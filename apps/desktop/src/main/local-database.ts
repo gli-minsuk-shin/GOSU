@@ -10,11 +10,94 @@ import type {
   WorkspacePendingSummary,
   WorkspaceSnapshot,
 } from '../shared/workspace-contracts';
+import { WorkspaceDataRecoveryError } from './workspace-storage-error';
 
 const MAX_WORKSPACE_STATE_BYTES = 8 * 1024 * 1024;
 
+function backfillLegacyWorkspaceRevisions(database: Database.Database) {
+  const operations = database
+    .prepare(
+      `select rowid,operation_json,workspace_revision from sync_outbox
+       where scope like 'workspace:%'
+       order by rowid asc`,
+    )
+    .all() as Array<{
+    rowid: number;
+    operation_json: string;
+    workspace_revision: number | null;
+  }>;
+  const repairs: Array<{ rowid: number; operationJson: string; revision: number }> = [];
+
+  for (const [index, row] of operations.entries()) {
+    const expectedRevision = index + 1;
+    if (row.workspace_revision !== null && row.workspace_revision !== expectedRevision) {
+      return false;
+    }
+
+    let operationJson = row.operation_json;
+    try {
+      const candidate = JSON.parse(row.operation_json) as unknown;
+      if (typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate)) {
+        const parsed = candidate as Record<string, unknown>;
+        const persistedRevision = parsed.workspaceRevision;
+        if (
+          persistedRevision !== undefined &&
+          (typeof persistedRevision !== 'number' ||
+            !Number.isSafeInteger(persistedRevision) ||
+            persistedRevision !== expectedRevision)
+        ) {
+          return false;
+        }
+        if (persistedRevision === undefined) {
+          operationJson = JSON.stringify({ ...parsed, workspaceRevision: expectedRevision });
+        }
+      }
+    } catch {
+      // Keep malformed payloads byte-for-byte opaque. Only ordering metadata can be repaired.
+    }
+
+    if (row.workspace_revision === null || operationJson !== row.operation_json) {
+      repairs.push({ rowid: row.rowid, operationJson, revision: expectedRevision });
+    }
+  }
+
+  const update = database.prepare(
+    'update sync_outbox set workspace_revision=?,operation_json=? where rowid=?',
+  );
+  for (const repair of repairs) {
+    update.run(repair.revision, repair.operationJson, repair.rowid);
+  }
+  return true;
+}
+
+function reconcileWorkspaceOutboxStatus(database: Database.Database): WorkspacePendingSummary {
+  const row = database
+    .prepare(
+      `select count(*) as pending_count,max(workspace_revision) as latest_workspace_revision
+       from sync_outbox
+       where delivered_at is null and scope like 'workspace:%'`,
+    )
+    .get() as { pending_count: number; latest_workspace_revision: number | null };
+  const summary: WorkspacePendingSummary = {
+    count: row.pending_count,
+    latestWorkspaceRevision: row.latest_workspace_revision,
+  };
+  database
+    .prepare(
+      `insert into local_workspace_outbox_status(
+         singleton_id,pending_count,latest_workspace_revision
+       ) values(1,?,?)
+       on conflict(singleton_id) do update set
+         pending_count=excluded.pending_count,
+         latest_workspace_revision=excluded.latest_workspace_revision`,
+    )
+    .run(summary.count, summary.latestWorkspaceRevision);
+  return summary;
+}
+
 export class LocalDatabase {
   private database: Database.Database | undefined;
+  private workspaceOutboxOrderingReady = false;
 
   isReady() {
     return this.database !== undefined;
@@ -33,14 +116,24 @@ export class LocalDatabase {
       key = decrypted.length > 0 ? Buffer.from(decrypted, 'hex') : Buffer.alloc(0);
     } else {
       key = randomBytes(32);
-      writeFileSync(keyPath, safeStorage.encryptString(key.toString('hex')), { mode: 0o600 });
+      try {
+        writeFileSync(keyPath, safeStorage.encryptString(key.toString('hex')), { mode: 0o600 });
+      } catch (error) {
+        key.fill(0);
+        throw error;
+      }
     }
-    if (key.length !== 32) throw new Error('invalid_local_database_key');
-    const database = new Database(join(userData, 'gosu.db'));
-    database.pragma(`key="x'${key.toString('hex')}'"`);
-    database.pragma('journal_mode=WAL');
-    database.pragma('foreign_keys=ON');
-    database.exec(`
+    if (key.length !== 32) {
+      key.fill(0);
+      throw new Error('invalid_local_database_key');
+    }
+    let database: Database.Database | undefined;
+    try {
+      database = new Database(join(userData, 'gosu.db'));
+      database.pragma(`key="x'${key.toString('hex')}'"`);
+      database.pragma('journal_mode=WAL');
+      database.pragma('foreign_keys=ON');
+      database.exec(`
       create table if not exists cache_records (
         scope text not null,
         key text not null,
@@ -90,78 +183,29 @@ export class LocalDatabase {
         updated_at text not null
       );
     `);
-    const outboxColumns = database.pragma('table_info(sync_outbox)') as Array<{ name: string }>;
-    if (!outboxColumns.some((column) => column.name === 'workspace_revision')) {
-      database.exec(
-        'alter table sync_outbox add column workspace_revision integer check (workspace_revision is null or workspace_revision > 0)',
-      );
-    }
-    const usedRevisions = new Set(
-      (
-        database
-          .prepare(
-            `select workspace_revision from sync_outbox
-             where scope like 'workspace:%' and workspace_revision is not null`,
-          )
-          .all() as Array<{ workspace_revision: number }>
-      ).map((row) => row.workspace_revision),
-    );
-    const legacyOperations = database
-      .prepare(
-        `select rowid,operation_json from sync_outbox
-         where scope like 'workspace:%' and workspace_revision is null
-         order by rowid asc`,
-      )
-      .all() as Array<{ rowid: number; operation_json: string }>;
-    let nextRevision = 1;
-    const backfillWorkspaceRevision = database.prepare(
-      'update sync_outbox set workspace_revision=?,operation_json=? where rowid=?',
-    );
-    database.transaction(() => {
-      for (const row of legacyOperations) {
-        let parsed: Record<string, unknown> | null = null;
-        try {
-          const candidate = JSON.parse(row.operation_json) as unknown;
-          if (typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate)) {
-            parsed = candidate as Record<string, unknown>;
-          }
-        } catch {
-          // Keep malformed payloads opaque. The bounded summary remains available while a future
-          // delivery worker can quarantine the row instead of exposing it to the renderer.
-        }
-        const persistedRevision = parsed?.workspaceRevision;
-        let revision =
-          typeof persistedRevision === 'number' &&
-          Number.isSafeInteger(persistedRevision) &&
-          persistedRevision > 0 &&
-          !usedRevisions.has(persistedRevision)
-            ? persistedRevision
-            : nextRevision;
-        while (usedRevisions.has(revision)) revision += 1;
-        usedRevisions.add(revision);
-        nextRevision = Math.max(nextRevision, revision + 1);
-        backfillWorkspaceRevision.run(
-          revision,
-          parsed === null
-            ? row.operation_json
-            : JSON.stringify({ ...parsed, workspaceRevision: revision }),
-          row.rowid,
+      const outboxColumns = database.pragma('table_info(sync_outbox)') as Array<{ name: string }>;
+      if (!outboxColumns.some((column) => column.name === 'workspace_revision')) {
+        database.exec(
+          'alter table sync_outbox add column workspace_revision integer check (workspace_revision is null or workspace_revision > 0)',
         );
       }
-    })();
-    database.exec(`
-      insert into local_workspace_outbox_status(
-        singleton_id,pending_count,latest_workspace_revision
-      )
-      select 1,count(*),max(workspace_revision)
-      from sync_outbox
-      where delivered_at is null and scope like 'workspace:%'
-      on conflict(singleton_id) do update set
-        pending_count=excluded.pending_count,
-        latest_workspace_revision=excluded.latest_workspace_revision
-    `);
-    this.database = database;
-    key.fill(0);
+      const initializedDatabase = database;
+      initializedDatabase.transaction(() => {
+        this.workspaceOutboxOrderingReady = backfillLegacyWorkspaceRevisions(initializedDatabase);
+        if (this.workspaceOutboxOrderingReady) reconcileWorkspaceOutboxStatus(initializedDatabase);
+      })();
+      this.database = initializedDatabase;
+    } catch (error) {
+      this.workspaceOutboxOrderingReady = false;
+      try {
+        database?.close();
+      } catch {
+        // Preserve the original open or migration error.
+      }
+      throw error;
+    } finally {
+      key.fill(0);
+    }
   }
 
   cache(scope: string, key: string, value: unknown, entityVersion = 0) {
@@ -196,6 +240,7 @@ export class LocalDatabase {
   }
 
   commitWorkspaceState(state: WorkspaceSnapshot, operation: WorkspaceOperation) {
+    if (!this.workspaceOutboxOrderingReady) throw new WorkspaceDataRecoveryError();
     const stateJson = JSON.stringify(state);
     const operationJson = JSON.stringify(operation);
     if (Buffer.byteLength(stateJson, 'utf8') > MAX_WORKSPACE_STATE_BYTES) {
@@ -210,18 +255,33 @@ export class LocalDatabase {
 
     const database = this.require();
     database.transaction(() => {
-      database
+      const expectedRevision = state.revision - 1;
+      const stateCommit = database
         .prepare(
           `insert into local_workspace_state(
              singleton_id,schema_version,revision,state_json,updated_at
-           ) values(1,1,?,?,?)
+           )
+           select 1,1,?,?,?
+           where ?=1 or exists(
+             select 1 from local_workspace_state
+             where singleton_id=1 and revision=?
+           )
            on conflict(singleton_id) do update set
              schema_version=excluded.schema_version,
              revision=excluded.revision,
              state_json=excluded.state_json,
-             updated_at=excluded.updated_at`,
+             updated_at=excluded.updated_at
+           where local_workspace_state.revision=?`,
         )
-        .run(state.revision, stateJson, operation.createdAt);
+        .run(
+          state.revision,
+          stateJson,
+          operation.createdAt,
+          state.revision,
+          expectedRevision,
+          expectedRevision,
+        );
+      if (stateCommit.changes !== 1) throw new Error('workspace_revision_conflict');
       database
         .prepare(
           `insert into sync_outbox(
@@ -250,6 +310,7 @@ export class LocalDatabase {
   }
 
   pendingWorkspaceChanges(): readonly WorkspaceOperation[] {
+    if (!this.workspaceOutboxOrderingReady) throw new WorkspaceDataRecoveryError();
     const rows = this.require()
       .prepare(
         `select operation_json from sync_outbox
@@ -257,23 +318,22 @@ export class LocalDatabase {
          order by workspace_revision asc,created_at asc,id asc`,
       )
       .all() as Array<{ operation_json: string }>;
-    return rows
-      .map((row) => JSON.parse(row.operation_json) as WorkspaceOperation)
-      .sort((left, right) => left.workspaceRevision - right.workspaceRevision);
+    try {
+      return rows
+        .map((row) => JSON.parse(row.operation_json) as WorkspaceOperation)
+        .sort((left, right) => left.workspaceRevision - right.workspaceRevision);
+    } catch {
+      throw new WorkspaceDataRecoveryError();
+    }
   }
 
   pendingWorkspaceSummary(): WorkspacePendingSummary {
-    const row = this.require()
-      .prepare(
-        `select pending_count,latest_workspace_revision
-         from local_workspace_outbox_status
-         where singleton_id=1`,
-      )
-      .get() as { pending_count: number; latest_workspace_revision: number | null } | undefined;
-    return {
-      count: row?.pending_count ?? 0,
-      latestWorkspaceRevision: row?.latest_workspace_revision ?? null,
-    };
+    const database = this.require();
+    return database.transaction(() => {
+      this.workspaceOutboxOrderingReady = backfillLegacyWorkspaceRevisions(database);
+      if (!this.workspaceOutboxOrderingReady) throw new WorkspaceDataRecoveryError();
+      return reconcileWorkspaceOutboxStatus(database);
+    })();
   }
 
   recordModelCatalog(catalog: ModelCatalog) {
@@ -312,6 +372,7 @@ export class LocalDatabase {
   close() {
     this.database?.close();
     this.database = undefined;
+    this.workspaceOutboxOrderingReady = false;
   }
   private require() {
     if (!this.database) throw new Error('local_database_not_open');

@@ -1,52 +1,121 @@
 import { ZodError } from 'zod';
 
 import {
-  type CreateProjectInput,
-  type CreateTaskInput,
-  type ObjectiveCommand,
-  type SaveObjectiveInput,
-  type UpdateTaskInput,
+  CreateProjectInputSchema,
+  CreateTaskInputSchema,
+  ObjectiveCommandSchema,
+  SaveObjectiveInputSchema,
+  UpdateTaskInputSchema,
 } from '../shared/workspace-contracts';
 import { WORKSPACE_IPC_CHANNELS } from '../shared/workspace-channels';
+import type { WorkspaceIpcResult } from '../shared/workspace-ipc-result';
 import { WorkspaceServiceError, type WorkspaceService } from './workspace-service';
+import { WorkspaceDataRecoveryError } from './workspace-storage-error';
 
 type RegisterHandler = (channel: string, listener: (...arguments_: unknown[]) => unknown) => void;
+type InputSchema<T> = Readonly<{
+  safeParse(value: unknown): { success: true; data: T } | { success: false };
+}>;
 
-export function registerWorkspaceIpc(register: RegisterHandler, workspace: WorkspaceService) {
-  register(WORKSPACE_IPC_CHANNELS.snapshot, () => safely(() => workspace.snapshot()));
-  register(WORKSPACE_IPC_CHANNELS.pendingSummary, () => safely(() => workspace.pendingSummary()));
+export function registerWorkspaceIpc(
+  register: RegisterHandler,
+  workspace: WorkspaceService,
+  reportUnexpected: (error: unknown) => void = () => undefined,
+) {
+  register(WORKSPACE_IPC_CHANNELS.snapshot, () =>
+    safely(() => workspace.snapshot(), reportUnexpected),
+  );
+  register(WORKSPACE_IPC_CHANNELS.pendingSummary, () =>
+    safely(() => workspace.pendingSummary(), reportUnexpected),
+  );
   register(WORKSPACE_IPC_CHANNELS.createProject, (input) =>
-    safely(() => workspace.createProject(input as CreateProjectInput)),
+    withValidatedInput(
+      input,
+      CreateProjectInputSchema,
+      (command) => workspace.createProject(command),
+      reportUnexpected,
+    ),
   );
   register(WORKSPACE_IPC_CHANNELS.createTask, (input) =>
-    safely(() => workspace.createTask(input as CreateTaskInput)),
+    withValidatedInput(
+      input,
+      CreateTaskInputSchema,
+      (command) => workspace.createTask(command),
+      reportUnexpected,
+    ),
   );
   register(WORKSPACE_IPC_CHANNELS.updateTask, (input) =>
-    safely(() => workspace.updateTask(input as UpdateTaskInput)),
+    withValidatedInput(
+      input,
+      UpdateTaskInputSchema,
+      (command) => workspace.updateTask(command),
+      reportUnexpected,
+    ),
   );
   register(WORKSPACE_IPC_CHANNELS.saveObjective, (input) =>
-    safely(() => workspace.saveObjective(input as SaveObjectiveInput)),
+    withValidatedInput(
+      input,
+      SaveObjectiveInputSchema,
+      (command) => workspace.saveObjective(command),
+      reportUnexpected,
+    ),
   );
   register(WORKSPACE_IPC_CHANNELS.lockObjective, (input) =>
-    safely(() => workspace.lockObjective(input as ObjectiveCommand)),
+    withValidatedInput(
+      input,
+      ObjectiveCommandSchema,
+      (command) => workspace.lockObjective(command),
+      reportUnexpected,
+    ),
   );
   register(WORKSPACE_IPC_CHANNELS.startObjectiveVersion, (input) =>
-    safely(() => workspace.startObjectiveVersion(input as ObjectiveCommand)),
+    withValidatedInput(
+      input,
+      ObjectiveCommandSchema,
+      (command) => workspace.startObjectiveVersion(command),
+      reportUnexpected,
+    ),
   );
 }
 
-async function safely<T>(operation: () => Promise<T>): Promise<T> {
+function withValidatedInput<TInput, TOutput>(
+  input: unknown,
+  schema: InputSchema<TInput>,
+  operation: (command: TInput) => Promise<TOutput>,
+  reportUnexpected: (error: unknown) => void,
+): Promise<WorkspaceIpcResult<TOutput>> {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) {
+    return Promise.resolve({ ok: false, error: { code: 'invalid_workspace_input' } });
+  }
+  return safely(() => operation(parsed.data), reportUnexpected);
+}
+
+async function safely<T>(
+  operation: () => Promise<T>,
+  reportUnexpected: (error: unknown) => void,
+): Promise<WorkspaceIpcResult<T>> {
   try {
-    return await operation();
+    return { ok: true, value: await operation() };
   } catch (error) {
     if (error instanceof WorkspaceServiceError) {
       const currentVersion = error.details.currentVersion;
-      throw new Error(
-        typeof currentVersion === 'number' ? `${error.code}:${currentVersion}` : error.code,
-        { cause: error },
-      );
+      return {
+        ok: false,
+        error: {
+          code: error.code,
+          ...(typeof currentVersion === 'number' ? { currentVersion } : {}),
+        },
+      };
     }
-    if (error instanceof ZodError) throw new Error('invalid_workspace_input', { cause: error });
-    throw new Error('workspace_unavailable', { cause: error });
+    if (error instanceof ZodError || error instanceof WorkspaceDataRecoveryError) {
+      return { ok: false, error: { code: 'workspace_data_requires_recovery' } };
+    }
+    try {
+      reportUnexpected(error);
+    } catch {
+      // Diagnostics must never turn a bounded IPC response into a rejected invoke call.
+    }
+    return { ok: false, error: { code: 'workspace_unavailable' } };
   }
 }

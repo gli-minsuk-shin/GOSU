@@ -151,7 +151,7 @@ export function DesktopApp() {
       <header className="titlebar">
         <div className="logo">G</div>
         <strong>GOSU</strong>
-        <span>Local Research Workspace</span>
+        <span>Local Research Workspace{runtime ? ` · v${runtime.app.version}` : ''}</span>
         <i className="titlebar-spacer" />
         <span
           className={`sync-pill ${pendingCount > 0 ? 'pending' : snapshot && pendingSummary === null ? 'offline' : runtime?.syncApi.ready ? 'ready' : 'offline'}`}

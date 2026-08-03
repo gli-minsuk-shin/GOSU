@@ -7,6 +7,7 @@ import Database from 'better-sqlite3-multiple-ciphers';
 import { app, safeStorage } from 'electron';
 
 import { LocalDatabase } from '../../src/main/local-database';
+import { WorkspaceDataRecoveryError } from '../../src/main/workspace-storage-error';
 import type {
   ProjectRecord,
   WorkspaceOperation,
@@ -72,22 +73,51 @@ void app.whenReady().then(() => {
     const legacyDatabase = new Database(join(temporaryUserData, 'gosu.db'));
     legacyDatabase.pragma(`key="x'${keyHex}'"`);
     const legacyRows = legacyDatabase
-      .prepare("select id,operation_json from sync_outbox where scope like 'workspace:%'")
-      .all() as Array<{ id: string; operation_json: string }>;
-    const makeLegacy = legacyDatabase.prepare(
-      'update sync_outbox set workspace_revision=null,operation_json=? where id=?',
-    );
+      .prepare(
+        `select id,scope,operation_json,base_version,created_at,delivered_at
+         from sync_outbox where scope like 'workspace:%' order by rowid asc`,
+      )
+      .all() as Array<{
+      id: string;
+      scope: string;
+      operation_json: string;
+      base_version: number | null;
+      created_at: string;
+      delivered_at: string | null;
+    }>;
     legacyDatabase.transaction(() => {
+      legacyDatabase.exec(`
+        create table sync_outbox_v01 (
+          id text primary key,
+          scope text not null,
+          operation_json text not null,
+          base_version integer,
+          created_at text not null,
+          delivered_at text
+        )
+      `);
+      const insertLegacy = legacyDatabase.prepare(
+        `insert into sync_outbox_v01(
+           id,scope,operation_json,base_version,created_at,delivered_at
+         ) values(?,?,?,?,?,?)`,
+      );
       for (const row of legacyRows) {
         const operation = JSON.parse(row.operation_json) as Record<string, unknown>;
         delete operation.workspaceRevision;
-        makeLegacy.run(JSON.stringify(operation), row.id);
+        insertLegacy.run(
+          row.id,
+          row.scope,
+          JSON.stringify(operation),
+          row.base_version,
+          row.created_at,
+          row.delivered_at,
+        );
       }
-      legacyDatabase
-        .prepare(
-          'update local_workspace_outbox_status set latest_workspace_revision=null where singleton_id=1',
-        )
-        .run();
+      legacyDatabase.exec(`
+        drop table sync_outbox;
+        alter table sync_outbox_v01 rename to sync_outbox;
+        drop table local_workspace_outbox_status;
+      `);
     })();
     legacyDatabase.close();
 
@@ -136,7 +166,105 @@ void app.whenReady().then(() => {
       afterRollback.pendingWorkspaceSummary().count === 2,
       'outbox_summary_did_not_roll_back',
     );
+
+    const competing = new LocalDatabase();
+    competing.open();
+    const accepted = fixture(3, randomUUID(), fixedTimestamp);
+    const stale = fixture(3, randomUUID(), fixedTimestamp);
+    afterRollback.commitWorkspaceState(accepted.state, accepted.operation);
+    let staleRevisionRejected = false;
+    try {
+      competing.commitWorkspaceState(stale.state, stale.operation);
+    } catch (error) {
+      staleRevisionRejected =
+        error instanceof Error && error.message === 'workspace_revision_conflict';
+    }
+    invariant(staleRevisionRejected, 'stale_workspace_revision_was_not_rejected');
     afterRollback.close();
+    competing.close();
+
+    const afterRace = new LocalDatabase();
+    afterRace.open();
+    invariant(afterRace.loadWorkspaceState()?.revision === 3, 'workspace_race_revision_changed');
+    invariant(
+      afterRace.loadWorkspaceState()?.projects[0]?.id === accepted.state.projects[0]?.id,
+      'workspace_race_snapshot_was_overwritten',
+    );
+    invariant(
+      afterRace.pendingWorkspaceChanges().filter((operation) => operation.workspaceRevision === 3)
+        .length === 1,
+      'workspace_race_created_duplicate_revision',
+    );
+    invariant(afterRace.pendingWorkspaceSummary().count === 3, 'workspace_race_summary_changed');
+    afterRace.close();
+
+    const opaquePayload = '{legacy-operation-payload-is-not-json';
+    const corruptStatus = new Database(join(temporaryUserData, 'gosu.db'));
+    corruptStatus.pragma(`key="x'${keyHex}'"`);
+    corruptStatus.transaction(() => {
+      corruptStatus
+        .prepare('update sync_outbox set operation_json=?,workspace_revision=null where id=?')
+        .run(opaquePayload, operationId);
+      corruptStatus
+        .prepare(
+          `update local_workspace_outbox_status
+           set pending_count=1,latest_workspace_revision=null where singleton_id=1`,
+        )
+        .run();
+    })();
+    corruptStatus.close();
+
+    const recovered = new LocalDatabase();
+    recovered.open();
+    invariant(recovered.loadWorkspaceState()?.revision === 3, 'opaque_payload_changed_snapshot');
+    invariant(recovered.pendingWorkspaceSummary().count === 3, 'status_reconciliation_failed');
+    invariant(
+      recovered.pendingWorkspaceSummary().latestWorkspaceRevision === 3,
+      'status_revision_reconciliation_failed',
+    );
+    let opaqueQueueRejected = false;
+    try {
+      recovered.pendingWorkspaceChanges();
+    } catch (error) {
+      opaqueQueueRejected = error instanceof WorkspaceDataRecoveryError;
+    }
+    invariant(opaqueQueueRejected, 'opaque_queue_was_not_marked_for_recovery');
+    recovered.close();
+
+    const preservedPayload = new Database(join(temporaryUserData, 'gosu.db'));
+    preservedPayload.pragma(`key="x'${keyHex}'"`);
+    const preserved = preservedPayload
+      .prepare('select operation_json from sync_outbox where id=?')
+      .get(operationId) as { operation_json: string };
+    preservedPayload.close();
+    invariant(preserved.operation_json === opaquePayload, 'opaque_payload_was_rewritten');
+
+    const ambiguousOrdering = new Database(join(temporaryUserData, 'gosu.db'));
+    ambiguousOrdering.pragma(`key="x'${keyHex}'"`);
+    const acceptedRow = ambiguousOrdering
+      .prepare('select operation_json from sync_outbox where id=?')
+      .get(accepted.operation.id) as { operation_json: string };
+    const acceptedOperation = JSON.parse(acceptedRow.operation_json) as Record<string, unknown>;
+    acceptedOperation.workspaceRevision = 4;
+    ambiguousOrdering
+      .prepare('update sync_outbox set operation_json=?,workspace_revision=4 where id=?')
+      .run(JSON.stringify(acceptedOperation), accepted.operation.id);
+    ambiguousOrdering.close();
+
+    const recoveryRequired = new LocalDatabase();
+    recoveryRequired.open();
+    invariant(
+      recoveryRequired.loadWorkspaceState()?.revision === 3,
+      'ambiguous_outbox_hid_workspace_snapshot',
+    );
+    let ambiguousSummaryRejected = false;
+    try {
+      recoveryRequired.pendingWorkspaceSummary();
+    } catch (error) {
+      ambiguousSummaryRejected = error instanceof WorkspaceDataRecoveryError;
+    }
+    invariant(ambiguousSummaryRejected, 'ambiguous_outbox_was_silently_renumbered');
+    recoveryRequired.close();
 
     process.stdout.write('local SQLCipher workspace smoke test passed\n');
     app.exit(0);

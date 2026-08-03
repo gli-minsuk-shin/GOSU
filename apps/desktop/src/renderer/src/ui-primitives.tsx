@@ -106,6 +106,8 @@ export function describeError(error: unknown) {
     version_conflict:
       'This item changed since it was opened. The newer version was not overwritten.',
     invalid_workspace_input: 'Check the workspace fields and try again.',
+    workspace_data_requires_recovery:
+      'Local workspace metadata needs recovery. Restart the latest GOSU build; existing data was not replaced.',
     workspace_unavailable:
       'The encrypted local workspace is unavailable. Your existing data was not replaced.',
   };
