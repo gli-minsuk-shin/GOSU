@@ -7,7 +7,7 @@ const testRoot = fileURLToPath(new URL('.', import.meta.url));
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: ['@gosu/contracts'] })],
     build: {
       outDir: 'out/local-database-smoke',
       rollupOptions: {

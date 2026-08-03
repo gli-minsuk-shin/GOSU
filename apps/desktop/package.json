@@ -1,13 +1,13 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build": "electron-vite build && node ../../scripts/verify-preload-bundle.mjs",
     "preview": "electron-vite preview",
     "package:mac": "pnpm build && electron-builder --mac dmg --publish never",
     "smoke:local-db:mac": "electron-builder install-app-deps && electron-vite build --config test/electron/electron.vite.config.ts && electron out/local-database-smoke/main.cjs",

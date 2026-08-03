@@ -8,6 +8,7 @@ import { app, safeStorage } from 'electron';
 
 import { LocalDatabase } from '../../src/main/local-database';
 import { WorkspaceDataRecoveryError } from '../../src/main/workspace-storage-error';
+import type { ProjectChatMessage } from '../../src/shared/project-chat-contracts';
 import type {
   ProjectRecord,
   WorkspaceOperation,
@@ -65,6 +66,30 @@ void app.whenReady().then(() => {
     database.open();
     database.commitWorkspaceState(first.state, first.operation);
     database.commitWorkspaceState(second.state, second.operation);
+    const chatMessageId = randomUUID();
+    const chatActionId = randomUUID();
+    const chatProjectId = second.state.projects[0]!.id;
+    const chatMessage: ProjectChatMessage = {
+      id: chatMessageId,
+      projectId: chatProjectId,
+      role: 'assistant',
+      content: 'Create the reproduction task after review.',
+      status: 'complete',
+      actions: [
+        {
+          id: chatActionId,
+          projectId: chatProjectId,
+          messageId: chatMessageId,
+          command: { type: 'task.create', title: 'Reproduce baseline', status: 'planned' },
+          status: 'proposed',
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+        },
+      ],
+      createdAt: fixedTimestamp,
+      completedAt: fixedTimestamp,
+    };
+    database.saveMessage(chatMessage);
     database.close();
 
     const keyHex = safeStorage
@@ -141,6 +166,18 @@ void app.whenReady().then(() => {
       reopened.pendingWorkspaceSummary().latestWorkspaceRevision === 2,
       'outbox_summary_revision_failed',
     );
+    invariant(
+      reopened.snapshot(chatProjectId).messages[0]?.content === chatMessage.content,
+      'chat_message_restore_failed',
+    );
+    invariant(
+      reopened.snapshot(chatProjectId).messages[0]?.actions[0]?.status === 'proposed',
+      'chat_action_restore_failed',
+    );
+    invariant(
+      reopened.claimAction(chatProjectId, chatActionId, fixedTimestamp),
+      'chat_action_claim_failed',
+    );
 
     const duplicate = fixture(3, operationId, fixedTimestamp);
     let duplicateRejected = false;
@@ -154,6 +191,11 @@ void app.whenReady().then(() => {
 
     const afterRollback = new LocalDatabase();
     afterRollback.open();
+    invariant(
+      afterRollback.snapshot(chatProjectId).messages[0]?.actions[0]?.errorCode ===
+        'application_interrupted',
+      'chat_action_interruption_reconciliation_failed',
+    );
     invariant(
       afterRollback.loadWorkspaceState()?.revision === 2,
       'workspace_transaction_did_not_roll_back',

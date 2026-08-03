@@ -115,7 +115,7 @@ export function ConnectionsView({
         )}
         <div className="privacy">
           Authentication and the live model catalog are handled by the local Codex App Server. The
-          selected model is a catalog preview until an AI turn is implemented.
+          selected model is used by Project chat and every turn records the resolved model locally.
         </div>
       </article>
       <article className="card">
