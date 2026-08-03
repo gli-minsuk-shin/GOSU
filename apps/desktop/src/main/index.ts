@@ -3,6 +3,7 @@ import { app, BrowserWindow, ipcMain, session, shell, type IpcMainInvokeEvent } 
 import type { ModelInvocation } from '@gosu/contracts';
 import { CodexAppServer } from './codex-app-server';
 import { LocalDatabase } from './local-database';
+import { installProcessOutputGuards } from './process-output-guard';
 import {
   createTrustedRenderer,
   isTrustedRendererUrl,
@@ -18,6 +19,9 @@ import {
 import { VaultAccess } from './vault';
 import { registerWorkspaceIpc } from './workspace-ipc';
 import { WorkspaceService } from './workspace-service';
+import { isSupervisorAlive, parseSupervisorPid } from './supervisor-liveness';
+
+installProcessOutputGuards();
 
 const codex = new CodexAppServer();
 const database = new LocalDatabase();
@@ -36,8 +40,32 @@ function setDevelopmentDockIcon() {
   }
 }
 
+function reportUnexpectedWorkspaceError(_error: unknown) {
+  console.error('[GOSU] Unexpected workspace IPC failure.');
+}
+
+function installLocalSupervisorGuard() {
+  if (app.isPackaged) return;
+  const supervisorPid = parseSupervisorPid(process.env.GOSU_LOCAL_SUPERVISOR_PID);
+  if (supervisorPid === null) return;
+  const check = () => {
+    if (!isSupervisorAlive(supervisorPid)) app.quit();
+  };
+  const timer = setInterval(check, 1_000);
+  timer.unref();
+  app.once('before-quit', () => clearInterval(timer));
+  check();
+}
+
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 function createWindow(trustedRenderer: TrustedRenderer) {
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1480,
     height: 930,
     minWidth: 1060,
@@ -52,7 +80,11 @@ function createWindow(trustedRenderer: TrustedRenderer) {
       spellcheck: true,
     },
   });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow = window;
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = undefined;
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
     try {
       if (new URL(url).protocol === 'https:') void shell.openExternal(url);
     } catch {
@@ -63,9 +95,9 @@ function createWindow(trustedRenderer: TrustedRenderer) {
   const preventUntrustedNavigation = (event: Electron.Event, url: string) => {
     if (!isTrustedRendererUrl(url, trustedRenderer)) event.preventDefault();
   };
-  mainWindow.webContents.on('will-navigate', preventUntrustedNavigation);
-  mainWindow.webContents.on('will-redirect', preventUntrustedNavigation);
-  void mainWindow.loadURL(trustedRenderer.entryUrl);
+  window.webContents.on('will-navigate', preventUntrustedNavigation);
+  window.webContents.on('will-redirect', preventUntrustedNavigation);
+  void window.loadURL(trustedRenderer.entryUrl);
 }
 
 function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadiness) {
@@ -91,6 +123,7 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   registerWorkspaceIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     workspace,
+    reportUnexpectedWorkspaceError,
   );
 
   handle('gosu:runtime:readiness', async () =>
@@ -134,46 +167,58 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   );
 }
 
-app.whenReady().then(() => {
-  app.setName('GOSU');
-  setDevelopmentDockIcon();
-  const trustedRenderer = createTrustedRenderer({
-    developmentUrl: process.env.ELECTRON_RENDERER_URL,
-    isPackaged: app.isPackaged,
-    productionEntryPath: join(__dirname, '../renderer/index.html'),
-  });
-  const contentSecurityPolicy = rendererContentSecurityPolicy(trustedRenderer);
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        'Content-Security-Policy': [contentSecurityPolicy],
-      },
-    }),
-  );
-  let localData = localDataReadiness();
-  try {
-    database.open();
-  } catch (error) {
-    localData = localDataReadiness(error);
-  }
-  codex.on(
-    'invocation',
-    (event: { threadId: string; turnId: string; invocation: ModelInvocation }) =>
-      database.isReady() &&
-      database.recordModelInvocation(event.threadId, event.turnId, event.invocation),
-  );
-  registerIpc(trustedRenderer, localData);
-  createWindow(trustedRenderer);
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(trustedRenderer);
-  });
-});
+const primaryInstance = app.requestSingleInstanceLock();
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
-app.on('before-quit', () => {
-  codex.stop();
-  database.close();
-});
+if (!primaryInstance) {
+  app.quit();
+} else {
+  installLocalSupervisorGuard();
+  void app.whenReady().then(() => {
+    app.setName('GOSU');
+    setDevelopmentDockIcon();
+    const trustedRenderer = createTrustedRenderer({
+      developmentUrl: process.env.ELECTRON_RENDERER_URL,
+      isPackaged: app.isPackaged,
+      productionEntryPath: join(__dirname, '../renderer/index.html'),
+    });
+    const contentSecurityPolicy = rendererContentSecurityPolicy(trustedRenderer);
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [contentSecurityPolicy],
+        },
+      }),
+    );
+    let localData = localDataReadiness();
+    try {
+      database.open();
+    } catch (error) {
+      localData = localDataReadiness(error);
+    }
+    codex.on(
+      'invocation',
+      (event: { threadId: string; turnId: string; invocation: ModelInvocation }) =>
+        database.isReady() &&
+        database.recordModelInvocation(event.threadId, event.turnId, event.invocation),
+    );
+    registerIpc(trustedRenderer, localData);
+    createWindow(trustedRenderer);
+    app.on('second-instance', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) createWindow(trustedRenderer);
+      else focusMainWindow();
+    });
+    app.on('activate', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) createWindow(trustedRenderer);
+      else focusMainWindow();
+    });
+  });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
+  app.on('before-quit', () => {
+    codex.stop();
+    database.close();
+  });
+}

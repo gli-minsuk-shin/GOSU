@@ -284,7 +284,7 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
 ```mermaid
 flowchart LR
   UI["React workspace UI"]
-  Preload["typed preload API\n8 fixed workspace channels"]
+  Preload["typed preload API\nfixed channels·result envelope"]
   Guard["Main sender·frame allowlist"]
   Service["WorkspaceService\nvalidation·version rules"]
   Transaction["single SQLCipher transaction"]
@@ -300,6 +300,10 @@ flowchart LR
 
 - Renderer는 project·task·objective별 typed command만 호출한다. 임의 channel이나 generic cache
   조회 API는 노출하지 않는다.
+- Main의 workspace handler는 예상 가능한 validation·version·recovery 실패를 reject하지 않고
+  제한된 result envelope로 resolve한다. Preload가 이를 Renderer의 로컬 `Error`로 바꾸므로 Electron
+  내부 오류 로거가 project 입력이나 local path를 Main console에 출력하지 않는다. IPC boundary에서
+  command input을 먼저 검증해 입력 오류와 persisted snapshot recovery 오류를 구분한다.
 - IPC DTO와 Zod schema는 `apps/desktop/src/shared/workspace-contracts.ts`, runtime 상태 DTO는
   `apps/desktop/src/shared/runtime-contracts.ts`가 소유한다. Renderer와 Preload는 privileged Main
   구현을 import하지 않고 이 shared contract의 type만 사용한다.
@@ -307,15 +311,20 @@ flowchart LR
 - 각 task와 objective는 entity version을 가지며 stale command는 conflict로 끝난다. 자동 merge나
   last-write-wins는 수행하지 않는다.
 - workspace 전체 revision은 성공한 mutation마다 증가한다. commit이 실패하면 in-memory snapshot도
-  갱신하지 않는다.
+  갱신하지 않는다. SQL transaction은 persisted revision이 정확히 이전 revision일 때만 snapshot을
+  CAS 갱신하므로 예외적으로 두 DB connection이 겹쳐도 같은 revision이 서로를 덮어쓰지 못한다.
 - 동일한 revision을 outbox operation의 durable `workspaceRevision`으로 기록하고 pending command는
   이 값으로 정렬한다. 같은 millisecond에 기록된 create→update 또는 save→freeze가 UUID 순서로
   뒤집히지 않는다.
 - sequence 도입 전 local row는 open migration에서 기존 insertion `rowid` 순서를 한 번만
-  `workspaceRevision` column과 operation JSON에 backfill하고, 이후에는 그 durable 값을 사용한다.
+  `workspaceRevision` column과 정상 operation JSON에 backfill하고, 이후에는 그 durable 값을 사용한다.
+  파싱할 수 없는 operation payload는 삭제하거나 재작성하지 않고 opaque provenance로 그대로 보존한다.
+  기존 revision과 row 순서가 모순되는 partial migration은 임의로 재번호를 만들지 않고 queue만
+  recovery-required로 막는다. 이때 snapshot과 기존 Board 읽기는 계속 가능하다.
 - UI는 outbox payload 전체를 받지 않는다. transaction에서 함께 갱신되는 singleton summary의
   pending count와 latest revision만 고정 크기 IPC로 읽는다. summary 오류는 snapshot 로딩과
-  격리되어 정상 project·task·objective를 숨기지 않는다.
+  격리되어 정상 project·task·objective를 숨기지 않는다. 앱을 열 때와 summary를 읽을 때 실제
+  outbox row에서 singleton을 다시 계산해 누락되거나 불일치하는 legacy summary를 복구한다.
 - project별 task 접근을 검사해 다른 project ID를 통한 수정은 거절한다.
 - objective freeze는 현재 단일 사용자 로컬 불변성 기능이다. Owner 승인이나 RBAC 승인으로 해석하면
   안 되며, 변경하려면 명시적으로 다음 objective version을 시작해야 한다.
@@ -334,6 +343,13 @@ package script의 shell은 `exec`로 supervisor에 교체되어 terminal signal�
 4. 준비된 base URL만 Electron Main에 전달하고 Desktop을 시작한다.
 5. Desktop이 끝나거나 `Ctrl+C`를 받으면 진행 중인 probe/readiness를 취소하고 이후 child 생성을
    차단한 뒤 소유한 process group을 종료해 watcher와 Electron helper가 남지 않게 한다.
+
+Desktop Main은 single-instance lock을 먼저 획득한다. 같은 user data를 사용하는 두 앱이 동시에
+SQLCipher workspace를 열지 않으며 두 번째 실행은 기존 창만 앞으로 가져온다. terminal이나 상위
+process가 사라진 뒤 `stdout`·`stderr`가 닫혀도 `EIO`·`EPIPE`만 제한적으로 흡수해 진단 출력의
+연쇄 crash를 막고, 그 밖의 process output 오류는 그대로 실패시킨다. 개발 launcher가 비정상
+종료되어 signal cleanup을 실행하지 못한 경우에도 Desktop은 supervisor PID liveness를 확인해 고아
+DB writer로 남지 않는다.
 
 `pnpm app:doctor`는 Node, macOS target, workspace 의존성, Electron·Codex package와 local port를
 비밀값 없이 검사한다. `pnpm app:package`는 전체 품질 게이트 후 unsigned DMG를 만든다. DMG는
@@ -455,8 +471,10 @@ service identity와 readiness retry 규칙을 검증한다. 특정 package를 �
 
 macOS에서 `pnpm --filter @gosu/desktop smoke:local-db:mac`을 실행하면 Electron ABI의 실제
 SQLCipher와 `safeStorage`를 사용해 workspace commit, encrypted file header, close/reopen 복구,
-duplicate idempotency key에 의한 transaction rollback과 outbox summary 일관성을 검증한다. 이
-검사는 native ABI와 Keychain 구현이 다른 Linux CI의 일반 Vitest 경로와 분리한다.
+duplicate idempotency key에 의한 transaction rollback과 outbox summary 일관성을 검증한다. 두
+SQLCipher connection의 동일 revision 경합, 실제 v0.1 outbox schema migration, 손상된 singleton
+summary 재구성, 해석 불가능한 operation payload의 byte-for-byte 보존도 포함한다. 이 검사는 native
+ABI와 Keychain 구현이 다른 Linux CI의 일반 Vitest 경로와 분리한다.
 
 Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 

@@ -13,6 +13,15 @@ import type {
   WorkspaceTask,
 } from '../shared/workspace-contracts';
 import { WORKSPACE_IPC_CHANNELS } from '../shared/workspace-channels';
+import { unwrapWorkspaceIpcResult } from '../shared/workspace-ipc-result';
+
+async function invokeWorkspace<T>(channel: string, ...arguments_: unknown[]): Promise<T> {
+  const result = await ipcRenderer.invoke(channel, ...arguments_).catch(() => ({
+    ok: false,
+    error: { code: 'workspace_unavailable' },
+  }));
+  return unwrapWorkspaceIpcResult<T>(result);
+}
 
 const api = {
   runtime: {
@@ -30,31 +39,21 @@ const api = {
     read: (relativePath: string) => ipcRenderer.invoke('gosu:vault:read', relativePath),
   },
   workspace: {
-    snapshot: () =>
-      ipcRenderer.invoke(WORKSPACE_IPC_CHANNELS.snapshot) as Promise<WorkspaceSnapshot>,
+    snapshot: () => invokeWorkspace<WorkspaceSnapshot>(WORKSPACE_IPC_CHANNELS.snapshot),
     pendingSummary: () =>
-      ipcRenderer.invoke(WORKSPACE_IPC_CHANNELS.pendingSummary) as Promise<WorkspacePendingSummary>,
+      invokeWorkspace<WorkspacePendingSummary>(WORKSPACE_IPC_CHANNELS.pendingSummary),
     createProject: (input: CreateProjectInput) =>
-      ipcRenderer.invoke(WORKSPACE_IPC_CHANNELS.createProject, input) as Promise<ProjectRecord>,
+      invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.createProject, input),
     createTask: (input: CreateTaskInput) =>
-      ipcRenderer.invoke(WORKSPACE_IPC_CHANNELS.createTask, input) as Promise<WorkspaceTask>,
+      invokeWorkspace<WorkspaceTask>(WORKSPACE_IPC_CHANNELS.createTask, input),
     updateTask: (input: UpdateTaskInput) =>
-      ipcRenderer.invoke(WORKSPACE_IPC_CHANNELS.updateTask, input) as Promise<WorkspaceTask>,
+      invokeWorkspace<WorkspaceTask>(WORKSPACE_IPC_CHANNELS.updateTask, input),
     saveObjective: (input: SaveObjectiveInput) =>
-      ipcRenderer.invoke(
-        WORKSPACE_IPC_CHANNELS.saveObjective,
-        input,
-      ) as Promise<WorkspaceObjective>,
+      invokeWorkspace<WorkspaceObjective>(WORKSPACE_IPC_CHANNELS.saveObjective, input),
     lockObjective: (input: ObjectiveCommand) =>
-      ipcRenderer.invoke(
-        WORKSPACE_IPC_CHANNELS.lockObjective,
-        input,
-      ) as Promise<WorkspaceObjective>,
+      invokeWorkspace<WorkspaceObjective>(WORKSPACE_IPC_CHANNELS.lockObjective, input),
     startObjectiveVersion: (input: ObjectiveCommand) =>
-      ipcRenderer.invoke(
-        WORKSPACE_IPC_CHANNELS.startObjectiveVersion,
-        input,
-      ) as Promise<WorkspaceObjective>,
+      invokeWorkspace<WorkspaceObjective>(WORKSPACE_IPC_CHANNELS.startObjectiveVersion, input),
   },
   openExternal: (url: string) => ipcRenderer.invoke('gosu:external:open', url),
 };

@@ -111,6 +111,7 @@ async function main() {
       : '[GOSU] Reusing the healthy local Sync API. Starting the desktop app…',
   );
   startProcess('Desktop', ['--filter', '@gosu/desktop', 'dev'], {
+    GOSU_LOCAL_SUPERVISOR_PID: String(process.pid),
     GOSU_SYNC_API_URL: baseUrl.origin,
     NODE_ENV: 'development',
   });
