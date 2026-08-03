@@ -1,0 +1,12 @@
+.next/
+.turbo/
+build/
+coverage/
+dist/
+node_modules/
+out/
+release/
+**/next-env.d.ts
+pnpm-lock.yaml
+*.min.*
+*.pdf

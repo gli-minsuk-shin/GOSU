@@ -1,0 +1,6 @@
+{
+  "$id": "urn:gosu:contract:v1:TrialState",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "string",
+  "enum": ["pending", "leased", "running", "succeeded", "failed", "pruned", "cancelled", "lost"]
+}

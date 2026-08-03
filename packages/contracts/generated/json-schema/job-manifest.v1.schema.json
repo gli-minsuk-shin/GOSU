@@ -1,0 +1,291 @@
+{
+  "$id": "urn:gosu:contract:v1:JobManifestV1",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "number", "const": 1 },
+    "jobId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "campaignId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "trialId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "issuedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+    },
+    "codeSha": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 160,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "reference": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      },
+      "required": ["reference", "digest"],
+      "additionalProperties": false
+    },
+    "command": {
+      "type": "object",
+      "properties": {
+        "executable": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "args": {
+          "maxItems": 512,
+          "type": "array",
+          "items": { "type": "string", "maxLength": 8192 }
+        }
+      },
+      "required": ["executable", "args"],
+      "additionalProperties": false
+    },
+    "parameters": {
+      "type": "object",
+      "propertyNames": { "type": "string" },
+      "additionalProperties": { "$ref": "#/definitions/__schema0" }
+    },
+    "seed": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "cpuCores": { "type": "number", "exclusiveMinimum": 0 },
+        "memoryMiB": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "gpuCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "gpuMemoryMiB": {
+          "anyOf": [
+            { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": ["cpuCores", "memoryMiB", "gpuCount", "gpuMemoryMiB"],
+      "additionalProperties": false
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["none", "allowlist"] },
+        "allowedHosts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 253 }
+        }
+      },
+      "required": ["mode", "allowedHosts"],
+      "additionalProperties": false
+    },
+    "mounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "enum": ["workspace", "dataset", "scratch", "host"] },
+          "sourceRef": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "containerPath": { "type": "string", "maxLength": 512, "pattern": "^\\/.*" },
+          "readOnly": { "type": "boolean" }
+        },
+        "required": ["kind", "sourceRef", "containerPath", "readOnly"],
+        "additionalProperties": false
+      }
+    },
+    "secretRefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ref": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "environmentVariable": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Z_][A-Z0-9_]*$"
+          }
+        },
+        "required": ["ref", "environmentVariable"],
+        "additionalProperties": false
+      }
+    },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "privileged": { "type": "boolean" },
+        "readOnlyRootFilesystem": { "type": "boolean" },
+        "noNewPrivileges": { "type": "boolean" },
+        "runAsUser": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "runAsGroup": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "drop": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+            },
+            "add": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+            }
+          },
+          "required": ["drop", "add"],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "privileged",
+        "readOnlyRootFilesystem",
+        "noNewPrivileges",
+        "runAsUser",
+        "runAsGroup",
+        "capabilities"
+      ],
+      "additionalProperties": false
+    },
+    "timeoutSeconds": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+    "objective": {
+      "type": "object",
+      "properties": {
+        "objectiveVersionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "primaryMetric": {
+          "type": "object",
+          "properties": {
+            "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "displayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "direction": { "type": "string", "enum": ["maximize", "minimize"] },
+            "unit": {
+              "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 64 }, { "type": "null" }]
+            },
+            "aggregation": {
+              "type": "string",
+              "enum": ["mean", "median", "minimum", "maximum", "last"]
+            },
+            "evaluatorHash": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 160,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+            },
+            "datasetHash": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 160,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+            },
+            "holdoutHash": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 8,
+                  "maxLength": 160,
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+                },
+                { "type": "null" }
+              ]
+            },
+            "baseline": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+            "target": { "anyOf": [{ "type": "number" }, { "type": "null" }] }
+          },
+          "required": [
+            "key",
+            "displayName",
+            "direction",
+            "unit",
+            "aggregation",
+            "evaluatorHash",
+            "datasetHash",
+            "holdoutHash",
+            "baseline",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "maxTrials": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+            "maxConcurrentTrials": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "maxWallTimeSeconds": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "maxGpuHours": { "type": "number", "minimum": 0 },
+            "maxFailures": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+          },
+          "required": [
+            "maxTrials",
+            "maxConcurrentTrials",
+            "maxWallTimeSeconds",
+            "maxGpuHours",
+            "maxFailures"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": ["objectiveVersionId", "version", "primaryMetric", "budget"],
+      "additionalProperties": false
+    },
+    "policyVersion": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+    "policyHash": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 160,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+    },
+    "manifestHash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "signature": {
+      "type": "object",
+      "properties": {
+        "algorithm": { "type": "string", "const": "ed25519" },
+        "keyId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "value": { "type": "string", "minLength": 32, "maxLength": 512 }
+      },
+      "required": ["algorithm", "keyId", "value"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "jobId",
+    "campaignId",
+    "trialId",
+    "attemptId",
+    "issuedAt",
+    "codeSha",
+    "image",
+    "command",
+    "parameters",
+    "seed",
+    "resources",
+    "network",
+    "mounts",
+    "secretRefs",
+    "execution",
+    "timeoutSeconds",
+    "objective",
+    "policyVersion",
+    "policyHash",
+    "manifestHash",
+    "signature"
+  ],
+  "additionalProperties": false,
+  "definitions": {
+    "__schema0": {
+      "anyOf": [
+        { "type": "string" },
+        { "type": "number" },
+        { "type": "boolean" },
+        { "type": "null" },
+        { "type": "array", "items": { "$ref": "#/definitions/__schema0" } },
+        {
+          "type": "object",
+          "propertyNames": { "type": "string" },
+          "additionalProperties": { "$ref": "#/definitions/__schema0" }
+        }
+      ]
+    }
+  }
+}

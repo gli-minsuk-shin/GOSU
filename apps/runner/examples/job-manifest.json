@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "idempotencyKey": "submit-test-001",
+  "lease": {
+    "id": "lease-test-001",
+    "fenceToken": 1,
+    "expiresAt": "2099-01-01T00:00:00Z"
+  },
+  "manifest": {
+    "schemaVersion": 1,
+    "jobId": "job-test-001",
+    "campaignId": "campaign-test-001",
+    "trialId": "trial-test-001",
+    "attemptId": "attempt-test-001",
+    "issuedAt": "2026-08-02T23:59:00Z",
+    "codeSha": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "image": {
+      "reference": "docker.io/library/python:3.12-slim",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "command": {
+      "executable": "python3",
+      "args": ["train.py", "--epochs", "1"]
+    },
+    "parameters": {
+      "learningRate": 0.01
+    },
+    "seed": 7,
+    "resources": {
+      "cpuCores": 1,
+      "memoryMiB": 512,
+      "gpuCount": 0,
+      "gpuMemoryMiB": null
+    },
+    "network": {
+      "mode": "none",
+      "allowedHosts": []
+    },
+    "mounts": [
+      {
+        "kind": "workspace",
+        "sourceRef": "job-source",
+        "containerPath": "/workspace",
+        "readOnly": false
+      }
+    ],
+    "secretRefs": [],
+    "execution": {
+      "privileged": false,
+      "readOnlyRootFilesystem": true,
+      "noNewPrivileges": true,
+      "runAsUser": 1000,
+      "runAsGroup": 1000,
+      "capabilities": {
+        "drop": ["ALL"],
+        "add": []
+      }
+    },
+    "timeoutSeconds": 60,
+    "objective": {
+      "objectiveVersionId": "objective-version-test-001",
+      "version": 1,
+      "primaryMetric": {
+        "key": "score",
+        "displayName": "Score",
+        "direction": "maximize",
+        "unit": "score",
+        "aggregation": "last",
+        "evaluatorHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "datasetHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "holdoutHash": null,
+        "baseline": null,
+        "target": null
+      },
+      "budget": {
+        "maxTrials": 10,
+        "maxConcurrentTrials": 1,
+        "maxWallTimeSeconds": 3600,
+        "maxGpuHours": 0,
+        "maxFailures": 2
+      }
+    },
+    "policyVersion": 1,
+    "policyHash": "local-policy-v1",
+    "manifestHash": "sha256:ca355883c85094cb0b8b2c8cbfc1fc31ca040dc98b8bce634c4b1d91e3b5ab56",
+    "signature": {
+      "algorithm": "ed25519",
+      "keyId": "test-signing-key",
+      "value": "Bmzt7bBvy0ntVv71zZSHL6RmKxLG99S6PYoTrhntC1OSST1uTjedVB0gXQrtAd4IJx8cIg+NrM4ZePQsbOZXBQ=="
+    }
+  }
+}

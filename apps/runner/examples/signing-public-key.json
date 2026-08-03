@@ -1,0 +1,5 @@
+{
+  "algorithm": "ed25519",
+  "keyId": "test-signing-key",
+  "publicKeyBase64": "IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI="
+}

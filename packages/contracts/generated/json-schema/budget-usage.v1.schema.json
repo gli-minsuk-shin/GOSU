@@ -1,0 +1,14 @@
+{
+  "$id": "urn:gosu:contract:v1:BudgetUsage",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "trialsStarted": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "activeTrials": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "wallTimeSeconds": { "type": "number", "minimum": 0 },
+    "gpuHours": { "type": "number", "minimum": 0 },
+    "failures": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+  },
+  "required": ["trialsStarted", "activeTrials", "wallTimeSeconds", "gpuHours", "failures"],
+  "additionalProperties": false
+}

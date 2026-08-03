@@ -1,0 +1,834 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:gosu:contracts:bundle:v1",
+  "title": "GOSU contract bundle v1",
+  "description": "Language-neutral canonical schemas for generated TypeScript and Go boundaries.",
+  "definitions": {
+    "ModelDescriptor": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "providerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "modelId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "catalogVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "isDefault": { "type": "boolean" },
+        "modalities": {
+          "minItems": 1,
+          "type": "array",
+          "items": { "type": "string", "enum": ["text", "image", "audio", "video"] }
+        },
+        "reasoningOptions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "label": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "isDefault": { "type": "boolean" }
+            },
+            "required": ["id", "label", "isDefault"],
+            "additionalProperties": false
+          }
+        },
+        "contextWindowTokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "deprecatedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            { "type": "null" }
+          ]
+        },
+        "replacementModelId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "metadata": {
+          "type": "object",
+          "propertyNames": { "type": "string" },
+          "additionalProperties": { "$ref": "#/definitions/__shared/definitions/schema0" }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "providerId",
+        "modelId",
+        "displayName",
+        "catalogVersion",
+        "isDefault",
+        "modalities",
+        "reasoningOptions"
+      ],
+      "additionalProperties": false
+    },
+    "ConnectorCapabilities": {
+      "type": "object",
+      "properties": {
+        "read": { "type": "boolean" },
+        "write": { "type": "boolean" },
+        "attachments": { "type": "boolean" },
+        "realtime": { "type": "boolean" },
+        "export": { "type": "boolean" }
+      },
+      "required": ["read", "write", "attachments", "realtime", "export"],
+      "additionalProperties": false
+    },
+    "LabRole": {
+      "type": "string",
+      "enum": ["owner", "project_lead", "researcher", "reviewer", "viewer"]
+    },
+    "CampaignState": {
+      "type": "string",
+      "enum": ["draft", "awaiting_approval", "active", "paused", "completed", "failed", "cancelled"]
+    },
+    "TrialState": {
+      "type": "string",
+      "enum": ["pending", "leased", "running", "succeeded", "failed", "pruned", "cancelled", "lost"]
+    },
+    "ExperimentBudget": {
+      "type": "object",
+      "properties": {
+        "maxTrials": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "maxConcurrentTrials": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxWallTimeSeconds": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxGpuHours": { "type": "number", "minimum": 0 },
+        "maxFailures": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      },
+      "required": [
+        "maxTrials",
+        "maxConcurrentTrials",
+        "maxWallTimeSeconds",
+        "maxGpuHours",
+        "maxFailures"
+      ],
+      "additionalProperties": false
+    },
+    "BudgetUsage": {
+      "type": "object",
+      "properties": {
+        "trialsStarted": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "activeTrials": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "wallTimeSeconds": { "type": "number", "minimum": 0 },
+        "gpuHours": { "type": "number", "minimum": 0 },
+        "failures": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      },
+      "required": ["trialsStarted", "activeTrials", "wallTimeSeconds", "gpuHours", "failures"],
+      "additionalProperties": false
+    },
+    "AutopilotPolicy": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "mode": { "type": "string", "enum": ["bounded", "full"] },
+        "allowedCodePaths": {
+          "minItems": 1,
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "allowOfflineContinuation": { "type": "boolean" },
+        "allowDependencyChanges": { "type": "boolean" },
+        "requireApprovalForNetworkChanges": { "type": "boolean", "const": true },
+        "requireApprovalForMetricChanges": { "type": "boolean", "const": true },
+        "requireApprovalForBudgetChanges": { "type": "boolean", "const": true }
+      },
+      "required": [
+        "schemaVersion",
+        "mode",
+        "allowedCodePaths",
+        "allowOfflineContinuation",
+        "allowDependencyChanges",
+        "requireApprovalForNetworkChanges",
+        "requireApprovalForMetricChanges",
+        "requireApprovalForBudgetChanges"
+      ],
+      "additionalProperties": false
+    },
+    "JobPolicyV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "policyVersion": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "policyHash": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 160,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+        },
+        "allowedSigningKeyIds": {
+          "minItems": 1,
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "allowedImageDigests": {
+          "minItems": 1,
+          "type": "array",
+          "items": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+        },
+        "allowedNetworkHosts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 253 }
+        },
+        "allowedSecretRefs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "maxJobTimeoutSeconds": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "policyVersion",
+        "policyHash",
+        "allowedSigningKeyIds",
+        "allowedImageDigests",
+        "allowedNetworkHosts",
+        "allowedSecretRefs",
+        "maxJobTimeoutSeconds"
+      ],
+      "additionalProperties": false
+    },
+    "ObjectiveVersion": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "objectiveVersionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "goal": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "primaryMetric": {
+          "type": "object",
+          "properties": {
+            "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "displayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "direction": { "type": "string", "enum": ["maximize", "minimize"] },
+            "unit": {
+              "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 64 }, { "type": "null" }]
+            },
+            "aggregation": {
+              "type": "string",
+              "enum": ["mean", "median", "minimum", "maximum", "last"]
+            },
+            "evaluatorHash": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 160,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+            },
+            "datasetHash": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 160,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+            },
+            "holdoutHash": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 8,
+                  "maxLength": 160,
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+                },
+                { "type": "null" }
+              ]
+            },
+            "baseline": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+            "target": { "anyOf": [{ "type": "number" }, { "type": "null" }] }
+          },
+          "required": [
+            "key",
+            "displayName",
+            "direction",
+            "unit",
+            "aggregation",
+            "evaluatorHash",
+            "datasetHash",
+            "holdoutHash",
+            "baseline",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        "guardrails": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "metricKey": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "operator": { "type": "string", "enum": ["lt", "lte", "gt", "gte"] },
+              "threshold": { "type": "number" }
+            },
+            "required": ["metricKey", "operator", "threshold"],
+            "additionalProperties": false
+          }
+        },
+        "budget": { "$ref": "#/definitions/ExperimentBudget" },
+        "stopPolicy": {
+          "type": "object",
+          "properties": {
+            "stopWhenTargetReached": { "type": "boolean" },
+            "guardrailAction": { "type": "string", "enum": ["pause", "stop", "fail"] },
+            "maxConsecutiveNoImprovement": {
+              "anyOf": [
+                { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+                { "type": "null" }
+              ]
+            }
+          },
+          "required": ["stopWhenTargetReached", "guardrailAction", "maxConsecutiveNoImprovement"],
+          "additionalProperties": false
+        },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "objectiveVersionId",
+        "projectId",
+        "version",
+        "goal",
+        "primaryMetric",
+        "guardrails",
+        "budget",
+        "stopPolicy",
+        "createdBy",
+        "createdAt"
+      ],
+      "additionalProperties": false
+    },
+    "JobManifestV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "jobId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "campaignId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "trialId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "issuedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "codeSha": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 160,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "reference": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+          },
+          "required": ["reference", "digest"],
+          "additionalProperties": false
+        },
+        "command": {
+          "type": "object",
+          "properties": {
+            "executable": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "args": {
+              "maxItems": 512,
+              "type": "array",
+              "items": { "type": "string", "maxLength": 8192 }
+            }
+          },
+          "required": ["executable", "args"],
+          "additionalProperties": false
+        },
+        "parameters": {
+          "type": "object",
+          "propertyNames": { "type": "string" },
+          "additionalProperties": { "$ref": "#/definitions/__shared/definitions/schema0" }
+        },
+        "seed": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "cpuCores": { "type": "number", "exclusiveMinimum": 0 },
+            "memoryMiB": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+            "gpuCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            "gpuMemoryMiB": {
+              "anyOf": [
+                { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+                { "type": "null" }
+              ]
+            }
+          },
+          "required": ["cpuCores", "memoryMiB", "gpuCount", "gpuMemoryMiB"],
+          "additionalProperties": false
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string", "enum": ["none", "allowlist"] },
+            "allowedHosts": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "maxLength": 253 }
+            }
+          },
+          "required": ["mode", "allowedHosts"],
+          "additionalProperties": false
+        },
+        "mounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": { "type": "string", "enum": ["workspace", "dataset", "scratch", "host"] },
+              "sourceRef": { "type": "string", "minLength": 1, "maxLength": 512 },
+              "containerPath": { "type": "string", "maxLength": 512, "pattern": "^\\/.*" },
+              "readOnly": { "type": "boolean" }
+            },
+            "required": ["kind", "sourceRef", "containerPath", "readOnly"],
+            "additionalProperties": false
+          }
+        },
+        "secretRefs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "environmentVariable": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Z_][A-Z0-9_]*$"
+              }
+            },
+            "required": ["ref", "environmentVariable"],
+            "additionalProperties": false
+          }
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "privileged": { "type": "boolean" },
+            "readOnlyRootFilesystem": { "type": "boolean" },
+            "noNewPrivileges": { "type": "boolean" },
+            "runAsUser": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+            "runAsGroup": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+            "capabilities": {
+              "type": "object",
+              "properties": {
+                "drop": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+                },
+                "add": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+                }
+              },
+              "required": ["drop", "add"],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "privileged",
+            "readOnlyRootFilesystem",
+            "noNewPrivileges",
+            "runAsUser",
+            "runAsGroup",
+            "capabilities"
+          ],
+          "additionalProperties": false
+        },
+        "timeoutSeconds": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "objective": {
+          "type": "object",
+          "properties": {
+            "objectiveVersionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "version": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+            "primaryMetric": {
+              "type": "object",
+              "properties": {
+                "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "displayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+                "direction": { "type": "string", "enum": ["maximize", "minimize"] },
+                "unit": {
+                  "anyOf": [
+                    { "type": "string", "minLength": 1, "maxLength": 64 },
+                    { "type": "null" }
+                  ]
+                },
+                "aggregation": {
+                  "type": "string",
+                  "enum": ["mean", "median", "minimum", "maximum", "last"]
+                },
+                "evaluatorHash": {
+                  "type": "string",
+                  "minLength": 8,
+                  "maxLength": 160,
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+                },
+                "datasetHash": {
+                  "type": "string",
+                  "minLength": 8,
+                  "maxLength": 160,
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+                },
+                "holdoutHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 8,
+                      "maxLength": 160,
+                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+                    },
+                    { "type": "null" }
+                  ]
+                },
+                "baseline": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+                "target": { "anyOf": [{ "type": "number" }, { "type": "null" }] }
+              },
+              "required": [
+                "key",
+                "displayName",
+                "direction",
+                "unit",
+                "aggregation",
+                "evaluatorHash",
+                "datasetHash",
+                "holdoutHash",
+                "baseline",
+                "target"
+              ],
+              "additionalProperties": false
+            },
+            "budget": { "$ref": "#/definitions/ExperimentBudget" }
+          },
+          "required": ["objectiveVersionId", "version", "primaryMetric", "budget"],
+          "additionalProperties": false
+        },
+        "policyVersion": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "policyHash": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 160,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+        },
+        "manifestHash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "signature": {
+          "type": "object",
+          "properties": {
+            "algorithm": { "type": "string", "const": "ed25519" },
+            "keyId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "value": { "type": "string", "minLength": 32, "maxLength": 512 }
+          },
+          "required": ["algorithm", "keyId", "value"],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "jobId",
+        "campaignId",
+        "trialId",
+        "attemptId",
+        "issuedAt",
+        "codeSha",
+        "image",
+        "command",
+        "parameters",
+        "seed",
+        "resources",
+        "network",
+        "mounts",
+        "secretRefs",
+        "execution",
+        "timeoutSeconds",
+        "objective",
+        "policyVersion",
+        "policyHash",
+        "manifestHash",
+        "signature"
+      ],
+      "additionalProperties": false
+    },
+    "RunnerEventV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "schemaVersion": { "type": "number", "const": 1 },
+            "eventId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "runnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "campaignId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "trialId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "sequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "kind": { "type": "string", "const": "state" },
+            "state": { "$ref": "#/definitions/TrialState" },
+            "previousState": { "allOf": [{ "$ref": "#/definitions/TrialState" }] },
+            "reason": { "type": "string", "minLength": 1, "maxLength": 2000 }
+          },
+          "required": [
+            "schemaVersion",
+            "eventId",
+            "runnerId",
+            "campaignId",
+            "trialId",
+            "attemptId",
+            "sequence",
+            "occurredAt",
+            "kind",
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schemaVersion": { "type": "number", "const": 1 },
+            "eventId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "runnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "campaignId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "trialId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "sequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "kind": { "type": "string", "const": "metric" },
+            "metricKey": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "value": { "type": "number" },
+            "step": {
+              "anyOf": [
+                { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+                { "type": "null" }
+              ]
+            },
+            "isSummary": { "type": "boolean" }
+          },
+          "required": [
+            "schemaVersion",
+            "eventId",
+            "runnerId",
+            "campaignId",
+            "trialId",
+            "attemptId",
+            "sequence",
+            "occurredAt",
+            "kind",
+            "metricKey",
+            "value",
+            "step",
+            "isSummary"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schemaVersion": { "type": "number", "const": 1 },
+            "eventId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "runnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "campaignId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "trialId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "sequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "kind": { "type": "string", "const": "log" },
+            "stream": { "type": "string", "enum": ["stdout", "stderr"] },
+            "chunk": { "type": "string", "maxLength": 64000 }
+          },
+          "required": [
+            "schemaVersion",
+            "eventId",
+            "runnerId",
+            "campaignId",
+            "trialId",
+            "attemptId",
+            "sequence",
+            "occurredAt",
+            "kind",
+            "stream",
+            "chunk"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schemaVersion": { "type": "number", "const": 1 },
+            "eventId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "runnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "campaignId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "trialId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "sequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "kind": { "type": "string", "const": "resource" },
+            "cpuPercent": { "type": "number", "minimum": 0 },
+            "memoryMiB": { "type": "number", "minimum": 0 },
+            "gpuPercent": { "anyOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }] },
+            "gpuMemoryMiB": { "anyOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }] }
+          },
+          "required": [
+            "schemaVersion",
+            "eventId",
+            "runnerId",
+            "campaignId",
+            "trialId",
+            "attemptId",
+            "sequence",
+            "occurredAt",
+            "kind",
+            "cpuPercent",
+            "memoryMiB",
+            "gpuPercent",
+            "gpuMemoryMiB"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schemaVersion": { "type": "number", "const": 1 },
+            "eventId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "runnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "campaignId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "trialId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "sequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            "occurredAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "kind": { "type": "string", "const": "artifact_reference" },
+            "artifactId": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "contentHash": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 160,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+            },
+            "sizeBytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            "runnerPathRef": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          },
+          "required": [
+            "schemaVersion",
+            "eventId",
+            "runnerId",
+            "campaignId",
+            "trialId",
+            "attemptId",
+            "sequence",
+            "occurredAt",
+            "kind",
+            "artifactId",
+            "contentHash",
+            "sizeBytes",
+            "runnerPathRef"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RunnerEventMessageV1": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "const": "runner.event" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "runnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "event": { "$ref": "#/definitions/RunnerEventV1" }
+      },
+      "required": ["type", "projectId", "runnerId", "event"],
+      "additionalProperties": false
+    },
+    "SyncEventV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "eventId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "idempotencyKey": { "type": "string", "minLength": 8, "maxLength": 256 },
+        "labId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "entityType": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "entityId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "entityVersion": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "payload": {
+          "type": "object",
+          "propertyNames": { "type": "string" },
+          "additionalProperties": { "$ref": "#/definitions/__shared/definitions/schema0" }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "eventId",
+        "idempotencyKey",
+        "labId",
+        "projectId",
+        "actorId",
+        "entityType",
+        "entityId",
+        "entityVersion",
+        "eventType",
+        "occurredAt",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    "__shared": {
+      "definitions": {
+        "schema0": {
+          "anyOf": [
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            { "type": "null" },
+            { "type": "array", "items": { "$ref": "#/definitions/__shared/definitions/schema0" } },
+            {
+              "type": "object",
+              "propertyNames": { "type": "string" },
+              "additionalProperties": { "$ref": "#/definitions/__shared/definitions/schema0" }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

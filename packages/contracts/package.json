@@ -1,0 +1,35 @@
+{
+  "name": "@gosu/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./json-schema/*": "./generated/json-schema/*"
+  },
+  "files": [
+    "dist",
+    "generated"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "generate": "tsc -p tsconfig.json && node scripts/generate-json-schema.mjs",
+    "generate:check": "tsc -p tsconfig.json && node scripts/generate-json-schema.mjs --check",
+    "lint": "eslint src test scripts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,476 @@
+:root {
+  color-scheme: dark;
+  --bg: #080a09;
+  --panel: #111512;
+  --line: rgba(255, 255, 255, 0.09);
+  --muted: #879088;
+  --green: #9ef01a;
+  --orange: #ff9f66;
+  --blue: #78a6ff;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: #f3f6f2;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+}
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+.desktop-shell {
+  display: grid;
+  grid-template: 56px 1fr/230px 1fr;
+  min-height: 100vh;
+  background: radial-gradient(circle at 70% 0, rgba(95, 135, 58, 0.12), transparent 40%), var(--bg);
+}
+.titlebar {
+  grid-column: 1/-1;
+  -webkit-app-region: drag;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px 0 84px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(9, 12, 10, 0.9);
+}
+.titlebar .logo {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--green);
+  color: #11180c;
+  font-weight: 900;
+}
+.titlebar strong {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+}
+.titlebar > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.titlebar i {
+  flex: 1;
+}
+.titlebar button,
+.titlebar b {
+  -webkit-app-region: no-drag;
+}
+.titlebar button {
+  border: 1px solid var(--line);
+  background: #131814;
+  border-radius: 16px;
+  padding: 6px 10px;
+  font-size: 9px;
+}
+.titlebar b {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #e6eee1;
+  color: #1b2319;
+  font-size: 8px;
+}
+.desktop-nav {
+  padding: 22px 12px;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+}
+.desktop-nav small {
+  color: #5e695f;
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  margin: 0 10px 7px;
+}
+.desktop-nav h2 {
+  font-size: 12px;
+  margin: 0 10px 20px;
+}
+.desktop-nav > button {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  height: 36px;
+  border-radius: 8px;
+  color: #9ea7a0;
+  font-size: 10px;
+}
+.desktop-nav > button span {
+  display: inline-block;
+  width: 28px;
+  text-align: center;
+}
+.desktop-nav > button.active {
+  background: rgba(158, 240, 26, 0.09);
+  color: var(--green);
+  box-shadow: inset 2px 0 var(--green);
+}
+.nav-spacer {
+  flex: 1;
+}
+.connection {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  align-items: center;
+  padding: 8px 9px;
+  font-size: 9px;
+}
+.connection i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 7px rgba(158, 240, 26, 0.6);
+}
+.connection i.warn {
+  background: var(--orange);
+  box-shadow: none;
+}
+.connection b {
+  color: var(--muted);
+  font-size: 8px;
+}
+.desktop-content {
+  padding: 34px clamp(26px, 4vw, 56px) 60px;
+  overflow: auto;
+}
+.welcome {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  margin-bottom: 25px;
+}
+.welcome span {
+  color: var(--green);
+  font-size: 8px;
+  letter-spacing: 0.17em;
+}
+.welcome h1 {
+  font-size: 27px;
+  letter-spacing: -0.04em;
+  margin: 7px 0;
+}
+.welcome p {
+  color: var(--muted);
+  font-size: 11px;
+}
+.welcome > button {
+  border: 0;
+  background: var(--green);
+  color: #131a0e;
+  border-radius: 9px;
+  padding: 10px 14px;
+  font-weight: 750;
+  font-size: 10px;
+}
+.desktop-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(300px, 1fr));
+  gap: 12px;
+  max-width: 1200px;
+}
+.card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: linear-gradient(145deg, #121713, #0e120f);
+  padding: 18px;
+}
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 17px;
+}
+.card-head h3 {
+  font-size: 12px;
+  margin: 0;
+}
+.card-head span {
+  color: var(--muted);
+  font-size: 8px;
+  max-width: 55%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.objective > p {
+  color: #b4bdb6;
+  font-size: 10px;
+  line-height: 1.65;
+}
+.metric {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  margin-top: 18px;
+}
+.metric span,
+.metric b {
+  display: block;
+}
+.metric span {
+  font-size: 8px;
+  color: var(--muted);
+}
+.metric b {
+  font-size: 10px;
+  margin-top: 4px;
+}
+.metric > strong {
+  font-size: 25px;
+  color: var(--green);
+}
+.progress {
+  height: 5px;
+  background: #242a25;
+  border-radius: 4px;
+  margin: 11px 0;
+}
+.progress i {
+  display: block;
+  height: 100%;
+  background: var(--green);
+  border-radius: 4px;
+}
+.card footer {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 8px;
+}
+.codex-card label {
+  display: block;
+  color: var(--muted);
+  font-size: 8px;
+}
+.codex-card select,
+.codex-card input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #090c0a;
+  outline: none;
+  font-size: 10px;
+}
+.codex-actions {
+  display: flex;
+  gap: 6px;
+  margin: 10px 0;
+}
+.codex-actions button,
+.codex-card form button,
+.run-card button,
+.choose {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #171d18;
+  padding: 7px 9px;
+  font-size: 8px;
+}
+.codex-card form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+}
+.codex-card form input {
+  margin: 0;
+}
+.privacy {
+  margin-top: 11px;
+  padding: 9px;
+  background: #090c0a;
+  border-radius: 7px;
+  color: #88928a;
+  font-size: 8px;
+  line-height: 1.5;
+}
+.run-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.run-line > i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 5px rgba(158, 240, 26, 0.07);
+}
+.run-line > div {
+  flex: 1;
+}
+.run-line b,
+.run-line span {
+  display: block;
+}
+.run-line b {
+  font-size: 9px;
+}
+.run-line span {
+  color: var(--muted);
+  font-size: 8px;
+  margin-top: 3px;
+}
+.run-line > strong {
+  color: var(--green);
+  font-size: 8px;
+}
+.mini-chart {
+  height: 90px;
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.mini-chart span {
+  flex: 1;
+  min-width: 4px;
+  background: linear-gradient(var(--green), rgba(158, 240, 26, 0.1));
+  border-radius: 3px 3px 0 0;
+}
+.run-card footer {
+  align-items: center;
+  padding-top: 10px;
+}
+.approval {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 0;
+  border-top: 1px solid var(--line);
+}
+.approval > i {
+  width: 3px;
+  height: 28px;
+  border-radius: 2px;
+}
+.approval .orange {
+  background: var(--orange);
+}
+.approval .green {
+  background: var(--green);
+}
+.approval .blue {
+  background: var(--blue);
+}
+.approval > div {
+  flex: 1;
+}
+.approval b,
+.approval span {
+  display: block;
+}
+.approval b {
+  font-size: 9px;
+}
+.approval span {
+  color: var(--muted);
+  font-size: 8px;
+  margin-top: 3px;
+}
+.approval button {
+  border: 0;
+  background: transparent;
+  color: #9ba49d;
+  font-size: 8px;
+}
+.vault-card {
+  grid-column: 1/-1;
+}
+.choose {
+  width: 100%;
+  height: 55px;
+  border-style: dashed;
+  color: var(--green);
+}
+.vault-browser {
+  display: grid;
+  grid-template-columns: 230px 1fr;
+  min-height: 180px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.vault-browser > div {
+  border-right: 1px solid var(--line);
+  padding: 7px;
+}
+.vault-browser button {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #a4ada6;
+  text-align: left;
+  padding: 7px;
+  font-size: 8px;
+}
+.vault-browser pre {
+  margin: 0;
+  padding: 15px;
+  white-space: pre-wrap;
+  color: #afb8b1;
+  font:
+    9px/1.7 ui-monospace,
+    monospace;
+  max-height: 260px;
+  overflow: auto;
+}
+.boundary {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.boundary span {
+  border-radius: 8px;
+  padding: 3px;
+  text-align: center;
+  font-size: 7px;
+  font-weight: 800;
+}
+.boundary .yes {
+  color: var(--green);
+  background: rgba(158, 240, 26, 0.08);
+}
+.boundary .no {
+  color: #9ba49d;
+  background: rgba(255, 255, 255, 0.04);
+}
+.boundary b {
+  font-size: 9px;
+}
+@media (max-width: 900px) {
+  .desktop-grid {
+    grid-template-columns: 1fr;
+  }
+  .vault-card {
+    grid-column: auto;
+  }
+}
