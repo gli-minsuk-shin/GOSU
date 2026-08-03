@@ -30,6 +30,12 @@ const workspace = new WorkspaceService({
 });
 let mainWindow: BrowserWindow | undefined;
 
+function setDevelopmentDockIcon() {
+  if (process.platform === 'darwin' && !app.isPackaged) {
+    app.dock?.setIcon(join(__dirname, '../../build/icon.png'));
+  }
+}
+
 function createWindow(trustedRenderer: TrustedRenderer) {
   mainWindow = new BrowserWindow({
     width: 1480,
@@ -130,6 +136,7 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
 
 app.whenReady().then(() => {
   app.setName('GOSU');
+  setDevelopmentDockIcon();
   const trustedRenderer = createTrustedRenderer({
     developmentUrl: process.env.ELECTRON_RENDERER_URL,
     isPackaged: app.isPackaged,
