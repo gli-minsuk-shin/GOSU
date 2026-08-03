@@ -7,6 +7,7 @@ import {
   ApplyProjectChatActionInputSchema,
   CodexProjectResponseSchema,
   PROJECT_CHAT_OUTPUT_SCHEMA,
+  PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH,
   ProjectChatProjectInputSchema,
   ProjectChatSnapshotSchema,
   ProjectChatTurnReceiptSchema,
@@ -25,6 +26,8 @@ import {
   type SendProjectChatMessageInput,
   type UpdateProjectChatProfileInput,
 } from '../shared/project-chat-contracts';
+import type { CodexDynamicToolHandler, CodexDynamicToolSpec } from './codex-app-server';
+import { ProjectAgentToolSession, type ProjectAgentVault } from './project-agent-tools';
 import { assembleProjectChatPrompt } from './project-chat-prompt';
 import { WorkspaceServiceError, type WorkspaceService } from './workspace-service';
 
@@ -59,6 +62,8 @@ export interface ProjectChatCodex {
     cwd: string;
     modelId: string | null;
     developerInstructions?: string;
+    dynamicTools?: readonly CodexDynamicToolSpec[];
+    dynamicToolHandler?: CodexDynamicToolHandler;
   }): Promise<{ threadId: string }>;
   runTurn(input: {
     threadId: string;
@@ -70,6 +75,7 @@ export interface ProjectChatCodex {
     outputSchema?: Readonly<Record<string, unknown>>;
   }): Promise<{ turnId: string; invocation: ModelInvocation }>;
   interruptTurn(threadId: string, turnId: string): Promise<void>;
+  revokeDynamicTools(threadId: string): void;
   releaseThread(threadId: string): Promise<void>;
 }
 
@@ -83,6 +89,8 @@ export class ProjectChatServiceError extends Error {
       | 'chat_attempt_not_found'
       | 'chat_attempt_not_retryable'
       | 'chat_profile_conflict'
+      | 'local_notes_vault_not_selected'
+      | 'local_notes_vault_changed'
       | 'action_not_found'
       | 'action_not_proposed'
       | 'codex_unavailable',
@@ -101,7 +109,15 @@ type ActiveTurn = {
   turnId: string;
   invocation: ModelInvocation;
   finalResponseText: string | null;
+  agentTools: ProjectAgentToolSession;
   terminal: boolean;
+};
+
+const UNAVAILABLE_AGENT_VAULT: ProjectAgentVault = {
+  descriptor: () => null,
+  matchesGrant: () => false,
+  listForAgent: () => Promise.reject(new Error('vault_not_selected')),
+  readForAgent: () => Promise.reject(new Error('vault_not_selected')),
 };
 
 const FAILURE_COPY = {
@@ -130,6 +146,13 @@ function modelProvenance(invocation: ModelInvocation) {
     catalogVersion: invocation.catalogVersion,
     reasoningOptionId: invocation.reasoningOptionId,
   };
+}
+
+function appendSourceProvenance(reply: string, appendix: string) {
+  if (!appendix) return reply;
+  const safeAppendix = appendix.slice(0, PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH - 1);
+  const replyBudget = PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH - safeAppendix.length;
+  return `${reply.slice(0, Math.max(1, replyBudget))}${safeAppendix}`;
 }
 
 function completedAttemptHistory(snapshot: ProjectChatSnapshot) {
@@ -209,6 +232,7 @@ export class ProjectChatService extends EventEmitter {
       storage: ProjectChatStorage;
       workspace: WorkspaceService;
       codex: ProjectChatCodex;
+      vault?: ProjectAgentVault;
       prepareProjectDirectory(projectId: string): Promise<string>;
     },
   ) {
@@ -249,8 +273,26 @@ export class ProjectChatService extends EventEmitter {
 
   async updateProfile(input: UpdateProjectChatProfileInput) {
     const command = UpdateProjectChatProfileInputSchema.parse(input);
+    if (
+      this.startingProjects.has(command.projectId) ||
+      this.activeTurnByProject.has(command.projectId)
+    ) {
+      throw new ProjectChatServiceError('chat_busy');
+    }
     return this.runProjectChatMutation(command.projectId, async () => {
       await this.requireActiveProject(command.projectId);
+      if (command.localNotesVault) {
+        const selectedVault = this.dependencies.vault?.descriptor() ?? null;
+        if (!selectedVault) {
+          throw new ProjectChatServiceError('local_notes_vault_not_selected');
+        }
+        if (
+          selectedVault.id !== command.localNotesVault.id ||
+          selectedVault.name !== command.localNotesVault.name
+        ) {
+          throw new ProjectChatServiceError('local_notes_vault_changed');
+        }
+      }
       const updated = await this.dependencies.storage.updateProjectChatProfile(command);
       if (!updated) throw new ProjectChatServiceError('chat_profile_conflict');
       return updated;
@@ -311,6 +353,12 @@ export class ProjectChatService extends EventEmitter {
       const harnessMode = command.harnessMode ?? profile.harnessMode;
       const responseDepth = command.responseDepth ?? profile.responseDepth;
       const contextScope = command.contextScope ?? profile.contextScope;
+      const agentTools = new ProjectAgentToolSession({
+        projectId: command.projectId,
+        workspace: this.dependencies.workspace,
+        vault: this.dependencies.vault ?? UNAVAILABLE_AGENT_VAULT,
+        localNotesVault: profile.localNotesVault ?? null,
+      });
       const assembled = assembleProjectChatPrompt({
         snapshot,
         projectId: command.projectId,
@@ -322,6 +370,11 @@ export class ProjectChatService extends EventEmitter {
         profileVersion: profile.version,
         instructionRevisionId: profile.instructionRevision?.id ?? null,
         customInstructions: profile.customInstructions,
+        toolCatalogSha256: agentTools.catalogSha256,
+        localNotesVaultId:
+          agentTools.localNotesAvailable && profile.localNotesVault
+            ? profile.localNotesVault.id
+            : null,
       });
 
       const createdAt = isoNow();
@@ -368,6 +421,7 @@ export class ProjectChatService extends EventEmitter {
           cwd,
           command.requestedModelId,
           assembled.developerInstructions,
+          agentTools,
         );
         ephemeralThreadId = threadId;
         connectionEpoch = this.codexConnectionEpoch;
@@ -404,6 +458,7 @@ export class ProjectChatService extends EventEmitter {
           turnId: result.turnId,
           invocation: result.invocation,
           finalResponseText: null,
+          agentTools,
           terminal: false,
         };
         this.activeByTurn.set(result.turnId, active);
@@ -443,9 +498,13 @@ export class ProjectChatService extends EventEmitter {
         }
         if (ephemeralTurnId) this.earlyNotifications.delete(ephemeralTurnId);
         if (!activeRegistered) {
+          const sourceAppendix = await agentTools.finalizeSourceAppendix();
           await this.finishAttemptBeforeTurn(
             currentAttempt,
-            interruptUnconfirmed ? FAILURE_COPY.interruptUnconfirmed : FAILURE_COPY.unavailable,
+            appendSourceProvenance(
+              interruptUnconfirmed ? FAILURE_COPY.interruptUnconfirmed : FAILURE_COPY.unavailable,
+              sourceAppendix,
+            ),
             interruptUnconfirmed ? 'application_interrupted' : 'codex_unavailable',
           );
         }
@@ -569,12 +628,21 @@ export class ProjectChatService extends EventEmitter {
     cwd: string,
     modelId: string | null,
     developerInstructions: string,
+    agentTools: ProjectAgentToolSession,
   ) {
     const started = await this.dependencies.codex.startThread({
       cwd,
       modelId,
       developerInstructions,
+      dynamicTools: agentTools.dynamicTools,
+      dynamicToolHandler: agentTools.handler,
     });
+    if (this.threadProjects.has(started.threadId)) {
+      throw new Error('codex_thread_id_collision');
+    }
+    agentTools.bindTransportRevoker(() =>
+      this.dependencies.codex.revokeDynamicTools(started.threadId),
+    );
     this.threadProjects.set(started.threadId, projectId);
     return started.threadId;
   }
@@ -628,10 +696,11 @@ export class ProjectChatService extends EventEmitter {
       .then((persistedStatus) => this.clearActive(active, persistedStatus))
       .catch(async () => {
         try {
+          const sourceAppendix = await active.agentTools.finalizeSourceAppendix();
           await this.saveAssistant(
             active,
             'interrupted',
-            FAILURE_COPY.persistence,
+            appendSourceProvenance(FAILURE_COPY.persistence, sourceAppendix),
             [],
             'application_interrupted',
           );
@@ -652,11 +721,18 @@ export class ProjectChatService extends EventEmitter {
   }
 
   private async finishCompleted(active: ActiveTurn): Promise<'complete' | 'failed'> {
+    const sourceAppendix = await active.agentTools.finalizeSourceAppendix();
     const response = active.finalResponseText
       ? parseCodexProjectResponse(active.finalResponseText)
       : null;
     if (!response) {
-      await this.saveAssistant(active, 'failed', FAILURE_COPY.invalid, [], 'invalid_response');
+      await this.saveAssistant(
+        active,
+        'failed',
+        appendSourceProvenance(FAILURE_COPY.invalid, sourceAppendix),
+        [],
+        'invalid_response',
+      );
       return 'failed';
     }
     const snapshot = await this.dependencies.workspace.snapshot();
@@ -670,15 +746,21 @@ export class ProjectChatService extends EventEmitter {
         : response.actions.filter(
             (action) => action.type === 'task.create' || taskIds.has(action.taskId),
           );
-    await this.saveAssistant(active, 'complete', response.reply, commands);
+    await this.saveAssistant(
+      active,
+      'complete',
+      appendSourceProvenance(response.reply, sourceAppendix),
+      commands,
+    );
     return 'complete';
   }
 
   private async finishInterrupted(active: ActiveTurn): Promise<'interrupted'> {
+    const sourceAppendix = await active.agentTools.finalizeSourceAppendix();
     await this.saveAssistant(
       active,
       'interrupted',
-      FAILURE_COPY.interrupted,
+      appendSourceProvenance(FAILURE_COPY.interrupted, sourceAppendix),
       [],
       'user_interrupted',
     );
@@ -686,7 +768,14 @@ export class ProjectChatService extends EventEmitter {
   }
 
   private async finishFailed(active: ActiveTurn): Promise<'failed'> {
-    await this.saveAssistant(active, 'failed', FAILURE_COPY.unavailable, [], 'codex_unavailable');
+    const sourceAppendix = await active.agentTools.finalizeSourceAppendix();
+    await this.saveAssistant(
+      active,
+      'failed',
+      appendSourceProvenance(FAILURE_COPY.unavailable, sourceAppendix),
+      [],
+      'codex_unavailable',
+    );
     return 'failed';
   }
 

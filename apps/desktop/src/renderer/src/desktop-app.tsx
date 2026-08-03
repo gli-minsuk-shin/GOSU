@@ -15,7 +15,12 @@ import type {
 } from '../../shared/workspace-contracts';
 import { BoardView } from './board-view';
 import { ConnectionsView, type CodexModel } from './connections-view';
-import { LocalNotesView, type SelectedNote, type VaultSelection } from './notes-view';
+import {
+  LocalNotesView,
+  type SelectedNote,
+  type VaultRuntimeState,
+  type VaultSelection,
+} from './notes-view';
 import { ProjectChatLoadGuard } from './project-chat-load-guard';
 import { ProjectChatView } from './project-chat-view';
 import { resolveActiveProjectId, visibleProjects } from './project-portfolio-model';
@@ -80,6 +85,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [codexErrorVisible, setCodexErrorVisible] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeReadiness | null>(null);
   const [vault, setVault] = useState<VaultSelection | null>(null);
+  const [vaultState, setVaultState] = useState<VaultRuntimeState>('checking');
   const [selectedNote, setSelectedNote] = useState<SelectedNote | null>(null);
   const [noteLoading, setNoteLoading] = useState(false);
   const [apiKeyMode, setApiKeyMode] = useState(false);
@@ -92,6 +98,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [preferences, setPreferences] = useState(initialPreferences);
   const chatLoadGuard = useRef(new ProjectChatLoadGuard());
   const codexBootstrapStarted = useRef(false);
+  const vaultSelectionGeneration = useRef(0);
 
   const activeProjects = useMemo(() => visibleProjects(snapshot?.projects ?? []), [snapshot]);
   const activeProject = useMemo(
@@ -148,6 +155,22 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     void loadWorkspace()
       .catch((error: unknown) => setWorkspaceError(describeError(error)))
       .finally(() => setWorkspaceLoading(false));
+
+    const vaultGeneration = ++vaultSelectionGeneration.current;
+    void window.gosu.vault
+      .current()
+      .then((selection) => {
+        if (vaultSelectionGeneration.current === vaultGeneration) {
+          setVault(selection);
+          setVaultState('ready');
+        }
+      })
+      .catch(() => {
+        if (vaultSelectionGeneration.current === vaultGeneration) {
+          setVault(null);
+          setVaultState('unavailable');
+        }
+      });
 
     void window.gosu.runtime
       .readiness()
@@ -270,17 +293,39 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
 
   const chooseVault = async () => {
     if (noteLoading) return;
+    const vaultGeneration = ++vaultSelectionGeneration.current;
+    setVaultState('checking');
     setNoteLoading(true);
     setWorkspaceError(null);
     try {
-      const result = (await window.gosu.vault.choose()) as VaultSelection | null;
-      if (result) {
+      const result = await window.gosu.vault.choose();
+      if (vaultSelectionGeneration.current !== vaultGeneration) return;
+      if (result !== null) {
         setVault(result);
+        setVaultState('ready');
         setSelectedNote(null);
         setAnnouncement(`Selected a local folder with ${result.files.length} Markdown files.`);
+      } else {
+        const current = await window.gosu.vault.current();
+        if (vaultSelectionGeneration.current === vaultGeneration) {
+          setVault(current);
+          setVaultState('ready');
+        }
       }
     } catch (error) {
       setWorkspaceError(describeError(error));
+      try {
+        const current = await window.gosu.vault.current();
+        if (vaultSelectionGeneration.current === vaultGeneration) {
+          setVault(current);
+          setVaultState('ready');
+        }
+      } catch {
+        if (vaultSelectionGeneration.current === vaultGeneration) {
+          setVault(null);
+          setVaultState('unavailable');
+        }
+      }
     } finally {
       setNoteLoading(false);
     }
@@ -537,6 +582,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 chatLoadingProjectId === activeProject.id &&
                 !chatSnapshots[activeProject.id]?.profile,
               )}
+              vault={vault}
+              vaultState={vaultState}
               onUpdateAgentProfile={updateProjectChatProfile}
             />
           </>
@@ -617,6 +664,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 selectedModel={selectedModel}
                 selectedReasoning={selectedReasoning}
                 applyingActionId={applyingChatActionId}
+                vault={vault}
+                vaultState={vaultState}
                 onSelectedModel={(modelId) => {
                   setSelectedModel(modelId);
                   setSelectedReasoning('auto');
@@ -631,6 +680,14 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onSend={async (message, retryOfAttemptId, controls) => {
                   if (chatStartingProjectId !== null || chatInFlight[activeProject.id])
                     return false;
+                  const savedLocalNotesGrant =
+                    chatSnapshots[activeProject.id]?.profile?.localNotesVault;
+                  if (savedLocalNotesGrant && vaultState !== 'ready') {
+                    setWorkspaceError(
+                      'Local Notes capability status is unavailable. GOSU paused this turn so a hidden saved grant cannot be used. Reopen Local notes and try again.',
+                    );
+                    return false;
+                  }
                   const selectedDescriptor = models.find(
                     (model) => model.modelId === selectedModel,
                   );

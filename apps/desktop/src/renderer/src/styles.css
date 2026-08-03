@@ -1278,6 +1278,16 @@ textarea:focus {
   margin-bottom: 12px;
 }
 
+.note-agent-disclosure {
+  margin: 0 12px 10px;
+  padding: 10px 11px;
+  border-left: 2px solid color-mix(in srgb, var(--blue) 65%, var(--line));
+  color: var(--muted);
+  background: color-mix(in srgb, var(--blue) 5%, transparent);
+  font-size: var(--font-caption);
+  line-height: 1.45;
+}
+
 .note-list header strong {
   overflow: hidden;
   font-size: var(--font-body);
@@ -1813,7 +1823,8 @@ textarea:focus {
 
 .chat-agent-boundary {
   grid-column: 1 / -1;
-  display: flex;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 9px;
   align-items: center;
   padding-top: 8px;
@@ -1824,6 +1835,12 @@ textarea:focus {
 
 .chat-agent-boundary strong {
   color: var(--green);
+}
+
+.chat-agent-boundary small {
+  grid-column: 1 / -1;
+  color: var(--subtle);
+  line-height: 1.45;
 }
 
 .chat-transcript {
@@ -2547,6 +2564,70 @@ textarea:focus {
   font-size: var(--font-caption);
 }
 
+.agent-notes-access {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.agent-notes-access > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agent-notes-access strong {
+  font-size: var(--font-body-large);
+}
+
+.agent-notes-access span,
+.agent-notes-access small {
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.45;
+}
+
+.agent-notes-access small {
+  color: var(--orange);
+}
+
+.agent-notes-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-notes-actions small {
+  flex-basis: 100%;
+  max-width: 320px;
+}
+
+.agent-notes-disclosure {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-left: 3px solid color-mix(in srgb, var(--blue) 65%, var(--line));
+  background: color-mix(in srgb, var(--blue) 5%, transparent);
+}
+
+.agent-notes-disclosure strong {
+  color: var(--blue);
+  font-size: var(--font-control);
+}
+
+.agent-notes-disclosure span {
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.5;
+}
+
 .agent-safety-boundary {
   display: grid;
   gap: 4px;
@@ -2729,5 +2810,11 @@ textarea:focus {
 
   .settings-category-nav {
     grid-template-columns: 1fr;
+  }
+
+  .agent-notes-access,
+  .agent-notes-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

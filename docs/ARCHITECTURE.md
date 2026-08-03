@@ -111,20 +111,20 @@ flowchart LR
 제품 모듈은 아직 모두 독립 디렉터리로 분리되어 있지 않다. 새 기능은 아래 소유권을 기준으로
 배치하고, 한 모듈이 다른 모듈의 저장 테이블을 직접 읽지 않게 한다.
 
-| 논리 모듈                  | 현재 코드 소유자                                             | 구현 수준                                                                                                    |
-| -------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                   |
-| Project Portfolio & Kanban | Desktop workspace service, Sync controller/store             | 프로젝트별 Board 설정·rename·복원 가능한 Trash, task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨 |
-| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                     |
-| Experiment Orchestration   | contracts, domain, Runner                                    | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨                               |
-| Manuscript                 | 향후 desktop workspace module                                | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                                              |
-| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                     | 기반 구현; 실제 review anchor·approval command는 계획됨                                                      |
-| Reference                  | Zotero read-only connector                                   | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                                                    |
-| Obsidian Knowledge         | Desktop Vault reader, Markdown renderer                      | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview 구현                                            |
-| Lecture                    | Owner Web UI 표현                                            | 생성·편집·출처 연결은 계획됨                                                                                 |
-| AI Gateway                 | Desktop Project Chat service와 Codex App Server              | 로그인·동적 catalog·프로젝트별 profile·prompt harness·thread/turn·모델 provenance 구현                       |
-| Integration Hub            | `packages/integrations` registry와 connector classes         | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨                                             |
-| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema            | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                     |
+| 논리 모듈                  | 현재 코드 소유자                                                | 구현 수준                                                                                                    |
+| -------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema    | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                   |
+| Project Portfolio & Kanban | Desktop workspace service, Sync controller/store                | 프로젝트별 Board 설정·rename·복원 가능한 Trash, task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨 |
+| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints    | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                     |
+| Experiment Orchestration   | contracts, domain, Runner                                       | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨                               |
+| Manuscript                 | 향후 desktop workspace module                                   | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                                              |
+| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                        | 기반 구현; 실제 review anchor·approval command는 계획됨                                                      |
+| Reference                  | Zotero read-only connector                                      | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                                                    |
+| Obsidian Knowledge         | Desktop Vault reader, Markdown renderer, project knowledge port | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview·프로젝트별 agent grant 구현                     |
+| Lecture                    | Owner Web UI 표현                                               | 생성·편집·출처 연결은 계획됨                                                                                 |
+| AI Gateway                 | Desktop Project Chat service와 Codex App Server                 | 로그인·동적 catalog·profile·prompt harness·project-bound read tool·thread/turn·모델 provenance 구현          |
+| Integration Hub            | `packages/integrations` registry와 connector classes            | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨                                             |
+| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema               | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                     |
 
 ## 5. 의존성 규칙
 
@@ -184,14 +184,25 @@ flowchart TD
 | Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store            | 금지                                      |
 | tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                 | 금지                                      |
 
+Hosted Sync에 저장하지 않는다는 것과 LLM에 전혀 전송하지 않는다는 것은 다르다. Local Notes는 기본적으로
+Mac 안에만 남지만, 사용자가 특정 Vault를 특정 project agent에 승인한 경우 그 turn에서 agent가 실제로
+list한 note의 display title·opaque ID와, 실제 read한 bounded excerpt·content SHA-256·offset·전체 문자 수가
+설정된 Codex/LLM provider로 전송된다. Vault root·상대 path·전체 tool payload는 모델에 주지 않고 원본 note
+file이나 raw tool payload를 자동 저장·동기화하지 않는다. 다만 모델이 이 metadata나 excerpt를 visible
+answer에 인용하거나 요약하면 그 문장은 보이는 대화이므로 암호화 local DB에 저장되고 향후 Hosted Sync
+대상이 될 수 있다. Local Notes와 Agent Settings 화면은 승인 전에 이 점을 명시한다. GOSU는 모든 terminal
+receipt에 별도로 display title, opaque note ID 일부, content SHA-256과 excerpt 여부를 붙인다. 이 승인은
+project별이며 다른 project나 새로 선택한 Vault로 자동 승계하지 않는다.
+
 `isSummary: true`인 Runner metric만 run summary projection에 들어간다. 그 외 metric point, log,
 resource sample, artifact reference는 WebSocket으로 실시간 relay할 수 있지만 memory store도 값을
 보존하지 않는다. 이 구분을 바꿀 때는 단순 schema 변경이 아니라 privacy·retention 설계 변경으로
 취급한다.
 
 Owner의 가시성도 tenant 범위 안에서만 적용된다. Owner는 동기화된 상태, 보이는 대화, 승인과
-감사를 볼 수 있지만 다른 사용자의 secret, 로컬 Vault 본문, repository 원문 또는 Runner 원본을
-볼 권한을 얻지 않는다.
+감사를 볼 수 있지만 다른 사용자의 secret, 로컬 Vault file 자체, repository 원문 또는 Runner 원본을
+직접 읽을 권한을 얻지 않는다. 단, 사용자가 승인한 excerpt를 모델이 보이는 대화에 인용했다면 Owner가
+그 동기화된 대화를 통해 인용문을 볼 수 있다는 점은 별도의 privacy 예외다.
 
 현재 Desktop의 Project·Kanban·Objective vertical slice는 Hosted delivery worker가 연결되기 전에도
 쓸 수 있도록 암호화 SQLite를 실행 원본으로 사용한다. 이는 장기적인 협업 authority를 바꾼 것이
@@ -278,7 +289,14 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
 - SQLite key는 random 32-byte 값이며 `safeStorage`로 봉인한다. 암호화 기능이 없으면 local DB를
   열지 않는다.
 - Obsidian reader는 사용자가 고른 root 아래의 bounded Markdown만 읽는다. symlink, root escape,
-  과도한 파일 크기·개수·깊이를 거부한다.
+  과도한 파일 크기·개수·깊이를 거부한다. grant ID는 canonical root와 root device·inode에 묶이고 매
+  list/read 전후에 root identity를 재검사한다. `VaultAccess`는 reader와 selection을 하나의 immutable
+  state로 완성한 뒤 원자적으로 교체하며, 전환 중이던 accessor는 `vault_grant_stale`로 실패한다.
+  Renderer는 `gosu:vault:current`에서 Main의 authoritative selection을 다시 받아 reload 뒤 표시와 실제
+  capability가 어긋나지 않게 한다. agent read는 root나 path를 받지 않고 Vault ID와 note ID를 Main에서
+  다시 해석한다. `O_NOFOLLOW`로 연 file descriptor의 device·inode와 post-open canonical target을 읽기
+  전후에 비교한다. Node의 path API만으로 ancestor 전체를 descriptor-relative하게 고정할 수는 없으므로,
+  정교한 local directory-swap race를 완전히 닫으려면 후속 native `openat` traversal이 필요하다.
 - Codex child는 허용된 최소 환경만 상속하고 stdio JSON-RPC로 initialize한다. GOSU 전용
   `CODEX_HOME`을 사용하며 최초 한 번만 기존 로컬 Codex 인증을 mode `0600`으로 가져온다. import
   marker가 남으므로 GOSU에서 로그아웃한 뒤 다음 실행에 개인 Codex 인증을 몰래 재수입하지 않는다.
@@ -290,11 +308,26 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
 - model picker는 paginated `model/list` 전체 결과를 사용한다. 새 catalog를 가져올 때마다 snapshot
   event를 내보내 SQLCipher에 저장하고, 실제 resolved model ID와 reasoning option을 turn provenance로
   기록한다. early `model/rerouted` event도 turn 시작 응답까지 bounded buffer에 보존한다.
-- Project Chat turn은 `approvalPolicy: never`, read-only sandbox, network off, empty environments,
-  empty runtime roots와 empty dynamic tools로 시작한다. process와 thread 양쪽에서 shell, unified exec,
-  browser, Apps, plugins, MCP, image generation, multi-agent와 utility tool을 끄며, `thread/start` 직후
-  MCP inventory가 0이 아니면 fail closed하고 thread를 해제한다. server-initiated command·file
-  approval은 Main이 거절하고 그 밖의 지원하지 않는 request에는 제한된 protocol error만 돌려준다.
+- Project Chat turn은 `approvalPolicy: never`, read-only sandbox, network off, empty environments와
+  empty runtime roots로 시작한다. process와 thread 양쪽에서 shell, unified exec, browser, Apps,
+  plugins, MCP, image generation, multi-agent와 utility tool을 끈다. 예외는 Main이 turn마다 선언하는
+  `gosu_project` namespace의 typed read-only dynamic tool뿐이다. `thread/start` 직후 MCP inventory가
+  0이 아니면 fail closed하고 thread를 해제한다. server-initiated command·file approval은 Main이
+  거절하고 그 밖의 지원하지 않는 request에는 제한된 protocol error만 돌려준다.
+- dynamic tool transport는 thread별 allowlist와 handler를 묶고 strict request envelope, namespace와
+  tool 일치, 실제 `turn/start` ID binding, 중복 call ID, turn·thread 호출 수, 동시성,
+  argument·result character cap, 10초 timeout을 검사한다. 조기 tool call이 먼저 도착하면 그 turn ID로
+  임시 binding한 뒤 `turn/start` 응답과 반드시 일치하는지 재검사한다. 실제 tool argument는 다시 strict
+  Zod schema로 검증한다. handler 성공만으로 읽기 출처를 확정하지 않고, 검증된 tool result를 현재 Codex
+  child의 stdin에 쓴 뒤 최대 1초 안에 write callback이 성공해야만 delivery를 `delivered`로 확정한다.
+  write를 시작하기 전의 invalid result·handler timeout·tool revoke는 `discarded`다. write가 시작된 뒤의
+  acknowledgement timeout·async write error·connection 변경·tool revoke는 이미 일부 byte가 전달됐을
+  가능성을 되돌릴 수 없으므로 `uncertain`으로 정산하고 출처에는 `delivery unconfirmed`를 붙인다. App
+  Server는 provider의 thread ID를 MCP inventory await 전에 동기적으로 예약하고, Project Chat router도
+  active thread ID의 단일 소유권을 검사한다. provider가 기존 ID를 동시에 다시 반환해도 기존 project
+  handler·Vault grant를 덮어쓰거나 unsubscribe하지 않고 두 번째 start를 거절한다. raw tool call·note
+  body는 Project Chat DB, Renderer, telemetry에 자동 전달하지 않는다. 모델이 visible reply에 인용한 note
+  text는 raw payload가 아니라 보이는 대화의 privacy 정책을 따른다.
 - Codex의 reasoning, command output, file diff, tool payload는 Project Chat DB나 Renderer로 전달하지
   않는다. Renderer에는 보이는 최종 답변, turn 상태, 검증된 action receipt만 보낸다.
 - Project Chat profile·custom instruction·조립된 prompt provenance는 로컬 SQLCipher에만 저장한다.
@@ -398,13 +431,18 @@ flowchart LR
   ChatUI["Project Chat UI\nplain-text transcript"]
   ChatIPC["typed Chat IPC\nproject-scoped DTO"]
   ChatService["ProjectChatService\ndurable attempt router"]
+  ToolGateway["ProjectAgentToolSession\nproject-bound read capabilities"]
   Codex["isolated Codex App Server\nstructured final response"]
+  Vault["selected Local Notes\nopaque IDs·bounded chunks"]
   ChatDB["SQLCipher chat tables\nvisible messages·attempts·receipts"]
   Approval["Apply action\nclaim→workspace command"]
   Workspace["WorkspaceService\nversion·project validation"]
 
   ChatUI --> ChatIPC --> ChatService --> ChatDB
   ChatService --> Codex
+  Codex -->|"item/tool/call"| ToolGateway
+  ToolGateway -->|"Board·Objective"| Workspace
+  ToolGateway -->|"explicit project grant"| Vault
   Codex --> ChatService --> ChatDB
   ChatDB --> ChatUI
   ChatUI --> Approval --> Workspace
@@ -417,8 +455,17 @@ flowchart LR
   `local_workspace_state` JSON이나 workspace sync outbox에 넣지 않는다. 따라서 긴 대화가
   Project·Task·Objective snapshot의 크기와 delivery 순서에 영향을 주지 않는다.
 - project profile은 `context`·`planner`·`reviewer` harness, `concise`·`standard`·`deep` 응답 깊이,
-  `project`·`board`·`objective` context scope와 최대 4,000자의 custom instruction을 소유한다.
+  `project`·`board`·`objective` context scope, nullable project-local Vault grant와 최대 4,000자의 custom
+  instruction을 소유한다.
   Settings의 저장은 profile version CAS를 사용하고 stale edit는 `chat_profile_conflict`로 끝난다.
+  Vault grant 저장 시 Main이 현재 선택된 Vault의 opaque ID와 이름을 다시 대조한다. folder가 바뀌면
+  기존 grant는 inactive이며 자동 이전하지 않는다. active turn 중 profile 변경은 거절해 한 turn의
+  capability snapshot을 고정한다. Renderer reload 때도 Main의 현재 Vault를 typed IPC로 hydrate하며 stale
+  hydration response가 이후의 새 folder 선택을 덮지 못하도록 generation guard를 둔다. Chat composer의
+  capability status는 grant가 없거나 inactive일 때 project AI Agent Settings로 가는 `Authorize…` 동선을
+  제공한다. authoritative status를 아직 확인 중이거나 IPC 오류로 확인하지 못했는데 저장된 grant가 있으면
+  chat send를 차단해 Main의 숨은 기존 capability가 UI 표시와 다르게 사용되지 않게 한다. grant·revoke
+  button은 profile 저장 전 local draft임을 label로 표시한다.
   custom instruction 변경은 append-only revision과 content hash를 남기며 이전 attempt의 의미를
   덮어쓰지 않는다. Chat 화면의 per-turn override는 profile을 수정하지 않고 해당 attempt에만 고정된다.
 - prompt assembly는 변경 가능한 문자열 연결을 Renderer에 두지 않는다. Main의 versioned immutable
@@ -426,10 +473,34 @@ flowchart LR
   만들고, project context·visible history·user message는 별도의 untrusted JSON envelope에 넣는다.
   context는 최대 48,000자, history는 최근 40개·24,000자, assembled prompt는 160,000자로 제한한다.
   base·harness·custom·context·history·message·최종 prompt의 SHA-256과 profile/instruction revision,
-  workspace revision, truncation 여부를 attempt provenance에 기록한다.
+  workspace revision, dynamic tool catalog hash, 실제 활성 Vault ID와 truncation 여부를 attempt
+  provenance assembly v2에 기록한다. 이전 assembly v1 provenance는 계속 읽을 수 있다.
 - reviewer harness는 조언 전용이다. 모델이 구조화 action을 반환하더라도 service가 `actions=[]`로
   강제해 UI prompt wording을 우회한 Board mutation을 만들지 못한다. 모든 harness는 현재와 동일한
-  read-only·no-network·no-tool·no-subagent Codex 경계를 사용한다.
+  read-only·no-network·no-shell·no-subagent 경계를 사용하며 GOSU가 선언한 project read tool만 예외다.
+- 현재 `gosu_project` namespace는 `read_workspace`, `list_local_notes`, `read_local_note`를 제공한다.
+  `read_workspace`는 active project ID를 handler closure에 묶어 Board와 최신 Objective만 반환하며
+  모델 argument로 project ID를 받지 않는다. repository는 credential·URL·SSH 주소를 제외한 canonical
+  `owner/repository` label만 agent context에 포함한다. Local Notes tool은 profile grant가 현재 선택 Vault와
+  일치할 때만 catalog에 나타난다. list는 opaque note ID와 display title만 반환하고 read는 호출당
+  24,000자, ephemeral turn당 합계 96,000자로 제한한다. 동시 호출은 read 전에 budget을 reserve하고 모든
+  tool 결과는 직렬화 후 48,000자 안으로 축약한다. note text와 tool result는 untrusted evidence이며 그
+  안의 지시를 실행하지 않는다.
+- agent가 실제로 읽은 note는 성공·invalid response·중단·실패·turn 등록 실패를 포함한 모든 terminal
+  assistant receipt 끝에 sanitized title, opaque ID prefix, full-content SHA-256 전체 값과 excerpt 여부를
+  남긴다. 자동 source appendix에는 raw note body, root/path와 tool arguments를 넣지 않는다. 다만 모델이
+  note를 visible reply에 직접 인용·요약하면 그 reply는 SQLCipher message와 향후 Hosted Sync 대상이다.
+  terminal 경로는 pending note delivery를 최대 100ms 동안 bounded settlement한 뒤 App Server의 해당
+  thread tool registration을 동기적으로 revoke한다. revoke로 확정된 `uncertain` 결과까지 한 microtask
+  안에서 반영한 다음 `Local Notes accessed` appendix를 봉인한다. timeout 뒤 완료된 handler는 note
+  result를 Codex로 보내거나 receipt를 뒤늦게 변경할 수 없다. source identity는
+  `note ID + content SHA-256` pair이므로 같은 note의 서로 다른 content version을 한 turn에서 읽어도 각각
+  보존하고, 동일 version의 여러 excerpt만 하나의 source entry로 합친다.
+- tool access는 UI section 자체나 database table 접근이 아니라 module capability다. 현재 구현된
+  Board·Goal & Metrics·승인된 Local Notes만 읽을 수 있다. Connections·secret·Settings·Project Trash는
+  노출하지 않으며 Experiments·Manuscript·Review·References·Lecture는 domain service가 완성되기 전에는
+  접근 가능한 것처럼 표시하지 않는다. Board 쓰기는 기존 `task.create`·`task.update` proposal과
+  사용자 Apply만 사용한다.
 - 사용자 메시지를 받으면 Codex를 호출하기 전에 attempt와 user message를 한 transaction으로
   `starting` 상태에 기록한다. `turn/start`가 성공하면 실제 thread ID, turn ID, requested·resolved
   model provenance를 포함해 `running`으로 CAS 전이하고, terminal attempt와 assistant receipt도 한
@@ -449,8 +520,9 @@ flowchart LR
   provenance를 보존한 `application_interrupted` receipt를 남겨 숨은 실행을 자동 retry하지 않는다.
 - turn prompt에는 현재 프로젝트의 이름·repository 식별자, Board 제목과 canonical status/display
   label mapping, 최대 200개 active Task의 bounded metadata, 최신 Objective와 해당 프로젝트의
-  bounded visible history만 넣는다. archived Task는 개수만 제공한다. 다른 프로젝트,
-  Obsidian/Vault 본문, 연구 파일과 secret은 포함하지 않는다.
+  bounded visible history만 선제적으로 넣는다. archived Task는 개수만 제공한다. 다른 프로젝트,
+  연구 파일과 secret은 포함하지 않는다. Vault 본문은 선제 context에 넣지 않고 승인된 read tool로
+  model이 요청한 bounded chunk만 제공한다.
 - snapshot은 현재 active turn ID를 포함한다. 창 재생성이나 Renderer reload가 `turn.started` event를
   놓쳐도 Thinking·Stop 상태를 복구하며, load generation과 event sequence guard가 오래된 snapshot이
   새 turn 상태나 action receipt를 덮지 못하게 한다.
@@ -519,12 +591,13 @@ flowchart LR
   열려야 한다.
   앞으로 계정 간 preference 동기화가 필요하면 전용 계약과 명시적 opt-in을 별도로 설계한다.
 
-### Project Agent Runtime 설계 (계획됨)
+### Project Agent Runtime: 구현된 read slice와 후속 자율 실행 설계
 
-Project Chat의 안전한 prompt harness와 profile이 구현됐다는 것은 아직 프로젝트 자율 실행 agent가
-구현됐다는 뜻이 아니다. 현재 harness는 tool을 선택하거나 실행하지 않으며 planner 결과도 제안에
-머문다. 후속
-runtime은 [OpenClaw Gateway architecture](https://docs.openclaw.ai/concepts/architecture),
+Project Chat에는 현재 active project의 Board·Objective와 명시적으로 승인한 Local Notes를 읽는
+bounded tool loop가 구현되어 있다. 이는 navigation UI나 DB를 자유롭게 조작하는 agent가 아니며,
+mutation은 여전히 검증된 proposal과 사용자 Apply를 거친다. shell·network·arbitrary file·subagent,
+실험 실행과 논문 변경을 포함한 프로젝트 자율 실행 runtime은 아직 계획 단계다. 후속 runtime은
+[OpenClaw Gateway architecture](https://docs.openclaw.ai/concepts/architecture),
 [OpenClaw agent loop](https://docs.openclaw.ai/concepts/agent-loop),
 [OpenClaw plugin policy](https://docs.openclaw.ai/tools/plugin),
 [Hermes architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture),
@@ -736,6 +809,22 @@ snapshot을 연 뒤 Board 설정, task metadata와 archive command를 기록하�
 확인한다. project rename의 stable slug, Trash/restore 시 task·objective·chat 보존, chat profile revision과
 prompt provenance의 재시작 복원도 확인한다. 이 검사는 native ABI와 Keychain 구현이 다른 Linux CI의
 일반 Vitest 경로와 분리한다.
+
+Project Agent tool test는 active project 밖의 Board·Objective가 섞이지 않는지, forged project
+argument·credential 포함 repository와 raw path가 차단되는지, grant가 없거나 선택 Vault가 바뀌면 note
+tool이 없거나 실패하는지 검증한다. Local Notes는 opaque ID, 호출당 24,000자·동시 호출을 포함한 turn당
+96,000자 budget, high-escaping 직렬화 cap, 큰 Board 축약, tail-only excerpt와 모든 terminal source
+appendix를 검사한다. 자동 appendix에는 본문과 absolute path가 남지 않아야 하지만, 승인된 note를 모델이
+visible answer에 인용한 경우 그 인용문이 durable chat에 저장되는 것도 명시적으로 검증한다. Codex App
+Server protocol test는 namespace allowlist, 실제 turn binding, malformed·duplicate call, invalid result,
+timeout과 release/disconnect cleanup, barrier를 둔 동시 thread ID 소유권 충돌뿐 아니라 active child의
+write callback이 성공한 경우만 `delivered`, write 시작 뒤 error·revoke는 `uncertain`인지 검증한다.
+Project Agent tool test는 discard 뒤 late completion 봉인, terminal의 bounded ack wait와 synchronous
+transport revoke, write-in-progress 출처의 `delivery unconfirmed`, 같은 note의 서로 다른 content hash
+보존도 담당한다. Project Chat service test는 project 간 thread ID 충돌이 기존 owner를 덮어쓰지 않는지
+확인한다. result 직렬화 크기와 동시 note budget·큰 Board 축약도 Project Agent tool test가 담당한다.
+SQLCipher smoke는 Local Notes grant column이 없던 실제 v0.5 profile schema를 열어 nullable grant로
+migration한 뒤 새 grant를 저장할 수 있는지도 확인한다.
 
 Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 

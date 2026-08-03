@@ -14,13 +14,16 @@ import {
   type WorkspaceTask,
   type WorkspaceTaskStatus,
 } from '../../shared/workspace-contracts';
+import type { VaultSelection } from '../../shared/vault-contracts';
 import { shouldSendChatMessage } from './chat-keyboard';
 import type { CodexModel } from './connections-view';
+import type { VaultRuntimeState } from './notes-view';
 
 const QUICK_PROMPTS = [
   '현재 프로젝트 상황을 요약해줘',
   '다음으로 할 연구 작업 3개를 제안해줘',
   '목표 metric 기준으로 가장 중요한 리스크를 찾아줘',
+  '승인된 Local Notes를 검토하고 프로젝트에 활용할 근거를 정리해줘',
 ] as const;
 
 export type ProjectChatTurnControls = Readonly<{
@@ -58,6 +61,8 @@ export function ProjectChatView({
   selectedModel,
   selectedReasoning,
   applyingActionId,
+  vault,
+  vaultState,
   onSelectedModel,
   onSelectedReasoning,
   onRefreshModels,
@@ -76,6 +81,8 @@ export function ProjectChatView({
   selectedModel: string;
   selectedReasoning: string;
   applyingActionId: string | null;
+  vault: VaultSelection | null;
+  vaultState: VaultRuntimeState;
   onSelectedModel: (modelId: string) => void;
   onSelectedReasoning: (reasoningId: string) => void;
   onRefreshModels: () => void;
@@ -106,11 +113,30 @@ export function ProjectChatView({
   const selectedReasoningMissing =
     selectedReasoning !== 'auto' &&
     !reasoningOptions.some((option) => option.id === selectedReasoning);
-  const selectionWarning = selectedModelMissing
+  const modelSelectionWarning = selectedModelMissing
     ? 'The selected model is no longer in the live Codex catalog. Choose a model before sending.'
     : selectedReasoningMissing
       ? 'The selected reasoning option is no longer available. Choose another option before sending.'
       : null;
+  const localNotesGrant = snapshot?.profile?.localNotesVault ?? null;
+  const localNotesAvailable = Boolean(
+    vaultState === 'ready' && localNotesGrant && vault?.id === localNotesGrant.id,
+  );
+  const localNotesStatus =
+    vaultState === 'checking'
+      ? 'Local Notes access checking'
+      : vaultState === 'unavailable'
+        ? 'Local Notes status unavailable'
+        : localNotesAvailable
+          ? `${localNotesGrant?.name ?? 'Local Notes'} authorized`
+          : localNotesGrant
+            ? `${localNotesGrant.name} grant inactive`
+            : 'Local Notes not authorized';
+  const localNotesWarning =
+    localNotesGrant && vaultState !== 'ready'
+      ? 'GOSU cannot verify the Main-process Local Notes capability yet. This turn is paused to prevent a hidden grant mismatch.'
+      : null;
+  const selectionWarning = modelSelectionWarning ?? localNotesWarning;
 
   useEffect(() => {
     const transcript = transcriptRef.current;
@@ -158,7 +184,7 @@ export function ProjectChatView({
           </span>
           <div>
             <strong>GOSU Project Copilot</strong>
-            <span>Board와 최신 Objective를 기준으로 대화합니다</span>
+            <span>현재 프로젝트 Board, Objective, 승인된 Local Notes를 활용합니다</span>
           </div>
         </div>
         <div className="chat-model-controls">
@@ -281,7 +307,10 @@ export function ProjectChatView({
                 </option>
               ))}
             </select>
-            <small>Vault contents and files are excluded in every scope.</small>
+            <small>
+              Scope controls preloaded context. Authorized Local Notes remain available through
+              bounded read tools.
+            </small>
           </div>
           <div className="chat-agent-profile-summary">
             <span>Project prompt</span>
@@ -295,8 +324,14 @@ export function ProjectChatView({
             </button>
           </div>
           <div className="chat-agent-boundary">
-            <strong>Chat-only safety boundary</strong>
-            <span>No shell · no files · no network · no tools · no subagents</span>
+            <strong>Project capability boundary</strong>
+            <span>
+              Board + Objective read tools · {localNotesStatus} · no shell/network/arbitrary files
+            </span>
+            <small>
+              Board changes are proposals requiring Apply. Connections, secrets, Settings, Trash,
+              and unfinished modules are unavailable to the model.
+            </small>
           </div>
         </section>
       )}
@@ -411,7 +446,17 @@ export function ProjectChatView({
         <div className="chat-context-note">
           <span>LOCAL CONTEXT</span>
           {CONTEXT_LABELS[contextScope]} · {HARNESS_LABELS[harnessMode]} ·{' '}
-          {DEPTH_LABELS[responseDepth]} response · Vault/파일 본문 제외
+          {DEPTH_LABELS[responseDepth]} response · {localNotesStatus}
+          {vaultState === 'ready' && !localNotesAvailable && (
+            <button
+              type="button"
+              className="retry-context"
+              onClick={onOpenAgentSettings}
+              title="Authorize the selected Local Notes folder for this project"
+            >
+              Authorize…
+            </button>
+          )}
           {retryOfAttemptId && (
             <button
               type="button"

@@ -1,9 +1,11 @@
 import { useState } from 'react';
 
+import type { VaultSelection } from '../../shared/vault-contracts';
 import { MarkdownDocument } from './markdown-document';
 
-export type VaultSelection = { root: string; files: string[] };
+export type { VaultSelection } from '../../shared/vault-contracts';
 export type SelectedNote = { path: string; content: string };
+export type VaultRuntimeState = 'checking' | 'ready' | 'unavailable';
 
 export function LocalNotesView({
   vault,
@@ -28,7 +30,11 @@ export function LocalNotesView({
           <h1>Open a local Markdown folder</h1>
           <p>
             GOSU receives read-only access to the folder you select. File contents are not sent to
-            Hosted Sync.
+            Hosted Sync automatically. If you later authorize this folder for a project agent,
+            listing sends note display titles and opaque IDs to the configured LLM; reading also
+            sends a bounded excerpt, content hash, offset, and total character count for that chat
+            turn. The model may quote or summarize that data in the visible project chat, which is
+            stored locally and may later be synchronized.
           </p>
           <button type="button" className="primary-button" onClick={onChoose} disabled={busy}>
             {busy ? 'Opening…' : 'Choose folder'}
@@ -47,6 +53,12 @@ export function LocalNotesView({
             Change folder
           </button>
         </header>
+        <p className="note-agent-disclosure">
+          Project agent access stays off until you authorize this folder in AI Agent Settings. Once
+          authorized, listing sends display titles and opaque IDs; reading also sends the requested
+          excerpt, content hash, offset, and total length to the configured LLM. Visible replies may
+          be stored and synchronized.
+        </p>
         {vault.files.length === 0 && <p className="column-empty">No Markdown files found</p>}
         {vault.files.map((file) => (
           <button

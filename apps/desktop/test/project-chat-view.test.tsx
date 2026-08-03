@@ -39,6 +39,8 @@ describe('advanced Project Chat controls', () => {
         selectedModel="fixture-live-model"
         selectedReasoning="provider-high"
         applyingActionId={null}
+        vault={null}
+        vaultState="ready"
         onSelectedModel={vi.fn()}
         onSelectedReasoning={vi.fn()}
         onRefreshModels={vi.fn()}
@@ -58,7 +60,49 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Reviewer');
     expect(html).toContain('Response depth');
     expect(html).toContain('Board + Objective');
-    expect(html).toContain('No shell · no files · no network · no tools · no subagents');
+    expect(html).toContain('Board + Objective read tools');
+    expect(html).toContain('Local Notes not authorized');
+    expect(html).toContain('Authorize…');
+    expect(html).toContain('no shell/network/arbitrary files');
     expect(html).toContain('Edit in Settings…');
+  });
+
+  it('pauses a saved Local Notes grant while Main-process capability status is unavailable', () => {
+    const profile = {
+      ...defaultProjectChatProfile(project.id),
+      localNotesVault: { id: 'a'.repeat(64), name: 'Research Vault' },
+    };
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile,
+        }}
+        loading={false}
+        inFlight={false}
+        models={[]}
+        selectedModel="auto"
+        selectedReasoning="auto"
+        applyingActionId={null}
+        vault={null}
+        vaultState="unavailable"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Local Notes status unavailable');
+    expect(html).toContain('This turn is paused to prevent a hidden grant mismatch.');
+    expect(html).not.toContain('Authorize…');
   });
 });

@@ -189,6 +189,104 @@ function verifyLegacyChatMigration(rootUserData: string, fixedTimestamp: string)
   }
 }
 
+function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: string) {
+  const primaryUserData = app.getPath('userData');
+  const legacyUserData = join(rootUserData, 'legacy-profile-v050');
+  mkdirSync(legacyUserData, { recursive: true });
+  app.setPath('userData', legacyUserData);
+  try {
+    const bootstrap = new LocalDatabase();
+    bootstrap.open();
+    bootstrap.close();
+
+    const keyHex = safeStorage
+      .decryptString(readFileSync(join(legacyUserData, 'local-key.bin')))
+      .trim();
+    const projectId = randomUUID();
+    const revisionId = randomUUID();
+    const raw = new Database(join(legacyUserData, 'gosu.db'));
+    try {
+      raw.pragma(`key="x'${keyHex}'"`);
+      raw.pragma('foreign_keys=OFF');
+      raw.transaction(() => {
+        raw.exec(`
+          drop table project_chat_profiles;
+          create table project_chat_profiles (
+            project_id text primary key,
+            version integer not null check (version > 0),
+            harness_mode text not null check (harness_mode in ('context','planner','reviewer')),
+            response_depth text not null check (response_depth in ('concise','standard','deep')),
+            context_scope text not null check (context_scope in ('project','board','objective')),
+            instruction_revision_id text not null
+              references project_chat_instruction_revisions(id),
+            created_at text not null,
+            updated_at text not null
+          );
+        `);
+        raw
+          .prepare(
+            `insert into project_chat_instruction_revisions(
+             id,project_id,revision,content,content_sha256,created_at
+           ) values(?,?,?,?,?,?)`,
+          )
+          .run(
+            revisionId,
+            projectId,
+            1,
+            'Legacy profile instructions.',
+            'd'.repeat(64),
+            fixedTimestamp,
+          );
+        raw
+          .prepare(
+            `insert into project_chat_profiles(
+             project_id,version,harness_mode,response_depth,context_scope,
+             instruction_revision_id,created_at,updated_at
+           ) values(?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            projectId,
+            1,
+            'planner',
+            'deep',
+            'board',
+            revisionId,
+            fixedTimestamp,
+            fixedTimestamp,
+          );
+      })();
+    } finally {
+      raw.close();
+    }
+
+    const migrated = new LocalDatabase();
+    migrated.open();
+    const legacyProfile = migrated.getProjectChatProfile(projectId);
+    invariant(
+      legacyProfile.version === 1 &&
+        legacyProfile.localNotesVault === null &&
+        legacyProfile.customInstructions === 'Legacy profile instructions.',
+      'legacy_profile_v050_migration_failed',
+    );
+    const updated = migrated.updateProjectChatProfile({
+      projectId,
+      expectedVersion: 1,
+      harnessMode: 'planner',
+      responseDepth: 'deep',
+      contextScope: 'board',
+      localNotesVault: { id: 'f'.repeat(64), name: 'Migrated Vault' },
+      customInstructions: 'Legacy profile instructions.',
+    });
+    invariant(
+      updated?.version === 2 && updated.localNotesVault?.id === 'f'.repeat(64),
+      'legacy_profile_v050_grant_update_failed',
+    );
+    migrated.close();
+  } finally {
+    app.setPath('userData', primaryUserData);
+  }
+}
+
 const temporaryUserData = mkdtempSync(join(tmpdir(), 'gosu-local-db-smoke-'));
 app.setPath('userData', temporaryUserData);
 
@@ -216,9 +314,15 @@ void app.whenReady().then(async () => {
       harnessMode: 'planner',
       responseDepth: 'deep',
       contextScope: 'board',
+      localNotesVault: { id: 'a'.repeat(64), name: 'Fixture Vault' },
       customInstructions: 'Prefer reproducible experiments.',
     });
     invariant(chatProfile?.version === 1, 'chat_profile_initial_update_failed');
+    invariant(
+      chatProfile.localNotesVault?.id === 'a'.repeat(64) &&
+        chatProfile.localNotesVault.name === 'Fixture Vault',
+      'chat_profile_local_notes_grant_missing',
+    );
     invariant(
       database.updateProjectChatProfile({
         projectId: chatProjectId,
@@ -226,6 +330,7 @@ void app.whenReady().then(async () => {
         harnessMode: 'reviewer',
         responseDepth: 'concise',
         contextScope: 'objective',
+        localNotesVault: null,
         customInstructions: '',
       }) === null,
       'stale_chat_profile_update_was_accepted',
@@ -575,6 +680,8 @@ void app.whenReady().then(async () => {
       reopened.getProjectChatProfile(chatProjectId).version === 1 &&
         reopened.getProjectChatProfile(chatProjectId).customInstructions ===
           'Prefer reproducible experiments.' &&
+        reopened.getProjectChatProfile(chatProjectId).localNotesVault?.id === 'a'.repeat(64) &&
+        reopened.getProjectChatProfile(chatProjectId).localNotesVault?.name === 'Fixture Vault' &&
         reopened.getProjectChatProfile(chatProjectId).instructionRevision?.id ===
           chatProfile.instructionRevision?.id,
       'chat_profile_restart_restore_failed',
@@ -735,6 +842,7 @@ void app.whenReady().then(async () => {
     recoveryRequired.close();
 
     verifyLegacyChatMigration(temporaryUserData, fixedTimestamp);
+    verifyLegacyProfileMigration(temporaryUserData, fixedTimestamp);
 
     process.stdout.write('local SQLCipher workspace smoke test passed\n');
     app.exit(0);

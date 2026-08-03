@@ -56,6 +56,8 @@ function renderSettings(initialCategory: 'appearance' | 'board' | 'projects' | '
       agentProject={snapshot.projects[0]}
       agentProfile={defaultProjectChatProfile(snapshot.projects[0]!.id)}
       agentProfileLoading={false}
+      vault={null}
+      vaultState="ready"
       onUpdateAgentProfile={vi.fn()}
       initialCategory={initialCategory}
     />,
@@ -96,6 +98,10 @@ describe('separated application Settings', () => {
     expect(html).toContain('Response depth');
     expect(html).toContain('Local context scope');
     expect(html).toContain('PROJECT INSTRUCTIONS');
-    expect(html).toContain('No shell · no file access · no network · no tools · no subagents');
+    expect(html).toContain('LOCAL NOTES ACCESS');
+    expect(html).toContain('Listing notes sends their display titles and opaque IDs');
+    expect(html).toContain('content SHA-256, offset, and total character');
+    expect(html).toContain('Project-bound read tools only');
+    expect(html).toContain('no shell · no arbitrary files · no network · no subagents');
   });
 });

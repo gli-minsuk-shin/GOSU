@@ -57,6 +57,7 @@ const projectChat = new ProjectChatService({
   storage: database,
   workspace,
   codex,
+  vault,
   async prepareProjectDirectory(projectId) {
     const directory = join(app.getPath('userData'), 'project-chat-workspaces', projectId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -250,6 +251,7 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     codex.loginApiKey(typeof apiKey === 'string' ? apiKey : ''),
   );
   handle('gosu:codex:logout', () => codex.logout());
+  handle('gosu:vault:current', () => vault.current());
   handle('gosu:vault:choose', () => (mainWindow ? vault.choose(mainWindow) : null));
   handle('gosu:vault:read', (_event, relativePath) =>
     vault.readMarkdown(typeof relativePath === 'string' ? relativePath : ''),
