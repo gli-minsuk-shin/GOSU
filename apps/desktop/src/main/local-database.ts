@@ -9,6 +9,10 @@ import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 export class LocalDatabase {
   private database: Database.Database | undefined;
 
+  isReady() {
+    return this.database !== undefined;
+  }
+
   open() {
     if (this.database) return;
     if (!safeStorage.isEncryptionAvailable()) {

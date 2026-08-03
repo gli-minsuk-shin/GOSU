@@ -29,13 +29,21 @@ import { SyncStore } from './store.js';
 export class AppController {
   constructor(@Inject(SyncStore) private readonly store: SyncStore) {}
 
-  @Get('health')
-  health() {
+  @Get('v1/health/live')
+  liveness() {
     return {
-      status: 'ok',
+      status: 'alive',
       service: 'gosu-sync-api',
-      now: new Date().toISOString(),
-      persistence: 'memory-development',
+      apiVersion: 1,
+    } as const;
+  }
+
+  @Get('v1/health/ready')
+  readiness() {
+    return {
+      status: 'ready',
+      service: 'gosu-sync-api',
+      apiVersion: 1,
     };
   }
 

@@ -12,6 +12,8 @@ import { roleSchema, type Role } from './contracts.js';
 export type Identity = { subject: string; issuer: string; role: Role; labId: string };
 type Headers = Record<string, string | string[] | undefined>;
 
+const PUBLIC_HEALTH_PATHS = new Set(['/v1/health/live', '/v1/health/ready']);
+
 const jwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 function header(headers: Headers, name: string) {
@@ -81,7 +83,7 @@ declare module 'fastify' {
 export class AuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest<FastifyRequest>();
-    if (request.url === '/health' || request.url.startsWith('/health?')) return true;
+    if (PUBLIC_HEALTH_PATHS.has(request.url.split('?', 1)[0] ?? '')) return true;
     request.identity = await authenticateHeaders(request.headers);
     return true;
   }

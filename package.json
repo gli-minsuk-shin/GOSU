@@ -19,14 +19,17 @@
     "pnpm": ">=11.0.0 <12.0.0"
   },
   "scripts": {
+    "app:dev": "exec node scripts/run-local.mjs",
+    "app:doctor": "node scripts/doctor.mjs",
+    "app:package": "pnpm check && pnpm --filter @gosu/desktop package:mac",
     "build": "turbo run build",
     "check": "pnpm format:check && pnpm contracts:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "contracts:check": "pnpm --filter @gosu/contracts generate:check",
     "dev": "turbo run dev --parallel",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint": "turbo run lint",
-    "test": "turbo run test",
+    "lint": "eslint scripts && turbo run lint",
+    "test": "turbo run test && node --test scripts/*.test.mjs",
     "test:coverage": "turbo run test:coverage",
     "typecheck": "turbo run typecheck"
   },

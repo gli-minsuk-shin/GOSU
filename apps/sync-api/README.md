@@ -8,12 +8,13 @@ series, checkpoints, artifacts, hidden tool payloads, or credentials.
 
 The current Nest application always injects `SyncStore`, a deterministic in-memory development
 repository. It includes seeded demo data unless `SEED_DEMO=false`, and all state is lost when the
-process exits. `GOSU_PERSISTENCE=postgres` is reserved configuration and does not currently change
-that runtime behavior.
+process exits. `GOSU_PERSISTENCE=postgres` is reserved configuration and is rejected rather than
+silently falling back to memory.
 
 ```bash
 pnpm --filter @gosu/sync-api dev
-curl http://127.0.0.1:4000/health
+curl http://127.0.0.1:4000/v1/health/live
+curl http://127.0.0.1:4000/v1/health/ready
 curl \
   -H 'x-gosu-lab: lab-demo' \
   -H 'x-gosu-sub: user-demo' \
@@ -22,8 +23,10 @@ curl \
 ```
 
 Development authentication requires all three `x-gosu-*` headers shown above; it never supplies a
-default identity or role. It is rejected whenever `NODE_ENV=production`; never expose development
-mode outside a local machine.
+default identity or role. The default listener is loopback-only, and development authentication is
+rejected on a non-loopback host. Production startup requires explicit OIDC and HTTPS-origin
+configuration, then remains fail-closed until the PostgreSQL runtime is wired and recovery-tested.
+Never expose development mode outside a local machine.
 
 Set `GOSU_AUTH_MODE=oidc` to verify an already-issued GOSU bearer JWT against
 `GOSU_OIDC_ISSUER` and `GOSU_OIDC_AUDIENCE`. The token must include `gosu:lab` and `gosu:role`

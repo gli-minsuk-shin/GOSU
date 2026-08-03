@@ -44,13 +44,14 @@ content; datasets, raw logs, checkpoints, and artifacts remain on the runner.
 
 ## Current bootstrap status
 
-The repository implements the security and domain foundation, but its components are not yet a
-deployed end-to-end product:
+The repository implements the security and domain foundation and a runnable local desktop slice,
+but it is not yet a deployed end-to-end product:
 
 - the Owner Web app is an interactive, responsive product slice backed by deterministic demo
   fixtures;
 - the Electron app provides a sandboxed renderer, encrypted local state, a read-only Obsidian
-  reader, and local Codex App Server integration with runtime model discovery;
+  reader, local Codex App Server integration with runtime model discovery, and a non-secret runtime
+  readiness view;
 - the running Sync API uses an in-memory development store with lab/project authorization,
   optimistic versions, idempotency, SSE, and a non-persistent WebSocket relay;
 - a PostgreSQL schema and tested persistence adapter implement tenant context, transactional
@@ -78,7 +79,8 @@ These are required trust boundaries. The development authentication mode and the
 are not substitutes for production identity, mTLS, deployment isolation, or external-service
 authorization.
 
-See [SECURITY.md](SECURITY.md) for reporting and operational security guidance.
+See [the architecture and maintenance guide](docs/ARCHITECTURE.md) for module ownership and safe
+change recipes, and [SECURITY.md](SECURITY.md) for reporting and operational security guidance.
 
 ## Development
 
@@ -89,24 +91,41 @@ See [SECURITY.md](SECURITY.md) for reporting and operational security guidance.
 - Docker with Compose v2 when developing the PostgreSQL/Redis adapters
 - Go and Python versions specified by their workspace components when working on the runner
 
-### Start locally
+### Run the local desktop app
 
 ```bash
 corepack enable
-cp .env.example .env
-pnpm install
-pnpm dev
+pnpm install --frozen-lockfile
+pnpm app:doctor
+pnpm app:dev
 ```
 
+`app:dev` starts the loopback-only in-memory Sync API, waits for its readiness endpoint, and then
+opens the Electron app. `Ctrl+C` stops the process group. A healthy GOSU Sync process already using
+the configured port is reused; an unrelated process on that port is rejected. No `.env` file or
+Docker service is required for this local slice, and Sync state is lost on restart.
+
+To build a local macOS installer after running the complete quality gate:
+
+```bash
+pnpm app:package
+```
+
+The resulting DMG under `apps/desktop/dist` is an unsigned development artifact. Public
+distribution still requires Developer ID signing, notarization, update metadata, and a clean-machine
+release test.
+
 The values in `.env.example` are local-only placeholders. Never copy production credentials into
-the repository or commit a populated `.env` file. The default Sync API does not require Docker and
-loses its in-memory state on restart. `docker compose up -d` starts PostgreSQL and Redis for adapter
-development; it does not switch the running API to PostgreSQL automatically.
+the repository or commit a populated `.env` file. `docker compose up -d` starts PostgreSQL and Redis
+for adapter development; it does not switch the running API to PostgreSQL automatically.
 
 ### Common commands
 
 ```bash
 pnpm dev           # run workspace development tasks
+pnpm app:dev       # start Sync, wait for readiness, and open Electron
+pnpm app:doctor    # validate the local desktop prerequisites
+pnpm app:package   # run all checks and create an unsigned local DMG
 pnpm build         # build all packages and applications
 pnpm lint          # lint all workspaces
 pnpm typecheck     # run TypeScript checks

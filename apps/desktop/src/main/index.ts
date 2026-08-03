@@ -6,8 +6,15 @@ import { LocalDatabase } from './local-database';
 import {
   createTrustedRenderer,
   isTrustedRendererUrl,
+  rendererContentSecurityPolicy,
   type TrustedRenderer,
 } from './renderer-trust';
+import {
+  buildRuntimeReadiness,
+  checkSyncApiHealth,
+  localDataReadiness,
+  type ComponentReadiness,
+} from './runtime-readiness';
 import { VaultAccess } from './vault';
 
 const codex = new CodexAppServer();
@@ -47,7 +54,7 @@ function createWindow(trustedRenderer: TrustedRenderer) {
   void mainWindow.loadURL(trustedRenderer.entryUrl);
 }
 
-function registerIpc(trustedRenderer: TrustedRenderer) {
+function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadiness) {
   const handle = (
     channel: string,
     listener: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown,
@@ -67,11 +74,25 @@ function registerIpc(trustedRenderer: TrustedRenderer) {
     });
   };
 
+  handle('gosu:runtime:readiness', async () =>
+    buildRuntimeReadiness({
+      app: {
+        version: app.getVersion(),
+        platform: process.platform,
+        packaged: app.isPackaged,
+      },
+      localData,
+      codex: await codex.availability(),
+      syncApi: await checkSyncApiHealth(process.env.GOSU_SYNC_API_URL?.trim() || undefined),
+    }),
+  );
   handle('gosu:codex:status', () => codex.status());
   handle('gosu:codex:list-models', async () => {
     const catalog = await codex.listModelCatalog();
-    database.recordModelCatalog(catalog);
-    database.cache('codex', 'model-catalog', catalog, Date.now());
+    if (database.isReady()) {
+      database.recordModelCatalog(catalog);
+      database.cache('codex', 'model-catalog', catalog, Date.now());
+    }
     return catalog.models;
   });
   handle('gosu:codex:login-chatgpt', async () => {
@@ -97,27 +118,33 @@ function registerIpc(trustedRenderer: TrustedRenderer) {
 
 app.whenReady().then(() => {
   app.setName('GOSU');
+  const trustedRenderer = createTrustedRenderer({
+    developmentUrl: process.env.ELECTRON_RENDERER_URL,
+    isPackaged: app.isPackaged,
+    productionEntryPath: join(__dirname, '../renderer/index.html'),
+  });
+  const contentSecurityPolicy = rendererContentSecurityPolicy(trustedRenderer);
   session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy': [
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:4000 ws://127.0.0.1:4000; font-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'self'",
-        ],
+        'Content-Security-Policy': [contentSecurityPolicy],
       },
     }),
   );
-  database.open();
+  let localData = localDataReadiness();
+  try {
+    database.open();
+  } catch (error) {
+    localData = localDataReadiness(error);
+  }
   codex.on(
     'invocation',
     (event: { threadId: string; turnId: string; invocation: ModelInvocation }) =>
+      database.isReady() &&
       database.recordModelInvocation(event.threadId, event.turnId, event.invocation),
   );
-  const trustedRenderer = createTrustedRenderer(
-    process.env.ELECTRON_RENDERER_URL,
-    join(__dirname, '../renderer/index.html'),
-  );
-  registerIpc(trustedRenderer);
+  registerIpc(trustedRenderer, localData);
   createWindow(trustedRenderer);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow(trustedRenderer);

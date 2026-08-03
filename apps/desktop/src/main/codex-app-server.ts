@@ -1,8 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { constants } from 'node:fs';
+import { access } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 
@@ -19,6 +21,11 @@ export type CodexModel = {
   supportedReasoningEfforts?: Array<{ reasoningEffort: string; description: string }>;
   inputModalities?: string[];
   upgrade?: string | null;
+};
+
+export type CodexAvailability = {
+  ready: boolean;
+  detail: 'bundled_codex_ready' | 'configured_codex_ready' | 'codex_executable_unavailable';
 };
 
 type JsonRpcMessage = {
@@ -85,6 +92,25 @@ function codexCommand() {
   };
 }
 
+async function executableIsAvailable(executable: string, pathEnvironment = '') {
+  const hasPath = isAbsolute(executable) || executable.includes(sep);
+  const candidates = hasPath
+    ? [executable]
+    : pathEnvironment
+        .split(delimiter)
+        .filter(Boolean)
+        .map((entry) => resolve(entry, executable));
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK);
+      return true;
+    } catch {
+      // Continue through the bounded PATH candidates.
+    }
+  }
+  return false;
+}
+
 export class CodexAppServer extends EventEmitter {
   private process: ChildProcessWithoutNullStreams | undefined;
   private nextId = 1;
@@ -92,6 +118,26 @@ export class CodexAppServer extends EventEmitter {
     number,
     { resolve: (value: unknown) => void; reject: (error: Error) => void; timeout: NodeJS.Timeout }
   >();
+
+  async availability(): Promise<CodexAvailability> {
+    try {
+      const command = codexCommand();
+      const executableReady = await executableIsAvailable(command.executable, process.env.PATH);
+      const entryReady =
+        command.prefixArgs.length === 0 ||
+        (await access(command.prefixArgs[0]!, constants.R_OK).then(
+          () => true,
+          () => false,
+        ));
+      if (!executableReady || !entryReady) throw new Error('codex_executable_unavailable');
+      return {
+        ready: true,
+        detail: command.runAsNode ? 'bundled_codex_ready' : 'configured_codex_ready',
+      };
+    } catch {
+      return { ready: false, detail: 'codex_executable_unavailable' };
+    }
+  }
   private starting: Promise<void> | undefined;
   private catalog: ModelCatalog | undefined;
   private readonly invocations = new Map<

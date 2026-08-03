@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 const api = {
+  runtime: {
+    readiness: () => ipcRenderer.invoke('gosu:runtime:readiness'),
+  },
   codex: {
     status: () => ipcRenderer.invoke('gosu:codex:status'),
     listModels: () => ipcRenderer.invoke('gosu:codex:list-models'),
