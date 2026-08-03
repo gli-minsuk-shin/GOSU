@@ -12,6 +12,7 @@ import {
 import { WorkspaceService } from '../src/main/workspace-service';
 import type {
   ProjectChatAction,
+  ProjectChatAttempt,
   ProjectChatEvent,
   ProjectChatMessage,
   ProjectChatSnapshot,
@@ -45,26 +46,65 @@ class MemoryWorkspaceStorage {
 
 class MemoryChatStorage implements ProjectChatStorage {
   readonly messages: ProjectChatMessage[] = [];
+  readonly attempts = new Map<string, ProjectChatAttempt>();
   readonly actions = new Map<string, ProjectChatAction>();
   failNextSave = false;
   failNextAssistantSave = false;
   failNextFinishAction = false;
+  failNextMarkRunning = false;
+  afterMarkRunning: (() => void) | null = null;
 
-  saveMessage(message: ProjectChatMessage) {
-    if (this.failNextSave || (this.failNextAssistantSave && message.role === 'assistant')) {
+  beginChatAttempt(attempt: ProjectChatAttempt, userMessage: ProjectChatMessage) {
+    if (this.failNextSave) {
+      this.failNextSave = false;
+      throw new Error('transient_storage_failure');
+    }
+    if (attempt.status !== 'starting') throw new Error('invalid_attempt_state');
+    this.attempts.set(attempt.id, structuredClone(attempt));
+    this.messages.push(structuredClone({ ...userMessage, attemptId: attempt.id }));
+  }
+
+  markChatAttemptRunning(attempt: ProjectChatAttempt) {
+    if (this.failNextMarkRunning) {
+      this.failNextMarkRunning = false;
+      throw new Error('transient_running_receipt_failure');
+    }
+    const current = this.attempts.get(attempt.id);
+    if (!current || current.status !== 'starting' || attempt.status !== 'running') {
+      throw new Error('attempt_state_conflict');
+    }
+    this.attempts.set(attempt.id, structuredClone(attempt));
+    this.afterMarkRunning?.();
+  }
+
+  finishChatAttempt(attempt: ProjectChatAttempt, assistantMessage: ProjectChatMessage) {
+    if (this.failNextSave || this.failNextAssistantSave) {
       this.failNextSave = false;
       this.failNextAssistantSave = false;
       throw new Error('transient_storage_failure');
     }
-    const copy = structuredClone(message);
-    this.messages.push(copy);
-    for (const action of copy.actions) this.actions.set(action.id, action);
+    const current = this.attempts.get(attempt.id);
+    if (!current || !['starting', 'running'].includes(current.status)) {
+      throw new Error('attempt_state_conflict');
+    }
+    const message = structuredClone({ ...assistantMessage, attemptId: attempt.id });
+    this.attempts.set(attempt.id, structuredClone(attempt));
+    this.messages.push(message);
+    for (const action of message.actions) this.actions.set(action.id, action);
+  }
+
+  getChatAttempt(projectId: string, attemptId: string) {
+    const attempt = this.attempts.get(attemptId);
+    return attempt?.projectId === projectId ? structuredClone(attempt) : null;
   }
 
   snapshot(projectId: string): ProjectChatSnapshot {
     return {
       schemaVersion: 1,
       projectId,
+      attempts: [...this.attempts.values()]
+        .filter((attempt) => attempt.projectId === projectId)
+        .map((attempt) => structuredClone(attempt)),
       messages: this.messages
         .filter((message) => message.projectId === projectId)
         .map((message) => ({
@@ -107,6 +147,7 @@ class FakeCodex extends EventEmitter {
   readonly released: string[] = [];
   readonly prompts: string[] = [];
   beforeRunReturns: ((threadId: string, turnId: string) => void) | null = null;
+  failNextInterrupt = false;
 
   async startThread() {
     this.threadCount += 1;
@@ -127,6 +168,10 @@ class FakeCodex extends EventEmitter {
 
   async interruptTurn(threadId: string, turnId: string) {
     this.interrupted.push({ threadId, turnId });
+    if (this.failNextInterrupt) {
+      this.failNextInterrupt = false;
+      throw new Error('transient_interrupt_failure');
+    }
   }
 
   async releaseThread(threadId: string) {
@@ -231,7 +276,16 @@ describe('ProjectChatService', () => {
 
     await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
     const assistant = storage.snapshot(projectA.id).messages[1]!;
+    const attempt = storage.snapshot(projectA.id).attempts?.[0];
     expect(assistant.content).toContain('Apply');
+    expect(attempt).toMatchObject({
+      id: receipt.attemptId,
+      userMessageId: receipt.userMessageId,
+      turnId: receipt.turnId,
+      status: 'complete',
+    });
+    expect(storage.snapshot(projectA.id).messages[0]?.attemptId).toBe(receipt.attemptId);
+    expect(assistant.attemptId).toBe(receipt.attemptId);
     expect(assistant.model?.resolvedModelId).toBe('new-catalog-model');
     expect(assistant.actions[0]?.status).toBe('proposed');
 
@@ -440,9 +494,13 @@ describe('ProjectChatService', () => {
         type: 'turn.completed',
         projectId: projectA.id,
         turnId: first.turnId,
-        status: 'failed',
+        status: 'interrupted',
       }),
     );
+    expect(storage.snapshot(projectA.id).attempts?.[0]).toMatchObject({
+      status: 'interrupted',
+      errorCode: 'application_interrupted',
+    });
 
     const second = await chat.send({
       projectId: projectA.id,
@@ -504,5 +562,220 @@ describe('ProjectChatService', () => {
     expect(codex.released).toHaveLength(101);
     expect(new Set(codex.released).size).toBe(101);
     expect(storage.snapshot(projectA.id).messages).toHaveLength(202);
+  });
+
+  it('durably records a disconnect during turn registration and can retry it', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    codex.beforeRunReturns = () => {
+      codex.beforeRunReturns = null;
+      codex.emit('disconnected');
+    };
+
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'Recover this registration race',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toThrow('codex_unavailable');
+
+    const failed = storage.snapshot(projectA.id);
+    expect(failed.messages).toHaveLength(2);
+    expect(failed.attempts?.[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'codex_unavailable',
+    });
+    const retryTargetId = failed.attempts?.[0]?.id;
+    expect(retryTargetId).toBeTruthy();
+
+    const retry = await chat.send({
+      projectId: projectA.id,
+      message: 'Recover this registration race',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      retryOfAttemptId: retryTargetId!,
+    });
+    codex.complete(retry.turnId, { reply: 'Recovered after reconnect', actions: [] });
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id).messages.at(-1)?.content).toBe(
+        'Recovered after reconnect',
+      ),
+    );
+    expect(storage.snapshot(projectA.id).attempts?.[1]).toMatchObject({
+      retryOfAttemptId: retryTargetId,
+      status: 'complete',
+    });
+  });
+
+  it('does not leave a project busy when Codex disconnects while the running receipt is saved', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    storage.afterMarkRunning = () => {
+      storage.afterMarkRunning = null;
+      codex.emit('disconnected');
+    };
+
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'Disconnect while registering this turn',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toThrow('codex_unavailable');
+
+    expect(storage.snapshot(projectA.id).attempts?.[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'codex_unavailable',
+    });
+    const retry = await chat.send({
+      projectId: projectA.id,
+      message: 'The project reservation should have been released',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(retry.turnId, { reply: 'Recovered without a stale busy state', actions: [] });
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id).messages.at(-1)?.content).toBe(
+        'Recovered without a stale busy state',
+      ),
+    );
+  });
+
+  it('interrupts a Codex turn when its running receipt cannot be saved', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    storage.failNextMarkRunning = true;
+
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'Do not leave this rejected turn running',
+        requestedModelId: 'fixture-explicit',
+        reasoningOptionId: null,
+      }),
+    ).rejects.toThrow('codex_unavailable');
+
+    expect(codex.interrupted).toEqual([{ threadId: 'thread-1', turnId: 'turn-1' }]);
+    expect(codex.released).toContain('thread-1');
+    expect(storage.snapshot(projectA.id).attempts?.[0]).toMatchObject({
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      status: 'failed',
+      errorCode: 'codex_unavailable',
+      model: { resolvedModelId: 'fixture-explicit' },
+    });
+
+    const retry = await chat.send({
+      projectId: projectA.id,
+      message: 'A new turn can start after cleanup',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(retry.turnId, { reply: 'Cleanup released the project', actions: [] });
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id).messages.at(-1)?.content).toBe(
+        'Cleanup released the project',
+      ),
+    );
+  });
+
+  it('records an unconfirmed turn interruption with durable turn provenance', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    storage.failNextMarkRunning = true;
+    codex.failNextInterrupt = true;
+
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'Preserve cleanup failure provenance',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toThrow('codex_unavailable');
+
+    const failed = storage.snapshot(projectA.id);
+    expect(failed.attempts?.[0]).toMatchObject({
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      status: 'failed',
+      errorCode: 'application_interrupted',
+    });
+    expect(failed.messages.at(-1)?.content).toContain('could not confirm');
+  });
+
+  it('retries only terminal failures and excludes their partial history', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const first = await chat.send({
+      projectId: projectA.id,
+      message: 'Unique failed request',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const firstCompleted = waitForTurnCompleted(chat, first.turnId);
+    codex.complete(first.turnId, 'not structured JSON');
+    await firstCompleted;
+    expect(storage.snapshot(projectA.id).attempts?.[0]?.status).toBe('failed');
+
+    const retry = await chat.send({
+      projectId: projectA.id,
+      message: 'Unique failed request',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      retryOfAttemptId: first.attemptId,
+    });
+    expect(codex.prompts[1]?.match(/Unique failed request/g)).toHaveLength(1);
+    const retryCompleted = waitForTurnCompleted(chat, retry.turnId);
+    codex.complete(retry.turnId, { reply: 'Valid retry', actions: [] });
+    await retryCompleted;
+    expect(storage.snapshot(projectA.id).attempts?.[1]?.status).toBe('complete');
+
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'Do not retry a completed turn',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        retryOfAttemptId: retry.attemptId,
+      }),
+    ).rejects.toThrow('chat_attempt_not_retryable');
+  });
+
+  it('does not duplicate a retried user message from a legacy failed turn', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const failedAt = new Date().toISOString();
+    storage.messages.push(
+      {
+        id: randomUUID(),
+        projectId: projectA.id,
+        role: 'user',
+        content: 'Unique legacy retry request',
+        status: 'complete',
+        actions: [],
+        createdAt: failedAt,
+        completedAt: failedAt,
+      },
+      {
+        id: randomUUID(),
+        projectId: projectA.id,
+        role: 'assistant',
+        content: 'Legacy Codex failure receipt',
+        status: 'failed',
+        actions: [],
+        createdAt: failedAt,
+        completedAt: failedAt,
+      },
+    );
+
+    const retry = await chat.send({
+      projectId: projectA.id,
+      message: 'Unique legacy retry request',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(codex.prompts[0]?.match(/Unique legacy retry request/g)).toHaveLength(1);
+    codex.complete(retry.turnId, { reply: 'Legacy retry recovered', actions: [] });
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id).messages.at(-1)?.content).toBe('Legacy retry recovered'),
+    );
   });
 });

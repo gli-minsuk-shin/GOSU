@@ -15,7 +15,13 @@ import { ConnectionsView, type CodexModel } from './connections-view';
 import { LocalNotesView, type SelectedNote, type VaultSelection } from './notes-view';
 import { ProjectChatLoadGuard } from './project-chat-load-guard';
 import { ProjectChatView } from './project-chat-view';
+import { SettingsView } from './settings-view';
 import { Connection, describeError } from './ui-primitives';
+import {
+  applyUserPreferences,
+  saveUserPreferences,
+  type UserPreferences,
+} from './user-preferences';
 import {
   BoardView,
   EmptyWorkspace,
@@ -29,7 +35,13 @@ import {
   type WorkspaceTabId,
 } from './workspace-views';
 
-export function DesktopApp() {
+type CodexConnectionState = 'checking' | 'ready' | 'auth-required' | 'unavailable';
+
+function isCodexUnavailableError(error: unknown) {
+  return error instanceof Error && error.message.includes('codex_unavailable');
+}
+
+export function DesktopApp({ initialPreferences }: { initialPreferences: UserPreferences }) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [pendingSummary, setPendingSummary] = useState<WorkspacePendingSummary | null>(null);
   const [activeProjectId, setActiveProjectId] = useState('');
@@ -45,6 +57,9 @@ export function DesktopApp() {
   const [selectedReasoning, setSelectedReasoning] = useState('auto');
   const [codexStatus, setCodexStatus] = useState('Catalog not loaded');
   const [codexBusy, setCodexBusy] = useState(false);
+  const [codexConnectionState, setCodexConnectionState] =
+    useState<CodexConnectionState>('checking');
+  const [codexErrorVisible, setCodexErrorVisible] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeReadiness | null>(null);
   const [vault, setVault] = useState<VaultSelection | null>(null);
   const [selectedNote, setSelectedNote] = useState<SelectedNote | null>(null);
@@ -56,7 +71,9 @@ export function DesktopApp() {
   const [chatStartingProjectId, setChatStartingProjectId] = useState<string | null>(null);
   const [chatInFlight, setChatInFlight] = useState<Record<string, boolean>>({});
   const [applyingChatActionId, setApplyingChatActionId] = useState<string | null>(null);
+  const [preferences, setPreferences] = useState(initialPreferences);
   const chatLoadGuard = useRef(new ProjectChatLoadGuard());
+  const codexBootstrapStarted = useRef(false);
 
   const activeProject = useMemo(
     () => snapshot?.projects.find((project) => project.id === activeProjectId),
@@ -110,15 +127,12 @@ export function DesktopApp() {
 
     void window.gosu.runtime
       .readiness()
-      .then((next: RuntimeReadiness) => {
-        setRuntime(next);
-        setCodexStatus(
-          next.codex.ready
-            ? 'Codex is available · load the catalog when needed'
-            : 'Codex executable is unavailable',
-        );
-      })
-      .catch(() => setCodexStatus('Runtime readiness check failed'));
+      .then((next: RuntimeReadiness) => setRuntime(next))
+      .catch(() =>
+        setCodexStatus((current) =>
+          current === 'Catalog not loaded' ? 'Runtime readiness check failed' : current,
+        ),
+      );
   }, []);
 
   useEffect(
@@ -166,20 +180,45 @@ export function DesktopApp() {
     );
   }, [activeProjectId, activeTab]);
 
-  const refreshModels = async () => {
+  const refreshModels = async (showRecoveryError = false) => {
     if (codexBusy) return;
     setCodexBusy(true);
-    setCodexStatus('Reading the live Codex model catalog…');
+    setCodexConnectionState('checking');
+    setCodexStatus('Checking the local Codex connection and model catalog…');
     try {
-      const next = (await window.gosu.codex.listModels()) as CodexModel[];
-      setModels(next);
-      setCodexStatus(`${next.length} models available locally`);
+      const result = (await window.gosu.codex.reconnect()) as {
+        authenticated: boolean;
+        models: CodexModel[];
+      };
+      setModels(result.models);
+      setCodexConnectionState(result.authenticated ? 'ready' : 'auth-required');
+      setCodexStatus(
+        result.authenticated
+          ? `Connected · ${result.models.length} models available locally`
+          : `${result.models.length} models found · sign in before chatting`,
+      );
+      if (codexErrorVisible || showRecoveryError) setWorkspaceError(null);
+      setCodexErrorVisible(false);
     } catch (error) {
+      setModels([]);
+      setCodexConnectionState('unavailable');
       setCodexStatus(describeError(error));
+      if (showRecoveryError) {
+        setWorkspaceError(
+          'Codex could not reconnect. Board, settings, and local notes still work.',
+        );
+        setCodexErrorVisible(true);
+      }
     } finally {
       setCodexBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (codexBootstrapStarted.current) return;
+    codexBootstrapStarted.current = true;
+    void refreshModels();
+  }, []);
 
   const chooseVault = async () => {
     if (noteLoading) return;
@@ -221,6 +260,16 @@ export function DesktopApp() {
   };
 
   const pendingCount = pendingSummary?.count ?? 0;
+
+  const updatePreferences = (next: UserPreferences) => {
+    applyUserPreferences(document.documentElement, next);
+    setPreferences(next);
+    setAnnouncement(
+      saveUserPreferences(window.localStorage, next)
+        ? 'Saved display settings on this Mac.'
+        : 'Display settings changed for this session but could not be saved.',
+    );
+  };
 
   return (
     <main className="desktop-shell">
@@ -293,15 +342,15 @@ export function DesktopApp() {
         <Connection
           name="Codex"
           state={
-            models.length
-              ? 'Catalog loaded'
-              : runtime === null
-                ? 'Checking'
-                : runtime.codex.ready
-                  ? 'Available'
-                  : 'Unavailable'
+            codexConnectionState === 'ready'
+              ? 'Connected'
+              : codexConnectionState === 'auth-required'
+                ? 'Sign in required'
+                : codexConnectionState === 'unavailable'
+                  ? 'Reconnect needed'
+                  : 'Checking'
           }
-          ready={Boolean(models.length || runtime?.codex.ready)}
+          ready={codexConnectionState === 'ready'}
         />
         <Connection
           name="Sync API"
@@ -322,11 +371,42 @@ export function DesktopApp() {
         </p>
         {workspaceError && (
           <div className="notice error" role="alert">
-            {workspaceError}
+            <span>{workspaceError}</span>
+            <div className="notice-actions">
+              {codexErrorVisible && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void refreshModels(true)}
+                  disabled={codexBusy}
+                >
+                  {codexBusy ? 'Reconnecting…' : 'Reconnect Codex'}
+                </button>
+              )}
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  setWorkspaceError(null);
+                  setCodexErrorVisible(false);
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
 
-        {workspaceLoading ? (
+        {activeTab === 'settings' ? (
+          <>
+            <WorkspacePageHeading
+              activeTab={activeTab}
+              activeProject={undefined}
+              onNewProject={null}
+            />
+            <SettingsView preferences={preferences} onChange={updatePreferences} />
+          </>
+        ) : workspaceLoading ? (
           <div className="loading-state" role="status">
             Opening the encrypted local workspace…
           </div>
@@ -385,6 +465,7 @@ export function DesktopApp() {
 
             {activeTab === 'chat' && activeProject && (
               <ProjectChatView
+                key={activeProject.id}
                 project={activeProject}
                 tasks={activeTasks}
                 snapshot={chatSnapshots[activeProject.id] ?? null}
@@ -406,9 +487,29 @@ export function DesktopApp() {
                 }}
                 onSelectedReasoning={setSelectedReasoning}
                 onRefreshModels={() => void refreshModels()}
-                onSend={async (message) => {
+                onSend={async (message, retryOfAttemptId) => {
                   if (chatStartingProjectId !== null || chatInFlight[activeProject.id])
                     return false;
+                  const selectedDescriptor = models.find(
+                    (model) => model.modelId === selectedModel,
+                  );
+                  if (selectedModel !== 'auto' && !selectedDescriptor) {
+                    setWorkspaceError(
+                      'The selected Codex model is no longer available. Choose a current model and try again.',
+                    );
+                    return false;
+                  }
+                  if (
+                    selectedReasoning !== 'auto' &&
+                    !selectedDescriptor?.reasoningOptions.some(
+                      (option) => option.id === selectedReasoning,
+                    )
+                  ) {
+                    setWorkspaceError(
+                      'The selected reasoning option is no longer available. Choose a current option and try again.',
+                    );
+                    return false;
+                  }
                   setChatStartingProjectId(activeProject.id);
                   setWorkspaceError(null);
                   try {
@@ -417,11 +518,18 @@ export function DesktopApp() {
                       message,
                       requestedModelId: selectedModel === 'auto' ? null : selectedModel,
                       reasoningOptionId: selectedReasoning === 'auto' ? null : selectedReasoning,
+                      ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
                     });
                     await loadProjectChat(activeProject.id);
+                    setCodexConnectionState('ready');
+                    setCodexErrorVisible(false);
                     return true;
                   } catch (error) {
                     setWorkspaceError(describeError(error));
+                    if (isCodexUnavailableError(error)) {
+                      setCodexConnectionState('unavailable');
+                      setCodexErrorVisible(true);
+                    }
                     await loadProjectChat(activeProject.id).catch(() => undefined);
                     return false;
                   } finally {
@@ -523,6 +631,7 @@ export function DesktopApp() {
                   setSelectedReasoning('auto');
                 }}
                 onRefresh={() => void refreshModels()}
+                onReconnect={() => void refreshModels(true)}
                 onToggleApiKey={() => setApiKeyMode((visible) => !visible)}
                 onApiKey={setApiKey}
                 onLoginChatGpt={() => {
@@ -555,6 +664,7 @@ export function DesktopApp() {
                       setModels([]);
                       setSelectedModel('auto');
                       setSelectedReasoning('auto');
+                      setCodexConnectionState('auth-required');
                       setCodexStatus('Signed out from local Codex.');
                     })
                     .catch((error: unknown) => setCodexStatus(describeError(error)))

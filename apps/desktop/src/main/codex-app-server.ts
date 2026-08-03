@@ -564,7 +564,7 @@ export class CodexAppServer extends EventEmitter {
 
     try {
       await this.request('initialize', {
-        clientInfo: { name: 'gosu_desktop', title: 'GOSU', version: '0.3.0' },
+        clientInfo: { name: 'gosu_desktop', title: 'GOSU', version: '0.3.1' },
         capabilities: { experimentalApi: true },
       });
       if (this.process !== child) throw new Error('codex_app_server_initialization_interrupted');
@@ -720,6 +720,7 @@ export class CodexAppServer extends EventEmitter {
       entry.reject(error);
     }
     this.pending.clear();
+    this.catalog = undefined;
     this.invocations.clear();
     this.earlyReroutes.clear();
     const volatileStateHome = this.volatileStateHomes.get(child);

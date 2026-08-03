@@ -14,6 +14,7 @@ import {
   type ApplyProjectChatActionInput,
   type ProjectChatAction,
   type ProjectChatActionCommand,
+  type ProjectChatAttempt,
   type ProjectChatEvent,
   type ProjectChatMessage,
   type ProjectChatProjectInput,
@@ -27,7 +28,16 @@ import { WorkspaceServiceError, type WorkspaceService } from './workspace-servic
 type MaybePromise<T> = T | Promise<T>;
 
 export interface ProjectChatStorage {
-  saveMessage(message: ProjectChatMessage): MaybePromise<void>;
+  beginChatAttempt(
+    attempt: ProjectChatAttempt,
+    userMessage: ProjectChatMessage,
+  ): MaybePromise<void>;
+  markChatAttemptRunning(attempt: ProjectChatAttempt): MaybePromise<void>;
+  finishChatAttempt(
+    attempt: ProjectChatAttempt,
+    assistantMessage: ProjectChatMessage,
+  ): MaybePromise<void>;
+  getChatAttempt(projectId: string, attemptId: string): MaybePromise<ProjectChatAttempt | null>;
   snapshot(projectId: string): MaybePromise<ProjectChatSnapshot>;
   getAction(projectId: string, actionId: string): MaybePromise<ProjectChatAction | null>;
   claimAction(projectId: string, actionId: string, updatedAt: string): MaybePromise<boolean>;
@@ -60,6 +70,8 @@ export class ProjectChatServiceError extends Error {
       | 'project_not_found'
       | 'chat_busy'
       | 'chat_not_active'
+      | 'chat_attempt_not_found'
+      | 'chat_attempt_not_retryable'
       | 'action_not_found'
       | 'action_not_proposed'
       | 'codex_unavailable',
@@ -73,6 +85,7 @@ type CodexNotification = Readonly<{ method?: string; params?: unknown }>;
 
 type ActiveTurn = {
   projectId: string;
+  attempt: ProjectChatAttempt;
   threadId: string;
   turnId: string;
   invocation: ModelInvocation;
@@ -91,6 +104,10 @@ const FAILURE_COPY = {
   unavailable: 'Codex could not complete this turn. Check the local connection and try again.',
   invalid: 'Codex returned an invalid project response. Please try the request again.',
   interrupted: 'This Codex turn was stopped.',
+  persistence:
+    'GOSU recovered this turn after its first completion receipt could not be saved. Retry when ready.',
+  interruptUnconfirmed:
+    'GOSU could not confirm that this Codex turn stopped after registration failed. Check the local Codex connection before retrying.',
 } as const;
 
 const MAX_HISTORY_MESSAGES = 40;
@@ -102,6 +119,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isoNow() {
   return new Date().toISOString();
+}
+
+function modelProvenance(invocation: ModelInvocation) {
+  return {
+    invocationId: invocation.invocationId,
+    requestedModelId: invocation.requestedModelId,
+    resolvedModelId: invocation.resolvedModelId,
+    catalogVersion: invocation.catalogVersion,
+    reasoningOptionId: invocation.reasoningOptionId,
+  };
+}
+
+function completedAttemptHistory(snapshot: ProjectChatSnapshot) {
+  const failedLegacyUserMessageIds = new Set<string>();
+  for (let index = 1; index < snapshot.messages.length; index += 1) {
+    const assistant = snapshot.messages[index];
+    const precedingUser = snapshot.messages[index - 1];
+    if (
+      assistant?.attemptId === undefined &&
+      assistant?.role === 'assistant' &&
+      assistant.status !== 'complete' &&
+      precedingUser?.attemptId === undefined &&
+      precedingUser?.role === 'user'
+    ) {
+      failedLegacyUserMessageIds.add(precedingUser.id);
+    }
+  }
+  const completedAttemptIds = new Set(
+    (snapshot.attempts ?? [])
+      .filter((attempt) => attempt.status === 'complete')
+      .map((attempt) => attempt.id),
+  );
+  return snapshot.messages.filter((message) =>
+    message.attemptId === undefined
+      ? !failedLegacyUserMessageIds.has(message.id)
+      : completedAttemptIds.has(message.attemptId),
+  );
 }
 
 function latestObjective(snapshot: WorkspaceSnapshot, projectId: string) {
@@ -212,6 +266,7 @@ export class ProjectChatService extends EventEmitter {
   private readonly startingProjects = new Set<string>();
   private readonly earlyNotifications = new Map<string, CodexNotification[]>();
   private actionTail: Promise<void> = Promise.resolve();
+  private codexConnectionEpoch = 0;
 
   constructor(
     private readonly dependencies: {
@@ -234,6 +289,7 @@ export class ProjectChatService extends EventEmitter {
       },
     );
     dependencies.codex.on('disconnected', () => {
+      this.codexConnectionEpoch += 1;
       this.threadProjects.clear();
       this.earlyNotifications.clear();
       for (const active of this.activeByTurn.values()) this.beginFinalize(active, 'failed');
@@ -265,21 +321,48 @@ export class ProjectChatService extends EventEmitter {
       const project = snapshot.projects.find((candidate) => candidate.id === command.projectId);
       if (!project) throw new ProjectChatServiceError('project_not_found');
       const priorChat = await this.dependencies.storage.snapshot(command.projectId);
+      if (command.retryOfAttemptId) {
+        const retryTarget = await this.dependencies.storage.getChatAttempt(
+          command.projectId,
+          command.retryOfAttemptId,
+        );
+        if (!retryTarget) throw new ProjectChatServiceError('chat_attempt_not_found');
+        if (retryTarget.status !== 'failed' && retryTarget.status !== 'interrupted') {
+          throw new ProjectChatServiceError('chat_attempt_not_retryable');
+        }
+      }
 
       const createdAt = isoNow();
+      const attemptId = randomUUID();
       const userMessage: ProjectChatMessage = {
         id: randomUUID(),
         projectId: command.projectId,
         role: 'user',
         content: command.message,
         status: 'complete',
+        attemptId,
         actions: [],
         createdAt,
         completedAt: createdAt,
       };
-      await this.dependencies.storage.saveMessage(userMessage);
+      const startingAttempt: ProjectChatAttempt = {
+        id: attemptId,
+        projectId: command.projectId,
+        userMessageId: userMessage.id,
+        ...(command.retryOfAttemptId ? { retryOfAttemptId: command.retryOfAttemptId } : {}),
+        requestedModelId: command.requestedModelId,
+        reasoningOptionId: command.reasoningOptionId,
+        status: 'starting',
+        createdAt,
+        updatedAt: createdAt,
+      };
+      await this.dependencies.storage.beginChatAttempt(startingAttempt, userMessage);
 
       let ephemeralThreadId: string | undefined;
+      let ephemeralTurnId: string | undefined;
+      let currentAttempt = startingAttempt;
+      let activeRegistered = false;
+      let connectionEpoch: number | undefined;
       try {
         const cwd = await this.dependencies.prepareProjectDirectory(command.projectId);
         const threadId = await this.startEphemeralThread(
@@ -288,13 +371,14 @@ export class ProjectChatService extends EventEmitter {
           command.requestedModelId,
         );
         ephemeralThreadId = threadId;
+        connectionEpoch = this.codexConnectionEpoch;
         const result = await this.dependencies.codex.runTurn({
           threadId,
           prompt: buildProjectChatPrompt(
             snapshot,
             command.projectId,
             command.message,
-            priorChat.messages,
+            completedAttemptHistory(priorChat),
           ),
           requestedModelId: command.requestedModelId,
           reasoningOptionId: command.reasoningOptionId,
@@ -302,8 +386,26 @@ export class ProjectChatService extends EventEmitter {
           clientUserMessageId: userMessage.id,
           outputSchema: PROJECT_CHAT_OUTPUT_SCHEMA,
         });
+        ephemeralTurnId = result.turnId;
+        if (connectionEpoch !== this.codexConnectionEpoch) {
+          throw new Error('codex_connection_changed_during_turn_start');
+        }
+        const runningAttempt: ProjectChatAttempt = {
+          ...startingAttempt,
+          threadId,
+          turnId: result.turnId,
+          model: modelProvenance(result.invocation),
+          status: 'running',
+          updatedAt: isoNow(),
+        };
+        currentAttempt = runningAttempt;
+        await this.dependencies.storage.markChatAttemptRunning(runningAttempt);
+        if (connectionEpoch !== this.codexConnectionEpoch) {
+          throw new Error('codex_connection_changed_during_turn_registration');
+        }
         const active: ActiveTurn = {
           projectId: command.projectId,
+          attempt: runningAttempt,
           threadId,
           turnId: result.turnId,
           invocation: result.invocation,
@@ -312,6 +414,7 @@ export class ProjectChatService extends EventEmitter {
         };
         this.activeByTurn.set(result.turnId, active);
         this.activeTurnByProject.set(command.projectId, result.turnId);
+        activeRegistered = true;
         this.emitEvent({
           type: 'turn.started',
           projectId: command.projectId,
@@ -322,15 +425,36 @@ export class ProjectChatService extends EventEmitter {
         for (const notification of buffered) this.processNotification(active, notification);
         return ProjectChatTurnReceiptSchema.parse({
           projectId: command.projectId,
+          attemptId,
           userMessageId: userMessage.id,
           turnId: result.turnId,
         });
       } catch (error) {
+        let interruptUnconfirmed = false;
+        if (
+          !activeRegistered &&
+          ephemeralThreadId &&
+          ephemeralTurnId &&
+          connectionEpoch === this.codexConnectionEpoch
+        ) {
+          try {
+            await this.dependencies.codex.interruptTurn(ephemeralThreadId, ephemeralTurnId);
+          } catch {
+            interruptUnconfirmed = true;
+          }
+        }
         if (ephemeralThreadId) {
           this.threadProjects.delete(ephemeralThreadId);
           void this.dependencies.codex.releaseThread(ephemeralThreadId).catch(() => undefined);
         }
-        await this.saveFailureMessage(command.projectId, 'failed', FAILURE_COPY.unavailable);
+        if (ephemeralTurnId) this.earlyNotifications.delete(ephemeralTurnId);
+        if (!activeRegistered) {
+          await this.finishAttemptBeforeTurn(
+            currentAttempt,
+            interruptUnconfirmed ? FAILURE_COPY.interruptUnconfirmed : FAILURE_COPY.unavailable,
+            interruptUnconfirmed ? 'application_interrupted' : 'codex_unavailable',
+          );
+        }
         if (error instanceof ProjectChatServiceError) throw error;
         throw new ProjectChatServiceError('codex_unavailable');
       }
@@ -497,7 +621,20 @@ export class ProjectChatService extends EventEmitter {
     active.terminal = true;
     void this.persistTerminal(active, status)
       .then((persistedStatus) => this.clearActive(active, persistedStatus))
-      .catch(() => this.clearActive(active, 'failed'));
+      .catch(async () => {
+        try {
+          await this.saveAssistant(
+            active,
+            'interrupted',
+            FAILURE_COPY.persistence,
+            [],
+            'application_interrupted',
+          );
+          this.clearActive(active, 'interrupted');
+        } catch {
+          this.clearActive(active, 'failed');
+        }
+      });
   }
 
   private async persistTerminal(
@@ -514,7 +651,7 @@ export class ProjectChatService extends EventEmitter {
       ? parseCodexProjectResponse(active.finalResponseText)
       : null;
     if (!response) {
-      await this.saveAssistant(active, 'failed', FAILURE_COPY.invalid, []);
+      await this.saveAssistant(active, 'failed', FAILURE_COPY.invalid, [], 'invalid_response');
       return 'failed';
     }
     const snapshot = await this.dependencies.workspace.snapshot();
@@ -529,12 +666,18 @@ export class ProjectChatService extends EventEmitter {
   }
 
   private async finishInterrupted(active: ActiveTurn): Promise<'interrupted'> {
-    await this.saveAssistant(active, 'interrupted', FAILURE_COPY.interrupted, []);
+    await this.saveAssistant(
+      active,
+      'interrupted',
+      FAILURE_COPY.interrupted,
+      [],
+      'user_interrupted',
+    );
     return 'interrupted';
   }
 
   private async finishFailed(active: ActiveTurn): Promise<'failed'> {
-    await this.saveAssistant(active, 'failed', FAILURE_COPY.unavailable, []);
+    await this.saveAssistant(active, 'failed', FAILURE_COPY.unavailable, [], 'codex_unavailable');
     return 'failed';
   }
 
@@ -543,6 +686,7 @@ export class ProjectChatService extends EventEmitter {
     status: ProjectChatMessage['status'],
     content: string,
     commands: readonly ProjectChatActionCommand[],
+    errorCode?: ProjectChatAttempt['errorCode'],
   ) {
     const completedAt = isoNow();
     const messageId = randomUUID();
@@ -555,42 +699,56 @@ export class ProjectChatService extends EventEmitter {
       createdAt: completedAt,
       updatedAt: completedAt,
     }));
-    await this.dependencies.storage.saveMessage({
+    const model = modelProvenance(active.invocation);
+    const terminalAttempt: ProjectChatAttempt = {
+      ...active.attempt,
+      model,
+      status,
+      ...(errorCode ? { errorCode } : {}),
+      updatedAt: completedAt,
+    };
+    await this.dependencies.storage.finishChatAttempt(terminalAttempt, {
       id: messageId,
       projectId: active.projectId,
       role: 'assistant',
       content,
       status,
+      attemptId: active.attempt.id,
       turnId: active.turnId,
-      model: {
-        invocationId: active.invocation.invocationId,
-        requestedModelId: active.invocation.requestedModelId,
-        resolvedModelId: active.invocation.resolvedModelId,
-        catalogVersion: active.invocation.catalogVersion,
-        reasoningOptionId: active.invocation.reasoningOptionId,
-      },
+      model,
       actions,
       createdAt: active.invocation.startedAt,
       completedAt,
     });
   }
 
-  private async saveFailureMessage(
-    projectId: string,
-    status: 'failed' | 'interrupted',
+  private async finishAttemptBeforeTurn(
+    attempt: ProjectChatAttempt,
     content: string,
+    errorCode: NonNullable<ProjectChatAttempt['errorCode']>,
   ) {
     const now = isoNow();
-    await this.dependencies.storage.saveMessage({
-      id: randomUUID(),
-      projectId,
-      role: 'assistant',
-      content,
-      status,
-      actions: [],
-      createdAt: now,
-      completedAt: now,
-    });
+    await this.dependencies.storage.finishChatAttempt(
+      {
+        ...attempt,
+        status: 'failed',
+        errorCode,
+        updatedAt: now,
+      },
+      {
+        id: randomUUID(),
+        projectId: attempt.projectId,
+        role: 'assistant',
+        content,
+        status: 'failed',
+        attemptId: attempt.id,
+        ...(attempt.turnId ? { turnId: attempt.turnId } : {}),
+        ...(attempt.model ? { model: attempt.model } : {}),
+        actions: [],
+        createdAt: now,
+        completedAt: now,
+      },
+    );
   }
 
   private clearActive(active: ActiveTurn, status: 'complete' | 'failed' | 'interrupted') {
