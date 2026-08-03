@@ -4,6 +4,7 @@ import type {
   ProjectRecord,
   ProjectVersionCommand,
   RenameProjectInput,
+  SetProjectArchivedInput,
   WorkspaceSnapshot,
 } from '../../shared/workspace-contracts';
 
@@ -14,6 +15,7 @@ export function ProjectSettingsSection({
   busyAction,
   chatBusyProjectIds,
   onRenameProject,
+  onSetProjectArchived,
   onTrashProject,
   onRestoreProject,
 }: {
@@ -21,6 +23,7 @@ export function ProjectSettingsSection({
   busyAction: string | null;
   chatBusyProjectIds: ReadonlySet<string>;
   onRenameProject: (input: RenameProjectInput) => Promise<boolean>;
+  onSetProjectArchived: (input: SetProjectArchivedInput) => Promise<boolean>;
   onTrashProject: ProjectMutation;
   onRestoreProject: ProjectMutation;
 }) {
@@ -43,9 +46,16 @@ export function ProjectSettingsSection({
     );
   }
 
-  const activeProjects = snapshot.projects.filter((project) => project.trashedAt === undefined);
+  const activeProjects = snapshot.projects.filter(
+    (project) => project.trashedAt === undefined && project.archivedAt === undefined,
+  );
+  const archivedProjects = snapshot.projects.filter(
+    (project) => project.trashedAt === undefined && project.archivedAt !== undefined,
+  );
   const trashedProjects = snapshot.projects.filter((project) => project.trashedAt !== undefined);
-  const trashCandidate = activeProjects.find((project) => project.id === trashCandidateId);
+  const trashCandidate = [...activeProjects, ...archivedProjects].find(
+    (project) => project.id === trashCandidateId,
+  );
 
   const preservedCounts = (projectId: string) => ({
     tasks: snapshot.tasks.filter((task) => task.projectId === projectId).length,
@@ -63,10 +73,10 @@ export function ProjectSettingsSection({
       <article className="settings-card">
         <div className="settings-card-heading">
           <span>ACTIVE PROJECTS</span>
-          <h2>Rename or move a project to Trash</h2>
+          <h2>Rename, archive, or move a project to Trash</h2>
           <p>
-            Renaming keeps the stable project slug. Trash hides a project from the switcher without
-            deleting its Board, objectives, or saved chat history.
+            Archive pauses normal work while keeping the project easy to restore. Trash is a
+            separate, recoverable step with two warnings. Renaming keeps the stable project slug.
           </p>
         </div>
         {activeProjects.length === 0 ? (
@@ -146,6 +156,23 @@ export function ProjectSettingsSection({
                       </button>
                       <button
                         type="button"
+                        className="secondary-button"
+                        onClick={() =>
+                          void onSetProjectArchived({
+                            projectId: project.id,
+                            expectedVersion: project.version,
+                            archived: true,
+                          })
+                        }
+                        disabled={busyAction !== null || chatBusy}
+                        title={
+                          chatBusy ? 'Stop or wait for the active Codex turn first' : undefined
+                        }
+                      >
+                        Archive
+                      </button>
+                      <button
+                        type="button"
                         className="danger-button"
                         onClick={() => {
                           setTrashCandidateId(project.id);
@@ -163,7 +190,8 @@ export function ProjectSettingsSection({
                   )}
                   {chatBusy && (
                     <p className="project-settings-warning">
-                      Stop or wait for this project's active Codex turn before moving it to Trash.
+                      Stop or wait for this project's active Codex turn before archiving it or
+                      moving it to Trash.
                     </p>
                   )}
                 </section>
@@ -228,11 +256,75 @@ export function ProjectSettingsSection({
 
       <article className="settings-card">
         <div className="settings-card-heading">
+          <span>ARCHIVED</span>
+          <h2>Paused projects</h2>
+          <p>
+            Archived projects keep their Board, goals, notes, and chat history. Restore one to
+            active before changing it or asking its AI agent to work.
+          </p>
+        </div>
+        {archivedProjects.length === 0 ? (
+          <div className="settings-empty-row">No archived projects.</div>
+        ) : (
+          <div className="project-settings-list">
+            {archivedProjects.map((project) => {
+              const counts = preservedCounts(project.id);
+              return (
+                <section className="project-settings-row archived" key={project.id}>
+                  <div className="project-settings-summary">
+                    <strong>{project.name}</strong>
+                    <span>
+                      Archived{' '}
+                      {project.archivedAt
+                        ? new Date(project.archivedAt).toLocaleString()
+                        : 'locally'}{' '}
+                      · {counts.tasks} tasks · {counts.objectiveVersions} objective revisions
+                      preserved
+                    </span>
+                  </div>
+                  <div className="project-settings-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busyAction !== null}
+                      onClick={() =>
+                        void onSetProjectArchived({
+                          projectId: project.id,
+                          expectedVersion: project.version,
+                          archived: false,
+                        })
+                      }
+                    >
+                      Restore to active
+                    </button>
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={busyAction !== null}
+                      onClick={() => {
+                        setTrashCandidateId(project.id);
+                        setTrashName('');
+                        setRenamingProjectId(null);
+                      }}
+                    >
+                      Move to Trash
+                    </button>
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        )}
+      </article>
+
+      <article className="settings-card">
+        <div className="settings-card-heading">
           <span>TRASH</span>
           <h2>Recoverable projects</h2>
           <p>
             GOSU does not permanently delete projects in this MVP. Restoring brings back the same
-            project ID and all preserved local work.
+            project ID and all preserved local work. A project archived before Trash returns to its
+            archived state.
           </p>
         </div>
         {trashedProjects.length === 0 ? (

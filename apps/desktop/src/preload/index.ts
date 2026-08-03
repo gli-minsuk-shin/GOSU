@@ -27,6 +27,7 @@ import type {
   ProjectVersionCommand,
   RenameProjectInput,
   SaveObjectiveInput,
+  SetProjectArchivedInput,
   SetTaskArchivedInput,
   UpdateBoardSettingsInput,
   UpdateTaskInput,
@@ -130,6 +131,8 @@ const api = {
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.createProject, input),
     renameProject: (input: RenameProjectInput) =>
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.renameProject, input),
+    setProjectArchived: (input: SetProjectArchivedInput) =>
+      invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.setProjectArchived, input),
     trashProject: (input: ProjectVersionCommand) =>
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.trashProject, input),
     restoreProject: (input: ProjectVersionCommand) =>

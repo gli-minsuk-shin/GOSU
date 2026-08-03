@@ -1596,6 +1596,39 @@ describe('ProjectChatService', () => {
     expect(storage.snapshot(projectA.id).attempts).toEqual([]);
   });
 
+  it('preserves chat history but blocks new turns and profile changes while a project is archived', async () => {
+    const { chat, workspace, storage, projectA } = await fixture();
+    await workspace.setProjectArchived({
+      projectId: projectA.id,
+      expectedVersion: projectA.version,
+      archived: true,
+    });
+
+    await expect(chat.snapshot({ projectId: projectA.id })).resolves.toMatchObject({
+      projectId: projectA.id,
+      messages: [],
+    });
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'This archived turn must not start.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toThrow('project_archived');
+    await expect(
+      chat.updateProfile({
+        projectId: projectA.id,
+        expectedVersion: 0,
+        harnessMode: 'planner',
+        responseDepth: 'deep',
+        contextScope: 'project',
+        customInstructions: 'Do not save this.',
+      }),
+    ).rejects.toThrow('project_archived');
+    expect(storage.snapshot(projectA.id).attempts).toEqual([]);
+  });
+
   it('does not apply a previously proposed action after the project enters Trash', async () => {
     const { chat, codex, workspace, storage, projectA } = await fixture();
     const receipt = await chat.send({
@@ -1687,6 +1720,31 @@ describe('ProjectChatService', () => {
     await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
     expect(storage.snapshot(projectA.id).messages[1]).toMatchObject({
       content: 'The text receipt remains visible.',
+      actions: [],
+    });
+  });
+
+  it('drops proposed actions if an internal caller archives a project during terminal persistence', async () => {
+    const { chat, codex, workspace, storage, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'This proposal must be invalidated by Archive.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await workspace.setProjectArchived({
+      projectId: projectA.id,
+      expectedVersion: projectA.version,
+      archived: true,
+    });
+    codex.complete(receipt.turnId, {
+      reply: 'The archived text receipt remains visible.',
+      actions: [{ type: 'task.create', title: 'Stale proposal', status: 'planned' }],
+    });
+
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    expect(storage.snapshot(projectA.id).messages[1]).toMatchObject({
+      content: 'The archived text receipt remains visible.',
       actions: [],
     });
   });

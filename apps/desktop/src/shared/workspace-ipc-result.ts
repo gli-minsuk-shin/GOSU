@@ -1,5 +1,7 @@
 export const WORKSPACE_IPC_ERROR_CODES = [
   'project_not_found',
+  'project_archived',
+  'project_not_archived',
   'project_trashed',
   'project_not_trashed',
   'chat_busy',

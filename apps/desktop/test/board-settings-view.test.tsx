@@ -40,6 +40,7 @@ describe('Board settings UI', () => {
         busyAction={null}
         chatBusyProjectIds={new Set()}
         onRenameProject={vi.fn()}
+        onSetProjectArchived={vi.fn()}
         onTrashProject={vi.fn()}
         onRestoreProject={vi.fn()}
         agentProject={undefined}

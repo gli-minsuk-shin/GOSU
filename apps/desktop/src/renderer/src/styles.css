@@ -99,7 +99,7 @@ button:disabled {
 
 .desktop-shell {
   display: grid;
-  grid-template: 58px minmax(0, 1fr) / 244px minmax(0, 1fr);
+  grid-template: 58px minmax(0, 1fr) / 280px minmax(0, 1fr);
   min-height: 100vh;
   background:
     radial-gradient(circle at 72% 0, rgba(104, 148, 63, 0.12), transparent 38%), var(--bg);
@@ -217,6 +217,332 @@ button:disabled {
   border-radius: 9px;
   background: var(--surface-soft);
   font-size: var(--font-body);
+}
+
+.project-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.project-navigation-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 3px;
+}
+
+.project-group-toggle,
+.project-add-button,
+.project-folder-button,
+.project-folder-menu summary,
+.project-folder-menu button,
+.project-folder-children button,
+.project-secondary-list button,
+.project-global-navigation > button {
+  border: 0;
+  background: transparent;
+  color: light-dark(#526057, #a5aea7);
+  font: inherit;
+}
+
+.project-group-toggle {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 8px;
+  color: var(--muted);
+  text-align: left;
+}
+
+.project-group-toggle strong {
+  overflow: hidden;
+  color: var(--subtle);
+  font-size: var(--font-meta);
+  letter-spacing: 0.11em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.project-group-toggle em {
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--subtle);
+  font-size: var(--font-caption);
+  font-style: normal;
+  text-align: center;
+}
+
+.project-add-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: var(--font-section);
+}
+
+.project-group-toggle:hover,
+.project-add-button:hover,
+.project-secondary-list button:hover,
+.project-global-navigation > button:hover {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.project-folder-list {
+  display: grid;
+  gap: 3px;
+}
+
+.project-folder {
+  min-width: 0;
+  border-radius: 9px;
+}
+
+.project-folder.selected {
+  background: rgba(158, 240, 26, 0.045);
+}
+
+.project-folder-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  min-width: 0;
+}
+
+.project-folder-button {
+  display: grid;
+  grid-template-columns: 13px 20px minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 3px 0 8px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.project-folder-button:hover,
+.project-folder.selected .project-folder-button {
+  color: var(--text);
+}
+
+.project-folder.selected .project-folder-button {
+  color: var(--green);
+  box-shadow: inset 2px 0 var(--green);
+}
+
+.project-folder-button strong {
+  overflow: hidden;
+  font-size: var(--font-body);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-folder-chevron {
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+
+.project-folder-icon {
+  color: var(--subtle);
+  text-align: center;
+}
+
+.project-running-indicator {
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px rgba(158, 240, 26, 0.55);
+}
+
+.project-folder-menu {
+  position: relative;
+}
+
+.project-folder-menu summary {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 30px;
+  border-radius: 7px;
+  color: var(--subtle);
+  cursor: pointer;
+  font-size: var(--font-caption);
+  list-style: none;
+}
+
+.project-folder-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.project-folder-menu summary:hover,
+.project-folder-menu[open] summary {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.project-folder-menu > div {
+  position: absolute;
+  z-index: 20;
+  top: 32px;
+  right: 0;
+  display: grid;
+  width: 170px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+}
+
+.project-folder-menu button {
+  min-height: 32px;
+  padding: 0 9px;
+  border-radius: 6px;
+  text-align: left;
+}
+
+.project-folder-menu button:hover:not(:disabled) {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.project-folder-menu button:disabled {
+  color: var(--subtle);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.project-folder-children {
+  display: grid;
+  gap: 1px;
+  margin: 0 7px 7px 18px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.project-folder-children button {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 7px;
+  border-radius: 7px;
+  text-align: left;
+}
+
+.project-folder-children button:hover:not(:disabled),
+.project-folder-children button.active {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.project-folder-children button.active {
+  color: var(--green);
+}
+
+.project-folder-children button.coming-soon {
+  color: var(--subtle);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.project-folder-children button em,
+.project-global-navigation > button em {
+  margin-left: auto;
+  color: var(--subtle);
+  font-size: var(--font-caption);
+  font-style: normal;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.project-navigation-empty {
+  margin: 2px 8px 8px 22px;
+  color: var(--subtle);
+  font-size: var(--font-control);
+}
+
+.project-secondary-group {
+  margin-top: 3px;
+  border-top: 1px solid var(--line);
+  padding-top: 3px;
+}
+
+.project-secondary-list {
+  display: grid;
+  gap: 2px;
+  padding: 0 5px 5px 22px;
+}
+
+.project-secondary-list > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  min-height: 31px;
+}
+
+.project-secondary-list span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--font-control);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-secondary-list button {
+  min-height: 27px;
+  padding: 0 7px;
+  border-radius: 6px;
+  color: var(--green);
+  font-size: var(--font-caption);
+}
+
+.project-secondary-list .project-show-all {
+  justify-self: stretch;
+  text-align: left;
+}
+
+.project-global-navigation {
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+
+.project-global-navigation small {
+  margin-bottom: 2px;
+}
+
+.project-global-navigation > button {
+  display: grid;
+  grid-template-columns: 29px minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 8px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.project-global-navigation > button.active {
+  background: rgba(158, 240, 26, 0.09);
+  color: var(--green);
+  box-shadow: inset 2px 0 var(--green);
 }
 
 .desktop-nav > button {
@@ -2679,7 +3005,7 @@ textarea:focus {
 
 @media (max-width: 1180px) {
   .desktop-shell {
-    grid-template-columns: 216px minmax(0, 1fr);
+    grid-template-columns: 252px minmax(0, 1fr);
   }
 
   .workspace-grid,
