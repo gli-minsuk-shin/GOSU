@@ -112,6 +112,9 @@ export function describeError(error: unknown) {
       'The encrypted local workspace is unavailable. Your existing data was not replaced.',
     chat_busy: 'This project already has an active Codex turn. Stop it or wait for completion.',
     chat_not_active: 'There is no active Codex turn to stop for this project.',
+    chat_attempt_not_found:
+      'The saved turn to retry is no longer available in this project. Send it as a new turn.',
+    chat_attempt_not_retryable: 'Only failed or interrupted Codex turns can be retried.',
     action_not_found: 'This proposed project action no longer exists.',
     action_not_proposed: 'This project action was already handled.',
     invalid_chat_input: 'Check the chat message and model selection, then try again.',

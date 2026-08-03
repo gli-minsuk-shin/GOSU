@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CodexProjectResponseSchema,
   PROJECT_CHAT_OUTPUT_SCHEMA,
+  ProjectChatAttemptSchema,
   ProjectChatMessageSchema,
+  ProjectChatSnapshotSchema,
 } from '../src/shared/project-chat-contracts';
 
 describe('Project chat contracts', () => {
@@ -60,6 +62,51 @@ describe('Project chat contracts', () => {
         ],
         createdAt: now,
         completedAt: now,
+      }),
+    ).toThrow();
+  });
+
+  it('links durable attempts to messages and rejects cross-project snapshot entries', () => {
+    const projectId = randomUUID();
+    const attemptId = randomUUID();
+    const userMessageId = randomUUID();
+    const now = new Date().toISOString();
+    const attempt = ProjectChatAttemptSchema.parse({
+      id: attemptId,
+      projectId,
+      userMessageId,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      status: 'starting',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const message = ProjectChatMessageSchema.parse({
+      id: userMessageId,
+      projectId,
+      attemptId,
+      role: 'user',
+      content: 'Retry this without losing the first attempt.',
+      status: 'complete',
+      actions: [],
+      createdAt: now,
+      completedAt: now,
+    });
+
+    expect(
+      ProjectChatSnapshotSchema.parse({
+        schemaVersion: 1,
+        projectId,
+        attempts: [attempt],
+        messages: [message],
+      }).attempts,
+    ).toEqual([attempt]);
+    expect(() =>
+      ProjectChatSnapshotSchema.parse({
+        schemaVersion: 1,
+        projectId,
+        attempts: [{ ...attempt, projectId: randomUUID() }],
+        messages: [message],
       }),
     ).toThrow();
   });

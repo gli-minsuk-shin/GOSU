@@ -168,6 +168,19 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     const catalog = await codex.listModelCatalog();
     return catalog.models;
   });
+  handle('gosu:codex:reconnect', async () => {
+    let status = (await codex.status()) as { account?: unknown; unavailable?: boolean };
+    if (status.unavailable) {
+      codex.stop();
+      status = (await codex.status()) as { account?: unknown; unavailable?: boolean };
+    }
+    if (status.unavailable) throw new Error('codex_unavailable');
+    const catalog = await codex.listModelCatalog();
+    return {
+      authenticated: status.account !== null && status.account !== undefined,
+      models: catalog.models,
+    };
+  });
   handle('gosu:codex:login-chatgpt', async () => {
     const result = (await codex.loginChatGpt()) as { authUrl?: string };
     if (result.authUrl?.startsWith('https://')) await shell.openExternal(result.authUrl);

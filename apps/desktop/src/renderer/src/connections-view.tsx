@@ -18,6 +18,7 @@ export function ConnectionsView({
   apiKey,
   onSelectedModel,
   onRefresh,
+  onReconnect,
   onToggleApiKey,
   onApiKey,
   onLoginChatGpt,
@@ -33,6 +34,7 @@ export function ConnectionsView({
   apiKey: string;
   onSelectedModel: (modelId: string) => void;
   onRefresh: () => void;
+  onReconnect: () => void;
   onToggleApiKey: () => void;
   onApiKey: (apiKey: string) => void;
   onLoginChatGpt: () => void;
@@ -61,6 +63,9 @@ export function ConnectionsView({
           </select>
         </label>
         <div className="codex-actions">
+          <button className="secondary-button" type="button" onClick={onReconnect} disabled={busy}>
+            Reconnect Codex
+          </button>
           <button className="secondary-button" type="button" onClick={onRefresh} disabled={busy}>
             Refresh catalog
           </button>

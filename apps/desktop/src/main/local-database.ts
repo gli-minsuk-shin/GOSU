@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3-multiple-ciphers';
@@ -7,9 +7,11 @@ import { app, safeStorage } from 'electron';
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import {
   ProjectChatActionSchema,
+  ProjectChatAttemptSchema,
   ProjectChatMessageSchema,
   ProjectChatSnapshotSchema,
   type ProjectChatAction,
+  type ProjectChatAttempt,
   type ProjectChatMessage,
   type ProjectChatSnapshot,
 } from '../shared/project-chat-contracts';
@@ -21,6 +23,8 @@ import type {
 import { WorkspaceDataRecoveryError } from './workspace-storage-error';
 
 const MAX_WORKSPACE_STATE_BYTES = 8 * 1024 * 1024;
+const INTERRUPTED_CHAT_ATTEMPT_RECEIPT =
+  'GOSU closed before this Codex turn finished. Retry when ready.';
 
 function backfillLegacyWorkspaceRevisions(database: Database.Database) {
   const operations = database
@@ -101,6 +105,114 @@ function reconcileWorkspaceOutboxStatus(database: Database.Database): WorkspaceP
     )
     .run(summary.count, summary.latestWorkspaceRevision);
   return summary;
+}
+
+function insertProjectChatMessage(database: Database.Database, message: ProjectChatMessage) {
+  database
+    .prepare(
+      `insert into project_chat_messages(
+         id,project_id,role,content,status,attempt_id,turn_id,model_json,created_at,completed_at
+       ) values(?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      message.id,
+      message.projectId,
+      message.role,
+      message.content,
+      message.status,
+      message.attemptId ?? null,
+      message.turnId ?? null,
+      message.model ? JSON.stringify(message.model) : null,
+      message.createdAt,
+      message.completedAt,
+    );
+  const insertAction = database.prepare(
+    `insert into project_chat_actions(
+       id,message_id,project_id,command_json,status,result_entity_id,
+       result_entity_version,error_code,created_at,updated_at
+     ) values(?,?,?,?,?,?,?,?,?,?)`,
+  );
+  for (const action of message.actions) {
+    insertAction.run(
+      action.id,
+      action.messageId,
+      action.projectId,
+      JSON.stringify(action.command),
+      action.status,
+      action.resultEntityId ?? null,
+      action.resultEntityVersion ?? null,
+      action.errorCode ?? null,
+      action.createdAt,
+      action.updatedAt,
+    );
+  }
+}
+
+function insertProjectChatAttempt(database: Database.Database, attempt: ProjectChatAttempt) {
+  database
+    .prepare(
+      `insert into project_chat_attempts(
+         id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
+         requested_model_id,reasoning_option_id,status,error_code,created_at,updated_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      attempt.id,
+      attempt.projectId,
+      attempt.userMessageId,
+      attempt.retryOfAttemptId ?? null,
+      attempt.threadId ?? null,
+      attempt.turnId ?? null,
+      attempt.model ? JSON.stringify(attempt.model) : null,
+      attempt.requestedModelId,
+      attempt.reasoningOptionId,
+      attempt.status,
+      attempt.errorCode ?? null,
+      attempt.createdAt,
+      attempt.updatedAt,
+    );
+}
+
+function reconcileInterruptedChatAttempts(database: Database.Database, reconciledAt: string) {
+  const attempts = database
+    .prepare(
+      `select id,project_id,turn_id,model_json
+       from project_chat_attempts where status in ('starting','running')`,
+    )
+    .all() as Array<{
+    id: string;
+    project_id: string;
+    turn_id: string | null;
+    model_json: string | null;
+  }>;
+  const interrupt = database.prepare(
+    `update project_chat_attempts
+     set status='interrupted',error_code='application_interrupted',updated_at=?
+     where id=? and project_id=? and status in ('starting','running')`,
+  );
+  const hasReceipt = database.prepare(
+    `select 1 from project_chat_messages
+     where project_id=? and attempt_id=? and role='assistant' limit 1`,
+  );
+  const insertReceipt = database.prepare(
+    `insert into project_chat_messages(
+       id,project_id,role,content,status,attempt_id,turn_id,model_json,created_at,completed_at
+     ) values(?,?,'assistant',?,'interrupted',?,?,?,?,?)`,
+  );
+  for (const attempt of attempts) {
+    const changed = interrupt.run(reconciledAt, attempt.id, attempt.project_id).changes;
+    if (changed !== 1 || hasReceipt.get(attempt.project_id, attempt.id)) continue;
+    insertReceipt.run(
+      randomUUID(),
+      attempt.project_id,
+      INTERRUPTED_CHAT_ATTEMPT_RECEIPT,
+      attempt.id,
+      attempt.turn_id,
+      attempt.model_json,
+      reconciledAt,
+      reconciledAt,
+    );
+  }
 }
 
 export class LocalDatabase {
@@ -196,6 +308,7 @@ export class LocalDatabase {
         role text not null check (role in ('user','assistant')),
         content text not null check (length(content) between 1 and 32000),
         status text not null check (status in ('complete','failed','interrupted')),
+        attempt_id text check (attempt_id is null or length(attempt_id) = 36),
         turn_id text check (turn_id is null or length(turn_id) between 1 and 256),
         model_json text check (model_json is null or length(model_json) <= 4096),
         created_at text not null,
@@ -203,6 +316,36 @@ export class LocalDatabase {
       );
       create index if not exists project_chat_messages_by_project
         on project_chat_messages(project_id,created_at,id);
+      create table if not exists project_chat_attempts (
+        id text primary key,
+        project_id text not null,
+        user_message_id text not null unique
+          references project_chat_messages(id) on delete cascade,
+        retry_of_attempt_id text references project_chat_attempts(id),
+        thread_id text check (thread_id is null or length(thread_id) between 1 and 256),
+        turn_id text check (turn_id is null or length(turn_id) between 1 and 256),
+        model_json text check (model_json is null or length(model_json) <= 4096),
+        requested_model_id text check (
+          requested_model_id is null or length(requested_model_id) between 1 and 256
+        ),
+        reasoning_option_id text check (
+          reasoning_option_id is null or length(reasoning_option_id) between 1 and 128
+        ),
+        status text not null check (
+          status in ('starting','running','complete','failed','interrupted')
+        ),
+        error_code text check (
+          error_code is null or error_code in (
+            'codex_unavailable','invalid_response','application_interrupted','user_interrupted'
+          )
+        ),
+        created_at text not null,
+        updated_at text not null
+      );
+      create index if not exists project_chat_attempts_by_project
+        on project_chat_attempts(project_id,created_at,id);
+      create index if not exists project_chat_attempts_by_retry
+        on project_chat_attempts(retry_of_attempt_id);
       create table if not exists project_chat_actions (
         id text primary key,
         message_id text not null references project_chat_messages(id) on delete cascade,
@@ -227,6 +370,22 @@ export class LocalDatabase {
            where status='applying'`,
         )
         .run(new Date().toISOString());
+      const messageColumns = database.pragma('table_info(project_chat_messages)') as Array<{
+        name: string;
+      }>;
+      if (!messageColumns.some((column) => column.name === 'attempt_id')) {
+        database.exec(
+          `alter table project_chat_messages add column attempt_id text
+           check (attempt_id is null or length(attempt_id) = 36)`,
+        );
+      }
+      database.exec(`
+        create index if not exists project_chat_messages_by_attempt
+          on project_chat_messages(attempt_id,role);
+        create unique index if not exists project_chat_one_assistant_per_attempt
+          on project_chat_messages(attempt_id)
+          where attempt_id is not null and role='assistant';
+      `);
       const outboxColumns = database.pragma('table_info(sync_outbox)') as Array<{ name: string }>;
       if (!outboxColumns.some((column) => column.name === 'workspace_revision')) {
         database.exec(
@@ -235,6 +394,7 @@ export class LocalDatabase {
       }
       const initializedDatabase = database;
       initializedDatabase.transaction(() => {
+        reconcileInterruptedChatAttempts(initializedDatabase, new Date().toISOString());
         this.workspaceOutboxOrderingReady = backfillLegacyWorkspaceRevisions(initializedDatabase);
         if (this.workspaceOutboxOrderingReady) reconcileWorkspaceOutboxStatus(initializedDatabase);
       })();
@@ -416,45 +576,159 @@ export class LocalDatabase {
   saveMessage(input: ProjectChatMessage) {
     const message = ProjectChatMessageSchema.parse(structuredClone(input));
     const database = this.require();
+    database.transaction(() => insertProjectChatMessage(database, message))();
+  }
+
+  beginChatAttempt(input: ProjectChatAttempt, inputUserMessage: ProjectChatMessage) {
+    const attempt = ProjectChatAttemptSchema.parse(structuredClone(input));
+    const parsedMessage = ProjectChatMessageSchema.parse(structuredClone(inputUserMessage));
+    if (attempt.status !== 'starting') throw new Error('chat_attempt_must_start_in_starting_state');
+    if (
+      parsedMessage.role !== 'user' ||
+      parsedMessage.status !== 'complete' ||
+      parsedMessage.actions.length > 0
+    ) {
+      throw new Error('invalid_chat_attempt_user_message');
+    }
+    if (
+      attempt.projectId !== parsedMessage.projectId ||
+      attempt.userMessageId !== parsedMessage.id ||
+      (parsedMessage.attemptId !== undefined && parsedMessage.attemptId !== attempt.id)
+    ) {
+      throw new Error('chat_attempt_message_mismatch');
+    }
+    const userMessage = ProjectChatMessageSchema.parse({
+      ...parsedMessage,
+      attemptId: attempt.id,
+    });
+    const database = this.require();
     database.transaction(() => {
-      database
+      if (attempt.retryOfAttemptId) {
+        const retryTarget = database
+          .prepare('select 1 from project_chat_attempts where project_id=? and id=?')
+          .get(attempt.projectId, attempt.retryOfAttemptId);
+        if (!retryTarget) throw new Error('chat_attempt_retry_target_not_found');
+      }
+      insertProjectChatMessage(database, userMessage);
+      insertProjectChatAttempt(database, attempt);
+    })();
+  }
+
+  markChatAttemptRunning(input: ProjectChatAttempt) {
+    const attempt = ProjectChatAttemptSchema.parse(structuredClone(input));
+    if (
+      attempt.status !== 'running' ||
+      !attempt.threadId ||
+      !attempt.turnId ||
+      !attempt.model ||
+      attempt.errorCode
+    ) {
+      throw new Error('invalid_running_chat_attempt');
+    }
+    const result = this.require()
+      .prepare(
+        `update project_chat_attempts set
+           thread_id=?,turn_id=?,model_json=?,status='running',error_code=null,updated_at=?
+         where project_id=? and id=? and user_message_id=? and status='starting'`,
+      )
+      .run(
+        attempt.threadId,
+        attempt.turnId,
+        JSON.stringify(attempt.model),
+        attempt.updatedAt,
+        attempt.projectId,
+        attempt.id,
+        attempt.userMessageId,
+      );
+    if (result.changes !== 1) throw new Error('chat_attempt_state_conflict');
+  }
+
+  finishChatAttempt(input: ProjectChatAttempt, inputAssistantMessage: ProjectChatMessage) {
+    const requestedTerminal = ProjectChatAttemptSchema.parse(structuredClone(input));
+    if (!['complete', 'failed', 'interrupted'].includes(requestedTerminal.status)) {
+      throw new Error('chat_attempt_terminal_state_required');
+    }
+    const database = this.require();
+    database.transaction(() => {
+      const currentRow = database
         .prepare(
-          `insert into project_chat_messages(
-             id,project_id,role,content,status,turn_id,model_json,created_at,completed_at
-           ) values(?,?,?,?,?,?,?,?,?)`,
+          `select id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
+                  requested_model_id,reasoning_option_id,status,error_code,created_at,updated_at
+           from project_chat_attempts where project_id=? and id=?`,
+        )
+        .get(requestedTerminal.projectId, requestedTerminal.id) as
+        ProjectChatAttemptRow | undefined;
+      if (!currentRow || !['starting', 'running'].includes(currentRow.status)) {
+        throw new Error('chat_attempt_state_conflict');
+      }
+      const current = toChatAttempt(currentRow);
+      if (
+        current.userMessageId !== requestedTerminal.userMessageId ||
+        current.retryOfAttemptId !== requestedTerminal.retryOfAttemptId ||
+        current.requestedModelId !== requestedTerminal.requestedModelId ||
+        current.reasoningOptionId !== requestedTerminal.reasoningOptionId ||
+        current.createdAt !== requestedTerminal.createdAt
+      ) {
+        throw new Error('chat_attempt_identity_mismatch');
+      }
+      const terminal = ProjectChatAttemptSchema.parse({
+        ...requestedTerminal,
+        threadId: requestedTerminal.threadId ?? current.threadId,
+        turnId: requestedTerminal.turnId ?? current.turnId,
+        model: requestedTerminal.model ?? current.model,
+      });
+      const parsedMessage = ProjectChatMessageSchema.parse(structuredClone(inputAssistantMessage));
+      const expectedMessageStatus =
+        terminal.status === 'complete'
+          ? 'complete'
+          : terminal.status === 'failed'
+            ? 'failed'
+            : 'interrupted';
+      if (
+        parsedMessage.role !== 'assistant' ||
+        parsedMessage.projectId !== terminal.projectId ||
+        parsedMessage.status !== expectedMessageStatus ||
+        (parsedMessage.attemptId !== undefined && parsedMessage.attemptId !== terminal.id)
+      ) {
+        throw new Error('chat_attempt_assistant_message_mismatch');
+      }
+      const assistantMessage = ProjectChatMessageSchema.parse({
+        ...parsedMessage,
+        attemptId: terminal.id,
+        turnId: parsedMessage.turnId ?? terminal.turnId,
+        model: parsedMessage.model ?? terminal.model,
+      });
+      const updated = database
+        .prepare(
+          `update project_chat_attempts set
+             thread_id=?,turn_id=?,model_json=?,status=?,error_code=?,updated_at=?
+           where project_id=? and id=? and user_message_id=? and status in ('starting','running')`,
         )
         .run(
-          message.id,
-          message.projectId,
-          message.role,
-          message.content,
-          message.status,
-          message.turnId ?? null,
-          message.model ? JSON.stringify(message.model) : null,
-          message.createdAt,
-          message.completedAt,
+          terminal.threadId ?? null,
+          terminal.turnId ?? null,
+          terminal.model ? JSON.stringify(terminal.model) : null,
+          terminal.status,
+          terminal.errorCode ?? null,
+          terminal.updatedAt,
+          terminal.projectId,
+          terminal.id,
+          terminal.userMessageId,
         );
-      const insertAction = database.prepare(
-        `insert into project_chat_actions(
-           id,message_id,project_id,command_json,status,result_entity_id,
-           result_entity_version,error_code,created_at,updated_at
-         ) values(?,?,?,?,?,?,?,?,?,?)`,
-      );
-      for (const action of message.actions) {
-        insertAction.run(
-          action.id,
-          action.messageId,
-          action.projectId,
-          JSON.stringify(action.command),
-          action.status,
-          action.resultEntityId ?? null,
-          action.resultEntityVersion ?? null,
-          action.errorCode ?? null,
-          action.createdAt,
-          action.updatedAt,
-        );
-      }
+      if (updated.changes !== 1) throw new Error('chat_attempt_state_conflict');
+      insertProjectChatMessage(database, assistantMessage);
     })();
+  }
+
+  getChatAttempt(projectId: string, attemptId: string) {
+    const row = this.require()
+      .prepare(
+        `select id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
+                requested_model_id,reasoning_option_id,status,error_code,created_at,updated_at
+         from project_chat_attempts where project_id=? and id=?`,
+      )
+      .get(projectId, attemptId) as ProjectChatAttemptRow | undefined;
+    return row ? toChatAttempt(row) : null;
   }
 
   snapshot(projectId: string): ProjectChatSnapshot {
@@ -462,13 +736,24 @@ export class LocalDatabase {
     const rows = database
       .prepare(
         `select * from (
-           select id,project_id,role,content,status,turn_id,model_json,created_at,completed_at
+           select id,project_id,role,content,status,attempt_id,turn_id,model_json,
+                  created_at,completed_at
            from project_chat_messages where project_id=?
            order by created_at desc,id desc limit 250
          ) order by created_at asc,id asc`,
       )
       .all(projectId) as ProjectChatMessageRow[];
     const actionsByMessage = new Map<string, ProjectChatAction[]>();
+    const attempts = database
+      .prepare(
+        `select * from (
+           select id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
+                  requested_model_id,reasoning_option_id,status,error_code,created_at,updated_at
+           from project_chat_attempts where project_id=?
+           order by created_at desc,id desc limit 500
+         ) order by created_at asc,id asc`,
+      )
+      .all(projectId) as ProjectChatAttemptRow[];
     const actionStatement = database.prepare(
       `select id,message_id,project_id,command_json,status,result_entity_id,
               result_entity_version,error_code,created_at,updated_at
@@ -481,12 +766,14 @@ export class LocalDatabase {
     return ProjectChatSnapshotSchema.parse({
       schemaVersion: 1,
       projectId,
+      attempts: attempts.map(toChatAttempt),
       messages: rows.map((row) => ({
         id: row.id,
         projectId: row.project_id,
         role: row.role,
         content: row.content,
         status: row.status,
+        ...(row.attempt_id ? { attemptId: row.attempt_id } : {}),
         ...(row.turn_id ? { turnId: row.turn_id } : {}),
         ...(row.model_json ? { model: JSON.parse(row.model_json) as Record<string, unknown> } : {}),
         actions: actionsByMessage.get(row.id) ?? [],
@@ -558,10 +845,32 @@ type ProjectChatMessageRow = {
   role: 'user' | 'assistant';
   content: string;
   status: 'complete' | 'failed' | 'interrupted';
+  attempt_id: string | null;
   turn_id: string | null;
   model_json: string | null;
   created_at: string;
   completed_at: string;
+};
+
+type ProjectChatAttemptRow = {
+  id: string;
+  project_id: string;
+  user_message_id: string;
+  retry_of_attempt_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  model_json: string | null;
+  requested_model_id: string | null;
+  reasoning_option_id: string | null;
+  status: 'starting' | 'running' | 'complete' | 'failed' | 'interrupted';
+  error_code:
+    | 'codex_unavailable'
+    | 'invalid_response'
+    | 'application_interrupted'
+    | 'user_interrupted'
+    | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type ProjectChatActionRow = {
@@ -586,6 +895,24 @@ function toChatAction(row: ProjectChatActionRow) {
     status: row.status,
     ...(row.result_entity_id ? { resultEntityId: row.result_entity_id } : {}),
     ...(row.result_entity_version ? { resultEntityVersion: row.result_entity_version } : {}),
+    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function toChatAttempt(row: ProjectChatAttemptRow) {
+  return ProjectChatAttemptSchema.parse({
+    id: row.id,
+    projectId: row.project_id,
+    userMessageId: row.user_message_id,
+    ...(row.retry_of_attempt_id ? { retryOfAttemptId: row.retry_of_attempt_id } : {}),
+    ...(row.thread_id ? { threadId: row.thread_id } : {}),
+    ...(row.turn_id ? { turnId: row.turn_id } : {}),
+    ...(row.model_json ? { model: JSON.parse(row.model_json) as unknown } : {}),
+    requestedModelId: row.requested_model_id,
+    reasoningOptionId: row.reasoning_option_id,
+    status: row.status,
     ...(row.error_code ? { errorCode: row.error_code } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,

@@ -9,7 +9,7 @@ import type {
 } from '../../shared/workspace-contracts';
 import { CardHead, describeError } from './ui-primitives';
 
-export type WorkspaceTabId = 'chat' | 'board' | 'objective' | 'connections' | 'notes';
+export type WorkspaceTabId = 'chat' | 'board' | 'objective' | 'connections' | 'notes' | 'settings';
 
 type ObjectiveDraft = {
   goal: string;
@@ -43,6 +43,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
   { id: 'notes', label: 'Local notes', icon: '◇' },
+  { id: 'settings', label: 'Settings', icon: '⚙' },
 ];
 
 export const FUTURE_MODULES = [
@@ -90,7 +91,7 @@ export function WorkspacePageHeading({
 }: {
   activeTab: WorkspaceTabId;
   activeProject: ProjectRecord | undefined;
-  onNewProject: () => void;
+  onNewProject: (() => void) | null;
 }) {
   const tab = WORKSPACE_TABS.find((item) => item.id === activeTab)!;
   const subtitles: Record<WorkspaceTabId, string> = {
@@ -100,19 +101,25 @@ export function WorkspacePageHeading({
       'Define a versioned goal, evaluation metric, reproducibility hashes, and hard experiment budget.',
     connections: 'Inspect real local capabilities. No connection state on this page is simulated.',
     notes: 'Read Markdown from a folder you explicitly select. Note contents stay on this Mac.',
+    settings: 'Adjust text size and appearance. These preferences stay on this Mac.',
   };
   return (
     <header className="page-heading">
       <div>
         <span className="eyebrow">
-          {activeProject?.name ?? 'Local workspace'} / {tab.label}
+          {activeTab === 'settings'
+            ? 'Local workspace'
+            : (activeProject?.name ?? 'Local workspace')}{' '}
+          / {tab.label}
         </span>
         <h1>{tab.label}</h1>
         <p>{subtitles[activeTab]}</p>
       </div>
-      <button type="button" className="secondary-button" onClick={onNewProject}>
-        ＋ New project
-      </button>
+      {onNewProject && (
+        <button type="button" className="secondary-button" onClick={onNewProject}>
+          ＋ New project
+        </button>
+      )}
     </header>
   );
 }

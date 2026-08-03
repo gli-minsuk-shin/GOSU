@@ -39,28 +39,46 @@ export function ProjectChatView({
   onSelectedModel: (modelId: string) => void;
   onSelectedReasoning: (reasoningId: string) => void;
   onRefreshModels: () => void;
-  onSend: (message: string) => Promise<boolean>;
+  onSend: (message: string, retryOfAttemptId?: string) => Promise<boolean>;
   onCancel: () => void;
   onApplyAction: (action: ProjectChatAction) => Promise<void>;
 }) {
   const [draft, setDraft] = useState('');
+  const [retryOfAttemptId, setRetryOfAttemptId] = useState<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const selectedDescriptor = useMemo(
     () => models.find((model) => model.modelId === selectedModel),
     [models, selectedModel],
   );
   const reasoningOptions = selectedDescriptor?.reasoningOptions ?? [];
+  const selectedModelMissing = selectedModel !== 'auto' && selectedDescriptor === undefined;
+  const selectedReasoningMissing =
+    selectedReasoning !== 'auto' &&
+    !reasoningOptions.some((option) => option.id === selectedReasoning);
+  const selectionWarning = selectedModelMissing
+    ? 'The selected model is no longer in the live Codex catalog. Choose a model before sending.'
+    : selectedReasoningMissing
+      ? 'The selected reasoning option is no longer available. Choose another option before sending.'
+      : null;
 
   useEffect(() => {
     const transcript = transcriptRef.current;
     if (transcript) transcript.scrollTop = transcript.scrollHeight;
   }, [inFlight, snapshot?.messages.length]);
 
+  useEffect(() => {
+    setDraft('');
+    setRetryOfAttemptId(null);
+  }, [project.id]);
+
   const submit = () => {
     const message = draft.trim();
-    if (!message || inFlight) return;
-    void onSend(message).then((accepted) => {
-      if (accepted) setDraft('');
+    if (!message || inFlight || selectionWarning) return;
+    void onSend(message, retryOfAttemptId ?? undefined).then((accepted) => {
+      if (accepted) {
+        setDraft('');
+        setRetryOfAttemptId(null);
+      }
     });
   };
 
@@ -85,6 +103,11 @@ export function ProjectChatView({
               disabled={inFlight}
             >
               <option value="auto">Auto · provider recommended</option>
+              {selectedModelMissing && (
+                <option value={selectedModel} disabled>
+                  Unavailable model · choose again
+                </option>
+              )}
               {models.map((model) => (
                 <option value={model.modelId} key={model.modelId}>
                   {model.displayName}
@@ -98,9 +121,14 @@ export function ProjectChatView({
             <select
               value={selectedReasoning}
               onChange={(event) => onSelectedReasoning(event.target.value)}
-              disabled={inFlight || reasoningOptions.length === 0}
+              disabled={inFlight || (reasoningOptions.length === 0 && !selectedReasoningMissing)}
             >
               <option value="auto">Model default</option>
+              {selectedReasoningMissing && (
+                <option value={selectedReasoning} disabled>
+                  Unavailable reasoning · choose again
+                </option>
+              )}
               {reasoningOptions.map((option) => (
                 <option value={option.id} key={option.id}>
                   {option.label}
@@ -133,7 +161,14 @@ export function ProjectChatView({
             </p>
             <div className="quick-prompts">
               {QUICK_PROMPTS.map((prompt) => (
-                <button type="button" key={prompt} onClick={() => setDraft(prompt)}>
+                <button
+                  type="button"
+                  key={prompt}
+                  onClick={() => {
+                    setDraft(prompt);
+                    setRetryOfAttemptId(null);
+                  }}
+                >
                   {prompt}
                   <span>↗</span>
                 </button>
@@ -141,36 +176,60 @@ export function ProjectChatView({
             </div>
           </div>
         ) : (
-          snapshot.messages.map((message) => (
-            <article className={`chat-message ${message.role} ${message.status}`} key={message.id}>
-              <header>
-                <strong>{message.role === 'user' ? 'You' : 'GOSU'}</strong>
-                <span>{formatTime(message.completedAt)}</span>
-              </header>
-              <div className="message-copy">{message.content}</div>
-              {message.model && (
-                <footer className="message-provenance">
-                  {message.model.resolvedModelId}
-                  {message.model.reasoningOptionId
-                    ? ` · reasoning ${message.model.reasoningOptionId}`
-                    : ''}
-                </footer>
-              )}
-              {message.actions.length > 0 && (
-                <div className="chat-actions">
-                  {message.actions.map((action) => (
-                    <ChatActionCard
-                      key={action.id}
-                      action={action}
-                      tasks={tasks}
-                      busy={applyingActionId === action.id}
-                      onApply={() => void onApplyAction(action)}
-                    />
-                  ))}
-                </div>
-              )}
-            </article>
-          ))
+          snapshot.messages.map((message, messageIndex) => {
+            const retrySource =
+              message.role === 'assistant' &&
+              (message.status === 'failed' || message.status === 'interrupted')
+                ? findRetrySource(snapshot, message, messageIndex)
+                : null;
+            return (
+              <article
+                className={`chat-message ${message.role} ${message.status}`}
+                key={message.id}
+              >
+                <header>
+                  <strong>{message.role === 'user' ? 'You' : 'GOSU'}</strong>
+                  <span>{formatTime(message.completedAt)}</span>
+                </header>
+                <div className="message-copy">{message.content}</div>
+                {message.model && (
+                  <footer className="message-provenance">
+                    {message.model.resolvedModelId}
+                    {message.model.reasoningOptionId
+                      ? ` · reasoning ${message.model.reasoningOptionId}`
+                      : ''}
+                  </footer>
+                )}
+                {retrySource && (
+                  <footer className="failed-turn-recovery">
+                    <span>Saved failed attempt · the connection may now be recovered</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraft(retrySource.content);
+                        setRetryOfAttemptId(retrySource.attemptId);
+                      }}
+                    >
+                      {retrySource.attemptId ? 'Retry this turn' : 'Use message again'}
+                    </button>
+                  </footer>
+                )}
+                {message.actions.length > 0 && (
+                  <div className="chat-actions">
+                    {message.actions.map((action) => (
+                      <ChatActionCard
+                        key={action.id}
+                        action={action}
+                        tasks={tasks}
+                        busy={applyingActionId === action.id}
+                        onApply={() => void onApplyAction(action)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </article>
+            );
+          })
         )}
         {inFlight && (
           <article className="chat-message assistant thinking" role="status">
@@ -192,11 +251,29 @@ export function ProjectChatView({
         <div className="chat-context-note">
           <span>LOCAL CONTEXT</span>
           현재 프로젝트 Board + Objective · Vault/파일 본문 제외
+          {retryOfAttemptId && (
+            <button
+              type="button"
+              className="retry-context"
+              onClick={() => setRetryOfAttemptId(null)}
+              title="Send as a new turn instead"
+            >
+              Retrying saved attempt ×
+            </button>
+          )}
         </div>
+        {selectionWarning && (
+          <div className="chat-selection-warning" role="status">
+            {selectionWarning}
+          </div>
+        )}
         <div className="chat-composer">
           <textarea
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setRetryOfAttemptId(null);
+            }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault();
@@ -217,7 +294,7 @@ export function ProjectChatView({
               type="button"
               className="primary-button chat-send"
               onClick={submit}
-              disabled={draft.trim().length === 0}
+              disabled={draft.trim().length === 0 || selectionWarning !== null}
             >
               Send
               <span>⌘↵</span>
@@ -293,4 +370,22 @@ function formatTime(value: string) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value));
+}
+
+function findRetrySource(
+  snapshot: ProjectChatSnapshot,
+  assistant: ProjectChatSnapshot['messages'][number],
+  beforeIndex: number,
+) {
+  if (assistant.attemptId) {
+    const matchingUser = snapshot.messages.find(
+      (message) => message.role === 'user' && message.attemptId === assistant.attemptId,
+    );
+    if (matchingUser) return { content: matchingUser.content, attemptId: assistant.attemptId };
+  }
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+    const message = snapshot.messages[index];
+    if (message?.role === 'user') return { content: message.content, attemptId: null };
+  }
+  return null;
 }

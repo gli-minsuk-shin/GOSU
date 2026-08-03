@@ -2,6 +2,8 @@ export const PROJECT_CHAT_IPC_ERROR_CODES = [
   'project_not_found',
   'chat_busy',
   'chat_not_active',
+  'chat_attempt_not_found',
+  'chat_attempt_not_retryable',
   'action_not_found',
   'action_not_proposed',
   'invalid_chat_input',

@@ -49,6 +49,7 @@ const api = {
   codex: {
     status: () => ipcRenderer.invoke('gosu:codex:status'),
     listModels: () => ipcRenderer.invoke('gosu:codex:list-models'),
+    reconnect: () => ipcRenderer.invoke('gosu:codex:reconnect'),
     loginChatGpt: () => ipcRenderer.invoke('gosu:codex:login-chatgpt'),
     loginApiKey: (apiKey: string) => ipcRenderer.invoke('gosu:codex:login-api-key', apiKey),
     logout: () => ipcRenderer.invoke('gosu:codex:logout'),

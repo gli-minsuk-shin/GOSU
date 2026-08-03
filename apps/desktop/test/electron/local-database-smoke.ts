@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -8,7 +8,10 @@ import { app, safeStorage } from 'electron';
 
 import { LocalDatabase } from '../../src/main/local-database';
 import { WorkspaceDataRecoveryError } from '../../src/main/workspace-storage-error';
-import type { ProjectChatMessage } from '../../src/shared/project-chat-contracts';
+import type {
+  ProjectChatAttempt,
+  ProjectChatMessage,
+} from '../../src/shared/project-chat-contracts';
 import type {
   ProjectRecord,
   WorkspaceOperation,
@@ -52,6 +55,139 @@ function fixture(revision: number, operationId: string, createdAt: string) {
   return { state, operation };
 }
 
+function verifyLegacyChatMigration(rootUserData: string, fixedTimestamp: string) {
+  const primaryUserData = app.getPath('userData');
+  const legacyUserData = join(rootUserData, 'legacy-chat-v030');
+  mkdirSync(legacyUserData, { recursive: true });
+  app.setPath('userData', legacyUserData);
+  try {
+    const bootstrap = new LocalDatabase();
+    bootstrap.open();
+    bootstrap.close();
+
+    const keyHex = safeStorage
+      .decryptString(readFileSync(join(legacyUserData, 'local-key.bin')))
+      .trim();
+    const legacyUserId = randomUUID();
+    const legacyAssistantId = randomUUID();
+    const legacyProjectId = randomUUID();
+    const raw = new Database(join(legacyUserData, 'gosu.db'));
+    try {
+      raw.pragma(`key="x'${keyHex}'"`);
+      raw.pragma('foreign_keys=OFF');
+      raw.transaction(() => {
+        raw.exec(`
+          drop table project_chat_actions;
+          drop table project_chat_attempts;
+          drop table project_chat_messages;
+          create table project_chat_messages (
+            id text primary key,
+            project_id text not null,
+            role text not null check (role in ('user','assistant')),
+            content text not null check (length(content) between 1 and 32000),
+            status text not null check (status in ('complete','failed','interrupted')),
+            turn_id text check (turn_id is null or length(turn_id) between 1 and 256),
+            model_json text check (model_json is null or length(model_json) <= 4096),
+            created_at text not null,
+            completed_at text not null
+          );
+          create index project_chat_messages_by_project
+            on project_chat_messages(project_id,created_at,id);
+          create table project_chat_actions (
+            id text primary key,
+            message_id text not null references project_chat_messages(id) on delete cascade,
+            project_id text not null,
+            command_json text not null check (length(command_json) <= 4096),
+            status text not null check (status in ('proposed','applying','applied','failed')),
+            result_entity_id text,
+            result_entity_version integer,
+            error_code text,
+            created_at text not null,
+            updated_at text not null
+          );
+          create index project_chat_actions_by_message
+            on project_chat_actions(message_id,created_at,id);
+        `);
+        const insertLegacyMessage = raw.prepare(
+          `insert into project_chat_messages(
+             id,project_id,role,content,status,turn_id,model_json,created_at,completed_at
+           ) values(?,?,?,?,?,?,?,?,?)`,
+        );
+        insertLegacyMessage.run(
+          legacyUserId,
+          legacyProjectId,
+          'user',
+          'Legacy failed request',
+          'complete',
+          null,
+          null,
+          fixedTimestamp,
+          fixedTimestamp,
+        );
+        insertLegacyMessage.run(
+          legacyAssistantId,
+          legacyProjectId,
+          'assistant',
+          'Legacy Codex failure',
+          'failed',
+          null,
+          null,
+          fixedTimestamp,
+          fixedTimestamp,
+        );
+      })();
+    } finally {
+      raw.close();
+    }
+
+    const migrated = new LocalDatabase();
+    migrated.open();
+    const migratedSnapshot = migrated.snapshot(legacyProjectId);
+    invariant(migratedSnapshot.messages.length === 2, 'legacy_chat_messages_were_not_preserved');
+    invariant(
+      migratedSnapshot.messages.every((message) => message.attemptId === undefined),
+      'legacy_chat_messages_received_false_attempt_lineage',
+    );
+    invariant(migratedSnapshot.attempts?.length === 0, 'legacy_chat_created_false_attempts');
+    const durableAttemptId = randomUUID();
+    const durableUserMessageId = randomUUID();
+    migrated.beginChatAttempt(
+      {
+        id: durableAttemptId,
+        projectId: legacyProjectId,
+        userMessageId: durableUserMessageId,
+        requestedModelId: null,
+        reasoningOptionId: null,
+        status: 'starting',
+        createdAt: fixedTimestamp,
+        updatedAt: fixedTimestamp,
+      },
+      {
+        id: durableUserMessageId,
+        projectId: legacyProjectId,
+        role: 'user',
+        content: 'First durable request after migration',
+        status: 'complete',
+        actions: [],
+        createdAt: fixedTimestamp,
+        completedAt: fixedTimestamp,
+      },
+    );
+    migrated.close();
+
+    const reopened = new LocalDatabase();
+    reopened.open();
+    const reconciled = reopened.getChatAttempt(legacyProjectId, durableAttemptId);
+    invariant(
+      reconciled?.status === 'interrupted' && reconciled.errorCode === 'application_interrupted',
+      'migrated_chat_did_not_support_durable_attempt_reconciliation',
+    );
+    reopened.close();
+  } finally {
+    app.setPath('userData', primaryUserData);
+  }
+}
+
 const temporaryUserData = mkdtempSync(join(tmpdir(), 'gosu-local-db-smoke-'));
 app.setPath('userData', temporaryUserData);
 
@@ -90,6 +226,93 @@ void app.whenReady().then(() => {
       completedAt: fixedTimestamp,
     };
     database.saveMessage(chatMessage);
+
+    const interruptedAttemptId = randomUUID();
+    const interruptedUserMessageId = randomUUID();
+    const interruptedAttempt: ProjectChatAttempt = {
+      id: interruptedAttemptId,
+      projectId: chatProjectId,
+      userMessageId: interruptedUserMessageId,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      status: 'starting',
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    };
+    database.beginChatAttempt(interruptedAttempt, {
+      id: interruptedUserMessageId,
+      projectId: chatProjectId,
+      role: 'user',
+      content: 'Leave this turn running across a restart.',
+      status: 'complete',
+      actions: [],
+      createdAt: fixedTimestamp,
+      completedAt: fixedTimestamp,
+    });
+    const interruptedRunning: ProjectChatAttempt = {
+      ...interruptedAttempt,
+      threadId: 'thread-interrupted-fixture',
+      turnId: 'turn-interrupted-fixture',
+      model: {
+        invocationId: randomUUID(),
+        requestedModelId: null,
+        resolvedModelId: 'fixture-model',
+        catalogVersion: 'fixture-catalog',
+        reasoningOptionId: null,
+      },
+      status: 'running',
+    };
+    database.markChatAttemptRunning(interruptedRunning);
+
+    const completedAttemptId = randomUUID();
+    const completedUserMessageId = randomUUID();
+    const completedAttempt: ProjectChatAttempt = {
+      id: completedAttemptId,
+      projectId: chatProjectId,
+      userMessageId: completedUserMessageId,
+      requestedModelId: 'fixture-model',
+      reasoningOptionId: 'high',
+      status: 'starting',
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    };
+    database.beginChatAttempt(completedAttempt, {
+      id: completedUserMessageId,
+      projectId: chatProjectId,
+      role: 'user',
+      content: 'Complete this durable attempt.',
+      status: 'complete',
+      actions: [],
+      createdAt: fixedTimestamp,
+      completedAt: fixedTimestamp,
+    });
+    const completedRunning: ProjectChatAttempt = {
+      ...completedAttempt,
+      threadId: 'thread-completed-fixture',
+      turnId: 'turn-completed-fixture',
+      model: {
+        invocationId: randomUUID(),
+        requestedModelId: 'fixture-model',
+        resolvedModelId: 'fixture-model',
+        catalogVersion: 'fixture-catalog',
+        reasoningOptionId: 'high',
+      },
+      status: 'running',
+    };
+    database.markChatAttemptRunning(completedRunning);
+    database.finishChatAttempt(
+      { ...completedRunning, status: 'complete' },
+      {
+        id: randomUUID(),
+        projectId: chatProjectId,
+        role: 'assistant',
+        content: 'This attempt completed durably.',
+        status: 'complete',
+        actions: [],
+        createdAt: fixedTimestamp,
+        completedAt: fixedTimestamp,
+      },
+    );
     database.close();
 
     const keyHex = safeStorage
@@ -166,14 +389,34 @@ void app.whenReady().then(() => {
       reopened.pendingWorkspaceSummary().latestWorkspaceRevision === 2,
       'outbox_summary_revision_failed',
     );
+    const reopenedChat = reopened.snapshot(chatProjectId);
     invariant(
-      reopened.snapshot(chatProjectId).messages[0]?.content === chatMessage.content,
+      reopenedChat.messages.find((message) => message.id === chatMessageId)?.content ===
+        chatMessage.content,
       'chat_message_restore_failed',
     );
     invariant(
-      reopened.snapshot(chatProjectId).messages[0]?.actions[0]?.status === 'proposed',
+      reopenedChat.messages.find((message) => message.id === chatMessageId)?.actions[0]?.status ===
+        'proposed',
       'chat_action_restore_failed',
     );
+    invariant(
+      reopened.getChatAttempt(chatProjectId, completedAttemptId)?.status === 'complete',
+      'completed_chat_attempt_restore_failed',
+    );
+    const reconciledAttempt = reopened.getChatAttempt(chatProjectId, interruptedAttemptId);
+    invariant(
+      reconciledAttempt?.status === 'interrupted' &&
+        reconciledAttempt.errorCode === 'application_interrupted',
+      'running_chat_attempt_was_not_reconciled',
+    );
+    invariant(
+      reopenedChat.messages.filter(
+        (message) => message.attemptId === interruptedAttemptId && message.role === 'assistant',
+      ).length === 1,
+      'interrupted_chat_attempt_receipt_missing',
+    );
+    invariant(reopenedChat.attempts?.length === 2, 'chat_attempt_snapshot_restore_failed');
     invariant(
       reopened.claimAction(chatProjectId, chatActionId, fixedTimestamp),
       'chat_action_claim_failed',
@@ -192,9 +435,17 @@ void app.whenReady().then(() => {
     const afterRollback = new LocalDatabase();
     afterRollback.open();
     invariant(
-      afterRollback.snapshot(chatProjectId).messages[0]?.actions[0]?.errorCode ===
-        'application_interrupted',
+      afterRollback.snapshot(chatProjectId).messages.find((message) => message.id === chatMessageId)
+        ?.actions[0]?.errorCode === 'application_interrupted',
       'chat_action_interruption_reconciliation_failed',
+    );
+    invariant(
+      afterRollback
+        .snapshot(chatProjectId)
+        .messages.filter(
+          (message) => message.attemptId === interruptedAttemptId && message.role === 'assistant',
+        ).length === 1,
+      'chat_attempt_reconciliation_created_duplicate_receipt',
     );
     invariant(
       afterRollback.loadWorkspaceState()?.revision === 2,
@@ -307,6 +558,8 @@ void app.whenReady().then(() => {
     }
     invariant(ambiguousSummaryRejected, 'ambiguous_outbox_was_silently_renumbered');
     recoveryRequired.close();
+
+    verifyLegacyChatMigration(temporaryUserData, fixedTimestamp);
 
     process.stdout.write('local SQLCipher workspace smoke test passed\n');
     app.exit(0);

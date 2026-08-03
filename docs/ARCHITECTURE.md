@@ -327,31 +327,50 @@ flowchart LR
 flowchart LR
   ChatUI["Project Chat UI\nplain-text transcript"]
   ChatIPC["typed Chat IPC\nproject-scoped DTO"]
-  ChatService["ProjectChatService\nephemeral turn router"]
+  ChatService["ProjectChatService\ndurable attempt router"]
   Codex["isolated Codex App Server\nstructured final response"]
-  ChatDB["SQLCipher chat tables\nvisible messages·receipts"]
+  ChatDB["SQLCipher chat tables\nvisible messages·attempts·receipts"]
   Approval["Apply action\nclaim→workspace command"]
   Workspace["WorkspaceService\nversion·project validation"]
 
-  ChatUI --> ChatIPC --> ChatService --> Codex
+  ChatUI --> ChatIPC --> ChatService --> ChatDB
+  ChatService --> Codex
   Codex --> ChatService --> ChatDB
   ChatDB --> ChatUI
   ChatUI --> Approval --> Workspace
   Workspace --> ChatDB
 ```
 
-- `project_chat_messages`, `project_chat_actions`는 Project Chat 모듈이 소유한다. 대화를
+- `project_chat_messages`, `project_chat_attempts`, `project_chat_actions`는 Project Chat 모듈이
+  소유한다. 대화를
   `local_workspace_state` JSON이나 workspace sync outbox에 넣지 않는다. 따라서 긴 대화가
   Project·Task·Objective snapshot의 크기와 delivery 순서에 영향을 주지 않는다.
+- 사용자 메시지를 받으면 Codex를 호출하기 전에 attempt와 user message를 한 transaction으로
+  `starting` 상태에 기록한다. `turn/start`가 성공하면 실제 thread ID, turn ID, requested·resolved
+  model provenance를 포함해 `running`으로 CAS 전이하고, terminal attempt와 assistant receipt도 한
+  transaction으로 저장한다. process 재시작 시 남아 있는 `starting`·`running` attempt는
+  `application_interrupted`로 바꾸고 정확히 하나의 보이는 중단 receipt를 만든다.
+- 실패·중단 attempt는 UI에서 삭제하지 않는다. 사용자는 `Retry this turn`으로 원래 attempt를 명시해
+  새 attempt를 만들 수 있고 `retryOfAttemptId`로 lineage를 남긴다. 실패한 partial history는 새 model
+  prompt에 완료된 대화처럼 재주입하지 않는다. attempt ID가 없던 이전 버전의 실패 receipt도 바로 앞
+  user message와 한 쌍으로 인식해 retry prompt에서 제외한다. 완료된 attempt를 retry하거나 다른
+  project의 attempt를 지정하면 거절한다.
 - Codex thread는 메시지마다 새 `ephemeral` thread로 만든다. 완료·실패·중단 후 즉시
-  `thread/unsubscribe`하고 thread ID를 DB에 저장하거나 재시작 후 resume하지 않는다. 대화 연속성은
+  `thread/unsubscribe`한다. thread·turn ID는 attempt provenance로는 저장하지만 재시작 후 resume하지
+  않는다. 대화 연속성은
   SQLCipher의 보이는 메시지 중 최근 최대 40개·24,000자를 다음 turn에 재주입해 유지한다.
+- Codex가 turn을 수락한 뒤 `running` receipt 저장 또는 active router 등록이 실패하면 해당 turn을 먼저
+  best-effort interrupt하고 thread를 해제한다. interrupt 확인까지 실패하면 실제 thread·turn·model
+  provenance를 보존한 `application_interrupted` receipt를 남겨 숨은 실행을 자동 retry하지 않는다.
 - turn prompt에는 현재 프로젝트의 이름·repository 식별자, 최대 200개 Task, 최신 Objective와 해당
   프로젝트의 bounded visible history만 넣는다. 다른 프로젝트, Obsidian/Vault 본문, 연구 파일과
   secret은 포함하지 않는다.
 - snapshot은 현재 active turn ID를 포함한다. 창 재생성이나 Renderer reload가 `turn.started` event를
   놓쳐도 Thinking·Stop 상태를 복구하며, load generation과 event sequence guard가 오래된 snapshot이
   새 turn 상태나 action receipt를 덮지 못하게 한다.
+- 앱 시작과 사용자의 Reconnect는 Codex account 상태와 전체 동적 model catalog를 다시 확인한다.
+  연결이 끊기면 이전 catalog를 폐기하며 Board·Settings·Local notes는 계속 동작한다. 선택한 model이
+  없어졌을 때 다른 model로 조용히 바꾸지 않는다.
 - Codex final은 JSON Schema와 Zod가 함께 검증하는 `reply + actions` 계약이다. v1 action은
   `task.create`와 `task.update`뿐이며 모델이 `projectId`를 정할 수 없다.
 - 제안 action은 곧바로 실행되지 않는다. 사용자가 Apply하면 SQLCipher row를 `proposed → applying`으로
@@ -388,6 +407,79 @@ flowchart LR
   안 되며, 변경하려면 명시적으로 다음 objective version을 시작해야 한다.
 - 이 slice에는 outbox delivery, conflict reconciliation, 로그인·연구실 RBAC가 아직 없다. 따라서
   pending operation을 synced로 표시하지 않는다.
+
+### 표시 설정과 비권한 UI 상태
+
+- appearance(`system`·`dark`·`light`)와 text size(`compact`·`default`·`large`·`extra-large`)는
+  schema version이 있는 Renderer `localStorage` preference다. React mount 전에 root dataset에
+  적용해 시작 시 theme flash를 줄이고, 변경은 semantic color·font token을 통해 전체 UI에 반영한다.
+- 이 preference는 연구 프로젝트 데이터가 아니므로 SQLCipher workspace, Git, Hosted Sync와 IPC에
+  넣지 않는다. 프로젝트를 아직 만들지 않았거나 workspace 복구가 실패해도 Settings 탭은 열려야 한다.
+- Renderer preference는 파일·Keychain·Codex 권한을 얻지 않는다. 앞으로 계정 간 동기화가 필요하면
+  display preference 전용 계약과 명시적 opt-in을 별도로 설계한다.
+
+### Project Agent Runtime 설계 (계획됨)
+
+Project Chat이 동작한다는 것은 아직 프로젝트 자율 실행 agent가 구현됐다는 뜻이 아니다. 후속
+runtime은 [OpenClaw Gateway architecture](https://docs.openclaw.ai/concepts/architecture),
+[OpenClaw agent loop](https://docs.openclaw.ai/concepts/agent-loop),
+[OpenClaw plugin policy](https://docs.openclaw.ai/tools/plugin),
+[Hermes architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture),
+[Hermes memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory),
+[Hermes skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)와
+[Hermes security](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md)의 패턴을
+참고한다. 두 프로젝트를 GOSU runtime dependency로 직접 내장하지는 않는다.
+
+```mermaid
+flowchart LR
+  User["Project conversation·goal"]
+  Gateway["Local Project Agent Gateway\nrun acceptance·session lane"]
+  Planner["Planner\nResearchPlanV1·ActionProposalV1"]
+  Policy["Deterministic Policy\nRBAC·mode·budget·policy hash"]
+  Approval["Human approval\ndiff·manifest·scope"]
+  Executor["Typed Executor\nversioned tool registry"]
+  Runner["Linux Runner\nsigned JobManifestV1"]
+  Observer["Observer\nreceipt·metric·guardrail"]
+  Memory["Approved project memory\nfacts·episodes·playbooks"]
+
+  User --> Gateway --> Planner --> Policy
+  Policy -->|"needs approval"| Approval --> Executor
+  Policy -->|"allowed"| Executor
+  Executor --> Runner --> Observer --> Gateway
+  Observer -->|"candidate + provenance"| Memory
+  Memory --> Planner
+```
+
+적용할 경계는 다음과 같다.
+
+- **Gateway와 run lifecycle**: Electron Main의 local gateway가 provider session, run queue, event와
+  cancellation의 control plane을 소유한다. Linux Runner는 execution data plane이고 Hosted Sync는
+  협업·승인·감사 metadata만 다룬다. LLM 호출 전에 `AgentRun`을 durable accept하고 `runId`를 반환한
+  뒤 lifecycle, assistant, tool, observation stream을 분리한다. project/session lane별 직렬화와
+  idempotency key·fencing token으로 stale run이 최신 상태를 덮지 못하게 한다.
+- **Planner**: LLM은 목표·`ObjectiveVersion`, expected metric, precondition, rollback, budget을 포함한
+  versioned `ResearchPlanV1`과 `ActionProposalV1`만 만든다. Planner가 connector나 shell을 직접
+  호출하거나 성공을 최종 판정하지 않는다.
+- **Policy**: LLM·plugin과 분리된 결정론적 engine이 lab/project RBAC, Autopilot mode, metric·dataset,
+  budget, network·secret, branch/base-SHA와 policy hash를 평가해 `allow`, `deny`, `needsApproval`을
+  결정한다. session ID는 routing 식별자일 뿐 authorization 근거가 아니다.
+- **Executor와 tool manifest**: tool은 version, JSON Schema input/output, capability, side-effect,
+  idempotency와 source hash를 선언한다. MVP는 bundled·allowlisted adapter만 로드하고 deny가 allow보다
+  우선한다. 실험은 raw shell string이 아니라 서명된 `JobManifestV1`만 Runner에 전달한다. connector는
+  별도 worker process로 격리한다.
+- **Observer와 evidence**: Runner, Git, compiler와 evaluator event를 append-only observation과
+  `ExecutionReceipt`로 만든다. trusted evaluator와 guardrail이 metric 채택을 판단하며 LLM 문장은
+  evidence가 아니다. 실패·중단·negative result도 lineage에서 제거하지 않는다.
+- **Memory와 skill learning**: Hermes의 bounded curated memory와 on-demand searchable history 분리를
+  참고해 (1) run 시작 시 고정된 bounded working snapshot, (2) project-scoped episodic history,
+  (3) 승인된 structured fact, (4) versioned procedural playbook을 별도 저장한다. 새 memory·playbook은
+  source, run, commit, ObjectiveVersion provenance가 있는 candidate→diff→human approval을 거친다.
+
+채택하지 않을 패턴도 불변식으로 둔다. 임의 marketplace plugin·MCP·skill을 Main process에 로드하지
+않고, host shell을 기본 tool로 제공하지 않으며, project 사이에 persistent execution container를
+공유하지 않는다. agent가 만든 memory·skill·code를 기본 자동 반영하지 않고 model/provider 오류를
+silent fallback으로 숨기지 않는다. approval regex, redaction, prompt scan은 보조 방어이며 실제 보안
+경계는 OS process, container, credential store와 tenant authorization이다.
 
 ### 로컬 실행과 패키징 경로
 

@@ -72,6 +72,45 @@ export const ProjectChatModelProvenanceSchema = z
 
 export type ProjectChatModelProvenance = z.infer<typeof ProjectChatModelProvenanceSchema>;
 
+export const PROJECT_CHAT_ATTEMPT_STATUSES = [
+  'starting',
+  'running',
+  'complete',
+  'failed',
+  'interrupted',
+] as const;
+
+export const PROJECT_CHAT_ATTEMPT_ERROR_CODES = [
+  'codex_unavailable',
+  'invalid_response',
+  'application_interrupted',
+  'user_interrupted',
+] as const;
+
+export const ProjectChatAttemptSchema = z
+  .object({
+    id: uuidSchema,
+    projectId: uuidSchema,
+    userMessageId: uuidSchema,
+    retryOfAttemptId: uuidSchema.optional(),
+    threadId: z.string().trim().min(1).max(256).optional(),
+    turnId: z.string().trim().min(1).max(256).optional(),
+    model: ProjectChatModelProvenanceSchema.optional(),
+    requestedModelId: z.string().trim().min(1).max(256).nullable(),
+    reasoningOptionId: z.string().trim().min(1).max(128).nullable(),
+    status: z.enum(PROJECT_CHAT_ATTEMPT_STATUSES),
+    errorCode: z.enum(PROJECT_CHAT_ATTEMPT_ERROR_CODES).optional(),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+  })
+  .strict()
+  .refine((attempt) => attempt.retryOfAttemptId !== attempt.id, {
+    message: 'A chat attempt cannot retry itself',
+    path: ['retryOfAttemptId'],
+  });
+
+export type ProjectChatAttempt = z.infer<typeof ProjectChatAttemptSchema>;
+
 export const ProjectChatMessageSchema = z
   .object({
     id: uuidSchema,
@@ -79,6 +118,7 @@ export const ProjectChatMessageSchema = z
     role: z.enum(['user', 'assistant']),
     content: z.string().min(1).max(PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH),
     status: z.enum(['complete', 'failed', 'interrupted']),
+    attemptId: uuidSchema.optional(),
     turnId: z.string().trim().min(1).max(256).optional(),
     model: ProjectChatModelProvenanceSchema.optional(),
     actions: z.array(ProjectChatActionSchema).max(8),
@@ -113,6 +153,9 @@ export const ProjectChatSnapshotSchema = z
     projectId: uuidSchema,
     activeTurnId: z.string().trim().min(1).max(256).optional(),
     messages: z.array(ProjectChatMessageSchema).max(250),
+    // Optional at the wire boundary so snapshots written before durable attempts remain readable.
+    // Current storage always returns an array.
+    attempts: z.array(ProjectChatAttemptSchema).max(500).optional(),
   })
   .strict()
   .superRefine((snapshot, context) => {
@@ -122,6 +165,15 @@ export const ProjectChatSnapshotSchema = z
           code: 'custom',
           message: 'Chat message references another project',
           path: ['messages', index, 'projectId'],
+        });
+      }
+    }
+    for (const [index, attempt] of (snapshot.attempts ?? []).entries()) {
+      if (attempt.projectId !== snapshot.projectId) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Chat attempt references another project',
+          path: ['attempts', index, 'projectId'],
         });
       }
     }
@@ -135,6 +187,7 @@ export const SendProjectChatMessageInputSchema = z
     message: z.string().trim().min(1).max(PROJECT_CHAT_MAX_MESSAGE_LENGTH),
     requestedModelId: z.string().trim().min(1).max(256).nullable(),
     reasoningOptionId: z.string().trim().min(1).max(128).nullable(),
+    retryOfAttemptId: uuidSchema.optional(),
   })
   .strict();
 
@@ -151,6 +204,7 @@ export type ApplyProjectChatActionInput = z.infer<typeof ApplyProjectChatActionI
 export const ProjectChatTurnReceiptSchema = z
   .object({
     projectId: uuidSchema,
+    attemptId: uuidSchema,
     userMessageId: uuidSchema,
     turnId: z.string().trim().min(1).max(256),
   })
