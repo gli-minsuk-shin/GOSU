@@ -20,11 +20,48 @@ export const WORKSPACE_TASK_STATUSES = [
 
 export type WorkspaceTaskStatus = (typeof WORKSPACE_TASK_STATUSES)[number];
 
+export const WORKSPACE_TASK_PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
+
+export type WorkspaceTaskPriority = (typeof WORKSPACE_TASK_PRIORITIES)[number];
+
+export type WorkspaceBoardSettings = Readonly<{
+  title: string;
+  columnLabels: Readonly<Record<WorkspaceTaskStatus, string>>;
+  columnOrder: readonly WorkspaceTaskStatus[];
+  wipLimits: Readonly<Record<WorkspaceTaskStatus, number | null>>;
+}>;
+
+export const DEFAULT_WORKSPACE_BOARD_SETTINGS: WorkspaceBoardSettings = Object.freeze({
+  title: 'Board',
+  columnLabels: Object.freeze({
+    backlog: 'Backlog',
+    planned: 'Planned',
+    in_progress: 'In Progress',
+    review: 'Review',
+    done: 'Done',
+  }),
+  columnOrder: Object.freeze([...WORKSPACE_TASK_STATUSES]),
+  wipLimits: Object.freeze({
+    backlog: null,
+    planned: null,
+    in_progress: null,
+    review: null,
+    done: null,
+  }),
+});
+
+export function resolveWorkspaceBoardSettings(
+  board: WorkspaceBoardSettings | undefined,
+): WorkspaceBoardSettings {
+  return structuredClone(board ?? DEFAULT_WORKSPACE_BOARD_SETTINGS);
+}
+
 export type ProjectRecord = Readonly<{
   id: string;
   name: string;
   slug: string;
   repository?: string | undefined;
+  board?: WorkspaceBoardSettings | undefined;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -35,6 +72,11 @@ export type WorkspaceTask = Readonly<{
   projectId: string;
   title: string;
   status: WorkspaceTaskStatus;
+  description?: string | undefined;
+  priority?: WorkspaceTaskPriority | undefined;
+  dueDate?: string | undefined;
+  labels?: readonly string[] | undefined;
+  archivedAt?: string | undefined;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -79,8 +121,11 @@ export type WorkspaceOperation = Readonly<{
   entityId: string;
   commandType:
     | 'project.create'
+    | 'project.board.update'
     | 'task.create'
     | 'task.update'
+    | 'task.archive'
+    | 'task.restore'
     | 'objective.save'
     | 'objective.lock'
     | 'objective.start-version';
@@ -97,6 +142,88 @@ export type WorkspacePendingSummary = Readonly<{
 const timestampSchema = z.string().datetime({ offset: true });
 const uuidSchema = z.string().uuid();
 const taskStatusSchema = z.enum(WORKSPACE_TASK_STATUSES);
+const taskPrioritySchema = z.enum(WORKSPACE_TASK_PRIORITIES);
+
+const localDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((value) => {
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year!, month! - 1, day));
+    return (
+      date.getUTCFullYear() === year &&
+      date.getUTCMonth() === month! - 1 &&
+      date.getUTCDate() === day
+    );
+  }, 'Due date must be a valid local calendar date');
+
+const columnLabelsSchema = z
+  .object({
+    backlog: z.string().trim().min(1).max(40),
+    planned: z.string().trim().min(1).max(40),
+    in_progress: z.string().trim().min(1).max(40),
+    review: z.string().trim().min(1).max(40),
+    done: z.string().trim().min(1).max(40),
+  })
+  .strict()
+  .superRefine((labels, context) => {
+    const seen = new Set<string>();
+    for (const status of WORKSPACE_TASK_STATUSES) {
+      const normalized = labels[status].normalize('NFKC').toLocaleLowerCase('en-US');
+      if (seen.has(normalized)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Column labels must be unique ignoring case',
+          path: [status],
+        });
+      }
+      seen.add(normalized);
+    }
+  });
+
+const columnOrderSchema = z
+  .array(taskStatusSchema)
+  .length(WORKSPACE_TASK_STATUSES.length)
+  .refine(
+    (order) =>
+      new Set(order).size === WORKSPACE_TASK_STATUSES.length &&
+      WORKSPACE_TASK_STATUSES.every((status) => order.includes(status)),
+    'Column order must contain every canonical status exactly once',
+  );
+
+const wipLimitsSchema = z
+  .object({
+    backlog: z.number().int().min(1).max(999).nullable(),
+    planned: z.number().int().min(1).max(999).nullable(),
+    in_progress: z.number().int().min(1).max(999).nullable(),
+    review: z.number().int().min(1).max(999).nullable(),
+    done: z.number().int().min(1).max(999).nullable(),
+  })
+  .strict();
+
+export const WorkspaceBoardSettingsSchema: z.ZodType<WorkspaceBoardSettings> = z
+  .object({
+    title: z.string().trim().min(1).max(120),
+    columnLabels: columnLabelsSchema,
+    columnOrder: columnOrderSchema,
+    wipLimits: wipLimitsSchema,
+  })
+  .strict();
+
+function normalizeLabels(labels: readonly string[]) {
+  const seen = new Set<string>();
+  return labels.filter((label) => {
+    const key = label.normalize('NFKC').toLocaleLowerCase('en-US');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+const taskLabelsSchema = z
+  .array(z.string().trim().min(1).max(32))
+  .max(8)
+  .transform(normalizeLabels);
 
 const projectSchema: z.ZodType<ProjectRecord> = z
   .object({
@@ -104,6 +231,7 @@ const projectSchema: z.ZodType<ProjectRecord> = z
     name: z.string().trim().min(2).max(120),
     slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     repository: z.string().trim().min(1).max(500).optional(),
+    board: WorkspaceBoardSettingsSchema.optional(),
     version: z.number().int().positive(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
@@ -116,6 +244,11 @@ const taskSchema: z.ZodType<WorkspaceTask> = z
     projectId: uuidSchema,
     title: z.string().trim().min(2).max(240),
     status: taskStatusSchema,
+    description: z.string().trim().min(1).max(4_000).optional(),
+    priority: taskPrioritySchema.optional(),
+    dueDate: localDateSchema.optional(),
+    labels: taskLabelsSchema.optional(),
+    archivedAt: timestampSchema.optional(),
     version: z.number().int().positive(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
@@ -203,8 +336,11 @@ export const WorkspaceOperationSchema: z.ZodType<WorkspaceOperation> = z
     entityId: uuidSchema,
     commandType: z.enum([
       'project.create',
+      'project.board.update',
       'task.create',
       'task.update',
+      'task.archive',
+      'task.restore',
       'objective.save',
       'objective.lock',
       'objective.start-version',
@@ -243,8 +379,20 @@ export const CreateTaskInputSchema = z
     projectId: uuidSchema,
     title: z.string().trim().min(2).max(240),
     status: taskStatusSchema.default('backlog'),
+    description: z.string().trim().max(4_000).optional(),
+    priority: taskPrioritySchema.optional(),
+    dueDate: localDateSchema.optional(),
+    labels: taskLabelsSchema.optional(),
   })
   .strict();
+
+const optionalTaskDescriptionUpdateSchema = z.string().trim().max(4_000).nullable().optional();
+const optionalTaskPriorityUpdateSchema = z
+  .union([taskPrioritySchema, z.literal(''), z.null()])
+  .optional();
+const optionalTaskDueDateUpdateSchema = z
+  .union([localDateSchema, z.literal(''), z.null()])
+  .optional();
 
 export const UpdateTaskInputSchema = z
   .object({
@@ -253,11 +401,39 @@ export const UpdateTaskInputSchema = z
     expectedVersion: z.number().int().positive(),
     title: z.string().trim().min(2).max(240).optional(),
     status: taskStatusSchema.optional(),
+    description: optionalTaskDescriptionUpdateSchema,
+    priority: optionalTaskPriorityUpdateSchema,
+    dueDate: optionalTaskDueDateUpdateSchema,
+    labels: taskLabelsSchema.optional(),
   })
   .strict()
-  .refine((input) => input.title !== undefined || input.status !== undefined, {
-    message: 'At least one task field must change',
-  });
+  .refine(
+    (input) =>
+      input.title !== undefined ||
+      input.status !== undefined ||
+      Object.prototype.hasOwnProperty.call(input, 'description') ||
+      Object.prototype.hasOwnProperty.call(input, 'priority') ||
+      Object.prototype.hasOwnProperty.call(input, 'dueDate') ||
+      input.labels !== undefined,
+    { message: 'At least one task field must change' },
+  );
+
+export const UpdateBoardSettingsInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+    board: WorkspaceBoardSettingsSchema,
+  })
+  .strict();
+
+export const SetTaskArchivedInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    taskId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+    archived: z.boolean(),
+  })
+  .strict();
 
 const objectiveFieldsSchema = objectiveSchema.pick({
   goal: true,
@@ -284,5 +460,7 @@ export const ObjectiveCommandSchema = z
 export type CreateProjectInput = z.input<typeof CreateProjectInputSchema>;
 export type CreateTaskInput = z.input<typeof CreateTaskInputSchema>;
 export type UpdateTaskInput = z.input<typeof UpdateTaskInputSchema>;
+export type UpdateBoardSettingsInput = z.input<typeof UpdateBoardSettingsInputSchema>;
+export type SetTaskArchivedInput = z.input<typeof SetTaskArchivedInputSchema>;
 export type SaveObjectiveInput = z.input<typeof SaveObjectiveInputSchema>;
 export type ObjectiveCommand = z.input<typeof ObjectiveCommandSchema>;

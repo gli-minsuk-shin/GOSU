@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ProjectChatAction, ProjectChatSnapshot } from '../../shared/project-chat-contracts';
-import type { ProjectRecord, WorkspaceTask } from '../../shared/workspace-contracts';
+import {
+  resolveWorkspaceBoardSettings,
+  type ProjectRecord,
+  type WorkspaceTask,
+  type WorkspaceTaskStatus,
+} from '../../shared/workspace-contracts';
 import { shouldSendChatMessage } from './chat-keyboard';
 import type { CodexModel } from './connections-view';
 
@@ -47,6 +52,7 @@ export function ProjectChatView({
   const [draft, setDraft] = useState('');
   const [retryOfAttemptId, setRetryOfAttemptId] = useState<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const board = useMemo(() => resolveWorkspaceBoardSettings(project.board), [project.board]);
   const selectedDescriptor = useMemo(
     () => models.find((model) => model.modelId === selectedModel),
     [models, selectedModel],
@@ -222,6 +228,7 @@ export function ProjectChatView({
                         key={action.id}
                         action={action}
                         tasks={tasks}
+                        statusLabels={board.columnLabels}
                         busy={applyingActionId === action.id}
                         onApply={() => void onApplyAction(action)}
                       />
@@ -317,11 +324,13 @@ export function ProjectChatView({
 function ChatActionCard({
   action,
   tasks,
+  statusLabels,
   busy,
   onApply,
 }: {
   action: ProjectChatAction;
   tasks: readonly WorkspaceTask[];
+  statusLabels: Readonly<Record<WorkspaceTaskStatus, string>>;
   busy: boolean;
   onApply: () => void;
 }) {
@@ -336,8 +345,8 @@ function ChatActionCard({
       : (command.title ?? task?.title ?? `Task ${command.taskId.slice(0, 8)}`);
   const detail =
     command.type === 'task.create'
-      ? `Create in ${statusLabel(command.status)}`
-      : `Update${command.status ? ` · move to ${statusLabel(command.status)}` : ''}`;
+      ? `Create in ${statusLabels[command.status]}`
+      : `Update${command.status ? ` · move to ${statusLabels[command.status]}` : ''}`;
   return (
     <section className={`chat-action-card ${action.status}`}>
       <div>
@@ -361,16 +370,6 @@ function actionStatusLabel(action: ProjectChatAction) {
   if (action.errorCode === 'version_conflict') return 'Board changed · ask again';
   if (action.errorCode === 'application_interrupted') return 'Check Board before retry';
   return 'Could not apply';
-}
-
-function statusLabel(status: WorkspaceTask['status']) {
-  return {
-    backlog: 'Backlog',
-    planned: 'Planned',
-    in_progress: 'In Progress',
-    review: 'Review',
-    done: 'Done',
-  }[status];
 }
 
 function formatTime(value: string) {

@@ -11,6 +11,7 @@ import type {
   WorkspacePendingSummary,
   WorkspaceSnapshot,
 } from '../../shared/workspace-contracts';
+import { BoardView } from './board-view';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import { LocalNotesView, type SelectedNote, type VaultSelection } from './notes-view';
 import { ProjectChatLoadGuard } from './project-chat-load-guard';
@@ -23,7 +24,6 @@ import {
   type UserPreferences,
 } from './user-preferences';
 import {
-  BoardView,
   EmptyWorkspace,
   FUTURE_MODULES,
   ObjectiveEditor,
@@ -569,6 +569,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
 
             {activeTab === 'board' && activeProject && (
               <BoardView
+                key={activeProject.id}
                 project={activeProject}
                 tasks={activeTasks}
                 busyAction={busyAction}
@@ -584,6 +585,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     `task:update:${input.taskId}`,
                     () => window.gosu.workspace.updateTask(input),
                     'Updated the task.',
+                  )
+                }
+                onUpdateBoardSettings={(input) =>
+                  runWorkspaceAction(
+                    'project:board:update',
+                    () => window.gosu.workspace.updateBoardSettings(input),
+                    'Updated the Board settings.',
+                  )
+                }
+                onSetTaskArchived={(input) =>
+                  runWorkspaceAction(
+                    `task:${input.archived ? 'archive' : 'restore'}:${input.taskId}`,
+                    () => window.gosu.workspace.setTaskArchived(input),
+                    input.archived ? 'Archived the task.' : 'Restored the task.',
                   )
                 }
               />

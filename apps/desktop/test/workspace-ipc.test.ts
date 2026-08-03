@@ -5,7 +5,11 @@ import { WorkspaceService, type WorkspaceStorage } from '../src/main/workspace-s
 import { WorkspaceDataRecoveryError } from '../src/main/workspace-storage-error';
 import { WORKSPACE_IPC_CHANNELS } from '../src/shared/workspace-channels';
 import type { WorkspaceIpcResult } from '../src/shared/workspace-ipc-result';
-import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
+import {
+  DEFAULT_WORKSPACE_BOARD_SETTINGS,
+  type WorkspaceOperation,
+  type WorkspaceSnapshot,
+} from '../src/shared/workspace-contracts';
 
 class MemoryStorage implements WorkspaceStorage {
   state: WorkspaceSnapshot | null = null;
@@ -97,6 +101,114 @@ describe('workspace IPC boundary', () => {
     expect(result).toEqual({
       ok: false,
       error: { code: 'version_conflict', currentVersion: 2 },
+    });
+  });
+
+  it('rejects invalid Board labels, order, and WIP limits at the fixed IPC boundary', async () => {
+    const storage = new MemoryStorage();
+    const handlers = handlersFor(new WorkspaceService(storage));
+    const project = await successful<{ id: string; version: number }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!,
+      { name: 'Board validation project' },
+    );
+    const updateBoard = handlers.get(WORKSPACE_IPC_CHANNELS.updateBoardSettings)!;
+    const invalidBoards = [
+      {
+        ...DEFAULT_WORKSPACE_BOARD_SETTINGS,
+        columnLabels: {
+          ...DEFAULT_WORKSPACE_BOARD_SETTINGS.columnLabels,
+          backlog: 'Duplicate',
+          planned: ' duplicate ',
+        },
+      },
+      {
+        ...DEFAULT_WORKSPACE_BOARD_SETTINGS,
+        columnOrder: ['backlog', 'backlog', 'in_progress', 'review', 'done'],
+      },
+      {
+        ...DEFAULT_WORKSPACE_BOARD_SETTINGS,
+        wipLimits: { ...DEFAULT_WORKSPACE_BOARD_SETTINGS.wipLimits, review: 0 },
+      },
+    ];
+
+    for (const board of invalidBoards) {
+      await expect(
+        updateBoard({ projectId: project.id, expectedVersion: project.version, board }),
+      ).resolves.toEqual({ ok: false, error: { code: 'invalid_workspace_input' } });
+    }
+    expect(storage.state).toMatchObject({ revision: 1, projects: [{ version: 1 }] });
+    expect(storage.operations).toHaveLength(1);
+  });
+
+  it('routes normalized Board, metadata, archive, and restore commands without generic IPC', async () => {
+    const handlers = handlersFor(new WorkspaceService(new MemoryStorage()));
+    const project = await successful<{ id: string; version: number }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!,
+      { name: 'Operational Board' },
+    );
+    const updatedProject = await successful<{ version: number; board?: { title: string } }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.updateBoardSettings)!,
+      {
+        projectId: project.id,
+        expectedVersion: project.version,
+        board: { ...DEFAULT_WORKSPACE_BOARD_SETTINGS, title: '  Evaluation queue  ' },
+      },
+    );
+    expect(updatedProject).toMatchObject({ version: 2, board: { title: 'Evaluation queue' } });
+
+    const task = await successful<{
+      id: string;
+      version: number;
+      labels?: readonly string[];
+      priority?: string;
+    }>(handlers.get(WORKSPACE_IPC_CHANNELS.createTask)!, {
+      projectId: project.id,
+      title: 'Track metadata',
+      priority: 'urgent',
+      labels: [' Reproducibility ', 'reproducibility'],
+    });
+    expect(task).toMatchObject({ version: 1, priority: 'urgent', labels: ['Reproducibility'] });
+
+    const archived = await successful<{ version: number; archivedAt?: string }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.setTaskArchived)!,
+      {
+        projectId: project.id,
+        taskId: task.id,
+        expectedVersion: task.version,
+        archived: true,
+      },
+    );
+    expect(archived).toMatchObject({ version: 2 });
+    expect(archived.archivedAt).toBeTypeOf('string');
+
+    const restored = await successful<{ version: number; archivedAt?: string }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.setTaskArchived)!,
+      {
+        projectId: project.id,
+        taskId: task.id,
+        expectedVersion: archived.version,
+        archived: false,
+      },
+    );
+    expect(restored).toMatchObject({ version: 3 });
+    expect(restored).not.toHaveProperty('archivedAt');
+  });
+
+  it('returns bounded invalid input for malformed metadata and archive payloads', async () => {
+    const handlers = handlersFor(new WorkspaceService(new MemoryStorage()));
+    const createTask = handlers.get(WORKSPACE_IPC_CHANNELS.createTask)!;
+    const archive = handlers.get(WORKSPACE_IPC_CHANNELS.setTaskArchived)!;
+
+    await expect(
+      createTask({
+        projectId: 'not-a-project-id',
+        title: 'Invalid due date',
+        dueDate: '2026-02-30',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_workspace_input' } });
+    await expect(archive({ projectId: 'private-project-value', archived: true })).resolves.toEqual({
+      ok: false,
+      error: { code: 'invalid_workspace_input' },
     });
   });
 

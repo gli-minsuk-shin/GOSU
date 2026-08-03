@@ -111,20 +111,20 @@ flowchart LR
 제품 모듈은 아직 모두 독립 디렉터리로 분리되어 있지 않다. 새 기능은 아래 소유권을 기준으로
 배치하고, 한 모듈이 다른 모듈의 저장 테이블을 직접 읽지 않게 한다.
 
-| 논리 모듈                  | 현재 코드 소유자                                             | 구현 수준                                                                      |
-| -------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                     |
-| Project Portfolio & Kanban | Desktop workspace service, Sync controller/store             | 로컬 project 생성·선택과 task 생성·편집·이동 구현; Hosted 전달은 계획됨        |
-| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨       |
-| Experiment Orchestration   | contracts, domain, Runner                                    | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨 |
-| Manuscript                 | 향후 desktop workspace module                                | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                |
-| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                     | 기반 구현; 실제 review anchor·approval command는 계획됨                        |
-| Reference                  | Zotero read-only connector                                   | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                      |
-| Obsidian Knowledge         | Desktop Vault reader, Obsidian parser                        | 제한된 read-only Markdown 선택·읽기 구현                                       |
-| Lecture                    | Owner Web UI 표현                                            | 생성·편집·출처 연결은 계획됨                                                   |
-| AI Gateway                 | Desktop Project Chat service와 Codex App Server              | 로그인·동적 catalog·프로젝트별 thread/turn·모델 provenance 구현                |
-| Integration Hub            | `packages/integrations` registry와 connector classes         | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨               |
-| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema            | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨       |
+| 논리 모듈                  | 현재 코드 소유자                                             | 구현 수준                                                                           |
+| -------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                          |
+| Project Portfolio & Kanban | Desktop workspace service, Sync controller/store             | 프로젝트별 Board 설정, task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨 |
+| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨            |
+| Experiment Orchestration   | contracts, domain, Runner                                    | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨      |
+| Manuscript                 | 향후 desktop workspace module                                | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                     |
+| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                     | 기반 구현; 실제 review anchor·approval command는 계획됨                             |
+| Reference                  | Zotero read-only connector                                   | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                           |
+| Obsidian Knowledge         | Desktop Vault reader, Obsidian parser                        | 제한된 read-only Markdown 선택·읽기 구현                                            |
+| Lecture                    | Owner Web UI 표현                                            | 생성·편집·출처 연결은 계획됨                                                        |
+| AI Gateway                 | Desktop Project Chat service와 Codex App Server              | 로그인·동적 catalog·프로젝트별 thread/turn·모델 provenance 구현                     |
+| Integration Hub            | `packages/integrations` registry와 connector classes         | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨                    |
+| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema            | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨            |
 
 ## 5. 의존성 규칙
 
@@ -321,6 +321,29 @@ flowchart LR
   내부 오류 로거가 project 입력이나 local path를 Main console에 출력하지 않는다. IPC boundary에서
   command input을 먼저 검증해 입력 오류와 persisted snapshot recovery 오류를 구분한다.
 
+### 운영형 Kanban의 소유권과 호환성
+
+- 내부 상태 ID `backlog`, `planned`, `in_progress`, `review`, `done`은 sync command와 Project Chat
+  action의 안정적인 의미로 유지한다. 사용자는 프로젝트마다 Board 제목, 다섯 column 표시명·순서와
+  optional soft WIP limit을 바꿀 수 있지만 새 status ID를 만들거나 기존 ID를 삭제하지 않는다.
+- `ProjectRecord.board`, Task의 description·priority·due date·labels·archivedAt은 schema-v1 안의
+  optional nested field다. v0.3.2 snapshot에 필드가 없어도 resolver가 런타임 기본값을 제공하며
+  top-level 필드나 workspace schema version을 바꾸지 않는다.
+- Renderer의 `board-view.tsx`는 form·drag-and-drop·archive 확인과 프로젝트별 임시 view state를
+  소유한다. `kanban-board-model.ts`는 column resolve, 검색·priority·label·due date filter와 안전한
+  drop 판단만 수행하는 pure helper다. 프로젝트 전환 시 `BoardView`를 project ID로 remount해 draft,
+  filter, archive mode와 drag ID가 다른 프로젝트로 넘어가지 않게 한다.
+- Board 설정은 Project version, task 수정·이동·archive·restore는 Task version으로 optimistic
+  conflict를 검사한다. Main의 `WorkspaceService`만 persisted snapshot을 바꾸며 각각
+  `project.board.update`, `task.update`, `task.archive`, `task.restore` outbox command를 같은 SQLCipher
+  transaction에 남긴다.
+- archive는 hard delete가 아니라 `archivedAt`과 새 entity version을 남기는 provenance 보존 동작이다.
+  기본 Board와 Project Chat model context에는 active task만 들어가며 archived task는 별도 view에서
+  검색·restore한다.
+- WIP limit은 현재 column의 전체 active task 수로 계산하는 시각적 경고다. filter 결과만 세거나
+  이동을 막지 않는다. 임의 column 추가·삭제, column 내부 수동 ranking, saved view와 bulk edit는
+  후속 범위다.
+
 ### Project Chat 흐름과 소유권
 
 ```mermaid
@@ -362,9 +385,10 @@ flowchart LR
 - Codex가 turn을 수락한 뒤 `running` receipt 저장 또는 active router 등록이 실패하면 해당 turn을 먼저
   best-effort interrupt하고 thread를 해제한다. interrupt 확인까지 실패하면 실제 thread·turn·model
   provenance를 보존한 `application_interrupted` receipt를 남겨 숨은 실행을 자동 retry하지 않는다.
-- turn prompt에는 현재 프로젝트의 이름·repository 식별자, 최대 200개 Task, 최신 Objective와 해당
-  프로젝트의 bounded visible history만 넣는다. 다른 프로젝트, Obsidian/Vault 본문, 연구 파일과
-  secret은 포함하지 않는다.
+- turn prompt에는 현재 프로젝트의 이름·repository 식별자, Board 제목과 canonical status/display
+  label mapping, 최대 200개 active Task의 bounded metadata, 최신 Objective와 해당 프로젝트의
+  bounded visible history만 넣는다. archived Task는 개수만 제공한다. 다른 프로젝트,
+  Obsidian/Vault 본문, 연구 파일과 secret은 포함하지 않는다.
 - snapshot은 현재 active turn ID를 포함한다. 창 재생성이나 Renderer reload가 `turn.started` event를
   놓쳐도 Thinking·Stop 상태를 복구하며, load generation과 event sequence guard가 오래된 snapshot이
   새 turn 상태나 action receipt를 덮지 못하게 한다.
@@ -627,8 +651,9 @@ macOS에서 `pnpm --filter @gosu/desktop smoke:local-db:mac`을 실행하면 Ele
 SQLCipher와 `safeStorage`를 사용해 workspace commit, encrypted file header, close/reopen 복구,
 duplicate idempotency key에 의한 transaction rollback과 outbox summary 일관성을 검증한다. 두
 SQLCipher connection의 동일 revision 경합, 실제 v0.1 outbox schema migration, 손상된 singleton
-summary 재구성, 해석 불가능한 operation payload의 byte-for-byte 보존도 포함한다. 이 검사는 native
-ABI와 Keychain 구현이 다른 Linux CI의 일반 Vitest 경로와 분리한다.
+summary 재구성, 해석 불가능한 operation payload의 byte-for-byte 보존도 포함한다. legacy schema-v1
+snapshot을 연 뒤 Board 설정, task metadata와 archive command를 기록하고 다시 열어 복원되는지도
+검증한다. 이 검사는 native ABI와 Keychain 구현이 다른 Linux CI의 일반 Vitest 경로와 분리한다.
 
 Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 

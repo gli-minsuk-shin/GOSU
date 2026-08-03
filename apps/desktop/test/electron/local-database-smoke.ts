@@ -7,6 +7,7 @@ import Database from 'better-sqlite3-multiple-ciphers';
 import { app, safeStorage } from 'electron';
 
 import { LocalDatabase } from '../../src/main/local-database';
+import { WorkspaceService } from '../../src/main/workspace-service';
 import { WorkspaceDataRecoveryError } from '../../src/main/workspace-storage-error';
 import type {
   ProjectChatAttempt,
@@ -191,7 +192,7 @@ function verifyLegacyChatMigration(rootUserData: string, fixedTimestamp: string)
 const temporaryUserData = mkdtempSync(join(tmpdir(), 'gosu-local-db-smoke-'));
 app.setPath('userData', temporaryUserData);
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   const operationId = randomUUID();
   const secondOperationId = randomUUID();
   const fixedTimestamp = new Date().toISOString();
@@ -375,18 +376,104 @@ void app.whenReady().then(() => {
       'workspace_database_was_not_encrypted',
     );
 
-    const reopened = new LocalDatabase();
-    reopened.open();
-    invariant(reopened.loadWorkspaceState()?.revision === 2, 'workspace_restart_restore_failed');
+    const legacyReopened = new LocalDatabase();
+    legacyReopened.open();
     invariant(
-      reopened
+      legacyReopened.loadWorkspaceState()?.revision === 2,
+      'legacy_workspace_restart_restore_failed',
+    );
+    invariant(
+      legacyReopened
         .pendingWorkspaceChanges()
         .every((operation, index) => operation.workspaceRevision === index + 1),
       'outbox_sequence_restore_failed',
     );
-    invariant(reopened.pendingWorkspaceSummary().count === 2, 'outbox_summary_restore_failed');
     invariant(
-      reopened.pendingWorkspaceSummary().latestWorkspaceRevision === 2,
+      legacyReopened.pendingWorkspaceSummary().count === 2,
+      'legacy_outbox_summary_restore_failed',
+    );
+    invariant(
+      legacyReopened.pendingWorkspaceSummary().latestWorkspaceRevision === 2,
+      'legacy_outbox_summary_revision_failed',
+    );
+    legacyReopened.close();
+
+    const mutationDatabase = new LocalDatabase();
+    mutationDatabase.open();
+    const workspace = new WorkspaceService({
+      load: () => mutationDatabase.loadWorkspaceState(),
+      commit: (state, operation) => mutationDatabase.commitWorkspaceState(state, operation),
+      pendingChanges: () => mutationDatabase.pendingWorkspaceChanges(),
+      pendingSummary: () => mutationDatabase.pendingWorkspaceSummary(),
+    });
+    const legacySnapshot = await workspace.snapshot();
+    const legacyProject = legacySnapshot.projects[0];
+    invariant(legacyProject !== undefined, 'legacy_project_missing');
+    invariant(legacyProject.board === undefined, 'legacy_project_received_persisted_defaults');
+    await workspace.updateBoardSettings({
+      projectId: legacyProject.id,
+      expectedVersion: legacyProject.version,
+      board: {
+        title: 'Reproduction pipeline',
+        columnLabels: {
+          backlog: 'Ideas',
+          planned: 'Ready',
+          in_progress: 'Running',
+          review: 'Evidence check',
+          done: 'Published',
+        },
+        columnOrder: ['backlog', 'planned', 'in_progress', 'review', 'done'],
+        wipLimits: { backlog: null, planned: 4, in_progress: 2, review: 1, done: null },
+      },
+    });
+    const persistedTask = await workspace.createTask({
+      projectId: legacyProject.id,
+      title: 'Run reproducibility baseline',
+      status: 'in_progress',
+      description: 'Verify metric parity before the ablation.',
+      priority: 'urgent',
+      dueDate: '2026-08-20',
+      labels: ['GPU', 'gpu', 'paper'],
+    });
+    await workspace.setTaskArchived({
+      projectId: legacyProject.id,
+      taskId: persistedTask.id,
+      expectedVersion: persistedTask.version,
+      archived: true,
+    });
+    mutationDatabase.close();
+
+    const reopened = new LocalDatabase();
+    reopened.open();
+    const operationalSnapshot = reopened.loadWorkspaceState();
+    invariant(operationalSnapshot?.revision === 5, 'kanban_workspace_restart_restore_failed');
+    invariant(
+      operationalSnapshot.projects[0]?.board?.title === 'Reproduction pipeline' &&
+        operationalSnapshot.projects[0]?.board?.columnLabels.review === 'Evidence check' &&
+        operationalSnapshot.projects[0]?.board?.wipLimits.in_progress === 2,
+      'kanban_board_settings_restart_restore_failed',
+    );
+    const restoredTask = operationalSnapshot.tasks.find((task) => task.id === persistedTask.id);
+    invariant(
+      restoredTask?.description === 'Verify metric parity before the ablation.' &&
+        restoredTask.priority === 'urgent' &&
+        restoredTask.dueDate === '2026-08-20' &&
+        restoredTask.labels?.join(',') === 'GPU,paper' &&
+        restoredTask.archivedAt !== undefined &&
+        restoredTask.version === 2,
+      'kanban_task_metadata_archive_restart_restore_failed',
+    );
+    invariant(
+      reopened
+        .pendingWorkspaceChanges()
+        .slice(-3)
+        .map((operation) => operation.commandType)
+        .join(',') === 'project.board.update,task.create,task.archive',
+      'kanban_outbox_lineage_restore_failed',
+    );
+    invariant(reopened.pendingWorkspaceSummary().count === 5, 'outbox_summary_restore_failed');
+    invariant(
+      reopened.pendingWorkspaceSummary().latestWorkspaceRevision === 5,
       'outbox_summary_revision_failed',
     );
     const reopenedChat = reopened.snapshot(chatProjectId);
@@ -422,7 +509,7 @@ void app.whenReady().then(() => {
       'chat_action_claim_failed',
     );
 
-    const duplicate = fixture(3, operationId, fixedTimestamp);
+    const duplicate = fixture(6, operationId, fixedTimestamp);
     let duplicateRejected = false;
     try {
       reopened.commitWorkspaceState(duplicate.state, duplicate.operation);
@@ -448,22 +535,22 @@ void app.whenReady().then(() => {
       'chat_attempt_reconciliation_created_duplicate_receipt',
     );
     invariant(
-      afterRollback.loadWorkspaceState()?.revision === 2,
+      afterRollback.loadWorkspaceState()?.revision === 5,
       'workspace_transaction_did_not_roll_back',
     );
     invariant(
-      afterRollback.pendingWorkspaceChanges().length === 2,
+      afterRollback.pendingWorkspaceChanges().length === 5,
       'outbox_transaction_did_not_roll_back',
     );
     invariant(
-      afterRollback.pendingWorkspaceSummary().count === 2,
+      afterRollback.pendingWorkspaceSummary().count === 5,
       'outbox_summary_did_not_roll_back',
     );
 
     const competing = new LocalDatabase();
     competing.open();
-    const accepted = fixture(3, randomUUID(), fixedTimestamp);
-    const stale = fixture(3, randomUUID(), fixedTimestamp);
+    const accepted = fixture(6, randomUUID(), fixedTimestamp);
+    const stale = fixture(6, randomUUID(), fixedTimestamp);
     afterRollback.commitWorkspaceState(accepted.state, accepted.operation);
     let staleRevisionRejected = false;
     try {
@@ -478,17 +565,17 @@ void app.whenReady().then(() => {
 
     const afterRace = new LocalDatabase();
     afterRace.open();
-    invariant(afterRace.loadWorkspaceState()?.revision === 3, 'workspace_race_revision_changed');
+    invariant(afterRace.loadWorkspaceState()?.revision === 6, 'workspace_race_revision_changed');
     invariant(
       afterRace.loadWorkspaceState()?.projects[0]?.id === accepted.state.projects[0]?.id,
       'workspace_race_snapshot_was_overwritten',
     );
     invariant(
-      afterRace.pendingWorkspaceChanges().filter((operation) => operation.workspaceRevision === 3)
+      afterRace.pendingWorkspaceChanges().filter((operation) => operation.workspaceRevision === 6)
         .length === 1,
       'workspace_race_created_duplicate_revision',
     );
-    invariant(afterRace.pendingWorkspaceSummary().count === 3, 'workspace_race_summary_changed');
+    invariant(afterRace.pendingWorkspaceSummary().count === 6, 'workspace_race_summary_changed');
     afterRace.close();
 
     const opaquePayload = '{legacy-operation-payload-is-not-json';
@@ -509,10 +596,10 @@ void app.whenReady().then(() => {
 
     const recovered = new LocalDatabase();
     recovered.open();
-    invariant(recovered.loadWorkspaceState()?.revision === 3, 'opaque_payload_changed_snapshot');
-    invariant(recovered.pendingWorkspaceSummary().count === 3, 'status_reconciliation_failed');
+    invariant(recovered.loadWorkspaceState()?.revision === 6, 'opaque_payload_changed_snapshot');
+    invariant(recovered.pendingWorkspaceSummary().count === 6, 'status_reconciliation_failed');
     invariant(
-      recovered.pendingWorkspaceSummary().latestWorkspaceRevision === 3,
+      recovered.pendingWorkspaceSummary().latestWorkspaceRevision === 6,
       'status_revision_reconciliation_failed',
     );
     let opaqueQueueRejected = false;
@@ -538,16 +625,16 @@ void app.whenReady().then(() => {
       .prepare('select operation_json from sync_outbox where id=?')
       .get(accepted.operation.id) as { operation_json: string };
     const acceptedOperation = JSON.parse(acceptedRow.operation_json) as Record<string, unknown>;
-    acceptedOperation.workspaceRevision = 4;
+    acceptedOperation.workspaceRevision = 7;
     ambiguousOrdering
-      .prepare('update sync_outbox set operation_json=?,workspace_revision=4 where id=?')
+      .prepare('update sync_outbox set operation_json=?,workspace_revision=7 where id=?')
       .run(JSON.stringify(acceptedOperation), accepted.operation.id);
     ambiguousOrdering.close();
 
     const recoveryRequired = new LocalDatabase();
     recoveryRequired.open();
     invariant(
-      recoveryRequired.loadWorkspaceState()?.revision === 3,
+      recoveryRequired.loadWorkspaceState()?.revision === 6,
       'ambiguous_outbox_hid_workspace_snapshot',
     );
     let ambiguousSummaryRejected = false;

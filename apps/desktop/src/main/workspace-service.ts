@@ -5,6 +5,8 @@ import {
   CreateTaskInputSchema,
   ObjectiveCommandSchema,
   SaveObjectiveInputSchema,
+  SetTaskArchivedInputSchema,
+  UpdateBoardSettingsInputSchema,
   UpdateTaskInputSchema,
   WorkspaceOperationSchema,
   WorkspacePendingSummarySchema,
@@ -14,6 +16,8 @@ import {
   type ObjectiveCommand,
   type ProjectRecord,
   type SaveObjectiveInput,
+  type SetTaskArchivedInput,
+  type UpdateBoardSettingsInput,
   type UpdateTaskInput,
   type WorkspaceObjective,
   type WorkspaceOperation,
@@ -23,6 +27,7 @@ import {
 } from '../shared/workspace-contracts';
 
 type WorkspaceOperationDraft = Omit<WorkspaceOperation, 'workspaceRevision'>;
+type MutableWorkspaceTask = { -readonly [Key in keyof WorkspaceTask]: WorkspaceTask[Key] };
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -163,6 +168,12 @@ export class WorkspaceService {
         projectId: command.projectId,
         title: command.title,
         status: command.status,
+        ...(command.description ? { description: command.description } : {}),
+        ...(command.priority === undefined ? {} : { priority: command.priority }),
+        ...(command.dueDate === undefined ? {} : { dueDate: command.dueDate }),
+        ...(command.labels === undefined || command.labels.length === 0
+          ? {}
+          : { labels: command.labels }),
         version: 1,
         createdAt: now,
         updatedAt: now,
@@ -177,7 +188,14 @@ export class WorkspaceService {
           task.id,
           null,
           now,
-          { title: task.title, status: task.status },
+          {
+            title: task.title,
+            status: task.status,
+            ...(task.description === undefined ? {} : { description: task.description }),
+            ...(task.priority === undefined ? {} : { priority: task.priority }),
+            ...(task.dueDate === undefined ? {} : { dueDate: task.dueDate }),
+            ...(task.labels === undefined ? {} : { labels: task.labels }),
+          },
         ),
         value: task,
       };
@@ -200,13 +218,29 @@ export class WorkspaceService {
         throw conflict(task.id, command.expectedVersion, task.version);
       }
       const now = new Date().toISOString();
-      const updated: WorkspaceTask = {
+      const updated: MutableWorkspaceTask = {
         ...task,
         ...(command.title === undefined ? {} : { title: command.title }),
         ...(command.status === undefined ? {} : { status: command.status }),
         version: task.version + 1,
         updatedAt: now,
       };
+      if (Object.prototype.hasOwnProperty.call(command, 'description')) {
+        if (command.description) updated.description = command.description;
+        else delete updated.description;
+      }
+      if (Object.prototype.hasOwnProperty.call(command, 'priority')) {
+        if (command.priority) updated.priority = command.priority;
+        else delete updated.priority;
+      }
+      if (Object.prototype.hasOwnProperty.call(command, 'dueDate')) {
+        if (command.dueDate) updated.dueDate = command.dueDate;
+        else delete updated.dueDate;
+      }
+      if (command.labels !== undefined) {
+        if (command.labels.length > 0) updated.labels = command.labels;
+        else delete updated.labels;
+      }
       return {
         state: {
           ...state,
@@ -223,6 +257,98 @@ export class WorkspaceService {
           {
             ...(command.title === undefined ? {} : { title: command.title }),
             ...(command.status === undefined ? {} : { status: command.status }),
+            ...(Object.prototype.hasOwnProperty.call(command, 'description')
+              ? { description: updated.description ?? null }
+              : {}),
+            ...(Object.prototype.hasOwnProperty.call(command, 'priority')
+              ? { priority: updated.priority ?? null }
+              : {}),
+            ...(Object.prototype.hasOwnProperty.call(command, 'dueDate')
+              ? { dueDate: updated.dueDate ?? null }
+              : {}),
+            ...(command.labels === undefined ? {} : { labels: updated.labels ?? [] }),
+            newEntityVersion: updated.version,
+          },
+        ),
+        value: updated,
+      };
+    });
+  }
+
+  updateBoardSettings(input: UpdateBoardSettingsInput): Promise<ProjectRecord> {
+    return this.mutate(async (state) => {
+      const command = UpdateBoardSettingsInputSchema.parse(input);
+      const project = this.requireProject(state, command.projectId);
+      if (project.version !== command.expectedVersion) {
+        throw conflict(project.id, command.expectedVersion, project.version);
+      }
+      const now = new Date().toISOString();
+      const updated: ProjectRecord = {
+        ...project,
+        board: command.board,
+        version: project.version + 1,
+        updatedAt: now,
+      };
+      return {
+        state: {
+          ...state,
+          projects: state.projects.map((candidate) =>
+            candidate.id === project.id ? updated : candidate,
+          ),
+        },
+        operation: this.operation(
+          'project.board.update',
+          `workspace:${project.id}:project:${project.id}:board:update`,
+          project.id,
+          'project',
+          project.id,
+          project.version,
+          now,
+          { board: updated.board, newEntityVersion: updated.version },
+        ),
+        value: updated,
+      };
+    });
+  }
+
+  setTaskArchived(input: SetTaskArchivedInput): Promise<WorkspaceTask> {
+    return this.mutate(async (state) => {
+      const command = SetTaskArchivedInputSchema.parse(input);
+      this.requireProject(state, command.projectId);
+      const task = state.tasks.find((candidate) => candidate.id === command.taskId);
+      if (!task) throw new WorkspaceServiceError('task_not_found', { taskId: command.taskId });
+      if (task.projectId !== command.projectId) {
+        throw new WorkspaceServiceError('cross_project_access_denied', {
+          projectId: command.projectId,
+          entityId: command.taskId,
+        });
+      }
+      if (task.version !== command.expectedVersion) {
+        throw conflict(task.id, command.expectedVersion, task.version);
+      }
+      const now = new Date().toISOString();
+      const updated: MutableWorkspaceTask = {
+        ...task,
+        version: task.version + 1,
+        updatedAt: now,
+      };
+      if (command.archived) updated.archivedAt = now;
+      else delete updated.archivedAt;
+      return {
+        state: {
+          ...state,
+          tasks: state.tasks.map((candidate) => (candidate.id === task.id ? updated : candidate)),
+        },
+        operation: this.operation(
+          command.archived ? 'task.archive' : 'task.restore',
+          `workspace:${task.projectId}:task:${task.id}:${command.archived ? 'archive' : 'restore'}`,
+          task.projectId,
+          'task',
+          task.id,
+          task.version,
+          now,
+          {
+            archivedAt: updated.archivedAt ?? null,
             newEntityVersion: updated.version,
           },
         ),
