@@ -1257,18 +1257,75 @@ textarea:focus {
 }
 
 .note-reader {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
-  padding: 22px;
-  overflow: auto;
+  min-height: 520px;
+  overflow: hidden;
 }
 
 .note-reader header {
-  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 50px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
   color: var(--muted);
   font-size: var(--font-control);
 }
 
-.note-reader pre {
+.note-reader header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-reader-mode {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.note-reader-mode button {
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-meta);
+  font-weight: 700;
+}
+
+.note-reader-mode button.active {
+  background: rgba(158, 240, 26, 0.12);
+  color: var(--green);
+}
+
+.note-reader-body {
+  min-width: 0;
+  overflow: auto;
+  padding: clamp(22px, 4vw, 44px);
+}
+
+.note-reader-state {
+  display: grid;
+  place-items: center;
+  min-height: 360px;
+  margin: 0;
+  color: var(--subtle);
+  font-size: var(--font-body);
+}
+
+.markdown-source {
   margin: 0;
   color: light-dark(#3f4b42, #cbd3cc);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1276,6 +1333,250 @@ textarea:focus {
   line-height: 1.7;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.markdown-document {
+  width: min(100%, 860px);
+  margin: 0 auto;
+  color: light-dark(#263029, #dfe6df);
+  font-size: var(--font-body-large);
+  line-height: 1.78;
+  overflow-wrap: anywhere;
+}
+
+.markdown-document > :first-child:not(.note-properties) {
+  margin-top: 0;
+}
+
+.markdown-document h1,
+.markdown-document h2,
+.markdown-document h3,
+.markdown-document h4,
+.markdown-document h5,
+.markdown-document h6 {
+  margin: 1.7em 0 0.65em;
+  color: var(--text);
+  line-height: 1.28;
+  letter-spacing: -0.025em;
+}
+
+.markdown-document h1 {
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--line);
+  font-size: clamp(25px, 3vw, 34px);
+}
+
+.markdown-document h2 {
+  padding-bottom: 0.28em;
+  border-bottom: 1px solid var(--line);
+  font-size: clamp(20px, 2.3vw, 26px);
+}
+
+.markdown-document h3 {
+  font-size: clamp(17px, 2vw, 21px);
+}
+
+.markdown-document h4,
+.markdown-document h5,
+.markdown-document h6 {
+  font-size: var(--font-section);
+}
+
+.markdown-document p,
+.markdown-document ul,
+.markdown-document ol,
+.markdown-document blockquote,
+.markdown-document table,
+.markdown-document pre {
+  margin: 0 0 1.05em;
+}
+
+.markdown-document ul,
+.markdown-document ol {
+  padding-left: 1.65em;
+}
+
+.markdown-document li + li {
+  margin-top: 0.28em;
+}
+
+.markdown-document li > p {
+  margin: 0.25em 0;
+}
+
+.markdown-document blockquote {
+  padding: 0.2em 1em;
+  border-left: 3px solid color-mix(in srgb, var(--green) 55%, var(--line));
+  background: color-mix(in srgb, var(--green) 4%, transparent);
+  color: var(--muted);
+}
+
+.markdown-document blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-document code {
+  padding: 0.16em 0.38em;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-soft);
+  color: light-dark(#395113, #bce77d);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+
+.markdown-document pre {
+  max-width: 100%;
+  padding: 14px 16px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: light-dark(#f2f5f1, #080b09);
+  line-height: 1.6;
+}
+
+.markdown-document pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--font-control);
+  white-space: pre;
+}
+
+.markdown-document hr {
+  height: 1px;
+  margin: 2em 0;
+  border: 0;
+  background: var(--line);
+}
+
+.markdown-document table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-spacing: 0;
+  border-collapse: collapse;
+  font-size: var(--font-control);
+}
+
+.markdown-document th,
+.markdown-document td {
+  min-width: 110px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-document th {
+  background: var(--surface-soft);
+  color: var(--text);
+  font-weight: 750;
+}
+
+.markdown-document tbody tr:nth-child(even) {
+  background: light-dark(rgba(37, 55, 40, 0.025), rgba(255, 255, 255, 0.018));
+}
+
+.markdown-document input[type='checkbox'] {
+  width: 14px;
+  min-height: 14px;
+  margin: 0 7px 0 -1.25em;
+  accent-color: var(--green);
+}
+
+.markdown-document a {
+  color: light-dark(#477000, #a8e655);
+  text-decoration-color: color-mix(in srgb, currentColor 42%, transparent);
+  text-underline-offset: 0.16em;
+}
+
+.markdown-document a:hover {
+  text-decoration-color: currentColor;
+}
+
+.blocked-markdown-link {
+  border-bottom: 1px dotted var(--subtle);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.blocked-markdown-link.missing-note {
+  color: var(--orange);
+}
+
+.note-properties {
+  margin-bottom: 1.5em;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.note-properties summary {
+  padding: 9px 11px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--font-control);
+  font-weight: 730;
+}
+
+.note-properties pre {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 10px 10px;
+  background: transparent;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+.markdown-image,
+.markdown-image-state {
+  display: grid;
+  width: min(100%, 760px);
+  margin: 1.2em auto;
+  place-items: center;
+}
+
+.markdown-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px light-dark(rgba(29, 43, 31, 0.12), rgba(0, 0, 0, 0.25));
+}
+
+.markdown-image > span {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.markdown-image-state {
+  min-height: 78px;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+  color: var(--subtle);
+  font-size: var(--font-control);
+  text-align: center;
+}
+
+.markdown-image-state.failed,
+.markdown-image-state.blocked {
+  color: var(--orange);
+}
+
+.markdown-document .footnotes {
+  margin-top: 2.2em;
+  padding-top: 1em;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--font-control);
 }
 
 .project-chat-shell {
