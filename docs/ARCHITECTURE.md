@@ -94,17 +94,17 @@ flowchart LR
 
 ## 4. 저장소 구조와 코드 소유권
 
-| 경로                    | 소유 책임                                                                 | 현재 상태                                  |
-| ----------------------- | ------------------------------------------------------------------------- | ------------------------------------------ |
-| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Vault 경계   | 실행 가능한 Project·Kanban·Objective slice |
-| `apps/web`              | Owner·Lab 관리 경험                                                       | demo fixture 기반의 인터랙티브 UI          |
-| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계 | memory runtime 구현, PostgreSQL 기반 구현  |
-| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill        | 제한된 로컬 실행 경로 구현                 |
-| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                              | 구현됨                                     |
-| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙              | 구현됨                                     |
-| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                     | 기반 구현                                  |
-| `packages/ui`           | 공통 visual token과 작은 presentational primitive                         | 기반 구현                                  |
-| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단              | 구현됨                                     |
+| 경로                    | 소유 책임                                                                 | 현재 상태                                       |
+| ----------------------- | ------------------------------------------------------------------------- | ----------------------------------------------- |
+| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Vault 경계   | 실행 가능한 Project Chat·Kanban·Objective slice |
+| `apps/web`              | Owner·Lab 관리 경험                                                       | demo fixture 기반의 인터랙티브 UI               |
+| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계 | memory runtime 구현, PostgreSQL 기반 구현       |
+| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill        | 제한된 로컬 실행 경로 구현                      |
+| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                              | 구현됨                                          |
+| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙              | 구현됨                                          |
+| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                     | 기반 구현                                       |
+| `packages/ui`           | 공통 visual token과 작은 presentational primitive                         | 기반 구현                                       |
+| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단              | 구현됨                                          |
 
 ### 논리 모듈 소유권
 
@@ -122,7 +122,7 @@ flowchart LR
 | Reference                  | Zotero read-only connector                                   | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                      |
 | Obsidian Knowledge         | Desktop Vault reader, Obsidian parser                        | 제한된 read-only Markdown 선택·읽기 구현                                       |
 | Lecture                    | Owner Web UI 표현                                            | 생성·편집·출처 연결은 계획됨                                                   |
-| AI Gateway                 | contracts와 Desktop Codex App Server                         | 로그인·catalog discovery 기반 구현; writing turn UI 흐름은 계획됨              |
+| AI Gateway                 | Desktop Project Chat service와 Codex App Server              | 로그인·동적 catalog·프로젝트별 thread/turn·모델 provenance 구현                |
 | Integration Hub            | `packages/integrations` registry와 connector classes         | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨               |
 | Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema            | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨       |
 
@@ -262,7 +262,9 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
 
 - `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`를 유지한다.
 - preload는 작은 `window.gosu` API만 노출한다. arbitrary IPC channel이나 raw Electron object를
-  노출하지 않는다.
+  노출하지 않는다. sandboxed preload의 runtime validator는 build 안에 묶고, production build
+  검사는 `electron` 외의 external `require()`가 남으면 실패시킨다. preload가 통째로 로드되지 않아
+  Renderer가 빈 화면이 되는 packaging regression을 이 경계에서 차단한다.
 - Main은 sender가 현재 window의 exact main frame이며 신뢰한 production file URL 또는 설정된
   development origin인지 매 IPC 호출마다 확인한다. development origin은 명시적 port를 가진
   loopback HTTP(S)만 허용하며 packaged build는 `ELECTRON_RENDERER_URL` override를 무시한다.
@@ -274,10 +276,24 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   열지 않는다.
 - Obsidian reader는 사용자가 고른 root 아래의 bounded Markdown만 읽는다. symlink, root escape,
   과도한 파일 크기·개수·깊이를 거부한다.
-- Codex child는 허용된 최소 환경만 상속하고 stdio JSON-RPC로 initialize한다. 인증은 로컬 Codex
-  credential store에 남고 Hosted Sync로 보내지 않는다.
-- model picker는 `model/list` 결과를 사용하며 catalog snapshot, resolved model ID와 reasoning
-  option을 provenance로 기록할 수 있다.
+- Codex child는 허용된 최소 환경만 상속하고 stdio JSON-RPC로 initialize한다. GOSU 전용
+  `CODEX_HOME`을 사용하며 최초 한 번만 기존 로컬 Codex 인증을 mode `0600`으로 가져온다. import
+  marker가 남으므로 GOSU에서 로그아웃한 뒤 다음 실행에 개인 Codex 인증을 몰래 재수입하지 않는다.
+  인증정보는 Hosted Sync로 보내지 않는다.
+- Project Chat의 Codex SQLite runtime은 mode `0700` 임시 디렉터리로 분리하고 child 종료 후 삭제한다.
+  process config에서 transcript history, analytics, OTel export와 user-prompt logging을 끈다. 실제
+  integration test는 ephemeral prompt가 장기 `CODEX_HOME`에 남지 않고 임시 SQLite에만 존재했다가
+  cleanup되는지 검사한다.
+- model picker는 paginated `model/list` 전체 결과를 사용한다. 새 catalog를 가져올 때마다 snapshot
+  event를 내보내 SQLCipher에 저장하고, 실제 resolved model ID와 reasoning option을 turn provenance로
+  기록한다. early `model/rerouted` event도 turn 시작 응답까지 bounded buffer에 보존한다.
+- Project Chat turn은 `approvalPolicy: never`, read-only sandbox, network off, empty environments,
+  empty runtime roots와 empty dynamic tools로 시작한다. process와 thread 양쪽에서 shell, unified exec,
+  browser, Apps, plugins, MCP, image generation, multi-agent와 utility tool을 끄며, `thread/start` 직후
+  MCP inventory가 0이 아니면 fail closed하고 thread를 해제한다. server-initiated command·file
+  approval은 Main이 거절하고 그 밖의 지원하지 않는 request에는 제한된 protocol error만 돌려준다.
+- Codex의 reasoning, command output, file diff, tool payload는 Project Chat DB나 Renderer로 전달하지
+  않는다. Renderer에는 보이는 최종 답변, turn 상태, 검증된 action receipt만 보낸다.
 
 ### 현재 로컬 workspace 흐름
 
@@ -304,6 +320,48 @@ flowchart LR
   제한된 result envelope로 resolve한다. Preload가 이를 Renderer의 로컬 `Error`로 바꾸므로 Electron
   내부 오류 로거가 project 입력이나 local path를 Main console에 출력하지 않는다. IPC boundary에서
   command input을 먼저 검증해 입력 오류와 persisted snapshot recovery 오류를 구분한다.
+
+### Project Chat 흐름과 소유권
+
+```mermaid
+flowchart LR
+  ChatUI["Project Chat UI\nplain-text transcript"]
+  ChatIPC["typed Chat IPC\nproject-scoped DTO"]
+  ChatService["ProjectChatService\nephemeral turn router"]
+  Codex["isolated Codex App Server\nstructured final response"]
+  ChatDB["SQLCipher chat tables\nvisible messages·receipts"]
+  Approval["Apply action\nclaim→workspace command"]
+  Workspace["WorkspaceService\nversion·project validation"]
+
+  ChatUI --> ChatIPC --> ChatService --> Codex
+  Codex --> ChatService --> ChatDB
+  ChatDB --> ChatUI
+  ChatUI --> Approval --> Workspace
+  Workspace --> ChatDB
+```
+
+- `project_chat_messages`, `project_chat_actions`는 Project Chat 모듈이 소유한다. 대화를
+  `local_workspace_state` JSON이나 workspace sync outbox에 넣지 않는다. 따라서 긴 대화가
+  Project·Task·Objective snapshot의 크기와 delivery 순서에 영향을 주지 않는다.
+- Codex thread는 메시지마다 새 `ephemeral` thread로 만든다. 완료·실패·중단 후 즉시
+  `thread/unsubscribe`하고 thread ID를 DB에 저장하거나 재시작 후 resume하지 않는다. 대화 연속성은
+  SQLCipher의 보이는 메시지 중 최근 최대 40개·24,000자를 다음 turn에 재주입해 유지한다.
+- turn prompt에는 현재 프로젝트의 이름·repository 식별자, 최대 200개 Task, 최신 Objective와 해당
+  프로젝트의 bounded visible history만 넣는다. 다른 프로젝트, Obsidian/Vault 본문, 연구 파일과
+  secret은 포함하지 않는다.
+- snapshot은 현재 active turn ID를 포함한다. 창 재생성이나 Renderer reload가 `turn.started` event를
+  놓쳐도 Thinking·Stop 상태를 복구하며, load generation과 event sequence guard가 오래된 snapshot이
+  새 turn 상태나 action receipt를 덮지 못하게 한다.
+- Codex final은 JSON Schema와 Zod가 함께 검증하는 `reply + actions` 계약이다. v1 action은
+  `task.create`와 `task.update`뿐이며 모델이 `projectId`를 정할 수 없다.
+- 제안 action은 곧바로 실행되지 않는다. 사용자가 Apply하면 SQLCipher row를 `proposed → applying`으로
+  원자 claim한 뒤 기존 `WorkspaceService` command를 호출한다. update는 Task의 project 소속과
+  optimistic `expectedVersion`을 다시 검사하며 중복 Apply는 새 mutation을 만들지 않는다.
+- `applying` 중 process가 중단되면 다음 DB open에서 `application_interrupted`로 표시한다. Board에
+  반영됐는지 확인하기 전 자동 retry하지 않아 중복 Task 생성을 막는다.
+- Board mutation 성공 뒤 action receipt 저장만 실패한 경우도 `application_interrupted`로 남기고
+  `workspaceChanged: true`를 알린다. 이미 반영된 mutation을 거짓 실패로 표시하거나 자동 재시도하지
+  않는다.
 - IPC DTO와 Zod schema는 `apps/desktop/src/shared/workspace-contracts.ts`, runtime 상태 DTO는
   `apps/desktop/src/shared/runtime-contracts.ts`가 소유한다. Renderer와 Preload는 privileged Main
   구현을 import하지 않고 이 shared contract의 type만 사용한다.
@@ -356,10 +414,13 @@ DB writer로 남지 않는다.
 Hosted Sync가 없어도 local-first 기능과 runtime 상태를 표시하며, 실제 배포용 서명·notarization과
 update channel은 아직 없다. `afterPack` hook은 Electron 기본 plist에서 사용하지 않는 카메라,
 마이크, Bluetooth 권한 설명을 제거하고 arbitrary network load를 끈 뒤 loopback 예외만 유지한다.
+패키지 안의 Codex JavaScript launcher와 native binary는 `app.asar.unpacked`에 두며 Main이 실제
+unpacked 경로를 계산해 실행한다. child process에 virtual `app.asar` 경로를 넘기면 native binary
+spawn이 실패하므로 경로 변환을 unit test와 설치본 smoke test로 검증한다.
 
 현재 한계도 중요하다. local outbox table은 존재하지만 Sync delivery·reconciliation worker는 아직
-없다. Codex thread·turn primitive는 Main에 있으나 renderer의 실제 논문 작성 흐름과 patch approval
-UI에는 아직 연결되지 않았다. Git, SSH, Keychain connector, LaTeX compile, PDF preview도 계획
+없다. Codex Project Chat은 실제 thread·turn과 연결됐지만 논문 작성·patch approval 흐름은 아직
+연결되지 않았다. Git, SSH, Keychain connector, LaTeX compile, PDF preview도 계획
 상태다. DMG 설정은 있으나 서명·notarization·auto-update를 보증하지 않는다.
 
 IPC 기능을 추가할 때는 preload type, argument schema, Main sender 검증, 최소 반환값, 실패 테스트를
@@ -467,7 +528,8 @@ model이 catalog에서 사라지면 다른 model로 조용히 바꾸지 않고 �
 `pnpm check`는 formatting, contract drift, lint, TypeScript typecheck, test와 build를 순서대로
 실행한다. Turbo는 workspace dependency의 build를 먼저 수행하고 root test는 local launcher의 URL,
 service identity와 readiness retry 규칙을 검증한다. 특정 package를 변경해도 PR 전에는 전체 gate를
-실행한다.
+실행한다. Desktop build는 추가로 sandboxed preload bundle을 검사해 허용되지 않은 external module이
+남은 artifact를 만들지 않는다.
 
 macOS에서 `pnpm --filter @gosu/desktop smoke:local-db:mac`을 실행하면 Electron ABI의 실제
 SQLCipher와 `safeStorage`를 사용해 workspace commit, encrypted file header, close/reopen 복구,
@@ -605,7 +667,7 @@ enforce하고 감사할 수 있는 egress adapter가 생기기 전에는 계속 
 
 - PostgreSQL adapter가 존재한다는 것과 실제 API가 PostgreSQL을 사용한다는 것은 다르다.
 - UI에 보이는 버튼·차트가 실제 command나 experiment를 수행한다는 뜻은 아니다.
-- Codex class에 turn method가 있다는 것과 renderer writing workflow가 연결됐다는 것은 다르다.
+- Project Chat이 연결됐다는 것과 Codex가 논문 파일을 쓰거나 자동실험을 실행한다는 것은 다르다.
 - connector class가 있다는 것과 사용자의 OAuth 연결·증분 sync가 완성됐다는 것은 다르다.
 - macOS package 설정이 있다는 것과 배포 artifact가 서명·notarization됐다는 것은 다르다.
 - manifest에 `allowlist` enum이 있다는 것과 Runner network 실행이 허용된다는 것은 다르다. 현재는

@@ -9,7 +9,7 @@ import type {
 } from '../../shared/workspace-contracts';
 import { CardHead, describeError } from './ui-primitives';
 
-export type WorkspaceTabId = 'board' | 'objective' | 'connections' | 'notes';
+export type WorkspaceTabId = 'chat' | 'board' | 'objective' | 'connections' | 'notes';
 
 type ObjectiveDraft = {
   goal: string;
@@ -38,6 +38,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   label: string;
   icon: string;
 }> = [
+  { id: 'chat', label: 'Project chat', icon: '◈' },
   { id: 'board', label: 'Board', icon: '▦' },
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
@@ -93,6 +94,7 @@ export function WorkspacePageHeading({
 }) {
   const tab = WORKSPACE_TABS.find((item) => item.id === activeTab)!;
   const subtitles: Record<WorkspaceTabId, string> = {
+    chat: 'Talk with the linked Codex model and turn the conversation into reviewed project work.',
     board: 'Create work, move it through the research workflow, and keep every change locally.',
     objective:
       'Define a versioned goal, evaluation metric, reproducibility hashes, and hard experiment budget.',

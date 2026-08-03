@@ -1,5 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
+import type {
+  ProjectChatAction,
+  ProjectChatEvent,
+  ProjectChatSnapshot,
+} from '../../shared/project-chat-contracts';
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
 import type {
   ProjectRecord,
@@ -8,6 +13,8 @@ import type {
 } from '../../shared/workspace-contracts';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import { LocalNotesView, type SelectedNote, type VaultSelection } from './notes-view';
+import { ProjectChatLoadGuard } from './project-chat-load-guard';
+import { ProjectChatView } from './project-chat-view';
 import { Connection, describeError } from './ui-primitives';
 import {
   BoardView,
@@ -26,7 +33,7 @@ export function DesktopApp() {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [pendingSummary, setPendingSummary] = useState<WorkspacePendingSummary | null>(null);
   const [activeProjectId, setActiveProjectId] = useState('');
-  const [activeTab, setActiveTab] = useState<WorkspaceTabId>('board');
+  const [activeTab, setActiveTab] = useState<WorkspaceTabId>('chat');
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -35,6 +42,7 @@ export function DesktopApp() {
 
   const [models, setModels] = useState<CodexModel[]>([]);
   const [selectedModel, setSelectedModel] = useState('auto');
+  const [selectedReasoning, setSelectedReasoning] = useState('auto');
   const [codexStatus, setCodexStatus] = useState('Catalog not loaded');
   const [codexBusy, setCodexBusy] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeReadiness | null>(null);
@@ -43,6 +51,12 @@ export function DesktopApp() {
   const [noteLoading, setNoteLoading] = useState(false);
   const [apiKeyMode, setApiKeyMode] = useState(false);
   const [apiKey, setApiKey] = useState('');
+  const [chatSnapshots, setChatSnapshots] = useState<Record<string, ProjectChatSnapshot>>({});
+  const [chatLoadingProjectId, setChatLoadingProjectId] = useState<string | null>(null);
+  const [chatStartingProjectId, setChatStartingProjectId] = useState<string | null>(null);
+  const [chatInFlight, setChatInFlight] = useState<Record<string, boolean>>({});
+  const [applyingChatActionId, setApplyingChatActionId] = useState<string | null>(null);
+  const chatLoadGuard = useRef(new ProjectChatLoadGuard());
 
   const activeProject = useMemo(
     () => snapshot?.projects.find((project) => project.id === activeProjectId),
@@ -72,6 +86,23 @@ export function DesktopApp() {
     return nextSnapshot;
   };
 
+  const loadProjectChat = async (projectId: string) => {
+    if (!projectId) return null;
+    const loadToken = chatLoadGuard.current.begin(projectId);
+    setChatLoadingProjectId(projectId);
+    try {
+      const next = await window.gosu.projectChat.snapshot(projectId);
+      if (!chatLoadGuard.current.canApply(loadToken)) return null;
+      setChatSnapshots((current) => ({ ...current, [projectId]: next }));
+      setChatInFlight((current) => ({ ...current, [projectId]: Boolean(next.activeTurnId) }));
+      return next;
+    } finally {
+      if (chatLoadGuard.current.isLatestRequest(loadToken)) {
+        setChatLoadingProjectId((current) => (current === projectId ? null : current));
+      }
+    }
+  };
+
   useEffect(() => {
     void loadWorkspace()
       .catch((error: unknown) => setWorkspaceError(describeError(error)))
@@ -89,6 +120,51 @@ export function DesktopApp() {
       })
       .catch(() => setCodexStatus('Runtime readiness check failed'));
   }, []);
+
+  useEffect(
+    () =>
+      window.gosu.projectChat.onEvent((event: ProjectChatEvent) => {
+        chatLoadGuard.current.observeEvent(event.projectId);
+        if (event.type === 'turn.started') {
+          setChatInFlight((current) => ({ ...current, [event.projectId]: true }));
+          return;
+        }
+        if (event.type === 'turn.completed') {
+          setChatInFlight((current) => ({ ...current, [event.projectId]: false }));
+          void loadProjectChat(event.projectId).catch((error: unknown) =>
+            setWorkspaceError(describeError(error)),
+          );
+          return;
+        }
+        setChatSnapshots((current) => {
+          const projectSnapshot = current[event.projectId];
+          if (!projectSnapshot) return current;
+          return {
+            ...current,
+            [event.projectId]: {
+              ...projectSnapshot,
+              messages: projectSnapshot.messages.map((message) => ({
+                ...message,
+                actions: message.actions.map((action) =>
+                  action.id === event.action.id ? event.action : action,
+                ),
+              })),
+            },
+          };
+        });
+        if (event.workspaceChanged) {
+          void loadWorkspace().catch((error: unknown) => setWorkspaceError(describeError(error)));
+        }
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    if (activeTab !== 'chat' || !activeProjectId) return;
+    void loadProjectChat(activeProjectId).catch((error: unknown) =>
+      setWorkspaceError(describeError(error)),
+    );
+  }, [activeProjectId, activeTab]);
 
   const refreshModels = async () => {
     if (codexBusy) return;
@@ -272,7 +348,7 @@ export function DesktopApp() {
               );
               if (succeeded && createdProject) {
                 setActiveProjectId(createdProject.id);
-                setActiveTab('board');
+                setActiveTab('chat');
               }
               return succeeded;
             }}
@@ -300,9 +376,85 @@ export function DesktopApp() {
                   if (succeeded && createdProject) {
                     setActiveProjectId(createdProject.id);
                     setShowProjectForm(false);
-                    setActiveTab('board');
+                    setActiveTab('chat');
                   }
                   return succeeded;
+                }}
+              />
+            )}
+
+            {activeTab === 'chat' && activeProject && (
+              <ProjectChatView
+                project={activeProject}
+                tasks={activeTasks}
+                snapshot={chatSnapshots[activeProject.id] ?? null}
+                loading={
+                  chatLoadingProjectId === activeProject.id &&
+                  chatSnapshots[activeProject.id] === undefined
+                }
+                inFlight={
+                  Boolean(chatInFlight[activeProject.id]) ||
+                  chatStartingProjectId === activeProject.id
+                }
+                models={models}
+                selectedModel={selectedModel}
+                selectedReasoning={selectedReasoning}
+                applyingActionId={applyingChatActionId}
+                onSelectedModel={(modelId) => {
+                  setSelectedModel(modelId);
+                  setSelectedReasoning('auto');
+                }}
+                onSelectedReasoning={setSelectedReasoning}
+                onRefreshModels={() => void refreshModels()}
+                onSend={async (message) => {
+                  if (chatStartingProjectId !== null || chatInFlight[activeProject.id])
+                    return false;
+                  setChatStartingProjectId(activeProject.id);
+                  setWorkspaceError(null);
+                  try {
+                    await window.gosu.projectChat.send({
+                      projectId: activeProject.id,
+                      message,
+                      requestedModelId: selectedModel === 'auto' ? null : selectedModel,
+                      reasoningOptionId: selectedReasoning === 'auto' ? null : selectedReasoning,
+                    });
+                    await loadProjectChat(activeProject.id);
+                    return true;
+                  } catch (error) {
+                    setWorkspaceError(describeError(error));
+                    await loadProjectChat(activeProject.id).catch(() => undefined);
+                    return false;
+                  } finally {
+                    setChatStartingProjectId((current) =>
+                      current === activeProject.id ? null : current,
+                    );
+                  }
+                }}
+                onCancel={() => {
+                  void window.gosu.projectChat
+                    .cancel(activeProject.id)
+                    .catch((error: unknown) => setWorkspaceError(describeError(error)));
+                }}
+                onApplyAction={async (action: ProjectChatAction) => {
+                  if (applyingChatActionId !== null) return;
+                  setApplyingChatActionId(action.id);
+                  setWorkspaceError(null);
+                  try {
+                    const updated = await window.gosu.projectChat.applyAction({
+                      projectId: activeProject.id,
+                      actionId: action.id,
+                    });
+                    await Promise.all([loadProjectChat(activeProject.id), loadWorkspace()]);
+                    setAnnouncement(
+                      updated.status === 'applied'
+                        ? 'Applied the reviewed chat action to the Board.'
+                        : 'The chat action was not applied. Its receipt explains why.',
+                    );
+                  } catch (error) {
+                    setWorkspaceError(describeError(error));
+                  } finally {
+                    setApplyingChatActionId(null);
+                  }
                 }}
               />
             )}
@@ -366,7 +518,10 @@ export function DesktopApp() {
                 busy={codexBusy}
                 apiKeyMode={apiKeyMode}
                 apiKey={apiKey}
-                onSelectedModel={setSelectedModel}
+                onSelectedModel={(modelId) => {
+                  setSelectedModel(modelId);
+                  setSelectedReasoning('auto');
+                }}
                 onRefresh={() => void refreshModels()}
                 onToggleApiKey={() => setApiKeyMode((visible) => !visible)}
                 onApiKey={setApiKey}
@@ -399,6 +554,7 @@ export function DesktopApp() {
                     .then(() => {
                       setModels([]);
                       setSelectedModel('auto');
+                      setSelectedReasoning('auto');
                       setCodexStatus('Signed out from local Codex.');
                     })
                     .catch((error: unknown) => setCodexStatus(describeError(error)))

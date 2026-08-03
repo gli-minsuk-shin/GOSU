@@ -110,6 +110,13 @@ export function describeError(error: unknown) {
       'Local workspace metadata needs recovery. Restart the latest GOSU build; existing data was not replaced.',
     workspace_unavailable:
       'The encrypted local workspace is unavailable. Your existing data was not replaced.',
+    chat_busy: 'This project already has an active Codex turn. Stop it or wait for completion.',
+    chat_not_active: 'There is no active Codex turn to stop for this project.',
+    action_not_found: 'This proposed project action no longer exists.',
+    action_not_proposed: 'This project action was already handled.',
+    invalid_chat_input: 'Check the chat message and model selection, then try again.',
+    codex_unavailable: 'Codex is unavailable. Board and local notes remain usable.',
+    chat_unavailable: 'Project chat is unavailable. Existing local messages were not replaced.',
   };
   const code = Object.keys(messages).find((candidate) => error.message.includes(candidate));
   return code ? messages[code]! : 'The operation could not be completed.';

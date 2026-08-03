@@ -5,6 +5,14 @@ import Database from 'better-sqlite3-multiple-ciphers';
 import { app, safeStorage } from 'electron';
 
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
+import {
+  ProjectChatActionSchema,
+  ProjectChatMessageSchema,
+  ProjectChatSnapshotSchema,
+  type ProjectChatAction,
+  type ProjectChatMessage,
+  type ProjectChatSnapshot,
+} from '../shared/project-chat-contracts';
 import type {
   WorkspaceOperation,
   WorkspacePendingSummary,
@@ -182,7 +190,43 @@ export class LocalDatabase {
         started_at text not null,
         updated_at text not null
       );
+      create table if not exists project_chat_messages (
+        id text primary key,
+        project_id text not null,
+        role text not null check (role in ('user','assistant')),
+        content text not null check (length(content) between 1 and 32000),
+        status text not null check (status in ('complete','failed','interrupted')),
+        turn_id text check (turn_id is null or length(turn_id) between 1 and 256),
+        model_json text check (model_json is null or length(model_json) <= 4096),
+        created_at text not null,
+        completed_at text not null
+      );
+      create index if not exists project_chat_messages_by_project
+        on project_chat_messages(project_id,created_at,id);
+      create table if not exists project_chat_actions (
+        id text primary key,
+        message_id text not null references project_chat_messages(id) on delete cascade,
+        project_id text not null,
+        command_json text not null check (length(command_json) <= 4096),
+        status text not null check (status in ('proposed','applying','applied','failed')),
+        result_entity_id text,
+        result_entity_version integer check (
+          result_entity_version is null or result_entity_version > 0
+        ),
+        error_code text,
+        created_at text not null,
+        updated_at text not null
+      );
+      create index if not exists project_chat_actions_by_message
+        on project_chat_actions(message_id,created_at,id);
     `);
+      database
+        .prepare(
+          `update project_chat_actions
+           set status='failed',error_code='application_interrupted',updated_at=?
+           where status='applying'`,
+        )
+        .run(new Date().toISOString());
       const outboxColumns = database.pragma('table_info(sync_outbox)') as Array<{ name: string }>;
       if (!outboxColumns.some((column) => column.name === 'workspace_revision')) {
         database.exec(
@@ -369,6 +413,134 @@ export class LocalDatabase {
       );
   }
 
+  saveMessage(input: ProjectChatMessage) {
+    const message = ProjectChatMessageSchema.parse(structuredClone(input));
+    const database = this.require();
+    database.transaction(() => {
+      database
+        .prepare(
+          `insert into project_chat_messages(
+             id,project_id,role,content,status,turn_id,model_json,created_at,completed_at
+           ) values(?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          message.id,
+          message.projectId,
+          message.role,
+          message.content,
+          message.status,
+          message.turnId ?? null,
+          message.model ? JSON.stringify(message.model) : null,
+          message.createdAt,
+          message.completedAt,
+        );
+      const insertAction = database.prepare(
+        `insert into project_chat_actions(
+           id,message_id,project_id,command_json,status,result_entity_id,
+           result_entity_version,error_code,created_at,updated_at
+         ) values(?,?,?,?,?,?,?,?,?,?)`,
+      );
+      for (const action of message.actions) {
+        insertAction.run(
+          action.id,
+          action.messageId,
+          action.projectId,
+          JSON.stringify(action.command),
+          action.status,
+          action.resultEntityId ?? null,
+          action.resultEntityVersion ?? null,
+          action.errorCode ?? null,
+          action.createdAt,
+          action.updatedAt,
+        );
+      }
+    })();
+  }
+
+  snapshot(projectId: string): ProjectChatSnapshot {
+    const database = this.require();
+    const rows = database
+      .prepare(
+        `select * from (
+           select id,project_id,role,content,status,turn_id,model_json,created_at,completed_at
+           from project_chat_messages where project_id=?
+           order by created_at desc,id desc limit 250
+         ) order by created_at asc,id asc`,
+      )
+      .all(projectId) as ProjectChatMessageRow[];
+    const actionsByMessage = new Map<string, ProjectChatAction[]>();
+    const actionStatement = database.prepare(
+      `select id,message_id,project_id,command_json,status,result_entity_id,
+              result_entity_version,error_code,created_at,updated_at
+       from project_chat_actions where message_id=? order by created_at asc,id asc`,
+    );
+    for (const row of rows) {
+      const actions = (actionStatement.all(row.id) as ProjectChatActionRow[]).map(toChatAction);
+      actionsByMessage.set(row.id, actions);
+    }
+    return ProjectChatSnapshotSchema.parse({
+      schemaVersion: 1,
+      projectId,
+      messages: rows.map((row) => ({
+        id: row.id,
+        projectId: row.project_id,
+        role: row.role,
+        content: row.content,
+        status: row.status,
+        ...(row.turn_id ? { turnId: row.turn_id } : {}),
+        ...(row.model_json ? { model: JSON.parse(row.model_json) as Record<string, unknown> } : {}),
+        actions: actionsByMessage.get(row.id) ?? [],
+        createdAt: row.created_at,
+        completedAt: row.completed_at,
+      })),
+    });
+  }
+
+  getAction(projectId: string, actionId: string) {
+    const row = this.require()
+      .prepare(
+        `select id,message_id,project_id,command_json,status,result_entity_id,
+                result_entity_version,error_code,created_at,updated_at
+         from project_chat_actions where project_id=? and id=?`,
+      )
+      .get(projectId, actionId) as ProjectChatActionRow | undefined;
+    return row ? toChatAction(row) : null;
+  }
+
+  claimAction(projectId: string, actionId: string, updatedAt: string) {
+    return (
+      this.require()
+        .prepare(
+          `update project_chat_actions set status='applying',updated_at=?
+           where project_id=? and id=? and status='proposed'`,
+        )
+        .run(updatedAt, projectId, actionId).changes === 1
+    );
+  }
+
+  finishAction(input: ProjectChatAction) {
+    const action = ProjectChatActionSchema.parse(structuredClone(input));
+    if (action.status !== 'applied' && action.status !== 'failed') {
+      throw new Error('invalid_chat_action_terminal_status');
+    }
+    const result = this.require()
+      .prepare(
+        `update project_chat_actions set
+           status=?,result_entity_id=?,result_entity_version=?,error_code=?,updated_at=?
+         where project_id=? and id=? and status='applying'`,
+      )
+      .run(
+        action.status,
+        action.resultEntityId ?? null,
+        action.resultEntityVersion ?? null,
+        action.errorCode ?? null,
+        action.updatedAt,
+        action.projectId,
+        action.id,
+      );
+    if (result.changes !== 1) throw new Error('chat_action_state_conflict');
+  }
+
   close() {
     this.database?.close();
     this.database = undefined;
@@ -378,4 +550,44 @@ export class LocalDatabase {
     if (!this.database) throw new Error('local_database_not_open');
     return this.database;
   }
+}
+
+type ProjectChatMessageRow = {
+  id: string;
+  project_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  status: 'complete' | 'failed' | 'interrupted';
+  turn_id: string | null;
+  model_json: string | null;
+  created_at: string;
+  completed_at: string;
+};
+
+type ProjectChatActionRow = {
+  id: string;
+  message_id: string;
+  project_id: string;
+  command_json: string;
+  status: 'proposed' | 'applying' | 'applied' | 'failed';
+  result_entity_id: string | null;
+  result_entity_version: number | null;
+  error_code: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function toChatAction(row: ProjectChatActionRow) {
+  return ProjectChatActionSchema.parse({
+    id: row.id,
+    projectId: row.project_id,
+    messageId: row.message_id,
+    command: JSON.parse(row.command_json) as unknown,
+    status: row.status,
+    ...(row.result_entity_id ? { resultEntityId: row.result_entity_id } : {}),
+    ...(row.result_entity_version ? { resultEntityVersion: row.result_entity_version } : {}),
+    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
 }

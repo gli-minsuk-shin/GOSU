@@ -1,9 +1,13 @@
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { app, BrowserWindow, ipcMain, session, shell, type IpcMainInvokeEvent } from 'electron';
-import type { ModelInvocation } from '@gosu/contracts';
+import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
+import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import { CodexAppServer } from './codex-app-server';
 import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
+import { registerProjectChatIpc } from './project-chat-ipc';
+import { ProjectChatService } from './project-chat-service';
 import {
   createTrustedRenderer,
   isTrustedRendererUrl,
@@ -23,7 +27,13 @@ import { isSupervisorAlive, parseSupervisorPid } from './supervisor-liveness';
 
 installProcessOutputGuards();
 
-const codex = new CodexAppServer();
+const sharedCodexHome =
+  process.env.CODEX_HOME?.trim() ||
+  (process.env.HOME ? join(process.env.HOME, '.codex') : undefined);
+const codex = new CodexAppServer({
+  isolatedCodexHome: () => join(app.getPath('userData'), 'codex-project-chat'),
+  sharedAuthFile: () => (sharedCodexHome ? join(sharedCodexHome, 'auth.json') : undefined),
+});
 const database = new LocalDatabase();
 const vault = new VaultAccess();
 const workspace = new WorkspaceService({
@@ -31,6 +41,16 @@ const workspace = new WorkspaceService({
   commit: (state, operation) => database.commitWorkspaceState(state, operation),
   pendingChanges: () => database.pendingWorkspaceChanges(),
   pendingSummary: () => database.pendingWorkspaceSummary(),
+});
+const projectChat = new ProjectChatService({
+  storage: database,
+  workspace,
+  codex,
+  async prepareProjectDirectory(projectId) {
+    const directory = join(app.getPath('userData'), 'project-chat-workspaces', projectId);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    return directory;
+  },
 });
 let mainWindow: BrowserWindow | undefined;
 
@@ -125,6 +145,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     workspace,
     reportUnexpectedWorkspaceError,
   );
+  registerProjectChatIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    projectChat,
+    reportUnexpectedWorkspaceError,
+  );
 
   handle('gosu:runtime:readiness', async () =>
     buildRuntimeReadiness({
@@ -141,10 +166,6 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   handle('gosu:codex:status', () => codex.status());
   handle('gosu:codex:list-models', async () => {
     const catalog = await codex.listModelCatalog();
-    if (database.isReady()) {
-      database.recordModelCatalog(catalog);
-      database.cache('codex', 'model-catalog', catalog, Date.now());
-    }
     return catalog.models;
   });
   handle('gosu:codex:login-chatgpt', async () => {
@@ -196,12 +217,26 @@ if (!primaryInstance) {
     } catch (error) {
       localData = localDataReadiness(error);
     }
+    codex.on('catalog', (catalog: ModelCatalog) => {
+      if (!database.isReady()) return;
+      database.recordModelCatalog(catalog);
+      database.cache('codex', 'model-catalog', catalog, Date.now());
+    });
     codex.on(
       'invocation',
       (event: { threadId: string; turnId: string; invocation: ModelInvocation }) =>
         database.isReady() &&
         database.recordModelInvocation(event.threadId, event.turnId, event.invocation),
     );
+    projectChat.on('event', (event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send(PROJECT_CHAT_IPC_CHANNELS.event, event);
+        } catch {
+          console.error('[GOSU] Project chat renderer event delivery failed.');
+        }
+      }
+    });
     registerIpc(trustedRenderer, localData);
     createWindow(trustedRenderer);
     app.on('second-instance', () => {
