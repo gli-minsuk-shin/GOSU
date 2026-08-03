@@ -180,7 +180,11 @@ function verifyLegacyChatMigration(rootUserData: string, fixedTimestamp: string)
     reopened.open();
     const reconciled = reopened.getChatAttempt(legacyProjectId, durableAttemptId);
     invariant(
-      reconciled?.status === 'interrupted' && reconciled.errorCode === 'application_interrupted',
+      reconciled?.status === 'interrupted' &&
+        reconciled.errorCode === 'application_interrupted' &&
+        reconciled.collaborationModeId === undefined &&
+        reconciled.personality === undefined &&
+        reconciled.responseVerbosity === undefined,
       'migrated_chat_did_not_support_durable_attempt_reconciliation',
     );
     reopened.close();
@@ -204,6 +208,10 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
       .trim();
     const projectId = randomUUID();
     const revisionId = randomUUID();
+    const contextProjectId = randomUUID();
+    const contextRevisionId = randomUUID();
+    const reviewerProjectId = randomUUID();
+    const reviewerRevisionId = randomUUID();
     const raw = new Database(join(legacyUserData, 'gosu.db'));
     try {
       raw.pragma(`key="x'${keyHex}'"`);
@@ -237,23 +245,63 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
             'd'.repeat(64),
             fixedTimestamp,
           );
-        raw
-          .prepare(
-            `insert into project_chat_profiles(
+        const insertLegacyRevision = raw.prepare(
+          `insert into project_chat_instruction_revisions(
+             id,project_id,revision,content,content_sha256,created_at
+           ) values(?,?,?,?,?,?)`,
+        );
+        insertLegacyRevision.run(
+          contextRevisionId,
+          contextProjectId,
+          1,
+          '',
+          'e'.repeat(64),
+          fixedTimestamp,
+        );
+        insertLegacyRevision.run(
+          reviewerRevisionId,
+          reviewerProjectId,
+          1,
+          '',
+          'f'.repeat(64),
+          fixedTimestamp,
+        );
+        const insertLegacyProfile = raw.prepare(
+          `insert into project_chat_profiles(
              project_id,version,harness_mode,response_depth,context_scope,
              instruction_revision_id,created_at,updated_at
            ) values(?,?,?,?,?,?,?,?)`,
-          )
-          .run(
-            projectId,
-            1,
-            'planner',
-            'deep',
-            'board',
-            revisionId,
-            fixedTimestamp,
-            fixedTimestamp,
-          );
+        );
+        insertLegacyProfile.run(
+          projectId,
+          1,
+          'planner',
+          'deep',
+          'board',
+          revisionId,
+          fixedTimestamp,
+          fixedTimestamp,
+        );
+        insertLegacyProfile.run(
+          contextProjectId,
+          1,
+          'context',
+          'standard',
+          'project',
+          contextRevisionId,
+          fixedTimestamp,
+          fixedTimestamp,
+        );
+        insertLegacyProfile.run(
+          reviewerProjectId,
+          1,
+          'reviewer',
+          'concise',
+          'objective',
+          reviewerRevisionId,
+          fixedTimestamp,
+          fixedTimestamp,
+        );
       })();
     } finally {
       raw.close();
@@ -264,21 +312,38 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
     const legacyProfile = migrated.getProjectChatProfile(projectId);
     invariant(
       legacyProfile.version === 1 &&
+        legacyProfile.collaborationModeId === 'plan' &&
+        legacyProfile.personality === 'auto' &&
+        legacyProfile.responseVerbosity === 'high' &&
         legacyProfile.localNotesVault === null &&
         legacyProfile.customInstructions === 'Legacy profile instructions.',
       'legacy_profile_v050_migration_failed',
+    );
+    invariant(
+      migrated.getProjectChatProfile(contextProjectId).collaborationModeId === 'default' &&
+        migrated.getProjectChatProfile(contextProjectId).responseVerbosity === 'medium' &&
+        migrated.getProjectChatProfile(reviewerProjectId).collaborationModeId === 'default' &&
+        migrated.getProjectChatProfile(reviewerProjectId).responseVerbosity === 'low',
+      'legacy_profile_v050_native_mode_mapping_failed',
     );
     const updated = migrated.updateProjectChatProfile({
       projectId,
       expectedVersion: 1,
       harnessMode: 'planner',
       responseDepth: 'deep',
+      collaborationModeId: 'research-orchestrator-v2',
+      personality: 'friendly',
+      responseVerbosity: 'low',
       contextScope: 'board',
       localNotesVault: { id: 'f'.repeat(64), name: 'Migrated Vault' },
       customInstructions: 'Legacy profile instructions.',
     });
     invariant(
-      updated?.version === 2 && updated.localNotesVault?.id === 'f'.repeat(64),
+      updated?.version === 2 &&
+        updated.collaborationModeId === 'research-orchestrator-v2' &&
+        updated.personality === 'friendly' &&
+        updated.responseVerbosity === 'low' &&
+        updated.localNotesVault?.id === 'f'.repeat(64),
       'legacy_profile_v050_grant_update_failed',
     );
     migrated.close();
@@ -305,7 +370,9 @@ void app.whenReady().then(async () => {
     const chatActionId = randomUUID();
     const chatProjectId = second.state.projects[0]!.id;
     invariant(
-      database.getProjectChatProfile(chatProjectId).version === 0,
+      database.getProjectChatProfile(chatProjectId).version === 0 &&
+        database.getProjectChatProfile(chatProjectId).collaborationModeId === null &&
+        database.getProjectChatProfile(chatProjectId).responseVerbosity === 'auto',
       'default_chat_profile_missing',
     );
     const chatProfile = database.updateProjectChatProfile({
@@ -313,11 +380,20 @@ void app.whenReady().then(async () => {
       expectedVersion: 0,
       harnessMode: 'planner',
       responseDepth: 'deep',
+      collaborationModeId: 'research-orchestrator-v2',
+      personality: 'pragmatic',
+      responseVerbosity: 'high',
       contextScope: 'board',
       localNotesVault: { id: 'a'.repeat(64), name: 'Fixture Vault' },
       customInstructions: 'Prefer reproducible experiments.',
     });
     invariant(chatProfile?.version === 1, 'chat_profile_initial_update_failed');
+    invariant(
+      chatProfile.collaborationModeId === 'research-orchestrator-v2' &&
+        chatProfile.personality === 'pragmatic' &&
+        chatProfile.responseVerbosity === 'high',
+      'chat_profile_native_settings_missing',
+    );
     invariant(
       chatProfile.localNotesVault?.id === 'a'.repeat(64) &&
         chatProfile.localNotesVault.name === 'Fixture Vault',
@@ -404,6 +480,9 @@ void app.whenReady().then(async () => {
       reasoningOptionId: 'high',
       harnessMode: 'planner',
       responseDepth: 'deep',
+      collaborationModeId: 'research-orchestrator-v2',
+      personality: 'pragmatic',
+      responseVerbosity: 'high',
       contextScope: 'board',
       profileVersion: chatProfile.version,
       instructionRevisionId: chatProfile.instructionRevision?.id ?? null,
@@ -671,6 +750,10 @@ void app.whenReady().then(async () => {
     invariant(
       reopened.getChatAttempt(chatProjectId, completedAttemptId)?.status === 'complete' &&
         reopened.getChatAttempt(chatProjectId, completedAttemptId)?.harnessMode === 'planner' &&
+        reopened.getChatAttempt(chatProjectId, completedAttemptId)?.collaborationModeId ===
+          'research-orchestrator-v2' &&
+        reopened.getChatAttempt(chatProjectId, completedAttemptId)?.personality === 'pragmatic' &&
+        reopened.getChatAttempt(chatProjectId, completedAttemptId)?.responseVerbosity === 'high' &&
         reopened.getChatAttempt(chatProjectId, completedAttemptId)?.profileVersion === 1 &&
         reopened.getChatAttempt(chatProjectId, completedAttemptId)?.promptProvenance
           ?.promptSha256 === 'e'.repeat(64),
@@ -680,6 +763,10 @@ void app.whenReady().then(async () => {
       reopened.getProjectChatProfile(chatProjectId).version === 1 &&
         reopened.getProjectChatProfile(chatProjectId).customInstructions ===
           'Prefer reproducible experiments.' &&
+        reopened.getProjectChatProfile(chatProjectId).collaborationModeId ===
+          'research-orchestrator-v2' &&
+        reopened.getProjectChatProfile(chatProjectId).personality === 'pragmatic' &&
+        reopened.getProjectChatProfile(chatProjectId).responseVerbosity === 'high' &&
         reopened.getProjectChatProfile(chatProjectId).localNotesVault?.id === 'a'.repeat(64) &&
         reopened.getProjectChatProfile(chatProjectId).localNotesVault?.name === 'Fixture Vault' &&
         reopened.getProjectChatProfile(chatProjectId).instructionRevision?.id ===

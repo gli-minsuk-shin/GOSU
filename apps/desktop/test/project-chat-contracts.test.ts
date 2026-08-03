@@ -3,13 +3,16 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
+  CodexCollaborationModeCatalogSchema,
   CodexProjectResponseSchema,
   PROJECT_CHAT_OUTPUT_SCHEMA,
   ProjectChatAttemptSchema,
   ProjectChatMessageSchema,
+  ProjectChatPromptProvenanceSchema,
   ProjectChatProfileSchema,
   ProjectChatSnapshotSchema,
   UpdateProjectChatProfileInputSchema,
+  defaultProjectChatProfile,
 } from '../src/shared/project-chat-contracts';
 
 describe('Project chat contracts', () => {
@@ -115,19 +118,37 @@ describe('Project chat contracts', () => {
 
   it('bounds versioned profile instructions and keeps the version-zero default representable', () => {
     const projectId = randomUUID();
+    const legacyProfile = ProjectChatProfileSchema.parse({
+      schemaVersion: 1,
+      projectId,
+      version: 0,
+      harnessMode: 'planner',
+      responseDepth: 'deep',
+      contextScope: 'project',
+      customInstructions: '',
+      instructionRevision: null,
+      updatedAt: null,
+    });
+    expect(legacyProfile).toMatchObject({
+      version: 0,
+      collaborationModeId: 'plan',
+      personality: 'auto',
+      responseVerbosity: 'high',
+    });
     expect(
       ProjectChatProfileSchema.parse({
-        schemaVersion: 1,
-        projectId,
-        version: 0,
-        harnessMode: 'context',
-        responseDepth: 'standard',
-        contextScope: 'project',
-        customInstructions: '',
-        instructionRevision: null,
-        updatedAt: null,
-      }).version,
-    ).toBe(0);
+        ...legacyProfile,
+        harnessMode: 'reviewer',
+        responseDepth: 'concise',
+        collaborationModeId: undefined,
+        responseVerbosity: undefined,
+      }),
+    ).toMatchObject({ collaborationModeId: 'default', responseVerbosity: 'low' });
+    expect(defaultProjectChatProfile(projectId)).toMatchObject({
+      collaborationModeId: null,
+      personality: 'auto',
+      responseVerbosity: 'auto',
+    });
     expect(() =>
       UpdateProjectChatProfileInputSchema.parse({
         projectId,
@@ -147,8 +168,13 @@ describe('Project chat contracts', () => {
         contextScope: 'project',
         localNotesVault: { id: 'a'.repeat(64), name: 'Research Notes' },
         customInstructions: '',
-      }).localNotesVault,
-    ).toEqual({ id: 'a'.repeat(64), name: 'Research Notes' });
+      }),
+    ).toMatchObject({
+      collaborationModeId: 'default',
+      personality: 'auto',
+      responseVerbosity: 'medium',
+      localNotesVault: { id: 'a'.repeat(64), name: 'Research Notes' },
+    });
     expect(() =>
       UpdateProjectChatProfileInputSchema.parse({
         projectId,
@@ -160,5 +186,89 @@ describe('Project chat contracts', () => {
         customInstructions: '',
       }),
     ).toThrow();
+  });
+
+  it('accepts future native collaboration modes without a desktop release', () => {
+    const catalog = CodexCollaborationModeCatalogSchema.parse({
+      catalogVersion: 'catalog-future-fixture',
+      modes: [
+        {
+          id: 'default',
+          displayName: 'Default',
+          recommendedModelId: null,
+          recommendedReasoningOptionId: null,
+        },
+        {
+          id: 'research-orchestrator-v2',
+          displayName: 'Research orchestrator',
+          recommendedModelId: 'future-model-id',
+          recommendedReasoningOptionId: 'high',
+        },
+      ],
+    });
+    expect(catalog.modes[1]?.id).toBe('research-orchestrator-v2');
+    expect(() =>
+      CodexCollaborationModeCatalogSchema.parse({
+        catalogVersion: 'duplicate-fixture',
+        modes: [catalog.modes[0], catalog.modes[0]],
+      }),
+    ).toThrow();
+  });
+
+  it('keeps v1/v2 prompt provenance readable and parses native v3 provenance', () => {
+    const base = {
+      schemaVersion: 1 as const,
+      baseInstructionId: 'gosu.project-chat.base',
+      baseInstructionVersion: 1,
+      baseInstructionsSha256: 'a'.repeat(64),
+      harnessInstructionId: 'gosu.project-chat.harness.planner',
+      harnessInstructionVersion: 1,
+      harnessInstructionsSha256: 'b'.repeat(64),
+      customInstructionsSha256: 'c'.repeat(64),
+      developerInstructionsSha256: 'd'.repeat(64),
+      promptSha256: 'e'.repeat(64),
+      projectContextSha256: 'f'.repeat(64),
+      visibleHistorySha256: '0'.repeat(64),
+      userMessageSha256: '1'.repeat(64),
+      profileVersion: 0,
+      instructionRevisionId: null,
+      workspaceRevision: 1,
+      developerInstructionsCharacters: 800,
+      promptCharacters: 1_200,
+      contextTruncated: false,
+      historyTruncated: false,
+    };
+    expect(
+      ProjectChatPromptProvenanceSchema.parse({ ...base, assemblyVersion: 1 }).assemblyVersion,
+    ).toBe(1);
+    const v2Fields = {
+      toolCatalogSha256: '2'.repeat(64),
+      localNotesVaultId: null,
+    };
+    expect(
+      ProjectChatPromptProvenanceSchema.parse({
+        ...base,
+        ...v2Fields,
+        assemblyVersion: 2,
+      }).assemblyVersion,
+    ).toBe(2);
+    expect(
+      ProjectChatPromptProvenanceSchema.parse({
+        ...base,
+        ...v2Fields,
+        assemblyVersion: 3,
+        requestedLegacyHarnessMode: 'planner',
+        nativeCollaborationModeId: 'plan',
+        nativeExecutionKind: 'plan',
+        nativeCollaborationCatalogSha256: '3'.repeat(64),
+        nativePersonality: 'pragmatic',
+        nativeResponseVerbosity: 'high',
+        effectiveReasoningOptionId: 'high',
+      }),
+    ).toMatchObject({
+      assemblyVersion: 3,
+      nativeCollaborationModeId: 'plan',
+      nativePersonality: 'pragmatic',
+    });
   });
 });

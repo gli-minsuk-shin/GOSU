@@ -42,7 +42,10 @@ const snapshot: WorkspaceSnapshot = {
   objectives: [],
 };
 
-function renderSettings(initialCategory: 'appearance' | 'board' | 'projects' | 'agent') {
+function renderSettings(
+  initialCategory: 'appearance' | 'board' | 'projects' | 'agent',
+  agentProfile = defaultProjectChatProfile(snapshot.projects[0]!.id),
+) {
   return renderToStaticMarkup(
     <SettingsView
       preferences={DEFAULT_USER_PREFERENCES}
@@ -54,8 +57,28 @@ function renderSettings(initialCategory: 'appearance' | 'board' | 'projects' | '
       onTrashProject={vi.fn()}
       onRestoreProject={vi.fn()}
       agentProject={snapshot.projects[0]}
-      agentProfile={defaultProjectChatProfile(snapshot.projects[0]!.id)}
+      agentProfile={agentProfile}
       agentProfileLoading={false}
+      collaborationModes={[
+        {
+          id: 'default',
+          displayName: 'Default',
+          recommendedModelId: null,
+          recommendedReasoningOptionId: null,
+        },
+        {
+          id: 'plan',
+          displayName: 'Plan',
+          recommendedModelId: null,
+          recommendedReasoningOptionId: 'medium',
+        },
+        {
+          id: 'auto',
+          displayName: 'Provider Auto Mode',
+          recommendedModelId: null,
+          recommendedReasoningOptionId: null,
+        },
+      ]}
       vault={null}
       vaultState="ready"
       onUpdateAgentProfile={vi.fn()}
@@ -88,14 +111,15 @@ describe('separated application Settings', () => {
     expect(html).not.toContain('Delete permanently');
   });
 
-  it('separates harness, response depth, context, and project instructions from model choice', () => {
+  it('separates native Codex mode, personality, context, and project instructions from model choice', () => {
     const html = renderSettings('agent');
 
-    expect(html).toContain('AGENT HARNESS');
-    expect(html).toContain('Research copilot');
-    expect(html).toContain('Planner');
-    expect(html).toContain('Reviewer');
-    expect(html).toContain('Response depth');
+    expect(html).toContain('NATIVE CODEX HARNESS');
+    expect(html).toContain('Default');
+    expect(html).toContain('Plan');
+    expect(html).toContain('Provider Auto Mode');
+    expect(html).toContain('Answer verbosity');
+    expect(html).toContain('Personality');
     expect(html).toContain('Local context scope');
     expect(html).toContain('PROJECT INSTRUCTIONS');
     expect(html).toContain('LOCAL NOTES ACCESS');
@@ -103,5 +127,15 @@ describe('separated application Settings', () => {
     expect(html).toContain('content SHA-256, offset, and total character');
     expect(html).toContain('Project-bound read tools only');
     expect(html).toContain('no shell · no arbitrary files · no network · no subagents');
+  });
+
+  it('keeps a migrated Reviewer profile in compatibility mode until a native mode is chosen', () => {
+    const html = renderSettings('agent', {
+      ...defaultProjectChatProfile(snapshot.projects[0]!.id),
+      harnessMode: 'reviewer',
+      collaborationModeId: 'default',
+    });
+
+    expect(html).toContain('Legacy Reviewer · choose a native mode to leave');
   });
 });

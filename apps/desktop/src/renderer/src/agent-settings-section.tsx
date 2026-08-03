@@ -2,47 +2,38 @@ import { useEffect, useState } from 'react';
 
 import {
   PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH,
+  type CodexCollaborationModeDescriptor,
   type LocalNotesVaultGrant,
   type ProjectChatContextScope,
-  type ProjectChatHarnessMode,
+  type ProjectChatPersonality,
   type ProjectChatProfile,
-  type ProjectChatResponseDepth,
+  type ProjectChatResponseVerbosity,
   type UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
 import type { VaultSelection } from '../../shared/vault-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import type { VaultRuntimeState } from './notes-view';
 
-const HARNESS_CHOICES: ReadonlyArray<{
-  id: ProjectChatHarnessMode;
+const VERBOSITY_CHOICES: ReadonlyArray<{
+  id: ProjectChatResponseVerbosity;
   label: string;
   description: string;
 }> = [
-  {
-    id: 'context',
-    label: 'Research copilot',
-    description: 'Discuss evidence and propose a Board change only when explicitly requested.',
-  },
-  {
-    id: 'planner',
-    label: 'Planner',
-    description: 'Turn the current project state into concrete, reviewable next actions.',
-  },
-  {
-    id: 'reviewer',
-    label: 'Reviewer',
-    description: 'Critique assumptions and gaps. GOSU enforces an empty action list.',
-  },
+  { id: 'auto', label: 'Auto', description: 'Use the model default' },
+  { id: 'low', label: 'Low', description: 'Compact visible answer' },
+  { id: 'medium', label: 'Medium', description: 'Balanced visible answer' },
+  { id: 'high', label: 'High', description: 'More complete visible answer' },
 ];
 
-const DEPTH_CHOICES: ReadonlyArray<{
-  id: ProjectChatResponseDepth;
+const PERSONALITY_CHOICES: ReadonlyArray<{
+  id: ProjectChatPersonality;
   label: string;
   description: string;
 }> = [
-  { id: 'concise', label: 'Concise', description: 'Decision-first answer' },
-  { id: 'standard', label: 'Standard', description: 'Balanced detail' },
-  { id: 'deep', label: 'Deep', description: 'Assumptions and tradeoffs' },
+  { id: 'auto', label: 'Auto', description: 'Use the Codex/model default' },
+  { id: 'friendly', label: 'Friendly', description: 'Warm, collaborative voice' },
+  { id: 'pragmatic', label: 'Pragmatic', description: 'Direct, execution-focused voice' },
+  { id: 'none', label: 'None', description: 'No personality override' },
 ];
 
 const CONTEXT_CHOICES: ReadonlyArray<{
@@ -60,6 +51,7 @@ export function AgentSettingsSection({
   profile,
   loading,
   busy,
+  collaborationModes = [],
   vault,
   vaultState,
   onSave,
@@ -68,19 +60,39 @@ export function AgentSettingsSection({
   profile: ProjectChatProfile | undefined;
   loading: boolean;
   busy: boolean;
+  collaborationModes: readonly CodexCollaborationModeDescriptor[];
   vault: VaultSelection | null;
   vaultState: VaultRuntimeState;
   onSave: (input: UpdateProjectChatProfileInput) => Promise<boolean>;
 }) {
-  const [harnessMode, setHarnessMode] = useState<ProjectChatHarnessMode>('context');
-  const [responseDepth, setResponseDepth] = useState<ProjectChatResponseDepth>('standard');
-  const [contextScope, setContextScope] = useState<ProjectChatContextScope>('project');
-  const [customInstructions, setCustomInstructions] = useState('');
-  const [localNotesVault, setLocalNotesVault] = useState<LocalNotesVaultGrant | null>(null);
+  const [collaborationModeId, setCollaborationModeId] = useState<string | null>(() =>
+    profile?.harnessMode === 'reviewer' ? null : (profile?.collaborationModeId ?? null),
+  );
+  const [legacyReviewerCompatibility, setLegacyReviewerCompatibility] = useState(
+    () => profile?.harnessMode === 'reviewer',
+  );
+  const [personality, setPersonality] = useState<ProjectChatPersonality>(
+    () => profile?.personality ?? 'auto',
+  );
+  const [responseVerbosity, setResponseVerbosity] = useState<ProjectChatResponseVerbosity>(
+    () => profile?.responseVerbosity ?? 'auto',
+  );
+  const [contextScope, setContextScope] = useState<ProjectChatContextScope>(
+    () => profile?.contextScope ?? 'project',
+  );
+  const [customInstructions, setCustomInstructions] = useState(
+    () => profile?.customInstructions ?? '',
+  );
+  const [localNotesVault, setLocalNotesVault] = useState<LocalNotesVaultGrant | null>(
+    () => profile?.localNotesVault ?? null,
+  );
 
   useEffect(() => {
-    setHarnessMode(profile?.harnessMode ?? 'context');
-    setResponseDepth(profile?.responseDepth ?? 'standard');
+    const preserveLegacyReviewer = profile?.harnessMode === 'reviewer';
+    setLegacyReviewerCompatibility(preserveLegacyReviewer);
+    setCollaborationModeId(preserveLegacyReviewer ? null : (profile?.collaborationModeId ?? null));
+    setPersonality(profile?.personality ?? 'auto');
+    setResponseVerbosity(profile?.responseVerbosity ?? 'auto');
     setContextScope(profile?.contextScope ?? 'project');
     setCustomInstructions(profile?.customInstructions ?? '');
     setLocalNotesVault(profile?.localNotesVault ?? null);
@@ -113,8 +125,9 @@ export function AgentSettingsSection({
   }
 
   const hasChanges =
-    harnessMode !== profile.harnessMode ||
-    responseDepth !== profile.responseDepth ||
+    (!legacyReviewerCompatibility && collaborationModeId !== profile.collaborationModeId) ||
+    personality !== profile.personality ||
+    responseVerbosity !== profile.responseVerbosity ||
     contextScope !== profile.contextScope ||
     localNotesVault?.id !== profile.localNotesVault?.id ||
     localNotesVault?.name !== profile.localNotesVault?.name ||
@@ -129,8 +142,22 @@ export function AgentSettingsSection({
         void onSave({
           projectId: project.id,
           expectedVersion: profile.version,
-          harnessMode,
-          responseDepth,
+          harnessMode: legacyReviewerCompatibility
+            ? 'reviewer'
+            : collaborationModeId === 'plan'
+              ? 'planner'
+              : 'context',
+          responseDepth:
+            responseVerbosity === 'low'
+              ? 'concise'
+              : responseVerbosity === 'high'
+                ? 'deep'
+                : 'standard',
+          collaborationModeId: legacyReviewerCompatibility
+            ? profile.collaborationModeId
+            : collaborationModeId,
+          personality,
+          responseVerbosity,
           contextScope,
           localNotesVault,
           customInstructions,
@@ -139,29 +166,48 @@ export function AgentSettingsSection({
     >
       <article className="settings-card">
         <div className="settings-card-heading">
-          <span>AGENT HARNESS · {project.name}</span>
-          <h2>Choose how the project copilot works</h2>
+          <span>NATIVE CODEX HARNESS · {project.name}</span>
+          <h2>Choose a Codex collaboration mode</h2>
           <p>
-            These modes change prompt assembly and allowed proposals. They do not grant tools or
-            execution permissions.
+            GOSU discovers these modes from the pinned local Codex App Server. Modes supported by
+            the bundled Codex runtime appear here automatically.
           </p>
         </div>
-        <div className="agent-choice-grid" role="radiogroup" aria-label="Agent harness mode">
-          {HARNESS_CHOICES.map((choice) => (
-            <button
-              type="button"
-              role="radio"
-              aria-checked={harnessMode === choice.id}
-              className={harnessMode === choice.id ? 'selected' : ''}
-              key={choice.id}
-              onClick={() => setHarnessMode(choice.id)}
-              disabled={busy}
-            >
-              <strong>{choice.label}</strong>
-              <span>{choice.description}</span>
-            </button>
-          ))}
-        </div>
+        <label className="agent-instructions-field">
+          Collaboration mode
+          <select
+            value={collaborationModeId ?? ''}
+            onChange={(event) => {
+              setLegacyReviewerCompatibility(false);
+              setCollaborationModeId(event.target.value || null);
+            }}
+            disabled={busy}
+          >
+            <option value="">
+              {legacyReviewerCompatibility
+                ? 'Legacy Reviewer · choose a native mode to leave'
+                : 'Auto · Codex default'}
+            </option>
+            {collaborationModeId !== null &&
+              !collaborationModes.some((mode) => mode.id === collaborationModeId) && (
+                <option value={collaborationModeId} disabled>
+                  Unavailable mode · choose again
+                </option>
+              )}
+            {collaborationModes.map((mode) => (
+              <option value={mode.id} key={mode.id}>
+                {mode.displayName}
+                {mode.recommendedReasoningOptionId
+                  ? ` · ${mode.recommendedReasoningOptionId} reasoning`
+                  : ''}
+              </option>
+            ))}
+          </select>
+          <span>
+            The mode selects Codex's own agent loop and instructions. It never expands GOSU's
+            project capability boundary.
+          </span>
+        </label>
       </article>
 
       <article className="settings-card">
@@ -250,20 +296,38 @@ export function AgentSettingsSection({
           <span>OUTPUT &amp; CONTEXT</span>
           <h2>Control the answer without hardcoding a model</h2>
           <p>
-            Response depth shapes the visible answer. Model reasoning is selected separately from
-            the live provider catalog on each chat turn.
+            Personality and answer verbosity use native Codex turn/thread settings. Model reasoning
+            remains a separate live-catalog choice on each turn.
           </p>
         </div>
         <div className="agent-setting-columns">
           <fieldset>
-            <legend>Response depth</legend>
-            {DEPTH_CHOICES.map((choice) => (
+            <legend>Answer verbosity</legend>
+            {VERBOSITY_CHOICES.map((choice) => (
               <label key={choice.id}>
                 <input
                   type="radio"
-                  name="response-depth"
-                  checked={responseDepth === choice.id}
-                  onChange={() => setResponseDepth(choice.id)}
+                  name="response-verbosity"
+                  checked={responseVerbosity === choice.id}
+                  onChange={() => setResponseVerbosity(choice.id)}
+                  disabled={busy}
+                />
+                <span>
+                  <strong>{choice.label}</strong>
+                  <small>{choice.description}</small>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+          <fieldset>
+            <legend>Personality</legend>
+            {PERSONALITY_CHOICES.map((choice) => (
+              <label key={choice.id}>
+                <input
+                  type="radio"
+                  name="personality"
+                  checked={personality === choice.id}
+                  onChange={() => setPersonality(choice.id)}
                   disabled={busy}
                 />
                 <span>
@@ -326,7 +390,7 @@ export function AgentSettingsSection({
           </span>
           <small>
             Board and Objective can be read live. Board changes remain proposals and require Apply.
-            Reviewer actions are discarded by the Main process even if a model returns one.
+            Codex native modes cannot grant themselves more tools or access another project.
           </small>
         </div>
         <div className="form-actions">

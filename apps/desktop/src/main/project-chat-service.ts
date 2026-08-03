@@ -13,12 +13,17 @@ import {
   ProjectChatTurnReceiptSchema,
   SendProjectChatMessageInputSchema,
   UpdateProjectChatProfileInputSchema,
+  legacyDepthToResponseVerbosity,
+  legacyHarnessToCollaborationModeId,
   type ApplyProjectChatActionInput,
+  type CodexCollaborationModeCatalog,
+  type CodexCollaborationModeDescriptor,
   type ProjectChatAction,
   type ProjectChatActionCommand,
   type ProjectChatAttempt,
   type ProjectChatEvent,
   type ProjectChatMessage,
+  type ProjectChatNativeExecutionKind,
   type ProjectChatProfile,
   type ProjectChatProjectInput,
   type ProjectChatSnapshot,
@@ -26,7 +31,12 @@ import {
   type SendProjectChatMessageInput,
   type UpdateProjectChatProfileInput,
 } from '../shared/project-chat-contracts';
-import type { CodexDynamicToolHandler, CodexDynamicToolSpec } from './codex-app-server';
+import type {
+  CodexDynamicToolHandler,
+  CodexDynamicToolSpec,
+  CodexPersonality,
+  CodexResponseVerbosity,
+} from './codex-app-server';
 import { ProjectAgentToolSession, type ProjectAgentVault } from './project-agent-tools';
 import { assembleProjectChatPrompt } from './project-chat-prompt';
 import { WorkspaceServiceError, type WorkspaceService } from './workspace-service';
@@ -58,10 +68,12 @@ export interface ProjectChatStorage {
 
 export interface ProjectChatCodex {
   on: EventEmitter['on'];
+  listCollaborationModeCatalog(): Promise<CodexCollaborationModeCatalog>;
   startThread(input: {
     cwd: string;
     modelId: string | null;
     developerInstructions?: string;
+    responseVerbosity?: CodexResponseVerbosity | null;
     dynamicTools?: readonly CodexDynamicToolSpec[];
     dynamicToolHandler?: CodexDynamicToolHandler;
   }): Promise<{ threadId: string }>;
@@ -73,7 +85,16 @@ export interface ProjectChatCodex {
     cwd: string;
     clientUserMessageId?: string;
     outputSchema?: Readonly<Record<string, unknown>>;
-  }): Promise<{ turnId: string; invocation: ModelInvocation }>;
+    collaborationModeId?: string | null;
+    expectedCollaborationModeCatalogVersion?: string | null;
+    personality?: CodexPersonality | null;
+  }): Promise<{
+    turnId: string;
+    invocation: ModelInvocation;
+    collaborationMode?: CodexCollaborationModeDescriptor | null;
+    effectiveReasoningOptionId?: string | null;
+    personality?: CodexPersonality | null;
+  }>;
   interruptTurn(threadId: string, turnId: string): Promise<void>;
   revokeDynamicTools(threadId: string): void;
   releaseThread(threadId: string): Promise<void>;
@@ -136,6 +157,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isoNow() {
   return new Date().toISOString();
+}
+
+function legacyHarnessForNativeMode(collaborationModeId: string | null) {
+  return collaborationModeId === 'plan' ? ('planner' as const) : ('context' as const);
+}
+
+function nativeExecutionKind(
+  collaborationModeId: string | null,
+  legacyReviewerCompatibility: boolean,
+): ProjectChatNativeExecutionKind {
+  if (legacyReviewerCompatibility) return 'legacy-reviewer';
+  return collaborationModeId === 'plan' ? 'plan' : 'default';
 }
 
 function modelProvenance(invocation: ModelInvocation) {
@@ -317,6 +350,7 @@ export class ProjectChatService extends EventEmitter {
   }
 
   async send(input: SendProjectChatMessageInput): Promise<ProjectChatTurnReceipt> {
+    const hasExplicitNativeModeSelection = input.collaborationModeId !== undefined;
     const command = SendProjectChatMessageInputSchema.parse(input);
     if (
       this.trashLockedProjects.has(command.projectId) ||
@@ -350,9 +384,50 @@ export class ProjectChatService extends EventEmitter {
         }
       }
 
-      const harnessMode = command.harnessMode ?? profile.harnessMode;
+      const legacyReviewerCompatibility =
+        !hasExplicitNativeModeSelection &&
+        (profile.harnessMode === 'reviewer' || command.harnessMode === 'reviewer');
+      const requestedHarnessMode = legacyReviewerCompatibility
+        ? 'reviewer'
+        : (command.harnessMode ?? profile.harnessMode);
+      const collaborationModeId = hasExplicitNativeModeSelection
+        ? (command.collaborationModeId ?? null)
+        : command.harnessMode !== undefined
+          ? legacyHarnessToCollaborationModeId(command.harnessMode)
+          : profile.collaborationModeId;
+      const harnessMode = hasExplicitNativeModeSelection
+        ? legacyHarnessForNativeMode(collaborationModeId)
+        : requestedHarnessMode;
+      const resolvedCollaborationModeId = legacyReviewerCompatibility ? null : collaborationModeId;
       const responseDepth = command.responseDepth ?? profile.responseDepth;
+      const personality = command.personality ?? profile.personality;
+      const responseVerbosity =
+        command.responseVerbosity ??
+        (command.responseDepth === undefined
+          ? profile.responseVerbosity
+          : legacyDepthToResponseVerbosity(command.responseDepth));
       const contextScope = command.contextScope ?? profile.contextScope;
+      let collaborationModeCatalog: CodexCollaborationModeCatalog;
+      try {
+        collaborationModeCatalog = await this.dependencies.codex.listCollaborationModeCatalog();
+      } catch {
+        throw new ProjectChatServiceError('codex_unavailable');
+      }
+      const collaborationMode = resolvedCollaborationModeId
+        ? (collaborationModeCatalog.modes.find(
+            (candidate) => candidate.id === resolvedCollaborationModeId,
+          ) ?? null)
+        : null;
+      if (resolvedCollaborationModeId && !collaborationMode) {
+        // A saved opaque mode is never silently replaced after the provider removes it.
+        throw new ProjectChatServiceError('codex_unavailable');
+      }
+      const effectiveReasoningOptionId =
+        command.reasoningOptionId ?? collaborationMode?.recommendedReasoningOptionId ?? null;
+      const executionKind = nativeExecutionKind(
+        resolvedCollaborationModeId,
+        legacyReviewerCompatibility,
+      );
       const agentTools = new ProjectAgentToolSession({
         projectId: command.projectId,
         workspace: this.dependencies.workspace,
@@ -375,6 +450,12 @@ export class ProjectChatService extends EventEmitter {
           agentTools.localNotesAvailable && profile.localNotesVault
             ? profile.localNotesVault.id
             : null,
+        nativeCollaborationModeId: resolvedCollaborationModeId,
+        nativeExecutionKind: executionKind,
+        nativeCollaborationCatalogSha256: collaborationModeCatalog.catalogVersion,
+        nativePersonality: personality,
+        nativeResponseVerbosity: responseVerbosity,
+        effectiveReasoningOptionId,
       });
 
       const createdAt = isoNow();
@@ -399,6 +480,9 @@ export class ProjectChatService extends EventEmitter {
         reasoningOptionId: command.reasoningOptionId,
         harnessMode,
         responseDepth,
+        collaborationModeId: resolvedCollaborationModeId,
+        personality,
+        responseVerbosity,
         contextScope,
         profileVersion: profile.version,
         instructionRevisionId: profile.instructionRevision?.id ?? null,
@@ -422,6 +506,7 @@ export class ProjectChatService extends EventEmitter {
           command.requestedModelId,
           assembled.developerInstructions,
           agentTools,
+          responseVerbosity === 'auto' ? null : responseVerbosity,
         );
         ephemeralThreadId = threadId;
         connectionEpoch = this.codexConnectionEpoch;
@@ -433,6 +518,9 @@ export class ProjectChatService extends EventEmitter {
           cwd,
           clientUserMessageId: userMessage.id,
           outputSchema: PROJECT_CHAT_OUTPUT_SCHEMA,
+          collaborationModeId: resolvedCollaborationModeId,
+          expectedCollaborationModeCatalogVersion: collaborationModeCatalog.catalogVersion,
+          personality: personality === 'auto' ? null : personality,
         });
         ephemeralTurnId = result.turnId;
         if (connectionEpoch !== this.codexConnectionEpoch) {
@@ -629,11 +717,13 @@ export class ProjectChatService extends EventEmitter {
     modelId: string | null,
     developerInstructions: string,
     agentTools: ProjectAgentToolSession,
+    responseVerbosity: CodexResponseVerbosity | null,
   ) {
     const started = await this.dependencies.codex.startThread({
       cwd,
       modelId,
       developerInstructions,
+      responseVerbosity,
       dynamicTools: agentTools.dynamicTools,
       dynamicToolHandler: agentTools.handler,
     });

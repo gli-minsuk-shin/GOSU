@@ -137,6 +137,20 @@ class MemoryChatStorage implements ProjectChatStorage {
       version: nextVersion,
       harnessMode: input.harnessMode,
       responseDepth: input.responseDepth,
+      collaborationModeId:
+        input.collaborationModeId === undefined
+          ? input.harnessMode === 'planner'
+            ? 'plan'
+            : 'default'
+          : input.collaborationModeId,
+      personality: input.personality ?? 'auto',
+      responseVerbosity:
+        input.responseVerbosity ??
+        (input.responseDepth === 'concise'
+          ? 'low'
+          : input.responseDepth === 'deep'
+            ? 'high'
+            : 'medium'),
       contextScope: input.contextScope,
       localNotesVault: input.localNotesVault ?? null,
       customInstructions: input.customInstructions,
@@ -184,19 +198,49 @@ class FakeCodex extends EventEmitter {
   readonly revoked: string[] = [];
   readonly prompts: string[] = [];
   readonly developerInstructions: string[] = [];
+  readonly responseVerbosities: Array<'low' | 'medium' | 'high' | null> = [];
+  readonly turnSettings: Array<{
+    collaborationModeId: string | null;
+    expectedCollaborationModeCatalogVersion: string | null;
+    personality: 'none' | 'friendly' | 'pragmatic' | null;
+    reasoningOptionId: string | null;
+  }> = [];
   readonly dynamicTools: Array<readonly CodexDynamicToolSpec[]> = [];
   readonly dynamicToolHandlers: Array<CodexDynamicToolHandler | undefined> = [];
   beforeRunReturns: ((threadId: string, turnId: string) => void | Promise<void>) | null = null;
   failNextInterrupt = false;
   nextThreadId: string | null = null;
+  collaborationModeCatalog = {
+    catalogVersion: 'd'.repeat(64),
+    modes: [
+      {
+        id: 'default',
+        displayName: 'Default',
+        recommendedModelId: null,
+        recommendedReasoningOptionId: null,
+      },
+      {
+        id: 'plan',
+        displayName: 'Plan',
+        recommendedModelId: null,
+        recommendedReasoningOptionId: 'medium',
+      },
+    ],
+  };
+
+  async listCollaborationModeCatalog() {
+    return structuredClone(this.collaborationModeCatalog);
+  }
 
   async startThread(input: {
     developerInstructions?: string;
+    responseVerbosity?: 'low' | 'medium' | 'high' | null;
     dynamicTools?: readonly CodexDynamicToolSpec[];
     dynamicToolHandler?: CodexDynamicToolHandler;
   }) {
     this.threadCount += 1;
     this.developerInstructions.push(input.developerInstructions ?? '');
+    this.responseVerbosities.push(input.responseVerbosity ?? null);
     this.dynamicTools.push(input.dynamicTools ?? []);
     this.dynamicToolHandlers.push(input.dynamicToolHandler);
     const threadId = this.nextThreadId ?? `thread-${this.threadCount}`;
@@ -204,15 +248,44 @@ class FakeCodex extends EventEmitter {
     return { threadId, modelId: 'fixture-model' };
   }
 
-  async runTurn(input: { threadId: string; requestedModelId: string | null; prompt: string }) {
+  async runTurn(input: {
+    threadId: string;
+    requestedModelId: string | null;
+    reasoningOptionId: string | null;
+    collaborationModeId?: string | null;
+    expectedCollaborationModeCatalogVersion?: string | null;
+    personality?: 'none' | 'friendly' | 'pragmatic' | null;
+    prompt: string;
+  }) {
     this.turnCount += 1;
     const turnId = `turn-${this.turnCount}`;
     this.turnThreads.set(turnId, input.threadId);
     this.prompts.push(input.prompt);
+    this.turnSettings.push({
+      collaborationModeId: input.collaborationModeId ?? null,
+      expectedCollaborationModeCatalogVersion:
+        input.expectedCollaborationModeCatalogVersion ?? null,
+      personality: input.personality ?? null,
+      reasoningOptionId: input.reasoningOptionId,
+    });
     await this.beforeRunReturns?.(input.threadId, turnId);
+    const collaborationMode = input.collaborationModeId
+      ? (this.collaborationModeCatalog.modes.find(
+          (candidate) => candidate.id === input.collaborationModeId,
+        ) ?? null)
+      : null;
+    const effectiveReasoningOptionId =
+      input.reasoningOptionId ?? collaborationMode?.recommendedReasoningOptionId ?? null;
     return {
       turnId,
-      invocation: invocation(input.requestedModelId),
+      invocation: {
+        ...invocation(input.requestedModelId),
+        reasoningOptionId: effectiveReasoningOptionId,
+      },
+      collaborationMode,
+      collaborationModeCatalogVersion: this.collaborationModeCatalog.catalogVersion,
+      effectiveReasoningOptionId,
+      personality: input.personality ?? null,
     };
   }
 
@@ -1029,15 +1102,30 @@ describe('ProjectChatService', () => {
       profileVersion: 1,
       instructionRevisionId: profile.instructionRevision?.id,
       promptProvenance: {
-        assemblyVersion: 2,
+        assemblyVersion: 3,
         profileVersion: 1,
         instructionRevisionId: profile.instructionRevision?.id,
+        requestedLegacyHarnessMode: 'planner',
+        nativeCollaborationModeId: 'plan',
+        nativeExecutionKind: 'plan',
+        nativeCollaborationCatalogSha256: 'd'.repeat(64),
+        nativePersonality: 'auto',
+        nativeResponseVerbosity: 'high',
+        effectiveReasoningOptionId: 'medium',
       },
     });
     expect(attempt?.promptProvenance?.promptCharacters).toBe(codex.prompts[0]?.length);
-    expect(codex.developerInstructions[0]).toContain('Harness mode (planner)');
-    expect(codex.developerInstructions[0]).toContain('Prefer falsifiable next steps.');
-    expect(codex.developerInstructions[0]).toContain('Do not run shell commands');
+    expect(codex.developerInstructions[0]).not.toContain('Harness mode');
+    expect(codex.developerInstructions[0]).not.toContain('Prefer falsifiable next steps.');
+    expect(codex.developerInstructions[0]).toContain('explicitly provided read-only GOSU tools');
+    expect(codex.prompts[0]).toContain('Prefer falsifiable next steps.');
+    expect(codex.turnSettings[0]).toMatchObject({
+      collaborationModeId: 'plan',
+      expectedCollaborationModeCatalogVersion: 'd'.repeat(64),
+      personality: null,
+      reasoningOptionId: null,
+    });
+    expect(codex.responseVerbosities[0]).toBe('high');
 
     codex.complete(receipt.turnId, { reply: 'Plan ready', actions: [] });
     await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
@@ -1123,7 +1211,7 @@ describe('ProjectChatService', () => {
     // discloses that the model may quote or summarize a note in the stored/synced answer.
     expect(assistant.content).toContain(content);
     expect(storage.getChatAttempt(projectA.id, receipt.attemptId)?.promptProvenance).toMatchObject({
-      assemblyVersion: 2,
+      assemblyVersion: 3,
       localNotesVaultId: vaultId,
     });
   });
@@ -1237,7 +1325,7 @@ describe('ProjectChatService', () => {
     expect(assistant.content).not.toContain(content);
   });
 
-  it('service-enforces reviewer mode by discarding every proposed action', async () => {
+  it('preserves migrated reviewer when new controls omit an explicit native mode', async () => {
     const { chat, codex, storage, projectA } = await fixture();
     const profile = await chat.updateProfile({
       projectId: projectA.id,
@@ -1253,6 +1341,13 @@ describe('ProjectChatService', () => {
       requestedModelId: null,
       reasoningOptionId: null,
       profileVersion: profile.version,
+      // A new renderer can send every other turn control while deliberately omitting
+      // collaborationModeId because the user has not changed the migrated Reviewer setting.
+      harnessMode: 'context',
+      responseDepth: 'deep',
+      personality: 'friendly',
+      responseVerbosity: 'high',
+      contextScope: 'board',
     });
     codex.complete(receipt.turnId, {
       reply: 'The plan needs a control.',
@@ -1261,7 +1356,165 @@ describe('ProjectChatService', () => {
 
     await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
     expect(storage.snapshot(projectA.id).messages[1]?.actions).toEqual([]);
-    expect(storage.getChatAttempt(projectA.id, receipt.attemptId)?.harnessMode).toBe('reviewer');
+    expect(storage.getChatAttempt(projectA.id, receipt.attemptId)).toMatchObject({
+      harnessMode: 'reviewer',
+      collaborationModeId: null,
+      personality: 'friendly',
+      responseVerbosity: 'high',
+      promptProvenance: {
+        assemblyVersion: 3,
+        requestedLegacyHarnessMode: 'reviewer',
+        nativeCollaborationModeId: null,
+        nativeExecutionKind: 'legacy-reviewer',
+      },
+    });
+    expect(codex.turnSettings[0]?.collaborationModeId).toBeNull();
+    expect(codex.developerInstructions[0]).toContain('Legacy reviewer compatibility is active');
+  });
+
+  it('lets an explicit native selection leave legacy reviewer compatibility', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const profile = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'reviewer',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      customInstructions: 'Be strict.',
+    });
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Plan a correction instead.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      profileVersion: profile.version,
+      collaborationModeId: 'plan',
+      personality: 'friendly',
+      responseVerbosity: 'low',
+    });
+    codex.complete(receipt.turnId, {
+      reply: 'A correction is ready for approval.',
+      actions: [{ type: 'task.create', title: 'Add a control run', status: 'planned' }],
+    });
+
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    expect(storage.snapshot(projectA.id).messages[1]?.actions).toHaveLength(1);
+    expect(storage.getChatAttempt(projectA.id, receipt.attemptId)).toMatchObject({
+      harnessMode: 'planner',
+      collaborationModeId: 'plan',
+      personality: 'friendly',
+      responseVerbosity: 'low',
+      promptProvenance: {
+        assemblyVersion: 3,
+        requestedLegacyHarnessMode: 'planner',
+        nativeCollaborationModeId: 'plan',
+        nativeExecutionKind: 'plan',
+        nativePersonality: 'friendly',
+        nativeResponseVerbosity: 'low',
+      },
+    });
+    expect(codex.turnSettings[0]).toMatchObject({
+      collaborationModeId: 'plan',
+      personality: 'friendly',
+    });
+    expect(codex.responseVerbosities[0]).toBe('low');
+    expect(codex.developerInstructions[0]).not.toContain('Legacy reviewer compatibility is active');
+  });
+
+  it('treats an explicitly selected native Auto mode as an exit from legacy reviewer', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const profile = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'reviewer',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      customInstructions: 'Be strict.',
+    });
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Return to native Auto and propose a task.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      profileVersion: profile.version,
+      harnessMode: 'reviewer',
+      collaborationModeId: null,
+      personality: 'auto',
+      responseVerbosity: 'auto',
+    });
+    codex.complete(receipt.turnId, {
+      reply: 'A proposal is ready.',
+      actions: [{ type: 'task.create', title: 'Run the native default', status: 'planned' }],
+    });
+
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    expect(storage.snapshot(projectA.id).messages[1]?.actions).toHaveLength(1);
+    expect(storage.getChatAttempt(projectA.id, receipt.attemptId)).toMatchObject({
+      harnessMode: 'context',
+      collaborationModeId: null,
+      promptProvenance: {
+        assemblyVersion: 3,
+        requestedLegacyHarnessMode: 'context',
+        nativeCollaborationModeId: null,
+        nativeExecutionKind: 'default',
+      },
+    });
+    expect(codex.developerInstructions[0]).not.toContain('Legacy reviewer compatibility is active');
+  });
+
+  it('does not silently replace a native collaboration mode removed by Codex', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'Use my saved native mode.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        collaborationModeId: 'removed-mode',
+      }),
+    ).rejects.toThrow('codex_unavailable');
+
+    expect(storage.snapshot(projectA.id).attempts).toEqual([]);
+    expect(storage.snapshot(projectA.id).messages).toEqual([]);
+    expect(codex.turnSettings).toEqual([]);
+  });
+
+  it('passes through a newly discovered opaque Codex mode without an app update', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    codex.collaborationModeCatalog.modes.push({
+      id: 'research-focus-v2',
+      displayName: 'Research Focus',
+      recommendedModelId: null,
+      recommendedReasoningOptionId: 'high',
+    });
+    codex.collaborationModeCatalog.catalogVersion = 'e'.repeat(64);
+
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Use the provider mode.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      collaborationModeId: 'research-focus-v2',
+      personality: 'pragmatic',
+      responseVerbosity: 'auto',
+    });
+
+    expect(codex.turnSettings[0]).toMatchObject({
+      collaborationModeId: 'research-focus-v2',
+      expectedCollaborationModeCatalogVersion: 'e'.repeat(64),
+      personality: 'pragmatic',
+    });
+    expect(storage.getChatAttempt(projectA.id, receipt.attemptId)).toMatchObject({
+      harnessMode: 'context',
+      collaborationModeId: 'research-focus-v2',
+      promptProvenance: {
+        assemblyVersion: 3,
+        nativeCollaborationModeId: 'research-focus-v2',
+        nativeExecutionKind: 'default',
+        nativeCollaborationCatalogSha256: 'e'.repeat(64),
+        effectiveReasoningOptionId: 'high',
+      },
+    });
   });
 
   it('rejects a stale send profile version before creating an attempt', async () => {
