@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { app, BrowserWindow, ipcMain, session, shell, type IpcMainInvokeEvent } from 'electron';
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
+import { ReadVaultAttachmentInputSchema } from '../shared/vault-contracts';
 import { CodexAppServer } from './codex-app-server';
 import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
@@ -194,6 +195,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   handle('gosu:vault:read', (_event, relativePath) =>
     vault.readMarkdown(typeof relativePath === 'string' ? relativePath : ''),
   );
+  handle('gosu:vault:read-attachment', (_event, input) => {
+    const parsed = ReadVaultAttachmentInputSchema.safeParse(input);
+    if (!parsed.success) throw new Error('invalid_vault_attachment_input');
+    return vault.readAttachment(parsed.data);
+  });
   handle('gosu:external:open', (_event, url) =>
     typeof url === 'string' && url.startsWith('https://')
       ? shell.openExternal(url)

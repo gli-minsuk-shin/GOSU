@@ -120,7 +120,7 @@ flowchart LR
 | Manuscript                 | 향후 desktop workspace module                                | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                     |
 | Review & Approval          | PostgreSQL approval schema와 Web UI 표현                     | 기반 구현; 실제 review anchor·approval command는 계획됨                             |
 | Reference                  | Zotero read-only connector                                   | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                           |
-| Obsidian Knowledge         | Desktop Vault reader, Obsidian parser                        | 제한된 read-only Markdown 선택·읽기 구현                                            |
+| Obsidian Knowledge         | Desktop Vault reader, Markdown renderer                      | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview 구현                   |
 | Lecture                    | Owner Web UI 표현                                            | 생성·편집·출처 연결은 계획됨                                                        |
 | AI Gateway                 | Desktop Project Chat service와 Codex App Server              | 로그인·동적 catalog·프로젝트별 thread/turn·모델 provenance 구현                     |
 | Integration Hub            | `packages/integrations` registry와 connector classes         | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨                    |
@@ -294,6 +294,33 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   approval은 Main이 거절하고 그 밖의 지원하지 않는 request에는 제한된 protocol error만 돌려준다.
 - Codex의 reasoning, command output, file diff, tool payload는 Project Chat DB나 Renderer로 전달하지
   않는다. Renderer에는 보이는 최종 답변, turn 상태, 검증된 action receipt만 보낸다.
+
+### Markdown reader 경계
+
+Local Notes의 기본 화면은 Markdown 원문이 아니라 CommonMark와 GFM의 heading, list, table, task
+list, blockquote, code block, footnote를 렌더링한다. 사용자는 같은 화면의 `Source` toggle로 원문을
+확인할 수 있다. 표시 크기와 색상은 전역 Appearance 설정의 font scale·theme token을 그대로
+사용한다.
+
+Markdown은 선택한 Vault에서 왔더라도 신뢰하지 않는다. Renderer는 raw HTML을 해석하지 않고,
+Markdown AST를 `rehype-sanitize` allowlist로 정리한 뒤 React element로 만든다. `script`, event
+handler, `iframe`, `object`, 임의 style과 SVG는 reader DOM에 들어갈 수 없다. frontmatter는 코드를
+실행하거나 Vault의 `cssclasses`를 적용하지 않고 접을 수 있는 read-only `Properties` 원문으로만
+표시한다.
+
+Obsidian `[[note]]`, alias와 표준 상대 `.md` link는 raw text 치환이 아닌 Markdown AST 단계에서
+처리한다. 따라서 inline/fenced code 안의 wiki-link 표시는 바뀌지 않는다. 대상은 현재 note 기준의
+exact path를 먼저 사용하고, basename은 Vault에서 유일할 때만 해석한다. missing·ambiguous link나
+Vault root 위로 벗어나는 path는 클릭할 수 없게 표시한다. heading·block fragment가 포함된 link도
+note 파일까지는 해석하지만 해당 fragment로 자동 scroll하는 기능과 note transclusion은 아직
+구현하지 않았다.
+
+외부 link는 정확한 HTTPS URL만 fixed preload IPC를 통해 Main process가 system browser로 연다.
+Renderer navigation과 새 창은 계속 차단한다. 외부 image는 privacy를 위해 자동 요청하지 않는다.
+Vault-local PNG, JPEG, GIF, WebP, AVIF만 typed attachment IPC로 읽으며 Main process가 note 기준 경로,
+root containment, symlink, 허용 확장자와 file signature, 8 MB 크기 제한을 다시 확인한다. 검증된 bytes만
+base64 data URL로 Renderer에 반환하며 절대 경로와 `file://` 권한은 노출하지 않는다. SVG, PDF,
+audio·video와 embedded note rendering은 후속 범위다.
 
 ### 현재 로컬 workspace 흐름
 

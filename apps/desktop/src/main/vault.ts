@@ -1,5 +1,6 @@
 import { dialog, type BrowserWindow } from 'electron';
 
+import type { ReadVaultAttachmentInput } from '../shared/vault-contracts';
 import { VaultReader } from './vault-reader';
 
 export class VaultAccess {
@@ -22,5 +23,10 @@ export class VaultAccess {
   async readMarkdown(relativePath: string) {
     if (!this.reader) throw new Error('vault_not_selected');
     return this.reader.readMarkdown(relativePath);
+  }
+
+  async readAttachment(input: ReadVaultAttachmentInput) {
+    if (!this.reader) throw new Error('vault_not_selected');
+    return this.reader.readAttachment(input.notePath, input.source);
   }
 }

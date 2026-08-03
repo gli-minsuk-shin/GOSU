@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -21,10 +21,16 @@
     "better-sqlite3-multiple-ciphers": "12.11.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "react-markdown": "10.1.0",
+    "rehype-sanitize": "6.0.0",
+    "remark-frontmatter": "5.0.0",
+    "remark-gfm": "4.0.1",
+    "unist-util-visit": "5.1.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
+    "@types/mdast": "4.0.4",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

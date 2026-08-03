@@ -1,3 +1,7 @@
+import { useState } from 'react';
+
+import { MarkdownDocument } from './markdown-document';
+
 export type VaultSelection = { root: string; files: string[] };
 export type SelectedNote = { path: string; content: string };
 
@@ -14,6 +18,8 @@ export function LocalNotesView({
   onChoose: () => void;
   onRead: (path: string) => void;
 }) {
+  const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
+
   if (!vault) {
     return (
       <section className="empty-state">
@@ -56,8 +62,48 @@ export function LocalNotesView({
         ))}
       </aside>
       <article className="note-reader">
-        <header>{selectedNote?.path ?? 'Select a Markdown file to read it locally.'}</header>
-        <pre>{busy ? 'Reading…' : (selectedNote?.content ?? 'No note selected.')}</pre>
+        <header>
+          <span>{selectedNote?.path ?? 'Select a Markdown file to read it locally.'}</span>
+          {selectedNote && (
+            <div className="note-reader-mode" aria-label="Markdown display mode">
+              <button
+                type="button"
+                className={mode === 'rendered' ? 'active' : ''}
+                aria-pressed={mode === 'rendered'}
+                onClick={() => setMode('rendered')}
+              >
+                Rendered
+              </button>
+              <button
+                type="button"
+                className={mode === 'source' ? 'active' : ''}
+                aria-pressed={mode === 'source'}
+                onClick={() => setMode('source')}
+              >
+                Source
+              </button>
+            </div>
+          )}
+        </header>
+        <div className="note-reader-body">
+          {busy ? (
+            <p className="note-reader-state">Reading…</p>
+          ) : selectedNote ? (
+            mode === 'rendered' ? (
+              <MarkdownDocument
+                key={selectedNote.path}
+                notePath={selectedNote.path}
+                source={selectedNote.content}
+                vaultFiles={vault.files}
+                onOpenNote={onRead}
+              />
+            ) : (
+              <pre className="markdown-source">{selectedNote.content}</pre>
+            )
+          ) : (
+            <p className="note-reader-state">No note selected.</p>
+          )}
+        </div>
       </article>
     </section>
   );
