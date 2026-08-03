@@ -5,6 +5,8 @@ import {
   CreateTaskInputSchema,
   ObjectiveCommandSchema,
   SaveObjectiveInputSchema,
+  SetTaskArchivedInputSchema,
+  UpdateBoardSettingsInputSchema,
   UpdateTaskInputSchema,
 } from '../shared/workspace-contracts';
 import { WORKSPACE_IPC_CHANNELS } from '../shared/workspace-channels';
@@ -36,6 +38,14 @@ export function registerWorkspaceIpc(
       reportUnexpected,
     ),
   );
+  register(WORKSPACE_IPC_CHANNELS.updateBoardSettings, (input) =>
+    withValidatedInput(
+      input,
+      UpdateBoardSettingsInputSchema,
+      (command) => workspace.updateBoardSettings(command),
+      reportUnexpected,
+    ),
+  );
   register(WORKSPACE_IPC_CHANNELS.createTask, (input) =>
     withValidatedInput(
       input,
@@ -49,6 +59,14 @@ export function registerWorkspaceIpc(
       input,
       UpdateTaskInputSchema,
       (command) => workspace.updateTask(command),
+      reportUnexpected,
+    ),
+  );
+  register(WORKSPACE_IPC_CHANNELS.setTaskArchived, (input) =>
+    withValidatedInput(
+      input,
+      SetTaskArchivedInputSchema,
+      (command) => workspace.setTaskArchived(command),
       reportUnexpected,
     ),
   );

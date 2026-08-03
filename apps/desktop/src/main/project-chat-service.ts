@@ -22,7 +22,10 @@ import {
   type ProjectChatTurnReceipt,
   type SendProjectChatMessageInput,
 } from '../shared/project-chat-contracts';
-import type { WorkspaceSnapshot } from '../shared/workspace-contracts';
+import {
+  resolveWorkspaceBoardSettings,
+  type WorkspaceSnapshot,
+} from '../shared/workspace-contracts';
 import { WorkspaceServiceError, type WorkspaceService } from './workspace-service';
 
 type MaybePromise<T> = T | Promise<T>;
@@ -112,6 +115,8 @@ const FAILURE_COPY = {
 
 const MAX_HISTORY_MESSAGES = 40;
 const MAX_HISTORY_CHARACTERS = 24_000;
+const MAX_CONTEXT_TASKS = 200;
+const MAX_CONTEXT_TASK_DESCRIPTION_CHARACTERS = 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -173,6 +178,8 @@ export function buildProjectChatPrompt(
   const project = snapshot.projects.find((candidate) => candidate.id === projectId);
   if (!project) throw new ProjectChatServiceError('project_not_found');
   const projectTasks = snapshot.tasks.filter((task) => task.projectId === projectId);
+  const activeProjectTasks = projectTasks.filter((task) => task.archivedAt === undefined);
+  const board = resolveWorkspaceBoardSettings(project.board);
   const objective = latestObjective(snapshot, projectId);
   const context = {
     schemaVersion: 1,
@@ -182,12 +189,24 @@ export function buildProjectChatPrompt(
       repository: project.repository ?? null,
     },
     board: {
-      taskCount: projectTasks.length,
-      truncated: projectTasks.length > 200,
-      tasks: projectTasks.slice(-200).map((task) => ({
+      title: board.title,
+      columns: board.columnOrder.map((status) => ({
+        status,
+        label: board.columnLabels[status],
+        wipLimit: board.wipLimits[status],
+      })),
+      taskCount: activeProjectTasks.length,
+      archivedTaskCount: projectTasks.length - activeProjectTasks.length,
+      truncated: activeProjectTasks.length > MAX_CONTEXT_TASKS,
+      tasks: activeProjectTasks.slice(-MAX_CONTEXT_TASKS).map((task) => ({
         id: task.id,
         title: task.title,
         status: task.status,
+        statusLabel: board.columnLabels[task.status],
+        description: task.description?.slice(0, MAX_CONTEXT_TASK_DESCRIPTION_CHARACTERS) ?? null,
+        priority: task.priority ?? null,
+        labels: task.labels ?? [],
+        dueDate: task.dueDate ?? null,
         version: task.version,
       })),
     },

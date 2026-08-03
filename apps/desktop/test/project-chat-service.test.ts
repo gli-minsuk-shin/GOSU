@@ -250,12 +250,74 @@ function waitForTurnCompleted(chat: ProjectChatService, turnId: string) {
 }
 
 describe('ProjectChatService', () => {
-  it('builds context from only the selected project', async () => {
-    const { workspace, projectA } = await fixture();
+  it('builds bounded active Board context from only the selected project', async () => {
+    const { workspace, projectA, taskA } = await fixture();
+    await workspace.updateBoardSettings({
+      projectId: projectA.id,
+      expectedVersion: projectA.version,
+      board: {
+        title: 'Alpha research flow',
+        columnLabels: {
+          backlog: 'Ideas',
+          planned: 'Ready for GPU',
+          in_progress: 'Running',
+          review: 'Check evidence',
+          done: 'Published',
+        },
+        columnOrder: ['planned', 'in_progress', 'review', 'backlog', 'done'],
+        wipLimits: {
+          backlog: null,
+          planned: 4,
+          in_progress: 2,
+          review: 1,
+          done: null,
+        },
+      },
+    });
+    await workspace.updateTask({
+      projectId: projectA.id,
+      taskId: taskA.id,
+      expectedVersion: taskA.version,
+      description: 'Reproduce the public baseline before the ablation.',
+      priority: 'urgent',
+      labels: ['baseline', 'gpu'],
+      dueDate: '2026-08-14',
+    });
+    await workspace.createTask({
+      projectId: projectA.id,
+      title: 'Bound the model context',
+      status: 'planned',
+      description: `${'x'.repeat(1_100)}DESCRIPTION_TAIL_MUST_BE_EXCLUDED`,
+    });
+    const archived = await workspace.createTask({
+      projectId: projectA.id,
+      title: 'Retired private direction',
+      status: 'review',
+      description: 'Archived task details must not enter the model context.',
+      priority: 'high',
+      labels: ['retired'],
+      dueDate: '2026-08-07',
+    });
+    await workspace.setTaskArchived({
+      projectId: projectA.id,
+      taskId: archived.id,
+      expectedVersion: archived.version,
+      archived: true,
+    });
     const prompt = buildProjectChatPrompt(await workspace.snapshot(), projectA.id, 'What next?');
 
     expect(prompt).toContain('Project Alpha');
+    expect(prompt).toContain('Alpha research flow');
+    expect(prompt).toContain('"status":"planned","label":"Ready for GPU"');
     expect(prompt).toContain('Alpha baseline');
+    expect(prompt).toContain('Reproduce the public baseline before the ablation.');
+    expect(prompt).toContain('"priority":"urgent"');
+    expect(prompt).toContain('"labels":["baseline","gpu"]');
+    expect(prompt).toContain('"dueDate":"2026-08-14"');
+    expect(prompt).toContain('"archivedTaskCount":1');
+    expect(prompt).not.toContain('DESCRIPTION_TAIL_MUST_BE_EXCLUDED');
+    expect(prompt).not.toContain('Retired private direction');
+    expect(prompt).not.toContain('Archived task details must not enter the model context.');
     expect(prompt).not.toContain('Project Beta');
     expect(prompt).not.toContain('Beta secret task');
   });

@@ -17,6 +17,8 @@ import type {
   ObjectiveCommand,
   ProjectRecord,
   SaveObjectiveInput,
+  SetTaskArchivedInput,
+  UpdateBoardSettingsInput,
   UpdateTaskInput,
   WorkspaceObjective,
   WorkspacePendingSummary,
@@ -84,10 +86,14 @@ const api = {
       invokeWorkspace<WorkspacePendingSummary>(WORKSPACE_IPC_CHANNELS.pendingSummary),
     createProject: (input: CreateProjectInput) =>
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.createProject, input),
+    updateBoardSettings: (input: UpdateBoardSettingsInput) =>
+      invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.updateBoardSettings, input),
     createTask: (input: CreateTaskInput) =>
       invokeWorkspace<WorkspaceTask>(WORKSPACE_IPC_CHANNELS.createTask, input),
     updateTask: (input: UpdateTaskInput) =>
       invokeWorkspace<WorkspaceTask>(WORKSPACE_IPC_CHANNELS.updateTask, input),
+    setTaskArchived: (input: SetTaskArchivedInput) =>
+      invokeWorkspace<WorkspaceTask>(WORKSPACE_IPC_CHANNELS.setTaskArchived, input),
     saveObjective: (input: SaveObjectiveInput) =>
       invokeWorkspace<WorkspaceObjective>(WORKSPACE_IPC_CHANNELS.saveObjective, input),
     lockObjective: (input: ObjectiveCommand) =>

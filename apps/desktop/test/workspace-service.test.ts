@@ -5,7 +5,12 @@ import {
   WorkspaceServiceError,
   type WorkspaceStorage,
 } from '../src/main/workspace-service';
-import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
+import {
+  DEFAULT_WORKSPACE_BOARD_SETTINGS,
+  resolveWorkspaceBoardSettings,
+  type WorkspaceOperation,
+  type WorkspaceSnapshot,
+} from '../src/shared/workspace-contracts';
 
 class MemoryWorkspaceStorage implements WorkspaceStorage {
   state: WorkspaceSnapshot | null = null;
@@ -67,6 +72,28 @@ function expectServiceError(error: unknown, code: WorkspaceServiceError['code'])
 }
 
 describe('WorkspaceService', () => {
+  it('opens a legacy schema-v1 snapshot without Board or task metadata fields', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    storage.state = {
+      schemaVersion: 1,
+      revision: 0,
+      projects: [],
+      tasks: [],
+      objectives: [],
+    };
+    const service = new WorkspaceService(storage);
+    const project = await service.createProject({ name: 'Legacy Compatible' });
+    const task = await service.createTask({ projectId: project.id, title: 'Legacy shaped task' });
+
+    const snapshot = await new WorkspaceService(storage).snapshot();
+    expect(snapshot.projects[0]).not.toHaveProperty('board');
+    expect(snapshot.tasks[0]).toEqual(task);
+    expect(snapshot.tasks[0]).not.toHaveProperty('description');
+    expect(resolveWorkspaceBoardSettings(snapshot.projects[0]?.board)).toEqual(
+      DEFAULT_WORKSPACE_BOARD_SETTINGS,
+    );
+  });
+
   it('starts empty, creates projects, and derives stable unique slugs', async () => {
     const storage = new MemoryWorkspaceStorage();
     const service = new WorkspaceService(storage);
@@ -140,6 +167,174 @@ describe('WorkspaceService', () => {
       .catch((caught: unknown) => caught);
     expectServiceError(error, 'cross_project_access_denied');
     expect((await service.snapshot()).tasks[0]?.projectId).toBe(first.id);
+  });
+
+  it('updates normalized project-specific Board settings with optimistic versions', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const first = await service.createProject({ name: 'Board Alpha' });
+    const second = await service.createProject({ name: 'Board Beta' });
+    const board = {
+      title: '  Experiment workflow  ',
+      columnLabels: {
+        backlog: '  Ideas ',
+        planned: 'Queued',
+        in_progress: 'Running',
+        review: 'Validate',
+        done: 'Published',
+      },
+      columnOrder: ['planned', 'backlog', 'in_progress', 'review', 'done'] as const,
+      wipLimits: {
+        backlog: null,
+        planned: 8,
+        in_progress: 3,
+        review: 2,
+        done: null,
+      },
+    };
+
+    const updated = await service.updateBoardSettings({
+      projectId: first.id,
+      expectedVersion: first.version,
+      board,
+    });
+
+    expect(updated).toMatchObject({
+      id: first.id,
+      version: 2,
+      board: {
+        title: 'Experiment workflow',
+        columnLabels: { backlog: 'Ideas' },
+        columnOrder: ['planned', 'backlog', 'in_progress', 'review', 'done'],
+        wipLimits: { in_progress: 3 },
+      },
+    });
+    const snapshot = await service.snapshot();
+    expect(snapshot.projects.find((project) => project.id === second.id)?.board).toBeUndefined();
+    expect(storage.operations.at(-1)).toMatchObject({
+      commandType: 'project.board.update',
+      projectId: first.id,
+      entityType: 'project',
+      entityId: first.id,
+      baseVersion: 1,
+      payload: { board: updated.board, newEntityVersion: 2 },
+    });
+
+    const staleError = await service
+      .updateBoardSettings({ projectId: first.id, expectedVersion: 1, board })
+      .catch((caught: unknown) => caught);
+    expectServiceError(staleError, 'version_conflict');
+    expect(staleError).toMatchObject({ details: { currentVersion: 2 } });
+  });
+
+  it('normalizes task metadata, clears optional values, and restores it after restart', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const project = await service.createProject({ name: 'Metadata Project' });
+    const created = await service.createTask({
+      projectId: project.id,
+      title: '  Compare optimizers  ',
+      status: 'planned',
+      description: '  Run the fixed-seed comparison.  ',
+      priority: 'high',
+      dueDate: '2026-08-14',
+      labels: [' Baseline ', 'GPU', 'baseline', ' gpu '],
+    });
+
+    expect(created).toMatchObject({
+      title: 'Compare optimizers',
+      description: 'Run the fixed-seed comparison.',
+      priority: 'high',
+      dueDate: '2026-08-14',
+      labels: ['Baseline', 'GPU'],
+      version: 1,
+    });
+    expect((await new WorkspaceService(storage).snapshot()).tasks[0]).toEqual(created);
+
+    const cleared = await service.updateTask({
+      projectId: project.id,
+      taskId: created.id,
+      expectedVersion: created.version,
+      description: '',
+      priority: '',
+      dueDate: null,
+      labels: [],
+    });
+    expect(cleared).toMatchObject({ id: created.id, version: 2 });
+    expect(cleared).not.toHaveProperty('description');
+    expect(cleared).not.toHaveProperty('priority');
+    expect(cleared).not.toHaveProperty('dueDate');
+    expect(cleared).not.toHaveProperty('labels');
+    expect(storage.operations.at(-1)).toMatchObject({
+      commandType: 'task.update',
+      baseVersion: 1,
+      payload: {
+        description: null,
+        priority: null,
+        dueDate: null,
+        labels: [],
+        newEntityVersion: 2,
+      },
+    });
+    expect((await new WorkspaceService(storage).snapshot()).tasks[0]).toEqual(cleared);
+  });
+
+  it('archives and restores through project ownership and optimistic task versions', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const first = await service.createProject({ name: 'Archive Alpha' });
+    const second = await service.createProject({ name: 'Archive Beta' });
+    const task = await service.createTask({ projectId: first.id, title: 'Preserve provenance' });
+
+    const denied = await service
+      .setTaskArchived({
+        projectId: second.id,
+        taskId: task.id,
+        expectedVersion: task.version,
+        archived: true,
+      })
+      .catch((caught: unknown) => caught);
+    expectServiceError(denied, 'cross_project_access_denied');
+
+    const archived = await service.setTaskArchived({
+      projectId: first.id,
+      taskId: task.id,
+      expectedVersion: task.version,
+      archived: true,
+    });
+    expect(archived).toMatchObject({ id: task.id, version: 2 });
+    expect(archived.archivedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(storage.operations.at(-1)).toMatchObject({
+      commandType: 'task.archive',
+      projectId: first.id,
+      baseVersion: 1,
+    });
+
+    const stale = await service
+      .setTaskArchived({
+        projectId: first.id,
+        taskId: task.id,
+        expectedVersion: task.version,
+        archived: false,
+      })
+      .catch((caught: unknown) => caught);
+    expectServiceError(stale, 'version_conflict');
+
+    const restored = await service.setTaskArchived({
+      projectId: first.id,
+      taskId: task.id,
+      expectedVersion: archived.version,
+      archived: false,
+    });
+    expect(restored).toMatchObject({ id: task.id, version: 3 });
+    expect(restored).not.toHaveProperty('archivedAt');
+    expect(storage.operations.at(-1)).toMatchObject({
+      commandType: 'task.restore',
+      projectId: first.id,
+      baseVersion: 2,
+      payload: { archivedAt: null, newEntityVersion: 3 },
+    });
+    expect((await new WorkspaceService(storage).snapshot()).tasks[0]).toEqual(restored);
   });
 
   it('keeps locked objective versions immutable and starts a separate draft explicitly', async () => {
