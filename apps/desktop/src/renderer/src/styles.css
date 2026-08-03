@@ -28,6 +28,10 @@ select {
   font: inherit;
   color: inherit;
 }
+button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
 .desktop-shell {
   display: grid;
   grid-template: 56px 1fr/230px 1fr;
@@ -184,6 +188,98 @@ select {
   grid-template-columns: repeat(2, minmax(300px, 1fr));
   gap: 12px;
   max-width: 1200px;
+}
+.runtime-card {
+  grid-column: 1/-1;
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(500px, 2fr);
+  gap: 22px;
+  padding: 15px 18px;
+  border: 1px solid rgba(158, 240, 26, 0.22);
+  border-radius: 13px;
+  background: linear-gradient(100deg, rgba(158, 240, 26, 0.08), rgba(18, 23, 19, 0.92));
+}
+.runtime-card.degraded,
+.runtime-card.checking {
+  border-color: rgba(255, 159, 102, 0.22);
+  background: linear-gradient(100deg, rgba(255, 159, 102, 0.07), rgba(18, 23, 19, 0.92));
+}
+.runtime-summary {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.runtime-summary > i,
+.runtime-checks i {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 7px rgba(158, 240, 26, 0.5);
+}
+.runtime-card.degraded .runtime-summary > i,
+.runtime-card.checking .runtime-summary > i,
+.runtime-checks i.warn {
+  background: var(--orange);
+  box-shadow: none;
+}
+.runtime-summary span,
+.runtime-summary strong {
+  display: block;
+}
+.runtime-summary span {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 7px;
+  letter-spacing: 0.14em;
+}
+.runtime-summary strong {
+  font-size: 10px;
+}
+.runtime-summary > b {
+  color: var(--green);
+  font-size: 7px;
+  letter-spacing: 0.1em;
+}
+.runtime-card.degraded .runtime-summary > b,
+.runtime-card.checking .runtime-summary > b {
+  color: var(--orange);
+}
+.runtime-checks {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(100px, 1fr));
+  gap: 8px;
+}
+.runtime-checks > div {
+  display: grid;
+  grid-template-columns: 9px 1fr;
+  gap: 3px 6px;
+  align-content: center;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(6, 9, 7, 0.45);
+}
+.runtime-checks i {
+  width: 5px;
+  height: 5px;
+  margin-top: 2px;
+}
+.runtime-checks span {
+  color: var(--muted);
+  font-size: 7px;
+}
+.runtime-checks b {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  color: #d6ddd7;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .card {
   min-width: 0;
@@ -472,5 +568,8 @@ select {
   }
   .vault-card {
     grid-column: auto;
+  }
+  .runtime-card {
+    grid-template-columns: 1fr;
   }
 }

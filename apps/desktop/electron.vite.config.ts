@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 
 export default defineConfig({
-  main: { plugins: [externalizeDepsPlugin()] },
+  main: { plugins: [externalizeDepsPlugin({ exclude: ['@gosu/contracts'] })] },
   preload: { plugins: [externalizeDepsPlugin()] },
   renderer: {
     resolve: { alias: { '@renderer': resolve('src/renderer/src') } },

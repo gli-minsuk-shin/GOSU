@@ -38,6 +38,7 @@
   "build": {
     "appId": "science.gosu.desktop",
     "productName": "GOSU",
+    "afterPack": "../../scripts/harden-mac-package.mjs",
     "asar": true,
     "asarUnpack": [
       "node_modules/@openai/codex/**",
