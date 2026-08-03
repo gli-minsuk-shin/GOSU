@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -10,6 +10,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package:mac": "pnpm build && electron-builder --mac dmg --publish never",
+    "smoke:local-db:mac": "electron-builder install-app-deps && electron-vite build --config test/electron/electron.vite.config.ts && electron out/local-database-smoke/main.cjs",
     "lint": "eslint src electron.vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"

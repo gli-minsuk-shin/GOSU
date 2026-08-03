@@ -16,10 +16,18 @@ import {
   type ComponentReadiness,
 } from './runtime-readiness';
 import { VaultAccess } from './vault';
+import { registerWorkspaceIpc } from './workspace-ipc';
+import { WorkspaceService } from './workspace-service';
 
 const codex = new CodexAppServer();
 const database = new LocalDatabase();
 const vault = new VaultAccess();
+const workspace = new WorkspaceService({
+  load: () => database.loadWorkspaceState(),
+  commit: (state, operation) => database.commitWorkspaceState(state, operation),
+  pendingChanges: () => database.pendingWorkspaceChanges(),
+  pendingSummary: () => database.pendingWorkspaceSummary(),
+});
 let mainWindow: BrowserWindow | undefined;
 
 function createWindow(trustedRenderer: TrustedRenderer) {
@@ -74,6 +82,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     });
   };
 
+  registerWorkspaceIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    workspace,
+  );
+
   handle('gosu:runtime:readiness', async () =>
     buildRuntimeReadiness({
       app: {
@@ -108,7 +121,6 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   handle('gosu:vault:read', (_event, relativePath) =>
     vault.readMarkdown(typeof relativePath === 'string' ? relativePath : ''),
   );
-  handle('gosu:cache:get', (_event, scope, key) => database.get(String(scope), String(key)));
   handle('gosu:external:open', (_event, url) =>
     typeof url === 'string' && url.startsWith('https://')
       ? shell.openExternal(url)

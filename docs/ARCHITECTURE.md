@@ -47,7 +47,7 @@ flowchart LR
   subgraph Mac["연구자 macOS"]
     Renderer["Electron Renderer\n비권한 UI"]
     Main["Electron Main\nIPC·파일·Codex·로컬 DB"]
-    LocalDB["암호화 SQLite\ncache·outbox·model provenance"]
+    LocalDB["암호화 SQLite\nworkspace snapshot·outbox·model provenance"]
     Codex["로컬 Codex App Server"]
     Vault["선택한 Obsidian 폴더"]
     Git["로컬 Git worktree"]
@@ -94,17 +94,17 @@ flowchart LR
 
 ## 4. 저장소 구조와 코드 소유권
 
-| 경로                    | 소유 책임                                                                 | 현재 상태                                 |
-| ----------------------- | ------------------------------------------------------------------------- | ----------------------------------------- |
-| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Vault 경계   | 실행 가능한 local demo slice              |
-| `apps/web`              | Owner·Lab 관리 경험                                                       | demo fixture 기반의 인터랙티브 UI         |
-| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계 | memory runtime 구현, PostgreSQL 기반 구현 |
-| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill        | 제한된 로컬 실행 경로 구현                |
-| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                              | 구현됨                                    |
-| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙              | 구현됨                                    |
-| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                     | 기반 구현                                 |
-| `packages/ui`           | 공통 visual token과 작은 presentational primitive                         | 기반 구현                                 |
-| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단              | 구현됨                                    |
+| 경로                    | 소유 책임                                                                 | 현재 상태                                  |
+| ----------------------- | ------------------------------------------------------------------------- | ------------------------------------------ |
+| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Vault 경계   | 실행 가능한 Project·Kanban·Objective slice |
+| `apps/web`              | Owner·Lab 관리 경험                                                       | demo fixture 기반의 인터랙티브 UI          |
+| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계 | memory runtime 구현, PostgreSQL 기반 구현  |
+| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill        | 제한된 로컬 실행 경로 구현                 |
+| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                              | 구현됨                                     |
+| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙              | 구현됨                                     |
+| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                     | 기반 구현                                  |
+| `packages/ui`           | 공통 visual token과 작은 presentational primitive                         | 기반 구현                                  |
+| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단              | 구현됨                                     |
 
 ### 논리 모듈 소유권
 
@@ -114,8 +114,8 @@ flowchart LR
 | 논리 모듈                  | 현재 코드 소유자                                             | 구현 수준                                                                      |
 | -------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------ |
 | Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                     |
-| Project Portfolio & Kanban | Sync controller/store, Owner Web fixture UI                  | command/query 기반 구현; Web API 연결은 계획됨                                 |
-| Goal & Evaluation          | contracts, domain, Sync objective endpoints                  | objective 저장·lock 기반 구현; 전체 version 재승인 흐름은 계획됨               |
+| Project Portfolio & Kanban | Desktop workspace service, Sync controller/store             | 로컬 project 생성·선택과 task 생성·편집·이동 구현; Hosted 전달은 계획됨        |
+| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨       |
 | Experiment Orchestration   | contracts, domain, Runner                                    | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨 |
 | Manuscript                 | 향후 desktop workspace module                                | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                |
 | Review & Approval          | PostgreSQL approval schema와 Web UI 표현                     | 기반 구현; 실제 review anchor·approval command는 계획됨                        |
@@ -174,15 +174,15 @@ flowchart TD
 
 ## 6. 데이터 원본과 개인정보 경계
 
-| 데이터                                           | authoritative source                                | Hosted Sync 보관 정책                     |
-| ------------------------------------------------ | --------------------------------------------------- | ----------------------------------------- |
-| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 local worktree                             | repository·branch·commit·PR metadata만    |
-| 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                             | 연결 상태만; 본문은 금지                  |
-| 서지 metadata, collection, PDF                   | Zotero                                              | 연결 상태와 선택 item ID만; PDF 금지      |
-| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                        | 원본 금지; 상태와 명시적 summary metric만 |
-| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | Hosted Sync                                         | 저장 대상                                 |
-| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store | 금지                                      |
-| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                      | 금지                                      |
+| 데이터                                           | authoritative source                                           | Hosted Sync 보관 정책                     |
+| ------------------------------------------------ | -------------------------------------------------------------- | ----------------------------------------- |
+| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 local worktree                                        | repository·branch·commit·PR metadata만    |
+| 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                                        | 연결 상태만; 본문은 금지                  |
+| 서지 metadata, collection, PDF                   | Zotero                                                         | 연결 상태와 선택 item ID만; PDF 금지      |
+| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                   | 원본 금지; 상태와 명시적 summary metric만 |
+| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본 | 협업 metadata 저장 대상                   |
+| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store            | 금지                                      |
+| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                 | 금지                                      |
 
 `isSummary: true`인 Runner metric만 run summary projection에 들어간다. 그 외 metric point, log,
 resource sample, artifact reference는 WebSocket으로 실시간 relay할 수 있지만 memory store도 값을
@@ -192,6 +192,12 @@ resource sample, artifact reference는 WebSocket으로 실시간 relay할 수 �
 Owner의 가시성도 tenant 범위 안에서만 적용된다. Owner는 동기화된 상태, 보이는 대화, 승인과
 감사를 볼 수 있지만 다른 사용자의 secret, 로컬 Vault 본문, repository 원문 또는 Runner 원본을
 볼 권한을 얻지 않는다.
+
+현재 Desktop의 Project·Kanban·Objective vertical slice는 Hosted delivery worker가 연결되기 전에도
+쓸 수 있도록 암호화 SQLite를 실행 원본으로 사용한다. 이는 장기적인 협업 authority를 바꾼 것이
+아니다. 각 로컬 mutation은 optimistic entity version을 확인하고 workspace snapshot과 idempotent
+outbox operation을 같은 transaction에 기록한다. delivery가 구현되기 전 UI의 pending 표시는
+“로컬에 안전하게 대기 중”만 의미하며, 서버 반영이나 다른 사용자와의 동기화를 의미하지 않는다.
 
 ## 7. 계약과 이벤트 흐름
 
@@ -272,6 +278,49 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   credential store에 남고 Hosted Sync로 보내지 않는다.
 - model picker는 `model/list` 결과를 사용하며 catalog snapshot, resolved model ID와 reasoning
   option을 provenance로 기록할 수 있다.
+
+### 현재 로컬 workspace 흐름
+
+```mermaid
+flowchart LR
+  UI["React workspace UI"]
+  Preload["typed preload API\n8 fixed workspace channels"]
+  Guard["Main sender·frame allowlist"]
+  Service["WorkspaceService\nvalidation·version rules"]
+  Transaction["single SQLCipher transaction"]
+  Snapshot["local_workspace_state\nversioned snapshot"]
+  Outbox["sync_outbox\nidempotent operation"]
+  Summary["local_workspace_outbox_status\nbounded pending summary"]
+
+  UI --> Preload --> Guard --> Service --> Transaction
+  Transaction --> Snapshot
+  Transaction --> Outbox
+  Transaction --> Summary
+```
+
+- Renderer는 project·task·objective별 typed command만 호출한다. 임의 channel이나 generic cache
+  조회 API는 노출하지 않는다.
+- IPC DTO와 Zod schema는 `apps/desktop/src/shared/workspace-contracts.ts`, runtime 상태 DTO는
+  `apps/desktop/src/shared/runtime-contracts.ts`가 소유한다. Renderer와 Preload는 privileged Main
+  구현을 import하지 않고 이 shared contract의 type만 사용한다.
+- `WorkspaceService`는 untrusted payload와 persisted snapshot을 Zod로 검증하고 mutation을 직렬화한다.
+- 각 task와 objective는 entity version을 가지며 stale command는 conflict로 끝난다. 자동 merge나
+  last-write-wins는 수행하지 않는다.
+- workspace 전체 revision은 성공한 mutation마다 증가한다. commit이 실패하면 in-memory snapshot도
+  갱신하지 않는다.
+- 동일한 revision을 outbox operation의 durable `workspaceRevision`으로 기록하고 pending command는
+  이 값으로 정렬한다. 같은 millisecond에 기록된 create→update 또는 save→freeze가 UUID 순서로
+  뒤집히지 않는다.
+- sequence 도입 전 local row는 open migration에서 기존 insertion `rowid` 순서를 한 번만
+  `workspaceRevision` column과 operation JSON에 backfill하고, 이후에는 그 durable 값을 사용한다.
+- UI는 outbox payload 전체를 받지 않는다. transaction에서 함께 갱신되는 singleton summary의
+  pending count와 latest revision만 고정 크기 IPC로 읽는다. summary 오류는 snapshot 로딩과
+  격리되어 정상 project·task·objective를 숨기지 않는다.
+- project별 task 접근을 검사해 다른 project ID를 통한 수정은 거절한다.
+- objective freeze는 현재 단일 사용자 로컬 불변성 기능이다. Owner 승인이나 RBAC 승인으로 해석하면
+  안 되며, 변경하려면 명시적으로 다음 objective version을 시작해야 한다.
+- 이 slice에는 outbox delivery, conflict reconciliation, 로그인·연구실 RBAC가 아직 없다. 따라서
+  pending operation을 synced로 표시하지 않는다.
 
 ### 로컬 실행과 패키징 경로
 
@@ -403,6 +452,11 @@ model이 catalog에서 사라지면 다른 model로 조용히 바꾸지 않고 �
 실행한다. Turbo는 workspace dependency의 build를 먼저 수행하고 root test는 local launcher의 URL,
 service identity와 readiness retry 규칙을 검증한다. 특정 package를 변경해도 PR 전에는 전체 gate를
 실행한다.
+
+macOS에서 `pnpm --filter @gosu/desktop smoke:local-db:mac`을 실행하면 Electron ABI의 실제
+SQLCipher와 `safeStorage`를 사용해 workspace commit, encrypted file header, close/reopen 복구,
+duplicate idempotency key에 의한 transaction rollback과 outbox summary 일관성을 검증한다. 이
+검사는 native ABI와 Keychain 구현이 다른 Linux CI의 일반 Vitest 경로와 분리한다.
 
 Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 
