@@ -1,0 +1,52 @@
+# Dependencies and package-manager state
+node_modules/
+.pnpm-store/
+
+# Build, cache, and test output
+.turbo/
+.next/
+.vite/
+dist/
+build/
+!apps/desktop/build/
+!apps/desktop/build/entitlements.mac.plist
+out/
+release/
+coverage/
+*.tsbuildinfo
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.secrets/
+*.key
+*.p12
+*.p8
+*.pfx
+*.jks
+
+# Local databases and application state
+.gosu/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Python and Go development output
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+/bin/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+*.swp
+*.swo
+*~

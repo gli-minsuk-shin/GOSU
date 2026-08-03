@@ -1,0 +1,139 @@
+{
+  "$id": "urn:gosu:contract:v1:ObjectiveVersion",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "number", "const": 1 },
+    "objectiveVersionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "version": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+    "goal": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "primaryMetric": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "direction": { "type": "string", "enum": ["maximize", "minimize"] },
+        "unit": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 64 }, { "type": "null" }]
+        },
+        "aggregation": {
+          "type": "string",
+          "enum": ["mean", "median", "minimum", "maximum", "last"]
+        },
+        "evaluatorHash": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 160,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+        },
+        "datasetHash": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 160,
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+        },
+        "holdoutHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 160,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:._-]+$"
+            },
+            { "type": "null" }
+          ]
+        },
+        "baseline": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+        "target": { "anyOf": [{ "type": "number" }, { "type": "null" }] }
+      },
+      "required": [
+        "key",
+        "displayName",
+        "direction",
+        "unit",
+        "aggregation",
+        "evaluatorHash",
+        "datasetHash",
+        "holdoutHash",
+        "baseline",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "guardrails": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "metricKey": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "operator": { "type": "string", "enum": ["lt", "lte", "gt", "gte"] },
+          "threshold": { "type": "number" }
+        },
+        "required": ["metricKey", "operator", "threshold"],
+        "additionalProperties": false
+      }
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "maxTrials": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "maxConcurrentTrials": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxWallTimeSeconds": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxGpuHours": { "type": "number", "minimum": 0 },
+        "maxFailures": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      },
+      "required": [
+        "maxTrials",
+        "maxConcurrentTrials",
+        "maxWallTimeSeconds",
+        "maxGpuHours",
+        "maxFailures"
+      ],
+      "additionalProperties": false
+    },
+    "stopPolicy": {
+      "type": "object",
+      "properties": {
+        "stopWhenTargetReached": { "type": "boolean" },
+        "guardrailAction": { "type": "string", "enum": ["pause", "stop", "fail"] },
+        "maxConsecutiveNoImprovement": {
+          "anyOf": [
+            { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": ["stopWhenTargetReached", "guardrailAction", "maxConsecutiveNoImprovement"],
+      "additionalProperties": false
+    },
+    "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "objectiveVersionId",
+    "projectId",
+    "version",
+    "goal",
+    "primaryMetric",
+    "guardrails",
+    "budget",
+    "stopPolicy",
+    "createdBy",
+    "createdAt"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,6 @@
+{
+  "$id": "urn:gosu:contract:v1:LabRole",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "string",
+  "enum": ["owner", "project_lead", "researcher", "reviewer", "viewer"]
+}

@@ -1,0 +1,24 @@
+{
+  "$id": "urn:gosu:contract:v1:ExperimentBudget",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "maxTrials": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+    "maxConcurrentTrials": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "maxWallTimeSeconds": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+    "maxGpuHours": { "type": "number", "minimum": 0 },
+    "maxFailures": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+  },
+  "required": [
+    "maxTrials",
+    "maxConcurrentTrials",
+    "maxWallTimeSeconds",
+    "maxGpuHours",
+    "maxFailures"
+  ],
+  "additionalProperties": false
+}

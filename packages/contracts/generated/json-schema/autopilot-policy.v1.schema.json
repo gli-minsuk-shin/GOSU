@@ -1,0 +1,30 @@
+{
+  "$id": "urn:gosu:contract:v1:AutopilotPolicy",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "number", "const": 1 },
+    "mode": { "type": "string", "enum": ["bounded", "full"] },
+    "allowedCodePaths": {
+      "minItems": 1,
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "allowOfflineContinuation": { "type": "boolean" },
+    "allowDependencyChanges": { "type": "boolean" },
+    "requireApprovalForNetworkChanges": { "type": "boolean", "const": true },
+    "requireApprovalForMetricChanges": { "type": "boolean", "const": true },
+    "requireApprovalForBudgetChanges": { "type": "boolean", "const": true }
+  },
+  "required": [
+    "schemaVersion",
+    "mode",
+    "allowedCodePaths",
+    "allowOfflineContinuation",
+    "allowDependencyChanges",
+    "requireApprovalForNetworkChanges",
+    "requireApprovalForMetricChanges",
+    "requireApprovalForBudgetChanges"
+  ],
+  "additionalProperties": false
+}

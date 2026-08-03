@@ -1,0 +1,14 @@
+{
+  "$id": "urn:gosu:contract:v1:ConnectorCapabilities",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "read": { "type": "boolean" },
+    "write": { "type": "boolean" },
+    "attachments": { "type": "boolean" },
+    "realtime": { "type": "boolean" },
+    "export": { "type": "boolean" }
+  },
+  "required": ["read", "write", "attachments", "realtime", "export"],
+  "additionalProperties": false
+}

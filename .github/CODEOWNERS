@@ -1,0 +1,9 @@
+# Default ownership. More specific module owners can be added as teams form.
+* @gli-minsuk-shin
+
+# Security-sensitive repository and delivery configuration.
+/.github/ @gli-minsuk-shin
+/compose.yaml @gli-minsuk-shin
+/package.json @gli-minsuk-shin
+/pnpm-workspace.yaml @gli-minsuk-shin
+/turbo.json @gli-minsuk-shin

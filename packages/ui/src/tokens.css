@@ -1,0 +1,56 @@
+:root {
+  --gosu-bg: #080a09;
+  --gosu-panel: #111512;
+  --gosu-text: #f3f7f1;
+  --gosu-muted: #8d978f;
+  --gosu-accent: #9ef01a;
+  --gosu-warning: #ff9f66;
+  --gosu-danger: #ff7272;
+  --gosu-line: rgba(255, 255, 255, 0.09);
+  --gosu-radius: 0.875rem;
+}
+
+.gosu-status-pill {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--gosu-line);
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.72rem;
+}
+.gosu-status-pill[data-gosu-status='success'] {
+  color: var(--gosu-accent);
+  background: color-mix(in srgb, var(--gosu-accent) 9%, transparent);
+}
+.gosu-status-pill[data-gosu-status='warning'] {
+  color: var(--gosu-warning);
+}
+.gosu-status-pill[data-gosu-status='danger'] {
+  color: var(--gosu-danger);
+}
+.gosu-action {
+  min-height: 2.25rem;
+  border: 1px solid var(--gosu-line);
+  border-radius: 0.55rem;
+  padding: 0 0.8rem;
+  background: var(--gosu-panel);
+  color: var(--gosu-text);
+}
+.gosu-action[data-gosu-variant='primary'] {
+  background: var(--gosu-accent);
+  color: #10170c;
+  border-color: var(--gosu-accent);
+}
+.gosu-action[data-gosu-variant='danger'] {
+  color: var(--gosu-danger);
+}
+.gosu-module-state {
+  padding: 2rem;
+  text-align: center;
+  border: 1px dashed var(--gosu-line);
+  border-radius: var(--gosu-radius);
+  color: var(--gosu-muted);
+}
+.gosu-module-state h3 {
+  color: var(--gosu-text);
+}

@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "bundle": "gosu-contracts.v1.bundle.schema.json",
+  "contracts": [
+    {
+      "name": "ModelDescriptor",
+      "file": "model-descriptor.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ModelDescriptor"
+    },
+    {
+      "name": "ConnectorCapabilities",
+      "file": "connector-capabilities.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ConnectorCapabilities"
+    },
+    { "name": "LabRole", "file": "lab-role.v1.schema.json", "id": "urn:gosu:contract:v1:LabRole" },
+    {
+      "name": "CampaignState",
+      "file": "campaign-state.v1.schema.json",
+      "id": "urn:gosu:contract:v1:CampaignState"
+    },
+    {
+      "name": "TrialState",
+      "file": "trial-state.v1.schema.json",
+      "id": "urn:gosu:contract:v1:TrialState"
+    },
+    {
+      "name": "ExperimentBudget",
+      "file": "experiment-budget.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ExperimentBudget"
+    },
+    {
+      "name": "BudgetUsage",
+      "file": "budget-usage.v1.schema.json",
+      "id": "urn:gosu:contract:v1:BudgetUsage"
+    },
+    {
+      "name": "AutopilotPolicy",
+      "file": "autopilot-policy.v1.schema.json",
+      "id": "urn:gosu:contract:v1:AutopilotPolicy"
+    },
+    {
+      "name": "JobPolicyV1",
+      "file": "job-policy.v1.schema.json",
+      "id": "urn:gosu:contract:v1:JobPolicyV1"
+    },
+    {
+      "name": "ObjectiveVersion",
+      "file": "objective-version.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ObjectiveVersion"
+    },
+    {
+      "name": "JobManifestV1",
+      "file": "job-manifest.v1.schema.json",
+      "id": "urn:gosu:contract:v1:JobManifestV1"
+    },
+    {
+      "name": "RunnerEventV1",
+      "file": "runner-event.v1.schema.json",
+      "id": "urn:gosu:contract:v1:RunnerEventV1"
+    },
+    {
+      "name": "RunnerEventMessageV1",
+      "file": "runner-event-message.v1.schema.json",
+      "id": "urn:gosu:contract:v1:RunnerEventMessageV1"
+    },
+    {
+      "name": "SyncEventV1",
+      "file": "sync-event.v1.schema.json",
+      "id": "urn:gosu:contract:v1:SyncEventV1"
+    }
+  ]
+}
