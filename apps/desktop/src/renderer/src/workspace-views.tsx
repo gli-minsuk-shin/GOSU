@@ -7,7 +7,7 @@ import type {
 } from '../../shared/workspace-contracts';
 import { CardHead, describeError } from './ui-primitives';
 
-export type WorkspaceTabId = 'chat' | 'board' | 'objective' | 'connections' | 'notes' | 'settings';
+export type WorkspaceTabId = 'chat' | 'board' | 'objective' | 'connections' | 'notes';
 
 type ObjectiveDraft = {
   goal: string;
@@ -41,7 +41,6 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
   { id: 'notes', label: 'Local notes', icon: '◇' },
-  { id: 'settings', label: 'Settings', icon: '⚙' },
 ];
 
 export const FUTURE_MODULES = [
@@ -91,16 +90,12 @@ export function WorkspacePageHeading({
       'Define a versioned goal, evaluation metric, reproducibility hashes, and hard experiment budget.',
     connections: 'Inspect real local capabilities. No connection state on this page is simulated.',
     notes: 'Read Markdown from a folder you explicitly select. Note contents stay on this Mac.',
-    settings: 'Adjust text size and appearance. These preferences stay on this Mac.',
   };
   return (
     <header className="page-heading">
       <div>
         <span className="eyebrow">
-          {activeTab === 'settings'
-            ? 'Local workspace'
-            : (activeProject?.name ?? 'Local workspace')}{' '}
-          / {tab.label}
+          {activeProject?.name ?? 'Local workspace'} / {tab.label}
         </span>
         <h1>{tab.label}</h1>
         <p>{subtitles[activeTab]}</p>

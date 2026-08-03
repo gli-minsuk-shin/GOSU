@@ -15,8 +15,11 @@ import type {
   ProjectChatAttempt,
   ProjectChatEvent,
   ProjectChatMessage,
+  ProjectChatProfile,
   ProjectChatSnapshot,
+  UpdateProjectChatProfileInput,
 } from '../src/shared/project-chat-contracts';
+import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
 import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 
 class MemoryWorkspaceStorage {
@@ -48,6 +51,7 @@ class MemoryChatStorage implements ProjectChatStorage {
   readonly messages: ProjectChatMessage[] = [];
   readonly attempts = new Map<string, ProjectChatAttempt>();
   readonly actions = new Map<string, ProjectChatAction>();
+  readonly profiles = new Map<string, ProjectChatProfile>();
   failNextSave = false;
   failNextAssistantSave = false;
   failNextFinishAction = false;
@@ -116,6 +120,35 @@ class MemoryChatStorage implements ProjectChatStorage {
     };
   }
 
+  getProjectChatProfile(projectId: string) {
+    return structuredClone(this.profiles.get(projectId) ?? defaultProjectChatProfile(projectId));
+  }
+
+  updateProjectChatProfile(input: UpdateProjectChatProfileInput) {
+    const current =
+      this.profiles.get(input.projectId) ?? defaultProjectChatProfile(input.projectId);
+    if (current.version !== input.expectedVersion) return null;
+    const nextVersion = current.version + 1;
+    const updated: ProjectChatProfile = {
+      schemaVersion: 1,
+      projectId: input.projectId,
+      version: nextVersion,
+      harnessMode: input.harnessMode,
+      responseDepth: input.responseDepth,
+      contextScope: input.contextScope,
+      customInstructions: input.customInstructions,
+      instructionRevision: {
+        id: randomUUID(),
+        revision: nextVersion,
+        contentSha256: '0'.repeat(64),
+        createdAt: new Date().toISOString(),
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    this.profiles.set(input.projectId, structuredClone(updated));
+    return updated;
+  }
+
   getAction(projectId: string, actionId: string) {
     const action = this.actions.get(actionId);
     return action?.projectId === projectId ? structuredClone(action) : null;
@@ -146,11 +179,13 @@ class FakeCodex extends EventEmitter {
   readonly interrupted: Array<{ threadId: string; turnId: string }> = [];
   readonly released: string[] = [];
   readonly prompts: string[] = [];
+  readonly developerInstructions: string[] = [];
   beforeRunReturns: ((threadId: string, turnId: string) => void) | null = null;
   failNextInterrupt = false;
 
-  async startThread() {
+  async startThread(input: { developerInstructions?: string }) {
     this.threadCount += 1;
+    this.developerInstructions.push(input.developerInstructions ?? '');
     return { threadId: `thread-${this.threadCount}`, modelId: 'fixture-model' };
   }
 
@@ -839,5 +874,239 @@ describe('ProjectChatService', () => {
     await vi.waitFor(() =>
       expect(storage.snapshot(projectA.id).messages.at(-1)?.content).toBe('Legacy retry recovered'),
     );
+  });
+
+  it('versions a project-local profile and records the resolved prompt provenance', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    expect((await chat.snapshot({ projectId: projectA.id })).profile).toMatchObject({
+      version: 0,
+      harnessMode: 'context',
+      customInstructions: '',
+    });
+
+    const profile = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'planner',
+      responseDepth: 'deep',
+      contextScope: 'board',
+      customInstructions: 'Prefer falsifiable next steps.',
+    });
+    await expect(
+      chat.updateProfile({
+        projectId: projectA.id,
+        expectedVersion: 0,
+        harnessMode: 'reviewer',
+        responseDepth: 'concise',
+        contextScope: 'objective',
+        customInstructions: '',
+      }),
+    ).rejects.toThrow('chat_profile_conflict');
+
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Plan the next experiment.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      profileVersion: profile.version,
+    });
+    const attempt = storage.getChatAttempt(projectA.id, receipt.attemptId);
+    expect(attempt).toMatchObject({
+      harnessMode: 'planner',
+      responseDepth: 'deep',
+      contextScope: 'board',
+      profileVersion: 1,
+      instructionRevisionId: profile.instructionRevision?.id,
+      promptProvenance: {
+        assemblyVersion: 1,
+        profileVersion: 1,
+        instructionRevisionId: profile.instructionRevision?.id,
+      },
+    });
+    expect(attempt?.promptProvenance?.promptCharacters).toBe(codex.prompts[0]?.length);
+    expect(codex.developerInstructions[0]).toContain('Harness mode (planner)');
+    expect(codex.developerInstructions[0]).toContain('Prefer falsifiable next steps.');
+    expect(codex.developerInstructions[0]).toContain('Do not run shell commands');
+
+    codex.complete(receipt.turnId, { reply: 'Plan ready', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+  });
+
+  it('service-enforces reviewer mode by discarding every proposed action', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const profile = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'reviewer',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      customInstructions: 'Be strict.',
+    });
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Review the board.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      profileVersion: profile.version,
+    });
+    codex.complete(receipt.turnId, {
+      reply: 'The plan needs a control.',
+      actions: [{ type: 'task.create', title: 'Hallucinated mutation', status: 'planned' }],
+    });
+
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    expect(storage.snapshot(projectA.id).messages[1]?.actions).toEqual([]);
+    expect(storage.getChatAttempt(projectA.id, receipt.attemptId)?.harnessMode).toBe('reviewer');
+  });
+
+  it('rejects a stale send profile version before creating an attempt', async () => {
+    const { chat, storage, projectA } = await fixture();
+    await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'context',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      customInstructions: '',
+    });
+
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'Use an obsolete profile.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        profileVersion: 0,
+      }),
+    ).rejects.toThrow('chat_profile_conflict');
+    expect(storage.snapshot(projectA.id).attempts).toEqual([]);
+    expect(storage.snapshot(projectA.id).messages).toEqual([]);
+  });
+
+  it('preserves chat history but blocks new turns and profile changes while a project is in Trash', async () => {
+    const { chat, workspace, storage, projectA } = await fixture();
+    await workspace.trashProject({
+      projectId: projectA.id,
+      expectedVersion: projectA.version,
+    });
+
+    await expect(chat.snapshot({ projectId: projectA.id })).resolves.toMatchObject({
+      projectId: projectA.id,
+      messages: [],
+    });
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'This turn must not start.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toThrow('project_trashed');
+    await expect(
+      chat.updateProfile({
+        projectId: projectA.id,
+        expectedVersion: 0,
+        harnessMode: 'planner',
+        responseDepth: 'deep',
+        contextScope: 'project',
+        customInstructions: 'Do not save this.',
+      }),
+    ).rejects.toThrow('project_trashed');
+    expect(storage.snapshot(projectA.id).attempts).toEqual([]);
+  });
+
+  it('does not apply a previously proposed action after the project enters Trash', async () => {
+    const { chat, codex, workspace, storage, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Propose one task.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(receipt.turnId, {
+      reply: 'Proposal ready.',
+      actions: [{ type: 'task.create', title: 'Preserved proposal', status: 'planned' }],
+    });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    const action = storage.snapshot(projectA.id).messages[1]!.actions[0]!;
+    await workspace.trashProject({
+      projectId: projectA.id,
+      expectedVersion: projectA.version,
+    });
+
+    await expect(chat.applyAction({ projectId: projectA.id, actionId: action.id })).rejects.toThrow(
+      'project_trashed',
+    );
+    expect(storage.getAction(projectA.id, action.id)?.status).toBe('proposed');
+  });
+
+  it('holds an application-level Trash gate around active turns and new turn starts', async () => {
+    const { chat, codex, workspace, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Keep this turn active.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    await expect(
+      chat.runWhenProjectChatIdle(projectA.id, () =>
+        workspace.trashProject({
+          projectId: projectA.id,
+          expectedVersion: projectA.version,
+        }),
+      ),
+    ).rejects.toThrow('chat_busy');
+    expect((await workspace.snapshot()).projects[0]).not.toHaveProperty('trashedAt');
+
+    const completed = waitForTurnCompleted(chat, receipt.turnId);
+    codex.complete(receipt.turnId, { reply: 'Turn complete.', actions: [] });
+    await completed;
+
+    let releaseTrashGate: (() => void) | undefined;
+    const trashed = chat.runWhenProjectChatIdle(projectA.id, async () => {
+      await new Promise<void>((resolve) => {
+        releaseTrashGate = resolve;
+      });
+      return workspace.trashProject({
+        projectId: projectA.id,
+        expectedVersion: projectA.version,
+      });
+    });
+    await vi.waitFor(() => expect(releaseTrashGate).toBeTypeOf('function'));
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'Do not start inside the Trash transition.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toThrow('chat_busy');
+    releaseTrashGate?.();
+    await expect(trashed).resolves.toHaveProperty('trashedAt');
+  });
+
+  it('drops proposed actions if an internal caller trashes a project during terminal persistence', async () => {
+    const { chat, codex, workspace, storage, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'This proposal must be invalidated by Trash.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await workspace.trashProject({
+      projectId: projectA.id,
+      expectedVersion: projectA.version,
+    });
+    codex.complete(receipt.turnId, {
+      reply: 'The text receipt remains visible.',
+      actions: [{ type: 'task.create', title: 'Stale proposal', status: 'planned' }],
+    });
+
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    expect(storage.snapshot(projectA.id).messages[1]).toMatchObject({
+      content: 'The text receipt remains visible.',
+      actions: [],
+    });
   });
 });

@@ -7,7 +7,9 @@ import {
   PROJECT_CHAT_OUTPUT_SCHEMA,
   ProjectChatAttemptSchema,
   ProjectChatMessageSchema,
+  ProjectChatProfileSchema,
   ProjectChatSnapshotSchema,
+  UpdateProjectChatProfileInputSchema,
 } from '../src/shared/project-chat-contracts';
 
 describe('Project chat contracts', () => {
@@ -107,6 +109,33 @@ describe('Project chat contracts', () => {
         projectId,
         attempts: [{ ...attempt, projectId: randomUUID() }],
         messages: [message],
+      }),
+    ).toThrow();
+  });
+
+  it('bounds versioned profile instructions and keeps the version-zero default representable', () => {
+    const projectId = randomUUID();
+    expect(
+      ProjectChatProfileSchema.parse({
+        schemaVersion: 1,
+        projectId,
+        version: 0,
+        harnessMode: 'context',
+        responseDepth: 'standard',
+        contextScope: 'project',
+        customInstructions: '',
+        instructionRevision: null,
+        updatedAt: null,
+      }).version,
+    ).toBe(0);
+    expect(() =>
+      UpdateProjectChatProfileInputSchema.parse({
+        projectId,
+        expectedVersion: 0,
+        harnessMode: 'planner',
+        responseDepth: 'deep',
+        contextScope: 'board',
+        customInstructions: 'x'.repeat(4_001),
       }),
     ).toThrow();
   });

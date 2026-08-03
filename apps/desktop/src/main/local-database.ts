@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3-multiple-ciphers';
@@ -9,11 +9,16 @@ import {
   ProjectChatActionSchema,
   ProjectChatAttemptSchema,
   ProjectChatMessageSchema,
+  ProjectChatProfileSchema,
   ProjectChatSnapshotSchema,
+  UpdateProjectChatProfileInputSchema,
+  defaultProjectChatProfile,
   type ProjectChatAction,
   type ProjectChatAttempt,
   type ProjectChatMessage,
+  type ProjectChatProfile,
   type ProjectChatSnapshot,
+  type UpdateProjectChatProfileInput,
 } from '../shared/project-chat-contracts';
 import type {
   WorkspaceOperation,
@@ -153,8 +158,10 @@ function insertProjectChatAttempt(database: Database.Database, attempt: ProjectC
     .prepare(
       `insert into project_chat_attempts(
          id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
-         requested_model_id,reasoning_option_id,status,error_code,created_at,updated_at
-       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         requested_model_id,reasoning_option_id,harness_mode,response_depth,context_scope,
+         profile_version,instruction_revision_id,prompt_provenance_json,status,error_code,
+         created_at,updated_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       attempt.id,
@@ -166,6 +173,12 @@ function insertProjectChatAttempt(database: Database.Database, attempt: ProjectC
       attempt.model ? JSON.stringify(attempt.model) : null,
       attempt.requestedModelId,
       attempt.reasoningOptionId,
+      attempt.harnessMode ?? null,
+      attempt.responseDepth ?? null,
+      attempt.contextScope ?? null,
+      attempt.profileVersion ?? null,
+      attempt.instructionRevisionId ?? null,
+      attempt.promptProvenance ? JSON.stringify(attempt.promptProvenance) : null,
       attempt.status,
       attempt.errorCode ?? null,
       attempt.createdAt,
@@ -316,6 +329,26 @@ export class LocalDatabase {
       );
       create index if not exists project_chat_messages_by_project
         on project_chat_messages(project_id,created_at,id);
+      create table if not exists project_chat_instruction_revisions (
+        id text primary key check (length(id) = 36),
+        project_id text not null,
+        revision integer not null check (revision > 0),
+        content text not null check (length(content) <= 4000),
+        content_sha256 text not null check (length(content_sha256) = 64),
+        created_at text not null,
+        unique(project_id,revision)
+      );
+      create table if not exists project_chat_profiles (
+        project_id text primary key,
+        version integer not null check (version > 0),
+        harness_mode text not null check (harness_mode in ('context','planner','reviewer')),
+        response_depth text not null check (response_depth in ('concise','standard','deep')),
+        context_scope text not null check (context_scope in ('project','board','objective')),
+        instruction_revision_id text not null
+          references project_chat_instruction_revisions(id),
+        created_at text not null,
+        updated_at text not null
+      );
       create table if not exists project_chat_attempts (
         id text primary key,
         project_id text not null,
@@ -330,6 +363,22 @@ export class LocalDatabase {
         ),
         reasoning_option_id text check (
           reasoning_option_id is null or length(reasoning_option_id) between 1 and 128
+        ),
+        harness_mode text check (
+          harness_mode is null or harness_mode in ('context','planner','reviewer')
+        ),
+        response_depth text check (
+          response_depth is null or response_depth in ('concise','standard','deep')
+        ),
+        context_scope text check (
+          context_scope is null or context_scope in ('project','board','objective')
+        ),
+        profile_version integer check (profile_version is null or profile_version >= 0),
+        instruction_revision_id text check (
+          instruction_revision_id is null or length(instruction_revision_id) = 36
+        ),
+        prompt_provenance_json text check (
+          prompt_provenance_json is null or length(prompt_provenance_json) <= 16384
         ),
         status text not null check (
           status in ('starting','running','complete','failed','interrupted')
@@ -378,6 +427,38 @@ export class LocalDatabase {
           `alter table project_chat_messages add column attempt_id text
            check (attempt_id is null or length(attempt_id) = 36)`,
         );
+      }
+      const attemptColumns = database.pragma('table_info(project_chat_attempts)') as Array<{
+        name: string;
+      }>;
+      const attemptMigrations = [
+        [
+          'harness_mode',
+          "alter table project_chat_attempts add column harness_mode text check (harness_mode is null or harness_mode in ('context','planner','reviewer'))",
+        ],
+        [
+          'response_depth',
+          "alter table project_chat_attempts add column response_depth text check (response_depth is null or response_depth in ('concise','standard','deep'))",
+        ],
+        [
+          'context_scope',
+          "alter table project_chat_attempts add column context_scope text check (context_scope is null or context_scope in ('project','board','objective'))",
+        ],
+        [
+          'profile_version',
+          'alter table project_chat_attempts add column profile_version integer check (profile_version is null or profile_version >= 0)',
+        ],
+        [
+          'instruction_revision_id',
+          'alter table project_chat_attempts add column instruction_revision_id text check (instruction_revision_id is null or length(instruction_revision_id) = 36)',
+        ],
+        [
+          'prompt_provenance_json',
+          'alter table project_chat_attempts add column prompt_provenance_json text check (prompt_provenance_json is null or length(prompt_provenance_json) <= 16384)',
+        ],
+      ] as const;
+      for (const [name, statement] of attemptMigrations) {
+        if (!attemptColumns.some((column) => column.name === name)) database.exec(statement);
       }
       database.exec(`
         create index if not exists project_chat_messages_by_attempt
@@ -579,6 +660,86 @@ export class LocalDatabase {
     database.transaction(() => insertProjectChatMessage(database, message))();
   }
 
+  getProjectChatProfile(projectId: string): ProjectChatProfile {
+    const row = this.require()
+      .prepare(
+        `select p.project_id,p.version,p.harness_mode,p.response_depth,p.context_scope,
+                p.instruction_revision_id,p.updated_at,r.content,r.content_sha256,r.created_at
+         from project_chat_profiles p
+         join project_chat_instruction_revisions r on r.id=p.instruction_revision_id
+         where p.project_id=?`,
+      )
+      .get(projectId) as ProjectChatProfileRow | undefined;
+    return row ? toChatProfile(row) : defaultProjectChatProfile(projectId);
+  }
+
+  updateProjectChatProfile(input: UpdateProjectChatProfileInput): ProjectChatProfile | null {
+    const command = UpdateProjectChatProfileInputSchema.parse(structuredClone(input));
+    const database = this.require();
+    const now = new Date().toISOString();
+    const nextVersion = command.expectedVersion + 1;
+    const instructionRevisionId = randomUUID();
+    const instructionSha256 = createHash('sha256')
+      .update(command.customInstructions, 'utf8')
+      .digest('hex');
+    const conflict = new Error('chat_profile_conflict');
+    try {
+      database
+        .transaction(() => {
+          const current = database
+            .prepare('select version from project_chat_profiles where project_id=?')
+            .get(command.projectId) as { version: number } | undefined;
+          if ((current?.version ?? 0) !== command.expectedVersion) throw conflict;
+          database
+            .prepare(
+              `insert into project_chat_instruction_revisions(
+               id,project_id,revision,content,content_sha256,created_at
+             ) values(?,?,?,?,?,?)`,
+            )
+            .run(
+              instructionRevisionId,
+              command.projectId,
+              nextVersion,
+              command.customInstructions,
+              instructionSha256,
+              now,
+            );
+          const changed = database
+            .prepare(
+              `insert into project_chat_profiles(
+               project_id,version,harness_mode,response_depth,context_scope,
+               instruction_revision_id,created_at,updated_at
+             ) values(?,?,?,?,?,?,?,?)
+             on conflict(project_id) do update set
+               version=excluded.version,
+               harness_mode=excluded.harness_mode,
+               response_depth=excluded.response_depth,
+               context_scope=excluded.context_scope,
+               instruction_revision_id=excluded.instruction_revision_id,
+               updated_at=excluded.updated_at
+             where project_chat_profiles.version=?`,
+            )
+            .run(
+              command.projectId,
+              nextVersion,
+              command.harnessMode,
+              command.responseDepth,
+              command.contextScope,
+              instructionRevisionId,
+              now,
+              now,
+              command.expectedVersion,
+            ).changes;
+          if (changed !== 1) throw conflict;
+        })
+        .immediate();
+    } catch (error) {
+      if (error === conflict) return null;
+      throw error;
+    }
+    return this.getProjectChatProfile(command.projectId);
+  }
+
   beginChatAttempt(input: ProjectChatAttempt, inputUserMessage: ProjectChatMessage) {
     const attempt = ProjectChatAttemptSchema.parse(structuredClone(input));
     const parsedMessage = ProjectChatMessageSchema.parse(structuredClone(inputUserMessage));
@@ -653,7 +814,9 @@ export class LocalDatabase {
       const currentRow = database
         .prepare(
           `select id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
-                  requested_model_id,reasoning_option_id,status,error_code,created_at,updated_at
+                  requested_model_id,reasoning_option_id,harness_mode,response_depth,context_scope,
+                  profile_version,instruction_revision_id,prompt_provenance_json,status,error_code,
+                  created_at,updated_at
            from project_chat_attempts where project_id=? and id=?`,
         )
         .get(requestedTerminal.projectId, requestedTerminal.id) as
@@ -667,6 +830,13 @@ export class LocalDatabase {
         current.retryOfAttemptId !== requestedTerminal.retryOfAttemptId ||
         current.requestedModelId !== requestedTerminal.requestedModelId ||
         current.reasoningOptionId !== requestedTerminal.reasoningOptionId ||
+        current.harnessMode !== requestedTerminal.harnessMode ||
+        current.responseDepth !== requestedTerminal.responseDepth ||
+        current.contextScope !== requestedTerminal.contextScope ||
+        current.profileVersion !== requestedTerminal.profileVersion ||
+        current.instructionRevisionId !== requestedTerminal.instructionRevisionId ||
+        JSON.stringify(current.promptProvenance) !==
+          JSON.stringify(requestedTerminal.promptProvenance) ||
         current.createdAt !== requestedTerminal.createdAt
       ) {
         throw new Error('chat_attempt_identity_mismatch');
@@ -724,7 +894,9 @@ export class LocalDatabase {
     const row = this.require()
       .prepare(
         `select id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
-                requested_model_id,reasoning_option_id,status,error_code,created_at,updated_at
+                requested_model_id,reasoning_option_id,harness_mode,response_depth,context_scope,
+                profile_version,instruction_revision_id,prompt_provenance_json,status,error_code,
+                created_at,updated_at
          from project_chat_attempts where project_id=? and id=?`,
       )
       .get(projectId, attemptId) as ProjectChatAttemptRow | undefined;
@@ -748,7 +920,9 @@ export class LocalDatabase {
       .prepare(
         `select * from (
            select id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
-                  requested_model_id,reasoning_option_id,status,error_code,created_at,updated_at
+                  requested_model_id,reasoning_option_id,harness_mode,response_depth,context_scope,
+                  profile_version,instruction_revision_id,prompt_provenance_json,status,error_code,
+                  created_at,updated_at
            from project_chat_attempts where project_id=?
            order by created_at desc,id desc limit 500
          ) order by created_at asc,id asc`,
@@ -862,6 +1036,12 @@ type ProjectChatAttemptRow = {
   model_json: string | null;
   requested_model_id: string | null;
   reasoning_option_id: string | null;
+  harness_mode: 'context' | 'planner' | 'reviewer' | null;
+  response_depth: 'concise' | 'standard' | 'deep' | null;
+  context_scope: 'project' | 'board' | 'objective' | null;
+  profile_version: number | null;
+  instruction_revision_id: string | null;
+  prompt_provenance_json: string | null;
   status: 'starting' | 'running' | 'complete' | 'failed' | 'interrupted';
   error_code:
     | 'codex_unavailable'
@@ -871,6 +1051,19 @@ type ProjectChatAttemptRow = {
     | null;
   created_at: string;
   updated_at: string;
+};
+
+type ProjectChatProfileRow = {
+  project_id: string;
+  version: number;
+  harness_mode: 'context' | 'planner' | 'reviewer';
+  response_depth: 'concise' | 'standard' | 'deep';
+  context_scope: 'project' | 'board' | 'objective';
+  instruction_revision_id: string;
+  updated_at: string;
+  content: string;
+  content_sha256: string;
+  created_at: string;
 };
 
 type ProjectChatActionRow = {
@@ -912,9 +1105,36 @@ function toChatAttempt(row: ProjectChatAttemptRow) {
     ...(row.model_json ? { model: JSON.parse(row.model_json) as unknown } : {}),
     requestedModelId: row.requested_model_id,
     reasoningOptionId: row.reasoning_option_id,
+    ...(row.harness_mode ? { harnessMode: row.harness_mode } : {}),
+    ...(row.response_depth ? { responseDepth: row.response_depth } : {}),
+    ...(row.context_scope ? { contextScope: row.context_scope } : {}),
+    ...(row.profile_version === null ? {} : { profileVersion: row.profile_version }),
+    ...(row.profile_version === null ? {} : { instructionRevisionId: row.instruction_revision_id }),
+    ...(row.prompt_provenance_json
+      ? { promptProvenance: JSON.parse(row.prompt_provenance_json) as unknown }
+      : {}),
     status: row.status,
     ...(row.error_code ? { errorCode: row.error_code } : {}),
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function toChatProfile(row: ProjectChatProfileRow) {
+  return ProjectChatProfileSchema.parse({
+    schemaVersion: 1,
+    projectId: row.project_id,
+    version: row.version,
+    harnessMode: row.harness_mode,
+    responseDepth: row.response_depth,
+    contextScope: row.context_scope,
+    customInstructions: row.content,
+    instructionRevision: {
+      id: row.instruction_revision_id,
+      revision: row.version,
+      contentSha256: row.content_sha256,
+      createdAt: row.created_at,
+    },
     updatedAt: row.updated_at,
   });
 }

@@ -1,9 +1,19 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { app, BrowserWindow, ipcMain, session, shell, type IpcMainInvokeEvent } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  session,
+  shell,
+  type IpcMainInvokeEvent,
+} from 'electron';
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
+import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import { ReadVaultAttachmentInputSchema } from '../shared/vault-contracts';
+import { buildMacApplicationMenuTemplate } from './application-menu';
 import { CodexAppServer } from './codex-app-server';
 import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
@@ -54,6 +64,8 @@ const projectChat = new ProjectChatService({
   },
 });
 let mainWindow: BrowserWindow | undefined;
+let mainWindowRendererLoaded = false;
+let pendingSettingsOpen = false;
 
 function setDevelopmentDockIcon() {
   if (process.platform === 'darwin' && !app.isPackaged) {
@@ -85,6 +97,19 @@ function focusMainWindow() {
   mainWindow.focus();
 }
 
+function deliverPendingSettingsOpen(window: BrowserWindow) {
+  if (
+    !pendingSettingsOpen ||
+    !mainWindowRendererLoaded ||
+    mainWindow !== window ||
+    window.isDestroyed()
+  ) {
+    return;
+  }
+  pendingSettingsOpen = false;
+  window.webContents.send(APP_NAVIGATION_CHANNELS.openSettings);
+}
+
 function createWindow(trustedRenderer: TrustedRenderer) {
   const window = new BrowserWindow({
     width: 1480,
@@ -102,8 +127,20 @@ function createWindow(trustedRenderer: TrustedRenderer) {
     },
   });
   mainWindow = window;
+  mainWindowRendererLoaded = false;
   window.on('closed', () => {
-    if (mainWindow === window) mainWindow = undefined;
+    if (mainWindow === window) {
+      mainWindow = undefined;
+      mainWindowRendererLoaded = false;
+    }
+  });
+  window.webContents.on('did-start-loading', () => {
+    if (mainWindow === window) mainWindowRendererLoaded = false;
+  });
+  window.webContents.on('did-finish-load', () => {
+    if (mainWindow !== window) return;
+    mainWindowRendererLoaded = true;
+    deliverPendingSettingsOpen(window);
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     try {
@@ -119,6 +156,27 @@ function createWindow(trustedRenderer: TrustedRenderer) {
   window.webContents.on('will-navigate', preventUntrustedNavigation);
   window.webContents.on('will-redirect', preventUntrustedNavigation);
   void window.loadURL(trustedRenderer.entryUrl);
+  return window;
+}
+
+function openSettings(trustedRenderer: TrustedRenderer) {
+  pendingSettingsOpen = true;
+  const window =
+    mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow(trustedRenderer);
+  focusMainWindow();
+  deliverPendingSettingsOpen(window);
+}
+
+function installApplicationMenu(trustedRenderer: TrustedRenderer) {
+  if (process.platform !== 'darwin') return;
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(
+      buildMacApplicationMenuTemplate({
+        appName: app.getName(),
+        openSettings: () => openSettings(trustedRenderer),
+      }),
+    ),
+  );
 }
 
 function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadiness) {
@@ -145,6 +203,7 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     workspace,
     reportUnexpectedWorkspaceError,
+    projectChat,
   );
   registerProjectChatIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
@@ -258,6 +317,7 @@ if (!primaryInstance) {
     });
     registerIpc(trustedRenderer, localData);
     createWindow(trustedRenderer);
+    installApplicationMenu(trustedRenderer);
     app.on('second-instance', () => {
       if (!mainWindow || mainWindow.isDestroyed()) createWindow(trustedRenderer);
       else focusMainWindow();

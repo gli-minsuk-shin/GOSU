@@ -98,6 +98,8 @@ export function describeError(error: unknown) {
   if (!(error instanceof Error)) return 'The operation could not be completed.';
   const messages: Record<string, string> = {
     project_not_found: 'This project no longer exists. Reload the workspace and try again.',
+    project_trashed: 'This project is in Trash. Restore it before making changes.',
+    project_not_trashed: 'This project is already active.',
     task_not_found: 'This task no longer exists.',
     cross_project_access_denied: 'A task cannot be changed from another project.',
     objective_not_found: 'Save an objective before using revision controls.',
@@ -115,6 +117,8 @@ export function describeError(error: unknown) {
     chat_attempt_not_found:
       'The saved turn to retry is no longer available in this project. Send it as a new turn.',
     chat_attempt_not_retryable: 'Only failed or interrupted Codex turns can be retried.',
+    chat_profile_conflict:
+      'This project agent profile changed since it was opened. GOSU reloaded the current version.',
     action_not_found: 'This proposed project action no longer exists.',
     action_not_proposed: 'This project action was already handled.',
     invalid_chat_input: 'Check the chat message and model selection, then try again.',

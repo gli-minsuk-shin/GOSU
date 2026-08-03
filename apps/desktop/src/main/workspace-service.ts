@@ -4,6 +4,8 @@ import {
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   ObjectiveCommandSchema,
+  ProjectVersionCommandSchema,
+  RenameProjectInputSchema,
   SaveObjectiveInputSchema,
   SetTaskArchivedInputSchema,
   UpdateBoardSettingsInputSchema,
@@ -11,10 +13,13 @@ import {
   WorkspaceOperationSchema,
   WorkspacePendingSummarySchema,
   WorkspaceSnapshotSchema,
+  resolveWorkspaceBoardSettings,
   type CreateProjectInput,
   type CreateTaskInput,
   type ObjectiveCommand,
   type ProjectRecord,
+  type ProjectVersionCommand,
+  type RenameProjectInput,
   type SaveObjectiveInput,
   type SetTaskArchivedInput,
   type UpdateBoardSettingsInput,
@@ -46,6 +51,8 @@ export class WorkspaceServiceError extends Error {
   constructor(
     readonly code:
       | 'project_not_found'
+      | 'project_trashed'
+      | 'project_not_trashed'
       | 'task_not_found'
       | 'cross_project_access_denied'
       | 'objective_not_found'
@@ -128,11 +135,13 @@ export class WorkspaceService {
     return this.mutate(async (state) => {
       const command = CreateProjectInputSchema.parse(input);
       const now = new Date().toISOString();
+      const board = resolveWorkspaceBoardSettings(command.board);
       const project: ProjectRecord = {
         id: randomUUID(),
         name: command.name,
         slug: deriveSlug(command.name, state.projects),
         ...(command.repository === undefined ? {} : { repository: command.repository }),
+        board,
         version: 1,
         createdAt: now,
         updatedAt: now,
@@ -151,6 +160,7 @@ export class WorkspaceService {
             name: project.name,
             slug: project.slug,
             ...(project.repository === undefined ? {} : { repository: project.repository }),
+            board,
           },
         ),
         value: project,
@@ -158,10 +168,124 @@ export class WorkspaceService {
     });
   }
 
+  renameProject(input: RenameProjectInput): Promise<ProjectRecord> {
+    return this.mutate(async (state) => {
+      const command = RenameProjectInputSchema.parse(input);
+      const project = this.requireActiveProject(state, command.projectId);
+      if (project.version !== command.expectedVersion) {
+        throw conflict(project.id, command.expectedVersion, project.version);
+      }
+      const now = new Date().toISOString();
+      const updated: ProjectRecord = {
+        ...project,
+        name: command.name,
+        version: project.version + 1,
+        updatedAt: now,
+      };
+      return {
+        state: {
+          ...state,
+          projects: state.projects.map((candidate) =>
+            candidate.id === project.id ? updated : candidate,
+          ),
+        },
+        operation: this.operation(
+          'project.rename',
+          `workspace:${project.id}:project:${project.id}:rename`,
+          project.id,
+          'project',
+          project.id,
+          project.version,
+          now,
+          { name: updated.name, newEntityVersion: updated.version },
+        ),
+        value: updated,
+      };
+    });
+  }
+
+  trashProject(input: ProjectVersionCommand): Promise<ProjectRecord> {
+    return this.mutate(async (state) => {
+      const command = ProjectVersionCommandSchema.parse(input);
+      const project = this.requireProject(state, command.projectId);
+      if (project.version !== command.expectedVersion) {
+        throw conflict(project.id, command.expectedVersion, project.version);
+      }
+      if (project.trashedAt !== undefined) {
+        throw new WorkspaceServiceError('project_trashed', { projectId: project.id });
+      }
+      const now = new Date().toISOString();
+      const updated: ProjectRecord = {
+        ...project,
+        trashedAt: now,
+        version: project.version + 1,
+        updatedAt: now,
+      };
+      return {
+        state: {
+          ...state,
+          projects: state.projects.map((candidate) =>
+            candidate.id === project.id ? updated : candidate,
+          ),
+        },
+        operation: this.operation(
+          'project.trash',
+          `workspace:${project.id}:project:${project.id}:trash`,
+          project.id,
+          'project',
+          project.id,
+          project.version,
+          now,
+          { trashedAt: updated.trashedAt, newEntityVersion: updated.version },
+        ),
+        value: updated,
+      };
+    });
+  }
+
+  restoreProject(input: ProjectVersionCommand): Promise<ProjectRecord> {
+    return this.mutate(async (state) => {
+      const command = ProjectVersionCommandSchema.parse(input);
+      const project = this.requireProject(state, command.projectId);
+      if (project.version !== command.expectedVersion) {
+        throw conflict(project.id, command.expectedVersion, project.version);
+      }
+      if (project.trashedAt === undefined) {
+        throw new WorkspaceServiceError('project_not_trashed', { projectId: project.id });
+      }
+      const now = new Date().toISOString();
+      const { trashedAt: _trashedAt, ...activeProject } = project;
+      const updated: ProjectRecord = {
+        ...activeProject,
+        version: project.version + 1,
+        updatedAt: now,
+      };
+      return {
+        state: {
+          ...state,
+          projects: state.projects.map((candidate) =>
+            candidate.id === project.id ? updated : candidate,
+          ),
+        },
+        operation: this.operation(
+          'project.restore',
+          `workspace:${project.id}:project:${project.id}:restore`,
+          project.id,
+          'project',
+          project.id,
+          project.version,
+          now,
+          { trashedAt: null, newEntityVersion: updated.version },
+        ),
+        value: updated,
+      };
+    });
+  }
+
   createTask(input: CreateTaskInput): Promise<WorkspaceTask> {
     return this.mutate(async (state) => {
       const command = CreateTaskInputSchema.parse(input);
-      this.requireProject(state, command.projectId);
+      this.requireActiveProject(state, command.projectId);
       const now = new Date().toISOString();
       const task: WorkspaceTask = {
         id: randomUUID(),
@@ -205,7 +329,7 @@ export class WorkspaceService {
   updateTask(input: UpdateTaskInput): Promise<WorkspaceTask> {
     return this.mutate(async (state) => {
       const command = UpdateTaskInputSchema.parse(input);
-      this.requireProject(state, command.projectId);
+      this.requireActiveProject(state, command.projectId);
       const task = state.tasks.find((candidate) => candidate.id === command.taskId);
       if (!task) throw new WorkspaceServiceError('task_not_found', { taskId: command.taskId });
       if (task.projectId !== command.projectId) {
@@ -278,7 +402,7 @@ export class WorkspaceService {
   updateBoardSettings(input: UpdateBoardSettingsInput): Promise<ProjectRecord> {
     return this.mutate(async (state) => {
       const command = UpdateBoardSettingsInputSchema.parse(input);
-      const project = this.requireProject(state, command.projectId);
+      const project = this.requireActiveProject(state, command.projectId);
       if (project.version !== command.expectedVersion) {
         throw conflict(project.id, command.expectedVersion, project.version);
       }
@@ -314,7 +438,7 @@ export class WorkspaceService {
   setTaskArchived(input: SetTaskArchivedInput): Promise<WorkspaceTask> {
     return this.mutate(async (state) => {
       const command = SetTaskArchivedInputSchema.parse(input);
-      this.requireProject(state, command.projectId);
+      this.requireActiveProject(state, command.projectId);
       const task = state.tasks.find((candidate) => candidate.id === command.taskId);
       if (!task) throw new WorkspaceServiceError('task_not_found', { taskId: command.taskId });
       if (task.projectId !== command.projectId) {
@@ -360,7 +484,7 @@ export class WorkspaceService {
   saveObjective(input: SaveObjectiveInput): Promise<WorkspaceObjective> {
     return this.mutate(async (state) => {
       const command = SaveObjectiveInputSchema.parse(input);
-      this.requireProject(state, command.projectId);
+      this.requireActiveProject(state, command.projectId);
       const current = currentObjective(state, command.projectId);
       const actualVersion = current?.entityVersion ?? 0;
       if (actualVersion !== command.expectedEntityVersion) {
@@ -428,7 +552,7 @@ export class WorkspaceService {
   lockObjective(input: ObjectiveCommand): Promise<WorkspaceObjective> {
     return this.mutate(async (state) => {
       const command = ObjectiveCommandSchema.parse(input);
-      this.requireProject(state, command.projectId);
+      this.requireActiveProject(state, command.projectId);
       const current = currentObjective(state, command.projectId);
       if (!current) throw new WorkspaceServiceError('objective_not_found');
       if (current.entityVersion !== command.expectedEntityVersion) {
@@ -473,7 +597,7 @@ export class WorkspaceService {
   startObjectiveVersion(input: ObjectiveCommand): Promise<WorkspaceObjective> {
     return this.mutate(async (state) => {
       const command = ObjectiveCommandSchema.parse(input);
-      this.requireProject(state, command.projectId);
+      this.requireActiveProject(state, command.projectId);
       const current = currentObjective(state, command.projectId);
       if (!current) throw new WorkspaceServiceError('objective_not_found');
       if (current.entityVersion !== command.expectedEntityVersion) {
@@ -554,6 +678,14 @@ export class WorkspaceService {
   private requireProject(state: WorkspaceSnapshot, projectId: string) {
     const project = state.projects.find((candidate) => candidate.id === projectId);
     if (!project) throw new WorkspaceServiceError('project_not_found', { projectId });
+    return project;
+  }
+
+  private requireActiveProject(state: WorkspaceSnapshot, projectId: string) {
+    const project = this.requireProject(state, projectId);
+    if (project.trashedAt !== undefined) {
+      throw new WorkspaceServiceError('project_trashed', { projectId });
+    }
     return project;
   }
 

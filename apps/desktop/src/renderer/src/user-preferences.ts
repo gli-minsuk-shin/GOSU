@@ -1,3 +1,10 @@
+import {
+  DEFAULT_WORKSPACE_BOARD_SETTINGS,
+  WorkspaceBoardSettingsSchema,
+  resolveWorkspaceBoardSettings,
+  type WorkspaceBoardSettings,
+} from '../../shared/workspace-contracts';
+
 export const APPEARANCE_OPTIONS = ['system', 'dark', 'light'] as const;
 export const TEXT_SIZE_OPTIONS = ['compact', 'default', 'large', 'extra-large'] as const;
 
@@ -8,6 +15,7 @@ export type UserPreferences = Readonly<{
   schemaVersion: 1;
   appearance: AppearancePreference;
   textSize: TextSizePreference;
+  defaultBoardTemplate: WorkspaceBoardSettings;
 }>;
 
 type PreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>;
@@ -18,6 +26,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   schemaVersion: 1,
   appearance: 'system',
   textSize: 'default',
+  defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -25,11 +34,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function parseUserPreferences(value: unknown): UserPreferences {
-  if (!isRecord(value) || value.schemaVersion !== 1) return DEFAULT_USER_PREFERENCES;
-  const appearance = APPEARANCE_OPTIONS.find((option) => option === value.appearance);
-  const textSize = TEXT_SIZE_OPTIONS.find((option) => option === value.textSize);
-  if (!appearance || !textSize) return DEFAULT_USER_PREFERENCES;
-  return { schemaVersion: 1, appearance, textSize };
+  if (!isRecord(value) || value.schemaVersion !== 1) return defaultUserPreferences();
+  const appearance =
+    APPEARANCE_OPTIONS.find((option) => option === value.appearance) ??
+    DEFAULT_USER_PREFERENCES.appearance;
+  const textSize =
+    TEXT_SIZE_OPTIONS.find((option) => option === value.textSize) ??
+    DEFAULT_USER_PREFERENCES.textSize;
+  const template = WorkspaceBoardSettingsSchema.safeParse(value.defaultBoardTemplate);
+  return {
+    schemaVersion: 1,
+    appearance,
+    textSize,
+    defaultBoardTemplate: template.success
+      ? template.data
+      : resolveWorkspaceBoardSettings(undefined),
+  };
 }
 
 export function loadUserPreferences(storage: PreferenceStorage): UserPreferences {
@@ -37,10 +57,17 @@ export function loadUserPreferences(storage: PreferenceStorage): UserPreferences
     const serialized = storage.getItem(USER_PREFERENCES_STORAGE_KEY);
     return serialized
       ? parseUserPreferences(JSON.parse(serialized) as unknown)
-      : DEFAULT_USER_PREFERENCES;
+      : defaultUserPreferences();
   } catch {
-    return DEFAULT_USER_PREFERENCES;
+    return defaultUserPreferences();
   }
+}
+
+function defaultUserPreferences(): UserPreferences {
+  return {
+    ...DEFAULT_USER_PREFERENCES,
+    defaultBoardTemplate: resolveWorkspaceBoardSettings(undefined),
+  };
 }
 
 export function saveUserPreferences(
