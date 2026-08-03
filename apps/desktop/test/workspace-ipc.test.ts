@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { ProjectChatServiceError } from '../src/main/project-chat-service';
 import { registerWorkspaceIpc } from '../src/main/workspace-ipc';
 import { WorkspaceService, type WorkspaceStorage } from '../src/main/workspace-service';
 import { WorkspaceDataRecoveryError } from '../src/main/workspace-storage-error';
@@ -36,12 +37,19 @@ class MemoryStorage implements WorkspaceStorage {
   }
 }
 
-function handlersFor(workspace: WorkspaceService, reportUnexpected?: (error: unknown) => void) {
+function handlersFor(
+  workspace: WorkspaceService,
+  reportUnexpected?: (error: unknown) => void,
+  projectChatIdleGuard?: Readonly<{
+    runWhenProjectChatIdle<T>(projectId: string, operation: () => Promise<T>): Promise<T>;
+  }>,
+) {
   const handlers = new Map<string, (...arguments_: unknown[]) => unknown>();
   registerWorkspaceIpc(
     (channel, listener) => handlers.set(channel, listener),
     workspace,
     reportUnexpected,
+    projectChatIdleGuard,
   );
   return handlers;
 }
@@ -53,6 +61,27 @@ async function successful<T>(
   const result = (await handler(...arguments_)) as WorkspaceIpcResult<T>;
   if (!result.ok) throw new Error(result.error.code);
   return result.value;
+}
+
+function invalidBoardTemplates() {
+  return [
+    {
+      ...DEFAULT_WORKSPACE_BOARD_SETTINGS,
+      columnLabels: {
+        ...DEFAULT_WORKSPACE_BOARD_SETTINGS.columnLabels,
+        backlog: 'Duplicate',
+        planned: ' duplicate ',
+      },
+    },
+    {
+      ...DEFAULT_WORKSPACE_BOARD_SETTINGS,
+      columnOrder: ['backlog', 'backlog', 'in_progress', 'review', 'done'],
+    },
+    {
+      ...DEFAULT_WORKSPACE_BOARD_SETTINGS,
+      wipLimits: { ...DEFAULT_WORKSPACE_BOARD_SETTINGS.wipLimits, review: 0 },
+    },
+  ];
 }
 
 describe('workspace IPC boundary', () => {
@@ -104,6 +133,124 @@ describe('workspace IPC boundary', () => {
     });
   });
 
+  it('routes explicit versioned project rename, trash, and restore commands', async () => {
+    const storage = new MemoryStorage();
+    const handlers = handlersFor(new WorkspaceService(storage));
+    const project = await successful<{ id: string; slug: string; version: number }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!,
+      { name: 'Lifecycle IPC project' },
+    );
+    const renamed = await successful<{
+      id: string;
+      name: string;
+      slug: string;
+      version: number;
+    }>(handlers.get(WORKSPACE_IPC_CHANNELS.renameProject)!, {
+      projectId: project.id,
+      expectedVersion: project.version,
+      name: '  Renamed IPC project  ',
+    });
+    expect(renamed).toMatchObject({
+      name: 'Renamed IPC project',
+      slug: project.slug,
+      version: 2,
+    });
+
+    const trashed = await successful<{ version: number; trashedAt?: string }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.trashProject)!,
+      { projectId: project.id, expectedVersion: renamed.version },
+    );
+    expect(trashed).toMatchObject({ version: 3 });
+    expect(trashed.trashedAt).toBeTypeOf('string');
+    await expect(
+      handlers.get(WORKSPACE_IPC_CHANNELS.createTask)!({
+        projectId: project.id,
+        title: 'Must stay out of Trash',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'project_trashed' } });
+    await expect(
+      handlers.get(WORKSPACE_IPC_CHANNELS.trashProject)!({
+        projectId: project.id,
+        expectedVersion: trashed.version,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'project_trashed' } });
+
+    const restored = await successful<{ version: number; trashedAt?: string }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.restoreProject)!,
+      { projectId: project.id, expectedVersion: trashed.version },
+    );
+    expect(restored).toMatchObject({ version: 4 });
+    expect(restored).not.toHaveProperty('trashedAt');
+    await expect(
+      handlers.get(WORKSPACE_IPC_CHANNELS.restoreProject)!({
+        projectId: project.id,
+        expectedVersion: restored.version,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'project_not_trashed' } });
+    expect(storage.operations.slice(-3).map((operation) => operation.commandType)).toEqual([
+      'project.rename',
+      'project.trash',
+      'project.restore',
+    ]);
+  });
+
+  it('rejects malformed project lifecycle commands without reflecting input', async () => {
+    const handlers = handlersFor(new WorkspaceService(new MemoryStorage()));
+    const privateName = 'x-private-project-name';
+
+    await expect(
+      handlers.get(WORKSPACE_IPC_CHANNELS.renameProject)!({
+        projectId: 'not-a-project-id',
+        expectedVersion: 0,
+        name: privateName,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_workspace_input' } });
+    const result = await handlers.get(WORKSPACE_IPC_CHANNELS.trashProject)!({
+      projectId: privateName,
+      expectedVersion: 1,
+    });
+    expect(result).toEqual({ ok: false, error: { code: 'invalid_workspace_input' } });
+    expect(String(result)).not.toContain(privateName);
+  });
+
+  it('returns a bounded busy result when Project Chat holds the Trash gate', async () => {
+    const storage = new MemoryStorage();
+    const workspace = new WorkspaceService(storage);
+    const idleGuard = {
+      async runWhenProjectChatIdle<T>(_projectId: string, _operation: () => Promise<T>) {
+        throw new ProjectChatServiceError('chat_busy');
+      },
+    };
+    const handlers = handlersFor(workspace, undefined, idleGuard);
+    const project = await successful<{ id: string; version: number }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!,
+      { name: 'Busy chat project' },
+    );
+
+    await expect(
+      handlers.get(WORKSPACE_IPC_CHANNELS.trashProject)!({
+        projectId: project.id,
+        expectedVersion: project.version,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'chat_busy' } });
+    expect((await workspace.snapshot()).projects[0]).not.toHaveProperty('trashedAt');
+  });
+
+  it('rejects invalid default Board templates on project creation without committing state', async () => {
+    const storage = new MemoryStorage();
+    const createProject = handlersFor(new WorkspaceService(storage)).get(
+      WORKSPACE_IPC_CHANNELS.createProject,
+    )!;
+
+    for (const [index, board] of invalidBoardTemplates().entries()) {
+      await expect(
+        createProject({ name: `Invalid template ${index + 1}`, board }),
+      ).resolves.toEqual({ ok: false, error: { code: 'invalid_workspace_input' } });
+    }
+    expect(storage.state).toBeNull();
+    expect(storage.operations).toEqual([]);
+  });
+
   it('rejects invalid Board labels, order, and WIP limits at the fixed IPC boundary', async () => {
     const storage = new MemoryStorage();
     const handlers = handlersFor(new WorkspaceService(storage));
@@ -112,26 +259,8 @@ describe('workspace IPC boundary', () => {
       { name: 'Board validation project' },
     );
     const updateBoard = handlers.get(WORKSPACE_IPC_CHANNELS.updateBoardSettings)!;
-    const invalidBoards = [
-      {
-        ...DEFAULT_WORKSPACE_BOARD_SETTINGS,
-        columnLabels: {
-          ...DEFAULT_WORKSPACE_BOARD_SETTINGS.columnLabels,
-          backlog: 'Duplicate',
-          planned: ' duplicate ',
-        },
-      },
-      {
-        ...DEFAULT_WORKSPACE_BOARD_SETTINGS,
-        columnOrder: ['backlog', 'backlog', 'in_progress', 'review', 'done'],
-      },
-      {
-        ...DEFAULT_WORKSPACE_BOARD_SETTINGS,
-        wipLimits: { ...DEFAULT_WORKSPACE_BOARD_SETTINGS.wipLimits, review: 0 },
-      },
-    ];
 
-    for (const board of invalidBoards) {
+    for (const board of invalidBoardTemplates()) {
       await expect(
         updateBoard({ projectId: project.id, expectedVersion: project.version, board }),
       ).resolves.toEqual({ ok: false, error: { code: 'invalid_workspace_input' } });
@@ -142,10 +271,15 @@ describe('workspace IPC boundary', () => {
 
   it('routes normalized Board, metadata, archive, and restore commands without generic IPC', async () => {
     const handlers = handlersFor(new WorkspaceService(new MemoryStorage()));
-    const project = await successful<{ id: string; version: number }>(
-      handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!,
-      { name: 'Operational Board' },
-    );
+    const project = await successful<{
+      id: string;
+      version: number;
+      board: { title: string };
+    }>(handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!, {
+      name: 'Operational Board',
+      board: { ...DEFAULT_WORKSPACE_BOARD_SETTINGS, title: '  Lab default workflow  ' },
+    });
+    expect(project.board.title).toBe('Lab default workflow');
     const updatedProject = await successful<{ version: number; board?: { title: string } }>(
       handlers.get(WORKSPACE_IPC_CHANNELS.updateBoardSettings)!,
       {

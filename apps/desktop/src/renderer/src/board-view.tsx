@@ -1,19 +1,17 @@
 import { useMemo, useState, type DragEventHandler } from 'react';
 
 import {
-  DEFAULT_WORKSPACE_BOARD_SETTINGS,
-  WORKSPACE_TASK_STATUSES,
   resolveWorkspaceBoardSettings,
   type CreateTaskInput,
   type ProjectRecord,
   type SetTaskArchivedInput,
   type UpdateBoardSettingsInput,
   type UpdateTaskInput,
-  type WorkspaceBoardSettings,
   type WorkspaceTask,
   type WorkspaceTaskPriority,
   type WorkspaceTaskStatus,
 } from '../../shared/workspace-contracts';
+import { BoardSettingsForm } from './board-settings-form';
 import {
   EMPTY_KANBAN_FILTERS,
   activeKanbanFilterCount,
@@ -57,6 +55,7 @@ export function BoardView({
   const board = useMemo(() => resolveWorkspaceBoardSettings(project.board), [project.board]);
   const [filters, setFilters] = useState<KanbanFilters>(EMPTY_KANBAN_FILTERS);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsFocusStatus, setSettingsFocusStatus] = useState<WorkspaceTaskStatus | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dropStatus, setDropStatus] = useState<WorkspaceTaskStatus | null>(null);
@@ -91,9 +90,12 @@ export function BoardView({
           <button
             type="button"
             className="secondary-button"
-            onClick={() => setShowSettings((current) => !current)}
+            onClick={() => {
+              setSettingsFocusStatus(null);
+              setShowSettings((current) => !current);
+            }}
           >
-            {showSettings ? 'Close settings' : 'Board settings'}
+            {showSettings ? 'Close settings' : 'Rename columns & settings'}
           </button>
         </div>
       </header>
@@ -107,13 +109,20 @@ export function BoardView({
 
       {showSettings && (
         <BoardSettingsPanel
-          key={`${project.id}:${project.version}`}
+          key={`${project.id}:${project.version}:${settingsFocusStatus ?? 'general'}`}
           project={project}
           busy={busy}
-          onCancel={() => setShowSettings(false)}
+          focusStatus={settingsFocusStatus}
+          onCancel={() => {
+            setSettingsFocusStatus(null);
+            setShowSettings(false);
+          }}
           onSave={async (input) => {
             const saved = await onUpdateBoardSettings(input);
-            if (saved) setShowSettings(false);
+            if (saved) {
+              setSettingsFocusStatus(null);
+              setShowSettings(false);
+            }
             return saved;
           }}
         />
@@ -192,7 +201,22 @@ export function BoardView({
                 >
                   <header>
                     <div>
-                      <strong id={`column-${column.status}`}>{column.label}</strong>
+                      <div className="column-title-row">
+                        <strong id={`column-${column.status}`}>{column.label}</strong>
+                        <button
+                          type="button"
+                          className="column-rename-button"
+                          onClick={() => {
+                            setSettingsFocusStatus(column.status);
+                            setShowSettings(true);
+                          }}
+                          disabled={busy}
+                          aria-label={`Rename ${column.label} column`}
+                          title={`Rename ${column.label}`}
+                        >
+                          Rename
+                        </button>
+                      </div>
                       {column.wipLimit !== null && (
                         <small className={exceeded ? 'wip-warning' : ''}>
                           WIP {allColumnTasks.length}/{column.wipLimit}
@@ -742,51 +766,17 @@ function TaskMetadataFields({
 function BoardSettingsPanel({
   project,
   busy,
+  focusStatus,
   onCancel,
   onSave,
 }: {
   project: ProjectRecord;
   busy: boolean;
+  focusStatus: WorkspaceTaskStatus | null;
   onCancel: () => void;
   onSave: (input: UpdateBoardSettingsInput) => Promise<boolean>;
 }) {
   const initial = resolveWorkspaceBoardSettings(project.board);
-  const [title, setTitle] = useState(initial.title);
-  const [columnLabels, setColumnLabels] = useState({ ...initial.columnLabels });
-  const [columnOrder, setColumnOrder] = useState([...initial.columnOrder]);
-  const [wipLimits, setWipLimits] = useState(
-    Object.fromEntries(
-      WORKSPACE_TASK_STATUSES.map((status) => [
-        status,
-        initial.wipLimits[status]?.toString() ?? '',
-      ]),
-    ) as Record<WorkspaceTaskStatus, string>,
-  );
-  const normalizedLabels = Object.values(columnLabels).map((label) =>
-    label.trim().toLocaleLowerCase(),
-  );
-  const valid =
-    title.trim().length >= 1 &&
-    normalizedLabels.every((label) => label.length > 0) &&
-    new Set(normalizedLabels).size === WORKSPACE_TASK_STATUSES.length &&
-    WORKSPACE_TASK_STATUSES.every((status) => {
-      const value = wipLimits[status];
-      return value === '' || (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 999);
-    });
-
-  const loadSettings = (settings: WorkspaceBoardSettings) => {
-    setTitle(settings.title);
-    setColumnLabels({ ...settings.columnLabels });
-    setColumnOrder([...settings.columnOrder]);
-    setWipLimits(
-      Object.fromEntries(
-        WORKSPACE_TASK_STATUSES.map((status) => [
-          status,
-          settings.wipLimits[status]?.toString() ?? '',
-        ]),
-      ) as Record<WorkspaceTaskStatus, string>,
-    );
-  };
 
   return (
     <section className="board-settings-panel" aria-label="Board settings">
@@ -797,110 +787,20 @@ function BoardSettingsPanel({
         </div>
         <p>Canonical status IDs remain stable for experiments, chat actions, and sync.</p>
       </header>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!valid || busy) return;
-          void onSave({
+      <BoardSettingsForm
+        initial={initial}
+        busy={busy}
+        saveLabel="Save board"
+        focusStatus={focusStatus}
+        onCancel={onCancel}
+        onSave={(board) =>
+          onSave({
             projectId: project.id,
             expectedVersion: project.version,
-            board: {
-              title: title.trim(),
-              columnLabels: Object.fromEntries(
-                WORKSPACE_TASK_STATUSES.map((status) => [status, columnLabels[status].trim()]),
-              ) as WorkspaceBoardSettings['columnLabels'],
-              columnOrder,
-              wipLimits: Object.fromEntries(
-                WORKSPACE_TASK_STATUSES.map((status) => [
-                  status,
-                  wipLimits[status] === '' ? null : Number(wipLimits[status]),
-                ]),
-              ) as WorkspaceBoardSettings['wipLimits'],
-            },
-          });
-        }}
-      >
-        <label className="board-title-field">
-          Board title
-          <input
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            minLength={1}
-            maxLength={120}
-            disabled={busy}
-          />
-        </label>
-        <div className="board-column-settings">
-          {columnOrder.map((status, index) => (
-            <div className="column-setting-row" key={status}>
-              <span>{index + 1}</span>
-              <label>
-                Column name
-                <input
-                  value={columnLabels[status]}
-                  onChange={(event) =>
-                    setColumnLabels((current) => ({ ...current, [status]: event.target.value }))
-                  }
-                  minLength={1}
-                  maxLength={40}
-                  disabled={busy}
-                />
-              </label>
-              <label>
-                WIP limit
-                <input
-                  type="number"
-                  value={wipLimits[status]}
-                  onChange={(event) =>
-                    setWipLimits((current) => ({ ...current, [status]: event.target.value }))
-                  }
-                  min={1}
-                  max={999}
-                  placeholder="None"
-                  disabled={busy}
-                />
-              </label>
-              <div className="column-order-actions" aria-label={`Move ${columnLabels[status]}`}>
-                <button
-                  type="button"
-                  onClick={() => setColumnOrder((current) => moveItem(current, index, index - 1))}
-                  disabled={busy || index === 0}
-                  title="Move column left"
-                >
-                  ←
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setColumnOrder((current) => moveItem(current, index, index + 1))}
-                  disabled={busy || index === columnOrder.length - 1}
-                  title="Move column right"
-                >
-                  →
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-        {!valid && (
-          <p className="settings-validation">Use unique names and WIP limits from 1–999.</p>
-        )}
-        <div className="form-actions">
-          <button type="submit" className="primary-button" disabled={busy || !valid}>
-            {busy ? 'Saving…' : 'Save board'}
-          </button>
-          <button type="button" className="ghost-button" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="ghost-button"
-            onClick={() => loadSettings(structuredClone(DEFAULT_WORKSPACE_BOARD_SETTINGS))}
-            disabled={busy}
-          >
-            Use GOSU defaults
-          </button>
-        </div>
-      </form>
+            board,
+          })
+        }
+      />
     </section>
   );
 }
@@ -950,14 +850,6 @@ function ArchivedTasks({
       )}
     </section>
   );
-}
-
-function moveItem<T>(items: readonly T[], from: number, to: number) {
-  if (to < 0 || to >= items.length || from === to) return [...items];
-  const next = [...items];
-  const [item] = next.splice(from, 1);
-  if (item !== undefined) next.splice(to, 0, item);
-  return next;
 }
 
 function formatUpdated(value: string) {

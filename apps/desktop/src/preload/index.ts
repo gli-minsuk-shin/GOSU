@@ -1,14 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import {
   ProjectChatEventSchema,
   type ApplyProjectChatActionInput,
   type ProjectChatAction,
   type ProjectChatEvent,
+  type ProjectChatProfile,
   type ProjectChatSnapshot,
   type ProjectChatTurnReceipt,
   type SendProjectChatMessageInput,
+  type UpdateProjectChatProfileInput,
 } from '../shared/project-chat-contracts';
 import { unwrapProjectChatIpcResult } from '../shared/project-chat-ipc-result';
 import type { ReadVaultAttachmentInput, VaultAttachment } from '../shared/vault-contracts';
@@ -17,6 +20,8 @@ import type {
   CreateTaskInput,
   ObjectiveCommand,
   ProjectRecord,
+  ProjectVersionCommand,
+  RenameProjectInput,
   SaveObjectiveInput,
   SetTaskArchivedInput,
   UpdateBoardSettingsInput,
@@ -45,7 +50,34 @@ async function invokeProjectChat<T>(channel: string, input: unknown): Promise<T>
   return unwrapProjectChatIpcResult<T>(result);
 }
 
+const openSettingsListeners = new Set<() => void>();
+let pendingOpenSettings = false;
+
+ipcRenderer.on(APP_NAVIGATION_CHANNELS.openSettings, (_event, ...arguments_: unknown[]) => {
+  if (arguments_.length !== 0) return;
+  if (openSettingsListeners.size === 0) {
+    pendingOpenSettings = true;
+    return;
+  }
+  for (const listener of openSettingsListeners) listener();
+});
+
+function onOpenSettings(listener: () => void) {
+  if (typeof listener !== 'function') throw new Error('invalid_open_settings_listener');
+  openSettingsListeners.add(listener);
+  if (pendingOpenSettings) {
+    pendingOpenSettings = false;
+    listener();
+  }
+  return () => {
+    openSettingsListeners.delete(listener);
+  };
+}
+
 const api = {
+  app: {
+    onOpenSettings,
+  },
   runtime: {
     readiness: () => ipcRenderer.invoke('gosu:runtime:readiness'),
   },
@@ -60,6 +92,8 @@ const api = {
   projectChat: {
     snapshot: (projectId: string) =>
       invokeProjectChat<ProjectChatSnapshot>(PROJECT_CHAT_IPC_CHANNELS.snapshot, { projectId }),
+    updateProfile: (input: UpdateProjectChatProfileInput) =>
+      invokeProjectChat<ProjectChatProfile>(PROJECT_CHAT_IPC_CHANNELS.updateProfile, input),
     send: (input: SendProjectChatMessageInput) =>
       invokeProjectChat<ProjectChatTurnReceipt>(PROJECT_CHAT_IPC_CHANNELS.send, input),
     cancel: (projectId: string) =>
@@ -89,6 +123,12 @@ const api = {
       invokeWorkspace<WorkspacePendingSummary>(WORKSPACE_IPC_CHANNELS.pendingSummary),
     createProject: (input: CreateProjectInput) =>
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.createProject, input),
+    renameProject: (input: RenameProjectInput) =>
+      invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.renameProject, input),
+    trashProject: (input: ProjectVersionCommand) =>
+      invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.trashProject, input),
+    restoreProject: (input: ProjectVersionCommand) =>
+      invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.restoreProject, input),
     updateBoardSettings: (input: UpdateBoardSettingsInput) =>
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.updateBoardSettings, input),
     createTask: (input: CreateTaskInput) =>

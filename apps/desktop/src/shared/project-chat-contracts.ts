@@ -4,10 +4,124 @@ import { WORKSPACE_TASK_STATUSES } from './workspace-contracts';
 
 export const PROJECT_CHAT_MAX_MESSAGE_LENGTH = 12_000;
 export const PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH = 32_000;
+export const PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH = 4_000;
+
+export const PROJECT_CHAT_HARNESS_MODES = ['context', 'planner', 'reviewer'] as const;
+export const PROJECT_CHAT_RESPONSE_DEPTHS = ['concise', 'standard', 'deep'] as const;
+export const PROJECT_CHAT_CONTEXT_SCOPES = ['project', 'board', 'objective'] as const;
 
 const timestampSchema = z.string().datetime({ offset: true });
 const uuidSchema = z.string().uuid();
 const taskStatusSchema = z.enum(WORKSPACE_TASK_STATUSES);
+const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
+const harnessModeSchema = z.enum(PROJECT_CHAT_HARNESS_MODES);
+const responseDepthSchema = z.enum(PROJECT_CHAT_RESPONSE_DEPTHS);
+const contextScopeSchema = z.enum(PROJECT_CHAT_CONTEXT_SCOPES);
+
+export const ProjectChatInstructionRevisionSchema = z
+  .object({
+    id: uuidSchema,
+    revision: z.number().int().positive(),
+    contentSha256: sha256Schema,
+    createdAt: timestampSchema,
+  })
+  .strict();
+
+export type ProjectChatInstructionRevision = z.infer<typeof ProjectChatInstructionRevisionSchema>;
+
+export const ProjectChatProfileSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    projectId: uuidSchema,
+    version: z.number().int().nonnegative(),
+    harnessMode: harnessModeSchema,
+    responseDepth: responseDepthSchema,
+    contextScope: contextScopeSchema,
+    customInstructions: z.string().max(PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH),
+    instructionRevision: ProjectChatInstructionRevisionSchema.nullable(),
+    updatedAt: timestampSchema.nullable(),
+  })
+  .strict()
+  .superRefine((profile, context) => {
+    if (profile.version === 0 && profile.instructionRevision !== null) {
+      context.addIssue({
+        code: 'custom',
+        message: 'An unsaved chat profile cannot reference an instruction revision',
+        path: ['instructionRevision'],
+      });
+    }
+    if (
+      profile.version > 0 &&
+      (profile.instructionRevision === null ||
+        profile.instructionRevision.revision !== profile.version)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The instruction revision must match the chat profile version',
+        path: ['instructionRevision'],
+      });
+    }
+  });
+
+export type ProjectChatProfile = z.infer<typeof ProjectChatProfileSchema>;
+export type ProjectChatHarnessMode = z.infer<typeof harnessModeSchema>;
+export type ProjectChatResponseDepth = z.infer<typeof responseDepthSchema>;
+export type ProjectChatContextScope = z.infer<typeof contextScopeSchema>;
+
+export function defaultProjectChatProfile(projectId: string): ProjectChatProfile {
+  return ProjectChatProfileSchema.parse({
+    schemaVersion: 1,
+    projectId,
+    version: 0,
+    harnessMode: 'context',
+    responseDepth: 'standard',
+    contextScope: 'project',
+    customInstructions: '',
+    instructionRevision: null,
+    updatedAt: null,
+  });
+}
+
+export const UpdateProjectChatProfileInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    expectedVersion: z.number().int().nonnegative(),
+    harnessMode: harnessModeSchema,
+    responseDepth: responseDepthSchema,
+    contextScope: contextScopeSchema,
+    customInstructions: z.string().max(PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH),
+  })
+  .strict();
+
+export type UpdateProjectChatProfileInput = z.infer<typeof UpdateProjectChatProfileInputSchema>;
+
+export const ProjectChatPromptProvenanceSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    assemblyVersion: z.literal(1),
+    baseInstructionId: z.string().trim().min(1).max(128),
+    baseInstructionVersion: z.number().int().positive(),
+    baseInstructionsSha256: sha256Schema,
+    harnessInstructionId: z.string().trim().min(1).max(128),
+    harnessInstructionVersion: z.number().int().positive(),
+    harnessInstructionsSha256: sha256Schema,
+    customInstructionsSha256: sha256Schema,
+    developerInstructionsSha256: sha256Schema,
+    promptSha256: sha256Schema,
+    projectContextSha256: sha256Schema,
+    visibleHistorySha256: sha256Schema,
+    userMessageSha256: sha256Schema,
+    profileVersion: z.number().int().nonnegative(),
+    instructionRevisionId: uuidSchema.nullable(),
+    workspaceRevision: z.number().int().nonnegative(),
+    developerInstructionsCharacters: z.number().int().nonnegative(),
+    promptCharacters: z.number().int().positive(),
+    contextTruncated: z.boolean(),
+    historyTruncated: z.boolean(),
+  })
+  .strict();
+
+export type ProjectChatPromptProvenance = z.infer<typeof ProjectChatPromptProvenanceSchema>;
 
 export const ProjectChatActionCommandSchema = z.discriminatedUnion('type', [
   z
@@ -98,6 +212,13 @@ export const ProjectChatAttemptSchema = z
     model: ProjectChatModelProvenanceSchema.optional(),
     requestedModelId: z.string().trim().min(1).max(256).nullable(),
     reasoningOptionId: z.string().trim().min(1).max(128).nullable(),
+    // Optional so durable attempts written before harness profiles remain readable.
+    harnessMode: harnessModeSchema.optional(),
+    responseDepth: responseDepthSchema.optional(),
+    contextScope: contextScopeSchema.optional(),
+    profileVersion: z.number().int().nonnegative().optional(),
+    instructionRevisionId: uuidSchema.nullable().optional(),
+    promptProvenance: ProjectChatPromptProvenanceSchema.optional(),
     status: z.enum(PROJECT_CHAT_ATTEMPT_STATUSES),
     errorCode: z.enum(PROJECT_CHAT_ATTEMPT_ERROR_CODES).optional(),
     createdAt: timestampSchema,
@@ -153,12 +274,22 @@ export const ProjectChatSnapshotSchema = z
     projectId: uuidSchema,
     activeTurnId: z.string().trim().min(1).max(256).optional(),
     messages: z.array(ProjectChatMessageSchema).max(250),
+    // Optional at the wire boundary so legacy snapshots remain readable. Current service snapshots
+    // always include the effective profile, including a version-zero default.
+    profile: ProjectChatProfileSchema.optional(),
     // Optional at the wire boundary so snapshots written before durable attempts remain readable.
     // Current storage always returns an array.
     attempts: z.array(ProjectChatAttemptSchema).max(500).optional(),
   })
   .strict()
   .superRefine((snapshot, context) => {
+    if (snapshot.profile && snapshot.profile.projectId !== snapshot.projectId) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Chat profile references another project',
+        path: ['profile', 'projectId'],
+      });
+    }
     for (const [index, message] of snapshot.messages.entries()) {
       if (message.projectId !== snapshot.projectId) {
         context.addIssue({
@@ -188,6 +319,10 @@ export const SendProjectChatMessageInputSchema = z
     requestedModelId: z.string().trim().min(1).max(256).nullable(),
     reasoningOptionId: z.string().trim().min(1).max(128).nullable(),
     retryOfAttemptId: uuidSchema.optional(),
+    harnessMode: harnessModeSchema.optional(),
+    responseDepth: responseDepthSchema.optional(),
+    contextScope: contextScopeSchema.optional(),
+    profileVersion: z.number().int().nonnegative().optional(),
   })
   .strict();
 

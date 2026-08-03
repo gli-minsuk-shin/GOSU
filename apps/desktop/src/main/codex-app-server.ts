@@ -564,7 +564,7 @@ export class CodexAppServer extends EventEmitter {
 
     try {
       await this.request('initialize', {
-        clientInfo: { name: 'gosu_desktop', title: 'GOSU', version: '0.4.1' },
+        clientInfo: { name: 'gosu_desktop', title: 'GOSU', version: '0.5.0' },
         capabilities: { experimentalApi: true },
       });
       if (this.process !== child) throw new Error('codex_app_server_initialization_interrupted');

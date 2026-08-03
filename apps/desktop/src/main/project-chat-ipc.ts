@@ -4,6 +4,7 @@ import {
   ApplyProjectChatActionInputSchema,
   ProjectChatProjectInputSchema,
   SendProjectChatMessageInputSchema,
+  UpdateProjectChatProfileInputSchema,
 } from '../shared/project-chat-contracts';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import type { ProjectChatIpcResult } from '../shared/project-chat-ipc-result';
@@ -32,6 +33,14 @@ export function registerProjectChatIpc(
       input,
       SendProjectChatMessageInputSchema,
       (command) => chat.send(command),
+      reportUnexpected,
+    ),
+  );
+  register(PROJECT_CHAT_IPC_CHANNELS.updateProfile, (input) =>
+    withInput(
+      input,
+      UpdateProjectChatProfileInputSchema,
+      (command) => chat.updateProfile(command),
       reportUnexpected,
     ),
   );

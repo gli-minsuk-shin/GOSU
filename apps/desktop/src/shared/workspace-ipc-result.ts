@@ -1,5 +1,8 @@
 export const WORKSPACE_IPC_ERROR_CODES = [
   'project_not_found',
+  'project_trashed',
+  'project_not_trashed',
+  'chat_busy',
   'task_not_found',
   'cross_project_access_denied',
   'objective_not_found',

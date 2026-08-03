@@ -111,20 +111,20 @@ flowchart LR
 제품 모듈은 아직 모두 독립 디렉터리로 분리되어 있지 않다. 새 기능은 아래 소유권을 기준으로
 배치하고, 한 모듈이 다른 모듈의 저장 테이블을 직접 읽지 않게 한다.
 
-| 논리 모듈                  | 현재 코드 소유자                                             | 구현 수준                                                                           |
-| -------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                          |
-| Project Portfolio & Kanban | Desktop workspace service, Sync controller/store             | 프로젝트별 Board 설정, task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨 |
-| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨            |
-| Experiment Orchestration   | contracts, domain, Runner                                    | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨      |
-| Manuscript                 | 향후 desktop workspace module                                | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                     |
-| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                     | 기반 구현; 실제 review anchor·approval command는 계획됨                             |
-| Reference                  | Zotero read-only connector                                   | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                           |
-| Obsidian Knowledge         | Desktop Vault reader, Markdown renderer                      | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview 구현                   |
-| Lecture                    | Owner Web UI 표현                                            | 생성·편집·출처 연결은 계획됨                                                        |
-| AI Gateway                 | Desktop Project Chat service와 Codex App Server              | 로그인·동적 catalog·프로젝트별 thread/turn·모델 provenance 구현                     |
-| Integration Hub            | `packages/integrations` registry와 connector classes         | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨                    |
-| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema            | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨            |
+| 논리 모듈                  | 현재 코드 소유자                                             | 구현 수준                                                                                                    |
+| -------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                   |
+| Project Portfolio & Kanban | Desktop workspace service, Sync controller/store             | 프로젝트별 Board 설정·rename·복원 가능한 Trash, task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨 |
+| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                     |
+| Experiment Orchestration   | contracts, domain, Runner                                    | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨                               |
+| Manuscript                 | 향후 desktop workspace module                                | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                                              |
+| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                     | 기반 구현; 실제 review anchor·approval command는 계획됨                                                      |
+| Reference                  | Zotero read-only connector                                   | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                                                    |
+| Obsidian Knowledge         | Desktop Vault reader, Markdown renderer                      | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview 구현                                            |
+| Lecture                    | Owner Web UI 표현                                            | 생성·편집·출처 연결은 계획됨                                                                                 |
+| AI Gateway                 | Desktop Project Chat service와 Codex App Server              | 로그인·동적 catalog·프로젝트별 profile·prompt harness·thread/turn·모델 provenance 구현                       |
+| Integration Hub            | `packages/integrations` registry와 connector classes         | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨                                             |
+| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema            | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                     |
 
 ## 5. 의존성 규칙
 
@@ -270,6 +270,9 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   loopback HTTP(S)만 허용하며 packaged build는 `ELECTRON_RENDERER_URL` override를 무시한다.
 - navigation과 redirect는 신뢰한 renderer URL 밖으로 나가지 못한다. 새 창은 거부하고 HTTPS
   링크만 system browser로 연다.
+- macOS application menu의 `Settings…`는 payload를 받지 않는 고정 Main→Renderer event 하나만
+  preload에 노출한다. generic route·channel 이름을 Renderer가 선택하게 하지 않으며, early event는
+  preload가 한 번 buffer해 같은 window의 app-level Settings 화면으로 전달한다.
 - packaged CSP는 script와 connection을 same-origin으로 제한하고 object·frame·base를 차단한다.
   Vite 개발 모드에서만 exact trusted origin의 inline refresh bootstrap과 HMR WebSocket을 허용한다.
 - SQLite key는 random 32-byte 값이며 `safeStorage`로 봉인한다. 암호화 기능이 없으면 local DB를
@@ -294,6 +297,9 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   approval은 Main이 거절하고 그 밖의 지원하지 않는 request에는 제한된 protocol error만 돌려준다.
 - Codex의 reasoning, command output, file diff, tool payload는 Project Chat DB나 Renderer로 전달하지
   않는다. Renderer에는 보이는 최종 답변, turn 상태, 검증된 action receipt만 보낸다.
+- Project Chat profile·custom instruction·조립된 prompt provenance는 로컬 SQLCipher에만 저장한다.
+  Hosted Sync, workspace outbox와 telemetry로 보내지 않으며 custom instruction도 project data와 같은
+  untrusted input으로 취급한다.
 
 ### Markdown reader 경계
 
@@ -352,10 +358,24 @@ flowchart LR
 
 - 내부 상태 ID `backlog`, `planned`, `in_progress`, `review`, `done`은 sync command와 Project Chat
   action의 안정적인 의미로 유지한다. 사용자는 프로젝트마다 Board 제목, 다섯 column 표시명·순서와
-  optional soft WIP limit을 바꿀 수 있지만 새 status ID를 만들거나 기존 ID를 삭제하지 않는다.
+  optional soft WIP limit을 바꿀 수 있지만 새 status ID를 만들거나 기존 ID를 삭제하지 않는다. 각
+  column header의 `Rename` 동작과 상단 Board 설정은 같은 reusable editor를 열기 때문에 validation
+  규칙이 갈라지지 않는다.
 - `ProjectRecord.board`, Task의 description·priority·due date·labels·archivedAt은 schema-v1 안의
   optional nested field다. v0.3.2 snapshot에 필드가 없어도 resolver가 런타임 기본값을 제공하며
-  top-level 필드나 workspace schema version을 바꾸지 않는다.
+  top-level 필드나 workspace schema version을 바꾸지 않는다. 새 project는 생성 시점의 full Board
+  설정을 항상 저장하지만 기존 project의 optional shape은 계속 읽는다.
+- project rename은 optimistic Project version을 검사하고 표시명만 바꾼다. repository·외부 연동의
+  안정 식별자로 쓰일 수 있는 기존 slug는 조용히 다시 만들지 않는다. `project.rename` command와
+  outbox provenance가 같은 workspace transaction에 남는다.
+- project 삭제 UI는 hard delete가 아니라 `trashedAt`을 기록하는 `project.trash`다. 이름을 정확히
+  입력하는 첫 경고와 최종 확인의 두 단계를 통과해야 하며, 기본 project picker에서는 숨기되 Settings의
+  Trash에서 같은 UUID를 `project.restore`로 복원할 수 있다. task, objective, Board, Project Chat과
+  pending outbox는 삭제하지 않는다. Trash의 기존 chat transcript는 읽을 수 있지만 새 turn·profile
+  변경·action Apply를 Main service가 거절한다. Renderer의 disabled button에 의존하지 않고 Main의
+  project-scoped gate가 starting·active turn과 chat mutation 중 `project.trash`를 원자적으로 거절하며,
+  내부 호출이 이 gate를 우회한 terminal 경합에서도 assistant text만 보존하고 action proposal은
+  폐기한다. 영구 삭제 command는 제공하지 않는다.
 - Renderer의 `board-view.tsx`는 form·drag-and-drop·archive 확인과 프로젝트별 임시 view state를
   소유한다. `kanban-board-model.ts`는 column resolve, 검색·priority·label·due date filter와 안전한
   drop 판단만 수행하는 pure helper다. 프로젝트 전환 시 `BoardView`를 project ID로 remount해 draft,
@@ -391,10 +411,25 @@ flowchart LR
   Workspace --> ChatDB
 ```
 
-- `project_chat_messages`, `project_chat_attempts`, `project_chat_actions`는 Project Chat 모듈이
+- `project_chat_messages`, `project_chat_attempts`, `project_chat_actions`,
+  `project_chat_profiles`, `project_chat_instruction_revisions`는 Project Chat 모듈이
   소유한다. 대화를
   `local_workspace_state` JSON이나 workspace sync outbox에 넣지 않는다. 따라서 긴 대화가
   Project·Task·Objective snapshot의 크기와 delivery 순서에 영향을 주지 않는다.
+- project profile은 `context`·`planner`·`reviewer` harness, `concise`·`standard`·`deep` 응답 깊이,
+  `project`·`board`·`objective` context scope와 최대 4,000자의 custom instruction을 소유한다.
+  Settings의 저장은 profile version CAS를 사용하고 stale edit는 `chat_profile_conflict`로 끝난다.
+  custom instruction 변경은 append-only revision과 content hash를 남기며 이전 attempt의 의미를
+  덮어쓰지 않는다. Chat 화면의 per-turn override는 profile을 수정하지 않고 해당 attempt에만 고정된다.
+- prompt assembly는 변경 가능한 문자열 연결을 Renderer에 두지 않는다. Main의 versioned immutable
+  base policy → harness policy → 낮은 우선순위의 custom instruction 순서로 developer instruction을
+  만들고, project context·visible history·user message는 별도의 untrusted JSON envelope에 넣는다.
+  context는 최대 48,000자, history는 최근 40개·24,000자, assembled prompt는 160,000자로 제한한다.
+  base·harness·custom·context·history·message·최종 prompt의 SHA-256과 profile/instruction revision,
+  workspace revision, truncation 여부를 attempt provenance에 기록한다.
+- reviewer harness는 조언 전용이다. 모델이 구조화 action을 반환하더라도 service가 `actions=[]`로
+  강제해 UI prompt wording을 우회한 Board mutation을 만들지 못한다. 모든 harness는 현재와 동일한
+  read-only·no-network·no-tool·no-subagent Codex 경계를 사용한다.
 - 사용자 메시지를 받으면 Codex를 호출하기 전에 attempt와 user message를 한 transaction으로
   `starting` 상태에 기록한다. `turn/start`가 성공하면 실제 thread ID, turn ID, requested·resolved
   model provenance를 포함해 `running`으로 CAS 전이하고, terminal attempt와 assistant receipt도 한
@@ -422,6 +457,9 @@ flowchart LR
 - 앱 시작과 사용자의 Reconnect는 Codex account 상태와 전체 동적 model catalog를 다시 확인한다.
   연결이 끊기면 이전 catalog를 폐기하며 Board·Settings·Local notes는 계속 동작한다. 선택한 model이
   없어졌을 때 다른 model로 조용히 바꾸지 않는다.
+- model별 reasoning option도 `model/list` catalog가 제공한 실제 값만 표시한다. GOSU가 model 이름이나
+  effort 목록을 하드코딩하지 않으며 선택한 model ID·reasoning option은 harness profile과 별개로 각
+  attempt에 기록한다.
 - Codex final은 JSON Schema와 Zod가 함께 검증하는 `reply + actions` 계약이다. v1 action은
   `task.create`와 `task.update`뿐이며 모델이 `projectId`를 정할 수 없다.
 - 제안 action은 곧바로 실행되지 않는다. 사용자가 Apply하면 SQLCipher row를 `proposed → applying`으로
@@ -459,19 +497,33 @@ flowchart LR
 - 이 slice에는 outbox delivery, conflict reconciliation, 로그인·연구실 RBAC가 아직 없다. 따라서
   pending operation을 synced로 표시하지 않는다.
 
-### 표시 설정과 비권한 UI 상태
+### App-level Settings, 표시 설정과 로컬 기본 Board template
 
+- Settings는 project module tab이 아니라 workspace와 분리된 app-level surface다. global Settings
+  button과 macOS `GOSU > Settings…` (`Command+,`)가 같은 화면을 열고 Done으로 이전 workspace로
+  돌아간다. category는 Appearance, Board defaults, Projects, AI Agent로 분리한다.
 - appearance(`system`·`dark`·`light`)와 text size(`compact`·`default`·`large`·`extra-large`)는
   schema version이 있는 Renderer `localStorage` preference다. React mount 전에 root dataset에
   적용해 시작 시 theme flash를 줄이고, 변경은 semantic color·font token을 통해 전체 UI에 반영한다.
-- 이 preference는 연구 프로젝트 데이터가 아니므로 SQLCipher workspace, Git, Hosted Sync와 IPC에
-  넣지 않는다. 프로젝트를 아직 만들지 않았거나 workspace 복구가 실패해도 Settings 탭은 열려야 한다.
-- Renderer preference는 파일·Keychain·Codex 권한을 얻지 않는다. 앞으로 계정 간 동기화가 필요하면
-  display preference 전용 계약과 명시적 opt-in을 별도로 설계한다.
+  네 font preset의 body 기준은 각각 12·14·16·18 px이며 component가 고정된 작은 pixel font를 다시
+  도입하지 않고 semantic token을 사용한다.
+- 같은 local preference에는 새 project용 default Board title, column 표시명·순서와 WIP limit도
+  들어간다. legacy preference에 이 필드가 없거나 유효하지 않으면 display 설정은 보존하고 Board
+  template만 GOSU 기본값으로 복구한다.
+- template preference 자체는 SQLCipher, Git 또는 Hosted Sync에 저장하지 않는다. project 생성 시에만
+  그 시점의 독립 copy를 typed `project.create` command로 보내 Main에서 다시 검증하고 Project record와
+  outbox payload에 원자적으로 기록한다. 이후 Settings template 변경은 기존 Board를 바꾸지 않는다.
+- appearance와 text size는 IPC에 넣지 않는다. project rename·Trash·restore는 Workspace SQLCipher가,
+  AI Agent profile은 Project Chat SQLCipher table이 각각 소유한다. Renderer preference는 파일·Keychain·Codex
+  권한을 얻지 않으며, 프로젝트를 아직 만들지 않았거나 workspace 복구가 실패해도 Settings 화면은
+  열려야 한다.
+  앞으로 계정 간 preference 동기화가 필요하면 전용 계약과 명시적 opt-in을 별도로 설계한다.
 
 ### Project Agent Runtime 설계 (계획됨)
 
-Project Chat이 동작한다는 것은 아직 프로젝트 자율 실행 agent가 구현됐다는 뜻이 아니다. 후속
+Project Chat의 안전한 prompt harness와 profile이 구현됐다는 것은 아직 프로젝트 자율 실행 agent가
+구현됐다는 뜻이 아니다. 현재 harness는 tool을 선택하거나 실행하지 않으며 planner 결과도 제안에
+머문다. 후속
 runtime은 [OpenClaw Gateway architecture](https://docs.openclaw.ai/concepts/architecture),
 [OpenClaw agent loop](https://docs.openclaw.ai/concepts/agent-loop),
 [OpenClaw plugin policy](https://docs.openclaw.ai/tools/plugin),
@@ -680,7 +732,10 @@ duplicate idempotency key에 의한 transaction rollback과 outbox summary 일�
 SQLCipher connection의 동일 revision 경합, 실제 v0.1 outbox schema migration, 손상된 singleton
 summary 재구성, 해석 불가능한 operation payload의 byte-for-byte 보존도 포함한다. legacy schema-v1
 snapshot을 연 뒤 Board 설정, task metadata와 archive command를 기록하고 다시 열어 복원되는지도
-검증한다. 이 검사는 native ABI와 Keychain 구현이 다른 Linux CI의 일반 Vitest 경로와 분리한다.
+검증한다. 새 project의 default Board template copy가 snapshot과 create outbox에 함께 보존되는지도
+확인한다. project rename의 stable slug, Trash/restore 시 task·objective·chat 보존, chat profile revision과
+prompt provenance의 재시작 복원도 확인한다. 이 검사는 native ABI와 Keychain 구현이 다른 Linux CI의
+일반 Vitest 경로와 분리한다.
 
 Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 
@@ -705,6 +760,11 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 - API 변경: schema, lab·project isolation, 모든 role, idempotency conflict, version conflict
 - relay 변경: Origin·native runner 인증, project isolation, duplicate·stale, backpressure, retention
 - Desktop IPC 변경: trusted sender, untrusted frame, path escape, 크기 제한, secret 비노출
+- Desktop menu·Settings 변경: fixed no-payload navigation event, early-event buffer, 표준 macOS role 보존
+- Project lifecycle 변경: stale version, 두 단계 Trash UI, trashed mutation 차단, 같은 UUID 복원과
+  task·objective·chat·outbox 보존
+- Project Chat harness 변경: profile CAS, instruction revision, prompt hash·bound·truncation, project 격리,
+  reviewer action suppression, dynamic model/reasoning provenance
 - Runner 변경: signature·policy rejection, fence race, Stop·Kill race, exact JSON wire, Podman argument
   array와 fail-closed 설정
 - connector 변경: deterministic fake response, capability 정확성, credential·원문 미저장

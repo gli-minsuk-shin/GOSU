@@ -4,6 +4,8 @@ import {
   CreateProjectInputSchema,
   CreateTaskInputSchema,
   ObjectiveCommandSchema,
+  ProjectVersionCommandSchema,
+  RenameProjectInputSchema,
   SaveObjectiveInputSchema,
   SetTaskArchivedInputSchema,
   UpdateBoardSettingsInputSchema,
@@ -11,6 +13,7 @@ import {
 } from '../shared/workspace-contracts';
 import { WORKSPACE_IPC_CHANNELS } from '../shared/workspace-channels';
 import type { WorkspaceIpcResult } from '../shared/workspace-ipc-result';
+import { ProjectChatServiceError, type ProjectChatService } from './project-chat-service';
 import { WorkspaceServiceError, type WorkspaceService } from './workspace-service';
 import { WorkspaceDataRecoveryError } from './workspace-storage-error';
 
@@ -18,11 +21,13 @@ type RegisterHandler = (channel: string, listener: (...arguments_: unknown[]) =>
 type InputSchema<T> = Readonly<{
   safeParse(value: unknown): { success: true; data: T } | { success: false };
 }>;
+type ProjectChatIdleGuard = Pick<ProjectChatService, 'runWhenProjectChatIdle'>;
 
 export function registerWorkspaceIpc(
   register: RegisterHandler,
   workspace: WorkspaceService,
   reportUnexpected: (error: unknown) => void = () => undefined,
+  projectChatIdleGuard?: ProjectChatIdleGuard,
 ) {
   register(WORKSPACE_IPC_CHANNELS.snapshot, () =>
     safely(() => workspace.snapshot(), reportUnexpected),
@@ -35,6 +40,35 @@ export function registerWorkspaceIpc(
       input,
       CreateProjectInputSchema,
       (command) => workspace.createProject(command),
+      reportUnexpected,
+    ),
+  );
+  register(WORKSPACE_IPC_CHANNELS.renameProject, (input) =>
+    withValidatedInput(
+      input,
+      RenameProjectInputSchema,
+      (command) => workspace.renameProject(command),
+      reportUnexpected,
+    ),
+  );
+  register(WORKSPACE_IPC_CHANNELS.trashProject, (input) =>
+    withValidatedInput(
+      input,
+      ProjectVersionCommandSchema,
+      (command) =>
+        projectChatIdleGuard
+          ? projectChatIdleGuard.runWhenProjectChatIdle(command.projectId, () =>
+              workspace.trashProject(command),
+            )
+          : workspace.trashProject(command),
+      reportUnexpected,
+    ),
+  );
+  register(WORKSPACE_IPC_CHANNELS.restoreProject, (input) =>
+    withValidatedInput(
+      input,
+      ProjectVersionCommandSchema,
+      (command) => workspace.restoreProject(command),
       reportUnexpected,
     ),
   );
@@ -125,6 +159,9 @@ async function safely<T>(
           ...(typeof currentVersion === 'number' ? { currentVersion } : {}),
         },
       };
+    }
+    if (error instanceof ProjectChatServiceError && error.code === 'chat_busy') {
+      return { ok: false, error: { code: 'chat_busy' } };
     }
     if (error instanceof ZodError || error instanceof WorkspaceDataRecoveryError) {
       return { ok: false, error: { code: 'workspace_data_requires_recovery' } };

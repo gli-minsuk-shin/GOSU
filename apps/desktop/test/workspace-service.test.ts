@@ -72,7 +72,38 @@ function expectServiceError(error: unknown, code: WorkspaceServiceError['code'])
 }
 
 describe('WorkspaceService', () => {
-  it('opens a legacy schema-v1 snapshot without Board or task metadata fields', async () => {
+  it('treats a legacy project without trashedAt as active', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    storage.state = {
+      schemaVersion: 1,
+      revision: 0,
+      projects: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          name: 'Legacy active project',
+          slug: 'legacy-active-project',
+          version: 1,
+          createdAt: '2026-08-04T00:00:00.000Z',
+          updatedAt: '2026-08-04T00:00:00.000Z',
+        },
+      ],
+      tasks: [],
+      objectives: [],
+    };
+
+    const service = new WorkspaceService(storage);
+    const snapshot = await service.snapshot();
+    expect(snapshot.projects[0]).not.toHaveProperty('trashedAt');
+    await expect(
+      service.renameProject({
+        projectId: snapshot.projects[0]!.id,
+        expectedVersion: snapshot.projects[0]!.version,
+        name: 'Legacy project renamed',
+      }),
+    ).resolves.toMatchObject({ name: 'Legacy project renamed', version: 2 });
+  });
+
+  it('opens a legacy schema-v1 snapshot and gives newly created projects the full default Board', async () => {
     const storage = new MemoryWorkspaceStorage();
     storage.state = {
       schemaVersion: 1,
@@ -86,7 +117,7 @@ describe('WorkspaceService', () => {
     const task = await service.createTask({ projectId: project.id, title: 'Legacy shaped task' });
 
     const snapshot = await new WorkspaceService(storage).snapshot();
-    expect(snapshot.projects[0]).not.toHaveProperty('board');
+    expect(snapshot.projects[0]?.board).toEqual(DEFAULT_WORKSPACE_BOARD_SETTINGS);
     expect(snapshot.tasks[0]).toEqual(task);
     expect(snapshot.tasks[0]).not.toHaveProperty('description');
     expect(resolveWorkspaceBoardSettings(snapshot.projects[0]?.board)).toEqual(
@@ -114,8 +145,223 @@ describe('WorkspaceService', () => {
 
     expect(first).toMatchObject({ slug: 'vision-study', repository: 'research/vision-study' });
     expect(second.slug).toBe('vision-study-2');
+    expect(first.board).toEqual(DEFAULT_WORKSPACE_BOARD_SETTINGS);
+    expect(second.board).toEqual(DEFAULT_WORKSPACE_BOARD_SETTINGS);
     expect(first.id).toMatch(/^[0-9a-f-]{36}$/);
     expect((await service.snapshot()).projects).toEqual([first, second]);
+    expect(storage.operations[0]).toMatchObject({
+      commandType: 'project.create',
+      payload: { board: DEFAULT_WORKSPACE_BOARD_SETTINGS },
+    });
+  });
+
+  it('normalizes a supplied Board template into the project and its create outbox operation', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const board = {
+      title: '  Experiment pipeline  ',
+      columnLabels: {
+        backlog: '  Ideas ',
+        planned: 'Queued',
+        in_progress: 'Running',
+        review: 'PI Review',
+        done: 'Published',
+      },
+      columnOrder: ['backlog', 'planned', 'in_progress', 'review', 'done'] as const,
+      wipLimits: {
+        backlog: null,
+        planned: 8,
+        in_progress: 3,
+        review: 2,
+        done: null,
+      },
+    };
+
+    const project = await service.createProject({ name: 'Template project', board });
+
+    expect(project.board).toEqual({
+      ...board,
+      title: 'Experiment pipeline',
+      columnLabels: { ...board.columnLabels, backlog: 'Ideas' },
+    });
+    expect(await new WorkspaceService(storage).snapshot()).toMatchObject({
+      revision: 1,
+      projects: [{ id: project.id, board: project.board }],
+    });
+    expect(storage.operations).toHaveLength(1);
+    expect(storage.operations[0]).toMatchObject({
+      commandType: 'project.create',
+      projectId: project.id,
+      entityType: 'project',
+      entityId: project.id,
+      baseVersion: null,
+      payload: {
+        name: 'Template project',
+        slug: 'template-project',
+        board: project.board,
+      },
+    });
+  });
+
+  it('renames, trashes, and restores a project without changing its stable slug or children', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const project = await service.createProject({ name: 'Lifecycle Project' });
+    const task = await service.createTask({
+      projectId: project.id,
+      title: 'Preserve this task',
+    });
+    const objective = await service.saveObjective({
+      projectId: project.id,
+      expectedEntityVersion: 0,
+      ...objectiveFields,
+    });
+
+    const renamed = await service.renameProject({
+      projectId: project.id,
+      expectedVersion: project.version,
+      name: '  Renamed Lifecycle Project  ',
+    });
+    expect(renamed).toMatchObject({
+      id: project.id,
+      name: 'Renamed Lifecycle Project',
+      slug: project.slug,
+      version: 2,
+    });
+    expect(storage.operations.at(-1)).toMatchObject({
+      commandType: 'project.rename',
+      baseVersion: 1,
+      payload: { name: 'Renamed Lifecycle Project', newEntityVersion: 2 },
+    });
+
+    const trashed = await service.trashProject({
+      projectId: project.id,
+      expectedVersion: renamed.version,
+    });
+    expect(trashed).toMatchObject({ id: project.id, slug: project.slug, version: 3 });
+    expect(trashed.trashedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(storage.operations.at(-1)).toMatchObject({
+      commandType: 'project.trash',
+      baseVersion: 2,
+      payload: { trashedAt: trashed.trashedAt, newEntityVersion: 3 },
+    });
+    expect(await service.snapshot()).toMatchObject({
+      projects: [{ id: project.id, trashedAt: trashed.trashedAt }],
+      tasks: [task],
+      objectives: [objective],
+    });
+
+    const staleRestore = await service
+      .restoreProject({ projectId: project.id, expectedVersion: renamed.version })
+      .catch((caught: unknown) => caught);
+    expectServiceError(staleRestore, 'version_conflict');
+
+    const duplicateTrash = await service
+      .trashProject({ projectId: project.id, expectedVersion: trashed.version })
+      .catch((caught: unknown) => caught);
+    expectServiceError(duplicateTrash, 'project_trashed');
+
+    const restored = await service.restoreProject({
+      projectId: project.id,
+      expectedVersion: trashed.version,
+    });
+    expect(restored).toMatchObject({
+      id: project.id,
+      name: renamed.name,
+      slug: project.slug,
+      version: 4,
+    });
+    expect(restored).not.toHaveProperty('trashedAt');
+    expect(storage.operations.at(-1)).toMatchObject({
+      commandType: 'project.restore',
+      baseVersion: 3,
+      payload: { trashedAt: null, newEntityVersion: 4 },
+    });
+    expect(await new WorkspaceService(storage).snapshot()).toMatchObject({
+      projects: [{ id: project.id, version: 4 }],
+      tasks: [task],
+      objectives: [objective],
+    });
+
+    const duplicateRestore = await service
+      .restoreProject({ projectId: project.id, expectedVersion: restored.version })
+      .catch((caught: unknown) => caught);
+    expectServiceError(duplicateRestore, 'project_not_trashed');
+  });
+
+  it('rejects normal project mutations while preserving a trashed aggregate', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const project = await service.createProject({ name: 'Read-only Trash Project' });
+    const task = await service.createTask({ projectId: project.id, title: 'Preserved task' });
+    const objective = await service.saveObjective({
+      projectId: project.id,
+      expectedEntityVersion: 0,
+      ...objectiveFields,
+    });
+    const trashed = await service.trashProject({
+      projectId: project.id,
+      expectedVersion: project.version,
+    });
+    const revisionAfterTrash = (await service.snapshot()).revision;
+
+    const mutations: Array<() => Promise<unknown>> = [
+      () =>
+        service.renameProject({
+          projectId: project.id,
+          expectedVersion: trashed.version,
+          name: 'Must not rename',
+        }),
+      () =>
+        service.updateBoardSettings({
+          projectId: project.id,
+          expectedVersion: trashed.version,
+          board: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+        }),
+      () => service.createTask({ projectId: project.id, title: 'Must not create' }),
+      () =>
+        service.updateTask({
+          projectId: project.id,
+          taskId: task.id,
+          expectedVersion: task.version,
+          status: 'planned',
+        }),
+      () =>
+        service.setTaskArchived({
+          projectId: project.id,
+          taskId: task.id,
+          expectedVersion: task.version,
+          archived: true,
+        }),
+      () =>
+        service.saveObjective({
+          projectId: project.id,
+          expectedEntityVersion: objective.entityVersion,
+          ...objectiveFields,
+        }),
+      () =>
+        service.lockObjective({
+          projectId: project.id,
+          expectedEntityVersion: objective.entityVersion,
+        }),
+      () =>
+        service.startObjectiveVersion({
+          projectId: project.id,
+          expectedEntityVersion: objective.entityVersion,
+        }),
+    ];
+
+    for (const mutate of mutations) {
+      const error = await mutate().catch((caught: unknown) => caught);
+      expectServiceError(error, 'project_trashed');
+    }
+
+    expect(await service.snapshot()).toMatchObject({
+      revision: revisionAfterTrash,
+      projects: [{ id: project.id, trashedAt: trashed.trashedAt }],
+      tasks: [task],
+      objectives: [objective],
+    });
   });
 
   it('creates and moves a task with optimistic versions and rejects a stale move', async () => {
@@ -210,7 +456,9 @@ describe('WorkspaceService', () => {
       },
     });
     const snapshot = await service.snapshot();
-    expect(snapshot.projects.find((project) => project.id === second.id)?.board).toBeUndefined();
+    expect(snapshot.projects.find((project) => project.id === second.id)?.board).toEqual(
+      DEFAULT_WORKSPACE_BOARD_SETTINGS,
+    );
     expect(storage.operations.at(-1)).toMatchObject({
       commandType: 'project.board.update',
       projectId: first.id,

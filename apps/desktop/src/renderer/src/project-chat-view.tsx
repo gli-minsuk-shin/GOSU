@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ProjectChatAction, ProjectChatSnapshot } from '../../shared/project-chat-contracts';
+import {
+  defaultProjectChatProfile,
+  type ProjectChatAction,
+  type ProjectChatContextScope,
+  type ProjectChatHarnessMode,
+  type ProjectChatResponseDepth,
+  type ProjectChatSnapshot,
+} from '../../shared/project-chat-contracts';
 import {
   resolveWorkspaceBoardSettings,
   type ProjectRecord,
@@ -16,6 +23,31 @@ const QUICK_PROMPTS = [
   '목표 metric 기준으로 가장 중요한 리스크를 찾아줘',
 ] as const;
 
+export type ProjectChatTurnControls = Readonly<{
+  harnessMode: ProjectChatHarnessMode;
+  responseDepth: ProjectChatResponseDepth;
+  contextScope: ProjectChatContextScope;
+  profileVersion: number;
+}>;
+
+const HARNESS_LABELS: Record<ProjectChatHarnessMode, string> = {
+  context: 'Copilot',
+  planner: 'Planner',
+  reviewer: 'Reviewer',
+};
+
+const DEPTH_LABELS: Record<ProjectChatResponseDepth, string> = {
+  concise: 'Concise',
+  standard: 'Standard',
+  deep: 'Deep',
+};
+
+const CONTEXT_LABELS: Record<ProjectChatContextScope, string> = {
+  project: 'Board + Objective',
+  board: 'Board only',
+  objective: 'Objective only',
+};
+
 export function ProjectChatView({
   project,
   tasks,
@@ -29,9 +61,11 @@ export function ProjectChatView({
   onSelectedModel,
   onSelectedReasoning,
   onRefreshModels,
+  onOpenAgentSettings,
   onSend,
   onCancel,
   onApplyAction,
+  initialAdvancedOpen = false,
 }: {
   project: ProjectRecord;
   tasks: readonly WorkspaceTask[];
@@ -45,12 +79,22 @@ export function ProjectChatView({
   onSelectedModel: (modelId: string) => void;
   onSelectedReasoning: (reasoningId: string) => void;
   onRefreshModels: () => void;
-  onSend: (message: string, retryOfAttemptId?: string) => Promise<boolean>;
+  onOpenAgentSettings: () => void;
+  onSend: (
+    message: string,
+    retryOfAttemptId: string | undefined,
+    controls: ProjectChatTurnControls,
+  ) => Promise<boolean>;
   onCancel: () => void;
   onApplyAction: (action: ProjectChatAction) => Promise<void>;
+  initialAdvancedOpen?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const [retryOfAttemptId, setRetryOfAttemptId] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(initialAdvancedOpen);
+  const [harnessMode, setHarnessMode] = useState<ProjectChatHarnessMode>('context');
+  const [responseDepth, setResponseDepth] = useState<ProjectChatResponseDepth>('standard');
+  const [contextScope, setContextScope] = useState<ProjectChatContextScope>('project');
   const transcriptRef = useRef<HTMLDivElement>(null);
   const board = useMemo(() => resolveWorkspaceBoardSettings(project.board), [project.board]);
   const selectedDescriptor = useMemo(
@@ -76,12 +120,25 @@ export function ProjectChatView({
   useEffect(() => {
     setDraft('');
     setRetryOfAttemptId(null);
+    setAdvancedOpen(false);
   }, [project.id]);
+
+  useEffect(() => {
+    const profile = snapshot?.profile ?? defaultProjectChatProfile(project.id);
+    setHarnessMode(profile.harnessMode);
+    setResponseDepth(profile.responseDepth);
+    setContextScope(profile.contextScope);
+  }, [project.id, snapshot?.profile?.version]);
 
   const submit = () => {
     const message = draft.trim();
     if (!message || inFlight || selectionWarning) return;
-    void onSend(message, retryOfAttemptId ?? undefined).then((accepted) => {
+    void onSend(message, retryOfAttemptId ?? undefined, {
+      harnessMode,
+      responseDepth,
+      contextScope,
+      profileVersion: snapshot?.profile?.version ?? 0,
+    }).then((accepted) => {
       if (accepted) {
         setDraft('');
         setRetryOfAttemptId(null);
@@ -90,7 +147,10 @@ export function ProjectChatView({
   };
 
   return (
-    <section className="project-chat-shell" aria-label={`${project.name} project chat`}>
+    <section
+      className={`project-chat-shell ${advancedOpen ? 'agent-controls-open' : ''}`}
+      aria-label={`${project.name} project chat`}
+    >
       <header className="chat-toolbar">
         <div className="chat-identity">
           <span className="chat-orbit" aria-hidden="true">
@@ -152,8 +212,94 @@ export function ProjectChatView({
           >
             Refresh
           </button>
+          <button
+            type="button"
+            className={`secondary-button chat-agent-toggle ${advancedOpen ? 'active' : ''}`}
+            aria-expanded={advancedOpen}
+            onClick={() => setAdvancedOpen((open) => !open)}
+            disabled={inFlight}
+          >
+            Agent controls
+          </button>
         </div>
       </header>
+
+      {advancedOpen && (
+        <section className="chat-agent-controls" aria-label="Advanced agent controls">
+          <div className="chat-agent-control-group">
+            <span>Harness</span>
+            <div role="radiogroup" aria-label="Turn harness">
+              {(Object.keys(HARNESS_LABELS) as ProjectChatHarnessMode[]).map((mode) => (
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={harnessMode === mode}
+                  className={harnessMode === mode ? 'selected' : ''}
+                  onClick={() => setHarnessMode(mode)}
+                  key={mode}
+                >
+                  {HARNESS_LABELS[mode]}
+                </button>
+              ))}
+            </div>
+            <small>
+              {harnessMode === 'reviewer'
+                ? 'Critique only; Main discards every returned Board action.'
+                : harnessMode === 'planner'
+                  ? 'Plan-first response with reviewable task proposals.'
+                  : 'Discuss evidence; propose changes only when requested.'}
+            </small>
+          </div>
+          <div className="chat-agent-control-group">
+            <span>Response depth</span>
+            <div role="radiogroup" aria-label="Response depth">
+              {(Object.keys(DEPTH_LABELS) as ProjectChatResponseDepth[]).map((depth) => (
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={responseDepth === depth}
+                  className={responseDepth === depth ? 'selected' : ''}
+                  onClick={() => setResponseDepth(depth)}
+                  key={depth}
+                >
+                  {DEPTH_LABELS[depth]}
+                </button>
+              ))}
+            </div>
+            <small>Separate from model reasoning effort; this shapes the visible answer.</small>
+          </div>
+          <div className="chat-agent-control-group">
+            <span>Context</span>
+            <select
+              value={contextScope}
+              onChange={(event) => setContextScope(event.target.value as ProjectChatContextScope)}
+              aria-label="Turn context scope"
+            >
+              {(Object.keys(CONTEXT_LABELS) as ProjectChatContextScope[]).map((scope) => (
+                <option value={scope} key={scope}>
+                  {CONTEXT_LABELS[scope]}
+                </option>
+              ))}
+            </select>
+            <small>Vault contents and files are excluded in every scope.</small>
+          </div>
+          <div className="chat-agent-profile-summary">
+            <span>Project prompt</span>
+            <strong>
+              {snapshot?.profile?.customInstructions
+                ? `${snapshot.profile.customInstructions.length} characters · profile v${snapshot.profile.version}`
+                : 'No custom instructions'}
+            </strong>
+            <button type="button" className="ghost-button" onClick={onOpenAgentSettings}>
+              Edit in Settings…
+            </button>
+          </div>
+          <div className="chat-agent-boundary">
+            <strong>Chat-only safety boundary</strong>
+            <span>No shell · no files · no network · no tools · no subagents</span>
+          </div>
+        </section>
+      )}
 
       <div className="chat-transcript" ref={transcriptRef} aria-live="polite">
         {loading ? (
@@ -189,6 +335,9 @@ export function ProjectChatView({
               (message.status === 'failed' || message.status === 'interrupted')
                 ? findRetrySource(snapshot, message, messageIndex)
                 : null;
+            const attempt = message.attemptId
+              ? snapshot.attempts?.find((candidate) => candidate.id === message.attemptId)
+              : undefined;
             return (
               <article
                 className={`chat-message ${message.role} ${message.status}`}
@@ -199,12 +348,15 @@ export function ProjectChatView({
                   <span>{formatTime(message.completedAt)}</span>
                 </header>
                 <div className="message-copy">{message.content}</div>
-                {message.model && (
+                {(message.model || attempt?.harnessMode) && (
                   <footer className="message-provenance">
-                    {message.model.resolvedModelId}
-                    {message.model.reasoningOptionId
+                    {message.model?.resolvedModelId ?? 'Codex'}
+                    {message.model?.reasoningOptionId
                       ? ` · reasoning ${message.model.reasoningOptionId}`
                       : ''}
+                    {attempt?.harnessMode ? ` · ${HARNESS_LABELS[attempt.harnessMode]}` : ''}
+                    {attempt?.responseDepth ? ` · ${DEPTH_LABELS[attempt.responseDepth]}` : ''}
+                    {attempt?.contextScope ? ` · ${CONTEXT_LABELS[attempt.contextScope]}` : ''}
                   </footer>
                 )}
                 {retrySource && (
@@ -258,7 +410,8 @@ export function ProjectChatView({
       <div className="chat-compose-area">
         <div className="chat-context-note">
           <span>LOCAL CONTEXT</span>
-          현재 프로젝트 Board + Objective · Vault/파일 본문 제외
+          {CONTEXT_LABELS[contextScope]} · {HARNESS_LABELS[harnessMode]} ·{' '}
+          {DEPTH_LABELS[responseDepth]} response · Vault/파일 본문 제외
           {retryOfAttemptId && (
             <button
               type="button"

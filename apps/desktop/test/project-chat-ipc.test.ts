@@ -58,4 +58,36 @@ describe('Project chat IPC', () => {
     expect(JSON.stringify(result)).not.toContain('private-path');
     expect(reportUnexpected).toHaveBeenCalledOnce();
   });
+
+  it('validates profile updates and preserves optimistic conflicts', async () => {
+    const projectId = randomUUID();
+    const updateProfile = vi.fn(async () => {
+      throw new ProjectChatServiceError('chat_profile_conflict');
+    });
+    const { handlers } = registerFixture({ updateProfile });
+
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.updateProfile)?.({
+        projectId,
+        expectedVersion: 0,
+        harnessMode: 'reviewer',
+        responseDepth: 'deep',
+        contextScope: 'project',
+        customInstructions: 'x'.repeat(4_001),
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_chat_input' } });
+    expect(updateProfile).not.toHaveBeenCalled();
+
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.updateProfile)?.({
+        projectId,
+        expectedVersion: 0,
+        harnessMode: 'reviewer',
+        responseDepth: 'deep',
+        contextScope: 'project',
+        customInstructions: 'Review evidence first.',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'chat_profile_conflict' } });
+    expect(updateProfile).toHaveBeenCalledOnce();
+  });
 });

@@ -4,9 +4,11 @@ import type {
   ProjectChatAction,
   ProjectChatEvent,
   ProjectChatSnapshot,
+  UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
 import type {
+  CreateProjectInput,
   ProjectRecord,
   WorkspacePendingSummary,
   WorkspaceSnapshot,
@@ -16,7 +18,8 @@ import { ConnectionsView, type CodexModel } from './connections-view';
 import { LocalNotesView, type SelectedNote, type VaultSelection } from './notes-view';
 import { ProjectChatLoadGuard } from './project-chat-load-guard';
 import { ProjectChatView } from './project-chat-view';
-import { SettingsView } from './settings-view';
+import { resolveActiveProjectId, visibleProjects } from './project-portfolio-model';
+import { SettingsView, type SettingsCategory } from './settings-view';
 import { Connection, describeError } from './ui-primitives';
 import {
   applyUserPreferences,
@@ -36,6 +39,19 @@ import {
 } from './workspace-views';
 
 type CodexConnectionState = 'checking' | 'ready' | 'auth-required' | 'unavailable';
+type AppSurface = 'workspace' | 'settings';
+
+type ProjectDraft = Readonly<{ name: string; repository?: string | undefined }>;
+
+function createProjectCommand(
+  input: ProjectDraft,
+  preferences: UserPreferences,
+): CreateProjectInput {
+  return {
+    ...input,
+    board: structuredClone(preferences.defaultBoardTemplate),
+  };
+}
 
 function isCodexUnavailableError(error: unknown) {
   return error instanceof Error && error.message.includes('codex_unavailable');
@@ -46,6 +62,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [pendingSummary, setPendingSummary] = useState<WorkspacePendingSummary | null>(null);
   const [activeProjectId, setActiveProjectId] = useState('');
   const [activeTab, setActiveTab] = useState<WorkspaceTabId>('chat');
+  const [activeSurface, setActiveSurface] = useState<AppSurface>('workspace');
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>('appearance');
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -75,9 +93,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const chatLoadGuard = useRef(new ProjectChatLoadGuard());
   const codexBootstrapStarted = useRef(false);
 
+  const activeProjects = useMemo(() => visibleProjects(snapshot?.projects ?? []), [snapshot]);
   const activeProject = useMemo(
-    () => snapshot?.projects.find((project) => project.id === activeProjectId),
-    [activeProjectId, snapshot],
+    () => activeProjects.find((project) => project.id === activeProjectId),
+    [activeProjectId, activeProjects],
   );
   const activeTasks = useMemo(
     () => snapshot?.tasks.filter((task) => task.projectId === activeProjectId) ?? [],
@@ -87,14 +106,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     () => latestObjective(snapshot?.objectives ?? [], activeProjectId),
     [activeProjectId, snapshot],
   );
+  const chatBusyProjectIds = useMemo(() => {
+    const busyProjects = new Set(
+      Object.entries(chatInFlight)
+        .filter(([, inFlight]) => inFlight)
+        .map(([projectId]) => projectId),
+    );
+    if (chatStartingProjectId) busyProjects.add(chatStartingProjectId);
+    return busyProjects;
+  }, [chatInFlight, chatStartingProjectId]);
   const loadWorkspace = async () => {
     const nextSnapshot = await window.gosu.workspace.snapshot();
     setSnapshot(nextSnapshot);
-    setActiveProjectId((current) =>
-      nextSnapshot.projects.some((project) => project.id === current)
-        ? current
-        : (nextSnapshot.projects[0]?.id ?? ''),
-    );
+    setActiveProjectId((current) => resolveActiveProjectId(nextSnapshot.projects, current));
     try {
       setPendingSummary(await window.gosu.workspace.pendingSummary());
     } catch {
@@ -134,6 +158,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         ),
       );
   }, []);
+
+  useEffect(
+    () =>
+      window.gosu.app.onOpenSettings(() => {
+        setSettingsCategory('appearance');
+        setActiveSurface('settings');
+        setShowProjectForm(false);
+      }),
+    [],
+  );
 
   useEffect(
     () =>
@@ -179,6 +213,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       setWorkspaceError(describeError(error)),
     );
   }, [activeProjectId, activeTab]);
+
+  useEffect(() => {
+    if (
+      activeSurface !== 'settings' ||
+      settingsCategory !== 'agent' ||
+      !activeProjectId ||
+      chatSnapshots[activeProjectId]?.profile
+    ) {
+      return;
+    }
+    void loadProjectChat(activeProjectId).catch((error: unknown) =>
+      setWorkspaceError(describeError(error)),
+    );
+  }, [activeProjectId, activeSurface, settingsCategory]);
 
   const refreshModels = async (showRecoveryError = false) => {
     if (codexBusy) return;
@@ -266,9 +314,30 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setPreferences(next);
     setAnnouncement(
       saveUserPreferences(window.localStorage, next)
-        ? 'Saved display settings on this Mac.'
-        : 'Display settings changed for this session but could not be saved.',
+        ? 'Saved local settings on this Mac.'
+        : 'Settings changed for this session but could not be saved.',
     );
+  };
+
+  const updateProjectChatProfile = async (input: UpdateProjectChatProfileInput) => {
+    if (busyAction !== null) return false;
+    setBusyAction(`project-chat:profile:${input.projectId}`);
+    setWorkspaceError(null);
+    try {
+      const profile = await window.gosu.projectChat.updateProfile(input);
+      setChatSnapshots((current) => {
+        const existing = current[input.projectId];
+        return existing ? { ...current, [input.projectId]: { ...existing, profile } } : current;
+      });
+      setAnnouncement(`Saved project agent profile version ${profile.version}.`);
+      return true;
+    } catch (error) {
+      setWorkspaceError(describeError(error));
+      await loadProjectChat(input.projectId).catch(() => undefined);
+      return false;
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   return (
@@ -299,11 +368,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           className="project-switcher"
           value={activeProjectId}
           onChange={(event) => setActiveProjectId(event.target.value)}
-          disabled={!snapshot?.projects.length || busyAction !== null}
+          disabled={activeProjects.length === 0 || busyAction !== null}
           aria-label="Active project"
         >
-          {snapshot?.projects.length ? (
-            snapshot.projects.map((project) => (
+          {activeProjects.length ? (
+            activeProjects.map((project) => (
               <option value={project.id} key={project.id}>
                 {project.name}
               </option>
@@ -315,10 +384,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         {WORKSPACE_TABS.map((tab) => (
           <button
             type="button"
-            className={activeTab === tab.id ? 'active' : ''}
+            className={activeSurface === 'workspace' && activeTab === tab.id ? 'active' : ''}
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            aria-current={activeTab === tab.id ? 'page' : undefined}
+            onClick={() => {
+              setActiveSurface('workspace');
+              setActiveTab(tab.id);
+            }}
+            aria-current={
+              activeSurface === 'workspace' && activeTab === tab.id ? 'page' : undefined
+            }
           >
             <span className="nav-icon">{tab.icon}</span>
             {tab.label}
@@ -337,6 +411,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             <em>Later</em>
           </button>
         ))}
+        <button
+          type="button"
+          className={`global-settings-button ${activeSurface === 'settings' ? 'active' : ''}`}
+          onClick={() => {
+            setSettingsCategory('appearance');
+            setActiveSurface('settings');
+            setShowProjectForm(false);
+          }}
+          aria-current={activeSurface === 'settings' ? 'page' : undefined}
+        >
+          <span className="nav-icon">⚙</span>
+          Settings
+          <em>⌘,</em>
+        </button>
         <div className="nav-spacer" />
         <small>Local connections</small>
         <Connection
@@ -397,14 +485,60 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           </div>
         )}
 
-        {activeTab === 'settings' ? (
+        {activeSurface === 'settings' ? (
           <>
-            <WorkspacePageHeading
-              activeTab={activeTab}
-              activeProject={undefined}
-              onNewProject={null}
+            <header className="page-heading settings-page-heading">
+              <div>
+                <span className="eyebrow">GOSU / Settings</span>
+                <h1>Settings</h1>
+                <p>Configure this Mac, project defaults, and recoverable project management.</p>
+              </div>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setActiveSurface('workspace')}
+              >
+                Done
+              </button>
+            </header>
+            <SettingsView
+              preferences={preferences}
+              onChange={updatePreferences}
+              workspaceSnapshot={snapshot}
+              busyAction={busyAction}
+              chatBusyProjectIds={chatBusyProjectIds}
+              onRenameProject={(input) =>
+                runWorkspaceAction(
+                  `project:rename:${input.projectId}`,
+                  () => window.gosu.workspace.renameProject(input),
+                  `Renamed the project to ${input.name}.`,
+                )
+              }
+              onTrashProject={(input) =>
+                runWorkspaceAction(
+                  `project:trash:${input.projectId}`,
+                  () => window.gosu.workspace.trashProject(input),
+                  'Moved the project to recoverable Trash.',
+                )
+              }
+              onRestoreProject={(input) =>
+                runWorkspaceAction(
+                  `project:restore:${input.projectId}`,
+                  () => window.gosu.workspace.restoreProject(input),
+                  'Restored the project with its preserved local work.',
+                )
+              }
+              category={settingsCategory}
+              onCategoryChange={setSettingsCategory}
+              agentProject={activeProject}
+              agentProfile={activeProject ? chatSnapshots[activeProject.id]?.profile : undefined}
+              agentProfileLoading={Boolean(
+                activeProject &&
+                chatLoadingProjectId === activeProject.id &&
+                !chatSnapshots[activeProject.id]?.profile,
+              )}
+              onUpdateAgentProfile={updateProjectChatProfile}
             />
-            <SettingsView preferences={preferences} onChange={updatePreferences} />
           </>
         ) : workspaceLoading ? (
           <div className="loading-state" role="status">
@@ -412,22 +546,22 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           </div>
         ) : !snapshot ? (
           <WorkspaceUnavailable onRetry={() => void retryWorkspace()} />
-        ) : snapshot.projects.length === 0 &&
-          activeTab !== 'connections' &&
-          activeTab !== 'notes' ? (
+        ) : activeProjects.length === 0 && activeTab !== 'connections' && activeTab !== 'notes' ? (
           <EmptyWorkspace
             busy={busyAction !== null}
             onCreate={async (input) => {
+              const command = createProjectCommand(input, preferences);
               let createdProject: ProjectRecord | undefined;
               const succeeded = await runWorkspaceAction(
                 'project:create',
                 async () => {
-                  createdProject = await window.gosu.workspace.createProject(input);
+                  createdProject = await window.gosu.workspace.createProject(command);
                 },
                 `Created ${input.name}.`,
               );
               if (succeeded && createdProject) {
                 setActiveProjectId(createdProject.id);
+                setActiveSurface('workspace');
                 setActiveTab('chat');
               }
               return succeeded;
@@ -445,17 +579,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 busy={busyAction !== null}
                 onCancel={() => setShowProjectForm(false)}
                 onCreate={async (input) => {
+                  const command = createProjectCommand(input, preferences);
                   let createdProject: ProjectRecord | undefined;
                   const succeeded = await runWorkspaceAction(
                     'project:create',
                     async () => {
-                      createdProject = await window.gosu.workspace.createProject(input);
+                      createdProject = await window.gosu.workspace.createProject(command);
                     },
                     `Created ${input.name}.`,
                   );
                   if (succeeded && createdProject) {
                     setActiveProjectId(createdProject.id);
                     setShowProjectForm(false);
+                    setActiveSurface('workspace');
                     setActiveTab('chat');
                   }
                   return succeeded;
@@ -487,7 +623,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 }}
                 onSelectedReasoning={setSelectedReasoning}
                 onRefreshModels={() => void refreshModels()}
-                onSend={async (message, retryOfAttemptId) => {
+                onOpenAgentSettings={() => {
+                  setSettingsCategory('agent');
+                  setActiveSurface('settings');
+                  setShowProjectForm(false);
+                }}
+                onSend={async (message, retryOfAttemptId, controls) => {
                   if (chatStartingProjectId !== null || chatInFlight[activeProject.id])
                     return false;
                   const selectedDescriptor = models.find(
@@ -518,6 +659,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       message,
                       requestedModelId: selectedModel === 'auto' ? null : selectedModel,
                       reasoningOptionId: selectedReasoning === 'auto' ? null : selectedReasoning,
+                      ...controls,
                       ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
                     });
                     await loadProjectChat(activeProject.id);

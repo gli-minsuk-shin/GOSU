@@ -18,6 +18,18 @@ describe('workspace IPC result', () => {
     ).toThrow('version_conflict:4');
   });
 
+  it('preserves bounded project Trash state errors for renderer handling', () => {
+    expect(() =>
+      unwrapWorkspaceIpcResult({ ok: false, error: { code: 'project_trashed' } }),
+    ).toThrow('project_trashed');
+    expect(() =>
+      unwrapWorkspaceIpcResult({ ok: false, error: { code: 'project_not_trashed' } }),
+    ).toThrow('project_not_trashed');
+    expect(() => unwrapWorkspaceIpcResult({ ok: false, error: { code: 'chat_busy' } })).toThrow(
+      'chat_busy',
+    );
+  });
+
   it('maps malformed or unknown responses to workspace unavailable', () => {
     expect(() =>
       unwrapWorkspaceIpcResult({ ok: false, error: { code: '/private/research/path' } }),

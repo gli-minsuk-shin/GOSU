@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_WORKSPACE_BOARD_SETTINGS } from '../src/shared/workspace-contracts';
 import {
   DEFAULT_USER_PREFERENCES,
   USER_PREFERENCES_STORAGE_KEY,
@@ -8,6 +9,25 @@ import {
   parseUserPreferences,
   saveUserPreferences,
 } from '../src/renderer/src/user-preferences';
+
+const customBoardTemplate = {
+  title: 'Experiment pipeline',
+  columnLabels: {
+    backlog: 'Ideas',
+    planned: 'Queued',
+    in_progress: 'Running',
+    review: 'PI Review',
+    done: 'Published',
+  },
+  columnOrder: ['backlog', 'planned', 'in_progress', 'review', 'done'],
+  wipLimits: {
+    backlog: null,
+    planned: 8,
+    in_progress: 3,
+    review: 2,
+    done: null,
+  },
+} as const;
 
 function memoryStorage(initial?: string) {
   const values = new Map<string, string>();
@@ -27,17 +47,70 @@ describe('local user preferences', () => {
     ).toEqual(DEFAULT_USER_PREFERENCES);
   });
 
-  it('round-trips a valid appearance and text size without project storage', () => {
+  it('migrates legacy schema-v1 preferences to the full GOSU Board template', () => {
+    expect(
+      loadUserPreferences(
+        memoryStorage(JSON.stringify({ schemaVersion: 1, appearance: 'light', textSize: 'large' })),
+      ),
+    ).toEqual({
+      schemaVersion: 1,
+      appearance: 'light',
+      textSize: 'large',
+      defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+    });
+  });
+
+  it('returns independent default Board template objects for separate loads', () => {
+    const first = loadUserPreferences(memoryStorage());
+    const second = loadUserPreferences(memoryStorage());
+
+    expect(first.defaultBoardTemplate).toEqual(DEFAULT_WORKSPACE_BOARD_SETTINGS);
+    expect(first.defaultBoardTemplate).not.toBe(second.defaultBoardTemplate);
+    expect(first.defaultBoardTemplate.columnLabels).not.toBe(
+      second.defaultBoardTemplate.columnLabels,
+    );
+  });
+
+  it('round-trips a valid appearance, text size, and custom Board template locally', () => {
     const storage = memoryStorage();
-    const preferences = { schemaVersion: 1, appearance: 'light', textSize: 'large' } as const;
+    const preferences = {
+      schemaVersion: 1,
+      appearance: 'light',
+      textSize: 'large',
+      defaultBoardTemplate: customBoardTemplate,
+    } as const;
     expect(saveUserPreferences(storage, preferences)).toBe(true);
     expect(loadUserPreferences(storage)).toEqual(preferences);
+  });
+
+  it('falls back only the invalid Board template while preserving valid display settings', () => {
+    const invalidBoardTemplate = {
+      ...customBoardTemplate,
+      columnLabels: {
+        ...customBoardTemplate.columnLabels,
+        planned: ' ideas ',
+      },
+    };
+
+    expect(
+      parseUserPreferences({
+        schemaVersion: 1,
+        appearance: 'dark',
+        textSize: 'extra-large',
+        defaultBoardTemplate: invalidBoardTemplate,
+      }),
+    ).toEqual({
+      schemaVersion: 1,
+      appearance: 'dark',
+      textSize: 'extra-large',
+      defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+    });
   });
 
   it('applies validated data attributes to the document root', () => {
     const root = { dataset: {} as DOMStringMap };
     applyUserPreferences(root, {
-      schemaVersion: 1,
+      ...DEFAULT_USER_PREFERENCES,
       appearance: 'dark',
       textSize: 'extra-large',
     });
