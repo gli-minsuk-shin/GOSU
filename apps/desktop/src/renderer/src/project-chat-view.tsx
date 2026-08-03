@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ProjectChatAction, ProjectChatSnapshot } from '../../shared/project-chat-contracts';
 import type { ProjectRecord, WorkspaceTask } from '../../shared/workspace-contracts';
+import { shouldSendChatMessage } from './chat-keyboard';
 import type { CodexModel } from './connections-view';
 
 const QUICK_PROMPTS = [
@@ -275,7 +276,14 @@ export function ProjectChatView({
               setRetryOfAttemptId(null);
             }}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              if (
+                shouldSendChatMessage({
+                  key: event.key,
+                  shiftKey: event.shiftKey,
+                  isComposing: event.nativeEvent.isComposing,
+                  keyCode: event.keyCode,
+                })
+              ) {
                 event.preventDefault();
                 submit();
               }
@@ -297,7 +305,7 @@ export function ProjectChatView({
               disabled={draft.trim().length === 0 || selectionWarning !== null}
             >
               Send
-              <span>⌘↵</span>
+              <span>Enter</span>
             </button>
           )}
         </div>
