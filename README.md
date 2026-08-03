@@ -49,9 +49,12 @@ but it is not yet a deployed end-to-end product:
 
 - the Owner Web app is an interactive, responsive product slice backed by deterministic demo
   fixtures;
-- the Electron app provides a sandboxed renderer, encrypted local state, a read-only Obsidian
-  reader, local Codex App Server integration with runtime model discovery, and a non-secret runtime
-  readiness view;
+- the Electron app provides a usable local workspace: users can create and switch projects, create,
+  edit, and move versioned Kanban tasks, and save, freeze, and explicitly revise goal/metric
+  definitions. Those records and an offline change outbox are committed atomically to encrypted
+  SQLite and survive an app restart;
+- the Electron security shell also provides a read-only Obsidian reader, local Codex App Server
+  integration with runtime model discovery, and a non-secret runtime readiness view;
 - the running Sync API uses an in-memory development store with lab/project authorization,
   optimistic versions, idempotency, SSE, and a non-persistent WebSocket relay;
 - a PostgreSQL schema and tested persistence adapter implement tenant context, transactional
@@ -62,7 +65,9 @@ but it is not yet a deployed end-to-end product:
 
 Google/Apple login orchestration, production PostgreSQL/Redis wiring, cloud deployment, macOS
 signing/notarization, auto-update, and the complete cross-application E2E flow remain operational
-work. See each application README for its exact runnable boundary.
+work. The Desktop outbox is not delivered to Hosted Sync yet, so its pending count means “stored
+locally for later synchronization”, not “synchronized”. See each application README for its exact
+runnable boundary.
 
 ## Trust boundaries
 
@@ -103,7 +108,9 @@ pnpm app:dev
 `app:dev` starts the loopback-only in-memory Sync API, waits for its readiness endpoint, and then
 opens the Electron app. `Ctrl+C` stops the process group. A healthy GOSU Sync process already using
 the configured port is reused; an unrelated process on that port is rejected. No `.env` file or
-Docker service is required for this local slice, and Sync state is lost on restart.
+Docker service is required for this local slice. Project, Kanban, and goal/metric data are stored in
+the Desktop's encrypted local database and survive restart; the development Sync API's own memory
+state is separate and is lost on restart.
 
 To build a local macOS installer after running the complete quality gate:
 

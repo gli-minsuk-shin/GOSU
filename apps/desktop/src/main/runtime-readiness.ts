@@ -1,25 +1,10 @@
 import { isIP } from 'node:net';
 
-import type { CodexAvailability } from './codex-app-server';
+import type { ComponentReadiness, RuntimeReadiness } from '../shared/runtime-contracts';
+
+export type { ComponentReadiness, RuntimeReadiness } from '../shared/runtime-contracts';
 
 export const DEFAULT_SYNC_API_URL = 'http://127.0.0.1:4000';
-
-export type ComponentReadiness = {
-  ready: boolean;
-  detail: string;
-};
-
-export type RuntimeReadiness = {
-  status: 'ready' | 'degraded';
-  app: {
-    version: string;
-    platform: NodeJS.Platform;
-    packaged: boolean;
-  };
-  localData: ComponentReadiness;
-  codex: CodexAvailability;
-  syncApi: ComponentReadiness;
-};
 
 type HealthFetch = (
   input: string,

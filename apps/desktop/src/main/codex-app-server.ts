@@ -8,6 +8,7 @@ import { delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 
+import type { CodexAvailability } from '../shared/runtime-contracts';
 import { createInvocation, recordModelReroute, toModelCatalog } from './model-catalog';
 
 export type CodexModel = {
@@ -21,11 +22,6 @@ export type CodexModel = {
   supportedReasoningEfforts?: Array<{ reasoningEffort: string; description: string }>;
   inputModalities?: string[];
   upgrade?: string | null;
-};
-
-export type CodexAvailability = {
-  ready: boolean;
-  detail: 'bundled_codex_ready' | 'configured_codex_ready' | 'codex_executable_unavailable';
 };
 
 type JsonRpcMessage = {

@@ -16,21 +16,46 @@ request can race the initialize handshake.
 
 ## Local data
 
-The cache and offline outbox live in a ciphered SQLite database. Its random key
-is sealed with Electron `safeStorage`, which uses the macOS Keychain. Obsidian
-access is read-only, ignores symlinks, enforces the selected root, and rejects
-files other than bounded Markdown documents. Navigation and privileged IPC are
-accepted only from the exact packaged renderer URL or an explicit-port loopback
-development origin and its main frame. Packaged builds ignore development URL
-environment overrides.
+Workspace state and the offline outbox live in a ciphered SQLite database. Its random key is sealed
+with Electron `safeStorage`, which uses the macOS Keychain. A project, task, or objective mutation
+updates the versioned workspace snapshot and appends its idempotent outbox operation in one SQL
+transaction. A failed commit publishes neither change. Task and objective updates require the
+caller's expected entity version instead of silently applying last-write-wins.
+
+Obsidian access is read-only, ignores symlinks, enforces the selected root, and rejects files other
+than bounded Markdown documents. Navigation and privileged IPC are accepted only from the exact
+packaged renderer URL or an explicit-port loopback development origin and its main frame. Packaged
+builds ignore development URL environment overrides.
 
 ## Runnable local slice
 
 From the repository root, `pnpm app:dev` starts the loopback development Sync API, waits for the
 versioned readiness endpoint, and then opens Electron. `pnpm app:doctor` checks prerequisites without
-starting Codex or reading credentials. The renderer displays live, non-secret readiness for the app,
-encrypted local data, Codex executable, and Sync API; research metrics and workflow cards remain
-clearly labeled demo content.
+starting Codex or reading credentials. On first launch the renderer starts with an empty workspace
+and supports:
+
+- creating and switching between multiple projects;
+- creating, renaming, and moving tasks across `Backlog / Planned / In Progress / Review / Done`;
+- defining a goal, primary metric, lineage hashes, budget, and stop policy;
+- freezing an objective revision locally and explicitly starting the next version; and
+- showing the number of durable changes waiting in the local outbox.
+
+These records survive an app restart. The pending-change count does not claim cloud delivery: a
+Sync delivery/reconciliation worker and multi-user authorization are not connected to this local
+workspace yet. The Sync readiness indicator only reports whether the development API can be
+reached. The remaining research modules are visibly marked as later work rather than populated with
+simulated experiment or manuscript results.
+
+The macOS-only storage smoke test runs inside Electron so the native SQLCipher module, `safeStorage`,
+close/reopen recovery, encrypted file header, and transaction rollback are exercised with their
+actual runtime ABI:
+
+```bash
+pnpm --filter @gosu/desktop smoke:local-db:mac
+```
+
+It creates and removes an isolated temporary user-data directory. It is intentionally separate from
+the cross-platform Vitest suite.
 
 The Desktop accepts `GOSU_SYNC_API_URL` as a credential-free base URL. Plain HTTP is limited to
 loopback; a remote endpoint must use HTTPS. Electron Main appends the fixed readiness path, rejects
