@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -142,5 +142,21 @@ describe('read-only Obsidian vault', () => {
 
     expect(await directoryLimited.listMarkdown()).toEqual(['root.md']);
     expect((await entryLimited.listMarkdown()).length).toBeLessThanOrEqual(2);
+  });
+
+  it('revokes access when another directory replaces the selected Vault path', async () => {
+    const parent = await temporaryDirectory();
+    const root = join(parent, 'vault');
+    const movedRoot = join(parent, 'vault-moved');
+    await mkdir(root);
+    await writeFile(join(root, 'approved.md'), 'approved content');
+    const reader = await VaultReader.open(root);
+
+    await rename(root, movedRoot);
+    await mkdir(root);
+    await writeFile(join(root, 'replacement.md'), 'replacement content');
+
+    await expect(reader.listMarkdown()).rejects.toThrow('vault_root_changed');
+    await expect(reader.readMarkdown('replacement.md')).rejects.toThrow('vault_root_changed');
   });
 });

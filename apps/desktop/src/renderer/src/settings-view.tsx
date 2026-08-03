@@ -10,8 +10,10 @@ import type {
   RenameProjectInput,
   WorkspaceSnapshot,
 } from '../../shared/workspace-contracts';
+import type { VaultSelection } from '../../shared/vault-contracts';
 import { AgentSettingsSection } from './agent-settings-section';
 import { BoardSettingsForm } from './board-settings-form';
+import type { VaultRuntimeState } from './notes-view';
 import { ProjectSettingsSection } from './project-settings-section';
 import {
   type AppearancePreference,
@@ -59,6 +61,8 @@ export function SettingsView({
   agentProject,
   agentProfile,
   agentProfileLoading,
+  vault,
+  vaultState,
   onUpdateAgentProfile,
 }: {
   preferences: UserPreferences;
@@ -75,6 +79,8 @@ export function SettingsView({
   agentProject: ProjectRecord | undefined;
   agentProfile: ProjectChatProfile | undefined;
   agentProfileLoading: boolean;
+  vault: VaultSelection | null;
+  vaultState: VaultRuntimeState;
   onUpdateAgentProfile: (input: UpdateProjectChatProfileInput) => Promise<boolean>;
 }) {
   const [localCategory, setLocalCategory] = useState<SettingsCategory>(initialCategory);
@@ -237,7 +243,12 @@ export function SettingsView({
             project={agentProject}
             profile={agentProfile}
             loading={agentProfileLoading}
-            busy={busyAction !== null}
+            busy={
+              busyAction !== null ||
+              Boolean(agentProject && chatBusyProjectIds.has(agentProject.id))
+            }
+            vault={vault}
+            vaultState={vaultState}
             onSave={onUpdateAgentProfile}
           />
         )}

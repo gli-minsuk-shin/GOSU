@@ -4,6 +4,8 @@ import { EventEmitter } from 'node:events';
 import type { ModelInvocation } from '@gosu/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { CodexDynamicToolHandler, CodexDynamicToolSpec } from '../src/main/codex-app-server';
+import type { ProjectAgentVault } from '../src/main/project-agent-tools';
 import {
   buildProjectChatPrompt,
   ProjectChatService,
@@ -136,6 +138,7 @@ class MemoryChatStorage implements ProjectChatStorage {
       harnessMode: input.harnessMode,
       responseDepth: input.responseDepth,
       contextScope: input.contextScope,
+      localNotesVault: input.localNotesVault ?? null,
       customInstructions: input.customInstructions,
       instructionRevision: {
         id: randomUUID(),
@@ -178,15 +181,27 @@ class FakeCodex extends EventEmitter {
   readonly turnThreads = new Map<string, string>();
   readonly interrupted: Array<{ threadId: string; turnId: string }> = [];
   readonly released: string[] = [];
+  readonly revoked: string[] = [];
   readonly prompts: string[] = [];
   readonly developerInstructions: string[] = [];
-  beforeRunReturns: ((threadId: string, turnId: string) => void) | null = null;
+  readonly dynamicTools: Array<readonly CodexDynamicToolSpec[]> = [];
+  readonly dynamicToolHandlers: Array<CodexDynamicToolHandler | undefined> = [];
+  beforeRunReturns: ((threadId: string, turnId: string) => void | Promise<void>) | null = null;
   failNextInterrupt = false;
+  nextThreadId: string | null = null;
 
-  async startThread(input: { developerInstructions?: string }) {
+  async startThread(input: {
+    developerInstructions?: string;
+    dynamicTools?: readonly CodexDynamicToolSpec[];
+    dynamicToolHandler?: CodexDynamicToolHandler;
+  }) {
     this.threadCount += 1;
     this.developerInstructions.push(input.developerInstructions ?? '');
-    return { threadId: `thread-${this.threadCount}`, modelId: 'fixture-model' };
+    this.dynamicTools.push(input.dynamicTools ?? []);
+    this.dynamicToolHandlers.push(input.dynamicToolHandler);
+    const threadId = this.nextThreadId ?? `thread-${this.threadCount}`;
+    this.nextThreadId = null;
+    return { threadId, modelId: 'fixture-model' };
   }
 
   async runTurn(input: { threadId: string; requestedModelId: string | null; prompt: string }) {
@@ -194,7 +209,7 @@ class FakeCodex extends EventEmitter {
     const turnId = `turn-${this.turnCount}`;
     this.turnThreads.set(turnId, input.threadId);
     this.prompts.push(input.prompt);
-    this.beforeRunReturns?.(input.threadId, turnId);
+    await this.beforeRunReturns?.(input.threadId, turnId);
     return {
       turnId,
       invocation: invocation(input.requestedModelId),
@@ -211,6 +226,10 @@ class FakeCodex extends EventEmitter {
 
   async releaseThread(threadId: string) {
     this.released.push(threadId);
+  }
+
+  revokeDynamicTools(threadId: string) {
+    this.revoked.push(threadId);
   }
 
   complete(turnId: string, response: unknown) {
@@ -247,7 +266,33 @@ function invocation(requestedModelId: string | null): ModelInvocation {
   };
 }
 
-async function fixture() {
+function localNotesVaultFixture() {
+  const vaultId = 'a'.repeat(64);
+  const noteId = 'b'.repeat(64);
+  const contentSha256 = 'c'.repeat(64);
+  const content = 'PRIVATE_NOTE_BODY';
+  const vault: ProjectAgentVault = {
+    descriptor: () => ({ id: vaultId, name: 'Research Notes' }),
+    matchesGrant: (candidate) => candidate === vaultId,
+    listForAgent: async () => ({
+      notes: [{ noteId, title: 'Baseline evidence' }],
+      truncated: false,
+    }),
+    readForAgent: async () => ({
+      noteId,
+      title: 'Baseline evidence',
+      content,
+      contentSha256,
+      offset: 0,
+      nextOffset: null,
+      totalCharacters: content.length,
+      truncated: false,
+    }),
+  };
+  return { vault, vaultId, noteId, contentSha256, content };
+}
+
+async function fixture(vault?: ProjectAgentVault) {
   const workspaceStorage = new MemoryWorkspaceStorage();
   const workspace = new WorkspaceService(workspaceStorage);
   const projectA = await workspace.createProject({ name: 'Project Alpha' });
@@ -268,9 +313,47 @@ async function fixture() {
     storage,
     workspace,
     codex,
+    ...(vault ? { vault } : {}),
     prepareProjectDirectory: async (projectId) => `/isolated/${projectId}`,
   });
   return { workspace, storage, codex, chat, projectA, projectB, taskA };
+}
+
+async function activeLocalNotesTurn(
+  deliveryOutcome: Promise<'delivered' | 'discarded' | 'uncertain'> = Promise.resolve('delivered'),
+) {
+  const localNotes = localNotesVaultFixture();
+  const environment = await fixture(localNotes.vault);
+  const profile = await environment.chat.updateProfile({
+    projectId: environment.projectA.id,
+    expectedVersion: 0,
+    harnessMode: 'context',
+    responseDepth: 'standard',
+    contextScope: 'project',
+    localNotesVault: { id: localNotes.vaultId, name: 'Research Notes' },
+    customInstructions: '',
+  });
+  const receipt = await environment.chat.send({
+    projectId: environment.projectA.id,
+    message: 'Read the approved evidence.',
+    requestedModelId: null,
+    reasoningOptionId: null,
+    profileVersion: profile.version,
+  });
+  const handler = environment.codex.dynamicToolHandlers[0]!;
+  const read = await handler(
+    {
+      threadId: environment.codex.turnThreads.get(receipt.turnId)!,
+      turnId: receipt.turnId,
+      callId: 'read-source-before-terminal',
+      namespace: 'gosu_project',
+      tool: 'read_local_note',
+      arguments: { noteId: localNotes.noteId },
+    },
+    { outcome: deliveryOutcome },
+  );
+  expect(read.success).toBe(true);
+  return { ...environment, ...localNotes, receipt };
 }
 
 function waitForTurnCompleted(chat: ProjectChatService, turnId: string) {
@@ -430,6 +513,34 @@ describe('ProjectChatService', () => {
       'Beta reply',
     ]);
     expect(alpha.projectId).not.toBe(beta.projectId);
+  });
+
+  it('rejects a cross-project thread ID collision without rebinding or releasing its owner', async () => {
+    const { chat, codex, storage, projectA, projectB } = await fixture();
+    const alpha = await chat.send({
+      projectId: projectA.id,
+      message: 'Keep the alpha owner.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.nextThreadId = 'thread-1';
+
+    await expect(
+      chat.send({
+        projectId: projectB.id,
+        message: 'Attempt a colliding owner.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toThrow('codex_unavailable');
+    expect(codex.released).not.toContain('thread-1');
+
+    codex.complete(alpha.turnId, { reply: 'Alpha ownership preserved', actions: [] });
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id).messages.at(-1)?.content).toBe(
+        'Alpha ownership preserved',
+      ),
+    );
   });
 
   it('drops notifications and provenance whose thread does not match the active turn', async () => {
@@ -918,7 +1029,7 @@ describe('ProjectChatService', () => {
       profileVersion: 1,
       instructionRevisionId: profile.instructionRevision?.id,
       promptProvenance: {
-        assemblyVersion: 1,
+        assemblyVersion: 2,
         profileVersion: 1,
         instructionRevisionId: profile.instructionRevision?.id,
       },
@@ -930,6 +1041,200 @@ describe('ProjectChatService', () => {
 
     codex.complete(receipt.turnId, { reply: 'Plan ready', actions: [] });
     await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+  });
+
+  it('requires the currently selected Vault before saving a project Local Notes grant', async () => {
+    const { chat, projectA } = await fixture();
+    await expect(
+      chat.updateProfile({
+        projectId: projectA.id,
+        expectedVersion: 0,
+        harnessMode: 'context',
+        responseDepth: 'standard',
+        contextScope: 'project',
+        localNotesVault: { id: 'a'.repeat(64), name: 'Unselected Vault' },
+        customInstructions: '',
+      }),
+    ).rejects.toThrow('local_notes_vault_not_selected');
+  });
+
+  it('binds authorized Local Notes tools to the project and persists bounded source provenance', async () => {
+    const { vault, vaultId, noteId, contentSha256, content } = localNotesVaultFixture();
+    const { chat, codex, storage, projectA } = await fixture(vault);
+    const profile = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'context',
+      responseDepth: 'deep',
+      contextScope: 'project',
+      localNotesVault: { id: vaultId, name: 'Research Notes' },
+      customInstructions: '',
+    });
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Use the approved local evidence.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      profileVersion: profile.version,
+    });
+
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_workspace');
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('list_local_notes');
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_local_note');
+    expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('/Users/');
+    const handler = codex.dynamicToolHandlers[0]!;
+    await expect(
+      handler(
+        {
+          threadId: 'thread-1',
+          turnId: receipt.turnId,
+          callId: 'list-1',
+          namespace: 'gosu_project',
+          tool: 'list_local_notes',
+          arguments: {},
+        },
+        { outcome: Promise.resolve('delivered') },
+      ),
+    ).resolves.toMatchObject({ success: true });
+    const read = await handler(
+      {
+        threadId: 'thread-1',
+        turnId: receipt.turnId,
+        callId: 'read-1',
+        namespace: 'gosu_project',
+        tool: 'read_local_note',
+        arguments: { noteId },
+      },
+      { outcome: Promise.resolve('delivered') },
+    );
+    expect(read).toMatchObject({ success: true });
+    expect(read.contentItems[0]?.text).toContain('PRIVATE_NOTE_BODY');
+
+    codex.complete(receipt.turnId, {
+      reply: `The model quoted approved evidence: ${content}`,
+      actions: [],
+    });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    const assistant = storage.snapshot(projectA.id).messages[1]!;
+    expect(assistant.content).toContain('Local Notes accessed');
+    expect(assistant.content).toContain('Baseline evidence');
+    expect(assistant.content).toContain(contentSha256);
+    // Visible model replies are durable project chat. Explicit authorization therefore also
+    // discloses that the model may quote or summarize a note in the stored/synced answer.
+    expect(assistant.content).toContain(content);
+    expect(storage.getChatAttempt(projectA.id, receipt.attemptId)?.promptProvenance).toMatchObject({
+      assemblyVersion: 2,
+      localNotesVaultId: vaultId,
+    });
+  });
+
+  it('keeps Local Notes source receipts when the structured response is invalid', async () => {
+    const { chat, codex, storage, projectA, receipt, contentSha256, content } =
+      await activeLocalNotesTurn();
+    const completed = waitForTurnCompleted(chat, receipt.turnId);
+
+    codex.complete(receipt.turnId, 'not structured JSON');
+    await completed;
+
+    const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
+    expect(assistant).toMatchObject({ status: 'failed' });
+    expect(assistant.content).toContain('invalid project response');
+    expect(assistant.content).toContain('Local Notes accessed');
+    expect(assistant.content).toContain(contentSha256);
+    expect(assistant.content).not.toContain(content);
+  });
+
+  it('keeps Local Notes source receipts when a turn is interrupted or fails', async () => {
+    for (const status of ['interrupted', 'failed'] as const) {
+      const { chat, codex, storage, projectA, receipt, contentSha256, content } =
+        await activeLocalNotesTurn();
+      const completed = waitForTurnCompleted(chat, receipt.turnId);
+      const threadId = codex.turnThreads.get(receipt.turnId)!;
+
+      codex.emit('notification', {
+        method: 'turn/completed',
+        params: { threadId, turn: { id: receipt.turnId, status } },
+      });
+      await completed;
+
+      const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
+      expect(assistant.status).toBe(status === 'interrupted' ? 'interrupted' : 'failed');
+      expect(assistant.content).toContain('Local Notes accessed');
+      expect(assistant.content).toContain(contentSha256);
+      expect(assistant.content).not.toContain(content);
+    }
+  });
+
+  it('waits for an in-flight delivery acknowledgement before sealing an interrupted receipt', async () => {
+    let acknowledge!: () => void;
+    const deliveryOutcome = new Promise<'delivered'>((resolve) => {
+      acknowledge = () => resolve('delivered');
+    });
+    const { chat, codex, storage, projectA, receipt, contentSha256 } =
+      await activeLocalNotesTurn(deliveryOutcome);
+    const completed = waitForTurnCompleted(chat, receipt.turnId);
+    const threadId = codex.turnThreads.get(receipt.turnId)!;
+
+    codex.emit('notification', {
+      method: 'turn/completed',
+      params: { threadId, turn: { id: receipt.turnId, status: 'interrupted' } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(storage.snapshot(projectA.id).messages).toHaveLength(1);
+
+    acknowledge();
+    await completed;
+    const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
+    expect(codex.revoked).toContain(threadId);
+    expect(assistant).toMatchObject({ status: 'interrupted' });
+    expect(assistant.content).toContain('Local Notes accessed');
+    expect(assistant.content).toContain(contentSha256);
+  });
+
+  it('keeps Local Notes source receipts when turn registration fails after a tool read', async () => {
+    const { vault, vaultId, noteId, contentSha256, content } = localNotesVaultFixture();
+    const { chat, codex, storage, projectA } = await fixture(vault);
+    const profile = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'context',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      localNotesVault: { id: vaultId, name: 'Research Notes' },
+      customInstructions: '',
+    });
+    storage.failNextMarkRunning = true;
+    codex.beforeRunReturns = async (threadId, turnId) => {
+      codex.beforeRunReturns = null;
+      const read = await codex.dynamicToolHandlers[0]!(
+        {
+          threadId,
+          turnId,
+          callId: 'read-before-running-receipt',
+          namespace: 'gosu_project',
+          tool: 'read_local_note',
+          arguments: { noteId },
+        },
+        { outcome: Promise.resolve('delivered') },
+      );
+      expect(read.success).toBe(true);
+    };
+
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'Preserve evidence provenance if registration fails.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        profileVersion: profile.version,
+      }),
+    ).rejects.toThrow('codex_unavailable');
+
+    const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
+    expect(assistant).toMatchObject({ status: 'failed' });
+    expect(assistant.content).toContain('Local Notes accessed');
+    expect(assistant.content).toContain(contentSha256);
+    expect(assistant.content).not.toContain(content);
   });
 
   it('service-enforces reviewer mode by discarding every proposed action', async () => {
@@ -981,6 +1286,29 @@ describe('ProjectChatService', () => {
     ).rejects.toThrow('chat_profile_conflict');
     expect(storage.snapshot(projectA.id).attempts).toEqual([]);
     expect(storage.snapshot(projectA.id).messages).toEqual([]);
+  });
+
+  it('does not change project capabilities while a Codex turn is active', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Keep this capability snapshot stable.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await expect(
+      chat.updateProfile({
+        projectId: projectA.id,
+        expectedVersion: 0,
+        harnessMode: 'planner',
+        responseDepth: 'deep',
+        contextScope: 'project',
+        localNotesVault: null,
+        customInstructions: '',
+      }),
+    ).rejects.toThrow('chat_busy');
+    codex.complete(receipt.turnId, { reply: 'Stable turn completed.', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
   });
 
   it('preserves chat history but blocks new turns and profile changes while a project is in Trash', async () => {

@@ -138,5 +138,27 @@ describe('Project chat contracts', () => {
         customInstructions: 'x'.repeat(4_001),
       }),
     ).toThrow();
+    expect(
+      UpdateProjectChatProfileInputSchema.parse({
+        projectId,
+        expectedVersion: 0,
+        harnessMode: 'context',
+        responseDepth: 'standard',
+        contextScope: 'project',
+        localNotesVault: { id: 'a'.repeat(64), name: 'Research Notes' },
+        customInstructions: '',
+      }).localNotesVault,
+    ).toEqual({ id: 'a'.repeat(64), name: 'Research Notes' });
+    expect(() =>
+      UpdateProjectChatProfileInputSchema.parse({
+        projectId,
+        expectedVersion: 0,
+        harnessMode: 'context',
+        responseDepth: 'standard',
+        contextScope: 'project',
+        localNotesVault: { id: '../vault', name: 'Research Notes' },
+        customInstructions: '',
+      }),
+    ).toThrow();
   });
 });

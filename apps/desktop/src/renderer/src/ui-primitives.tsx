@@ -119,6 +119,10 @@ export function describeError(error: unknown) {
     chat_attempt_not_retryable: 'Only failed or interrupted Codex turns can be retried.',
     chat_profile_conflict:
       'This project agent profile changed since it was opened. GOSU reloaded the current version.',
+    local_notes_vault_not_selected:
+      'Choose a Local Notes folder before authorizing it for this project.',
+    local_notes_vault_changed:
+      'The selected Local Notes folder changed. Review it and authorize the current folder again.',
     action_not_found: 'This proposed project action no longer exists.',
     action_not_proposed: 'This project action was already handled.',
     invalid_chat_input: 'Check the chat message and model selection, then try again.',

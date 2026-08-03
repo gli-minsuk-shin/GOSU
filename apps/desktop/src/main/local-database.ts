@@ -344,6 +344,12 @@ export class LocalDatabase {
         harness_mode text not null check (harness_mode in ('context','planner','reviewer')),
         response_depth text not null check (response_depth in ('concise','standard','deep')),
         context_scope text not null check (context_scope in ('project','board','objective')),
+        local_notes_vault_id text check (
+          local_notes_vault_id is null or length(local_notes_vault_id) = 64
+        ),
+        local_notes_vault_name text check (
+          local_notes_vault_name is null or length(local_notes_vault_name) between 1 and 256
+        ),
         instruction_revision_id text not null
           references project_chat_instruction_revisions(id),
         created_at text not null,
@@ -459,6 +465,22 @@ export class LocalDatabase {
       ] as const;
       for (const [name, statement] of attemptMigrations) {
         if (!attemptColumns.some((column) => column.name === name)) database.exec(statement);
+      }
+      const profileColumns = database.pragma('table_info(project_chat_profiles)') as Array<{
+        name: string;
+      }>;
+      const profileMigrations = [
+        [
+          'local_notes_vault_id',
+          'alter table project_chat_profiles add column local_notes_vault_id text check (local_notes_vault_id is null or length(local_notes_vault_id) = 64)',
+        ],
+        [
+          'local_notes_vault_name',
+          'alter table project_chat_profiles add column local_notes_vault_name text check (local_notes_vault_name is null or length(local_notes_vault_name) between 1 and 256)',
+        ],
+      ] as const;
+      for (const [name, statement] of profileMigrations) {
+        if (!profileColumns.some((column) => column.name === name)) database.exec(statement);
       }
       database.exec(`
         create index if not exists project_chat_messages_by_attempt
@@ -664,6 +686,7 @@ export class LocalDatabase {
     const row = this.require()
       .prepare(
         `select p.project_id,p.version,p.harness_mode,p.response_depth,p.context_scope,
+                p.local_notes_vault_id,p.local_notes_vault_name,
                 p.instruction_revision_id,p.updated_at,r.content,r.content_sha256,r.created_at
          from project_chat_profiles p
          join project_chat_instruction_revisions r on r.id=p.instruction_revision_id
@@ -708,13 +731,16 @@ export class LocalDatabase {
             .prepare(
               `insert into project_chat_profiles(
                project_id,version,harness_mode,response_depth,context_scope,
+               local_notes_vault_id,local_notes_vault_name,
                instruction_revision_id,created_at,updated_at
-             ) values(?,?,?,?,?,?,?,?)
+             ) values(?,?,?,?,?,?,?,?,?,?)
              on conflict(project_id) do update set
                version=excluded.version,
                harness_mode=excluded.harness_mode,
                response_depth=excluded.response_depth,
                context_scope=excluded.context_scope,
+               local_notes_vault_id=excluded.local_notes_vault_id,
+               local_notes_vault_name=excluded.local_notes_vault_name,
                instruction_revision_id=excluded.instruction_revision_id,
                updated_at=excluded.updated_at
              where project_chat_profiles.version=?`,
@@ -725,6 +751,8 @@ export class LocalDatabase {
               command.harnessMode,
               command.responseDepth,
               command.contextScope,
+              command.localNotesVault?.id ?? null,
+              command.localNotesVault?.name ?? null,
               instructionRevisionId,
               now,
               now,
@@ -1059,6 +1087,8 @@ type ProjectChatProfileRow = {
   harness_mode: 'context' | 'planner' | 'reviewer';
   response_depth: 'concise' | 'standard' | 'deep';
   context_scope: 'project' | 'board' | 'objective';
+  local_notes_vault_id: string | null;
+  local_notes_vault_name: string | null;
   instruction_revision_id: string;
   updated_at: string;
   content: string;
@@ -1128,6 +1158,10 @@ function toChatProfile(row: ProjectChatProfileRow) {
     harnessMode: row.harness_mode,
     responseDepth: row.response_depth,
     contextScope: row.context_scope,
+    localNotesVault:
+      row.local_notes_vault_id && row.local_notes_vault_name
+        ? { id: row.local_notes_vault_id, name: row.local_notes_vault_name }
+        : null,
     customInstructions: row.content,
     instructionRevision: {
       id: row.instruction_revision_id,

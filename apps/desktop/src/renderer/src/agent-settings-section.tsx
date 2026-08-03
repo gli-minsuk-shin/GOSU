@@ -2,13 +2,16 @@ import { useEffect, useState } from 'react';
 
 import {
   PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH,
+  type LocalNotesVaultGrant,
   type ProjectChatContextScope,
   type ProjectChatHarnessMode,
   type ProjectChatProfile,
   type ProjectChatResponseDepth,
   type UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
+import type { VaultSelection } from '../../shared/vault-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
+import type { VaultRuntimeState } from './notes-view';
 
 const HARNESS_CHOICES: ReadonlyArray<{
   id: ProjectChatHarnessMode;
@@ -57,24 +60,30 @@ export function AgentSettingsSection({
   profile,
   loading,
   busy,
+  vault,
+  vaultState,
   onSave,
 }: {
   project: ProjectRecord | undefined;
   profile: ProjectChatProfile | undefined;
   loading: boolean;
   busy: boolean;
+  vault: VaultSelection | null;
+  vaultState: VaultRuntimeState;
   onSave: (input: UpdateProjectChatProfileInput) => Promise<boolean>;
 }) {
   const [harnessMode, setHarnessMode] = useState<ProjectChatHarnessMode>('context');
   const [responseDepth, setResponseDepth] = useState<ProjectChatResponseDepth>('standard');
   const [contextScope, setContextScope] = useState<ProjectChatContextScope>('project');
   const [customInstructions, setCustomInstructions] = useState('');
+  const [localNotesVault, setLocalNotesVault] = useState<LocalNotesVaultGrant | null>(null);
 
   useEffect(() => {
     setHarnessMode(profile?.harnessMode ?? 'context');
     setResponseDepth(profile?.responseDepth ?? 'standard');
     setContextScope(profile?.contextScope ?? 'project');
     setCustomInstructions(profile?.customInstructions ?? '');
+    setLocalNotesVault(profile?.localNotesVault ?? null);
   }, [profile?.projectId, profile?.version]);
 
   if (!project) {
@@ -107,6 +116,8 @@ export function AgentSettingsSection({
     harnessMode !== profile.harnessMode ||
     responseDepth !== profile.responseDepth ||
     contextScope !== profile.contextScope ||
+    localNotesVault?.id !== profile.localNotesVault?.id ||
+    localNotesVault?.name !== profile.localNotesVault?.name ||
     customInstructions !== profile.customInstructions;
 
   return (
@@ -121,6 +132,7 @@ export function AgentSettingsSection({
           harnessMode,
           responseDepth,
           contextScope,
+          localNotesVault,
           customInstructions,
         });
       }}
@@ -149,6 +161,87 @@ export function AgentSettingsSection({
               <span>{choice.description}</span>
             </button>
           ))}
+        </div>
+      </article>
+
+      <article className="settings-card">
+        <div className="settings-card-heading">
+          <span>LOCAL NOTES ACCESS</span>
+          <h2>Authorize research notes per project</h2>
+          <p>
+            The agent receives typed, read-only list and read tools. It never receives the Vault
+            root, a raw path, shell access, or another project's grant.
+          </p>
+        </div>
+        <div className="agent-notes-access">
+          <div>
+            <strong>
+              {vaultState === 'checking'
+                ? 'Checking Local Notes access…'
+                : vaultState === 'unavailable'
+                  ? 'Local Notes status unavailable'
+                  : vault
+                    ? vault.name
+                    : 'No Local Notes folder selected'}
+            </strong>
+            <span>
+              {vaultState === 'checking'
+                ? 'Waiting for the authoritative Main-process Vault state.'
+                : vaultState === 'unavailable'
+                  ? 'GOSU could not verify the selected folder. Chats with a saved grant are paused.'
+                  : vault
+                    ? `${vault.files.length.toLocaleString()} Markdown files available locally`
+                    : 'Open Local notes in the sidebar and choose a folder first.'}
+            </span>
+            {vaultState === 'ready' &&
+              profile.localNotesVault &&
+              profile.localNotesVault.id !== vault?.id && (
+                <small>
+                  The saved grant for {profile.localNotesVault.name} is inactive because the
+                  selected folder changed. GOSU will not silently transfer access.
+                </small>
+              )}
+          </div>
+          <div className="agent-notes-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={
+                vaultState !== 'ready' || !vault || busy || localNotesVault?.id === vault.id
+              }
+              onClick={() => vault && setLocalNotesVault({ id: vault.id, name: vault.name })}
+            >
+              {vault && localNotesVault?.id === vault.id
+                ? profile.localNotesVault?.id === vault.id
+                  ? 'Current folder authorized'
+                  : 'Selected — save to authorize'
+                : 'Authorize current folder'}
+            </button>
+            {localNotesVault && (
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={busy}
+                onClick={() => setLocalNotesVault(null)}
+              >
+                Remove access (save required)
+              </button>
+            )}
+            {profile.localNotesVault && !localNotesVault && (
+              <small>Removal pending — save the profile to revoke access.</small>
+            )}
+          </div>
+        </div>
+        <div className="agent-notes-disclosure">
+          <strong>What leaves this Mac</strong>
+          <span>
+            Listing notes sends their display titles and opaque IDs to the configured Codex/LLM.
+            Reading sends a bounded excerpt plus its content SHA-256, offset, and total character
+            count for that turn. The model may quote or summarize this data in its visible answer.
+            Visible chat is saved in this project's encrypted local database and is eligible for
+            Hosted Sync. GOSU does not automatically store or sync the raw tool payload, Vault
+            root/path, or source note file; it appends bounded source metadata to the answer.
+          </span>
         </div>
       </article>
 
@@ -226,11 +319,14 @@ export function AgentSettingsSection({
           </span>
         </label>
         <div className="agent-safety-boundary">
-          <strong>Fixed chat boundary</strong>
-          <span>No shell · no file access · no network · no tools · no subagents</span>
+          <strong>Fixed capability boundary</strong>
+          <span>
+            Project-bound read tools only · no shell · no arbitrary files · no network · no
+            subagents
+          </span>
           <small>
-            Planner actions remain proposals and require Apply. Reviewer actions are discarded by
-            the Main process even if a model returns one.
+            Board and Objective can be read live. Board changes remain proposals and require Apply.
+            Reviewer actions are discarded by the Main process even if a model returns one.
           </small>
         </div>
         <div className="form-actions">

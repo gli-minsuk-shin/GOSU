@@ -14,7 +14,11 @@ import {
   type UpdateProjectChatProfileInput,
 } from '../shared/project-chat-contracts';
 import { unwrapProjectChatIpcResult } from '../shared/project-chat-ipc-result';
-import type { ReadVaultAttachmentInput, VaultAttachment } from '../shared/vault-contracts';
+import type {
+  ReadVaultAttachmentInput,
+  VaultAttachment,
+  VaultSelection,
+} from '../shared/vault-contracts';
 import type {
   CreateProjectInput,
   CreateTaskInput,
@@ -112,7 +116,8 @@ const api = {
     },
   },
   vault: {
-    choose: () => ipcRenderer.invoke('gosu:vault:choose'),
+    current: () => ipcRenderer.invoke('gosu:vault:current') as Promise<VaultSelection | null>,
+    choose: () => ipcRenderer.invoke('gosu:vault:choose') as Promise<VaultSelection | null>,
     read: (relativePath: string) => ipcRenderer.invoke('gosu:vault:read', relativePath),
     readAttachment: (input: ReadVaultAttachmentInput) =>
       ipcRenderer.invoke('gosu:vault:read-attachment', input) as Promise<VaultAttachment>,

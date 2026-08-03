@@ -18,6 +18,15 @@ const harnessModeSchema = z.enum(PROJECT_CHAT_HARNESS_MODES);
 const responseDepthSchema = z.enum(PROJECT_CHAT_RESPONSE_DEPTHS);
 const contextScopeSchema = z.enum(PROJECT_CHAT_CONTEXT_SCOPES);
 
+export const LocalNotesVaultGrantSchema = z
+  .object({
+    id: sha256Schema,
+    name: z.string().trim().min(1).max(256),
+  })
+  .strict();
+
+export type LocalNotesVaultGrant = z.infer<typeof LocalNotesVaultGrantSchema>;
+
 export const ProjectChatInstructionRevisionSchema = z
   .object({
     id: uuidSchema,
@@ -37,6 +46,8 @@ export const ProjectChatProfileSchema = z
     harnessMode: harnessModeSchema,
     responseDepth: responseDepthSchema,
     contextScope: contextScopeSchema,
+    // Optional at the wire boundary so profiles created by older desktop builds remain readable.
+    localNotesVault: LocalNotesVaultGrantSchema.nullable().optional(),
     customInstructions: z.string().max(PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH),
     instructionRevision: ProjectChatInstructionRevisionSchema.nullable(),
     updatedAt: timestampSchema.nullable(),
@@ -76,6 +87,7 @@ export function defaultProjectChatProfile(projectId: string): ProjectChatProfile
     harnessMode: 'context',
     responseDepth: 'standard',
     contextScope: 'project',
+    localNotesVault: null,
     customInstructions: '',
     instructionRevision: null,
     updatedAt: null,
@@ -89,13 +101,15 @@ export const UpdateProjectChatProfileInputSchema = z
     harnessMode: harnessModeSchema,
     responseDepth: responseDepthSchema,
     contextScope: contextScopeSchema,
+    // Legacy clients omitted this field and therefore retain the safe no-access default.
+    localNotesVault: LocalNotesVaultGrantSchema.nullable().optional(),
     customInstructions: z.string().max(PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH),
   })
   .strict();
 
 export type UpdateProjectChatProfileInput = z.infer<typeof UpdateProjectChatProfileInputSchema>;
 
-export const ProjectChatPromptProvenanceSchema = z
+const ProjectChatPromptProvenanceV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     assemblyVersion: z.literal(1),
@@ -120,6 +134,21 @@ export const ProjectChatPromptProvenanceSchema = z
     historyTruncated: z.boolean(),
   })
   .strict();
+
+const ProjectChatPromptProvenanceV2Schema = ProjectChatPromptProvenanceV1Schema.omit({
+  assemblyVersion: true,
+})
+  .extend({
+    assemblyVersion: z.literal(2),
+    toolCatalogSha256: sha256Schema,
+    localNotesVaultId: sha256Schema.nullable(),
+  })
+  .strict();
+
+export const ProjectChatPromptProvenanceSchema = z.discriminatedUnion('assemblyVersion', [
+  ProjectChatPromptProvenanceV1Schema,
+  ProjectChatPromptProvenanceV2Schema,
+]);
 
 export type ProjectChatPromptProvenance = z.infer<typeof ProjectChatPromptProvenanceSchema>;
 

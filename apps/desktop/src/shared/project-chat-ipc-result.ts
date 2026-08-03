@@ -6,6 +6,8 @@ export const PROJECT_CHAT_IPC_ERROR_CODES = [
   'chat_attempt_not_found',
   'chat_attempt_not_retryable',
   'chat_profile_conflict',
+  'local_notes_vault_not_selected',
+  'local_notes_vault_changed',
   'action_not_found',
   'action_not_proposed',
   'invalid_chat_input',

@@ -45,6 +45,8 @@ describe('Board settings UI', () => {
         agentProject={undefined}
         agentProfile={undefined}
         agentProfileLoading={false}
+        vault={null}
+        vaultState="ready"
         onUpdateAgentProfile={vi.fn()}
         initialCategory="board"
       />,

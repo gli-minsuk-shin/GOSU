@@ -15,6 +15,8 @@ import {
   parseCodexThreadStartResponse,
   prepareIsolatedCodexHome,
   resolveUnpackedAsarPath,
+  type CodexDynamicToolHandler,
+  type CodexDynamicToolSpec,
 } from '../src/main/codex-app-server';
 import { toModelCatalog } from '../src/main/model-catalog';
 
@@ -332,7 +334,7 @@ describe('Codex App Server process boundary', () => {
         },
         web_search: 'disabled',
       },
-      baseInstructions: expect.stringContaining('text-only research project assistant'),
+      baseInstructions: expect.stringContaining('explicitly declared read-only GOSU dynamic tools'),
       ephemeral: true,
       environments: [],
       dynamicTools: [],
@@ -362,6 +364,728 @@ describe('Codex App Server process boundary', () => {
       sandboxPolicy: { type: 'readOnly', networkAccess: false },
       outputSchema: { type: 'object' },
     });
+  });
+
+  it('routes only declared dynamic tools to the handler registered for that thread', async () => {
+    const dynamicTools: readonly CodexDynamicToolSpec[] = [
+      {
+        type: 'namespace',
+        name: 'gosu_project',
+        description: 'Read-only project context',
+        tools: [
+          {
+            type: 'function',
+            name: 'read_note',
+            description: 'Read one explicitly connected project note',
+            inputSchema: {
+              type: 'object',
+              properties: { path: { type: 'string' } },
+              required: ['path'],
+              additionalProperties: false,
+            },
+          },
+        ],
+      },
+    ];
+    expect(
+      buildCodexThreadParameters({
+        cwd: '/isolated/project',
+        modelId: null,
+        dynamicTools,
+      }).dynamicTools,
+    ).toEqual(dynamicTools);
+
+    const deliveryOutcomes: Array<Promise<'delivered' | 'discarded' | 'uncertain'>> = [];
+    const handler = vi.fn(async (_call, delivery) => {
+      deliveryOutcomes.push(delivery.outcome);
+      return {
+        contentItems: [{ type: 'inputText' as const, text: '{"content":"fixture"}' }],
+        success: true,
+      };
+    });
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const request = vi.fn(async (method: string) => {
+      if (method === 'thread/start') return { thread: { id: 'thread-tools' } };
+      if (method === 'mcpServerStatus/list') return { data: [] };
+      throw new Error('unexpected_request');
+    });
+    const internal = server as unknown as {
+      request: typeof request;
+      process: unknown;
+      handleLine: (child: unknown, line: string) => void;
+    };
+    internal.request = request;
+    await server.startThread({
+      cwd: '/isolated/project',
+      modelId: null,
+      dynamicTools,
+      dynamicToolHandler: handler,
+    });
+
+    const writes: string[] = [];
+    const writeCallbacks: Array<(error?: Error | null) => void> = [];
+    const child = {
+      stdin: {
+        write(payload: string, callback?: (error?: Error | null) => void) {
+          writes.push(payload);
+          if (callback) writeCallbacks.push(callback);
+          return true;
+        },
+      },
+    };
+    internal.process = child;
+    internal.handleLine(
+      child,
+      JSON.stringify({
+        id: 91,
+        method: 'item/tool/call',
+        params: {
+          threadId: 'thread-tools',
+          turnId: 'turn-tools',
+          callId: 'call-tools',
+          namespace: 'gosu_project',
+          tool: 'read_note',
+          arguments: { path: 'notes/result.md' },
+        },
+      }),
+    );
+
+    await vi.waitFor(() => expect(writes).toHaveLength(1));
+    expect(handler).toHaveBeenCalledWith(
+      {
+        threadId: 'thread-tools',
+        turnId: 'turn-tools',
+        callId: 'call-tools',
+        namespace: 'gosu_project',
+        tool: 'read_note',
+        arguments: { path: 'notes/result.md' },
+      },
+      expect.objectContaining({ outcome: expect.any(Promise) }),
+    );
+    expect(JSON.parse(writes[0]!)).toEqual({
+      id: 91,
+      result: {
+        contentItems: [{ type: 'inputText', text: '{"content":"fixture"}' }],
+        success: true,
+      },
+    });
+    let firstOutcome: string | undefined;
+    void deliveryOutcomes[0]!.then((outcome) => {
+      firstOutcome = outcome;
+    });
+    await Promise.resolve();
+    expect(firstOutcome).toBeUndefined();
+    writeCallbacks[0]!();
+    await expect(deliveryOutcomes[0]).resolves.toBe('delivered');
+
+    internal.handleLine(
+      child,
+      JSON.stringify({
+        id: 92,
+        method: 'item/tool/call',
+        params: {
+          threadId: 'thread-tools',
+          turnId: 'turn-tools',
+          callId: 'call-write-error',
+          namespace: 'gosu_project',
+          tool: 'read_note',
+          arguments: { path: 'notes/error.md' },
+        },
+      }),
+    );
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    writeCallbacks[1]!(new Error('asynchronous_write_failure'));
+    await expect(deliveryOutcomes[1]).resolves.toBe('uncertain');
+
+    internal.handleLine(
+      child,
+      JSON.stringify({
+        id: 93,
+        method: 'item/tool/call',
+        params: {
+          threadId: 'thread-tools',
+          turnId: 'turn-tools',
+          callId: 'call-revoked-during-write',
+          namespace: 'gosu_project',
+          tool: 'read_note',
+          arguments: { path: 'notes/unconfirmed.md' },
+        },
+      }),
+    );
+    await vi.waitFor(() => expect(writes).toHaveLength(3));
+    server.revokeDynamicTools('thread-tools');
+    await expect(deliveryOutcomes[2]).resolves.toBe('uncertain');
+    writeCallbacks[2]!();
+    await expect(deliveryOutcomes[2]).resolves.toBe('uncertain');
+  });
+
+  it('binds a dynamic-tool registration to the first turn and rejects another turn', async () => {
+    const dynamicTools: readonly CodexDynamicToolSpec[] = [
+      {
+        type: 'function',
+        name: 'read_board',
+        description: 'Read the current project board',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    ];
+    const handler = vi.fn(async () => ({
+      contentItems: [{ type: 'inputText' as const, text: '{}' }],
+      success: true,
+    }));
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const request = vi.fn(async (method: string) => {
+      if (method === 'thread/start') return { thread: { id: 'thread-bound' } };
+      if (method === 'mcpServerStatus/list') return { data: [] };
+      throw new Error('unexpected_request');
+    });
+    const internal = server as unknown as {
+      request: typeof request;
+      process: unknown;
+      handleLine: (child: unknown, line: string) => void;
+    };
+    internal.request = request;
+    await server.startThread({
+      cwd: '/isolated/project',
+      modelId: null,
+      dynamicTools,
+      dynamicToolHandler: handler,
+    });
+
+    const writes: string[] = [];
+    const child = {
+      stdin: {
+        write(payload: string, callback?: (error?: Error | null) => void) {
+          writes.push(payload);
+          callback?.();
+          return true;
+        },
+      },
+    };
+    internal.process = child;
+    const send = (id: number, turnId: string, callId: string) =>
+      internal.handleLine(
+        child,
+        JSON.stringify({
+          id,
+          method: 'item/tool/call',
+          params: {
+            threadId: 'thread-bound',
+            turnId,
+            callId,
+            tool: 'read_board',
+            arguments: {},
+          },
+        }),
+      );
+
+    send(92, 'turn-first', 'call-first');
+    send(93, 'turn-other', 'call-other');
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+
+    const responses = new Map(
+      writes.map((payload) => {
+        const response = JSON.parse(payload) as { id: number };
+        return [response.id, response] as const;
+      }),
+    );
+    expect(responses.get(92)).toEqual({
+      id: 92,
+      result: {
+        contentItems: [{ type: 'inputText', text: '{}' }],
+        success: true,
+      },
+    });
+    expect(responses.get(93)).toMatchObject({
+      id: 93,
+      error: { code: -32602, message: 'Invalid GOSU dynamic tool call.' },
+    });
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-bound', turnId: 'turn-first' }),
+      expect.objectContaining({ outcome: expect.any(Promise) }),
+    );
+  });
+
+  it.each([
+    { name: 'accepts', returnedTurnId: 'turn-early', rejects: false },
+    { name: 'rejects', returnedTurnId: 'turn-different', rejects: true },
+  ])(
+    '$name an early dynamic-tool call when turn/start returns its actual turn ID',
+    async ({ returnedTurnId, rejects }) => {
+      const dynamicTools: readonly CodexDynamicToolSpec[] = [
+        {
+          type: 'function',
+          name: 'read_objective',
+          description: 'Read the current project objective',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        },
+      ];
+      const handler = vi.fn(async () => ({
+        contentItems: [{ type: 'inputText' as const, text: '{}' }],
+        success: true,
+      }));
+      const server = new CodexAppServer();
+      vi.spyOn(server, 'start').mockResolvedValue();
+      vi.spyOn(server, 'listModelCatalog').mockResolvedValue(
+        toModelCatalog(
+          [
+            {
+              id: 'fixture-model',
+              model: 'fixture-model',
+              displayName: 'Fixture Model',
+              hidden: false,
+              isDefault: true,
+            },
+          ],
+          '2026-08-04T00:00:00.000Z',
+        ),
+      );
+
+      let deliverEarlyCall: () => void = () => undefined;
+      const request = vi.fn(async (method: string) => {
+        if (method === 'thread/start') return { thread: { id: 'thread-early' } };
+        if (method === 'mcpServerStatus/list') return { data: [] };
+        if (method === 'turn/start') {
+          deliverEarlyCall();
+          return { turn: { id: returnedTurnId } };
+        }
+        throw new Error('unexpected_request');
+      });
+      const internal = server as unknown as {
+        request: typeof request;
+        process: unknown;
+        handleLine: (child: unknown, line: string) => void;
+      };
+      internal.request = request;
+      await server.startThread({
+        cwd: '/isolated/project',
+        modelId: null,
+        dynamicTools,
+        dynamicToolHandler: handler,
+      });
+
+      const writes: string[] = [];
+      const child = {
+        stdin: {
+          write(payload: string, callback?: (error?: Error | null) => void) {
+            writes.push(payload);
+            callback?.();
+            return true;
+          },
+        },
+      };
+      internal.process = child;
+      deliverEarlyCall = () =>
+        internal.handleLine(
+          child,
+          JSON.stringify({
+            id: 94,
+            method: 'item/tool/call',
+            params: {
+              threadId: 'thread-early',
+              turnId: 'turn-early',
+              callId: 'call-early',
+              namespace: null,
+              tool: 'read_objective',
+              arguments: {},
+            },
+          }),
+        );
+
+      const turn = server.runTurn({
+        threadId: 'thread-early',
+        prompt: 'Read the objective',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        cwd: '/isolated/project',
+      });
+      if (rejects) {
+        await expect(turn).rejects.toThrow('codex_dynamic_tool_turn_mismatch');
+      } else {
+        await expect(turn).resolves.toMatchObject({ turnId: 'turn-early' });
+      }
+      await vi.waitFor(() => expect(writes).toHaveLength(1));
+      expect(handler).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('fails closed for undeclared, malformed, duplicate, and invalid-result dynamic calls', async () => {
+    const dynamicTools: readonly CodexDynamicToolSpec[] = [
+      {
+        type: 'function',
+        name: 'read_board',
+        description: 'Read the current project board',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    ];
+    let invalidResultDelivery: Promise<'delivered' | 'discarded' | 'uncertain'> | undefined;
+    const handler = vi.fn(async (_call, delivery) => {
+      invalidResultDelivery = delivery.outcome;
+      return {
+        contentItems: [{ type: 'inputImage' as const, imageUrl: 'https://invalid.test/a.png' }],
+        success: true,
+      };
+    });
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const request = vi.fn(async (method: string) => {
+      if (method === 'thread/start') return { thread: { id: 'thread-strict' } };
+      if (method === 'mcpServerStatus/list') return { data: [] };
+      throw new Error('unexpected_request');
+    });
+    const internal = server as unknown as {
+      request: typeof request;
+      process: unknown;
+      handleLine: (child: unknown, line: string) => void;
+    };
+    internal.request = request;
+    await server.startThread({
+      cwd: '/isolated/project',
+      modelId: null,
+      dynamicTools,
+      dynamicToolHandler: handler as never,
+    });
+
+    const writes: string[] = [];
+    const child = {
+      stdin: {
+        write(payload: string, callback?: (error?: Error | null) => void) {
+          writes.push(payload);
+          callback?.();
+          return true;
+        },
+      },
+    };
+    internal.process = child;
+    const send = (id: number, params: Record<string, unknown>) =>
+      internal.handleLine(child, JSON.stringify({ id, method: 'item/tool/call', params }));
+    const base = {
+      threadId: 'thread-strict',
+      turnId: 'turn-strict',
+      tool: 'read_board',
+      arguments: {},
+    };
+    send(101, { ...base, callId: 'unknown-route', tool: 'read_note' });
+    send(102, { ...base, callId: 'extra-field', unexpected: true });
+    send(103, { ...base, callId: 'invalid-result' });
+    await vi.waitFor(() => expect(writes).toHaveLength(3));
+    send(104, { ...base, callId: 'invalid-result' });
+    await vi.waitFor(() => expect(writes).toHaveLength(4));
+
+    expect(JSON.parse(writes[0]!)).toMatchObject({ id: 101, error: { code: -32602 } });
+    expect(JSON.parse(writes[1]!)).toMatchObject({ id: 102, error: { code: -32602 } });
+    expect(JSON.parse(writes[2]!)).toEqual({
+      id: 103,
+      result: {
+        contentItems: [
+          { type: 'inputText', text: 'GOSU dynamic tool returned an invalid result.' },
+        ],
+        success: false,
+      },
+    });
+    expect(JSON.parse(writes[3]!)).toEqual({
+      id: 104,
+      result: {
+        contentItems: [{ type: 'inputText', text: 'GOSU dynamic tool limit exceeded.' }],
+        success: false,
+      },
+    });
+    expect(handler).toHaveBeenCalledOnce();
+    await expect(invalidResultDelivery).resolves.toBe('discarded');
+  });
+
+  it('discards a timed-out dynamic tool delivery and ignores its late result', async () => {
+    const dynamicTools: readonly CodexDynamicToolSpec[] = [
+      {
+        type: 'function',
+        name: 'read_note',
+        description: 'Read one project note',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    ];
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const request = vi.fn(async (method: string) => {
+      if (method === 'thread/start') return { thread: { id: 'thread-timeout' } };
+      if (method === 'mcpServerStatus/list') return { data: [] };
+      throw new Error('unexpected_request');
+    });
+    const internal = server as unknown as {
+      request: typeof request;
+      process: unknown;
+      handleLine: (child: unknown, line: string) => void;
+    };
+    internal.request = request;
+    let resolveLateResult!: (result: {
+      contentItems: Array<{ type: 'inputText'; text: string }>;
+      success: boolean;
+    }) => void;
+    let deliveryOutcome: Promise<'delivered' | 'discarded' | 'uncertain'> | undefined;
+    await server.startThread({
+      cwd: '/isolated/project',
+      modelId: null,
+      dynamicTools,
+      dynamicToolHandler: (_call, delivery) => {
+        deliveryOutcome = delivery.outcome;
+        return new Promise((resolve) => {
+          resolveLateResult = resolve;
+        });
+      },
+    });
+
+    const writes: string[] = [];
+    const child = {
+      stdin: {
+        write(payload: string, callback?: (error?: Error | null) => void) {
+          writes.push(payload);
+          callback?.();
+          return true;
+        },
+      },
+    };
+    internal.process = child;
+    vi.useFakeTimers();
+    try {
+      internal.handleLine(
+        child,
+        JSON.stringify({
+          id: 111,
+          method: 'item/tool/call',
+          params: {
+            threadId: 'thread-timeout',
+            turnId: 'turn-timeout',
+            callId: 'call-timeout',
+            namespace: null,
+            tool: 'read_note',
+            arguments: {},
+          },
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(writes).toHaveLength(1);
+      expect(JSON.parse(writes[0]!)).toEqual({
+        id: 111,
+        result: {
+          contentItems: [{ type: 'inputText', text: 'GOSU dynamic tool failed.' }],
+          success: false,
+        },
+      });
+      await expect(deliveryOutcome).resolves.toBe('discarded');
+      resolveLateResult({
+        contentItems: [{ type: 'inputText', text: '{"late":true}' }],
+        success: true,
+      });
+      await Promise.resolve();
+      expect(writes).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects a duplicate provider thread ID without replacing or unsubscribing its owner', async () => {
+    const dynamicTools: readonly CodexDynamicToolSpec[] = [
+      {
+        type: 'function',
+        name: 'read_board',
+        description: 'Read the current board',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    ];
+    const firstHandler = vi.fn(async () => ({
+      contentItems: [{ type: 'inputText' as const, text: '{"owner":"first"}' }],
+      success: true,
+    }));
+    const secondHandler = vi.fn(async () => ({
+      contentItems: [{ type: 'inputText' as const, text: '{"owner":"second"}' }],
+      success: true,
+    }));
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    let releaseInventory!: () => void;
+    let inventoryCalls = 0;
+    const request = vi.fn(async (method: string) => {
+      if (method === 'thread/start') return { thread: { id: 'thread-collision' } };
+      if (method === 'mcpServerStatus/list') {
+        inventoryCalls += 1;
+        await new Promise<void>((resolve) => {
+          releaseInventory = resolve;
+        });
+        return { data: [] };
+      }
+      if (method === 'thread/unsubscribe') return {};
+      throw new Error('unexpected_request');
+    });
+    const internal = server as unknown as {
+      request: typeof request;
+      dynamicToolRegistrations: Map<string, { handler: CodexDynamicToolHandler }>;
+    };
+    internal.request = request;
+
+    const firstStart = server.startThread({
+      cwd: '/isolated/first',
+      modelId: null,
+      dynamicTools,
+      dynamicToolHandler: firstHandler,
+    });
+    await vi.waitFor(() => expect(inventoryCalls).toBe(1));
+    await expect(
+      server.startThread({
+        cwd: '/isolated/second',
+        modelId: null,
+        dynamicTools,
+        dynamicToolHandler: secondHandler,
+      }),
+    ).rejects.toThrow('codex_thread_id_collision');
+    expect(inventoryCalls).toBe(1);
+    releaseInventory();
+    await expect(firstStart).resolves.toEqual({ threadId: 'thread-collision' });
+
+    expect(internal.dynamicToolRegistrations.get('thread-collision')?.handler).toBe(firstHandler);
+    expect(request).not.toHaveBeenCalledWith('thread/unsubscribe', {
+      threadId: 'thread-collision',
+    });
+  });
+
+  it('revokes a slow handler before it can return note text after terminal sealing', async () => {
+    const dynamicTools: readonly CodexDynamicToolSpec[] = [
+      {
+        type: 'function',
+        name: 'read_note',
+        description: 'Read one note',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    ];
+    let resolveResult!: (result: {
+      contentItems: Array<{ type: 'inputText'; text: string }>;
+      success: boolean;
+    }) => void;
+    let outcome: Promise<'delivered' | 'discarded' | 'uncertain'> | undefined;
+    const handler: CodexDynamicToolHandler = (_call, delivery) => {
+      outcome = delivery.outcome;
+      return new Promise((resolve) => {
+        resolveResult = resolve;
+      });
+    };
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const request = vi.fn(async (method: string) => {
+      if (method === 'thread/start') return { thread: { id: 'thread-revoke' } };
+      if (method === 'mcpServerStatus/list') return { data: [] };
+      throw new Error('unexpected_request');
+    });
+    const internal = server as unknown as {
+      request: typeof request;
+      process: unknown;
+      handleLine: (child: unknown, line: string) => void;
+    };
+    internal.request = request;
+    await server.startThread({
+      cwd: '/isolated/project',
+      modelId: null,
+      dynamicTools,
+      dynamicToolHandler: handler,
+    });
+    const writes: string[] = [];
+    const child = {
+      stdin: {
+        write(payload: string, callback?: (error?: Error | null) => void) {
+          writes.push(payload);
+          callback?.();
+          return true;
+        },
+      },
+    };
+    internal.process = child;
+    internal.handleLine(
+      child,
+      JSON.stringify({
+        id: 112,
+        method: 'item/tool/call',
+        params: {
+          threadId: 'thread-revoke',
+          turnId: 'turn-revoke',
+          callId: 'call-revoke',
+          namespace: null,
+          tool: 'read_note',
+          arguments: {},
+        },
+      }),
+    );
+    await vi.waitFor(() => expect(outcome).toBeDefined());
+
+    server.revokeDynamicTools('thread-revoke');
+    await expect(outcome).resolves.toBe('discarded');
+    resolveResult({
+      contentItems: [{ type: 'inputText', text: 'PRIVATE_LATE_NOTE_TEXT' }],
+      success: true,
+    });
+    await vi.waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).not.toContain('PRIVATE_LATE_NOTE_TEXT');
+    expect(JSON.parse(writes[0]!)).toMatchObject({ id: 112, error: { code: -32000 } });
+  });
+
+  it('requires paired tool specs and handlers and removes registrations on release or disconnect', async () => {
+    const dynamicTools: readonly CodexDynamicToolSpec[] = [
+      {
+        type: 'function',
+        name: 'read_objective',
+        description: 'Read the current objective',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    ];
+    const handler = vi.fn(async () => ({
+      contentItems: [{ type: 'inputText' as const, text: '{}' }],
+      success: true,
+    }));
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    let nextThread = 1;
+    const request = vi.fn(async (method: string) => {
+      if (method === 'thread/start') return { thread: { id: `thread-clean-${nextThread++}` } };
+      if (method === 'mcpServerStatus/list') return { data: [] };
+      if (method === 'thread/unsubscribe') return {};
+      throw new Error('unexpected_request');
+    });
+    const internal = server as unknown as {
+      request: typeof request;
+      process: unknown;
+      dynamicToolRegistrations: Map<string, unknown>;
+    };
+    internal.request = request;
+
+    await expect(
+      server.startThread({ cwd: '/isolated/project', modelId: null, dynamicTools }),
+    ).rejects.toThrow('codex_dynamic_tool_handler_required');
+    await expect(
+      server.startThread({
+        cwd: '/isolated/project',
+        modelId: null,
+        dynamicToolHandler: handler,
+      }),
+    ).rejects.toThrow('codex_dynamic_tool_specs_required');
+
+    const first = await server.startThread({
+      cwd: '/isolated/project',
+      modelId: null,
+      dynamicTools,
+      dynamicToolHandler: handler,
+    });
+    expect(internal.dynamicToolRegistrations.has(first.threadId)).toBe(true);
+    await server.releaseThread(first.threadId);
+    expect(internal.dynamicToolRegistrations.has(first.threadId)).toBe(false);
+
+    const second = await server.startThread({
+      cwd: '/isolated/project',
+      modelId: null,
+      dynamicTools,
+      dynamicToolHandler: handler,
+    });
+    expect(internal.dynamicToolRegistrations.has(second.threadId)).toBe(true);
+    internal.process = { exitCode: 0, killed: false };
+    server.stop();
+    expect(internal.dynamicToolRegistrations.size).toBe(0);
   });
 
   it('disables external tool feature families for the entire isolated App Server process', () => {

@@ -30,6 +30,9 @@ type NavigationApi = {
   app: {
     onOpenSettings: (listener: () => void) => () => void;
   };
+  vault: {
+    current: () => Promise<unknown>;
+  };
 };
 
 let api: NavigationApi;
@@ -75,5 +78,13 @@ describe('preload app navigation bridge', () => {
     expect(() => api.app.onOpenSettings('not-a-listener' as unknown as () => void)).toThrow(
       'invalid_open_settings_listener',
     );
+  });
+
+  it('exposes the authoritative current Vault through a fixed IPC channel', async () => {
+    const selection = { id: 'a'.repeat(64), name: 'Notes', root: '/fixture', files: [] };
+    electron.ipcRenderer.invoke.mockResolvedValueOnce(selection);
+
+    await expect(api.vault.current()).resolves.toEqual(selection);
+    expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith('gosu:vault:current');
   });
 });

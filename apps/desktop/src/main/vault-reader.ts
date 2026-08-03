@@ -37,6 +37,8 @@ type WalkState = {
   stopped: boolean;
 };
 
+type VaultRootIdentity = Readonly<{ dev: number; ino: number }>;
+
 function boundedLimits(overrides: Partial<VaultLimits>): Readonly<VaultLimits> {
   return Object.freeze(
     Object.fromEntries(
@@ -65,20 +67,34 @@ export class VaultReader {
   private constructor(
     readonly root: string,
     private readonly limits: Readonly<VaultLimits>,
+    private readonly rootIdentity: VaultRootIdentity,
   ) {}
 
   static async open(root: string, limitOverrides: Partial<VaultLimits> = {}) {
-    return new VaultReader(await realpath(root), boundedLimits(limitOverrides));
+    const canonicalRoot = await realpath(root);
+    const metadata = await stat(canonicalRoot);
+    if (!metadata.isDirectory()) throw new Error('vault_directory_required');
+    return new VaultReader(canonicalRoot, boundedLimits(limitOverrides), {
+      dev: metadata.dev,
+      ino: metadata.ino,
+    });
+  }
+
+  identityKey() {
+    return `${this.rootIdentity.dev}:${this.rootIdentity.ino}`;
   }
 
   async listMarkdown() {
+    await this.assertRootIdentity();
     const results: string[] = [];
     const state: WalkState = { directories: 0, entries: 0, stopped: false };
     await this.walk(this.root, results, state, 0);
+    await this.assertRootIdentity();
     return results.sort();
   }
 
   async readMarkdown(relativePath: string) {
+    await this.assertRootIdentity();
     if (extname(relativePath).toLowerCase() !== '.md') throw new Error('markdown_only');
 
     const requestedTarget = resolve(this.root, relativePath);
@@ -86,16 +102,19 @@ export class VaultReader {
     const path = assertInsideVault(this.root, target);
     if (target !== requestedTarget) throw new Error('vault_symlink_not_allowed');
 
+    const expectedMetadata = await stat(target);
     const bytes = await this.readBoundedFile(
       target,
       this.limits.maxMarkdownBytes,
       'markdown_file_required',
       'markdown_too_large',
+      expectedMetadata,
     );
     return { path, content: bytes.toString('utf8') };
   }
 
   async readAttachment(notePath: string, rawSource: string): Promise<VaultAttachment> {
+    await this.assertRootIdentity();
     if (extname(notePath).toLowerCase() !== '.md') throw new Error('markdown_only');
     const noteTarget = resolve(this.root, notePath);
     const realNoteTarget = await realpath(noteTarget);
@@ -130,11 +149,19 @@ export class VaultReader {
     limit: number,
     fileError: string,
     sizeError: string,
+    expectedMetadata?: Readonly<{ dev: number | bigint; ino: number | bigint }>,
   ) {
     const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const metadata = await handle.stat();
       if (!metadata.isFile()) throw new Error(fileError);
+      if (
+        expectedMetadata &&
+        (metadata.dev !== expectedMetadata.dev || metadata.ino !== expectedMetadata.ino)
+      ) {
+        throw new Error('vault_file_changed_during_open');
+      }
+      await this.assertOpenedTarget(target, metadata);
       if (metadata.size > limit) throw new Error(sizeError);
 
       const bytes = Buffer.allocUnsafe(limit + 1);
@@ -145,9 +172,51 @@ export class VaultReader {
         total += bytesRead;
       }
       if (total > limit) throw new Error(sizeError);
+      await this.assertOpenedTarget(target, metadata);
       return bytes.subarray(0, total);
     } finally {
       await handle.close();
+    }
+  }
+
+  private async assertOpenedTarget(
+    target: string,
+    openedMetadata: Readonly<{ dev: number | bigint; ino: number | bigint }>,
+  ) {
+    await this.assertRootIdentity();
+    try {
+      const canonicalTarget = await realpath(target);
+      assertInsideVault(this.root, canonicalTarget);
+      if (canonicalTarget !== target) throw new Error('vault_file_changed_during_open');
+      const currentMetadata = await stat(canonicalTarget);
+      if (
+        !currentMetadata.isFile() ||
+        currentMetadata.dev !== openedMetadata.dev ||
+        currentMetadata.ino !== openedMetadata.ino
+      ) {
+        throw new Error('vault_file_changed_during_open');
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'vault_root_changed') throw error;
+      throw new Error('vault_file_changed_during_open', { cause: error });
+    }
+  }
+
+  private async assertRootIdentity() {
+    try {
+      const canonicalRoot = await realpath(this.root);
+      const metadata = await stat(canonicalRoot);
+      if (
+        canonicalRoot !== this.root ||
+        !metadata.isDirectory() ||
+        metadata.dev !== this.rootIdentity.dev ||
+        metadata.ino !== this.rootIdentity.ino
+      ) {
+        throw new Error('vault_root_changed');
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'vault_root_changed') throw error;
+      throw new Error('vault_root_changed', { cause: error });
     }
   }
 
