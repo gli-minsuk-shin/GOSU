@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import type {
+  CodexCollaborationModeDescriptor,
   ProjectChatProfile,
   UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
@@ -61,6 +62,7 @@ export function SettingsView({
   agentProject,
   agentProfile,
   agentProfileLoading,
+  collaborationModes,
   vault,
   vaultState,
   onUpdateAgentProfile,
@@ -79,6 +81,7 @@ export function SettingsView({
   agentProject: ProjectRecord | undefined;
   agentProfile: ProjectChatProfile | undefined;
   agentProfileLoading: boolean;
+  collaborationModes: readonly CodexCollaborationModeDescriptor[];
   vault: VaultSelection | null;
   vaultState: VaultRuntimeState;
   onUpdateAgentProfile: (input: UpdateProjectChatProfileInput) => Promise<boolean>;
@@ -131,7 +134,7 @@ export function SettingsView({
         >
           <i aria-hidden="true">✦</i>
           <strong>AI Agent</strong>
-          <span>Harness and project prompt</span>
+          <span>Native Codex mode and project prompt</span>
         </button>
       </nav>
 
@@ -247,6 +250,7 @@ export function SettingsView({
               busyAction !== null ||
               Boolean(agentProject && chatBusyProjectIds.has(agentProject.id))
             }
+            collaborationModes={collaborationModes}
             vault={vault}
             vaultState={vaultState}
             onSave={onUpdateAgentProfile}

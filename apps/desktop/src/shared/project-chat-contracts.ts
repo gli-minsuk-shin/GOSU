@@ -9,6 +9,9 @@ export const PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH = 4_000;
 export const PROJECT_CHAT_HARNESS_MODES = ['context', 'planner', 'reviewer'] as const;
 export const PROJECT_CHAT_RESPONSE_DEPTHS = ['concise', 'standard', 'deep'] as const;
 export const PROJECT_CHAT_CONTEXT_SCOPES = ['project', 'board', 'objective'] as const;
+export const PROJECT_CHAT_PERSONALITIES = ['auto', 'none', 'friendly', 'pragmatic'] as const;
+export const PROJECT_CHAT_RESPONSE_VERBOSITIES = ['auto', 'low', 'medium', 'high'] as const;
+export const PROJECT_CHAT_NATIVE_EXECUTION_KINDS = ['default', 'plan', 'legacy-reviewer'] as const;
 
 const timestampSchema = z.string().datetime({ offset: true });
 const uuidSchema = z.string().uuid();
@@ -17,6 +20,61 @@ const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
 const harnessModeSchema = z.enum(PROJECT_CHAT_HARNESS_MODES);
 const responseDepthSchema = z.enum(PROJECT_CHAT_RESPONSE_DEPTHS);
 const contextScopeSchema = z.enum(PROJECT_CHAT_CONTEXT_SCOPES);
+const personalitySchema = z.enum(PROJECT_CHAT_PERSONALITIES);
+const responseVerbositySchema = z.enum(PROJECT_CHAT_RESPONSE_VERBOSITIES);
+const nativeExecutionKindSchema = z.enum(PROJECT_CHAT_NATIVE_EXECUTION_KINDS);
+const opaqueCollaborationModeIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine((value) => value.trim().length > 0, 'Collaboration mode ID cannot be blank');
+
+export const CodexCollaborationModeDescriptorSchema = z
+  .object({
+    id: opaqueCollaborationModeIdSchema,
+    displayName: z.string().trim().min(1).max(256),
+    recommendedModelId: z.string().trim().min(1).max(256).nullable(),
+    recommendedReasoningOptionId: z.string().trim().min(1).max(128).nullable(),
+  })
+  .strict();
+
+export type CodexCollaborationModeDescriptor = z.infer<
+  typeof CodexCollaborationModeDescriptorSchema
+>;
+
+export const CodexCollaborationModeCatalogSchema = z
+  .object({
+    catalogVersion: z.string().trim().min(1).max(128),
+    modes: z.array(CodexCollaborationModeDescriptorSchema).max(64),
+  })
+  .strict()
+  .superRefine((catalog, context) => {
+    const seen = new Set<string>();
+    for (const [index, mode] of catalog.modes.entries()) {
+      if (seen.has(mode.id)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Collaboration mode IDs must be unique',
+          path: ['modes', index, 'id'],
+        });
+      }
+      seen.add(mode.id);
+    }
+  });
+
+export type CodexCollaborationModeCatalog = z.infer<typeof CodexCollaborationModeCatalogSchema>;
+
+export function legacyHarnessToCollaborationModeId(harnessMode: ProjectChatHarnessMode): string {
+  return harnessMode === 'planner' ? 'plan' : 'default';
+}
+
+export function legacyDepthToResponseVerbosity(
+  responseDepth: ProjectChatResponseDepth,
+): Exclude<ProjectChatResponseVerbosity, 'auto'> {
+  if (responseDepth === 'concise') return 'low';
+  if (responseDepth === 'deep') return 'high';
+  return 'medium';
+}
 
 export const LocalNotesVaultGrantSchema = z
   .object({
@@ -38,13 +96,17 @@ export const ProjectChatInstructionRevisionSchema = z
 
 export type ProjectChatInstructionRevision = z.infer<typeof ProjectChatInstructionRevisionSchema>;
 
-export const ProjectChatProfileSchema = z
+const ProjectChatProfileWireSchema = z
   .object({
     schemaVersion: z.literal(1),
     projectId: uuidSchema,
     version: z.number().int().nonnegative(),
     harnessMode: harnessModeSchema,
     responseDepth: responseDepthSchema,
+    // Optional at the wire boundary so v0.6 profiles can be upgraded without data loss.
+    collaborationModeId: opaqueCollaborationModeIdSchema.nullable().optional(),
+    personality: personalitySchema.optional(),
+    responseVerbosity: responseVerbositySchema.optional(),
     contextScope: contextScopeSchema,
     // Optional at the wire boundary so profiles created by older desktop builds remain readable.
     localNotesVault: LocalNotesVaultGrantSchema.nullable().optional(),
@@ -74,10 +136,24 @@ export const ProjectChatProfileSchema = z
     }
   });
 
+export const ProjectChatProfileSchema = ProjectChatProfileWireSchema.transform((profile) => ({
+  ...profile,
+  collaborationModeId:
+    profile.collaborationModeId === undefined
+      ? legacyHarnessToCollaborationModeId(profile.harnessMode)
+      : profile.collaborationModeId,
+  personality: profile.personality ?? 'auto',
+  responseVerbosity:
+    profile.responseVerbosity ?? legacyDepthToResponseVerbosity(profile.responseDepth),
+}));
+
 export type ProjectChatProfile = z.infer<typeof ProjectChatProfileSchema>;
 export type ProjectChatHarnessMode = z.infer<typeof harnessModeSchema>;
 export type ProjectChatResponseDepth = z.infer<typeof responseDepthSchema>;
 export type ProjectChatContextScope = z.infer<typeof contextScopeSchema>;
+export type ProjectChatPersonality = z.infer<typeof personalitySchema>;
+export type ProjectChatResponseVerbosity = z.infer<typeof responseVerbositySchema>;
+export type ProjectChatNativeExecutionKind = z.infer<typeof nativeExecutionKindSchema>;
 
 export function defaultProjectChatProfile(projectId: string): ProjectChatProfile {
   return ProjectChatProfileSchema.parse({
@@ -86,6 +162,9 @@ export function defaultProjectChatProfile(projectId: string): ProjectChatProfile
     version: 0,
     harnessMode: 'context',
     responseDepth: 'standard',
+    collaborationModeId: null,
+    personality: 'auto',
+    responseVerbosity: 'auto',
     contextScope: 'project',
     localNotesVault: null,
     customInstructions: '',
@@ -100,14 +179,28 @@ export const UpdateProjectChatProfileInputSchema = z
     expectedVersion: z.number().int().nonnegative(),
     harnessMode: harnessModeSchema,
     responseDepth: responseDepthSchema,
+    // Optional for compatibility with v0.6 renderer payloads. Parsing always resolves values.
+    collaborationModeId: opaqueCollaborationModeIdSchema.nullable().optional(),
+    personality: personalitySchema.optional(),
+    responseVerbosity: responseVerbositySchema.optional(),
     contextScope: contextScopeSchema,
     // Legacy clients omitted this field and therefore retain the safe no-access default.
     localNotesVault: LocalNotesVaultGrantSchema.nullable().optional(),
     customInstructions: z.string().max(PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH),
   })
-  .strict();
+  .strict()
+  .transform((profile) => ({
+    ...profile,
+    collaborationModeId:
+      profile.collaborationModeId === undefined
+        ? legacyHarnessToCollaborationModeId(profile.harnessMode)
+        : profile.collaborationModeId,
+    personality: profile.personality ?? 'auto',
+    responseVerbosity:
+      profile.responseVerbosity ?? legacyDepthToResponseVerbosity(profile.responseDepth),
+  }));
 
-export type UpdateProjectChatProfileInput = z.infer<typeof UpdateProjectChatProfileInputSchema>;
+export type UpdateProjectChatProfileInput = z.input<typeof UpdateProjectChatProfileInputSchema>;
 
 const ProjectChatPromptProvenanceV1Schema = z
   .object({
@@ -145,9 +238,25 @@ const ProjectChatPromptProvenanceV2Schema = ProjectChatPromptProvenanceV1Schema.
   })
   .strict();
 
+const ProjectChatPromptProvenanceV3Schema = ProjectChatPromptProvenanceV2Schema.omit({
+  assemblyVersion: true,
+})
+  .extend({
+    assemblyVersion: z.literal(3),
+    requestedLegacyHarnessMode: harnessModeSchema,
+    nativeCollaborationModeId: opaqueCollaborationModeIdSchema.nullable(),
+    nativeExecutionKind: nativeExecutionKindSchema,
+    nativeCollaborationCatalogSha256: sha256Schema,
+    nativePersonality: personalitySchema,
+    nativeResponseVerbosity: responseVerbositySchema,
+    effectiveReasoningOptionId: z.string().trim().min(1).max(128).nullable(),
+  })
+  .strict();
+
 export const ProjectChatPromptProvenanceSchema = z.discriminatedUnion('assemblyVersion', [
   ProjectChatPromptProvenanceV1Schema,
   ProjectChatPromptProvenanceV2Schema,
+  ProjectChatPromptProvenanceV3Schema,
 ]);
 
 export type ProjectChatPromptProvenance = z.infer<typeof ProjectChatPromptProvenanceSchema>;
@@ -244,6 +353,9 @@ export const ProjectChatAttemptSchema = z
     // Optional so durable attempts written before harness profiles remain readable.
     harnessMode: harnessModeSchema.optional(),
     responseDepth: responseDepthSchema.optional(),
+    collaborationModeId: opaqueCollaborationModeIdSchema.nullable().optional(),
+    personality: personalitySchema.optional(),
+    responseVerbosity: responseVerbositySchema.optional(),
     contextScope: contextScopeSchema.optional(),
     profileVersion: z.number().int().nonnegative().optional(),
     instructionRevisionId: uuidSchema.nullable().optional(),
@@ -350,6 +462,9 @@ export const SendProjectChatMessageInputSchema = z
     retryOfAttemptId: uuidSchema.optional(),
     harnessMode: harnessModeSchema.optional(),
     responseDepth: responseDepthSchema.optional(),
+    collaborationModeId: opaqueCollaborationModeIdSchema.nullable().optional(),
+    personality: personalitySchema.optional(),
+    responseVerbosity: responseVerbositySchema.optional(),
     contextScope: contextScopeSchema.optional(),
     profileVersion: z.number().int().nonnegative().optional(),
   })

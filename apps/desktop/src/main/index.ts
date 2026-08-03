@@ -227,7 +227,10 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   handle('gosu:codex:status', () => codex.status());
   handle('gosu:codex:list-models', async () => {
     const catalog = await codex.listModelCatalog();
-    return catalog.models;
+    return catalog.models.map((model) => ({
+      ...model,
+      supportsPersonality: model.metadata?.supportsPersonality === true,
+    }));
   });
   handle('gosu:codex:reconnect', async () => {
     let status = (await codex.status()) as { account?: unknown; unavailable?: boolean };
@@ -236,10 +239,17 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
       status = (await codex.status()) as { account?: unknown; unavailable?: boolean };
     }
     if (status.unavailable) throw new Error('codex_unavailable');
-    const catalog = await codex.listModelCatalog();
+    const [catalog, collaborationModeCatalog] = await Promise.all([
+      codex.listModelCatalog(),
+      codex.listCollaborationModeCatalog(),
+    ]);
     return {
       authenticated: status.account !== null && status.account !== undefined,
-      models: catalog.models,
+      models: catalog.models.map((model) => ({
+        ...model,
+        supportsPersonality: model.metadata?.supportsPersonality === true,
+      })),
+      collaborationModeCatalog,
     };
   });
   handle('gosu:codex:login-chatgpt', async () => {

@@ -2,10 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   defaultProjectChatProfile,
+  type CodexCollaborationModeDescriptor,
   type ProjectChatAction,
   type ProjectChatContextScope,
   type ProjectChatHarnessMode,
+  type ProjectChatPersonality,
   type ProjectChatResponseDepth,
+  type ProjectChatResponseVerbosity,
   type ProjectChatSnapshot,
 } from '../../shared/project-chat-contracts';
 import {
@@ -29,6 +32,9 @@ const QUICK_PROMPTS = [
 export type ProjectChatTurnControls = Readonly<{
   harnessMode: ProjectChatHarnessMode;
   responseDepth: ProjectChatResponseDepth;
+  collaborationModeId?: string | null;
+  personality: ProjectChatPersonality;
+  responseVerbosity: ProjectChatResponseVerbosity;
   contextScope: ProjectChatContextScope;
   profileVersion: number;
 }>;
@@ -45,11 +51,42 @@ const DEPTH_LABELS: Record<ProjectChatResponseDepth, string> = {
   deep: 'Deep',
 };
 
+const VERBOSITY_LABELS: Record<ProjectChatResponseVerbosity, string> = {
+  auto: 'Auto verbosity',
+  low: 'Low verbosity',
+  medium: 'Medium verbosity',
+  high: 'High verbosity',
+};
+
+const PERSONALITY_LABELS: Record<ProjectChatPersonality, string> = {
+  auto: 'Auto personality',
+  none: 'No personality',
+  friendly: 'Friendly',
+  pragmatic: 'Pragmatic',
+};
+
 const CONTEXT_LABELS: Record<ProjectChatContextScope, string> = {
   project: 'Board + Objective',
   board: 'Board only',
   objective: 'Objective only',
 };
+
+export function resolveEffectiveCodexModel(
+  models: readonly CodexModel[],
+  collaborationModes: readonly CodexCollaborationModeDescriptor[],
+  selectedModelId: string | null,
+  collaborationModeId: string | null,
+) {
+  if (selectedModelId !== null) {
+    return models.find((model) => model.modelId === selectedModelId);
+  }
+  const recommendedModelId = collaborationModeId
+    ? collaborationModes.find((mode) => mode.id === collaborationModeId)?.recommendedModelId
+    : null;
+  return recommendedModelId
+    ? models.find((model) => model.modelId === recommendedModelId)
+    : models.find((model) => model.isDefault);
+}
 
 export function ProjectChatView({
   project,
@@ -58,6 +95,7 @@ export function ProjectChatView({
   loading,
   inFlight,
   models,
+  collaborationModes = [],
   selectedModel,
   selectedReasoning,
   applyingActionId,
@@ -78,13 +116,14 @@ export function ProjectChatView({
   loading: boolean;
   inFlight: boolean;
   models: readonly CodexModel[];
-  selectedModel: string;
-  selectedReasoning: string;
+  collaborationModes: readonly CodexCollaborationModeDescriptor[];
+  selectedModel: string | null;
+  selectedReasoning: string | null;
   applyingActionId: string | null;
   vault: VaultSelection | null;
   vaultState: VaultRuntimeState;
-  onSelectedModel: (modelId: string) => void;
-  onSelectedReasoning: (reasoningId: string) => void;
+  onSelectedModel: (modelId: string | null) => void;
+  onSelectedReasoning: (reasoningId: string | null) => void;
   onRefreshModels: () => void;
   onOpenAgentSettings: () => void;
   onSend: (
@@ -99,24 +138,52 @@ export function ProjectChatView({
   const [draft, setDraft] = useState('');
   const [retryOfAttemptId, setRetryOfAttemptId] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(initialAdvancedOpen);
-  const [harnessMode, setHarnessMode] = useState<ProjectChatHarnessMode>('context');
-  const [responseDepth, setResponseDepth] = useState<ProjectChatResponseDepth>('standard');
+  const [collaborationModeId, setCollaborationModeId] = useState<string | null>(null);
+  const [legacyReviewerCompatibility, setLegacyReviewerCompatibility] = useState(false);
+  const [personality, setPersonality] = useState<ProjectChatPersonality>('auto');
+  const [responseVerbosity, setResponseVerbosity] = useState<ProjectChatResponseVerbosity>('auto');
   const [contextScope, setContextScope] = useState<ProjectChatContextScope>('project');
   const transcriptRef = useRef<HTMLDivElement>(null);
   const board = useMemo(() => resolveWorkspaceBoardSettings(project.board), [project.board]);
+  const selectedCollaborationMode = collaborationModeId
+    ? collaborationModes.find((mode) => mode.id === collaborationModeId)
+    : null;
   const selectedDescriptor = useMemo(
-    () => models.find((model) => model.modelId === selectedModel),
-    [models, selectedModel],
+    () =>
+      resolveEffectiveCodexModel(models, collaborationModes, selectedModel, collaborationModeId),
+    [collaborationModeId, collaborationModes, models, selectedModel],
   );
   const reasoningOptions = selectedDescriptor?.reasoningOptions ?? [];
-  const selectedModelMissing = selectedModel !== 'auto' && selectedDescriptor === undefined;
+  const selectedModelMissing = selectedModel !== null && selectedDescriptor === undefined;
+  const recommendedModelMissing =
+    selectedModel === null &&
+    Boolean(selectedCollaborationMode?.recommendedModelId) &&
+    selectedDescriptor === undefined;
   const selectedReasoningMissing =
-    selectedReasoning !== 'auto' &&
+    selectedReasoning !== null &&
     !reasoningOptions.some((option) => option.id === selectedReasoning);
+  const recommendedReasoningMissing =
+    selectedReasoning === null &&
+    Boolean(selectedCollaborationMode?.recommendedReasoningOptionId) &&
+    !reasoningOptions.some(
+      (option) => option.id === selectedCollaborationMode?.recommendedReasoningOptionId,
+    );
   const modelSelectionWarning = selectedModelMissing
     ? 'The selected model is no longer in the live Codex catalog. Choose a model before sending.'
-    : selectedReasoningMissing
-      ? 'The selected reasoning option is no longer available. Choose another option before sending.'
+    : recommendedModelMissing
+      ? 'This Codex mode recommends a model that is no longer available. Choose a model or another mode.'
+      : selectedReasoningMissing
+        ? 'The selected reasoning option is no longer available. Choose another option before sending.'
+        : recommendedReasoningMissing
+          ? 'This Codex mode recommends reasoning that the effective model does not support. Choose a reasoning option, model, or mode.'
+          : null;
+  const collaborationModeWarning =
+    collaborationModeId !== null && !selectedCollaborationMode
+      ? 'The selected Codex collaboration mode is no longer available. Choose a current mode before sending.'
+      : null;
+  const personalityWarning =
+    personality !== 'auto' && selectedDescriptor?.supportsPersonality === false
+      ? 'The selected model does not support Codex personality controls. Choose Auto or another model.'
       : null;
   const localNotesGrant = snapshot?.profile?.localNotesVault ?? null;
   const localNotesAvailable = Boolean(
@@ -136,7 +203,8 @@ export function ProjectChatView({
     localNotesGrant && vaultState !== 'ready'
       ? 'GOSU cannot verify the Main-process Local Notes capability yet. This turn is paused to prevent a hidden grant mismatch.'
       : null;
-  const selectionWarning = modelSelectionWarning ?? localNotesWarning;
+  const selectionWarning =
+    modelSelectionWarning ?? collaborationModeWarning ?? personalityWarning ?? localNotesWarning;
 
   useEffect(() => {
     const transcript = transcriptRef.current;
@@ -151,20 +219,36 @@ export function ProjectChatView({
 
   useEffect(() => {
     const profile = snapshot?.profile ?? defaultProjectChatProfile(project.id);
-    setHarnessMode(profile.harnessMode);
-    setResponseDepth(profile.responseDepth);
+    const preserveLegacyReviewer = profile.harnessMode === 'reviewer';
+    setLegacyReviewerCompatibility(preserveLegacyReviewer);
+    setCollaborationModeId(preserveLegacyReviewer ? null : profile.collaborationModeId);
+    setPersonality(profile.personality);
+    setResponseVerbosity(profile.responseVerbosity);
     setContextScope(profile.contextScope);
   }, [project.id, snapshot?.profile?.version]);
 
   const submit = () => {
     const message = draft.trim();
     if (!message || inFlight || selectionWarning) return;
-    void onSend(message, retryOfAttemptId ?? undefined, {
-      harnessMode,
-      responseDepth,
+    const controls: ProjectChatTurnControls = {
+      harnessMode: legacyReviewerCompatibility
+        ? 'reviewer'
+        : collaborationModeId === 'plan'
+          ? 'planner'
+          : 'context',
+      responseDepth:
+        responseVerbosity === 'low'
+          ? 'concise'
+          : responseVerbosity === 'high'
+            ? 'deep'
+            : 'standard',
+      personality,
+      responseVerbosity,
       contextScope,
       profileVersion: snapshot?.profile?.version ?? 0,
-    }).then((accepted) => {
+      ...(legacyReviewerCompatibility ? {} : { collaborationModeId }),
+    };
+    void onSend(message, retryOfAttemptId ?? undefined, controls).then((accepted) => {
       if (accepted) {
         setDraft('');
         setRetryOfAttemptId(null);
@@ -191,11 +275,11 @@ export function ProjectChatView({
           <label>
             Model
             <select
-              value={selectedModel}
-              onChange={(event) => onSelectedModel(event.target.value)}
+              value={selectedModel ?? ''}
+              onChange={(event) => onSelectedModel(event.target.value || null)}
               disabled={inFlight}
             >
-              <option value="auto">Auto · provider recommended</option>
+              <option value="">Auto · provider recommended</option>
               {selectedModelMissing && (
                 <option value={selectedModel} disabled>
                   Unavailable model · choose again
@@ -212,11 +296,11 @@ export function ProjectChatView({
           <label>
             Reasoning
             <select
-              value={selectedReasoning}
-              onChange={(event) => onSelectedReasoning(event.target.value)}
+              value={selectedReasoning ?? ''}
+              onChange={(event) => onSelectedReasoning(event.target.value || null)}
               disabled={inFlight || (reasoningOptions.length === 0 && !selectedReasoningMissing)}
             >
-              <option value="auto">Model default</option>
+              <option value="">Model default</option>
               {selectedReasoningMissing && (
                 <option value={selectedReasoning} disabled>
                   Unavailable reasoning · choose again
@@ -253,46 +337,77 @@ export function ProjectChatView({
       {advancedOpen && (
         <section className="chat-agent-controls" aria-label="Advanced agent controls">
           <div className="chat-agent-control-group">
-            <span>Harness</span>
-            <div role="radiogroup" aria-label="Turn harness">
-              {(Object.keys(HARNESS_LABELS) as ProjectChatHarnessMode[]).map((mode) => (
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={harnessMode === mode}
-                  className={harnessMode === mode ? 'selected' : ''}
-                  onClick={() => setHarnessMode(mode)}
-                  key={mode}
-                >
-                  {HARNESS_LABELS[mode]}
-                </button>
+            <span>Codex mode</span>
+            <select
+              value={collaborationModeId ?? ''}
+              onChange={(event) => {
+                setLegacyReviewerCompatibility(false);
+                setCollaborationModeId(event.target.value || null);
+              }}
+              aria-label="Codex collaboration mode"
+            >
+              <option value="">
+                {legacyReviewerCompatibility
+                  ? 'Legacy Reviewer · choose a native mode to leave'
+                  : 'Auto · Codex default'}
+              </option>
+              {collaborationModeId !== null && !selectedCollaborationMode && (
+                <option value={collaborationModeId} disabled>
+                  Unavailable mode · choose again
+                </option>
+              )}
+              {collaborationModes.map((mode) => (
+                <option value={mode.id} key={mode.id}>
+                  {mode.displayName}
+                  {mode.recommendedReasoningOptionId
+                    ? ` · ${mode.recommendedReasoningOptionId}`
+                    : ''}
+                </option>
               ))}
-            </div>
+            </select>
             <small>
-              {harnessMode === 'reviewer'
-                ? 'Critique only; Main discards every returned Board action.'
-                : harnessMode === 'planner'
-                  ? 'Plan-first response with reviewable task proposals.'
-                  : 'Discuss evidence; propose changes only when requested.'}
+              Native modes are discovered from the local Codex App Server, not recreated by GOSU.
             </small>
           </div>
           <div className="chat-agent-control-group">
-            <span>Response depth</span>
-            <div role="radiogroup" aria-label="Response depth">
-              {(Object.keys(DEPTH_LABELS) as ProjectChatResponseDepth[]).map((depth) => (
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={responseDepth === depth}
-                  className={responseDepth === depth ? 'selected' : ''}
-                  onClick={() => setResponseDepth(depth)}
-                  key={depth}
+            <span>Personality</span>
+            <select
+              value={personality}
+              onChange={(event) => setPersonality(event.target.value as ProjectChatPersonality)}
+              aria-label="Codex personality"
+            >
+              {(Object.keys(PERSONALITY_LABELS) as ProjectChatPersonality[]).map((value) => (
+                <option
+                  value={value}
+                  key={value}
+                  disabled={value !== 'auto' && selectedDescriptor?.supportsPersonality === false}
                 >
-                  {DEPTH_LABELS[depth]}
-                </button>
+                  {PERSONALITY_LABELS[value]}
+                </option>
               ))}
-            </div>
-            <small>Separate from model reasoning effort; this shapes the visible answer.</small>
+            </select>
+            <small>
+              {selectedDescriptor?.supportsPersonality === false
+                ? 'The selected model does not advertise personality support.'
+                : 'Applied through the native Codex personality setting.'}
+            </small>
+          </div>
+          <div className="chat-agent-control-group">
+            <span>Answer verbosity</span>
+            <select
+              value={responseVerbosity}
+              onChange={(event) =>
+                setResponseVerbosity(event.target.value as ProjectChatResponseVerbosity)
+              }
+              aria-label="Codex answer verbosity"
+            >
+              {(Object.keys(VERBOSITY_LABELS) as ProjectChatResponseVerbosity[]).map((value) => (
+                <option value={value} key={value}>
+                  {VERBOSITY_LABELS[value]}
+                </option>
+              ))}
+            </select>
+            <small>Native model verbosity; reasoning effort remains a separate control.</small>
           </div>
           <div className="chat-agent-control-group">
             <span>Context</span>
@@ -373,6 +488,7 @@ export function ProjectChatView({
             const attempt = message.attemptId
               ? snapshot.attempts?.find((candidate) => candidate.id === message.attemptId)
               : undefined;
+            const nativeAttempt = attempt?.collaborationModeId !== undefined;
             return (
               <article
                 className={`chat-message ${message.role} ${message.status}`}
@@ -383,14 +499,27 @@ export function ProjectChatView({
                   <span>{formatTime(message.completedAt)}</span>
                 </header>
                 <div className="message-copy">{message.content}</div>
-                {(message.model || attempt?.harnessMode) && (
+                {(message.model || attempt?.harnessMode || nativeAttempt) && (
                   <footer className="message-provenance">
                     {message.model?.resolvedModelId ?? 'Codex'}
                     {message.model?.reasoningOptionId
                       ? ` · reasoning ${message.model.reasoningOptionId}`
                       : ''}
-                    {attempt?.harnessMode ? ` · ${HARNESS_LABELS[attempt.harnessMode]}` : ''}
-                    {attempt?.responseDepth ? ` · ${DEPTH_LABELS[attempt.responseDepth]}` : ''}
+                    {nativeAttempt
+                      ? attempt?.collaborationModeId
+                        ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
+                        : ' · Codex default mode'
+                      : attempt?.harnessMode
+                        ? ` · legacy ${HARNESS_LABELS[attempt.harnessMode]}`
+                        : ''}
+                    {attempt?.personality && attempt.personality !== 'auto'
+                      ? ` · ${PERSONALITY_LABELS[attempt.personality]}`
+                      : ''}
+                    {attempt?.responseVerbosity
+                      ? ` · ${VERBOSITY_LABELS[attempt.responseVerbosity]}`
+                      : attempt?.responseDepth
+                        ? ` · legacy ${DEPTH_LABELS[attempt.responseDepth]}`
+                        : ''}
                     {attempt?.contextScope ? ` · ${CONTEXT_LABELS[attempt.contextScope]}` : ''}
                   </footer>
                 )}
@@ -445,8 +574,13 @@ export function ProjectChatView({
       <div className="chat-compose-area">
         <div className="chat-context-note">
           <span>LOCAL CONTEXT</span>
-          {CONTEXT_LABELS[contextScope]} · {HARNESS_LABELS[harnessMode]} ·{' '}
-          {DEPTH_LABELS[responseDepth]} response · {localNotesStatus}
+          {CONTEXT_LABELS[contextScope]} ·{' '}
+          {legacyReviewerCompatibility
+            ? 'Legacy Reviewer'
+            : collaborationModeId === null
+              ? 'Codex default mode'
+              : (selectedCollaborationMode?.displayName ?? collaborationModeId)}{' '}
+          · {VERBOSITY_LABELS[responseVerbosity]} · {localNotesStatus}
           {vaultState === 'ready' && !localNotesAvailable && (
             <button
               type="button"

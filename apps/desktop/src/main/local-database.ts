@@ -158,10 +158,10 @@ function insertProjectChatAttempt(database: Database.Database, attempt: ProjectC
     .prepare(
       `insert into project_chat_attempts(
          id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
-         requested_model_id,reasoning_option_id,harness_mode,response_depth,context_scope,
-         profile_version,instruction_revision_id,prompt_provenance_json,status,error_code,
-         created_at,updated_at
-       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         requested_model_id,reasoning_option_id,harness_mode,response_depth,
+         collaboration_mode_id,personality,response_verbosity,context_scope,profile_version,
+         instruction_revision_id,prompt_provenance_json,status,error_code,created_at,updated_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       attempt.id,
@@ -175,6 +175,9 @@ function insertProjectChatAttempt(database: Database.Database, attempt: ProjectC
       attempt.reasoningOptionId,
       attempt.harnessMode ?? null,
       attempt.responseDepth ?? null,
+      attempt.collaborationModeId ?? null,
+      attempt.personality ?? null,
+      attempt.responseVerbosity ?? null,
       attempt.contextScope ?? null,
       attempt.profileVersion ?? null,
       attempt.instructionRevisionId ?? null,
@@ -343,6 +346,15 @@ export class LocalDatabase {
         version integer not null check (version > 0),
         harness_mode text not null check (harness_mode in ('context','planner','reviewer')),
         response_depth text not null check (response_depth in ('concise','standard','deep')),
+        collaboration_mode_id text check (
+          collaboration_mode_id is null or length(collaboration_mode_id) between 1 and 128
+        ),
+        personality text not null default 'auto' check (
+          personality in ('auto','none','friendly','pragmatic')
+        ),
+        response_verbosity text not null default 'auto' check (
+          response_verbosity in ('auto','low','medium','high')
+        ),
         context_scope text not null check (context_scope in ('project','board','objective')),
         local_notes_vault_id text check (
           local_notes_vault_id is null or length(local_notes_vault_id) = 64
@@ -375,6 +387,15 @@ export class LocalDatabase {
         ),
         response_depth text check (
           response_depth is null or response_depth in ('concise','standard','deep')
+        ),
+        collaboration_mode_id text check (
+          collaboration_mode_id is null or length(collaboration_mode_id) between 1 and 128
+        ),
+        personality text check (
+          personality is null or personality in ('auto','none','friendly','pragmatic')
+        ),
+        response_verbosity text check (
+          response_verbosity is null or response_verbosity in ('auto','low','medium','high')
         ),
         context_scope text check (
           context_scope is null or context_scope in ('project','board','objective')
@@ -447,6 +468,18 @@ export class LocalDatabase {
           "alter table project_chat_attempts add column response_depth text check (response_depth is null or response_depth in ('concise','standard','deep'))",
         ],
         [
+          'collaboration_mode_id',
+          'alter table project_chat_attempts add column collaboration_mode_id text check (collaboration_mode_id is null or length(collaboration_mode_id) between 1 and 128)',
+        ],
+        [
+          'personality',
+          "alter table project_chat_attempts add column personality text check (personality is null or personality in ('auto','none','friendly','pragmatic'))",
+        ],
+        [
+          'response_verbosity',
+          "alter table project_chat_attempts add column response_verbosity text check (response_verbosity is null or response_verbosity in ('auto','low','medium','high'))",
+        ],
+        [
           'context_scope',
           "alter table project_chat_attempts add column context_scope text check (context_scope is null or context_scope in ('project','board','objective'))",
         ],
@@ -469,7 +502,24 @@ export class LocalDatabase {
       const profileColumns = database.pragma('table_info(project_chat_profiles)') as Array<{
         name: string;
       }>;
+      const profileNeedsNativeBackfill = [
+        'collaboration_mode_id',
+        'personality',
+        'response_verbosity',
+      ].some((name) => !profileColumns.some((column) => column.name === name));
       const profileMigrations = [
+        [
+          'collaboration_mode_id',
+          'alter table project_chat_profiles add column collaboration_mode_id text check (collaboration_mode_id is null or length(collaboration_mode_id) between 1 and 128)',
+        ],
+        [
+          'personality',
+          "alter table project_chat_profiles add column personality text not null default 'auto' check (personality in ('auto','none','friendly','pragmatic'))",
+        ],
+        [
+          'response_verbosity',
+          "alter table project_chat_profiles add column response_verbosity text not null default 'auto' check (response_verbosity in ('auto','low','medium','high'))",
+        ],
         [
           'local_notes_vault_id',
           'alter table project_chat_profiles add column local_notes_vault_id text check (local_notes_vault_id is null or length(local_notes_vault_id) = 64)',
@@ -481,6 +531,23 @@ export class LocalDatabase {
       ] as const;
       for (const [name, statement] of profileMigrations) {
         if (!profileColumns.some((column) => column.name === name)) database.exec(statement);
+      }
+      if (profileNeedsNativeBackfill) {
+        database.exec(`
+          update project_chat_profiles
+          set collaboration_mode_id=case harness_mode
+            when 'planner' then 'plan'
+            else 'default'
+          end
+        `);
+        database.exec(`
+          update project_chat_profiles
+          set response_verbosity=case response_depth
+            when 'concise' then 'low'
+            when 'deep' then 'high'
+            else 'medium'
+          end
+        `);
       }
       database.exec(`
         create index if not exists project_chat_messages_by_attempt
@@ -685,7 +752,8 @@ export class LocalDatabase {
   getProjectChatProfile(projectId: string): ProjectChatProfile {
     const row = this.require()
       .prepare(
-        `select p.project_id,p.version,p.harness_mode,p.response_depth,p.context_scope,
+        `select p.project_id,p.version,p.harness_mode,p.response_depth,
+                p.collaboration_mode_id,p.personality,p.response_verbosity,p.context_scope,
                 p.local_notes_vault_id,p.local_notes_vault_name,
                 p.instruction_revision_id,p.updated_at,r.content,r.content_sha256,r.created_at
          from project_chat_profiles p
@@ -730,14 +798,18 @@ export class LocalDatabase {
           const changed = database
             .prepare(
               `insert into project_chat_profiles(
-               project_id,version,harness_mode,response_depth,context_scope,
+               project_id,version,harness_mode,response_depth,collaboration_mode_id,
+               personality,response_verbosity,context_scope,
                local_notes_vault_id,local_notes_vault_name,
                instruction_revision_id,created_at,updated_at
-             ) values(?,?,?,?,?,?,?,?,?,?)
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?)
              on conflict(project_id) do update set
                version=excluded.version,
                harness_mode=excluded.harness_mode,
                response_depth=excluded.response_depth,
+               collaboration_mode_id=excluded.collaboration_mode_id,
+               personality=excluded.personality,
+               response_verbosity=excluded.response_verbosity,
                context_scope=excluded.context_scope,
                local_notes_vault_id=excluded.local_notes_vault_id,
                local_notes_vault_name=excluded.local_notes_vault_name,
@@ -750,6 +822,9 @@ export class LocalDatabase {
               nextVersion,
               command.harnessMode,
               command.responseDepth,
+              command.collaborationModeId,
+              command.personality,
+              command.responseVerbosity,
               command.contextScope,
               command.localNotesVault?.id ?? null,
               command.localNotesVault?.name ?? null,
@@ -842,9 +917,9 @@ export class LocalDatabase {
       const currentRow = database
         .prepare(
           `select id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
-                  requested_model_id,reasoning_option_id,harness_mode,response_depth,context_scope,
-                  profile_version,instruction_revision_id,prompt_provenance_json,status,error_code,
-                  created_at,updated_at
+                  requested_model_id,reasoning_option_id,harness_mode,response_depth,
+                  collaboration_mode_id,personality,response_verbosity,context_scope,profile_version,
+                  instruction_revision_id,prompt_provenance_json,status,error_code,created_at,updated_at
            from project_chat_attempts where project_id=? and id=?`,
         )
         .get(requestedTerminal.projectId, requestedTerminal.id) as
@@ -860,6 +935,9 @@ export class LocalDatabase {
         current.reasoningOptionId !== requestedTerminal.reasoningOptionId ||
         current.harnessMode !== requestedTerminal.harnessMode ||
         current.responseDepth !== requestedTerminal.responseDepth ||
+        current.collaborationModeId !== requestedTerminal.collaborationModeId ||
+        current.personality !== requestedTerminal.personality ||
+        current.responseVerbosity !== requestedTerminal.responseVerbosity ||
         current.contextScope !== requestedTerminal.contextScope ||
         current.profileVersion !== requestedTerminal.profileVersion ||
         current.instructionRevisionId !== requestedTerminal.instructionRevisionId ||
@@ -922,9 +1000,9 @@ export class LocalDatabase {
     const row = this.require()
       .prepare(
         `select id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
-                requested_model_id,reasoning_option_id,harness_mode,response_depth,context_scope,
-                profile_version,instruction_revision_id,prompt_provenance_json,status,error_code,
-                created_at,updated_at
+                requested_model_id,reasoning_option_id,harness_mode,response_depth,
+                collaboration_mode_id,personality,response_verbosity,context_scope,profile_version,
+                instruction_revision_id,prompt_provenance_json,status,error_code,created_at,updated_at
          from project_chat_attempts where project_id=? and id=?`,
       )
       .get(projectId, attemptId) as ProjectChatAttemptRow | undefined;
@@ -948,9 +1026,9 @@ export class LocalDatabase {
       .prepare(
         `select * from (
            select id,project_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
-                  requested_model_id,reasoning_option_id,harness_mode,response_depth,context_scope,
-                  profile_version,instruction_revision_id,prompt_provenance_json,status,error_code,
-                  created_at,updated_at
+                  requested_model_id,reasoning_option_id,harness_mode,response_depth,
+                  collaboration_mode_id,personality,response_verbosity,context_scope,profile_version,
+                  instruction_revision_id,prompt_provenance_json,status,error_code,created_at,updated_at
            from project_chat_attempts where project_id=?
            order by created_at desc,id desc limit 500
          ) order by created_at asc,id asc`,
@@ -1066,6 +1144,9 @@ type ProjectChatAttemptRow = {
   reasoning_option_id: string | null;
   harness_mode: 'context' | 'planner' | 'reviewer' | null;
   response_depth: 'concise' | 'standard' | 'deep' | null;
+  collaboration_mode_id: string | null;
+  personality: 'auto' | 'none' | 'friendly' | 'pragmatic' | null;
+  response_verbosity: 'auto' | 'low' | 'medium' | 'high' | null;
   context_scope: 'project' | 'board' | 'objective' | null;
   profile_version: number | null;
   instruction_revision_id: string | null;
@@ -1086,6 +1167,9 @@ type ProjectChatProfileRow = {
   version: number;
   harness_mode: 'context' | 'planner' | 'reviewer';
   response_depth: 'concise' | 'standard' | 'deep';
+  collaboration_mode_id: string | null;
+  personality: 'auto' | 'none' | 'friendly' | 'pragmatic';
+  response_verbosity: 'auto' | 'low' | 'medium' | 'high';
   context_scope: 'project' | 'board' | 'objective';
   local_notes_vault_id: string | null;
   local_notes_vault_name: string | null;
@@ -1125,6 +1209,7 @@ function toChatAction(row: ProjectChatActionRow) {
 }
 
 function toChatAttempt(row: ProjectChatAttemptRow) {
+  const hasNativeSettings = row.personality !== null || row.response_verbosity !== null;
   return ProjectChatAttemptSchema.parse({
     id: row.id,
     projectId: row.project_id,
@@ -1137,6 +1222,9 @@ function toChatAttempt(row: ProjectChatAttemptRow) {
     reasoningOptionId: row.reasoning_option_id,
     ...(row.harness_mode ? { harnessMode: row.harness_mode } : {}),
     ...(row.response_depth ? { responseDepth: row.response_depth } : {}),
+    ...(hasNativeSettings ? { collaborationModeId: row.collaboration_mode_id } : {}),
+    ...(row.personality ? { personality: row.personality } : {}),
+    ...(row.response_verbosity ? { responseVerbosity: row.response_verbosity } : {}),
     ...(row.context_scope ? { contextScope: row.context_scope } : {}),
     ...(row.profile_version === null ? {} : { profileVersion: row.profile_version }),
     ...(row.profile_version === null ? {} : { instructionRevisionId: row.instruction_revision_id }),
@@ -1157,6 +1245,9 @@ function toChatProfile(row: ProjectChatProfileRow) {
     version: row.version,
     harnessMode: row.harness_mode,
     responseDepth: row.response_depth,
+    collaborationModeId: row.collaboration_mode_id,
+    personality: row.personality,
+    responseVerbosity: row.response_verbosity,
     contextScope: row.context_scope,
     localNotesVault:
       row.local_notes_vault_id && row.local_notes_vault_name

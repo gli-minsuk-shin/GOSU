@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ProjectChatView } from '../src/renderer/src/project-chat-view';
+import { ProjectChatView, resolveEffectiveCodexModel } from '../src/renderer/src/project-chat-view';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
 
 const project = {
@@ -14,6 +14,39 @@ const project = {
 } as const;
 
 describe('advanced Project Chat controls', () => {
+  it('resolves Auto through the selected native mode before the provider default', () => {
+    const models = [
+      {
+        modelId: 'provider-default',
+        displayName: 'Provider default',
+        isDefault: true,
+        reasoningOptions: [{ id: 'low', label: 'Low', isDefault: true }],
+      },
+      {
+        modelId: 'mode-recommended',
+        displayName: 'Mode recommended',
+        isDefault: false,
+        reasoningOptions: [{ id: 'high', label: 'High', isDefault: true }],
+        supportsPersonality: true,
+      },
+    ];
+    const modes = [
+      {
+        id: 'future-mode',
+        displayName: 'Future mode',
+        recommendedModelId: 'mode-recommended',
+        recommendedReasoningOptionId: 'high',
+      },
+    ];
+
+    expect(resolveEffectiveCodexModel(models, modes, null, 'future-mode')?.modelId).toBe(
+      'mode-recommended',
+    );
+    expect(
+      resolveEffectiveCodexModel(models, modes, 'provider-default', 'future-mode')?.modelId,
+    ).toBe('provider-default');
+  });
+
   it('exposes dynamic reasoning separately from the bounded project harness', () => {
     const html = renderToStaticMarkup(
       <ProjectChatView
@@ -34,6 +67,27 @@ describe('advanced Project Chat controls', () => {
             displayName: 'Fixture live model',
             isDefault: true,
             reasoningOptions: [{ id: 'provider-high', label: 'Provider high', isDefault: false }],
+            supportsPersonality: true,
+          },
+        ]}
+        collaborationModes={[
+          {
+            id: 'default',
+            displayName: 'Default',
+            recommendedModelId: null,
+            recommendedReasoningOptionId: null,
+          },
+          {
+            id: 'plan',
+            displayName: 'Plan',
+            recommendedModelId: null,
+            recommendedReasoningOptionId: 'provider-high',
+          },
+          {
+            id: 'auto',
+            displayName: 'Provider Auto Mode',
+            recommendedModelId: null,
+            recommendedReasoningOptionId: null,
           },
         ]}
         selectedModel="fixture-live-model"
@@ -55,10 +109,14 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Fixture live model');
     expect(html).toContain('Provider high');
     expect(html).toContain('Advanced agent controls');
-    expect(html).toContain('Copilot');
-    expect(html).toContain('Planner');
-    expect(html).toContain('Reviewer');
-    expect(html).toContain('Response depth');
+    expect(html).toContain('Default');
+    expect(html).toContain('Plan');
+    expect(html).toContain('Provider Auto Mode');
+    expect(html).toContain('<option value="" selected="">Auto · Codex default</option>');
+    expect(html).toContain('<option value="auto">Provider Auto Mode</option>');
+    expect(html).toContain('Native modes are discovered from the local Codex App Server');
+    expect(html).toContain('Answer verbosity');
+    expect(html).toContain('Personality');
     expect(html).toContain('Board + Objective');
     expect(html).toContain('Board + Objective read tools');
     expect(html).toContain('Local Notes not authorized');
@@ -86,8 +144,9 @@ describe('advanced Project Chat controls', () => {
         loading={false}
         inFlight={false}
         models={[]}
-        selectedModel="auto"
-        selectedReasoning="auto"
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
         applyingActionId={null}
         vault={null}
         vaultState="unavailable"

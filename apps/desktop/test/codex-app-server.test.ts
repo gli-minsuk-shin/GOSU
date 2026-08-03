@@ -12,9 +12,11 @@ import {
   codexServerRequestResponse,
   assertNoProjectMcpServers,
   buildCodexAppServerArguments,
+  parseCodexCollaborationModeCatalog,
   parseCodexThreadStartResponse,
   prepareIsolatedCodexHome,
   resolveUnpackedAsarPath,
+  toCodexCollaborationModeCatalog,
   type CodexDynamicToolHandler,
   type CodexDynamicToolSpec,
 } from '../src/main/codex-app-server';
@@ -179,6 +181,93 @@ describe('Codex App Server process boundary', () => {
     });
   });
 
+  it('discovers opaque native collaboration modes without hard-coded mode names', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const request = vi.fn().mockResolvedValue({
+      data: [
+        {
+          name: 'Default',
+          mode: 'default',
+          model: null,
+          reasoning_effort: null,
+        },
+        {
+          name: 'Future research mode',
+          mode: 'future-research-mode',
+          model: 'future-model',
+          reasoning_effort: 'high',
+        },
+        {
+          name: 'Provider heading',
+          mode: null,
+          model: null,
+          reasoning_effort: null,
+        },
+      ],
+    });
+    (server as unknown as { request: typeof request }).request = request;
+
+    await expect(server.listCollaborationModes()).resolves.toEqual([
+      {
+        id: 'default',
+        displayName: 'Default',
+        recommendedModelId: null,
+        recommendedReasoningOptionId: null,
+      },
+      {
+        id: 'future-research-mode',
+        displayName: 'Future research mode',
+        recommendedModelId: 'future-model',
+        recommendedReasoningOptionId: 'high',
+      },
+    ]);
+    expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledWith('collaborationMode/list', {});
+  });
+
+  it('strictly bounds and de-duplicates the native collaboration catalog', () => {
+    const mode = {
+      name: 'Plan',
+      mode: 'plan',
+      model: null,
+      reasoning_effort: 'medium',
+    };
+    expect(() => parseCodexCollaborationModeCatalog({ data: [mode, mode] })).toThrow(
+      'codex_collaboration_mode_catalog_duplicate',
+    );
+    expect(() =>
+      parseCodexCollaborationModeCatalog({ data: Array.from({ length: 65 }, () => mode) }),
+    ).toThrow('codex_collaboration_mode_catalog_limit');
+    expect(() =>
+      parseCodexCollaborationModeCatalog({
+        data: [{ ...mode, mode: ' '.repeat(2) }],
+      }),
+    ).toThrow('codex_collaboration_mode_catalog_invalid');
+    expect(() =>
+      parseCodexCollaborationModeCatalog({
+        data: [{ ...mode, reasoning_effort: { unexpected: true } }],
+      }),
+    ).toThrow('codex_collaboration_mode_catalog_invalid');
+    expect(() => parseCodexCollaborationModeCatalog({ data: 'not-an-array' })).toThrow(
+      'codex_collaboration_mode_catalog_invalid',
+    );
+  });
+
+  it('hashes collaboration catalogs independently of provider display order', () => {
+    const modes = parseCodexCollaborationModeCatalog({
+      data: [
+        { name: 'Plan', mode: 'plan', model: null, reasoning_effort: 'medium' },
+        { name: 'Default', mode: 'default', model: null, reasoning_effort: null },
+      ],
+    });
+    const forward = toCodexCollaborationModeCatalog(modes);
+    const reverse = toCodexCollaborationModeCatalog([...modes].reverse());
+    expect(forward.catalogVersion).toMatch(/^[0-9a-f]{64}$/u);
+    expect(reverse.catalogVersion).toBe(forward.catalogVersion);
+    expect(forward.modes).toEqual(modes);
+  });
+
   it('unsubscribes a newly started thread when the MCP fail-closed check rejects it', async () => {
     const server = new CodexAppServer();
     vi.spyOn(server, 'start').mockResolvedValue();
@@ -277,6 +366,299 @@ describe('Codex App Server process boundary', () => {
     expect(internal.invocations.size).toBe(0);
   });
 
+  it.each([
+    {
+      name: 'uses native recommendations for Auto settings',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      expectedModelId: 'mode-model',
+      expectedReasoningOptionId: 'medium',
+    },
+    {
+      name: 'lets explicit model and reasoning settings win',
+      requestedModelId: 'user-model',
+      reasoningOptionId: 'xhigh',
+      expectedModelId: 'user-model',
+      expectedReasoningOptionId: 'xhigh',
+    },
+  ])(
+    '$name',
+    async ({ requestedModelId, reasoningOptionId, expectedModelId, expectedReasoningOptionId }) => {
+      const server = new CodexAppServer();
+      vi.spyOn(server, 'start').mockResolvedValue();
+      vi.spyOn(server, 'listModelCatalog').mockResolvedValue(
+        toModelCatalog(
+          [
+            {
+              id: 'provider-default',
+              model: 'provider-default',
+              displayName: 'Provider default',
+              hidden: false,
+              isDefault: true,
+            },
+            {
+              id: 'mode-model',
+              model: 'mode-model',
+              displayName: 'Mode model',
+              hidden: false,
+              isDefault: false,
+              supportsPersonality: true,
+              defaultReasoningEffort: 'medium',
+              supportedReasoningEfforts: [
+                { reasoningEffort: 'medium', description: 'Medium reasoning' },
+              ],
+            },
+            {
+              id: 'user-model',
+              model: 'user-model',
+              displayName: 'User model',
+              hidden: false,
+              isDefault: false,
+              supportsPersonality: true,
+              defaultReasoningEffort: 'xhigh',
+              supportedReasoningEfforts: [
+                { reasoningEffort: 'xhigh', description: 'Extra-high reasoning' },
+              ],
+            },
+          ],
+          '2026-08-04T00:00:00.000Z',
+        ),
+      );
+      vi.spyOn(server, 'listCollaborationModeCatalog').mockResolvedValue(
+        toCodexCollaborationModeCatalog([
+          {
+            id: 'plan',
+            displayName: 'Plan',
+            recommendedModelId: 'mode-model',
+            recommendedReasoningOptionId: 'medium',
+          },
+        ]),
+      );
+      const request = vi.fn().mockResolvedValue({ turn: { id: 'turn-native' } });
+      (server as unknown as { request: typeof request }).request = request;
+
+      const result = await server.runTurn({
+        threadId: 'thread-native',
+        prompt: 'Plan this project',
+        requestedModelId,
+        reasoningOptionId,
+        collaborationModeId: 'plan',
+        personality: 'pragmatic',
+        cwd: '/isolated/project',
+      });
+
+      expect(result.invocation.resolvedModelId).toBe(expectedModelId);
+      expect(result.invocation.reasoningOptionId).toBe(expectedReasoningOptionId);
+      expect(result.effectiveReasoningOptionId).toBe(expectedReasoningOptionId);
+      expect(result.collaborationMode).toMatchObject({ id: 'plan' });
+      expect(result.collaborationModeCatalogVersion).toMatch(/^[0-9a-f]{64}$/u);
+      expect(request).toHaveBeenCalledWith(
+        'turn/start',
+        expect.objectContaining({
+          model: expectedModelId,
+          effort: expectedReasoningOptionId,
+          personality: 'pragmatic',
+          collaborationMode: {
+            mode: 'plan',
+            settings: {
+              model: expectedModelId,
+              reasoning_effort: expectedReasoningOptionId,
+              developer_instructions: null,
+            },
+          },
+        }),
+      );
+    },
+  );
+
+  it('rejects a mode-recommended effort unsupported by an explicit model', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    vi.spyOn(server, 'listModelCatalog').mockResolvedValue(
+      toModelCatalog(
+        [
+          {
+            id: 'provider-default',
+            model: 'provider-default',
+            displayName: 'Provider default',
+            hidden: false,
+            isDefault: true,
+          },
+          {
+            id: 'explicit-model',
+            model: 'explicit-model',
+            displayName: 'Explicit model',
+            hidden: false,
+            isDefault: false,
+            defaultReasoningEffort: 'high',
+            supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'High reasoning' }],
+          },
+        ],
+        '2026-08-04T00:00:00.000Z',
+      ),
+    );
+    vi.spyOn(server, 'listCollaborationModeCatalog').mockResolvedValue(
+      toCodexCollaborationModeCatalog([
+        {
+          id: 'plan',
+          displayName: 'Plan',
+          recommendedModelId: 'mode-model',
+          recommendedReasoningOptionId: 'medium',
+        },
+      ]),
+    );
+    const request = vi.fn();
+    (server as unknown as { request: typeof request }).request = request;
+
+    await expect(
+      server.runTurn({
+        threadId: 'thread-native',
+        prompt: 'Plan with an explicit model',
+        requestedModelId: 'explicit-model',
+        reasoningOptionId: null,
+        collaborationModeId: 'plan',
+        cwd: '/isolated/project',
+      }),
+    ).rejects.toThrow('codex_model_reasoning_unsupported');
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when an explicitly selected native mode or its model disappears', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    vi.spyOn(server, 'listModelCatalog').mockResolvedValue(
+      toModelCatalog(
+        [
+          {
+            id: 'provider-default',
+            model: 'provider-default',
+            displayName: 'Provider default',
+            hidden: false,
+            isDefault: true,
+          },
+        ],
+        '2026-08-04T00:00:00.000Z',
+      ),
+    );
+    const request = vi.fn();
+    (server as unknown as { request: typeof request }).request = request;
+
+    vi.spyOn(server, 'listCollaborationModeCatalog').mockResolvedValueOnce(
+      toCodexCollaborationModeCatalog([]),
+    );
+    await expect(
+      server.runTurn({
+        threadId: 'thread-native',
+        prompt: 'Plan this project',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        collaborationModeId: 'disappeared-mode',
+        cwd: '/isolated/project',
+      }),
+    ).rejects.toThrow('codex_collaboration_mode_unavailable');
+    expect(request).not.toHaveBeenCalled();
+
+    vi.spyOn(server, 'listCollaborationModeCatalog').mockResolvedValueOnce(
+      toCodexCollaborationModeCatalog([
+        {
+          id: 'plan',
+          displayName: 'Plan',
+          recommendedModelId: 'disappeared-model',
+          recommendedReasoningOptionId: 'medium',
+        },
+      ]),
+    );
+    await expect(
+      server.runTurn({
+        threadId: 'thread-native',
+        prompt: 'Plan this project',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        collaborationModeId: 'plan',
+        cwd: '/isolated/project',
+      }),
+    ).rejects.toThrow('codex_collaboration_mode_model_unavailable');
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('fails closed if the native collaboration catalog changes after prompt assembly', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    vi.spyOn(server, 'listModelCatalog').mockResolvedValue(
+      toModelCatalog(
+        [
+          {
+            id: 'provider-default',
+            model: 'provider-default',
+            displayName: 'Provider default',
+            hidden: false,
+            isDefault: true,
+          },
+        ],
+        '2026-08-04T00:00:00.000Z',
+      ),
+    );
+    vi.spyOn(server, 'listCollaborationModeCatalog').mockResolvedValue(
+      toCodexCollaborationModeCatalog([
+        {
+          id: 'plan',
+          displayName: 'Plan',
+          recommendedModelId: null,
+          recommendedReasoningOptionId: 'medium',
+        },
+      ]),
+    );
+    const request = vi.fn();
+    (server as unknown as { request: typeof request }).request = request;
+
+    await expect(
+      server.runTurn({
+        threadId: 'thread-native',
+        prompt: 'Plan this project',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        collaborationModeId: 'plan',
+        expectedCollaborationModeCatalogVersion: '0'.repeat(64),
+        cwd: '/isolated/project',
+      }),
+    ).rejects.toThrow('codex_collaboration_mode_catalog_changed');
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('rejects personality settings when the live model catalog does not support them', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    vi.spyOn(server, 'listModelCatalog').mockResolvedValue(
+      toModelCatalog(
+        [
+          {
+            id: 'model-without-personality',
+            model: 'model-without-personality',
+            displayName: 'Model without personality',
+            hidden: false,
+            isDefault: true,
+            supportsPersonality: false,
+          },
+        ],
+        '2026-08-04T00:00:00.000Z',
+      ),
+    );
+    const request = vi.fn();
+    (server as unknown as { request: typeof request }).request = request;
+
+    await expect(
+      server.runTurn({
+        threadId: 'thread-native',
+        prompt: 'Use a friendly personality',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        personality: 'friendly',
+        cwd: '/isolated/project',
+      }),
+    ).rejects.toThrow('codex_model_personality_unsupported');
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it('builds project chat turns without shell, write, approval, or network access', () => {
     expect(
       buildCodexThreadParameters({
@@ -334,7 +716,6 @@ describe('Codex App Server process boundary', () => {
         },
         web_search: 'disabled',
       },
-      baseInstructions: expect.stringContaining('explicitly declared read-only GOSU dynamic tools'),
       ephemeral: true,
       environments: [],
       dynamicTools: [],
@@ -343,6 +724,16 @@ describe('Codex App Server process boundary', () => {
       developerInstructions: 'Project chat only',
       model: 'catalog-model',
     });
+    expect(
+      buildCodexThreadParameters({
+        cwd: '/isolated/project',
+        modelId: null,
+        responseVerbosity: 'high',
+      }),
+    ).toMatchObject({ config: { model_verbosity: 'high' } });
+    expect(
+      buildCodexThreadParameters({ cwd: '/isolated/project', modelId: null }),
+    ).not.toHaveProperty('baseInstructions');
     expect(
       buildCodexTurnParameters({
         threadId: 'thread-1',
@@ -363,6 +754,34 @@ describe('Codex App Server process boundary', () => {
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'readOnly', networkAccess: false },
       outputSchema: { type: 'object' },
+    });
+    expect(
+      buildCodexTurnParameters({
+        threadId: 'thread-native',
+        prompt: 'Use the native plan loop',
+        requestedModelId: 'resolved-model',
+        reasoningOptionId: 'high',
+        cwd: '/isolated/project',
+        collaborationMode: {
+          id: 'plan',
+          displayName: 'Plan',
+          recommendedModelId: null,
+          recommendedReasoningOptionId: 'medium',
+        },
+        personality: 'pragmatic',
+      }),
+    ).toMatchObject({
+      model: 'resolved-model',
+      effort: 'high',
+      personality: 'pragmatic',
+      collaborationMode: {
+        mode: 'plan',
+        settings: {
+          model: 'resolved-model',
+          reasoning_effort: 'high',
+          developer_instructions: null,
+        },
+      },
     });
   });
 

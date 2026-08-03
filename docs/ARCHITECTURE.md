@@ -122,7 +122,7 @@ flowchart LR
 | Reference                  | Zotero read-only connector                                      | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                                                    |
 | Obsidian Knowledge         | Desktop Vault reader, Markdown renderer, project knowledge port | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview·프로젝트별 agent grant 구현                     |
 | Lecture                    | Owner Web UI 표현                                               | 생성·편집·출처 연결은 계획됨                                                                                 |
-| AI Gateway                 | Desktop Project Chat service와 Codex App Server                 | 로그인·동적 catalog·profile·prompt harness·project-bound read tool·thread/turn·모델 provenance 구현          |
+| AI Gateway                 | Desktop Project Chat service와 Codex App Server                 | 로그인·동적 model/mode catalog·native harness·project-bound read tool·thread/turn·모델 provenance 구현       |
 | Integration Hub            | `packages/integrations` registry와 connector classes            | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨                                             |
 | Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema               | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                     |
 
@@ -308,6 +308,17 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
 - model picker는 paginated `model/list` 전체 결과를 사용한다. 새 catalog를 가져올 때마다 snapshot
   event를 내보내 SQLCipher에 저장하고, 실제 resolved model ID와 reasoning option을 turn provenance로
   기록한다. early `model/rerouted` event도 turn 시작 응답까지 bounded buffer에 보존한다.
+- agent mode picker는 pinned Codex App Server의 experimental `collaborationMode/list` 결과를 strict하게
+  검증하고 opaque mode ID·표시명·추천 model/reasoning을 사용한다. GOSU가 `default`, `plan` 또는 향후
+  mode 목록을 제품 enum으로 하드코딩하지 않는다. mode catalog는 canonical SHA-256으로 고정하며 prompt
+  조립 뒤 catalog가 바뀌거나 mode·추천 model이 사라지면 silent fallback 없이 turn을 중단한다.
+- GOSU는 Codex의 base instructions와 agent loop를 덮어쓰지 않는다. `thread/start`에는 project 권한,
+  evidence 취급, Apply gate만 포함한 최소 product policy를 developer instructions로 주고,
+  `turn/start.collaborationMode.settings.developer_instructions`는 `null`로 보내 Codex에 내장된 mode
+  instructions를 사용한다. pinned 0.146.0 runtime에서 thread developer instructions와 collaboration-mode
+  developer fragment는 별도 context layer로 유지되므로 native mode가 product policy를 제거하지 않는다.
+  request-shape test는 두 layer가 동시에 전달되는지 고정한다. personality와 model verbosity도 Codex native
+  setting으로 전달한다.
 - Project Chat turn은 `approvalPolicy: never`, read-only sandbox, network off, empty environments와
   empty runtime roots로 시작한다. process와 thread 양쪽에서 shell, unified exec, browser, Apps,
   plugins, MCP, image generation, multi-agent와 utility tool을 끈다. 예외는 Main이 turn마다 선언하는
@@ -454,9 +465,11 @@ flowchart LR
   소유한다. 대화를
   `local_workspace_state` JSON이나 workspace sync outbox에 넣지 않는다. 따라서 긴 대화가
   Project·Task·Objective snapshot의 크기와 delivery 순서에 영향을 주지 않는다.
-- project profile은 `context`·`planner`·`reviewer` harness, `concise`·`standard`·`deep` 응답 깊이,
+- project profile은 provider가 발견한 nullable opaque Codex collaboration mode ID,
+  `auto`·`none`·`friendly`·`pragmatic` personality, `auto`·`low`·`medium`·`high` native verbosity,
   `project`·`board`·`objective` context scope, nullable project-local Vault grant와 최대 4,000자의 custom
-  instruction을 소유한다.
+  instruction을 소유한다. v0.6의 `context`·`planner`·`reviewer`와 `concise`·`standard`·`deep` column은
+  migration·과거 receipt 판독을 위해 남기되 새 UI의 harness 원본으로 사용하지 않는다.
   Settings의 저장은 profile version CAS를 사용하고 stale edit는 `chat_profile_conflict`로 끝난다.
   Vault grant 저장 시 Main이 현재 선택된 Vault의 opaque ID와 이름을 다시 대조한다. folder가 바뀌면
   기존 grant는 inactive이며 자동 이전하지 않는다. active turn 중 profile 변경은 거절해 한 turn의
@@ -468,16 +481,19 @@ flowchart LR
   button은 profile 저장 전 local draft임을 label로 표시한다.
   custom instruction 변경은 append-only revision과 content hash를 남기며 이전 attempt의 의미를
   덮어쓰지 않는다. Chat 화면의 per-turn override는 profile을 수정하지 않고 해당 attempt에만 고정된다.
-- prompt assembly는 변경 가능한 문자열 연결을 Renderer에 두지 않는다. Main의 versioned immutable
-  base policy → harness policy → 낮은 우선순위의 custom instruction 순서로 developer instruction을
-  만들고, project context·visible history·user message는 별도의 untrusted JSON envelope에 넣는다.
+- prompt assembly는 변경 가능한 문자열 연결을 Renderer에 두지 않는다. Main은 versioned immutable
+  GOSU product policy만 developer instruction으로 만들고, Codex의 Default·Plan 동작과 답변 verbosity를
+  자체 prompt로 재구현하지 않는다. custom project preference, project context, visible history와 user
+  message는 모두 별도의 untrusted JSON envelope에 넣는다.
   context는 최대 48,000자, history는 최근 40개·24,000자, assembled prompt는 160,000자로 제한한다.
-  base·harness·custom·context·history·message·최종 prompt의 SHA-256과 profile/instruction revision,
-  workspace revision, dynamic tool catalog hash, 실제 활성 Vault ID와 truncation 여부를 attempt
-  provenance assembly v2에 기록한다. 이전 assembly v1 provenance는 계속 읽을 수 있다.
-- reviewer harness는 조언 전용이다. 모델이 구조화 action을 반환하더라도 service가 `actions=[]`로
-  강제해 UI prompt wording을 우회한 Board mutation을 만들지 못한다. 모든 harness는 현재와 동일한
-  read-only·no-network·no-shell·no-subagent 경계를 사용하며 GOSU가 선언한 project read tool만 예외다.
+  policy·legacy compatibility·custom·context·history·message·최종 prompt의 SHA-256과
+  profile/instruction revision, workspace revision, dynamic tool catalog hash, 실제 활성 Vault ID,
+  Codex mode catalog hash, 선택 mode·personality·verbosity·effective reasoning과 truncation 여부를 attempt
+  provenance assembly v3에 기록한다. 이전 assembly v1·v2 provenance는 계속 읽을 수 있다.
+- 기존 reviewer profile은 migration 호환 경로에서만 조언 전용으로 유지한다. 모델이 구조화 action을
+  반환하더라도 service가 `actions=[]`로 강제한다. 사용자가 새 native mode를 명시하면 legacy reviewer를
+  벗어난다. native mode를 포함한 모든 turn은 동일한 read-only·no-network·no-shell·no-subagent 경계를
+  사용하며 GOSU가 선언한 project read tool만 예외다.
 - 현재 `gosu_project` namespace는 `read_workspace`, `list_local_notes`, `read_local_note`를 제공한다.
   `read_workspace`는 active project ID를 handler closure에 묶어 Board와 최신 Objective만 반환하며
   모델 argument로 project ID를 받지 않는다. repository는 credential·URL·SSH 주소를 제외한 canonical
@@ -529,9 +545,10 @@ flowchart LR
 - 앱 시작과 사용자의 Reconnect는 Codex account 상태와 전체 동적 model catalog를 다시 확인한다.
   연결이 끊기면 이전 catalog를 폐기하며 Board·Settings·Local notes는 계속 동작한다. 선택한 model이
   없어졌을 때 다른 model로 조용히 바꾸지 않는다.
-- model별 reasoning option도 `model/list` catalog가 제공한 실제 값만 표시한다. GOSU가 model 이름이나
-  effort 목록을 하드코딩하지 않으며 선택한 model ID·reasoning option은 harness profile과 별개로 각
-  attempt에 기록한다.
+- model별 reasoning option과 personality 지원 여부도 `model/list` catalog가 제공한 실제 값만 표시한다.
+  GOSU가 model 이름이나 effort 목록을 하드코딩하지 않으며 선택한 model ID·reasoning option과 native
+  mode 설정은 각 attempt에 기록한다. 사용자가 선택한 model/reasoning이 mode 추천보다 우선하고,
+  mode 추천은 provider 기본값보다 우선한다. personality 미지원 model에는 Main도 설정을 거절한다.
 - Codex final은 JSON Schema와 Zod가 함께 검증하는 `reply + actions` 계약이다. v1 action은
   `task.create`와 `task.update`뿐이며 모델이 `projectId`를 정할 수 없다.
 - 제안 action은 곧바로 실행되지 않는다. 사용자가 Apply하면 SQLCipher row를 `proposed → applying`으로
@@ -591,26 +608,26 @@ flowchart LR
   열려야 한다.
   앞으로 계정 간 preference 동기화가 필요하면 전용 계약과 명시적 opt-in을 별도로 설계한다.
 
-### Project Agent Runtime: 구현된 read slice와 후속 자율 실행 설계
+### Project Agent Runtime: native Codex harness와 후속 자율 실행 설계
 
-Project Chat에는 현재 active project의 Board·Objective와 명시적으로 승인한 Local Notes를 읽는
-bounded tool loop가 구현되어 있다. 이는 navigation UI나 DB를 자유롭게 조작하는 agent가 아니며,
-mutation은 여전히 검증된 proposal과 사용자 Apply를 거친다. shell·network·arbitrary file·subagent,
-실험 실행과 논문 변경을 포함한 프로젝트 자율 실행 runtime은 아직 계획 단계다. 후속 runtime은
-[OpenClaw Gateway architecture](https://docs.openclaw.ai/concepts/architecture),
-[OpenClaw agent loop](https://docs.openclaw.ai/concepts/agent-loop),
-[OpenClaw plugin policy](https://docs.openclaw.ai/tools/plugin),
-[Hermes architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture),
-[Hermes memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory),
-[Hermes skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)와
-[Hermes security](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md)의 패턴을
-참고한다. 두 프로젝트를 GOSU runtime dependency로 직접 내장하지는 않는다.
+Project Chat에는 pinned local [Codex App Server](https://learn.chatgpt.com/docs/app-server)의 native
+thread/turn/item agent loop와 dynamic tools를 사용해 active project의 Board·Objective와 명시적으로
+승인한 Local Notes를 읽는 bounded tool loop가 구현되어 있다. GOSU가 별도의 planner/reviewer loop를
+재작성하지 않고 Codex가 제공하는 collaboration mode·reasoning·personality·verbosity를 조합한다.
+다만 이는 navigation UI나 DB를 자유롭게 조작하는 agent가 아니며 mutation은 검증된 proposal과 사용자
+Apply를 거친다. shell·network·arbitrary file·subagent, 실험 실행과 논문 변경을 포함한 프로젝트 자율
+실행 runtime은 아직 계획 단계다.
+
+OpenClaw와 Hermes는 gateway lifecycle, policy, memory를 비교 검토하는 참고 자료일 뿐 GOSU의 agent
+harness dependency가 아니다. 후속 기능도 우선 Codex App Server의 native thread/turn/dynamic-tool
+계약으로 확장하고, GOSU는 연구 도메인 capability·승인·provenance만 소유한다. Codex plugin·skill과
+multi-agent는 child thread가 project authorization을 상속하고 audit할 수 있기 전까지 비활성화한다.
 
 ```mermaid
 flowchart LR
   User["Project conversation·goal"]
   Gateway["Local Project Agent Gateway\nrun acceptance·session lane"]
-  Planner["Planner\nResearchPlanV1·ActionProposalV1"]
+  Planner["Codex native agent loop\nResearchPlanV1·ActionProposalV1 output"]
   Policy["Deterministic Policy\nRBAC·mode·budget·policy hash"]
   Approval["Human approval\ndiff·manifest·scope"]
   Executor["Typed Executor\nversioned tool registry"]
@@ -633,9 +650,10 @@ flowchart LR
   협업·승인·감사 metadata만 다룬다. LLM 호출 전에 `AgentRun`을 durable accept하고 `runId`를 반환한
   뒤 lifecycle, assistant, tool, observation stream을 분리한다. project/session lane별 직렬화와
   idempotency key·fencing token으로 stale run이 최신 상태를 덮지 못하게 한다.
-- **Planner**: LLM은 목표·`ObjectiveVersion`, expected metric, precondition, rollback, budget을 포함한
-  versioned `ResearchPlanV1`과 `ActionProposalV1`만 만든다. Planner가 connector나 shell을 직접
-  호출하거나 성공을 최종 판정하지 않는다.
+- **Native agent loop와 계획 계약**: Codex가 목표와 허용된 tool observation을 바탕으로 계획을
+  진행하되, GOSU가 받는 변경 출력은 `ObjectiveVersion`, expected metric, precondition, rollback,
+  budget을 포함한 versioned `ResearchPlanV1`과 `ActionProposalV1`으로 제한한다. Codex mode가 connector나
+  shell 권한을 스스로 얻거나 성공을 최종 판정하지 않는다.
 - **Policy**: LLM·plugin과 분리된 결정론적 engine이 lab/project RBAC, Autopilot mode, metric·dataset,
   budget, network·secret, branch/base-SHA와 policy hash를 평가해 `allow`, `deny`, `needsApproval`을
   결정한다. session ID는 routing 식별자일 뿐 authorization 근거가 아니다.
@@ -646,8 +664,8 @@ flowchart LR
 - **Observer와 evidence**: Runner, Git, compiler와 evaluator event를 append-only observation과
   `ExecutionReceipt`로 만든다. trusted evaluator와 guardrail이 metric 채택을 판단하며 LLM 문장은
   evidence가 아니다. 실패·중단·negative result도 lineage에서 제거하지 않는다.
-- **Memory와 skill learning**: Hermes의 bounded curated memory와 on-demand searchable history 분리를
-  참고해 (1) run 시작 시 고정된 bounded working snapshot, (2) project-scoped episodic history,
+- **Memory와 skill learning**: bounded curated memory와 on-demand searchable history를 분리해
+  (1) run 시작 시 고정된 bounded working snapshot, (2) project-scoped episodic history,
   (3) 승인된 structured fact, (4) versioned procedural playbook을 별도 저장한다. 새 memory·playbook은
   source, run, commit, ObjectiveVersion provenance가 있는 candidate→diff→human approval을 거친다.
 
@@ -852,8 +870,9 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 - Desktop menu·Settings 변경: fixed no-payload navigation event, early-event buffer, 표준 macOS role 보존
 - Project lifecycle 변경: stale version, 두 단계 Trash UI, trashed mutation 차단, 같은 UUID 복원과
   task·objective·chat·outbox 보존
-- Project Chat harness 변경: profile CAS, instruction revision, prompt hash·bound·truncation, project 격리,
-  reviewer action suppression, dynamic model/reasoning provenance
+- Project Chat native harness 변경: dynamic mode catalog·hash·TOCTOU, mode/model/reasoning fallback 금지,
+  personality 지원, profile CAS, instruction revision, prompt hash·bound·truncation, project 격리,
+  legacy reviewer action suppression, dynamic model/mode/reasoning provenance
 - Runner 변경: signature·policy rejection, fence race, Stop·Kill race, exact JSON wire, Podman argument
   array와 fail-closed 설정
 - connector 변경: deterministic fake response, capability 정확성, credential·원문 미저장

@@ -6,6 +6,7 @@ export type CodexModel = {
   displayName: string;
   isDefault: boolean;
   reasoningOptions: Array<{ id: string; label: string; isDefault: boolean }>;
+  supportsPersonality?: boolean;
 };
 
 export function ConnectionsView({
@@ -27,12 +28,12 @@ export function ConnectionsView({
 }: {
   runtime: RuntimeReadiness | null;
   models: readonly CodexModel[];
-  selectedModel: string;
+  selectedModel: string | null;
   status: string;
   busy: boolean;
   apiKeyMode: boolean;
   apiKey: string;
-  onSelectedModel: (modelId: string) => void;
+  onSelectedModel: (modelId: string | null) => void;
   onRefresh: () => void;
   onReconnect: () => void;
   onToggleApiKey: () => void;
@@ -49,11 +50,11 @@ export function ConnectionsView({
         <label>
           Discovered model
           <select
-            value={selectedModel}
-            onChange={(event) => onSelectedModel(event.target.value)}
+            value={selectedModel ?? ''}
+            onChange={(event) => onSelectedModel(event.target.value || null)}
             disabled={busy}
           >
-            <option value="auto">Auto · provider recommended</option>
+            <option value="">Auto · provider recommended</option>
             {models.map((model) => (
               <option key={model.modelId} value={model.modelId}>
                 {model.displayName}

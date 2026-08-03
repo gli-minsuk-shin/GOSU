@@ -14,10 +14,13 @@ const PROVIDER_ID = 'codex';
 function catalogHash(models: readonly CodexModel[]) {
   const canonical = models.map((model) => ({
     id: model.id,
+    wireModel: model.model,
     displayName: model.displayName,
     isDefault: model.isDefault,
+    defaultReasoningEffort: model.defaultReasoningEffort ?? null,
     reasoning: model.supportedReasoningEfforts ?? [],
     modalities: model.inputModalities ?? ['text', 'image'],
+    supportsPersonality: model.supportsPersonality ?? false,
     upgrade: model.upgrade ?? null,
   }));
 
@@ -50,7 +53,10 @@ export function toModelCatalog(
         isDefault: option.reasoningEffort === model.defaultReasoningEffort,
       })),
       ...(model.upgrade ? { replacementModelId: model.upgrade } : {}),
-      metadata: { wireModel: model.model },
+      metadata: {
+        wireModel: model.model,
+        supportsPersonality: model.supportsPersonality ?? false,
+      },
     })),
   });
 }

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
+  CodexCollaborationModeCatalog,
+  CodexCollaborationModeDescriptor,
   ProjectChatAction,
   ProjectChatEvent,
   ProjectChatSnapshot,
@@ -14,6 +16,7 @@ import type {
   WorkspaceSnapshot,
 } from '../../shared/workspace-contracts';
 import { BoardView } from './board-view';
+import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import {
   LocalNotesView,
@@ -22,7 +25,7 @@ import {
   type VaultSelection,
 } from './notes-view';
 import { ProjectChatLoadGuard } from './project-chat-load-guard';
-import { ProjectChatView } from './project-chat-view';
+import { ProjectChatView, resolveEffectiveCodexModel } from './project-chat-view';
 import { resolveActiveProjectId, visibleProjects } from './project-portfolio-model';
 import { SettingsView, type SettingsCategory } from './settings-view';
 import { Connection, describeError } from './ui-primitives';
@@ -76,8 +79,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [showProjectForm, setShowProjectForm] = useState(false);
 
   const [models, setModels] = useState<CodexModel[]>([]);
-  const [selectedModel, setSelectedModel] = useState('auto');
-  const [selectedReasoning, setSelectedReasoning] = useState('auto');
+  const [collaborationModes, setCollaborationModes] = useState<CodexCollaborationModeDescriptor[]>(
+    [],
+  );
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [selectedReasoning, setSelectedReasoning] = useState<string | null>(null);
   const [codexStatus, setCodexStatus] = useState('Catalog not loaded');
   const [codexBusy, setCodexBusy] = useState(false);
   const [codexConnectionState, setCodexConnectionState] =
@@ -260,18 +266,21 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       const result = (await window.gosu.codex.reconnect()) as {
         authenticated: boolean;
         models: CodexModel[];
+        collaborationModeCatalog: CodexCollaborationModeCatalog;
       };
       setModels(result.models);
+      setCollaborationModes(result.collaborationModeCatalog.modes);
       setCodexConnectionState(result.authenticated ? 'ready' : 'auth-required');
       setCodexStatus(
         result.authenticated
-          ? `Connected · ${result.models.length} models available locally`
-          : `${result.models.length} models found · sign in before chatting`,
+          ? `Connected · ${result.models.length} models · ${result.collaborationModeCatalog.modes.length} native modes`
+          : `${result.models.length} models and ${result.collaborationModeCatalog.modes.length} native modes found · sign in before chatting`,
       );
       if (codexErrorVisible || showRecoveryError) setWorkspaceError(null);
       setCodexErrorVisible(false);
     } catch (error) {
       setModels([]);
+      setCollaborationModes([]);
       setCodexConnectionState('unavailable');
       setCodexStatus(describeError(error));
       if (showRecoveryError) {
@@ -582,6 +591,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 chatLoadingProjectId === activeProject.id &&
                 !chatSnapshots[activeProject.id]?.profile,
               )}
+              collaborationModes={collaborationModes}
               vault={vault}
               vaultState={vaultState}
               onUpdateAgentProfile={updateProjectChatProfile}
@@ -661,14 +671,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   chatStartingProjectId === activeProject.id
                 }
                 models={models}
+                collaborationModes={collaborationModes}
                 selectedModel={selectedModel}
                 selectedReasoning={selectedReasoning}
                 applyingActionId={applyingChatActionId}
                 vault={vault}
                 vaultState={vaultState}
                 onSelectedModel={(modelId) => {
-                  setSelectedModel(modelId);
-                  setSelectedReasoning('auto');
+                  const selection = selectCodexModel(modelId);
+                  setSelectedModel(selection.modelId);
+                  setSelectedReasoning(selection.reasoningOptionId);
                 }}
                 onSelectedReasoning={setSelectedReasoning}
                 onRefreshModels={() => void refreshModels()}
@@ -688,23 +700,50 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     );
                     return false;
                   }
-                  const selectedDescriptor = models.find(
-                    (model) => model.modelId === selectedModel,
+                  const selectedDescriptor = resolveEffectiveCodexModel(
+                    models,
+                    collaborationModes,
+                    selectedModel,
+                    controls.collaborationModeId ?? null,
                   );
-                  if (selectedModel !== 'auto' && !selectedDescriptor) {
+                  const selectedCollaborationMode = controls.collaborationModeId
+                    ? collaborationModes.find((mode) => mode.id === controls.collaborationModeId)
+                    : undefined;
+                  const effectiveReasoningOptionId =
+                    selectedReasoning ??
+                    selectedCollaborationMode?.recommendedReasoningOptionId ??
+                    null;
+                  if (controls.collaborationModeId && !selectedCollaborationMode) {
                     setWorkspaceError(
-                      'The selected Codex model is no longer available. Choose a current model and try again.',
+                      'The selected Codex collaboration mode is no longer available. Choose a current mode and try again.',
+                    );
+                    return false;
+                  }
+                  if (!selectedDescriptor) {
+                    setWorkspaceError(
+                      selectedModel !== null
+                        ? 'The selected Codex model is no longer available. Choose a current model and try again.'
+                        : 'The effective Codex default or mode-recommended model is unavailable. Choose a current model or mode and try again.',
                     );
                     return false;
                   }
                   if (
-                    selectedReasoning !== 'auto' &&
+                    effectiveReasoningOptionId !== null &&
                     !selectedDescriptor?.reasoningOptions.some(
-                      (option) => option.id === selectedReasoning,
+                      (option) => option.id === effectiveReasoningOptionId,
                     )
                   ) {
                     setWorkspaceError(
-                      'The selected reasoning option is no longer available. Choose a current option and try again.',
+                      'The selected or mode-recommended reasoning option is unavailable for the effective model. Choose a current option and try again.',
+                    );
+                    return false;
+                  }
+                  if (
+                    controls.personality !== 'auto' &&
+                    selectedDescriptor?.supportsPersonality === false
+                  ) {
+                    setWorkspaceError(
+                      'The effective Codex model does not support personality controls. Choose Auto personality or another model/mode.',
                     );
                     return false;
                   }
@@ -714,8 +753,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     await window.gosu.projectChat.send({
                       projectId: activeProject.id,
                       message,
-                      requestedModelId: selectedModel === 'auto' ? null : selectedModel,
-                      reasoningOptionId: selectedReasoning === 'auto' ? null : selectedReasoning,
+                      requestedModelId: selectedModel,
+                      reasoningOptionId: selectedReasoning,
                       ...controls,
                       ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
                     });
@@ -841,8 +880,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 apiKeyMode={apiKeyMode}
                 apiKey={apiKey}
                 onSelectedModel={(modelId) => {
-                  setSelectedModel(modelId);
-                  setSelectedReasoning('auto');
+                  const selection = selectCodexModel(modelId);
+                  setSelectedModel(selection.modelId);
+                  setSelectedReasoning(selection.reasoningOptionId);
                 }}
                 onRefresh={() => void refreshModels()}
                 onReconnect={() => void refreshModels(true)}
@@ -875,9 +915,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   void window.gosu.codex
                     .logout()
                     .then(() => {
+                      const selection = resetCodexPicker();
                       setModels([]);
-                      setSelectedModel('auto');
-                      setSelectedReasoning('auto');
+                      setSelectedModel(selection.modelId);
+                      setSelectedReasoning(selection.reasoningOptionId);
                       setCodexConnectionState('auth-required');
                       setCodexStatus('Signed out from local Codex.');
                     })
