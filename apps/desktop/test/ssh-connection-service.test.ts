@@ -279,6 +279,104 @@ describe('SSH connection and Allow once service', () => {
     await vi.waitFor(() => expect(removeAbortListener).toHaveBeenCalledOnce());
   });
 
+  it('does not call the runner when its caller aborts during approved connection revalidation', async () => {
+    const storage = new MemorySshStorage();
+    let releaseRevalidation!: (profiles: SshConnectionProfile[]) => void;
+    const listConnections = vi
+      .spyOn(storage, 'listSshConnections')
+      .mockImplementationOnce(() => [connectionFixture()])
+      .mockImplementationOnce(
+        () =>
+          new Promise<SshConnectionProfile[]>((resolve) => {
+            releaseRevalidation = resolve;
+          }),
+      );
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner);
+    const controller = new AbortController();
+    const removeAbortListener = vi.spyOn(controller.signal, 'removeEventListener');
+    const approval = nextApproval(service);
+    const execution = service.runAgentCommand(commandFixture(), controller.signal);
+    const request = await approval;
+    service.resolveApproval({ approvalId: request.id, decision: 'allow_once' });
+    await vi.waitFor(() => expect(listConnections).toHaveBeenCalledTimes(2));
+
+    controller.abort();
+
+    await expect(execution).rejects.toEqual(
+      expect.objectContaining<Partial<SshConnectionServiceError>>({ code: 'ssh_cancelled' }),
+    );
+    releaseRevalidation([connectionFixture()]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(execute).not.toHaveBeenCalled();
+    expect(removeAbortListener).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an active caller abort terminal when a signal-ignoring runner later succeeds', async () => {
+    let finishRunner!: (result: SshProcessResult) => void;
+    const { runner, execute } = runnerFixture();
+    execute.mockImplementationOnce(
+      () =>
+        new Promise<SshProcessResult>((resolve) => {
+          finishRunner = resolve;
+        }),
+    );
+    const service = new SshConnectionService(new MemorySshStorage(), runner);
+    const controller = new AbortController();
+    const removeAbortListener = vi.spyOn(controller.signal, 'removeEventListener');
+    const approval = nextApproval(service);
+    const execution = service.runAgentCommand(commandFixture(), controller.signal);
+    const request = await approval;
+    service.resolveApproval({ approvalId: request.id, decision: 'allow_once' });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+
+    controller.abort();
+
+    await expect(execution).rejects.toEqual(
+      expect.objectContaining<Partial<SshConnectionServiceError>>({ code: 'ssh_cancelled' }),
+    );
+    finishRunner({
+      exitCode: 0,
+      stdout: 'late success',
+      stderr: '',
+      truncated: false,
+      durationMs: 10,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(removeAbortListener).toHaveBeenCalledOnce();
+  });
+
+  it('lets abort win when runner success is queued but not yet observed by the service', async () => {
+    let finishRunner!: (result: SshProcessResult) => void;
+    const { runner, execute } = runnerFixture();
+    execute.mockImplementationOnce(
+      () =>
+        new Promise<SshProcessResult>((resolve) => {
+          finishRunner = resolve;
+        }),
+    );
+    const service = new SshConnectionService(new MemorySshStorage(), runner);
+    const controller = new AbortController();
+    const approval = nextApproval(service);
+    const execution = service.runAgentCommand(commandFixture(), controller.signal);
+    const request = await approval;
+    service.resolveApproval({ approvalId: request.id, decision: 'allow_once' });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+
+    finishRunner({
+      exitCode: 0,
+      stdout: 'queued success',
+      stderr: '',
+      truncated: false,
+      durationMs: 10,
+    });
+    controller.abort();
+
+    await expect(execution).rejects.toEqual(
+      expect.objectContaining<Partial<SshConnectionServiceError>>({ code: 'ssh_cancelled' }),
+    );
+  });
+
   it('denies without executing and has no raw-output persistence method', async () => {
     const { runner, execute } = runnerFixture();
     const storage = new MemorySshStorage();
