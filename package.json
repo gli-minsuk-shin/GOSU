@@ -21,7 +21,8 @@
   "scripts": {
     "app:dev": "exec node scripts/run-local.mjs",
     "app:doctor": "node scripts/doctor.mjs",
-    "app:package": "pnpm check && pnpm --filter @gosu/desktop package:mac",
+    "app:package": "pnpm check && pnpm --filter @gosu/desktop package:mac:dev",
+    "app:package:release": "pnpm check && pnpm --filter @gosu/desktop package:mac:release",
     "build": "turbo run build",
     "check": "pnpm format:check && pnpm contracts:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "contracts:check": "pnpm --filter @gosu/contracts generate:check",
