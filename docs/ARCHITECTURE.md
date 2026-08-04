@@ -416,9 +416,12 @@ sanitize한 뒤 local KaTeX를 실행한다. sanitizer는 `math-inline`·`math-d
 KaTeX는 `trust: false`, `strict: warn`, `maxExpand: 1000`, `maxSize: 20`을 사용한다. 문서 하나에서
 렌더링하는 수식은 최대 256개, 수식 하나는 4,096자, 전체 TeX source는 32,768자로 제한한다. 한도를
 넘은 수식은 없애지 않고 inline 또는 fenced TeX code로 보여 주며, 긴 display 수식은 reader 안에서
-가로 scroll한다. KaTeX CSS와 font는 앱 package에 포함되고 Appearance font scale과 theme을 상속하며
-외부 network를 요청하지 않는다. `Source` mode는 이 파이프라인을 거치지 않아 원문 delimiter를 그대로
-표시한다.
+가로 scroll한다. 일반 prose와 긴 URL·무공백 token은 document 폭 안에서 줄바꿈하고, KaTeX의
+`white-space: nowrap`으로 폭을 유지해야 하는 긴 inline 수식은 해당 수식 자체가 가로 scroll region이
+된다. display 수식·code block·넓은 GFM table도 각각 자기 block 안에서 scroll하므로 바깥 Local Notes나
+Repository layout을 밀어내거나 문서 끝의 전역 scrollbar에 의존하지 않는다. KaTeX CSS와 font는 앱
+package에 포함되고 Appearance font scale과 theme을 상속하며 외부 network를 요청하지 않는다. `Source`
+mode는 이 파이프라인을 거치지 않아 원문 delimiter를 그대로 표시한다.
 
 Obsidian `[[note]]`, alias와 표준 상대 `.md` link는 raw text 치환이 아닌 Markdown AST 단계에서
 처리한다. 따라서 inline/fenced code 안의 wiki-link 표시는 바뀌지 않는다. 대상은 현재 note 기준의
@@ -1169,8 +1172,8 @@ Local Notes tree test는 입력 순서와 무관한 directory-first natural orde
 DOM에 없고 directory의 `aria-expanded`, 현재 file의 `aria-selected`·`aria-current`, visible row의 단일
 roving tab stop과 tree level·position metadata가 일치하는지 검사한다. Markdown document test는 inline·
 display MathML, frontmatter·inline/fenced code 제외, escaped·unmatched dollar, malformed·unsafe TeX,
-수식 rendering budget의 visible fallback과 기존 wiki-link·attachment·HTTPS·raw HTML 경계를 함께
-검증한다.
+수식 rendering budget의 visible fallback, 긴 prose 줄바꿈과 inline/display 수식·code·table의 local
+가로 scroll 계약, 기존 wiki-link·attachment·HTTPS·raw HTML 경계를 함께 검증한다.
 
 Project Chat session test는 legacy single-chat DB가 default session으로 lossless migration되는지,
 root session isolation, completed-message branch prefix와 이후 source history 차단, cross-project·

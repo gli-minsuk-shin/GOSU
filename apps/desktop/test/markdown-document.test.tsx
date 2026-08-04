@@ -186,6 +186,30 @@ $$`);
     );
   });
 
+  it('wraps prose while keeping long inline math locally scrollable', () => {
+    const longToken = 'research-evidence-'.repeat(40);
+    const html = renderMarkdown(
+      `${longToken}\n\n$\\displaystyle ${Array.from({ length: 80 }, (_, index) => `x_{${index}}`).join(' + ')}$`,
+    );
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(html).toContain(longToken);
+    expect(html).toContain('class="katex"');
+    expect(html).not.toContain('class="katex-display"');
+    expect(styles).toMatch(
+      /\.markdown-document\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*max-width:\s*860px;[^}]*overflow-wrap:\s*anywhere;/su,
+    );
+    expect(styles).toMatch(
+      /\.markdown-document \.katex\s*\{[^}]*display:\s*inline-block;[^}]*max-width:\s*100%;[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/su,
+    );
+    expect(styles).toMatch(
+      /\.markdown-document \.katex-display > \.katex\s*\{[^}]*display:\s*block;[^}]*max-width:\s*none;[^}]*overflow:\s*visible;/su,
+    );
+    expect(styles).toMatch(
+      /\.note-reader-body\s*\{[^}]*min-width:\s*0;[^}]*min-height:\s*0;[^}]*max-width:\s*100%;[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*auto;/su,
+    );
+  });
+
   it('turns prose wiki-links into note links without rewriting inline or fenced code', () => {
     const html = renderMarkdown(
       `Open [[Target|Readable alias]].
