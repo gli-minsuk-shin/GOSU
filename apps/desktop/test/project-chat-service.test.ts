@@ -347,6 +347,9 @@ function localNotesVaultFixture() {
   const vault: ProjectAgentVault = {
     descriptor: () => ({ id: vaultId, name: 'Research Notes' }),
     matchesGrant: (candidate) => candidate === vaultId,
+    validateGrant: async (candidate) => {
+      if (candidate !== vaultId) throw new Error('vault_grant_stale');
+    },
     listForAgent: async () => ({
       notes: [{ noteId, title: 'Baseline evidence' }],
       truncated: false,
@@ -1144,6 +1147,63 @@ describe('ProjectChatService', () => {
         customInstructions: '',
       }),
     ).rejects.toThrow('local_notes_vault_not_selected');
+  });
+
+  it('revalidates the selected folder identity before saving a Local Notes grant', async () => {
+    const localNotes = localNotesVaultFixture();
+    const vault: ProjectAgentVault = {
+      ...localNotes.vault,
+      validateGrant: () => Promise.reject(new Error('vault_root_changed')),
+    };
+    const { chat, projectA } = await fixture(vault);
+
+    await expect(
+      chat.updateProfile({
+        projectId: projectA.id,
+        expectedVersion: 0,
+        harnessMode: 'context',
+        responseDepth: 'standard',
+        contextScope: 'project',
+        localNotesVault: { id: localNotes.vaultId, name: 'Research Notes' },
+        customInstructions: '',
+      }),
+    ).rejects.toThrow('local_notes_vault_changed');
+  });
+
+  it('allows an existing Local Notes grant to be revoked when the folder is unavailable', async () => {
+    const localNotes = localNotesVaultFixture();
+    let folderAvailable = true;
+    const vault: ProjectAgentVault = {
+      ...localNotes.vault,
+      descriptor: () =>
+        folderAvailable ? { id: localNotes.vaultId, name: 'Research Notes' } : null,
+    };
+    const { chat, projectA } = await fixture(vault);
+    const authorized = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'context',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      localNotesVault: { id: localNotes.vaultId, name: 'Research Notes' },
+      customInstructions: '',
+    });
+
+    folderAvailable = false;
+    const revoked = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: authorized.version,
+      harnessMode: authorized.harnessMode,
+      responseDepth: authorized.responseDepth,
+      collaborationModeId: authorized.collaborationModeId,
+      personality: authorized.personality,
+      responseVerbosity: authorized.responseVerbosity,
+      contextScope: authorized.contextScope,
+      localNotesVault: null,
+      customInstructions: authorized.customInstructions,
+    });
+
+    expect(revoked.localNotesVault).toBeNull();
   });
 
   it('binds authorized Local Notes tools to the project and persists bounded source provenance', async () => {

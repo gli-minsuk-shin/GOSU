@@ -74,6 +74,17 @@ describe('VaultAccess atomic state', () => {
     expect(access.matchesGrant(first!.id)).toBe(true);
   });
 
+  it('revalidates the selected folder before a project grant is saved', async () => {
+    const access = new VaultAccess();
+    const root = await temporaryVault('removed-notes');
+    const selected = await choose(access, root);
+
+    await access.validateGrant(selected!.id);
+    await rm(root, { recursive: true });
+
+    await expect(access.validateGrant(selected!.id)).rejects.toThrow('vault_root_changed');
+  });
+
   it('rejects an in-flight accessor when another selection becomes current', async () => {
     const access = new VaultAccess();
     const firstRoot = await temporaryVault('first-notes');

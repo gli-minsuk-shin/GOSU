@@ -593,9 +593,21 @@ flowchart LR
   capability snapshot을 고정한다. Renderer reload 때도 Main의 현재 Vault를 typed IPC로 hydrate하며 stale
   hydration response가 이후의 새 folder 선택을 덮지 못하도록 generation guard를 둔다. Chat composer의
   capability status는 grant가 없거나 inactive일 때 project AI Agent Settings로 가는 `Authorize…` 동선을
-  제공한다. authoritative status를 아직 확인 중이거나 IPC 오류로 확인하지 못했는데 저장된 grant가 있으면
-  chat send를 차단해 Main의 숨은 기존 capability가 UI 표시와 다르게 사용되지 않게 한다. grant·revoke
-  button은 profile 저장 전 local draft임을 label로 표시한다.
+  제공한다. Local Notes 화면도 진입 시 현재 active project의 암호화 profile을 hydrate하고, project 이름과
+  `authorized`·`not authorized`·`inactive`·`checking`·`unavailable` 상태를 함께 표시한다. 사용자는 이
+  화면에서 현재 folder를 직접 승인하거나 기존 grant를 즉시 해제할 수 있고, 같은 project의 AI Agent
+  Settings로 바로 이동할 수 있다. 직접 변경은 storage-only profile field를 spread하지 않고 허용된 설정
+  field를 명시적으로 보존한 CAS command만 전송한다. 승인은 Main이 확인한 exact Vault ID·이름과 active
+  turn 없음이 모두 충족될 때만 가능하며, 저장 직전에 선택 folder의 canonical root와 device·inode identity도
+  다시 검증한다. 해제는 Vault가 사라졌거나 상태 확인이 실패했어도 가능하다. Notes 진입 hydration이 진행
+  중이면 direct action을 잠근다. Hydration busy state는 단일 current ID가 아니라 project별 in-flight set으로
+  추적해 다른 project의 동시에 끝나는 snapshot이 이 잠금을 풀 수 없게 한다. local profile mutation은 진행
+  중인 hydration token을 무효화하며, Renderer의 snapshot merge도 profile version을 단조롭게 유지하므로
+  지연된 이전 snapshot이 새 grant를 화면에서 되돌릴 수 없다.
+  authoritative status를 아직 확인 중이거나 IPC 오류로 확인하지 못했는데 저장된 grant가 있으면 chat
+  send를 차단해 Main의 숨은 기존 capability가 UI 표시와 다르게 사용되지 않게 한다. Agent Settings의
+  grant·revoke button은 profile 저장 전 local draft임을 label로 표시하고, Local Notes의 direct action은
+  성공한 CAS 저장 결과를 즉시 상태에 반영한다.
   custom instruction 변경은 append-only revision과 content hash를 남기며 이전 attempt의 의미를
   덮어쓰지 않는다. Chat 화면의 per-turn override는 profile을 수정하지 않고 해당 attempt에만 고정된다.
 - prompt assembly는 변경 가능한 문자열 연결을 Renderer에 두지 않는다. Main은 versioned immutable

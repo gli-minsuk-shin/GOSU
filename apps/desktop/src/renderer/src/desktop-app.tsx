@@ -3,8 +3,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CodexCollaborationModeCatalog,
   CodexCollaborationModeDescriptor,
+  LocalNotesVaultGrant,
   ProjectChatAction,
   ProjectChatEvent,
+  ProjectChatProfile,
   ProjectChatSnapshot,
   UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
@@ -18,13 +20,20 @@ import type {
 import { BoardView } from './board-view';
 import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
+import { buildLocalNotesGrantUpdate } from './local-notes-access-model';
 import {
   LocalNotesView,
   type SelectedNote,
   type VaultRuntimeState,
   type VaultSelection,
 } from './notes-view';
-import { ProjectChatLoadGuard } from './project-chat-load-guard';
+import {
+  ProjectChatLoadGuard,
+  clearProjectChatLoading,
+  markProjectChatLoading,
+  mergeProjectChatSnapshot,
+  shouldHydrateProjectChat,
+} from './project-chat-load-guard';
 import { ProjectChatView, resolveEffectiveCodexModel } from './project-chat-view';
 import { RepositoryView } from './repository-view';
 import {
@@ -121,7 +130,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [apiKeyMode, setApiKeyMode] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [chatSnapshots, setChatSnapshots] = useState<Record<string, ProjectChatSnapshot>>({});
-  const [chatLoadingProjectId, setChatLoadingProjectId] = useState<string | null>(null);
+  const [chatLoadingProjectIds, setChatLoadingProjectIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [chatStartingProjectId, setChatStartingProjectId] = useState<string | null>(null);
   const [chatInFlight, setChatInFlight] = useState<Record<string, boolean>>({});
   const [applyingChatActionId, setApplyingChatActionId] = useState<string | null>(null);
@@ -195,16 +206,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const loadProjectChat = async (projectId: string) => {
     if (!projectId) return null;
     const loadToken = chatLoadGuard.current.begin(projectId);
-    setChatLoadingProjectId(projectId);
+    setChatLoadingProjectIds((current) => markProjectChatLoading(current, projectId));
     try {
       const next = await window.gosu.projectChat.snapshot(projectId);
       if (!chatLoadGuard.current.canApply(loadToken)) return null;
-      setChatSnapshots((current) => ({ ...current, [projectId]: next }));
+      setChatSnapshots((current) => ({
+        ...current,
+        [projectId]: mergeProjectChatSnapshot(current[projectId], next),
+      }));
       setChatInFlight((current) => ({ ...current, [projectId]: Boolean(next.activeTurnId) }));
       return next;
     } finally {
       if (chatLoadGuard.current.isLatestRequest(loadToken)) {
-        setChatLoadingProjectId((current) => (current === projectId ? null : current));
+        setChatLoadingProjectIds((current) => clearProjectChatLoading(current, projectId));
       }
     }
   };
@@ -289,7 +303,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   );
 
   useEffect(() => {
-    if (activeTab !== 'chat' || !activeProjectId) return;
+    if (!shouldHydrateProjectChat(activeTab, activeProjectId)) return;
     void loadProjectChat(activeProjectId).catch((error: unknown) =>
       setWorkspaceError(describeError(error)),
     );
@@ -431,6 +445,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setWorkspaceError(null);
     try {
       const profile = await window.gosu.projectChat.updateProfile(input);
+      chatLoadGuard.current.invalidateProject(input.projectId);
       setChatSnapshots((current) => {
         const existing = current[input.projectId];
         return existing ? { ...current, [input.projectId]: { ...existing, profile } } : current;
@@ -443,6 +458,21 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       return false;
     } finally {
       setBusyAction(null);
+    }
+  };
+
+  const updateProjectLocalNotesGrant = async (
+    project: ProjectRecord,
+    profile: ProjectChatProfile,
+    grant: LocalNotesVaultGrant | null,
+  ) => {
+    const saved = await updateProjectChatProfile(buildLocalNotesGrantUpdate(profile, grant));
+    if (saved) {
+      setAnnouncement(
+        grant
+          ? `Authorized ${grant.name} for ${project.name} project chat.`
+          : `Revoked Local Notes access for ${project.name}.`,
+      );
     }
   };
 
@@ -488,6 +518,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const selectGlobalTab = (tab: GlobalWorkspaceTabId) => {
     setActiveSurface('workspace');
     setActiveTab(tab);
+    setShowProjectForm(false);
+  };
+
+  const openAgentSettings = () => {
+    setSettingsCategory('agent');
+    setActiveSurface('settings');
     setShowProjectForm(false);
   };
 
@@ -723,7 +759,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               agentProfile={activeProject ? chatSnapshots[activeProject.id]?.profile : undefined}
               agentProfileLoading={Boolean(
                 activeProject &&
-                chatLoadingProjectId === activeProject.id &&
+                chatLoadingProjectIds.has(activeProject.id) &&
                 !chatSnapshots[activeProject.id]?.profile,
               )}
               collaborationModes={collaborationModes}
@@ -812,7 +848,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 tasks={activeTasks}
                 snapshot={chatSnapshots[activeProject.id] ?? null}
                 loading={
-                  chatLoadingProjectId === activeProject.id &&
+                  chatLoadingProjectIds.has(activeProject.id) &&
                   chatSnapshots[activeProject.id] === undefined
                 }
                 inFlight={
@@ -833,11 +869,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 }}
                 onSelectedReasoning={setSelectedReasoning}
                 onRefreshModels={() => void refreshModels()}
-                onOpenAgentSettings={() => {
-                  setSettingsCategory('agent');
-                  setActiveSurface('settings');
-                  setShowProjectForm(false);
-                }}
+                onOpenAgentSettings={openAgentSettings}
                 onSend={async (message, retryOfAttemptId, controls) => {
                   if (chatStartingProjectId !== null || chatInFlight[activeProject.id])
                     return false;
@@ -1092,8 +1124,18 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             {activeTab === 'notes' && (
               <LocalNotesView
                 vault={vault}
+                vaultState={vaultState}
                 selectedNote={selectedNote}
                 busy={noteLoading}
+                project={activeProject}
+                profile={activeProject ? chatSnapshots[activeProject.id]?.profile : undefined}
+                profileLoading={Boolean(
+                  activeProject && chatLoadingProjectIds.has(activeProject.id),
+                )}
+                accessBusy={
+                  busyAction !== null ||
+                  Boolean(activeProject && chatBusyProjectIds.has(activeProject.id))
+                }
                 onChoose={() => void chooseVault()}
                 onRead={(path) => {
                   if (noteLoading) return;
@@ -1105,6 +1147,18 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     .catch((error: unknown) => setWorkspaceError(describeError(error)))
                     .finally(() => setNoteLoading(false));
                 }}
+                onSetProjectAccess={(grant) => {
+                  if (!activeProject) return;
+                  const profile = chatSnapshots[activeProject.id]?.profile;
+                  if (!profile) {
+                    setWorkspaceError(
+                      'The project agent profile is not available yet. Open AI Agent Settings and try again.',
+                    );
+                    return;
+                  }
+                  void updateProjectLocalNotesGrant(activeProject, profile, grant);
+                }}
+                onOpenAgentSettings={openAgentSettings}
               />
             )}
           </>

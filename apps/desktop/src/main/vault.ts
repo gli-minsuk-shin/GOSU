@@ -62,6 +62,12 @@ export class VaultAccess {
     return this.state?.selection.id === vaultId;
   }
 
+  async validateGrant(expectedVaultId: string) {
+    const state = this.requireGrant(expectedVaultId);
+    await state.reader.validateRoot();
+    this.assertCurrent(state);
+  }
+
   async listMarkdown() {
     const state = this.state;
     if (!state) return [];
