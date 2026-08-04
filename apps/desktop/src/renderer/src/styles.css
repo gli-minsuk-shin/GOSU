@@ -1323,8 +1323,10 @@ textarea:focus {
   font-size: var(--font-control);
 }
 
-.task-actions button:last-child {
-  color: var(--orange);
+.task-actions .task-delete-button {
+  border-color: color-mix(in srgb, var(--red) 38%, var(--line));
+  background: color-mix(in srgb, var(--red) 7%, var(--surface-soft));
+  color: var(--red);
 }
 
 .task-edit-form {
