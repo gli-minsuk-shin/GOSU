@@ -1,13 +1,146 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import type { LocalNotesVaultGrant, ProjectChatProfile } from '../../shared/project-chat-contracts';
 import type { VaultSelection } from '../../shared/vault-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
+import {
+  localNotesTreeRows,
+  revealLocalNote,
+  toggleLocalNotesDirectory,
+  type LocalNotesTreeRow,
+} from './local-notes-tree-model';
 import { MarkdownDocument } from './markdown-document';
 
 export type { VaultSelection } from '../../shared/vault-contracts';
 export type SelectedNote = { path: string; content: string };
 export type VaultRuntimeState = 'checking' | 'ready' | 'unavailable';
+
+const EMPTY_EXPANDED_DIRECTORIES: ReadonlySet<string> = new Set();
+
+export function LocalNotesTree({
+  files,
+  expandedDirectories,
+  selectedPath,
+  busy,
+  onToggleDirectory,
+  onOpenFile,
+}: {
+  files: readonly string[];
+  expandedDirectories: ReadonlySet<string>;
+  selectedPath: string | null;
+  busy: boolean;
+  onToggleDirectory: (path: string) => void;
+  onOpenFile: (path: string) => void;
+}) {
+  const rows = useMemo(
+    () => localNotesTreeRows(files, expandedDirectories),
+    [expandedDirectories, files],
+  );
+  const [focusedPath, setFocusedPath] = useState<string | null>(selectedPath);
+  const rowButtons = useRef(new Map<string, HTMLButtonElement>());
+  useEffect(() => {
+    if (selectedPath) setFocusedPath(selectedPath);
+  }, [selectedPath]);
+  const visibleFocusedPath = rows.some((row) => row.path === focusedPath)
+    ? focusedPath
+    : rows.some((row) => row.path === selectedPath)
+      ? selectedPath
+      : (rows[0]?.path ?? null);
+
+  const focusRow = (path: string | null) => {
+    if (!path) return;
+    setFocusedPath(path);
+    rowButtons.current.get(path)?.focus();
+  };
+
+  const handleKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    row: LocalNotesTreeRow,
+    index: number,
+  ) => {
+    let focusTarget: string | null;
+    switch (event.key) {
+      case 'ArrowDown':
+        focusTarget = rows[Math.min(index + 1, rows.length - 1)]?.path ?? null;
+        break;
+      case 'ArrowUp':
+        focusTarget = rows[Math.max(index - 1, 0)]?.path ?? null;
+        break;
+      case 'Home':
+        focusTarget = rows[0]?.path ?? null;
+        break;
+      case 'End':
+        focusTarget = rows.at(-1)?.path ?? null;
+        break;
+      case 'ArrowRight':
+        if (row.kind !== 'directory') return;
+        if (!expandedDirectories.has(row.path)) {
+          event.preventDefault();
+          onToggleDirectory(row.path);
+          return;
+        }
+        focusTarget = rows[index + 1]?.depth === row.depth + 1 ? rows[index + 1]!.path : null;
+        break;
+      case 'ArrowLeft':
+        if (row.kind === 'directory' && expandedDirectories.has(row.path)) {
+          event.preventDefault();
+          onToggleDirectory(row.path);
+          return;
+        }
+        focusTarget = row.parentPath;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    focusRow(focusTarget);
+  };
+
+  return (
+    <div className="local-notes-tree" role="tree" aria-label="Local Notes files">
+      {rows.map((row, index) => {
+        const directory = row.kind === 'directory';
+        const expanded = directory && expandedDirectories.has(row.path);
+        const selected = !directory && selectedPath === row.path;
+        return (
+          <button
+            type="button"
+            role="treeitem"
+            key={`${row.kind}:${row.path}`}
+            ref={(button) => {
+              if (button) rowButtons.current.set(row.path, button);
+              else rowButtons.current.delete(row.path);
+            }}
+            className={`local-notes-tree-row ${row.kind}${selected ? ' selected' : ''}`}
+            style={{ paddingInlineStart: `${9 + row.depth * 17}px` }}
+            aria-level={row.depth + 1}
+            aria-posinset={row.posInSet}
+            aria-setsize={row.setSize}
+            aria-expanded={directory ? expanded : undefined}
+            aria-selected={directory ? undefined : selected}
+            aria-current={selected ? 'page' : undefined}
+            aria-disabled={!directory && busy ? true : undefined}
+            tabIndex={visibleFocusedPath === row.path ? 0 : -1}
+            title={row.path}
+            onFocus={() => setFocusedPath(row.path)}
+            onKeyDown={(event) => handleKeyDown(event, row, index)}
+            onClick={() => {
+              if (directory) onToggleDirectory(row.path);
+              else if (!busy) onOpenFile(row.path);
+            }}
+          >
+            <span
+              className={`local-notes-tree-disclosure${expanded ? ' expanded' : ''}`}
+              aria-hidden="true"
+            />
+            <span className="local-notes-tree-icon" aria-hidden="true" />
+            <span className="local-notes-tree-label">{row.name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 export function LocalNotesView({
   vault,
@@ -36,7 +169,35 @@ export function LocalNotesView({
   onSetProjectAccess: (grant: LocalNotesVaultGrant | null) => void;
   onOpenAgentSettings: () => void;
 }) {
+  const vaultId = vault?.id ?? null;
+  const selectedNotePath =
+    selectedNote && vault?.files.includes(selectedNote.path) ? selectedNote.path : null;
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
+  const [treeState, setTreeState] = useState<{
+    vaultId: string | null;
+    expandedDirectories: ReadonlySet<string>;
+  }>({
+    vaultId,
+    expandedDirectories: selectedNotePath
+      ? revealLocalNote(EMPTY_EXPANDED_DIRECTORIES, selectedNotePath)
+      : EMPTY_EXPANDED_DIRECTORIES,
+  });
+  useEffect(() => {
+    setTreeState({
+      vaultId,
+      expandedDirectories: EMPTY_EXPANDED_DIRECTORIES,
+    });
+  }, [vaultId]);
+  useEffect(() => {
+    if (!vaultId || !selectedNotePath) return;
+    setTreeState((current) => ({
+      vaultId,
+      expandedDirectories: revealLocalNote(
+        current.vaultId === vaultId ? current.expandedDirectories : EMPTY_EXPANDED_DIRECTORIES,
+        selectedNotePath,
+      ),
+    }));
+  }, [selectedNotePath, vaultId]);
   const accessPanel = (
     <LocalNotesProjectAccess
       vault={vault}
@@ -73,6 +234,23 @@ export function LocalNotesView({
     );
   }
 
+  const expandedDirectories =
+    treeState.vaultId === vault.id ? treeState.expandedDirectories : EMPTY_EXPANDED_DIRECTORIES;
+  const updateExpandedDirectories = (
+    update: (current: ReadonlySet<string>) => ReadonlySet<string>,
+  ) => {
+    setTreeState((current) => ({
+      vaultId: vault.id,
+      expandedDirectories: update(
+        current.vaultId === vault.id ? current.expandedDirectories : EMPTY_EXPANDED_DIRECTORIES,
+      ),
+    }));
+  };
+  const openNote = (path: string) => {
+    updateExpandedDirectories((current) => revealLocalNote(current, path));
+    onRead(path);
+  };
+
   return (
     <section className="notes-layout">
       <aside className="note-list" aria-label="Markdown files">
@@ -90,18 +268,19 @@ export function LocalNotesView({
           configured LLM. Visible replies may be stored and synchronized.
         </p>
         {vault.files.length === 0 && <p className="column-empty">No Markdown files found</p>}
-        {vault.files.map((file) => (
-          <button
-            type="button"
-            className={selectedNote?.path === file ? 'active' : ''}
-            key={file}
-            onClick={() => onRead(file)}
-            disabled={busy}
-            title={file}
-          >
-            {file}
-          </button>
-        ))}
+        {vault.files.length > 0 && (
+          <LocalNotesTree
+            key={vault.id}
+            files={vault.files}
+            expandedDirectories={expandedDirectories}
+            selectedPath={selectedNote?.path ?? null}
+            busy={busy}
+            onToggleDirectory={(path) =>
+              updateExpandedDirectories((current) => toggleLocalNotesDirectory(current, path))
+            }
+            onOpenFile={openNote}
+          />
+        )}
       </aside>
       <article className="note-reader">
         <header>
@@ -137,7 +316,7 @@ export function LocalNotesView({
                 notePath={selectedNote.path}
                 source={selectedNote.content}
                 vaultFiles={vault.files}
-                onOpenNote={onRead}
+                onOpenNote={openNote}
               />
             ) : (
               <pre className="markdown-source">{selectedNote.content}</pre>

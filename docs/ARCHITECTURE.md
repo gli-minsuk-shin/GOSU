@@ -392,6 +392,17 @@ list, blockquote, code block, footnote를 렌더링한다. 사용자는 같은 �
 확인할 수 있다. 표시 크기와 색상은 전역 Appearance 설정의 font scale·theme token을 그대로
 사용한다.
 
+왼쪽 file explorer는 Main이 이미 검증해 반환한 bounded `VaultSelection.files` snapshot만 Renderer에서
+directory-first natural order의 tree로 만든다. 폴더는 기본적으로 접혀 있고 같은 row를 다시 누르면
+열림·닫힘이 전환되며, sibling과 접힌 subtree의 기존 expansion은 보존한다. 파일 또는 Markdown
+wiki-link를 열면 해당 note의 ancestor만 펼쳐 현재 파일을 드러낸다. expansion과 roving keyboard focus는
+Vault별 volatile UI state라 localStorage·Hosted Sync·LLM context에 저장하지 않고 새 Vault에서는
+초기화한다. tree model은 absolute·dot-segment·empty component·control character·과도한 길이·non-Markdown·
+file/directory 충돌 path를 normalize하지 않고 제외한다. `role="tree"`/`treeitem`, `aria-expanded`·
+`aria-selected`, 방향키·Home/End navigation을 제공하며 읽는 동안에도 폴더 탐색은 유지한다. 현재 contract는
+Markdown path만 제공하므로 읽을 수 있는 Markdown을 포함한 폴더만 표시하고 empty 또는 attachment-only
+folder를 열거하기 위해 Main capability를 넓히지 않는다.
+
 Markdown은 선택한 Vault에서 왔더라도 신뢰하지 않는다. Renderer는 raw HTML을 해석하지 않고,
 Markdown AST를 `rehype-sanitize` allowlist로 정리한 뒤 React element로 만든다. `script`, event
 handler, `iframe`, `object`, 임의 style과 SVG는 reader DOM에 들어갈 수 없다. frontmatter는 코드를
@@ -1126,6 +1137,11 @@ transport revoke, write-in-progress 출처의 `delivery unconfirmed`, 같은 not
 확인한다. result 직렬화 크기와 동시 note budget·큰 Board 축약도 Project Agent tool test가 담당한다.
 SQLCipher smoke는 Local Notes grant column이 없던 실제 v0.5 profile schema를 열어 nullable grant로
 migration한 뒤 새 grant를 저장할 수 있는지도 확인한다.
+
+Local Notes tree test는 입력 순서와 무관한 directory-first natural ordering, duplicate와 malformed path
+제외, nested·sibling expansion 보존, 현재 note ancestor reveal을 고정한다. Renderer test는 접힌 descendant가
+DOM에 없고 directory의 `aria-expanded`, 현재 file의 `aria-selected`·`aria-current`, visible row의 단일
+roving tab stop과 tree level·position metadata가 일치하는지 검사한다.
 
 Project Chat session test는 legacy single-chat DB가 default session으로 lossless migration되는지,
 root session isolation, completed-message branch prefix와 이후 source history 차단, cross-project·
