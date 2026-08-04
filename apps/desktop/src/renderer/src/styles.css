@@ -2450,7 +2450,7 @@ textarea:focus {
   grid-template-columns: 184px minmax(0, 1fr);
   gap: 10px;
   width: 100%;
-  height: max(560px, calc(100vh - 172px));
+  height: max(560px, calc(100vh - 104px));
   min-height: 0;
 }
 
@@ -4224,7 +4224,7 @@ textarea:focus {
 
   .project-chat-workspace {
     grid-template: auto minmax(500px, 1fr) / 1fr;
-    height: calc(100vh - 220px);
+    height: calc(100vh - 152px);
   }
 
   .project-chat-session-rail {

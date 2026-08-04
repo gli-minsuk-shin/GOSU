@@ -1,10 +1,15 @@
+import { readFileSync } from 'node:fs';
+
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import { WorkspacePageHeading } from '../src/renderer/src/workspace-views';
+import {
+  shouldShowActiveProjectPageHeading,
+  WorkspacePageHeading,
+} from '../src/renderer/src/workspace-views';
 
 describe('workspace page heading', () => {
-  it('marks Project Chat for its compact wide-layout treatment', () => {
+  it('keeps the descriptive Project Chat heading available for empty-project states', () => {
     const html = renderToStaticMarkup(
       <WorkspacePageHeading activeTab="chat" activeProject={undefined} onNewProject={null} />,
     );
@@ -13,12 +18,30 @@ describe('workspace page heading', () => {
     expect(html).toContain('Project chat');
   });
 
+  it('gives an active Project Chat the full content area without the shared heading', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(shouldShowActiveProjectPageHeading('chat')).toBe(false);
+    expect(styles).toMatch(
+      /\.project-chat-workspace\s*\{[^}]*height:\s*max\(560px, calc\(100vh - 104px\)\);/su,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 860px\)[\s\S]*?\.project-chat-workspace\s*\{[^}]*height:\s*calc\(100vh - 152px\);/u,
+    );
+  });
+
   it('keeps other workspace headings on their own surface class', () => {
     const html = renderToStaticMarkup(
-      <WorkspacePageHeading activeTab="board" activeProject={undefined} onNewProject={null} />,
+      <WorkspacePageHeading
+        activeTab="board"
+        activeProject={undefined}
+        onNewProject={() => undefined}
+      />,
     );
 
     expect(html).toContain('class="page-heading page-heading-board"');
     expect(html).not.toContain('page-heading-chat');
+    expect(html).toContain('New project');
+    expect(shouldShowActiveProjectPageHeading('board')).toBe(true);
   });
 });
