@@ -44,4 +44,16 @@ describe('workspace page heading', () => {
     expect(html).toContain('New project');
     expect(shouldShowActiveProjectPageHeading('board')).toBe(true);
   });
+
+  it('describes Literature as a living evidence table on the project surface', () => {
+    const html = renderToStaticMarkup(
+      <WorkspacePageHeading activeTab="literature" activeProject={undefined} onNewProject={null} />,
+    );
+
+    expect(html).toContain('page-heading-literature');
+    expect(html).toContain('Literature');
+    expect(html).toContain('living evidence table');
+    expect(html).toContain('JSON, CSV, and BibTeX');
+    expect(shouldShowActiveProjectPageHeading('literature')).toBe(true);
+  });
 });

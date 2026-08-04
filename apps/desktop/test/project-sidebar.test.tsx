@@ -124,7 +124,7 @@ describe('folder-style project sidebar', () => {
       'utf8',
     );
     const toggleHandler = source.match(
-      /const toggleProjectSidebarVisibility = useCallback\(\(\) => \{(?<body>[\s\S]*?)\n  \}, \[updateProjectNavigation\]\);/u,
+      /const toggleProjectSidebarVisibility = useCallback\(\(\) => \{(?<body>[\s\S]*?)\n {2}\}, \[updateProjectNavigation\]\);/u,
     )?.groups?.body;
 
     expect(source).toContain('aria-hidden={projectNavigation.sidebarCollapsed}');
@@ -147,7 +147,9 @@ describe('folder-style project sidebar', () => {
     expect(html).toContain('Project chat');
     expect(html).toContain('Board');
     expect(html).toContain('Goal &amp; Metrics');
+    expect(html).toContain('Literature');
     expect(html).toContain('Experiments');
+    expect(html).not.toContain('References');
     expect(html).toContain('Codex is running');
     expect(html).toContain('Hide locally');
     expect(html).toContain('before hiding this project');

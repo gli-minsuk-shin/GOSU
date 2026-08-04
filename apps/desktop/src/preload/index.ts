@@ -15,6 +15,24 @@ import type {
   GitWorkspaceSnapshot,
 } from '../shared/git-workspace-contracts';
 import { unwrapGitWorkspaceIpcResult } from '../shared/git-workspace-ipc-result';
+import { LITERATURE_IPC_CHANNELS } from '../shared/literature-channels';
+import type {
+  DeleteLiteratureRecordInput,
+  DeleteLiteratureRecordReceipt,
+  LiteratureExportReceipt,
+  LiteratureExportRequest,
+  LiteratureImportReceipt,
+  LiteratureImportRequest,
+  LiteratureLibrary,
+  LiteratureOrganizeReceipt,
+  LiteratureRecord,
+  LiteratureSearchInput,
+  LiteratureSearchReceipt,
+  ListLiteratureInput,
+  OrganizeLiteratureInput,
+  UpdateLiteratureAnnotationsInput,
+} from '../shared/literature-contracts';
+import { unwrapLiteratureIpcResult } from '../shared/literature-ipc-result';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import {
   ProjectChatEventSchema,
@@ -93,6 +111,14 @@ async function invokeGitWorkspace<T>(channel: string, input: unknown): Promise<T
     error: { code: 'git_workspace_unavailable' },
   }));
   return unwrapGitWorkspaceIpcResult<T>(result);
+}
+
+async function invokeLiterature<T>(channel: string, input: unknown): Promise<T> {
+  const result = await ipcRenderer.invoke(channel, input).catch(() => ({
+    ok: false,
+    error: { code: 'literature_unavailable' },
+  }));
+  return unwrapLiteratureIpcResult<T>(result);
 }
 
 async function invokeSsh<T>(channel: string, input?: unknown): Promise<T> {
@@ -243,6 +269,22 @@ const api = {
       invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.push, input),
     reveal: (projectId: string) =>
       invokeGitWorkspace<{ revealed: true }>(GIT_WORKSPACE_IPC_CHANNELS.reveal, { projectId }),
+  },
+  literature: {
+    list: (input: ListLiteratureInput) =>
+      invokeLiterature<LiteratureLibrary>(LITERATURE_IPC_CHANNELS.list, input),
+    search: (input: LiteratureSearchInput) =>
+      invokeLiterature<LiteratureSearchReceipt>(LITERATURE_IPC_CHANNELS.search, input),
+    updateAnnotations: (input: UpdateLiteratureAnnotationsInput) =>
+      invokeLiterature<LiteratureRecord>(LITERATURE_IPC_CHANNELS.updateAnnotations, input),
+    deleteRecord: (input: DeleteLiteratureRecordInput) =>
+      invokeLiterature<DeleteLiteratureRecordReceipt>(LITERATURE_IPC_CHANNELS.deleteRecord, input),
+    importRecords: (input: LiteratureImportRequest) =>
+      invokeLiterature<LiteratureImportReceipt>(LITERATURE_IPC_CHANNELS.importRecords, input),
+    exportRecords: (input: LiteratureExportRequest) =>
+      invokeLiterature<LiteratureExportReceipt>(LITERATURE_IPC_CHANNELS.exportRecords, input),
+    organize: (input: OrganizeLiteratureInput) =>
+      invokeLiterature<LiteratureOrganizeReceipt>(LITERATURE_IPC_CHANNELS.organize, input),
   },
   ssh: {
     listConnections: () =>

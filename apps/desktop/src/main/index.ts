@@ -21,6 +21,11 @@ import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
 import { registerGitWorkspaceIpc } from './git-workspace-ipc';
 import { GitWorkspaceService } from './git-workspace-service';
+import { LiteratureAiService } from './literature-ai-service';
+import { CrossrefLiteratureProvider } from './literature-crossref';
+import { registerLiteratureIpc } from './literature-ipc';
+import { LiteratureService } from './literature-service';
+import { createLiteratureTransferPlatform } from './literature-transfer-platform';
 import { registerProjectChatIpc } from './project-chat-ipc';
 import { ProjectChatService } from './project-chat-service';
 import { createSshCommandRunner } from './ssh-command-runner';
@@ -78,6 +83,26 @@ const projectChat = new ProjectChatService({
   },
 });
 let mainWindow: BrowserWindow | undefined;
+const literature = new LiteratureService({
+  storage: database,
+  workspace,
+  provider: new CrossrefLiteratureProvider({
+    contactEmail: process.env.GOSU_CROSSREF_MAILTO?.trim() || undefined,
+    userAgent:
+      process.env.GOSU_CROSSREF_USER_AGENT?.trim() ||
+      `GOSU/${app.getVersion()} (+https://github.com/gli-minsuk-shin/GOSU)`,
+  }),
+  transfer: createLiteratureTransferPlatform(() => mainWindow),
+});
+const literatureAi = new LiteratureAiService({
+  storage: literature,
+  codex,
+  async prepareDirectory(projectId) {
+    const directory = join(app.getPath('userData'), 'literature-ai-workspaces', projectId);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    return directory;
+  },
+});
 let mainWindowRendererLoaded = false;
 let pendingSettingsOpen = false;
 let pendingSidebarToggle = false;
@@ -249,6 +274,12 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     ssh,
     reportUnexpectedWorkspaceError,
   );
+  registerLiteratureIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    literature,
+    literatureAi,
+    reportUnexpectedWorkspaceError,
+  );
 
   handle('gosu:runtime:readiness', async () =>
     buildRuntimeReadiness({
@@ -391,6 +422,7 @@ if (!primaryInstance) {
     if (process.platform !== 'darwin') app.quit();
   });
   app.on('before-quit', () => {
+    literature.shutdown();
     ssh.shutdown();
     codex.stop();
     database.close();
