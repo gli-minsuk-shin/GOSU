@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { Image, Link, PhrasingContent, Root, Text } from 'mdast';
+import rehypeKatex from 'rehype-katex';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import Markdown, { type Components } from 'react-markdown';
 import remarkFrontmatter from 'remark-frontmatter';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import { SKIP, visit } from 'unist-util-visit';
+
+import {
+  MARKDOWN_KATEX_OPTIONS,
+  MARKDOWN_REMARK_MATH_OPTIONS,
+  markdownMathSanitizeAttributes,
+  remarkBoundedMath,
+} from './markdown-math-policy';
 
 const WIKI_LINK_PROTOCOL = 'gosu-wiki:';
 const WIKI_EMBED_PROTOCOL = 'gosu-embed:';
@@ -12,6 +21,7 @@ const RASTER_ATTACHMENT = /\.(?:avif|gif|jpe?g|png|webp)$/i;
 
 const SANITIZE_SCHEMA = {
   ...defaultSchema,
+  attributes: markdownMathSanitizeAttributes(defaultSchema.attributes),
   protocols: {
     ...defaultSchema.protocols,
     href: [...(defaultSchema.protocols?.href ?? []), 'gosu-wiki'],
@@ -69,8 +79,17 @@ export function MarkdownDocument({
         </details>
       )}
       <Markdown
-        remarkPlugins={[remarkFrontmatter, remarkGfm, remarkObsidianWikiLinks]}
-        rehypePlugins={[[rehypeSanitize, SANITIZE_SCHEMA]]}
+        remarkPlugins={[
+          remarkFrontmatter,
+          remarkGfm,
+          [remarkMath, MARKDOWN_REMARK_MATH_OPTIONS],
+          remarkBoundedMath,
+          remarkObsidianWikiLinks,
+        ]}
+        rehypePlugins={[
+          [rehypeSanitize, SANITIZE_SCHEMA],
+          [rehypeKatex, MARKDOWN_KATEX_OPTIONS],
+        ]}
         skipHtml
         urlTransform={safeMarkdownUrl}
         components={components}
