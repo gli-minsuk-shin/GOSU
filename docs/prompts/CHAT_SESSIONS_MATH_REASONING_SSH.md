@@ -123,8 +123,9 @@ Session command를 fixed IPC channel로 제공한다.
 - dynamic tool의 기본 timeout은 10초다. registration에 선언된 tool만 최대 180초의 고정 override를 가질
   수 있고, `run_ssh_command`만 30초 approval과 최대 120초 execution을 포함하는 155초 bound를 사용한다.
   모델 input으로 tool timeout을 확대하지 않는다. timeout과 thread revoke는 handler에 AbortSignal을
-  전달하며, timeout 응답 뒤에도 실제 handler가 settle할 때까지 in-flight capacity를 유지해 zombie 작업이
-  동시 호출 상한을 우회하지 못하게 한다.
+  전달하고 SSH broker는 이를 connection lookup, pending approval와 approved active transport 전체 수명에
+  연결한다. abort·deny·expire·정상 종료 시 listener를 제거하며, timeout 응답 뒤에도 실제 handler가
+  settle할 때까지 in-flight capacity를 유지해 zombie 작업이 동시 호출 상한을 우회하지 못하게 한다.
 - 허용된 read/diagnostic command도 승인 없이 실행하지 않는다. 사용자가 exact alias와 preview를 직접
   검토한 뒤 실행마다 `Allow once` 해야 하며 승인을 기억하거나 unattended 실행으로 전환하지 않는다.
 - timeout·cancel·turn 종료는 local OpenSSH transport만 종료한다. command가 이미 시작됐다면 remote process
