@@ -89,13 +89,52 @@ describe('folder-style project sidebar', () => {
     expect(collapsed).toContain('aria-expanded="false"');
   });
 
-  it('removes the sidebar grid track and gives its space to content when collapsed', () => {
+  it('smoothly collapses the desktop sidebar without moving content between grid rows', () => {
     const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
 
     expect(styles).toMatch(
-      /\.desktop-shell\.sidebar-collapsed\s*\{\s*grid-template:\s*58px minmax\(0, 1fr\) \/ minmax\(0, 1fr\);/su,
+      /\.desktop-shell\s*\{[^}]*--sidebar-width:\s*280px;[^}]*grid-template:\s*58px minmax\(0, 1fr\) \/ var\(--sidebar-width\) minmax\(0, 1fr\);[^}]*transition:\s*grid-template-columns 240ms/su,
     );
-    expect(styles).toMatch(/\.desktop-nav\[hidden\]\s*\{\s*display:\s*none;/su);
+    expect(styles).toMatch(
+      /\.desktop-shell\.sidebar-collapsed\s*\{\s*--sidebar-width:\s*0px;\s*\}/su,
+    );
+    expect(styles).toMatch(
+      /\.desktop-content\s*\{\s*grid-row:\s*2;\s*grid-column:\s*2;[^}]*scrollbar-gutter:\s*stable;/su,
+    );
+    expect(styles).toMatch(
+      /\.desktop-shell\.sidebar-collapsed \.desktop-nav\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;[^}]*visibility:\s*hidden;/su,
+    );
+    expect(styles).not.toContain('.desktop-nav[hidden]');
+  });
+
+  it('keeps responsive collapse behavior and respects reduced-motion preferences', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(styles).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.desktop-shell,\s*\.desktop-nav\s*\{\s*transition:\s*none;/su,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 860px\)[\s\S]*?\.desktop-shell\.sidebar-collapsed \.desktop-nav\s*\{\s*display:\s*none;/u,
+    );
+  });
+
+  it('takes a collapsed sidebar out of keyboard and accessibility navigation', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/desktop-app.tsx', import.meta.url),
+      'utf8',
+    );
+    const toggleHandler = source.match(
+      /const toggleProjectSidebarVisibility = useCallback\(\(\) => \{(?<body>[\s\S]*?)\n  \}, \[updateProjectNavigation\]\);/u,
+    )?.groups?.body;
+
+    expect(source).toContain('aria-hidden={projectNavigation.sidebarCollapsed}');
+    expect(source).toContain('inert={projectNavigation.sidebarCollapsed ? true : undefined}');
+    expect(toggleHandler).toBeDefined();
+    expect(toggleHandler).toContain('sidebarToggleRef.current?.focus()');
+    expect(toggleHandler).toContain('updateProjectNavigation(next)');
+    expect(toggleHandler?.indexOf('sidebarToggleRef.current?.focus()')).toBeLessThan(
+      toggleHandler?.indexOf('updateProjectNavigation(next)') ?? 0,
+    );
   });
 
   it('shows active project folders and the expanded project sections', () => {

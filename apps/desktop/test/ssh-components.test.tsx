@@ -3,7 +3,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SshApprovalCenter } from '../src/renderer/src/ssh-approval-center';
-import { SshConnectionsCard } from '../src/renderer/src/ssh-connections-card';
+import {
+  SshConnectionsCard,
+  validateSshHostAliasInput,
+} from '../src/renderer/src/ssh-connections-card';
 import type { SshApprovalRequest, SshConnectionProfile } from '../src/shared/ssh-contracts';
 
 const connection: SshConnectionProfile = {
@@ -72,6 +75,12 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('fixture-gpu');
     expect(html).toContain('SSH agent or existing config');
     expect(html).toContain('private keys are never stored');
+    expect(html).toContain('How to add an SSH server');
+    expect(html).toContain('~/.ssh/config');
+    expect(html).toContain('Host research-gpu');
+    expect(html).toContain('HostName gpu.example.edu');
+    expect(html).toContain('enter only');
+    expect(html).toContain('Port forwarding remains outside GOSU');
     expect(html).toContain('Register server');
     expect(html).toContain('Test');
     expect(html).toContain('Edit');
@@ -79,6 +88,48 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('Allow once');
     expect(html).toContain('fixed read-only diagnostics allowlist');
     expect(html).toContain('disables scripts, mutation, interactive shells');
+  });
+
+  it('accepts only a concrete SSH config Host alias', () => {
+    expect(validateSshHostAliasInput('  research-gpu  ')).toEqual({
+      valid: true,
+      alias: 'research-gpu',
+    });
+    expect(validateSshHostAliasInput('')).toMatchObject({ valid: false, reason: 'empty' });
+    expect(validateSshHostAliasInput('research gpu')).toMatchObject({
+      valid: false,
+      reason: 'invalid-format',
+    });
+    expect(validateSshHostAliasInput('ssh')).toEqual({ valid: true, alias: 'ssh' });
+    expect(validateSshHostAliasInput('root@gpu.example.edu')).toMatchObject({
+      valid: false,
+      reason: 'user-host',
+    });
+    expect(validateSshHostAliasInput('-p')).toMatchObject({
+      valid: false,
+      reason: 'option',
+    });
+    expect(validateSshHostAliasInput('research/gpu')).toMatchObject({
+      valid: false,
+      reason: 'invalid-format',
+    });
+  });
+
+  it('recognizes a pasted ssh command and explains that forwarding stays unavailable', () => {
+    const regular = validateSshHostAliasInput('ssh -p 2222 researcher@gpu.example.edu');
+    expect(regular).toMatchObject({ valid: false, reason: 'ssh-command' });
+    if (!regular.valid) {
+      expect(regular.message).toContain('only the Host alias');
+      expect(regular.message).toContain('HostName, User, and Port');
+    }
+
+    const forwarding = validateSshHostAliasInput(
+      'ssh -p 2222 researcher@gpu.example.edu -L 8080:localhost:8080',
+    );
+    expect(forwarding).toMatchObject({ valid: false, reason: 'ssh-command' });
+    if (!forwarding.valid) {
+      expect(forwarding.message).toContain('does not accept SSH forwarding options such as -L');
+    }
   });
 
   it('shows the exact bounded command and wires Allow once and Deny decisions', () => {

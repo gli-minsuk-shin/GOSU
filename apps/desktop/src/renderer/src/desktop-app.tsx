@@ -231,11 +231,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
 
   const toggleProjectSidebarVisibility = useCallback(() => {
     const next = toggleProjectSidebar(projectNavigationRef.current);
+    if (next.sidebarCollapsed) {
+      sidebarToggleRef.current?.focus();
+    }
     updateProjectNavigation(next);
     setAnnouncement(next.sidebarCollapsed ? 'Project sidebar hidden.' : 'Project sidebar shown.');
-    if (next.sidebarCollapsed) {
-      window.requestAnimationFrame(() => sidebarToggleRef.current?.focus());
-    }
   }, [updateProjectNavigation]);
 
   useEffect(() => {
@@ -984,7 +984,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         id="workspace-sidebar"
         className="desktop-nav"
         aria-label="Workspace navigation"
-        hidden={projectNavigation.sidebarCollapsed}
+        aria-hidden={projectNavigation.sidebarCollapsed}
+        inert={projectNavigation.sidebarCollapsed ? true : undefined}
       >
         <ProjectSidebar
           projects={snapshot?.projects ?? []}
