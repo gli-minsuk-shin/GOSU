@@ -80,6 +80,7 @@ const projectChat = new ProjectChatService({
 let mainWindow: BrowserWindow | undefined;
 let mainWindowRendererLoaded = false;
 let pendingSettingsOpen = false;
+let pendingSidebarToggle = false;
 
 function setDevelopmentDockIcon() {
   if (process.platform === 'darwin' && !app.isPackaged) {
@@ -111,17 +112,18 @@ function focusMainWindow() {
   mainWindow.focus();
 }
 
-function deliverPendingSettingsOpen(window: BrowserWindow) {
-  if (
-    !pendingSettingsOpen ||
-    !mainWindowRendererLoaded ||
-    mainWindow !== window ||
-    window.isDestroyed()
-  ) {
+function deliverPendingNavigation(window: BrowserWindow) {
+  if (!mainWindowRendererLoaded || mainWindow !== window || window.isDestroyed()) {
     return;
   }
-  pendingSettingsOpen = false;
-  window.webContents.send(APP_NAVIGATION_CHANNELS.openSettings);
+  if (pendingSettingsOpen) {
+    pendingSettingsOpen = false;
+    window.webContents.send(APP_NAVIGATION_CHANNELS.openSettings);
+  }
+  if (pendingSidebarToggle) {
+    pendingSidebarToggle = false;
+    window.webContents.send(APP_NAVIGATION_CHANNELS.toggleSidebar);
+  }
 }
 
 function createWindow(trustedRenderer: TrustedRenderer) {
@@ -154,7 +156,7 @@ function createWindow(trustedRenderer: TrustedRenderer) {
   window.webContents.on('did-finish-load', () => {
     if (mainWindow !== window) return;
     mainWindowRendererLoaded = true;
-    deliverPendingSettingsOpen(window);
+    deliverPendingNavigation(window);
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     try {
@@ -178,7 +180,18 @@ function openSettings(trustedRenderer: TrustedRenderer) {
   const window =
     mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow(trustedRenderer);
   focusMainWindow();
-  deliverPendingSettingsOpen(window);
+  deliverPendingNavigation(window);
+}
+
+function toggleSidebar(trustedRenderer: TrustedRenderer) {
+  const window =
+    mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow(trustedRenderer);
+  focusMainWindow();
+  if (!mainWindowRendererLoaded) {
+    pendingSidebarToggle = !pendingSidebarToggle;
+    return;
+  }
+  window.webContents.send(APP_NAVIGATION_CHANNELS.toggleSidebar);
 }
 
 function installApplicationMenu(trustedRenderer: TrustedRenderer) {
@@ -188,6 +201,7 @@ function installApplicationMenu(trustedRenderer: TrustedRenderer) {
       buildMacApplicationMenuTemplate({
         appName: app.getName(),
         openSettings: () => openSettings(trustedRenderer),
+        toggleSidebar: () => toggleSidebar(trustedRenderer),
       }),
     ),
   );

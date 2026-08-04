@@ -6,7 +6,12 @@ import { buildMacApplicationMenuTemplate } from '../src/main/application-menu';
 describe('macOS application menu', () => {
   it('adds one standard Settings item while preserving the native menu roles', () => {
     const openSettings = vi.fn();
-    const template = buildMacApplicationMenuTemplate({ appName: 'GOSU', openSettings });
+    const toggleSidebar = vi.fn();
+    const template = buildMacApplicationMenuTemplate({
+      appName: 'GOSU',
+      openSettings,
+      toggleSidebar,
+    });
     const appMenu = template[0];
     const appItems = appMenu?.submenu as MenuItemConstructorOptions[];
     const settings = appItems.find((item) => item.id === 'app.settings');
@@ -30,6 +35,24 @@ describe('macOS application menu', () => {
       'editMenu',
       'viewMenu',
       'windowMenu',
+    ]);
+
+    const viewMenu = template.find((item) => item.role === 'viewMenu');
+    const viewItems = viewMenu?.submenu as MenuItemConstructorOptions[];
+    const sidebar = viewItems.find((item) => item.id === 'view.toggle-project-sidebar');
+    expect(sidebar).toMatchObject({
+      label: 'Toggle Project Sidebar',
+      accelerator: 'Control+Command+S',
+    });
+    expect(sidebar?.click).toBe(toggleSidebar);
+    expect(viewItems.map((item) => item.role).filter(Boolean)).toEqual([
+      'reload',
+      'forceReload',
+      'toggleDevTools',
+      'resetZoom',
+      'zoomIn',
+      'zoomOut',
+      'togglefullscreen',
     ]);
   });
 });

@@ -3,9 +3,11 @@ import type { MenuItemConstructorOptions } from 'electron';
 export function buildMacApplicationMenuTemplate({
   appName,
   openSettings,
+  toggleSidebar,
 }: {
   appName: string;
   openSettings: () => void;
+  toggleSidebar: () => void;
 }): MenuItemConstructorOptions[] {
   return [
     {
@@ -31,7 +33,27 @@ export function buildMacApplicationMenuTemplate({
     },
     { role: 'fileMenu' },
     { role: 'editMenu' },
-    { role: 'viewMenu' },
+    {
+      role: 'viewMenu',
+      submenu: [
+        {
+          id: 'view.toggle-project-sidebar',
+          label: 'Toggle Project Sidebar',
+          accelerator: 'Control+Command+S',
+          click: toggleSidebar,
+        },
+        { type: 'separator' },
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
     { role: 'windowMenu' },
   ];
 }

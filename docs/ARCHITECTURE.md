@@ -592,9 +592,14 @@ flowchart LR
   Chat·Board·Goal & Metrics 하위 항목을 동시에 펼칠 수 있다. folder row를 누르면 그 project를 선택하며
   같은 row를 다시 누르면 하위 항목만 접고 현재 작업 화면은 유지한다. Hidden과 Archived는 별도
   recovery group으로 표시하고 Connections·Local Notes·Settings는 project 밖의 global navigation으로 둔다.
-- folder 펼침, Active group 접힘과 `Hide locally`는 개인 Mac의 navigation preference다.
-  `project-navigation-state.ts`가 UUID 목록과 boolean만 versioned `localStorage` key
-  `gosu:project-navigation:v1`에 저장하며 SQLCipher snapshot, outbox, Git 또는 Hosted Sync에는 넣지 않는다.
+- folder 펼침, Active group 접힘, `Hide locally`와 왼쪽 project sidebar 전체의 접힘 상태는 개인 Mac의
+  navigation preference다. `project-navigation-state.ts`가 UUID 목록과 boolean만 versioned
+  `localStorage` key `gosu:project-navigation:v1`에 저장하며 SQLCipher snapshot, outbox, Git 또는
+  Hosted Sync에는 넣지 않는다. sidebar를 접어도 현재 project·tab·chat draft는 그대로 유지하고
+  Codex turn이나 SSH 작업을 중단하지 않는다. titlebar의 항상 보이는 panel button과
+  `View → Toggle Project Sidebar` (`Control+Command+S`)가 같은 toggle을 호출한다. Main과 preload는
+  payload 없는 고정 IPC channel만 노출하며 Renderer load 전 menu 요청은 toggle parity로 합쳐 전달한다.
+  keyboard 또는 menu로 접을 때 sidebar 내부 focus는 titlebar toggle로 옮겨 숨겨진 control에 남지 않게 한다.
   Hide는 project lifecycle이나 협업자 화면을 바꾸지 않고 `Show` 또는 `Show all`로 즉시 되돌린다.
   진행 중인 Codex turn 표시와 중지 진입점을 숨기지 않도록 해당 project가 busy인 동안 Hide와 Archive를
   비활성화한다.
@@ -1168,6 +1173,12 @@ cross-session snapshot/cancel/retry/action 거절, duplicate·stale event guard�
 composer 잠금과 selected-session Stop을 검사한다. Markdown test는 GFM과 `$...$`·`$$...$$` KaTeX,
 raw HTML·unsafe URL 차단, 긴 입력과 깨진 수식의 bounded fallback을 검증한다. model catalog test는
 provider가 제공한 opaque reasoning ID와 짧은 label을 그대로 보존하고 임의 fallback하지 않는지 확인한다.
+
+Project navigation test는 이전 저장값에 sidebar 필드가 없으면 펼침으로 복구하고, sidebar toggle이 folder·
+group·hidden project 상태를 보존하는지 확인한다. Renderer test는 접힘·펼침 button의 `aria-controls`와
+`aria-expanded`, 접힌 one-column grid와 hidden navigation을 검사한다. application menu와 preload test는
+고정 accelerator, 표준 View 동작 보존, 구독 해제, 잘못된 payload 거절과 Renderer 준비 전 toggle parity를
+검증한다.
 
 SSH test는 connection version CAS와 SQLCipher reopen, Renderer에 credential·resolved host·output이
 노출되지 않는 IPC, concrete system executable·read/diagnostic allowlist·query-only subcommand,

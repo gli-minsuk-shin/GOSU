@@ -11,6 +11,7 @@ import {
   showAllProjectsLocally,
   showProjectLocally,
   toggleProjectFolder,
+  toggleProjectSidebar,
 } from '../src/renderer/src/project-navigation-state';
 
 function memoryStorage(initial?: string) {
@@ -42,6 +43,7 @@ describe('local project navigation state', () => {
       activeGroupExpanded: true,
       hiddenGroupExpanded: true,
       archivedGroupExpanded: true,
+      sidebarCollapsed: true,
     } as const;
 
     expect(saveProjectNavigationState(storage, state)).toBe(true);
@@ -62,6 +64,7 @@ describe('local project navigation state', () => {
       activeGroupExpanded: true,
       hiddenGroupExpanded: false,
       archivedGroupExpanded: false,
+      sidebarCollapsed: false,
     });
   });
 
@@ -73,6 +76,21 @@ describe('local project navigation state', () => {
     expect(first.expandedProjectIds).toEqual(['project-a']);
     expect(second.expandedProjectIds).toEqual(['project-a', 'project-b']);
     expect(third.expandedProjectIds).toEqual(['project-b']);
+  });
+
+  it('toggles the whole sidebar without changing project navigation state', () => {
+    const state = {
+      ...DEFAULT_PROJECT_NAVIGATION_STATE,
+      expandedProjectIds: ['project-a'],
+      hiddenProjectIds: ['project-b'],
+      hiddenGroupExpanded: true,
+    };
+
+    const collapsed = toggleProjectSidebar(state);
+    const expanded = toggleProjectSidebar(collapsed);
+
+    expect(collapsed).toEqual({ ...state, sidebarCollapsed: true });
+    expect(expanded).toEqual(state);
   });
 
   it('hides, restores, and reveals projects locally without affecting unrelated folders', () => {

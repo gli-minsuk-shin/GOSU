@@ -1,3 +1,5 @@
+import type { Ref } from 'react';
+
 import type { WorkspaceTabId } from './workspace-views';
 import { FUTURE_MODULES } from './workspace-views';
 import { toggleProjectFolder, type ProjectNavigationState } from './project-navigation-state';
@@ -53,6 +55,35 @@ export interface ProjectSidebarProps {
   onOpenProjectSettings: (projectId: string) => void;
   onOpenSettings: () => void;
   onNewProject: () => void;
+}
+
+export function ProjectSidebarToggle({
+  collapsed,
+  onToggle,
+  buttonRef,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+  buttonRef?: Ref<HTMLButtonElement>;
+}) {
+  const label = collapsed ? 'Show project sidebar' : 'Hide project sidebar';
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      className={`sidebar-toggle-button${collapsed ? ' collapsed' : ''}`}
+      aria-label={label}
+      aria-controls="workspace-sidebar"
+      aria-expanded={!collapsed}
+      title={label}
+      onClick={onToggle}
+    >
+      <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+        <rect x="2" y="2.5" width="14" height="13" rx="2.5" />
+        <path d="M6.5 2.5v13" />
+      </svg>
+    </button>
+  );
 }
 
 export function ProjectSidebar({
