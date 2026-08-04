@@ -24,6 +24,7 @@ type MarkdownDocumentProps = {
   source: string;
   vaultFiles: readonly string[];
   onOpenNote: (path: string) => void;
+  loadVaultImages?: boolean;
 };
 
 export function MarkdownDocument({
@@ -31,6 +32,7 @@ export function MarkdownDocument({
   source,
   vaultFiles,
   onOpenNote,
+  loadVaultImages = true,
 }: MarkdownDocumentProps) {
   const frontmatter = useMemo(() => extractFrontmatter(source), [source]);
   const components = useMemo<Components>(
@@ -46,10 +48,16 @@ export function MarkdownDocument({
         </MarkdownLink>
       ),
       img: ({ alt, src, title }) => (
-        <MarkdownImage notePath={notePath} source={src} alt={alt} title={title} />
+        <MarkdownImage
+          notePath={notePath}
+          source={src}
+          alt={alt}
+          title={title}
+          loadVaultImages={loadVaultImages}
+        />
       ),
     }),
-    [notePath, onOpenNote, vaultFiles],
+    [loadVaultImages, notePath, onOpenNote, vaultFiles],
   );
 
   return (
@@ -131,11 +139,13 @@ function MarkdownImage({
   source,
   alt,
   title,
+  loadVaultImages,
 }: {
   notePath: string;
   source: string | undefined;
   alt: string | undefined;
   title: string | undefined;
+  loadVaultImages: boolean;
 }) {
   const attachmentSource = decodeAttachmentSource(source);
   const [state, setState] = useState<
@@ -143,10 +153,10 @@ function MarkdownImage({
     | { status: 'blocked' }
     | { status: 'failed' }
     | { status: 'ready'; dataUrl: string; path: string }
-  >(() => (attachmentSource ? { status: 'loading' } : { status: 'blocked' }));
+  >(() => (attachmentSource && loadVaultImages ? { status: 'loading' } : { status: 'blocked' }));
 
   useEffect(() => {
-    if (!attachmentSource) {
+    if (!attachmentSource || !loadVaultImages) {
       setState({ status: 'blocked' });
       return;
     }
@@ -168,7 +178,7 @@ function MarkdownImage({
     return () => {
       active = false;
     };
-  }, [attachmentSource, notePath]);
+  }, [attachmentSource, loadVaultImages, notePath]);
 
   const label = alt?.trim() || attachmentSource || 'Markdown image';
   if (state.status !== 'ready') {

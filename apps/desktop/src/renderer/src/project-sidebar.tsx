@@ -7,7 +7,10 @@ import {
   type PortfolioProjectRecord,
 } from './project-portfolio-model';
 
-export type ProjectWorkspaceTabId = Extract<WorkspaceTabId, 'chat' | 'board' | 'objective'>;
+export type ProjectWorkspaceTabId = Extract<
+  WorkspaceTabId,
+  'chat' | 'repository' | 'board' | 'objective'
+>;
 export type GlobalWorkspaceTabId = Extract<WorkspaceTabId, 'connections' | 'notes'>;
 
 const PROJECT_TABS: ReadonlyArray<{
@@ -16,6 +19,7 @@ const PROJECT_TABS: ReadonlyArray<{
   icon: string;
 }> = [
   { id: 'chat', label: 'Project chat', icon: '◈' },
+  { id: 'repository', label: 'Repository', icon: '⌘' },
   { id: 'board', label: 'Board', icon: '▦' },
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
 ];

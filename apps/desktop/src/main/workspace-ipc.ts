@@ -10,6 +10,7 @@ import {
   SetProjectArchivedInputSchema,
   SetTaskArchivedInputSchema,
   UpdateBoardSettingsInputSchema,
+  UpdateProjectRepositoryInputSchema,
   UpdateTaskInputSchema,
 } from '../shared/workspace-contracts';
 import { WORKSPACE_IPC_CHANNELS } from '../shared/workspace-channels';
@@ -49,6 +50,14 @@ export function registerWorkspaceIpc(
       input,
       RenameProjectInputSchema,
       (command) => workspace.renameProject(command),
+      reportUnexpected,
+    ),
+  );
+  register(WORKSPACE_IPC_CHANNELS.updateProjectRepository, (input) =>
+    withValidatedInput(
+      input,
+      UpdateProjectRepositoryInputSchema,
+      (command) => workspace.updateProjectRepository(command),
       reportUnexpected,
     ),
   );

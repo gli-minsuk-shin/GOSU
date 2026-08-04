@@ -3,6 +3,7 @@ export const WORKSPACE_IPC_CHANNELS = {
   pendingSummary: 'gosu:workspace:pending-summary',
   createProject: 'gosu:workspace:create-project',
   renameProject: 'gosu:workspace:rename-project',
+  updateProjectRepository: 'gosu:workspace:update-project-repository',
   setProjectArchived: 'gosu:workspace:set-project-archived',
   trashProject: 'gosu:workspace:trash-project',
   restoreProject: 'gosu:workspace:restore-project',

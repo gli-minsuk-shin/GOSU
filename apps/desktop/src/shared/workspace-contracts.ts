@@ -9,6 +9,7 @@ import {
   type StopPolicy,
 } from '@gosu/contracts';
 import { z } from 'zod';
+import { REPOSITORY_IDENTIFIER_PATTERN } from './repository-identifier';
 
 export const WORKSPACE_TASK_STATUSES = [
   'backlog',
@@ -124,6 +125,7 @@ export type WorkspaceOperation = Readonly<{
   commandType:
     | 'project.create'
     | 'project.rename'
+    | 'project.repository.update'
     | 'project.archive'
     | 'project.unarchive'
     | 'project.trash'
@@ -346,6 +348,7 @@ export const WorkspaceOperationSchema: z.ZodType<WorkspaceOperation> = z
     commandType: z.enum([
       'project.create',
       'project.rename',
+      'project.repository.update',
       'project.archive',
       'project.unarchive',
       'project.trash',
@@ -384,7 +387,7 @@ export const WorkspacePendingSummarySchema: z.ZodType<WorkspacePendingSummary> =
 export const CreateProjectInputSchema = z
   .object({
     name: z.string().trim().min(2).max(120),
-    repository: z.string().trim().min(1).max(500).optional(),
+    repository: z.string().trim().regex(REPOSITORY_IDENTIFIER_PATTERN).optional(),
     board: WorkspaceBoardSettingsSchema.optional(),
   })
   .strict();
@@ -394,6 +397,14 @@ export const RenameProjectInputSchema = z
     projectId: uuidSchema,
     expectedVersion: z.number().int().positive(),
     name: z.string().trim().min(2).max(120),
+  })
+  .strict();
+
+export const UpdateProjectRepositoryInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+    repository: z.string().trim().regex(REPOSITORY_IDENTIFIER_PATTERN),
   })
   .strict();
 
@@ -493,6 +504,7 @@ export const ObjectiveCommandSchema = z
 
 export type CreateProjectInput = z.input<typeof CreateProjectInputSchema>;
 export type RenameProjectInput = z.input<typeof RenameProjectInputSchema>;
+export type UpdateProjectRepositoryInput = z.input<typeof UpdateProjectRepositoryInputSchema>;
 export type ProjectVersionCommand = z.input<typeof ProjectVersionCommandSchema>;
 export type SetProjectArchivedInput = z.input<typeof SetProjectArchivedInputSchema>;
 export type CreateTaskInput = z.input<typeof CreateTaskInputSchema>;

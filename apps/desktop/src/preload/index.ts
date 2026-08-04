@@ -1,6 +1,20 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
+import { GIT_WORKSPACE_IPC_CHANNELS } from '../shared/git-workspace-channels';
+import type {
+  GitCommitInput,
+  GitCreateBranchInput,
+  GitDiffInput,
+  GitFileInput,
+  GitFilePreview,
+  GitHeadCommand,
+  GitPathsCommand,
+  GitSwitchBranchInput,
+  GitTextPreview,
+  GitWorkspaceSnapshot,
+} from '../shared/git-workspace-contracts';
+import { unwrapGitWorkspaceIpcResult } from '../shared/git-workspace-ipc-result';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import {
   ProjectChatEventSchema,
@@ -30,6 +44,7 @@ import type {
   SetProjectArchivedInput,
   SetTaskArchivedInput,
   UpdateBoardSettingsInput,
+  UpdateProjectRepositoryInput,
   UpdateTaskInput,
   WorkspaceObjective,
   WorkspacePendingSummary,
@@ -53,6 +68,14 @@ async function invokeProjectChat<T>(channel: string, input: unknown): Promise<T>
     error: { code: 'chat_unavailable' },
   }));
   return unwrapProjectChatIpcResult<T>(result);
+}
+
+async function invokeGitWorkspace<T>(channel: string, input: unknown): Promise<T> {
+  const result = await ipcRenderer.invoke(channel, input).catch(() => ({
+    ok: false,
+    error: { code: 'git_workspace_unavailable' },
+  }));
+  return unwrapGitWorkspaceIpcResult<T>(result);
 }
 
 const openSettingsListeners = new Set<() => void>();
@@ -116,6 +139,39 @@ const api = {
       };
     },
   },
+  gitWorkspace: {
+    snapshot: (projectId: string) =>
+      invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.snapshot, { projectId }),
+    clone: (projectId: string) =>
+      invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.clone, { projectId }),
+    readFile: (input: GitFileInput) =>
+      invokeGitWorkspace<GitFilePreview>(GIT_WORKSPACE_IPC_CHANNELS.readFile, input),
+    diff: (input: GitDiffInput) =>
+      invokeGitWorkspace<GitTextPreview>(GIT_WORKSPACE_IPC_CHANNELS.diff, input),
+    commitDetail: (projectId: string, commitSha: string) =>
+      invokeGitWorkspace<GitTextPreview>(GIT_WORKSPACE_IPC_CHANNELS.commitDetail, {
+        projectId,
+        commitSha,
+      }),
+    stage: (input: GitPathsCommand) =>
+      invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.stage, input),
+    unstage: (input: GitPathsCommand) =>
+      invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.unstage, input),
+    commit: (input: GitCommitInput) =>
+      invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.commit, input),
+    createBranch: (input: GitCreateBranchInput) =>
+      invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.createBranch, input),
+    switchBranch: (input: GitSwitchBranchInput) =>
+      invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.switchBranch, input),
+    fetch: (input: GitHeadCommand) =>
+      invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.fetch, input),
+    pull: (input: GitHeadCommand) =>
+      invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.pull, input),
+    push: (input: GitHeadCommand) =>
+      invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.push, input),
+    reveal: (projectId: string) =>
+      invokeGitWorkspace<{ revealed: true }>(GIT_WORKSPACE_IPC_CHANNELS.reveal, { projectId }),
+  },
   vault: {
     current: () => ipcRenderer.invoke('gosu:vault:current') as Promise<VaultSelection | null>,
     choose: () => ipcRenderer.invoke('gosu:vault:choose') as Promise<VaultSelection | null>,
@@ -131,6 +187,8 @@ const api = {
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.createProject, input),
     renameProject: (input: RenameProjectInput) =>
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.renameProject, input),
+    updateProjectRepository: (input: UpdateProjectRepositoryInput) =>
+      invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.updateProjectRepository, input),
     setProjectArchived: (input: SetProjectArchivedInput) =>
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.setProjectArchived, input),
     trashProject: (input: ProjectVersionCommand) =>

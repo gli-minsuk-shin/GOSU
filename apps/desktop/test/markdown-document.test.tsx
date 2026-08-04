@@ -8,13 +8,18 @@ import {
   safeMarkdownUrl,
 } from '../src/renderer/src/markdown-document';
 
-function renderMarkdown(source: string, vaultFiles: readonly string[] = []) {
+function renderMarkdown(
+  source: string,
+  vaultFiles: readonly string[] = [],
+  loadVaultImages = true,
+) {
   return renderToStaticMarkup(
     <MarkdownDocument
       notePath="notes/current.md"
       source={source}
       vaultFiles={vaultFiles}
       onOpenNote={vi.fn()}
+      loadVaultImages={loadVaultImages}
     />,
   );
 }
@@ -83,6 +88,13 @@ const score = 0.81;
     expect(html).not.toContain('onclick');
     expect(html).not.toContain('evil.example');
     expect(html).not.toContain('raw container');
+  });
+
+  it('does not resolve repository Markdown images through the Obsidian Vault', () => {
+    const html = renderMarkdown('![private collision](secret.png)', ['secret.png'], false);
+
+    expect(html).toContain('Remote or unsupported image blocked: private collision');
+    expect(html).not.toContain('Loading image');
   });
 
   it('turns prose wiki-links into note links without rewriting inline or fenced code', () => {

@@ -1,0 +1,16 @@
+export const GIT_WORKSPACE_IPC_CHANNELS = {
+  snapshot: 'gosu:git-workspace:snapshot',
+  clone: 'gosu:git-workspace:clone',
+  readFile: 'gosu:git-workspace:read-file',
+  diff: 'gosu:git-workspace:diff',
+  commitDetail: 'gosu:git-workspace:commit-detail',
+  stage: 'gosu:git-workspace:stage',
+  unstage: 'gosu:git-workspace:unstage',
+  commit: 'gosu:git-workspace:commit',
+  createBranch: 'gosu:git-workspace:create-branch',
+  switchBranch: 'gosu:git-workspace:switch-branch',
+  fetch: 'gosu:git-workspace:fetch',
+  pull: 'gosu:git-workspace:pull',
+  push: 'gosu:git-workspace:push',
+  reveal: 'gosu:git-workspace:reveal',
+} as const;

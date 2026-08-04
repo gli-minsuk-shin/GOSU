@@ -50,7 +50,7 @@ flowchart LR
     LocalDB["암호화 SQLite\nworkspace snapshot·outbox·model provenance"]
     Codex["로컬 Codex App Server"]
     Vault["선택한 Obsidian 폴더"]
-    Git["로컬 Git worktree"]
+    Git["앱 관리형 로컬 Git worktree\nfile·change·history·branch"]
   end
 
   subgraph Hosted["Hosted collaboration boundary"]
@@ -71,7 +71,7 @@ flowchart LR
   Main --> LocalDB
   Main --> Codex
   Main -->|"read-only"| Vault
-  Main -.->|"계획된 privileged adapter"| Git
+  Main -->|"project-scoped typed Git IPC"| Git
   Main <-->|"readiness·향후 sync worker"| API
   API --> Memory
   API -.->|"런타임 연결 전"| Postgres
@@ -94,17 +94,17 @@ flowchart LR
 
 ## 4. 저장소 구조와 코드 소유권
 
-| 경로                    | 소유 책임                                                                 | 현재 상태                                       |
-| ----------------------- | ------------------------------------------------------------------------- | ----------------------------------------------- |
-| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Vault 경계   | 실행 가능한 Project Chat·Kanban·Objective slice |
-| `apps/web`              | Owner·Lab 관리 경험                                                       | demo fixture 기반의 인터랙티브 UI               |
-| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계 | memory runtime 구현, PostgreSQL 기반 구현       |
-| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill        | 제한된 로컬 실행 경로 구현                      |
-| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                              | 구현됨                                          |
-| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙              | 구현됨                                          |
-| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                     | 기반 구현                                       |
-| `packages/ui`           | 공통 visual token과 작은 presentational primitive                         | 기반 구현                                       |
-| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단              | 구현됨                                          |
+| 경로                    | 소유 책임                                                                   | 현재 상태                                                  |
+| ----------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Vault·Git 경계 | 실행 가능한 Project Chat·Kanban·Objective·Repository slice |
+| `apps/web`              | Owner·Lab 관리 경험                                                         | demo fixture 기반의 인터랙티브 UI                          |
+| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계   | memory runtime 구현, PostgreSQL 기반 구현                  |
+| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill          | 제한된 로컬 실행 경로 구현                                 |
+| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                                | 구현됨                                                     |
+| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙                | 구현됨                                                     |
+| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                       | 기반 구현                                                  |
+| `packages/ui`           | 공통 visual token과 작은 presentational primitive                           | 기반 구현                                                  |
+| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단                | 구현됨                                                     |
 
 ### 논리 모듈 소유권
 
@@ -117,13 +117,13 @@ flowchart LR
 | Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨 |
 | Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                   | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                       |
 | Experiment Orchestration   | contracts, domain, Runner                                                      | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨                                                                 |
-| Manuscript                 | 향후 desktop workspace module                                                  | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                                                                                |
+| Manuscript                 | Desktop Repository workspace와 향후 manuscript module                          | 앱 관리형 Git worktree·파일/Markdown preview·change/history/branch·commit 구현; LaTeX compile·PDF preview는 계획됨                             |
 | Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                       | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                        |
 | Reference                  | Zotero read-only connector                                                     | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                                                                                      |
 | Obsidian Knowledge         | Desktop Vault reader, Markdown renderer, project knowledge port                | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview·프로젝트별 agent grant 구현                                                       |
 | Lecture                    | Owner Web UI 표현                                                              | 생성·편집·출처 연결은 계획됨                                                                                                                   |
 | AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 로그인·동적 model/mode catalog·native harness·project-bound read tool·thread/turn·모델 provenance 구현                                         |
-| Integration Hub            | `packages/integrations` registry와 connector classes                           | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨                                                                               |
+| Integration Hub            | Desktop Git Workspace, `packages/integrations` registry와 connector classes    | GitHub HTTPS clone·bounded Git 작업 구현; GitHub App 계정 연결과 다른 connector lifecycle은 계획됨                                             |
 | Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                              | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                       |
 
 ## 5. 의존성 규칙
@@ -174,15 +174,15 @@ flowchart TD
 
 ## 6. 데이터 원본과 개인정보 경계
 
-| 데이터                                           | authoritative source                                           | Hosted Sync 보관 정책                     |
-| ------------------------------------------------ | -------------------------------------------------------------- | ----------------------------------------- |
-| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 local worktree                                        | repository·branch·commit·PR metadata만    |
-| 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                                        | 연결 상태만; 본문은 금지                  |
-| 서지 metadata, collection, PDF                   | Zotero                                                         | 연결 상태와 선택 item ID만; PDF 금지      |
-| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                   | 원본 금지; 상태와 명시적 summary metric만 |
-| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본 | 협업 metadata 저장 대상                   |
-| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store            | 금지                                      |
-| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                 | 금지                                      |
+| 데이터                                           | authoritative source                                           | Hosted Sync 보관 정책                                               |
+| ------------------------------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 앱 관리형 local worktree                              | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지 |
+| 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                                        | 연결 상태만; 본문은 금지                                            |
+| 서지 metadata, collection, PDF                   | Zotero                                                         | 연결 상태와 선택 item ID만; PDF 금지                                |
+| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                   | 원본 금지; 상태와 명시적 summary metric만                           |
+| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본 | 협업 metadata 저장 대상                                             |
+| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store            | 금지                                                                |
+| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                 | 금지                                                                |
 
 Hosted Sync에 저장하지 않는다는 것과 LLM에 전혀 전송하지 않는다는 것은 다르다. Local Notes는 기본적으로
 Mac 안에만 남지만, 사용자가 특정 Vault를 특정 project agent에 승인한 경우 그 turn에서 agent가 실제로
@@ -371,6 +371,102 @@ Vault-local PNG, JPEG, GIF, WebP, AVIF만 typed attachment IPC로 읽으며 Main
 root containment, symlink, 허용 확장자와 file signature, 8 MB 크기 제한을 다시 확인한다. 검증된 bytes만
 base64 data URL로 Renderer에 반환하며 절대 경로와 `file://` 권한은 노출하지 않는다. SVG, PDF,
 audio·video와 embedded note rendering은 후속 범위다.
+
+Repository의 Markdown preview도 같은 sanitize·link 정책을 재사용하지만 데이터 source capability는
+공유하지 않는다. 특히 repository Markdown의 상대 image가 같은 이름의 비공개 Obsidian attachment를
+읽지 않도록 Vault image loader를 명시적으로 끈다. Repository-local raster preview는 별도의 bounded
+Git asset IPC가 생기기 전까지 blocked placeholder로 표시한다.
+
+### Git Workspace 경계
+
+Project의 `repository`에는 URL이나 SSH 주소가 아니라 검증된 `owner/repository` label만 저장한다.
+이 label은 암호화 workspace snapshot과 outbox에 들어갈 수 있지만 token, credential, local path,
+파일 본문과 raw diff는 들어갈 수 없다. 과거 snapshot이 임의 repository 문자열을 포함해도 agent에는
+검증된 label만 보이며, 새 project 생성과 연결 command는 URL·userinfo·token 모양을 경계에서 거부한다.
+
+Clone은 Electron Main이 `app.getPath('userData')/git-workspaces/<project UUID>` 아래에 만드는 앱 관리형
+worktree만 허용한다. Project Chat의 임시 Codex workspace, Obsidian Vault나 사용자가 고른 임의 폴더를
+Git root로 재사용하지 않는다. clone은 HTTPS, no-submodule, no-checkout으로 임시 sibling directory에
+받고 다음 검증을 모두 통과한 뒤 atomic rename한다.
+
+- project가 active이고 exact UUID directory를 소유하는 현재 macOS 사용자여야 한다.
+- repository directory와 `.git`은 실제 directory여야 하며 symlink일 수 없다. macOS의 `/var`와
+  `/private/var` 같은 신뢰한 parent alias는 canonical parent 기준으로 처리하되 project directory 자체의
+  alias는 거부한다.
+- `.git`의 HEAD, config, index, refs, logs, objects와 Git이 쓰는 주요 admin file은 canonical metadata
+  tree 안의 regular single-link file/directory여야 한다. symlink 또는 outside hard link가 보이면 read와
+  mutation을 모두 중단한다.
+- object alternates, HTTP alternates, grafts, partial-clone/promisor marker와 promisor config는 허용하지
+  않는다. 다른 project나 host path의 object를 같은 SHA처럼 읽거나 조회 중 lazy network fetch하는 것을
+  막는다.
+- `rev-parse --show-toplevel`은 canonical project root와 같아야 한다.
+- `origin` URL은 정확히 하나이고 userinfo·query·fragment 없는 예상 GitHub HTTPS repository여야 한다.
+  다중 URL, `pushurl`, `insteadOf`/`pushInsteadOf`, custom upload/receive pack, local `http.*`와
+  `include.path/includeIf`는 network command 전에 거부한다.
+- symbolic HEAD는 `refs/heads/<validated branch>`만 가리킬 수 있고 그 local branch 자체는 direct ref여야
+  한다. detached HEAD는 exact object ID로만 표현하며 remote-tracking/local ref와 loose ref/reflog path의
+  filesystem symlink를 거부한다.
+- remote가 비어 있어 unborn default branch만 있는 경우 HEAD를 `null`로 표현하고 checkout을 생략한다.
+  첫 file stage·unstage·commit 뒤 같은 workspace에서 정상 history로 전환한다.
+
+Renderer에는 filesystem path, Node, raw Git command나 generic IPC를 노출하지 않는다. 고정 preload API는
+snapshot, clone, text/Markdown preview, diff, commit detail, stage/unstage/commit, branch create/switch,
+Fetch, fast-forward-only Pull, current-branch Push와 Finder reveal만 제공한다. force push, reset, clean,
+discard, stash, branch 삭제, merge, rebase, submodule update와 arbitrary command는 현재 surface에 없다.
+
+Git child는 shell 없이 고정 executable과 argv array로 실행한다. hook, fsmonitor, pager, external diff,
+textconv, commit signature 표시·검증, merge signature 검증, global attributes, interactive prompt와
+submodule recursion을 끄고 output·timeout·파일 수·preview 크기를 제한한다. Clone checkout과 branch
+switch에도 `--no-recurse-submodules`를 명시해 repository-local `submodule.recurse`가 nested worktree를
+움직이거나 그 안의 filter를 실행하지 못하게 한다. History와 commit detail은
+`--no-show-signature`, Pull merge는 `--no-verify-signatures`를 다시 명시해 repository-local
+`gpg.program`이 조회나 fast-forward 과정에서 실행되지 않게 한다. Network command를 포함한 모든
+operational Git command는 global/system config를 기본 격리한다. Commit 직전의
+`git config --get user.name/user.email`만 authorship을 얻기 위한 제한된 read로 예외 처리하고, 검증한 값을
+격리된 commit argv에 다시 넣는다. 이름이나 이메일이 없거나 control character를 포함하면 commit을
+중단한다. HTTPS protocol만 허용하며,
+`GIT_ASKPASS`·`SSH_ASKPASS`와 `core.askPass`를 `/usr/bin/false`로 고정해 저장소 또는 parent process가
+지정한 credential executable을 실행하지 않는다. macOS에서는 command-line에서 초기화한 Keychain
+credential helper만 사용한다. local/worktree config가
+filter, hook, alternate refs command, include 또는 외부 command를 다시 켜면 fail closed하고, stage
+대상에 `filter` attribute가 있어도 실행하지 않는다. Snapshot과 diff도 status/diff 전에 같은
+local/worktree config gate를 통과해야 하므로 Repository 화면을 여는 것만으로 filter command가 실행되지
+않는다. 모든 child에 `--no-replace-objects`/`GIT_NO_REPLACE_OBJECTS=1`을 적용해 replace ref가 표시 SHA와
+실제 history/diff/merge 대상을 바꾸지 못하게 한다. 또한
+`--literal-pathspecs`와 `GIT_LITERAL_PATHSPECS=1`을 강제해 `*`, `?`, `[]`, `:(...)`가 포함된 실제 파일명을
+renderer가 선택해도 다른 파일로 확장되지 않는다. symlink·submodule·binary·2 MiB 초과 파일은 tree에
+표시할 수 있지만 본문을 Renderer에 반환하지 않는다. UTF-8 preview cutoff는 최대 3 byte를 backtrack해
+완전한 code point에서 끝내므로 큰 정상 text를 binary로 오인하지 않는다. History는 먼저 validated
+OID-only 목록을 고정하고 NUL-framed metadata가 그 순서와 정확히 일치할 때만 표시한다. Commit detail은
+current HEAD에서 reachable한 commit object만 허용해 blob, tree, dangling object로 file-preview policy를
+우회할 수 없다. 깨끗한 macOS에 `/usr/bin/git`을 제공하는 Apple Command Line Tools가 없으면
+설치가 필요한 bounded 오류를 표시한다. pinned Git 배포와 GitHub App token lifecycle은 후속 범위다.
+
+모든 mutation은 UI snapshot의 exact full HEAD SHA 또는 unborn `null`과 exact symbolic branch를 함께
+보내며 Main에서 다시 비교한다. 같은 commit을 가리키는 다른 branch로 외부 전환했어도 stale command는
+중단된다. Create Branch는 mutable HEAD 대신 그 reviewed SHA를 explicit start point로 사용한다. Commit은
+snapshot의 index fingerprint를 요구하고, `write-tree` 전후 fingerprint가 같을 때 exact tree를
+`commit-tree`로 만들며 local branch는 expected HEAD CAS `update-ref --no-deref`로만 이동한다. Renderer도
+현재 fingerprint의 모든 staged diff를 연 뒤에만 Commit을 활성화한다. 외부 process가 index를 바꾸면
+reviewed tree만 commit되거나 명시적인 stale-index 오류로 중단된다. Rename diff와 Unstage는 original과
+destination literal path를 함께 처리한다.
+
+project별 in-process queue가 index lock 경합을 막고, base가 바뀌면 자동 merge/rebase하지 않는다. Pull은
+clean worktree와 exact `origin/<current branch>` upstream을 요구한다. Fetch/Pull은 remote head를 예측
+불가능한 `refs/gosu/fetch/<session>/...` direct ref에 먼저 받고, 검증한 SHA를 remote-tracking ref에
+`update-ref --no-deref` CAS로 반영한다. 따라서 악성 `origin/<branch>` symbolic ref가 local branch를
+덮어쓸 수 없다. Pull은 network 이후 HEAD/clean 상태를 다시 확인하고 fetched exact SHA에
+`merge --ff-only`만 수행하며 merge commit이나 rebase는 만들지 않는다. 일반 Fetch도 repository의
+`remote.origin.fetch`를 신뢰하지 않고 tag·prune·FETCH_HEAD 기록을 끈다. Push도
+검토된 exact HEAD SHA를 source로 삼아 예상 GitHub HTTPS URL의 current branch에만 보낸다. branch가
+network call 중 움직여도 새 commit은 전송하지 않고 상태 경합으로 중단한다. `--no-follow-tags`,
+`--signed=no`, no-submodule 옵션을 강제해 local config가 tag, push certificate 또는 submodule push로
+전송 범위를 넓힐 수 없게 하며 force option은 생성하지 않는다. 성공 뒤 `origin/<branch>` tracking ref는
+이전 값과 함께 atomic compare-and-swap으로만 갱신한다.
+
+Git file tree와 raw file/diff/history는 로컬 조회 결과다. Hosted DB, workspace outbox, telemetry 또는
+Project Chat context에 자동 포함하지 않는다. GitHub remote 장애나 Git 설치 실패는 Repository 화면의
+bounded error로 격리하며 Kanban, Objective, Local Notes와 기존 Project Chat을 중단시키지 않는다.
 
 ### 현재 로컬 workspace 흐름
 
@@ -738,8 +834,10 @@ package 설정과 ICNS의 `ic10` rendition 일치를 검사해 네모 아이콘�
 
 현재 한계도 중요하다. local outbox table은 존재하지만 Sync delivery·reconciliation worker는 아직
 없다. Codex Project Chat은 실제 thread·turn과 연결됐지만 논문 작성·patch approval 흐름은 아직
-연결되지 않았다. Git, SSH, Keychain connector, LaTeX compile, PDF preview도 계획
-상태다. DMG 설정은 있으나 서명·notarization·auto-update를 보증하지 않는다.
+연결되지 않았다. 앱 관리형 Git Workspace는 동작하지만 GitHub App 설치·PR review·보호 branch gate,
+repository asset preview와 LaTeX compile·PDF preview는 아직 계획 상태다. macOS Keychain의 기존 Git
+credential을 사용할 수는 있지만 GOSU 자체 GitHub account lifecycle을 구현한 것은 아니다. SSH와 Runner
+설치 connector도 계획 상태다. DMG 설정은 있으나 서명·notarization·auto-update를 보증하지 않는다.
 
 IPC 기능을 추가할 때는 preload type, argument schema, Main sender 검증, 최소 반환값, 실패 테스트를
 한 묶음으로 변경한다. Renderer 편의를 이유로 filesystem path나 secret 값을 넓게 반환하면 안 된다.
@@ -1002,7 +1100,7 @@ enforce하고 감사할 수 있는 egress adapter가 생기기 전에는 계속 
 - PostgreSQL runtime wiring, migration 운영, Redis coordination와 transactional outbox publisher
 - trusted ingress의 TLS·runner mTLS·service credential과 proxy spoofing 방어
 - Desktop sync worker, offline command replay와 사람이 이해할 수 있는 conflict UI
-- GitHub App 설치·token lifecycle, Git worktree·patch·base-SHA gate
+- GitHub App 설치·token lifecycle, PR review·보호 branch·AI patch·base-SHA gate
 - LaTeX editor·Tectonic compile·PDF preview·review anchor·citation provenance
 - Runner enrollment, repository materialization, dataset·scratch resolver, artifact reference·upload,
   restart reconciliation
@@ -1015,6 +1113,8 @@ enforce하고 감사할 수 있는 egress adapter가 생기기 전에는 계속 
 - PostgreSQL adapter가 존재한다는 것과 실제 API가 PostgreSQL을 사용한다는 것은 다르다.
 - UI에 보이는 버튼·차트가 실제 command나 experiment를 수행한다는 뜻은 아니다.
 - Project Chat이 연결됐다는 것과 Codex가 논문 파일을 쓰거나 자동실험을 실행한다는 것은 다르다.
+- Repository file·history·branch·commit UI가 있다는 것과 GitHub App 로그인, PR merge 또는
+  AI가 worktree를 자유롭게 수정할 권한이 있다는 것은 다르다.
 - connector class가 있다는 것과 사용자의 OAuth 연결·증분 sync가 완성됐다는 것은 다르다.
 - macOS package 설정이 있다는 것과 배포 artifact가 서명·notarization됐다는 것은 다르다.
 - manifest에 `allowlist` enum이 있다는 것과 Runner network 실행이 허용된다는 것은 다르다. 현재는
@@ -1030,6 +1130,8 @@ enforce하고 감사할 수 있는 egress adapter가 생기기 전에는 계속 
 - [ ] lab·project·role authorization이 command, query, search, stream 모두에 있는가?
 - [ ] optimistic version, idempotency, replay와 conflict semantics가 정의됐는가?
 - [ ] secret, 연구 원문, raw output가 DB·event·log·fixture에 들어가지 않는가?
+- [ ] Git 변경이면 arbitrary command·hook·filter·protocol·remote URL 우회가 없는가? HEAD와 branch를
+      함께 검증하고 destructive history 작업을 새 IPC에 넣지 않았는가?
 - [ ] 실패·cancel·negative result provenance가 사라지지 않는가?
 - [ ] 외부 장애가 독립 모듈을 막지 않는가?
 - [ ] 구현 상태와 계획 상태를 README·architecture에서 정확히 구분했는가?

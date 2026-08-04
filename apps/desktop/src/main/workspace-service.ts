@@ -10,6 +10,7 @@ import {
   SetProjectArchivedInputSchema,
   SetTaskArchivedInputSchema,
   UpdateBoardSettingsInputSchema,
+  UpdateProjectRepositoryInputSchema,
   UpdateTaskInputSchema,
   WorkspaceOperationSchema,
   WorkspacePendingSummarySchema,
@@ -25,6 +26,7 @@ import {
   type SetProjectArchivedInput,
   type SetTaskArchivedInput,
   type UpdateBoardSettingsInput,
+  type UpdateProjectRepositoryInput,
   type UpdateTaskInput,
   type WorkspaceObjective,
   type WorkspaceOperation,
@@ -202,6 +204,42 @@ export class WorkspaceService {
           project.version,
           now,
           { name: updated.name, newEntityVersion: updated.version },
+        ),
+        value: updated,
+      };
+    });
+  }
+
+  updateProjectRepository(input: UpdateProjectRepositoryInput): Promise<ProjectRecord> {
+    return this.mutate(async (state) => {
+      const command = UpdateProjectRepositoryInputSchema.parse(input);
+      const project = this.requireActiveProject(state, command.projectId);
+      if (project.version !== command.expectedVersion) {
+        throw conflict(project.id, command.expectedVersion, project.version);
+      }
+      const now = new Date().toISOString();
+      const updated: ProjectRecord = {
+        ...project,
+        repository: command.repository,
+        version: project.version + 1,
+        updatedAt: now,
+      };
+      return {
+        state: {
+          ...state,
+          projects: state.projects.map((candidate) =>
+            candidate.id === project.id ? updated : candidate,
+          ),
+        },
+        operation: this.operation(
+          'project.repository.update',
+          `workspace:${project.id}:project:${project.id}:repository:update`,
+          project.id,
+          'project',
+          project.id,
+          project.version,
+          now,
+          { repository: updated.repository, newEntityVersion: updated.version },
         ),
         value: updated,
       };
