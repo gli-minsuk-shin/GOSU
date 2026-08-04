@@ -625,6 +625,10 @@ button:disabled {
   overflow: auto;
 }
 
+.desktop-content.desktop-content-chat {
+  padding: 18px clamp(14px, 1.8vw, 28px) 28px;
+}
+
 .page-heading {
   display: flex;
   align-items: flex-end;
@@ -632,6 +636,21 @@ button:disabled {
   gap: 18px;
   max-width: 1500px;
   margin-bottom: 24px;
+}
+
+.page-heading-chat {
+  align-items: center;
+  max-width: none;
+  margin-bottom: 12px;
+}
+
+.page-heading-chat h1 {
+  margin: 3px 0 0;
+  font-size: clamp(22px, 2.4vw, 28px);
+}
+
+.page-heading-chat p {
+  display: none;
 }
 
 .eyebrow {
@@ -2263,10 +2282,10 @@ textarea:focus {
 
 .project-chat-workspace {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 12px;
-  width: min(100%, 1460px);
-  height: clamp(560px, calc(100vh - 210px), 820px);
+  grid-template-columns: 184px minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  height: max(560px, calc(100vh - 172px));
   min-height: 0;
 }
 
@@ -2282,8 +2301,8 @@ textarea:focus {
 
 .project-chat-session-rail > header {
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 11px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -2328,7 +2347,7 @@ textarea:focus {
   align-content: start;
   gap: 5px;
   min-height: 0;
-  padding: 8px;
+  padding: 6px;
   overflow: auto;
 }
 
@@ -2337,7 +2356,7 @@ textarea:focus {
   gap: 5px;
   width: 100%;
   min-width: 0;
-  padding: 10px;
+  padding: 8px;
   border: 1px solid transparent;
   border-radius: 10px;
   background: transparent;
@@ -2430,8 +2449,8 @@ textarea:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  padding: 14px 16px;
+  gap: 14px;
+  padding: 11px 13px;
   border-bottom: 1px solid var(--line);
   background: light-dark(rgba(255, 255, 255, 0.9), rgba(14, 18, 15, 0.86));
 }
@@ -2603,9 +2622,9 @@ textarea:focus {
 .chat-transcript {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   min-height: 0;
-  padding: 28px clamp(18px, 5vw, 64px);
+  padding: 18px clamp(12px, 1.8vw, 26px);
   overflow: auto;
   scroll-behavior: smooth;
 }
@@ -2619,7 +2638,7 @@ textarea:focus {
 }
 
 .chat-welcome {
-  width: min(100%, 720px);
+  width: min(100%, 920px);
   margin: auto;
   padding: 38px 0;
   text-align: center;
@@ -2639,7 +2658,7 @@ textarea:focus {
 }
 
 .chat-welcome > p {
-  max-width: 540px;
+  max-width: 680px;
   margin: 0 auto 24px;
   color: var(--muted);
   font-size: var(--font-body);
@@ -2678,7 +2697,7 @@ textarea:focus {
 }
 
 .chat-message {
-  width: min(84%, 760px);
+  width: min(96%, 1180px);
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 5px 16px 16px;
@@ -2956,7 +2975,7 @@ textarea:focus {
 }
 
 .chat-compose-area {
-  padding: 11px 14px 14px;
+  padding: 9px 10px 11px;
   border-top: 1px solid var(--line);
   background: light-dark(rgba(252, 253, 251, 0.97), rgba(10, 13, 11, 0.95));
 }
@@ -3977,7 +3996,7 @@ textarea:focus {
   }
 
   .project-chat-workspace {
-    grid-template-columns: 190px minmax(0, 1fr);
+    grid-template-columns: 166px minmax(0, 1fr);
   }
 
   .repository-toolbar {
@@ -4019,6 +4038,10 @@ textarea:focus {
 
   .desktop-content {
     padding: 24px 18px 48px;
+  }
+
+  .desktop-content.desktop-content-chat {
+    padding: 14px 12px 24px;
   }
 
   .board-toolbar,

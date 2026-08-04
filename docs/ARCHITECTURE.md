@@ -650,6 +650,12 @@ flowchart LR
   snapshot·event·cancel·retry·action도
   project+session composite key와 membership을 다시 검사해 다른 session이나 project의 상태가 섞이지
   않게 한다.
+- Project Chat은 다른 workspace 화면과 분리된 compact content layout을 사용한다. chat surface의 공통
+  바깥 여백과 중복 subtitle을 줄이고, session rail은 좁은 고정 navigation column으로 유지한다. chat
+  workspace에는 desktop 최대 폭·높이 cap을 두지 않아 현재 window를 사용하며 transcript 안쪽 여백도
+  제한한다. message card는 넓은 코드·표·수식을 위해 가용 폭의 96%, 최대 1,180px까지 확장하되 작은
+  window에서는 기존 horizontal session rail breakpoint를 유지한다. Board·Repository·Settings 등 다른
+  surface의 공통 spacing은 이 chat 전용 class의 영향을 받지 않는다.
 - 한 project에는 동시에 하나의 Codex turn만 허용한다. 사용자는 active turn 중에도 다른 session을 열어
   history를 읽거나 새 root/완료 지점 branch를 만들 수 있지만, 다른 session의 composer·model·reasoning·
   profile·rename은 잠긴다. active session에는 `●`와 Stop을 표시하고 다른 session에는 해당 active session으로

@@ -96,7 +96,7 @@ export function WorkspacePageHeading({
     notes: 'Read Markdown from a folder you explicitly select. Note contents stay on this Mac.',
   };
   return (
-    <header className="page-heading">
+    <header className={`page-heading page-heading-${activeTab}`}>
       <div>
         <span className="eyebrow">
           {activeProject?.name ?? 'Local workspace'} / {tab.label}

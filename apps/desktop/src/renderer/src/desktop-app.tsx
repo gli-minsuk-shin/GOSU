@@ -1055,7 +1055,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         />
       </aside>
 
-      <section className="desktop-content">
+      <section
+        className={
+          activeSurface === 'workspace' && activeTab === 'chat'
+            ? 'desktop-content desktop-content-chat'
+            : 'desktop-content'
+        }
+      >
         <p className="sr-only" aria-live="polite">
           {announcement}
         </p>
