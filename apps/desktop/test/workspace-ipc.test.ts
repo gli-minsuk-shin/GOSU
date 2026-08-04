@@ -133,7 +133,7 @@ describe('workspace IPC boundary', () => {
     });
   });
 
-  it('routes explicit versioned project rename, trash, and restore commands', async () => {
+  it('routes explicit versioned project rename, archive, Trash, and restore commands', async () => {
     const storage = new MemoryStorage();
     const handlers = handlersFor(new WorkspaceService(storage));
     const project = await successful<{ id: string; slug: string; version: number }>(
@@ -156,11 +156,30 @@ describe('workspace IPC boundary', () => {
       version: 2,
     });
 
+    const archived = await successful<{ version: number; archivedAt?: string }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.setProjectArchived)!,
+      { projectId: project.id, expectedVersion: renamed.version, archived: true },
+    );
+    expect(archived).toMatchObject({ version: 3 });
+    expect(archived.archivedAt).toBeTypeOf('string');
+    await expect(
+      handlers.get(WORKSPACE_IPC_CHANNELS.createTask)!({
+        projectId: project.id,
+        title: 'Must stay out of Archive',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'project_archived' } });
+    const unarchived = await successful<{ version: number; archivedAt?: string }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.setProjectArchived)!,
+      { projectId: project.id, expectedVersion: archived.version, archived: false },
+    );
+    expect(unarchived).toMatchObject({ version: 4 });
+    expect(unarchived).not.toHaveProperty('archivedAt');
+
     const trashed = await successful<{ version: number; trashedAt?: string }>(
       handlers.get(WORKSPACE_IPC_CHANNELS.trashProject)!,
-      { projectId: project.id, expectedVersion: renamed.version },
+      { projectId: project.id, expectedVersion: unarchived.version },
     );
-    expect(trashed).toMatchObject({ version: 3 });
+    expect(trashed).toMatchObject({ version: 5 });
     expect(trashed.trashedAt).toBeTypeOf('string');
     await expect(
       handlers.get(WORKSPACE_IPC_CHANNELS.createTask)!({
@@ -179,7 +198,7 @@ describe('workspace IPC boundary', () => {
       handlers.get(WORKSPACE_IPC_CHANNELS.restoreProject)!,
       { projectId: project.id, expectedVersion: trashed.version },
     );
-    expect(restored).toMatchObject({ version: 4 });
+    expect(restored).toMatchObject({ version: 6 });
     expect(restored).not.toHaveProperty('trashedAt');
     await expect(
       handlers.get(WORKSPACE_IPC_CHANNELS.restoreProject)!({
@@ -187,8 +206,10 @@ describe('workspace IPC boundary', () => {
         expectedVersion: restored.version,
       }),
     ).resolves.toEqual({ ok: false, error: { code: 'project_not_trashed' } });
-    expect(storage.operations.slice(-3).map((operation) => operation.commandType)).toEqual([
+    expect(storage.operations.slice(-5).map((operation) => operation.commandType)).toEqual([
       'project.rename',
+      'project.archive',
+      'project.unarchive',
       'project.trash',
       'project.restore',
     ]);
@@ -234,6 +255,30 @@ describe('workspace IPC boundary', () => {
       }),
     ).resolves.toEqual({ ok: false, error: { code: 'chat_busy' } });
     expect((await workspace.snapshot()).projects[0]).not.toHaveProperty('trashedAt');
+  });
+
+  it('uses the Project Chat idle gate for archive transitions', async () => {
+    const storage = new MemoryStorage();
+    const workspace = new WorkspaceService(storage);
+    const idleGuard = {
+      async runWhenProjectChatIdle<T>(_projectId: string, _operation: () => Promise<T>) {
+        throw new ProjectChatServiceError('chat_busy');
+      },
+    };
+    const handlers = handlersFor(workspace, undefined, idleGuard);
+    const project = await successful<{ id: string; version: number }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!,
+      { name: 'Busy archive project' },
+    );
+
+    await expect(
+      handlers.get(WORKSPACE_IPC_CHANNELS.setProjectArchived)!({
+        projectId: project.id,
+        expectedVersion: project.version,
+        archived: true,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'chat_busy' } });
+    expect((await workspace.snapshot()).projects[0]).not.toHaveProperty('archivedAt');
   });
 
   it('rejects invalid default Board templates on project creation without committing state', async () => {

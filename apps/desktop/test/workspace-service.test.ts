@@ -72,7 +72,7 @@ function expectServiceError(error: unknown, code: WorkspaceServiceError['code'])
 }
 
 describe('WorkspaceService', () => {
-  it('treats a legacy project without trashedAt as active', async () => {
+  it('treats a legacy project without archivedAt or trashedAt as active', async () => {
     const storage = new MemoryWorkspaceStorage();
     storage.state = {
       schemaVersion: 1,
@@ -93,6 +93,7 @@ describe('WorkspaceService', () => {
 
     const service = new WorkspaceService(storage);
     const snapshot = await service.snapshot();
+    expect(snapshot.projects[0]).not.toHaveProperty('archivedAt');
     expect(snapshot.projects[0]).not.toHaveProperty('trashedAt');
     await expect(
       service.renameProject({
@@ -287,6 +288,98 @@ describe('WorkspaceService', () => {
       .restoreProject({ projectId: project.id, expectedVersion: restored.version })
       .catch((caught: unknown) => caught);
     expectServiceError(duplicateRestore, 'project_not_trashed');
+  });
+
+  it('archives with optimistic versions and preserves the prior archived state through Trash', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const project = await service.createProject({ name: 'Recoverable Archive Project' });
+    const task = await service.createTask({ projectId: project.id, title: 'Preserved task' });
+    const objective = await service.saveObjective({
+      projectId: project.id,
+      expectedEntityVersion: 0,
+      ...objectiveFields,
+    });
+
+    const archived = await service.setProjectArchived({
+      projectId: project.id,
+      expectedVersion: project.version,
+      archived: true,
+    });
+    expect(archived).toMatchObject({ id: project.id, slug: project.slug, version: 2 });
+    expect(archived.archivedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(storage.operations.at(-1)).toMatchObject({
+      commandType: 'project.archive',
+      baseVersion: 1,
+      payload: { archivedAt: archived.archivedAt, newEntityVersion: 2 },
+    });
+
+    const staleUnarchive = await service
+      .setProjectArchived({
+        projectId: project.id,
+        expectedVersion: project.version,
+        archived: false,
+      })
+      .catch((caught: unknown) => caught);
+    expectServiceError(staleUnarchive, 'version_conflict');
+    const duplicateArchive = await service
+      .setProjectArchived({
+        projectId: project.id,
+        expectedVersion: archived.version,
+        archived: true,
+      })
+      .catch((caught: unknown) => caught);
+    expectServiceError(duplicateArchive, 'project_archived');
+    await expect(
+      service.createTask({ projectId: project.id, title: 'Archived write must fail' }),
+    ).rejects.toMatchObject({ code: 'project_archived' });
+
+    const restarted = new WorkspaceService(storage);
+    expect(await restarted.snapshot()).toMatchObject({
+      projects: [{ id: project.id, archivedAt: archived.archivedAt }],
+      tasks: [task],
+      objectives: [objective],
+    });
+    const trashed = await restarted.trashProject({
+      projectId: project.id,
+      expectedVersion: archived.version,
+    });
+    expect(trashed).toMatchObject({ version: 3, archivedAt: archived.archivedAt });
+    const archiveChangeInTrash = await restarted
+      .setProjectArchived({
+        projectId: project.id,
+        expectedVersion: trashed.version,
+        archived: false,
+      })
+      .catch((caught: unknown) => caught);
+    expectServiceError(archiveChangeInTrash, 'project_trashed');
+    const restored = await restarted.restoreProject({
+      projectId: project.id,
+      expectedVersion: trashed.version,
+    });
+    expect(restored).toMatchObject({ version: 4, archivedAt: archived.archivedAt });
+    expect(restored).not.toHaveProperty('trashedAt');
+
+    const active = await restarted.setProjectArchived({
+      projectId: project.id,
+      expectedVersion: restored.version,
+      archived: false,
+    });
+    expect(active).toMatchObject({ id: project.id, slug: project.slug, version: 5 });
+    expect(active).not.toHaveProperty('archivedAt');
+    expect(storage.operations.at(-1)).toMatchObject({
+      commandType: 'project.unarchive',
+      baseVersion: 4,
+      payload: { archivedAt: null, newEntityVersion: 5 },
+    });
+    const duplicateUnarchive = await restarted
+      .setProjectArchived({
+        projectId: project.id,
+        expectedVersion: active.version,
+        archived: false,
+      })
+      .catch((caught: unknown) => caught);
+    expectServiceError(duplicateUnarchive, 'project_not_archived');
   });
 
   it('rejects normal project mutations while preserving a trashed aggregate', async () => {

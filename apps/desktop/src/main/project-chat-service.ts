@@ -104,6 +104,7 @@ export class ProjectChatServiceError extends Error {
   constructor(
     readonly code:
       | 'project_not_found'
+      | 'project_archived'
       | 'project_trashed'
       | 'chat_busy'
       | 'chat_not_active'
@@ -254,7 +255,7 @@ export class ProjectChatService extends EventEmitter {
   private readonly activeTurnByProject = new Map<string, string>();
   private readonly threadProjects = new Map<string, string>();
   private readonly startingProjects = new Set<string>();
-  private readonly trashLockedProjects = new Set<string>();
+  private readonly lifecycleLockedProjects = new Set<string>();
   private readonly mutatingProjects = new Set<string>();
   private readonly earlyNotifications = new Map<string, CodexNotification[]>();
   private actionTail: Promise<void> = Promise.resolve();
@@ -334,18 +335,18 @@ export class ProjectChatService extends EventEmitter {
 
   async runWhenProjectChatIdle<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
     if (
-      this.trashLockedProjects.has(projectId) ||
+      this.lifecycleLockedProjects.has(projectId) ||
       this.mutatingProjects.has(projectId) ||
       this.startingProjects.has(projectId) ||
       this.activeTurnByProject.has(projectId)
     ) {
       throw new ProjectChatServiceError('chat_busy');
     }
-    this.trashLockedProjects.add(projectId);
+    this.lifecycleLockedProjects.add(projectId);
     try {
       return await operation();
     } finally {
-      this.trashLockedProjects.delete(projectId);
+      this.lifecycleLockedProjects.delete(projectId);
     }
   }
 
@@ -353,7 +354,7 @@ export class ProjectChatService extends EventEmitter {
     const hasExplicitNativeModeSelection = input.collaborationModeId !== undefined;
     const command = SendProjectChatMessageInputSchema.parse(input);
     if (
-      this.trashLockedProjects.has(command.projectId) ||
+      this.lifecycleLockedProjects.has(command.projectId) ||
       this.mutatingProjects.has(command.projectId) ||
       this.startingProjects.has(command.projectId) ||
       this.activeTurnByProject.has(command.projectId)
@@ -366,6 +367,7 @@ export class ProjectChatService extends EventEmitter {
       const project = snapshot.projects.find((candidate) => candidate.id === command.projectId);
       if (!project) throw new ProjectChatServiceError('project_not_found');
       if (project.trashedAt !== undefined) throw new ProjectChatServiceError('project_trashed');
+      if (project.archivedAt !== undefined) throw new ProjectChatServiceError('project_archived');
       const [priorChat, profile] = await Promise.all([
         this.dependencies.storage.snapshot(command.projectId),
         this.dependencies.storage.getProjectChatProfile(command.projectId),
@@ -831,7 +833,10 @@ export class ProjectChatService extends EventEmitter {
       snapshot.tasks.filter((task) => task.projectId === active.projectId).map((task) => task.id),
     );
     const commands =
-      project?.trashedAt !== undefined || active.attempt.harnessMode === 'reviewer'
+      !project ||
+      project.trashedAt !== undefined ||
+      project.archivedAt !== undefined ||
+      active.attempt.harnessMode === 'reviewer'
         ? []
         : response.actions.filter(
             (action) => action.type === 'task.create' || taskIds.has(action.taskId),
@@ -965,6 +970,7 @@ export class ProjectChatService extends EventEmitter {
   private async requireActiveProject(projectId: string) {
     const project = await this.requireProject(projectId);
     if (project.trashedAt !== undefined) throw new ProjectChatServiceError('project_trashed');
+    if (project.archivedAt !== undefined) throw new ProjectChatServiceError('project_archived');
     return project;
   }
 
@@ -972,7 +978,7 @@ export class ProjectChatService extends EventEmitter {
     projectId: string,
     operation: () => Promise<T>,
   ): Promise<T> {
-    if (this.trashLockedProjects.has(projectId) || this.mutatingProjects.has(projectId)) {
+    if (this.lifecycleLockedProjects.has(projectId) || this.mutatingProjects.has(projectId)) {
       throw new ProjectChatServiceError('chat_busy');
     }
     this.mutatingProjects.add(projectId);

@@ -692,12 +692,38 @@ void app.whenReady().then(async () => {
         wipLimits: { backlog: null, planned: 5, in_progress: 2, review: 2, done: null },
       },
     });
+    const archivedProject = await workspace.setProjectArchived({
+      projectId: templatedProject.id,
+      expectedVersion: templatedProject.version,
+      archived: true,
+    });
     mutationDatabase.close();
+
+    const archivedRestart = new LocalDatabase();
+    archivedRestart.open();
+    const archivedWorkspace = new WorkspaceService({
+      load: () => archivedRestart.loadWorkspaceState(),
+      commit: (state, operation) => archivedRestart.commitWorkspaceState(state, operation),
+      pendingChanges: () => archivedRestart.pendingWorkspaceChanges(),
+      pendingSummary: () => archivedRestart.pendingWorkspaceSummary(),
+    });
+    const archivedSnapshot = await archivedWorkspace.snapshot();
+    invariant(
+      archivedSnapshot.projects.find((project) => project.id === templatedProject.id)
+        ?.archivedAt !== undefined,
+      'project_archive_restart_restore_failed',
+    );
+    await archivedWorkspace.setProjectArchived({
+      projectId: templatedProject.id,
+      expectedVersion: archivedProject.version,
+      archived: false,
+    });
+    archivedRestart.close();
 
     const reopened = new LocalDatabase();
     reopened.open();
     const operationalSnapshot = reopened.loadWorkspaceState();
-    invariant(operationalSnapshot?.revision === 6, 'kanban_workspace_restart_restore_failed');
+    invariant(operationalSnapshot?.revision === 8, 'kanban_workspace_restart_restore_failed');
     invariant(
       operationalSnapshot.projects[0]?.board?.title === 'Reproduction pipeline' &&
         operationalSnapshot.projects[0]?.board?.columnLabels.review === 'Evidence check' &&
@@ -716,24 +742,35 @@ void app.whenReady().then(async () => {
     );
     invariant(
       operationalSnapshot.projects.find((project) => project.id === templatedProject.id)?.board
-        ?.columnLabels.backlog === 'Questions',
-      'default_board_template_restart_restore_failed',
+        ?.columnLabels.backlog === 'Questions' &&
+        operationalSnapshot.projects.find((project) => project.id === templatedProject.id)
+          ?.archivedAt === undefined &&
+        operationalSnapshot.projects.find((project) => project.id === templatedProject.id)
+          ?.version === 3,
+      'project_archive_unarchive_restart_restore_failed',
     );
     invariant(
       reopened
         .pendingWorkspaceChanges()
-        .slice(-4)
+        .slice(-6)
         .map((operation) => operation.commandType)
-        .join(',') === 'project.board.update,task.create,task.archive,project.create',
+        .join(',') ===
+        'project.board.update,task.create,task.archive,project.create,project.archive,project.unarchive',
       'kanban_outbox_lineage_restore_failed',
     );
     invariant(
-      reopened.pendingWorkspaceChanges().at(-1)?.payload.board !== undefined,
+      reopened
+        .pendingWorkspaceChanges()
+        .find(
+          (operation) =>
+            operation.commandType === 'project.create' &&
+            operation.entityId === templatedProject.id,
+        )?.payload.board !== undefined,
       'default_board_template_outbox_missing',
     );
-    invariant(reopened.pendingWorkspaceSummary().count === 6, 'outbox_summary_restore_failed');
+    invariant(reopened.pendingWorkspaceSummary().count === 8, 'outbox_summary_restore_failed');
     invariant(
-      reopened.pendingWorkspaceSummary().latestWorkspaceRevision === 6,
+      reopened.pendingWorkspaceSummary().latestWorkspaceRevision === 8,
       'outbox_summary_revision_failed',
     );
     const reopenedChat = reopened.snapshot(chatProjectId);
@@ -791,7 +828,7 @@ void app.whenReady().then(async () => {
       'chat_action_claim_failed',
     );
 
-    const duplicate = fixture(7, operationId, fixedTimestamp);
+    const duplicate = fixture(9, operationId, fixedTimestamp);
     let duplicateRejected = false;
     try {
       reopened.commitWorkspaceState(duplicate.state, duplicate.operation);
@@ -817,22 +854,22 @@ void app.whenReady().then(async () => {
       'chat_attempt_reconciliation_created_duplicate_receipt',
     );
     invariant(
-      afterRollback.loadWorkspaceState()?.revision === 6,
+      afterRollback.loadWorkspaceState()?.revision === 8,
       'workspace_transaction_did_not_roll_back',
     );
     invariant(
-      afterRollback.pendingWorkspaceChanges().length === 6,
+      afterRollback.pendingWorkspaceChanges().length === 8,
       'outbox_transaction_did_not_roll_back',
     );
     invariant(
-      afterRollback.pendingWorkspaceSummary().count === 6,
+      afterRollback.pendingWorkspaceSummary().count === 8,
       'outbox_summary_did_not_roll_back',
     );
 
     const competing = new LocalDatabase();
     competing.open();
-    const accepted = fixture(7, randomUUID(), fixedTimestamp);
-    const stale = fixture(7, randomUUID(), fixedTimestamp);
+    const accepted = fixture(9, randomUUID(), fixedTimestamp);
+    const stale = fixture(9, randomUUID(), fixedTimestamp);
     afterRollback.commitWorkspaceState(accepted.state, accepted.operation);
     let staleRevisionRejected = false;
     try {
@@ -847,17 +884,17 @@ void app.whenReady().then(async () => {
 
     const afterRace = new LocalDatabase();
     afterRace.open();
-    invariant(afterRace.loadWorkspaceState()?.revision === 7, 'workspace_race_revision_changed');
+    invariant(afterRace.loadWorkspaceState()?.revision === 9, 'workspace_race_revision_changed');
     invariant(
       afterRace.loadWorkspaceState()?.projects[0]?.id === accepted.state.projects[0]?.id,
       'workspace_race_snapshot_was_overwritten',
     );
     invariant(
-      afterRace.pendingWorkspaceChanges().filter((operation) => operation.workspaceRevision === 7)
+      afterRace.pendingWorkspaceChanges().filter((operation) => operation.workspaceRevision === 9)
         .length === 1,
       'workspace_race_created_duplicate_revision',
     );
-    invariant(afterRace.pendingWorkspaceSummary().count === 7, 'workspace_race_summary_changed');
+    invariant(afterRace.pendingWorkspaceSummary().count === 9, 'workspace_race_summary_changed');
     afterRace.close();
 
     const opaquePayload = '{legacy-operation-payload-is-not-json';
@@ -878,10 +915,10 @@ void app.whenReady().then(async () => {
 
     const recovered = new LocalDatabase();
     recovered.open();
-    invariant(recovered.loadWorkspaceState()?.revision === 7, 'opaque_payload_changed_snapshot');
-    invariant(recovered.pendingWorkspaceSummary().count === 7, 'status_reconciliation_failed');
+    invariant(recovered.loadWorkspaceState()?.revision === 9, 'opaque_payload_changed_snapshot');
+    invariant(recovered.pendingWorkspaceSummary().count === 9, 'status_reconciliation_failed');
     invariant(
-      recovered.pendingWorkspaceSummary().latestWorkspaceRevision === 7,
+      recovered.pendingWorkspaceSummary().latestWorkspaceRevision === 9,
       'status_revision_reconciliation_failed',
     );
     let opaqueQueueRejected = false;
@@ -907,16 +944,16 @@ void app.whenReady().then(async () => {
       .prepare('select operation_json from sync_outbox where id=?')
       .get(accepted.operation.id) as { operation_json: string };
     const acceptedOperation = JSON.parse(acceptedRow.operation_json) as Record<string, unknown>;
-    acceptedOperation.workspaceRevision = 8;
+    acceptedOperation.workspaceRevision = 10;
     ambiguousOrdering
-      .prepare('update sync_outbox set operation_json=?,workspace_revision=8 where id=?')
+      .prepare('update sync_outbox set operation_json=?,workspace_revision=10 where id=?')
       .run(JSON.stringify(acceptedOperation), accepted.operation.id);
     ambiguousOrdering.close();
 
     const recoveryRequired = new LocalDatabase();
     recoveryRequired.open();
     invariant(
-      recoveryRequired.loadWorkspaceState()?.revision === 7,
+      recoveryRequired.loadWorkspaceState()?.revision === 9,
       'ambiguous_outbox_hid_workspace_snapshot',
     );
     let ambiguousSummaryRejected = false;

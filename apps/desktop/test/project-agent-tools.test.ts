@@ -286,6 +286,28 @@ describe('ProjectAgentToolSession', () => {
     expect(resultPayload(wrongNamespace)).toEqual({ error: 'tool_not_allowed' });
   });
 
+  it('revokes every project-bound read after the project is archived', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, vault } = authorizedSession(workspace, projectAlpha.id);
+    await workspace.setProjectArchived({
+      projectId: projectAlpha.id,
+      expectedVersion: projectAlpha.version,
+      archived: true,
+    });
+
+    for (const call of [
+      toolCall('read_workspace', { section: 'summary' }),
+      toolCall('list_local_notes', {}),
+      toolCall('read_local_note', { noteId: NOTE_ID }),
+    ]) {
+      const result = await invokeTool(session, call);
+      expect(result.success).toBe(false);
+      expect(resultPayload(result)).toEqual({ error: 'project_archived' });
+    }
+    expect(vault.listForAgent).not.toHaveBeenCalled();
+    expect(vault.readForAgent).not.toHaveBeenCalled();
+  });
+
   it('lists and reads only explicitly granted Local Notes through opaque IDs', async () => {
     const { workspace, projectAlpha } = await workspaceFixture();
     const { session, vault } = authorizedSession(workspace, projectAlpha.id);

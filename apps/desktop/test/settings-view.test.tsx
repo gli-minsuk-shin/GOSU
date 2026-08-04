@@ -19,6 +19,15 @@ const snapshot: WorkspaceSnapshot = {
       updatedAt: '2026-08-04T00:00:00.000Z',
     },
     {
+      id: '44444444-4444-4444-8444-444444444444',
+      name: 'Archived study',
+      slug: 'archived-study',
+      archivedAt: '2026-08-04T00:30:00.000Z',
+      version: 2,
+      createdAt: '2026-08-04T00:00:00.000Z',
+      updatedAt: '2026-08-04T00:30:00.000Z',
+    },
+    {
       id: '22222222-2222-4222-8222-222222222222',
       name: 'Recoverable study',
       slug: 'recoverable-study',
@@ -54,6 +63,7 @@ function renderSettings(
       busyAction={null}
       chatBusyProjectIds={new Set()}
       onRenameProject={vi.fn()}
+      onSetProjectArchived={vi.fn()}
       onTrashProject={vi.fn()}
       onRestoreProject={vi.fn()}
       agentProject={snapshot.projects[0]}
@@ -98,12 +108,15 @@ describe('separated application Settings', () => {
     expect(html).toContain('18 px base');
   });
 
-  it('shows active projects and recoverable Trash without offering permanent deletion', () => {
+  it('shows active, archived, and recoverable Trash projects without permanent deletion', () => {
     const html = renderSettings('projects');
 
     expect(html).toContain('ACTIVE PROJECTS');
     expect(html).toContain('Active study');
     expect(html).toContain('Move to Trash');
+    expect(html).toContain('Archive');
+    expect(html).toContain('Archived study');
+    expect(html).toContain('Restore to active');
     expect(html).toContain('Recoverable study');
     expect(html).toContain('1 tasks');
     expect(html).toContain('Restore');

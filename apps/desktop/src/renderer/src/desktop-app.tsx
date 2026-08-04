@@ -26,7 +26,25 @@ import {
 } from './notes-view';
 import { ProjectChatLoadGuard } from './project-chat-load-guard';
 import { ProjectChatView, resolveEffectiveCodexModel } from './project-chat-view';
-import { resolveActiveProjectId, visibleProjects } from './project-portfolio-model';
+import {
+  archivedProjects as archivedPortfolioProjects,
+  resolveActiveProjectId,
+  visibleProjects,
+} from './project-portfolio-model';
+import {
+  hideProjectLocally,
+  loadProjectNavigationState,
+  pruneProjectNavigationState,
+  saveProjectNavigationState,
+  showAllProjectsLocally,
+  showProjectLocally,
+  type ProjectNavigationState,
+} from './project-navigation-state';
+import {
+  ProjectSidebar,
+  type GlobalWorkspaceTabId,
+  type ProjectWorkspaceTabId,
+} from './project-sidebar';
 import { SettingsView, type SettingsCategory } from './settings-view';
 import { Connection, describeError } from './ui-primitives';
 import {
@@ -36,10 +54,8 @@ import {
 } from './user-preferences';
 import {
   EmptyWorkspace,
-  FUTURE_MODULES,
   ObjectiveEditor,
   ProjectComposer,
-  WORKSPACE_TABS,
   WorkspacePageHeading,
   WorkspaceUnavailable,
   latestObjective,
@@ -65,6 +81,10 @@ function isCodexUnavailableError(error: unknown) {
   return error instanceof Error && error.message.includes('codex_unavailable');
 }
 
+function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabId {
+  return tab === 'chat' || tab === 'board' || tab === 'objective';
+}
+
 export function DesktopApp({ initialPreferences }: { initialPreferences: UserPreferences }) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [pendingSummary, setPendingSummary] = useState<WorkspacePendingSummary | null>(null);
@@ -77,6 +97,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const [showProjectForm, setShowProjectForm] = useState(false);
+  const [projectNavigation, setProjectNavigation] = useState<ProjectNavigationState>(() =>
+    loadProjectNavigationState(window.localStorage),
+  );
 
   const [models, setModels] = useState<CodexModel[]>([]);
   const [collaborationModes, setCollaborationModes] = useState<CodexCollaborationModeDescriptor[]>(
@@ -105,8 +128,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const chatLoadGuard = useRef(new ProjectChatLoadGuard());
   const codexBootstrapStarted = useRef(false);
   const vaultSelectionGeneration = useRef(0);
+  const projectNavigationRef = useRef(projectNavigation);
 
   const activeProjects = useMemo(() => visibleProjects(snapshot?.projects ?? []), [snapshot]);
+  const archivedProjects = useMemo(
+    () => archivedPortfolioProjects(snapshot?.projects ?? []),
+    [snapshot],
+  );
   const activeProject = useMemo(
     () => activeProjects.find((project) => project.id === activeProjectId),
     [activeProjectId, activeProjects],
@@ -128,10 +156,33 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     if (chatStartingProjectId) busyProjects.add(chatStartingProjectId);
     return busyProjects;
   }, [chatInFlight, chatStartingProjectId]);
+
+  const updateProjectNavigation = (next: ProjectNavigationState) => {
+    projectNavigationRef.current = next;
+    setProjectNavigation(next);
+  };
+
+  useEffect(() => {
+    projectNavigationRef.current = projectNavigation;
+    saveProjectNavigationState(window.localStorage, projectNavigation);
+  }, [projectNavigation]);
+
   const loadWorkspace = async () => {
     const nextSnapshot = await window.gosu.workspace.snapshot();
+    const nextNavigation = pruneProjectNavigationState(
+      projectNavigationRef.current,
+      new Set(nextSnapshot.projects.map((project) => project.id)),
+    );
+    projectNavigationRef.current = nextNavigation;
+    setProjectNavigation(nextNavigation);
     setSnapshot(nextSnapshot);
-    setActiveProjectId((current) => resolveActiveProjectId(nextSnapshot.projects, current));
+    setActiveProjectId((current) =>
+      resolveActiveProjectId(
+        nextSnapshot.projects,
+        current,
+        new Set(nextNavigation.hiddenProjectIds),
+      ),
+    );
     try {
       setPendingSummary(await window.gosu.workspace.pendingSummary());
     } catch {
@@ -394,6 +445,84 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     }
   };
 
+  const createProject = async (input: ProjectDraft) => {
+    const command = createProjectCommand(input, preferences);
+    let createdProject: ProjectRecord | undefined;
+    const succeeded = await runWorkspaceAction(
+      'project:create',
+      async () => {
+        createdProject = await window.gosu.workspace.createProject(command);
+      },
+      `Created ${input.name}.`,
+    );
+    if (succeeded && createdProject) {
+      const shown = showProjectLocally(projectNavigationRef.current, createdProject.id);
+      updateProjectNavigation({
+        ...shown,
+        expandedProjectIds: [...new Set([...shown.expandedProjectIds, createdProject.id])],
+        activeGroupExpanded: true,
+      });
+      setActiveProjectId(createdProject.id);
+      setShowProjectForm(false);
+      setActiveSurface('workspace');
+      setActiveTab('chat');
+    }
+    return succeeded;
+  };
+
+  const selectProject = (projectId: string) => {
+    setActiveProjectId(projectId);
+    setActiveSurface('workspace');
+    setShowProjectForm(false);
+    if (!isProjectWorkspaceTab(activeTab)) setActiveTab('chat');
+  };
+
+  const selectProjectTab = (projectId: string, tab: ProjectWorkspaceTabId) => {
+    setActiveProjectId(projectId);
+    setActiveSurface('workspace');
+    setActiveTab(tab);
+    setShowProjectForm(false);
+  };
+
+  const selectGlobalTab = (tab: GlobalWorkspaceTabId) => {
+    setActiveSurface('workspace');
+    setActiveTab(tab);
+    setShowProjectForm(false);
+  };
+
+  const hideProject = (projectId: string) => {
+    if (chatBusyProjectIds.has(projectId)) {
+      setAnnouncement("Stop or wait for this project's active Codex turn before hiding it.");
+      return;
+    }
+    const next = hideProjectLocally(projectNavigationRef.current, projectId);
+    updateProjectNavigation(next);
+    setActiveProjectId((current) =>
+      current === projectId
+        ? resolveActiveProjectId(snapshot?.projects ?? [], '', new Set(next.hiddenProjectIds))
+        : current,
+    );
+    setAnnouncement('Hidden the project from this Mac sidebar. Its project data was not changed.');
+  };
+
+  const showProject = (projectId: string) => {
+    const shown = showProjectLocally(projectNavigationRef.current, projectId);
+    updateProjectNavigation({
+      ...shown,
+      expandedProjectIds: [...new Set([...shown.expandedProjectIds, projectId])],
+      activeGroupExpanded: true,
+    });
+    selectProjectTab(projectId, 'chat');
+    setAnnouncement('Restored the project to this Mac sidebar.');
+  };
+
+  const showAllProjects = () => {
+    const next = showAllProjectsLocally(projectNavigationRef.current);
+    updateProjectNavigation(next);
+    setActiveProjectId((current) => resolveActiveProjectId(snapshot?.projects ?? [], current));
+    setAnnouncement('Showing all active projects in this Mac sidebar.');
+  };
+
   return (
     <main className="desktop-shell">
       <header className="titlebar">
@@ -417,68 +546,64 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       </header>
 
       <aside className="desktop-nav" aria-label="Workspace navigation">
-        <small>Project</small>
-        <select
-          className="project-switcher"
-          value={activeProjectId}
-          onChange={(event) => setActiveProjectId(event.target.value)}
-          disabled={activeProjects.length === 0 || busyAction !== null}
-          aria-label="Active project"
-        >
-          {activeProjects.length ? (
-            activeProjects.map((project) => (
-              <option value={project.id} key={project.id}>
-                {project.name}
-              </option>
-            ))
-          ) : (
-            <option value="">No project yet</option>
-          )}
-        </select>
-        {WORKSPACE_TABS.map((tab) => (
-          <button
-            type="button"
-            className={activeSurface === 'workspace' && activeTab === tab.id ? 'active' : ''}
-            key={tab.id}
-            onClick={() => {
-              setActiveSurface('workspace');
-              setActiveTab(tab.id);
-            }}
-            aria-current={
-              activeSurface === 'workspace' && activeTab === tab.id ? 'page' : undefined
-            }
-          >
-            <span className="nav-icon">{tab.icon}</span>
-            {tab.label}
-          </button>
-        ))}
-        {FUTURE_MODULES.map(([label, icon]) => (
-          <button
-            type="button"
-            className="coming-soon"
-            key={label}
-            disabled
-            title={`${label} is not implemented yet`}
-          >
-            <span className="nav-icon">{icon}</span>
-            {label}
-            <em>Later</em>
-          </button>
-        ))}
-        <button
-          type="button"
-          className={`global-settings-button ${activeSurface === 'settings' ? 'active' : ''}`}
-          onClick={() => {
+        <ProjectSidebar
+          projects={snapshot?.projects ?? []}
+          activeProjectId={activeProjectId}
+          activeTab={activeTab}
+          navigationState={projectNavigation}
+          settingsActive={activeSurface === 'settings'}
+          disabled={busyAction !== null}
+          busyProjectIds={chatBusyProjectIds}
+          onNavigationStateChange={updateProjectNavigation}
+          onSelectProject={selectProject}
+          onSelectProjectTab={selectProjectTab}
+          onSelectGlobalTab={selectGlobalTab}
+          onHideProject={hideProject}
+          onShowProject={showProject}
+          onShowAllProjects={showAllProjects}
+          onArchiveProject={(project) => {
+            void runWorkspaceAction(
+              `project:archive:${project.id}`,
+              () =>
+                window.gosu.workspace.setProjectArchived({
+                  projectId: project.id,
+                  expectedVersion: project.version,
+                  archived: true,
+                }),
+              `Archived ${project.name}.`,
+            );
+          }}
+          onRestoreProject={(project) => {
+            void runWorkspaceAction(
+              `project:unarchive:${project.id}`,
+              () =>
+                window.gosu.workspace.setProjectArchived({
+                  projectId: project.id,
+                  expectedVersion: project.version,
+                  archived: false,
+                }),
+              `Restored ${project.name} to active projects.`,
+            ).then((succeeded) => {
+              if (succeeded) showProject(project.id);
+            });
+          }}
+          onOpenProjectSettings={(projectId) => {
+            setActiveProjectId(projectId);
+            setSettingsCategory('projects');
+            setActiveSurface('settings');
+            setShowProjectForm(false);
+          }}
+          onOpenSettings={() => {
             setSettingsCategory('appearance');
             setActiveSurface('settings');
             setShowProjectForm(false);
           }}
-          aria-current={activeSurface === 'settings' ? 'page' : undefined}
-        >
-          <span className="nav-icon">⚙</span>
-          Settings
-          <em>⌘,</em>
-        </button>
+          onNewProject={() => {
+            setActiveSurface('workspace');
+            if (!isProjectWorkspaceTab(activeTab)) setActiveTab('chat');
+            setShowProjectForm(true);
+          }}
+        />
         <div className="nav-spacer" />
         <small>Local connections</small>
         <Connection
@@ -568,6 +693,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   `Renamed the project to ${input.name}.`,
                 )
               }
+              onSetProjectArchived={(input) =>
+                runWorkspaceAction(
+                  `project:${input.archived ? 'archive' : 'unarchive'}:${input.projectId}`,
+                  () => window.gosu.workspace.setProjectArchived(input),
+                  input.archived
+                    ? 'Archived the project with all local work preserved.'
+                    : 'Restored the project to active projects.',
+                )
+              }
               onTrashProject={(input) =>
                 runWorkspaceAction(
                   `project:trash:${input.projectId}`,
@@ -603,27 +737,58 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           </div>
         ) : !snapshot ? (
           <WorkspaceUnavailable onRetry={() => void retryWorkspace()} />
-        ) : activeProjects.length === 0 && activeTab !== 'connections' && activeTab !== 'notes' ? (
-          <EmptyWorkspace
-            busy={busyAction !== null}
-            onCreate={async (input) => {
-              const command = createProjectCommand(input, preferences);
-              let createdProject: ProjectRecord | undefined;
-              const succeeded = await runWorkspaceAction(
-                'project:create',
-                async () => {
-                  createdProject = await window.gosu.workspace.createProject(command);
-                },
-                `Created ${input.name}.`,
-              );
-              if (succeeded && createdProject) {
-                setActiveProjectId(createdProject.id);
-                setActiveSurface('workspace');
-                setActiveTab('chat');
-              }
-              return succeeded;
-            }}
-          />
+        ) : activeProjects.length === 0 &&
+          archivedProjects.length === 0 &&
+          isProjectWorkspaceTab(activeTab) ? (
+          <EmptyWorkspace busy={busyAction !== null} onCreate={createProject} />
+        ) : !activeProject && isProjectWorkspaceTab(activeTab) ? (
+          <>
+            <WorkspacePageHeading
+              activeTab={activeTab}
+              activeProject={undefined}
+              onNewProject={() => setShowProjectForm((visible) => !visible)}
+            />
+            {showProjectForm && (
+              <ProjectComposer
+                busy={busyAction !== null}
+                onCancel={() => setShowProjectForm(false)}
+                onCreate={createProject}
+              />
+            )}
+            <section className="empty-state portfolio-selection-empty">
+              <div className="empty-card">
+                <div className="empty-mark">▱</div>
+                <h1>
+                  {activeProjects.length > 0
+                    ? 'All active projects are hidden on this Mac'
+                    : 'Your projects are archived'}
+                </h1>
+                <p>
+                  {activeProjects.length > 0
+                    ? 'Show all projects, or open Hidden projects in the sidebar to restore just one. Hiding never changes project data.'
+                    : 'Open Archived in the sidebar and restore a project to resume Board, Goal, and AI work with its history intact.'}
+                </p>
+                {activeProjects.length > 0 ? (
+                  <button type="button" className="secondary-button" onClick={showAllProjects}>
+                    Show all active projects
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() =>
+                      updateProjectNavigation({
+                        ...projectNavigationRef.current,
+                        archivedGroupExpanded: true,
+                      })
+                    }
+                  >
+                    Show archived projects
+                  </button>
+                )}
+              </div>
+            </section>
+          </>
         ) : (
           <>
             <WorkspacePageHeading
@@ -635,24 +800,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               <ProjectComposer
                 busy={busyAction !== null}
                 onCancel={() => setShowProjectForm(false)}
-                onCreate={async (input) => {
-                  const command = createProjectCommand(input, preferences);
-                  let createdProject: ProjectRecord | undefined;
-                  const succeeded = await runWorkspaceAction(
-                    'project:create',
-                    async () => {
-                      createdProject = await window.gosu.workspace.createProject(command);
-                    },
-                    `Created ${input.name}.`,
-                  );
-                  if (succeeded && createdProject) {
-                    setActiveProjectId(createdProject.id);
-                    setShowProjectForm(false);
-                    setActiveSurface('workspace');
-                    setActiveTab('chat');
-                  }
-                  return succeeded;
-                }}
+                onCreate={createProject}
               />
             )}
 

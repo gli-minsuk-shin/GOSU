@@ -111,20 +111,20 @@ flowchart LR
 제품 모듈은 아직 모두 독립 디렉터리로 분리되어 있지 않다. 새 기능은 아래 소유권을 기준으로
 배치하고, 한 모듈이 다른 모듈의 저장 테이블을 직접 읽지 않게 한다.
 
-| 논리 모듈                  | 현재 코드 소유자                                                | 구현 수준                                                                                                    |
-| -------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema    | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                   |
-| Project Portfolio & Kanban | Desktop workspace service, Sync controller/store                | 프로젝트별 Board 설정·rename·복원 가능한 Trash, task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨 |
-| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints    | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                     |
-| Experiment Orchestration   | contracts, domain, Runner                                       | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨                               |
-| Manuscript                 | 향후 desktop workspace module                                   | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                                              |
-| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                        | 기반 구현; 실제 review anchor·approval command는 계획됨                                                      |
-| Reference                  | Zotero read-only connector                                      | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                                                    |
-| Obsidian Knowledge         | Desktop Vault reader, Markdown renderer, project knowledge port | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview·프로젝트별 agent grant 구현                     |
-| Lecture                    | Owner Web UI 표현                                               | 생성·편집·출처 연결은 계획됨                                                                                 |
-| AI Gateway                 | Desktop Project Chat service와 Codex App Server                 | 로그인·동적 model/mode catalog·native harness·project-bound read tool·thread/turn·모델 provenance 구현       |
-| Integration Hub            | `packages/integrations` registry와 connector classes            | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨                                             |
-| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema               | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                     |
+| 논리 모듈                  | 현재 코드 소유자                                                               | 구현 수준                                                                                                                                      |
+| -------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                   | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                     |
+| Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨 |
+| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                   | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                       |
+| Experiment Orchestration   | contracts, domain, Runner                                                      | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨                                                                 |
+| Manuscript                 | 향후 desktop workspace module                                                  | UI 표현만 존재; Git worktree·LaTeX compile·PDF preview는 계획됨                                                                                |
+| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                       | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                        |
+| Reference                  | Zotero read-only connector                                                     | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                                                                                      |
+| Obsidian Knowledge         | Desktop Vault reader, Markdown renderer, project knowledge port                | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview·프로젝트별 agent grant 구현                                                       |
+| Lecture                    | Owner Web UI 표현                                                              | 생성·편집·출처 연결은 계획됨                                                                                                                   |
+| AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 로그인·동적 model/mode catalog·native harness·project-bound read tool·thread/turn·모델 provenance 구현                                         |
+| Integration Hub            | `packages/integrations` registry와 connector classes                           | capability 선언과 제한된 호출 구현; 계정 연결 lifecycle은 계획됨                                                                               |
+| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                              | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                       |
 
 ## 5. 의존성 규칙
 
@@ -405,7 +405,8 @@ flowchart LR
   optional soft WIP limit을 바꿀 수 있지만 새 status ID를 만들거나 기존 ID를 삭제하지 않는다. 각
   column header의 `Rename` 동작과 상단 Board 설정은 같은 reusable editor를 열기 때문에 validation
   규칙이 갈라지지 않는다.
-- `ProjectRecord.board`, Task의 description·priority·due date·labels·archivedAt은 schema-v1 안의
+- `ProjectRecord.board`와 project-level `archivedAt`, Task의 description·priority·due date·labels·
+  task-level `archivedAt`은 schema-v1 안의
   optional nested field다. v0.3.2 snapshot에 필드가 없어도 resolver가 런타임 기본값을 제공하며
   top-level 필드나 workspace schema version을 바꾸지 않는다. 새 project는 생성 시점의 full Board
   설정을 항상 저장하지만 기존 project의 optional shape은 계속 읽는다.
@@ -420,6 +421,26 @@ flowchart LR
   project-scoped gate가 starting·active turn과 chat mutation 중 `project.trash`를 원자적으로 거절하며,
   내부 호출이 이 gate를 우회한 terminal 경합에서도 assistant text만 보존하고 action proposal은
   폐기한다. 영구 삭제 command는 제공하지 않는다.
+- project lifecycle은 서로 다른 세 상태로 분리한다. Active는 `archivedAt`과 `trashedAt`이 모두 없고,
+  Archived는 `archivedAt`만 있으며, Trash는 `trashedAt`이 있는 모든 project다. `project.archive`와
+  `project.unarchive`는 Project version CAS와 같은 SQLCipher transaction의 outbox provenance를 사용한다.
+  Archived project의 기존 snapshot·chat transcript는 보존하지만 rename, Board·Objective·Task mutation,
+  새 Project Chat turn·profile 변경·action Apply와 agent read tool은 Main에서 거절한다. Archived project를
+  Trash로 옮길 때 `archivedAt`을 보존하므로 Trash 복원은 원래 Archived 상태로 돌아간다.
+  optional project field는 legacy snapshot을 그대로 읽지만 새 outbox command enum을 모르는 v0.7 이하로의
+  downgrade는 지원하지 않는다. downgrade 지원이 필요해지면 workspace/outbox schema migration을 별도
+  ADR로 설계해야 한다.
+- Renderer의 `project-sidebar.tsx`는 모든 Active project 이름을 folder tree로 보여주고, 여러 folder의
+  Chat·Board·Goal & Metrics 하위 항목을 동시에 펼칠 수 있다. folder row를 누르면 그 project를 선택하며
+  같은 row를 다시 누르면 하위 항목만 접고 현재 작업 화면은 유지한다. Hidden과 Archived는 별도
+  recovery group으로 표시하고 Connections·Local Notes·Settings는 project 밖의 global navigation으로 둔다.
+- folder 펼침, Active group 접힘과 `Hide locally`는 개인 Mac의 navigation preference다.
+  `project-navigation-state.ts`가 UUID 목록과 boolean만 versioned `localStorage` key
+  `gosu:project-navigation:v1`에 저장하며 SQLCipher snapshot, outbox, Git 또는 Hosted Sync에는 넣지 않는다.
+  Hide는 project lifecycle이나 협업자 화면을 바꾸지 않고 `Show` 또는 `Show all`로 즉시 되돌린다.
+  진행 중인 Codex turn 표시와 중지 진입점을 숨기지 않도록 해당 project가 busy인 동안 Hide와 Archive를
+  비활성화한다.
+  Archive는 이 로컬 preference와 달리 domain command이므로 두 개념을 같은 필드나 API로 합치지 않는다.
 - Renderer의 `board-view.tsx`는 form·drag-and-drop·archive 확인과 프로젝트별 임시 view state를
   소유한다. `kanban-board-model.ts`는 column resolve, 검색·priority·label·due date filter와 안전한
   drop 판단만 수행하는 pure helper다. 프로젝트 전환 시 `BoardView`를 project ID로 remount해 draft,
@@ -602,7 +623,8 @@ flowchart LR
 - template preference 자체는 SQLCipher, Git 또는 Hosted Sync에 저장하지 않는다. project 생성 시에만
   그 시점의 독립 copy를 typed `project.create` command로 보내 Main에서 다시 검증하고 Project record와
   outbox payload에 원자적으로 기록한다. 이후 Settings template 변경은 기존 Board를 바꾸지 않는다.
-- appearance와 text size는 IPC에 넣지 않는다. project rename·Trash·restore는 Workspace SQLCipher가,
+- appearance와 text size 및 project folder 접힘·hide는 IPC에 넣지 않는다. project rename·Archive·
+  Trash·restore는 Workspace SQLCipher가,
   AI Agent profile은 Project Chat SQLCipher table이 각각 소유한다. Renderer preference는 파일·Keychain·Codex
   권한을 얻지 않으며, 프로젝트를 아직 만들지 않았거나 workspace 복구가 실패해도 Settings 화면은
   열려야 한다.
@@ -868,8 +890,11 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 - relay 변경: Origin·native runner 인증, project isolation, duplicate·stale, backpressure, retention
 - Desktop IPC 변경: trusted sender, untrusted frame, path escape, 크기 제한, secret 비노출
 - Desktop menu·Settings 변경: fixed no-payload navigation event, early-event buffer, 표준 macOS role 보존
-- Project lifecycle 변경: stale version, 두 단계 Trash UI, trashed mutation 차단, 같은 UUID 복원과
-  task·objective·chat·outbox 보존
+- Project lifecycle 변경: Active/Archived/Trash의 중복 없는 분류, archive/unarchive stale version,
+  archived mutation·chat·agent tool 차단, active-turn lifecycle gate, Archived→Trash→restore 상태 보존,
+  두 단계 Trash UI, 같은 UUID와 task·objective·chat·outbox 보존
+- Project portfolio navigation 변경: 여러 folder 동시 펼침, 같은 folder 재선택 시 접힘, local hide·show·
+  show-all, malformed/stale localStorage 복구, hidden·archived fallback과 project 간 active-tab 격리
 - Project Chat native harness 변경: dynamic mode catalog·hash·TOCTOU, mode/model/reasoning fallback 금지,
   personality 지원, profile CAS, instruction revision, prompt hash·bound·truncation, project 격리,
   legacy reviewer action suppression, dynamic model/mode/reasoning provenance

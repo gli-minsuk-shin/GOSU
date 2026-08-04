@@ -7,6 +7,7 @@ import {
   ProjectVersionCommandSchema,
   RenameProjectInputSchema,
   SaveObjectiveInputSchema,
+  SetProjectArchivedInputSchema,
   SetTaskArchivedInputSchema,
   UpdateBoardSettingsInputSchema,
   UpdateTaskInputSchema,
@@ -21,6 +22,7 @@ import {
   type ProjectVersionCommand,
   type RenameProjectInput,
   type SaveObjectiveInput,
+  type SetProjectArchivedInput,
   type SetTaskArchivedInput,
   type UpdateBoardSettingsInput,
   type UpdateTaskInput,
@@ -51,6 +53,8 @@ export class WorkspaceServiceError extends Error {
   constructor(
     readonly code:
       | 'project_not_found'
+      | 'project_archived'
+      | 'project_not_archived'
       | 'project_trashed'
       | 'project_not_trashed'
       | 'task_not_found'
@@ -198,6 +202,63 @@ export class WorkspaceService {
           project.version,
           now,
           { name: updated.name, newEntityVersion: updated.version },
+        ),
+        value: updated,
+      };
+    });
+  }
+
+  setProjectArchived(input: SetProjectArchivedInput): Promise<ProjectRecord> {
+    return this.mutate(async (state) => {
+      const command = SetProjectArchivedInputSchema.parse(input);
+      const project = this.requireProject(state, command.projectId);
+      if (project.version !== command.expectedVersion) {
+        throw conflict(project.id, command.expectedVersion, project.version);
+      }
+      if (project.trashedAt !== undefined) {
+        throw new WorkspaceServiceError('project_trashed', { projectId: project.id });
+      }
+      if (command.archived === (project.archivedAt !== undefined)) {
+        throw new WorkspaceServiceError(
+          command.archived ? 'project_archived' : 'project_not_archived',
+          { projectId: project.id },
+        );
+      }
+      const now = new Date().toISOString();
+      const updated: ProjectRecord = command.archived
+        ? {
+            ...project,
+            archivedAt: now,
+            version: project.version + 1,
+            updatedAt: now,
+          }
+        : (() => {
+            const { archivedAt: _archivedAt, ...activeProject } = project;
+            return {
+              ...activeProject,
+              version: project.version + 1,
+              updatedAt: now,
+            };
+          })();
+      return {
+        state: {
+          ...state,
+          projects: state.projects.map((candidate) =>
+            candidate.id === project.id ? updated : candidate,
+          ),
+        },
+        operation: this.operation(
+          command.archived ? 'project.archive' : 'project.unarchive',
+          `workspace:${project.id}:project:${project.id}:${command.archived ? 'archive' : 'unarchive'}`,
+          project.id,
+          'project',
+          project.id,
+          project.version,
+          now,
+          {
+            archivedAt: updated.archivedAt ?? null,
+            newEntityVersion: updated.version,
+          },
         ),
         value: updated,
       };
@@ -685,6 +746,9 @@ export class WorkspaceService {
     const project = this.requireProject(state, projectId);
     if (project.trashedAt !== undefined) {
       throw new WorkspaceServiceError('project_trashed', { projectId });
+    }
+    if (project.archivedAt !== undefined) {
+      throw new WorkspaceServiceError('project_archived', { projectId });
     }
     return project;
   }

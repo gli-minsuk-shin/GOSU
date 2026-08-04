@@ -98,6 +98,8 @@ export function describeError(error: unknown) {
   if (!(error instanceof Error)) return 'The operation could not be completed.';
   const messages: Record<string, string> = {
     project_not_found: 'This project no longer exists. Reload the workspace and try again.',
+    project_archived: 'This project is archived. Restore it to active before making changes.',
+    project_not_archived: 'This project is already active.',
     project_trashed: 'This project is in Trash. Restore it before making changes.',
     project_not_trashed: 'This project is already active.',
     task_not_found: 'This task no longer exists.',

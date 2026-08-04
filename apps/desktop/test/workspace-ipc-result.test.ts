@@ -18,7 +18,13 @@ describe('workspace IPC result', () => {
     ).toThrow('version_conflict:4');
   });
 
-  it('preserves bounded project Trash state errors for renderer handling', () => {
+  it('preserves bounded project Archive and Trash state errors for renderer handling', () => {
+    expect(() =>
+      unwrapWorkspaceIpcResult({ ok: false, error: { code: 'project_archived' } }),
+    ).toThrow('project_archived');
+    expect(() =>
+      unwrapWorkspaceIpcResult({ ok: false, error: { code: 'project_not_archived' } }),
+    ).toThrow('project_not_archived');
     expect(() =>
       unwrapWorkspaceIpcResult({ ok: false, error: { code: 'project_trashed' } }),
     ).toThrow('project_trashed');

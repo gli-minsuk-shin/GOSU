@@ -348,6 +348,7 @@ export class ProjectAgentToolSession {
       return failure(
         [
           'project_not_found',
+          'project_archived',
           'project_trashed',
           'vault_not_selected',
           'vault_grant_stale',
@@ -371,6 +372,7 @@ export class ProjectAgentToolSession {
     );
     if (!project) throw new Error('project_not_found');
     if (project.trashedAt !== undefined) throw new Error('project_trashed');
+    if (project.archivedAt !== undefined) throw new Error('project_archived');
     return { snapshot, project };
   }
 

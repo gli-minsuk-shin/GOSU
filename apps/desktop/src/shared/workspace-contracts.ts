@@ -62,6 +62,7 @@ export type ProjectRecord = Readonly<{
   slug: string;
   repository?: string | undefined;
   board?: WorkspaceBoardSettings | undefined;
+  archivedAt?: string | undefined;
   trashedAt?: string | undefined;
   version: number;
   createdAt: string;
@@ -123,6 +124,8 @@ export type WorkspaceOperation = Readonly<{
   commandType:
     | 'project.create'
     | 'project.rename'
+    | 'project.archive'
+    | 'project.unarchive'
     | 'project.trash'
     | 'project.restore'
     | 'project.board.update'
@@ -236,6 +239,7 @@ const projectSchema: z.ZodType<ProjectRecord> = z
     slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     repository: z.string().trim().min(1).max(500).optional(),
     board: WorkspaceBoardSettingsSchema.optional(),
+    archivedAt: timestampSchema.optional(),
     trashedAt: timestampSchema.optional(),
     version: z.number().int().positive(),
     createdAt: timestampSchema,
@@ -342,6 +346,8 @@ export const WorkspaceOperationSchema: z.ZodType<WorkspaceOperation> = z
     commandType: z.enum([
       'project.create',
       'project.rename',
+      'project.archive',
+      'project.unarchive',
       'project.trash',
       'project.restore',
       'project.board.update',
@@ -397,6 +403,10 @@ export const ProjectVersionCommandSchema = z
     expectedVersion: z.number().int().positive(),
   })
   .strict();
+
+export const SetProjectArchivedInputSchema = ProjectVersionCommandSchema.extend({
+  archived: z.boolean(),
+}).strict();
 
 export const CreateTaskInputSchema = z
   .object({
@@ -484,6 +494,7 @@ export const ObjectiveCommandSchema = z
 export type CreateProjectInput = z.input<typeof CreateProjectInputSchema>;
 export type RenameProjectInput = z.input<typeof RenameProjectInputSchema>;
 export type ProjectVersionCommand = z.input<typeof ProjectVersionCommandSchema>;
+export type SetProjectArchivedInput = z.input<typeof SetProjectArchivedInputSchema>;
 export type CreateTaskInput = z.input<typeof CreateTaskInputSchema>;
 export type UpdateTaskInput = z.input<typeof UpdateTaskInputSchema>;
 export type UpdateBoardSettingsInput = z.input<typeof UpdateBoardSettingsInputSchema>;

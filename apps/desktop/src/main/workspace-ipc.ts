@@ -7,6 +7,7 @@ import {
   ProjectVersionCommandSchema,
   RenameProjectInputSchema,
   SaveObjectiveInputSchema,
+  SetProjectArchivedInputSchema,
   SetTaskArchivedInputSchema,
   UpdateBoardSettingsInputSchema,
   UpdateTaskInputSchema,
@@ -48,6 +49,19 @@ export function registerWorkspaceIpc(
       input,
       RenameProjectInputSchema,
       (command) => workspace.renameProject(command),
+      reportUnexpected,
+    ),
+  );
+  register(WORKSPACE_IPC_CHANNELS.setProjectArchived, (input) =>
+    withValidatedInput(
+      input,
+      SetProjectArchivedInputSchema,
+      (command) =>
+        projectChatIdleGuard
+          ? projectChatIdleGuard.runWhenProjectChatIdle(command.projectId, () =>
+              workspace.setProjectArchived(command),
+            )
+          : workspace.setProjectArchived(command),
       reportUnexpected,
     ),
   );

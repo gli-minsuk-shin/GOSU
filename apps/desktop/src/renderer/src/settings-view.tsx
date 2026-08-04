@@ -9,6 +9,7 @@ import type {
   ProjectRecord,
   ProjectVersionCommand,
   RenameProjectInput,
+  SetProjectArchivedInput,
   WorkspaceSnapshot,
 } from '../../shared/workspace-contracts';
 import type { VaultSelection } from '../../shared/vault-contracts';
@@ -54,6 +55,7 @@ export function SettingsView({
   busyAction,
   chatBusyProjectIds,
   onRenameProject,
+  onSetProjectArchived,
   onTrashProject,
   onRestoreProject,
   initialCategory = 'appearance',
@@ -73,6 +75,7 @@ export function SettingsView({
   busyAction: string | null;
   chatBusyProjectIds: ReadonlySet<string>;
   onRenameProject: (input: RenameProjectInput) => Promise<boolean>;
+  onSetProjectArchived: (input: SetProjectArchivedInput) => Promise<boolean>;
   onTrashProject: (input: ProjectVersionCommand) => Promise<boolean>;
   onRestoreProject: (input: ProjectVersionCommand) => Promise<boolean>;
   initialCategory?: SettingsCategory;
@@ -124,7 +127,7 @@ export function SettingsView({
         >
           <i aria-hidden="true">◇</i>
           <strong>Projects</strong>
-          <span>Rename, Trash, restore</span>
+          <span>Rename, archive, Trash, restore</span>
         </button>
         <button
           type="button"
@@ -238,6 +241,7 @@ export function SettingsView({
             busyAction={busyAction}
             chatBusyProjectIds={chatBusyProjectIds}
             onRenameProject={onRenameProject}
+            onSetProjectArchived={onSetProjectArchived}
             onTrashProject={onTrashProject}
             onRestoreProject={onRestoreProject}
           />
