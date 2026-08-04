@@ -63,6 +63,12 @@ export type CodexDynamicToolNamespaceSpec = Readonly<{
 
 export type CodexDynamicToolSpec = CodexDynamicToolFunctionSpec | CodexDynamicToolNamespaceSpec;
 
+export type CodexDynamicToolTimeoutOverride = Readonly<{
+  namespace: string | null;
+  tool: string;
+  timeoutMs: number;
+}>;
+
 export type CodexDynamicToolCall = Readonly<{
   threadId: string;
   turnId: string;
@@ -81,6 +87,7 @@ export type CodexDynamicToolDeliveryOutcome = 'delivered' | 'discarded' | 'uncer
 
 export type CodexDynamicToolDelivery = Readonly<{
   outcome: Promise<CodexDynamicToolDeliveryOutcome>;
+  abortSignal: AbortSignal;
 }>;
 
 export type CodexDynamicToolHandler = (
@@ -199,6 +206,7 @@ const CODEX_DYNAMIC_TOOL_MAX_ARGUMENT_CHARACTERS = 32_000;
 const CODEX_DYNAMIC_TOOL_MAX_RESULT_ITEMS = 8;
 const CODEX_DYNAMIC_TOOL_MAX_RESULT_CHARACTERS = 64_000;
 const CODEX_DYNAMIC_TOOL_TIMEOUT_MS = 10_000;
+const CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS = 180_000;
 const CODEX_DYNAMIC_TOOL_RESPONSE_ACK_TIMEOUT_MS = 1_000;
 const CODEX_COLLABORATION_MODE_MAX_ITEMS = 64;
 const CODEX_COLLABORATION_MODE_MAX_ID_CHARACTERS = 128;
@@ -211,6 +219,7 @@ const CODEX_RESPONSE_VERBOSITIES = new Set<CodexResponseVerbosity>(['low', 'medi
 
 type DynamicToolRegistration = {
   readonly tools: ReadonlySet<string>;
+  readonly timeoutMsByTool: ReadonlyMap<string, number>;
   readonly handler: CodexDynamicToolHandler;
   readonly callsByTurn: Map<string, number>;
   readonly seenCalls: Set<string>;
@@ -221,6 +230,7 @@ type DynamicToolRegistration = {
 
 type DynamicToolDeliveryController = Readonly<{
   signal: CodexDynamicToolDelivery;
+  abort(reason?: unknown): void;
   markWriteStarted(): void;
   acknowledge(): void;
   discard(): void;
@@ -250,6 +260,7 @@ function dynamicToolKey(namespace: string | null, tool: string) {
 function createDynamicToolDelivery(): DynamicToolDeliveryController {
   let settled = false;
   let writeStarted = false;
+  const abortController = new AbortController();
   let resolveOutcome!: (outcome: CodexDynamicToolDeliveryOutcome) => void;
   const outcome = new Promise<CodexDynamicToolDeliveryOutcome>((resolve) => {
     resolveOutcome = resolve;
@@ -260,7 +271,8 @@ function createDynamicToolDelivery(): DynamicToolDeliveryController {
     resolveOutcome(next);
   };
   return {
-    signal: { outcome },
+    signal: { outcome, abortSignal: abortController.signal },
+    abort: (reason) => abortController.abort(reason),
     markWriteStarted: () => {
       writeStarted = true;
     },
@@ -272,9 +284,12 @@ function createDynamicToolDelivery(): DynamicToolDeliveryController {
 function prepareDynamicToolRegistration(
   tools: readonly CodexDynamicToolSpec[],
   handler: CodexDynamicToolHandler | undefined,
+  timeoutOverrides: readonly CodexDynamicToolTimeoutOverride[] = [],
 ) {
   if (tools.length === 0) {
-    if (handler) throw new Error('codex_dynamic_tool_specs_required');
+    if (handler || timeoutOverrides.length > 0) {
+      throw new Error('codex_dynamic_tool_specs_required');
+    }
     return undefined;
   }
   if (!handler) throw new Error('codex_dynamic_tool_handler_required');
@@ -295,8 +310,24 @@ function prepareDynamicToolRegistration(
   ) {
     throw new Error('codex_dynamic_tool_duplicate');
   }
+
+  const timeoutMsByTool = new Map<string, number>();
+  for (const override of timeoutOverrides) {
+    const key = dynamicToolKey(override.namespace, override.tool);
+    if (
+      !keys.has(key) ||
+      timeoutMsByTool.has(key) ||
+      !Number.isInteger(override.timeoutMs) ||
+      override.timeoutMs < 1 ||
+      override.timeoutMs > CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS
+    ) {
+      throw new Error('codex_dynamic_tool_timeout_override_invalid');
+    }
+    timeoutMsByTool.set(key, override.timeoutMs);
+  }
   return {
     tools: keys,
+    timeoutMsByTool,
     handler,
     callsByTurn: new Map<string, number>(),
     seenCalls: new Set<string>(),
@@ -782,11 +813,16 @@ export class CodexAppServer extends EventEmitter {
     developerInstructions?: string;
     dynamicTools?: readonly CodexDynamicToolSpec[];
     dynamicToolHandler?: CodexDynamicToolHandler;
+    dynamicToolTimeouts?: readonly CodexDynamicToolTimeoutOverride[];
     responseVerbosity?: CodexResponseVerbosity | null;
   }) {
     await this.start();
     const dynamicTools = input.dynamicTools ?? [];
-    const registration = prepareDynamicToolRegistration(dynamicTools, input.dynamicToolHandler);
+    const registration = prepareDynamicToolRegistration(
+      dynamicTools,
+      input.dynamicToolHandler,
+      input.dynamicToolTimeouts,
+    );
     const result = await this.request(
       'thread/start',
       buildCodexThreadParameters({ ...input, dynamicTools }),
@@ -822,7 +858,9 @@ export class CodexAppServer extends EventEmitter {
     personality?: CodexPersonality | null;
   }) {
     await this.start();
-    const catalog = this.catalog ?? (await this.listModelCatalog());
+    // Always validate the chosen opaque IDs against a fresh provider catalog immediately before
+    // turn/start. A previously rendered picker catalog is provenance, not authority for a new turn.
+    const catalog = await this.listModelCatalog();
     let collaborationMode: CodexCollaborationModeDescriptor | null = null;
     let collaborationModeCatalogVersion: string | null = null;
     if (input.collaborationModeId) {
@@ -974,7 +1012,7 @@ export class CodexAppServer extends EventEmitter {
 
     try {
       await this.request('initialize', {
-        clientInfo: { name: 'gosu_desktop', title: 'GOSU', version: '0.9.1' },
+        clientInfo: { name: 'gosu_desktop', title: 'GOSU', version: '0.10.0' },
         capabilities: { experimentalApi: true },
       });
       if (this.process !== child) throw new Error('codex_app_server_initialization_interrupted');
@@ -1152,16 +1190,27 @@ export class CodexAppServer extends EventEmitter {
     registration.inFlight += 1;
     const delivery = createDynamicToolDelivery();
     registration.deliveries.add(delivery);
+    const timeoutMs =
+      registration.timeoutMsByTool.get(dynamicToolKey(call.namespace, call.tool)) ??
+      CODEX_DYNAMIC_TOOL_TIMEOUT_MS;
 
     let timeout: NodeJS.Timeout | undefined;
+    let releaseAfterHandlerSettlement = false;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      delivery.discard();
+      registration.deliveries.delete(delivery);
+      registration.inFlight -= 1;
+    };
+    const timeoutError = new Error('codex_dynamic_tool_timeout');
+    const handlerResult = Promise.resolve().then(() => registration.handler(call, delivery.signal));
     try {
       const result = await Promise.race([
-        Promise.resolve().then(() => registration.handler(call, delivery.signal)),
+        handlerResult,
         new Promise<never>((_resolve, reject) => {
-          timeout = setTimeout(
-            () => reject(new Error('codex_dynamic_tool_timeout')),
-            CODEX_DYNAMIC_TOOL_TIMEOUT_MS,
-          );
+          timeout = setTimeout(() => reject(timeoutError), timeoutMs);
         }),
       ]);
       if (timeout) {
@@ -1201,7 +1250,14 @@ export class CodexAppServer extends EventEmitter {
       } else {
         delivery.discard();
       }
-    } catch {
+    } catch (error) {
+      if (error === timeoutError) {
+        delivery.abort(timeoutError);
+        // A timeout may return a failure to Codex immediately, but the underlying operation still
+        // occupies capacity until it observes the AbortSignal and actually settles.
+        releaseAfterHandlerSettlement = true;
+        void handlerResult.then(release, release);
+      }
       delivery.discard();
       if (this.dynamicToolRegistrations.get(call.threadId) !== registration) {
         this.respond(child, requestId, undefined, {
@@ -1213,9 +1269,7 @@ export class CodexAppServer extends EventEmitter {
       this.respond(child, requestId, failureDynamicToolResult('GOSU dynamic tool failed.'));
     } finally {
       if (timeout) clearTimeout(timeout);
-      delivery.discard();
-      registration.deliveries.delete(delivery);
-      registration.inFlight -= 1;
+      if (!releaseAfterHandlerSettlement) release();
     }
   }
 
@@ -1239,7 +1293,10 @@ export class CodexAppServer extends EventEmitter {
     const registration = this.dynamicToolRegistrations.get(threadId);
     this.dynamicToolRegistrations.delete(threadId);
     if (!registration) return;
-    for (const delivery of registration.deliveries) delivery.discard();
+    for (const delivery of registration.deliveries) {
+      delivery.abort(new Error('codex_dynamic_tools_revoked'));
+      delivery.discard();
+    }
     registration.deliveries.clear();
   }
 

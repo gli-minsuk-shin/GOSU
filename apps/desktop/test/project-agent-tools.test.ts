@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { ProjectAgentToolSession, type ProjectAgentVault } from '../src/main/project-agent-tools';
+import {
+  ProjectAgentToolSession,
+  type ProjectAgentSsh,
+  type ProjectAgentVault,
+} from '../src/main/project-agent-tools';
 import { WorkspaceService, type WorkspaceStorage } from '../src/main/workspace-service';
 import type {
   CodexDynamicToolCall,
@@ -11,6 +15,11 @@ import type {
   CodexJsonValue,
 } from '../src/main/codex-app-server';
 import type { LocalNotesVaultGrant } from '../src/shared/project-chat-contracts';
+import type {
+  SshAgentCommand,
+  SshCommandResult,
+  SshConnectionProfile,
+} from '../src/shared/ssh-contracts';
 import type { AgentVaultNoteChunk, AgentVaultNoteList } from '../src/shared/vault-contracts';
 import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 
@@ -21,6 +30,9 @@ const NOTE_ID = 'c'.repeat(64);
 const NOTE_SHA256 = 'd'.repeat(64);
 const NOTE_BODY = 'LOCAL_NOTE_BODY_MUST_NOT_ENTER_SOURCE_APPENDIX';
 const RAW_NOTE_PATH = '/Users/researcher/private-vault/experiments/result.md';
+const CHAT_SESSION_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const CHAT_ATTEMPT_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const SSH_CONNECTION_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 
 const objectiveFields = {
   goal: 'ALPHA_OBJECTIVE improve deterministic validation accuracy',
@@ -135,6 +147,34 @@ class FakeProjectVault implements ProjectAgentVault {
   }
 }
 
+class FakeProjectSsh implements ProjectAgentSsh {
+  readonly connections: SshConnectionProfile[] = [
+    {
+      schemaVersion: 1,
+      id: SSH_CONNECTION_ID,
+      label: 'Training GPU',
+      hostAlias: 'private-resolved-alias',
+      version: 1,
+      createdAt: '2026-08-04T00:00:00.000Z',
+      updatedAt: '2026-08-04T00:00:00.000Z',
+    },
+  ];
+  readonly listConnections = vi.fn(async () => structuredClone(this.connections));
+  readonly runAgentCommand = vi.fn(async (_input: SshAgentCommand): Promise<SshCommandResult> => ({
+    schemaVersion: 1,
+    trust: 'untrusted_remote_output',
+    connectionLabel: 'Training GPU',
+    commandSha256: 'f'.repeat(64),
+    exitCode: 0,
+    stdout: 'GPU 0: ready',
+    stderr: '',
+    truncated: false,
+    durationMs: 12,
+  }));
+  readonly cancelSession = vi.fn(() => 1);
+  readonly cancelProject = vi.fn(() => 1);
+}
+
 async function workspaceFixture() {
   const workspace = new WorkspaceService(new MemoryWorkspaceStorage());
   const projectAlpha = await workspace.createProject({ name: 'Project Alpha' });
@@ -210,8 +250,14 @@ function resultPayload(result: CodexDynamicToolResult): Record<string, unknown> 
   return JSON.parse(result.contentItems[0]!.text) as Record<string, unknown>;
 }
 
+function delivery(
+  outcome: CodexDynamicToolDelivery['outcome'] = Promise.resolve('delivered'),
+): CodexDynamicToolDelivery {
+  return { outcome, abortSignal: new AbortController().signal };
+}
+
 function delivered(): CodexDynamicToolDelivery {
-  return { outcome: Promise.resolve('delivered') };
+  return delivery();
 }
 
 function invokeTool(session: ProjectAgentToolSession, call: CodexDynamicToolCall) {
@@ -222,15 +268,20 @@ function authorizedSession(
   workspace: WorkspaceService,
   projectId: string,
   vault = new FakeProjectVault(),
+  ssh = new FakeProjectSsh(),
 ) {
   return {
     session: new ProjectAgentToolSession({
       projectId,
+      sessionId: CHAT_SESSION_ID,
+      attemptId: CHAT_ATTEMPT_ID,
       workspace,
       vault,
       localNotesVault: { id: ACTIVE_VAULT_ID, name: 'Research Vault' },
+      ssh,
     }),
     vault,
+    ssh,
   };
 }
 
@@ -292,7 +343,7 @@ describe('ProjectAgentToolSession', () => {
 
   it('revokes every project-bound read after the project is archived', async () => {
     const { workspace, projectAlpha } = await workspaceFixture();
-    const { session, vault } = authorizedSession(workspace, projectAlpha.id);
+    const { session, vault, ssh } = authorizedSession(workspace, projectAlpha.id);
     await workspace.setProjectArchived({
       projectId: projectAlpha.id,
       expectedVersion: projectAlpha.version,
@@ -303,6 +354,11 @@ describe('ProjectAgentToolSession', () => {
       toolCall('read_workspace', { section: 'summary' }),
       toolCall('list_local_notes', {}),
       toolCall('read_local_note', { noteId: NOTE_ID }),
+      toolCall('list_ssh_connections', {}),
+      toolCall('run_ssh_command', {
+        connectionId: SSH_CONNECTION_ID,
+        command: 'true',
+      }),
     ]) {
       const result = await invokeTool(session, call);
       expect(result.success).toBe(false);
@@ -310,6 +366,8 @@ describe('ProjectAgentToolSession', () => {
     }
     expect(vault.listForAgent).not.toHaveBeenCalled();
     expect(vault.readForAgent).not.toHaveBeenCalled();
+    expect(ssh.listConnections).not.toHaveBeenCalled();
+    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
   });
 
   it('lists and reads only explicitly granted Local Notes through opaque IDs', async () => {
@@ -319,7 +377,13 @@ describe('ProjectAgentToolSession', () => {
     const declaredTools = session.dynamicTools.flatMap((spec) =>
       spec.type === 'namespace' ? spec.tools.map((tool) => tool.name) : [spec.name],
     );
-    expect(declaredTools).toEqual(['read_workspace', 'list_local_notes', 'read_local_note']);
+    expect(declaredTools).toEqual([
+      'read_workspace',
+      'list_local_notes',
+      'read_local_note',
+      'list_ssh_connections',
+      'run_ssh_command',
+    ]);
 
     const listed = await invokeTool(
       session,
@@ -354,19 +418,113 @@ describe('ProjectAgentToolSession', () => {
     expect(JSON.stringify(readPayload)).not.toContain(RAW_NOTE_PATH);
   });
 
+  it('lists only opaque SSH IDs and labels, never aliases or resolved connection data', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
+
+    const listed = await invokeTool(session, toolCall('list_ssh_connections', {}));
+    const serialized = listed.contentItems[0]!.text;
+
+    expect(listed.success).toBe(true);
+    expect(resultPayload(listed)).toEqual({
+      schemaVersion: 1,
+      connections: [{ id: SSH_CONNECTION_ID, label: 'Training GPU' }],
+    });
+    expect(ssh.listConnections).toHaveBeenCalledOnce();
+    expect(serialized).not.toContain('private-resolved-alias');
+    expect(serialized).not.toContain('hostAlias');
+  });
+
+  it('injects the active project and session into approved SSH tool requests', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
+
+    const call = toolCall('run_ssh_command', {
+      connectionId: SSH_CONNECTION_ID,
+      command: '/usr/bin/nvidia-smi',
+      args: ['--query-gpu=name'],
+      workingDirectory: '/srv/research data',
+      timeoutSeconds: 20,
+    });
+    const result = await invokeTool(session, call);
+
+    expect(result.success).toBe(true);
+    expect(resultPayload(result)).toMatchObject({
+      connectionLabel: 'Training GPU',
+      stdout: 'GPU 0: ready',
+    });
+    expect(ssh.runAgentCommand).toHaveBeenCalledExactlyOnceWith(
+      {
+        projectId: projectAlpha.id,
+        sessionId: CHAT_SESSION_ID,
+        attemptId: CHAT_ATTEMPT_ID,
+        turnId: call.turnId,
+        toolCallId: call.callId,
+        connectionId: SSH_CONNECTION_ID,
+        command: '/usr/bin/nvidia-smi',
+        args: ['--query-gpu=name'],
+        workingDirectory: '/srv/research data',
+        timeoutSeconds: 20,
+      },
+      expect.any(AbortSignal),
+    );
+
+    const forged = await invokeTool(
+      session,
+      toolCall('run_ssh_command', {
+        projectId: randomUUID(),
+        sessionId: randomUUID(),
+        connectionId: SSH_CONNECTION_ID,
+        command: 'true',
+      }),
+    );
+    expect(forged.success).toBe(false);
+    expect(resultPayload(forged)).toEqual({ error: 'invalid_tool_arguments' });
+    expect(ssh.runAgentCommand).toHaveBeenCalledOnce();
+  });
+
+  it('revokes current and future SSH calls without revoking project read tools', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
+
+    session.revokeSshCapability();
+    const listed = await invokeTool(session, toolCall('list_ssh_connections', {}));
+    const executed = await invokeTool(
+      session,
+      toolCall('run_ssh_command', {
+        connectionId: SSH_CONNECTION_ID,
+        command: '/usr/bin/nvidia-smi',
+      }),
+    );
+    const workspaceResult = await invokeTool(
+      session,
+      toolCall('read_workspace', { section: 'summary' }),
+    );
+
+    expect(resultPayload(listed)).toEqual({ error: 'ssh_cancelled' });
+    expect(resultPayload(executed)).toEqual({ error: 'ssh_cancelled' });
+    expect(workspaceResult.success).toBe(true);
+    expect(ssh.cancelSession).toHaveBeenCalledExactlyOnceWith(projectAlpha.id, CHAT_SESSION_ID);
+    expect(ssh.listConnections).not.toHaveBeenCalled();
+    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+  });
+
   it('does not declare note tools without a grant and rejects a grant that becomes stale', async () => {
     const { workspace, projectAlpha } = await workspaceFixture();
     const vault = new FakeProjectVault();
     const noGrant = new ProjectAgentToolSession({
       projectId: projectAlpha.id,
+      sessionId: CHAT_SESSION_ID,
+      attemptId: CHAT_ATTEMPT_ID,
       workspace,
       vault,
       localNotesVault: null,
+      ssh: new FakeProjectSsh(),
     });
     const noGrantTools = noGrant.dynamicTools.flatMap((spec) =>
       spec.type === 'namespace' ? spec.tools.map((tool) => tool.name) : [spec.name],
     );
-    expect(noGrantTools).toEqual(['read_workspace']);
+    expect(noGrantTools).toEqual(['read_workspace', 'list_ssh_connections', 'run_ssh_command']);
     const unauthorized = await invokeTool(noGrant, toolCall('list_local_notes', {}));
     expect(unauthorized.success).toBe(false);
     expect(resultPayload(unauthorized)).toEqual({ error: 'local_notes_not_authorized' });
@@ -600,7 +758,10 @@ describe('ProjectAgentToolSession', () => {
     const outcome = new Promise<'discarded'>((resolve) => {
       discard = () => resolve('discarded');
     });
-    const read = session.handler(toolCall('read_local_note', { noteId: NOTE_ID }), { outcome });
+    const read = session.handler(
+      toolCall('read_local_note', { noteId: NOTE_ID }),
+      delivery(outcome),
+    );
     await vi.waitFor(() => expect(vault.readForAgent).toHaveBeenCalledOnce());
 
     discard();
@@ -632,7 +793,7 @@ describe('ProjectAgentToolSession', () => {
     session.bindTransportRevoker(() => resolveOutcome('uncertain'));
     const pendingRead = await session.handler(
       toolCall('read_local_note', { noteId: NOTE_ID, offset: 24_000 }),
-      { outcome },
+      delivery(outcome),
     );
     expect(pendingRead.success).toBe(true);
 

@@ -7,6 +7,10 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**", "out/**", "release/**"]
     },
+    "@gosu/desktop#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["out/**"]
+    },
     "dev": {
       "cache": false,
       "persistent": true

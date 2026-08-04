@@ -121,6 +121,16 @@ export function describeError(error: unknown) {
     chat_attempt_not_retryable: 'Only failed or interrupted Codex turns can be retried.',
     chat_profile_conflict:
       'This project agent profile changed since it was opened. GOSU reloaded the current version.',
+    chat_session_not_found:
+      'This chat session no longer exists in the selected project. Choose another session.',
+    chat_branch_message_not_found: 'That branch point is not part of the selected chat session.',
+    chat_branch_point_invalid: 'Wait for this turn to finish before branching from that message.',
+    chat_branch_lineage_invalid:
+      'This chat lineage could not be verified, so GOSU did not create the branch.',
+    chat_branch_limit_reached:
+      'This chat is too deep or long to branch safely. Start a new chat instead.',
+    chat_session_limit_reached:
+      'This project has reached its local chat-session limit. Rename and reuse an existing chat.',
     local_notes_vault_not_selected:
       'Choose a Local Notes folder before authorizing it for this project.',
     local_notes_vault_changed:
@@ -130,6 +140,29 @@ export function describeError(error: unknown) {
     invalid_chat_input: 'Check the chat message and model selection, then try again.',
     codex_unavailable: 'Codex is unavailable. Board and local notes remain usable.',
     chat_unavailable: 'Project chat is unavailable. Existing local messages were not replaced.',
+    invalid_ssh_input: 'Check the SSH server name or alias and try again.',
+    ssh_connection_not_found: 'This SSH server profile no longer exists. Refresh Connections.',
+    ssh_connection_version_conflict:
+      'This SSH server profile changed since it was opened. The newer version was not overwritten.',
+    ssh_connection_limit_reached: 'This Mac has reached the SSH server profile limit.',
+    ssh_approval_not_found: 'This SSH approval is no longer pending.',
+    ssh_approval_denied: 'The SSH command was denied and was not started.',
+    ssh_approval_expired: 'The SSH approval expired and the command was not started.',
+    ssh_approval_cancelled: 'The SSH approval or command was cancelled.',
+    ssh_command_not_allowed:
+      'GOSU blocked this SSH command shape or high-risk command. Use a smaller non-interactive command.',
+    ssh_unknown_host_key:
+      'This server host key is not trusted yet. Verify its fingerprint and connect once in Terminal.',
+    ssh_authentication_failed:
+      'SSH authentication failed. Check this alias, ssh-agent, and Keychain in Terminal.',
+    ssh_connection_failed: 'The SSH connection failed. Board and existing chat remain available.',
+    ssh_timed_out: 'The SSH connection or command timed out.',
+    ssh_output_too_large: 'The SSH command produced more output than this chat tool can accept.',
+    ssh_cancelled:
+      'The local SSH transport was stopped. The remote process may require separate verification.',
+    ssh_capacity_exceeded:
+      'Too many SSH commands are awaiting approval or running. Try again later.',
+    ssh_unavailable: 'Local SSH is unavailable. Board and existing chat remain available.',
   };
   const code = Object.keys(messages).find((candidate) => error.message.includes(candidate));
   return code ? messages[code]! : 'The operation could not be completed.';

@@ -4,8 +4,13 @@ import { EventEmitter } from 'node:events';
 import type { ModelInvocation } from '@gosu/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { CodexDynamicToolHandler, CodexDynamicToolSpec } from '../src/main/codex-app-server';
-import type { ProjectAgentVault } from '../src/main/project-agent-tools';
+import type {
+  CodexDynamicToolDelivery,
+  CodexDynamicToolHandler,
+  CodexDynamicToolSpec,
+  CodexDynamicToolTimeoutOverride,
+} from '../src/main/codex-app-server';
+import type { ProjectAgentSsh, ProjectAgentVault } from '../src/main/project-agent-tools';
 import {
   buildProjectChatPrompt,
   ProjectChatService,
@@ -18,11 +23,18 @@ import type {
   ProjectChatEvent,
   ProjectChatMessage,
   ProjectChatProfile,
+  ProjectChatSession,
   ProjectChatSnapshot,
   UpdateProjectChatProfileInput,
 } from '../src/shared/project-chat-contracts';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
 import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
+
+function dynamicToolDelivery(
+  outcome: CodexDynamicToolDelivery['outcome'] = Promise.resolve('delivered'),
+): CodexDynamicToolDelivery {
+  return { outcome, abortSignal: new AbortController().signal };
+}
 
 class MemoryWorkspaceStorage {
   state: WorkspaceSnapshot | null = null;
@@ -54,6 +66,8 @@ class MemoryChatStorage implements ProjectChatStorage {
   readonly attempts = new Map<string, ProjectChatAttempt>();
   readonly actions = new Map<string, ProjectChatAction>();
   readonly profiles = new Map<string, ProjectChatProfile>();
+  readonly sessions = new Map<string, ProjectChatSession[]>();
+  readonly sessionMessageIds = new Map<string, string[]>();
   failNextSave = false;
   failNextAssistantSave = false;
   failNextFinishAction = false;
@@ -66,8 +80,20 @@ class MemoryChatStorage implements ProjectChatStorage {
       throw new Error('transient_storage_failure');
     }
     if (attempt.status !== 'starting') throw new Error('invalid_attempt_state');
-    this.attempts.set(attempt.id, structuredClone(attempt));
+    const session = attempt.sessionId
+      ? this.getSession(attempt.projectId, attempt.sessionId)
+      : this.ensureDefaultSession(attempt.projectId);
+    if (!session) throw new Error('chat_session_not_found');
+    if (
+      attempt.retryOfAttemptId &&
+      !this.getChatAttempt(attempt.projectId, session.id, attempt.retryOfAttemptId)
+    ) {
+      throw new Error('chat_attempt_retry_target_not_found');
+    }
+    const storedAttempt = { ...attempt, sessionId: session.id };
+    this.attempts.set(attempt.id, structuredClone(storedAttempt));
     this.messages.push(structuredClone({ ...userMessage, attemptId: attempt.id }));
+    this.sessionMessageIds.get(session.id)!.push(userMessage.id);
   }
 
   markChatAttemptRunning(attempt: ProjectChatAttempt) {
@@ -96,23 +122,48 @@ class MemoryChatStorage implements ProjectChatStorage {
     const message = structuredClone({ ...assistantMessage, attemptId: attempt.id });
     this.attempts.set(attempt.id, structuredClone(attempt));
     this.messages.push(message);
+    if (!attempt.sessionId || !this.getSession(attempt.projectId, attempt.sessionId)) {
+      throw new Error('chat_session_not_found');
+    }
+    this.sessionMessageIds.get(attempt.sessionId)!.push(message.id);
     for (const action of message.actions) this.actions.set(action.id, action);
   }
 
-  getChatAttempt(projectId: string, attemptId: string) {
-    const attempt = this.attempts.get(attemptId);
-    return attempt?.projectId === projectId ? structuredClone(attempt) : null;
+  getChatAttempt(projectId: string, sessionId: string, attemptId?: string) {
+    const resolvedAttemptId = attemptId ?? sessionId;
+    const resolvedSessionId = attemptId ? sessionId : this.ensureDefaultSession(projectId).id;
+    const attempt = this.attempts.get(resolvedAttemptId);
+    const membership = attempt
+      ? this.sessionMessageIds.get(resolvedSessionId)?.includes(attempt.userMessageId)
+      : false;
+    return attempt?.projectId === projectId && membership ? structuredClone(attempt) : null;
   }
 
-  snapshot(projectId: string): ProjectChatSnapshot {
+  snapshot(projectId: string, requestedSessionId?: string): ProjectChatSnapshot {
+    const session = requestedSessionId
+      ? this.getSession(projectId, requestedSessionId)
+      : this.ensureDefaultSession(projectId);
+    if (!session) throw new Error('chat_session_not_found');
+    const defaultSession = this.ensureDefaultSession(projectId);
+    const assigned = new Set([...this.sessionMessageIds.values()].flat());
+    for (const message of this.messages) {
+      if (message.projectId === projectId && !assigned.has(message.id)) {
+        this.sessionMessageIds.get(defaultSession.id)!.push(message.id);
+      }
+    }
+    const visibleIds = new Set(this.sessionMessageIds.get(session.id) ?? []);
     return {
       schemaVersion: 1,
       projectId,
+      session: structuredClone(session),
+      sessions: this.listProjectChatSessions(projectId),
       attempts: [...this.attempts.values()]
-        .filter((attempt) => attempt.projectId === projectId)
+        .filter(
+          (attempt) => attempt.projectId === projectId && visibleIds.has(attempt.userMessageId),
+        )
         .map((attempt) => structuredClone(attempt)),
       messages: this.messages
-        .filter((message) => message.projectId === projectId)
+        .filter((message) => message.projectId === projectId && visibleIds.has(message.id))
         .map((message) => ({
           ...structuredClone(message),
           actions: message.actions.map((action) =>
@@ -120,6 +171,89 @@ class MemoryChatStorage implements ProjectChatStorage {
           ),
         })),
     };
+  }
+
+  listProjectChatSessions(projectId: string) {
+    this.ensureDefaultSession(projectId);
+    return structuredClone(this.sessions.get(projectId)!);
+  }
+
+  createProjectChatSession(projectId: string, title?: string) {
+    const existing = this.listProjectChatSessions(projectId);
+    const now = new Date().toISOString();
+    const session: ProjectChatSession = {
+      id: randomUUID(),
+      projectId,
+      title: title ?? `New chat${existing.length > 1 ? ` ${existing.length}` : ''}`,
+      isDefault: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.sessions.get(projectId)!.push(session);
+    this.sessionMessageIds.set(session.id, []);
+    return structuredClone(session);
+  }
+
+  branchProjectChatSession(input: {
+    projectId: string;
+    sourceSessionId: string;
+    branchFromMessageId: string;
+    title?: string;
+  }) {
+    const source = this.getSession(input.projectId, input.sourceSessionId);
+    if (!source) throw new Error('chat_session_not_found');
+    const sourceMessages = this.sessionMessageIds.get(source.id) ?? [];
+    const branchIndex = sourceMessages.indexOf(input.branchFromMessageId);
+    if (branchIndex < 0) throw new Error('chat_branch_message_not_found');
+    const message = this.messages.find((candidate) => candidate.id === input.branchFromMessageId);
+    const attempt = message?.attemptId ? this.attempts.get(message.attemptId) : undefined;
+    if (!message || message.status !== 'complete' || (attempt && attempt.status === 'running')) {
+      throw new Error('chat_branch_point_invalid');
+    }
+    const now = new Date().toISOString();
+    const session: ProjectChatSession = {
+      id: randomUUID(),
+      projectId: input.projectId,
+      title: input.title ?? `Branch · ${source.title}`,
+      isDefault: false,
+      parentSessionId: source.id,
+      branchedFromMessageId: message.id,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.sessions.get(input.projectId)!.push(session);
+    this.sessionMessageIds.set(session.id, sourceMessages.slice(0, branchIndex + 1));
+    return structuredClone(session);
+  }
+
+  renameProjectChatSession(projectId: string, sessionId: string, title: string) {
+    const session = this.getSession(projectId, sessionId);
+    if (!session) return null;
+    const renamed = { ...session, title, updatedAt: new Date().toISOString() };
+    const projectSessions = this.sessions.get(projectId)!;
+    projectSessions[projectSessions.indexOf(session)] = renamed;
+    return structuredClone(renamed);
+  }
+
+  private ensureDefaultSession(projectId: string) {
+    const existing = this.sessions.get(projectId)?.find((session) => session.isDefault);
+    if (existing) return existing;
+    const now = new Date().toISOString();
+    const session: ProjectChatSession = {
+      id: randomUUID(),
+      projectId,
+      title: 'Project chat',
+      isDefault: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.sessions.set(projectId, [session]);
+    this.sessionMessageIds.set(session.id, []);
+    return session;
+  }
+
+  private getSession(projectId: string, sessionId: string) {
+    return this.sessions.get(projectId)?.find((session) => session.id === sessionId) ?? null;
   }
 
   getProjectChatProfile(projectId: string) {
@@ -166,9 +300,14 @@ class MemoryChatStorage implements ProjectChatStorage {
     return updated;
   }
 
-  getAction(projectId: string, actionId: string) {
-    const action = this.actions.get(actionId);
-    return action?.projectId === projectId ? structuredClone(action) : null;
+  getAction(projectId: string, sessionId: string, actionId?: string) {
+    const resolvedActionId = actionId ?? sessionId;
+    const resolvedSessionId = actionId ? sessionId : this.ensureDefaultSession(projectId).id;
+    const action = this.actions.get(resolvedActionId);
+    const membership = action
+      ? this.sessionMessageIds.get(resolvedSessionId)?.includes(action.messageId)
+      : false;
+    return action?.projectId === projectId && membership ? structuredClone(action) : null;
   }
 
   claimAction(projectId: string, actionId: string, updatedAt: string) {
@@ -207,6 +346,7 @@ class FakeCodex extends EventEmitter {
   }> = [];
   readonly dynamicTools: Array<readonly CodexDynamicToolSpec[]> = [];
   readonly dynamicToolHandlers: Array<CodexDynamicToolHandler | undefined> = [];
+  readonly dynamicToolTimeouts: Array<readonly CodexDynamicToolTimeoutOverride[]> = [];
   beforeRunReturns: ((threadId: string, turnId: string) => void | Promise<void>) | null = null;
   failNextInterrupt = false;
   nextThreadId: string | null = null;
@@ -237,12 +377,14 @@ class FakeCodex extends EventEmitter {
     responseVerbosity?: 'low' | 'medium' | 'high' | null;
     dynamicTools?: readonly CodexDynamicToolSpec[];
     dynamicToolHandler?: CodexDynamicToolHandler;
+    dynamicToolTimeouts?: readonly CodexDynamicToolTimeoutOverride[];
   }) {
     this.threadCount += 1;
     this.developerInstructions.push(input.developerInstructions ?? '');
     this.responseVerbosities.push(input.responseVerbosity ?? null);
     this.dynamicTools.push(input.dynamicTools ?? []);
     this.dynamicToolHandlers.push(input.dynamicToolHandler);
+    this.dynamicToolTimeouts.push(input.dynamicToolTimeouts ?? []);
     const threadId = this.nextThreadId ?? `thread-${this.threadCount}`;
     this.nextThreadId = null;
     return { threadId, modelId: 'fixture-model' };
@@ -385,14 +527,23 @@ async function fixture(vault?: ProjectAgentVault) {
   });
   const storage = new MemoryChatStorage();
   const codex = new FakeCodex();
+  const ssh: ProjectAgentSsh = {
+    listConnections: vi.fn(async () => []),
+    runAgentCommand: vi.fn(async () => {
+      throw new Error('ssh_unavailable');
+    }),
+    cancelSession: vi.fn(() => 0),
+    cancelProject: vi.fn(() => 0),
+  };
   const chat = new ProjectChatService({
     storage,
     workspace,
     codex,
+    ssh,
     ...(vault ? { vault } : {}),
     prepareProjectDirectory: async (projectId) => `/isolated/${projectId}`,
   });
-  return { workspace, storage, codex, chat, projectA, projectB, taskA };
+  return { workspace, storage, codex, chat, ssh, projectA, projectB, taskA };
 }
 
 async function activeLocalNotesTurn(
@@ -426,7 +577,7 @@ async function activeLocalNotesTurn(
       tool: 'read_local_note',
       arguments: { noteId: localNotes.noteId },
     },
-    { outcome: deliveryOutcome },
+    dynamicToolDelivery(deliveryOutcome),
   );
   expect(read.success).toBe(true);
   return { ...environment, ...localNotes, receipt };
@@ -777,6 +928,7 @@ describe('ProjectChatService', () => {
       expect(events).toContainEqual({
         type: 'turn.completed',
         projectId: projectA.id,
+        sessionId: first.sessionId,
         turnId: first.turnId,
         status: 'interrupted',
       }),
@@ -1120,7 +1272,7 @@ describe('ProjectChatService', () => {
     expect(attempt?.promptProvenance?.promptCharacters).toBe(codex.prompts[0]?.length);
     expect(codex.developerInstructions[0]).not.toContain('Harness mode');
     expect(codex.developerInstructions[0]).not.toContain('Prefer falsifiable next steps.');
-    expect(codex.developerInstructions[0]).toContain('explicitly provided read-only GOSU tools');
+    expect(codex.developerInstructions[0]).toContain('explicitly provided GOSU tools');
     expect(codex.prompts[0]).toContain('Prefer falsifiable next steps.');
     expect(codex.turnSettings[0]).toMatchObject({
       collaborationModeId: 'plan',
@@ -1229,7 +1381,12 @@ describe('ProjectChatService', () => {
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_workspace');
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('list_local_notes');
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_local_note');
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('list_ssh_connections');
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('run_ssh_command');
     expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('/Users/');
+    expect(codex.dynamicToolTimeouts[0]).toEqual([
+      { namespace: 'gosu_project', tool: 'run_ssh_command', timeoutMs: 155_000 },
+    ]);
     const handler = codex.dynamicToolHandlers[0]!;
     await expect(
       handler(
@@ -1241,7 +1398,7 @@ describe('ProjectChatService', () => {
           tool: 'list_local_notes',
           arguments: {},
         },
-        { outcome: Promise.resolve('delivered') },
+        dynamicToolDelivery(),
       ),
     ).resolves.toMatchObject({ success: true });
     const read = await handler(
@@ -1253,7 +1410,7 @@ describe('ProjectChatService', () => {
         tool: 'read_local_note',
         arguments: { noteId },
       },
-      { outcome: Promise.resolve('delivered') },
+      dynamicToolDelivery(),
     );
     expect(read).toMatchObject({ success: true });
     expect(read.contentItems[0]?.text).toContain('PRIVATE_NOTE_BODY');
@@ -1318,7 +1475,7 @@ describe('ProjectChatService', () => {
     const deliveryOutcome = new Promise<'delivered'>((resolve) => {
       acknowledge = () => resolve('delivered');
     });
-    const { chat, codex, storage, projectA, receipt, contentSha256 } =
+    const { chat, codex, ssh, storage, projectA, receipt, contentSha256 } =
       await activeLocalNotesTurn(deliveryOutcome);
     const completed = waitForTurnCompleted(chat, receipt.turnId);
     const threadId = codex.turnThreads.get(receipt.turnId)!;
@@ -1327,6 +1484,37 @@ describe('ProjectChatService', () => {
       method: 'turn/completed',
       params: { threadId, turn: { id: receipt.turnId, status: 'interrupted' } },
     });
+    const handler = codex.dynamicToolHandlers[0]!;
+    const listed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-list-during-terminal-note-settlement',
+        namespace: 'gosu_project',
+        tool: 'list_ssh_connections',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+    const executed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-run-during-terminal-note-settlement',
+        namespace: 'gosu_project',
+        tool: 'run_ssh_command',
+        arguments: {
+          connectionId: randomUUID(),
+          command: '/usr/bin/nvidia-smi',
+        },
+      },
+      dynamicToolDelivery(),
+    );
+    expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(ssh.listConnections).not.toHaveBeenCalled();
+    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    expect(ssh.cancelSession).toHaveBeenCalledWith(projectA.id, receipt.sessionId);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(storage.snapshot(projectA.id).messages).toHaveLength(1);
 
@@ -1363,7 +1551,7 @@ describe('ProjectChatService', () => {
           tool: 'read_local_note',
           arguments: { noteId },
         },
-        { outcome: Promise.resolve('delivered') },
+        dynamicToolDelivery(),
       );
       expect(read.success).toBe(true);
     };
@@ -1807,5 +1995,610 @@ describe('ProjectChatService', () => {
       content: 'The archived text receipt remains visible.',
       actions: [],
     });
+  });
+
+  it('keeps root sessions isolated and permits only one active turn per project', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const [defaultSession] = await chat.listSessions({ projectId: projectA.id });
+    const secondSession = await chat.createSession({ projectId: projectA.id });
+
+    const first = await chat.send({
+      projectId: projectA.id,
+      sessionId: defaultSession!.id,
+      message: 'Default session question',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        sessionId: secondSession.id,
+        message: 'Do not overlap this project turn',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toThrow('chat_busy');
+
+    await expect(
+      chat.snapshot({ projectId: projectA.id, sessionId: defaultSession!.id }),
+    ).resolves.toMatchObject({ activeTurnId: first.turnId });
+    await expect(
+      chat.snapshot({ projectId: projectA.id, sessionId: secondSession.id }),
+    ).resolves.not.toHaveProperty('activeTurnId');
+    expect(storage.snapshot(projectA.id, defaultSession!.id).messages).toHaveLength(1);
+    expect(storage.snapshot(projectA.id, secondSession.id).messages).toHaveLength(0);
+    codex.complete(first.turnId, { reply: 'Default answer', actions: [] });
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id, defaultSession!.id).messages).toHaveLength(2),
+    );
+
+    const second = await chat.send({
+      projectId: projectA.id,
+      sessionId: secondSession.id,
+      message: 'Independent session question',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(second.turnId, { reply: 'Independent answer', actions: [] });
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id, secondSession.id).messages).toHaveLength(2),
+    );
+    expect(
+      storage.snapshot(projectA.id, defaultSession!.id).messages.map((message) => message.content),
+    ).toEqual(['Default session question', 'Default answer']);
+    expect(
+      storage.snapshot(projectA.id, secondSession.id).messages.map((message) => message.content),
+    ).toEqual(['Independent session question', 'Independent answer']);
+  });
+
+  it('branches only through the selected completed message and stops inheriting later history', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const first = await chat.send({
+      projectId: projectA.id,
+      message: 'First question',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(first.turnId, { reply: 'First answer', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    const firstAnswerId = storage.snapshot(projectA.id).messages[1]!.id;
+
+    const second = await chat.send({
+      projectId: projectA.id,
+      message: 'Later source question',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(second.turnId, { reply: 'Later source answer', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(4));
+    const sourceSession = storage.snapshot(projectA.id).session!;
+    const branch = await chat.branchSession({
+      projectId: projectA.id,
+      sourceSessionId: sourceSession.id,
+      branchFromMessageId: firstAnswerId,
+    });
+
+    expect(
+      storage.snapshot(projectA.id, branch.id).messages.map((message) => message.content),
+    ).toEqual(['First question', 'First answer']);
+    const branchTurn = await chat.send({
+      projectId: projectA.id,
+      sessionId: branch.id,
+      message: 'Branch-only question',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(branchTurn.turnId, { reply: 'Branch-only answer', actions: [] });
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id, branch.id).messages).toHaveLength(4),
+    );
+    expect(storage.snapshot(projectA.id).messages.map((message) => message.content)).toEqual([
+      'First question',
+      'First answer',
+      'Later source question',
+      'Later source answer',
+    ]);
+    expect(
+      storage.snapshot(projectA.id, branch.id).messages.map((message) => message.content),
+    ).toEqual(['First question', 'First answer', 'Branch-only question', 'Branch-only answer']);
+  });
+
+  it('rejects cross-project and cross-session cancel, retry, and action access', async () => {
+    const { chat, codex, storage, projectA, projectB } = await fixture();
+    const defaultSession = storage.snapshot(projectA.id).session!;
+    const otherSession = await chat.createSession({ projectId: projectA.id });
+    await expect(
+      chat.snapshot({ projectId: projectB.id, sessionId: defaultSession.id }),
+    ).rejects.toThrow('chat_session_not_found');
+    await expect(
+      chat.cancel({ projectId: projectB.id, sessionId: defaultSession.id }),
+    ).rejects.toThrow('chat_session_not_found');
+
+    const failed = await chat.send({
+      projectId: projectA.id,
+      sessionId: defaultSession.id,
+      message: 'Produce an invalid response',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(failed.turnId, 'not-json');
+    await vi.waitFor(() =>
+      expect(storage.getChatAttempt(projectA.id, defaultSession.id, failed.attemptId)?.status).toBe(
+        'failed',
+      ),
+    );
+    await expect(
+      chat.branchSession({
+        projectId: projectA.id,
+        sourceSessionId: otherSession.id,
+        branchFromMessageId: failed.userMessageId,
+      }),
+    ).rejects.toThrow('chat_branch_message_not_found');
+    await expect(
+      chat.branchSession({
+        projectId: projectB.id,
+        sourceSessionId: defaultSession.id,
+        branchFromMessageId: failed.userMessageId,
+      }),
+    ).rejects.toThrow('chat_session_not_found');
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        sessionId: otherSession.id,
+        message: 'Cross-session retry',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        retryOfAttemptId: failed.attemptId,
+      }),
+    ).rejects.toThrow('chat_attempt_not_found');
+
+    const proposed = await chat.send({
+      projectId: projectA.id,
+      sessionId: defaultSession.id,
+      message: 'Propose one task',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(proposed.turnId, {
+      reply: 'Proposal',
+      actions: [{ type: 'task.create', title: 'Session-owned task', status: 'planned' }],
+    });
+    await vi.waitFor(() =>
+      expect(
+        storage.snapshot(projectA.id, defaultSession.id).messages.at(-1)?.actions,
+      ).toHaveLength(1),
+    );
+    const action = storage.snapshot(projectA.id, defaultSession.id).messages.at(-1)!.actions[0]!;
+    await expect(
+      chat.applyAction({ projectId: projectA.id, sessionId: otherSession.id, actionId: action.id }),
+    ).rejects.toThrow('action_not_found');
+    await expect(
+      chat.applyAction({
+        projectId: projectB.id,
+        sessionId: defaultSession.id,
+        actionId: action.id,
+      }),
+    ).rejects.toThrow('chat_session_not_found');
+  });
+
+  it('routes legacy callers to the one durable default session', async () => {
+    const { chat, codex, ssh, projectA } = await fixture();
+    const first = await chat.snapshot({ projectId: projectA.id });
+    const second = await chat.snapshot({ projectId: projectA.id });
+    expect(first.session).toEqual(second.session);
+    expect(first.sessions?.filter((session) => session.isDefault)).toHaveLength(1);
+
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Legacy default send',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(receipt.sessionId).toBe(first.session?.id);
+    await chat.cancel({ projectId: projectA.id });
+    expect(codex.interrupted.at(-1)?.turnId).toBe(receipt.turnId);
+    expect(ssh.cancelSession).toHaveBeenCalledWith(projectA.id, receipt.sessionId);
+    codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
+  });
+
+  it('revokes SSH synchronously even when cancelling the Codex turn fails', async () => {
+    const { chat, codex, ssh, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Keep the turn active until cancellation.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.failNextInterrupt = true;
+    const cancellation = chat
+      .cancel({ projectId: projectA.id, sessionId: receipt.sessionId })
+      .catch((error: unknown) => error);
+    const handler = codex.dynamicToolHandlers[0]!;
+    const threadId = codex.turnThreads.get(receipt.turnId)!;
+    const listed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-list-after-cancel-start',
+        namespace: 'gosu_project',
+        tool: 'list_ssh_connections',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+    const executed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-run-after-cancel-start',
+        namespace: 'gosu_project',
+        tool: 'run_ssh_command',
+        arguments: {
+          connectionId: randomUUID(),
+          command: '/usr/bin/nvidia-smi',
+        },
+      },
+      dynamicToolDelivery(),
+    );
+
+    await expect(cancellation).resolves.toEqual(
+      expect.objectContaining({ message: 'transient_interrupt_failure' }),
+    );
+    expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(ssh.listConnections).not.toHaveBeenCalled();
+    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    expect(ssh.cancelSession).toHaveBeenCalledWith(projectA.id, receipt.sessionId);
+    codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
+  });
+
+  it('keeps SSH revoked when cancel session lookup fails', async () => {
+    const { chat, codex, ssh, storage, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Keep the turn active during a failed lookup.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    vi.spyOn(storage, 'snapshot').mockImplementationOnce(() => {
+      throw new Error('fixture_cancel_lookup_failure');
+    });
+    const cancellation = chat
+      .cancel({ projectId: projectA.id, sessionId: receipt.sessionId })
+      .catch((error: unknown) => error);
+    const handler = codex.dynamicToolHandlers[0]!;
+    const threadId = codex.turnThreads.get(receipt.turnId)!;
+    const listed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-list-after-cancel-lookup-failure',
+        namespace: 'gosu_project',
+        tool: 'list_ssh_connections',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+    const executed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-run-after-cancel-lookup-failure',
+        namespace: 'gosu_project',
+        tool: 'run_ssh_command',
+        arguments: { connectionId: randomUUID(), command: '/usr/bin/nvidia-smi' },
+      },
+      dynamicToolDelivery(),
+    );
+
+    await expect(cancellation).resolves.toEqual(
+      expect.objectContaining({ message: 'fixture_cancel_lookup_failure' }),
+    );
+    expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(ssh.listConnections).not.toHaveBeenCalled();
+    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    expect(ssh.cancelSession).toHaveBeenCalledWith(projectA.id, receipt.sessionId);
+    codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
+  });
+
+  it('keeps a starting turn SSH-revoked when Stop races before turn registration', async () => {
+    const { chat, codex, ssh, storage, projectA } = await fixture();
+    const session = (await chat.snapshot({ projectId: projectA.id })).session!;
+    const originalSnapshot = storage.snapshot.bind(storage);
+    let releaseSnapshot!: (snapshot: ProjectChatSnapshot) => void;
+    const deferredSnapshot = new Promise<ProjectChatSnapshot>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const snapshotSpy = vi
+      .spyOn(storage, 'snapshot')
+      .mockImplementationOnce(() => deferredSnapshot as unknown as ProjectChatSnapshot);
+    const sending = chat.send({
+      projectId: projectA.id,
+      sessionId: session.id,
+      message: 'Race startup with Stop.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await vi.waitFor(() => expect(snapshotSpy).toHaveBeenCalledOnce());
+
+    await expect(chat.cancel({ projectId: projectA.id, sessionId: session.id })).rejects.toThrow(
+      'chat_not_active',
+    );
+    releaseSnapshot(originalSnapshot(projectA.id, session.id));
+    const receipt = await sending;
+    const handler = codex.dynamicToolHandlers.at(-1)!;
+    const threadId = codex.turnThreads.get(receipt.turnId)!;
+    const listed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-list-after-startup-stop',
+        namespace: 'gosu_project',
+        tool: 'list_ssh_connections',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+    const executed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-run-after-startup-stop',
+        namespace: 'gosu_project',
+        tool: 'run_ssh_command',
+        arguments: { connectionId: randomUUID(), command: '/usr/bin/nvidia-smi' },
+      },
+      dynamicToolDelivery(),
+    );
+
+    expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(ssh.listConnections).not.toHaveBeenCalled();
+    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
+  });
+
+  it('revokes current and future SSH tools for a session without stopping its Codex turn', async () => {
+    const { chat, codex, ssh, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Inspect the server if needed.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const handler = codex.dynamicToolHandlers[0]!;
+
+    await expect(
+      chat.revokeSsh({ projectId: projectA.id, sessionId: receipt.sessionId }),
+    ).resolves.toEqual({ revoked: true });
+    const sshResult = await handler(
+      {
+        threadId: codex.turnThreads.get(receipt.turnId)!,
+        turnId: receipt.turnId,
+        callId: 'ssh-after-navigation',
+        namespace: 'gosu_project',
+        tool: 'list_ssh_connections',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+    const workspaceResult = await handler(
+      {
+        threadId: codex.turnThreads.get(receipt.turnId)!,
+        turnId: receipt.turnId,
+        callId: 'workspace-after-navigation',
+        namespace: 'gosu_project',
+        tool: 'read_workspace',
+        arguments: { section: 'summary' },
+      },
+      dynamicToolDelivery(),
+    );
+
+    expect(JSON.parse(sshResult.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(workspaceResult.success).toBe(true);
+    expect(ssh.cancelSession).toHaveBeenCalledWith(projectA.id, receipt.sessionId);
+    expect(codex.interrupted).toHaveLength(0);
+    codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
+  });
+
+  it('fails closed when SSH revocation races a chat send startup', async () => {
+    const { chat, codex, ssh, storage, projectA } = await fixture();
+    const session = (await chat.snapshot({ projectId: projectA.id })).session!;
+    const originalSnapshot = storage.snapshot.bind(storage);
+    let releaseSnapshot!: (snapshot: ProjectChatSnapshot) => void;
+    const deferredSnapshot = new Promise<ProjectChatSnapshot>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const snapshotSpy = vi
+      .spyOn(storage, 'snapshot')
+      .mockImplementationOnce(() => deferredSnapshot as unknown as ProjectChatSnapshot);
+
+    const sending = chat.send({
+      projectId: projectA.id,
+      sessionId: session.id,
+      message: 'Inspect the server after startup.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await vi.waitFor(() => expect(snapshotSpy).toHaveBeenCalledOnce());
+
+    await chat.revokeSsh({ projectId: projectA.id, sessionId: session.id });
+    releaseSnapshot(originalSnapshot(projectA.id, session.id));
+    const receipt = await sending;
+    const handler = codex.dynamicToolHandlers.at(-1)!;
+    const threadId = codex.turnThreads.get(receipt.turnId)!;
+    const listed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-list-after-startup-revoke',
+        namespace: 'gosu_project',
+        tool: 'list_ssh_connections',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+    const executed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-run-after-startup-revoke',
+        namespace: 'gosu_project',
+        tool: 'run_ssh_command',
+        arguments: {
+          connectionId: randomUUID(),
+          command: '/usr/bin/nvidia-smi',
+        },
+      },
+      dynamicToolDelivery(),
+    );
+
+    expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(ssh.listConnections).not.toHaveBeenCalled();
+    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
+  });
+
+  it('keeps a different session SSH-capable when an older session is revoked during startup', async () => {
+    const { chat, codex, ssh, storage, projectA } = await fixture();
+    const sessionA = (await chat.snapshot({ projectId: projectA.id })).session!;
+    const sessionB = await chat.createSession({ projectId: projectA.id });
+    const originalSnapshot = storage.snapshot.bind(storage);
+    let releaseSnapshot!: (snapshot: ProjectChatSnapshot) => void;
+    const deferredSnapshot = new Promise<ProjectChatSnapshot>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const snapshotSpy = vi
+      .spyOn(storage, 'snapshot')
+      .mockImplementationOnce(() => deferredSnapshot as unknown as ProjectChatSnapshot);
+
+    const sending = chat.send({
+      projectId: projectA.id,
+      sessionId: sessionB.id,
+      message: 'Keep the new session capability isolated.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await vi.waitFor(() => expect(snapshotSpy).toHaveBeenCalledOnce());
+    await chat.revokeSsh({ projectId: projectA.id, sessionId: sessionA.id });
+    releaseSnapshot(originalSnapshot(projectA.id, sessionB.id));
+
+    const receipt = await sending;
+    const listed = await codex.dynamicToolHandlers.at(-1)!(
+      {
+        threadId: codex.turnThreads.get(receipt.turnId)!,
+        turnId: receipt.turnId,
+        callId: 'ssh-list-in-new-session',
+        namespace: 'gosu_project',
+        tool: 'list_ssh_connections',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+
+    expect(listed.success).toBe(true);
+    expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({
+      schemaVersion: 1,
+      connections: [],
+    });
+    expect(ssh.listConnections).toHaveBeenCalledOnce();
+    codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
+  });
+
+  it('keeps every active SSH capability revoked when project-wide storage validation fails', async () => {
+    const { chat, codex, ssh, storage, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Inspect the server before navigation.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    vi.spyOn(storage, 'listProjectChatSessions').mockImplementationOnce(() => {
+      throw new Error('fixture_storage_failure');
+    });
+
+    await expect(chat.revokeSsh({ projectId: projectA.id })).rejects.toThrow(
+      'fixture_storage_failure',
+    );
+    const handler = codex.dynamicToolHandlers.at(-1)!;
+    const threadId = codex.turnThreads.get(receipt.turnId)!;
+    const listed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-list-after-storage-failure',
+        namespace: 'gosu_project',
+        tool: 'list_ssh_connections',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+    const executed = await handler(
+      {
+        threadId,
+        turnId: receipt.turnId,
+        callId: 'ssh-run-after-storage-failure',
+        namespace: 'gosu_project',
+        tool: 'run_ssh_command',
+        arguments: {
+          connectionId: randomUUID(),
+          command: '/usr/bin/nvidia-smi',
+        },
+      },
+      dynamicToolDelivery(),
+    );
+
+    expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(ssh.listConnections).not.toHaveBeenCalled();
+    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    expect(ssh.cancelProject).toHaveBeenCalledWith(projectA.id);
+    codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
+  });
+
+  it('validates a project before storage can lazily create its default session', async () => {
+    const { chat, storage } = await fixture();
+    const missingProjectId = randomUUID();
+
+    await expect(
+      chat.send({
+        projectId: missingProjectId,
+        message: 'This project does not exist.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toThrow('project_not_found');
+
+    expect(storage.sessions.has(missingProjectId)).toBe(false);
+  });
+
+  it('renames one session without changing its identity or sibling history', async () => {
+    const { chat, projectA } = await fixture();
+    const original = (await chat.listSessions({ projectId: projectA.id }))[0]!;
+    const sibling = await chat.createSession({ projectId: projectA.id });
+
+    const renamed = await chat.renameSession({
+      projectId: projectA.id,
+      sessionId: original.id,
+      title: 'Main research thread',
+    });
+
+    expect(renamed).toMatchObject({
+      id: original.id,
+      projectId: projectA.id,
+      title: 'Main research thread',
+      isDefault: true,
+    });
+    const sessions = await chat.listSessions({ projectId: projectA.id });
+    expect(sessions.filter((session) => session.isDefault)).toHaveLength(1);
+    expect(sessions.find((session) => session.id === sibling.id)?.isDefault).toBe(false);
+    expect(sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: original.id, title: 'Main research thread' }),
+        expect.objectContaining({ id: sibling.id, title: sibling.title }),
+      ]),
+    );
   });
 });

@@ -30,6 +30,47 @@ describe('dynamic Codex model catalog', () => {
     expect(catalog.models.map((model) => model.modelId)).toContain('future-provider-model');
   });
 
+  it('uses exact native reasoning IDs as compact labels without an app-owned enum', () => {
+    const catalog = toModelCatalog(
+      [
+        {
+          ...fixtureModels[0]!,
+          defaultReasoningEffort: 'xhigh',
+          supportedReasoningEfforts: [
+            { reasoningEffort: 'medium', description: 'A deliberately long provider summary' },
+            { reasoningEffort: 'xhigh', description: 'Another deliberately long summary' },
+            { reasoningEffort: 'future-ultra', description: 'Introduced after this app shipped' },
+          ],
+        },
+      ],
+      '2026-08-03T00:00:00Z',
+    );
+
+    expect(catalog.models[0]?.reasoningOptions).toEqual([
+      { id: 'medium', label: 'medium', isDefault: false },
+      { id: 'xhigh', label: 'xhigh', isDefault: true },
+      { id: 'future-ultra', label: 'future-ultra', isDefault: false },
+    ]);
+  });
+
+  it('does not invent a reasoning option when model/list provides none', () => {
+    const catalog = toModelCatalog(
+      [
+        {
+          id: 'provider-without-reasoning-options',
+          model: 'provider-without-reasoning-options',
+          displayName: 'Provider without reasoning options',
+          hidden: false,
+          isDefault: true,
+          defaultReasoningEffort: 'provider-default-not-in-options',
+        },
+      ],
+      '2026-08-03T00:00:00Z',
+    );
+
+    expect(catalog.models[0]?.reasoningOptions).toEqual([]);
+  });
+
   it('records the exact selected model, catalog snapshot and later reroute', () => {
     const catalog = toModelCatalog(fixtureModels, '2026-08-03T00:00:00Z');
     const invocation = createInvocation({

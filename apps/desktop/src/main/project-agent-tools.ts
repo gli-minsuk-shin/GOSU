@@ -4,6 +4,13 @@ import { z } from 'zod';
 
 import type { LocalNotesVaultGrant } from '../shared/project-chat-contracts';
 import { repositoryIdentifierForAgent } from '../shared/repository-identifier';
+import {
+  SSH_IPC_ERROR_CODES,
+  SshAgentCommandSchema,
+  type SshAgentCommand,
+  type SshCommandResult,
+  type SshConnectionProfile,
+} from '../shared/ssh-contracts';
 import type { AgentVaultNoteChunk, AgentVaultNoteList } from '../shared/vault-contracts';
 import { resolveWorkspaceBoardSettings } from '../shared/workspace-contracts';
 import type {
@@ -13,6 +20,7 @@ import type {
   CodexDynamicToolHandler,
   CodexDynamicToolResult,
   CodexDynamicToolSpec,
+  CodexDynamicToolTimeoutOverride,
 } from './codex-app-server';
 import type { WorkspaceService } from './workspace-service';
 
@@ -22,6 +30,7 @@ const MAX_NOTE_CHARACTERS_PER_CALL = 24_000;
 const MAX_NOTE_CHARACTERS_PER_SESSION = 96_000;
 const MAX_TOOL_RESULT_CHARACTERS = 48_000;
 const SOURCE_FINALIZATION_WAIT_MS = 100;
+const SSH_DYNAMIC_TOOL_TIMEOUT_MS = 155_000;
 
 const ReadWorkspaceArgumentsSchema = z
   .object({ section: z.enum(['summary', 'board', 'objective']).default('summary') })
@@ -39,6 +48,14 @@ const ReadNoteArgumentsSchema = z
     maxCharacters: z.number().int().min(1).max(MAX_NOTE_CHARACTERS_PER_CALL).optional(),
   })
   .strict();
+const ListSshConnectionsArgumentsSchema = z.object({}).strict();
+const RunSshCommandArgumentsSchema = SshAgentCommandSchema.pick({
+  connectionId: true,
+  command: true,
+  args: true,
+  workingDirectory: true,
+  timeoutSeconds: true,
+});
 
 const PROJECT_TOOL_NAMESPACE = 'gosu_project';
 
@@ -92,6 +109,46 @@ const READ_NOTE_TOOL = {
   },
 } as const;
 
+const LIST_SSH_CONNECTIONS_TOOL = {
+  type: 'function',
+  name: 'list_ssh_connections',
+  description:
+    'List the opaque IDs and display labels of SSH server aliases registered locally on this Mac. Host resolution, credentials, private-key paths, and SSH config are never returned.',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+    additionalProperties: false,
+  },
+} as const;
+
+const RUN_SSH_COMMAND_TOOL = {
+  type: 'function',
+  name: 'run_ssh_command',
+  description:
+    'Request one bounded, non-interactive read or diagnostic command on a registered SSH connection. Use an absolute executable under /bin, /sbin, /usr/bin, or /usr/sbin. GOSU applies a fixed read-only executable/argument allowlist, shows the exact target and command, and executes only after a fresh Allow once decision. Scripts, mutation, interactive shells, privilege escalation, file transfer, forwarding, TTY, and unattended execution are unavailable.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      connectionId: { type: 'string', format: 'uuid' },
+      command: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+        pattern: '^(?!-)[A-Za-z0-9_./+:-]+$',
+      },
+      args: {
+        type: 'array',
+        maxItems: 32,
+        items: { type: 'string', maxLength: 1_024 },
+      },
+      workingDirectory: { type: 'string', minLength: 1, maxLength: 1_024, pattern: '^/' },
+      timeoutSeconds: { type: 'integer', minimum: 5, maximum: 120 },
+    },
+    required: ['connectionId', 'command'],
+    additionalProperties: false,
+  },
+} as const;
+
 type NoteSource = Readonly<{
   noteId: string;
   title: string;
@@ -125,6 +182,15 @@ export interface ProjectAgentVault {
     requestedCharacters?: number,
   ): Promise<AgentVaultNoteChunk>;
 }
+
+export interface ProjectAgentSsh {
+  listConnections(): Promise<readonly SshConnectionProfile[]>;
+  runAgentCommand(input: SshAgentCommand, signal?: AbortSignal): Promise<SshCommandResult>;
+  cancelSession(projectId: string, sessionId: string): number;
+  cancelProject(projectId: string): number;
+}
+
+const knownSshErrors = new Set<string>(SSH_IPC_ERROR_CODES);
 
 function sha256(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -174,6 +240,7 @@ function latestObjective(
 
 export class ProjectAgentToolSession {
   readonly dynamicTools: readonly CodexDynamicToolSpec[];
+  readonly dynamicToolTimeouts: readonly CodexDynamicToolTimeoutOverride[];
   readonly handler: CodexDynamicToolHandler;
   readonly catalogSha256: string;
   readonly localNotesAvailable: boolean;
@@ -184,13 +251,18 @@ export class ProjectAgentToolSession {
   private sourceAppendixFinalization: Promise<string> | null = null;
   private transportRevoker: (() => void) | null = null;
   private transportRevoked = false;
+  private readonly sshScopeController = new AbortController();
+  private sshCapabilityRevoked = false;
 
   constructor(
     private readonly dependencies: {
       projectId: string;
+      sessionId?: string;
+      attemptId?: string;
       workspace: WorkspaceService;
       vault: ProjectAgentVault;
       localNotesVault: LocalNotesVaultGrant | null;
+      ssh?: ProjectAgentSsh;
     },
   ) {
     this.localNotesAvailable = Boolean(
@@ -198,15 +270,28 @@ export class ProjectAgentToolSession {
       dependencies.vault.matchesGrant(dependencies.localNotesVault.id),
     );
     const tools = this.localNotesAvailable
-      ? [WORKSPACE_TOOL, LIST_NOTES_TOOL, READ_NOTE_TOOL]
-      : [WORKSPACE_TOOL];
+      ? [
+          WORKSPACE_TOOL,
+          LIST_NOTES_TOOL,
+          READ_NOTE_TOOL,
+          LIST_SSH_CONNECTIONS_TOOL,
+          RUN_SSH_COMMAND_TOOL,
+        ]
+      : [WORKSPACE_TOOL, LIST_SSH_CONNECTIONS_TOOL, RUN_SSH_COMMAND_TOOL];
     this.dynamicTools = [
       {
         type: 'namespace',
         name: PROJECT_TOOL_NAMESPACE,
         description:
-          'Read-only, project-bound GOSU capabilities. They cannot access another project, secrets, the shell, arbitrary files, or the network.',
+          'Project-bound GOSU capabilities plus globally registered local SSH aliases. Project and session identity are injected by the Main process. SSH execution always requires a fresh user Allow once decision and never exposes credentials or a local shell.',
         tools,
+      },
+    ];
+    this.dynamicToolTimeouts = [
+      {
+        namespace: PROJECT_TOOL_NAMESPACE,
+        tool: RUN_SSH_COMMAND_TOOL.name,
+        timeoutMs: SSH_DYNAMIC_TOOL_TIMEOUT_MS,
       },
     ];
     this.catalogSha256 = sha256(JSON.stringify(this.dynamicTools));
@@ -224,6 +309,15 @@ export class ProjectAgentToolSession {
     if (this.transportRevoker) throw new Error('agent_tool_transport_already_bound');
     if (this.sourceAppendixFinalization) throw new Error('agent_tool_sources_already_finalizing');
     this.transportRevoker = revoker;
+  }
+
+  revokeSshCapability() {
+    if (this.sshCapabilityRevoked) return;
+    this.sshCapabilityRevoked = true;
+    this.sshScopeController.abort();
+    if (this.dependencies.ssh && this.dependencies.sessionId) {
+      this.dependencies.ssh.cancelSession(this.dependencies.projectId, this.dependencies.sessionId);
+    }
   }
 
   private buildSourceAppendix() {
@@ -250,6 +344,7 @@ export class ProjectAgentToolSession {
       if (timer) clearTimeout(timer);
     }
     this.revokeTransport();
+    this.revokeSshCapability();
     await Promise.resolve();
     this.sourcesSealed = true;
     for (const pending of [...this.pendingNoteCalls]) {
@@ -328,11 +423,23 @@ export class ProjectAgentToolSession {
     delivery: CodexDynamicToolDelivery,
   ): Promise<CodexDynamicToolResult> {
     if (call.namespace !== PROJECT_TOOL_NAMESPACE) return failure('tool_not_allowed');
+    if (
+      this.sshCapabilityRevoked &&
+      (call.tool === LIST_SSH_CONNECTIONS_TOOL.name || call.tool === RUN_SSH_COMMAND_TOOL.name)
+    ) {
+      return failure('ssh_cancelled');
+    }
     const pendingNoteCall =
       call.tool === READ_NOTE_TOOL.name ? this.beginPendingNoteCall(delivery) : null;
     try {
       await this.requireActiveProject();
       if (call.tool === WORKSPACE_TOOL.name) return await this.readWorkspace(call.arguments);
+      if (call.tool === LIST_SSH_CONNECTIONS_TOOL.name) {
+        return await this.listSshConnections(call.arguments);
+      }
+      if (call.tool === RUN_SSH_COMMAND_TOOL.name) {
+        return await this.runSshCommand(call, delivery.abortSignal);
+      }
       if (!this.localNotesAvailable || !this.dependencies.localNotesVault) {
         return failure('local_notes_not_authorized');
       }
@@ -347,17 +454,18 @@ export class ProjectAgentToolSession {
     } catch (error) {
       const code = error instanceof Error ? error.message : 'tool_failed';
       return failure(
-        [
-          'project_not_found',
-          'project_archived',
-          'project_trashed',
-          'vault_not_selected',
-          'vault_grant_stale',
-          'vault_note_not_found',
-          'markdown_too_large',
-          'vault_root_changed',
-          'vault_file_changed_during_open',
-        ].includes(code)
+        knownSshErrors.has(code) ||
+          [
+            'project_not_found',
+            'project_archived',
+            'project_trashed',
+            'vault_not_selected',
+            'vault_grant_stale',
+            'vault_note_not_found',
+            'markdown_too_large',
+            'vault_root_changed',
+            'vault_file_changed_during_open',
+          ].includes(code)
           ? code
           : 'tool_failed',
       );
@@ -472,6 +580,42 @@ export class ProjectAgentToolSession {
       boardTruncated = true;
     }
     return jsonResult(createBoardPayload());
+  }
+
+  private async listSshConnections(arguments_: unknown) {
+    const parsed = ListSshConnectionsArgumentsSchema.safeParse(arguments_);
+    if (!parsed.success) return failure('invalid_tool_arguments');
+    if (!this.dependencies.ssh) return jsonResult({ schemaVersion: 1, connections: [] });
+    const connections = await this.dependencies.ssh.listConnections();
+    if (this.sshCapabilityRevoked) return failure('ssh_cancelled');
+    return jsonResult({
+      schemaVersion: 1,
+      connections: connections.map((connection) => ({
+        id: connection.id,
+        label: connection.label,
+      })),
+    });
+  }
+
+  private async runSshCommand(call: CodexDynamicToolCall, toolAbortSignal: AbortSignal) {
+    const parsed = RunSshCommandArgumentsSchema.safeParse(call.arguments);
+    if (!parsed.success) return failure('invalid_tool_arguments');
+    if (!this.dependencies.ssh || !this.dependencies.sessionId || !this.dependencies.attemptId) {
+      return failure('ssh_unavailable');
+    }
+    const result = await this.dependencies.ssh.runAgentCommand(
+      {
+        projectId: this.dependencies.projectId,
+        sessionId: this.dependencies.sessionId,
+        attemptId: this.dependencies.attemptId,
+        turnId: call.turnId,
+        toolCallId: call.callId,
+        ...parsed.data,
+      },
+      AbortSignal.any([this.sshScopeController.signal, toolAbortSignal]),
+    );
+    if (this.sshCapabilityRevoked) return failure('ssh_cancelled');
+    return jsonResult(result);
   }
 
   private async listNotes(arguments_: unknown) {

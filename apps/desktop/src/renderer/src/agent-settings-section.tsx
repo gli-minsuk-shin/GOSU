@@ -385,12 +385,14 @@ export function AgentSettingsSection({
         <div className="agent-safety-boundary">
           <strong>Fixed capability boundary</strong>
           <span>
-            Project-bound read tools only · no shell · no arbitrary files · no network · no
-            subagents
+            Codex sandbox: project-bound reads · no direct shell, files, network, or subagents
           </span>
           <small>
             Board and Objective can be read live. Board changes remain proposals and require Apply.
-            Codex native modes cannot grant themselves more tools or access another project.
+            A separate Main-process SSH broker can run one typed remote command only after Allow
+            once and only from a read-only diagnostics allowlist. Codex native modes cannot grant
+            themselves scripts, mutation tools, broader capabilities, or access another project's
+            data.
           </small>
         </div>
         <div className="form-actions">

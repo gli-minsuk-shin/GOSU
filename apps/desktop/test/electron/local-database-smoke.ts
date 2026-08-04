@@ -13,6 +13,10 @@ import type {
   ProjectChatAttempt,
   ProjectChatMessage,
 } from '../../src/shared/project-chat-contracts';
+import {
+  PROJECT_CHAT_MAX_BRANCH_DEPTH,
+  PROJECT_CHAT_MAX_BRANCH_MESSAGES,
+} from '../../src/shared/project-chat-contracts';
 import type {
   ProjectRecord,
   WorkspaceOperation,
@@ -77,6 +81,9 @@ function verifyLegacyChatMigration(rootUserData: string, fixedTimestamp: string)
       raw.pragma(`key="x'${keyHex}'"`);
       raw.pragma('foreign_keys=OFF');
       raw.transaction(() => {
+        raw
+          .prepare('delete from local_schema_migrations where id=?')
+          .run('project-chat-sessions-v1');
         raw.exec(`
           drop table project_chat_actions;
           drop table project_chat_attempts;
@@ -146,6 +153,14 @@ function verifyLegacyChatMigration(rootUserData: string, fixedTimestamp: string)
     const migratedSnapshot = migrated.snapshot(legacyProjectId);
     invariant(migratedSnapshot.messages.length === 2, 'legacy_chat_messages_were_not_preserved');
     invariant(
+      migratedSnapshot.session?.isDefault === true && migratedSnapshot.sessions?.length === 1,
+      'legacy_chat_default_session_was_not_created_once',
+    );
+    invariant(
+      migrated.snapshot(legacyProjectId).session?.id === migratedSnapshot.session?.id,
+      'legacy_chat_default_session_was_not_idempotent',
+    );
+    invariant(
       migratedSnapshot.messages.every((message) => message.attemptId === undefined),
       'legacy_chat_messages_received_false_attempt_lineage',
     );
@@ -178,6 +193,10 @@ function verifyLegacyChatMigration(rootUserData: string, fixedTimestamp: string)
 
     const reopened = new LocalDatabase();
     reopened.open();
+    invariant(
+      reopened.snapshot(legacyProjectId).session?.id === migratedSnapshot.session?.id,
+      'legacy_chat_default_session_changed_after_restart',
+    );
     const reconciled = reopened.getChatAttempt(legacyProjectId, durableAttemptId);
     invariant(
       reconciled?.status === 'interrupted' &&
@@ -432,12 +451,33 @@ void app.whenReady().then(async () => {
       completedAt: fixedTimestamp,
     };
     database.saveMessage(chatMessage);
+    const defaultChatSession = database.ensureDefaultProjectChatSession(chatProjectId);
+    invariant(
+      database.ensureDefaultProjectChatSession(chatProjectId).id === defaultChatSession.id &&
+        database.listProjectChatSessions(chatProjectId).filter((session) => session.isDefault)
+          .length === 1,
+      'default_chat_session_was_not_idempotent',
+    );
+    invariant(
+      database.renameProjectChatSession(
+        chatProjectId,
+        defaultChatSession.id,
+        'Primary research chat',
+      )?.isDefault === true,
+      'default_chat_session_marker_changed_during_rename',
+    );
+    const independentChatSession = database.createProjectChatSession(chatProjectId);
+    invariant(
+      database.snapshot(chatProjectId, independentChatSession.id).messages.length === 0,
+      'new_root_chat_inherited_default_history',
+    );
 
     const interruptedAttemptId = randomUUID();
     const interruptedUserMessageId = randomUUID();
     const interruptedAttempt: ProjectChatAttempt = {
       id: interruptedAttemptId,
       projectId: chatProjectId,
+      sessionId: defaultChatSession.id,
       userMessageId: interruptedUserMessageId,
       requestedModelId: null,
       reasoningOptionId: null,
@@ -475,6 +515,7 @@ void app.whenReady().then(async () => {
     const completedAttempt: ProjectChatAttempt = {
       id: completedAttemptId,
       projectId: chatProjectId,
+      sessionId: defaultChatSession.id,
       userMessageId: completedUserMessageId,
       requestedModelId: 'fixture-model',
       reasoningOptionId: 'high',
@@ -537,10 +578,11 @@ void app.whenReady().then(async () => {
       status: 'running',
     };
     database.markChatAttemptRunning(completedRunning);
+    const completedAssistantMessageId = randomUUID();
     database.finishChatAttempt(
       { ...completedRunning, status: 'complete' },
       {
-        id: randomUUID(),
+        id: completedAssistantMessageId,
         projectId: chatProjectId,
         role: 'assistant',
         content: 'This attempt completed durably.',
@@ -550,13 +592,109 @@ void app.whenReady().then(async () => {
         completedAt: fixedTimestamp,
       },
     );
+    const sshConnectionId = randomUUID();
+    const sshProfile = {
+      schemaVersion: 1 as const,
+      id: sshConnectionId,
+      label: 'Fixture GPU',
+      hostAlias: 'fixture-gpu',
+      version: 1,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    };
+    invariant(database.createSshConnection(sshProfile), 'ssh_profile_create_failed');
+    invariant(!database.createSshConnection(sshProfile), 'ssh_profile_duplicate_was_accepted');
+    const updatedSshProfile = {
+      ...sshProfile,
+      label: 'Fixture GPU 2',
+      hostAlias: 'fixture-gpu-2',
+      version: 2,
+    };
+    invariant(
+      !database.updateSshConnection({ ...updatedSshProfile, version: 3 }, 2),
+      'ssh_profile_stale_version_was_accepted',
+    );
+    invariant(database.updateSshConnection(updatedSshProfile, 1), 'ssh_profile_update_failed');
     database.close();
 
+    const branchLimitProjectId = randomUUID();
+    const branchLimitSessionId = randomUUID();
+    let branchLimitMessageId = '';
     const keyHex = safeStorage
       .decryptString(readFileSync(join(temporaryUserData, 'local-key.bin')))
       .trim();
     const legacyDatabase = new Database(join(temporaryUserData, 'gosu.db'));
     legacyDatabase.pragma(`key="x'${keyHex}'"`);
+    let defaultMarkerMutationRejected = false;
+    try {
+      legacyDatabase
+        .prepare('update project_chat_sessions set is_default=0 where id=?')
+        .run(defaultChatSession.id);
+    } catch (error) {
+      defaultMarkerMutationRejected =
+        error instanceof Error && error.message.includes('chat_default_session_immutable');
+    }
+    invariant(defaultMarkerMutationRejected, 'default_chat_session_marker_was_mutable');
+    legacyDatabase.transaction(() => {
+      legacyDatabase
+        .prepare(
+          `insert into project_chat_sessions(
+             id,project_id,title,is_default,parent_session_id,branched_from_message_id,
+             created_at,updated_at
+           ) values(?,?,?,1,null,null,?,?)`,
+        )
+        .run(
+          branchLimitSessionId,
+          branchLimitProjectId,
+          'Branch limit fixture',
+          fixedTimestamp,
+          fixedTimestamp,
+        );
+      legacyDatabase.exec(`
+        with digits(value) as (
+          values(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)
+        ), sequence(value) as (
+          select ones.value+10*tens.value+100*hundreds.value+1000*thousands.value+1
+          from digits ones cross join digits tens cross join digits hundreds cross join digits thousands
+          where ones.value+10*tens.value+100*hundreds.value+1000*thousands.value
+                <${PROJECT_CHAT_MAX_BRANCH_MESSAGES + 1}
+        )
+        insert into project_chat_messages(
+          id,project_id,role,content,status,attempt_id,turn_id,model_json,created_at,completed_at
+        )
+        select printf('%08x-0000-4000-8000-%012x',value,value),
+               '${branchLimitProjectId}','assistant','Branch limit message','complete',
+               null,null,null,'${fixedTimestamp}','${fixedTimestamp}'
+        from sequence;
+        with digits(value) as (
+          values(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)
+        ), sequence(value) as (
+          select ones.value+10*tens.value+100*hundreds.value+1000*thousands.value+1
+          from digits ones cross join digits tens cross join digits hundreds cross join digits thousands
+          where ones.value+10*tens.value+100*hundreds.value+1000*thousands.value
+                <${PROJECT_CHAT_MAX_BRANCH_MESSAGES + 1}
+        )
+        insert into project_chat_session_messages(session_id,message_id,ordinal)
+        select '${branchLimitSessionId}',
+               printf('%08x-0000-4000-8000-%012x',value,value),value
+        from sequence;
+      `);
+      branchLimitMessageId = (
+        legacyDatabase
+          .prepare(
+            `select message_id from project_chat_session_messages
+             where session_id=? order by ordinal desc limit 1`,
+          )
+          .get(branchLimitSessionId) as { message_id: string }
+      ).message_id;
+    })();
+    const sshColumns = (
+      legacyDatabase.pragma('table_info(ssh_connections)') as Array<{ name: string }>
+    ).map((column) => column.name);
+    invariant(
+      sshColumns.join(',') === 'id,schema_version,label,host_alias,version,created_at,updated_at',
+      'ssh_profile_table_contains_unexpected_data',
+    );
     const legacyRows = legacyDatabase
       .prepare(
         `select id,scope,operation_json,base_version,created_at,delivered_at
@@ -722,6 +860,52 @@ void app.whenReady().then(async () => {
 
     const reopened = new LocalDatabase();
     reopened.open();
+    let branchMessageLimitRejected = false;
+    try {
+      reopened.branchProjectChatSession({
+        projectId: branchLimitProjectId,
+        sourceSessionId: branchLimitSessionId,
+        branchFromMessageId: branchLimitMessageId,
+      });
+    } catch (error) {
+      branchMessageLimitRejected =
+        error instanceof Error && error.message === 'chat_branch_limit_reached';
+    }
+    invariant(branchMessageLimitRejected, 'chat_branch_message_limit_was_not_enforced');
+    const firstBranchMessageId = '00000001-0000-4000-8000-000000000001';
+    let lineageSourceSessionId: string = branchLimitSessionId;
+    for (let depth = 0; depth < PROJECT_CHAT_MAX_BRANCH_DEPTH; depth += 1) {
+      lineageSourceSessionId = reopened.branchProjectChatSession({
+        projectId: branchLimitProjectId,
+        sourceSessionId: lineageSourceSessionId,
+        branchFromMessageId: firstBranchMessageId,
+      }).id;
+    }
+    let branchDepthLimitRejected = false;
+    try {
+      reopened.branchProjectChatSession({
+        projectId: branchLimitProjectId,
+        sourceSessionId: lineageSourceSessionId,
+        branchFromMessageId: firstBranchMessageId,
+      });
+    } catch (error) {
+      branchDepthLimitRejected =
+        error instanceof Error && error.message === 'chat_branch_limit_reached';
+    }
+    invariant(branchDepthLimitRejected, 'chat_branch_depth_limit_was_not_enforced');
+    const unrelatedRoot = reopened.createProjectChatSession(branchLimitProjectId, 'Unrelated root');
+    let crossSessionBranchRejected = false;
+    try {
+      reopened.branchProjectChatSession({
+        projectId: branchLimitProjectId,
+        sourceSessionId: unrelatedRoot.id,
+        branchFromMessageId: firstBranchMessageId,
+      });
+    } catch (error) {
+      crossSessionBranchRejected =
+        error instanceof Error && error.message === 'chat_branch_message_not_found';
+    }
+    invariant(crossSessionBranchRejected, 'cross_session_chat_branch_was_not_rejected');
     const operationalSnapshot = reopened.loadWorkspaceState();
     invariant(operationalSnapshot?.revision === 8, 'kanban_workspace_restart_restore_failed');
     invariant(
@@ -774,6 +958,50 @@ void app.whenReady().then(async () => {
       'outbox_summary_revision_failed',
     );
     const reopenedChat = reopened.snapshot(chatProjectId);
+    const reopenedSsh = reopened.listSshConnections();
+    invariant(
+      reopenedSsh.length === 1 &&
+        reopenedSsh[0]?.id === sshConnectionId &&
+        reopenedSsh[0].label === 'Fixture GPU 2' &&
+        reopenedSsh[0].hostAlias === 'fixture-gpu-2' &&
+        reopenedSsh[0].version === 2,
+      'ssh_profile_restart_restore_failed',
+    );
+    invariant(
+      reopened.listProjectChatSessions(chatProjectId).length === 2 &&
+        reopened.snapshot(chatProjectId, independentChatSession.id).messages.length === 0,
+      'root_chat_session_isolation_did_not_survive_restart',
+    );
+    const completedBranchSession = reopened.branchProjectChatSession({
+      projectId: chatProjectId,
+      sourceSessionId: defaultChatSession.id,
+      branchFromMessageId: completedAssistantMessageId,
+    });
+    const branchedSnapshot = reopened.snapshot(chatProjectId, completedBranchSession.id);
+    invariant(
+      branchedSnapshot.messages.some((message) => message.id === completedAssistantMessageId) &&
+        !branchedSnapshot.messages.some(
+          (message) => message.attemptId === interruptedAttemptId && message.role === 'assistant',
+        ),
+      'chat_branch_did_not_stop_at_completed_message',
+    );
+    invariant(
+      reopened.getChatAttempt(chatProjectId, independentChatSession.id, completedAttemptId) ===
+        null,
+      'chat_attempt_crossed_root_session_boundary',
+    );
+    let crossProjectBranchRejected = false;
+    try {
+      reopened.branchProjectChatSession({
+        projectId: first.state.projects[0]!.id,
+        sourceSessionId: defaultChatSession.id,
+        branchFromMessageId: completedAssistantMessageId,
+      });
+    } catch (error) {
+      crossProjectBranchRejected =
+        error instanceof Error && error.message === 'chat_session_not_found';
+    }
+    invariant(crossProjectBranchRejected, 'cross_project_chat_branch_was_not_rejected');
     invariant(
       reopenedChat.messages.find((message) => message.id === chatMessageId)?.content ===
         chatMessage.content,
@@ -826,6 +1054,94 @@ void app.whenReady().then(async () => {
     invariant(
       reopened.claimAction(chatProjectId, chatActionId, fixedTimestamp),
       'chat_action_claim_failed',
+    );
+
+    const independentSession = reopened.createProjectChatSession(
+      chatProjectId,
+      'Independent investigation',
+    );
+    invariant(
+      reopened.snapshot(chatProjectId, independentSession.id).messages.length === 0,
+      'new_chat_session_inherited_default_history',
+    );
+    const sessionAttemptId = randomUUID();
+    const sessionUserMessageId = randomUUID();
+    const sessionAssistantMessageId = randomUUID();
+    const sessionAttempt: ProjectChatAttempt = {
+      id: sessionAttemptId,
+      projectId: chatProjectId,
+      sessionId: independentSession.id,
+      userMessageId: sessionUserMessageId,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      status: 'starting',
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    };
+    reopened.beginChatAttempt(sessionAttempt, {
+      id: sessionUserMessageId,
+      projectId: chatProjectId,
+      role: 'user',
+      content: 'Session-only question',
+      status: 'complete',
+      actions: [],
+      createdAt: fixedTimestamp,
+      completedAt: fixedTimestamp,
+    });
+    const sessionRunning: ProjectChatAttempt = {
+      ...sessionAttempt,
+      threadId: 'thread-session-fixture',
+      turnId: 'turn-session-fixture',
+      model: {
+        invocationId: randomUUID(),
+        requestedModelId: null,
+        resolvedModelId: 'fixture-model',
+        catalogVersion: 'fixture-catalog',
+        reasoningOptionId: null,
+      },
+      status: 'running',
+    };
+    reopened.markChatAttemptRunning(sessionRunning);
+    reopened.finishChatAttempt(
+      { ...sessionRunning, status: 'complete' },
+      {
+        id: sessionAssistantMessageId,
+        projectId: chatProjectId,
+        role: 'assistant',
+        content: 'Session-only answer',
+        status: 'complete',
+        actions: [],
+        createdAt: fixedTimestamp,
+        completedAt: fixedTimestamp,
+      },
+    );
+    const branchedSession = reopened.branchProjectChatSession({
+      projectId: chatProjectId,
+      sourceSessionId: independentSession.id,
+      branchFromMessageId: sessionAssistantMessageId,
+    });
+    invariant(
+      reopened.snapshot(chatProjectId, branchedSession.id).messages.length === 2,
+      'branched_chat_session_did_not_copy_membership_prefix',
+    );
+    const renamedSession = reopened.renameProjectChatSession(
+      chatProjectId,
+      branchedSession.id,
+      'Alternative hypothesis',
+    );
+    invariant(
+      renamedSession?.title === 'Alternative hypothesis' &&
+        renamedSession.id === branchedSession.id,
+      'chat_session_rename_failed',
+    );
+    invariant(
+      reopened
+        .snapshot(chatProjectId)
+        .messages.every(
+          (message) =>
+            message.id !== sessionUserMessageId && message.id !== sessionAssistantMessageId,
+        ),
+      'independent_chat_session_leaked_into_default_history',
     );
 
     const duplicate = fixture(9, operationId, fixedTimestamp);

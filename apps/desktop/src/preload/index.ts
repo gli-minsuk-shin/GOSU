@@ -19,15 +19,32 @@ import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import {
   ProjectChatEventSchema,
   type ApplyProjectChatActionInput,
+  type BranchProjectChatSessionInput,
+  type CreateProjectChatSessionInput,
   type ProjectChatAction,
   type ProjectChatEvent,
   type ProjectChatProfile,
+  type ProjectChatSession,
+  type RenameProjectChatSessionInput,
   type ProjectChatSnapshot,
   type ProjectChatTurnReceipt,
   type SendProjectChatMessageInput,
   type UpdateProjectChatProfileInput,
 } from '../shared/project-chat-contracts';
 import { unwrapProjectChatIpcResult } from '../shared/project-chat-ipc-result';
+import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
+import {
+  SshEventSchema,
+  type CancelSshScopeInput,
+  type CreateSshConnectionInput,
+  type RemoveSshConnectionInput,
+  type ResolveSshApprovalInput,
+  type SshConnectionProfile,
+  type SshConnectionTestResult,
+  type SshEvent,
+  type UpdateSshConnectionInput,
+} from '../shared/ssh-contracts';
+import { unwrapSshIpcResult } from '../shared/ssh-ipc-result';
 import type {
   ReadVaultAttachmentInput,
   VaultAttachment,
@@ -78,6 +95,16 @@ async function invokeGitWorkspace<T>(channel: string, input: unknown): Promise<T
   return unwrapGitWorkspaceIpcResult<T>(result);
 }
 
+async function invokeSsh<T>(channel: string, input?: unknown): Promise<T> {
+  const result = await ipcRenderer
+    .invoke(channel, ...(input === undefined ? [] : [input]))
+    .catch(() => ({
+      ok: false,
+      error: { code: 'ssh_unavailable' },
+    }));
+  return unwrapSshIpcResult<T>(result);
+}
+
 const openSettingsListeners = new Set<() => void>();
 let pendingOpenSettings = false;
 
@@ -118,14 +145,35 @@ const api = {
     logout: () => ipcRenderer.invoke('gosu:codex:logout'),
   },
   projectChat: {
-    snapshot: (projectId: string) =>
-      invokeProjectChat<ProjectChatSnapshot>(PROJECT_CHAT_IPC_CHANNELS.snapshot, { projectId }),
+    snapshot: (projectId: string, sessionId?: string) =>
+      invokeProjectChat<ProjectChatSnapshot>(PROJECT_CHAT_IPC_CHANNELS.snapshot, {
+        projectId,
+        ...(sessionId ? { sessionId } : {}),
+      }),
+    listSessions: (projectId: string) =>
+      invokeProjectChat<ProjectChatSession[]>(PROJECT_CHAT_IPC_CHANNELS.listSessions, {
+        projectId,
+      }),
+    createSession: (input: CreateProjectChatSessionInput) =>
+      invokeProjectChat<ProjectChatSession>(PROJECT_CHAT_IPC_CHANNELS.createSession, input),
+    branchSession: (input: BranchProjectChatSessionInput) =>
+      invokeProjectChat<ProjectChatSession>(PROJECT_CHAT_IPC_CHANNELS.branchSession, input),
+    renameSession: (input: RenameProjectChatSessionInput) =>
+      invokeProjectChat<ProjectChatSession>(PROJECT_CHAT_IPC_CHANNELS.renameSession, input),
     updateProfile: (input: UpdateProjectChatProfileInput) =>
       invokeProjectChat<ProjectChatProfile>(PROJECT_CHAT_IPC_CHANNELS.updateProfile, input),
     send: (input: SendProjectChatMessageInput) =>
       invokeProjectChat<ProjectChatTurnReceipt>(PROJECT_CHAT_IPC_CHANNELS.send, input),
-    cancel: (projectId: string) =>
-      invokeProjectChat<{ accepted: true }>(PROJECT_CHAT_IPC_CHANNELS.cancel, { projectId }),
+    cancel: (projectId: string, sessionId?: string) =>
+      invokeProjectChat<{ accepted: true }>(PROJECT_CHAT_IPC_CHANNELS.cancel, {
+        projectId,
+        ...(sessionId ? { sessionId } : {}),
+      }),
+    revokeSsh: (projectId: string, sessionId?: string) =>
+      invokeProjectChat<{ revoked: true }>(PROJECT_CHAT_IPC_CHANNELS.revokeSsh, {
+        projectId,
+        ...(sessionId ? { sessionId } : {}),
+      }),
     applyAction: (input: ApplyProjectChatActionInput) =>
       invokeProjectChat<ProjectChatAction>(PROJECT_CHAT_IPC_CHANNELS.applyAction, input),
     onEvent: (listener: (event: ProjectChatEvent) => void) => {
@@ -171,6 +219,33 @@ const api = {
       invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.push, input),
     reveal: (projectId: string) =>
       invokeGitWorkspace<{ revealed: true }>(GIT_WORKSPACE_IPC_CHANNELS.reveal, { projectId }),
+  },
+  ssh: {
+    listConnections: () =>
+      invokeSsh<readonly SshConnectionProfile[]>(SSH_IPC_CHANNELS.listConnections),
+    createConnection: (input: CreateSshConnectionInput) =>
+      invokeSsh<SshConnectionProfile>(SSH_IPC_CHANNELS.createConnection, input),
+    updateConnection: (input: UpdateSshConnectionInput) =>
+      invokeSsh<SshConnectionProfile>(SSH_IPC_CHANNELS.updateConnection, input),
+    removeConnection: (input: RemoveSshConnectionInput) =>
+      invokeSsh<{ removed: true }>(SSH_IPC_CHANNELS.removeConnection, input),
+    testConnection: (connectionId: string) =>
+      invokeSsh<SshConnectionTestResult>(SSH_IPC_CHANNELS.testConnection, { connectionId }),
+    resolveApproval: (input: ResolveSshApprovalInput) =>
+      invokeSsh<{ outcome: 'allowed' | 'denied' }>(SSH_IPC_CHANNELS.resolveApproval, input),
+    cancelScope: (input: CancelSshScopeInput) =>
+      invokeSsh<{ cancelled: number }>(SSH_IPC_CHANNELS.cancelScope, input),
+    onEvent: (listener: (event: SshEvent) => void) => {
+      if (typeof listener !== 'function') throw new Error('invalid_ssh_event_listener');
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const parsed = SshEventSchema.safeParse(value);
+        if (parsed.success) listener(parsed.data);
+      };
+      ipcRenderer.on(SSH_IPC_CHANNELS.event, handler);
+      return () => {
+        ipcRenderer.removeListener(SSH_IPC_CHANNELS.event, handler);
+      };
+    },
   },
   vault: {
     current: () => ipcRenderer.invoke('gosu:vault:current') as Promise<VaultSelection | null>,

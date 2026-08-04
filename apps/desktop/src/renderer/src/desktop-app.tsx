@@ -7,10 +7,19 @@ import type {
   ProjectChatAction,
   ProjectChatEvent,
   ProjectChatProfile,
+  ProjectChatSession,
   ProjectChatSnapshot,
   UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
+import type {
+  CreateSshConnectionInput,
+  RemoveSshConnectionInput,
+  SshApprovalRequest,
+  SshConnectionProfile,
+  SshEvent,
+  UpdateSshConnectionInput,
+} from '../../shared/ssh-contracts';
 import type {
   CreateProjectInput,
   ProjectRecord,
@@ -35,6 +44,12 @@ import {
   shouldHydrateProjectChat,
 } from './project-chat-load-guard';
 import { ProjectChatView, resolveEffectiveCodexModel } from './project-chat-view';
+import {
+  activeSessionIdsForProject,
+  projectChatSessionKey,
+  resolveProjectChatSessionId,
+  VolatileProjectChatDrafts,
+} from './project-chat-session-state';
 import { RepositoryView } from './repository-view';
 import {
   archivedProjects as archivedPortfolioProjects,
@@ -56,6 +71,7 @@ import {
   type ProjectWorkspaceTabId,
 } from './project-sidebar';
 import { SettingsView, type SettingsCategory } from './settings-view';
+import { SshApprovalCenter } from './ssh-approval-center';
 import { Connection, describeError } from './ui-primitives';
 import {
   applyUserPreferences,
@@ -89,6 +105,10 @@ function createProjectCommand(
 
 function isCodexUnavailableError(error: unknown) {
   return error instanceof Error && error.message.includes('codex_unavailable');
+}
+
+function hasErrorCode(error: unknown, code: string) {
+  return error instanceof Error && error.message.includes(code);
 }
 
 function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabId {
@@ -129,11 +149,32 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [noteLoading, setNoteLoading] = useState(false);
   const [apiKeyMode, setApiKeyMode] = useState(false);
   const [apiKey, setApiKey] = useState('');
-  const [chatSnapshots, setChatSnapshots] = useState<Record<string, ProjectChatSnapshot>>({});
-  const [chatLoadingProjectIds, setChatLoadingProjectIds] = useState<ReadonlySet<string>>(
+  const [sshConnections, setSshConnections] = useState<readonly SshConnectionProfile[]>([]);
+  const [sshConnectionBusy, setSshConnectionBusy] = useState<string | null>(null);
+  const [sshConnectionState, setSshConnectionState] = useState<
+    'checking' | 'ready' | 'unavailable'
+  >('checking');
+  const [sshTestStatus, setSshTestStatus] = useState<Record<string, string>>({});
+  const [sshApprovals, setSshApprovals] = useState<readonly SshApprovalRequest[]>([]);
+  const [sshApprovalBusyIds, setSshApprovalBusyIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  const [chatStartingProjectId, setChatStartingProjectId] = useState<string | null>(null);
+  const [chatSnapshots, setChatSnapshots] = useState<Record<string, ProjectChatSnapshot>>({});
+  const [projectChatSessions, setProjectChatSessions] = useState<
+    Record<string, readonly ProjectChatSession[]>
+  >({});
+  const [activeChatSessionIds, setActiveChatSessionIds] = useState<Record<string, string>>({});
+  const [chatSessionMutation, setChatSessionMutation] = useState<{
+    projectId: string;
+    kind: 'create' | 'branch' | 'rename';
+    messageId?: string;
+  } | null>(null);
+  const [chatLoadingSessionKeys, setChatLoadingSessionKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [chatStartingSessionKeys, setChatStartingSessionKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [chatInFlight, setChatInFlight] = useState<Record<string, boolean>>({});
   const [applyingChatActionId, setApplyingChatActionId] = useState<string | null>(null);
   const [preferences, setPreferences] = useState(initialPreferences);
@@ -141,6 +182,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const codexBootstrapStarted = useRef(false);
   const vaultSelectionGeneration = useRef(0);
   const projectNavigationRef = useRef(projectNavigation);
+  const activeChatSessionIdsRef = useRef(activeChatSessionIds);
+  const projectChatSessionsRef = useRef(projectChatSessions);
+  const chatDraftsRef = useRef(new VolatileProjectChatDrafts());
+  const visibleChatSshScopeRef = useRef<{ projectId: string; sessionId: string } | null>(null);
 
   const activeProjects = useMemo(() => visibleProjects(snapshot?.projects ?? []), [snapshot]);
   const archivedProjects = useMemo(
@@ -160,14 +205,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     [activeProjectId, snapshot],
   );
   const chatBusyProjectIds = useMemo(() => {
-    const busyProjects = new Set(
-      Object.entries(chatInFlight)
-        .filter(([, inFlight]) => inFlight)
-        .map(([projectId]) => projectId),
-    );
-    if (chatStartingProjectId) busyProjects.add(chatStartingProjectId);
+    const busyProjects = new Set<string>();
+    for (const project of snapshot?.projects ?? []) {
+      const sessionKeyPrefix = projectChatSessionKey(project.id, '');
+      if (
+        Object.entries(chatInFlight).some(
+          ([key, inFlight]) => inFlight && key.startsWith(sessionKeyPrefix),
+        ) ||
+        [...chatStartingSessionKeys].some((key) => key.startsWith(sessionKeyPrefix))
+      ) {
+        busyProjects.add(project.id);
+      }
+    }
     return busyProjects;
-  }, [chatInFlight, chatStartingProjectId]);
+  }, [chatInFlight, chatStartingSessionKeys, snapshot?.projects]);
 
   const updateProjectNavigation = (next: ProjectNavigationState) => {
     projectNavigationRef.current = next;
@@ -178,6 +229,14 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     projectNavigationRef.current = projectNavigation;
     saveProjectNavigationState(window.localStorage, projectNavigation);
   }, [projectNavigation]);
+
+  useEffect(() => {
+    activeChatSessionIdsRef.current = activeChatSessionIds;
+  }, [activeChatSessionIds]);
+
+  useEffect(() => {
+    projectChatSessionsRef.current = projectChatSessions;
+  }, [projectChatSessions]);
 
   const loadWorkspace = async () => {
     const nextSnapshot = await window.gosu.workspace.snapshot();
@@ -203,24 +262,98 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     return nextSnapshot;
   };
 
-  const loadProjectChat = async (projectId: string) => {
+  const updateProjectChatSessions = (
+    projectId: string,
+    sessions: readonly ProjectChatSession[],
+  ) => {
+    projectChatSessionsRef.current = {
+      ...projectChatSessionsRef.current,
+      [projectId]: sessions,
+    };
+    setProjectChatSessions(projectChatSessionsRef.current);
+  };
+
+  const activateChatSession = (projectId: string, sessionId: string) => {
+    activeChatSessionIdsRef.current = {
+      ...activeChatSessionIdsRef.current,
+      [projectId]: sessionId,
+    };
+    setActiveChatSessionIds(activeChatSessionIdsRef.current);
+  };
+
+  const projectChatCatalogLoadKey = (projectId: string) => `sessions:${projectId}`;
+
+  const loadProjectChatSessions = async (projectId: string) => {
+    const guardKey = projectChatCatalogLoadKey(projectId);
+    const loadToken = chatLoadGuard.current.begin(guardKey);
+    const sessions = await window.gosu.projectChat.listSessions(projectId);
+    if (!chatLoadGuard.current.canApply(loadToken)) {
+      return projectChatSessionsRef.current[projectId] ?? sessions;
+    }
+    updateProjectChatSessions(projectId, sessions);
+    return sessions;
+  };
+
+  const loadProjectChat = async (projectId: string, requestedSessionId?: string) => {
     if (!projectId) return null;
-    const loadToken = chatLoadGuard.current.begin(projectId);
-    setChatLoadingProjectIds((current) => markProjectChatLoading(current, projectId));
+    let sessions = projectChatSessionsRef.current[projectId] ?? [];
+    if (
+      sessions.length === 0 ||
+      (requestedSessionId !== undefined &&
+        !sessions.some((session) => session.id === requestedSessionId))
+    ) {
+      sessions = await loadProjectChatSessions(projectId);
+    }
+    const sessionId =
+      requestedSessionId ??
+      resolveProjectChatSessionId(sessions, activeChatSessionIdsRef.current[projectId]);
+    if (!sessionId) return null;
+    if (
+      activeChatSessionIdsRef.current[projectId] === undefined ||
+      (requestedSessionId === undefined && activeChatSessionIdsRef.current[projectId] !== sessionId)
+    ) {
+      activateChatSession(projectId, sessionId);
+    }
+    const sessionKey = projectChatSessionKey(projectId, sessionId);
+    const loadToken = chatLoadGuard.current.begin(sessionKey);
+    setChatLoadingSessionKeys((current) => markProjectChatLoading(current, sessionKey));
     try {
-      const next = await window.gosu.projectChat.snapshot(projectId);
+      const next = await window.gosu.projectChat.snapshot(projectId, sessionId);
       if (!chatLoadGuard.current.canApply(loadToken)) return null;
+      const resolvedSessionId = next.session?.id ?? sessionId;
+      const resolvedSessionKey = projectChatSessionKey(projectId, resolvedSessionId);
       setChatSnapshots((current) => ({
         ...current,
-        [projectId]: mergeProjectChatSnapshot(current[projectId], next),
+        [resolvedSessionKey]: mergeProjectChatSnapshot(current[resolvedSessionKey], next),
       }));
-      setChatInFlight((current) => ({ ...current, [projectId]: Boolean(next.activeTurnId) }));
+      setChatInFlight((current) => ({
+        ...current,
+        [resolvedSessionKey]: Boolean(next.activeTurnId),
+      }));
       return next;
     } finally {
       if (chatLoadGuard.current.isLatestRequest(loadToken)) {
-        setChatLoadingProjectIds((current) => clearProjectChatLoading(current, projectId));
+        setChatLoadingSessionKeys((current) => clearProjectChatLoading(current, sessionKey));
       }
     }
+  };
+
+  const selectedProjectChatSessionId = (projectId: string) =>
+    resolveProjectChatSessionId(
+      projectChatSessions[projectId] ?? [],
+      activeChatSessionIds[projectId],
+    );
+
+  const selectedProjectChatSnapshot = (projectId: string) => {
+    const sessionId = selectedProjectChatSessionId(projectId);
+    return sessionId ? chatSnapshots[projectChatSessionKey(projectId, sessionId)] : undefined;
+  };
+
+  const loadSshConnections = async () => {
+    const connections = await window.gosu.ssh.listConnections();
+    setSshConnections(connections);
+    setSshConnectionState('ready');
+    return connections;
   };
 
   useEffect(() => {
@@ -252,6 +385,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           current === 'Catalog not loaded' ? 'Runtime readiness check failed' : current,
         ),
       );
+
+    void loadSshConnections().catch(() => {
+      setSshConnections([]);
+      setSshConnectionState('unavailable');
+    });
   }, []);
 
   useEffect(
@@ -267,26 +405,28 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   useEffect(
     () =>
       window.gosu.projectChat.onEvent((event: ProjectChatEvent) => {
-        chatLoadGuard.current.observeEvent(event.projectId);
+        const sessionKey = projectChatSessionKey(event.projectId, event.sessionId);
+        chatLoadGuard.current.observeEvent(sessionKey);
         if (event.type === 'turn.started') {
-          setChatInFlight((current) => ({ ...current, [event.projectId]: true }));
+          setChatInFlight((current) => ({ ...current, [sessionKey]: true }));
           return;
         }
         if (event.type === 'turn.completed') {
-          setChatInFlight((current) => ({ ...current, [event.projectId]: false }));
-          void loadProjectChat(event.projectId).catch((error: unknown) =>
-            setWorkspaceError(describeError(error)),
-          );
+          setChatInFlight((current) => ({ ...current, [sessionKey]: false }));
+          void Promise.all([
+            loadProjectChat(event.projectId, event.sessionId),
+            loadProjectChatSessions(event.projectId),
+          ]).catch((error: unknown) => setWorkspaceError(describeError(error)));
           return;
         }
         setChatSnapshots((current) => {
-          const projectSnapshot = current[event.projectId];
-          if (!projectSnapshot) return current;
+          const sessionSnapshot = current[sessionKey];
+          if (!sessionSnapshot) return current;
           return {
             ...current,
-            [event.projectId]: {
-              ...projectSnapshot,
-              messages: projectSnapshot.messages.map((message) => ({
+            [sessionKey]: {
+              ...sessionSnapshot,
+              messages: sessionSnapshot.messages.map((message) => ({
                 ...message,
                 actions: message.actions.map((action) =>
                   action.id === event.action.id ? event.action : action,
@@ -298,6 +438,27 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         if (event.workspaceChanged) {
           void loadWorkspace().catch((error: unknown) => setWorkspaceError(describeError(error)));
         }
+      }),
+    [],
+  );
+
+  useEffect(
+    () =>
+      window.gosu.ssh.onEvent((event: SshEvent) => {
+        if (event.type === 'approval.requested') {
+          setSshApprovals((current) => [
+            ...current.filter((request) => request.id !== event.request.id),
+            event.request,
+          ]);
+          return;
+        }
+        setSshApprovals((current) => current.filter((request) => request.id !== event.approvalId));
+        setSshApprovalBusyIds((current) => {
+          if (!current.has(event.approvalId)) return current;
+          const next = new Set(current);
+          next.delete(event.approvalId);
+          return next;
+        });
       }),
     [],
   );
@@ -314,7 +475,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       activeSurface !== 'settings' ||
       settingsCategory !== 'agent' ||
       !activeProjectId ||
-      chatSnapshots[activeProjectId]?.profile
+      selectedProjectChatSnapshot(activeProjectId)?.profile
     ) {
       return;
     }
@@ -427,6 +588,112 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     }
   };
 
+  const runSshConnectionAction = async (
+    key: string,
+    action: () => Promise<unknown>,
+    successMessage: string,
+  ) => {
+    if (sshConnectionBusy !== null) return false;
+    setSshConnectionBusy(key);
+    setWorkspaceError(null);
+    try {
+      await action();
+      await loadSshConnections();
+      setAnnouncement(successMessage);
+      return true;
+    } catch (error) {
+      if (hasErrorCode(error, 'ssh_unavailable')) setSshConnectionState('unavailable');
+      setWorkspaceError(describeError(error));
+      return false;
+    } finally {
+      setSshConnectionBusy(null);
+    }
+  };
+
+  const testSshConnection = async (connectionId: string) => {
+    if (sshConnectionBusy !== null) return false;
+    setSshConnectionBusy(`test:${connectionId}`);
+    setWorkspaceError(null);
+    setSshTestStatus((current) => ({ ...current, [connectionId]: 'Testing…' }));
+    try {
+      const result = await window.gosu.ssh.testConnection(connectionId);
+      const status = result.reachable
+        ? 'Ready'
+        : result.code === 'unknown_host_key'
+          ? 'Host key not trusted'
+          : result.code === 'authentication_failed'
+            ? 'Authentication failed'
+            : result.code === 'timed_out'
+              ? 'Connection timed out'
+              : 'Connection failed';
+      setSshTestStatus((current) => ({ ...current, [connectionId]: status }));
+      setSshConnectionState('ready');
+      return result.reachable;
+    } catch (error) {
+      setSshTestStatus((current) => ({ ...current, [connectionId]: 'Test unavailable' }));
+      setWorkspaceError(describeError(error));
+      setSshConnectionState('unavailable');
+      return false;
+    } finally {
+      setSshConnectionBusy(null);
+    }
+  };
+
+  const resolveSshApproval = async (approvalId: string, decision: 'allow_once' | 'deny') => {
+    if (sshApprovalBusyIds.has(approvalId)) return;
+    setSshApprovalBusyIds((current) => new Set(current).add(approvalId));
+    setWorkspaceError(null);
+    try {
+      await window.gosu.ssh.resolveApproval({ approvalId, decision });
+      setSshApprovals((current) => current.filter((request) => request.id !== approvalId));
+    } catch (error) {
+      const description = describeError(error);
+      if (
+        hasErrorCode(error, 'ssh_approval_not_found') ||
+        hasErrorCode(error, 'ssh_approval_expired') ||
+        hasErrorCode(error, 'ssh_approval_cancelled')
+      ) {
+        setSshApprovals((current) => current.filter((request) => request.id !== approvalId));
+      }
+      setWorkspaceError(description);
+    } finally {
+      setSshApprovalBusyIds((current) => {
+        const next = new Set(current);
+        next.delete(approvalId);
+        return next;
+      });
+    }
+  };
+
+  useEffect(() => {
+    const selectedSessionId = activeProjectId ? activeChatSessionIds[activeProjectId] : undefined;
+    const currentScope =
+      activeSurface === 'workspace' && activeTab === 'chat' && activeProjectId && selectedSessionId
+        ? { projectId: activeProjectId, sessionId: selectedSessionId }
+        : null;
+    const previousScope = visibleChatSshScopeRef.current;
+    if (
+      previousScope &&
+      (previousScope.projectId !== currentScope?.projectId ||
+        previousScope.sessionId !== currentScope?.sessionId)
+    ) {
+      setSshApprovals((current) =>
+        current.filter(
+          (request) =>
+            request.projectId !== previousScope.projectId ||
+            request.sessionId !== previousScope.sessionId,
+        ),
+      );
+      void window.gosu.ssh
+        .cancelScope(previousScope)
+        .catch(() => setWorkspaceError('Could not cancel the previous SSH activity safely.'));
+      void window.gosu.projectChat
+        .revokeSsh(previousScope.projectId, previousScope.sessionId)
+        .catch(() => setWorkspaceError('Could not revoke the previous SSH capability safely.'));
+    }
+    visibleChatSshScopeRef.current = currentScope;
+  }, [activeChatSessionIds, activeProjectId, activeSurface, activeTab]);
+
   const pendingCount = pendingSummary?.count ?? 0;
 
   const updatePreferences = (next: UserPreferences) => {
@@ -445,10 +712,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setWorkspaceError(null);
     try {
       const profile = await window.gosu.projectChat.updateProfile(input);
-      chatLoadGuard.current.invalidateProject(input.projectId);
+      chatLoadGuard.current.invalidateProject(projectChatCatalogLoadKey(input.projectId));
+      for (const session of projectChatSessionsRef.current[input.projectId] ?? []) {
+        chatLoadGuard.current.invalidateProject(projectChatSessionKey(input.projectId, session.id));
+      }
       setChatSnapshots((current) => {
-        const existing = current[input.projectId];
-        return existing ? { ...current, [input.projectId]: { ...existing, profile } } : current;
+        const updated = { ...current };
+        for (const [key, existing] of Object.entries(current)) {
+          if (existing.projectId === input.projectId) updated[key] = { ...existing, profile };
+        }
+        return updated;
       });
       setAnnouncement(`Saved project agent profile version ${profile.version}.`);
       return true;
@@ -527,6 +800,89 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setShowProjectForm(false);
   };
 
+  const selectChatSession = (projectId: string, sessionId: string) => {
+    activateChatSession(projectId, sessionId);
+    void loadProjectChat(projectId, sessionId).catch((error: unknown) =>
+      setWorkspaceError(describeError(error)),
+    );
+  };
+
+  const createChatSession = async (projectId: string) => {
+    if (chatSessionMutation) return;
+    setChatSessionMutation({ projectId, kind: 'create' });
+    setWorkspaceError(null);
+    try {
+      const session = await window.gosu.projectChat.createSession({ projectId });
+      activateChatSession(projectId, session.id);
+      await loadProjectChat(projectId, session.id);
+      setAnnouncement(`Created ${session.title}.`);
+    } catch (error) {
+      setWorkspaceError(describeError(error));
+    } finally {
+      setChatSessionMutation(null);
+    }
+  };
+
+  const branchChatSession = async (projectId: string, messageId: string) => {
+    const sourceSessionId = activeChatSessionIdsRef.current[projectId];
+    const sourceSessionKey = sourceSessionId
+      ? projectChatSessionKey(projectId, sourceSessionId)
+      : null;
+    if (
+      !sourceSessionId ||
+      !sourceSessionKey ||
+      chatInFlight[sourceSessionKey] ||
+      chatStartingSessionKeys.has(sourceSessionKey) ||
+      chatSessionMutation
+    ) {
+      return;
+    }
+    setChatSessionMutation({ projectId, kind: 'branch', messageId });
+    setWorkspaceError(null);
+    try {
+      const session = await window.gosu.projectChat.branchSession({
+        projectId,
+        sourceSessionId,
+        branchFromMessageId: messageId,
+      });
+      activateChatSession(projectId, session.id);
+      await loadProjectChat(projectId, session.id);
+      setAnnouncement(`Created ${session.title} from the selected message.`);
+    } catch (error) {
+      setWorkspaceError(describeError(error));
+    } finally {
+      setChatSessionMutation(null);
+    }
+  };
+
+  const renameChatSession = async (session: ProjectChatSession) => {
+    if (chatBusyProjectIds.has(session.projectId) || chatSessionMutation) return;
+    const proposed = window.prompt('Rename chat session', session.title)?.trim();
+    if (!proposed || proposed === session.title) return;
+    if (proposed.length > 120) {
+      setWorkspaceError('Chat session names can contain at most 120 characters.');
+      return;
+    }
+    setChatSessionMutation({ projectId: session.projectId, kind: 'rename' });
+    setWorkspaceError(null);
+    try {
+      const renamed = await window.gosu.projectChat.renameSession({
+        projectId: session.projectId,
+        sessionId: session.id,
+        title: proposed,
+      });
+      await Promise.all([
+        loadProjectChat(session.projectId, renamed.id),
+        loadProjectChatSessions(session.projectId),
+      ]);
+      setAnnouncement(`Renamed the chat session to ${renamed.title}.`);
+    } catch (error) {
+      setWorkspaceError(describeError(error));
+    } finally {
+      setChatSessionMutation(null);
+    }
+  };
+
   const hideProject = (projectId: string) => {
     if (chatBusyProjectIds.has(projectId)) {
       setAnnouncement("Stop or wait for this project's active Codex turn before hiding it.");
@@ -559,6 +915,23 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setActiveProjectId((current) => resolveActiveProjectId(snapshot?.projects ?? [], current));
     setAnnouncement('Showing all active projects in this Mac sidebar.');
   };
+
+  const activeProjectSessions = activeProject ? (projectChatSessions[activeProject.id] ?? []) : [];
+  const activeProjectChatSessionId = activeProject
+    ? resolveProjectChatSessionId(activeProjectSessions, activeChatSessionIds[activeProject.id])
+    : null;
+  const activeProjectChatSessionKey =
+    activeProject && activeProjectChatSessionId
+      ? projectChatSessionKey(activeProject.id, activeProjectChatSessionId)
+      : null;
+  const activeProjectChatSnapshot = activeProjectChatSessionKey
+    ? chatSnapshots[activeProjectChatSessionKey]
+    : undefined;
+  const activeChatSessionKeys = new Set(
+    Object.entries(chatInFlight)
+      .filter(([, inFlight]) => inFlight)
+      .map(([key]) => key),
+  );
 
   return (
     <main className="desktop-shell">
@@ -661,6 +1034,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           state={runtime === null ? 'Checking' : runtime.syncApi.ready ? 'Reachable' : 'Offline'}
           ready={Boolean(runtime?.syncApi.ready)}
         />
+        <Connection
+          name="SSH"
+          state={
+            sshConnectionState === 'checking'
+              ? 'Checking'
+              : sshConnectionState === 'unavailable'
+                ? 'Unavailable'
+                : sshConnections.length > 0
+                  ? `${sshConnections.length} registered`
+                  : 'Not configured'
+          }
+          ready={sshConnectionState === 'ready' && sshConnections.length > 0}
+        />
         <Connection name="Runner" state="Not configured" ready={false} />
         <Connection
           name="Obsidian"
@@ -756,11 +1142,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               category={settingsCategory}
               onCategoryChange={setSettingsCategory}
               agentProject={activeProject}
-              agentProfile={activeProject ? chatSnapshots[activeProject.id]?.profile : undefined}
+              agentProfile={activeProjectChatSnapshot?.profile}
               agentProfileLoading={Boolean(
                 activeProject &&
-                chatLoadingProjectIds.has(activeProject.id) &&
-                !chatSnapshots[activeProject.id]?.profile,
+                activeProjectChatSessionKey &&
+                chatLoadingSessionKeys.has(activeProjectChatSessionKey) &&
+                !activeProjectChatSnapshot?.profile,
               )}
               collaborationModes={collaborationModes}
               vault={vault}
@@ -843,18 +1230,22 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
 
             {activeTab === 'chat' && activeProject && (
               <ProjectChatView
-                key={activeProject.id}
+                key={`${activeProject.id}:${activeProjectChatSessionId ?? 'default'}`}
                 project={activeProject}
                 tasks={activeTasks}
-                snapshot={chatSnapshots[activeProject.id] ?? null}
+                snapshot={activeProjectChatSnapshot ?? null}
                 loading={
-                  chatLoadingProjectIds.has(activeProject.id) &&
-                  chatSnapshots[activeProject.id] === undefined
+                  activeProjectChatSessionId === null ||
+                  Boolean(
+                    activeProjectChatSessionKey &&
+                    chatLoadingSessionKeys.has(activeProjectChatSessionKey) &&
+                    activeProjectChatSnapshot === undefined,
+                  )
                 }
-                inFlight={
-                  Boolean(chatInFlight[activeProject.id]) ||
-                  chatStartingProjectId === activeProject.id
-                }
+                inFlight={Boolean(
+                  activeProjectChatSessionKey && chatInFlight[activeProjectChatSessionKey],
+                )}
+                projectBusy={chatBusyProjectIds.has(activeProject.id)}
                 models={models}
                 collaborationModes={collaborationModes}
                 selectedModel={selectedModel}
@@ -862,8 +1253,36 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 applyingActionId={applyingChatActionId}
                 vault={vault}
                 vaultState={vaultState}
+                sessions={activeProjectSessions}
+                selectedSessionId={activeProjectChatSessionId}
+                initialDraft={chatDraftsRef.current.read(
+                  activeProject.id,
+                  activeProjectChatSessionId,
+                )}
+                onDraftChange={(value) =>
+                  chatDraftsRef.current.write(activeProject.id, activeProjectChatSessionId, value)
+                }
+                activeSessionIds={activeSessionIdsForProject(
+                  activeProject.id,
+                  activeChatSessionKeys,
+                  activeProjectSessions,
+                )}
+                creatingSession={
+                  chatSessionMutation?.projectId === activeProject.id &&
+                  chatSessionMutation.kind === 'create'
+                }
+                branchingMessageId={
+                  chatSessionMutation?.projectId === activeProject.id &&
+                  chatSessionMutation.kind === 'branch'
+                    ? (chatSessionMutation.messageId ?? null)
+                    : null
+                }
+                onSelectSession={(sessionId) => selectChatSession(activeProject.id, sessionId)}
+                onCreateSession={() => void createChatSession(activeProject.id)}
+                onRenameSession={(session) => void renameChatSession(session)}
+                onBranchSession={(messageId) => branchChatSession(activeProject.id, messageId)}
                 onSelectedModel={(modelId) => {
-                  const selection = selectCodexModel(modelId);
+                  const selection = selectCodexModel(modelId, selectedReasoning);
                   setSelectedModel(selection.modelId);
                   setSelectedReasoning(selection.reasoningOptionId);
                 }}
@@ -871,10 +1290,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onRefreshModels={() => void refreshModels()}
                 onOpenAgentSettings={openAgentSettings}
                 onSend={async (message, retryOfAttemptId, controls) => {
-                  if (chatStartingProjectId !== null || chatInFlight[activeProject.id])
+                  if (
+                    !activeProjectChatSessionId ||
+                    !activeProjectChatSessionKey ||
+                    chatBusyProjectIds.has(activeProject.id) ||
+                    chatStartingSessionKeys.has(activeProjectChatSessionKey) ||
+                    chatInFlight[activeProjectChatSessionKey]
+                  ) {
                     return false;
-                  const savedLocalNotesGrant =
-                    chatSnapshots[activeProject.id]?.profile?.localNotesVault;
+                  }
+                  const savedLocalNotesGrant = activeProjectChatSnapshot?.profile?.localNotesVault;
                   if (savedLocalNotesGrant && vaultState !== 'ready') {
                     setWorkspaceError(
                       'Local Notes capability status is unavailable. GOSU paused this turn so a hidden saved grant cannot be used. Reopen Local notes and try again.',
@@ -928,18 +1353,23 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     );
                     return false;
                   }
-                  setChatStartingProjectId(activeProject.id);
+                  setChatStartingSessionKeys((current) => {
+                    const next = new Set(current);
+                    next.add(activeProjectChatSessionKey);
+                    return next;
+                  });
                   setWorkspaceError(null);
                   try {
-                    await window.gosu.projectChat.send({
+                    const receipt = await window.gosu.projectChat.send({
                       projectId: activeProject.id,
+                      sessionId: activeProjectChatSessionId,
                       message,
                       requestedModelId: selectedModel,
                       reasoningOptionId: selectedReasoning,
                       ...controls,
                       ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
                     });
-                    await loadProjectChat(activeProject.id);
+                    await loadProjectChat(activeProject.id, receipt.sessionId);
                     setCodexConnectionState('ready');
                     setCodexErrorVisible(false);
                     return true;
@@ -949,29 +1379,38 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       setCodexConnectionState('unavailable');
                       setCodexErrorVisible(true);
                     }
-                    await loadProjectChat(activeProject.id).catch(() => undefined);
+                    await loadProjectChat(activeProject.id, activeProjectChatSessionId).catch(
+                      () => undefined,
+                    );
                     return false;
                   } finally {
-                    setChatStartingProjectId((current) =>
-                      current === activeProject.id ? null : current,
-                    );
+                    setChatStartingSessionKeys((current) => {
+                      const next = new Set(current);
+                      next.delete(activeProjectChatSessionKey);
+                      return next;
+                    });
                   }
                 }}
                 onCancel={() => {
+                  if (!activeProjectChatSessionId) return;
                   void window.gosu.projectChat
-                    .cancel(activeProject.id)
+                    .cancel(activeProject.id, activeProjectChatSessionId)
                     .catch((error: unknown) => setWorkspaceError(describeError(error)));
                 }}
                 onApplyAction={async (action: ProjectChatAction) => {
-                  if (applyingChatActionId !== null) return;
+                  if (applyingChatActionId !== null || !activeProjectChatSessionId) return;
                   setApplyingChatActionId(action.id);
                   setWorkspaceError(null);
                   try {
                     const updated = await window.gosu.projectChat.applyAction({
                       projectId: activeProject.id,
+                      sessionId: activeProjectChatSessionId,
                       actionId: action.id,
                     });
-                    await Promise.all([loadProjectChat(activeProject.id), loadWorkspace()]);
+                    await Promise.all([
+                      loadProjectChat(activeProject.id, activeProjectChatSessionId),
+                      loadWorkspace(),
+                    ]);
                     setAnnouncement(
                       updated.status === 'applied'
                         ? 'Applied the reviewed chat action to the Board.'
@@ -1074,7 +1513,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 apiKeyMode={apiKeyMode}
                 apiKey={apiKey}
                 onSelectedModel={(modelId) => {
-                  const selection = selectCodexModel(modelId);
+                  const selection = selectCodexModel(modelId, selectedReasoning);
                   setSelectedModel(selection.modelId);
                   setSelectedReasoning(selection.reasoningOptionId);
                 }}
@@ -1119,6 +1558,42 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     .catch((error: unknown) => setCodexStatus(describeError(error)))
                     .finally(() => setCodexBusy(false));
                 }}
+                sshConnections={sshConnections}
+                sshBusy={sshConnectionBusy !== null}
+                sshTestStatus={sshTestStatus}
+                onCreateSshConnection={(input: CreateSshConnectionInput) =>
+                  runSshConnectionAction(
+                    'create',
+                    () => window.gosu.ssh.createConnection(input),
+                    `Registered ${input.label} for approved Project Chat commands.`,
+                  )
+                }
+                onUpdateSshConnection={(input: UpdateSshConnectionInput) =>
+                  runSshConnectionAction(
+                    `update:${input.connectionId}`,
+                    () => window.gosu.ssh.updateConnection(input),
+                    `Updated the ${input.label} SSH profile.`,
+                  )
+                }
+                onRemoveSshConnection={(input: RemoveSshConnectionInput) => {
+                  const connection = sshConnections.find(
+                    (candidate) => candidate.id === input.connectionId,
+                  );
+                  if (
+                    !connection ||
+                    !window.confirm(
+                      `Remove “${connection.label}” from GOSU? This does not change your OpenSSH config.`,
+                    )
+                  ) {
+                    return Promise.resolve(false);
+                  }
+                  return runSshConnectionAction(
+                    `remove:${input.connectionId}`,
+                    () => window.gosu.ssh.removeConnection(input),
+                    `Removed ${connection.label} from GOSU.`,
+                  );
+                }}
+                onTestSshConnection={testSshConnection}
               />
             )}
             {activeTab === 'notes' && (
@@ -1128,9 +1603,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 selectedNote={selectedNote}
                 busy={noteLoading}
                 project={activeProject}
-                profile={activeProject ? chatSnapshots[activeProject.id]?.profile : undefined}
+                profile={activeProjectChatSnapshot?.profile}
                 profileLoading={Boolean(
-                  activeProject && chatLoadingProjectIds.has(activeProject.id),
+                  activeProjectChatSessionKey &&
+                  chatLoadingSessionKeys.has(activeProjectChatSessionKey),
                 )}
                 accessBusy={
                   busyAction !== null ||
@@ -1149,7 +1625,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 }}
                 onSetProjectAccess={(grant) => {
                   if (!activeProject) return;
-                  const profile = chatSnapshots[activeProject.id]?.profile;
+                  const profile = activeProjectChatSnapshot?.profile;
                   if (!profile) {
                     setWorkspaceError(
                       'The project agent profile is not available yet. Open AI Agent Settings and try again.',
@@ -1164,6 +1640,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           </>
         )}
       </section>
+      <SshApprovalCenter
+        requests={sshApprovals}
+        busyApprovalIds={sshApprovalBusyIds}
+        describeScope={(request) => {
+          const projectName =
+            snapshot?.projects.find((project) => project.id === request.projectId)?.name ??
+            'Unknown project';
+          const sessionTitle = projectChatSessions[request.projectId]?.find(
+            (session) => session.id === request.sessionId,
+          )?.title;
+          return `${projectName} · ${sessionTitle ?? 'Project chat'}`;
+        }}
+        onResolve={(input) => resolveSshApproval(input.approvalId, input.decision)}
+      />
     </main>
   );
 

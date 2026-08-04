@@ -1,4 +1,11 @@
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
+import type {
+  CreateSshConnectionInput,
+  RemoveSshConnectionInput,
+  SshConnectionProfile,
+  UpdateSshConnectionInput,
+} from '../../shared/ssh-contracts';
+import { SshConnectionsCard } from './ssh-connections-card';
 import { Boundary, CardHead, RuntimeCard } from './ui-primitives';
 
 export type CodexModel = {
@@ -25,6 +32,13 @@ export function ConnectionsView({
   onLoginChatGpt,
   onLoginApiKey,
   onLogout,
+  sshConnections,
+  sshBusy,
+  sshTestStatus,
+  onCreateSshConnection,
+  onUpdateSshConnection,
+  onRemoveSshConnection,
+  onTestSshConnection,
 }: {
   runtime: RuntimeReadiness | null;
   models: readonly CodexModel[];
@@ -41,6 +55,13 @@ export function ConnectionsView({
   onLoginChatGpt: () => void;
   onLoginApiKey: () => void;
   onLogout: () => void;
+  sshConnections: readonly SshConnectionProfile[];
+  sshBusy: boolean;
+  sshTestStatus: Readonly<Record<string, string>>;
+  onCreateSshConnection: (input: CreateSshConnectionInput) => Promise<unknown>;
+  onUpdateSshConnection: (input: UpdateSshConnectionInput) => Promise<unknown>;
+  onRemoveSshConnection: (input: RemoveSshConnectionInput) => Promise<unknown>;
+  onTestSshConnection: (connectionId: string) => Promise<unknown>;
 }) {
   return (
     <section className="connection-grid">
@@ -124,6 +145,15 @@ export function ConnectionsView({
           selected model is used by Project chat and every turn records the resolved model locally.
         </div>
       </article>
+      <SshConnectionsCard
+        connections={sshConnections}
+        busy={sshBusy}
+        testStatus={sshTestStatus}
+        onCreate={onCreateSshConnection}
+        onUpdate={onUpdateSshConnection}
+        onRemove={onRemoveSshConnection}
+        onTest={onTestSshConnection}
+      />
       <article className="card">
         <CardHead title="Local-first boundary" detail="Eligibility policy · delivery is off" />
         <div className="boundary-list">

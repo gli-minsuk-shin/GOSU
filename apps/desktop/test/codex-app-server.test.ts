@@ -523,6 +523,55 @@ describe('Codex App Server process boundary', () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it('revalidates explicit model IDs against a fresh catalog immediately before turn start', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const staleCatalog = toModelCatalog(
+      [
+        {
+          id: 'removed-model',
+          model: 'removed-model',
+          displayName: 'Removed model',
+          hidden: false,
+          isDefault: true,
+          supportedReasoningEfforts: [
+            { reasoningEffort: 'future-ultra', description: 'Future ultra reasoning' },
+          ],
+        },
+      ],
+      '2026-08-04T00:00:00.000Z',
+    );
+    (server as unknown as { catalog: unknown }).catalog = staleCatalog;
+    const listModelCatalog = vi.spyOn(server, 'listModelCatalog').mockResolvedValue(
+      toModelCatalog(
+        [
+          {
+            id: 'current-default',
+            model: 'current-default',
+            displayName: 'Current default',
+            hidden: false,
+            isDefault: true,
+          },
+        ],
+        '2026-08-04T00:00:01.000Z',
+      ),
+    );
+    const request = vi.fn();
+    (server as unknown as { request: typeof request }).request = request;
+
+    await expect(
+      server.runTurn({
+        threadId: 'thread-fresh-catalog',
+        prompt: 'Use my explicit selection.',
+        requestedModelId: 'removed-model',
+        reasoningOptionId: 'future-ultra',
+        cwd: '/isolated/project',
+      }),
+    ).rejects.toThrow('selected_model_not_in_catalog');
+    expect(listModelCatalog).toHaveBeenCalledOnce();
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it('fails closed when an explicitly selected native mode or its model disappears', async () => {
     const server = new CodexAppServer();
     vi.spyOn(server, 'start').mockResolvedValue();
@@ -1215,7 +1264,7 @@ describe('Codex App Server process boundary', () => {
     await expect(invalidResultDelivery).resolves.toBe('discarded');
   });
 
-  it('discards a timed-out dynamic tool delivery and ignores its late result', async () => {
+  it('aborts a timed-out dynamic tool and retains capacity until its late handler settles', async () => {
     const dynamicTools: readonly CodexDynamicToolSpec[] = [
       {
         type: 'function',
@@ -1235,6 +1284,7 @@ describe('Codex App Server process boundary', () => {
       request: typeof request;
       process: unknown;
       handleLine: (child: unknown, line: string) => void;
+      dynamicToolRegistrations: Map<string, { inFlight: number; deliveries: Set<unknown> }>;
     };
     internal.request = request;
     let resolveLateResult!: (result: {
@@ -1242,12 +1292,14 @@ describe('Codex App Server process boundary', () => {
       success: boolean;
     }) => void;
     let deliveryOutcome: Promise<'delivered' | 'discarded' | 'uncertain'> | undefined;
+    let handlerAbortSignal: AbortSignal | undefined;
     await server.startThread({
       cwd: '/isolated/project',
       modelId: null,
       dynamicTools,
       dynamicToolHandler: (_call, delivery) => {
         deliveryOutcome = delivery.outcome;
+        handlerAbortSignal = delivery.abortSignal;
         return new Promise((resolve) => {
           resolveLateResult = resolve;
         });
@@ -1283,6 +1335,7 @@ describe('Codex App Server process boundary', () => {
         }),
       );
       await vi.advanceTimersByTimeAsync(10_000);
+      const registration = internal.dynamicToolRegistrations.get('thread-timeout');
       expect(writes).toHaveLength(1);
       expect(JSON.parse(writes[0]!)).toEqual({
         id: 111,
@@ -1291,16 +1344,141 @@ describe('Codex App Server process boundary', () => {
           success: false,
         },
       });
+      expect(handlerAbortSignal?.aborted).toBe(true);
+      expect(registration).toMatchObject({ inFlight: 1 });
+      expect(registration?.deliveries.size).toBe(1);
       await expect(deliveryOutcome).resolves.toBe('discarded');
       resolveLateResult({
         contentItems: [{ type: 'inputText', text: '{"late":true}' }],
         success: true,
       });
       await Promise.resolve();
+      await Promise.resolve();
       expect(writes).toHaveLength(1);
+      expect(registration).toMatchObject({ inFlight: 0 });
+      expect(registration?.deliveries.size).toBe(0);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('applies a bounded timeout override only to its declared dynamic tool', async () => {
+    const dynamicTools: readonly CodexDynamicToolSpec[] = [
+      {
+        type: 'namespace',
+        name: 'gosu_project',
+        description: 'Project tools',
+        tools: [
+          {
+            type: 'function',
+            name: 'run_ssh_command',
+            description: 'Run one approved SSH command',
+            inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+          },
+        ],
+      },
+    ];
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const request = vi.fn(async (method: string) => {
+      if (method === 'thread/start') return { thread: { id: 'thread-long-tool' } };
+      if (method === 'mcpServerStatus/list') return { data: [] };
+      throw new Error('unexpected_request');
+    });
+    const internal = server as unknown as {
+      request: typeof request;
+      process: unknown;
+      handleLine: (child: unknown, line: string) => void;
+    };
+    internal.request = request;
+    await server.startThread({
+      cwd: '/isolated/project',
+      modelId: null,
+      dynamicTools,
+      dynamicToolTimeouts: [
+        {
+          namespace: 'gosu_project',
+          tool: 'run_ssh_command',
+          timeoutMs: 20_000,
+        },
+      ],
+      dynamicToolHandler: () => new Promise(() => undefined),
+    });
+
+    const writes: string[] = [];
+    const child = {
+      stdin: {
+        write(payload: string, callback?: (error?: Error | null) => void) {
+          writes.push(payload);
+          callback?.();
+          return true;
+        },
+      },
+    };
+    internal.process = child;
+    vi.useFakeTimers();
+    try {
+      internal.handleLine(
+        child,
+        JSON.stringify({
+          id: 112,
+          method: 'item/tool/call',
+          params: {
+            threadId: 'thread-long-tool',
+            turnId: 'turn-long-tool',
+            callId: 'call-long-tool',
+            namespace: 'gosu_project',
+            tool: 'run_ssh_command',
+            arguments: {},
+          },
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(writes).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(JSON.parse(writes[0]!)).toEqual({
+        id: 112,
+        result: {
+          contentItems: [{ type: 'inputText', text: 'GOSU dynamic tool failed.' }],
+          success: false,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects timeout overrides for undeclared tools or excessive durations', async () => {
+    const dynamicTools: readonly CodexDynamicToolSpec[] = [
+      {
+        type: 'function',
+        name: 'read_note',
+        description: 'Read one note',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    ];
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const handler: CodexDynamicToolHandler = async () => ({ success: true, contentItems: [] });
+
+    await expect(
+      server.startThread({
+        cwd: '/isolated/project',
+        modelId: null,
+        dynamicTools,
+        dynamicToolHandler: handler,
+        dynamicToolTimeouts: [{ namespace: null, tool: 'missing', timeoutMs: 20_000 }],
+      }),
+    ).rejects.toThrow('codex_dynamic_tool_timeout_override_invalid');
+    await expect(
+      server.startThread({
+        cwd: '/isolated/project',
+        modelId: null,
+        dynamicTools,
+        dynamicToolHandler: handler,
+        dynamicToolTimeouts: [{ namespace: null, tool: 'read_note', timeoutMs: 180_001 }],
+      }),
+    ).rejects.toThrow('codex_dynamic_tool_timeout_override_invalid');
   });
 
   it('rejects a duplicate provider thread ID without replacing or unsubscribing its owner', async () => {

@@ -12,6 +12,8 @@ import {
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
+import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
+import { SshEventSchema } from '../shared/ssh-contracts';
 import { ReadVaultAttachmentInputSchema } from '../shared/vault-contracts';
 import { buildMacApplicationMenuTemplate } from './application-menu';
 import { CodexAppServer } from './codex-app-server';
@@ -21,6 +23,9 @@ import { registerGitWorkspaceIpc } from './git-workspace-ipc';
 import { GitWorkspaceService } from './git-workspace-service';
 import { registerProjectChatIpc } from './project-chat-ipc';
 import { ProjectChatService } from './project-chat-service';
+import { createSshCommandRunner } from './ssh-command-runner';
+import { SshConnectionService } from './ssh-connection-service';
+import { registerSshIpc } from './ssh-ipc';
 import {
   createTrustedRenderer,
   isTrustedRendererUrl,
@@ -49,6 +54,7 @@ const codex = new CodexAppServer({
 });
 const database = new LocalDatabase();
 const vault = new VaultAccess();
+const ssh = new SshConnectionService(database, createSshCommandRunner());
 const workspace = new WorkspaceService({
   load: () => database.loadWorkspaceState(),
   commit: (state, operation) => database.commitWorkspaceState(state, operation),
@@ -64,6 +70,7 @@ const projectChat = new ProjectChatService({
   workspace,
   codex,
   vault,
+  ssh,
   async prepareProjectDirectory(projectId) {
     const directory = join(app.getPath('userData'), 'project-chat-workspaces', projectId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -223,6 +230,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     { reveal: (path) => shell.showItemInFolder(path) },
     reportUnexpectedWorkspaceError,
   );
+  registerSshIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    ssh,
+    reportUnexpectedWorkspaceError,
+  );
 
   handle('gosu:runtime:readiness', async () =>
     buildRuntimeReadiness({
@@ -339,6 +351,15 @@ if (!primaryInstance) {
         }
       }
     });
+    ssh.on('event', (event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send(SSH_IPC_CHANNELS.event, SshEventSchema.parse(event));
+        } catch {
+          console.error('[GOSU] SSH approval renderer event delivery failed.');
+        }
+      }
+    });
     registerIpc(trustedRenderer, localData);
     createWindow(trustedRenderer);
     installApplicationMenu(trustedRenderer);
@@ -356,6 +377,7 @@ if (!primaryInstance) {
     if (process.platform !== 'darwin') app.quit();
   });
   app.on('before-quit', () => {
+    ssh.shutdown();
     codex.stop();
     database.close();
   });
