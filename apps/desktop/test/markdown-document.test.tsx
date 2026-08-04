@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -7,6 +9,7 @@ import {
   extractFrontmatter,
   safeMarkdownUrl,
 } from '../src/renderer/src/markdown-document';
+import { MARKDOWN_MATH_LIMITS } from '../src/renderer/src/markdown-math-policy';
 
 function renderMarkdown(
   source: string,
@@ -69,6 +72,79 @@ const score = 0.81;
     expect(html).toContain('<code class="language-ts">const score = 0.81;');
   });
 
+  it('renders single-dollar inline math and double-dollar display math with local KaTeX', () => {
+    const html = renderMarkdown(`Mass and energy satisfy $E = mc^2$.
+
+$$
+\\mathcal{L}(\\theta) = \\sum_{i=1}^{n} \\ell_i(\\theta)
+$$`);
+
+    expect(html).toContain('class="katex"');
+    expect(html).toContain('class="katex-display"');
+    expect(html).toContain('<math xmlns="http://www.w3.org/1998/Math/MathML"');
+    expect(html).toContain('<annotation encoding="application/x-tex">E = mc^2</annotation>');
+    expect(html).toContain('\\mathcal{L}(\\theta)');
+  });
+
+  it('keeps escaped and unmatched dollars as text and bounds malformed or untrusted TeX', () => {
+    const malformed = renderMarkdown(String.raw`The budget is \$20. Invalid: $\notacommand{$`);
+    const unmatched = renderMarkdown('An unmatched $ remains text.');
+    const untrusted = renderMarkdown(String.raw`$\href{javascript:alert(1)}{unsafe}$`);
+    const untrustedImage = renderMarkdown(
+      String.raw`$\includegraphics{https://evil.example/tracker.png}$`,
+    );
+
+    expect(malformed).toContain('The budget is $20.');
+    expect(malformed).toContain('katex-error');
+    expect(malformed).toContain('\\notacommand');
+    expect(unmatched).toContain('An unmatched $ remains text.');
+    expect(unmatched).not.toContain('class="katex"');
+    expect(untrusted).not.toContain('href="');
+    expect(untrusted).toContain('\\href{javascript:alert(1)}{unsafe}');
+    expect(untrustedImage).not.toContain('<img');
+    expect(untrustedImage).toContain('\\includegraphics');
+  });
+
+  it('does not interpret frontmatter, inline code, or fenced code as math', () => {
+    const html = renderMarkdown(
+      [
+        '---',
+        'budget: $20',
+        '---',
+        'Body math: $x^2$.',
+        '',
+        'Inline code: `$not_math$`.',
+        '',
+        '```text',
+        '$$',
+        'not_math',
+        '$$',
+        '```',
+      ].join('\n'),
+    );
+
+    expect(html.match(/class="katex"/g)).toHaveLength(1);
+    expect(html).toContain('budget: $20');
+    expect(html).toContain('<code>$not_math$</code>');
+    expect(html).toContain('<code class="language-text">$$\nnot_math\n$$');
+  });
+
+  it('keeps formulas beyond the local document rendering budget visible as code', () => {
+    const source = Array.from(
+      { length: MARKDOWN_MATH_LIMITS.maxFormulaCount + 1 },
+      (_, index) => `$x_${index}$`,
+    ).join(' ');
+    const html = renderMarkdown(source);
+
+    expect(html.match(/class="katex"/g)).toHaveLength(MARKDOWN_MATH_LIMITS.maxFormulaCount);
+    expect(html).toContain(`<code>$x_${MARKDOWN_MATH_LIMITS.maxFormulaCount}$</code>`);
+
+    const overlongFormula = 'x'.repeat(MARKDOWN_MATH_LIMITS.maxCharactersPerFormula + 1);
+    const overlongHtml = renderMarkdown(`$${overlongFormula}$`);
+    expect(overlongHtml).not.toContain('class="katex"');
+    expect(overlongHtml).toContain(`<code>$${overlongFormula}$</code>`);
+  });
+
   it('drops raw HTML and does not expose active attributes or remote images', () => {
     const html = renderMarkdown(`# Safe
 
@@ -91,10 +167,23 @@ const score = 0.81;
   });
 
   it('does not resolve repository Markdown images through the Obsidian Vault', () => {
-    const html = renderMarkdown('![private collision](secret.png)', ['secret.png'], false);
+    const html = renderMarkdown(
+      '![private collision](secret.png)\n\nRepository math: $E = mc^2$.',
+      ['secret.png'],
+      false,
+    );
 
     expect(html).toContain('Remote or unsupported image blocked: private collision');
     expect(html).not.toContain('Loading image');
+    expect(html).toContain('class="katex"');
+  });
+
+  it('keeps long display math inside the Markdown reader viewport', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(styles).toMatch(
+      /\.markdown-document \.katex-display\s*\{[^}]*max-width:\s*100%;[^}]*overflow-x:\s*auto;/su,
+    );
   });
 
   it('turns prose wiki-links into note links without rewriting inline or fenced code', () => {

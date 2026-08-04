@@ -2,6 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { DesktopApp } from './desktop-app';
 import { applyUserPreferences, loadUserPreferences } from './user-preferences';
+
+import 'katex/dist/katex.min.css';
 import './styles.css';
 
 const initialPreferences = loadUserPreferences(window.localStorage);

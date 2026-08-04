@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import rehypeKatex, { type Options as RehypeKatexOptions } from 'rehype-katex';
+import rehypeKatex from 'rehype-katex';
 import rehypeSanitize, {
   defaultSchema,
   type Options as RehypeSanitizeOptions,
@@ -8,30 +8,20 @@ import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
-import 'katex/dist/katex.min.css';
+import {
+  MARKDOWN_KATEX_OPTIONS,
+  MARKDOWN_REMARK_MATH_OPTIONS,
+  markdownMathSanitizeAttributes,
+  remarkBoundedMath,
+} from './markdown-math-policy';
 
 const PROJECT_CHAT_SANITIZE_SCHEMA: RehypeSanitizeOptions = {
   ...defaultSchema,
-  attributes: {
-    ...defaultSchema.attributes,
-    // Sanitize the untrusted Markdown tree before KaTeX expands these bounded marker classes
-    // into its own locally generated HTML and MathML tree.
-    div: [...(defaultSchema.attributes?.div ?? []), ['className', 'math', 'math-display']],
-    span: [...(defaultSchema.attributes?.span ?? []), ['className', 'math', 'math-inline']],
-  },
+  attributes: markdownMathSanitizeAttributes(defaultSchema.attributes),
   protocols: {
     ...defaultSchema.protocols,
     href: ['https'],
   },
-};
-
-const PROJECT_CHAT_KATEX_OPTIONS: RehypeKatexOptions = {
-  trust: false,
-  // rehype-katex owns throwOnError: it catches the strict render and retries malformed formulas
-  // with escaped `katex-error` output instead of throwing through the React tree.
-  strict: 'warn',
-  maxExpand: 1_000,
-  maxSize: 20,
 };
 
 const PROJECT_CHAT_MARKDOWN_COMPONENTS: Components = {
@@ -46,10 +36,10 @@ const PROJECT_CHAT_MARKDOWN_COMPONENTS: Components = {
 export function ProjectChatMarkdown({ source }: { source: string }) {
   return (
     <Markdown
-      remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
+      remarkPlugins={[remarkGfm, [remarkMath, MARKDOWN_REMARK_MATH_OPTIONS], remarkBoundedMath]}
       rehypePlugins={[
         [rehypeSanitize, PROJECT_CHAT_SANITIZE_SCHEMA],
-        [rehypeKatex, PROJECT_CHAT_KATEX_OPTIONS],
+        [rehypeKatex, MARKDOWN_KATEX_OPTIONS],
       ]}
       skipHtml
       urlTransform={safeProjectChatMarkdownUrl}
