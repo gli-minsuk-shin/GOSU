@@ -203,6 +203,82 @@ describe('SSH connection and Allow once service', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('rejects a pre-aborted scope before reading connection state', async () => {
+    const storage = new MemorySshStorage();
+    const listConnections = vi.spyOn(storage, 'listSshConnections');
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(service.runAgentCommand(commandFixture(), controller.signal)).rejects.toEqual(
+      expect.objectContaining<Partial<SshConnectionServiceError>>({ code: 'ssh_cancelled' }),
+    );
+    expect(listConnections).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending approval when its caller aborts and removes the signal listener', async () => {
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(new MemorySshStorage(), runner);
+    const controller = new AbortController();
+    const removeAbortListener = vi.spyOn(controller.signal, 'removeEventListener');
+    const approval = nextApproval(service);
+    const execution = service.runAgentCommand(commandFixture(), controller.signal);
+    const request = await approval;
+
+    controller.abort();
+
+    await expect(execution).rejects.toEqual(
+      expect.objectContaining<Partial<SshConnectionServiceError>>({ code: 'ssh_cancelled' }),
+    );
+    expect(removeAbortListener).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(() =>
+      service.resolveApproval({ approvalId: request.id, decision: 'allow_once' }),
+    ).toThrow(expect.objectContaining({ code: 'ssh_approval_not_found' }));
+  });
+
+  it('links caller abort to an approved transport and cleans the listener after settlement', async () => {
+    let runnerSignal: AbortSignal | undefined;
+    const execute = vi.fn(
+      async (
+        _hostAlias: string,
+        _command: SshAgentCommand,
+        options?: SshCommandRunOptions,
+      ): Promise<SshProcessResult> => {
+        runnerSignal = options?.signal;
+        if (!runnerSignal) throw new Error('missing abort signal');
+        return new Promise<SshProcessResult>((_resolve, reject) => {
+          runnerSignal!.addEventListener(
+            'abort',
+            () => reject(new SshCommandRunnerError('cancelled')),
+            { once: true },
+          );
+        });
+      },
+    );
+    const runner = vi.fn() as unknown as SshCommandRunner;
+    runner.execute = execute;
+    runner.testConnection = vi.fn(async () => undefined);
+    const service = new SshConnectionService(new MemorySshStorage(), runner);
+    const controller = new AbortController();
+    const removeAbortListener = vi.spyOn(controller.signal, 'removeEventListener');
+    const approval = nextApproval(service);
+    const execution = service.runAgentCommand(commandFixture(), controller.signal);
+    const request = await approval;
+    service.resolveApproval({ approvalId: request.id, decision: 'allow_once' });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+
+    controller.abort();
+
+    await expect(execution).rejects.toEqual(
+      expect.objectContaining<Partial<SshConnectionServiceError>>({ code: 'ssh_cancelled' }),
+    );
+    expect(runnerSignal?.aborted).toBe(true);
+    await vi.waitFor(() => expect(removeAbortListener).toHaveBeenCalledOnce());
+  });
+
   it('denies without executing and has no raw-output persistence method', async () => {
     const { runner, execute } = runnerFixture();
     const storage = new MemorySshStorage();

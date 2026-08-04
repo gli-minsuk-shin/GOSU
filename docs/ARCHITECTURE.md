@@ -723,8 +723,10 @@ flowchart LR
   비교할 generation을 바꾸므로 이미 보이는 pending·active
   command뿐 아니라 connection lookup 중인 요청과 전환 race 뒤의 future SSH tool call도 fail closed하며,
   SSH 밖의 Codex turn은 계속 진행한다. dynamic tool timeout과 thread revoke는 handler에 AbortSignal을
-  전달하고, timeout 응답을 먼저 보냈더라도 실제 handler가 settle할 때까지 해당 in-flight capacity를
-  유지해 zombie 작업이 동시 실행 상한을 우회하지 못하게 한다. Stop은 project/session lookup과 Codex
+  전달하고 SSH broker는 이를 connection lookup·pending approval·approved active transport 전체 수명에
+  연결한다. abort·deny·expire·정상 종료마다 listener를 제거하며 timeout 응답을 먼저 보냈더라도 실제
+  handler가 settle할 때까지 해당 in-flight capacity를 유지해 zombie 작업이 동시 실행 상한을 우회하지
+  못하게 한다. Stop은 project/session lookup과 Codex
   interrupt보다 먼저, terminal notification은 Local Notes delivery settlement와 receipt persistence보다 먼저
   live SSH capability와 transport를 동기적으로 폐기한다. Renderer는 `turn.started` 전 startup 동안 Stop을
   표시하지 않고 project busy 상태만 보여 준다. timeout·output cap·transport failure는 typed error로 끝나 다른

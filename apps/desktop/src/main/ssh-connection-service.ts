@@ -56,8 +56,14 @@ type PendingApproval = Readonly<{
   profile: SshConnectionProfile;
   command: SshAgentCommand;
   timer: NodeJS.Timeout;
+  cancellation: ExecutionCancellation;
   resolve: (result: SshCommandResult) => void;
   reject: (error: SshConnectionServiceError) => void;
+}>;
+
+type ExecutionCancellation = Readonly<{
+  controller: AbortController;
+  detach(): void;
 }>;
 
 type ActiveExecution = Readonly<{
@@ -68,7 +74,7 @@ type ActiveExecution = Readonly<{
   turnId: string;
   toolCallId: string;
   connectionId: string;
-  controller: AbortController;
+  cancellation: ExecutionCancellation;
 }>;
 
 const MAX_CONNECTIONS = 100;
@@ -111,6 +117,25 @@ const READ_ONLY_EXECUTABLES = new Set([
 
 function copy<T>(value: T): T {
   return structuredClone(value);
+}
+
+function linkedCancellation(signal: AbortSignal | undefined, onAbort: () => void) {
+  const controller = new AbortController();
+  let detached = false;
+  const handleControllerAbort = () => onAbort();
+  const forwardAbort = () => controller.abort(signal?.reason);
+  controller.signal.addEventListener('abort', handleControllerAbort, { once: true });
+  signal?.addEventListener('abort', forwardAbort, { once: true });
+  if (signal?.aborted) forwardAbort();
+  return {
+    controller,
+    detach: () => {
+      if (detached) return;
+      detached = true;
+      controller.signal.removeEventListener('abort', handleControllerAbort);
+      signal?.removeEventListener('abort', forwardAbort);
+    },
+  } satisfies ExecutionCancellation;
 }
 
 function systemExecutableBasename(command: string) {
@@ -465,17 +490,27 @@ export class SshConnectionService extends EventEmitter {
       expiresAt: new Date(requestedAt + this.approvalTtlMs).toISOString(),
     } satisfies SshApprovalRequest;
 
+    let pending: PendingApproval | undefined;
+    const cancellation = linkedCancellation(signal, () => {
+      if (pending) this.rejectPending(pending, 'cancelled', 'ssh_cancelled');
+    });
     return new Promise<SshCommandResult>((resolve, reject) => {
       const timer = setTimeout(() => this.expireApproval(approvalId), this.approvalTtlMs);
       timer.unref?.();
-      this.pendingApprovals.set(approvalId, {
+      pending = {
         request,
         profile,
         command,
         timer,
+        cancellation,
         resolve,
         reject,
-      });
+      };
+      this.pendingApprovals.set(approvalId, pending);
+      if (cancellation.controller.signal.aborted) {
+        this.rejectPending(pending, 'cancelled', 'ssh_cancelled');
+        return;
+      }
       this.emitSshEvent({ type: 'approval.requested', request: copy(request) });
     });
   }
@@ -595,6 +630,8 @@ export class SshConnectionService extends EventEmitter {
   ) {
     if (!this.pendingApprovals.delete(pending.request.id)) return;
     clearTimeout(pending.timer);
+    pending.cancellation.controller.abort();
+    pending.cancellation.detach();
     this.emitSshEvent({
       type: 'approval.resolved',
       approvalId: pending.request.id,
@@ -606,7 +643,6 @@ export class SshConnectionService extends EventEmitter {
   private startApproved(pending: PendingApproval) {
     if (!this.pendingApprovals.delete(pending.request.id)) return;
     clearTimeout(pending.timer);
-    const controller = new AbortController();
     const active: ActiveExecution = {
       approvalId: pending.request.id,
       projectId: pending.command.projectId,
@@ -615,7 +651,7 @@ export class SshConnectionService extends EventEmitter {
       turnId: pending.command.turnId,
       toolCallId: pending.command.toolCallId,
       connectionId: pending.command.connectionId,
-      controller,
+      cancellation: pending.cancellation,
     };
     this.activeExecutions.set(active.approvalId, active);
     this.emitSshEvent({
@@ -638,7 +674,7 @@ export class SshConnectionService extends EventEmitter {
           throw new SshConnectionServiceError('ssh_connection_version_conflict');
         }
         return this.runner.execute(profile.hostAlias, pending.command, {
-          signal: controller.signal,
+          signal: active.cancellation.controller.signal,
           maxOutputCharacters: SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS,
           failOnOutputLimit: false,
         });
@@ -649,7 +685,10 @@ export class SshConnectionService extends EventEmitter {
       .catch((error: unknown) => {
         pending.reject(error instanceof SshConnectionServiceError ? error : executionError(error));
       })
-      .finally(() => this.activeExecutions.delete(active.approvalId));
+      .finally(() => {
+        active.cancellation.detach();
+        this.activeExecutions.delete(active.approvalId);
+      });
   }
 
   private cancelWhere(
@@ -670,7 +709,7 @@ export class SshConnectionService extends EventEmitter {
     }
     for (const active of this.activeExecutions.values()) {
       if (!predicate(active)) continue;
-      active.controller.abort();
+      active.cancellation.controller.abort();
       cancelled += 1;
     }
     return cancelled;
