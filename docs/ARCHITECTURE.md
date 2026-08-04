@@ -599,17 +599,19 @@ flowchart LR
   진행 중인 Codex turn 표시와 중지 진입점을 숨기지 않도록 해당 project가 busy인 동안 Hide와 Archive를
   비활성화한다.
   Archive는 이 로컬 preference와 달리 domain command이므로 두 개념을 같은 필드나 API로 합치지 않는다.
-- Renderer의 `board-view.tsx`는 form·drag-and-drop·archive 확인과 프로젝트별 임시 view state를
+- Renderer의 `board-view.tsx`는 form·drag-and-drop·Delete 확인과 프로젝트별 임시 view state를
   소유한다. `kanban-board-model.ts`는 column resolve, 검색·priority·label·due date filter와 안전한
   drop 판단만 수행하는 pure helper다. 프로젝트 전환 시 `BoardView`를 project ID로 remount해 draft,
-  filter, archive mode와 drag ID가 다른 프로젝트로 넘어가지 않게 한다.
-- Board 설정은 Project version, task 수정·이동·archive·restore는 Task version으로 optimistic
+  filter, Task trash mode와 drag ID가 다른 프로젝트로 넘어가지 않게 한다.
+- Board 설정은 Project version, task 수정·이동·Delete·restore는 Task version으로 optimistic
   conflict를 검사한다. Main의 `WorkspaceService`만 persisted snapshot을 바꾸며 각각
   `project.board.update`, `task.update`, `task.archive`, `task.restore` outbox command를 같은 SQLCipher
   transaction에 남긴다.
-- archive는 hard delete가 아니라 `archivedAt`과 새 entity version을 남기는 provenance 보존 동작이다.
-  기본 Board와 Project Chat model context에는 active task만 들어가며 archived task는 별도 view에서
-  검색·restore한다.
+- 카드의 `Delete`는 hard delete가 아니라 `archivedAt`과 새 entity version을 남기는 복원 가능한
+  soft delete다. 확인을 통과한 task는 기본 Board에서 빠지고 `Task trash`에 나타나며 `Restore`로 같은
+  UUID를 되살린다. 저장·sync 호환성을 위해 내부 command 이름은 `task.archive`·`task.restore`를
+  유지한다. 기본 Board와 Project Chat model context에는 active task만 들어가며 Task trash의 task는
+  명시적으로 복원하기 전까지 제외한다. 영구 삭제 command는 제공하지 않는다.
 - WIP limit은 현재 column의 전체 active task 수로 계산하는 시각적 경고다. filter 결과만 세거나
   이동을 막지 않는다. 임의 column 추가·삭제, column 내부 수동 ranking, saved view와 bulk edit는
   후속 범위다.

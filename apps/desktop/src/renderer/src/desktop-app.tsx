@@ -1462,7 +1462,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   runWorkspaceAction(
                     `task:${input.archived ? 'archive' : 'restore'}:${input.taskId}`,
                     () => window.gosu.workspace.setTaskArchived(input),
-                    input.archived ? 'Archived the task.' : 'Restored the task.',
+                    input.archived
+                      ? 'Moved the task to Task trash.'
+                      : 'Restored the task to the Board.',
                   )
                 }
               />

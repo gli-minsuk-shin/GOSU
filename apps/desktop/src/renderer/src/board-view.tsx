@@ -61,6 +61,7 @@ export function BoardView({
   const [dropStatus, setDropStatus] = useState<WorkspaceTaskStatus | null>(null);
   const filteredTasks = useMemo(() => filterKanbanTasks(tasks, filters), [filters, tasks]);
   const availableLabels = useMemo(() => projectTaskLabels(tasks), [tasks]);
+  const trashedTaskCount = tasks.filter((task) => task.archivedAt !== undefined).length;
   const filterCount = activeKanbanFilterCount(filters);
   const busy = busyAction !== null;
 
@@ -85,7 +86,7 @@ export function BoardView({
               }))
             }
           >
-            {filters.mode === 'active' ? 'Archived' : 'Back to board'}
+            {filters.mode === 'active' ? `Task trash (${trashedTaskCount})` : 'Back to board'}
           </button>
           <button
             type="button"
@@ -129,7 +130,7 @@ export function BoardView({
       )}
 
       {filters.mode === 'archived' ? (
-        <ArchivedTasks
+        <TaskTrash
           tasks={filteredTasks}
           busy={busy}
           onRestore={(task) =>
@@ -253,8 +254,12 @@ export function BoardView({
                         setDraggedTaskId(null);
                         setDropStatus(null);
                       }}
-                      onArchive={() => {
-                        if (!window.confirm(`Archive “${task.title}”? You can restore it later.`)) {
+                      onDelete={() => {
+                        if (
+                          !window.confirm(
+                            `Delete “${task.title}” from the board? It will move to Task trash and can be restored later.`,
+                          )
+                        ) {
                           return;
                         }
                         void onSetTaskArchived({
@@ -480,7 +485,7 @@ function TaskCard({
   onEdit,
   onCancel,
   onUpdate,
-  onArchive,
+  onDelete,
   onDragStart,
   onDragEnd,
 }: {
@@ -492,7 +497,7 @@ function TaskCard({
   onEdit: () => void;
   onCancel: () => void;
   onUpdate: (input: UpdateTaskInput) => Promise<boolean>;
-  onArchive: () => void;
+  onDelete: () => void;
   onDragStart: DragEventHandler<HTMLElement>;
   onDragEnd: DragEventHandler<HTMLElement>;
 }) {
@@ -581,11 +586,13 @@ function TaskCard({
           </button>
           <button
             type="button"
-            onClick={onArchive}
+            className="task-delete-button"
+            onClick={onDelete}
             disabled={busy}
-            aria-label={`Archive ${task.title}`}
+            aria-label={`Delete ${task.title}`}
+            title="Delete from board; restorable from Task trash"
           >
-            Archive
+            Delete
           </button>
         </div>
       </footer>
@@ -805,7 +812,7 @@ function BoardSettingsPanel({
   );
 }
 
-function ArchivedTasks({
+export function TaskTrash({
   tasks,
   busy,
   onRestore,
@@ -815,16 +822,16 @@ function ArchivedTasks({
   onRestore: (task: WorkspaceTask) => Promise<boolean>;
 }) {
   return (
-    <section className="archived-task-view" aria-label="Archived tasks">
+    <section className="archived-task-view" aria-label="Task trash">
       <header>
         <div>
-          <span>PROVENANCE-PRESERVING ARCHIVE</span>
-          <h3>Archived tasks</h3>
+          <span>RESTORABLE DELETIONS</span>
+          <h3>Task trash</h3>
         </div>
-        <p>{tasks.length} matching archived tasks</p>
+        <p>{tasks.length} matching deleted tasks</p>
       </header>
       {tasks.length === 0 ? (
-        <p className="archive-empty">No archived tasks match the current filters.</p>
+        <p className="archive-empty">No deleted tasks match the current filters.</p>
       ) : (
         <div className="archived-task-grid">
           {tasks.map((task) => (
@@ -833,13 +840,14 @@ function ArchivedTasks({
               {task.description && <p className="task-description">{task.description}</p>}
               <footer>
                 <span className="task-version">
-                  Archived {task.archivedAt ? formatUpdated(task.archivedAt) : ''}
+                  Deleted {task.archivedAt ? formatUpdated(task.archivedAt) : ''}
                 </span>
                 <button
                   type="button"
                   className="secondary-button"
                   onClick={() => void onRestore(task)}
                   disabled={busy}
+                  aria-label={`Restore ${task.title}`}
                 >
                   Restore
                 </button>
