@@ -84,6 +84,7 @@ import {
   EmptyWorkspace,
   ObjectiveEditor,
   ProjectComposer,
+  shouldShowActiveProjectPageHeading,
   WorkspacePageHeading,
   WorkspaceUnavailable,
   latestObjective,
@@ -1250,11 +1251,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           </>
         ) : (
           <>
-            <WorkspacePageHeading
-              activeTab={activeTab}
-              activeProject={activeProject}
-              onNewProject={() => setShowProjectForm((visible) => !visible)}
-            />
+            {shouldShowActiveProjectPageHeading(activeTab) && (
+              <WorkspacePageHeading
+                activeTab={activeTab}
+                activeProject={activeProject}
+                onNewProject={() => setShowProjectForm((visible) => !visible)}
+              />
+            )}
             {showProjectForm && (
               <ProjectComposer
                 busy={busyAction !== null}

@@ -102,6 +102,7 @@ describe('folder-style project sidebar', () => {
     const html = renderSidebar();
 
     expect(html).toContain('Projects');
+    expect(html).toContain('aria-label="Create a new project"');
     expect(html).toContain('Active Alpha');
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain('Project chat');
