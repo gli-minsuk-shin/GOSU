@@ -7,7 +7,8 @@ import type {
 } from '../../shared/workspace-contracts';
 import { CardHead, describeError } from './ui-primitives';
 
-export type WorkspaceTabId = 'chat' | 'board' | 'objective' | 'connections' | 'notes';
+export type WorkspaceTabId =
+  'chat' | 'repository' | 'board' | 'objective' | 'connections' | 'notes';
 
 type ObjectiveDraft = {
   goal: string;
@@ -37,6 +38,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   icon: string;
 }> = [
   { id: 'chat', label: 'Project chat', icon: '◈' },
+  { id: 'repository', label: 'Repository', icon: '⌘' },
   { id: 'board', label: 'Board', icon: '▦' },
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
@@ -85,6 +87,8 @@ export function WorkspacePageHeading({
   const tab = WORKSPACE_TABS.find((item) => item.id === activeTab)!;
   const subtitles: Record<WorkspaceTabId, string> = {
     chat: 'Talk with the linked Codex model and turn the conversation into reviewed project work.',
+    repository:
+      'Browse project files, review changes and history, and use bounded Git operations without a terminal.',
     board: 'Create work, move it through the research workflow, and keep every change locally.',
     objective:
       'Define a versioned goal, evaluation metric, reproducibility hashes, and hard experiment budget.',
@@ -216,8 +220,10 @@ function ProjectForm({
         <input
           value={repository}
           onChange={(event) => setRepository(event.target.value)}
-          maxLength={500}
+          maxLength={201}
+          pattern="[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}"
           placeholder="owner/repository · optional"
+          title="Use the GitHub owner/repository format without a URL, token, or SSH address."
           disabled={busy}
         />
       </label>

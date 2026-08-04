@@ -1,4 +1,4 @@
-const REPOSITORY_IDENTIFIER =
+export const REPOSITORY_IDENTIFIER_PATTERN =
   /^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$/u;
 
 /**
@@ -10,5 +10,5 @@ const REPOSITORY_IDENTIFIER =
 export function repositoryIdentifierForAgent(value: string | null | undefined) {
   if (!value) return null;
   const candidate = value.trim();
-  return REPOSITORY_IDENTIFIER.test(candidate) ? candidate : null;
+  return REPOSITORY_IDENTIFIER_PATTERN.test(candidate) ? candidate : null;
 }

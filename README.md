@@ -49,12 +49,17 @@ but it is not yet a deployed end-to-end product:
 
 - the Owner Web app is an interactive, responsive product slice backed by deterministic demo
   fixtures;
-- the Electron app provides a usable local workspace: users can create and switch projects, create,
-  edit, and move versioned Kanban tasks, and save, freeze, and explicitly revise goal/metric
+- the Electron app provides a usable local workspace: users can navigate project folders, customize
+  Kanban boards, manage versioned tasks, and save, freeze, and explicitly revise goal/metric
   definitions. Those records and an offline change outbox are committed atomically to encrypted
   SQLite and survive an app restart;
-- the Electron security shell also provides a read-only Obsidian reader, local Codex App Server
-  integration with runtime model discovery, and a non-secret runtime readiness view;
+- Project Chat uses the local Codex App Server with runtime-discovered model, reasoning, and native
+  harness catalogs. Its project-scoped read tools can inspect reviewed Board, Objective, and
+  explicitly granted Local Notes context without exposing raw filesystem paths;
+- the read-only Obsidian reader renders sanitized Markdown, and each project has an app-managed
+  Repository workspace for GitHub HTTPS clone, file tree and Markdown preview, staged/unstaged diff,
+  commit history, local branches, commit, Fetch, fast-forward-only Pull, and reviewed-SHA-only
+  non-force Push; and
 - the running Sync API uses an in-memory development store with lab/project authorization,
   optimistic versions, idempotency, SSE, and a non-persistent WebSocket relay;
 - a PostgreSQL schema and tested persistence adapter implement tenant context, transactional
@@ -93,6 +98,7 @@ change recipes, and [SECURITY.md](SECURITY.md) for reporting and operational sec
 
 - Node.js 22 or newer
 - pnpm 11 (managed through Corepack)
+- Apple Command Line Tools (`git`) for the project Repository workspace on macOS
 - Docker with Compose v2 when developing the PostgreSQL/Redis adapters
 - Go and Python versions specified by their workspace components when working on the runner
 
@@ -109,8 +115,9 @@ pnpm app:dev
 opens the Electron app. `Ctrl+C` stops the process group. A healthy GOSU Sync process already using
 the configured port is reused; an unrelated process on that port is rejected. No `.env` file or
 Docker service is required for this local slice. Project, Kanban, and goal/metric data are stored in
-the Desktop's encrypted local database and survive restart; the development Sync API's own memory
-state is separate and is lost on restart.
+the Desktop's encrypted local database and survive restart. App-managed Git worktrees remain only
+under the Desktop user-data directory and are not uploaded to Hosted Sync. The development Sync
+API's own memory state is separate and is lost on restart.
 
 To build a local macOS installer after running the complete quality gate:
 

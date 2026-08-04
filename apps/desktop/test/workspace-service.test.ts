@@ -156,6 +156,44 @@ describe('WorkspaceService', () => {
     });
   });
 
+  it('updates a project repository with optimistic versioning and stores only an owner/repository label', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const project = await service.createProject({ name: 'Repository project' });
+
+    const updated = await service.updateProjectRepository({
+      projectId: project.id,
+      expectedVersion: project.version,
+      repository: 'research-lab/paper-code',
+    });
+
+    expect(updated).toMatchObject({
+      repository: 'research-lab/paper-code',
+      version: project.version + 1,
+    });
+    expect(storage.operations.at(-1)).toMatchObject({
+      commandType: 'project.repository.update',
+      baseVersion: project.version,
+      payload: {
+        repository: 'research-lab/paper-code',
+        newEntityVersion: project.version + 1,
+      },
+    });
+    await expect(
+      service.updateProjectRepository({
+        projectId: project.id,
+        expectedVersion: project.version,
+        repository: 'research-lab/other-code',
+      }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    await expect(
+      service.createProject({
+        name: 'Unsafe repository',
+        repository: 'https://token@github.com/research/private.git',
+      }),
+    ).rejects.toThrow();
+  });
+
   it('normalizes a supplied Board template into the project and its create outbox operation', async () => {
     const storage = new MemoryWorkspaceStorage();
     const service = new WorkspaceService(storage);

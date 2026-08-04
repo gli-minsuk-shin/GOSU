@@ -513,11 +513,19 @@ describe('ProjectAgentToolSession', () => {
   });
 
   it('never exposes a repository URL with embedded credentials to the agent', async () => {
-    const workspace = new WorkspaceService(new MemoryWorkspaceStorage());
-    const project = await workspace.createProject({
-      name: 'Credential boundary',
-      repository: 'https://researcher:secret-token@github.com/lab/private.git',
-    });
+    const storage = new MemoryWorkspaceStorage();
+    const workspace = new WorkspaceService(storage);
+    const project = await workspace.createProject({ name: 'Credential boundary' });
+    storage.state = {
+      ...(await workspace.snapshot()),
+      projects: [
+        {
+          ...project,
+          // Legacy snapshots were permissive. New commands reject this shape at the boundary.
+          repository: 'https://researcher:secret-token@github.com/lab/private.git',
+        },
+      ],
+    };
     const { session } = authorizedSession(workspace, project.id);
 
     const result = await invokeTool(session, toolCall('read_workspace', { section: 'summary' }));

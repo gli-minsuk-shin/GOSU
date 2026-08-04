@@ -17,6 +17,8 @@ import { buildMacApplicationMenuTemplate } from './application-menu';
 import { CodexAppServer } from './codex-app-server';
 import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
+import { registerGitWorkspaceIpc } from './git-workspace-ipc';
+import { GitWorkspaceService } from './git-workspace-service';
 import { registerProjectChatIpc } from './project-chat-ipc';
 import { ProjectChatService } from './project-chat-service';
 import {
@@ -52,6 +54,10 @@ const workspace = new WorkspaceService({
   commit: (state, operation) => database.commitWorkspaceState(state, operation),
   pendingChanges: () => database.pendingWorkspaceChanges(),
   pendingSummary: () => database.pendingWorkspaceSummary(),
+});
+const gitWorkspace = new GitWorkspaceService({
+  workspace,
+  rootDirectory: () => join(app.getPath('userData'), 'git-workspaces'),
 });
 const projectChat = new ProjectChatService({
   storage: database,
@@ -209,6 +215,12 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   registerProjectChatIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     projectChat,
+    reportUnexpectedWorkspaceError,
+  );
+  registerGitWorkspaceIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    gitWorkspace,
+    { reveal: (path) => shell.showItemInFolder(path) },
     reportUnexpectedWorkspaceError,
   );
 

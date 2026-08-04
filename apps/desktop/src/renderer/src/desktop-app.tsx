@@ -26,6 +26,7 @@ import {
 } from './notes-view';
 import { ProjectChatLoadGuard } from './project-chat-load-guard';
 import { ProjectChatView, resolveEffectiveCodexModel } from './project-chat-view';
+import { RepositoryView } from './repository-view';
 import {
   archivedProjects as archivedPortfolioProjects,
   resolveActiveProjectId,
@@ -82,7 +83,7 @@ function isCodexUnavailableError(error: unknown) {
 }
 
 function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabId {
-  return tab === 'chat' || tab === 'board' || tab === 'objective';
+  return tab === 'chat' || tab === 'repository' || tab === 'board' || tab === 'objective';
 }
 
 export function DesktopApp({ initialPreferences }: { initialPreferences: UserPreferences }) {
@@ -985,6 +986,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     `task:${input.archived ? 'archive' : 'restore'}:${input.taskId}`,
                     () => window.gosu.workspace.setTaskArchived(input),
                     input.archived ? 'Archived the task.' : 'Restored the task.',
+                  )
+                }
+              />
+            )}
+            {activeTab === 'repository' && activeProject && (
+              <RepositoryView
+                key={`${activeProject.id}:${activeProject.version}`}
+                project={activeProject}
+                onUpdateRepository={(input) =>
+                  runWorkspaceAction(
+                    `project:repository:${input.projectId}`,
+                    () => window.gosu.workspace.updateProjectRepository(input),
+                    `Connected ${input.repository} to this project.`,
                   )
                 }
               />
