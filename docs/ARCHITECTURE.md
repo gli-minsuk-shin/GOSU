@@ -686,7 +686,11 @@ flowchart LR
   공통 heading과 action을 유지한다. session rail은 좁은 고정 navigation column으로 유지하고 chat workspace에는 desktop
   최대 폭·높이 cap을 두지 않아 현재 window를 사용하며 transcript 안쪽 여백도 제한한다. message card는
   넓은 코드·표·수식을 위해 가용 폭의 96%, 최대 1,180px까지 확장하되 작은 window에서는 기존 horizontal
-  session rail breakpoint를 유지한다. 다른 surface의 공통 spacing은 이 chat 전용 class의 영향을 받지 않는다.
+  session rail breakpoint를 유지한다. 완료된 최신 message가 transcript보다 길면 container-local scroll을
+  그 message의 header와 top inset에 맞춰 시작해 toolbar 아래에서 첫 줄이 잘리지 않게 한다. active turn 시작 시
+  bottom의 thinking state를 보여준다. terminal event가 새 snapshot보다 먼저 와도 stale user message로
+  이동하지 않고 새 assistant message ID를 기다리며, 무관한 parent rerender는 현재 scroll을 바꾸지 않는다.
+  다른 surface의 공통 spacing은 이 chat 전용 class의 영향을 받지 않는다.
 - 한 project에는 동시에 하나의 Codex turn만 허용한다. 사용자는 active turn 중에도 다른 session을 열어
   history를 읽거나 새 root/완료 지점 branch를 만들 수 있지만, 다른 session의 composer·model·reasoning·
   profile·rename은 잠긴다. active session에는 `●`와 Stop을 표시하고 다른 session에는 해당 active session으로
@@ -1172,7 +1176,9 @@ Project Chat session test는 legacy single-chat DB가 default session으로 loss
 root session isolation, completed-message branch prefix와 이후 source history 차단, cross-project·
 cross-session snapshot/cancel/retry/action 거절, duplicate·stale event guard와 project당 단일 active turn을
 검증한다. Renderer test는 session create/select/rename/branch, active session 표시, 다른 session에서
-composer 잠금과 selected-session Stop을 검사한다. Markdown test는 GFM과 `$...$`·`$$...$$` KaTeX,
+composer 잠금과 selected-session Stop, 긴 최신 답변의 top anchor, 짧은 답변의 bottom clamp와
+terminal-event/snapshot 순서 경합을 검사한다.
+Markdown test는 GFM과 `$...$`·`$$...$$` KaTeX,
 raw HTML·unsafe URL 차단, 긴 입력과 깨진 수식의 bounded fallback을 검증한다. model catalog test는
 provider가 제공한 opaque reasoning ID와 짧은 label을 그대로 보존하고 임의 fallback하지 않는지 확인한다.
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import {
   defaultProjectChatProfile,
@@ -46,6 +46,45 @@ export type ProjectChatSessionUiState = Readonly<{
   retryOfAttemptId: string | null;
   advancedOpen: boolean;
 }>;
+
+export function resolveLatestMessageScrollTop({
+  currentScrollTop,
+  scrollHeight,
+  clientHeight,
+  transcriptTop,
+  messageTop,
+  topInset,
+}: Readonly<{
+  currentScrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  transcriptTop: number;
+  messageTop: number;
+  topInset: number;
+}>) {
+  const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+  const messageContentTop = currentScrollTop + messageTop - transcriptTop;
+  return Math.min(maxScrollTop, Math.max(0, messageContentTop - topInset));
+}
+
+export type ProjectChatScrollIntent = 'top' | 'bottom' | 'latest-start' | 'none';
+
+export function resolveProjectChatScrollIntent({
+  observedLatestMessageId,
+  latestMessageId,
+  wasInFlight,
+  inFlight,
+}: Readonly<{
+  observedLatestMessageId: string | null;
+  latestMessageId: string | null;
+  wasInFlight: boolean;
+  inFlight: boolean;
+}>): ProjectChatScrollIntent {
+  if (inFlight) return 'bottom';
+  if (latestMessageId === null) return 'top';
+  if (wasInFlight && latestMessageId === observedLatestMessageId) return 'none';
+  return latestMessageId === observedLatestMessageId ? 'none' : 'latest-start';
+}
 
 export function reconcileProjectChatSessionUiState(
   previousIdentity: string,
@@ -198,6 +237,9 @@ export function ProjectChatView({
   const [responseVerbosity, setResponseVerbosity] = useState<ProjectChatResponseVerbosity>('auto');
   const [contextScope, setContextScope] = useState<ProjectChatContextScope>('project');
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const latestMessageRef = useRef<HTMLElement>(null);
+  const observedLatestMessageIdRef = useRef<string | null>(null);
+  const wasInFlightRef = useRef(inFlight);
   const draftSessionKey = `${project.id}\u0000${selectedSessionId ?? ''}`;
   const hydratedSessionKeyRef = useRef(draftSessionKey);
   const updateDraft = (value: string) => {
@@ -265,11 +307,43 @@ export function ProjectChatView({
       : null;
   const selectionWarning =
     modelSelectionWarning ?? collaborationModeWarning ?? personalityWarning ?? localNotesWarning;
+  const latestMessageId = snapshot?.messages.at(-1)?.id ?? null;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const transcript = transcriptRef.current;
-    if (transcript) transcript.scrollTop = transcript.scrollHeight;
-  }, [inFlight, snapshot?.messages.length]);
+    if (!transcript) return;
+    const intent = resolveProjectChatScrollIntent({
+      observedLatestMessageId: observedLatestMessageIdRef.current,
+      latestMessageId,
+      wasInFlight: wasInFlightRef.current,
+      inFlight,
+    });
+    wasInFlightRef.current = inFlight;
+    const latestMessage = latestMessageRef.current;
+    if (intent === 'none') return;
+    if (intent === 'bottom') {
+      observedLatestMessageIdRef.current = latestMessageId;
+      transcript.scrollTop = transcript.scrollHeight;
+      return;
+    }
+    if (intent === 'top' || !latestMessage) {
+      observedLatestMessageIdRef.current = null;
+      transcript.scrollTop = 0;
+      return;
+    }
+    observedLatestMessageIdRef.current = latestMessageId;
+    const transcriptBounds = transcript.getBoundingClientRect();
+    const messageBounds = latestMessage.getBoundingClientRect();
+    const topInset = Number.parseFloat(window.getComputedStyle(transcript).paddingTop) || 0;
+    transcript.scrollTop = resolveLatestMessageScrollTop({
+      currentScrollTop: transcript.scrollTop,
+      scrollHeight: transcript.scrollHeight,
+      clientHeight: transcript.clientHeight,
+      transcriptTop: transcriptBounds.top,
+      messageTop: messageBounds.top,
+      topInset,
+    });
+  }, [inFlight, latestMessageId]);
 
   useEffect(() => {
     const previousIdentity = hydratedSessionKeyRef.current;
@@ -579,6 +653,7 @@ export function ProjectChatView({
               const nativeAttempt = attempt?.collaborationModeId !== undefined;
               return (
                 <article
+                  ref={messageIndex === snapshot.messages.length - 1 ? latestMessageRef : undefined}
                   className={`chat-message ${message.role} ${message.status}`}
                   key={message.id}
                 >
