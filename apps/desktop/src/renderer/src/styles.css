@@ -105,6 +105,15 @@ button:disabled {
     radial-gradient(circle at 72% 0, rgba(104, 148, 63, 0.12), transparent 38%), var(--bg);
 }
 
+.desktop-shell.sidebar-collapsed {
+  grid-template: 58px minmax(0, 1fr) / minmax(0, 1fr);
+}
+
+.desktop-shell.sidebar-collapsed .desktop-content {
+  grid-row: 2;
+  grid-column: 1;
+}
+
 .titlebar {
   grid-column: 1 / -1;
   -webkit-app-region: drag;
@@ -126,6 +135,37 @@ button:disabled {
   color: var(--green-ink);
   font-size: var(--font-section);
   font-weight: 900;
+}
+
+.sidebar-toggle-button {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.sidebar-toggle-button:hover,
+.sidebar-toggle-button:focus-visible,
+.sidebar-toggle-button.collapsed {
+  border-color: var(--line);
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.sidebar-toggle-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.35;
 }
 
 .titlebar strong {
@@ -197,6 +237,10 @@ button:disabled {
   display: flex;
   flex-direction: column;
   overflow: auto;
+}
+
+.desktop-nav[hidden] {
+  display: none;
 }
 
 .desktop-nav small,

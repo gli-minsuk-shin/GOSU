@@ -5,6 +5,7 @@ export type ProjectNavigationState = Readonly<{
   activeGroupExpanded: boolean;
   hiddenGroupExpanded: boolean;
   archivedGroupExpanded: boolean;
+  sidebarCollapsed: boolean;
 }>;
 
 type NavigationStorage = Pick<Storage, 'getItem' | 'setItem'>;
@@ -18,6 +19,7 @@ export const DEFAULT_PROJECT_NAVIGATION_STATE: ProjectNavigationState = Object.f
   activeGroupExpanded: true,
   hiddenGroupExpanded: false,
   archivedGroupExpanded: false,
+  sidebarCollapsed: false,
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -44,6 +46,7 @@ export function parseProjectNavigationState(value: unknown): ProjectNavigationSt
       typeof value.hiddenGroupExpanded === 'boolean' ? value.hiddenGroupExpanded : false,
     archivedGroupExpanded:
       typeof value.archivedGroupExpanded === 'boolean' ? value.archivedGroupExpanded : false,
+    sidebarCollapsed: typeof value.sidebarCollapsed === 'boolean' ? value.sidebarCollapsed : false,
   };
 }
 
@@ -121,6 +124,10 @@ export function showProjectLocally(
 
 export function showAllProjectsLocally(state: ProjectNavigationState): ProjectNavigationState {
   return { ...state, hiddenProjectIds: [], hiddenGroupExpanded: false };
+}
+
+export function toggleProjectSidebar(state: ProjectNavigationState): ProjectNavigationState {
+  return { ...state, sidebarCollapsed: !state.sidebarCollapsed };
 }
 
 function defaultProjectNavigationState(): ProjectNavigationState {

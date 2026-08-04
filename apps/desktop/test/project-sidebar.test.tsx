@@ -1,7 +1,13 @@
+import { readFileSync } from 'node:fs';
+
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ProjectSidebar, type ProjectSidebarProps } from '../src/renderer/src/project-sidebar';
+import {
+  ProjectSidebar,
+  ProjectSidebarToggle,
+  type ProjectSidebarProps,
+} from '../src/renderer/src/project-sidebar';
 import { DEFAULT_PROJECT_NAVIGATION_STATE } from '../src/renderer/src/project-navigation-state';
 import type { PortfolioProjectRecord } from '../src/renderer/src/project-portfolio-model';
 
@@ -70,6 +76,28 @@ function renderSidebar(overrides: Partial<ProjectSidebarProps> = {}) {
 }
 
 describe('folder-style project sidebar', () => {
+  it('keeps an accessible titlebar control available in both sidebar states', () => {
+    const expanded = renderToStaticMarkup(
+      <ProjectSidebarToggle collapsed={false} onToggle={vi.fn()} />,
+    );
+    const collapsed = renderToStaticMarkup(<ProjectSidebarToggle collapsed onToggle={vi.fn()} />);
+
+    expect(expanded).toContain('aria-label="Hide project sidebar"');
+    expect(expanded).toContain('aria-controls="workspace-sidebar"');
+    expect(expanded).toContain('aria-expanded="true"');
+    expect(collapsed).toContain('aria-label="Show project sidebar"');
+    expect(collapsed).toContain('aria-expanded="false"');
+  });
+
+  it('removes the sidebar grid track and gives its space to content when collapsed', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(styles).toMatch(
+      /\.desktop-shell\.sidebar-collapsed\s*\{\s*grid-template:\s*58px minmax\(0, 1fr\) \/ minmax\(0, 1fr\);/su,
+    );
+    expect(styles).toMatch(/\.desktop-nav\[hidden\]\s*\{\s*display:\s*none;/su);
+  });
+
   it('shows active project folders and the expanded project sections', () => {
     const html = renderSidebar();
 

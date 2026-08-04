@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
   CodexCollaborationModeCatalog,
@@ -63,10 +63,12 @@ import {
   saveProjectNavigationState,
   showAllProjectsLocally,
   showProjectLocally,
+  toggleProjectSidebar,
   type ProjectNavigationState,
 } from './project-navigation-state';
 import {
   ProjectSidebar,
+  ProjectSidebarToggle,
   type GlobalWorkspaceTabId,
   type ProjectWorkspaceTabId,
 } from './project-sidebar';
@@ -186,6 +188,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const projectChatSessionsRef = useRef(projectChatSessions);
   const chatDraftsRef = useRef(new VolatileProjectChatDrafts());
   const visibleChatSshScopeRef = useRef<{ projectId: string; sessionId: string } | null>(null);
+  const sidebarToggleRef = useRef<HTMLButtonElement>(null);
 
   const activeProjects = useMemo(() => visibleProjects(snapshot?.projects ?? []), [snapshot]);
   const archivedProjects = useMemo(
@@ -220,10 +223,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     return busyProjects;
   }, [chatInFlight, chatStartingSessionKeys, snapshot?.projects]);
 
-  const updateProjectNavigation = (next: ProjectNavigationState) => {
+  const updateProjectNavigation = useCallback((next: ProjectNavigationState) => {
     projectNavigationRef.current = next;
     setProjectNavigation(next);
-  };
+  }, []);
+
+  const toggleProjectSidebarVisibility = useCallback(() => {
+    const next = toggleProjectSidebar(projectNavigationRef.current);
+    updateProjectNavigation(next);
+    setAnnouncement(next.sidebarCollapsed ? 'Project sidebar hidden.' : 'Project sidebar shown.');
+    if (next.sidebarCollapsed) {
+      window.requestAnimationFrame(() => sidebarToggleRef.current?.focus());
+    }
+  }, [updateProjectNavigation]);
 
   useEffect(() => {
     projectNavigationRef.current = projectNavigation;
@@ -400,6 +412,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         setShowProjectForm(false);
       }),
     [],
+  );
+
+  useEffect(
+    () => window.gosu.app.onToggleSidebar(toggleProjectSidebarVisibility),
+    [toggleProjectSidebarVisibility],
   );
 
   useEffect(
@@ -934,8 +951,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   );
 
   return (
-    <main className="desktop-shell">
+    <main
+      className={`desktop-shell${projectNavigation.sidebarCollapsed ? ' sidebar-collapsed' : ''}`}
+    >
       <header className="titlebar">
+        <ProjectSidebarToggle
+          collapsed={projectNavigation.sidebarCollapsed}
+          onToggle={toggleProjectSidebarVisibility}
+          buttonRef={sidebarToggleRef}
+        />
         <div className="logo">G</div>
         <strong>GOSU</strong>
         <span>Local Research Workspace{runtime ? ` · v${runtime.app.version}` : ''}</span>
@@ -955,7 +979,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         </span>
       </header>
 
-      <aside className="desktop-nav" aria-label="Workspace navigation">
+      <aside
+        id="workspace-sidebar"
+        className="desktop-nav"
+        aria-label="Workspace navigation"
+        hidden={projectNavigation.sidebarCollapsed}
+      >
         <ProjectSidebar
           projects={snapshot?.projects ?? []}
           activeProjectId={activeProjectId}

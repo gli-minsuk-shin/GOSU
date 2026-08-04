@@ -106,7 +106,9 @@ async function invokeSsh<T>(channel: string, input?: unknown): Promise<T> {
 }
 
 const openSettingsListeners = new Set<() => void>();
+const toggleSidebarListeners = new Set<() => void>();
 let pendingOpenSettings = false;
+let pendingSidebarToggle = false;
 
 ipcRenderer.on(APP_NAVIGATION_CHANNELS.openSettings, (_event, ...arguments_: unknown[]) => {
   if (arguments_.length !== 0) return;
@@ -129,9 +131,31 @@ function onOpenSettings(listener: () => void) {
   };
 }
 
+ipcRenderer.on(APP_NAVIGATION_CHANNELS.toggleSidebar, (_event, ...arguments_: unknown[]) => {
+  if (arguments_.length !== 0) return;
+  if (toggleSidebarListeners.size === 0) {
+    pendingSidebarToggle = !pendingSidebarToggle;
+    return;
+  }
+  for (const listener of toggleSidebarListeners) listener();
+});
+
+function onToggleSidebar(listener: () => void) {
+  if (typeof listener !== 'function') throw new Error('invalid_toggle_sidebar_listener');
+  toggleSidebarListeners.add(listener);
+  if (pendingSidebarToggle) {
+    pendingSidebarToggle = false;
+    listener();
+  }
+  return () => {
+    toggleSidebarListeners.delete(listener);
+  };
+}
+
 const api = {
   app: {
     onOpenSettings,
+    onToggleSidebar,
   },
   runtime: {
     readiness: () => ipcRenderer.invoke('gosu:runtime:readiness'),
