@@ -98,20 +98,17 @@ button:disabled {
 }
 
 .desktop-shell {
+  --sidebar-width: 280px;
   display: grid;
-  grid-template: 58px minmax(0, 1fr) / 280px minmax(0, 1fr);
+  grid-template: 58px minmax(0, 1fr) / var(--sidebar-width) minmax(0, 1fr);
   min-height: 100vh;
   background:
     radial-gradient(circle at 72% 0, rgba(104, 148, 63, 0.12), transparent 38%), var(--bg);
+  transition: grid-template-columns 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .desktop-shell.sidebar-collapsed {
-  grid-template: 58px minmax(0, 1fr) / minmax(0, 1fr);
-}
-
-.desktop-shell.sidebar-collapsed .desktop-content {
-  grid-row: 2;
-  grid-column: 1;
+  --sidebar-width: 0px;
 }
 
 .titlebar {
@@ -231,16 +228,36 @@ button:disabled {
 }
 
 .desktop-nav {
+  grid-row: 2;
+  grid-column: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
   padding: 22px 12px 16px;
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   overflow: auto;
+  opacity: 1;
+  transform: translateX(0);
+  visibility: visible;
+  will-change: opacity, transform;
+  transition:
+    opacity 150ms ease-out,
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0s;
 }
 
-.desktop-nav[hidden] {
-  display: none;
+.desktop-shell.sidebar-collapsed .desktop-nav {
+  border-right-color: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-14px);
+  visibility: hidden;
+  transition:
+    opacity 120ms ease-in,
+    transform 200ms cubic-bezier(0.4, 0, 1, 1),
+    visibility 0s linear 240ms;
 }
 
 .desktop-nav small,
@@ -664,9 +681,13 @@ button:disabled {
 }
 
 .desktop-content {
+  grid-row: 2;
+  grid-column: 2;
   min-width: 0;
+  min-height: 0;
   padding: 32px clamp(24px, 4vw, 54px) 60px;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .desktop-content.desktop-content-chat {
@@ -2161,7 +2182,11 @@ textarea:focus {
 
 .note-reader-body {
   min-width: 0;
-  overflow: auto;
+  min-height: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: clamp(22px, 4vw, 44px);
 }
 
@@ -2185,7 +2210,9 @@ textarea:focus {
 }
 
 .markdown-document {
-  width: min(100%, 860px);
+  width: 100%;
+  min-width: 0;
+  max-width: 860px;
   margin: 0 auto;
   color: light-dark(#263029, #dfe6df);
   font-size: var(--font-body-large);
@@ -2275,7 +2302,13 @@ textarea:focus {
 }
 
 .markdown-document .katex {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
   font-size: 1em;
+  vertical-align: middle;
 }
 
 .markdown-document .katex-display {
@@ -2284,6 +2317,13 @@ textarea:focus {
   padding: 4px 0;
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+.markdown-document .katex-display > .katex {
+  display: block;
+  max-width: none;
+  overflow: visible;
+  vertical-align: baseline;
 }
 
 .markdown-document .katex-error {
@@ -4138,9 +4178,16 @@ textarea:focus {
   border: 0;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .desktop-shell,
+  .desktop-nav {
+    transition: none;
+  }
+}
+
 @media (max-width: 1180px) {
   .desktop-shell {
-    grid-template-columns: 252px minmax(0, 1fr);
+    --sidebar-width: 252px;
   }
 
   .workspace-grid,
@@ -4177,16 +4224,40 @@ textarea:focus {
 
 @media (max-width: 860px) {
   .desktop-shell {
+    --sidebar-width: 0px;
     grid-template: 58px auto minmax(0, 1fr) / 1fr;
+    transition: none;
+  }
+
+  .desktop-shell.sidebar-collapsed {
+    grid-template: 58px minmax(0, 1fr) / 1fr;
   }
 
   .desktop-nav {
+    grid-row: 2;
+    grid-column: 1;
     display: grid;
     grid-template-columns: repeat(6, 1fr);
     gap: 4px;
     padding: 8px 12px;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+    transform: none;
+    transition: none;
+  }
+
+  .desktop-shell.sidebar-collapsed .desktop-nav {
+    display: none;
+  }
+
+  .desktop-content,
+  .desktop-shell.sidebar-collapsed .desktop-content {
+    grid-row: 3;
+    grid-column: 1;
+  }
+
+  .desktop-shell.sidebar-collapsed .desktop-content {
+    grid-row: 2;
   }
 
   .desktop-nav small,

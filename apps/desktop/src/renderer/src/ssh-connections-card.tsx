@@ -9,6 +9,74 @@ import type {
 
 type MaybePromise<T> = T | Promise<T>;
 
+const SSH_HOST_ALIAS_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+
+export type SshHostAliasValidation = Readonly<
+  | { valid: true; alias: string }
+  | {
+      valid: false;
+      reason: 'empty' | 'ssh-command' | 'user-host' | 'option' | 'invalid-format';
+      message: string;
+    }
+>;
+
+export function validateSshHostAliasInput(value: string): SshHostAliasValidation {
+  const candidate = value.trim();
+  if (!candidate) {
+    return { valid: false, reason: 'empty', message: 'Enter a Host alias from ~/.ssh/config.' };
+  }
+
+  const looksLikeSshCommand = /^(?:\/[^\s]+\/)?ssh\s+/iu.test(candidate);
+  if (looksLikeSshCommand) {
+    const forwardingNote = /(?:^|\s)-(?:[LRD])(?:\s|\d|$)/u.test(candidate)
+      ? ' GOSU does not accept SSH forwarding options such as -L.'
+      : '';
+    return {
+      valid: false,
+      reason: 'ssh-command',
+      message:
+        'Enter only the Host alias (for example, research-gpu), not the full ssh command. Put HostName, User, and Port in ~/.ssh/config.' +
+        forwardingNote,
+    };
+  }
+
+  if (candidate.includes('@')) {
+    return {
+      valid: false,
+      reason: 'user-host',
+      message:
+        'Enter only the Host alias. Put the User and HostName values under that Host in ~/.ssh/config.',
+    };
+  }
+
+  if (candidate.startsWith('-')) {
+    return {
+      valid: false,
+      reason: 'option',
+      message: 'SSH options are not accepted here. Enter only a Host alias from ~/.ssh/config.',
+    };
+  }
+
+  if (/\s/u.test(candidate)) {
+    return {
+      valid: false,
+      reason: 'invalid-format',
+      message: 'A Host alias cannot contain spaces. Enter only one Host name from ~/.ssh/config.',
+    };
+  }
+
+  if (!SSH_HOST_ALIAS_PATTERN.test(candidate)) {
+    return {
+      valid: false,
+      reason: 'invalid-format',
+      message:
+        'Use one Host alias containing only letters, numbers, dots, underscores, or hyphens.',
+    };
+  }
+
+  return { valid: true, alias: candidate };
+}
+
 function invokeWithoutUnhandledRejection(operation: () => MaybePromise<unknown>) {
   void Promise.resolve()
     .then(operation)
@@ -36,9 +104,13 @@ export function SshConnectionsCard({
 }: SshConnectionsCardProps) {
   const [label, setLabel] = useState('');
   const [hostAlias, setHostAlias] = useState('');
+  const [hostAliasTouched, setHostAliasTouched] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingLabel, setEditingLabel] = useState('');
   const [editingAlias, setEditingAlias] = useState('');
+  const [editingAliasTouched, setEditingAliasTouched] = useState(false);
+  const hostAliasValidation = validateSshHostAliasInput(hostAlias);
+  const editingAliasValidation = validateSshHostAliasInput(editingAlias);
 
   return (
     <article className="card ssh-connections-card" aria-labelledby="ssh-connections-heading">
@@ -55,18 +127,38 @@ export function SshConnectionsCard({
         this connection list.
       </p>
 
+      <details>
+        <summary>How to add an SSH server</summary>
+        <p className="privacy">
+          First add a named Host to <code>~/.ssh/config</code>, confirm{' '}
+          <code>ssh research-gpu</code> works in Terminal, then enter only <code>research-gpu</code>{' '}
+          below. Do not paste an entire command, <code>user@host</code>, <code>-p</code>, or{' '}
+          <code>-L</code> here.
+        </p>
+        <pre>{`Host research-gpu
+  HostName gpu.example.edu
+  User researcher
+  Port 2222`}</pre>
+        <p className="privacy">
+          Port forwarding remains outside GOSU. Project Chat can request only separately approved,
+          read-only diagnostic commands.
+        </p>
+      </details>
+
       <form
         className="stack-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (busy || !label.trim() || !hostAlias.trim()) return;
+          setHostAliasTouched(true);
+          if (busy || !label.trim() || !hostAliasValidation.valid) return;
           void Promise.resolve()
-            .then(() => onCreate({ label: label.trim(), hostAlias: hostAlias.trim() }))
+            .then(() => onCreate({ label: label.trim(), hostAlias: hostAliasValidation.alias }))
             .then(
               (succeeded) => {
                 if (succeeded === false) return;
                 setLabel('');
                 setHostAlias('');
+                setHostAliasTouched(false);
               },
               () => undefined,
             );
@@ -87,19 +179,34 @@ export function SshConnectionsCard({
           OpenSSH host alias
           <input
             value={hostAlias}
-            onChange={(event) => setHostAlias(event.target.value)}
+            onChange={(event) => {
+              setHostAlias(event.target.value);
+              setHostAliasTouched(true);
+            }}
+            onBlur={() => setHostAliasTouched(true)}
             maxLength={255}
-            pattern="[A-Za-z0-9][A-Za-z0-9._-]*"
             placeholder="research-gpu"
             title="Use one concrete Host alias from your SSH config, without user@, spaces, or options."
+            aria-invalid={hostAliasTouched && !hostAliasValidation.valid}
+            aria-describedby={
+              hostAliasTouched && !hostAliasValidation.valid
+                ? 'ssh-host-alias-help ssh-host-alias-error'
+                : 'ssh-host-alias-help'
+            }
             required
             disabled={busy}
           />
+          <small id="ssh-host-alias-help">Alias only — example: research-gpu</small>
         </label>
+        {hostAliasTouched && !hostAliasValidation.valid && (
+          <p className="settings-validation" id="ssh-host-alias-error" role="alert">
+            {hostAliasValidation.message}
+          </p>
+        )}
         <button
           type="submit"
           className="primary-button"
-          disabled={busy || !label.trim() || !hostAlias.trim()}
+          disabled={busy || !label.trim() || !hostAliasValidation.valid}
         >
           Register server
         </button>
@@ -121,14 +228,15 @@ export function SshConnectionsCard({
                     className="stack-form"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      if (busy || !editingLabel.trim() || !editingAlias.trim()) return;
+                      setEditingAliasTouched(true);
+                      if (busy || !editingLabel.trim() || !editingAliasValidation.valid) return;
                       void Promise.resolve()
                         .then(() =>
                           onUpdate({
                             connectionId: connection.id,
                             expectedVersion: connection.version,
                             label: editingLabel.trim(),
-                            hostAlias: editingAlias.trim(),
+                            hostAlias: editingAliasValidation.alias,
                           }),
                         )
                         .then(
@@ -149,19 +257,44 @@ export function SshConnectionsCard({
                     <input
                       aria-label="OpenSSH host alias"
                       value={editingAlias}
-                      onChange={(event) => setEditingAlias(event.target.value)}
+                      onChange={(event) => {
+                        setEditingAlias(event.target.value);
+                        setEditingAliasTouched(true);
+                      }}
+                      onBlur={() => setEditingAliasTouched(true)}
                       maxLength={255}
-                      pattern="[A-Za-z0-9][A-Za-z0-9._-]*"
+                      aria-invalid={editingAliasTouched && !editingAliasValidation.valid}
+                      aria-describedby={
+                        editingAliasTouched && !editingAliasValidation.valid
+                          ? `ssh-edit-alias-error-${connection.id}`
+                          : undefined
+                      }
                       disabled={busy}
                     />
+                    {editingAliasTouched && !editingAliasValidation.valid && (
+                      <p
+                        className="settings-validation"
+                        id={`ssh-edit-alias-error-${connection.id}`}
+                        role="alert"
+                      >
+                        {editingAliasValidation.message}
+                      </p>
+                    )}
                     <div className="form-actions">
-                      <button type="submit" className="primary-button" disabled={busy}>
+                      <button
+                        type="submit"
+                        className="primary-button"
+                        disabled={busy || !editingLabel.trim() || !editingAliasValidation.valid}
+                      >
                         Save
                       </button>
                       <button
                         type="button"
                         className="ghost-button"
-                        onClick={() => setEditingId(null)}
+                        onClick={() => {
+                          setEditingId(null);
+                          setEditingAliasTouched(false);
+                        }}
                         disabled={busy}
                       >
                         Cancel
@@ -193,6 +326,7 @@ export function SshConnectionsCard({
                           setEditingId(connection.id);
                           setEditingLabel(connection.label);
                           setEditingAlias(connection.hostAlias);
+                          setEditingAliasTouched(false);
                         }}
                         disabled={busy}
                       >

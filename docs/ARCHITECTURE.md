@@ -363,7 +363,11 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   주입해 실행 요청을 만들며, 모델은 host resolution·credential·private-key path를 보거나 binding을
   선택할 수 없다. 매 command는 exact target과 remote command preview를 보여 주는 30초짜리
   `Allow once` 승인을 새로 받아야 하고 Deny를 먼저 표시한다. 승인은 재사용하거나 unattended 실행에
-  전용하지 않는다.
+  전용하지 않는다. Connections의 등록 form은 전체 `ssh -p ... user@host` command, `user@host`, option과
+  forwarding을 host alias로 오인하지 않고 inline validation으로 차단한다. 사용자는 먼저
+  `~/.ssh/config`에 `Host`·`HostName`·`User`·`Port`를 설정하고 Terminal에서 해당 alias를 확인한 뒤 앱에는
+  `Host` 이름만 넣는다. UI 예시는 placeholder host만 사용하며 config·address·username·key path를 읽거나
+  자동 저장하는 새 Renderer capability를 열지 않는다.
 - SSH command는 concrete system executable path가 `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` 중 하나에
   있고 basename이 고정된 read/diagnostic allowlist에 있을 때만 approval center에 도달한다. `hostname`,
   `date`, `nvidia-smi`는 query-only argument까지 별도로 검증한다. arbitrary script·file/process/container
@@ -416,9 +420,12 @@ sanitize한 뒤 local KaTeX를 실행한다. sanitizer는 `math-inline`·`math-d
 KaTeX는 `trust: false`, `strict: warn`, `maxExpand: 1000`, `maxSize: 20`을 사용한다. 문서 하나에서
 렌더링하는 수식은 최대 256개, 수식 하나는 4,096자, 전체 TeX source는 32,768자로 제한한다. 한도를
 넘은 수식은 없애지 않고 inline 또는 fenced TeX code로 보여 주며, 긴 display 수식은 reader 안에서
-가로 scroll한다. KaTeX CSS와 font는 앱 package에 포함되고 Appearance font scale과 theme을 상속하며
-외부 network를 요청하지 않는다. `Source` mode는 이 파이프라인을 거치지 않아 원문 delimiter를 그대로
-표시한다.
+가로 scroll한다. 일반 prose와 긴 URL·무공백 token은 document 폭 안에서 줄바꿈하고, KaTeX의
+`white-space: nowrap`으로 폭을 유지해야 하는 긴 inline 수식은 해당 수식 자체가 가로 scroll region이
+된다. display 수식·code block·넓은 GFM table도 각각 자기 block 안에서 scroll하므로 바깥 Local Notes나
+Repository layout을 밀어내거나 문서 끝의 전역 scrollbar에 의존하지 않는다. KaTeX CSS와 font는 앱
+package에 포함되고 Appearance font scale과 theme을 상속하며 외부 network를 요청하지 않는다. `Source`
+mode는 이 파이프라인을 거치지 않아 원문 delimiter를 그대로 표시한다.
 
 Obsidian `[[note]]`, alias와 표준 상대 `.md` link는 raw text 치환이 아닌 Markdown AST 단계에서
 처리한다. 따라서 inline/fenced code 안의 wiki-link 표시는 바뀌지 않는다. 대상은 현재 note 기준의
@@ -599,7 +606,12 @@ flowchart LR
   Codex turn이나 SSH 작업을 중단하지 않는다. titlebar의 항상 보이는 panel button과
   `View → Toggle Project Sidebar` (`Control+Command+S`)가 같은 toggle을 호출한다. Main과 preload는
   payload 없는 고정 IPC channel만 노출하며 Renderer load 전 menu 요청은 toggle parity로 합쳐 전달한다.
-  keyboard 또는 menu로 접을 때 sidebar 내부 focus는 titlebar toggle로 옮겨 숨겨진 control에 남지 않게 한다.
+  Desktop wide layout은 sidebar DOM과 고정된 2열 grid placement를 유지한 채 첫 track만 280/252px에서
+  0px로 전환하고 nav opacity·짧은 translate를 함께 적용한다. content를 다른 row/column으로 재배치하지
+  않고 `scrollbar-gutter: stable`로 scrollbar 출현에 따른 좌우 흔들림을 막는다. 접힌 nav는 transition
+  종료 뒤 hidden visibility가 되며 `inert`·`aria-hidden`·pointer 차단으로 접근할 수 없다. keyboard 또는
+  menu로 접을 때 sidebar 내부 focus는 먼저 titlebar toggle로 옮겨 숨겨진 control에 남지 않게 한다.
+  좁은 stacked layout은 즉시 접고 `prefers-reduced-motion`에서는 모든 sidebar transition을 제거한다.
   Hide는 project lifecycle이나 협업자 화면을 바꾸지 않고 `Show` 또는 `Show all`로 즉시 되돌린다.
   진행 중인 Codex turn 표시와 중지 진입점을 숨기지 않도록 해당 project가 busy인 동안 Hide와 Archive를
   비활성화한다.
@@ -1169,8 +1181,8 @@ Local Notes tree test는 입력 순서와 무관한 directory-first natural orde
 DOM에 없고 directory의 `aria-expanded`, 현재 file의 `aria-selected`·`aria-current`, visible row의 단일
 roving tab stop과 tree level·position metadata가 일치하는지 검사한다. Markdown document test는 inline·
 display MathML, frontmatter·inline/fenced code 제외, escaped·unmatched dollar, malformed·unsafe TeX,
-수식 rendering budget의 visible fallback과 기존 wiki-link·attachment·HTTPS·raw HTML 경계를 함께
-검증한다.
+수식 rendering budget의 visible fallback, 긴 prose 줄바꿈과 inline/display 수식·code·table의 local
+가로 scroll 계약, 기존 wiki-link·attachment·HTTPS·raw HTML 경계를 함께 검증한다.
 
 Project Chat session test는 legacy single-chat DB가 default session으로 lossless migration되는지,
 root session isolation, completed-message branch prefix와 이후 source history 차단, cross-project·
@@ -1184,7 +1196,8 @@ provider가 제공한 opaque reasoning ID와 짧은 label을 그대로 보존하
 
 Project navigation test는 이전 저장값에 sidebar 필드가 없으면 펼침으로 복구하고, sidebar toggle이 folder·
 group·hidden project 상태를 보존하는지 확인한다. Renderer test는 접힘·펼침 button의 `aria-controls`와
-`aria-expanded`, 접힌 one-column grid와 hidden navigation을 검사한다. application menu와 preload test는
+`aria-expanded`, 고정 content grid placement, animated zero-width track, stable scrollbar gutter,
+`inert`·`aria-hidden`, responsive·reduced-motion fallback과 focus 이동 순서를 검사한다. application menu와 preload test는
 고정 accelerator, 표준 View 동작 보존, 구독 해제, 잘못된 payload 거절과 Renderer 준비 전 toggle parity를
 검증한다.
 
@@ -1192,7 +1205,8 @@ SSH test는 connection version CAS와 SQLCipher reopen, Renderer에 credential·
 노출되지 않는 IPC, concrete system executable·read/diagnostic allowlist·query-only subcommand,
 OpenSSH safe option·argument quoting·environment, background fork 차단, client diagnostic 비공개 격리와
 remote stderr 보존, arbitrary script·mutation·privilege·shell·transfer 거절, approval exact
-binding·TTL·capacity·Allow once·scope cancel, output crop·untrusted marker를 검증한다. Project Agent
+binding·TTL·capacity·Allow once·scope cancel, output crop·untrusted marker뿐 아니라 alias-only onboarding과
+full command·`user@host`·forwarding option의 inline 거절을 검증한다. Project Agent
 통합 test는 모델이 project/session binding을 위조할 수 없고 허용된 diagnostic도 승인 전에는 실행되지
 않으며 navigation·send startup·startup Stop 경합, 실패하거나 지연된 Stop, pending Local Notes delivery가
 있는 terminal turn과 app shutdown이 pending approval과 local transport를 즉시 폐기하는지 확인한다. remote
