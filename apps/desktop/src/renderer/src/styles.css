@@ -1604,6 +1604,64 @@ textarea:focus {
   margin-bottom: 12px;
 }
 
+.local-notes-project-access {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  text-align: left;
+}
+
+.empty-card .local-notes-project-access {
+  width: min(100%, 560px);
+  margin: 18px auto 0;
+}
+
+.local-notes-project-access.authorized {
+  border-color: color-mix(in srgb, var(--green) 42%, var(--line));
+  background: color-mix(in srgb, var(--green) 6%, var(--surface-soft));
+}
+
+.local-notes-project-access.warning {
+  border-color: color-mix(in srgb, var(--orange) 42%, var(--line));
+  background: color-mix(in srgb, var(--orange) 5%, var(--surface-soft));
+}
+
+.local-notes-project-access > span {
+  color: var(--green);
+  font-size: var(--font-kicker);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.local-notes-project-access > strong {
+  font-size: var(--font-control);
+  line-height: 1.35;
+}
+
+.local-notes-project-access > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-caption);
+  line-height: 1.45;
+}
+
+.local-notes-access-actions {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.local-notes-access-actions button {
+  width: 100%;
+  min-height: 34px;
+  padding-inline: 9px;
+  white-space: normal;
+}
+
 .note-agent-disclosure {
   margin: 0 12px 10px;
   padding: 10px 11px;

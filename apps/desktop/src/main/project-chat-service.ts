@@ -138,6 +138,7 @@ type ActiveTurn = {
 const UNAVAILABLE_AGENT_VAULT: ProjectAgentVault = {
   descriptor: () => null,
   matchesGrant: () => false,
+  validateGrant: () => Promise.reject(new Error('vault_not_selected')),
   listForAgent: () => Promise.reject(new Error('vault_not_selected')),
   readForAgent: () => Promise.reject(new Error('vault_not_selected')),
 };
@@ -324,6 +325,11 @@ export class ProjectChatService extends EventEmitter {
           selectedVault.id !== command.localNotesVault.id ||
           selectedVault.name !== command.localNotesVault.name
         ) {
+          throw new ProjectChatServiceError('local_notes_vault_changed');
+        }
+        try {
+          await this.dependencies.vault!.validateGrant(command.localNotesVault.id);
+        } catch {
           throw new ProjectChatServiceError('local_notes_vault_changed');
         }
       }

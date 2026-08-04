@@ -84,6 +84,10 @@ export class VaultReader {
     return `${this.rootIdentity.dev}:${this.rootIdentity.ino}`;
   }
 
+  async validateRoot() {
+    await this.assertRootIdentity();
+  }
+
   async listMarkdown() {
     await this.assertRootIdentity();
     const results: string[] = [];

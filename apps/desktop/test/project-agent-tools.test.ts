@@ -125,6 +125,10 @@ class FakeProjectVault implements ProjectAgentVault {
     return this.activeVaultId === vaultId;
   }
 
+  async validateGrant(expectedVaultId: string) {
+    this.assertGrant(expectedVaultId);
+  }
+
   private assertGrant(expectedVaultId: string) {
     if (this.activeVaultId === null) throw new Error('vault_not_selected');
     if (this.activeVaultId !== expectedVaultId) throw new Error('vault_grant_stale');

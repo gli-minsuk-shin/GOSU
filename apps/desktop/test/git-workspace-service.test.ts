@@ -3,7 +3,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GitCommandError, createGitCommandRunner } from '../src/main/git-command-runner';
 import { GitWorkspaceService } from '../src/main/git-workspace-service';
@@ -11,6 +11,10 @@ import type { ProjectRecord, WorkspaceSnapshot } from '../src/shared/workspace-c
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const CREATED_AT = '2026-08-04T00:00:00.000Z';
+
+// These are real Git process integration tests. Keep the timeout above transient macOS I/O and
+// process-startup contention while retaining per-test failure bounds.
+vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
 
 function git(root: string, ...arguments_: string[]) {
   return execFileSync('git', arguments_, { cwd: root, encoding: 'utf8' }).trim();

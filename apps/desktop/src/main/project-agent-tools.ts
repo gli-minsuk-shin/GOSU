@@ -112,6 +112,7 @@ type PendingNoteCall = {
 export interface ProjectAgentVault {
   descriptor(): LocalNotesVaultGrant | null;
   matchesGrant(vaultId: string): boolean;
+  validateGrant(expectedVaultId: string): Promise<void>;
   listForAgent(
     expectedVaultId: string,
     query?: string,
