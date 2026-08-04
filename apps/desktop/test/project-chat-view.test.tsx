@@ -5,6 +5,8 @@ import {
   ProjectChatView,
   reconcileProjectChatSessionUiState,
   resolveEffectiveCodexModel,
+  resolveLatestMessageScrollTop,
+  resolveProjectChatScrollIntent,
 } from '../src/renderer/src/project-chat-view';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
 
@@ -18,6 +20,65 @@ const project = {
 } as const;
 
 describe('advanced Project Chat controls', () => {
+  it('anchors a tall latest response below the transcript inset instead of clipping its header', () => {
+    expect(
+      resolveLatestMessageScrollTop({
+        currentScrollTop: 600,
+        scrollHeight: 1_600,
+        clientHeight: 600,
+        transcriptTop: 200,
+        messageTop: 150,
+        topInset: 18,
+      }),
+    ).toBe(532);
+
+    expect(
+      resolveLatestMessageScrollTop({
+        currentScrollTop: 0,
+        scrollHeight: 1_000,
+        clientHeight: 600,
+        transcriptTop: 100,
+        messageTop: 980,
+        topInset: 18,
+      }),
+    ).toBe(400);
+  });
+
+  it('waits for the terminal assistant snapshot before moving away from the active turn bottom', () => {
+    expect(
+      resolveProjectChatScrollIntent({
+        observedLatestMessageId: null,
+        latestMessageId: 'saved-assistant',
+        wasInFlight: false,
+        inFlight: false,
+      }),
+    ).toBe('latest-start');
+    expect(
+      resolveProjectChatScrollIntent({
+        observedLatestMessageId: 'new-user-message',
+        latestMessageId: 'new-user-message',
+        wasInFlight: true,
+        inFlight: false,
+      }),
+    ).toBe('none');
+    expect(
+      resolveProjectChatScrollIntent({
+        observedLatestMessageId: 'new-user-message',
+        latestMessageId: 'terminal-assistant-message',
+        wasInFlight: false,
+        inFlight: false,
+      }),
+    ).toBe('latest-start');
+    expect(
+      resolveProjectChatScrollIntent({
+        observedLatestMessageId: 'terminal-assistant-message',
+        latestMessageId: 'terminal-assistant-message',
+        wasInFlight: false,
+        inFlight: true,
+      }),
+    ).toBe('bottom');
+  });
+
   it('preserves typed draft, retry, and Advanced state for the same project session', () => {
     const current = {
       draft: 'typed while changing the model',
