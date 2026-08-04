@@ -62,9 +62,20 @@ loopback; a remote endpoint must use HTTPS. Electron Main appends the fixed read
 redirects, bounds the request timeout, validates the GOSU health identity, and returns only a small
 ready/degraded result over IPC.
 
-`pnpm app:package` runs the complete repository gate and creates an unsigned development DMG. The
-packaged renderer keeps the strict production CSP; only the exact Vite development origin receives
+`pnpm app:package` runs the complete repository gate and creates an ad-hoc-signed development DMG.
+The local-only packaging command disables Hardened Runtime so Electron and its native modules share
+a valid development signature without weakening the production signing configuration. The packaged
+renderer keeps the strict production CSP; only the exact Vite development origin receives
 the inline refresh and HMR exceptions required for local development. Signing, notarization, update
 metadata, and clean-machine release validation remain release work. The packaging hook also removes
 Electron's unused camera, microphone, audio, and Bluetooth usage descriptions and replaces arbitrary
 transport access with the explicit loopback development exception.
+
+Because an ad-hoc signature has no stable Developer ID requirement, macOS can ask the user to allow
+access to the existing `Electron Safe Storage` Keychain item after installing a rebuilt development
+app. This prompt must be approved by the user; the packaging flow must not weaken or rewrite the
+Keychain access policy to suppress it.
+
+`pnpm app:package:release` keeps Hardened Runtime enabled and fails closed when a signing identity is
+unavailable. It is the release entry point; Developer ID credentials and notarization configuration
+must be supplied by the release environment.

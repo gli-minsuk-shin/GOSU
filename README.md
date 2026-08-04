@@ -139,7 +139,7 @@ for adapter development; it does not switch the running API to PostgreSQL automa
 pnpm dev           # run workspace development tasks
 pnpm app:dev       # start Sync, wait for readiness, and open Electron
 pnpm app:doctor    # validate the local desktop prerequisites
-pnpm app:package   # run all checks and create an unsigned local DMG
+pnpm app:package   # run all checks and create an ad-hoc-signed local DMG
 pnpm build         # build all packages and applications
 pnpm lint          # lint all workspaces
 pnpm typecheck     # run TypeScript checks
