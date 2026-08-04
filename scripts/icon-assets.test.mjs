@@ -105,11 +105,19 @@ function readIcnsChunk(icns, expectedType) {
 
 test('packages the GOSU icon instead of the Electron default', async () => {
   const packageJson = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
+  const source = await readFile(join(desktopRoot, 'build', 'icon-source.png'));
   const png = await readFile(join(desktopRoot, 'build', 'icon.png'));
   const icns = await readFile(join(desktopRoot, 'build', 'icon.icns'));
 
   assert.equal(packageJson.build.mac.icon, 'build/icon.icns');
   assert.equal(packageJson.build.dmg.icon, 'build/icon.icns');
+
+  assert.deepEqual(
+    source.subarray(0, 8),
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  );
+  assert.equal(source.readUInt32BE(16), source.readUInt32BE(20));
+  assert.ok(source.readUInt32BE(16) >= 1024, 'editable icon source must remain high resolution');
 
   assert.deepEqual(
     png.subarray(0, 8),
