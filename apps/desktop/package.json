@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -19,12 +19,15 @@
     "@gosu/contracts": "workspace:*",
     "@openai/codex": "0.146.0",
     "better-sqlite3-multiple-ciphers": "12.11.1",
+    "katex": "0.16.47",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "10.1.0",
+    "rehype-katex": "7.0.1",
     "rehype-sanitize": "6.0.0",
     "remark-frontmatter": "5.0.0",
     "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
     "unist-util-visit": "5.1.0",
     "zod": "4.4.3"
   },

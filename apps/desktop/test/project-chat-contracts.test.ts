@@ -6,10 +6,13 @@ import {
   CodexCollaborationModeCatalogSchema,
   CodexProjectResponseSchema,
   PROJECT_CHAT_OUTPUT_SCHEMA,
+  BranchProjectChatSessionInputSchema,
+  CreateProjectChatSessionInputSchema,
   ProjectChatAttemptSchema,
   ProjectChatMessageSchema,
   ProjectChatPromptProvenanceSchema,
   ProjectChatProfileSchema,
+  ProjectChatSessionSchema,
   ProjectChatSnapshotSchema,
   UpdateProjectChatProfileInputSchema,
   defaultProjectChatProfile,
@@ -112,6 +115,87 @@ describe('Project chat contracts', () => {
         projectId,
         attempts: [{ ...attempt, projectId: randomUUID() }],
         messages: [message],
+      }),
+    ).toThrow();
+  });
+
+  it('keeps session catalogs strict, project-scoped, and compatible with legacy snapshots', () => {
+    const projectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const now = new Date().toISOString();
+    const root = ProjectChatSessionSchema.parse({
+      id: randomUUID(),
+      projectId,
+      title: ' Project chat ',
+      isDefault: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    expect(root.title).toBe('Project chat');
+    expect(
+      ProjectChatSnapshotSchema.parse({
+        schemaVersion: 1,
+        projectId,
+        session: root,
+        sessions: [root],
+        messages: [],
+        attempts: [],
+      }).session,
+    ).toEqual(root);
+    expect(
+      ProjectChatSnapshotSchema.parse({ schemaVersion: 1, projectId, messages: [] }).session,
+    ).toBeUndefined();
+    expect(() =>
+      ProjectChatSnapshotSchema.parse({
+        schemaVersion: 1,
+        projectId,
+        session: root,
+        sessions: [{ ...root, projectId: otherProjectId }],
+        messages: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      ProjectChatSnapshotSchema.parse({
+        schemaVersion: 1,
+        projectId,
+        session: root,
+        sessions: [root, root],
+        messages: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      ProjectChatSessionSchema.parse({
+        ...root,
+        parentSessionId: randomUUID(),
+        branchedFromMessageId: randomUUID(),
+      }),
+    ).toThrow();
+  });
+
+  it('bounds strict root and branch session commands', () => {
+    const projectId = randomUUID();
+    expect(
+      CreateProjectChatSessionInputSchema.parse({ projectId, title: '  New analysis  ' }),
+    ).toEqual({ projectId, title: 'New analysis' });
+    expect(
+      BranchProjectChatSessionInputSchema.parse({
+        projectId,
+        sourceSessionId: randomUUID(),
+        branchFromMessageId: randomUUID(),
+      }),
+    ).toMatchObject({ projectId });
+    expect(() =>
+      CreateProjectChatSessionInputSchema.parse({
+        projectId,
+        title: 'x'.repeat(121),
+      }),
+    ).toThrow();
+    expect(() =>
+      BranchProjectChatSessionInputSchema.parse({
+        projectId,
+        sourceSessionId: randomUUID(),
+        branchFromMessageId: randomUUID(),
+        unsafe: true,
       }),
     ).toThrow();
   });

@@ -138,8 +138,8 @@ describe('separated application Settings', () => {
     expect(html).toContain('LOCAL NOTES ACCESS');
     expect(html).toContain('Listing notes sends their display titles and opaque IDs');
     expect(html).toContain('content SHA-256, offset, and total character');
-    expect(html).toContain('Project-bound read tools only');
-    expect(html).toContain('no shell · no arbitrary files · no network · no subagents');
+    expect(html).toContain('Codex sandbox: project-bound reads');
+    expect(html).toContain('no direct shell, files, network, or subagents');
   });
 
   it('keeps a migrated Reviewer profile in compatibility mode until a native mode is chosen', () => {

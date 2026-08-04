@@ -5,6 +5,10 @@ import { WORKSPACE_TASK_STATUSES } from './workspace-contracts';
 export const PROJECT_CHAT_MAX_MESSAGE_LENGTH = 12_000;
 export const PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH = 32_000;
 export const PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH = 4_000;
+export const PROJECT_CHAT_MAX_SESSIONS_PER_PROJECT = 100;
+export const PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH = 120;
+export const PROJECT_CHAT_MAX_BRANCH_DEPTH = 32;
+export const PROJECT_CHAT_MAX_BRANCH_MESSAGES = 5_000;
 
 export const PROJECT_CHAT_HARNESS_MODES = ['context', 'planner', 'reviewer'] as const;
 export const PROJECT_CHAT_RESPONSE_DEPTHS = ['concise', 'standard', 'deep'] as const;
@@ -324,6 +328,37 @@ export const ProjectChatModelProvenanceSchema = z
 
 export type ProjectChatModelProvenance = z.infer<typeof ProjectChatModelProvenanceSchema>;
 
+export const ProjectChatSessionSchema = z
+  .object({
+    id: uuidSchema,
+    projectId: uuidSchema,
+    title: z.string().trim().min(1).max(PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH),
+    isDefault: z.boolean(),
+    parentSessionId: uuidSchema.optional(),
+    branchedFromMessageId: uuidSchema.optional(),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+  })
+  .strict()
+  .refine(
+    (session) =>
+      (session.parentSessionId === undefined) === (session.branchedFromMessageId === undefined),
+    {
+      message: 'A branched chat session must identify both its parent and branch message',
+      path: ['parentSessionId'],
+    },
+  )
+  .refine((session) => !session.isDefault || session.parentSessionId === undefined, {
+    message: 'The default chat session must be a root session',
+    path: ['isDefault'],
+  })
+  .refine((session) => session.parentSessionId !== session.id, {
+    message: 'A chat session cannot branch from itself',
+    path: ['parentSessionId'],
+  });
+
+export type ProjectChatSession = z.infer<typeof ProjectChatSessionSchema>;
+
 export const PROJECT_CHAT_ATTEMPT_STATUSES = [
   'starting',
   'running',
@@ -343,6 +378,8 @@ export const ProjectChatAttemptSchema = z
   .object({
     id: uuidSchema,
     projectId: uuidSchema,
+    // Optional at the wire boundary so pre-session durable attempts remain migratable.
+    sessionId: uuidSchema.optional(),
     userMessageId: uuidSchema,
     retryOfAttemptId: uuidSchema.optional(),
     threadId: z.string().trim().min(1).max(256).optional(),
@@ -413,6 +450,13 @@ export const ProjectChatSnapshotSchema = z
   .object({
     schemaVersion: z.literal(1),
     projectId: uuidSchema,
+    // Optional at the wire boundary for compatibility with snapshots produced before sessions.
+    session: ProjectChatSessionSchema.optional(),
+    sessions: z
+      .array(ProjectChatSessionSchema)
+      .min(1)
+      .max(PROJECT_CHAT_MAX_SESSIONS_PER_PROJECT)
+      .optional(),
     activeTurnId: z.string().trim().min(1).max(256).optional(),
     messages: z.array(ProjectChatMessageSchema).max(250),
     // Optional at the wire boundary so legacy snapshots remain readable. Current service snapshots
@@ -430,6 +474,58 @@ export const ProjectChatSnapshotSchema = z
         message: 'Chat profile references another project',
         path: ['profile', 'projectId'],
       });
+    }
+    if (snapshot.session && snapshot.session.projectId !== snapshot.projectId) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Chat session references another project',
+        path: ['session', 'projectId'],
+      });
+    }
+    for (const [index, session] of (snapshot.sessions ?? []).entries()) {
+      if (session.projectId !== snapshot.projectId) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Chat session catalog references another project',
+          path: ['sessions', index, 'projectId'],
+        });
+      }
+    }
+    if (snapshot.sessions) {
+      const sessionIds = new Set<string>();
+      for (const [index, session] of snapshot.sessions.entries()) {
+        if (sessionIds.has(session.id)) {
+          context.addIssue({
+            code: 'custom',
+            message: 'Chat session IDs must be unique',
+            path: ['sessions', index, 'id'],
+          });
+        }
+        sessionIds.add(session.id);
+      }
+      if (snapshot.sessions.filter((session) => session.isDefault).length !== 1) {
+        context.addIssue({
+          code: 'custom',
+          message: 'A chat session catalog must contain exactly one default session',
+          path: ['sessions'],
+        });
+      }
+      if (snapshot.session && !sessionIds.has(snapshot.session.id)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'The selected chat session must be present in its catalog',
+          path: ['session', 'id'],
+        });
+      }
+      for (const [index, attempt] of (snapshot.attempts ?? []).entries()) {
+        if (attempt.sessionId && !sessionIds.has(attempt.sessionId)) {
+          context.addIssue({
+            code: 'custom',
+            message: 'Chat attempt origin must be present in the session catalog',
+            path: ['attempts', index, 'sessionId'],
+          });
+        }
+      }
     }
     for (const [index, message] of snapshot.messages.entries()) {
       if (message.projectId !== snapshot.projectId) {
@@ -456,6 +552,8 @@ export type ProjectChatSnapshot = z.infer<typeof ProjectChatSnapshotSchema>;
 export const SendProjectChatMessageInputSchema = z
   .object({
     projectId: uuidSchema,
+    // Legacy callers omit this and are routed to the project's durable default session.
+    sessionId: uuidSchema.optional(),
     message: z.string().trim().min(1).max(PROJECT_CHAT_MAX_MESSAGE_LENGTH),
     requestedModelId: z.string().trim().min(1).max(256).nullable(),
     reasoningOptionId: z.string().trim().min(1).max(128).nullable(),
@@ -472,17 +570,60 @@ export const SendProjectChatMessageInputSchema = z
 
 export const ProjectChatProjectInputSchema = z.object({ projectId: uuidSchema }).strict();
 
+export const ProjectChatSnapshotInputSchema = z
+  .object({ projectId: uuidSchema, sessionId: uuidSchema.optional() })
+  .strict();
+
+export const CreateProjectChatSessionInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    title: z.string().trim().min(1).max(PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH).optional(),
+  })
+  .strict();
+
+export const BranchProjectChatSessionInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    sourceSessionId: uuidSchema,
+    branchFromMessageId: uuidSchema,
+    title: z.string().trim().min(1).max(PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH).optional(),
+  })
+  .strict();
+
+export const RenameProjectChatSessionInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    sessionId: uuidSchema,
+    title: z.string().trim().min(1).max(PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH),
+  })
+  .strict();
+
+export const ProjectChatSessionInputSchema = z
+  .object({ projectId: uuidSchema, sessionId: uuidSchema.optional() })
+  .strict();
+
 export const ApplyProjectChatActionInputSchema = z
-  .object({ projectId: uuidSchema, actionId: uuidSchema })
+  .object({
+    projectId: uuidSchema,
+    // Legacy callers omit this and apply actions from the durable default session.
+    sessionId: uuidSchema.optional(),
+    actionId: uuidSchema,
+  })
   .strict();
 
 export type SendProjectChatMessageInput = z.infer<typeof SendProjectChatMessageInputSchema>;
 export type ProjectChatProjectInput = z.infer<typeof ProjectChatProjectInputSchema>;
+export type ProjectChatSnapshotInput = z.infer<typeof ProjectChatSnapshotInputSchema>;
+export type CreateProjectChatSessionInput = z.infer<typeof CreateProjectChatSessionInputSchema>;
+export type BranchProjectChatSessionInput = z.infer<typeof BranchProjectChatSessionInputSchema>;
+export type RenameProjectChatSessionInput = z.infer<typeof RenameProjectChatSessionInputSchema>;
+export type ProjectChatSessionInput = z.infer<typeof ProjectChatSessionInputSchema>;
 export type ApplyProjectChatActionInput = z.infer<typeof ApplyProjectChatActionInputSchema>;
 
 export const ProjectChatTurnReceiptSchema = z
   .object({
     projectId: uuidSchema,
+    sessionId: uuidSchema,
     attemptId: uuidSchema,
     userMessageId: uuidSchema,
     turnId: z.string().trim().min(1).max(256),
@@ -496,6 +637,7 @@ export const ProjectChatEventSchema = z.discriminatedUnion('type', [
     .object({
       type: z.literal('turn.started'),
       projectId: uuidSchema,
+      sessionId: uuidSchema,
       turnId: z.string().trim().min(1).max(256),
     })
     .strict(),
@@ -503,6 +645,7 @@ export const ProjectChatEventSchema = z.discriminatedUnion('type', [
     .object({
       type: z.literal('turn.completed'),
       projectId: uuidSchema,
+      sessionId: uuidSchema,
       turnId: z.string().trim().min(1).max(256),
       status: z.enum(['complete', 'failed', 'interrupted']),
     })
@@ -511,6 +654,7 @@ export const ProjectChatEventSchema = z.discriminatedUnion('type', [
     .object({
       type: z.literal('action.updated'),
       projectId: uuidSchema,
+      sessionId: uuidSchema,
       action: ProjectChatActionSchema,
       workspaceChanged: z.boolean(),
     })

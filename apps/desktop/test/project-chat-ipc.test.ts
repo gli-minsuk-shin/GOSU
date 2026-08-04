@@ -90,4 +90,89 @@ describe('Project chat IPC', () => {
     ).resolves.toEqual({ ok: false, error: { code: 'chat_profile_conflict' } });
     expect(updateProfile).toHaveBeenCalledOnce();
   });
+
+  it('exposes strict session commands without accepting extra or malformed fields', async () => {
+    const projectId = randomUUID();
+    const sessionId = randomUUID();
+    const messageId = randomUUID();
+    const listSessions = vi.fn(async () => []);
+    const createSession = vi.fn(async (input) => input);
+    const branchSession = vi.fn(async (input) => input);
+    const renameSession = vi.fn(async (input) => input);
+    const { handlers } = registerFixture({
+      listSessions,
+      createSession,
+      branchSession,
+      renameSession,
+    });
+
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.listSessions)?.({ projectId }),
+    ).resolves.toEqual({ ok: true, value: [] });
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.createSession)?.({
+        projectId,
+        title: 'Replication plan',
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.branchSession)?.({
+        projectId,
+        sourceSessionId: sessionId,
+        branchFromMessageId: messageId,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.renameSession)?.({
+        projectId,
+        sessionId,
+        title: 'A'.repeat(121),
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_chat_input' } });
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.createSession)?.({
+        projectId,
+        title: 'Valid title',
+        unexpected: true,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_chat_input' } });
+
+    expect(listSessions).toHaveBeenCalledOnce();
+    expect(createSession).toHaveBeenCalledOnce();
+    expect(branchSession).toHaveBeenCalledOnce();
+    expect(renameSession).not.toHaveBeenCalled();
+  });
+
+  it('preserves bounded session errors and validates session-aware cancel input', async () => {
+    const projectId = randomUUID();
+    const sessionId = randomUUID();
+    const branchSession = vi.fn(async () => {
+      throw new ProjectChatServiceError('chat_branch_point_invalid');
+    });
+    const cancel = vi.fn(async () => ({ accepted: true as const }));
+    const revokeSsh = vi.fn(async () => ({ revoked: true as const }));
+    const { handlers, reportUnexpected } = registerFixture({ branchSession, cancel, revokeSsh });
+
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.branchSession)?.({
+        projectId,
+        sourceSessionId: sessionId,
+        branchFromMessageId: randomUUID(),
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'chat_branch_point_invalid' } });
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.cancel)?.({ projectId, sessionId }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.cancel)?.({ projectId, sessionId, extra: true }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_chat_input' } });
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.revokeSsh)?.({ projectId, sessionId }),
+    ).resolves.toEqual({ ok: true, value: { revoked: true } });
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.revokeSsh)?.({ projectId, sessionId: '/' }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_chat_input' } });
+    expect(revokeSsh).toHaveBeenCalledExactlyOnceWith({ projectId, sessionId });
+    expect(reportUnexpected).not.toHaveBeenCalled();
+  });
 });

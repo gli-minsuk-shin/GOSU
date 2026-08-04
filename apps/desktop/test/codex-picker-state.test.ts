@@ -3,10 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { resetCodexPicker, selectCodexModel } from '../src/renderer/src/codex-picker-state';
 
 describe('Codex picker state', () => {
-  it('clears reasoning when a model changes without reserving an opaque model ID', () => {
-    expect(selectCodexModel('auto')).toEqual({
+  it('preserves an opaque reasoning ID so an unsupported new model fails visibly', () => {
+    expect(selectCodexModel('auto', 'future-ultra')).toEqual({
       modelId: 'auto',
-      reasoningOptionId: null,
+      reasoningOptionId: 'future-ultra',
     });
   });
 

@@ -1443,6 +1443,244 @@ textarea:focus {
   max-width: 1100px;
 }
 
+.ssh-connections-card {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 16px;
+}
+
+.ssh-connections-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.ssh-connections-heading span,
+.ssh-connections-card .card-head span {
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.ssh-connections-heading h2 {
+  margin: 5px 0 3px;
+}
+
+.ssh-connections-heading p,
+.ssh-connections-card .privacy {
+  max-width: 760px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.55;
+}
+
+.ssh-connections-heading > strong {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.ssh-connection-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.ssh-connection-form button {
+  min-height: 36px;
+}
+
+.ssh-connection-list,
+.ssh-connections-card .connection-list {
+  display: grid;
+  gap: 7px;
+}
+
+.ssh-connection-row,
+.ssh-connections-card .connection-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.ssh-connection-row > div:first-child,
+.ssh-connections-card .connection-item > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ssh-connection-row code,
+.ssh-connections-card .connection-item span {
+  color: var(--blue);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-control);
+}
+
+.ssh-test-status,
+.ssh-connections-card .connection-item small {
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+
+.ssh-test-status.ready {
+  color: var(--green);
+}
+
+.ssh-connection-actions,
+.ssh-connections-card .connection-item .form-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.ssh-connection-empty,
+.ssh-connections-card .connection-list > .empty-card {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-height: 90px;
+  padding: 18px;
+  place-content: center;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  text-align: center;
+  box-shadow: none;
+}
+
+.ssh-approval-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(5px);
+}
+
+.ssh-approval-dialog {
+  width: min(100%, 580px);
+  padding: 22px;
+  border: 1px solid color-mix(in srgb, var(--orange) 42%, var(--line));
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 28px 100px rgba(0, 0, 0, 0.42);
+}
+
+.ssh-approval-kicker {
+  color: var(--orange);
+  font-size: var(--font-caption);
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.ssh-approval-dialog h2 {
+  margin: 8px 0;
+}
+
+.ssh-approval-dialog p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.ssh-approval-dialog dl {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+}
+
+.ssh-approval-dialog dl > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.ssh-approval-dialog dt {
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+
+.ssh-approval-dialog dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ssh-approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ssh-approval-center {
+  position: fixed;
+  z-index: 1000;
+  right: 22px;
+  bottom: 22px;
+  display: grid;
+  gap: 8px;
+  width: min(calc(100vw - 44px), 520px);
+  max-height: min(72vh, 680px);
+  padding: 13px;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--orange) 42%, var(--line));
+  border-radius: 15px;
+  background: var(--surface);
+  box-shadow: 0 28px 100px rgba(0, 0, 0, 0.42);
+}
+
+.ssh-approval-center > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ssh-approval-center > header span {
+  color: var(--orange);
+  font-size: var(--font-meta);
+}
+
+.ssh-approval-card {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.ssh-approval-card pre {
+  max-height: 140px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border-radius: 7px;
+  background: var(--bg);
+  white-space: pre-wrap;
+}
+
+.ssh-approval-card p,
+.ssh-approval-card small {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.5;
+}
+
 .runtime-card {
   grid-column: 1 / -1;
   display: grid;
@@ -2023,11 +2261,146 @@ textarea:focus {
   font-size: var(--font-control);
 }
 
+.project-chat-workspace {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 12px;
+  width: min(100%, 1460px);
+  height: clamp(560px, calc(100vh - 210px), 820px);
+  min-height: 0;
+}
+
+.project-chat-session-rail {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.project-chat-session-rail > header {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.project-chat-session-rail > header > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.project-chat-session-rail > header span {
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.project-chat-session-rail > header strong {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.project-chat-session-rail > header button {
+  width: 100%;
+  min-height: 34px;
+}
+
+.project-chat-session-actions {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px !important;
+}
+
+.project-chat-session-rail > header .project-chat-session-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 6px;
+}
+
+.project-chat-session-list {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-height: 0;
+  padding: 8px;
+  overflow: auto;
+}
+
+.project-chat-session-item {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+}
+
+.project-chat-session-item:hover {
+  border-color: var(--line);
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.project-chat-session-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.project-chat-session-item.active {
+  border-color: color-mix(in srgb, var(--green) 36%, var(--line));
+  background: color-mix(in srgb, var(--green) 9%, var(--surface));
+  color: var(--text);
+}
+
+.project-chat-session-title {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.project-chat-session-title i {
+  color: var(--green);
+  font-size: var(--font-meta);
+  font-style: normal;
+}
+
+.project-chat-session-title strong {
+  overflow: hidden;
+  font-size: var(--font-control);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-chat-session-title b {
+  color: var(--green);
+  font-size: 8px;
+}
+
+.project-chat-session-item small {
+  overflow: hidden;
+  color: var(--subtle);
+  font-size: var(--font-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .project-chat-shell {
   display: grid;
   grid-template-rows: auto minmax(300px, 1fr) auto;
-  width: min(100%, 1240px);
-  height: clamp(560px, calc(100vh - 210px), 820px);
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -2357,7 +2730,101 @@ textarea:focus {
   font-size: var(--font-body);
   line-height: 1.72;
   overflow-wrap: anywhere;
+}
+
+.message-copy > :first-child {
+  margin-top: 0;
+}
+
+.message-copy > :last-child {
+  margin-bottom: 0;
+}
+
+.message-copy p,
+.message-copy ul,
+.message-copy ol,
+.message-copy blockquote,
+.message-copy pre,
+.message-copy .katex-display {
+  margin: 0.65em 0;
+}
+
+.message-copy p,
+.message-copy li {
   white-space: pre-wrap;
+}
+
+.message-copy ul,
+.message-copy ol {
+  padding-left: 1.5em;
+}
+
+.message-copy pre,
+.message-copy :not(pre) > code {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-soft) 76%, var(--bg));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.message-copy pre {
+  max-width: 100%;
+  padding: 11px 12px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.message-copy :not(pre) > code {
+  padding: 0.08em 0.3em;
+}
+
+.message-copy blockquote {
+  padding-left: 12px;
+  border-left: 3px solid color-mix(in srgb, var(--green) 45%, var(--line));
+  color: var(--muted);
+}
+
+.message-copy a {
+  color: var(--blue);
+}
+
+.project-chat-markdown-link-blocked,
+.project-chat-markdown-image-blocked {
+  color: var(--orange);
+  font-size: 0.92em;
+}
+
+.project-chat-markdown-image-blocked {
+  display: inline-block;
+  padding: 2px 6px;
+  border: 1px dashed color-mix(in srgb, var(--orange) 38%, var(--line));
+  border-radius: 5px;
+}
+
+.message-copy .katex {
+  font-size: 1em;
+}
+
+.message-copy .katex-display {
+  max-width: 100%;
+  padding: 4px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.chat-message-branch {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 9px;
+  padding-top: 7px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.chat-message-branch button {
+  min-height: 27px;
+  padding: 3px 7px;
+  color: var(--subtle);
+  font-size: var(--font-caption);
 }
 
 .message-provenance {
@@ -3509,6 +3976,10 @@ textarea:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .project-chat-workspace {
+    grid-template-columns: 190px minmax(0, 1fr);
+  }
+
   .repository-toolbar {
     align-items: stretch;
     flex-direction: column;
@@ -3563,8 +4034,34 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .project-chat-shell {
+  .project-chat-workspace {
+    grid-template: auto minmax(500px, 1fr) / 1fr;
     height: calc(100vh - 220px);
+  }
+
+  .project-chat-session-rail {
+    grid-template: auto / auto minmax(0, 1fr);
+    min-height: 92px;
+  }
+
+  .project-chat-session-rail > header {
+    min-width: 150px;
+    border-right: 1px solid var(--line);
+    border-bottom: 0;
+  }
+
+  .project-chat-session-list {
+    display: flex;
+    align-items: stretch;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .project-chat-session-item {
+    flex: 0 0 180px;
+  }
+
+  .project-chat-shell {
     min-height: 500px;
   }
 
@@ -3633,6 +4130,10 @@ textarea:focus {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
+
+  .ssh-connection-form {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 620px) {
@@ -3651,5 +4152,33 @@ textarea:focus {
   .agent-notes-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .project-chat-session-rail {
+    grid-template: auto auto / 1fr;
+  }
+
+  .project-chat-session-rail > header {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .ssh-connections-heading,
+  .ssh-connection-row,
+  .ssh-connections-card .connection-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ssh-connection-actions,
+  .ssh-connections-card .connection-item .form-actions,
+  .ssh-approval-actions {
+    justify-content: stretch;
+  }
+
+  .ssh-connection-actions button,
+  .ssh-connections-card .connection-item .form-actions button,
+  .ssh-approval-actions button {
+    flex: 1;
   }
 }

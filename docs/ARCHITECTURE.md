@@ -51,6 +51,7 @@ flowchart LR
     Codex["로컬 Codex App Server"]
     Vault["선택한 Obsidian 폴더"]
     Git["앱 관리형 로컬 Git worktree\nfile·change·history·branch"]
+    OpenSSH["system OpenSSH\nconfig alias·ssh-agent"]
   end
 
   subgraph Hosted["Hosted collaboration boundary"]
@@ -65,6 +66,7 @@ flowchart LR
     Podman["rootless Podman workload"]
     Artifacts["dataset·raw log·artifact"]
     Optimizer["Python Optuna worker"]
+    SshHost["사용자 등록 SSH server\n승인된 bounded command"]
   end
 
   Renderer -->|"allowlisted IPC"| Main
@@ -72,6 +74,7 @@ flowchart LR
   Main --> Codex
   Main -->|"read-only"| Vault
   Main -->|"project-scoped typed Git IPC"| Git
+  Main -->|"Allow once broker"| OpenSSH --> SshHost
   Main <-->|"readiness·향후 sync worker"| API
   API --> Memory
   API -.->|"런타임 연결 전"| Postgres
@@ -94,17 +97,17 @@ flowchart LR
 
 ## 4. 저장소 구조와 코드 소유권
 
-| 경로                    | 소유 책임                                                                   | 현재 상태                                                  |
-| ----------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Vault·Git 경계 | 실행 가능한 Project Chat·Kanban·Objective·Repository slice |
-| `apps/web`              | Owner·Lab 관리 경험                                                         | demo fixture 기반의 인터랙티브 UI                          |
-| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계   | memory runtime 구현, PostgreSQL 기반 구현                  |
-| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill          | 제한된 로컬 실행 경로 구현                                 |
-| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                                | 구현됨                                                     |
-| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙                | 구현됨                                                     |
-| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                       | 기반 구현                                                  |
-| `packages/ui`           | 공통 visual token과 작은 presentational primitive                           | 기반 구현                                                  |
-| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단                | 구현됨                                                     |
+| 경로                    | 소유 책임                                                                       | 현재 상태                                                             |
+| ----------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Vault·Git·SSH 경계 | 실행 가능한 Project Chat·Kanban·Objective·Repository·승인형 SSH slice |
+| `apps/web`              | Owner·Lab 관리 경험                                                             | demo fixture 기반의 인터랙티브 UI                                     |
+| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계       | memory runtime 구현, PostgreSQL 기반 구현                             |
+| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill              | 제한된 로컬 실행 경로 구현                                            |
+| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                                    | 구현됨                                                                |
+| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙                    | 구현됨                                                                |
+| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                           | 기반 구현                                                             |
+| `packages/ui`           | 공통 visual token과 작은 presentational primitive                               | 기반 구현                                                             |
+| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단                    | 구현됨                                                                |
 
 ### 논리 모듈 소유권
 
@@ -122,8 +125,8 @@ flowchart LR
 | Reference                  | Zotero read-only connector                                                     | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                                                                                      |
 | Obsidian Knowledge         | Desktop Vault reader, Markdown renderer, project knowledge port                | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview·프로젝트별 agent grant 구현                                                       |
 | Lecture                    | Owner Web UI 표현                                                              | 생성·편집·출처 연결은 계획됨                                                                                                                   |
-| AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 로그인·동적 model/mode catalog·native harness·project-bound read tool·thread/turn·모델 provenance 구현                                         |
-| Integration Hub            | Desktop Git Workspace, `packages/integrations` registry와 connector classes    | GitHub HTTPS clone·bounded Git 작업 구현; GitHub App 계정 연결과 다른 connector lifecycle은 계획됨                                             |
+| AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 다중 chat session·동적 model/mode catalog·native harness·project/SSH tool·thread/turn·모델 provenance 구현                                     |
+| Integration Hub            | Desktop Git Workspace·승인형 SSH broker, `packages/integrations` registry      | GitHub HTTPS clone·bounded Git·OpenSSH alias/agent 실행 구현; GitHub App 계정 연결과 다른 connector lifecycle은 계획됨                         |
 | Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                              | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                       |
 
 ## 5. 의존성 규칙
@@ -174,15 +177,18 @@ flowchart TD
 
 ## 6. 데이터 원본과 개인정보 경계
 
-| 데이터                                           | authoritative source                                           | Hosted Sync 보관 정책                                               |
-| ------------------------------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------- |
-| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 앱 관리형 local worktree                              | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지 |
-| 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                                        | 연결 상태만; 본문은 금지                                            |
-| 서지 metadata, collection, PDF                   | Zotero                                                         | 연결 상태와 선택 item ID만; PDF 금지                                |
-| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                   | 원본 금지; 상태와 명시적 summary metric만                           |
-| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본 | 협업 metadata 저장 대상                                             |
-| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store            | 금지                                                                |
-| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                 | 금지                                                                |
+| 데이터                                           | authoritative source                                                               | Hosted Sync 보관 정책                                                   |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 앱 관리형 local worktree                                                  | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지     |
+| 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                                                            | 연결 상태만; 본문은 금지                                                |
+| 서지 metadata, collection, PDF                   | Zotero                                                                             | 연결 상태와 선택 item ID만; PDF 금지                                    |
+| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                                       | 원본 금지; 상태와 명시적 summary metric만                               |
+| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                     | 협업 metadata 저장 대상                                                 |
+| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store                                | 금지                                                                    |
+| SSH connection label·OpenSSH alias               | 모든 local project가 공유하는 Desktop SQLCipher registry와 사용자의 OpenSSH config | Hosted Sync 금지; host resolution·credential·private-key path 금지      |
+| SSH command output                               | 해당 Project Chat turn의 Main-process memory와 ephemeral tool result               | raw output 저장·동기화 금지; 모델이 답변에 포함한 문장만 대화 정책 적용 |
+| SSH approval request·outcome metadata            | 현재 app process의 in-memory broker event                                          | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지 |
+| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                                     | 금지                                                                    |
 
 Hosted Sync에 저장하지 않는다는 것과 LLM에 전혀 전송하지 않는다는 것은 다르다. Local Notes는 기본적으로
 Mac 안에만 남지만, 사용자가 특정 Vault를 특정 project agent에 승인한 경우 그 turn에서 agent가 실제로
@@ -306,8 +312,10 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   integration test는 ephemeral prompt가 장기 `CODEX_HOME`에 남지 않고 임시 SQLite에만 존재했다가
   cleanup되는지 검사한다.
 - model picker는 paginated `model/list` 전체 결과를 사용한다. 새 catalog를 가져올 때마다 snapshot
-  event를 내보내 SQLCipher에 저장하고, 실제 resolved model ID와 reasoning option을 turn provenance로
-  기록한다. early `model/rerouted` event도 turn 시작 응답까지 bounded buffer에 보존한다.
+  event를 내보내 SQLCipher에 저장하고, `turn/start` 직전에도 cached catalog를 authority로 재사용하지 않고
+  provider에서 fresh catalog를 받아 explicit model·reasoning ID를 다시 검증한다. 사라진 ID는 provider
+  fallback에 맡기기 전에 fail closed한다. 실제 resolved model ID와 reasoning option은 turn provenance로
+  기록하며 early `model/rerouted` event도 turn 시작 응답까지 bounded buffer에 보존한다.
 - agent mode picker는 pinned Codex App Server의 experimental `collaborationMode/list` 결과를 strict하게
   검증하고 opaque mode ID·표시명·추천 model/reasoning을 사용한다. GOSU가 `default`, `plan` 또는 향후
   mode 목록을 제품 enum으로 하드코딩하지 않는다. mode catalog는 canonical SHA-256으로 고정하며 prompt
@@ -322,12 +330,17 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
 - Project Chat turn은 `approvalPolicy: never`, read-only sandbox, network off, empty environments와
   empty runtime roots로 시작한다. process와 thread 양쪽에서 shell, unified exec, browser, Apps,
   plugins, MCP, image generation, multi-agent와 utility tool을 끈다. 예외는 Main이 turn마다 선언하는
-  `gosu_project` namespace의 typed read-only dynamic tool뿐이다. `thread/start` 직후 MCP inventory가
-  0이 아니면 fail closed하고 thread를 해제한다. server-initiated command·file approval은 Main이
-  거절하고 그 밖의 지원하지 않는 request에는 제한된 protocol error만 돌려준다.
+  `gosu_project` namespace의 typed dynamic tool뿐이다. Board·Objective·Local Notes·SSH catalog 조회는
+  read-only이고, SSH command는 Codex sandbox에 network를 주는 대신 별도 Main broker와 사용자
+  `Allow once`를 통과하는 read/diagnostic 실행이다. `thread/start` 직후 예상 밖 MCP inventory가 0이
+  아니면 fail closed하고 thread를 해제한다. server-initiated command·file approval은 Main이 거절하고 그 밖의
+  지원하지 않는 request에는 제한된 protocol error만 돌려준다.
 - dynamic tool transport는 thread별 allowlist와 handler를 묶고 strict request envelope, namespace와
   tool 일치, 실제 `turn/start` ID binding, 중복 call ID, turn·thread 호출 수, 동시성,
-  argument·result character cap, 10초 timeout을 검사한다. 조기 tool call이 먼저 도착하면 그 turn ID로
+  argument·result character cap과 기본 10초 timeout을 검사한다. 긴 승인이 필요한 declared tool만
+  registration에 고정된 timeout override를 가질 수 있고 override 상한은 180초다. 현재
+  `run_ssh_command`만 최대 30초 approval과 120초 execution을 포함하는 155초 bound를 사용하며, 모델이
+  timeout을 늘리거나 미등록 tool에 override를 붙일 수 없다. 조기 tool call이 먼저 도착하면 그 turn ID로
   임시 binding한 뒤 `turn/start` 응답과 반드시 일치하는지 재검사한다. 실제 tool argument는 다시 strict
   Zod schema로 검증한다. handler 성공만으로 읽기 출처를 확정하지 않고, 검증된 tool result를 현재 Codex
   child의 stdin에 쓴 뒤 최대 1초 안에 write callback이 성공해야만 delivery를 `delivered`로 확정한다.
@@ -344,6 +357,33 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
 - Project Chat profile·custom instruction·조립된 prompt provenance는 로컬 SQLCipher에만 저장한다.
   Hosted Sync, workspace outbox와 telemetry로 보내지 않으며 custom instruction도 project data와 같은
   untrusted input으로 취급한다.
+- SSH connection은 Renderer가 임의 실행 IPC를 호출하는 구조가 아니다. Renderer는 이 Mac의 모든 local
+  project가 공유하는 registry에서 label과 사용자가 직접 등록한 OpenSSH host alias만 CRUD·연결 테스트할
+  수 있다. Project Chat의 `run_ssh_command`만 Main이 project·session·attempt·turn·tool-call identity를
+  주입해 실행 요청을 만들며, 모델은 host resolution·credential·private-key path를 보거나 binding을
+  선택할 수 없다. 매 command는 exact target과 remote command preview를 보여 주는 30초짜리
+  `Allow once` 승인을 새로 받아야 하고 Deny를 먼저 표시한다. 승인은 재사용하거나 unattended 실행에
+  전용하지 않는다.
+- SSH command는 concrete system executable path가 `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` 중 하나에
+  있고 basename이 고정된 read/diagnostic allowlist에 있을 때만 approval center에 도달한다. `hostname`,
+  `date`, `nvidia-smi`는 query-only argument까지 별도로 검증한다. arbitrary script·file/process/container
+  mutation, privilege escalation, shell·interpreter eval, transfer와 forwarding은 pre-approval에서
+  fail closed한다. 허용된 진단 명령도 자동 실행하지 않고 사용자가 alias와 exact preview를 확인해 매번
+  `Allow once` 해야 한다.
+- `/usr/bin/ssh`는 `shell: false` argument array, POSIX token quoting, strict host-key, no TTY·forwarding·
+  local command·password prompt 옵션과 agent/Keychain·사용자의 OpenSSH config alias만 사용한다.
+  `ForkAfterAuthentication=no`와 `ControlMaster=no`를 command line에서 강제해 alias config가 추적 중인 child를
+  background transport로 분리하지 못하게 한다. OpenSSH 자체 진단은 process별 권한 `0600` 임시 `-E` log로
+  격리해 모델 결과에 local user·config·key path가 들어가지 않게 하고, remote program stderr만 tool result에
+  남긴다. exit 255는 이 private diagnostic으로만 분류한 뒤 fail closed하고 log directory는 항상 삭제한다.
+  timeout, cancel, session/turn 종료와 app shutdown은 로컬 OpenSSH child에 SIGTERM 뒤 SIGKILL을 보낼 뿐이다.
+  연결이 끊기기 전에 원격 program이 시작됐다면 원격 process 또는 그 child가 종료됐다고 보증하지 않는다.
+  장기·무인 workload는 이 broker가 아니라 lease·fencing·reconciliation이 있는 Runner가 소유해야 한다.
+- raw remote stdout/stderr는 Main memory에서 bounded·cropped `untrusted_remote_output` tool result로 Codex에
+  전달한 뒤 폐기하며 SQLCipher, Hosted Sync, outbox와 telemetry에 저장하지 않는다. 모델이 그 결과를
+  visible answer에 요약하면 그 문장만 일반 대화 보존 정책을 따른다. approval request·allowed/denied/
+  expired/cancelled event, command binding과 outcome metadata도 현재 app process와 turn 수명의 ephemeral
+  상태이며 durable append-only audit가 아니다. connection label 자체도 tenant secret으로 사용하지 않는다.
 
 ### Markdown reader 경계
 
@@ -556,13 +596,14 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  ChatUI["Project Chat UI\nplain-text transcript"]
+  ChatUI["Project Chat UI\nsession rail·safe Markdown/KaTeX"]
   ChatIPC["typed Chat IPC\nproject-scoped DTO"]
   ChatService["ProjectChatService\ndurable attempt router"]
   ToolGateway["ProjectAgentToolSession\nproject-bound read capabilities"]
   Codex["isolated Codex App Server\nstructured final response"]
   Vault["selected Local Notes\nopaque IDs·bounded chunks"]
-  ChatDB["SQLCipher chat tables\nvisible messages·attempts·receipts"]
+  SSH["SSH broker\nOpenSSH alias·Allow once"]
+  ChatDB["SQLCipher chat tables\nsessions·visible messages·attempts·receipts"]
   Approval["Apply action\nclaim→workspace command"]
   Workspace["WorkspaceService\nversion·project validation"]
 
@@ -571,17 +612,48 @@ flowchart LR
   Codex -->|"item/tool/call"| ToolGateway
   ToolGateway -->|"Board·Objective"| Workspace
   ToolGateway -->|"explicit project grant"| Vault
+  ToolGateway -->|"exact approved command"| SSH
   Codex --> ChatService --> ChatDB
   ChatDB --> ChatUI
   ChatUI --> Approval --> Workspace
   Workspace --> ChatDB
 ```
 
-- `project_chat_messages`, `project_chat_attempts`, `project_chat_actions`,
-  `project_chat_profiles`, `project_chat_instruction_revisions`는 Project Chat 모듈이
+- `project_chat_sessions`, `project_chat_session_messages`, `project_chat_messages`,
+  `project_chat_attempts`, `project_chat_actions`, `project_chat_profiles`,
+  `project_chat_instruction_revisions`는 Project Chat 모듈이
   소유한다. 대화를
   `local_workspace_state` JSON이나 workspace sync outbox에 넣지 않는다. 따라서 긴 대화가
   Project·Task·Objective snapshot의 크기와 delivery 순서에 영향을 주지 않는다.
+- 각 project는 정확히 하나의 durable default root session marker를 갖는다. active project 존재·Archive·
+  Trash 상태를 Main에서 먼저 검증한 뒤 chat을 처음 조회할 때 default를 idempotent하게 만들므로 잘못된
+  project UUID가 orphan session을 만들 수 없다. legacy `snapshot(projectId)`·send·cancel caller는 이 default로
+  routing하며, 기존 message와 attempt는 migration에서 순서를 잃지 않고 같은 membership으로 backfill한다.
+  초기 default title은 `Project chat`이고 일반 session처럼 rename할 수 있지만 `isDefault`, project identity,
+  parent lineage와 생성 identity는 update/delete trigger로 바꿀 수 없다. 현재 catalog는 정확히 하나의
+  default를 가져야 한다.
+- `New chat`은 history가 빈 독립 root를 만들고 같은 project의 root title과 충돌하면 `New chat 2`처럼
+  번호를 붙인다. branch는 `parentSessionId`와 `branchedFromMessageId`를 함께 고정하고, source session의
+  terminal `complete` message까지 기존 immutable message membership만 하나의 transaction에서 연결한다.
+  message 본문·action·attempt·model provenance를 복제하지 않으며 branch 이후 source history도 child에
+  유입되지 않는다. source session에 속하지 않은 message, 다른 project, active/incomplete point, ordinal
+  gap·cycle·손상된 lineage는 fail closed한다. 최대 session 100개, branch depth 32, inherited message
+  5,000개와 trim된 title 120자 제한을 적용한다.
+- fixed IPC는 session list, selected-session snapshot, root create, completed-message branch와 rename만
+  노출한다. rail은 모든 session을 동시에 표시하고 default·independent·branched·active 상태, branch parent와
+  생성 시각을 보여 준다. 선택 session별 React key와 generation guard가 retry·scroll·늦게 도착한
+  hydration을 격리한다. keyed `ProjectChatView`보다 오래 사는 Desktop shell이 unsent composer draft를
+  project+session key의 Renderer volatile memory에만 보존해 session을 오간 뒤 복원하고 성공한 send 뒤
+  해당 값만 지운다. 같은 project+session의 parent rerender나 model·reasoning 변경은 typed draft,
+  retry provenance와 Advanced 열림 상태를 바꾸지 않고, 실제 project/session identity 전환에서만 새 draft를
+  hydrate하고 retry·Advanced를 초기화한다. 이 draft는 SQLCipher·Hosted Sync 원본이 아니다.
+  snapshot·event·cancel·retry·action도
+  project+session composite key와 membership을 다시 검사해 다른 session이나 project의 상태가 섞이지
+  않게 한다.
+- 한 project에는 동시에 하나의 Codex turn만 허용한다. 사용자는 active turn 중에도 다른 session을 열어
+  history를 읽거나 새 root/완료 지점 branch를 만들 수 있지만, 다른 session의 composer·model·reasoning·
+  profile·rename은 잠긴다. active session에는 `●`와 Stop을 표시하고 다른 session에는 해당 active session으로
+  이동하라는 상태를 표시한다. 이 gate는 UI 편의가 아니라 Main의 project-level lifecycle lock으로도 강제한다.
 - project profile은 provider가 발견한 nullable opaque Codex collaboration mode ID,
   `auto`·`none`·`friendly`·`pragmatic` personality, `auto`·`low`·`medium`·`high` native verbosity,
   `project`·`board`·`objective` context scope, nullable project-local Vault grant와 최대 4,000자의 custom
@@ -622,8 +694,10 @@ flowchart LR
 - 기존 reviewer profile은 migration 호환 경로에서만 조언 전용으로 유지한다. 모델이 구조화 action을
   반환하더라도 service가 `actions=[]`로 강제한다. 사용자가 새 native mode를 명시하면 legacy reviewer를
   벗어난다. native mode를 포함한 모든 turn은 동일한 read-only·no-network·no-shell·no-subagent 경계를
-  사용하며 GOSU가 선언한 project read tool만 예외다.
-- 현재 `gosu_project` namespace는 `read_workspace`, `list_local_notes`, `read_local_note`를 제공한다.
+  사용한다. GOSU project read tool과 별도 `Allow once`를 요구하는 Main-process SSH broker만 명시적
+  capability 예외이며, SSH 실행이 Codex child 자체에 shell·network 권한을 부여하지는 않는다.
+- 현재 `gosu_project` namespace는 `read_workspace`, `list_local_notes`, `read_local_note`,
+  `list_ssh_connections`, `run_ssh_command`를 제공한다.
   `read_workspace`는 active project ID를 handler closure에 묶어 Board와 최신 Objective만 반환하며
   모델 argument로 project ID를 받지 않는다. repository는 credential·URL·SSH 주소를 제외한 canonical
   `owner/repository` label만 agent context에 포함한다. Local Notes tool은 profile grant가 현재 선택 Vault와
@@ -631,6 +705,31 @@ flowchart LR
   24,000자, ephemeral turn당 합계 96,000자로 제한한다. 동시 호출은 read 전에 budget을 reserve하고 모든
   tool 결과는 직렬화 후 48,000자 안으로 축약한다. note text와 tool result는 untrusted evidence이며 그
   안의 지시를 실행하지 않는다.
+- SSH list tool은 이 Mac의 모든 local project가 공유하는 connection registry에서 opaque ID와 display
+  label만 반환한다. command tool의 project·session·attempt·turn·tool-call binding은 모델 argument가 아니라
+  Main이 주입한다. command는 허용된 system directory의 concrete executable이어야 하고 basename은 고정된
+  read/diagnostic allowlist에 있어야 한다. 최대 32개 argument는 별도 token으로 검증하며 `hostname`, `date`,
+  `nvidia-smi`의 state-changing form도 query-only argument 규칙으로 차단한다. arbitrary script·shell·
+  interpreter eval, file/process/container mutation, privilege escalation, transfer와 forwarding은 approval UI
+  전에 fail closed한다.
+- approval center는 exact remote preview와 connection label·alias·project/session을 표시하며 사용자는 각
+  실행을 `Allow once` 또는 Deny한다. approval은 최대 30초, 전체 pending 16개·turn당 4개, 전체 active
+  4개·turn당 1개다. turn terminal/cancel, connection 삭제와 앱 종료는 pending 요청을 거절하고 active local
+  SSH transport를 abort한다. 화면에서 project/session을 벗어나면 strict project/session payload만 받는
+  cancellation-only `gosu:ssh:cancel-scope` IPC와 Project Chat revoke IPC가 Main의 pending·active transport와
+  해당 live agent tool session을 찾아 attempt-scoped abort signal과 scope epoch를 폐기한다. revoke epoch는
+  storage 검증보다 먼저 in-memory capability와 transport를 폐기한다. explicit session epoch와 revoke-all
+  project epoch를 분리해 이전 session A의 revoke가 새 session B를 잘못 막지 않으면서, send의 첫 await 전에
+  비교할 generation을 바꾸므로 이미 보이는 pending·active
+  command뿐 아니라 connection lookup 중인 요청과 전환 race 뒤의 future SSH tool call도 fail closed하며,
+  SSH 밖의 Codex turn은 계속 진행한다. dynamic tool timeout과 thread revoke는 handler에 AbortSignal을
+  전달하고, timeout 응답을 먼저 보냈더라도 실제 handler가 settle할 때까지 해당 in-flight capacity를
+  유지해 zombie 작업이 동시 실행 상한을 우회하지 못하게 한다. Stop은 project/session lookup과 Codex
+  interrupt보다 먼저, terminal notification은 Local Notes delivery settlement와 receipt persistence보다 먼저
+  live SSH capability와 transport를 동기적으로 폐기한다. Renderer는 `turn.started` 전 startup 동안 Stop을
+  표시하지 않고 project busy 상태만 보여 준다. timeout·output cap·transport failure는 typed error로 끝나 다른
+  Project Chat capability를 중단시키지 않지만, local abort 뒤 remote process 종료는 보증하지 않는다.
+  approval event·binding·outcome은 현재 memory-only라 restart 후 감사 원본으로 쓸 수 없다.
 - agent가 실제로 읽은 note는 성공·invalid response·중단·실패·turn 등록 실패를 포함한 모든 terminal
   assistant receipt 끝에 sanitized title, opaque ID prefix, full-content SHA-256 전체 값과 excerpt 여부를
   남긴다. 자동 source appendix에는 raw note body, root/path와 tool arguments를 넣지 않는다. 다만 모델이
@@ -642,10 +741,11 @@ flowchart LR
   `note ID + content SHA-256` pair이므로 같은 note의 서로 다른 content version을 한 turn에서 읽어도 각각
   보존하고, 동일 version의 여러 excerpt만 하나의 source entry로 합친다.
 - tool access는 UI section 자체나 database table 접근이 아니라 module capability다. 현재 구현된
-  Board·Goal & Metrics·승인된 Local Notes만 읽을 수 있다. Connections·secret·Settings·Project Trash는
-  노출하지 않으며 Experiments·Manuscript·Review·References·Lecture는 domain service가 완성되기 전에는
-  접근 가능한 것처럼 표시하지 않는다. Board 쓰기는 기존 `task.create`·`task.update` proposal과
-  사용자 Apply만 사용한다.
+  Board·Goal & Metrics·승인된 Local Notes와 등록된 SSH connection의 opaque ID·label만 읽을 수 있다.
+  SSH host resolution·credential·private-key path, Settings·Project Trash는 노출하지 않으며
+  Experiments·Manuscript·Review·References·Lecture는 domain service가 완성되기 전에는 접근 가능한 것처럼
+  표시하지 않는다. Board 쓰기는 기존 `task.create`·`task.update` proposal과 사용자 Apply만 사용하고,
+  SSH diagnostic command는 별도의 exact Allow-once broker boundary를 사용한다.
 - 사용자 메시지를 받으면 Codex를 호출하기 전에 attempt와 user message를 한 transaction으로
   `starting` 상태에 기록한다. `turn/start`가 성공하면 실제 thread ID, turn ID, requested·resolved
   model provenance를 포함해 `running`으로 CAS 전이하고, terminal attempt와 assistant receipt도 한
@@ -674,10 +774,24 @@ flowchart LR
 - 앱 시작과 사용자의 Reconnect는 Codex account 상태와 전체 동적 model catalog를 다시 확인한다.
   연결이 끊기면 이전 catalog를 폐기하며 Board·Settings·Local notes는 계속 동작한다. 선택한 model이
   없어졌을 때 다른 model로 조용히 바꾸지 않는다.
-- model별 reasoning option과 personality 지원 여부도 `model/list` catalog가 제공한 실제 값만 표시한다.
-  GOSU가 model 이름이나 effort 목록을 하드코딩하지 않으며 선택한 model ID·reasoning option과 native
-  mode 설정은 각 attempt에 기록한다. 사용자가 선택한 model/reasoning이 mode 추천보다 우선하고,
-  mode 추천은 provider 기본값보다 우선한다. personality 미지원 model에는 Main도 설정을 거절한다.
+- model별 reasoning option과 personality 지원 여부는 paginated `model/list` catalog가 제공한 실제 값만
+  사용한다. `supportedReasoningEfforts[].reasoningEffort`의 opaque ID를 option ID와 짧은 label에 그대로
+  쓰고 provider description을 label로 바꾸거나 `medium`·`high` 같은 목록을 하드코딩·번역·재정렬하지
+  않는다. 따라서 provider가 새 effort ID를 추가하면 앱 업데이트 없이 catalog 순서대로 나타난다.
+  `Model default`는 null이며 `defaultReasoningEffort`는 default 표시만 결정한다. 선택 ID가 refresh 뒤
+  사라지거나 다른 model에서 지원되지 않으면 unavailable로 남기고 send를 중단하지 임의 fallback하지
+  않는다. requested/resolved model ID, catalog hash, 실제 reasoning ID와 native mode 설정은 각 attempt
+  provenance에 기록한다. 사용자가 선택한 model/reasoning이 mode 추천보다 우선하고, mode 추천은 provider
+  기본값보다 우선한다. personality 미지원 model에는 Main도 설정을 거절한다.
+- Project Chat의 user·assistant 본문은 같은 `react-markdown` pipeline으로 렌더링한다. `remark-gfm` 뒤
+  `remark-math`가 `$ ... $` inline math와 독립 줄의 `$$ ... $$` display math marker를 만들고, raw HTML은
+  `skipHtml`로 버린다. `rehype-sanitize`가 untrusted tree에서 기본 safe element와 KaTeX 입력용
+  `math-inline`·`math-display` marker class만 보존한 **뒤에** bundled `rehype-katex`가 local HTML/MathML을
+  생성한다. KaTeX는 `trust: false`, `strict: warn`, `maxExpand: 1000`, `maxSize: 20`으로 제한한다.
+  link는 정확한 HTTPS만 Main의 external-browser IPC로 열고 image는 remote fetch 대신 blocked placeholder로
+  바꾼다. 깨진 수식은 escaped error/fallback으로 해당 message 안에 남아 transcript 전체를 throw하지
+  않으며 원문과 message provenance는 그대로 유지한다. KaTeX CSS와 font는 package에 묶여 theme·font
+  scale을 따르고 수식 표시 때문에 외부 network를 요청하지 않는다.
 - Codex final은 JSON Schema와 Zod가 함께 검증하는 `reply + actions` 계약이다. v1 action은
   `task.create`와 `task.update`뿐이며 모델이 `projectId`를 정할 수 없다.
 - 제안 action은 곧바로 실행되지 않는다. 사용자가 Apply하면 SQLCipher row를 `proposed → applying`으로
@@ -742,11 +856,13 @@ flowchart LR
 
 Project Chat에는 pinned local [Codex App Server](https://learn.chatgpt.com/docs/app-server)의 native
 thread/turn/item agent loop와 dynamic tools를 사용해 active project의 Board·Objective와 명시적으로
-승인한 Local Notes를 읽는 bounded tool loop가 구현되어 있다. GOSU가 별도의 planner/reviewer loop를
-재작성하지 않고 Codex가 제공하는 collaboration mode·reasoning·personality·verbosity를 조합한다.
+승인한 Local Notes를 읽고, 등록된 OpenSSH alias에 exact Allow-once command를 요청하는 bounded tool
+loop가 구현되어 있다. GOSU가 별도의 planner/reviewer loop를 재작성하지 않고 Codex가 제공하는
+collaboration mode·reasoning·personality·verbosity를 조합한다.
 다만 이는 navigation UI나 DB를 자유롭게 조작하는 agent가 아니며 mutation은 검증된 proposal과 사용자
-Apply를 거친다. shell·network·arbitrary file·subagent, 실험 실행과 논문 변경을 포함한 프로젝트 자율
-실행 runtime은 아직 계획 단계다.
+Apply를 거친다. 승인형 SSH는 local shell/network 권한을 Codex에 주는 것이 아니라 Main의 고정 broker가
+한 command만 대리 실행하는 좁은 예외다. arbitrary local file·subagent, 실험 campaign 실행과 논문 변경을
+포함한 프로젝트 자율 실행 runtime은 아직 계획 단계다.
 
 OpenClaw와 Hermes는 gateway lifecycle, policy, memory를 비교 검토하는 참고 자료일 뿐 GOSU의 agent
 harness dependency가 아니다. 후속 기능도 우선 Codex App Server의 native thread/turn/dynamic-tool
@@ -825,6 +941,13 @@ process가 사라진 뒤 `stdout`·`stderr`가 닫혀도 `EIO`·`EPIPE`만 제�
 종료되어 signal cleanup을 실행하지 못한 경우에도 Desktop은 supervisor PID liveness를 확인해 고아
 DB writer로 남지 않는다.
 
+root `turbo.json`의 package-specific `@gosu/desktop#build` task는 Desktop build output을 `out/**`로
+좁힌다. 일반 package compile 결과는 계속 cache하지만 Electron packaging이 만드는 `dist/**`의 `.app`과
+DMG는 Turbo cache에 넣지 않는다. `dist/**`는 release마다 직접 재생성·검증한다. 이 override를 제거하면
+수백 MB 앱 bundle과 DMG가 반복 압축되어 `.turbo/cache`가 수십 GB 이상 커질 수 있으므로, 변경 후에는
+Turbo dry-run의 resolved Desktop output과 실제 cache 크기를 함께 확인한다.
+`scripts/turbo-cache-policy.test.mjs`는 이 package-specific output이 `out/**`에서 넓어지는 회귀를 막는다.
+
 `pnpm app:doctor`는 Node, macOS target, workspace 의존성, Electron·Codex package와 local port를
 비밀값 없이 검사한다. `pnpm app:package`는 전체 품질 게이트 후 unsigned DMG를 만든다. DMG는
 Hosted Sync가 없어도 local-first 기능과 runtime 상태를 표시하며, 실제 배포용 서명·notarization과
@@ -848,8 +971,15 @@ package 설정과 ICNS의 `ic10` rendition 일치를 검사해 네모 아이콘�
 없다. Codex Project Chat은 실제 thread·turn과 연결됐지만 논문 작성·patch approval 흐름은 아직
 연결되지 않았다. 앱 관리형 Git Workspace는 동작하지만 GitHub App 설치·PR review·보호 branch gate,
 repository asset preview와 LaTeX compile·PDF preview는 아직 계획 상태다. macOS Keychain의 기존 Git
-credential을 사용할 수는 있지만 GOSU 자체 GitHub account lifecycle을 구현한 것은 아니다. SSH와 Runner
-설치 connector도 계획 상태다. DMG 설정은 있으나 서명·notarization·auto-update를 보증하지 않는다.
+credential을 사용할 수는 있지만 GOSU 자체 GitHub account lifecycle을 구현한 것은 아니다. 승인형 SSH
+command broker는 구현됐지만 interactive terminal, PTY, file transfer, port forwarding, unattended command,
+Runner 설치·복구 connector는 계획 상태다. 현재는 concrete system executable과 고정 read/diagnostic
+allowlist만 허용하므로 arbitrary remote mutation이나 user-defined script 실행 surface가 아니다. local
+OpenSSH transport를 timeout·cancel로 종료해도 연결이 이미 끊어진 뒤 remote process tree가 종료됐다고
+보증할 수 없으므로 장기 workload는 SSH broker가 아니라 lease·fencing·reconciliation이 있는 Runner를
+사용해야 한다. raw SSH output은 현재 turn memory에만 있고 durable transcript가 아니며, approval request·
+command hash·binding·allowed/denied/expired/cancelled outcome도 해당 app process/turn 수명의 event일 뿐
+append-only audit가 아니다. DMG 설정은 있으나 서명·notarization·auto-update를 보증하지 않는다.
 
 IPC 기능을 추가할 때는 preload type, argument schema, Main sender 검증, 최소 반환값, 실패 테스트를
 한 묶음으로 변경한다. Renderer 편의를 이유로 filesystem path나 secret 값을 넓게 반환하면 안 된다.
@@ -935,6 +1065,7 @@ optimizer scheduling이다.
 | 장애                               | 유지되어야 하는 기능                  | 처리 원칙                                                                      |
 | ---------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------ |
 | Codex unavailable                  | local cache, Vault reader, project UI | provider 상태를 실패로 표시하고 다른 모듈을 중단하지 않는다                    |
+| SSH unavailable·approval timeout   | Project Chat history, Board, notes    | command만 typed failure로 끝내고 raw diagnostic·output을 저장하지 않는다       |
 | GitHub·Zotero·Overleaf unavailable | 로컬 문서와 Kanban                    | connector별 timeout·retry·error를 port 뒤에 격리한다                           |
 | Hosted Sync unavailable            | 로컬 편집과 승인 전 작업              | command를 versioned outbox에 두고 재연결 시 conflict를 명시적으로 처리한다     |
 | Runner disconnect                  | 현재 trial의 제한된 완료              | 기본적으로 새 trial은 시작하지 않고 spool event를 보존한다                     |
@@ -986,6 +1117,24 @@ transport revoke, write-in-progress 출처의 `delivery unconfirmed`, 같은 not
 SQLCipher smoke는 Local Notes grant column이 없던 실제 v0.5 profile schema를 열어 nullable grant로
 migration한 뒤 새 grant를 저장할 수 있는지도 확인한다.
 
+Project Chat session test는 legacy single-chat DB가 default session으로 lossless migration되는지,
+root session isolation, completed-message branch prefix와 이후 source history 차단, cross-project·
+cross-session snapshot/cancel/retry/action 거절, duplicate·stale event guard와 project당 단일 active turn을
+검증한다. Renderer test는 session create/select/rename/branch, active session 표시, 다른 session에서
+composer 잠금과 selected-session Stop을 검사한다. Markdown test는 GFM과 `$...$`·`$$...$$` KaTeX,
+raw HTML·unsafe URL 차단, 긴 입력과 깨진 수식의 bounded fallback을 검증한다. model catalog test는
+provider가 제공한 opaque reasoning ID와 짧은 label을 그대로 보존하고 임의 fallback하지 않는지 확인한다.
+
+SSH test는 connection version CAS와 SQLCipher reopen, Renderer에 credential·resolved host·output이
+노출되지 않는 IPC, concrete system executable·read/diagnostic allowlist·query-only subcommand,
+OpenSSH safe option·argument quoting·environment, background fork 차단, client diagnostic 비공개 격리와
+remote stderr 보존, arbitrary script·mutation·privilege·shell·transfer 거절, approval exact
+binding·TTL·capacity·Allow once·scope cancel, output crop·untrusted marker를 검증한다. Project Agent
+통합 test는 모델이 project/session binding을 위조할 수 없고 허용된 diagnostic도 승인 전에는 실행되지
+않으며 navigation·send startup·startup Stop 경합, 실패하거나 지연된 Stop, pending Local Notes delivery가
+있는 terminal turn과 app shutdown이 pending approval과 local transport를 즉시 폐기하는지 확인한다. remote
+process-tree 종료와 durable approval audit는 현재 구현·테스트 보증 밖이다.
+
 Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 
 - `gofmt` 결과가 깨끗한지 확인
@@ -1017,7 +1166,12 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
   show-all, malformed/stale localStorage 복구, hidden·archived fallback과 project 간 active-tab 격리
 - Project Chat native harness 변경: dynamic mode catalog·hash·TOCTOU, mode/model/reasoning fallback 금지,
   personality 지원, profile CAS, instruction revision, prompt hash·bound·truncation, project 격리,
-  legacy reviewer action suppression, dynamic model/mode/reasoning provenance
+  legacy reviewer action suppression, dynamic model/mode/reasoning provenance, session migration·branch lineage·
+  project/session event isolation, sanitized Markdown·KaTeX
+- SSH broker 변경: global local alias-only registry, credential·resolved host·raw output 비노출, concrete
+  system executable·read/diagnostic allowlist, exact Allow once binding, cancellation-only navigation IPC,
+  OpenSSH argument array·background fork 차단·client diagnostic 격리, timeout·capacity·local transport cancel,
+  remote kill 비보증과 ephemeral approval metadata
 - Runner 변경: signature·policy rejection, fence race, Stop·Kill race, exact JSON wire, Podman argument
   array와 fail-closed 설정
 - connector 변경: deterministic fake response, capability 정확성, credential·원문 미저장
@@ -1125,6 +1279,8 @@ enforce하고 감사할 수 있는 egress adapter가 생기기 전에는 계속 
 - PostgreSQL adapter가 존재한다는 것과 실제 API가 PostgreSQL을 사용한다는 것은 다르다.
 - UI에 보이는 버튼·차트가 실제 command나 experiment를 수행한다는 뜻은 아니다.
 - Project Chat이 연결됐다는 것과 Codex가 논문 파일을 쓰거나 자동실험을 실행한다는 것은 다르다.
+- SSH command broker가 있다는 것과 interactive terminal, 원격 process-tree kill 보증 또는 Runner 기반
+  무인 실험 orchestration이 완성됐다는 것은 다르다.
 - Repository file·history·branch·commit UI가 있다는 것과 GitHub App 로그인, PR merge 또는
   AI가 worktree를 자유롭게 수정할 권한이 있다는 것은 다르다.
 - connector class가 있다는 것과 사용자의 OAuth 연결·증분 sync가 완성됐다는 것은 다르다.
@@ -1144,6 +1300,11 @@ enforce하고 감사할 수 있는 egress adapter가 생기기 전에는 계속 
 - [ ] secret, 연구 원문, raw output가 DB·event·log·fixture에 들어가지 않는가?
 - [ ] Git 변경이면 arbitrary command·hook·filter·protocol·remote URL 우회가 없는가? HEAD와 branch를
       함께 검증하고 destructive history 작업을 새 IPC에 넣지 않았는가?
+- [ ] SSH 변경이면 global local registry에서 alias 밖 host resolution·credential이 노출되지 않고 exact
+      approval·concrete system executable·read/diagnostic allowlist·argument array·timeout·output
+      non-retention과 turn cleanup이 유지되는가? arbitrary script·mutation·privilege·shell·transfer가 승인
+      전에 fail closed하는가? local abort를 remote kill 보증이라 부르거나 ephemeral metadata를 durable
+      감사 원본이라 부르지 않는가?
 - [ ] 실패·cancel·negative result provenance가 사라지지 않는가?
 - [ ] 외부 장애가 독립 모듈을 막지 않는가?
 - [ ] 구현 상태와 계획 상태를 README·architecture에서 정확히 구분했는가?

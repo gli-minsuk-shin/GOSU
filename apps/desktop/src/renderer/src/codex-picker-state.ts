@@ -3,13 +3,16 @@ export interface CodexPickerSelection {
   reasoningOptionId: string | null;
 }
 
-export function selectCodexModel(modelId: string | null): CodexPickerSelection {
+export function selectCodexModel(
+  modelId: string | null,
+  reasoningOptionId: string | null,
+): CodexPickerSelection {
   return {
     modelId,
-    reasoningOptionId: null,
+    reasoningOptionId,
   };
 }
 
 export function resetCodexPicker(): CodexPickerSelection {
-  return selectCodexModel(null);
+  return selectCodexModel(null, null);
 }

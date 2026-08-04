@@ -2,7 +2,12 @@ import { ZodError } from 'zod';
 
 import {
   ApplyProjectChatActionInputSchema,
+  BranchProjectChatSessionInputSchema,
+  CreateProjectChatSessionInputSchema,
   ProjectChatProjectInputSchema,
+  ProjectChatSessionInputSchema,
+  ProjectChatSnapshotInputSchema,
+  RenameProjectChatSessionInputSchema,
   SendProjectChatMessageInputSchema,
   UpdateProjectChatProfileInputSchema,
 } from '../shared/project-chat-contracts';
@@ -23,8 +28,40 @@ export function registerProjectChatIpc(
   register(PROJECT_CHAT_IPC_CHANNELS.snapshot, (input) =>
     withInput(
       input,
-      ProjectChatProjectInputSchema,
+      ProjectChatSnapshotInputSchema,
       (command) => chat.snapshot(command),
+      reportUnexpected,
+    ),
+  );
+  register(PROJECT_CHAT_IPC_CHANNELS.listSessions, (input) =>
+    withInput(
+      input,
+      ProjectChatProjectInputSchema,
+      (command) => chat.listSessions(command),
+      reportUnexpected,
+    ),
+  );
+  register(PROJECT_CHAT_IPC_CHANNELS.createSession, (input) =>
+    withInput(
+      input,
+      CreateProjectChatSessionInputSchema,
+      (command) => chat.createSession(command),
+      reportUnexpected,
+    ),
+  );
+  register(PROJECT_CHAT_IPC_CHANNELS.branchSession, (input) =>
+    withInput(
+      input,
+      BranchProjectChatSessionInputSchema,
+      (command) => chat.branchSession(command),
+      reportUnexpected,
+    ),
+  );
+  register(PROJECT_CHAT_IPC_CHANNELS.renameSession, (input) =>
+    withInput(
+      input,
+      RenameProjectChatSessionInputSchema,
+      (command) => chat.renameSession(command),
       reportUnexpected,
     ),
   );
@@ -47,8 +84,16 @@ export function registerProjectChatIpc(
   register(PROJECT_CHAT_IPC_CHANNELS.cancel, (input) =>
     withInput(
       input,
-      ProjectChatProjectInputSchema,
+      ProjectChatSessionInputSchema,
       (command) => chat.cancel(command),
+      reportUnexpected,
+    ),
+  );
+  register(PROJECT_CHAT_IPC_CHANNELS.revokeSsh, (input) =>
+    withInput(
+      input,
+      ProjectChatSessionInputSchema,
+      (command) => chat.revokeSsh(command),
       reportUnexpected,
     ),
   );

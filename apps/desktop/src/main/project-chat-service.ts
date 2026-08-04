@@ -5,10 +5,15 @@ import type { ModelInvocation } from '@gosu/contracts';
 
 import {
   ApplyProjectChatActionInputSchema,
+  BranchProjectChatSessionInputSchema,
   CodexProjectResponseSchema,
+  CreateProjectChatSessionInputSchema,
   PROJECT_CHAT_OUTPUT_SCHEMA,
   PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH,
   ProjectChatProjectInputSchema,
+  RenameProjectChatSessionInputSchema,
+  ProjectChatSessionInputSchema,
+  ProjectChatSnapshotInputSchema,
   ProjectChatSnapshotSchema,
   ProjectChatTurnReceiptSchema,
   SendProjectChatMessageInputSchema,
@@ -16,8 +21,10 @@ import {
   legacyDepthToResponseVerbosity,
   legacyHarnessToCollaborationModeId,
   type ApplyProjectChatActionInput,
+  type BranchProjectChatSessionInput,
   type CodexCollaborationModeCatalog,
   type CodexCollaborationModeDescriptor,
+  type CreateProjectChatSessionInput,
   type ProjectChatAction,
   type ProjectChatActionCommand,
   type ProjectChatAttempt,
@@ -26,7 +33,11 @@ import {
   type ProjectChatNativeExecutionKind,
   type ProjectChatProfile,
   type ProjectChatProjectInput,
+  type RenameProjectChatSessionInput,
+  type ProjectChatSession,
+  type ProjectChatSessionInput,
   type ProjectChatSnapshot,
+  type ProjectChatSnapshotInput,
   type ProjectChatTurnReceipt,
   type SendProjectChatMessageInput,
   type UpdateProjectChatProfileInput,
@@ -34,10 +45,15 @@ import {
 import type {
   CodexDynamicToolHandler,
   CodexDynamicToolSpec,
+  CodexDynamicToolTimeoutOverride,
   CodexPersonality,
   CodexResponseVerbosity,
 } from './codex-app-server';
-import { ProjectAgentToolSession, type ProjectAgentVault } from './project-agent-tools';
+import {
+  ProjectAgentToolSession,
+  type ProjectAgentSsh,
+  type ProjectAgentVault,
+} from './project-agent-tools';
 import { assembleProjectChatPrompt } from './project-chat-prompt';
 import { WorkspaceServiceError, type WorkspaceService } from './workspace-service';
 
@@ -55,13 +71,29 @@ export interface ProjectChatStorage {
     attempt: ProjectChatAttempt,
     assistantMessage: ProjectChatMessage,
   ): MaybePromise<void>;
-  getChatAttempt(projectId: string, attemptId: string): MaybePromise<ProjectChatAttempt | null>;
-  snapshot(projectId: string): MaybePromise<ProjectChatSnapshot>;
+  getChatAttempt(
+    projectId: string,
+    sessionId: string,
+    attemptId: string,
+  ): MaybePromise<ProjectChatAttempt | null>;
+  snapshot(projectId: string, sessionId?: string): MaybePromise<ProjectChatSnapshot>;
+  listProjectChatSessions(projectId: string): MaybePromise<ProjectChatSession[]>;
+  createProjectChatSession(projectId: string, title?: string): MaybePromise<ProjectChatSession>;
+  branchProjectChatSession(input: BranchProjectChatSessionInput): MaybePromise<ProjectChatSession>;
+  renameProjectChatSession(
+    projectId: string,
+    sessionId: string,
+    title: string,
+  ): MaybePromise<ProjectChatSession | null>;
   getProjectChatProfile(projectId: string): MaybePromise<ProjectChatProfile>;
   updateProjectChatProfile(
     input: UpdateProjectChatProfileInput,
   ): MaybePromise<ProjectChatProfile | null>;
-  getAction(projectId: string, actionId: string): MaybePromise<ProjectChatAction | null>;
+  getAction(
+    projectId: string,
+    sessionId: string,
+    actionId: string,
+  ): MaybePromise<ProjectChatAction | null>;
   claimAction(projectId: string, actionId: string, updatedAt: string): MaybePromise<boolean>;
   finishAction(action: ProjectChatAction): MaybePromise<void>;
 }
@@ -76,6 +108,7 @@ export interface ProjectChatCodex {
     responseVerbosity?: CodexResponseVerbosity | null;
     dynamicTools?: readonly CodexDynamicToolSpec[];
     dynamicToolHandler?: CodexDynamicToolHandler;
+    dynamicToolTimeouts?: readonly CodexDynamicToolTimeoutOverride[];
   }): Promise<{ threadId: string }>;
   runTurn(input: {
     threadId: string;
@@ -111,6 +144,12 @@ export class ProjectChatServiceError extends Error {
       | 'chat_attempt_not_found'
       | 'chat_attempt_not_retryable'
       | 'chat_profile_conflict'
+      | 'chat_session_not_found'
+      | 'chat_branch_message_not_found'
+      | 'chat_branch_point_invalid'
+      | 'chat_branch_lineage_invalid'
+      | 'chat_branch_limit_reached'
+      | 'chat_session_limit_reached'
       | 'local_notes_vault_not_selected'
       | 'local_notes_vault_changed'
       | 'action_not_found'
@@ -126,6 +165,7 @@ type CodexNotification = Readonly<{ method?: string; params?: unknown }>;
 
 type ActiveTurn = {
   projectId: string;
+  sessionId: string;
   attempt: ProjectChatAttempt;
   threadId: string;
   turnId: string;
@@ -251,11 +291,39 @@ function actionErrorCode(error: unknown): ProjectChatAction['errorCode'] {
   return 'action_failed';
 }
 
+function mapSessionStorageError(error: unknown): ProjectChatServiceError {
+  const code = error instanceof Error ? error.message : '';
+  if (
+    code === 'chat_session_not_found' ||
+    code === 'chat_branch_message_not_found' ||
+    code === 'chat_branch_point_invalid' ||
+    code === 'chat_branch_lineage_invalid' ||
+    code === 'chat_branch_limit_reached' ||
+    code === 'chat_session_limit_reached'
+  ) {
+    return new ProjectChatServiceError(code);
+  }
+  throw error;
+}
+
+function sessionIdentity(projectId: string, sessionId: string) {
+  return `${projectId}:${sessionId}`;
+}
+
+function transportIdentity(threadId: string, turnId: string) {
+  return `${threadId}\u0000${turnId}`;
+}
+
 export class ProjectChatService extends EventEmitter {
-  private readonly activeByTurn = new Map<string, ActiveTurn>();
-  private readonly activeTurnByProject = new Map<string, string>();
-  private readonly threadProjects = new Map<string, string>();
+  private readonly activeByTransport = new Map<string, ActiveTurn>();
+  private readonly activeTransportBySession = new Map<string, string>();
+  private readonly threadSessions = new Map<string, { projectId: string; sessionId: string }>();
   private readonly startingProjects = new Set<string>();
+  private readonly startingSessions = new Set<string>();
+  private readonly liveAgentToolsBySession = new Map<string, ProjectAgentToolSession>();
+  private readonly sshScopeEpochBySession = new Map<string, number>();
+  private readonly sshScopeEpochByProject = new Map<string, number>();
+  private readonly sshRevokeAllEpochByProject = new Map<string, number>();
   private readonly lifecycleLockedProjects = new Set<string>();
   private readonly mutatingProjects = new Set<string>();
   private readonly earlyNotifications = new Map<string, CodexNotification[]>();
@@ -268,6 +336,7 @@ export class ProjectChatService extends EventEmitter {
       workspace: WorkspaceService;
       codex: ProjectChatCodex;
       vault?: ProjectAgentVault;
+      ssh?: ProjectAgentSsh;
       prepareProjectDirectory(projectId: string): Promise<string>;
     },
   ) {
@@ -279,39 +348,93 @@ export class ProjectChatService extends EventEmitter {
       'invocation',
       (event: { threadId?: string; turnId?: string; invocation?: ModelInvocation }) => {
         if (!event.threadId || !event.turnId || !event.invocation) return;
-        const active = this.activeByTurn.get(event.turnId);
-        if (active?.threadId === event.threadId) active.invocation = event.invocation;
+        const active = this.activeByTransport.get(transportIdentity(event.threadId, event.turnId));
+        if (active) active.invocation = event.invocation;
       },
     );
     dependencies.codex.on('disconnected', () => {
       this.codexConnectionEpoch += 1;
-      this.threadProjects.clear();
+      this.threadSessions.clear();
       this.earlyNotifications.clear();
-      for (const active of this.activeByTurn.values()) this.beginFinalize(active, 'failed');
+      for (const active of this.activeByTransport.values()) this.beginFinalize(active, 'failed');
     });
   }
 
-  async snapshot(input: ProjectChatProjectInput) {
-    const command = ProjectChatProjectInputSchema.parse(input);
+  async snapshot(input: ProjectChatSnapshotInput) {
+    const command = ProjectChatSnapshotInputSchema.parse(input);
     await this.requireProject(command.projectId);
-    const [stored, profile] = await Promise.all([
-      this.dependencies.storage.snapshot(command.projectId),
-      this.dependencies.storage.getProjectChatProfile(command.projectId),
-    ]);
-    const activeTurnId = this.activeTurnByProject.get(command.projectId);
+    let stored: ProjectChatSnapshot;
+    let profile: ProjectChatProfile;
+    try {
+      [stored, profile] = await Promise.all([
+        this.dependencies.storage.snapshot(command.projectId, command.sessionId),
+        this.dependencies.storage.getProjectChatProfile(command.projectId),
+      ]);
+    } catch (error) {
+      throw mapSessionStorageError(error);
+    }
+    const selectedSessionId = stored.session?.id;
+    const activeTransport = selectedSessionId
+      ? this.activeTransportBySession.get(sessionIdentity(command.projectId, selectedSessionId))
+      : undefined;
+    const active = activeTransport ? this.activeByTransport.get(activeTransport) : undefined;
     return ProjectChatSnapshotSchema.parse({
       ...stored,
       profile,
-      ...(activeTurnId ? { activeTurnId } : {}),
+      ...(active ? { activeTurnId: active.turnId } : {}),
+    });
+  }
+
+  async listSessions(input: ProjectChatProjectInput) {
+    const command = ProjectChatProjectInputSchema.parse(input);
+    await this.requireProject(command.projectId);
+    return this.dependencies.storage.listProjectChatSessions(command.projectId);
+  }
+
+  async createSession(input: CreateProjectChatSessionInput) {
+    const command = CreateProjectChatSessionInputSchema.parse(input);
+    return this.runProjectChatMutation(command.projectId, async () => {
+      await this.requireActiveProject(command.projectId);
+      try {
+        return await this.dependencies.storage.createProjectChatSession(
+          command.projectId,
+          command.title,
+        );
+      } catch (error) {
+        throw mapSessionStorageError(error);
+      }
+    });
+  }
+
+  async branchSession(input: BranchProjectChatSessionInput) {
+    const command = BranchProjectChatSessionInputSchema.parse(input);
+    return this.runProjectChatMutation(command.projectId, async () => {
+      await this.requireActiveProject(command.projectId);
+      try {
+        return await this.dependencies.storage.branchProjectChatSession(command);
+      } catch (error) {
+        throw mapSessionStorageError(error);
+      }
+    });
+  }
+
+  async renameSession(input: RenameProjectChatSessionInput) {
+    const command = RenameProjectChatSessionInputSchema.parse(input);
+    return this.runWhenProjectChatIdle(command.projectId, async () => {
+      await this.requireActiveProject(command.projectId);
+      const renamed = await this.dependencies.storage.renameProjectChatSession(
+        command.projectId,
+        command.sessionId,
+        command.title,
+      );
+      if (!renamed) throw new ProjectChatServiceError('chat_session_not_found');
+      return renamed;
     });
   }
 
   async updateProfile(input: UpdateProjectChatProfileInput) {
     const command = UpdateProjectChatProfileInputSchema.parse(input);
-    if (
-      this.startingProjects.has(command.projectId) ||
-      this.activeTurnByProject.has(command.projectId)
-    ) {
+    if (this.hasProjectActivity(command.projectId)) {
       throw new ProjectChatServiceError('chat_busy');
     }
     return this.runProjectChatMutation(command.projectId, async () => {
@@ -343,8 +466,7 @@ export class ProjectChatService extends EventEmitter {
     if (
       this.lifecycleLockedProjects.has(projectId) ||
       this.mutatingProjects.has(projectId) ||
-      this.startingProjects.has(projectId) ||
-      this.activeTurnByProject.has(projectId)
+      this.hasProjectActivity(projectId)
     ) {
       throw new ProjectChatServiceError('chat_busy');
     }
@@ -359,31 +481,64 @@ export class ProjectChatService extends EventEmitter {
   async send(input: SendProjectChatMessageInput): Promise<ProjectChatTurnReceipt> {
     const hasExplicitNativeModeSelection = input.collaborationModeId !== undefined;
     const command = SendProjectChatMessageInputSchema.parse(input);
+    const requestedSshSessionKey = command.sessionId
+      ? sessionIdentity(command.projectId, command.sessionId)
+      : null;
+    const sshSessionEpochAtInvocation = requestedSshSessionKey
+      ? (this.sshScopeEpochBySession.get(requestedSshSessionKey) ?? 0)
+      : null;
+    const sshProjectEpochAtInvocation = this.sshScopeEpochByProject.get(command.projectId) ?? 0;
+    const sshRevokeAllEpochAtInvocation =
+      this.sshRevokeAllEpochByProject.get(command.projectId) ?? 0;
     if (
       this.lifecycleLockedProjects.has(command.projectId) ||
       this.mutatingProjects.has(command.projectId) ||
-      this.startingProjects.has(command.projectId) ||
-      this.activeTurnByProject.has(command.projectId)
+      this.hasProjectActivity(command.projectId)
     ) {
       throw new ProjectChatServiceError('chat_busy');
     }
     this.startingProjects.add(command.projectId);
+    let startingSessionKey: string | undefined;
+    let startingSessionRegistered = false;
     try {
-      const snapshot = await this.dependencies.workspace.snapshot();
+      await this.requireActiveProject(command.projectId);
+      let priorChat: ProjectChatSnapshot;
+      try {
+        priorChat = await this.dependencies.storage.snapshot(command.projectId, command.sessionId);
+      } catch (error) {
+        throw mapSessionStorageError(error);
+      }
+      const session = priorChat.session;
+      if (!session) throw new ProjectChatServiceError('chat_session_not_found');
+      startingSessionKey = sessionIdentity(command.projectId, session.id);
+      if (
+        this.lifecycleLockedProjects.has(command.projectId) ||
+        this.mutatingProjects.has(command.projectId) ||
+        [...this.startingSessions].some((identity) =>
+          identity.startsWith(`${command.projectId}:`),
+        ) ||
+        this.startingSessions.has(startingSessionKey) ||
+        this.activeTransportBySession.has(startingSessionKey)
+      ) {
+        throw new ProjectChatServiceError('chat_busy');
+      }
+      this.startingSessions.add(startingSessionKey);
+      startingSessionRegistered = true;
+      const [snapshot, profile] = await Promise.all([
+        this.dependencies.workspace.snapshot(),
+        this.dependencies.storage.getProjectChatProfile(command.projectId),
+      ]);
       const project = snapshot.projects.find((candidate) => candidate.id === command.projectId);
       if (!project) throw new ProjectChatServiceError('project_not_found');
       if (project.trashedAt !== undefined) throw new ProjectChatServiceError('project_trashed');
       if (project.archivedAt !== undefined) throw new ProjectChatServiceError('project_archived');
-      const [priorChat, profile] = await Promise.all([
-        this.dependencies.storage.snapshot(command.projectId),
-        this.dependencies.storage.getProjectChatProfile(command.projectId),
-      ]);
       if (command.profileVersion !== undefined && command.profileVersion !== profile.version) {
         throw new ProjectChatServiceError('chat_profile_conflict');
       }
       if (command.retryOfAttemptId) {
         const retryTarget = await this.dependencies.storage.getChatAttempt(
           command.projectId,
+          session.id,
           command.retryOfAttemptId,
         );
         if (!retryTarget) throw new ProjectChatServiceError('chat_attempt_not_found');
@@ -436,11 +591,15 @@ export class ProjectChatService extends EventEmitter {
         resolvedCollaborationModeId,
         legacyReviewerCompatibility,
       );
+      const attemptId = randomUUID();
       const agentTools = new ProjectAgentToolSession({
         projectId: command.projectId,
+        sessionId: session.id,
+        attemptId,
         workspace: this.dependencies.workspace,
         vault: this.dependencies.vault ?? UNAVAILABLE_AGENT_VAULT,
         localNotesVault: profile.localNotesVault ?? null,
+        ...(this.dependencies.ssh ? { ssh: this.dependencies.ssh } : {}),
       });
       const assembled = assembleProjectChatPrompt({
         snapshot,
@@ -467,7 +626,6 @@ export class ProjectChatService extends EventEmitter {
       });
 
       const createdAt = isoNow();
-      const attemptId = randomUUID();
       const userMessage: ProjectChatMessage = {
         id: randomUUID(),
         projectId: command.projectId,
@@ -482,6 +640,7 @@ export class ProjectChatService extends EventEmitter {
       const startingAttempt: ProjectChatAttempt = {
         id: attemptId,
         projectId: command.projectId,
+        sessionId: session.id,
         userMessageId: userMessage.id,
         ...(command.retryOfAttemptId ? { retryOfAttemptId: command.retryOfAttemptId } : {}),
         requestedModelId: command.requestedModelId,
@@ -500,6 +659,16 @@ export class ProjectChatService extends EventEmitter {
         updatedAt: createdAt,
       };
       await this.dependencies.storage.beginChatAttempt(startingAttempt, userMessage);
+      const sshScopeRevokedDuringStartup = requestedSshSessionKey
+        ? (this.sshScopeEpochBySession.get(requestedSshSessionKey) ?? 0) !==
+            sshSessionEpochAtInvocation ||
+          (this.sshRevokeAllEpochByProject.get(command.projectId) ?? 0) !==
+            sshRevokeAllEpochAtInvocation
+        : (this.sshScopeEpochByProject.get(command.projectId) ?? 0) !== sshProjectEpochAtInvocation;
+      if (sshScopeRevokedDuringStartup) {
+        agentTools.revokeSshCapability();
+      }
+      this.liveAgentToolsBySession.set(startingSessionKey, agentTools);
 
       let ephemeralThreadId: string | undefined;
       let ephemeralTurnId: string | undefined;
@@ -510,6 +679,7 @@ export class ProjectChatService extends EventEmitter {
         const cwd = await this.dependencies.prepareProjectDirectory(command.projectId);
         const threadId = await this.startEphemeralThread(
           command.projectId,
+          session.id,
           cwd,
           command.requestedModelId,
           assembled.developerInstructions,
@@ -549,6 +719,7 @@ export class ProjectChatService extends EventEmitter {
         }
         const active: ActiveTurn = {
           projectId: command.projectId,
+          sessionId: session.id,
           attempt: runningAttempt,
           threadId,
           turnId: result.turnId,
@@ -557,19 +728,22 @@ export class ProjectChatService extends EventEmitter {
           agentTools,
           terminal: false,
         };
-        this.activeByTurn.set(result.turnId, active);
-        this.activeTurnByProject.set(command.projectId, result.turnId);
+        const activeTransport = transportIdentity(threadId, result.turnId);
+        this.activeByTransport.set(activeTransport, active);
+        this.activeTransportBySession.set(startingSessionKey, activeTransport);
         activeRegistered = true;
         this.emitEvent({
           type: 'turn.started',
           projectId: command.projectId,
+          sessionId: session.id,
           turnId: result.turnId,
         });
-        const buffered = this.earlyNotifications.get(result.turnId) ?? [];
-        this.earlyNotifications.delete(result.turnId);
+        const buffered = this.earlyNotifications.get(activeTransport) ?? [];
+        this.earlyNotifications.delete(activeTransport);
         for (const notification of buffered) this.processNotification(active, notification);
         return ProjectChatTurnReceiptSchema.parse({
           projectId: command.projectId,
+          sessionId: session.id,
           attemptId,
           userMessageId: userMessage.id,
           turnId: result.turnId,
@@ -589,11 +763,17 @@ export class ProjectChatService extends EventEmitter {
           }
         }
         if (ephemeralThreadId) {
-          this.threadProjects.delete(ephemeralThreadId);
+          this.threadSessions.delete(ephemeralThreadId);
           void this.dependencies.codex.releaseThread(ephemeralThreadId).catch(() => undefined);
         }
-        if (ephemeralTurnId) this.earlyNotifications.delete(ephemeralTurnId);
+        if (ephemeralThreadId && ephemeralTurnId) {
+          this.earlyNotifications.delete(transportIdentity(ephemeralThreadId, ephemeralTurnId));
+        }
         if (!activeRegistered) {
+          agentTools.revokeSshCapability();
+          if (this.liveAgentToolsBySession.get(startingSessionKey) === agentTools) {
+            this.liveAgentToolsBySession.delete(startingSessionKey);
+          }
           const sourceAppendix = await agentTools.finalizeSourceAppendix();
           await this.finishAttemptBeforeTurn(
             currentAttempt,
@@ -609,16 +789,102 @@ export class ProjectChatService extends EventEmitter {
       }
     } finally {
       this.startingProjects.delete(command.projectId);
+      if (startingSessionRegistered && startingSessionKey) {
+        this.startingSessions.delete(startingSessionKey);
+      }
     }
   }
 
-  async cancel(input: ProjectChatProjectInput) {
-    const command = ProjectChatProjectInputSchema.parse(input);
-    const turnId = this.activeTurnByProject.get(command.projectId);
-    const active = turnId ? this.activeByTurn.get(turnId) : undefined;
+  async cancel(input: ProjectChatSessionInput) {
+    const command = ProjectChatSessionInputSchema.parse(input);
+    this.advanceSshScopeEpoch(command.projectId, command.sessionId);
+    this.revokeSshScopeImmediately(command.projectId, command.sessionId);
+    await this.requireProject(command.projectId);
+    let snapshot: ProjectChatSnapshot;
+    try {
+      snapshot = await this.dependencies.storage.snapshot(command.projectId, command.sessionId);
+    } catch (error) {
+      throw mapSessionStorageError(error);
+    }
+    const sessionId = snapshot.session?.id;
+    if (!sessionId) throw new ProjectChatServiceError('chat_session_not_found');
+    const activeTransport = this.activeTransportBySession.get(
+      sessionIdentity(command.projectId, sessionId),
+    );
+    const active = activeTransport ? this.activeByTransport.get(activeTransport) : undefined;
     if (!active) throw new ProjectChatServiceError('chat_not_active');
+    active.agentTools.revokeSshCapability();
+    this.dependencies.ssh?.cancelSession(command.projectId, sessionId);
     await this.dependencies.codex.interruptTurn(active.threadId, active.turnId);
     return { accepted: true } as const;
+  }
+
+  async revokeSsh(input: ProjectChatSessionInput) {
+    const command = ProjectChatSessionInputSchema.parse(input);
+    this.advanceSshScopeEpoch(command.projectId, command.sessionId);
+    this.revokeSshScopeImmediately(command.projectId, command.sessionId);
+    await this.requireProject(command.projectId);
+    let sessionIds: string[];
+    try {
+      if (command.sessionId) {
+        const snapshot = await this.dependencies.storage.snapshot(
+          command.projectId,
+          command.sessionId,
+        );
+        if (!snapshot.session) throw new ProjectChatServiceError('chat_session_not_found');
+        sessionIds = [snapshot.session.id];
+      } else {
+        sessionIds = (
+          await this.dependencies.storage.listProjectChatSessions(command.projectId)
+        ).map((session) => session.id);
+      }
+    } catch (error) {
+      if (error instanceof ProjectChatServiceError) throw error;
+      throw mapSessionStorageError(error);
+    }
+
+    for (const sessionId of sessionIds) {
+      const key = sessionIdentity(command.projectId, sessionId);
+      if (!command.sessionId) {
+        this.sshScopeEpochBySession.set(key, (this.sshScopeEpochBySession.get(key) ?? 0) + 1);
+      }
+      this.liveAgentToolsBySession.get(key)?.revokeSshCapability();
+      this.dependencies.ssh?.cancelSession(command.projectId, sessionId);
+    }
+    return { revoked: true } as const;
+  }
+
+  private advanceSshScopeEpoch(projectId: string, sessionId?: string) {
+    this.sshScopeEpochByProject.set(
+      projectId,
+      (this.sshScopeEpochByProject.get(projectId) ?? 0) + 1,
+    );
+    if (sessionId) {
+      const requestedKey = sessionIdentity(projectId, sessionId);
+      this.sshScopeEpochBySession.set(
+        requestedKey,
+        (this.sshScopeEpochBySession.get(requestedKey) ?? 0) + 1,
+      );
+    } else {
+      this.sshRevokeAllEpochByProject.set(
+        projectId,
+        (this.sshRevokeAllEpochByProject.get(projectId) ?? 0) + 1,
+      );
+    }
+  }
+
+  private revokeSshScopeImmediately(projectId: string, sessionId?: string) {
+    if (sessionId) {
+      this.liveAgentToolsBySession
+        .get(sessionIdentity(projectId, sessionId))
+        ?.revokeSshCapability();
+      this.dependencies.ssh?.cancelSession(projectId, sessionId);
+      return;
+    }
+    for (const [key, agentTools] of this.liveAgentToolsBySession) {
+      if (key.startsWith(`${projectId}:`)) agentTools.revokeSshCapability();
+    }
+    this.dependencies.ssh?.cancelProject(projectId);
   }
 
   applyAction(input: ApplyProjectChatActionInput): Promise<ProjectChatAction> {
@@ -639,13 +905,29 @@ export class ProjectChatService extends EventEmitter {
 
   private async applyActionWithProjectLock(command: ApplyProjectChatActionInput) {
     await this.requireActiveProject(command.projectId);
-    let action = await this.dependencies.storage.getAction(command.projectId, command.actionId);
+    let snapshot: ProjectChatSnapshot;
+    try {
+      snapshot = await this.dependencies.storage.snapshot(command.projectId, command.sessionId);
+    } catch (error) {
+      throw mapSessionStorageError(error);
+    }
+    const sessionId = snapshot.session?.id;
+    if (!sessionId) throw new ProjectChatServiceError('chat_session_not_found');
+    let action = await this.dependencies.storage.getAction(
+      command.projectId,
+      sessionId,
+      command.actionId,
+    );
     if (!action) throw new ProjectChatServiceError('action_not_found');
     if (action.status === 'applied' || action.status === 'failed') return action;
     if (action.status !== 'proposed') throw new ProjectChatServiceError('action_not_proposed');
     const claimedAt = isoNow();
     if (!(await this.dependencies.storage.claimAction(action.projectId, action.id, claimedAt))) {
-      action = await this.dependencies.storage.getAction(command.projectId, command.actionId);
+      action = await this.dependencies.storage.getAction(
+        command.projectId,
+        sessionId,
+        command.actionId,
+      );
       if (action?.status === 'applied' || action?.status === 'failed') return action;
       throw new ProjectChatServiceError('action_not_proposed');
     }
@@ -677,6 +959,7 @@ export class ProjectChatService extends EventEmitter {
       this.emitEvent({
         type: 'action.updated',
         projectId: action.projectId,
+        sessionId,
         action: failed,
         workspaceChanged: false,
       });
@@ -695,6 +978,7 @@ export class ProjectChatService extends EventEmitter {
       this.emitEvent({
         type: 'action.updated',
         projectId: action.projectId,
+        sessionId,
         action: applied,
         workspaceChanged: true,
       });
@@ -712,6 +996,7 @@ export class ProjectChatService extends EventEmitter {
       this.emitEvent({
         type: 'action.updated',
         projectId: action.projectId,
+        sessionId,
         action: interrupted,
         workspaceChanged: true,
       });
@@ -721,6 +1006,7 @@ export class ProjectChatService extends EventEmitter {
 
   private async startEphemeralThread(
     projectId: string,
+    sessionId: string,
     cwd: string,
     modelId: string | null,
     developerInstructions: string,
@@ -734,33 +1020,37 @@ export class ProjectChatService extends EventEmitter {
       responseVerbosity,
       dynamicTools: agentTools.dynamicTools,
       dynamicToolHandler: agentTools.handler,
+      dynamicToolTimeouts: agentTools.dynamicToolTimeouts,
     });
-    if (this.threadProjects.has(started.threadId)) {
+    if (this.threadSessions.has(started.threadId)) {
       throw new Error('codex_thread_id_collision');
     }
     agentTools.bindTransportRevoker(() =>
       this.dependencies.codex.revokeDynamicTools(started.threadId),
     );
-    this.threadProjects.set(started.threadId, projectId);
+    this.threadSessions.set(started.threadId, { projectId, sessionId });
     return started.threadId;
   }
 
   private routeNotification(notification: CodexNotification) {
     const identity = notificationIdentity(notification);
     if (!identity) return;
-    const projectId = this.threadProjects.get(identity.threadId);
-    if (projectId === undefined) return;
-    const active = this.activeByTurn.get(identity.turnId);
+    const session = this.threadSessions.get(identity.threadId);
+    if (!session) return;
+    const transport = transportIdentity(identity.threadId, identity.turnId);
+    const active = this.activeByTransport.get(transport);
     if (active) {
-      if (active.threadId !== identity.threadId || active.projectId !== projectId) return;
+      if (active.projectId !== session.projectId || active.sessionId !== session.sessionId) {
+        return;
+      }
       this.processNotification(active, notification);
       return;
     }
-    if (!this.startingProjects.has(projectId)) return;
-    const current = this.earlyNotifications.get(identity.turnId) ?? [];
+    if (!this.startingSessions.has(sessionIdentity(session.projectId, session.sessionId))) return;
+    const current = this.earlyNotifications.get(transport) ?? [];
     if (current.length < 100) {
       current.push(notification);
-      this.earlyNotifications.set(identity.turnId, current);
+      this.earlyNotifications.set(transport, current);
     }
   }
 
@@ -790,6 +1080,7 @@ export class ProjectChatService extends EventEmitter {
   private beginFinalize(active: ActiveTurn, status: 'completed' | 'interrupted' | 'failed') {
     if (active.terminal) return;
     active.terminal = true;
+    active.agentTools.revokeSshCapability();
     void this.persistTerminal(active, status)
       .then((persistedStatus) => this.clearActive(active, persistedStatus))
       .catch(async () => {
@@ -951,16 +1242,23 @@ export class ProjectChatService extends EventEmitter {
   }
 
   private clearActive(active: ActiveTurn, status: 'complete' | 'failed' | 'interrupted') {
-    this.activeByTurn.delete(active.turnId);
-    this.threadProjects.delete(active.threadId);
-    if (this.activeTurnByProject.get(active.projectId) === active.turnId) {
-      this.activeTurnByProject.delete(active.projectId);
+    this.dependencies.ssh?.cancelSession(active.projectId, active.sessionId);
+    const transport = transportIdentity(active.threadId, active.turnId);
+    const session = sessionIdentity(active.projectId, active.sessionId);
+    this.activeByTransport.delete(transport);
+    this.threadSessions.delete(active.threadId);
+    if (this.activeTransportBySession.get(session) === transport) {
+      this.activeTransportBySession.delete(session);
     }
-    this.earlyNotifications.delete(active.turnId);
+    if (this.liveAgentToolsBySession.get(session) === active.agentTools) {
+      this.liveAgentToolsBySession.delete(session);
+    }
+    this.earlyNotifications.delete(transport);
     void this.dependencies.codex.releaseThread(active.threadId).catch(() => undefined);
     this.emitEvent({
       type: 'turn.completed',
       projectId: active.projectId,
+      sessionId: active.sessionId,
       turnId: active.turnId,
       status,
     });
@@ -993,6 +1291,15 @@ export class ProjectChatService extends EventEmitter {
     } finally {
       this.mutatingProjects.delete(projectId);
     }
+  }
+
+  private hasProjectActivity(projectId: string) {
+    const prefix = `${projectId}:`;
+    return (
+      this.startingProjects.has(projectId) ||
+      [...this.startingSessions].some((identity) => identity.startsWith(prefix)) ||
+      [...this.activeTransportBySession.keys()].some((identity) => identity.startsWith(prefix))
+    );
   }
 
   private emitEvent(event: ProjectChatEvent) {

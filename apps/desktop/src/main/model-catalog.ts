@@ -49,7 +49,9 @@ export function toModelCatalog(
       modalities: model.inputModalities ?? ['text', 'image'],
       reasoningOptions: (model.supportedReasoningEfforts ?? []).map((option) => ({
         id: option.reasoningEffort,
-        label: option.description,
+        // The App Server owns this opaque vocabulary. Keep the picker compact and let future
+        // native options appear without a GOSU enum or a rewritten display name.
+        label: option.reasoningEffort,
         isDefault: option.reasoningEffort === model.defaultReasoningEffort,
       })),
       ...(model.upgrade ? { replacementModelId: model.upgrade } : {}),
