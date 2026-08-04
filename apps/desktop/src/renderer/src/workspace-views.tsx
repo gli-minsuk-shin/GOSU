@@ -8,7 +8,7 @@ import type {
 import { CardHead, describeError } from './ui-primitives';
 
 export type WorkspaceTabId =
-  'chat' | 'repository' | 'board' | 'objective' | 'connections' | 'notes';
+  'chat' | 'repository' | 'board' | 'objective' | 'literature' | 'connections' | 'notes';
 
 type ObjectiveDraft = {
   goal: string;
@@ -41,6 +41,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   { id: 'repository', label: 'Repository', icon: '⌘' },
   { id: 'board', label: 'Board', icon: '▦' },
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
+  { id: 'literature', label: 'Literature', icon: '▤' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
   { id: 'notes', label: 'Local notes', icon: '◇' },
 ];
@@ -49,7 +50,6 @@ export const FUTURE_MODULES = [
   ['Experiments', '⌁'],
   ['Manuscript', '¶'],
   ['Review', '✓'],
-  ['References', '⌘'],
   ['Lecture slides', '▹'],
 ] as const;
 
@@ -92,6 +92,8 @@ export function WorkspacePageHeading({
     board: 'Create work, move it through the research workflow, and keep every change locally.',
     objective:
       'Define a versioned goal, evaluation metric, reproducibility hashes, and hard experiment budget.',
+    literature:
+      'Build a living evidence table, enrich it with AI, and move records safely between JSON, CSV, and BibTeX.',
     connections: 'Inspect real local capabilities. No connection state on this page is simulated.',
     notes: 'Read Markdown from a folder you explicitly select. Note contents stay on this Mac.',
   };

@@ -7,6 +7,8 @@ import Database from 'better-sqlite3-multiple-ciphers';
 import { app, safeStorage } from 'electron';
 
 import { LocalDatabase } from '../../src/main/local-database';
+import { literatureFingerprint } from '../../src/main/literature-crossref';
+import { LiteratureStorageError } from '../../src/main/literature-storage-error';
 import { WorkspaceService } from '../../src/main/workspace-service';
 import { WorkspaceDataRecoveryError } from '../../src/main/workspace-storage-error';
 import type {
@@ -17,6 +19,10 @@ import {
   PROJECT_CHAT_MAX_BRANCH_DEPTH,
   PROJECT_CHAT_MAX_BRANCH_MESSAGES,
 } from '../../src/shared/project-chat-contracts';
+import {
+  LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT,
+  type LiteratureAiProvenance,
+} from '../../src/shared/literature-contracts';
 import type {
   ProjectRecord,
   WorkspaceOperation,
@@ -58,6 +64,781 @@ function fixture(revision: number, operationId: string, createdAt: string) {
     payload: { name: project.name, slug: project.slug },
   };
   return { state, operation };
+}
+
+function verifyLiteraturePersistence(fixedTimestamp: string) {
+  const database = new LocalDatabase();
+  database.open();
+  const projectId = randomUUID();
+  const otherProjectId = randomUUID();
+  const title = 'Bounded research systems';
+  const authors = ['Ada Researcher'];
+  const firstFingerprint = literatureFingerprint(title, authors, 2026);
+  const firstRunId = randomUUID();
+  const firstRun = {
+    schemaVersion: 1 as const,
+    id: firstRunId,
+    projectId,
+    provider: 'crossref' as const,
+    query: 'bounded research systems',
+    fromYear: 2020,
+    toYear: 2026,
+    requestedLimit: 25,
+    status: 'running' as const,
+    foundCount: 0,
+    newCount: 0,
+    updatedCount: 0,
+    unchangedCount: 0,
+    createdAt: fixedTimestamp,
+    completedAt: null,
+  };
+  invariant(database.beginLiteratureSearch(firstRun), 'literature_search_start_failed');
+  const firstReceipt = database.completeLiteratureSearch(
+    projectId,
+    firstRunId,
+    [
+      {
+        provider: 'crossref',
+        providerId: 'crossref-fixture-1',
+        doi: '10.1000/gosu.fixture',
+        fingerprint: firstFingerprint,
+        title,
+        authors,
+        containerTitle: 'Journal of Fixtures',
+        publishedYear: 2026,
+        topics: ['research systems'],
+        workType: 'journal-article',
+        citationCount: 2,
+        sourceUrl: 'https://doi.org/10.1000/gosu.fixture',
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(
+    firstReceipt.newCount === 1 && firstReceipt.run.fromYear === 2020,
+    'literature_search_insert_failed',
+  );
+  const first = database.listLiteratureRecords(projectId)[0];
+  invariant(first?.doi === '10.1000/gosu.fixture', 'literature_doi_was_not_persisted');
+  const manual = database.updateLiteratureManualAnnotations({
+    projectId,
+    recordId: first.id,
+    expectedVersion: first.version,
+    expectedAnnotationVersion: first.annotationVersion,
+    manualTopics: ['verified'],
+    manualSummary: 'Human-reviewed summary',
+    manualRelevance: 'Directly relevant',
+    reviewStatus: 'included',
+    updatedAt: fixedTimestamp,
+  });
+  invariant(
+    manual?.annotationVersion === 1 && manual.reviewStatus === 'included',
+    'literature_manual_annotation_update_failed',
+  );
+  const provenance: LiteratureAiProvenance = {
+    invocation: {
+      schemaVersion: 1,
+      invocationId: randomUUID(),
+      providerId: 'codex',
+      requestedModelId: null,
+      resolvedModelId: 'fixture-model',
+      catalogVersion: 'fixture-catalog',
+      reasoningOptionId: 'high',
+      startedAt: fixedTimestamp,
+    },
+    inputSha256: 'a'.repeat(64),
+    generatedAt: fixedTimestamp,
+    metadataOnly: true,
+  };
+  const ai = database.applyLiteratureAiAnnotations(
+    projectId,
+    [
+      {
+        recordId: first.id,
+        expectedVersion: manual.version,
+        expectedAnnotationVersion: manual.annotationVersion,
+        topics: ['metadata'],
+        summary: 'Metadata-only AI summary',
+        relevance: 'high',
+        studyType: 'Not assessable from metadata alone',
+        limitations: ['Not assessable from metadata alone'],
+        provenance,
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(ai?.[0]?.aiAnnotations?.provenance.metadataOnly, 'literature_ai_update_failed');
+
+  const secondRunId = randomUUID();
+  invariant(
+    database.beginLiteratureSearch({ ...firstRun, id: secondRunId, query: 'refresh fixture' }),
+    'literature_refresh_start_failed',
+  );
+  const refresh = database.completeLiteratureSearch(
+    projectId,
+    secondRunId,
+    [
+      {
+        provider: 'crossref',
+        providerId: 'crossref-fixture-1',
+        doi: '10.1000/gosu.fixture',
+        fingerprint: literatureFingerprint('Updated provider title', authors, 2026),
+        title: 'Updated provider title',
+        authors,
+        containerTitle: 'Updated Fixture Journal',
+        publishedYear: 2026,
+        topics: ['updated source topic'],
+        workType: 'journal-article',
+        citationCount: 9,
+        sourceUrl: 'https://doi.org/10.1000/gosu.fixture',
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(refresh.updatedCount === 1, 'literature_crossref_refresh_not_classified');
+  const refreshed = database.listLiteratureRecords(projectId)[0];
+  invariant(
+    refreshed?.title === 'Updated provider title' &&
+      refreshed.manualAnnotations.summary === 'Human-reviewed summary' &&
+      refreshed.aiAnnotations === null &&
+      refreshed.annotationVersion === ai[0]!.annotationVersion + 1,
+    'literature_crossref_refresh_did_not_invalidate_stale_ai',
+  );
+  const reorganized = database.applyLiteratureAiAnnotations(
+    projectId,
+    [
+      {
+        recordId: refreshed.id,
+        expectedVersion: refreshed.version,
+        expectedAnnotationVersion: refreshed.annotationVersion,
+        topics: ['updated metadata'],
+        summary: 'Metadata-only AI summary',
+        relevance: 'high',
+        studyType: 'Not assessable from metadata alone',
+        limitations: ['Not assessable from metadata alone'],
+        provenance,
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(
+    reorganized?.[0]?.aiAnnotations?.summary === 'Metadata-only AI summary',
+    'literature_crossref_refresh_could_not_be_reorganized',
+  );
+
+  const imported = database.upsertLiteratureCandidates(
+    projectId,
+    [
+      {
+        provider: 'import',
+        doi: '10.1000/gosu.fixture',
+        fingerprint: firstFingerprint,
+        title: 'Untrusted stale imported title',
+        authors: ['Different Imported Author'],
+        publishedYear: 2020,
+        topics: ['stale import topic'],
+        citationKey: 'ImportedReviewKey',
+        reviewStatus: 'reviewed',
+        manualAnnotations: {
+          topics: ['restored review'],
+          summary: 'Imported human review',
+          relevance: 'Imported relevance',
+        },
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(imported.updated === 1, 'literature_review_import_not_updated');
+  const merged = database.listLiteratureRecords(projectId)[0];
+  invariant(
+    merged?.provider === 'crossref' &&
+      merged.title === 'Updated provider title' &&
+      merged.manualAnnotations.summary === 'Imported human review' &&
+      merged.reviewStatus === 'reviewed' &&
+      merged.aiAnnotations?.summary === 'Metadata-only AI summary',
+    'literature_import_trust_merge_failed',
+  );
+
+  const providerIdentityTitle = 'Provider identity before metadata change';
+  database.upsertLiteratureCandidates(
+    projectId,
+    [
+      {
+        provider: 'crossref',
+        providerId: 'https://api.crossref.org/works/provider-only-fixture',
+        fingerprint: literatureFingerprint(providerIdentityTitle, authors, 2025),
+        title: providerIdentityTitle,
+        authors,
+        publishedYear: 2025,
+        topics: [],
+      },
+    ],
+    fixedTimestamp,
+  );
+  database.upsertLiteratureCandidates(
+    projectId,
+    [
+      {
+        provider: 'crossref',
+        providerId: '10.1000/gosu.provider-enriched',
+        doi: '10.1000/gosu.provider-enriched',
+        fingerprint: literatureFingerprint(providerIdentityTitle, authors, 2025),
+        title: providerIdentityTitle,
+        authors,
+        publishedYear: 2025,
+        topics: [],
+      },
+    ],
+    fixedTimestamp,
+  );
+  database.upsertLiteratureCandidates(
+    projectId,
+    [
+      {
+        provider: 'crossref',
+        providerId: '10.1000/gosu.provider-enriched',
+        doi: '10.1000/gosu.provider-enriched',
+        fingerprint: literatureFingerprint('Provider identity changed title', authors, 2025),
+        title: 'Provider identity changed title',
+        authors,
+        publishedYear: 2025,
+        topics: [],
+      },
+    ],
+    fixedTimestamp,
+  );
+  const providerIdentity = database
+    .listLiteratureRecords(projectId)
+    .find((record) => record.doi === '10.1000/gosu.provider-enriched');
+  invariant(
+    database.countLiteratureRecords(projectId) === 2 &&
+      providerIdentity?.doi === '10.1000/gosu.provider-enriched' &&
+      providerIdentity?.fingerprint ===
+        literatureFingerprint('Provider identity changed title', authors, 2025),
+    'literature_provider_dedupe_or_fingerprint_refresh_failed',
+  );
+
+  const fingerprintTitle = 'Fingerprint-only identity';
+  const fingerprint = literatureFingerprint(fingerprintTitle, authors, 2024);
+  database.upsertLiteratureCandidates(
+    projectId,
+    [
+      {
+        provider: 'import',
+        fingerprint,
+        title: fingerprintTitle,
+        authors,
+        publishedYear: 2024,
+        topics: [],
+      },
+      {
+        provider: 'import',
+        fingerprint,
+        title: fingerprintTitle,
+        authors,
+        publishedYear: 2024,
+        topics: [],
+        reviewStatus: 'screening',
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(
+    database.countLiteratureRecords(projectId) === 3,
+    'literature_fingerprint_dedupe_failed',
+  );
+
+  database.upsertLiteratureCandidates(
+    otherProjectId,
+    [
+      {
+        provider: 'crossref',
+        doi: '10.1000/gosu.fixture',
+        fingerprint: firstFingerprint,
+        title,
+        authors,
+        publishedYear: 2026,
+        topics: [],
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(
+    database.countLiteratureRecords(otherProjectId) === 1 &&
+      database.countLiteratureRecords(projectId) === 3,
+    'literature_project_isolation_failed',
+  );
+
+  const beforeAtomicConflict = database.getLiteratureRecordsByIds(projectId, [merged.id])[0]!;
+  const atomicConflict = database.applyLiteratureAiAnnotations(
+    projectId,
+    [
+      {
+        recordId: merged.id,
+        expectedVersion: beforeAtomicConflict.version,
+        expectedAnnotationVersion: beforeAtomicConflict.annotationVersion,
+        topics: ['would-be-write'],
+        summary: 'This must roll back',
+        relevance: 'low',
+        studyType: '',
+        limitations: [],
+        provenance,
+      },
+      {
+        recordId: randomUUID(),
+        expectedVersion: 1,
+        expectedAnnotationVersion: 0,
+        topics: [],
+        summary: '',
+        relevance: 'uncertain',
+        studyType: '',
+        limitations: [],
+        provenance,
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(atomicConflict === null, 'literature_ai_conflict_was_not_rejected');
+  invariant(
+    database.getLiteratureRecordsByIds(projectId, [merged.id])[0]?.aiAnnotations?.summary ===
+      'Metadata-only AI summary',
+    'literature_ai_conflict_was_not_atomic',
+  );
+  invariant(
+    database.updateLiteratureManualAnnotations({
+      projectId,
+      recordId: merged.id,
+      expectedVersion: 1,
+      expectedAnnotationVersion: 0,
+      manualTopics: [],
+      manualSummary: '',
+      manualRelevance: '',
+      reviewStatus: 'unreviewed',
+      updatedAt: fixedTimestamp,
+    }) === null,
+    'literature_manual_conflict_was_not_rejected',
+  );
+
+  const beforeSourceRefresh = database.getLiteratureRecordsByIds(projectId, [merged.id])[0]!;
+  const staleDraftRunId = randomUUID();
+  invariant(
+    database.beginLiteratureSearch({
+      ...firstRun,
+      id: staleDraftRunId,
+      query: 'source refresh after AI draft',
+    }),
+    'literature_stale_ai_refresh_start_failed',
+  );
+  database.completeLiteratureSearch(
+    projectId,
+    staleDraftRunId,
+    [
+      {
+        provider: 'crossref',
+        ...(beforeSourceRefresh.providerRecordId
+          ? { providerId: beforeSourceRefresh.providerRecordId }
+          : {}),
+        ...(beforeSourceRefresh.doi ? { doi: beforeSourceRefresh.doi } : {}),
+        fingerprint: literatureFingerprint('Source changed after AI draft', authors, 2026),
+        title: 'Source changed after AI draft',
+        authors,
+        ...(beforeSourceRefresh.containerTitle
+          ? { containerTitle: beforeSourceRefresh.containerTitle }
+          : {}),
+        publishedYear: 2026,
+        topics: ['fresh source metadata'],
+        ...(beforeSourceRefresh.workType ? { workType: beforeSourceRefresh.workType } : {}),
+        citationCount: 10,
+        ...(beforeSourceRefresh.sourceUrl ? { sourceUrl: beforeSourceRefresh.sourceUrl } : {}),
+      },
+    ],
+    fixedTimestamp,
+  );
+  const afterSourceRefresh = database.getLiteratureRecordsByIds(projectId, [merged.id])[0]!;
+  invariant(
+    afterSourceRefresh.version === beforeSourceRefresh.version + 1 &&
+      afterSourceRefresh.annotationVersion === beforeSourceRefresh.annotationVersion + 1 &&
+      afterSourceRefresh.aiAnnotations === null,
+    'literature_source_refresh_did_not_clear_ai_annotations',
+  );
+  invariant(
+    database.applyLiteratureAiAnnotations(
+      projectId,
+      [
+        {
+          recordId: merged.id,
+          expectedVersion: beforeSourceRefresh.version,
+          expectedAnnotationVersion: beforeSourceRefresh.annotationVersion,
+          topics: ['stale-draft'],
+          summary: 'This stale draft must not apply',
+          relevance: 'low',
+          studyType: '',
+          limitations: [],
+          provenance,
+        },
+      ],
+      fixedTimestamp,
+    ) === null,
+    'literature_stale_ai_source_version_was_accepted',
+  );
+  const freshAi = database.applyLiteratureAiAnnotations(
+    projectId,
+    [
+      {
+        recordId: merged.id,
+        expectedVersion: afterSourceRefresh.version,
+        expectedAnnotationVersion: afterSourceRefresh.annotationVersion,
+        topics: ['fresh-draft'],
+        summary: 'Fresh metadata-only draft',
+        relevance: 'high',
+        studyType: '',
+        limitations: [],
+        provenance,
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(
+    freshAi?.[0]?.aiAnnotations?.summary === 'Fresh metadata-only draft',
+    'literature_source_refresh_new_ai_cas_failed',
+  );
+  invariant(
+    database.deleteLiteratureRecord(projectId, merged.id, freshAi[0]!.version, fixedTimestamp),
+    'literature_soft_delete_failed',
+  );
+  invariant(
+    !database.listLiteratureRecords(projectId).some((record) => record.id === merged.id),
+    'literature_soft_delete_remained_visible',
+  );
+  database.close();
+
+  const reopened = new LocalDatabase();
+  reopened.open();
+  invariant(
+    reopened.listLiteratureSearchRuns(projectId).length === 3,
+    'literature_runs_not_reopened',
+  );
+  invariant(reopened.countLiteratureRecords(projectId) === 2, 'literature_records_not_reopened');
+  invariant(
+    reopened.countLiteratureRecords(otherProjectId) === 1,
+    'literature_other_project_not_reopened',
+  );
+  reopened.close();
+}
+
+function verifyLiteratureBoundsAndIdentity(fixedTimestamp: string) {
+  const database = new LocalDatabase();
+  database.open();
+  try {
+    const identityProjectId = randomUUID();
+    const identityCandidates = ['doi', 'provider', 'fingerprint'].map((name, index) => ({
+      provider: 'crossref' as const,
+      providerId: `identity-provider-${index}`,
+      doi: `10.1000/gosu.identity-${index}`,
+      fingerprint: literatureFingerprint(`Identity ${name}`, ['Identity Author'], 2026),
+      title: `Identity ${name}`,
+      authors: ['Identity Author'],
+      publishedYear: 2026,
+      topics: [],
+      citationKey: `Identity${index}`,
+    }));
+    database.upsertLiteratureCandidates(identityProjectId, identityCandidates, fixedTimestamp);
+    let identityConflictRejected = false;
+    try {
+      database.upsertLiteratureCandidates(
+        identityProjectId,
+        [
+          {
+            provider: 'import',
+            fingerprint: literatureFingerprint('Must roll back', ['Atomic Author'], 2026),
+            title: 'Must roll back',
+            authors: ['Atomic Author'],
+            publishedYear: 2026,
+            topics: [],
+            citationKey: 'MustRollBack',
+          },
+          {
+            provider: 'crossref',
+            providerId: identityCandidates[1]!.providerId,
+            doi: identityCandidates[0]!.doi,
+            fingerprint: identityCandidates[2]!.fingerprint,
+            title: 'Conflicting three-way identity',
+            authors: ['Identity Author'],
+            publishedYear: 2026,
+            topics: [],
+          },
+        ],
+        fixedTimestamp,
+      );
+    } catch (error) {
+      identityConflictRejected =
+        error instanceof LiteratureStorageError && error.code === 'identity_conflict';
+    }
+    invariant(identityConflictRejected, 'literature_identity_conflict_was_not_typed');
+    invariant(
+      database.countLiteratureRecords(identityProjectId) === identityCandidates.length &&
+        !database
+          .listLiteratureRecords(identityProjectId)
+          .some((record) => record.citationKey === 'MustRollBack'),
+      'literature_identity_conflict_was_not_atomic',
+    );
+
+    for (const mismatch of [
+      {
+        ...identityCandidates[0]!,
+        doi: '10.1000/gosu.identity-different',
+      },
+      {
+        ...identityCandidates[0]!,
+        providerId: 'identity-provider-different',
+      },
+    ]) {
+      let strongIdentityMismatchRejected = false;
+      try {
+        database.upsertLiteratureCandidates(identityProjectId, [mismatch], fixedTimestamp);
+      } catch (error) {
+        strongIdentityMismatchRejected =
+          error instanceof LiteratureStorageError && error.code === 'identity_conflict';
+      }
+      invariant(
+        strongIdentityMismatchRejected,
+        'literature_strong_identity_mismatch_was_not_rejected',
+      );
+    }
+    const preservedIdentity = database
+      .listLiteratureRecords(identityProjectId)
+      .find((record) => record.fingerprint === identityCandidates[0]!.fingerprint);
+    invariant(
+      preservedIdentity?.doi === identityCandidates[0]!.doi &&
+        preservedIdentity.providerRecordId === identityCandidates[0]!.providerId,
+      'literature_strong_identity_mismatch_overwrote_identity',
+    );
+
+    const capacityProjectId = randomUUID();
+    const capacityCandidate = (index: number, provider: 'crossref' | 'import' = 'import') => ({
+      provider,
+      ...(provider === 'crossref' ? { providerId: `capacity-provider-${index}` } : {}),
+      fingerprint: literatureFingerprint(`Capacity record ${index}`, ['Capacity Author'], 2026),
+      title: `Capacity record ${index}`,
+      authors: ['Capacity Author'],
+      publishedYear: 2026,
+      topics: [],
+      citationKey: `Capacity${index}`,
+    });
+    database.upsertLiteratureCandidates(
+      capacityProjectId,
+      Array.from({ length: LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT - 1 }, (_, index) =>
+        capacityCandidate(index),
+      ),
+      fixedTimestamp,
+    );
+
+    const capacityRunId = randomUUID();
+    invariant(
+      database.beginLiteratureSearch({
+        schemaVersion: 1,
+        id: capacityRunId,
+        projectId: capacityProjectId,
+        provider: 'crossref',
+        query: 'capacity boundary',
+        fromYear: null,
+        toYear: null,
+        requestedLimit: 2,
+        status: 'running',
+        foundCount: 0,
+        newCount: 0,
+        updatedCount: 0,
+        unchangedCount: 0,
+        createdAt: fixedTimestamp,
+        completedAt: null,
+      }),
+      'literature_capacity_search_start_failed',
+    );
+    let searchLimitRejected = false;
+    try {
+      database.completeLiteratureSearch(
+        capacityProjectId,
+        capacityRunId,
+        [capacityCandidate(10_000, 'crossref'), capacityCandidate(10_001, 'crossref')],
+        fixedTimestamp,
+      );
+    } catch (error) {
+      searchLimitRejected =
+        error instanceof LiteratureStorageError && error.code === 'record_limit_reached';
+    }
+    invariant(searchLimitRejected, 'literature_search_capacity_was_not_typed');
+    invariant(
+      database.countLiteratureRecords(capacityProjectId) ===
+        LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT - 1,
+      'literature_search_capacity_was_not_atomic',
+    );
+    invariant(
+      database.failLiteratureSearch(capacityProjectId, capacityRunId, 'failed', fixedTimestamp),
+      'literature_capacity_search_was_not_reconcilable',
+    );
+
+    let importLimitRejected = false;
+    try {
+      database.upsertLiteratureCandidates(
+        capacityProjectId,
+        [capacityCandidate(20_000), capacityCandidate(20_001)],
+        fixedTimestamp,
+      );
+    } catch (error) {
+      importLimitRejected =
+        error instanceof LiteratureStorageError && error.code === 'record_limit_reached';
+    }
+    invariant(importLimitRejected, 'literature_import_capacity_was_not_typed');
+    invariant(
+      database.countLiteratureRecords(capacityProjectId) ===
+        LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT - 1,
+      'literature_import_capacity_was_not_atomic',
+    );
+    database.upsertLiteratureCandidates(
+      capacityProjectId,
+      [capacityCandidate(30_000)],
+      fixedTimestamp,
+    );
+    invariant(
+      database.listLiteratureRecords(capacityProjectId).length ===
+        LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT,
+      'literature_record_list_was_silently_truncated',
+    );
+  } finally {
+    database.close();
+  }
+}
+
+function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp: string) {
+  const primaryUserData = app.getPath('userData');
+  const legacyUserData = join(rootUserData, 'legacy-literature-relevance-v1');
+  mkdirSync(legacyUserData, { recursive: true });
+  app.setPath('userData', legacyUserData);
+  try {
+    const projectId = randomUUID();
+    const bootstrap = new LocalDatabase();
+    bootstrap.open();
+    bootstrap.upsertLiteratureCandidates(
+      projectId,
+      [
+        {
+          provider: 'import',
+          fingerprint: literatureFingerprint('Relevance migration', ['Migration Author'], 2026),
+          title: 'Relevance migration',
+          authors: ['Migration Author'],
+          publishedYear: 2026,
+          topics: [],
+          manualAnnotations: {
+            topics: [],
+            summary: '',
+            relevance: 'n'.repeat(4_000),
+          },
+        },
+      ],
+      fixedTimestamp,
+    );
+    const inserted = bootstrap.listLiteratureRecords(projectId)[0]!;
+    invariant(
+      inserted.manualAnnotations.relevance.length === 4_000,
+      'new_literature_relevance_limit_was_not_applied',
+    );
+    const legacyValue = 'Preserved legacy relevance';
+    const legacyRecord = bootstrap.updateLiteratureManualAnnotations({
+      projectId,
+      recordId: inserted.id,
+      expectedVersion: inserted.version,
+      expectedAnnotationVersion: inserted.annotationVersion,
+      manualTopics: [],
+      manualSummary: '',
+      manualRelevance: legacyValue,
+      reviewStatus: inserted.reviewStatus,
+      updatedAt: fixedTimestamp,
+    });
+    invariant(legacyRecord !== null, 'legacy_literature_relevance_fixture_failed');
+    bootstrap.close();
+
+    const keyHex = safeStorage
+      .decryptString(readFileSync(join(legacyUserData, 'local-key.bin')))
+      .trim();
+    const raw = new Database(join(legacyUserData, 'gosu.db'));
+    try {
+      raw.pragma(`key="x'${keyHex}'"`);
+      raw.transaction(() => {
+        raw
+          .prepare('delete from local_schema_migrations where id=?')
+          .run('literature-manual-relevance-v2');
+        raw.exec(`
+          alter table literature_records rename column manual_relevance to manual_relevance_v2;
+          alter table literature_records add column manual_relevance text check (
+            manual_relevance is null or length(manual_relevance) between 1 and 64
+          );
+          update literature_records set manual_relevance=manual_relevance_v2;
+          alter table literature_records drop column manual_relevance_v2;
+        `);
+      })();
+    } finally {
+      raw.close();
+    }
+
+    const migrated = new LocalDatabase();
+    migrated.open();
+    const preserved = migrated.listLiteratureRecords(projectId)[0]!;
+    invariant(
+      preserved.manualAnnotations.relevance === legacyValue,
+      'legacy_literature_relevance_was_not_preserved',
+    );
+    const expandedValue = 'r'.repeat(4_000);
+    const expanded = migrated.updateLiteratureManualAnnotations({
+      projectId,
+      recordId: preserved.id,
+      expectedVersion: preserved.version,
+      expectedAnnotationVersion: preserved.annotationVersion,
+      manualTopics: [],
+      manualSummary: '',
+      manualRelevance: expandedValue,
+      reviewStatus: preserved.reviewStatus,
+      updatedAt: fixedTimestamp,
+    });
+    invariant(
+      expanded?.manualAnnotations.relevance === expandedValue,
+      'migrated_literature_relevance_limit_was_not_applied',
+    );
+    migrated.close();
+
+    const inspected = new Database(join(legacyUserData, 'gosu.db'));
+    try {
+      inspected.pragma(`key="x'${keyHex}'"`);
+      const columns = inspected.pragma('table_info(literature_records)') as Array<{ name: string }>;
+      const table = inspected
+        .prepare("select sql from sqlite_master where type='table' and name='literature_records'")
+        .get() as { sql: string };
+      invariant(
+        columns
+          .filter((column) => column.name.includes('manual_relevance'))
+          .every((column) => column.name === 'manual_relevance') &&
+          columns.filter((column) => column.name === 'manual_relevance').length === 1,
+        'literature_relevance_migration_left_a_duplicate_column',
+      );
+      invariant(
+        /\bmanual_relevance\s+text\s+check\s*\(\s*manual_relevance\s+is\s+null\s+or\s+length\s*\(\s*manual_relevance\s*\)\s+between\s+1\s+and\s+4000\s*\)/iu.test(
+          table.sql,
+        ),
+        'literature_relevance_migration_schema_is_not_4000',
+      );
+    } finally {
+      inspected.close();
+    }
+
+    const reopened = new LocalDatabase();
+    reopened.open();
+    invariant(
+      reopened.listLiteratureRecords(projectId)[0]?.manualAnnotations.relevance === expandedValue,
+      'migrated_literature_relevance_was_not_durable',
+    );
+    reopened.close();
+  } finally {
+    app.setPath('userData', primaryUserData);
+  }
 }
 
 function verifyLegacyChatMigration(rootUserData: string, fixedTimestamp: string) {
@@ -1283,6 +2064,9 @@ void app.whenReady().then(async () => {
 
     verifyLegacyChatMigration(temporaryUserData, fixedTimestamp);
     verifyLegacyProfileMigration(temporaryUserData, fixedTimestamp);
+    verifyLiteratureRelevanceMigration(temporaryUserData, fixedTimestamp);
+    verifyLiteraturePersistence(fixedTimestamp);
+    verifyLiteratureBoundsAndIdentity(fixedTimestamp);
 
     process.stdout.write('local SQLCipher workspace smoke test passed\n');
     app.exit(0);

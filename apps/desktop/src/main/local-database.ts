@@ -6,6 +6,16 @@ import { app, safeStorage } from 'electron';
 
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import {
+  LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT,
+  LITERATURE_MAX_SEARCH_RESULTS,
+  LiteratureRecordSchema,
+  LiteratureSearchRunSchema,
+  type LiteratureAiAnnotationUpdate,
+  type LiteratureAiProvenance,
+  type LiteratureRecord,
+  type LiteratureSearchRun,
+} from '../shared/literature-contracts';
+import {
   ProjectChatActionSchema,
   ProjectChatAttemptSchema,
   ProjectChatMessageSchema,
@@ -31,13 +41,19 @@ import type {
   WorkspacePendingSummary,
   WorkspaceSnapshot,
 } from '../shared/workspace-contracts';
+import type { LiteratureProviderCandidate } from './literature-crossref';
+import { LiteratureStorageError } from './literature-storage-error';
 import { WorkspaceDataRecoveryError } from './workspace-storage-error';
 
 const MAX_WORKSPACE_STATE_BYTES = 8 * 1024 * 1024;
 const INTERRUPTED_CHAT_ATTEMPT_RECEIPT =
   'GOSU closed before this Codex turn finished. Retry when ready.';
 const PROJECT_CHAT_SESSIONS_MIGRATION = 'project-chat-sessions-v1';
+const LITERATURE_MANUAL_RELEVANCE_MIGRATION = 'literature-manual-relevance-v2';
 const DEFAULT_PROJECT_CHAT_SESSION_TITLE = 'Project chat';
+
+export type LocalLiteratureAiAnnotationUpdate = LiteratureAiAnnotationUpdate &
+  Readonly<{ provenance: LiteratureAiProvenance }>;
 
 function backfillLegacyWorkspaceRevisions(database: Database.Database) {
   const operations = database
@@ -294,6 +310,497 @@ function reconcileInterruptedChatAttempts(database: Database.Database, reconcile
   }
 }
 
+type LiteratureRecordRow = Readonly<{
+  id: string;
+  schema_version: number;
+  project_id: string;
+  source_provider: string;
+  provider_record_id: string | null;
+  doi: string | null;
+  fingerprint: string;
+  title: string;
+  authors_json: string;
+  container_title: string | null;
+  published_year: number | null;
+  topics_json: string;
+  work_type: string | null;
+  citation_count: number | null;
+  source_url: string | null;
+  citation_key: string | null;
+  review_status: string;
+  manual_topics_json: string;
+  manual_summary: string | null;
+  manual_relevance: string | null;
+  ai_topics_json: string;
+  ai_summary: string | null;
+  ai_relevance: string | null;
+  ai_study_type: string | null;
+  ai_limitations_json: string;
+  ai_model_provenance_json: string | null;
+  annotation_version: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}>;
+
+type LiteratureSearchRunRow = Readonly<{
+  id: string;
+  project_id: string;
+  provider: string;
+  query: string;
+  requested_limit: number;
+  from_year: number | null;
+  to_year: number | null;
+  status: LiteratureSearchRun['status'];
+  new_count: number;
+  updated_count: number;
+  unchanged_count: number;
+  created_at: string;
+  completed_at: string | null;
+}>;
+
+function stringArrayJson(value: string) {
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === 'string')) {
+    throw new Error('invalid_literature_record');
+  }
+  return parsed;
+}
+
+function recordJson(value: string | null) {
+  if (value === null) return null;
+  const parsed = JSON.parse(value) as unknown;
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('invalid_literature_record');
+  }
+  return parsed as Readonly<Record<string, unknown>>;
+}
+
+function toLocalLiteratureRecord(row: LiteratureRecordRow): LiteratureRecord {
+  return LiteratureRecordSchema.parse({
+    schemaVersion: 1,
+    id: row.id,
+    projectId: row.project_id,
+    provider: row.source_provider,
+    providerRecordId: row.provider_record_id,
+    doi: row.doi,
+    fingerprint: row.fingerprint,
+    title: row.title,
+    authors: stringArrayJson(row.authors_json),
+    containerTitle: row.container_title,
+    publishedYear: row.published_year,
+    sourceTopics: stringArrayJson(row.topics_json),
+    workType: row.work_type,
+    citationCount: row.citation_count,
+    sourceUrl: row.source_url,
+    citationKey: row.citation_key ?? '',
+    reviewStatus: row.review_status,
+    manualAnnotations: {
+      topics: stringArrayJson(row.manual_topics_json),
+      summary: row.manual_summary ?? '',
+      relevance: row.manual_relevance ?? '',
+    },
+    aiAnnotations: row.ai_model_provenance_json
+      ? {
+          topics: stringArrayJson(row.ai_topics_json),
+          summary: row.ai_summary ?? '',
+          relevance: row.ai_relevance,
+          studyType: row.ai_study_type ?? '',
+          limitations: stringArrayJson(row.ai_limitations_json),
+          provenance: recordJson(row.ai_model_provenance_json),
+        }
+      : null,
+    version: row.version,
+    annotationVersion: row.annotation_version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function toLocalLiteratureSearchRun(row: LiteratureSearchRunRow): LiteratureSearchRun {
+  return LiteratureSearchRunSchema.parse({
+    schemaVersion: 1,
+    id: row.id,
+    projectId: row.project_id,
+    provider: 'crossref',
+    query: row.query,
+    requestedLimit: row.requested_limit,
+    fromYear: row.from_year,
+    toYear: row.to_year,
+    status: row.status,
+    foundCount: row.new_count + row.updated_count + row.unchanged_count,
+    newCount: row.new_count,
+    updatedCount: row.updated_count,
+    unchangedCount: row.unchanged_count,
+    createdAt: row.created_at,
+    completedAt: row.completed_at,
+  });
+}
+
+function citationKeyBase(candidate: LiteratureProviderCandidate) {
+  const author = (candidate.authors[0] ?? 'paper')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/gu, '')
+    .split(/\s+/u)
+    .at(-1)
+    ?.replace(/[^A-Za-z0-9]/gu, '')
+    .toLowerCase();
+  const titleWord = candidate.title
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/gu, '')
+    .split(/[^A-Za-z0-9]+/u)
+    .find((word) => word.length >= 3)
+    ?.toLowerCase();
+  return `${author || 'paper'}${candidate.publishedYear ?? 'nd'}${titleWord || 'work'}`.slice(
+    0,
+    140,
+  );
+}
+
+function nextCitationKey(
+  database: Database.Database,
+  projectId: string,
+  candidate: LiteratureProviderCandidate,
+  excludeRecordId?: string,
+) {
+  const requested = candidate.citationKey
+    ?.trim()
+    .replace(/[^A-Za-z0-9_:+./-]/gu, '')
+    .slice(0, 140);
+  const base = requested || citationKeyBase(candidate);
+  const exists = excludeRecordId
+    ? database.prepare(
+        `select 1 from literature_records
+         where project_id=? and citation_key=? and id<>? limit 1`,
+      )
+    : database.prepare(
+        'select 1 from literature_records where project_id=? and citation_key=? limit 1',
+      );
+  const values = (key: string) =>
+    excludeRecordId ? [projectId, key, excludeRecordId] : [projectId, key];
+  if (!exists.get(...values(base))) return base;
+  let suffix = 2;
+  while (exists.get(...values(`${base}${suffix}`))) suffix += 1;
+  return `${base}${suffix}`;
+}
+
+function candidateState(candidate: LiteratureProviderCandidate) {
+  return {
+    source_provider: candidate.provider,
+    provider_record_id: candidate.providerId ?? null,
+    doi: candidate.doi ?? null,
+    fingerprint: candidate.fingerprint,
+    title: candidate.title,
+    authors_json: JSON.stringify(candidate.authors),
+    container_title: candidate.containerTitle ?? null,
+    published_year: candidate.publishedYear ?? null,
+    topics_json: JSON.stringify(candidate.topics),
+    work_type: candidate.workType ?? null,
+    citation_count: candidate.citationCount ?? null,
+    source_url: candidate.sourceUrl ?? null,
+  };
+}
+
+function requireLiteratureRecordCapacity(
+  database: Database.Database,
+  projectId: string,
+  existing: LiteratureRecordRow | undefined,
+) {
+  if (existing?.deleted_at === null) return;
+  const row = database
+    .prepare(
+      'select count(*) as count from literature_records where project_id=? and deleted_at is null',
+    )
+    .get(projectId) as { count: number };
+  if (row.count >= LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT) {
+    throw new LiteratureStorageError('record_limit_reached');
+  }
+}
+
+function findLiteratureRecord(
+  database: Database.Database,
+  projectId: string,
+  candidate: LiteratureProviderCandidate,
+): LiteratureRecordRow | undefined {
+  const byDoi = candidate.doi
+    ? (database
+        .prepare('select * from literature_records where project_id=? and doi=? limit 1')
+        .get(projectId, candidate.doi) as LiteratureRecordRow | undefined)
+    : undefined;
+  const byProvider = candidate.providerId
+    ? (database
+        .prepare(
+          `select * from literature_records
+           where project_id=? and source_provider=? and provider_record_id=? limit 1`,
+        )
+        .get(projectId, candidate.provider, candidate.providerId) as
+        LiteratureRecordRow | undefined)
+    : undefined;
+  const byFingerprint = database
+    .prepare('select * from literature_records where project_id=? and fingerprint=? limit 1')
+    .get(projectId, candidate.fingerprint) as LiteratureRecordRow | undefined;
+  const identities = [byDoi, byProvider, byFingerprint].filter(
+    (record): record is LiteratureRecordRow => record !== undefined,
+  );
+  if (new Set(identities.map((record) => record.id)).size > 1) {
+    throw new LiteratureStorageError('identity_conflict');
+  }
+  const matched = byDoi ?? byProvider ?? byFingerprint;
+  if (matched && candidate.doi && matched.doi && candidate.doi !== matched.doi) {
+    throw new LiteratureStorageError('identity_conflict');
+  }
+  if (
+    matched &&
+    candidate.provider === matched.source_provider &&
+    candidate.providerId &&
+    matched.provider_record_id &&
+    candidate.providerId !== matched.provider_record_id &&
+    !(matched.doi === null && candidate.doi !== undefined && candidate.providerId === candidate.doi)
+  ) {
+    throw new LiteratureStorageError('identity_conflict');
+  }
+  return matched;
+}
+
+function requireNoLiteratureIdentityCollision(
+  database: Database.Database,
+  projectId: string,
+  recordId: string,
+  state: ReturnType<typeof candidateState>,
+) {
+  const doiCollision = state.doi
+    ? database
+        .prepare('select 1 from literature_records where project_id=? and doi=? and id<>? limit 1')
+        .get(projectId, state.doi, recordId)
+    : undefined;
+  const providerCollision = state.provider_record_id
+    ? database
+        .prepare(
+          `select 1 from literature_records where project_id=? and source_provider=?
+           and provider_record_id=? and id<>? limit 1`,
+        )
+        .get(projectId, state.source_provider, state.provider_record_id, recordId)
+    : undefined;
+  const fingerprintCollision = database
+    .prepare(
+      'select 1 from literature_records where project_id=? and fingerprint=? and id<>? limit 1',
+    )
+    .get(projectId, state.fingerprint, recordId);
+  if (doiCollision || providerCollision || fingerprintCollision) {
+    throw new LiteratureStorageError('identity_conflict');
+  }
+}
+
+function upsertLiteratureCandidate(
+  database: Database.Database,
+  projectId: string,
+  candidate: LiteratureProviderCandidate,
+  updatedAt: string,
+) {
+  const existing = findLiteratureRecord(database, projectId, candidate);
+  requireLiteratureRecordCapacity(database, projectId, existing);
+  const state = candidateState(candidate);
+  if (!existing) {
+    const id = randomUUID();
+    const manual = candidate.manualAnnotations ?? { topics: [], summary: '', relevance: '' };
+    database
+      .prepare(
+        `insert into literature_records(
+           id,schema_version,project_id,source_provider,provider_record_id,doi,fingerprint,title,
+           authors_json,container_title,published_year,topics_json,work_type,citation_count,
+           source_url,citation_key,review_status,manual_topics_json,manual_summary,manual_relevance,
+           ai_topics_json,ai_summary,ai_relevance,ai_study_type,ai_limitations_json,
+           ai_model_provenance_json,annotation_version,version,created_at,updated_at,deleted_at
+         ) values(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,null)`,
+      )
+      .run(
+        id,
+        projectId,
+        state.source_provider,
+        state.provider_record_id,
+        state.doi,
+        state.fingerprint,
+        state.title,
+        state.authors_json,
+        state.container_title,
+        state.published_year,
+        state.topics_json,
+        state.work_type,
+        state.citation_count,
+        state.source_url,
+        nextCitationKey(database, projectId, candidate),
+        candidate.reviewStatus ?? 'unreviewed',
+        JSON.stringify(manual.topics),
+        manual.summary || null,
+        manual.relevance || null,
+        '[]',
+        null,
+        null,
+        null,
+        '[]',
+        null,
+        updatedAt,
+        updatedAt,
+      );
+    const inserted = database
+      .prepare('select * from literature_records where project_id=? and id=?')
+      .get(projectId, id) as LiteratureRecordRow;
+    return { outcome: 'new' as const, record: toLocalLiteratureRecord(inserted) };
+  }
+  const refreshSource = candidate.provider === 'crossref' || existing.source_provider === 'import';
+  const importReview = candidate.provider === 'import';
+  const merged = refreshSource
+    ? {
+        ...state,
+        provider_record_id:
+          state.provider_record_id ??
+          (state.source_provider === existing.source_provider ? existing.provider_record_id : null),
+        doi: state.doi ?? existing.doi,
+      }
+    : candidateState({
+        provider: existing.source_provider as LiteratureProviderCandidate['provider'],
+        ...(existing.provider_record_id ? { providerId: existing.provider_record_id } : {}),
+        ...(existing.doi ? { doi: existing.doi } : {}),
+        fingerprint: existing.fingerprint,
+        title: existing.title,
+        authors: stringArrayJson(existing.authors_json),
+        ...(existing.container_title ? { containerTitle: existing.container_title } : {}),
+        ...(existing.published_year ? { publishedYear: existing.published_year } : {}),
+        topics: stringArrayJson(existing.topics_json),
+        ...(existing.work_type ? { workType: existing.work_type } : {}),
+        ...(existing.citation_count === null ? {} : { citationCount: existing.citation_count }),
+        ...(existing.source_url ? { sourceUrl: existing.source_url } : {}),
+      });
+  const manual = importReview
+    ? (candidate.manualAnnotations ?? { topics: [], summary: '', relevance: '' })
+    : {
+        topics: stringArrayJson(existing.manual_topics_json),
+        summary: existing.manual_summary ?? '',
+        relevance: existing.manual_relevance ?? '',
+      };
+  const reviewStatus = importReview
+    ? (candidate.reviewStatus ?? existing.review_status)
+    : existing.review_status;
+  const citationKey =
+    importReview && candidate.citationKey
+      ? nextCitationKey(database, projectId, candidate, existing.id)
+      : existing.citation_key;
+  const sourceChanged =
+    existing.source_provider !== merged.source_provider ||
+    existing.provider_record_id !== merged.provider_record_id ||
+    existing.doi !== merged.doi ||
+    existing.fingerprint !== merged.fingerprint ||
+    existing.title !== merged.title ||
+    existing.authors_json !== merged.authors_json ||
+    existing.container_title !== merged.container_title ||
+    existing.published_year !== merged.published_year ||
+    existing.topics_json !== merged.topics_json ||
+    existing.work_type !== merged.work_type ||
+    existing.citation_count !== merged.citation_count ||
+    existing.source_url !== merged.source_url;
+  const aiInvalidated = sourceChanged && existing.ai_model_provenance_json !== null;
+  const annotationChanged =
+    existing.review_status !== reviewStatus ||
+    existing.manual_topics_json !== JSON.stringify(manual.topics) ||
+    existing.manual_summary !== (manual.summary || null) ||
+    existing.manual_relevance !== (manual.relevance || null);
+  const changed =
+    sourceChanged ||
+    existing.citation_key !== citationKey ||
+    existing.review_status !== reviewStatus ||
+    existing.manual_topics_json !== JSON.stringify(manual.topics) ||
+    existing.manual_summary !== (manual.summary || null) ||
+    existing.manual_relevance !== (manual.relevance || null) ||
+    existing.deleted_at !== null;
+  if (!changed) return { outcome: 'unchanged' as const, record: toLocalLiteratureRecord(existing) };
+  requireNoLiteratureIdentityCollision(database, projectId, existing.id, merged);
+  database
+    .prepare(
+      `update literature_records set
+         source_provider=?,provider_record_id=?,doi=?,fingerprint=?,title=?,authors_json=?,container_title=?,
+         published_year=?,topics_json=?,work_type=?,citation_count=?,source_url=?,citation_key=?,
+         review_status=?,manual_topics_json=?,manual_summary=?,manual_relevance=?,
+         ai_topics_json=?,ai_summary=?,ai_relevance=?,ai_study_type=?,ai_limitations_json=?,
+         ai_model_provenance_json=?,
+         annotation_version=annotation_version+?,version=version+1,updated_at=?,deleted_at=null
+       where project_id=? and id=?`,
+    )
+    .run(
+      merged.source_provider,
+      merged.provider_record_id,
+      merged.doi,
+      merged.fingerprint,
+      merged.title,
+      merged.authors_json,
+      merged.container_title,
+      merged.published_year,
+      merged.topics_json,
+      merged.work_type,
+      merged.citation_count,
+      merged.source_url,
+      citationKey,
+      reviewStatus,
+      JSON.stringify(manual.topics),
+      manual.summary || null,
+      manual.relevance || null,
+      aiInvalidated ? '[]' : existing.ai_topics_json,
+      aiInvalidated ? null : existing.ai_summary,
+      aiInvalidated ? null : existing.ai_relevance,
+      aiInvalidated ? null : existing.ai_study_type,
+      aiInvalidated ? '[]' : existing.ai_limitations_json,
+      aiInvalidated ? null : existing.ai_model_provenance_json,
+      annotationChanged || aiInvalidated ? 1 : 0,
+      updatedAt,
+      projectId,
+      existing.id,
+    );
+  const updated = database
+    .prepare('select * from literature_records where project_id=? and id=?')
+    .get(projectId, existing.id) as LiteratureRecordRow;
+  return { outcome: 'updated' as const, record: toLocalLiteratureRecord(updated) };
+}
+
+function migrateLiteratureManualRelevance(database: Database.Database) {
+  const schema = database
+    .prepare("select sql from sqlite_master where type='table' and name='literature_records'")
+    .get() as { sql: string | null } | undefined;
+  const limitMatch = schema?.sql?.match(
+    /\bmanual_relevance\s+text\s+check\s*\(\s*manual_relevance\s+is\s+null\s+or\s+length\s*\(\s*manual_relevance\s*\)\s+between\s+1\s+and\s+(\d+)\s*\)/iu,
+  );
+  const configuredLimit = limitMatch ? Number(limitMatch[1]) : null;
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(LITERATURE_MANUAL_RELEVANCE_MIGRATION);
+
+  if (migrationApplied) {
+    if (configuredLimit !== 4_000) {
+      throw new Error('literature_manual_relevance_schema_invalid');
+    }
+    return;
+  }
+
+  database
+    .transaction(() => {
+      if (configuredLimit === 64) {
+        database.exec(`
+          alter table literature_records rename column manual_relevance to legacy_manual_relevance;
+          alter table literature_records add column manual_relevance text check (
+            manual_relevance is null or length(manual_relevance) between 1 and 4000
+          );
+          update literature_records set manual_relevance=legacy_manual_relevance;
+          alter table literature_records drop column legacy_manual_relevance;
+        `);
+      } else if (configuredLimit !== 4_000) {
+        throw new Error('literature_manual_relevance_schema_invalid');
+      }
+      database
+        .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+        .run(LITERATURE_MANUAL_RELEVANCE_MIGRATION, new Date().toISOString());
+    })
+    .immediate();
+}
+
 export class LocalDatabase {
   private database: Database.Database | undefined;
   private workspaceOutboxOrderingReady = false;
@@ -392,6 +899,99 @@ export class LocalDatabase {
       );
       create index if not exists ssh_connections_by_label
         on ssh_connections(label,id);
+      create table if not exists literature_records (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null,
+        source_provider text not null check (length(source_provider) between 1 and 64),
+        provider_record_id text check (
+          provider_record_id is null or length(provider_record_id) between 1 and 2048
+        ),
+        doi text check (doi is null or length(doi) between 1 and 512),
+        fingerprint text not null check (length(fingerprint) = 64),
+        title text not null check (length(title) between 1 and 2000),
+        authors_json text not null check (length(authors_json) <= 32768),
+        container_title text check (
+          container_title is null or length(container_title) between 1 and 1000
+        ),
+        published_year integer check (
+          published_year is null or published_year between 1000 and 3000
+        ),
+        topics_json text not null check (length(topics_json) <= 32768),
+        work_type text check (work_type is null or length(work_type) between 1 and 120),
+        citation_count integer check (citation_count is null or citation_count >= 0),
+        source_url text check (source_url is null or length(source_url) between 1 and 2048),
+        citation_key text check (citation_key is null or length(citation_key) between 1 and 160),
+        review_status text not null default 'unreviewed' check (
+          review_status in ('unreviewed','screening','included','excluded','reviewed','maybe')
+        ),
+        manual_topics_json text not null default '[]' check (
+          length(manual_topics_json) <= 32768
+        ),
+        manual_summary text check (
+          manual_summary is null or length(manual_summary) between 1 and 8000
+        ),
+        manual_relevance text check (
+          manual_relevance is null or length(manual_relevance) between 1 and 4000
+        ),
+        ai_topics_json text not null default '[]' check (length(ai_topics_json) <= 32768),
+        ai_summary text check (ai_summary is null or length(ai_summary) between 1 and 8000),
+        ai_relevance text check (
+          ai_relevance is null or length(ai_relevance) between 1 and 64
+        ),
+        ai_study_type text check (
+          ai_study_type is null or length(ai_study_type) between 1 and 240
+        ),
+        ai_limitations_json text not null default '[]' check (
+          length(ai_limitations_json) <= 32768
+        ),
+        ai_model_provenance_json text check (
+          ai_model_provenance_json is null or length(ai_model_provenance_json) <= 16384
+        ),
+        annotation_version integer not null default 0 check (annotation_version >= 0),
+        version integer not null check (version > 0),
+        created_at text not null,
+        updated_at text not null,
+        deleted_at text
+      );
+      create unique index if not exists literature_record_doi_identity
+        on literature_records(project_id,doi) where doi is not null;
+      create unique index if not exists literature_record_provider_identity
+        on literature_records(project_id,source_provider,provider_record_id)
+        where provider_record_id is not null;
+      create unique index if not exists literature_record_fingerprint_identity
+        on literature_records(project_id,fingerprint);
+      create unique index if not exists literature_record_citation_key
+        on literature_records(project_id,citation_key) where citation_key is not null;
+      create index if not exists literature_records_by_project
+        on literature_records(project_id,deleted_at,updated_at desc,id);
+      create table if not exists literature_search_runs (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null,
+        provider text not null check (length(provider) between 1 and 64),
+        query text not null check (length(query) between 1 and 1000),
+        requested_limit integer not null check (requested_limit between 1 and 50),
+        from_year integer check (from_year is null or from_year between 1000 and 3000),
+        to_year integer check (to_year is null or to_year between 1000 and 3000),
+        status text not null check (status in ('running','complete','failed','cancelled')),
+        new_count integer not null default 0 check (new_count >= 0),
+        updated_count integer not null default 0 check (updated_count >= 0),
+        unchanged_count integer not null default 0 check (unchanged_count >= 0),
+        created_at text not null,
+        completed_at text
+      );
+      create index if not exists literature_search_runs_by_project
+        on literature_search_runs(project_id,created_at desc,id);
+      create table if not exists literature_search_hits (
+        search_run_id text not null references literature_search_runs(id) on delete cascade,
+        ordinal integer not null check (ordinal > 0),
+        record_id text not null references literature_records(id) on delete cascade,
+        outcome text not null check (outcome in ('new','updated','unchanged')),
+        primary key(search_run_id,ordinal)
+      );
+      create index if not exists literature_search_hits_by_record
+        on literature_search_hits(record_id,search_run_id);
       create table if not exists local_schema_migrations (
         id text primary key,
         applied_at text not null
@@ -559,11 +1159,18 @@ export class LocalDatabase {
       create index if not exists project_chat_actions_by_message
         on project_chat_actions(message_id,created_at,id);
     `);
+      migrateLiteratureManualRelevance(database);
       database
         .prepare(
           `update project_chat_actions
            set status='failed',error_code='application_interrupted',updated_at=?
            where status='applying'`,
+        )
+        .run(new Date().toISOString());
+      database
+        .prepare(
+          `update literature_search_runs
+           set status='failed',completed_at=? where status='running'`,
         )
         .run(new Date().toISOString());
       const messageColumns = database.pragma('table_info(project_chat_messages)') as Array<{
@@ -1566,6 +2173,295 @@ export class LocalDatabase {
         action.id,
       );
     if (result.changes !== 1) throw new Error('chat_action_state_conflict');
+  }
+
+  listLiteratureRecords(projectId: string): LiteratureRecord[] {
+    const rows = this.require()
+      .prepare(
+        `select * from literature_records where project_id=? and deleted_at is null
+         order by updated_at desc,id asc`,
+      )
+      .all(projectId) as LiteratureRecordRow[];
+    return rows.map(toLocalLiteratureRecord);
+  }
+
+  countLiteratureRecords(projectId: string) {
+    const row = this.require()
+      .prepare(
+        'select count(*) as count from literature_records where project_id=? and deleted_at is null',
+      )
+      .get(projectId) as { count: number };
+    return row.count;
+  }
+
+  getLiteratureRecordsByIds(projectId: string, recordIds: readonly string[]): LiteratureRecord[] {
+    const uniqueIds = [...new Set(recordIds)];
+    if (uniqueIds.length > LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT) {
+      throw new LiteratureStorageError('record_limit_reached');
+    }
+    if (uniqueIds.length === 0) return [];
+    const placeholders = uniqueIds.map(() => '?').join(',');
+    const rows = this.require()
+      .prepare(
+        `select * from literature_records
+         where project_id=? and deleted_at is null and id in (${placeholders})`,
+      )
+      .all(projectId, ...uniqueIds) as LiteratureRecordRow[];
+    const byId = new Map(rows.map((row) => [row.id, toLocalLiteratureRecord(row)]));
+    return uniqueIds.flatMap((id) => {
+      const record = byId.get(id);
+      return record ? [record] : [];
+    });
+  }
+
+  listLiteratureSearchRuns(projectId: string): LiteratureSearchRun[] {
+    const rows = this.require()
+      .prepare(
+        `select id,project_id,provider,query,requested_limit,from_year,to_year,status,
+                new_count,updated_count,unchanged_count,created_at,completed_at
+         from literature_search_runs where project_id=? order by created_at desc,id desc limit 20`,
+      )
+      .all(projectId) as LiteratureSearchRunRow[];
+    return rows.map(toLocalLiteratureSearchRun);
+  }
+
+  beginLiteratureSearch(input: LiteratureSearchRun) {
+    if (
+      input.status !== 'running' ||
+      input.foundCount !== 0 ||
+      input.newCount !== 0 ||
+      input.updatedCount !== 0 ||
+      input.unchangedCount !== 0
+    ) {
+      throw new Error('invalid_literature_search_start');
+    }
+    return (
+      this.require()
+        .prepare(
+          `insert or ignore into literature_search_runs(
+             id,schema_version,project_id,provider,query,requested_limit,from_year,to_year,status,
+             new_count,updated_count,unchanged_count,created_at,completed_at
+           ) values(?,1,?,?,?,?,?,?,'running',0,0,0,?,null)`,
+        )
+        .run(
+          input.id,
+          input.projectId,
+          input.provider,
+          input.query,
+          input.requestedLimit,
+          input.fromYear,
+          input.toYear,
+          input.createdAt,
+        ).changes === 1
+    );
+  }
+
+  completeLiteratureSearch(
+    projectId: string,
+    runId: string,
+    candidates: readonly LiteratureProviderCandidate[],
+    completedAt: string,
+  ) {
+    if (candidates.length > LITERATURE_MAX_SEARCH_RESULTS) {
+      throw new LiteratureStorageError('record_limit_reached');
+    }
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const run = database
+          .prepare(
+            `select id,project_id,provider,query,requested_limit,from_year,to_year,status,
+                    new_count,updated_count,unchanged_count,created_at,completed_at
+             from literature_search_runs where project_id=? and id=?`,
+          )
+          .get(projectId, runId) as LiteratureSearchRunRow | undefined;
+        if (!run || run.status !== 'running') throw new Error('literature_search_state_conflict');
+        let added = 0;
+        let updated = 0;
+        let skipped = 0;
+        const insertHit = database.prepare(
+          `insert into literature_search_hits(search_run_id,ordinal,record_id,outcome)
+           values(?,?,?,?)`,
+        );
+        for (const [index, candidate] of candidates.entries()) {
+          const result = upsertLiteratureCandidate(database, projectId, candidate, completedAt);
+          if (result.outcome === 'new') added += 1;
+          else if (result.outcome === 'updated') updated += 1;
+          else skipped += 1;
+          insertHit.run(runId, index + 1, result.record.id, result.outcome);
+        }
+        const changed = database
+          .prepare(
+            `update literature_search_runs set
+               status='complete',new_count=?,updated_count=?,unchanged_count=?,completed_at=?
+             where project_id=? and id=? and status='running'`,
+          )
+          .run(added, updated, skipped, completedAt, projectId, runId).changes;
+        if (changed !== 1) throw new Error('literature_search_state_conflict');
+        return {
+          foundCount: candidates.length,
+          newCount: added,
+          updatedCount: updated,
+          unchangedCount: skipped,
+          run: toLocalLiteratureSearchRun({
+            ...run,
+            status: 'complete',
+            new_count: added,
+            updated_count: updated,
+            unchanged_count: skipped,
+            completed_at: completedAt,
+          }),
+        };
+      })
+      .immediate();
+  }
+
+  failLiteratureSearch(
+    projectId: string,
+    runId: string,
+    status: 'failed' | 'cancelled',
+    completedAt: string,
+  ) {
+    return (
+      this.require()
+        .prepare(
+          `update literature_search_runs set status=?,completed_at=?
+           where project_id=? and id=? and status='running'`,
+        )
+        .run(status, completedAt, projectId, runId).changes === 1
+    );
+  }
+
+  upsertLiteratureCandidates(
+    projectId: string,
+    candidates: readonly LiteratureProviderCandidate[],
+    updatedAt: string,
+  ) {
+    if (candidates.length > LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT) {
+      throw new LiteratureStorageError('record_limit_reached');
+    }
+    const database = this.require();
+    return database
+      .transaction(() => {
+        let imported = 0;
+        let updated = 0;
+        let skipped = 0;
+        for (const candidate of candidates) {
+          const result = upsertLiteratureCandidate(database, projectId, candidate, updatedAt);
+          if (result.outcome === 'new') imported += 1;
+          else if (result.outcome === 'updated') updated += 1;
+          else skipped += 1;
+        }
+        return { imported, updated, skipped };
+      })
+      .immediate();
+  }
+
+  updateLiteratureManualAnnotations(input: {
+    projectId: string;
+    recordId: string;
+    expectedVersion: number;
+    expectedAnnotationVersion: number;
+    manualTopics: readonly string[];
+    manualSummary: string;
+    manualRelevance: string;
+    reviewStatus: string;
+    updatedAt: string;
+  }) {
+    const database = this.require();
+    const changed = database
+      .prepare(
+        `update literature_records set
+           manual_topics_json=?,manual_summary=?,manual_relevance=?,review_status=?,
+           annotation_version=annotation_version+1,version=version+1,updated_at=?
+         where project_id=? and id=? and deleted_at is null
+           and version=? and annotation_version=?`,
+      )
+      .run(
+        JSON.stringify(input.manualTopics),
+        input.manualSummary || null,
+        input.manualRelevance || null,
+        input.reviewStatus,
+        input.updatedAt,
+        input.projectId,
+        input.recordId,
+        input.expectedVersion,
+        input.expectedAnnotationVersion,
+      ).changes;
+    if (changed !== 1) return null;
+    const row = database
+      .prepare(
+        'select * from literature_records where project_id=? and id=? and deleted_at is null',
+      )
+      .get(input.projectId, input.recordId) as LiteratureRecordRow;
+    return toLocalLiteratureRecord(row);
+  }
+
+  applyLiteratureAiAnnotations(
+    projectId: string,
+    updates: readonly LocalLiteratureAiAnnotationUpdate[],
+    updatedAt: string,
+  ) {
+    const database = this.require();
+    const conflict = new Error('literature_annotation_conflict');
+    try {
+      return database
+        .transaction(() => {
+          const results: LiteratureRecord[] = [];
+          for (const update of updates) {
+            const changed = database
+              .prepare(
+                `update literature_records set
+                   ai_topics_json=?,ai_summary=?,ai_relevance=?,ai_study_type=?,
+                   ai_limitations_json=?,ai_model_provenance_json=?,
+                   annotation_version=annotation_version+1,version=version+1,updated_at=?
+                 where project_id=? and id=? and deleted_at is null
+                   and version=? and annotation_version=?`,
+              )
+              .run(
+                JSON.stringify(update.topics),
+                update.summary || null,
+                update.relevance,
+                update.studyType || null,
+                JSON.stringify(update.limitations),
+                JSON.stringify(update.provenance),
+                updatedAt,
+                projectId,
+                update.recordId,
+                update.expectedVersion,
+                update.expectedAnnotationVersion,
+              ).changes;
+            if (changed !== 1) throw conflict;
+            const row = database
+              .prepare(
+                'select * from literature_records where project_id=? and id=? and deleted_at is null',
+              )
+              .get(projectId, update.recordId) as LiteratureRecordRow;
+            results.push(toLocalLiteratureRecord(row));
+          }
+          return results;
+        })
+        .immediate();
+    } catch (error) {
+      if (error === conflict) return null;
+      throw error;
+    }
+  }
+
+  deleteLiteratureRecord(
+    projectId: string,
+    recordId: string,
+    expectedVersion: number,
+    deletedAt: string,
+  ) {
+    return (
+      this.require()
+        .prepare(
+          `update literature_records set deleted_at=?,version=version+1,updated_at=?
+           where project_id=? and id=? and deleted_at is null and version=?`,
+        )
+        .run(deletedAt, deletedAt, projectId, recordId, expectedVersion).changes === 1
+    );
   }
 
   listSshConnections(): SshConnectionProfile[] {

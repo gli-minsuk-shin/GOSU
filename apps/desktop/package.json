@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",

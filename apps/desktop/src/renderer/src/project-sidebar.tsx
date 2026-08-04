@@ -11,7 +11,7 @@ import {
 
 export type ProjectWorkspaceTabId = Extract<
   WorkspaceTabId,
-  'chat' | 'repository' | 'board' | 'objective'
+  'chat' | 'repository' | 'board' | 'objective' | 'literature'
 >;
 export type GlobalWorkspaceTabId = Extract<WorkspaceTabId, 'connections' | 'notes'>;
 
@@ -24,6 +24,7 @@ const PROJECT_TABS: ReadonlyArray<{
   { id: 'repository', label: 'Repository', icon: '⌘' },
   { id: 'board', label: 'Board', icon: '▦' },
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
+  { id: 'literature', label: 'Literature', icon: '▤' },
 ];
 
 const GLOBAL_TABS: ReadonlyArray<{

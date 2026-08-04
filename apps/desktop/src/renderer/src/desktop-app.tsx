@@ -30,6 +30,7 @@ import { BoardView } from './board-view';
 import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import { buildLocalNotesGrantUpdate } from './local-notes-access-model';
+import { LiteratureView, type LiteratureViewAdapter } from './literature-view';
 import {
   LocalNotesView,
   type SelectedNote,
@@ -96,6 +97,16 @@ type AppSurface = 'workspace' | 'settings';
 
 type ProjectDraft = Readonly<{ name: string; repository?: string | undefined }>;
 
+const literatureAdapter: LiteratureViewAdapter = {
+  list: (input) => window.gosu.literature.list(input),
+  search: (input) => window.gosu.literature.search(input),
+  updateAnnotations: (input) => window.gosu.literature.updateAnnotations(input),
+  deleteRecord: (input) => window.gosu.literature.deleteRecord(input),
+  importRecords: (input) => window.gosu.literature.importRecords(input),
+  exportRecords: (input) => window.gosu.literature.exportRecords(input),
+  organize: (input) => window.gosu.literature.organize(input),
+};
+
 function createProjectCommand(
   input: ProjectDraft,
   preferences: UserPreferences,
@@ -115,7 +126,13 @@ function hasErrorCode(error: unknown, code: string) {
 }
 
 function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabId {
-  return tab === 'chat' || tab === 'repository' || tab === 'board' || tab === 'objective';
+  return (
+    tab === 'chat' ||
+    tab === 'repository' ||
+    tab === 'board' ||
+    tab === 'objective' ||
+    tab === 'literature'
+  );
 }
 
 export function DesktopApp({ initialPreferences }: { initialPreferences: UserPreferences }) {
@@ -1542,6 +1559,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     'Started an editable objective revision.',
                   )
                 }
+              />
+            )}
+            {activeTab === 'literature' && activeProject && (
+              <LiteratureView
+                key={activeProject.id}
+                project={activeProject}
+                adapter={literatureAdapter}
+                aiAvailable={codexConnectionState === 'ready'}
+                requestedModelId={selectedModel}
+                reasoningOptionId={selectedReasoning}
               />
             )}
             {activeTab === 'connections' && (

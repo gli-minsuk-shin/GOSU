@@ -97,17 +97,17 @@ flowchart LR
 
 ## 4. 저장소 구조와 코드 소유권
 
-| 경로                    | 소유 책임                                                                       | 현재 상태                                                             |
-| ----------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Vault·Git·SSH 경계 | 실행 가능한 Project Chat·Kanban·Objective·Repository·승인형 SSH slice |
-| `apps/web`              | Owner·Lab 관리 경험                                                             | demo fixture 기반의 인터랙티브 UI                                     |
-| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계       | memory runtime 구현, PostgreSQL 기반 구현                             |
-| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill              | 제한된 로컬 실행 경로 구현                                            |
-| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                                    | 구현됨                                                                |
-| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙                    | 구현됨                                                                |
-| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                           | 기반 구현                                                             |
-| `packages/ui`           | 공통 visual token과 작은 presentational primitive                               | 기반 구현                                                             |
-| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단                    | 구현됨                                                                |
+| 경로                    | 소유 책임                                                                       | 현재 상태                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Vault·Git·SSH 경계 | 실행 가능한 Project Chat·Kanban·Objective·Repository·Literature·승인형 SSH slice |
+| `apps/web`              | Owner·Lab 관리 경험                                                             | demo fixture 기반의 인터랙티브 UI                                                |
+| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계       | memory runtime 구현, PostgreSQL 기반 구현                                        |
+| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill              | 제한된 로컬 실행 경로 구현                                                       |
+| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                                    | 구현됨                                                                           |
+| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙                    | 구현됨                                                                           |
+| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                           | 기반 구현                                                                        |
+| `packages/ui`           | 공통 visual token과 작은 presentational primitive                               | 기반 구현                                                                        |
+| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단                    | 구현됨                                                                           |
 
 ### 논리 모듈 소유권
 
@@ -122,7 +122,7 @@ flowchart LR
 | Experiment Orchestration   | contracts, domain, Runner                                                      | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨                                                                 |
 | Manuscript                 | Desktop Repository workspace와 향후 manuscript module                          | 앱 관리형 Git worktree·파일/Markdown preview·change/history/branch·commit 구현; LaTeX compile·PDF preview는 계획됨                             |
 | Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                       | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                        |
-| Reference                  | Zotero read-only connector                                                     | metadata mirror primitives 구현; 앱 내 인용 흐름은 계획됨                                                                                      |
+| Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                      | Crossref 검색·누적 evidence table·JSON/CSV/BibTeX transfer·metadata-only AI 정리 구현; Zotero 앱 연결은 계획됨                                 |
 | Obsidian Knowledge         | Desktop Vault reader, Markdown renderer, project knowledge port                | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview·프로젝트별 agent grant 구현                                                       |
 | Lecture                    | Owner Web UI 표현                                                              | 생성·편집·출처 연결은 계획됨                                                                                                                   |
 | AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 다중 chat session·동적 model/mode catalog·native harness·project/SSH tool·thread/turn·모델 provenance 구현                                     |
@@ -182,6 +182,7 @@ flowchart TD
 | 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 앱 관리형 local worktree                                                  | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지     |
 | 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                                                            | 연결 상태만; 본문은 금지                                                |
 | 서지 metadata, collection, PDF                   | Zotero                                                                             | 연결 상태와 선택 item ID만; PDF 금지                                    |
+| 검색 문헌 metadata, review annotation, 검색 이력 | 프로젝트별 Desktop Literature SQLCipher tables와 선택한 import file                | 현재 Hosted Sync·outbox 대상이 아님; 원문·abstract·로컬 file path 금지  |
 | dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                                       | 원본 금지; 상태와 명시적 summary metric만                               |
 | 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                     | 협업 metadata 저장 대상                                                 |
 | Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store                                | 금지                                                                    |
@@ -445,6 +446,58 @@ Repository의 Markdown preview도 같은 sanitize·link 정책을 재사용하�
 공유하지 않는다. 특히 repository Markdown의 상대 image가 같은 이름의 비공개 Obsidian attachment를
 읽지 않도록 Vault image loader를 명시적으로 끈다. Repository-local raster preview는 별도의 bounded
 Git asset IPC가 생기기 전까지 blocked placeholder로 표시한다.
+
+### Literature Discovery & Review 경계
+
+프로젝트 folder의 `Literature`는 Crossref public REST API에서 서지 metadata를 검색하고, 결과를 해당
+프로젝트의 암호화 SQLCipher evidence table에 누적한다. 검색어, 선택적인 출판 연도 범위와 최대 50건을
+typed command로 보내며 Main process의 고정 `https://api.crossref.org/v1/works` adapter만 외부 요청을
+수행한다. provider 응답은 title, author, journal·venue, year, subject, DOI, work type, citation count와
+HTTPS source URL allowlist로 즉시 정규화하고 raw response와 abstract는 저장하거나 Renderer에 보내지
+않는다. 요청은 process 전체에서 직렬화하고 public은 최소 250 ms, polite pool은 최소 125 ms 간격을 두며
+15초 timeout, 4 MB response 한도와 429 전용 오류를 둔다. 429의 `Retry-After`는 최대 30초로 제한해 다음
+요청 전에 적용하고 header가 없으면 2초 backoff한다.
+`GOSU_CROSSREF_MAILTO`와 `GOSU_CROSSREF_USER_AGENT`는 polite-pool 식별을 위한 선택 설정이며 인증정보가
+아니다. 값이 없으면 version이 포함된 공개 GOSU user agent를 사용한다.
+
+`literature_records`, `literature_search_runs`, `literature_search_hits`는 Workspace snapshot이나 다른
+모듈의 table이 아닌 Literature 모듈 소유다. 모든 query와 mutation은 Main에서 active project 존재 여부를
+다시 검사하고 project ID를 SQL predicate에 포함한다. 앱 재시작 중 남은 `running` search는 `failed`로
+reconcile하고, 최근 검색은 `Search again` 입력으로 복원할 수 있다. 자동 background scheduler는 아직
+없으므로 continual review는 사용자가 같은 검색이나 새 검색을 다시 실행할 때 additive merge하는
+형태다. active evidence table은 프로젝트당 500건으로 제한하고 검색·import가 한도를 넘으면 일부만
+반영하지 않고 transaction 전체를 거절한다. 동일성은 normalized DOI, 같은 provider record ID, metadata
+fingerprint 순서로 판정하며 세 identity가 서로 다른 기존 row를 가리키면 임의 merge 없이 전체 작업을
+거절한다. 새 검색은
+기존 record를 지우지 않으며 source metadata만 갱신하고 사람의 topics·summary·relevance·review status는
+보존한다. source field나 fingerprint가 실제로 바뀌면 기존 metadata에 근거한 AI draft와 provenance는
+무효화해 다음 AI batch 후보로 되돌린다. 삭제는 active table에서 숨기는 soft delete이고 hard-delete
+command는 제공하지 않는다.
+
+사람의 annotation, provider source field와 AI draft는 별도 column·version으로 관리한다. 수동 편집은
+record version과 annotation version을 함께 비교하고, AI batch도 각 row의 expected record version과
+annotation version이 모두 일치할 때만 하나의 transaction으로 적용한다. 따라서 검색 갱신이나 사람이
+수정한 record를 늦게 끝난 AI turn이 덮어쓰지 않는다. `Organize with Codex`는 AI draft가 아직 없는
+다음 최대 50개 정규화 metadata만
+pinned Codex App Server의 새 read-only thread에 보내며 dynamic tool, shell과 network를 주지 않는다.
+manual note와 paper full text는 prompt에 포함하지 않는다. structured output은 입력 record ID를 정확히
+한 번씩 반환해야 하고, model ID·reasoning option·입력 SHA-256·생성 시각·`metadataOnly: true` provenance를
+저장한다. metadata만으로 알 수 없는 방법·결과·한계는 추측하지 않도록 표시하며 결과는 사람이 검토할
+draft이지 verified evidence가 아니다. Codex 장애는 검색·표·수동 review·transfer를 막지 않는다.
+
+Import와 Export는 Renderer가 path나 file body를 넘기는 범용 파일 IPC가 아니다. Main의 고정 dialog가
+JSON, CSV, BibTeX 한 파일만 고르고 8 MB·500 record·regular-file·no-symlink 정책으로 같은 file handle에서
+읽는다. export는 선택한 directory의 private 0600 temporary regular file에 쓰고 `fsync`한 뒤 atomic rename해
+기존 파일을 부분적으로 손상시키거나 destination symlink를 따라가지 않는다. Renderer에는 basename,
+건수와 export SHA-256만 돌려준다. JSON/CSV는 versioned deterministic interchange이고 CSV는 spreadsheet
+formula injection을 방지한다. BibTeX citation key는 안정적으로 생성하고 project 내 collision에 suffix를
+붙인다. parser는 `%` line comment와 `@string`·`@preamble`·`@comment` special entry를 건너뛰지만 external
+macro `#` concatenation은 지원하지 않고 명시적으로 거절한다. export에는 source metadata와 사람이 검토한
+field만 포함하고 AI annotation, provider raw
+ID, project ID, local version·삭제 상태는 제외한다. import는 DOI→provider ID→fingerprint로 기존 row와
+병합하고 manual review는 복원할 수 있지만 AI provenance를 신뢰해 가져오지 않으며 Crossref source를
+generic import source로 강등하지 않는다. Zotero local mirror·citation insertion·PDF 확인과 background
+alert는 후속 adapter 범위다.
 
 ### Git Workspace 경계
 
@@ -1038,7 +1091,9 @@ OpenSSH transport를 timeout·cancel로 종료해도 연결이 이미 끊어진 
 보증할 수 없으므로 장기 workload는 SSH broker가 아니라 lease·fencing·reconciliation이 있는 Runner를
 사용해야 한다. raw SSH output은 현재 turn memory에만 있고 durable transcript가 아니며, approval request·
 command hash·binding·allowed/denied/expired/cancelled outcome도 해당 app process/turn 수명의 event일 뿐
-append-only audit가 아니다. DMG 설정은 있으나 서명·notarization·auto-update를 보증하지 않는다.
+append-only audit가 아니다. Literature는 metadata 검색·review table까지 구현됐지만 paper full text 확인,
+Zotero 동기화, 예약된 background alert와 Hosted collaboration은 아직 보증하지 않는다. DMG 설정은 있으나
+서명·notarization·auto-update를 보증하지 않는다.
 
 IPC 기능을 추가할 때는 preload type, argument schema, Main sender 검증, 최소 반환값, 실패 테스트를
 한 묶음으로 변경한다. Renderer 편의를 이유로 filesystem path나 secret 값을 넓게 반환하면 안 된다.
@@ -1212,6 +1267,17 @@ full command·`user@host`·forwarding option의 inline 거절을 검증한다. P
 있는 terminal turn과 app shutdown이 pending approval과 local transport를 즉시 폐기하는지 확인한다. remote
 process-tree 종료와 durable approval audit는 현재 구현·테스트 보증 밖이다.
 
+Literature test는 Crossref fixed origin·query encoding·year filter·timeout·response size·429 mapping과 raw
+abstract 제외를 검사한다. transfer test는 JSON/CSV/BibTeX deterministic round-trip, DOI·fingerprint·
+citation-key consistency, CSV formula injection 방어, HTTPS URL과 8 MB·500건 한도를 확인한다. service와
+IPC test는 active project authorization, project isolation, strict sender/input, additive merge, rate-limit
+failure isolation, basename-only dialog receipt와 record version conflict를 고정한다. SQLCipher smoke는
+DOI→provider→fingerprint dedupe, Crossref/import trust merge, manual·AI annotation atomic CAS, soft delete,
+source refresh 뒤 stale AI invalidation, search run restart reconciliation을 실제 Electron ABI close/reopen으로
+검증한다. AI test는 최대 50개
+metadata-only prompt, dynamic model·reasoning provenance, manual annotation 비노출, exact record/version
+response와 malformed·hallucinated·stale batch 전체 거절을 검사한다.
+
 Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 
 - `gofmt` 결과가 깨끗한지 확인
@@ -1249,6 +1315,9 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
   system executable·read/diagnostic allowlist, exact Allow once binding, cancellation-only navigation IPC,
   OpenSSH argument array·background fork 차단·client diagnostic 격리, timeout·capacity·local transport cancel,
   remote kill 비보증과 ephemeral approval metadata
+- Literature 변경: active project 격리, Crossref fixed-origin·bounded metadata normalization, DOI→provider→
+  fingerprint dedupe, source/manual/AI field ownership, optimistic annotation conflict, no-abstract retention,
+  Main-owned no-symlink transfer, deterministic JSON/CSV/BibTeX와 metadata-only Codex provenance
 - Runner 변경: signature·policy rejection, fence race, Stop·Kill race, exact JSON wire, Podman argument
   array와 fail-closed 설정
 - connector 변경: deterministic fake response, capability 정확성, credential·원문 미저장
@@ -1361,6 +1430,8 @@ enforce하고 감사할 수 있는 egress adapter가 생기기 전에는 계속 
 - Repository file·history·branch·commit UI가 있다는 것과 GitHub App 로그인, PR merge 또는
   AI가 worktree를 자유롭게 수정할 권한이 있다는 것은 다르다.
 - connector class가 있다는 것과 사용자의 OAuth 연결·증분 sync가 완성됐다는 것은 다르다.
+- Literature 검색·누적 table이 있다는 것과 paper full text를 읽어 systematic-review evidence를 검증하거나
+  Zotero와 자동 동기화하고 background alert를 수행한다는 것은 다르다.
 - macOS package 설정이 있다는 것과 배포 artifact가 서명·notarization됐다는 것은 다르다.
 - manifest에 `allowlist` enum이 있다는 것과 Runner network 실행이 허용된다는 것은 다르다. 현재는
   명시적으로 거부된다.
@@ -1382,6 +1453,8 @@ enforce하고 감사할 수 있는 egress adapter가 생기기 전에는 계속 
       non-retention과 turn cleanup이 유지되는가? arbitrary script·mutation·privilege·shell·transfer가 승인
       전에 fail closed하는가? local abort를 remote kill 보증이라 부르거나 ephemeral metadata를 durable
       감사 원본이라 부르지 않는가?
+- [ ] Literature 변경이면 provider raw response·abstract·local path를 저장하지 않고 project isolation,
+      source/manual/AI ownership, deterministic transfer와 metadata-only AI provenance를 유지하는가?
 - [ ] 실패·cancel·negative result provenance가 사라지지 않는가?
 - [ ] 외부 장애가 독립 모듈을 막지 않는가?
 - [ ] 구현 상태와 계획 상태를 README·architecture에서 정확히 구분했는가?
