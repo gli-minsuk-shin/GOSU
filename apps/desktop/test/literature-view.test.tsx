@@ -6,10 +6,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   LiteratureTable,
   LiteratureView,
+  literatureCoreGateSummary,
+  literatureCorePolicyCounts,
+  literatureLayerCounts,
   literatureTableScrollAvailability,
   literatureSearchNotice,
   literatureViewRecord,
   moveLiteratureTable,
+  resetLiteratureTableVerticalPosition,
   type LiteratureViewAdapter,
 } from '../src/renderer/src/literature-view';
 import type { LiteratureRecord } from '../src/shared/literature-contracts';
@@ -38,7 +42,7 @@ const rawPaper: LiteratureRecord = {
   sourceTopics: ['evaluation', 'agents'],
   doi: '10.1000/gosu.1',
   workType: 'journal-article',
-  citationCount: 42,
+  citationCount: 55,
   reviewStatus: 'included',
   sourceUrl: 'https://doi.org/10.1000/gosu.1',
   citationKey: 'researcher2026reliable',
@@ -59,14 +63,14 @@ const rawPaper: LiteratureRecord = {
     authorityScore: 0.82,
     momentumScore: 0.36,
     citationVelocityProxy: 4.2,
-    influentialCitationCount: 8,
+    influentialCitationCount: 10,
     maxAuthorHIndex: 64,
     reasons: ['high-query-relevance', 'high-citation-impact', 'prominent-author-signal'],
     signalSources: ['semantic-scholar'],
     searchRunId: '33333333-3333-4333-8333-333333333333',
     query: 'agentic research evaluation',
     policyId: 'balanced-three-layer',
-    policyVersion: 1,
+    policyVersion: 2,
     classifiedAt: '2026-08-04T00:00:00.000Z',
   },
   createdAt: '2026-08-04T00:00:00.000Z',
@@ -191,7 +195,15 @@ describe('Literature workspace', () => {
     const html = renderToStaticMarkup(<LiteratureView project={project} adapter={adapter} />);
 
     expect(html).toContain('Deep search and continue this review');
-    expect(html).toContain('Fixed three-layer policy');
+    expect(html).toContain('Fixed policy v2');
+    expect(html).toContain('Core is a maximum, never a quota');
+    expect(html).toContain('Venue metadata and author h-index never promote a paper by themselves');
+    expect(html).toContain('aria-label="Discovery layer view"');
+    expect(html).toContain('aria-label="Total, 0 saved papers"');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('aria-controls="literature-evidence-table-panel"');
+    expect(html).toContain('id="literature-evidence-table-panel"');
+    expect(html.indexOf('>Total<')).toBeLessThan(html.indexOf('>Core &amp; canonical<'));
     expect(html).toContain('Core &amp; canonical');
     expect(html).toContain('Rising &amp; recent');
     expect(html).toContain('Broad discovery');
@@ -242,6 +254,7 @@ describe('Literature workspace', () => {
     expect(html).toContain('evaluation');
     expect(html).toContain('Core &amp; canonical');
     expect(html).toContain('91 / 100 · within search');
+    expect(html).toContain('55 citations · 10 influential');
     expect(html.match(/>evaluation</gu)).toHaveLength(1);
     expect(html).toContain('page 1 of 1');
   });
@@ -317,6 +330,74 @@ describe('Literature workspace', () => {
     expect(scrollTo).toHaveBeenLastCalledWith({ left: 100, top: 0, behavior: 'auto' });
     moveLiteratureTable(element, 'bottom');
     expect(scrollTo).toHaveBeenLastCalledWith({ left: 100, top: 1_400, behavior: 'auto' });
+
+    resetLiteratureTableVerticalPosition(element);
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 100, top: 0, behavior: 'auto' });
+  });
+
+  it('counts Total across every layer, including imported and unclassified papers', () => {
+    expect(
+      literatureLayerCounts([
+        { discoveryTier: 'core' },
+        { discoveryTier: 'rising' },
+        { discoveryTier: 'broad' },
+        { discoveryTier: 'unclassified' },
+      ]),
+    ).toEqual({ all: 4, core: 1, rising: 1, broad: 1, unclassified: 1 });
+  });
+
+  it('explains current Core gates and marks old policy labels as historical', () => {
+    expect(literatureCoreGateSummary(rawPaper)).toBe(
+      'Passed · relevance-lane rank 95 ≥ 55 · 55 citations · 10 influential',
+    );
+    expect(
+      literatureCoreGateSummary({
+        ...rawPaper,
+        citationCount: null,
+        discovery: rawPaper.discovery
+          ? {
+              ...rawPaper.discovery,
+              tier: 'broad',
+              influentialCitationCount: null,
+              reasons: ['core-impact-threshold-not-met', 'broad-recall'],
+            }
+          : null,
+      }),
+    ).toBe(
+      'Not passed · citations unavailable · influential citations unavailable; needs ≥50 citations or ≥10 influential',
+    );
+    expect(
+      literatureCoreGateSummary({
+        ...rawPaper,
+        discovery: rawPaper.discovery ? { ...rawPaper.discovery, policyVersion: 1 } : null,
+      }),
+    ).toBe('Legacy policy v1 — search again to apply v2');
+    expect(
+      literatureCoreGateSummary({
+        ...rawPaper,
+        discovery: rawPaper.discovery ? { ...rawPaper.discovery, policyVersion: 3 } : null,
+      }),
+    ).toBe('Policy balanced-three-layer v3 — current v2 Core gate is not interpreted');
+  });
+
+  it('separates current v2 Core counts from historical or other-policy labels', () => {
+    const legacy = {
+      ...rawPaper,
+      id: '44444444-4444-4444-8444-444444444444',
+      discovery: rawPaper.discovery ? { ...rawPaper.discovery, policyVersion: 1 } : null,
+    } satisfies LiteratureRecord;
+    const otherPolicy = {
+      ...rawPaper,
+      id: '55555555-5555-4555-8555-555555555555',
+      discovery: rawPaper.discovery
+        ? { ...rawPaper.discovery, policyId: 'crossref-basic', policyVersion: 1 }
+        : null,
+    } satisfies LiteratureRecord;
+
+    expect(literatureCorePolicyCounts([rawPaper, legacy, otherPolicy])).toEqual({
+      current: 1,
+      historicalOrOther: 2,
+    });
   });
 
   it('keeps table navigation usable when no results match', () => {

@@ -2615,6 +2615,10 @@ textarea:focus {
   overflow: hidden;
 }
 
+.literature-evidence-table-panel {
+  min-width: 0;
+}
+
 .literature-library-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -2652,7 +2656,7 @@ textarea:focus {
 
 .literature-layer-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 9px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--line);
@@ -3115,10 +3119,6 @@ textarea:focus {
 
   .literature-detail-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .literature-layer-grid {
-    grid-template-columns: 1fr;
   }
 }
 

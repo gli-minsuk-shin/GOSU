@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { LiteratureProviderCandidate } from '../src/main/literature-crossref';
 import { literatureFingerprint } from '../src/main/literature-crossref';
 import {
+  BALANCED_LITERATURE_POLICY_VERSION,
   rankLiteratureCandidates,
   type LiteratureRankingCandidate,
 } from '../src/main/literature-ranking';
@@ -38,7 +39,11 @@ function rankingInput(
 }
 
 describe('balanced literature ranking', () => {
-  it('fills deterministic core, rising, and broad quotas', () => {
+  it('uses the eligibility-gated policy v2', () => {
+    expect(BALANCED_LITERATURE_POLICY_VERSION).toBe(2);
+  });
+
+  it('fills deterministic bounded Core, Rising, and Broad allocations for eligible papers', () => {
     const classic = Array.from({ length: 5 }, (_, index) =>
       rankingInput(
         candidate(`classic-${index}`, {
@@ -325,7 +330,127 @@ describe('balanced literature ranking', () => {
 
     expect(byId.get('cited-only')?.discovery?.relevanceScore).toBe(0.12);
     expect(byId.get('recent-only')?.discovery?.relevanceScore).toBe(0.12);
+    expect(byId.get('recent-only')?.discovery?.tier).not.toBe('rising');
     expect(byId.get('relevance-result')?.discovery?.relevanceScore).toBe(1);
+  });
+
+  it('never quota-promotes zero-citation papers into Core, with or without a venue', () => {
+    const inputs = Array.from({ length: 10 }, (_, index) =>
+      rankingInput(
+        candidate(`zero-citation-${index}`, {
+          containerTitle: index % 2 === 0 ? undefined : 'Example Venue',
+          citationCount: 0,
+          publishedYear: 2020,
+        }),
+        { relevanceRank: index + 1, relevancePoolSize: 10 },
+      ),
+    );
+
+    const result = rankLiteratureCandidates(inputs, 10, 2026);
+
+    expect(result.tierCounts).toEqual({ core: 0, rising: 0, broad: 10 });
+    expect(result.candidates.every(({ discovery }) => discovery?.tier === 'broad')).toBe(true);
+    expect(result.candidates[0]?.discovery?.matchedLayers).toEqual(['broad']);
+    expect(result.candidates[0]?.discovery?.reasons).toContain('core-impact-threshold-not-met');
+  });
+
+  it('can keep a high-impact relevant paper Core even when venue metadata is absent', () => {
+    const result = rankLiteratureCandidates(
+      [
+        rankingInput(
+          candidate('high-impact-preprint', {
+            containerTitle: undefined,
+            citationCount: 500,
+            publishedYear: 2020,
+          }),
+          { relevanceRank: 1, relevancePoolSize: 1 },
+        ),
+      ],
+      1,
+      2026,
+    );
+
+    expect(result.tierCounts).toEqual({ core: 1, rising: 0, broad: 0 });
+    expect(result.candidates[0]?.discovery?.tier).toBe('core');
+    expect(result.candidates[0]?.discovery?.reasons).toContain('high-citation-impact');
+  });
+
+  it('records why a Rising paper did not pass the Core impact gate', () => {
+    const result = rankLiteratureCandidates(
+      [
+        rankingInput(candidate('rising-low-impact', { publishedYear: 2026, citationCount: 2 }), {
+          relevanceRank: 1,
+          relevancePoolSize: 2,
+          recentRank: 1,
+          recentPoolSize: 1,
+        }),
+        rankingInput(candidate('broad-control', { publishedYear: 2019, citationCount: 0 }), {
+          relevanceRank: 2,
+          relevancePoolSize: 2,
+        }),
+      ],
+      2,
+      2026,
+    );
+    const rising = result.candidates.find(({ discovery }) => discovery?.tier === 'rising');
+
+    expect(rising?.providerId).toBe('rising-low-impact');
+    expect(rising?.discovery?.reasons).toContain('core-impact-threshold-not-met');
+  });
+
+  it('keeps future-dated metadata out of Core and Rising', () => {
+    const result = rankLiteratureCandidates(
+      [
+        rankingInput(
+          candidate('future-paper', {
+            publishedYear: 2027,
+            citationCount: 10_000,
+          }),
+          {
+            relevanceRank: 1,
+            relevancePoolSize: 1,
+            citationRank: 1,
+            citationPoolSize: 1,
+            recentRank: 1,
+            recentPoolSize: 1,
+            influentialCitationCount: 100,
+          },
+        ),
+      ],
+      1,
+      2026,
+    );
+
+    expect(result.tierCounts).toEqual({ core: 0, rising: 0, broad: 1 });
+    expect(result.candidates[0]?.discovery?.matchedLayers).toEqual(['broad']);
+    expect(result.candidates[0]?.discovery?.reasons).toContain('future-publication-year');
+  });
+
+  it('keeps citation-heavy candidates Broad when minimum bibliographic identity is incomplete', () => {
+    const result = rankLiteratureCandidates(
+      [
+        rankingInput(
+          candidate('incomplete', {
+            providerId: undefined,
+            doi: undefined,
+            authors: [],
+            publishedYear: undefined,
+            citationCount: 10_000,
+          }),
+          {
+            relevanceRank: 1,
+            relevancePoolSize: 1,
+            citationRank: 1,
+            citationPoolSize: 1,
+          },
+        ),
+      ],
+      1,
+      2026,
+    );
+
+    expect(result.tierCounts).toEqual({ core: 0, rising: 0, broad: 1 });
+    expect(result.candidates[0]?.discovery?.reasons).toContain('incomplete-bibliographic-metadata');
   });
 
   it('reserves a bounded Core share for highly cited classics outside the relevance lane', () => {
@@ -360,7 +485,7 @@ describe('balanced literature ranking', () => {
         providerId?.startsWith('citation-only-classic-') && discovery?.tier === 'core',
     );
 
-    expect(forward.tierCounts).toEqual({ core: 20, rising: 0, broad: 30 });
+    expect(forward.tierCounts).toEqual({ core: 5, rising: 0, broad: 45 });
     expect(canonicalCore).toHaveLength(5);
     expect(canonicalCore.every(({ discovery }) => discovery?.relevanceScore === 0.12)).toBe(true);
     expect(
@@ -401,7 +526,10 @@ describe('balanced literature ranking', () => {
       ({ providerId }) => providerId === 'one-citation-classic',
     );
 
-    expect(result.tierCounts).toEqual({ core: 1, rising: 0, broad: 2 });
+    expect(result.tierCounts).toEqual({ core: 0, rising: 0, broad: 3 });
+    expect(oldPaper?.discovery?.tier).toBe('broad');
+    expect(oldPaper?.discovery?.matchedLayers).toEqual(['broad']);
+    expect(oldPaper?.discovery?.reasons).toContain('core-impact-threshold-not-met');
     expect(oldPaper?.discovery?.reasons).not.toContain('high-citation-impact');
     expect(oldPaper?.discovery?.reasons).not.toContain('established-classic');
     expect(

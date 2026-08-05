@@ -4,10 +4,21 @@ import type {
   LiteratureRankingSignals,
   LiteratureTierCounts,
 } from '../shared/literature-contracts';
+import {
+  BALANCED_LITERATURE_POLICY_ID,
+  BALANCED_LITERATURE_POLICY_VERSION,
+  LITERATURE_CANONICAL_MIN_AGE_YEARS,
+  LITERATURE_CORE_MIN_CITATIONS,
+  LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS,
+  LITERATURE_CORE_MIN_RELEVANCE_SCORE,
+  LITERATURE_RISING_MAX_AGE_YEARS,
+  LITERATURE_RISING_MIN_CITATIONS_PER_YEAR,
+  LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS,
+  LITERATURE_RISING_MIN_RELEVANCE_SCORE,
+} from '../shared/literature-ranking-policy';
 import { literatureFingerprint, type LiteratureProviderCandidate } from './literature-crossref';
 
-export const BALANCED_LITERATURE_POLICY_ID = 'balanced-three-layer' as const;
-export const BALANCED_LITERATURE_POLICY_VERSION = 1;
+export { BALANCED_LITERATURE_POLICY_ID, BALANCED_LITERATURE_POLICY_VERSION };
 const CANONICAL_CORE_SHARE = 0.25;
 
 export type LiteratureRankingCandidate = Readonly<{
@@ -41,8 +52,11 @@ type ScoredCandidate = Readonly<{
   broadScore: number;
   citationVelocityProxy: number | null;
   recent: boolean;
-  established: boolean;
+  publicationYearEligible: boolean;
+  bibliographicEligible: boolean;
   citationImpactEligible: boolean;
+  relevantCoreEligible: boolean;
+  canonicalCoreEligible: boolean;
   risingEligible: boolean;
 }>;
 
@@ -304,10 +318,10 @@ function quotas(limit: number) {
 function reasonsFor(candidate: ScoredCandidate, tier: LiteratureDiscoveryTier) {
   const reasons: LiteratureDiscoveryReason[] = [];
   if (candidate.relevanceScore >= 0.55) reasons.push('high-query-relevance');
-  if (candidate.citationImpactEligible && candidate.authorityScore >= 0.3) {
+  if (candidate.citationImpactEligible) {
     reasons.push('high-citation-impact');
   }
-  if (candidate.established && candidate.citationImpactEligible) {
+  if (candidate.canonicalCoreEligible) {
     reasons.push('established-classic');
   }
   if ((candidate.input.maxAuthorHIndex ?? 0) >= 40) reasons.push('prominent-author-signal');
@@ -318,6 +332,20 @@ function reasonsFor(candidate: ScoredCandidate, tier: LiteratureDiscoveryTier) {
   if ((candidate.input.influentialCitationCount ?? 0) > 0) {
     reasons.push('influential-citation-signal');
   }
+  if (tier !== 'core') {
+    if (
+      candidate.input.candidate.publishedYear !== undefined &&
+      !candidate.publicationYearEligible
+    ) {
+      reasons.push('future-publication-year');
+    } else if (!candidate.bibliographicEligible) {
+      reasons.push('incomplete-bibliographic-metadata');
+    } else if (!candidate.citationImpactEligible) {
+      reasons.push('core-impact-threshold-not-met');
+    } else if (!candidate.relevantCoreEligible && !candidate.canonicalCoreEligible) {
+      reasons.push('core-relevance-threshold-not-met');
+    }
+  }
   if (tier === 'broad') reasons.push('broad-recall');
   if (reasons.length === 0) {
     reasons.push(tier === 'broad' ? 'broad-recall' : 'query-match-candidate');
@@ -327,7 +355,12 @@ function reasonsFor(candidate: ScoredCandidate, tier: LiteratureDiscoveryTier) {
 
 function matchedLayers(candidate: ScoredCandidate, primary: LiteratureDiscoveryTier) {
   const matches: LiteratureDiscoveryTier[] = [];
-  if (candidate.coreScore >= 0.48) matches.push('core');
+  if (
+    (candidate.relevantCoreEligible || candidate.canonicalCoreEligible) &&
+    candidate.coreScore >= 0.48
+  ) {
+    matches.push('core');
+  }
   if (candidate.risingEligible && candidate.risingScore >= 0.42) matches.push('rising');
   matches.push('broad');
   if (!matches.includes(primary)) matches.unshift(primary);
@@ -384,7 +417,7 @@ export function rankLiteratureCandidates(
     const age = Math.max(0, referenceYear - year);
     return citations / Math.max(1, age + 1);
   };
-  const recentFloor = referenceYear - 3;
+  const recentFloor = referenceYear - LITERATURE_RISING_MAX_AGE_YEARS;
   const scored: ScoredCandidate[] = unique.map((input) => {
     const relevanceScore =
       input.relevanceRank === undefined
@@ -402,11 +435,36 @@ export function rankLiteratureCandidates(
     const citationVelocityProxy = velocity(input);
     const velocityScore = fixedLogarithmicScore(citationVelocityProxy, 50);
     const recentLaneScore = rankScore(input.recentRank, input.recentPoolSize);
-    const recent = publishedYear !== undefined && publishedYear >= recentFloor;
+    const publicationYearEligible = publishedYear !== undefined && publishedYear <= referenceYear;
+    const recent =
+      publishedYear !== undefined && publishedYear <= referenceYear && publishedYear >= recentFloor;
+    const bibliographicEligible =
+      publicationYearEligible &&
+      input.candidate.authors.length > 0 &&
+      Boolean(input.candidate.doi || input.candidate.providerId);
     const citationImpactEligible =
-      (input.candidate.citationCount ?? 0) >= 50 || (input.influentialCitationCount ?? 0) >= 10;
+      (input.candidate.citationCount ?? 0) >= LITERATURE_CORE_MIN_CITATIONS ||
+      (input.influentialCitationCount ?? 0) >= LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS;
+    const established =
+      publishedYear !== undefined &&
+      publishedYear <= referenceYear - LITERATURE_CANONICAL_MIN_AGE_YEARS;
+    const relevantCoreEligible =
+      bibliographicEligible &&
+      input.relevanceRank !== undefined &&
+      relevanceScore >= LITERATURE_CORE_MIN_RELEVANCE_SCORE &&
+      citationImpactEligible;
+    const canonicalCoreEligible =
+      bibliographicEligible &&
+      established &&
+      input.citationRank !== undefined &&
+      citationImpactEligible;
     const risingEligible =
-      recent && ((citationVelocityProxy ?? 0) >= 2 || (input.influentialCitationCount ?? 0) >= 1);
+      bibliographicEligible &&
+      recent &&
+      input.relevanceRank !== undefined &&
+      relevanceScore >= LITERATURE_RISING_MIN_RELEVANCE_SCORE &&
+      ((citationVelocityProxy ?? 0) >= LITERATURE_RISING_MIN_CITATIONS_PER_YEAR ||
+        (input.influentialCitationCount ?? 0) >= LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS);
     const momentumScore =
       0.35 * recencyScore +
       0.4 * velocityScore +
@@ -427,8 +485,11 @@ export function rankLiteratureCandidates(
       broadScore,
       citationVelocityProxy,
       recent,
-      established: publishedYear !== undefined && publishedYear <= referenceYear - 5,
+      publicationYearEligible,
+      bibliographicEligible,
       citationImpactEligible,
+      relevantCoreEligible,
+      canonicalCoreEligible,
       risingEligible,
     };
   });
@@ -455,16 +516,13 @@ export function rankLiteratureCandidates(
   const canonicalCoreTarget =
     target.core === 0 ? 0 : Math.max(1, Math.floor(target.core * CANONICAL_CORE_SHARE));
   const canonicalCore = choose(
-    scored.filter(
-      ({ established, citationImpactEligible, input }) =>
-        established && citationImpactEligible && input.citationRank !== undefined,
-    ),
+    scored.filter(({ canonicalCoreEligible }) => canonicalCoreEligible),
     canonicalCoreTarget,
     'core',
     ({ authorityScore }) => authorityScore,
   );
   const relevanceCore = choose(
-    scored,
+    scored.filter(({ relevantCoreEligible }) => relevantCoreEligible),
     target.core - canonicalCore.length,
     'core',
     ({ coreScore }) => coreScore,

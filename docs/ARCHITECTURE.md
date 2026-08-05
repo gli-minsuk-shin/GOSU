@@ -620,28 +620,40 @@ DOI, work type, citation count와 HTTPS source URL allowlist로 즉시 정규화
 간격과 15초 timeout, 4 MB response 한도를 사용한다. `GOSU_CROSSREF_MAILTO`와
 `GOSU_CROSSREF_USER_AGENT`는 polite-pool 식별용 선택 설정이며 credential이 아니다.
 
-정규화된 연구 paper 후보는 다음 세 layer로 한 번만 배정된다. 최대 결과 수 기준 기본 quota는
-`Core 40% / Rising 30% / Broad 나머지`이며 최근 후보가 부족하면 남은 자리를 Broad가 채운다. Core의 약
-25%(Core가 있으면 최소 1건)는 citation 정렬 lane에 실제로 나타나고, 최소 citation impact 기준을 넘으며,
-출판 후 5년 이상 지난 고전 후보에 예약한다. 해당 후보가 부족하면 빈 자리를 일반 Core ranking이 채운다.
+정규화된 연구 paper 후보는 policy v2에서 다음 세 layer로 한 번만 배정된다. 최대 결과 수 기준
+`Core 40% / Rising 30%`는 강제 quota가 아니라 각각의 최대 상한이다. Core·Rising 자격 후보가 부족하면
+빈자리를 약한 후보로 채우지 않고 Broad로 넘긴다. 이 때문에 실제 layer count는 검색마다 달라질 수 있고,
+모든 후보가 gate를 통과하지 못하면 `Core 0 / Rising 0`도 정상 결과다. Core 상한의 약 25%(Core target이
+있으면 최대 1건 이상)는 citation 정렬 lane에 실제로 나타나고, 최소 citation impact 기준을 넘으며, 출판 후
+5년 이상 지난 고전 후보에만 예약한다.
 
-- **Core & canonical**: query relevance를 가장 크게 보고 citation count, influential citation count와
-  오래 축적된 영향력을 함께 사용해 중요한 관련 논문과 classical anchor를 보존한다.
-- **Rising & recent**: 최근 4년 논문 안에서 relevance, 출판 후 경과 연수로 보정한 citation-per-year
-  proxy, influential citation을 결합해 새롭게 주목받을 가능성이 큰 논문을 찾는다.
+- **Core & canonical**: year·author와 DOI/provider ID가 있는 연구 후보 중 relevance lane에 실제로
+  나타나고 그 검색 결과 안의 정규화 rank score가 0.55 이상이며, 최소 50 citation 또는 10 influential
+  citation을 가진 high-impact relevant paper만 일반 Core 후보가 된다. relevance 밖의 canonical reserve는
+  같은 impact floor, citation lane과 5년 이상의 age를 모두 요구한다.
+- **Rising & recent**: 같은 최소 서지 identity를 가진 최근 4개 calendar year 논문 중 relevance lane에
+  실제로 나타나고 그 검색 결과 안의 정규화 rank score가 0.35 이상이며, 출판 후 경과 연수로 보정한
+  citation-per-year proxy가 2 이상이거나
+  influential citation이 1건 이상인 후보만 배정한다.
 - **Broad discovery**: relevance 중심의 넓은 recall을 유지해 obvious result 밖의 후보를 사람이
-  screening할 수 있게 한다.
+  screening할 수 있게 한다. Core impact/relevance gate나 서지 identity가 부족한 이유도 typed reason으로
+  함께 저장한다.
 
-저자 h-index는 이름 allowlist나 명성 판정이 아니라 정규화·상한이 있는 작은 supporting signal뿐이다.
-코드에 유명 학자 이름을 넣지 않으며 author signal만으로 Core나 Rising이 되지 않는다. Rising의
+저자 h-index와 journal·venue 존재 여부는 이름 allowlist나 venue prestige 판정이 아니라 표시·보조
+metadata일 뿐이다. 코드에 유명 학자·저널 이름을 넣지 않으며 author나 venue signal만으로 Core나
+Rising이 되지 않는다. venue가 없는 주요 conference paper·preprint도 충분한 citation 근거가 있으면 Core
+후보가 될 수 있지만, venue가 없고 citation 0인 paper는 Core gate를 통과할 수 없다. Rising의
 `citation momentum`도 조회 시점 metadata에서 계산한 proxy이지 실시간 download, social attention,
 venue quality 또는 장래 영향력의 보증이 아니다. discovery score와 layer는 읽을 순서를 돕는 ranking
 metadata이며 논문의 진실성, 연구 품질 또는 evidence 채택을 판정하지 않는다.
 Citation·influential-citation·author score는 현재 후보 집합의 최댓값으로 정규화하지 않고 고정된 bounded
 scale을 사용한다. Core의 high-impact/classic reason에는 최소 50 citation 또는 10 influential citation,
 Rising에는 최근 4년이면서 연평균 2 citation 또는 influential citation 1건이라는 absolute eligibility
-floor를 적용한다. 이 floor는 분야별 품질 판정이 아니라 한 건의 citation이나 단순 최신성만으로
-"고전"·"급부상" label이 생기는 것을 막는 보수적 discovery guard다.
+floor와 실제 relevance lane 조건을 적용한다. `matchedLayers`도 동일 eligibility를 사용하므로 score만 높은
+Broad paper에 Core가 붙지 않는다. 이 floor는 분야별 품질 판정이 아니라 citation 0·단순 최신성·저자
+명성만으로 "고전"·"급부상" label이 생기는 것을 막는 보수적 discovery guard다.
+검색 기준 연도보다 미래인 publication year는 잘못되거나 조기 등록된 metadata로 보고 Core·Rising에서
+fail-closed하며 Broad에 명시적인 reason을 저장한다.
 
 일반 Project Chat에는 top-level 사용자 메시지가 문헌 subject와 명시적인 검색·찾기·추가 action을 함께
 말하고 부정 명령이 아닐 때만 `search_literature` capability를 turn-scoped catalog에 넣는다. 검색 기능이나
@@ -676,8 +688,13 @@ source·reason을 보존해 검색 이력을 재현할 수 있고, record에는 
 discovery summary만 별도로 둔다. 따라서 다음 continual search가 같은 paper를 다른 layer로 분류해도
 과거 run의 판정은 덮어쓰지 않는다. Evidence table의 기본 importance 정렬은 서로 다른 query에서 나온
 상대 score를 숫자로 비교하지 않는다. `classifiedAt`이 최신인 검색을 먼저 두고, 같은 run 안에서만
-Core→Rising→Broad와 tier rank를 비교한다. UI도 score를 `within search`로 표시한다. import paper는 새
-search에서 매칭되기 전까지 `unclassified`로 남는다.
+Core→Rising→Broad와 tier rank를 비교한다. UI도 score를 `within search`로 표시하고 각 paper의 Core gate
+통과·실패 이유와 exact v2 threshold를 보여 준다. v1 결과를 조용히 재작성하지 않고 legacy label로 표시하며,
+같은 검색을 다시 실행하면 matching record의 current summary만 v2로 갱신되고 과거 hit provenance는
+보존된다. Core card는 현재 v2 통과 수와 legacy/other-policy 수를 분리해 오래된 citation 0 Core label을 현재
+기준 통과처럼 보이지 않게 한다. `Total` quick filter는 Core·Rising·Broad와 import된 `unclassified`를 한
+table에서 함께 보여 주며 DB tier enum에는 추가하지 않는다. import paper는 새 search에서 매칭되기 전까지
+`unclassified`로 남는다.
 모든 query와 mutation은 Main에서 active project 존재 여부를
 다시 검사하고 project ID를 SQL predicate에 포함한다. 앱 재시작 중 남은 `running` search는 `failed`로
 reconcile하고, 최근 검색은 `Search again` 입력으로 복원할 수 있다. 자동 background scheduler는 아직
@@ -1672,13 +1689,16 @@ bound, API key header, timeout·streaming response size·429 mapping과 raw abst
 Discovery test는 lane별 성공·실패 coverage, 빈 보강 pool에서도 유지되는 degradation provenance,
 불완전 Semantic Scholar pool의 Crossref 보강·combined rerank, 30,000-ID 선형 bound와 first·last·other
 author의 균형 selection·partial coverage를
-검사한다. deterministic rank test는 Core/Rising/Broad quota, DOI dedupe, junk type 제외, Core 안의
-canonical high-citation 예약, absolute eligibility floor, citation/recent lane을 query relevance로 오인하지
-않는 규칙, sparse Semantic Scholar·rich Crossref 동일 DOI의 deterministic metadata merge, age-adjusted
-momentum, author signal cap과 Crossref 3-lane fallback을 고정한다. Renderer table test는
-서로 다른 query의 상대 score를 비교하지 않고 latest matching run과 same-run layer/rank만 사용하는지
-검사하고, focusable region·명시적 shrinkable grid track·bounded block size·양축 scrollbar와 네 개의
-fallback navigation command를 고정한다. macOS Electron geometry smoke는 실제 production CSS와 25행×11열
+검사한다. deterministic rank test는 Core/Rising 최대 상한과 Broad 재분배, citation 0·venue 유무와 무관한
+Core fail-closed, 미래 연도와 불완전 서지 identity 차단, DOI dedupe, junk type 제외, Core 안의 canonical
+high-citation 예약, absolute eligibility floor, citation/recent lane을 query relevance로 오인하지 않는 규칙,
+sparse Semantic Scholar·rich Crossref
+동일 DOI의 deterministic metadata merge, age-adjusted momentum, author signal cap과 Crossref 3-lane
+fallback을 고정한다. Renderer table test는 Total이 세 layer와 unclassified를 모두 포함하고 기본 선택되는지,
+layer별 filter와 세로 위치 초기화가 가로 위치를 보존하는지, 서로 다른 query의 상대 score를 비교하지 않고
+latest matching run과 same-run layer/rank만 사용하는지 검사하고, focusable region·명시적 shrinkable grid
+track·bounded block size·양축 scrollbar와 네 개의 fallback navigation command를 고정한다. macOS Electron
+geometry smoke는 실제 production CSS와 25행×11열
 fixture를 BrowserWindow에 넣어 `scrollWidth > clientWidth`, `scrollHeight > clientHeight`와 양축 최대
 offset 이동을 검사하므로 SSR markup·CSS 문자열만으로 scroll 가능성을 추정하지 않는다. transfer test는
 JSON/CSV/BibTeX deterministic round-trip, DOI·fingerprint·

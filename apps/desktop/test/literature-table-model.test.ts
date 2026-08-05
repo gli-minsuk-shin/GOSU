@@ -188,4 +188,33 @@ describe('literature table model', () => {
       'second-run-high-score',
     ]);
   });
+
+  it('treats Total as all classified and imported papers while preserving layer filters', () => {
+    const records = [
+      record('core', { discoveryTier: 'core' }),
+      record('rising', { discoveryTier: 'rising' }),
+      record('broad', { discoveryTier: 'broad' }),
+      record('imported', { discoveryTier: 'unclassified' }),
+    ];
+    const query = {
+      text: '',
+      reviewStatus: 'all',
+      sortKey: 'title' as const,
+      sortDirection: 'ascending' as const,
+      page: 1,
+    };
+
+    expect(
+      buildLiteratureTablePage(records, { ...query, discoveryTier: 'all' }).rows.map(
+        ({ id }) => id,
+      ),
+    ).toEqual(['broad', 'core', 'imported', 'rising']);
+    for (const tier of ['core', 'rising', 'broad', 'unclassified'] as const) {
+      expect(
+        buildLiteratureTablePage(records, { ...query, discoveryTier: tier }).rows.map(
+          ({ id }) => id,
+        ),
+      ).toEqual([tier === 'unclassified' ? 'imported' : tier]);
+    }
+  });
 });
