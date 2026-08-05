@@ -395,6 +395,11 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   가진다. Project Chat은 active project에 속한 grant의 opaque ID·label·mode만 볼 수 있고 Main이
   project·session·attempt·turn·tool-call과 실제 connection을 주입한다. 모델은 host·username·port·root·
   credential·private-key path를 list 결과에서 받거나 다른 project의 grant를 선택할 수 없다.
+  server profile 등록은 transport 후보만 만들며 project grant나 실제 접속을 의미하지 않는다. 등록 직후와
+  grant가 없는 Project Chat에는 `Grant to project` 동선을 표시하고 project-scoped form으로 즉시 이동해
+  유일한 등록 server를 자동 선택한다. 사용자는 그곳에서 exact remote project root·permission mode·risk를
+  별도로 확인해야 하며 UI가 이 승인 단계를 자동 통과하지 않는다. 같은 form과 기존 grant row의 명시적
+  `Test server`는 transport/auth 상태만 확인하고 project grant나 command 승인을 대신하지 않는다.
 - Connections의 별도 importer는 전체 `ssh -p ... user@host -L ...` 문자열을 shell이나 LLM으로 실행하지
   않고 bounded parser로 분해한다. `ssh`, `-p`, `-l`, 하나의 destination과 loopback-only `-L`만 허용하고
   remote command, quoting·expansion, key/config/proxy/jump, reverse/dynamic forwarding, TTY와 agent forwarding
@@ -857,7 +862,11 @@ flowchart LR
   생성 시각을 보여 준다. 선택 session별 React key와 generation guard가 retry·scroll·늦게 도착한
   hydration을 격리한다. keyed `ProjectChatView`보다 오래 사는 Desktop shell이 unsent composer draft를
   project+session key의 Renderer volatile memory에만 보존해 session을 오간 뒤 복원하고 성공한 send 뒤
-  해당 값만 지운다. 같은 project+session의 parent rerender나 model·reasoning 변경은 typed draft,
+  해당 값만 지운다. 같은 소유자가 transcript의 finite nonnegative `scrollTop`도 project+session별 volatile
+  map에 보존한다. chat 재진입 시 저장값이 있으면 viewport 범위로 clamp해 paint 전에 복원하고, 처음 여는
+  session이면 실제 snapshot hydration 뒤 paint 전에 바로 bottom에서 시작한다. loading placeholder나 실패한
+  hydration의 `0`은 위치로 저장하지 않는다. SQLCipher·Hosted Sync에는 이 UI 위치를 저장하지 않는다.
+  같은 project+session의 parent rerender나 model·reasoning 변경은 typed draft,
   retry provenance와 Advanced 열림 상태를 바꾸지 않고, 실제 project/session identity 전환에서만 새 draft를
   hydrate하고 retry·Advanced를 초기화한다. 이 draft는 SQLCipher·Hosted Sync 원본이 아니다.
   snapshot·event·cancel·retry·action도
@@ -874,6 +883,8 @@ flowchart LR
   그 message의 header와 top inset에 맞춰 시작해 toolbar 아래에서 첫 줄이 잘리지 않게 한다. active turn 시작 시
   bottom의 thinking state를 보여준다. terminal event가 새 snapshot보다 먼저 와도 stale user message로
   이동하지 않고 새 assistant message ID를 기다리며, 무관한 parent rerender는 현재 scroll을 바꾸지 않는다.
+  transcript는 CSS smooth behavior를 사용하지 않아 restore·bottom·latest-message anchor가 과거 history를
+  위에서 아래로 통과하는 애니메이션으로 보이지 않는다.
   다른 surface의 공통 spacing은 이 chat 전용 class의 영향을 받지 않는다.
 - 한 project에는 동시에 하나의 Codex turn만 허용한다. 사용자는 active turn 중에도 다른 session을 열어
   history를 읽거나 새 root/완료 지점 branch를 만들 수 있지만, 다른 session의 composer·model·reasoning·
@@ -938,8 +949,11 @@ flowchart LR
   60,000자다. 동시 호출은 read 전에 budget을 reserve하고 모든 tool 결과는 직렬화 후 48,000자 안으로
   축약한다. note/PDF/web text와 tool result는 untrusted evidence이며 그 안의 지시를 실행하지 않는다.
 - SSH workspace list tool은 active project의 grant만 읽어 opaque grant ID, connection label과 permission
-  mode를 반환한다. global registry의 ungranted connection, 다른 project의 grant, actual target과 root는
-  모델에 노출하지 않는다. command tool의 project·session·attempt·turn·tool-call·connection binding은
+  mode를 반환한다. grant가 없을 때는 bounded `registeredConnectionCount`와
+  `no_registered_connections|workspace_grant_required` setup state만 반환해 모델이 transport 실패와 승인
+  누락을 혼동하지 않게 한다. global registry의 ungranted connection label/profile, 다른 project의 grant,
+  actual target·user·root는 모델에 노출하지 않는다. command tool의
+  project·session·attempt·turn·tool-call·connection binding은
   모델 argument가 아니라 Main이 주입하고 grant를 다시 조회한다. 최대 20개 argument는 별도 token으로
   검증하며 absolute executable, relative workspace subdirectory와 mode별 inspect/test/build allowlist를
   적용한다. raw shell·inline interpreter eval, privilege escalation, nested transport·transfer, TTY·forwarding과
@@ -1422,7 +1436,10 @@ connection/grant version CAS와 SQLCipher reopen, Renderer에 credential·raw pa
 IPC, narrow full-command parser, trailing loopback `-L` normalization·inactive retention,
 dangerous option·remote command·shell syntax 거절, direct target의 `-F none`과 imported forwarding 미적용,
 OpenSSH safe option·argument quoting·environment, background fork 차단, client diagnostic 비공개 격리와
-remote stderr 보존을 검증한다. workspace policy test는 project grant isolation, canonical root·relative cwd,
+remote stderr 보존을 검증한다. Renderer test는 grant setup의 sole-server preselection·명시적 risk confirmation
+유지와 Project Chat의 project-grant CTA를 검사하고, session state/view test는 scroll 위치의
+project/session 격리·saved zero·invalid value 거절·bottom default·viewport clamp·smooth replay 금지를 고정한다.
+workspace policy test는 project grant isolation, canonical root·relative cwd,
 mode별 concrete executable·inspect/test/build allowlist, root diagnostic 축소, shell·inline eval·privilege·
 transfer·forwarding 거절, approval exact target/root/mode/command binding·profile/grant revalidation·TTL·capacity·
 Allow once·scope cancel, output crop·untrusted marker를 고정한다. Project Agent

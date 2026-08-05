@@ -14,7 +14,7 @@ import type {
 } from '../../shared/ssh-workspace-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import { SshConnectionsCard } from './ssh-connections-card';
-import { SshWorkspaceGrantsCard } from './ssh-workspace-grants-card';
+import { SshWorkspaceGrantsCard, type SshWorkspaceSetupRequest } from './ssh-workspace-grants-card';
 import { Boundary, CardHead, RuntimeCard } from './ui-primitives';
 
 export type CodexModel = {
@@ -54,6 +54,8 @@ export function ConnectionsView({
   onCreateSshWorkspace,
   onUpdateSshWorkspace,
   onRemoveSshWorkspace,
+  sshWorkspaceSetupRequest = null,
+  onSshWorkspaceSetupHandled = () => undefined,
 }: {
   runtime: RuntimeReadiness | null;
   models: readonly CodexModel[];
@@ -83,6 +85,8 @@ export function ConnectionsView({
   onCreateSshWorkspace: (input: CreateRemoteWorkspaceGrantInput) => Promise<unknown>;
   onUpdateSshWorkspace: (input: UpdateRemoteWorkspaceGrantInput) => Promise<unknown>;
   onRemoveSshWorkspace: (input: RemoveRemoteWorkspaceGrantInput) => Promise<unknown>;
+  sshWorkspaceSetupRequest?: SshWorkspaceSetupRequest | null;
+  onSshWorkspaceSetupHandled?: (requestId: number) => void;
 }) {
   return (
     <section className="connection-grid">
@@ -184,6 +188,10 @@ export function ConnectionsView({
         onCreate={onCreateSshWorkspace}
         onUpdate={onUpdateSshWorkspace}
         onRemove={onRemoveSshWorkspace}
+        onTest={onTestSshConnection}
+        testStatus={sshTestStatus}
+        setupRequest={sshWorkspaceSetupRequest}
+        onSetupRequestHandled={onSshWorkspaceSetupHandled}
       />
       <article className="card">
         <CardHead title="Local-first boundary" detail="Eligibility policy · delivery is off" />

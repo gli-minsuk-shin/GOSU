@@ -165,6 +165,12 @@ class FakeProjectSsh implements ProjectAgentSsh {
       id: SSH_CONNECTION_ID,
       label: 'Training GPU',
       hostAlias: 'private-resolved-alias',
+      directTarget: {
+        host: 'sensitive-gpu.example.test',
+        user: 'sensitive-remote-user',
+        port: 4597,
+        localForwards: [],
+      },
       version: 1,
       createdAt: '2026-08-04T00:00:00.000Z',
       updatedAt: '2026-08-04T00:00:00.000Z',
@@ -692,6 +698,8 @@ describe('ProjectAgentToolSession', () => {
     expect(listed.success).toBe(true);
     expect(resultPayload(listed)).toEqual({
       schemaVersion: 1,
+      setupState: 'ready',
+      registeredConnectionCount: 1,
       workspaces: [
         {
           grantId: SSH_GRANT_ID,
@@ -701,8 +709,60 @@ describe('ProjectAgentToolSession', () => {
       ],
     });
     expect(ssh.listWorkspaceGrants).toHaveBeenCalledExactlyOnceWith(projectAlpha.id);
+    expect(ssh.listConnections).toHaveBeenCalledOnce();
     expect(serialized).not.toContain('private-resolved-alias');
     expect(serialized).not.toContain('hostAlias');
+    expect(serialized).not.toContain('sensitive-gpu.example.test');
+    expect(serialized).not.toContain('sensitive-remote-user');
+    expect(serialized).not.toContain('directTarget');
+  });
+
+  it('distinguishes a missing project grant from having no registered SSH connection', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
+    ssh.listWorkspaceGrants.mockResolvedValue([]);
+
+    const grantRequired = await invokeTool(session, toolCall('list_ssh_workspaces', {}));
+    const grantRequiredText = grantRequired.contentItems[0]!.text;
+
+    expect(grantRequired.success).toBe(true);
+    expect(resultPayload(grantRequired)).toEqual({
+      schemaVersion: 1,
+      setupState: 'workspace_grant_required',
+      registeredConnectionCount: 1,
+      workspaces: [],
+    });
+    expect(grantRequiredText).not.toContain('Training GPU');
+    expect(grantRequiredText).not.toContain('private-resolved-alias');
+    expect(grantRequiredText).not.toContain('hostAlias');
+    expect(grantRequiredText).not.toContain('sensitive-gpu.example.test');
+    expect(grantRequiredText).not.toContain('sensitive-remote-user');
+    expect(grantRequiredText).not.toContain('directTarget');
+
+    ssh.connections.splice(0);
+    const registrationRequired = await invokeTool(session, toolCall('list_ssh_workspaces', {}));
+
+    expect(registrationRequired.success).toBe(true);
+    expect(resultPayload(registrationRequired)).toEqual({
+      schemaVersion: 1,
+      setupState: 'no_registered_connections',
+      registeredConnectionCount: 0,
+      workspaces: [],
+    });
+    expect(ssh.listWorkspaceGrants).toHaveBeenCalledTimes(2);
+    expect(ssh.listConnections).toHaveBeenCalledTimes(2);
+
+    const denied = await invokeTool(
+      session,
+      toolCall('run_ssh_workspace_command', {
+        grantId: SSH_GRANT_ID,
+        command: '/usr/bin/git',
+        args: ['status'],
+      }),
+    );
+    expect(denied.success).toBe(false);
+    expect(resultPayload(denied)).toEqual({ error: 'ssh_workspace_grant_not_found' });
+    expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
   });
 
   it('injects the active project and session into approved SSH tool requests', async () => {

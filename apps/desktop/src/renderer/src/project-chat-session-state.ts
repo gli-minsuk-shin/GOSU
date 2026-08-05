@@ -41,3 +41,22 @@ export class VolatileProjectChatDrafts {
     else this.drafts.delete(key);
   }
 }
+
+const MAX_VOLATILE_CHAT_SCROLL_TOP = 10_000_000;
+
+export class VolatileProjectChatScrollPositions {
+  private readonly positions = new Map<string, number>();
+
+  read(projectId: string, sessionId: string | null) {
+    return this.positions.get(projectChatSessionKey(projectId, sessionId ?? '')) ?? null;
+  }
+
+  write(projectId: string, sessionId: string | null, scrollTop: number) {
+    if (!Number.isFinite(scrollTop) || scrollTop < 0) return false;
+    this.positions.set(
+      projectChatSessionKey(projectId, sessionId ?? ''),
+      Math.min(scrollTop, MAX_VOLATILE_CHAT_SCROLL_TOP),
+    );
+    return true;
+  }
+}

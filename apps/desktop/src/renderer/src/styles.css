@@ -1641,6 +1641,22 @@ textarea:focus {
   font-size: var(--font-caption);
 }
 
+.ssh-workspace-connection-check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.ssh-workspace-connection-check span {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
 .ssh-connection-row,
 .ssh-connections-card .connection-item {
   display: flex;
@@ -3166,12 +3182,46 @@ textarea:focus {
 
 .chat-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
   padding: 11px 13px;
   border-bottom: 1px solid var(--line);
   background: light-dark(rgba(255, 255, 255, 0.9), rgba(14, 18, 15, 0.86));
+}
+
+.chat-ssh-setup-notice {
+  display: flex;
+  flex: 1 0 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--orange) 42%, var(--line));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--orange) 8%, var(--surface));
+}
+
+.chat-ssh-setup-notice div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chat-ssh-setup-notice strong {
+  color: var(--text);
+  font-size: var(--font-control);
+}
+
+.chat-ssh-setup-notice span {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.chat-ssh-setup-notice button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .chat-identity {
@@ -3345,7 +3395,6 @@ textarea:focus {
   min-height: 0;
   padding: 18px clamp(12px, 1.8vw, 26px);
   overflow: auto;
-  scroll-behavior: smooth;
 }
 
 .chat-loading {
@@ -4910,6 +4959,11 @@ textarea:focus {
   }
 
   .chat-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .chat-ssh-setup-notice {
     align-items: stretch;
     flex-direction: column;
   }

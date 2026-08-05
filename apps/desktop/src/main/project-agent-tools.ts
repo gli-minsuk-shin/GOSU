@@ -216,7 +216,7 @@ const LIST_SSH_WORKSPACES_TOOL = {
   type: 'function',
   name: 'list_ssh_workspaces',
   description:
-    'List only remote workspaces explicitly granted to the active GOSU project. Returns opaque grant IDs, connection labels, and permission modes. Host resolution, credentials, workspace roots, private-key paths, and SSH config are never returned.',
+    'List only remote workspaces explicitly granted to the active GOSU project. Returns opaque grant IDs, connection labels, permission modes, and a bounded setup state. If no workspace is granted, setupState distinguishes no_registered_connections from workspace_grant_required and registeredConnectionCount reports only the number of local registrations. Host resolution, users, credentials, workspace roots, private-key paths, and SSH config are never returned.',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -846,11 +846,28 @@ export class ProjectAgentToolSession {
   private async listSshWorkspaces(arguments_: unknown) {
     const parsed = ListSshWorkspacesArgumentsSchema.safeParse(arguments_);
     if (!parsed.success) return failure('invalid_tool_arguments');
-    if (!this.dependencies.ssh) return jsonResult({ schemaVersion: 1, workspaces: [] });
-    const workspaces = await this.dependencies.ssh.listWorkspaceGrants(this.dependencies.projectId);
+    if (!this.dependencies.ssh) {
+      return jsonResult({
+        schemaVersion: 1,
+        setupState: 'no_registered_connections',
+        registeredConnectionCount: 0,
+        workspaces: [],
+      });
+    }
+    const [workspaces, registeredConnections] = await Promise.all([
+      this.dependencies.ssh.listWorkspaceGrants(this.dependencies.projectId),
+      this.dependencies.ssh.listConnections(),
+    ]);
     if (this.sshCapabilityRevoked) return failure('ssh_cancelled');
     return jsonResult({
       schemaVersion: 1,
+      setupState:
+        workspaces.length > 0
+          ? 'ready'
+          : registeredConnections.length > 0
+            ? 'workspace_grant_required'
+            : 'no_registered_connections',
+      registeredConnectionCount: registeredConnections.length,
       workspaces: workspaces.map(({ grant, connection }) => ({
         grantId: grant.id,
         connectionLabel: connection.label,

@@ -57,6 +57,7 @@ import {
   projectChatSessionKey,
   resolveProjectChatSessionId,
   VolatileProjectChatDrafts,
+  VolatileProjectChatScrollPositions,
 } from './project-chat-session-state';
 import { RepositoryView } from './repository-view';
 import {
@@ -82,6 +83,10 @@ import {
 } from './project-sidebar';
 import { SettingsView, type SettingsCategory } from './settings-view';
 import { SshApprovalCenter } from './ssh-approval-center';
+import {
+  acknowledgeSshWorkspaceSetupRequest,
+  type SshWorkspaceSetupRequest,
+} from './ssh-workspace-grants-card';
 import { SshWorkspaceLoadGuard, sshWorkspacesForProject } from './ssh-workspace-load-guard';
 import { Connection, describeError } from './ui-primitives';
 import {
@@ -183,7 +188,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [sshConnectionState, setSshConnectionState] = useState<
     'checking' | 'ready' | 'unavailable'
   >('checking');
+  const [sshWorkspaceRuntime, setSshWorkspaceRuntime] = useState<{
+    projectId: string | null;
+    state: 'checking' | 'ready' | 'unavailable';
+  }>({ projectId: null, state: 'checking' });
   const [sshTestStatus, setSshTestStatus] = useState<Record<string, string>>({});
+  const [sshWorkspaceSetupRequest, setSshWorkspaceSetupRequest] =
+    useState<SshWorkspaceSetupRequest | null>(null);
   const [sshApprovals, setSshApprovals] = useState<readonly SshApprovalRequest[]>([]);
   const [sshApprovalBusyIds, setSshApprovalBusyIds] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -211,10 +222,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const codexBootstrapStarted = useRef(false);
   const vaultSelectionGeneration = useRef(0);
   const sshWorkspaceLoadGuard = useRef(new SshWorkspaceLoadGuard());
+  const sshWorkspaceSetupRequestIdRef = useRef(0);
   const projectNavigationRef = useRef(projectNavigation);
   const activeChatSessionIdsRef = useRef(activeChatSessionIds);
   const projectChatSessionsRef = useRef(projectChatSessions);
   const chatDraftsRef = useRef(new VolatileProjectChatDrafts());
+  const chatScrollPositionsRef = useRef(new VolatileProjectChatScrollPositions());
   const visibleChatSshScopeRef = useRef<{ projectId: string; sessionId: string } | null>(null);
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
 
@@ -228,6 +241,14 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     [activeProjectId, activeProjects],
   );
   sshWorkspaceLoadGuard.current.activate(activeProject?.id ?? null);
+  const activeProjectSshWorkspaces = sshWorkspacesForProject(
+    sshWorkspaces,
+    activeProject?.id ?? null,
+  );
+  const activeProjectSshWorkspaceState =
+    sshWorkspaceRuntime.projectId === (activeProject?.id ?? null)
+      ? sshWorkspaceRuntime.state
+      : 'checking';
   const activeTasks = useMemo(
     () => snapshot?.tasks.filter((task) => task.projectId === activeProjectId) ?? [],
     [activeProjectId, snapshot],
@@ -403,10 +424,14 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       const workspaces = await window.gosu.ssh.listWorkspaceGrants({ projectId });
       if (sshWorkspaceLoadGuard.current.accepts(token)) {
         setSshWorkspaces(workspaces);
+        setSshWorkspaceRuntime({ projectId, state: 'ready' });
       }
       return workspaces;
     } catch (error) {
-      if (sshWorkspaceLoadGuard.current.accepts(token)) throw error;
+      if (sshWorkspaceLoadGuard.current.accepts(token)) {
+        setSshWorkspaceRuntime({ projectId, state: 'unavailable' });
+        throw error;
+      }
       return [];
     }
   };
@@ -449,6 +474,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
 
   useEffect(() => {
     setSshWorkspaces([]);
+    setSshWorkspaceRuntime({ projectId: activeProject?.id ?? null, state: 'checking' });
     if (!activeProject) {
       return;
     }
@@ -893,6 +919,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const openAgentSettings = () => {
     setSettingsCategory('agent');
     setActiveSurface('settings');
+    setShowProjectForm(false);
+  };
+
+  const openSshWorkspaceSetup = (connectionId: string | null = null) => {
+    if (activeProject) {
+      sshWorkspaceSetupRequestIdRef.current += 1;
+      setSshWorkspaceSetupRequest({
+        requestId: sshWorkspaceSetupRequestIdRef.current,
+        projectId: activeProject.id,
+        connectionId,
+      });
+    }
+    setActiveSurface('workspace');
+    setActiveTab('connections');
     setShowProjectForm(false);
   };
 
@@ -1379,6 +1419,23 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onDraftChange={(value) =>
                   chatDraftsRef.current.write(activeProject.id, activeProjectChatSessionId, value)
                 }
+                initialScrollTop={chatScrollPositionsRef.current.read(
+                  activeProject.id,
+                  activeProjectChatSessionId,
+                )}
+                onScrollTopChange={(scrollTop) =>
+                  chatScrollPositionsRef.current.write(
+                    activeProject.id,
+                    activeProjectChatSessionId,
+                    scrollTop,
+                  )
+                }
+                sshAccess={{
+                  state: activeProjectSshWorkspaceState,
+                  registeredConnectionCount: sshConnections.length,
+                  grantedWorkspaceCount: activeProjectSshWorkspaces.length,
+                }}
+                onOpenSshWorkspaceSetup={() => openSshWorkspaceSetup()}
                 activeSessionIds={activeSessionIdsForProject(
                   activeProject.id,
                   activeChatSessionKeys,
@@ -1708,20 +1765,36 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 sshConnections={sshConnections}
                 sshBusy={sshConnectionBusy !== null}
                 sshTestStatus={sshTestStatus}
-                onCreateSshConnection={(input: CreateSshConnectionInput) =>
-                  runSshConnectionAction(
+                onCreateSshConnection={async (input: CreateSshConnectionInput) => {
+                  let registeredConnectionId: string | null = null;
+                  const succeeded = await runSshConnectionAction(
                     'create',
-                    () => window.gosu.ssh.createConnection(input),
-                    `Registered ${input.label} for approved Project Chat commands.`,
-                  )
-                }
-                onImportSshCommand={(input: ImportSshCommandInput) =>
-                  runSshConnectionAction(
+                    async () => {
+                      const registered = await window.gosu.ssh.createConnection(input);
+                      registeredConnectionId = registered.id;
+                    },
+                    `Registered ${input.label} locally. A project workspace grant is still required.`,
+                  );
+                  if (succeeded && activeProject) {
+                    openSshWorkspaceSetup(registeredConnectionId);
+                  }
+                  return succeeded;
+                }}
+                onImportSshCommand={async (input: ImportSshCommandInput) => {
+                  let registeredConnectionId: string | null = null;
+                  const succeeded = await runSshConnectionAction(
                     'import',
-                    () => window.gosu.ssh.importCommand(input),
-                    `Parsed and registered ${input.label ?? 'the SSH server'} locally.`,
-                  )
-                }
+                    async () => {
+                      const registered = await window.gosu.ssh.importCommand(input);
+                      registeredConnectionId = registered.id;
+                    },
+                    `Parsed and registered ${input.label ?? 'the SSH server'} locally. A project workspace grant is still required.`,
+                  );
+                  if (succeeded && activeProject) {
+                    openSshWorkspaceSetup(registeredConnectionId);
+                  }
+                  return succeeded;
+                }}
                 onUpdateSshConnection={(input: UpdateSshConnectionInput) =>
                   runSshConnectionAction(
                     `update:${input.connectionId}`,
@@ -1749,7 +1822,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 }}
                 onTestSshConnection={testSshConnection}
                 activeProject={activeProject ?? null}
-                sshWorkspaces={sshWorkspacesForProject(sshWorkspaces, activeProject?.id ?? null)}
+                sshWorkspaces={activeProjectSshWorkspaces}
+                sshWorkspaceSetupRequest={sshWorkspaceSetupRequest}
+                onSshWorkspaceSetupHandled={(requestId) =>
+                  setSshWorkspaceSetupRequest((current) =>
+                    acknowledgeSshWorkspaceSetupRequest(current, requestId),
+                  )
+                }
                 onCreateSshWorkspace={(input: CreateRemoteWorkspaceGrantInput) =>
                   runSshWorkspaceAction(
                     `workspace-create:${input.projectId}:${input.connectionId}`,
