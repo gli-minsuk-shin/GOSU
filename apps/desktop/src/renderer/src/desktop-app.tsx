@@ -19,6 +19,7 @@ import type {
   SshApprovalRequest,
   SshConnectionProfile,
   SshEvent,
+  SshServerResourceSnapshot,
   UpdateSshConnectionInput,
 } from '../../shared/ssh-contracts';
 import type {
@@ -52,7 +53,11 @@ import {
   mergeProjectChatSnapshot,
   shouldHydrateProjectChat,
 } from './project-chat-load-guard';
-import { ProjectChatView, resolveEffectiveCodexModel } from './project-chat-view';
+import {
+  ProjectChatView,
+  resolveEffectiveCodexModel,
+  type ProjectChatSshServer,
+} from './project-chat-view';
 import {
   activeSessionIdsForProject,
   loadProjectChatLayoutState,
@@ -96,6 +101,8 @@ import {
   type SshWorkspaceSetupRequest,
 } from './ssh-workspace-grants-card';
 import { SshWorkspaceLoadGuard, sshWorkspacesForProject } from './ssh-workspace-load-guard';
+import type { SshResourceUiState } from './ssh-resource-summary';
+import { SshResourceRequestGuard, sshResourceProfilesKey } from './ssh-resource-request-guard';
 import { Connection, describeError } from './ui-primitives';
 import {
   applyUserPreferences,
@@ -117,6 +124,7 @@ type CodexConnectionState = 'checking' | 'ready' | 'auth-required' | 'unavailabl
 type AppSurface = 'workspace' | 'settings';
 
 type ProjectDraft = Readonly<{ name: string; repository?: string | undefined }>;
+const SSH_RESOURCE_POLL_INTERVAL_MS = 15_000;
 
 const literatureAdapter: LiteratureViewAdapter = {
   list: (input) => window.gosu.literature.list(input),
@@ -152,6 +160,47 @@ function isCodexUnavailableError(error: unknown) {
 
 function hasErrorCode(error: unknown, code: string) {
   return error instanceof Error && error.message.includes(code);
+}
+
+function sshResourceSnapshotFromState(state: SshResourceUiState | undefined) {
+  return state && state.phase !== 'idle' ? state.snapshot : undefined;
+}
+
+function markSshResourcesLoading(
+  current: Readonly<Record<string, SshResourceUiState>>,
+  connectionIds: readonly string[],
+) {
+  const next = { ...current };
+  for (const connectionId of connectionIds) {
+    const snapshot = sshResourceSnapshotFromState(current[connectionId]);
+    next[connectionId] = snapshot ? { phase: 'loading', snapshot } : { phase: 'loading' };
+  }
+  return next;
+}
+
+function markSshResourcesFailed(
+  current: Readonly<Record<string, SshResourceUiState>>,
+  connectionIds: readonly string[],
+) {
+  const next = { ...current };
+  for (const connectionId of connectionIds) {
+    const snapshot = sshResourceSnapshotFromState(current[connectionId]);
+    next[connectionId] = snapshot ? { phase: 'error', snapshot } : { phase: 'error' };
+  }
+  return next;
+}
+
+function mergeSshResourceSnapshots(
+  current: Readonly<Record<string, SshResourceUiState>>,
+  snapshots: readonly SshServerResourceSnapshot[],
+) {
+  const next = { ...current };
+  for (const snapshot of snapshots) {
+    const existing = sshResourceSnapshotFromState(current[snapshot.connectionId]);
+    if (existing && Date.parse(existing.capturedAt) > Date.parse(snapshot.capturedAt)) continue;
+    next[snapshot.connectionId] = { phase: 'ready', snapshot };
+  }
+  return next;
 }
 
 function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabId {
@@ -214,6 +263,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     state: 'checking' | 'ready' | 'unavailable';
   }>({ projectId: null, state: 'checking' });
   const [sshTestStatus, setSshTestStatus] = useState<Record<string, string>>({});
+  const [sshResourceStates, setSshResourceStates] = useState<Record<string, SshResourceUiState>>(
+    {},
+  );
   const [sshWorkspaceSetupRequest, setSshWorkspaceSetupRequest] =
     useState<SshWorkspaceSetupRequest | null>(null);
   const [sshApprovals, setSshApprovals] = useState<readonly SshApprovalRequest[]>([]);
@@ -247,6 +299,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const vaultSelectionGeneration = useRef(0);
   const sshWorkspaceLoadGuard = useRef(new SshWorkspaceLoadGuard());
   const sshWorkspaceSetupRequestIdRef = useRef(0);
+  const sshResourceRequestsRef = useRef(new Map<string, Promise<void>>());
+  const sshResourceRequestGuardRef = useRef(new SshResourceRequestGuard());
   const projectNavigationRef = useRef(projectNavigation);
   const activeChatSessionIdsRef = useRef(activeChatSessionIds);
   const projectChatSessionsRef = useRef(projectChatSessions);
@@ -269,6 +323,27 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const activeProjectSshWorkspaces = sshWorkspacesForProject(
     sshWorkspaces,
     activeProject?.id ?? null,
+  );
+  const activeProjectSshServers: readonly ProjectChatSshServer[] = activeProjectSshWorkspaces.map(
+    ({ connection, grant }) => ({
+      connectionId: connection.id,
+      label: connection.label,
+      canonicalRoot: grant.canonicalRoot,
+      permissionMode: grant.permissionMode,
+      resourceState: sshResourceStates[connection.id] ?? { phase: 'idle' },
+    }),
+  );
+  const registeredSshConnectionIdsKey = sshConnections
+    .map((connection) => connection.id)
+    .sort()
+    .join(',');
+  const registeredSshResourceProfilesKey = sshResourceProfilesKey(sshConnections);
+  const activeProjectSshConnectionIdsKey = activeProjectSshWorkspaces
+    .map((workspace) => workspace.connection.id)
+    .sort()
+    .join(',');
+  const activeProjectSshResourceProfilesKey = sshResourceProfilesKey(
+    activeProjectSshWorkspaces.map(({ connection }) => connection),
   );
   const activeProjectSshWorkspaceState =
     sshWorkspaceRuntime.projectId === (activeProject?.id ?? null)
@@ -457,6 +532,14 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
 
   const loadSshConnections = async () => {
     const connections = await window.gosu.ssh.listConnections();
+    const invalidatedIds = sshResourceRequestGuardRef.current.reconcile(connections);
+    if (invalidatedIds.length > 0) {
+      setSshResourceStates((current) => {
+        const next = { ...current };
+        for (const connectionId of invalidatedIds) delete next[connectionId];
+        return next;
+      });
+    }
     setSshConnections(connections);
     setSshConnectionState('ready');
     return connections;
@@ -479,6 +562,134 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       return [];
     }
   };
+
+  const refreshSshResource = useCallback((connectionId: string, force = true) => {
+    const token = sshResourceRequestGuardRef.current.token(connectionId);
+    if (!token) return Promise.resolve();
+    const requestKey = `connection:${connectionId}:${token.generation}`;
+    const activeRequest = sshResourceRequestsRef.current.get(requestKey);
+    if (activeRequest) return activeRequest;
+
+    setSshResourceStates((current) => markSshResourcesLoading(current, [connectionId]));
+    const request = (async () => {
+      try {
+        const snapshot = await window.gosu.ssh.readResourceSnapshot(
+          force ? { connectionId, force: true } : { connectionId },
+        );
+        setSshResourceStates((current) =>
+          sshResourceRequestGuardRef.current.accepts(token)
+            ? mergeSshResourceSnapshots(current, [snapshot])
+            : current,
+        );
+      } catch {
+        setSshResourceStates((current) =>
+          sshResourceRequestGuardRef.current.accepts(token)
+            ? markSshResourcesFailed(current, [connectionId])
+            : current,
+        );
+      } finally {
+        sshResourceRequestsRef.current.delete(requestKey);
+      }
+    })();
+    sshResourceRequestsRef.current.set(requestKey, request);
+    return request;
+  }, []);
+
+  const refreshProjectSshResources = useCallback(
+    (projectId: string, connectionIds: readonly string[], force = false) => {
+      const requestScopes = new Map(
+        [...new Set(connectionIds)].sort().flatMap((connectionId) => {
+          const token = sshResourceRequestGuardRef.current.token(connectionId);
+          return token ? ([[connectionId, token]] as const) : [];
+        }),
+      );
+      const scopedConnectionIds = [...requestScopes.keys()];
+      if (scopedConnectionIds.length === 0) return Promise.resolve();
+      const requestKey = `project:${projectId}:${scopedConnectionIds
+        .map(
+          (connectionId) => `${connectionId}:${requestScopes.get(connectionId)?.generation ?? 0}`,
+        )
+        .join(',')}`;
+      const activeRequest = sshResourceRequestsRef.current.get(requestKey);
+      if (activeRequest) return activeRequest;
+
+      setSshResourceStates((current) => markSshResourcesLoading(current, scopedConnectionIds));
+      const request = (async () => {
+        try {
+          const snapshots = await window.gosu.ssh.listProjectResourceSnapshots(
+            force ? { projectId, force: true } : { projectId },
+          );
+          setSshResourceStates((current) => {
+            const allowedIds = new Set(scopedConnectionIds);
+            const isCurrent = (connectionId: string) => {
+              const token = requestScopes.get(connectionId);
+              return token !== undefined && sshResourceRequestGuardRef.current.accepts(token);
+            };
+            const scopedSnapshots = snapshots.filter(
+              (snapshot) =>
+                allowedIds.has(snapshot.connectionId) && isCurrent(snapshot.connectionId),
+            );
+            const returnedIds = new Set(scopedSnapshots.map((snapshot) => snapshot.connectionId));
+            const missingIds = scopedConnectionIds.filter(
+              (connectionId) => isCurrent(connectionId) && !returnedIds.has(connectionId),
+            );
+            return markSshResourcesFailed(
+              mergeSshResourceSnapshots(current, scopedSnapshots),
+              missingIds,
+            );
+          });
+        } catch {
+          setSshResourceStates((current) => {
+            const currentIds = scopedConnectionIds.filter((connectionId) => {
+              const token = requestScopes.get(connectionId);
+              return token !== undefined && sshResourceRequestGuardRef.current.accepts(token);
+            });
+            return markSshResourcesFailed(current, currentIds);
+          });
+        } finally {
+          sshResourceRequestsRef.current.delete(requestKey);
+        }
+      })();
+      sshResourceRequestsRef.current.set(requestKey, request);
+      return request;
+    },
+    [],
+  );
+
+  const refreshProjectSshResource = useCallback(
+    (projectId: string, connectionId: string, force = true) => {
+      const token = sshResourceRequestGuardRef.current.token(connectionId);
+      if (!token) return Promise.resolve();
+      const requestKey = `project:${projectId}:connection:${connectionId}:${token.generation}`;
+      const activeRequest = sshResourceRequestsRef.current.get(requestKey);
+      if (activeRequest) return activeRequest;
+
+      setSshResourceStates((current) => markSshResourcesLoading(current, [connectionId]));
+      const request = (async () => {
+        try {
+          const snapshot = await window.gosu.ssh.readProjectResourceSnapshot(
+            force ? { projectId, connectionId, force: true } : { projectId, connectionId },
+          );
+          setSshResourceStates((current) =>
+            sshResourceRequestGuardRef.current.accepts(token)
+              ? mergeSshResourceSnapshots(current, [snapshot])
+              : current,
+          );
+        } catch {
+          setSshResourceStates((current) =>
+            sshResourceRequestGuardRef.current.accepts(token)
+              ? markSshResourcesFailed(current, [connectionId])
+              : current,
+          );
+        } finally {
+          sshResourceRequestsRef.current.delete(requestKey);
+        }
+      })();
+      sshResourceRequestsRef.current.set(requestKey, request);
+      return request;
+    },
+    [],
+  );
 
   useEffect(() => {
     void loadWorkspace()
@@ -527,6 +738,47 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       setWorkspaceError(describeError(error));
     });
   }, [activeProject?.id]);
+
+  useEffect(() => {
+    if (activeSurface !== 'workspace' || (activeTab !== 'connections' && activeTab !== 'chat')) {
+      return;
+    }
+    const connectionIdsKey =
+      activeTab === 'connections'
+        ? registeredSshConnectionIdsKey
+        : activeProjectSshConnectionIdsKey;
+    const connectionIds = connectionIdsKey ? connectionIdsKey.split(',') : [];
+    if (connectionIds.length === 0) return;
+
+    const refreshVisibleResources = () => {
+      if (document.hidden) return;
+      if (activeTab === 'connections') {
+        for (const connectionId of connectionIds) void refreshSshResource(connectionId, false);
+        return;
+      }
+      if (activeProject) {
+        void refreshProjectSshResources(activeProject.id, connectionIds, false);
+      }
+    };
+    const handleVisibilityChange = () => refreshVisibleResources();
+    refreshVisibleResources();
+    const interval = window.setInterval(refreshVisibleResources, SSH_RESOURCE_POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [
+    activeProject?.id,
+    activeProjectSshConnectionIdsKey,
+    activeProjectSshResourceProfilesKey,
+    activeSurface,
+    activeTab,
+    refreshProjectSshResources,
+    refreshSshResource,
+    registeredSshConnectionIdsKey,
+    registeredSshResourceProfilesKey,
+  ]);
 
   useEffect(
     () =>
@@ -1538,7 +1790,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   registeredConnectionCount: sshConnections.length,
                   grantedWorkspaceCount: activeProjectSshWorkspaces.length,
                 }}
+                sshServers={activeProjectSshServers}
                 onOpenSshWorkspaceSetup={() => openSshWorkspaceSetup()}
+                onRefreshSshResource={(connectionId) =>
+                  refreshProjectSshResource(activeProject.id, connectionId, true)
+                }
                 activeSessionIds={activeSessionIdsForProject(
                   activeProject.id,
                   activeChatSessionKeys,
@@ -1933,6 +2189,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   );
                 }}
                 onTestSshConnection={testSshConnection}
+                sshResourceStates={sshResourceStates}
+                onRefreshSshResource={(connectionId) => refreshSshResource(connectionId, true)}
+                onOpenSshWorkspaceSetup={(connectionId) => openSshWorkspaceSetup(connectionId)}
                 activeProject={activeProject ?? null}
                 sshWorkspaces={activeProjectSshWorkspaces}
                 sshWorkspaceSetupRequest={sshWorkspaceSetupRequest}

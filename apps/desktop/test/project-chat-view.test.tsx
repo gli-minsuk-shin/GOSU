@@ -17,6 +17,7 @@ import {
   shouldPersistProjectChatScrollPosition,
 } from '../src/renderer/src/project-chat-view';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
+import type { SshServerResourceSnapshot } from '../src/shared/ssh-contracts';
 import { describeError } from '../src/renderer/src/ui-primitives';
 import {
   isProjectChatNearBottom,
@@ -31,6 +32,34 @@ const project = {
   createdAt: '2026-08-04T00:00:00.000Z',
   updatedAt: '2026-08-04T00:00:00.000Z',
 } as const;
+
+const linkedServerSnapshot: SshServerResourceSnapshot = {
+  schemaVersion: 1,
+  connectionId: '99999999-9999-4999-8999-999999999999',
+  capturedAt: '2026-08-06T01:02:03.000Z',
+  status: 'ready',
+  cpu: { state: 'available', utilizationPercent: 63, logicalProcessorCount: 64 },
+  memory: {
+    state: 'available',
+    usedBytes: 32 * 1024 ** 3,
+    totalBytes: 128 * 1024 ** 3,
+    utilizationPercent: 25,
+  },
+  gpu: {
+    state: 'available',
+    devices: [
+      {
+        index: 0,
+        name: 'RTX fixture',
+        utilizationPercent: 81,
+        memoryUsedBytes: 8 * 1024 ** 3,
+        memoryTotalBytes: 24 * 1024 ** 3,
+        temperatureC: 69,
+      },
+    ],
+  },
+  issues: [],
+};
 
 describe('advanced Project Chat controls', () => {
   it('describes bounded attachment failures without exposing local details', () => {
@@ -414,6 +443,58 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('<span>Files</span>');
     expect(html).not.toContain('Attach PDF files');
     expect(html).toContain('Edit in Settings…');
+  });
+
+  it('shows only the project-scoped linked server resources in every chat session shell', () => {
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={false}
+        models={[]}
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+        sshAccess={{ state: 'ready', registeredConnectionCount: 2, grantedWorkspaceCount: 1 }}
+        sshServers={[
+          {
+            connectionId: linkedServerSnapshot.connectionId,
+            label: 'Granted GPU server',
+            canonicalRoot: '/workspace/agentic-study',
+            permissionMode: 'workspace',
+            resourceState: { phase: 'ready', snapshot: linkedServerSnapshot },
+          },
+        ]}
+        onRefreshSshResource={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Linked server resources');
+    expect(html).toContain('Visible only to Agentic study');
+    expect(html).toContain('Granted GPU server');
+    expect(html).toContain('/workspace/agentic-study');
+    expect(html).toContain('CPU utilization 63%');
+    expect(html).toContain('GPU 0 utilization 81%');
+    expect(html).toContain('Refresh usage');
+    expect(html).not.toContain('SSH server registered — project access is not granted yet');
   });
 
   it('keeps the composer disabled until the default session finishes hydrating', () => {

@@ -14,6 +14,7 @@ import type {
 } from '../../shared/ssh-workspace-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import { SshConnectionsCard } from './ssh-connections-card';
+import type { SshResourceUiState } from './ssh-resource-summary';
 import { SshWorkspaceGrantsCard, type SshWorkspaceSetupRequest } from './ssh-workspace-grants-card';
 import { Boundary, CardHead, RuntimeCard } from './ui-primitives';
 
@@ -50,6 +51,9 @@ export function ConnectionsView({
   onUpdateSshConnection,
   onRemoveSshConnection,
   onTestSshConnection,
+  sshResourceStates = {},
+  onRefreshSshResource = async () => undefined,
+  onOpenSshWorkspaceSetup = () => undefined,
   activeProject,
   sshWorkspaces,
   onCreateSshWorkspace,
@@ -81,6 +85,9 @@ export function ConnectionsView({
   onUpdateSshConnection: (input: UpdateSshConnectionInput) => Promise<unknown>;
   onRemoveSshConnection: (input: RemoveSshConnectionInput) => Promise<unknown>;
   onTestSshConnection: (connectionId: string) => Promise<unknown>;
+  sshResourceStates?: Readonly<Record<string, SshResourceUiState>>;
+  onRefreshSshResource?: (connectionId: string) => Promise<unknown>;
+  onOpenSshWorkspaceSetup?: (connectionId: string) => void;
   activeProject: ProjectRecord | null;
   sshWorkspaces: readonly GrantedRemoteWorkspace[];
   onCreateSshWorkspace: (input: CreateRemoteWorkspaceGrantInput) => Promise<unknown>;
@@ -100,6 +107,11 @@ export function ConnectionsView({
         onUpdate={onUpdateSshConnection}
         onRemove={onRemoveSshConnection}
         onTest={onTestSshConnection}
+        activeProject={activeProject}
+        linkedConnectionIds={new Set(sshWorkspaces.map((workspace) => workspace.connection.id))}
+        resourceStates={sshResourceStates}
+        onRefreshResource={onRefreshSshResource}
+        onOpenWorkspaceSetup={onOpenSshWorkspaceSetup}
       />
       <RuntimeCard runtime={runtime} />
       <article className="card codex-card">

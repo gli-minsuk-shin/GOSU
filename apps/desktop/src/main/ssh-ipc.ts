@@ -4,6 +4,9 @@ import {
   CancelSshScopeInputSchema,
   CreateSshConnectionInputSchema,
   ImportSshCommandInputSchema,
+  ListProjectSshResourceSnapshotsInputSchema,
+  ReadProjectSshResourceSnapshotInputSchema,
+  ReadSshResourceSnapshotInputSchema,
   RemoveSshConnectionInputSchema,
   ResolveSshApprovalInputSchema,
   TestSshConnectionInputSchema,
@@ -68,6 +71,32 @@ export function registerSshIpc(
       input,
       TestSshConnectionInputSchema,
       (command) => service.testConnection(command),
+      reportUnexpected,
+    ),
+  );
+  register(SSH_IPC_CHANNELS.readResourceSnapshot, (input) =>
+    withInput(
+      input,
+      ReadSshResourceSnapshotInputSchema,
+      (command) => service.readResourceSnapshot(command),
+      reportUnexpected,
+    ),
+  );
+  register(SSH_IPC_CHANNELS.readProjectResourceSnapshot, (input) =>
+    withActiveProjectInput(
+      input,
+      ReadProjectSshResourceSnapshotInputSchema,
+      workspace,
+      (command) => service.readProjectResourceSnapshot(command),
+      reportUnexpected,
+    ),
+  );
+  register(SSH_IPC_CHANNELS.listProjectResourceSnapshots, (input) =>
+    withActiveProjectInput(
+      input,
+      ListProjectSshResourceSnapshotsInputSchema,
+      workspace,
+      (command) => service.listProjectResourceSnapshots(command),
       reportUnexpected,
     ),
   );
