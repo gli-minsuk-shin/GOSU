@@ -400,6 +400,12 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   유일한 등록 server를 자동 선택한다. 사용자는 그곳에서 exact remote project root·permission mode·risk를
   별도로 확인해야 하며 UI가 이 승인 단계를 자동 통과하지 않는다. 같은 form과 기존 grant row의 명시적
   `Test server`는 transport/auth 상태만 확인하고 project grant나 command 승인을 대신하지 않는다.
+- Connections surface는 global SSH registry의 등록 server card를 Runtime·Codex·project grant보다 먼저
+  렌더링하며, card 안에서도 실제 server row 또는 empty state를 onboarding·import·alias 등록 form보다 먼저
+  DOM에 배치한다. 이 순서는 first-glance 상태 확인과 keyboard·screen-reader 탐색을 일치시키기 위한 UI
+  ordering일 뿐이며 global transport profile 등록 → project-scoped workspace grant → command별 `Allow once`
+  경계를 합치거나 완화하지 않는다. 기존 import·Test·Edit·Remove와 Project Chat CTA의 grant form
+  focus·신규 server preselection은 그대로 유지한다.
 - Connections의 별도 importer는 전체 `ssh -p ... user@host -L ...` 문자열을 shell이나 LLM으로 실행하지
   않고 bounded parser로 분해한다. `ssh`, `-p`, `-l`, 하나의 destination과 loopback-only `-L`만 허용하고
   remote command, quoting·expansion, key/config/proxy/jump, reverse/dynamic forwarding, TTY와 agent forwarding

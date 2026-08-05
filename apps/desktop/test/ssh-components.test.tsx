@@ -2,6 +2,7 @@ import { Children, isValidElement, type ReactElement, type ReactNode } from 'rea
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
+import { ConnectionsView } from '../src/renderer/src/connections-view';
 import { SshApprovalCenter } from '../src/renderer/src/ssh-approval-center';
 import {
   SshConnectionsCard,
@@ -93,6 +94,75 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('Allow once');
     expect(html).toContain('Diagnostics grants permit bounded Git inspection');
     expect(html).toContain('Raw shells, inline eval, interactive shells');
+
+    const serverRowIndex = html.indexOf('Fixture training server');
+    expect(serverRowIndex).toBeGreaterThan(-1);
+    expect(serverRowIndex).toBeLessThan(html.indexOf('How to add an SSH server'));
+    expect(serverRowIndex).toBeLessThan(html.indexOf('Paste an SSH connection command'));
+    expect(serverRowIndex).toBeLessThan(html.indexOf('Parse and register'));
+    expect(serverRowIndex).toBeLessThan(html.indexOf('Register server'));
+  });
+
+  it('puts the registered server inventory first on the Connections surface', () => {
+    const operation = vi.fn(async () => undefined);
+    const html = renderToStaticMarkup(
+      <ConnectionsView
+        runtime={null}
+        models={[]}
+        selectedModel={null}
+        status="Disconnected"
+        busy={false}
+        apiKeyMode={false}
+        apiKey=""
+        onSelectedModel={vi.fn()}
+        onRefresh={vi.fn()}
+        onReconnect={vi.fn()}
+        onToggleApiKey={vi.fn()}
+        onApiKey={vi.fn()}
+        onLoginChatGpt={vi.fn()}
+        onLoginApiKey={vi.fn()}
+        onLogout={vi.fn()}
+        sshConnections={[connection]}
+        sshBusy={false}
+        sshTestStatus={{ [connection.id]: 'Ready' }}
+        onCreateSshConnection={operation}
+        onImportSshCommand={operation}
+        onUpdateSshConnection={operation}
+        onRemoveSshConnection={operation}
+        onTestSshConnection={operation}
+        activeProject={null}
+        sshWorkspaces={[]}
+        onCreateSshWorkspace={operation}
+        onUpdateSshWorkspace={operation}
+        onRemoveSshWorkspace={operation}
+      />,
+    );
+
+    const serverCardIndex = html.indexOf('Registered SSH servers');
+    expect(serverCardIndex).toBeGreaterThan(-1);
+    expect(serverCardIndex).toBeLessThan(html.indexOf('LOCAL RUNTIME'));
+    expect(serverCardIndex).toBeLessThan(html.indexOf('Local Codex'));
+    expect(serverCardIndex).toBeLessThan(html.indexOf('Remote workspace access'));
+  });
+
+  it('keeps the empty server inventory above registration controls', () => {
+    const html = renderToStaticMarkup(
+      <SshConnectionsCard
+        connections={[]}
+        busy={false}
+        onCreate={vi.fn()}
+        onImport={vi.fn()}
+        onUpdate={vi.fn()}
+        onRemove={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    const emptyStateIndex = html.indexOf('No SSH servers registered');
+    expect(emptyStateIndex).toBeGreaterThan(-1);
+    expect(emptyStateIndex).toBeLessThan(html.indexOf('How to add an SSH server'));
+    expect(emptyStateIndex).toBeLessThan(html.indexOf('Parse and register'));
+    expect(emptyStateIndex).toBeLessThan(html.indexOf('Register server'));
   });
 
   it('accepts only a concrete SSH config Host alias', () => {

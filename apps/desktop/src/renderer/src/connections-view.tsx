@@ -90,6 +90,16 @@ export function ConnectionsView({
 }) {
   return (
     <section className="connection-grid">
+      <SshConnectionsCard
+        connections={sshConnections}
+        busy={sshBusy}
+        testStatus={sshTestStatus}
+        onCreate={onCreateSshConnection}
+        onImport={onImportSshCommand}
+        onUpdate={onUpdateSshConnection}
+        onRemove={onRemoveSshConnection}
+        onTest={onTestSshConnection}
+      />
       <RuntimeCard runtime={runtime} />
       <article className="card codex-card">
         <CardHead title="Local Codex" detail={status} />
@@ -170,16 +180,6 @@ export function ConnectionsView({
           selected model is used by Project chat and every turn records the resolved model locally.
         </div>
       </article>
-      <SshConnectionsCard
-        connections={sshConnections}
-        busy={sshBusy}
-        testStatus={sshTestStatus}
-        onCreate={onCreateSshConnection}
-        onImport={onImportSshCommand}
-        onUpdate={onUpdateSshConnection}
-        onRemove={onRemoveSshConnection}
-        onTest={onTestSshConnection}
-      />
       <SshWorkspaceGrantsCard
         project={activeProject}
         connections={sshConnections}
