@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+import { AGENT_ADD_ON_CHANNELS } from '../shared/agent-addon-channels';
+import type {
+  AgentAddOnId,
+  AgentAddOnStatus,
+  AgentAddOnStatusRequest,
+} from '../shared/agent-addon-contracts';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { GIT_WORKSPACE_IPC_CHANNELS } from '../shared/git-workspace-channels';
 import type {
@@ -200,6 +206,12 @@ const api = {
   },
   runtime: {
     readiness: () => ipcRenderer.invoke('gosu:runtime:readiness'),
+  },
+  agentAddOns: {
+    status: (ids: readonly AgentAddOnId[]) =>
+      ipcRenderer.invoke(AGENT_ADD_ON_CHANNELS.status, {
+        ids,
+      } satisfies AgentAddOnStatusRequest) as Promise<readonly AgentAddOnStatus[]>,
   },
   codex: {
     status: () => ipcRenderer.invoke('gosu:codex:status'),

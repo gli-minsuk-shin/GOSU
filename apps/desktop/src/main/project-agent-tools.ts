@@ -49,7 +49,7 @@ const MAX_NOTE_CHARACTERS_PER_CALL = 24_000;
 const MAX_NOTE_CHARACTERS_PER_SESSION = 96_000;
 const MAX_TOOL_RESULT_CHARACTERS = 48_000;
 const SOURCE_FINALIZATION_WAIT_MS = 100;
-const LITERATURE_DYNAMIC_TOOL_TIMEOUT_MS = 65_000;
+const LITERATURE_DYNAMIC_TOOL_TIMEOUT_MS = 125_000;
 const SSH_DYNAMIC_TOOL_TIMEOUT_MS = 155_000;
 
 const ReadWorkspaceArgumentsSchema = z
@@ -87,7 +87,7 @@ const SearchLiteratureArgumentsSchema = z
     query: z.string().trim().min(1).max(1_000),
     fromYear: z.number().int().min(1000).max(3000).optional(),
     toYear: z.number().int().min(1000).max(3000).optional(),
-    limit: z.number().int().min(1).max(LITERATURE_MAX_SEARCH_RESULTS).optional(),
+    limit: z.number().int().min(3).max(LITERATURE_MAX_SEARCH_RESULTS).optional(),
   })
   .strict()
   .superRefine((input, context) => {
@@ -198,14 +198,14 @@ const SEARCH_LITERATURE_TOOL = {
   type: 'function',
   name: 'search_literature',
   description:
-    'Search bounded Crossref bibliographic metadata and additively merge the normalized results into the active GOSU project Literature table. Use only when the user explicitly asks to search for or add literature. Project identity is injected by GOSU and cannot be selected by the model. DOI and same-provider record ID are strong identities; metadata fingerprint is only a fallback for records without a strong identity, so distinct DOI works are preserved. Ambiguous candidates are skipped and reported without changing saved papers. This tool does not read paper full text, PDFs, or abstracts; never present its metadata-only results as verified paper evidence.',
+    "Run GOSU's fixed bounded three-layer literature discovery policy and additively merge the selected metadata into the active project Literature table. Core & canonical balances relevance with established citation impact, Rising & recent uses age-adjusted estimated momentum, and Broad discovery preserves recall. Verified author impact is only a capped supporting signal; the model cannot supply names, weights, provider URLs, or override the policy. Use only when the user explicitly asks to search for or add literature. Project identity is injected by GOSU. Ambiguous identities are skipped without changing saved papers. This tool reads bibliographic metadata, not paper full text, PDFs, or abstracts; never present discovery ranks as verified evidence quality.",
   inputSchema: {
     type: 'object',
     properties: {
       query: { type: 'string', minLength: 1, maxLength: 1_000 },
       fromYear: { type: 'integer', minimum: 1000, maximum: 3000 },
       toYear: { type: 'integer', minimum: 1000, maximum: 3000 },
-      limit: { type: 'integer', minimum: 1, maximum: LITERATURE_MAX_SEARCH_RESULTS },
+      limit: { type: 'integer', minimum: 3, maximum: LITERATURE_MAX_SEARCH_RESULTS },
     },
     required: ['query'],
     additionalProperties: false,
@@ -886,14 +886,22 @@ export class ProjectAgentToolSession {
         { projectId: this.dependencies.projectId, ...parsed.data },
         signal,
       );
+      const coverage = receipt.coverage ?? receipt.run.coverage;
       return jsonResult({
         schemaVersion: 1,
-        provider: 'crossref',
+        provider: receipt.run.provider,
+        policyId: receipt.run.policyId ?? 'crossref-basic',
+        policyVersion: receipt.run.policyVersion ?? 1,
         metadataOnly: true,
         persisted: true,
         runId: receipt.run.id,
         query: receipt.run.query,
         foundCount: receipt.foundCount,
+        retrievedCount: receipt.retrievedCount ?? receipt.run.retrievedCount ?? receipt.foundCount,
+        selectedCount: receipt.selectedCount ?? receipt.run.selectedCount ?? receipt.foundCount,
+        tierCounts: receipt.tierCounts ??
+          receipt.run.tierCounts ?? { core: 0, rising: 0, broad: 0 },
+        ...(coverage ? { coverage } : {}),
         newCount: receipt.newCount,
         updatedCount: receipt.updatedCount,
         unchangedCount: receipt.unchangedCount,

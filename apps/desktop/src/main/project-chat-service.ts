@@ -229,19 +229,86 @@ function nativeExecutionKind(
 }
 
 const LITERATURE_SUBJECT_PATTERN =
-  /(?:\bliterature\b|\bpapers?\b|\bpublications?\b|\breferences?\b|\bbibliograph(?:y|ies|ic)\b|논문|문헌|참고문헌|레퍼런스)/iu;
-const LITERATURE_ACTION_PATTERN =
-  /(?:\bsearch(?:ing)?\b|\bfind\b|\blook\s+up\b|\bdiscover\b|\badd\b|\bsave\b|\binsert\b|\bimport\b|\bcollect\b|\bsurvey\b|\breview\b|\bupdate\b|검색|찾|조사|추가|넣|저장|수집|정리|업데이트|갱신|리뷰)/iu;
+  /(?:\bliterature\b|\bpapers?\b|\bpublications?\b|\breferences?\b|\bbibliograph(?:y|ies|ic)\b|논문|문헌|참고문헌|레퍼런스)/giu;
+const LITERATURE_ENGLISH_ACTION_PATTERN =
+  /(?:^|\bplease\s+|\b(?:can|could|would|will)\s+you\s+|\bi\s+(?:want|need)\s+you\s+to\s+|\b(?:let['’]?s|help\s+me|go\s+ahead\s+and|then)\s+)(?<verb>search|find|look\s+up|discover|add|insert)\b/giu;
+const LITERATURE_KOREAN_ACTION_PATTERN =
+  /(?<verb>\b(?:search|find|add|insert)(?:해서|하고|하여|해줘|해주세요)|(?:검색|발굴)(?:해서|하고|하여|해줘|해주세요|해라|하라|하십시오|할래|해줄래|해)|찾(?:아서|아줘|아라|으세요|아)|추가(?:해서|하고|하여|해줘|해주세요|하라|하십시오|해)|넣(?:어서|어줘|어라|으세요|어))(?=$|[\s,.!?])/giu;
 const LITERATURE_DENIAL_PATTERN =
   /(?:\bdo\s+not\b|\bdon't\b|\bwithout\s+(?:searching|finding|adding|saving|importing)\b|검색\s*(?:하지\s*마|하지\s*말|없이)|찾지\s*마|추가하지\s*마|넣지\s*마)/iu;
+const LITERATURE_INTERVENING_TARGET_PATTERN =
+  /(?:\b(?:board|tasks?|notes?|settings?)\b|보드|태스크|작업|노트|설정)/iu;
+const LITERATURE_LOCAL_SUBJECT_SUFFIX_PATTERN =
+  /^\s*(?:(?:search\s+)?(?:settings?|policy|tools?|feature|table|section|library)\b|(?:in|from|on)\s+(?:the\s+)?(?:board|tasks?|notes?|literature)\b|(?:검색\s*)?(?:설정|정책|도구|기능|표|테이블|섹션|라이브러리)|(?:보드|태스크|작업|노트|문헌)(?:에서|의))/iu;
+const LITERATURE_ADD_TARGET_PREFIX_PATTERN =
+  /(?:\b(?:add|insert)\b.{0,32}\b(?:to|into)\s+(?:the\s+)?$|(?:추가|넣).{0,24}(?:에|로)\s*$)/iu;
+const LITERATURE_EXPLICIT_LIBRARY_TARGET_PATTERN =
+  /(?:\b(?:to|into)\s+(?:the\s+)?(?:literature|bibliograph(?:y|ies))(?:\s+(?:table|section|library))?\b|(?:Literature|문헌|참고문헌|레퍼런스)(?:\s*(?:표|테이블|섹션|라이브러리))?(?:에|로))/iu;
+const LITERATURE_LOCAL_DOCUMENT_SCOPE_PATTERN =
+  /(?:\b(?:search|find|look\s+up)\b.{0,160}\b(?:in|from|inside|within|of)\s+(?:the\s+)?(?:(?:this|attached|current)\s+)?(?:paper|pdf|file|document)\b|\b(?:search|find|look\s+up)\s+(?:the\s+)?(?:this|attached|current)\s+(?:paper|pdf|file|document)\b|(?:(?:첨부|이|현재)\s*)?(?:논문|PDF|파일|문서)(?:에서|안에서|내에서|의).{0,128}(?:\b(?:search|find|look\s+up)\b|(?:검색|찾)(?:해서|하고|하여|해줘|해주세요|해라|하라|하십시오|할래|해줄래|해|아서|아줘|아라|으세요|아)))/iu;
+const LITERATURE_LOCAL_WORKSPACE_SCOPE_PATTERN =
+  /(?:\b(?:search|find|look\s+up)\b.{0,160}\b(?:in|from|inside|within|of)\s+(?:the\s+)?(?:local\s+notes|repository(?=$|[,.!?]|\s+(?:for|about|on|under|inside|within|and)\b)|manuscript(?=$|[,.!?]|\s+(?:for|about|on|under|inside|within|and)\b)|literature(?:\s+(?:table|section|library))?|source\s+code(?=$|[,.!?])|(?:this|current|the)\s+(?:code|source|function))\b|\b(?:search|find|look\s+up)\b.{0,96}\breferences?\s+to\s+(?:this|the|current)\s+function\b|(?:로컬\s*노트|저장소|리포지토리|원고|코드|소스|함수)(?:에서|안에서|내에서|의|에).{0,128}(?:\b(?:search|find|look\s+up)\b|(?:검색|찾)(?:해서|하고|하여|해줘|해주세요|해라|하라|하십시오|할래|해줄래|해|아서|아줘|아라|으세요|아)))/iu;
+const LITERATURE_EXISTING_COLLECTION_SCOPE_PATTERN =
+  /(?:\b(?:search|find|look\s+up)\b.{0,180}\b(?:(?:my|our|the|these|those)\s+)?(?:(?:already\s+)?(?:saved|stored|collected|imported)|existing)\s+(?:papers?|publications?|references?|literature|bibliograph(?:y|ies))\b|\b(?:search|find|look\s+up)\b.{0,180}\b(?:papers?|publications?|references?)\s+(?:already\s+)?(?:saved|stored|collected|imported)(?:\s+by\s+GOSU)?\b|\b(?:search|find|look\s+up)\b.{0,180}\b(?:papers?|publications?|references?|literature|bibliograph(?:y|ies))\s+(?:already\s+)?(?:in|from|inside|within)\s+(?:(?:my|our|the|this|current\s+project|project)\s+)?(?:library|collection|literature\s+(?:table|section)|GOSU)\b|\b(?:search|find|look\s+up)\b.{0,180}\b(?:this|the|current)\s+project(?:'s)?\s+(?:papers?|references?|library|literature)\b|(?:(?:내|우리|이\s*프로젝트(?:의)?|현재\s*프로젝트(?:의)?|기존|저장된|이미\s*저장(?:한|된))\s*)?(?:논문|문헌|참고문헌|레퍼런스|라이브러리|컬렉션)(?:에서|안에서|내에서|중에서|의).{0,128}(?:\b(?:search|find|look\s+up)\b|(?:검색|찾)(?:해서|하고|하여|해줘|해주세요|해라|하라|하십시오|할래|해줄래|해|아서|아줘|아라|으세요|아)))/iu;
+
+type LiteratureCommandAction = Readonly<{
+  start: number;
+  end: number;
+  verb: string;
+}>;
+
+function literatureCommandActions(message: string) {
+  return [
+    ...message.matchAll(LITERATURE_ENGLISH_ACTION_PATTERN),
+    ...message.matchAll(LITERATURE_KOREAN_ACTION_PATTERN),
+  ].map<LiteratureCommandAction>((match) => {
+    const verb = match.groups?.verb ?? '';
+    const verbOffset = match[0].toLocaleLowerCase().lastIndexOf(verb.toLocaleLowerCase());
+    const start = match.index + Math.max(0, verbOffset);
+    return { start, end: start + verb.length, verb };
+  });
+}
+
+function actionDirectlyTargetsLiterature(message: string, action: LiteratureCommandAction) {
+  if (/^find$/iu.test(action.verb) && /^\s+out\b/iu.test(message.slice(action.end))) return false;
+  for (const subject of message.matchAll(LITERATURE_SUBJECT_PATTERN)) {
+    const subjectStart = subject.index;
+    const subjectEnd = subjectStart + subject[0].length;
+    const distance = Math.max(action.start, subjectStart) - Math.min(action.end, subjectEnd);
+    if (distance > 200) continue;
+    const between = message.slice(
+      Math.min(action.end, subjectEnd),
+      Math.max(action.start, subjectStart),
+    );
+    if (LITERATURE_INTERVENING_TARGET_PATTERN.test(between)) continue;
+    const suffix = message.slice(subjectEnd, subjectEnd + 64);
+    if (LITERATURE_LOCAL_SUBJECT_SUFFIX_PATTERN.test(suffix)) {
+      const prefix = message.slice(Math.max(0, subjectStart - 48), subjectStart);
+      if (!LITERATURE_ADD_TARGET_PREFIX_PATTERN.test(prefix)) continue;
+    }
+    if (/^(?:add|insert|추가|넣)/iu.test(action.verb)) {
+      const commandWindow = message.slice(
+        Math.max(0, Math.min(action.start, subjectStart) - 32),
+        Math.min(message.length, Math.max(action.end, subjectEnd) + 160),
+      );
+      if (!LITERATURE_EXPLICIT_LIBRARY_TARGET_PATTERN.test(commandWindow)) continue;
+    }
+    return true;
+  }
+  return false;
+}
 
 export function explicitlyAuthorizesLiteratureSearch(message: string) {
   const normalized = message.normalize('NFKC').trim();
   return (
     normalized.length > 0 &&
     !LITERATURE_DENIAL_PATTERN.test(normalized) &&
-    LITERATURE_SUBJECT_PATTERN.test(normalized) &&
-    LITERATURE_ACTION_PATTERN.test(normalized)
+    !LITERATURE_LOCAL_DOCUMENT_SCOPE_PATTERN.test(normalized) &&
+    !LITERATURE_LOCAL_WORKSPACE_SCOPE_PATTERN.test(normalized) &&
+    !LITERATURE_EXISTING_COLLECTION_SCOPE_PATTERN.test(normalized) &&
+    literatureCommandActions(normalized).some((action) =>
+      actionDirectlyTargetsLiterature(normalized, action),
+    )
   );
 }
 

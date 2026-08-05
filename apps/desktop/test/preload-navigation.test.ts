@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { AGENT_ADD_ON_CHANNELS } from '../src/shared/agent-addon-channels';
 import { APP_NAVIGATION_CHANNELS } from '../src/shared/app-navigation-channels';
+import type { AgentAddOnId } from '../src/shared/agent-addon-contracts';
 
 const electron = vi.hoisted(() => {
   const exposed: unknown[][] = [];
@@ -33,6 +35,9 @@ type NavigationApi = {
   };
   vault: {
     current: () => Promise<unknown>;
+  };
+  agentAddOns: {
+    status: (ids: readonly AgentAddOnId[]) => Promise<unknown>;
   };
 };
 
@@ -115,5 +120,16 @@ describe('preload app navigation bridge', () => {
 
     await expect(api.vault.current()).resolves.toEqual(selection);
     expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith('gosu:vault:current');
+  });
+
+  it('exposes add-on detection through a fixed read-only status channel', async () => {
+    const statuses = [{ id: 'openclaw', state: 'not_detected', evidence: null, connected: false }];
+    electron.ipcRenderer.invoke.mockResolvedValueOnce(statuses);
+
+    await expect(api.agentAddOns.status(['openclaw'])).resolves.toEqual(statuses);
+    expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(AGENT_ADD_ON_CHANNELS.status, {
+      ids: ['openclaw'],
+    });
+    expect(Object.keys(api.agentAddOns)).toEqual(['status']);
   });
 });

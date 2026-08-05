@@ -16,6 +16,8 @@ import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
 import { SshEventSchema } from '../shared/ssh-contracts';
 import { ReadVaultAttachmentInputSchema } from '../shared/vault-contracts';
 import { buildMacApplicationMenuTemplate } from './application-menu';
+import { registerAgentAddOnIpc } from './agent-addon-ipc';
+import { createAgentAddOnRegistry } from './agent-addon-service';
 import { CodexAppServer } from './codex-app-server';
 import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
@@ -23,7 +25,9 @@ import { registerGitWorkspaceIpc } from './git-workspace-ipc';
 import { GitWorkspaceService } from './git-workspace-service';
 import { LiteratureAiService } from './literature-ai-service';
 import { CrossrefLiteratureProvider } from './literature-crossref';
+import { BalancedLiteratureProvider } from './literature-discovery';
 import { registerLiteratureIpc } from './literature-ipc';
+import { SemanticScholarLiteratureProvider } from './literature-semantic-scholar';
 import { LiteratureService } from './literature-service';
 import { createLiteratureTransferPlatform } from './literature-transfer-platform';
 import { registerProjectChatAttachmentIpc } from './project-chat-attachment-ipc';
@@ -61,6 +65,7 @@ const codex = new CodexAppServer({
   sharedAuthFile: () => (sharedCodexHome ? join(sharedCodexHome, 'auth.json') : undefined),
   clientVersion: () => app.getVersion(),
 });
+const agentAddOns = createAgentAddOnRegistry();
 const database = new LocalDatabase();
 const vault = new VaultAccess();
 const ssh = new SshConnectionService(database, createSshCommandRunner());
@@ -85,11 +90,16 @@ const projectChatAttachments = new ProjectChatAttachmentService({
 const literature = new LiteratureService({
   storage: database,
   workspace,
-  provider: new CrossrefLiteratureProvider({
-    contactEmail: process.env.GOSU_CROSSREF_MAILTO?.trim() || undefined,
-    userAgent:
-      process.env.GOSU_CROSSREF_USER_AGENT?.trim() ||
-      `GOSU/${app.getVersion()} (+https://github.com/gli-minsuk-shin/GOSU)`,
+  provider: new BalancedLiteratureProvider({
+    semanticScholar: new SemanticScholarLiteratureProvider({
+      apiKey: process.env.GOSU_SEMANTIC_SCHOLAR_API_KEY?.trim() || undefined,
+    }),
+    crossref: new CrossrefLiteratureProvider({
+      contactEmail: process.env.GOSU_CROSSREF_MAILTO?.trim() || undefined,
+      userAgent:
+        process.env.GOSU_CROSSREF_USER_AGENT?.trim() ||
+        `GOSU/${app.getVersion()} (+https://github.com/gli-minsuk-shin/GOSU)`,
+    }),
   }),
   transfer: createLiteratureTransferPlatform(() => mainWindow),
 });
@@ -298,6 +308,10 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     literature,
     literatureAi,
     reportUnexpectedWorkspaceError,
+  );
+  registerAgentAddOnIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    agentAddOns,
   );
 
   handle('gosu:runtime:readiness', async () =>

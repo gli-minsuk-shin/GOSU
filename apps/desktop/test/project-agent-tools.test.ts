@@ -262,6 +262,14 @@ class FakeProjectLiterature implements ProjectAgentLiterature {
           completedAt,
         },
         foundCount: 5,
+        coverage: {
+          source: 'crossref',
+          availableSignals: ['relevance'],
+          degradationReasons: [
+            'crossref-citation-lane-unavailable',
+            'crossref-recent-lane-unavailable',
+          ],
+        },
         newCount: 3,
         updatedCount: 1,
         unchangedCount: 0,
@@ -541,11 +549,24 @@ describe('ProjectAgentToolSession', () => {
     expect(resultPayload(result)).toEqual({
       schemaVersion: 1,
       provider: 'crossref',
+      policyId: 'crossref-basic',
+      policyVersion: 1,
       metadataOnly: true,
       persisted: true,
       runId: LITERATURE_RUN_ID,
       query: 'tabular foundation models',
       foundCount: 5,
+      retrievedCount: 5,
+      selectedCount: 5,
+      tierCounts: { core: 0, rising: 0, broad: 0 },
+      coverage: {
+        source: 'crossref',
+        availableSignals: ['relevance'],
+        degradationReasons: [
+          'crossref-citation-lane-unavailable',
+          'crossref-recent-lane-unavailable',
+        ],
+      },
       newCount: 3,
       updatedCount: 1,
       unchangedCount: 0,
@@ -669,6 +690,8 @@ describe('ProjectAgentToolSession', () => {
     for (const arguments_ of [
       { query: '' },
       { query: 'x', fromYear: 2027, toYear: 2026 },
+      { query: 'x', limit: 1 },
+      { query: 'x', limit: 2 },
       { query: 'x', limit: 51 },
       { query: 'x', provider: 'another-origin' },
     ]) {

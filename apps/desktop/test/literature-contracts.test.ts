@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   LiteratureAiAnnotationUpdateSchema,
+  LiteratureDiscoveryCoverageSchema,
   LiteratureRecordSchema,
   LiteratureSearchInputSchema,
   LiteratureSearchReceiptSchema,
@@ -118,6 +119,53 @@ describe('literature IPC contracts', () => {
       conflictCount: 0,
       run: { conflictCount: 0, conflicts: [] },
     });
+  });
+
+  it('keeps discovery coverage bounded, typed, and duplicate-free', () => {
+    expect(
+      LiteratureDiscoveryCoverageSchema.parse({
+        source: 'semantic-scholar',
+        availableSignals: ['relevance', 'citation-authority', 'author-impact'],
+        degradationReasons: ['recent-lane-unavailable'],
+      }),
+    ).toEqual({
+      source: 'semantic-scholar',
+      availableSignals: ['relevance', 'citation-authority', 'author-impact'],
+      degradationReasons: ['recent-lane-unavailable'],
+    });
+    expect(
+      LiteratureDiscoveryCoverageSchema.parse({
+        source: 'combined',
+        availableSignals: ['relevance', 'citation-authority', 'recent-momentum'],
+        degradationReasons: [
+          'semantic-scholar-insufficient-results',
+          'author-metrics-partial',
+          'crossref-supplement-unavailable',
+        ],
+      }),
+    ).toEqual({
+      source: 'combined',
+      availableSignals: ['relevance', 'citation-authority', 'recent-momentum'],
+      degradationReasons: [
+        'semantic-scholar-insufficient-results',
+        'author-metrics-partial',
+        'crossref-supplement-unavailable',
+      ],
+    });
+    expect(
+      LiteratureDiscoveryCoverageSchema.safeParse({
+        source: 'semantic-scholar',
+        availableSignals: ['relevance', 'relevance'],
+        degradationReasons: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      LiteratureDiscoveryCoverageSchema.safeParse({
+        source: 'unknown-provider',
+        availableSignals: ['relevance'],
+        degradationReasons: ['silent-fallback'],
+      }).success,
+    ).toBe(false);
   });
 
   it('exposes only bounded public error codes across the preload boundary', () => {

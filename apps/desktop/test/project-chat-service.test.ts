@@ -50,7 +50,7 @@ function dynamicToolDelivery(
 }
 
 describe('Literature command authorization', () => {
-  it('recognizes direct Korean and English requests but denies unrelated or negative text', () => {
+  it('recognizes explicit Korean and English search, find, and add requests', () => {
     expect(
       explicitlyAuthorizesLiteratureSearch(
         'Tabular foundation model을 literature search해서 Literature section에 넣어줘.',
@@ -59,8 +59,145 @@ describe('Literature command authorization', () => {
     expect(explicitlyAuthorizesLiteratureSearch('관련 논문을 찾아서 문헌 표에 추가해줘.')).toBe(
       true,
     );
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Find recent papers and add them to Literature.'),
+    ).toBe(true);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('I want you to search for papers on causal inference.'),
+    ).toBe(true);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Could you help me find papers and add them?'),
+    ).toBe(true);
+    expect(explicitlyAuthorizesLiteratureSearch('고전 논문과 최신 문헌을 검색해줘.')).toBe(true);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Can you search the web for papers about TabPFN?'),
+    ).toBe(true);
+    expect(explicitlyAuthorizesLiteratureSearch('Add this paper to Literature.')).toBe(true);
+    expect(
+      explicitlyAuthorizesLiteratureSearch(
+        'Please search for tabular models and add them to the Literature section.',
+      ),
+    ).toBe(true);
+    expect(explicitlyAuthorizesLiteratureSearch('Find evidence synthesis papers.')).toBe(true);
+    expect(explicitlyAuthorizesLiteratureSearch('Find document retrieval papers.')).toBe(true);
+    expect(explicitlyAuthorizesLiteratureSearch('Find claim verification papers.')).toBe(true);
+    expect(explicitlyAuthorizesLiteratureSearch('Find citation analysis papers.')).toBe(true);
+    expect(explicitlyAuthorizesLiteratureSearch('Find current papers on tabular models.')).toBe(
+      true,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('Search current literature on TabPFN.')).toBe(true);
+    expect(explicitlyAuthorizesLiteratureSearch('Find papers related to this paper.')).toBe(true);
+    expect(
+      explicitlyAuthorizesLiteratureSearch("Find papers about this project's research topic."),
+    ).toBe(true);
+    expect(explicitlyAuthorizesLiteratureSearch('Find papers about source code analysis.')).toBe(
+      true,
+    );
+  });
+
+  it('does not authorize search for review, organization, or update-only requests', () => {
     expect(explicitlyAuthorizesLiteratureSearch('Summarize the attached PDF.')).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Review the papers already saved in Literature.'),
+    ).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Organize the existing references by research topic.'),
+    ).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Update the existing literature table metadata.'),
+    ).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('기존 문헌을 주제별로 정리하고 리뷰해줘.')).toBe(
+      false,
+    );
     expect(explicitlyAuthorizesLiteratureSearch("Don't search papers; explain the metric.")).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('How does literature search work?')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('Explain the literature search policy.')).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('문헌 검색 정책을 설명해줘.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('논문 검색이 어떻게 작동하는지 알려줘.')).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('Can you explain how to search literature?')).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('What tools do you use to search papers?')).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('Teach me to search literature effectively.')).toBe(
+      false,
+    );
+    expect(
+      explicitlyAuthorizesLiteratureSearch(
+        'Could you help me find out how literature search works?',
+      ),
+    ).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch(
+        'Can you find out whether the Literature search is working?',
+      ),
+    ).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Please find the Literature search settings.'),
+    ).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Please search the existing Literature table.'),
+    ).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('Please search my saved papers for TabPFN.')).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('Search the papers already saved by GOSU.')).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('Find papers already in the library.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('Find literature already in GOSU.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('Find papers already in GOSU.')).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch("Search this project's saved references for TabPFN."),
+    ).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('저장된 논문에서 TabPFN을 찾아줘.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('이 프로젝트의 문헌에서 찾아줘.')).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Can you add a note about papers to the Board?'),
+    ).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Can you find a task about papers in the Board?'),
+    ).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Can you find citations in the attached paper?'),
+    ).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('Please find a quote in this paper.')).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Can you search the attached PDF for references?'),
+    ).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('Can you find equations in the paper?')).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('첨부 논문에서 인용문 찾아줘.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('이 논문에서 수식을 찾아줘.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('첨부 PDF에서 참고문헌 찾아줘.')).toBe(false);
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Please find the methods section in this paper.'),
+    ).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('Search this paper for ablation results.')).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('Find the conclusion in the attached paper.')).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('Find the title of this paper.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('이 논문에서 결과를 찾아줘.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('Find papers in Local Notes.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('Find references in the Repository.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('Search references in the manuscript.')).toBe(
+      false,
+    );
+    expect(
+      explicitlyAuthorizesLiteratureSearch('Find references to this function in the repository.'),
+    ).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch('코드에서 이 함수의 레퍼런스를 찾아줘.')).toBe(
       false,
     );
   });
@@ -1597,6 +1734,10 @@ describe('ProjectChatService', () => {
       dynamicToolDelivery(),
     );
     expect(result.success).toBe(true);
+    expect(codex.dynamicToolTimeouts[0]).toEqual([
+      { namespace: 'gosu_project', tool: 'search_literature', timeoutMs: 125_000 },
+      { namespace: 'gosu_project', tool: 'run_ssh_workspace_command', timeoutMs: 155_000 },
+    ]);
     expect(JSON.parse(result.contentItems[0]!.text)).toMatchObject({
       provider: 'crossref',
       metadataOnly: true,
@@ -1632,11 +1773,11 @@ describe('ProjectChatService', () => {
     await vi.waitFor(() => expect(storage.snapshot(projectB.id).messages).toHaveLength(2));
   });
 
-  it('does not grant Literature mutation to an unrelated or explicitly denied user turn', async () => {
+  it('does not grant Literature mutation to a review-only or explicitly denied user turn', async () => {
     const { chat, codex, storage, projectA, projectB } = await fixture();
     const unrelated = await chat.send({
       projectId: projectA.id,
-      message: 'Summarize the attached evidence.',
+      message: 'Review and organize the papers already saved in Literature.',
       requestedModelId: null,
       reasoningOptionId: null,
     });

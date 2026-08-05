@@ -16,7 +16,39 @@ const optionalYearSchema = z.number().int().min(1000).max(3000).optional();
 const nullableText = (maximum: number) => boundedText(maximum).nullable();
 const topicSchema = boundedText(240);
 
-export const LiteratureProviderSchema = z.enum(['crossref', 'import']);
+export const LiteratureProviderSchema = z.enum(['crossref', 'semantic-scholar', 'import']);
+export const LiteratureSearchProviderSchema = z.enum(['crossref', 'balanced']);
+export const LiteratureDiscoveryTierSchema = z.enum(['core', 'rising', 'broad']);
+export const LiteratureDiscoveryPolicySchema = z.enum(['crossref-basic', 'balanced-three-layer']);
+export const LiteratureDiscoverySignalSchema = z.enum([
+  'relevance',
+  'citation-authority',
+  'recent-momentum',
+  'author-impact',
+]);
+export const LiteratureDiscoveryDegradationReasonSchema = z.enum([
+  'semantic-scholar-unavailable',
+  'semantic-scholar-no-eligible-results',
+  'semantic-scholar-insufficient-results',
+  'citation-lane-unavailable',
+  'recent-lane-unavailable',
+  'author-metrics-unavailable',
+  'author-metrics-partial',
+  'crossref-supplement-unavailable',
+  'crossref-citation-lane-unavailable',
+  'crossref-recent-lane-unavailable',
+]);
+export const LiteratureDiscoveryReasonSchema = z.enum([
+  'high-query-relevance',
+  'query-match-candidate',
+  'high-citation-impact',
+  'established-classic',
+  'prominent-author-signal',
+  'recent-publication',
+  'estimated-citation-momentum',
+  'influential-citation-signal',
+  'broad-recall',
+]);
 export const LiteratureReviewStatusSchema = z.enum([
   'unreviewed',
   'screening',
@@ -55,6 +87,63 @@ export const LiteratureManualAnnotationsSchema = z
   })
   .strict();
 
+export const LiteratureTierCountsSchema = z
+  .object({
+    core: z.number().int().nonnegative(),
+    rising: z.number().int().nonnegative(),
+    broad: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const LiteratureDiscoveryCoverageSchema = z
+  .object({
+    source: z.enum(['semantic-scholar', 'crossref', 'combined']),
+    availableSignals: z
+      .array(LiteratureDiscoverySignalSchema)
+      .min(1)
+      .max(4)
+      .refine((signals) => new Set(signals).size === signals.length, {
+        message: 'Discovery coverage signals must be unique',
+      }),
+    degradationReasons: z
+      .array(LiteratureDiscoveryDegradationReasonSchema)
+      .max(10)
+      .refine((reasons) => new Set(reasons).size === reasons.length, {
+        message: 'Discovery degradation reasons must be unique',
+      }),
+  })
+  .strict();
+
+const normalizedDiscoveryScore = z.number().finite().min(0).max(1);
+
+export const LiteratureRankingSignalsSchema = z
+  .object({
+    tier: LiteratureDiscoveryTierSchema,
+    matchedLayers: z.array(LiteratureDiscoveryTierSchema).min(1).max(3),
+    tierRank: z.number().int().positive().max(LITERATURE_MAX_SEARCH_RESULTS),
+    overallScore: normalizedDiscoveryScore,
+    relevanceScore: normalizedDiscoveryScore,
+    authorityScore: normalizedDiscoveryScore,
+    momentumScore: normalizedDiscoveryScore,
+    citationVelocityProxy: z.number().finite().nonnegative().nullable(),
+    influentialCitationCount: z.number().int().nonnegative().nullable(),
+    maxAuthorHIndex: z.number().int().nonnegative().nullable(),
+    reasons: z.array(LiteratureDiscoveryReasonSchema).min(1).max(8),
+    signalSources: z
+      .array(z.enum(['crossref', 'semantic-scholar']))
+      .min(1)
+      .max(2),
+  })
+  .strict();
+
+export const LiteratureDiscoverySummarySchema = LiteratureRankingSignalsSchema.extend({
+  searchRunId: uuidSchema,
+  query: boundedText(1_000),
+  policyId: LiteratureDiscoveryPolicySchema,
+  policyVersion: z.number().int().positive(),
+  classifiedAt: timestampSchema,
+}).strict();
+
 export const LiteratureRecordSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -81,6 +170,7 @@ export const LiteratureRecordSchema = z
     reviewStatus: LiteratureReviewStatusSchema,
     manualAnnotations: LiteratureManualAnnotationsSchema,
     aiAnnotations: LiteratureAiAnnotationsSchema.nullable(),
+    discovery: LiteratureDiscoverySummarySchema.nullable().optional(),
     annotationVersion: z.number().int().nonnegative(),
     version: z.number().int().positive(),
     createdAt: timestampSchema,
@@ -91,7 +181,7 @@ export const LiteratureRecordSchema = z
 export const LiteratureSearchConflictSchema = z
   .object({
     ordinal: z.number().int().min(1).max(LITERATURE_MAX_SEARCH_RESULTS),
-    provider: z.literal('crossref'),
+    provider: z.enum(['crossref', 'semantic-scholar']),
     providerRecordId: nullableText(2_048),
     doi: nullableText(512),
     fingerprint: sha256Schema,
@@ -106,13 +196,19 @@ export const LiteratureSearchRunSchema = z
     schemaVersion: z.literal(1),
     id: uuidSchema,
     projectId: uuidSchema,
-    provider: z.literal('crossref'),
+    provider: LiteratureSearchProviderSchema,
+    policyId: LiteratureDiscoveryPolicySchema.optional(),
+    policyVersion: z.number().int().positive().optional(),
     query: boundedText(1_000),
     fromYear: z.number().int().min(1000).max(3000).nullable(),
     toYear: z.number().int().min(1000).max(3000).nullable(),
     requestedLimit: z.number().int().min(1).max(LITERATURE_MAX_SEARCH_RESULTS),
     status: z.enum(['running', 'complete', 'failed', 'cancelled']),
     foundCount: z.number().int().nonnegative(),
+    retrievedCount: z.number().int().nonnegative().optional(),
+    selectedCount: z.number().int().nonnegative().optional(),
+    tierCounts: LiteratureTierCountsSchema.optional(),
+    coverage: LiteratureDiscoveryCoverageSchema.optional(),
     newCount: z.number().int().nonnegative(),
     updatedCount: z.number().int().nonnegative(),
     unchangedCount: z.number().int().nonnegative(),
@@ -153,6 +249,10 @@ export const LiteratureSearchReceiptSchema = z
     updatedCount: z.number().int().nonnegative(),
     unchangedCount: z.number().int().nonnegative(),
     conflictCount: z.number().int().nonnegative().default(0),
+    retrievedCount: z.number().int().nonnegative().optional(),
+    selectedCount: z.number().int().nonnegative().optional(),
+    tierCounts: LiteratureTierCountsSchema.optional(),
+    coverage: LiteratureDiscoveryCoverageSchema.optional(),
   })
   .strict();
 
@@ -341,6 +441,18 @@ export const LITERATURE_IPC_ERROR_CODES = [
 ] as const;
 
 export type LiteratureProvider = z.infer<typeof LiteratureProviderSchema>;
+export type LiteratureSearchProvider = z.infer<typeof LiteratureSearchProviderSchema>;
+export type LiteratureDiscoveryTier = z.infer<typeof LiteratureDiscoveryTierSchema>;
+export type LiteratureDiscoveryPolicy = z.infer<typeof LiteratureDiscoveryPolicySchema>;
+export type LiteratureDiscoverySignal = z.infer<typeof LiteratureDiscoverySignalSchema>;
+export type LiteratureDiscoveryDegradationReason = z.infer<
+  typeof LiteratureDiscoveryDegradationReasonSchema
+>;
+export type LiteratureDiscoveryCoverage = z.infer<typeof LiteratureDiscoveryCoverageSchema>;
+export type LiteratureDiscoveryReason = z.infer<typeof LiteratureDiscoveryReasonSchema>;
+export type LiteratureTierCounts = z.infer<typeof LiteratureTierCountsSchema>;
+export type LiteratureRankingSignals = z.infer<typeof LiteratureRankingSignalsSchema>;
+export type LiteratureDiscoverySummary = z.infer<typeof LiteratureDiscoverySummarySchema>;
 export type LiteratureReviewStatus = z.infer<typeof LiteratureReviewStatusSchema>;
 export type LiteratureTransferFormat = z.infer<typeof LiteratureTransferFormatSchema>;
 export type LiteratureAiProvenance = z.infer<typeof LiteratureAiProvenanceSchema>;

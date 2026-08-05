@@ -1,4 +1,10 @@
 import type { ProjectChatSession } from '../../shared/project-chat-contracts';
+import {
+  PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH,
+  PROJECT_CHAT_SESSION_RAIL_MAX_WIDTH,
+  PROJECT_CHAT_SESSION_RAIL_MIN_WIDTH,
+} from './project-chat-session-state';
+import { ResizeHandle } from './resize-handle';
 
 export function ProjectChatSessionRail({
   sessions,
@@ -10,6 +16,8 @@ export function ProjectChatSessionRail({
   onSelect,
   onCreate,
   onRename,
+  width = PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH,
+  onWidthChange = () => undefined,
 }: {
   sessions: readonly ProjectChatSession[];
   selectedSessionId: string | null;
@@ -20,6 +28,8 @@ export function ProjectChatSessionRail({
   onSelect: (sessionId: string) => void;
   onCreate: () => void;
   onRename?: (session: ProjectChatSession) => void;
+  width?: number;
+  onWidthChange?: (width: number) => void;
 }) {
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const selectedSession = selectedSessionId ? byId.get(selectedSessionId) : undefined;
@@ -80,6 +90,14 @@ export function ProjectChatSessionRail({
           );
         })}
       </div>
+      <ResizeHandle
+        className="project-chat-session-resize-handle"
+        label="Resize project chat sessions sidebar"
+        value={width}
+        min={PROJECT_CHAT_SESSION_RAIL_MIN_WIDTH}
+        max={PROJECT_CHAT_SESSION_RAIL_MAX_WIDTH}
+        onChange={onWidthChange}
+      />
     </aside>
   );
 }

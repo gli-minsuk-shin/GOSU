@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CrossrefLiteratureProvider } from '../src/main/literature-crossref';
+import type { LiteratureDiscoveryProvider } from '../src/main/literature-discovery';
 import {
   LiteratureService,
   type LiteratureServiceError,
@@ -15,6 +16,7 @@ import type { WorkspaceService } from '../src/main/workspace-service';
 import type {
   LiteratureAiAnnotationUpdate,
   LiteratureAiProvenance,
+  LiteratureDiscoveryCoverage,
   LiteratureRecord,
   LiteratureSearchRun,
 } from '../src/shared/literature-contracts';
@@ -285,7 +287,7 @@ function service(
   storage: MemoryLiteratureStorage,
   options: {
     workspace?: WorkspaceService;
-    provider?: CrossrefLiteratureProvider;
+    provider?: LiteratureDiscoveryProvider;
     transfer?: LiteratureTransferPlatform;
   } = {},
 ) {
@@ -343,10 +345,56 @@ describe('LiteratureService', () => {
       projectId: PROJECT_ID,
       fromYear: 2020,
       toYear: 2026,
-      requestedLimit: 25,
+      requestedLimit: 50,
       status: 'complete',
     });
     expect(JSON.stringify(storage.candidates)).not.toContain('abstract');
+  });
+
+  it('persists and returns the discovery signal coverage used by Project Chat receipts', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const complete = vi.spyOn(storage, 'completeLiteratureSearch');
+    const coverage: LiteratureDiscoveryCoverage = {
+      source: 'semantic-scholar',
+      availableSignals: ['relevance', 'citation-authority'],
+      degradationReasons: ['recent-lane-unavailable', 'author-metrics-unavailable'],
+    };
+    const discoveryProvider: LiteratureDiscoveryProvider = {
+      providerId: 'balanced',
+      policyId: 'balanced-three-layer',
+      policyVersion: 1,
+      search: vi.fn(async () => ({
+        candidates: [
+          {
+            provider: 'semantic-scholar' as const,
+            providerId: 'coverage-fixture',
+            fingerprint: 'b'.repeat(64),
+            title: 'Coverage fixture',
+            authors: ['Ada Researcher'],
+            topics: [],
+          },
+        ],
+        retrievedCount: 4,
+        selectedCount: 1,
+        tierCounts: { core: 0, rising: 0, broad: 1 },
+        coverage,
+      })),
+    };
+
+    const result = await service(storage, { provider: discoveryProvider }).search({
+      projectId: PROJECT_ID,
+      query: 'discovery coverage',
+    });
+
+    expect(result.coverage).toEqual(coverage);
+    expect(result.run.coverage).toEqual(coverage);
+    expect(complete).toHaveBeenCalledWith(
+      PROJECT_ID,
+      result.run.id,
+      expect.any(Array),
+      NOW.toISOString(),
+      expect.objectContaining({ coverage }),
+    );
   });
 
   it('cancels an externally aborted search without committing candidates', async () => {

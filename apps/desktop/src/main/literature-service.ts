@@ -22,6 +22,7 @@ import {
   type DeleteLiteratureRecordReceipt,
   type LiteratureAiAnnotationUpdate,
   type LiteratureAiProvenance,
+  type LiteratureDiscoveryCoverage,
   type LiteratureExportReceipt,
   type LiteratureExportRequest,
   type LiteratureImportReceipt,
@@ -36,11 +37,12 @@ import {
 } from '../shared/literature-contracts';
 import type { WorkspaceService } from './workspace-service';
 import { parseLiteratureBibtex, serializeLiteratureBibtex } from './literature-bibtex';
+import { LiteratureProviderError, type LiteratureProviderCandidate } from './literature-crossref';
 import {
-  CrossrefLiteratureProvider,
-  LiteratureProviderError,
-  type LiteratureProviderCandidate,
-} from './literature-crossref';
+  BalancedLiteratureProvider,
+  type LiteratureDiscoveryProvider,
+  type LiteratureProviderSearchResult,
+} from './literature-discovery';
 import { LiteratureStorageError } from './literature-storage-error';
 import {
   LiteratureTransferError,
@@ -53,6 +55,12 @@ import {
 import type { LiteratureTransferPlatform } from './literature-transfer-platform';
 
 type MaybePromise<T> = T | Promise<T>;
+
+type LiteratureDiscoveryPersistence = Omit<
+  LiteratureProviderSearchResult,
+  'candidates' | 'coverage'
+> &
+  Readonly<{ coverage?: LiteratureDiscoveryCoverage }>;
 
 type StoredAiUpdate = LiteratureAiAnnotationUpdate &
   Readonly<{ provenance: LiteratureAiProvenance }>;
@@ -129,6 +137,7 @@ export interface LiteratureStorage {
     runId: string,
     candidates: readonly LiteratureProviderCandidate[],
     completedAt: string,
+    discovery?: LiteratureDiscoveryPersistence,
   ): MaybePromise<{
     foundCount: number;
     newCount: number;
@@ -182,7 +191,7 @@ export class LiteratureServiceError extends Error {
 type LiteratureServiceOptions = Readonly<{
   storage: LiteratureStorage;
   workspace: WorkspaceService;
-  provider?: CrossrefLiteratureProvider;
+  provider?: LiteratureDiscoveryProvider;
   transfer: LiteratureTransferPlatform;
   now?: () => Date;
 }>;
@@ -190,7 +199,7 @@ type LiteratureServiceOptions = Readonly<{
 export class LiteratureService {
   private readonly storage: LiteratureStorage;
   private readonly workspace: WorkspaceService;
-  private readonly provider: CrossrefLiteratureProvider;
+  private readonly provider: LiteratureDiscoveryProvider;
   private readonly transfer: LiteratureTransferPlatform;
   private readonly now: () => Date;
   private readonly activeSearches = new Set<AbortController>();
@@ -198,7 +207,7 @@ export class LiteratureService {
   constructor(options: LiteratureServiceOptions) {
     this.storage = options.storage;
     this.workspace = options.workspace;
-    this.provider = options.provider ?? new CrossrefLiteratureProvider();
+    this.provider = options.provider ?? new BalancedLiteratureProvider();
     this.transfer = options.transfer;
     this.now = options.now ?? (() => new Date());
   }
@@ -240,13 +249,18 @@ export class LiteratureService {
       schemaVersion: 1,
       id: randomUUID(),
       projectId: command.projectId,
-      provider: 'crossref',
+      provider: this.provider.providerId,
+      policyId: this.provider.policyId,
+      policyVersion: this.provider.policyVersion,
       query: command.query,
       fromYear: command.fromYear ?? null,
       toYear: command.toYear ?? null,
-      requestedLimit: command.limit ?? 25,
+      requestedLimit: command.limit ?? 50,
       status: 'running',
       foundCount: 0,
+      retrievedCount: 0,
+      selectedCount: 0,
+      tierCounts: { core: 0, rising: 0, broad: 0 },
       newCount: 0,
       updatedCount: 0,
       unchangedCount: 0,
@@ -264,20 +278,50 @@ export class LiteratureService {
     if (externalSignal?.aborted) controller.abort(externalSignal.reason);
     this.activeSearches.add(controller);
     try {
-      const candidates = await this.provider.search(command.query, run.requestedLimit, {
+      const providerResult = await this.provider.search(command.query, run.requestedLimit, {
         signal: controller.signal,
         fromYear: command.fromYear,
         toYear: command.toYear,
       });
+      const discovered = Array.isArray(providerResult)
+        ? {
+            candidates: providerResult as readonly LiteratureProviderCandidate[],
+            retrievedCount: providerResult.length,
+            selectedCount: providerResult.length,
+            tierCounts: { core: 0, rising: 0, broad: 0 },
+          }
+        : (providerResult as LiteratureProviderSearchResult);
+      const discoveryCoverage = 'coverage' in discovered ? discovered.coverage : undefined;
       await this.requireActiveProject(command.projectId);
       if (controller.signal.aborted) throw new LiteratureProviderError('cancelled');
       const receipt = await this.storage.completeLiteratureSearch(
         command.projectId,
         run.id,
-        candidates,
+        discovered.candidates,
         this.now().toISOString(),
+        {
+          retrievedCount: discovered.retrievedCount,
+          selectedCount: discovered.selectedCount,
+          tierCounts: discovered.tierCounts,
+          ...(discoveryCoverage ? { coverage: discoveryCoverage } : {}),
+        },
       );
-      return LiteratureSearchReceiptSchema.parse(receipt);
+      const persistedTierCounts = receipt.run.tierCounts ?? discovered.tierCounts;
+      const persistedCoverage = receipt.run.coverage ?? discoveryCoverage;
+      return LiteratureSearchReceiptSchema.parse({
+        ...receipt,
+        retrievedCount: discovered.retrievedCount,
+        selectedCount: discovered.selectedCount,
+        tierCounts: persistedTierCounts,
+        ...(persistedCoverage ? { coverage: persistedCoverage } : {}),
+        run: {
+          ...receipt.run,
+          retrievedCount: discovered.retrievedCount,
+          selectedCount: discovered.selectedCount,
+          tierCounts: persistedTierCounts,
+          ...(persistedCoverage ? { coverage: persistedCoverage } : {}),
+        },
+      });
     } catch (error) {
       const cancelled = error instanceof LiteratureProviderError && error.code === 'cancelled';
       await this.storage.failLiteratureSearch(
