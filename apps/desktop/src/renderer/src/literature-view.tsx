@@ -22,6 +22,18 @@ import type {
   UpdateLiteratureAnnotationsInput,
 } from '../../shared/literature-contracts';
 import { LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW } from '../../shared/literature-contracts';
+import {
+  BALANCED_LITERATURE_POLICY_ID,
+  BALANCED_LITERATURE_POLICY_VERSION,
+  LITERATURE_CANONICAL_MIN_AGE_YEARS,
+  LITERATURE_CORE_MIN_CITATIONS,
+  LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS,
+  LITERATURE_CORE_MIN_RELEVANCE_SCORE,
+  LITERATURE_RISING_MAX_AGE_YEARS,
+  LITERATURE_RISING_MIN_CITATIONS_PER_YEAR,
+  LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS,
+  LITERATURE_RISING_MIN_RELEVANCE_SCORE,
+} from '../../shared/literature-ranking-policy';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import {
   buildLiteratureTablePage,
@@ -103,6 +115,12 @@ export function moveLiteratureTable(
   element.scrollTo({ left, top, behavior: 'auto' });
 }
 
+export function resetLiteratureTableVerticalPosition(
+  element: Pick<HTMLElement, 'scrollLeft' | 'scrollTo'>,
+) {
+  element.scrollTo({ left: element.scrollLeft, top: 0, behavior: 'auto' });
+}
+
 const COLUMN_LABELS: ReadonlyArray<{
   key: LiteratureSortKey;
   label: string;
@@ -125,12 +143,12 @@ const DISCOVERY_LAYERS = [
   {
     id: 'core',
     title: 'Core & canonical',
-    description: 'Most relevant anchors, including established highly cited work.',
+    description: 'Eligibility-gated, high-impact query anchors and limited canonical classics.',
   },
   {
     id: 'rising',
     title: 'Rising & recent',
-    description: 'Recent work with strong relevance and estimated citation momentum.',
+    description: 'Relevant recent work that also clears the estimated momentum gate.',
   },
   {
     id: 'broad',
@@ -143,8 +161,102 @@ const DISCOVERY_LAYERS = [
   description: string;
 }>;
 
+const DISCOVERY_LAYER_FILTERS = [
+  {
+    id: 'all',
+    title: 'Total',
+    description: 'All saved papers, including Core, Rising, Broad, and imported / unclassified.',
+  },
+  ...DISCOVERY_LAYERS,
+] as const;
+
+type LiteratureLayerFilter = (typeof DISCOVERY_LAYER_FILTERS)[number]['id'];
+type LiteratureLayerCounts = Record<LiteratureLayerFilter | 'unclassified', number>;
+
+function isCurrentBalancedLiteraturePolicy(discovery: NonNullable<LiteratureRecord['discovery']>) {
+  return (
+    discovery.policyId === BALANCED_LITERATURE_POLICY_ID &&
+    discovery.policyVersion === BALANCED_LITERATURE_POLICY_VERSION
+  );
+}
+
+export function literatureCorePolicyCounts(records: readonly LiteratureRecord[]) {
+  return records.reduce(
+    (counts, record) => {
+      if (record.discovery?.tier !== 'core') return counts;
+      return isCurrentBalancedLiteraturePolicy(record.discovery)
+        ? { ...counts, current: counts.current + 1 }
+        : { ...counts, historicalOrOther: counts.historicalOrOther + 1 };
+    },
+    { current: 0, historicalOrOther: 0 },
+  );
+}
+
+export function literatureLayerCounts(
+  records: readonly Pick<LiteratureTableRecord, 'discoveryTier'>[],
+): LiteratureLayerCounts {
+  return records.reduce<LiteratureLayerCounts>(
+    (counts, record) => ({
+      ...counts,
+      [record.discoveryTier]: counts[record.discoveryTier] + 1,
+    }),
+    {
+      all: records.length,
+      core: 0,
+      rising: 0,
+      broad: 0,
+      unclassified: 0,
+    },
+  );
+}
+
 function discoveryLayerTitle(tier: LiteratureDiscoveryTier | 'unclassified') {
   return DISCOVERY_LAYERS.find(({ id }) => id === tier)?.title ?? 'Imported / unclassified';
+}
+
+export function literatureCoreGateSummary(record: LiteratureRecord) {
+  const discovery = record.discovery;
+  if (!discovery) return 'Not classified by a discovery search';
+  if (
+    discovery.policyId === BALANCED_LITERATURE_POLICY_ID &&
+    discovery.policyVersion < BALANCED_LITERATURE_POLICY_VERSION
+  ) {
+    return `Legacy policy v${discovery.policyVersion} — search again to apply v${BALANCED_LITERATURE_POLICY_VERSION}`;
+  }
+  if (!isCurrentBalancedLiteraturePolicy(discovery)) {
+    return `Policy ${discovery.policyId} v${discovery.policyVersion} — current v${BALANCED_LITERATURE_POLICY_VERSION} Core gate is not interpreted`;
+  }
+  const relevance = Math.round(discovery.relevanceScore * 100);
+  const citationEvidence =
+    record.citationCount === null ? 'citations unavailable' : `${record.citationCount} citations`;
+  const influentialEvidence =
+    discovery.influentialCitationCount === null
+      ? 'influential citations unavailable'
+      : `${discovery.influentialCitationCount} influential`;
+  const impactEvidence = `${citationEvidence} · ${influentialEvidence}`;
+  if (discovery.tier === 'core') {
+    return discovery.reasons.includes('established-classic')
+      ? `Passed · canonical citation-lane anchor · ${impactEvidence}`
+      : `Passed · relevance-lane rank ${relevance} ≥ ${Math.round(LITERATURE_CORE_MIN_RELEVANCE_SCORE * 100)} · ${impactEvidence}`;
+  }
+  if (discovery.reasons.includes('future-publication-year')) {
+    return 'Not passed · publication year is later than this search’s reference year';
+  }
+  if (discovery.reasons.includes('incomplete-bibliographic-metadata')) {
+    const missing = [
+      record.publishedYear === null ? 'year' : null,
+      record.authors.length === 0 ? 'author' : null,
+      !record.doi && !record.providerRecordId ? 'DOI/provider ID' : null,
+    ].filter((value): value is string => value !== null);
+    return `Not passed · missing ${missing.join(', ') || 'required bibliographic metadata'}`;
+  }
+  if (discovery.reasons.includes('core-impact-threshold-not-met')) {
+    return `Not passed · ${impactEvidence}; needs ≥${LITERATURE_CORE_MIN_CITATIONS} citations or ≥${LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS} influential`;
+  }
+  if (discovery.reasons.includes('core-relevance-threshold-not-met')) {
+    return `Not passed · relevance-lane rank ${relevance} < ${Math.round(LITERATURE_CORE_MIN_RELEVANCE_SCORE * 100)} and no canonical route`;
+  }
+  return 'Eligible, but outside this search’s bounded Core maximum';
 }
 
 function literatureCoverageSummary(coverage: LiteratureDiscoveryCoverage | undefined) {
@@ -369,7 +481,23 @@ export function LiteratureTable({
       element.removeEventListener('scroll', updateScrollAvailability);
       window.removeEventListener('resize', updateScrollAvailability);
     };
-  }, [result.page, result.rows.length, updateScrollAvailability]);
+  }, [result.page, result.rows.length, result.total, updateScrollAvailability]);
+
+  useLayoutEffect(() => {
+    const element = scrollRegionRef.current;
+    if (!element) return;
+    resetLiteratureTableVerticalPosition(element);
+    updateScrollAvailability();
+  }, [
+    page,
+    result.total,
+    sortDirection,
+    sortKey,
+    statusFilter,
+    textFilter,
+    tierFilter,
+    updateScrollAvailability,
+  ]);
 
   const handleScrollCommand = (command: LiteratureTableScrollCommand) => {
     const element = scrollRegionRef.current;
@@ -489,6 +617,9 @@ export function LiteratureTable({
                       <small>
                         {Math.round(record.importanceScore * 100)} / 100 · within search
                       </small>
+                    )}
+                    {record.record.discovery && (
+                      <small>{literatureCoreGateSummary(record.record)}</small>
                     )}
                   </div>
                 </td>
@@ -642,7 +773,7 @@ function LiteratureDetail({
           </p>
           <dl className="literature-ai-facts">
             <div>
-              <dt>Relevance</dt>
+              <dt>Relevance-lane rank (within search)</dt>
               <dd>{Math.round(record.discovery.relevanceScore * 100)}</dd>
             </div>
             <div>
@@ -652,6 +783,14 @@ function LiteratureDetail({
             <div>
               <dt>Estimated momentum</dt>
               <dd>{Math.round(record.discovery.momentumScore * 100)}</dd>
+            </div>
+            <div>
+              <dt>Influential citations</dt>
+              <dd>{record.discovery.influentialCitationCount ?? 'Unavailable'}</dd>
+            </div>
+            <div>
+              <dt>Core gate</dt>
+              <dd>{literatureCoreGateSummary(record)}</dd>
             </div>
             <div>
               <dt>Highest author h-index signal</dt>
@@ -820,17 +959,8 @@ export function LiteratureView({
   const selected = records.find((record) => record.id === selectedId) ?? null;
   const latestSearchCoverage = recentSearches[0]?.coverage;
   const tableRecords = useMemo(() => records.map(literatureViewRecord), [records]);
-  const layerCounts = useMemo(
-    () =>
-      tableRecords.reduce<Record<'core' | 'rising' | 'broad' | 'unclassified', number>>(
-        (counts, record) => ({
-          ...counts,
-          [record.discoveryTier]: counts[record.discoveryTier] + 1,
-        }),
-        { core: 0, rising: 0, broad: 0, unclassified: 0 },
-      ),
-    [tableRecords],
-  );
+  const layerCounts = useMemo(() => literatureLayerCounts(tableRecords), [tableRecords]);
+  const corePolicyCounts = useMemo(() => literatureCorePolicyCounts(records), [records]);
   const aiCandidates = useMemo(
     () => records.filter((record) => record.aiAnnotations === null).slice(0, 50),
     [records],
@@ -990,12 +1120,20 @@ export function LiteratureView({
           </button>
         </form>
         <p className="literature-search-help">
-          <strong>Fixed three-layer policy:</strong> Core balances relevance with established
-          citation impact; Rising age-normalizes early attention; Broad preserves recall for human
-          screening. Verified author metrics are a small supporting signal, never a name-based
-          allowlist. Each search is additive and matching identities update in place. A paper’s
-          saved layer comes from its latest matching search, and scores are only comparable within
-          the same search.
+          <strong>Fixed policy v{BALANCED_LITERATURE_POLICY_VERSION}:</strong> Core is a maximum,
+          never a quota. High-impact relevant papers must appear in the relevance lane with a
+          within-search normalized rank score of at least{' '}
+          {Math.round(LITERATURE_CORE_MIN_RELEVANCE_SCORE * 100)} and at least{' '}
+          {LITERATURE_CORE_MIN_CITATIONS} citations or {LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS}{' '}
+          influential citations. A limited canonical route uses the same impact floor, a citation
+          lane, and age of at least {LITERATURE_CANONICAL_MIN_AGE_YEARS} years. Rising needs
+          relevance of at least {Math.round(LITERATURE_RISING_MIN_RELEVANCE_SCORE * 100)},
+          publication within the latest {LITERATURE_RISING_MAX_AGE_YEARS + 1} calendar years, and at
+          least {LITERATURE_RISING_MIN_CITATIONS_PER_YEAR} citations/year or{' '}
+          {LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS} influential citation. Others remain Broad
+          for screening. Venue metadata and author h-index never promote a paper by themselves.
+          Existing v1 labels remain historical until that search is run again. Each search is
+          additive; scores are only comparable within the same search.
         </p>
         {recentSearches.length > 0 && (
           <div className="literature-recent-searches" aria-label="Recent literature searches">
@@ -1129,21 +1267,29 @@ export function LiteratureView({
             separate from human review notes.
           </p>
         )}
-        <div className="literature-layer-grid" aria-label="Latest matching search discovery layers">
-          {DISCOVERY_LAYERS.map((layer) => (
+        <div className="literature-layer-grid" role="group" aria-label="Discovery layer view">
+          {DISCOVERY_LAYER_FILTERS.map((layer) => (
             <button
               type="button"
               key={layer.id}
               className={`literature-layer-card ${layer.id}${tierFilter === layer.id ? ' active' : ''}`}
               aria-pressed={tierFilter === layer.id}
+              aria-controls="literature-evidence-table-panel"
+              aria-label={`${layer.title}, ${layerCounts[layer.id]} saved papers${layer.id === 'core' && corePolicyCounts.historicalOrOther > 0 ? `, ${corePolicyCounts.current} current v${BALANCED_LITERATURE_POLICY_VERSION} and ${corePolicyCounts.historicalOrOther} historical or other policy` : ''}`}
               onClick={() => {
-                setTierFilter((current) => (current === layer.id ? 'all' : layer.id));
+                setTierFilter(layer.id);
                 setPage(1);
               }}
             >
               <span>{layer.title}</span>
               <strong>{layerCounts[layer.id]}</strong>
               <small>{layer.description}</small>
+              {layer.id === 'core' && corePolicyCounts.historicalOrOther > 0 && (
+                <small>
+                  {corePolicyCounts.current} current v{BALANCED_LITERATURE_POLICY_VERSION} ·{' '}
+                  {corePolicyCounts.historicalOrOther} historical / other policy
+                </small>
+              )}
             </button>
           ))}
         </div>
@@ -1203,25 +1349,27 @@ export function LiteratureView({
           </label>
         </div>
 
-        {loading ? (
-          <div className="literature-loading" role="status">
-            Opening this project’s literature library…
-          </div>
-        ) : (
-          <LiteratureTable
-            records={tableRecords}
-            selectedId={selectedId}
-            textFilter={textFilter}
-            statusFilter={statusFilter}
-            tierFilter={tierFilter}
-            sortKey={sortKey}
-            sortDirection={sortDirection}
-            page={page}
-            onSelect={setSelectedId}
-            onSort={handleSort}
-            onPage={setPage}
-          />
-        )}
+        <div id="literature-evidence-table-panel" className="literature-evidence-table-panel">
+          {loading ? (
+            <div className="literature-loading" role="status">
+              Opening this project’s literature library…
+            </div>
+          ) : (
+            <LiteratureTable
+              records={tableRecords}
+              selectedId={selectedId}
+              textFilter={textFilter}
+              statusFilter={statusFilter}
+              tierFilter={tierFilter}
+              sortKey={sortKey}
+              sortDirection={sortDirection}
+              page={page}
+              onSelect={setSelectedId}
+              onSort={handleSort}
+              onPage={setPage}
+            />
+          )}
+        </div>
       </section>
 
       {selected && (

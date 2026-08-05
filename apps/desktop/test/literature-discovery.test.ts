@@ -150,6 +150,7 @@ describe('balanced literature discovery provider', () => {
 
     expect(provider.providerId).toBe('balanced');
     expect(provider.policyId).toBe('balanced-three-layer');
+    expect(provider.policyVersion).toBe(2);
     expect(crossref.search).toHaveBeenCalledTimes(3);
     expect(crossref.search).toHaveBeenNthCalledWith(
       1,
@@ -170,7 +171,8 @@ describe('balanced literature discovery provider', () => {
       expect.objectContaining({ sort: 'published', fromYear: 2023, toYear: 2026 }),
     );
     expect(result.selectedCount).toBe(9);
-    expect(result.tierCounts).toEqual({ core: 3, rising: 2, broad: 4 });
+    expect(result.tierCounts).toEqual({ core: 3, rising: 0, broad: 6 });
+    expect(result.candidates.some(({ discovery }) => discovery?.tier === 'rising')).toBe(false);
     expect(result.candidates.every(({ discovery }) => discovery !== undefined)).toBe(true);
     expect(result.coverage).toEqual({
       source: 'crossref',

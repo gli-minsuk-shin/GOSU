@@ -47,6 +47,10 @@ export const LiteratureDiscoveryReasonSchema = z.enum([
   'recent-publication',
   'estimated-citation-momentum',
   'influential-citation-signal',
+  'core-impact-threshold-not-met',
+  'core-relevance-threshold-not-met',
+  'incomplete-bibliographic-metadata',
+  'future-publication-year',
   'broad-recall',
 ]);
 export const LiteratureReviewStatusSchema = z.enum([
