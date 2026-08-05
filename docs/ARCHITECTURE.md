@@ -681,10 +681,18 @@ flowchart LR
   payload 없는 고정 IPC channel만 노출하며 Renderer load 전 menu 요청은 toggle parity로 합쳐 전달한다.
   Desktop wide layout은 sidebar DOM과 고정된 2열 grid placement를 유지한 채 첫 track만 280/252px에서
   0px로 전환하고 nav opacity·짧은 translate를 함께 적용한다. content를 다른 row/column으로 재배치하지
-  않고 `scrollbar-gutter: stable`로 scrollbar 출현에 따른 좌우 흔들림을 막는다. 접힌 nav는 transition
+  않고 `scrollbar-gutter: stable`로 scrollbar 출현에 따른 좌우 흔들림을 막는다. Renderer의
+  `html`·`body`·`#root`와 `desktop-shell`은 window viewport 높이에 고정하고 document overflow를
+  차단한다. 46px titlebar는 첫 grid row에 남고, 두 번째 row의 nav와 content만 각자의 세로 scroll을
+  소유하며 `overscroll-behavior: contain`으로 scroll chaining을 막는다. 따라서 Connections처럼 긴
+  surface도 GOSU window chrome이나 다른 pane을 밀어내지 않는다. 이 경계는 `position: sticky`에
+  의존하지 않으며 compact logo·toggle·sync indicator도 같은 titlebar height token을 사용한다.
+  접힌 nav는 transition
   종료 뒤 hidden visibility가 되며 `inert`·`aria-hidden`·pointer 차단으로 접근할 수 없다. keyboard 또는
   menu로 접을 때 sidebar 내부 focus는 먼저 titlebar toggle로 옮겨 숨겨진 control에 남지 않게 한다.
-  좁은 stacked layout은 즉시 접고 `prefers-reduced-motion`에서는 모든 sidebar transition을 제거한다.
+  좁은 stacked layout의 project navigation은 `min(320px, 40vh)` 높이 안에서 독립적으로 scroll해
+  project가 많거나 글자 크기가 커져도 content row를 없애지 않는다. 이 layout은 즉시 접고
+  `prefers-reduced-motion`에서는 모든 sidebar transition을 제거한다.
   Hide는 project lifecycle이나 협업자 화면을 바꾸지 않고 `Show` 또는 `Show all`로 즉시 되돌린다.
   진행 중인 Codex turn 표시와 중지 진입점을 숨기지 않도록 해당 project가 busy인 동안 Hide와 Archive를
   비활성화한다.
@@ -1287,7 +1295,8 @@ provider가 제공한 opaque reasoning ID와 짧은 label을 그대로 보존하
 
 Project navigation test는 이전 저장값에 sidebar 필드가 없으면 펼침으로 복구하고, sidebar toggle이 folder·
 group·hidden project 상태를 보존하는지 확인한다. Renderer test는 접힘·펼침 button의 `aria-controls`와
-`aria-expanded`, 고정 content grid placement, animated zero-width track, stable scrollbar gutter,
+`aria-expanded`, 46px 공통 titlebar token, viewport height chain과 document overflow 차단, nav·content의
+독립 scroll ownership, 고정 content grid placement, animated zero-width track, stable scrollbar gutter,
 `inert`·`aria-hidden`, responsive·reduced-motion fallback과 focus 이동 순서를 검사한다. application menu와 preload test는
 고정 accelerator, 표준 View 동작 보존, 구독 해제, 잘못된 payload 거절과 Renderer 준비 전 toggle parity를
 검증한다.

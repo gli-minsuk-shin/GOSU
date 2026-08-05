@@ -198,6 +198,13 @@ export function buildCodexAppServerArguments(prefixArguments: readonly string[])
   ];
 }
 
+export function buildCodexInitializeParameters(clientVersion: string) {
+  return {
+    clientInfo: { name: 'gosu_desktop', title: 'GOSU', version: clientVersion },
+    capabilities: { experimentalApi: true },
+  } as const;
+}
+
 const CODEX_DYNAMIC_TOOL_MAX_TOOLS = 32;
 const CODEX_DYNAMIC_TOOL_MAX_CALLS_PER_TURN = 24;
 const CODEX_DYNAMIC_TOOL_MAX_CALLS_PER_THREAD = 48;
@@ -704,6 +711,7 @@ export class CodexAppServer extends EventEmitter {
     private readonly options: {
       isolatedCodexHome?: () => string;
       sharedAuthFile?: () => string | undefined;
+      clientVersion?: () => string;
     } = {},
   ) {
     super();
@@ -1011,10 +1019,10 @@ export class CodexAppServer extends EventEmitter {
     });
 
     try {
-      await this.request('initialize', {
-        clientInfo: { name: 'gosu_desktop', title: 'GOSU', version: '0.11.0' },
-        capabilities: { experimentalApi: true },
-      });
+      await this.request(
+        'initialize',
+        buildCodexInitializeParameters(this.options.clientVersion?.() ?? '0.0.0-development'),
+      );
       if (this.process !== child) throw new Error('codex_app_server_initialization_interrupted');
       this.notify('initialized', {});
     } catch (error) {

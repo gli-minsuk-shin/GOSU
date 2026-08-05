@@ -56,6 +56,7 @@ const sharedCodexHome =
 const codex = new CodexAppServer({
   isolatedCodexHome: () => join(app.getPath('userData'), 'codex-project-chat'),
   sharedAuthFile: () => (sharedCodexHome ? join(sharedCodexHome, 'auth.json') : undefined),
+  clientVersion: () => app.getVersion(),
 });
 const database = new LocalDatabase();
 const vault = new VaultAccess();

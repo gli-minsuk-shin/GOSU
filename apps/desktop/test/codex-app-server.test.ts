@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   buildCodexChildEnvironment,
+  buildCodexInitializeParameters,
   buildCodexThreadParameters,
   buildCodexTurnParameters,
   CodexAppServer,
@@ -23,6 +24,13 @@ import {
 import { toModelCatalog } from '../src/main/model-catalog';
 
 describe('Codex App Server process boundary', () => {
+  it('reports the installed GOSU version without a duplicated model-client constant', () => {
+    expect(buildCodexInitializeParameters('9.8.7')).toEqual({
+      clientInfo: { name: 'gosu_desktop', title: 'GOSU', version: '9.8.7' },
+      capabilities: { experimentalApi: true },
+    });
+  });
+
   it('passes only runtime, temporary-file, certificate, and proxy settings', () => {
     const environment = buildCodexChildEnvironment(
       {
