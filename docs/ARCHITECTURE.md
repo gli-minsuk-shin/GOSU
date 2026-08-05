@@ -131,7 +131,7 @@ flowchart LR
 | Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                   | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                     |
 | Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                 |
 | Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                   | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                       |
-| Experiment Orchestration   | contracts, domain, Runner                                                      | signed job 실행 기반 구현; campaign scheduler와 완전한 optimizer 연동은 계획됨                                                                                                                 |
+| Experiment Orchestration   | Desktop Experiment workspace, contracts, domain, Runner                        | 프로젝트별 idea lineage·검토 outcome·동결 Objective 기반 summary metric trajectory·evidence report를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨 |
 | Manuscript                 | Desktop Repository workspace와 향후 manuscript module                          | 앱 관리형 Git worktree·파일/Markdown preview·change/history/branch·commit 구현; LaTeX compile·PDF preview는 계획됨                                                                             |
 | Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                       | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                        |
 | Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                      | Semantic Scholar 우선·Crossref fallback의 3-layer discovery, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat additive search 구현; Zotero 앱 연결은 계획됨 |
@@ -195,6 +195,7 @@ flowchart TD
 | 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                                                                  | 연결 상태만; 본문은 금지                                                                                                                                 |
 | 서지 metadata, collection, PDF                   | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                                     |
 | 검색 문헌 metadata, review annotation, 검색 이력 | 프로젝트별 Desktop Literature SQLCipher tables, Project Chat search와 선택한 import file | 현재 Hosted Sync·outbox 대상이 아님; raw provider response·원문·abstract·로컬 file path·API key 금지                                                     |
+| 실험 idea lineage·검토 outcome·summary metric    | 프로젝트별 Desktop Experiment SQLCipher tables                                           | 현재 Hosted Sync·workspace outbox 대상이 아님; raw Runner metric·log·artifact는 저장하지 않음                                                            |
 | dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                                             | 원본 금지; 상태와 명시적 summary metric만                                                                                                                |
 | 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                           | 협업 metadata 저장 대상                                                                                                                                  |
 | Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store                                      | 금지                                                                                                                                                     |
@@ -300,6 +301,35 @@ sequenceDiagram
 Runner delivery는 at-least-once다. Sync는 `projectId + runnerId + eventId` fingerprint로 exact
 duplicate를 제거하고, attempt별 sequence projection에서 stale event를 거절한다. ACK는 수신한
 durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 spool event를 만들지 않는다.
+
+### Desktop Experiment trajectory 흐름
+
+현재 Desktop `Experiments` surface는 원격 Runner가 연결되기 전에도 연구 가설과 검토된 결과를 실제로
+기록할 수 있는 local-first projection이다. Renderer는 고정 `experiment-workspace` IPC에서 list,
+idea 생성, optimistic-version idea 수정과 manual summary metric 기록만 요청할 수 있다. Main service는
+active project를 다시 확인하고, metric 기록 시 해당 project의 최신 Objective가 동결되어 있는지 검사한
+뒤 metric identity, direction, aggregation, evaluator·dataset·holdout hash, baseline과 target을 point에
+snapshot한다. Renderer는 `source`나 Objective provenance를 선택할 수 없으며 수동 입력은 항상
+`manual`이다. `runner-summary` ingress는 향후 Main의 검증된 Runner event adapter 전용으로 남겨 둔다.
+
+`experiment_ideas`와 `experiment_metric_points`는 generic workspace JSON이나 다른 module table에
+포함하지 않고 Experiment module의 SQLCipher repository가 소유한다. composite foreign key가 parent와
+metric point의 project 경계를 고정하고, idea 수정은 version CAS를 사용한다. metric point는 project별
+단조 sequence를 가진 append-only record이며 실패·부분 성공·불확실 결과도 삭제하지 않는다. count limit,
+parent·idea 재검사와 insert는 같은 immediate transaction 안에서 수행한다. 이 데이터는 현재 Hosted Sync와
+workspace outbox에 들어가지 않는다.
+
+Main은 성공한 변경 뒤 project-scoped `experiment.workspace.changed` event만 Renderer로 보낸다. 화면은
+같은 project event를 받으면 snapshot을 다시 읽어 trajectory, idea map과 report를 갱신한다. 차트는
+`objectiveId + objectiveVersion + metricKey + evaluatorHash + datasetHash + holdoutHash`가 같은 point만
+한 series로 연결하고 maximize/minimize 방향에 맞는 best-so-far를 별도로 계산한다. report도 저장된 idea,
+outcome과 선택한 comparable series에서만 best result, baseline 대비 개선, phase와 lineage를 계산한다.
+tool call, 작성 line, GPU job처럼 현재 authoritative source가 없는 숫자를 만들지 않는다.
+
+이 surface의 `Local live`는 같은 Mac의 저장·event 반영을 뜻한다. `Runner not connected`인 동안 manual
+summary 입력이 원격 실행을 증명하지 않으며, raw learning curve·resource sample을 실시간 relay하는 기능도
+아니다. 실제 Runner 연결에서는 검증된 `RunnerEventMessageV1` 중 durable summary만 위 repository port로
+투영하고 raw metric·log·resource sample은 기존 retention 정책대로 memory relay에만 둬야 한다.
 
 ## 8. Desktop 보안 모델
 
@@ -1742,6 +1772,16 @@ strict query/year/limit/tag, additive dedupe와 적용 tag receipt,
 metadata-only count receipt, legacy reviewer exclusion과 125초 timeout override를 검사한다. cancel·terminal
 뒤 늦은 provider completion은 commit·tool delivery·visible receipt를 만들지 않아야 한다.
 
+Desktop Experiment test는 active project와 parent·metric의 project isolation, strict IPC와 preload event
+allowlist, idea optimistic version·terminal timestamp, 동결된 최신 Objective requirement, Renderer가 선택할 수
+없는 manual source와 metric provenance snapshot을 검사한다. trajectory model test는 maximize/minimize
+best-so-far, 서로 다른 Objective·evaluator·dataset·holdout series 분리, baseline·target과 단일 point,
+Idea A→A-1 label·cycle/missing-parent fallback, outcome count·phase·best lineage report를 고정한다.
+SQLCipher Electron smoke는 composite foreign key, project별 sequence, append-only metric, transaction 안의
+capacity limit·CAS·실패 atomicity와 close/reopen durability를 실제 native ABI에서 검증한다. Renderer markup과
+CSS test는 세 tab, data-table fallback, outcome의 색상 외 symbol·text, 가로 graph scroll, print report와
+`Local live / Runner not connected` 문구를 고정한다.
+
 Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 
 - `gofmt` 결과가 깨끗한지 확인
@@ -1906,6 +1946,8 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
 
 - PostgreSQL adapter가 존재한다는 것과 실제 API가 PostgreSQL을 사용한다는 것은 다르다.
 - UI에 보이는 버튼·차트가 실제 command나 experiment를 수행한다는 뜻은 아니다.
+- Desktop Experiment의 manual summary와 local-live 갱신이 있다는 것과 원격 Runner가 실행됐거나 raw
+  learning curve가 연결됐다는 것은 다르다. Runner 연결 여부와 각 point source를 별도로 확인해야 한다.
 - Project Chat이 연결됐다는 것과 Codex가 논문 파일을 쓰거나 자동실험을 실행한다는 것은 다르다.
 - OpenClaw·Hermes CLI 이름이 감지됐다는 것과 publisher·version이 검증됐거나 GOSU Project Chat에
   연결됐다는 것은 다르다. 현재 add-on UI는 detector와 official setup guidance뿐이다.

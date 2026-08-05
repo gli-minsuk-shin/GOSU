@@ -7,6 +7,7 @@ import Database from 'better-sqlite3-multiple-ciphers';
 import { app, safeStorage } from 'electron';
 
 import { LocalDatabase } from '../../src/main/local-database';
+import { ExperimentWorkspaceStorageError } from '../../src/main/experiment-workspace-storage-error';
 import { literatureFingerprint } from '../../src/main/literature-crossref';
 import { LiteratureStorageError } from '../../src/main/literature-storage-error';
 import { WorkspaceService } from '../../src/main/workspace-service';
@@ -15,6 +16,12 @@ import type {
   ProjectChatAttempt,
   ProjectChatMessage,
 } from '../../src/shared/project-chat-contracts';
+import {
+  EXPERIMENT_MAX_IDEAS_PER_PROJECT,
+  EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
+  type ExperimentIdea,
+  type ExperimentMetricPoint,
+} from '../../src/shared/experiment-workspace-contracts';
 import {
   PROJECT_CHAT_MAX_BRANCH_DEPTH,
   PROJECT_CHAT_MAX_BRANCH_MESSAGES,
@@ -68,6 +75,336 @@ function fixture(revision: number, operationId: string, createdAt: string) {
     payload: { name: project.name, slug: project.slug },
   };
   return { state, operation };
+}
+
+function verifyExperimentPersistence(fixedTimestamp: string) {
+  const database = new LocalDatabase();
+  database.open();
+  const projectId = randomUUID();
+  const otherProjectId = randomUUID();
+  const rootIdea: ExperimentIdea = {
+    schemaVersion: 1,
+    id: randomUUID(),
+    projectId,
+    parentIdeaId: null,
+    title: 'Reproduce the baseline',
+    hypothesis: 'A locked baseline makes later comparisons meaningful.',
+    phase: 'baseline',
+    outcome: 'planned',
+    resultSummary: '',
+    version: 1,
+    createdAt: fixedTimestamp,
+    updatedAt: fixedTimestamp,
+    completedAt: null,
+  };
+  const childIdea: ExperimentIdea = {
+    ...rootIdea,
+    id: randomUUID(),
+    parentIdeaId: rootIdea.id,
+    title: 'Tune the learning rate',
+    phase: 'optimization',
+  };
+  const otherRootIdea: ExperimentIdea = {
+    ...rootIdea,
+    id: randomUUID(),
+    projectId: otherProjectId,
+    title: 'Other project baseline',
+  };
+  invariant(database.createExperimentIdea(rootIdea), 'experiment_root_idea_insert_failed');
+  invariant(database.createExperimentIdea(childIdea), 'experiment_child_idea_insert_failed');
+  invariant(
+    database.createExperimentIdea(otherRootIdea),
+    'experiment_other_project_idea_insert_failed',
+  );
+  invariant(!database.createExperimentIdea(rootIdea), 'experiment_duplicate_idea_was_accepted');
+
+  let crossProjectParentRejected = false;
+  try {
+    database.createExperimentIdea({
+      ...childIdea,
+      id: randomUUID(),
+      projectId: otherProjectId,
+    });
+  } catch (error) {
+    crossProjectParentRejected =
+      error instanceof ExperimentWorkspaceStorageError && error.code === 'parent_not_found';
+  }
+  invariant(crossProjectParentRejected, 'experiment_cross_project_parent_was_accepted');
+  invariant(
+    database.listExperimentIdeas(otherProjectId).length === 1,
+    'experiment_failed_parent_insert_was_not_atomic',
+  );
+
+  const completedAt = new Date(Date.parse(fixedTimestamp) + 1_000).toISOString();
+  const updatedChild: ExperimentIdea = {
+    ...childIdea,
+    title: 'Tune the learning rate and scheduler',
+    outcome: 'success',
+    resultSummary: 'Improved the primary metric.',
+    version: 2,
+    updatedAt: completedAt,
+    completedAt,
+  };
+  invariant(
+    database.updateExperimentIdea(updatedChild, 1)?.version === 2,
+    'experiment_idea_cas_update_failed',
+  );
+  invariant(
+    database.updateExperimentIdea(updatedChild, 1) === null,
+    'experiment_stale_idea_cas_was_accepted',
+  );
+
+  const metricDraft: Omit<ExperimentMetricPoint, 'sequence'> = {
+    schemaVersion: 1,
+    id: randomUUID(),
+    projectId,
+    ideaId: childIdea.id,
+    objectiveId: randomUUID(),
+    objectiveVersion: 3,
+    metricKey: 'validation.rmse',
+    metricDisplayName: 'Validation RMSE',
+    direction: 'minimize',
+    unit: 'rmse',
+    aggregation: 'mean',
+    evaluatorHash: 'evaluator-sha256-fixture',
+    datasetHash: 'dataset-sha256-fixture',
+    holdoutHash: 'holdout-sha256-fixture',
+    baseline: 1.25,
+    target: 1,
+    value: 0.95,
+    source: 'manual',
+    trialId: 'trial-001',
+    recordedAt: fixedTimestamp,
+  };
+  const firstPoint = database.appendExperimentMetricPoint(metricDraft);
+  invariant(
+    firstPoint.sequence === 1 &&
+      firstPoint.aggregation === 'mean' &&
+      firstPoint.evaluatorHash === metricDraft.evaluatorHash &&
+      firstPoint.datasetHash === metricDraft.datasetHash &&
+      firstPoint.holdoutHash === metricDraft.holdoutHash,
+    'experiment_metric_provenance_insert_failed',
+  );
+  const competing = new LocalDatabase();
+  competing.open();
+  const secondPoint = competing.appendExperimentMetricPoint({
+    ...metricDraft,
+    id: randomUUID(),
+    value: 0.91,
+    trialId: 'trial-002',
+  });
+  competing.close();
+  invariant(secondPoint.sequence === 2, 'experiment_metric_sequence_was_not_project_unique');
+  invariant(
+    database.appendExperimentMetricPoint({
+      ...metricDraft,
+      id: randomUUID(),
+      projectId: otherProjectId,
+      ideaId: otherRootIdea.id,
+    }).sequence === 1,
+    'experiment_metric_sequence_crossed_project_boundary',
+  );
+
+  let missingMetricIdeaRejected = false;
+  try {
+    database.appendExperimentMetricPoint({
+      ...metricDraft,
+      id: randomUUID(),
+      ideaId: randomUUID(),
+    });
+  } catch (error) {
+    missingMetricIdeaRejected =
+      error instanceof ExperimentWorkspaceStorageError && error.code === 'idea_not_found';
+  }
+  invariant(missingMetricIdeaRejected, 'experiment_metric_without_idea_was_accepted');
+  invariant(
+    database.listExperimentMetricPoints(projectId).length === 2,
+    'experiment_failed_metric_insert_was_not_atomic',
+  );
+  database.close();
+
+  const keyHex = safeStorage
+    .decryptString(readFileSync(join(app.getPath('userData'), 'local-key.bin')))
+    .trim();
+  const raw = new Database(join(app.getPath('userData'), 'gosu.db'));
+  raw.pragma(`key="x'${keyHex}'"`);
+  raw.pragma('foreign_keys=ON');
+  try {
+    let rawCrossProjectParentRejected = false;
+    try {
+      raw
+        .prepare(
+          `insert into experiment_ideas(
+             id,schema_version,project_id,parent_idea_id,title,hypothesis,phase,outcome,
+             result_summary,version,created_at,updated_at,completed_at
+           )
+           select ?,schema_version,?,id,?,hypothesis,phase,outcome,result_summary,
+                  version,created_at,updated_at,completed_at
+           from experiment_ideas where id=?`,
+        )
+        .run(randomUUID(), otherProjectId, 'Invalid cross-project child', rootIdea.id);
+    } catch {
+      rawCrossProjectParentRejected = true;
+    }
+    invariant(
+      rawCrossProjectParentRejected,
+      'experiment_composite_parent_foreign_key_was_not_enforced',
+    );
+
+    let rawCrossProjectMetricRejected = false;
+    try {
+      raw
+        .prepare(
+          `insert into experiment_metric_points(
+             id,schema_version,project_id,idea_id,sequence,objective_id,objective_version,
+             metric_key,metric_display_name,direction,unit,aggregation,evaluator_hash,
+             dataset_hash,holdout_hash,baseline,target,value,source,trial_id,recorded_at
+           )
+           select ?,schema_version,?,idea_id,2,objective_id,objective_version,metric_key,
+                  metric_display_name,direction,unit,aggregation,evaluator_hash,dataset_hash,
+                  holdout_hash,baseline,target,value,source,trial_id,recorded_at
+           from experiment_metric_points where id=?`,
+        )
+        .run(randomUUID(), otherProjectId, firstPoint.id);
+    } catch {
+      rawCrossProjectMetricRejected = true;
+    }
+    invariant(
+      rawCrossProjectMetricRejected,
+      'experiment_composite_metric_foreign_key_was_not_enforced',
+    );
+
+    let duplicateSequenceRejected = false;
+    try {
+      raw
+        .prepare(
+          `insert into experiment_metric_points(
+             id,schema_version,project_id,idea_id,sequence,objective_id,objective_version,
+             metric_key,metric_display_name,direction,unit,aggregation,evaluator_hash,
+             dataset_hash,holdout_hash,baseline,target,value,source,trial_id,recorded_at
+           )
+           select ?,schema_version,project_id,idea_id,sequence,objective_id,objective_version,
+                  metric_key,metric_display_name,direction,unit,aggregation,evaluator_hash,
+                  dataset_hash,holdout_hash,baseline,target,value,source,trial_id,recorded_at
+           from experiment_metric_points where id=?`,
+        )
+        .run(randomUUID(), firstPoint.id);
+    } catch {
+      duplicateSequenceRejected = true;
+    }
+    invariant(duplicateSequenceRejected, 'experiment_duplicate_metric_sequence_was_accepted');
+
+    let metricUpdateRejected = false;
+    try {
+      raw.prepare('update experiment_metric_points set value=? where id=?').run(9, firstPoint.id);
+    } catch {
+      metricUpdateRejected = true;
+    }
+    let metricDeleteRejected = false;
+    try {
+      raw.prepare('delete from experiment_metric_points where id=?').run(firstPoint.id);
+    } catch {
+      metricDeleteRejected = true;
+    }
+    invariant(
+      metricUpdateRejected && metricDeleteRejected,
+      'experiment_metric_append_only_guard_failed',
+    );
+
+    raw
+      .prepare(
+        `with recursive counter(value) as (
+           values(1) union all select value+1 from counter where value<498
+         )
+         insert into experiment_ideas(
+           id,schema_version,project_id,parent_idea_id,title,hypothesis,phase,outcome,
+           result_summary,version,created_at,updated_at,completed_at
+         )
+         select printf('20000000-0000-4000-8000-%012d',value),1,?,null,
+                'Capacity idea ' || value,'','','planned','',1,?,?,null
+         from counter`,
+      )
+      .run(projectId, fixedTimestamp, fixedTimestamp);
+    raw
+      .prepare(
+        `with digits(value) as (
+           values(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)
+         ), numbers(sequence) as (
+           select 3+ones.value+10*tens.value+100*hundreds.value+1000*thousands.value
+           from digits ones cross join digits tens cross join digits hundreds
+           cross join digits thousands
+         )
+         insert into experiment_metric_points(
+           id,schema_version,project_id,idea_id,sequence,objective_id,objective_version,
+           metric_key,metric_display_name,direction,unit,aggregation,evaluator_hash,
+           dataset_hash,holdout_hash,baseline,target,value,source,trial_id,recorded_at
+         )
+         select printf('30000000-0000-4000-8000-%012d',numbers.sequence),seed.schema_version,
+                seed.project_id,seed.idea_id,numbers.sequence,seed.objective_id,
+                seed.objective_version,seed.metric_key,seed.metric_display_name,seed.direction,
+                seed.unit,seed.aggregation,seed.evaluator_hash,seed.dataset_hash,seed.holdout_hash,
+                seed.baseline,seed.target,seed.value,seed.source,seed.trial_id,seed.recorded_at
+         from experiment_metric_points seed cross join numbers
+         where seed.id=? and numbers.sequence<=${EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT}`,
+      )
+      .run(firstPoint.id);
+  } finally {
+    raw.close();
+  }
+
+  const reopened = new LocalDatabase();
+  reopened.open();
+  try {
+    invariant(
+      reopened.listExperimentIdeas(projectId).length === EXPERIMENT_MAX_IDEAS_PER_PROJECT,
+      'experiment_ideas_did_not_persist_to_capacity',
+    );
+    const durablePoints = reopened.listExperimentMetricPoints(projectId);
+    invariant(
+      durablePoints.length === EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT &&
+        durablePoints[0]?.id === firstPoint.id &&
+        durablePoints[0]?.evaluatorHash === metricDraft.evaluatorHash &&
+        durablePoints[1]?.sequence === 2 &&
+        durablePoints.at(-1)?.sequence === EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
+      'experiment_metric_points_did_not_persist_in_sequence',
+    );
+    invariant(
+      reopened.getExperimentIdea(projectId, childIdea.id)?.title === updatedChild.title,
+      'experiment_idea_update_did_not_persist',
+    );
+
+    let ideaLimitRejected = false;
+    try {
+      reopened.createExperimentIdea({
+        ...rootIdea,
+        id: randomUUID(),
+        title: 'Over idea capacity',
+      });
+    } catch (error) {
+      ideaLimitRejected =
+        error instanceof ExperimentWorkspaceStorageError && error.code === 'idea_limit_reached';
+    }
+    let metricLimitRejected = false;
+    try {
+      reopened.appendExperimentMetricPoint({
+        ...metricDraft,
+        id: randomUUID(),
+      });
+    } catch (error) {
+      metricLimitRejected =
+        error instanceof ExperimentWorkspaceStorageError && error.code === 'metric_limit_reached';
+    }
+    invariant(ideaLimitRejected, 'experiment_idea_project_cap_was_not_enforced');
+    invariant(metricLimitRejected, 'experiment_metric_project_cap_was_not_enforced');
+    invariant(
+      reopened.listExperimentIdeas(projectId).length === EXPERIMENT_MAX_IDEAS_PER_PROJECT &&
+        reopened.listExperimentMetricPoints(projectId).length ===
+          EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
+      'experiment_capacity_failure_was_not_atomic',
+    );
+  } finally {
+    reopened.close();
+  }
 }
 
 function verifyLiteraturePersistence(fixedTimestamp: string) {
@@ -3281,6 +3618,7 @@ void app.whenReady().then(async () => {
     verifySparseSemanticScholarMerge(fixedTimestamp);
     verifyLiteratureDiscoveryPersistence(fixedTimestamp);
     verifyLiteratureBoundsAndIdentity(fixedTimestamp);
+    verifyExperimentPersistence(fixedTimestamp);
 
     process.stdout.write('local SQLCipher workspace smoke test passed\n');
     app.exit(0);

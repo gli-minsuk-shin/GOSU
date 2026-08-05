@@ -53,6 +53,9 @@ but it is not yet a deployed end-to-end product:
   Kanban boards, manage versioned tasks, and save, freeze, and explicitly revise goal/metric
   definitions. Those records and an offline change outbox are committed atomically to encrypted
   SQLite and survive an app restart;
+- Experiments stores project-scoped idea branches, reviewed outcomes, and manual summary metrics in
+  SQLCipher. Its local-live trajectory, interactive idea map, and evidence report use saved values
+  only; the remote Runner live bridge is not connected yet;
 - Project Chat uses the local Codex App Server with runtime-discovered model, reasoning, and native
   harness catalogs. Its project-scoped read tools can inspect reviewed Board, Objective, and
   explicitly granted Local Notes context without exposing raw filesystem paths;
@@ -118,8 +121,8 @@ pnpm app:dev
 `app:dev` starts the loopback-only in-memory Sync API, waits for its readiness endpoint, and then
 opens the Electron app. `Ctrl+C` stops the process group. A healthy GOSU Sync process already using
 the configured port is reused; an unrelated process on that port is rejected. No `.env` file or
-Docker service is required for this local slice. Project, Kanban, and goal/metric data are stored in
-the Desktop's encrypted local database and survive restart. App-managed Git worktrees remain only
+Docker service is required for this local slice. Project, Kanban, goal/metric, and Experiment data
+are stored in the Desktop's encrypted local database and survive restart. App-managed Git worktrees remain only
 under the Desktop user-data directory and are not uploaded to Hosted Sync. The development Sync
 API's own memory state is separate and is lost on restart.
 

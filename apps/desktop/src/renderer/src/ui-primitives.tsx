@@ -159,6 +159,24 @@ export function describeError(error: unknown) {
     invalid_chat_input: 'Check the chat message and model selection, then try again.',
     codex_unavailable: 'Codex is unavailable. Board and local notes remain usable.',
     chat_unavailable: 'Project chat is unavailable. Existing local messages were not replaced.',
+    invalid_experiment_input: 'Check the experiment fields and try again.',
+    experiment_project_not_found:
+      'This project no longer exists. Reload the workspace before opening Experiments.',
+    experiment_project_unavailable:
+      'Experiments are available only while this project is active. Restore it first.',
+    experiment_idea_not_found:
+      'This experiment idea no longer exists in the selected project. Refresh and try again.',
+    experiment_parent_not_found:
+      'The parent idea is no longer available in this project. Choose another branch point.',
+    experiment_idea_conflict:
+      'This idea changed since it was opened. GOSU kept the newer version and did not overwrite it.',
+    experiment_idea_limit_reached: 'This project has reached its local experiment-idea limit.',
+    experiment_metric_limit_reached:
+      'This project has reached its local experiment-metric history limit.',
+    experiment_objective_required:
+      'Freeze the latest Goal & Metrics revision before recording experiment evidence.',
+    experiment_unavailable:
+      'The local experiment workspace is unavailable. Existing experiment evidence was not replaced.',
     invalid_ssh_input: 'Check the SSH server name or alias and try again.',
     ssh_import_invalid_command:
       'Use ssh with only -p, -l, one user@host destination, and optional loopback-only -L forwarding.',
@@ -194,6 +212,8 @@ export function describeError(error: unknown) {
       'Too many SSH commands are awaiting approval or running. Try again later.',
     ssh_unavailable: 'Local SSH is unavailable. Board and existing chat remain available.',
   };
-  const code = Object.keys(messages).find((candidate) => error.message.includes(candidate));
+  const code = Object.keys(messages)
+    .sort((left, right) => right.length - left.length)
+    .find((candidate) => error.message.includes(candidate));
   return code ? messages[code]! : 'The operation could not be completed.';
 }

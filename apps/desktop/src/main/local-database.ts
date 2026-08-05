@@ -6,6 +6,14 @@ import { app, safeStorage } from 'electron';
 
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import {
+  EXPERIMENT_MAX_IDEAS_PER_PROJECT,
+  EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
+  ExperimentIdeaSchema,
+  ExperimentMetricPointSchema,
+  type ExperimentIdea,
+  type ExperimentMetricPoint,
+} from '../shared/experiment-workspace-contracts';
+import {
   LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT,
   LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW,
   LITERATURE_MAX_SEARCH_RESULTS,
@@ -57,6 +65,7 @@ import type {
   WorkspacePendingSummary,
   WorkspaceSnapshot,
 } from '../shared/workspace-contracts';
+import { ExperimentWorkspaceStorageError } from './experiment-workspace-storage-error';
 import { literatureFingerprint, type LiteratureProviderCandidate } from './literature-crossref';
 import { LiteratureStorageError } from './literature-storage-error';
 import { WorkspaceDataRecoveryError } from './workspace-storage-error';
@@ -71,6 +80,7 @@ const LITERATURE_DISCOVERY_MIGRATION = 'literature-balanced-discovery-v1';
 const LITERATURE_DISCOVERY_COVERAGE_MIGRATION = 'literature-discovery-coverage-v1';
 const LITERATURE_SEARCH_TAGS_MIGRATION = 'literature-search-tags-v1';
 const DEFAULT_PROJECT_CHAT_SESSION_TITLE = 'Project chat';
+const ExperimentMetricPointDraftSchema = ExperimentMetricPointSchema.omit({ sequence: true });
 
 export type LocalLiteratureAiAnnotationUpdate = LiteratureAiAnnotationUpdate &
   Readonly<{ provenance: LiteratureAiProvenance }>;
@@ -411,6 +421,90 @@ type LiteratureSearchConflictRow = Readonly<{
   authors_json: string;
   published_year: number | null;
 }>;
+
+type ExperimentIdeaRow = Readonly<{
+  id: string;
+  schema_version: number;
+  project_id: string;
+  parent_idea_id: string | null;
+  title: string;
+  hypothesis: string;
+  phase: string;
+  outcome: ExperimentIdea['outcome'];
+  result_summary: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}>;
+
+type ExperimentMetricPointRow = Readonly<{
+  id: string;
+  schema_version: number;
+  project_id: string;
+  idea_id: string;
+  sequence: number;
+  objective_id: string;
+  objective_version: number;
+  metric_key: string;
+  metric_display_name: string;
+  direction: ExperimentMetricPoint['direction'];
+  unit: string | null;
+  aggregation: ExperimentMetricPoint['aggregation'];
+  evaluator_hash: string;
+  dataset_hash: string;
+  holdout_hash: string | null;
+  baseline: number | null;
+  target: number | null;
+  value: number;
+  source: ExperimentMetricPoint['source'];
+  trial_id: string | null;
+  recorded_at: string;
+}>;
+
+function toExperimentIdea(row: ExperimentIdeaRow): ExperimentIdea {
+  return ExperimentIdeaSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    projectId: row.project_id,
+    parentIdeaId: row.parent_idea_id,
+    title: row.title,
+    hypothesis: row.hypothesis,
+    phase: row.phase,
+    outcome: row.outcome,
+    resultSummary: row.result_summary,
+    version: row.version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at,
+  });
+}
+
+function toExperimentMetricPoint(row: ExperimentMetricPointRow): ExperimentMetricPoint {
+  return ExperimentMetricPointSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    projectId: row.project_id,
+    ideaId: row.idea_id,
+    sequence: row.sequence,
+    objectiveId: row.objective_id,
+    objectiveVersion: row.objective_version,
+    metricKey: row.metric_key,
+    metricDisplayName: row.metric_display_name,
+    direction: row.direction,
+    unit: row.unit,
+    aggregation: row.aggregation,
+    evaluatorHash: row.evaluator_hash,
+    datasetHash: row.dataset_hash,
+    holdoutHash: row.holdout_hash,
+    baseline: row.baseline,
+    target: row.target,
+    value: row.value,
+    source: row.source,
+    trialId: row.trial_id,
+    recordedAt: row.recorded_at,
+  });
+}
 
 function stringArrayJson(value: string) {
   const parsed = JSON.parse(value) as unknown;
@@ -1435,6 +1529,89 @@ export class LocalDatabase {
         ),
         primary key(search_run_id,ordinal)
       );
+      create table if not exists experiment_ideas (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null check (length(project_id) = 36),
+        parent_idea_id text check (parent_idea_id is null or length(parent_idea_id) = 36),
+        title text not null check (length(title) between 1 and 160),
+        hypothesis text not null check (length(hypothesis) <= 4000),
+        phase text not null check (length(phase) <= 80),
+        outcome text not null check (
+          outcome in ('planned','running','success','partial','failed','inconclusive')
+        ),
+        result_summary text not null check (length(result_summary) <= 4000),
+        version integer not null check (version > 0),
+        created_at text not null,
+        updated_at text not null,
+        completed_at text,
+        unique(project_id,id),
+        check (parent_idea_id is null or parent_idea_id <> id),
+        foreign key(project_id,parent_idea_id)
+          references experiment_ideas(project_id,id)
+      );
+      create index if not exists experiment_ideas_by_project
+        on experiment_ideas(project_id,created_at,id);
+      create trigger if not exists experiment_ideas_project_limit
+        before insert on experiment_ideas
+        when (
+          select count(*) from experiment_ideas where project_id=new.project_id
+        ) >= ${EXPERIMENT_MAX_IDEAS_PER_PROJECT}
+        begin
+          select raise(abort,'experiment_idea_limit_reached');
+        end;
+      create table if not exists experiment_metric_points (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null check (length(project_id) = 36),
+        idea_id text not null check (length(idea_id) = 36),
+        sequence integer not null check (sequence > 0),
+        objective_id text not null check (length(objective_id) = 36),
+        objective_version integer not null check (objective_version > 0),
+        metric_key text not null check (length(metric_key) between 1 and 128),
+        metric_display_name text not null check (
+          length(metric_display_name) between 1 and 256
+        ),
+        direction text not null check (direction in ('maximize','minimize')),
+        unit text check (unit is null or length(unit) between 1 and 64),
+        aggregation text not null check (
+          aggregation in ('mean','median','minimum','maximum','last')
+        ),
+        evaluator_hash text not null check (length(evaluator_hash) between 8 and 160),
+        dataset_hash text not null check (length(dataset_hash) between 8 and 160),
+        holdout_hash text check (holdout_hash is null or length(holdout_hash) between 8 and 160),
+        baseline real,
+        target real,
+        value real not null,
+        source text not null check (source in ('manual','runner-summary')),
+        trial_id text check (trial_id is null or length(trial_id) between 1 and 128),
+        recorded_at text not null,
+        unique(project_id,sequence),
+        foreign key(project_id,idea_id)
+          references experiment_ideas(project_id,id)
+      );
+      create index if not exists experiment_metric_points_by_project
+        on experiment_metric_points(project_id,sequence);
+      create index if not exists experiment_metric_points_by_idea
+        on experiment_metric_points(project_id,idea_id,sequence);
+      create trigger if not exists experiment_metric_points_project_limit
+        before insert on experiment_metric_points
+        when (
+          select count(*) from experiment_metric_points where project_id=new.project_id
+        ) >= ${EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT}
+        begin
+          select raise(abort,'experiment_metric_limit_reached');
+        end;
+      create trigger if not exists experiment_metric_points_update_guard
+        before update on experiment_metric_points
+        begin
+          select raise(abort,'experiment_metric_point_append_only');
+        end;
+      create trigger if not exists experiment_metric_points_delete_guard
+        before delete on experiment_metric_points
+        begin
+          select raise(abort,'experiment_metric_point_append_only');
+        end;
       create table if not exists local_schema_migrations (
         id text primary key,
         applied_at text not null
@@ -2674,6 +2851,180 @@ export class LocalDatabase {
         action.id,
       );
     if (result.changes !== 1) throw new Error('chat_action_state_conflict');
+  }
+
+  listExperimentIdeas(projectId: string): ExperimentIdea[] {
+    const rows = this.require()
+      .prepare(
+        `select * from experiment_ideas
+         where project_id=? order by created_at asc,id asc`,
+      )
+      .all(projectId) as ExperimentIdeaRow[];
+    return rows.map(toExperimentIdea);
+  }
+
+  listExperimentMetricPoints(projectId: string): ExperimentMetricPoint[] {
+    const rows = this.require()
+      .prepare(
+        `select * from experiment_metric_points
+         where project_id=? order by sequence asc`,
+      )
+      .all(projectId) as ExperimentMetricPointRow[];
+    return rows.map(toExperimentMetricPoint);
+  }
+
+  getExperimentIdea(projectId: string, ideaId: string): ExperimentIdea | null {
+    const row = this.require()
+      .prepare('select * from experiment_ideas where project_id=? and id=?')
+      .get(projectId, ideaId) as ExperimentIdeaRow | undefined;
+    return row ? toExperimentIdea(row) : null;
+  }
+
+  createExperimentIdea(input: ExperimentIdea) {
+    const idea = ExperimentIdeaSchema.parse(structuredClone(input));
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const duplicate = database
+          .prepare('select 1 from experiment_ideas where id=?')
+          .get(idea.id);
+        if (duplicate) return false;
+        if (
+          idea.parentIdeaId &&
+          !database
+            .prepare('select 1 from experiment_ideas where project_id=? and id=?')
+            .get(idea.projectId, idea.parentIdeaId)
+        ) {
+          throw new ExperimentWorkspaceStorageError('parent_not_found');
+        }
+        const count = database
+          .prepare('select count(*) as count from experiment_ideas where project_id=?')
+          .get(idea.projectId) as { count: number };
+        if (count.count >= EXPERIMENT_MAX_IDEAS_PER_PROJECT) {
+          throw new ExperimentWorkspaceStorageError('idea_limit_reached');
+        }
+        const inserted = database
+          .prepare(
+            `insert into experiment_ideas(
+               id,schema_version,project_id,parent_idea_id,title,hypothesis,phase,outcome,
+               result_summary,version,created_at,updated_at,completed_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            idea.id,
+            idea.schemaVersion,
+            idea.projectId,
+            idea.parentIdeaId,
+            idea.title,
+            idea.hypothesis,
+            idea.phase,
+            idea.outcome,
+            idea.resultSummary,
+            idea.version,
+            idea.createdAt,
+            idea.updatedAt,
+            idea.completedAt,
+          );
+        return inserted.changes === 1;
+      })
+      .immediate();
+  }
+
+  updateExperimentIdea(input: ExperimentIdea, expectedVersion: number) {
+    const idea = ExperimentIdeaSchema.parse(structuredClone(input));
+    if (idea.version !== expectedVersion + 1) {
+      throw new Error('experiment_idea_version_sequence_invalid');
+    }
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const changed = database
+          .prepare(
+            `update experiment_ideas set
+               title=?,hypothesis=?,phase=?,outcome=?,result_summary=?,version=?,
+               updated_at=?,completed_at=?
+             where project_id=? and id=? and version=?`,
+          )
+          .run(
+            idea.title,
+            idea.hypothesis,
+            idea.phase,
+            idea.outcome,
+            idea.resultSummary,
+            idea.version,
+            idea.updatedAt,
+            idea.completedAt,
+            idea.projectId,
+            idea.id,
+            expectedVersion,
+          );
+        if (changed.changes !== 1) return null;
+        const row = database
+          .prepare('select * from experiment_ideas where project_id=? and id=?')
+          .get(idea.projectId, idea.id) as ExperimentIdeaRow;
+        return toExperimentIdea(row);
+      })
+      .immediate();
+  }
+
+  appendExperimentMetricPoint(input: Omit<ExperimentMetricPoint, 'sequence'>) {
+    const point = ExperimentMetricPointDraftSchema.parse(structuredClone(input));
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const idea = database
+          .prepare('select 1 from experiment_ideas where project_id=? and id=?')
+          .get(point.projectId, point.ideaId);
+        if (!idea) throw new ExperimentWorkspaceStorageError('idea_not_found');
+        const count = database
+          .prepare('select count(*) as count from experiment_metric_points where project_id=?')
+          .get(point.projectId) as { count: number };
+        if (count.count >= EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT) {
+          throw new ExperimentWorkspaceStorageError('metric_limit_reached');
+        }
+        const next = database
+          .prepare(
+            `select coalesce(max(sequence),0)+1 as sequence
+             from experiment_metric_points where project_id=?`,
+          )
+          .get(point.projectId) as { sequence: number };
+        database
+          .prepare(
+            `insert into experiment_metric_points(
+               id,schema_version,project_id,idea_id,sequence,objective_id,objective_version,
+               metric_key,metric_display_name,direction,unit,aggregation,evaluator_hash,
+               dataset_hash,holdout_hash,baseline,target,value,source,trial_id,recorded_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            point.id,
+            point.schemaVersion,
+            point.projectId,
+            point.ideaId,
+            next.sequence,
+            point.objectiveId,
+            point.objectiveVersion,
+            point.metricKey,
+            point.metricDisplayName,
+            point.direction,
+            point.unit,
+            point.aggregation,
+            point.evaluatorHash,
+            point.datasetHash,
+            point.holdoutHash,
+            point.baseline,
+            point.target,
+            point.value,
+            point.source,
+            point.trialId,
+            point.recordedAt,
+          );
+        const row = database
+          .prepare('select * from experiment_metric_points where id=?')
+          .get(point.id) as ExperimentMetricPointRow;
+        return toExperimentMetricPoint(row);
+      })
+      .immediate();
   }
 
   listLiteratureRecords(projectId: string): LiteratureRecord[] {
