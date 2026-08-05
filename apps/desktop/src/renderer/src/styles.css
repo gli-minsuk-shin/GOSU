@@ -3400,6 +3400,14 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
   overflow: auto;
 }
 
+.project-chat-session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: stretch;
+  gap: 3px;
+  min-width: 0;
+}
+
 .project-chat-session-item {
   display: grid;
   gap: 5px;
@@ -3428,6 +3436,84 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
   border-color: color-mix(in srgb, var(--green) 36%, var(--line));
   background: color-mix(in srgb, var(--green) 9%, var(--surface));
   color: var(--text);
+}
+
+.project-chat-session-rename-trigger {
+  align-self: stretch;
+  min-width: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--subtle);
+  font-size: var(--font-control);
+  opacity: 0;
+  transition:
+    opacity 140ms ease,
+    border-color 140ms ease,
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.project-chat-session-row:hover .project-chat-session-rename-trigger,
+.project-chat-session-row:focus-within .project-chat-session-rename-trigger,
+.project-chat-session-row.active .project-chat-session-rename-trigger {
+  opacity: 1;
+}
+
+.project-chat-session-rename-trigger:hover:not(:disabled),
+.project-chat-session-rename-trigger:focus-visible {
+  border-color: var(--line-strong);
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.project-chat-session-rename-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.project-chat-session-rename-form {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--green) 7%, var(--surface));
+}
+
+.project-chat-session-rename-form label {
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.project-chat-session-rename-form input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+  font-size: var(--font-control);
+}
+
+.project-chat-session-rename-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.project-chat-session-rename-actions button {
+  min-height: 30px;
+  padding: 5px 7px;
+}
+
+.project-chat-session-rename-form > small {
+  color: var(--orange);
+  font-size: var(--font-caption);
+  line-height: 1.35;
 }
 
 .project-chat-session-title {
@@ -5252,8 +5338,8 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
     overflow-y: hidden;
   }
 
-  .project-chat-session-item {
-    flex: 0 0 180px;
+  .project-chat-session-row {
+    flex: 0 0 214px;
   }
 
   .repository-toolbar {
@@ -5367,8 +5453,8 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
     overflow-y: hidden;
   }
 
-  .project-chat-session-item {
-    flex: 0 0 180px;
+  .project-chat-session-row {
+    flex: 0 0 214px;
   }
 
   .project-chat-shell {
