@@ -37,7 +37,12 @@ and supports:
 - creating and switching between multiple projects;
 - creating, renaming, and moving tasks across `Backlog / Planned / In Progress / Review / Done`;
 - defining a goal, primary metric, lineage hashes, budget, and stop policy;
-- freezing an objective revision locally and explicitly starting the next version; and
+- freezing an objective revision locally and explicitly starting the next version;
+- reading a selected Obsidian folder as rendered, sanitized Markdown;
+- using project-scoped Codex chats with runtime-discovered models, reasoning, and native modes;
+- inspecting an app-managed Git workspace and reviewing its branches, history, and changes;
+- building and incrementally updating a project literature review table;
+- registering a safely parsed SSH destination and granting a remote workspace root to one project; and
 - showing the number of durable changes waiting in the local outbox.
 
 These records survive an app restart. The pending-change count does not claim cloud delivery: a
@@ -45,6 +50,30 @@ Sync delivery/reconciliation worker and multi-user authorization are not connect
 workspace yet. The Sync readiness indicator only reports whether the development API can be
 reached. The remaining research modules are visibly marked as later work rather than populated with
 simulated experiment or manuscript results.
+
+## Project Chat remote workspace
+
+In Connections, paste a connection command such as
+`ssh -p 2222 researcher@203.0.113.10 -L 8080:localhost:8080` into **Paste an SSH connection
+command**, then select **Parse and register**. A deterministic local parser normalizes the supported
+destination fields; neither an LLM nor a shell executes the pasted text, and the original string is
+not retained. GOSU accepts only a narrow subset and keeps imported loopback `-L` values inactive.
+
+Use **Test** after the host key has been trusted once in Terminal and SSH agent or Keychain
+authentication works without a password prompt. GOSU does not store passwords or private keys and
+does not support interactive authentication.
+
+For the active project, use **Remote workspace access** to select the server, enter one exact project
+root such as `/workspace/research-project`, choose Diagnostics or Workspace mode, and acknowledge
+the risk. The model cannot create this connection or grant itself; it sees only the opaque workspace
+grant approved for the active project. You can then ask Project Chat to inspect Git or run a bounded
+test/build. Each exact target, root, command, and argument list waits for a fresh **Allow once**
+decision.
+
+This slice has no interactive shell, TTY, file transfer, active tunnel, arbitrary remote patch,
+background task, or unattended experiment execution. Workspace tests/builds execute repository code
+with the SSH account's privileges, and the selected root is a lexical boundary rather than a remote
+sandbox. Long GPU jobs belong on the isolated Runner path.
 
 The macOS-only storage smoke test runs inside Electron so the native SQLCipher module, `safeStorage`,
 close/reopen recovery, encrypted file header, and transaction rollback are exercised with their
@@ -66,10 +95,11 @@ ready/degraded result over IPC.
 The local-only packaging command disables Hardened Runtime so Electron and its native modules share
 a valid development signature without weakening the production signing configuration. The packaged
 renderer keeps the strict production CSP; only the exact Vite development origin receives
-the inline refresh and HMR exceptions required for local development. Signing, notarization, update
-metadata, and clean-machine release validation remain release work. The packaging hook also removes
-Electron's unused camera, microphone, audio, and Bluetooth usage descriptions and replaces arbitrary
-transport access with the explicit loopback development exception.
+the inline refresh and HMR exceptions required for local development. Developer ID signing,
+notarization, update metadata, and clean-machine release validation remain release work. The
+packaging hook also removes Electron's unused camera, microphone, audio, and Bluetooth usage
+descriptions and replaces arbitrary transport access with the explicit loopback development
+exception.
 
 Because an ad-hoc signature has no stable Developer ID requirement, macOS can ask the user to allow
 access to the existing `Electron Safe Storage` Keychain item after installing a rebuilt development

@@ -529,7 +529,11 @@ async function fixture(vault?: ProjectAgentVault) {
   const codex = new FakeCodex();
   const ssh: ProjectAgentSsh = {
     listConnections: vi.fn(async () => []),
+    listWorkspaceGrants: vi.fn(async () => []),
     runAgentCommand: vi.fn(async () => {
+      throw new Error('ssh_unavailable');
+    }),
+    runAgentWorkspaceCommand: vi.fn(async () => {
       throw new Error('ssh_unavailable');
     }),
     cancelSession: vi.fn(() => 0),
@@ -1381,11 +1385,11 @@ describe('ProjectChatService', () => {
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_workspace');
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('list_local_notes');
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_local_note');
-    expect(JSON.stringify(codex.dynamicTools[0])).toContain('list_ssh_connections');
-    expect(JSON.stringify(codex.dynamicTools[0])).toContain('run_ssh_command');
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('list_ssh_workspaces');
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('run_ssh_workspace_command');
     expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('/Users/');
     expect(codex.dynamicToolTimeouts[0]).toEqual([
-      { namespace: 'gosu_project', tool: 'run_ssh_command', timeoutMs: 155_000 },
+      { namespace: 'gosu_project', tool: 'run_ssh_workspace_command', timeoutMs: 155_000 },
     ]);
     const handler = codex.dynamicToolHandlers[0]!;
     await expect(
@@ -1491,7 +1495,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-list-during-terminal-note-settlement',
         namespace: 'gosu_project',
-        tool: 'list_ssh_connections',
+        tool: 'list_ssh_workspaces',
         arguments: {},
       },
       dynamicToolDelivery(),
@@ -1502,7 +1506,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-run-during-terminal-note-settlement',
         namespace: 'gosu_project',
-        tool: 'run_ssh_command',
+        tool: 'run_ssh_workspace_command',
         arguments: {
           connectionId: randomUUID(),
           command: '/usr/bin/nvidia-smi',
@@ -1512,8 +1516,8 @@ describe('ProjectChatService', () => {
     );
     expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
     expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
-    expect(ssh.listConnections).not.toHaveBeenCalled();
-    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
+    expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
     expect(ssh.cancelSession).toHaveBeenCalledWith(projectA.id, receipt.sessionId);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(storage.snapshot(projectA.id).messages).toHaveLength(1);
@@ -2221,7 +2225,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-list-after-cancel-start',
         namespace: 'gosu_project',
-        tool: 'list_ssh_connections',
+        tool: 'list_ssh_workspaces',
         arguments: {},
       },
       dynamicToolDelivery(),
@@ -2232,7 +2236,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-run-after-cancel-start',
         namespace: 'gosu_project',
-        tool: 'run_ssh_command',
+        tool: 'run_ssh_workspace_command',
         arguments: {
           connectionId: randomUUID(),
           command: '/usr/bin/nvidia-smi',
@@ -2246,8 +2250,8 @@ describe('ProjectChatService', () => {
     );
     expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
     expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
-    expect(ssh.listConnections).not.toHaveBeenCalled();
-    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
+    expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
     expect(ssh.cancelSession).toHaveBeenCalledWith(projectA.id, receipt.sessionId);
     codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
   });
@@ -2274,7 +2278,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-list-after-cancel-lookup-failure',
         namespace: 'gosu_project',
-        tool: 'list_ssh_connections',
+        tool: 'list_ssh_workspaces',
         arguments: {},
       },
       dynamicToolDelivery(),
@@ -2285,7 +2289,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-run-after-cancel-lookup-failure',
         namespace: 'gosu_project',
-        tool: 'run_ssh_command',
+        tool: 'run_ssh_workspace_command',
         arguments: { connectionId: randomUUID(), command: '/usr/bin/nvidia-smi' },
       },
       dynamicToolDelivery(),
@@ -2296,8 +2300,8 @@ describe('ProjectChatService', () => {
     );
     expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
     expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
-    expect(ssh.listConnections).not.toHaveBeenCalled();
-    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
+    expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
     expect(ssh.cancelSession).toHaveBeenCalledWith(projectA.id, receipt.sessionId);
     codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
   });
@@ -2335,7 +2339,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-list-after-startup-stop',
         namespace: 'gosu_project',
-        tool: 'list_ssh_connections',
+        tool: 'list_ssh_workspaces',
         arguments: {},
       },
       dynamicToolDelivery(),
@@ -2346,7 +2350,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-run-after-startup-stop',
         namespace: 'gosu_project',
-        tool: 'run_ssh_command',
+        tool: 'run_ssh_workspace_command',
         arguments: { connectionId: randomUUID(), command: '/usr/bin/nvidia-smi' },
       },
       dynamicToolDelivery(),
@@ -2354,8 +2358,8 @@ describe('ProjectChatService', () => {
 
     expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
     expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
-    expect(ssh.listConnections).not.toHaveBeenCalled();
-    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
+    expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
     codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
   });
 
@@ -2378,7 +2382,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-after-navigation',
         namespace: 'gosu_project',
-        tool: 'list_ssh_connections',
+        tool: 'list_ssh_workspaces',
         arguments: {},
       },
       dynamicToolDelivery(),
@@ -2434,7 +2438,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-list-after-startup-revoke',
         namespace: 'gosu_project',
-        tool: 'list_ssh_connections',
+        tool: 'list_ssh_workspaces',
         arguments: {},
       },
       dynamicToolDelivery(),
@@ -2445,7 +2449,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-run-after-startup-revoke',
         namespace: 'gosu_project',
-        tool: 'run_ssh_command',
+        tool: 'run_ssh_workspace_command',
         arguments: {
           connectionId: randomUUID(),
           command: '/usr/bin/nvidia-smi',
@@ -2456,8 +2460,8 @@ describe('ProjectChatService', () => {
 
     expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
     expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
-    expect(ssh.listConnections).not.toHaveBeenCalled();
-    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
+    expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
     codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
   });
 
@@ -2492,7 +2496,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-list-in-new-session',
         namespace: 'gosu_project',
-        tool: 'list_ssh_connections',
+        tool: 'list_ssh_workspaces',
         arguments: {},
       },
       dynamicToolDelivery(),
@@ -2501,9 +2505,9 @@ describe('ProjectChatService', () => {
     expect(listed.success).toBe(true);
     expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({
       schemaVersion: 1,
-      connections: [],
+      workspaces: [],
     });
-    expect(ssh.listConnections).toHaveBeenCalledOnce();
+    expect(ssh.listWorkspaceGrants).toHaveBeenCalledOnce();
     codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
   });
 
@@ -2530,7 +2534,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-list-after-storage-failure',
         namespace: 'gosu_project',
-        tool: 'list_ssh_connections',
+        tool: 'list_ssh_workspaces',
         arguments: {},
       },
       dynamicToolDelivery(),
@@ -2541,7 +2545,7 @@ describe('ProjectChatService', () => {
         turnId: receipt.turnId,
         callId: 'ssh-run-after-storage-failure',
         namespace: 'gosu_project',
-        tool: 'run_ssh_command',
+        tool: 'run_ssh_workspace_command',
         arguments: {
           connectionId: randomUUID(),
           command: '/usr/bin/nvidia-smi',
@@ -2552,8 +2556,8 @@ describe('ProjectChatService', () => {
 
     expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
     expect(JSON.parse(executed.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
-    expect(ssh.listConnections).not.toHaveBeenCalled();
-    expect(ssh.runAgentCommand).not.toHaveBeenCalled();
+    expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
+    expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
     expect(ssh.cancelProject).toHaveBeenCalledWith(projectA.id);
     codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
   });

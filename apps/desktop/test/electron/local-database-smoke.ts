@@ -993,6 +993,127 @@ function verifyLegacyChatMigration(rootUserData: string, fixedTimestamp: string)
   }
 }
 
+function verifyLegacySshMigration(rootUserData: string, fixedTimestamp: string) {
+  const primaryUserData = app.getPath('userData');
+  const legacyUserData = join(rootUserData, 'legacy-ssh-v010');
+  mkdirSync(legacyUserData, { recursive: true });
+  app.setPath('userData', legacyUserData);
+  try {
+    const bootstrap = new LocalDatabase();
+    bootstrap.open();
+    bootstrap.close();
+
+    const keyHex = safeStorage
+      .decryptString(readFileSync(join(legacyUserData, 'local-key.bin')))
+      .trim();
+    const legacyConnectionId = randomUUID();
+    const raw = new Database(join(legacyUserData, 'gosu.db'));
+    try {
+      raw.pragma(`key="x'${keyHex}'"`);
+      raw.pragma('foreign_keys=OFF');
+      raw.transaction(() => {
+        raw.exec(`
+          drop table ssh_workspace_grants;
+          drop table ssh_connections;
+          create table ssh_connections (
+            id text primary key check (length(id) = 36),
+            schema_version integer not null check (schema_version = 1),
+            label text not null check (length(label) between 1 and 120),
+            host_alias text not null check (length(host_alias) between 1 and 255),
+            version integer not null check (version > 0),
+            created_at text not null,
+            updated_at text not null
+          );
+          create index ssh_connections_by_label on ssh_connections(label,id);
+        `);
+        raw
+          .prepare(
+            `insert into ssh_connections(
+               id,schema_version,label,host_alias,version,created_at,updated_at
+             ) values(?,?,?,?,?,?,?)`,
+          )
+          .run(
+            legacyConnectionId,
+            1,
+            'Legacy alias',
+            'legacy-research-gpu',
+            1,
+            fixedTimestamp,
+            fixedTimestamp,
+          );
+      })();
+    } finally {
+      raw.close();
+    }
+
+    const migrated = new LocalDatabase();
+    migrated.open();
+    const legacy = migrated
+      .listSshConnections()
+      .find((connection) => connection.id === legacyConnectionId);
+    invariant(
+      legacy?.hostAlias === 'legacy-research-gpu' && legacy.directTarget === null,
+      'legacy_ssh_alias_migration_failed',
+    );
+    invariant(
+      migrated.listSshWorkspaceGrants(randomUUID()).length === 0,
+      'legacy_ssh_workspace_table_missing',
+    );
+
+    const directConnectionId = randomUUID();
+    const projectId = randomUUID();
+    const grantId = randomUUID();
+    invariant(
+      migrated.createSshConnection({
+        schemaVersion: 1,
+        id: directConnectionId,
+        label: 'Imported SSH server',
+        hostAlias: 'direct-203.0.113.20-2222',
+        directTarget: {
+          host: '203.0.113.20',
+          user: 'researcher',
+          port: 2222,
+          localForwards: [],
+        },
+        version: 1,
+        createdAt: fixedTimestamp,
+        updatedAt: fixedTimestamp,
+      }),
+      'migrated_ssh_direct_profile_create_failed',
+    );
+    invariant(
+      migrated.createSshWorkspaceGrant({
+        schemaVersion: 1,
+        id: grantId,
+        projectId,
+        connectionId: directConnectionId,
+        canonicalRoot: '/workspace/research-project',
+        permissionMode: 'diagnostics',
+        version: 1,
+        createdAt: fixedTimestamp,
+        updatedAt: fixedTimestamp,
+      }),
+      'migrated_ssh_workspace_grant_create_failed',
+    );
+    migrated.close();
+
+    const reopened = new LocalDatabase();
+    reopened.open();
+    invariant(
+      reopened.listSshConnections().some((connection) => connection.id === legacyConnectionId) &&
+        reopened.listSshConnections().some((connection) => connection.id === directConnectionId),
+      'migrated_ssh_profiles_were_not_durable',
+    );
+    invariant(
+      reopened.listSshWorkspaceGrants(projectId)[0]?.id === grantId,
+      'migrated_ssh_workspace_grant_was_not_durable',
+    );
+    reopened.close();
+  } finally {
+    app.setPath('userData', primaryUserData);
+  }
+}
+
 function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: string) {
   const primaryUserData = app.getPath('userData');
   const legacyUserData = join(rootUserData, 'legacy-profile-v050');
@@ -1379,6 +1500,19 @@ void app.whenReady().then(async () => {
       id: sshConnectionId,
       label: 'Fixture GPU',
       hostAlias: 'fixture-gpu',
+      directTarget: {
+        host: '203.0.113.10',
+        user: 'researcher',
+        port: 2222,
+        localForwards: [
+          {
+            bindAddress: '127.0.0.1' as const,
+            localPort: 8080,
+            destinationHost: 'localhost' as const,
+            destinationPort: 8080,
+          },
+        ],
+      },
       version: 1,
       createdAt: fixedTimestamp,
       updatedAt: fixedTimestamp,
@@ -1396,6 +1530,40 @@ void app.whenReady().then(async () => {
       'ssh_profile_stale_version_was_accepted',
     );
     invariant(database.updateSshConnection(updatedSshProfile, 1), 'ssh_profile_update_failed');
+    const sshWorkspaceGrantId = randomUUID();
+    const sshWorkspaceGrant = {
+      schemaVersion: 1 as const,
+      id: sshWorkspaceGrantId,
+      projectId: chatProjectId,
+      connectionId: sshConnectionId,
+      canonicalRoot: '/workspace',
+      permissionMode: 'diagnostics' as const,
+      version: 1,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    };
+    invariant(
+      database.createSshWorkspaceGrant(sshWorkspaceGrant),
+      'ssh_workspace_grant_create_failed',
+    );
+    invariant(
+      !database.createSshWorkspaceGrant(sshWorkspaceGrant),
+      'ssh_workspace_grant_duplicate_was_accepted',
+    );
+    const updatedSshWorkspaceGrant = {
+      ...sshWorkspaceGrant,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace' as const,
+      version: 2,
+    };
+    invariant(
+      !database.updateSshWorkspaceGrant({ ...updatedSshWorkspaceGrant, version: 3 }, 2),
+      'ssh_workspace_grant_stale_version_was_accepted',
+    );
+    invariant(
+      database.updateSshWorkspaceGrant(updatedSshWorkspaceGrant, 1),
+      'ssh_workspace_grant_update_failed',
+    );
     database.close();
 
     const branchLimitProjectId = randomUUID();
@@ -1473,7 +1641,8 @@ void app.whenReady().then(async () => {
       legacyDatabase.pragma('table_info(ssh_connections)') as Array<{ name: string }>
     ).map((column) => column.name);
     invariant(
-      sshColumns.join(',') === 'id,schema_version,label,host_alias,version,created_at,updated_at',
+      sshColumns.join(',') ===
+        'id,schema_version,label,host_alias,direct_target_json,version,created_at,updated_at',
       'ssh_profile_table_contains_unexpected_data',
     );
     const legacyRows = legacyDatabase
@@ -1550,6 +1719,31 @@ void app.whenReady().then(async () => {
     invariant(
       legacyReopened.pendingWorkspaceSummary().latestWorkspaceRevision === 2,
       'legacy_outbox_summary_revision_failed',
+    );
+    const restoredSshProfile = legacyReopened
+      .listSshConnections()
+      .find((profile) => profile.id === sshConnectionId);
+    invariant(
+      restoredSshProfile?.directTarget?.host === '203.0.113.10' &&
+        restoredSshProfile.directTarget.localForwards[0]?.localPort === 8080,
+      'ssh_direct_target_restart_restore_failed',
+    );
+    invariant(
+      !JSON.stringify(restoredSshProfile).includes('ssh -p'),
+      'ssh_raw_import_command_was_persisted',
+    );
+    const restoredSshWorkspaceGrant = legacyReopened
+      .listSshWorkspaceGrants(chatProjectId)
+      .find((grant) => grant.id === sshWorkspaceGrantId);
+    invariant(
+      restoredSshWorkspaceGrant?.canonicalRoot === '/workspace/research-project' &&
+        restoredSshWorkspaceGrant.permissionMode === 'workspace' &&
+        restoredSshWorkspaceGrant.version === 2,
+      'ssh_workspace_grant_restart_restore_failed',
+    );
+    invariant(
+      !legacyReopened.removeSshWorkspaceGrant(chatProjectId, sshWorkspaceGrantId, 1),
+      'ssh_workspace_grant_stale_remove_was_accepted',
     );
     legacyReopened.close();
 
@@ -1747,6 +1941,14 @@ void app.whenReady().then(async () => {
         reopenedSsh[0].hostAlias === 'fixture-gpu-2' &&
         reopenedSsh[0].version === 2,
       'ssh_profile_restart_restore_failed',
+    );
+    invariant(
+      reopened.removeSshConnection(sshConnectionId, 2),
+      'ssh_profile_remove_for_grant_cascade_failed',
+    );
+    invariant(
+      reopened.listSshWorkspaceGrants(chatProjectId).length === 0,
+      'ssh_workspace_grant_connection_cascade_failed',
     );
     invariant(
       reopened.listProjectChatSessions(chatProjectId).length === 2 &&
@@ -2063,6 +2265,7 @@ void app.whenReady().then(async () => {
     recoveryRequired.close();
 
     verifyLegacyChatMigration(temporaryUserData, fixedTimestamp);
+    verifyLegacySshMigration(temporaryUserData, fixedTimestamp);
     verifyLegacyProfileMigration(temporaryUserData, fixedTimestamp);
     verifyLiteratureRelevanceMigration(temporaryUserData, fixedTimestamp);
     verifyLiteraturePersistence(fixedTimestamp);

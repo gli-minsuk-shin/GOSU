@@ -18,16 +18,22 @@ import {
   type SshApprovalRequest,
   type SshConnectionProfile,
 } from '../src/shared/ssh-contracts';
+import type {
+  RemoteWorkspaceGrant,
+  SshWorkspaceAgentCommand,
+} from '../src/shared/ssh-workspace-contracts';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const SESSION_A = '22222222-2222-4222-8222-222222222222';
 const SESSION_B = '33333333-3333-4333-8333-333333333333';
 const CONNECTION_ID = '44444444-4444-4444-8444-444444444444';
 const ATTEMPT_ID = '55555555-5555-4555-8555-555555555555';
+const OTHER_PROJECT_ID = '66666666-6666-4666-8666-666666666666';
 const NOW = new Date('2026-08-04T00:00:00.000Z');
 
 class MemorySshStorage implements SshConnectionStorage {
   readonly profiles = new Map<string, SshConnectionProfile>();
+  readonly workspaceGrants = new Map<string, RemoteWorkspaceGrant>();
 
   constructor(profile: SshConnectionProfile | null = connectionFixture()) {
     if (profile) this.profiles.set(profile.id, profile);
@@ -43,17 +49,60 @@ class MemorySshStorage implements SshConnectionStorage {
     return true;
   }
 
-  updateSshConnection(profile: SshConnectionProfile, expectedVersion: number) {
+  updateSshConnection(
+    profile: SshConnectionProfile,
+    expectedVersion: number,
+  ): boolean | Promise<boolean> {
     const current = this.profiles.get(profile.id);
     if (!current || current.version !== expectedVersion) return false;
     this.profiles.set(profile.id, profile);
     return true;
   }
 
-  removeSshConnection(connectionId: string, expectedVersion: number) {
+  removeSshConnection(connectionId: string, expectedVersion: number): boolean | Promise<boolean> {
     const current = this.profiles.get(connectionId);
     if (!current || current.version !== expectedVersion) return false;
     return this.profiles.delete(connectionId);
+  }
+
+  listSshWorkspaceGrants(projectId: string) {
+    return [...this.workspaceGrants.values()].filter((grant) => grant.projectId === projectId);
+  }
+
+  createSshWorkspaceGrant(grant: RemoteWorkspaceGrant) {
+    if (
+      this.workspaceGrants.has(grant.id) ||
+      [...this.workspaceGrants.values()].some(
+        (existing) =>
+          existing.projectId === grant.projectId && existing.connectionId === grant.connectionId,
+      )
+    ) {
+      return false;
+    }
+    this.workspaceGrants.set(grant.id, grant);
+    return true;
+  }
+
+  updateSshWorkspaceGrant(
+    grant: RemoteWorkspaceGrant,
+    expectedVersion: number,
+  ): boolean | Promise<boolean> {
+    const current = this.workspaceGrants.get(grant.id);
+    if (!current || current.version !== expectedVersion) return false;
+    this.workspaceGrants.set(grant.id, grant);
+    return true;
+  }
+
+  removeSshWorkspaceGrant(
+    projectId: string,
+    grantId: string,
+    expectedVersion: number,
+  ): boolean | Promise<boolean> {
+    const current = this.workspaceGrants.get(grantId);
+    if (!current || current.projectId !== projectId || current.version !== expectedVersion) {
+      return false;
+    }
+    return this.workspaceGrants.delete(grantId);
   }
 }
 
@@ -85,6 +134,25 @@ function commandFixture(overrides: Partial<SshAgentCommand> = {}): SshAgentComma
   };
 }
 
+function workspaceCommandFixture(
+  grant: RemoteWorkspaceGrant,
+  overrides: Partial<SshWorkspaceAgentCommand> = {},
+): SshWorkspaceAgentCommand {
+  return {
+    projectId: grant.projectId,
+    sessionId: SESSION_A,
+    attemptId: ATTEMPT_ID,
+    turnId: 'turn-workspace',
+    toolCallId: 'tool-workspace',
+    connectionId: grant.connectionId,
+    grantId: grant.id,
+    command: '/usr/bin/git',
+    args: ['status', '--short'],
+    timeoutSeconds: 30,
+    ...overrides,
+  };
+}
+
 function runnerFixture(result?: Partial<SshProcessResult>) {
   const execute = vi.fn(async (): Promise<SshProcessResult> => ({
     exitCode: 0,
@@ -107,6 +175,14 @@ function nextApproval(service: SshConnectionService) {
       if (event.type === 'approval.requested') resolve(event.request);
     });
   });
+}
+
+function deferredSignal() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -138,6 +214,391 @@ describe('SSH connection and Allow once service', () => {
     await expect(
       service.removeConnection({ connectionId: created.id, expectedVersion: 2 }),
     ).resolves.toEqual({ removed: true });
+  });
+
+  it('owns project-scoped workspace grants with optimistic versions', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: { host: '203.0.113.10', user: 'researcher', port: 2222, localForwards: [] },
+      }),
+    );
+    const { runner } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const created = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace',
+      permissionMode: 'diagnostics',
+      confirmWorkspaceRisk: true,
+    });
+
+    await expect(service.listWorkspaceGrants(PROJECT_ID)).resolves.toMatchObject([
+      { grant: created, connection: { id: CONNECTION_ID } },
+    ]);
+    const updated = await service.updateWorkspaceGrant({
+      grantId: created.id,
+      projectId: PROJECT_ID,
+      expectedVersion: created.version,
+      canonicalRoot: '/root/project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    expect(updated).toMatchObject({ version: 2, canonicalRoot: '/root/project' });
+    await expect(
+      service.removeWorkspaceGrant({
+        grantId: updated.id,
+        projectId: OTHER_PROJECT_ID,
+        expectedVersion: updated.version,
+      }),
+    ).rejects.toMatchObject({ code: 'ssh_workspace_grant_not_found' });
+    await expect(
+      service.removeWorkspaceGrant({
+        grantId: updated.id,
+        projectId: PROJECT_ID,
+        expectedVersion: updated.version,
+      }),
+    ).resolves.toEqual({ removed: true });
+  });
+
+  it('requires a normalized direct target before enabling test/build workspace mode', async () => {
+    const { runner } = runnerFixture();
+    const service = new SshConnectionService(new MemorySshStorage(connectionFixture()), runner);
+
+    await expect(
+      service.createWorkspaceGrant({
+        projectId: PROJECT_ID,
+        connectionId: CONNECTION_ID,
+        canonicalRoot: '/workspace',
+        permissionMode: 'workspace',
+        confirmWorkspaceRisk: true,
+      }),
+    ).rejects.toMatchObject({ code: 'ssh_workspace_command_not_allowed' });
+  });
+
+  it('binds a root workspace command to exact grant, root, cwd, hash, and fresh approval', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: { host: '203.0.113.10', user: 'root', port: 2222, localForwards: [] },
+      }),
+    );
+    const { runner, execute } = runnerFixture({ stdout: ' M src/model.py\n' });
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const grant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/root/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const approval = nextApproval(service);
+    const execution = service.runAgentWorkspaceCommand(
+      workspaceCommandFixture(grant, {
+        args: ['--no-pager', 'diff', '--stat'],
+        workspaceSubdirectory: 'packages/app',
+      }),
+    );
+    const request = await approval;
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(request).toMatchObject({
+      executionMode: 'remote_workspace',
+      targetDisplay: 'root@203.0.113.10:2222',
+      privilegeClass: 'root',
+      rootLogin: true,
+      workspaceGrantId: grant.id,
+      workspaceGrantVersion: 1,
+      workspaceRoot: '/root/research-project',
+      workspaceWorkingDirectory: '/root/research-project/packages/app',
+      workspaceOperation: 'inspect',
+      connectionVersion: 1,
+      commandSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
+    expect(request.commandPreview).toContain("'core.fsmonitor=false'");
+    expect(request.commandPreview).toContain("'core.hooksPath=/dev/null'");
+    expect(request.commandPreview).toContain("'--no-ext-diff'");
+    expect(request.commandPreview).toContain("'--no-textconv'");
+    expect(request.commandPreview).toContain("cd '/root/research-project/packages/app'");
+    service.resolveApproval({ approvalId: request.id, decision: 'allow_once' });
+
+    await expect(execution).resolves.toMatchObject({ stdout: ' M src/model.py\n' });
+    expect(execute).toHaveBeenCalledWith(
+      'fixture-gpu',
+      expect.objectContaining({
+        args: expect.arrayContaining([
+          '-c',
+          'core.fsmonitor=false',
+          'diff',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--stat',
+        ]),
+        workingDirectory: '/root/research-project/packages/app',
+      }),
+      expect.any(Object),
+      expect.objectContaining({ user: 'root', host: '203.0.113.10', port: 2222 }),
+    );
+  });
+
+  it.each([
+    { workspaceSubdirectory: '../outside' },
+    { command: '/bin/bash', args: ['-lc', 'touch owned'] },
+    { command: '/usr/bin/git', args: ['clean', '-fdx'] },
+    { command: '/usr/bin/python3', args: ['-c', 'print(1)'] },
+  ])('rejects forged or escaping workspace command before approval', async (override) => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: { host: '203.0.113.10', user: 'researcher', localForwards: [] },
+      }),
+    );
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner);
+    const grant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+
+    await expect(
+      service.runAgentWorkspaceCommand(workspaceCommandFixture(grant, override)),
+    ).rejects.toMatchObject({ code: 'ssh_workspace_command_not_allowed' });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('revalidates the exact grant version immediately after approval', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: { host: '203.0.113.10', user: 'researcher', localForwards: [] },
+      }),
+    );
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner);
+    const grant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace',
+      permissionMode: 'diagnostics',
+      confirmWorkspaceRisk: true,
+    });
+    const approval = nextApproval(service);
+    const execution = service.runAgentWorkspaceCommand(workspaceCommandFixture(grant));
+    const request = await approval;
+    storage.workspaceGrants.set(grant.id, { ...grant, version: 2 });
+
+    service.resolveApproval({ approvalId: request.id, decision: 'allow_once' });
+    await expect(execution).rejects.toMatchObject({ code: 'ssh_workspace_grant_conflict' });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(['grant update', 'grant removal', 'connection update', 'connection removal'] as const)(
+    'waits for an in-flight %s before post-approval revalidation and never starts the runner',
+    async (mutationKind) => {
+      const profile = connectionFixture({
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          port: 2222,
+          localForwards: [],
+        },
+      });
+      const storage = new MemorySshStorage(profile);
+      const { runner, execute } = runnerFixture();
+      const service = new SshConnectionService(storage, runner);
+      const grant = await service.createWorkspaceGrant({
+        projectId: PROJECT_ID,
+        connectionId: CONNECTION_ID,
+        canonicalRoot: '/workspace',
+        permissionMode: 'diagnostics',
+        confirmWorkspaceRisk: true,
+      });
+      const approvalPromise = nextApproval(service);
+      const execution = service.runAgentWorkspaceCommand(workspaceCommandFixture(grant));
+      const settledExecution = execution.catch((error: unknown) => error);
+      const approval = await approvalPromise;
+      const mutationStarted = deferredSignal();
+      const releaseMutation = deferredSignal();
+      let mutation: Promise<unknown>;
+
+      if (mutationKind === 'grant update') {
+        const original = storage.updateSshWorkspaceGrant.bind(storage);
+        vi.spyOn(storage, 'updateSshWorkspaceGrant').mockImplementationOnce(
+          async (nextGrant, expectedVersion) => {
+            mutationStarted.resolve();
+            await releaseMutation.promise;
+            return original(nextGrant, expectedVersion);
+          },
+        );
+        mutation = service.updateWorkspaceGrant({
+          grantId: grant.id,
+          projectId: PROJECT_ID,
+          expectedVersion: grant.version,
+          canonicalRoot: '/workspace/changed',
+          permissionMode: 'diagnostics',
+          confirmWorkspaceRisk: true,
+        });
+      } else if (mutationKind === 'grant removal') {
+        const original = storage.removeSshWorkspaceGrant.bind(storage);
+        vi.spyOn(storage, 'removeSshWorkspaceGrant').mockImplementationOnce(
+          async (projectId, grantId, expectedVersion) => {
+            mutationStarted.resolve();
+            await releaseMutation.promise;
+            return original(projectId, grantId, expectedVersion);
+          },
+        );
+        mutation = service.removeWorkspaceGrant({
+          grantId: grant.id,
+          projectId: PROJECT_ID,
+          expectedVersion: grant.version,
+        });
+      } else if (mutationKind === 'connection update') {
+        const original = storage.updateSshConnection.bind(storage);
+        vi.spyOn(storage, 'updateSshConnection').mockImplementationOnce(
+          async (nextProfile, expectedVersion) => {
+            mutationStarted.resolve();
+            await releaseMutation.promise;
+            return original(nextProfile, expectedVersion);
+          },
+        );
+        mutation = service.updateConnection({
+          connectionId: profile.id,
+          expectedVersion: profile.version,
+          label: 'Renamed fixture GPU',
+          hostAlias: profile.hostAlias,
+        });
+      } else {
+        const original = storage.removeSshConnection.bind(storage);
+        vi.spyOn(storage, 'removeSshConnection').mockImplementationOnce(
+          async (connectionId, expectedVersion) => {
+            mutationStarted.resolve();
+            await releaseMutation.promise;
+            return original(connectionId, expectedVersion);
+          },
+        );
+        mutation = service.removeConnection({
+          connectionId: profile.id,
+          expectedVersion: profile.version,
+        });
+      }
+
+      await mutationStarted.promise;
+      service.resolveApproval({ approvalId: approval.id, decision: 'allow_once' });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(execute).not.toHaveBeenCalled();
+
+      releaseMutation.resolve();
+      await mutation;
+      const executionError = await settledExecution;
+      expect(executionError).toMatchObject({
+        code:
+          mutationKind === 'connection update'
+            ? 'ssh_connection_version_conflict'
+            : 'ssh_cancelled',
+      });
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it('imports a normalized direct target idempotently and preserves an existing custom label', async () => {
+    const storage = new MemorySshStorage(null);
+    const { runner } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const command = 'ssh -p 2222 researcher@203.0.113.10 -L 8080:localhost:8080';
+
+    const created = await service.importCommand({ label: 'Private label', command });
+    expect(created).toMatchObject({
+      label: 'Private label',
+      hostAlias: 'direct-203.0.113.10-2222',
+      version: 1,
+      directTarget: {
+        host: '203.0.113.10',
+        user: 'researcher',
+        port: 2222,
+        localForwards: [{ bindAddress: '127.0.0.1', localPort: 8080 }],
+      },
+    });
+
+    await expect(service.importCommand({ command })).resolves.toEqual(created);
+    expect(storage.profiles.size).toBe(1);
+    expect(JSON.stringify([...storage.profiles.values()])).not.toContain('ssh -p');
+  });
+
+  it('uses distinct opaque default labels instead of exposing imported endpoints to the model', async () => {
+    const storage = new MemorySshStorage(null);
+    const { runner } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+
+    const first = await service.importCommand({
+      command: 'ssh -p 2222 researcher@203.0.113.10',
+    });
+    const second = await service.importCommand({
+      command: 'ssh -p 2223 researcher@203.0.113.11',
+    });
+
+    expect(first.label).toBe('Imported SSH server');
+    expect(second.label).toBe('Imported SSH server 2');
+    expect(`${first.label} ${second.label}`).not.toContain('203.0.113');
+  });
+
+  it('restricts an imported root login to non-file diagnostics and labels the exact approval target', async () => {
+    const profile = connectionFixture({
+      hostAlias: 'direct-203.0.113.10-2222',
+      directTarget: {
+        host: '203.0.113.10',
+        user: 'root',
+        port: 2222,
+        localForwards: [],
+      },
+    });
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(new MemorySshStorage(profile), runner);
+
+    for (const command of ['/usr/bin/cat', '/usr/bin/head', '/usr/bin/grep', '/usr/bin/ps']) {
+      await expect(service.runAgentCommand(commandFixture({ command, args: [] }))).rejects.toEqual(
+        expect.objectContaining<Partial<SshConnectionServiceError>>({
+          code: 'ssh_command_not_allowed',
+        }),
+      );
+    }
+    expect(execute).not.toHaveBeenCalled();
+
+    const approvalPromise = nextApproval(service);
+    const execution = service.runAgentCommand(commandFixture());
+    const approval = await approvalPromise;
+    expect(approval).toMatchObject({
+      targetDisplay: 'root@203.0.113.10:2222',
+      rootLogin: true,
+    });
+    service.resolveApproval({ approvalId: approval.id, decision: 'deny' });
+    await expect(execution).rejects.toMatchObject({ code: 'ssh_approval_denied' });
+  });
+
+  it('revalidates a direct target version after approval before starting the transport', async () => {
+    const profile = connectionFixture({
+      directTarget: {
+        host: '203.0.113.10',
+        user: 'researcher',
+        port: 2222,
+        localForwards: [],
+      },
+    });
+    const storage = new MemorySshStorage(profile);
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner);
+    const approvalPromise = nextApproval(service);
+    const execution = service.runAgentCommand(commandFixture());
+    const approval = await approvalPromise;
+    storage.profiles.set(profile.id, {
+      ...profile,
+      version: 2,
+      directTarget: { ...profile.directTarget!, host: '203.0.113.11' },
+    });
+
+    service.resolveApproval({ approvalId: approval.id, decision: 'allow_once' });
+
+    await expect(execution).rejects.toMatchObject({ code: 'ssh_connection_version_conflict' });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('does not execute before a single-use Allow once decision', async () => {

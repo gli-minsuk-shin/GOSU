@@ -135,6 +135,46 @@ if (alias === 'wait-forever') {
     }
   });
 
+  it('uses normalized direct fields with no SSH config, raw command, or imported forwarding', async () => {
+    const result = await createSshCommandRunner(executable)({
+      hostAlias: 'direct-fixture',
+      directTarget: {
+        host: '203.0.113.10',
+        user: 'researcher',
+        port: 2222,
+        localForwards: [
+          {
+            bindAddress: '127.0.0.1',
+            localPort: 8080,
+            destinationHost: 'localhost',
+            destinationPort: 8080,
+          },
+        ],
+      },
+      command: '/usr/bin/true',
+      timeoutSeconds: 5,
+    });
+    const captured = JSON.parse(result.stdout) as { args: string[] };
+
+    expect(captured.args).toEqual(
+      expect.arrayContaining([
+        '-F',
+        'none',
+        '-l',
+        'researcher',
+        '-p',
+        '2222',
+        'ClearAllForwardings=yes',
+        'GatewayPorts=no',
+        '--',
+        '203.0.113.10',
+      ]),
+    );
+    expect(captured.args).not.toContain('-L');
+    expect(JSON.stringify(captured.args)).not.toContain('8080:localhost:8080');
+    expect(JSON.stringify(captured.args)).not.toContain('ssh -p');
+  });
+
   it('quotes every remote token without turning arguments into shell syntax', () => {
     expect(quotePosixToken("alpha'beta")).toBe("'alpha'\"'\"'beta'");
     expect(

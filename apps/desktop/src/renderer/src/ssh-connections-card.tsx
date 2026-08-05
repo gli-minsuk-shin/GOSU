@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import type {
   CreateSshConnectionInput,
+  ImportSshCommandInput,
   RemoveSshConnectionInput,
   SshConnectionProfile,
   UpdateSshConnectionInput,
@@ -10,6 +11,10 @@ import type {
 type MaybePromise<T> = T | Promise<T>;
 
 const SSH_HOST_ALIAS_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+
+export function canEditSshHostAlias(connection: SshConnectionProfile) {
+  return !connection.directTarget;
+}
 
 export type SshHostAliasValidation = Readonly<
   | { valid: true; alias: string }
@@ -29,13 +34,13 @@ export function validateSshHostAliasInput(value: string): SshHostAliasValidation
   const looksLikeSshCommand = /^(?:\/[^\s]+\/)?ssh\s+/iu.test(candidate);
   if (looksLikeSshCommand) {
     const forwardingNote = /(?:^|\s)-(?:[LRD])(?:\s|\d|$)/u.test(candidate)
-      ? ' GOSU does not accept SSH forwarding options such as -L.'
+      ? ' A supported -L value will be saved as an inactive loopback forwarding plan.'
       : '';
     return {
       valid: false,
       reason: 'ssh-command',
       message:
-        'Enter only the Host alias (for example, research-gpu), not the full ssh command. Put HostName, User, and Port in ~/.ssh/config.' +
+        'Paste this full command into “Paste an SSH connection command” above, or enter only a Host alias here.' +
         forwardingNote,
     };
   }
@@ -88,6 +93,7 @@ export type SshConnectionsCardProps = Readonly<{
   busy: boolean;
   testStatus?: Readonly<Record<string, string>>;
   onCreate: (input: CreateSshConnectionInput) => MaybePromise<unknown>;
+  onImport: (input: ImportSshCommandInput) => MaybePromise<unknown>;
   onUpdate: (input: UpdateSshConnectionInput) => MaybePromise<unknown>;
   onRemove: (input: RemoveSshConnectionInput) => MaybePromise<unknown>;
   onTest: (connectionId: string) => MaybePromise<unknown>;
@@ -98,6 +104,7 @@ export function SshConnectionsCard({
   busy,
   testStatus = {},
   onCreate,
+  onImport,
   onUpdate,
   onRemove,
   onTest,
@@ -105,6 +112,8 @@ export function SshConnectionsCard({
   const [label, setLabel] = useState('');
   const [hostAlias, setHostAlias] = useState('');
   const [hostAliasTouched, setHostAliasTouched] = useState(false);
+  const [importLabel, setImportLabel] = useState('');
+  const [importCommand, setImportCommand] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingLabel, setEditingLabel] = useState('');
   const [editingAlias, setEditingAlias] = useState('');
@@ -117,33 +126,94 @@ export function SshConnectionsCard({
       <header className="card-head">
         <div>
           <span>LOCAL SSH</span>
-          <h2 id="ssh-connections-heading">Registered server aliases</h2>
+          <h2 id="ssh-connections-heading">Registered SSH servers</h2>
         </div>
-        <small>{connections.length} available to Project Chat</small>
+        <small>{connections.length} registered locally</small>
       </header>
       <p className="privacy">
-        GOSU calls the system OpenSSH client with a host alias from your SSH config. Authentication
-        stays in your SSH agent or existing config; passwords and private keys are never stored by
-        this connection list.
+        GOSU calls the system OpenSSH client with a registered alias or a safely parsed destination.
+        Authentication stays in your SSH agent; passwords, private keys, and pasted command text are
+        never stored by this connection list.
       </p>
 
       <details>
         <summary>How to add an SSH server</summary>
         <p className="privacy">
-          First add a named Host to <code>~/.ssh/config</code>, confirm{' '}
-          <code>ssh research-gpu</code> works in Terminal, then enter only <code>research-gpu</code>{' '}
-          below. Do not paste an entire command, <code>user@host</code>, <code>-p</code>, or{' '}
-          <code>-L</code> here.
+          You can paste a narrow connection command in the importer below. GOSU accepts only{' '}
+          <code>ssh</code>, <code>-p</code>, <code>-l</code>, one destination, and loopback-only{' '}
+          <code>-L</code>. It never executes the pasted text. Alternatively, add a named Host to{' '}
+          <code>~/.ssh/config</code>, confirm <code>ssh research-gpu</code> works in Terminal, then
+          enter only <code>research-gpu</code> in the alias form.
         </p>
         <pre>{`Host research-gpu
   HostName gpu.example.edu
   User researcher
   Port 2222`}</pre>
         <p className="privacy">
-          Port forwarding remains outside GOSU. Project Chat can request only separately approved,
-          read-only diagnostic commands.
+          Imported <code>-L</code> requests are stored as an inactive normalized plan. Project Chat
+          does not open a tunnel automatically and can request only separately approved commands.
         </p>
       </details>
+
+      <form
+        className="stack-form ssh-command-import-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (busy || !importCommand.trim()) return;
+          void Promise.resolve()
+            .then(() =>
+              onImport({
+                command: importCommand.trim(),
+                ...(importLabel.trim() ? { label: importLabel.trim() } : {}),
+              }),
+            )
+            .then(
+              (succeeded) => {
+                if (succeeded === false) return;
+                setImportLabel('');
+                setImportCommand('');
+              },
+              () => undefined,
+            );
+        }}
+      >
+        <strong>Paste an SSH connection command</strong>
+        <label>
+          Server name · optional
+          <input
+            value={importLabel}
+            onChange={(event) => setImportLabel(event.target.value)}
+            maxLength={120}
+            placeholder="8× RTX 3080"
+            disabled={busy}
+          />
+        </label>
+        <label>
+          SSH command
+          <textarea
+            value={importCommand}
+            onChange={(event) => setImportCommand(event.target.value)}
+            maxLength={4096}
+            rows={3}
+            spellCheck={false}
+            placeholder="ssh -p 2222 researcher@203.0.113.10 -L 8080:localhost:8080"
+            required
+            disabled={busy}
+          />
+        </label>
+        <p className="privacy">
+          The parser runs locally without an LLM or shell. Generic options, key paths, proxy
+          commands, remote commands, and shell syntax are rejected. A root login requires a separate
+          project workspace grant and is marked HIGH RISK for every approval.
+        </p>
+        <button type="submit" className="primary-button" disabled={busy || !importCommand.trim()}>
+          Parse and register
+        </button>
+      </form>
+
+      <div className="ssh-registration-divider" role="separator">
+        <span>or register an existing ~/.ssh/config alias</span>
+      </div>
 
       <form
         className="stack-form"
@@ -152,7 +222,12 @@ export function SshConnectionsCard({
           setHostAliasTouched(true);
           if (busy || !label.trim() || !hostAliasValidation.valid) return;
           void Promise.resolve()
-            .then(() => onCreate({ label: label.trim(), hostAlias: hostAliasValidation.alias }))
+            .then(() =>
+              onCreate({
+                label: label.trim(),
+                hostAlias: hostAliasValidation.alias,
+              }),
+            )
             .then(
               (succeeded) => {
                 if (succeeded === false) return;
@@ -215,8 +290,8 @@ export function SshConnectionsCard({
       <div className="connection-list">
         {connections.length === 0 ? (
           <div className="empty-card">
-            <strong>No SSH server aliases registered</strong>
-            <p>Add an alias already configured for non-interactive SSH Agent authentication.</p>
+            <strong>No SSH servers registered</strong>
+            <p>Paste a connection command or add an existing OpenSSH Host alias.</p>
           </div>
         ) : (
           connections.map((connection) => {
@@ -229,14 +304,24 @@ export function SshConnectionsCard({
                     onSubmit={(event) => {
                       event.preventDefault();
                       setEditingAliasTouched(true);
-                      if (busy || !editingLabel.trim() || !editingAliasValidation.valid) return;
+                      if (
+                        busy ||
+                        !editingLabel.trim() ||
+                        (canEditSshHostAlias(connection) && !editingAliasValidation.valid)
+                      ) {
+                        return;
+                      }
                       void Promise.resolve()
                         .then(() =>
                           onUpdate({
                             connectionId: connection.id,
                             expectedVersion: connection.version,
                             label: editingLabel.trim(),
-                            hostAlias: editingAliasValidation.alias,
+                            hostAlias: !canEditSshHostAlias(connection)
+                              ? connection.hostAlias
+                              : editingAliasValidation.valid
+                                ? editingAliasValidation.alias
+                                : connection.hostAlias,
                           }),
                         )
                         .then(
@@ -254,37 +339,53 @@ export function SshConnectionsCard({
                       maxLength={120}
                       disabled={busy}
                     />
-                    <input
-                      aria-label="OpenSSH host alias"
-                      value={editingAlias}
-                      onChange={(event) => {
-                        setEditingAlias(event.target.value);
-                        setEditingAliasTouched(true);
-                      }}
-                      onBlur={() => setEditingAliasTouched(true)}
-                      maxLength={255}
-                      aria-invalid={editingAliasTouched && !editingAliasValidation.valid}
-                      aria-describedby={
-                        editingAliasTouched && !editingAliasValidation.valid
-                          ? `ssh-edit-alias-error-${connection.id}`
-                          : undefined
-                      }
-                      disabled={busy}
-                    />
-                    {editingAliasTouched && !editingAliasValidation.valid && (
-                      <p
-                        className="settings-validation"
-                        id={`ssh-edit-alias-error-${connection.id}`}
-                        role="alert"
-                      >
-                        {editingAliasValidation.message}
+                    {!canEditSshHostAlias(connection) && connection.directTarget ? (
+                      <p className="privacy">
+                        Direct target ·{' '}
+                        {connection.directTarget.user ? `${connection.directTarget.user}@` : ''}
+                        {connection.directTarget.host}
+                        {connection.directTarget.port ? `:${connection.directTarget.port}` : ''}.
+                        Re-import an SSH command to change this target.
                       </p>
+                    ) : (
+                      <input
+                        aria-label="OpenSSH host alias"
+                        value={editingAlias}
+                        onChange={(event) => {
+                          setEditingAlias(event.target.value);
+                          setEditingAliasTouched(true);
+                        }}
+                        onBlur={() => setEditingAliasTouched(true)}
+                        maxLength={255}
+                        aria-invalid={editingAliasTouched && !editingAliasValidation.valid}
+                        aria-describedby={
+                          editingAliasTouched && !editingAliasValidation.valid
+                            ? `ssh-edit-alias-error-${connection.id}`
+                            : undefined
+                        }
+                        disabled={busy}
+                      />
                     )}
+                    {canEditSshHostAlias(connection) &&
+                      editingAliasTouched &&
+                      !editingAliasValidation.valid && (
+                        <p
+                          className="settings-validation"
+                          id={`ssh-edit-alias-error-${connection.id}`}
+                          role="alert"
+                        >
+                          {editingAliasValidation.message}
+                        </p>
+                      )}
                     <div className="form-actions">
                       <button
                         type="submit"
                         className="primary-button"
-                        disabled={busy || !editingLabel.trim() || !editingAliasValidation.valid}
+                        disabled={
+                          busy ||
+                          !editingLabel.trim() ||
+                          (canEditSshHostAlias(connection) && !editingAliasValidation.valid)
+                        }
                       >
                         Save
                       </button>
@@ -305,7 +406,20 @@ export function SshConnectionsCard({
                   <>
                     <div>
                       <strong>{connection.label}</strong>
-                      <span>{connection.hostAlias}</span>
+                      <span>
+                        {connection.directTarget
+                          ? `${connection.directTarget.user ? `${connection.directTarget.user}@` : ''}${connection.directTarget.host.includes(':') ? `[${connection.directTarget.host}]` : connection.directTarget.host}${connection.directTarget.port ? `:${connection.directTarget.port}` : ''}`
+                          : connection.hostAlias}
+                      </span>
+                      {connection.directTarget?.localForwards.map((forward) => (
+                        <small key={`${forward.bindAddress}:${forward.localPort}`}>
+                          Inactive tunnel · {forward.bindAddress}:{forward.localPort} →{' '}
+                          {forward.destinationHost}:{forward.destinationPort}
+                        </small>
+                      ))}
+                      {connection.directTarget?.user === 'root' && (
+                        <small>Root login · HIGH RISK for remote workspace work</small>
+                      )}
                       <small>
                         {testStatus[connection.id] ?? `Connection profile v${connection.version}`}
                       </small>
@@ -359,9 +473,11 @@ export function SshConnectionsCard({
         Project Chat can request a typed remote command, but every command waits for a separate
         Allow once decision. Raw output is returned only to that active model turn and is not saved
         as a tool payload; a summary the model writes in its visible answer becomes chat history.
-        GOSU only permits a fixed read-only diagnostics allowlist and disables scripts, mutation,
-        interactive shells, privilege escalation, file transfer, TTY, and forwarding. The OpenSSH
-        alias still uses your trusted local SSH configuration.
+        Registered servers remain unavailable to a project until a separate workspace grant is
+        approved. Diagnostics grants permit bounded Git inspection; Workspace grants may
+        additionally run a strict direct-argv test/build allowlist. Raw shells, inline eval,
+        interactive shells, privilege escalation, file transfer, TTY, and forwarding remain
+        disabled. Parsed destinations use isolated, non-interactive OpenSSH options.
       </p>
     </article>
   );

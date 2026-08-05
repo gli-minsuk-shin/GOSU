@@ -59,9 +59,14 @@ describe('SSH preload bridge', () => {
     expect(Object.keys(api.ssh)).toEqual([
       'listConnections',
       'createConnection',
+      'importCommand',
       'updateConnection',
       'removeConnection',
       'testConnection',
+      'listWorkspaceGrants',
+      'createWorkspaceGrant',
+      'updateWorkspaceGrant',
+      'removeWorkspaceGrant',
       'resolveApproval',
       'cancelScope',
       'onEvent',
@@ -76,10 +81,12 @@ describe('SSH preload bridge', () => {
     const approvalId = '22222222-2222-4222-8222-222222222222';
     const projectId = '33333333-3333-4333-8333-333333333333';
     const sessionId = '44444444-4444-4444-8444-444444444444';
+    const grantId = '55555555-5555-4555-8555-555555555555';
     electron.ipcRenderer.invoke.mockResolvedValue({ ok: true, value: {} });
 
     await api.ssh.listConnections();
     await api.ssh.createConnection({ label: 'Lab GPU', hostAlias: 'lab-gpu' });
+    await api.ssh.importCommand({ command: 'ssh researcher@gpu.example' });
     await api.ssh.updateConnection({
       connectionId,
       expectedVersion: 1,
@@ -88,12 +95,30 @@ describe('SSH preload bridge', () => {
     });
     await api.ssh.removeConnection({ connectionId, expectedVersion: 2 });
     await api.ssh.testConnection(connectionId);
+    await api.ssh.listWorkspaceGrants({ projectId });
+    await api.ssh.createWorkspaceGrant({
+      projectId,
+      connectionId,
+      canonicalRoot: '/workspace',
+      permissionMode: 'diagnostics',
+      confirmWorkspaceRisk: true,
+    });
+    await api.ssh.updateWorkspaceGrant({
+      grantId,
+      projectId,
+      expectedVersion: 1,
+      canonicalRoot: '/root/project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    await api.ssh.removeWorkspaceGrant({ grantId, projectId, expectedVersion: 2 });
     await api.ssh.resolveApproval({ approvalId, decision: 'allow_once' });
     await api.ssh.cancelScope({ projectId, sessionId });
 
     expect(electron.ipcRenderer.invoke.mock.calls).toEqual([
       [SSH_IPC_CHANNELS.listConnections],
       [SSH_IPC_CHANNELS.createConnection, { label: 'Lab GPU', hostAlias: 'lab-gpu' }],
+      [SSH_IPC_CHANNELS.importCommand, { command: 'ssh researcher@gpu.example' }],
       [
         SSH_IPC_CHANNELS.updateConnection,
         {
@@ -105,6 +130,29 @@ describe('SSH preload bridge', () => {
       ],
       [SSH_IPC_CHANNELS.removeConnection, { connectionId, expectedVersion: 2 }],
       [SSH_IPC_CHANNELS.testConnection, { connectionId }],
+      [SSH_IPC_CHANNELS.listWorkspaceGrants, { projectId }],
+      [
+        SSH_IPC_CHANNELS.createWorkspaceGrant,
+        {
+          projectId,
+          connectionId,
+          canonicalRoot: '/workspace',
+          permissionMode: 'diagnostics',
+          confirmWorkspaceRisk: true,
+        },
+      ],
+      [
+        SSH_IPC_CHANNELS.updateWorkspaceGrant,
+        {
+          grantId,
+          projectId,
+          expectedVersion: 1,
+          canonicalRoot: '/root/project',
+          permissionMode: 'workspace',
+          confirmWorkspaceRisk: true,
+        },
+      ],
+      [SSH_IPC_CHANNELS.removeWorkspaceGrant, { grantId, projectId, expectedVersion: 2 }],
       [SSH_IPC_CHANNELS.resolveApproval, { approvalId, decision: 'allow_once' }],
       [SSH_IPC_CHANNELS.cancelScope, { projectId, sessionId }],
     ]);

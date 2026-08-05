@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SshApprovalCenter } from '../src/renderer/src/ssh-approval-center';
 import {
   SshConnectionsCard,
+  canEditSshHostAlias,
   validateSshHostAliasInput,
 } from '../src/renderer/src/ssh-connections-card';
 import type { SshApprovalRequest, SshConnectionProfile } from '../src/shared/ssh-contracts';
@@ -64,30 +65,34 @@ describe('independent SSH connection UI', () => {
         busy={false}
         testStatus={{ [connection.id]: 'Ready' }}
         onCreate={vi.fn()}
+        onImport={vi.fn()}
         onUpdate={vi.fn()}
         onRemove={vi.fn()}
         onTest={vi.fn()}
       />,
     );
 
-    expect(html).toContain('Registered server aliases');
+    expect(html).toContain('Registered SSH servers');
     expect(html).toContain('Fixture training server');
     expect(html).toContain('fixture-gpu');
-    expect(html).toContain('SSH agent or existing config');
-    expect(html).toContain('private keys are never stored');
+    expect(html).toContain('Authentication stays in your SSH agent');
+    expect(html).toContain('private keys');
+    expect(html).toContain('never stored');
     expect(html).toContain('How to add an SSH server');
     expect(html).toContain('~/.ssh/config');
     expect(html).toContain('Host research-gpu');
     expect(html).toContain('HostName gpu.example.edu');
-    expect(html).toContain('enter only');
-    expect(html).toContain('Port forwarding remains outside GOSU');
+    expect(html).toContain('Paste an SSH connection command');
+    expect(html).toContain('ssh -p 2222 researcher@203.0.113.10 -L 8080:localhost:8080');
+    expect(html).toContain('inactive normalized plan');
+    expect(html).toContain('Parse and register');
     expect(html).toContain('Register server');
     expect(html).toContain('Test');
     expect(html).toContain('Edit');
     expect(html).toContain('Remove');
     expect(html).toContain('Allow once');
-    expect(html).toContain('fixed read-only diagnostics allowlist');
-    expect(html).toContain('disables scripts, mutation, interactive shells');
+    expect(html).toContain('Diagnostics grants permit bounded Git inspection');
+    expect(html).toContain('Raw shells, inline eval, interactive shells');
   });
 
   it('accepts only a concrete SSH config Host alias', () => {
@@ -115,12 +120,27 @@ describe('independent SSH connection UI', () => {
     });
   });
 
+  it('keeps imported direct targets rename-only', () => {
+    expect(canEditSshHostAlias(connection)).toBe(true);
+    expect(
+      canEditSshHostAlias({
+        ...connection,
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          port: 2222,
+          localForwards: [],
+        },
+      }),
+    ).toBe(false);
+  });
+
   it('recognizes a pasted ssh command and explains that forwarding stays unavailable', () => {
     const regular = validateSshHostAliasInput('ssh -p 2222 researcher@gpu.example.edu');
     expect(regular).toMatchObject({ valid: false, reason: 'ssh-command' });
     if (!regular.valid) {
-      expect(regular.message).toContain('only the Host alias');
-      expect(regular.message).toContain('HostName, User, and Port');
+      expect(regular.message).toContain('Paste this full command');
+      expect(regular.message).toContain('only a Host alias');
     }
 
     const forwarding = validateSshHostAliasInput(
@@ -128,7 +148,7 @@ describe('independent SSH connection UI', () => {
     );
     expect(forwarding).toMatchObject({ valid: false, reason: 'ssh-command' });
     if (!forwarding.valid) {
-      expect(forwarding.message).toContain('does not accept SSH forwarding options such as -L');
+      expect(forwarding.message).toContain('inactive loopback forwarding plan');
     }
   });
 
@@ -143,7 +163,7 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('this project chat session');
     expect(html).toContain('not stored as raw SSH output');
     expect(html).toContain('untrusted data, never project instructions');
-    expect(html).toContain('read-only diagnostics allowlist');
+    expect(html).toContain('restricted diagnostic');
     expect(html).toContain(approval.projectId);
     expect(html).toContain(approval.sessionId);
 
@@ -157,6 +177,39 @@ describe('independent SSH connection UI', () => {
       approvalId: approval.id,
       decision: 'deny',
     });
+  });
+
+  it('shows exact root workspace scope and an honest root execution warning', () => {
+    const workspaceApproval: SshApprovalRequest = {
+      ...approval,
+      targetDisplay: 'root@203.0.113.10:2222',
+      rootLogin: true,
+      privilegeClass: 'root',
+      executionMode: 'remote_workspace',
+      connectionVersion: 2,
+      workspaceGrantId: '66666666-6666-4666-8666-666666666666',
+      workspaceGrantVersion: 3,
+      workspaceRoot: '/root/research-project',
+      workspaceWorkingDirectory: '/root/research-project/packages/app',
+      workspaceOperation: 'test',
+      commandSha256: 'a'.repeat(64),
+      commandPreview:
+        "cd '/root/research-project/packages/app' && exec '/usr/bin/python3' '-m' 'pytest'",
+    };
+    const html = renderToStaticMarkup(
+      <SshApprovalCenter requests={[workspaceApproval]} onResolve={vi.fn()} />,
+    );
+
+    expect(html).toContain('root@203.0.113.10:2222');
+    expect(html).toContain('HIGH RISK');
+    expect(html).toContain('project code can run as ROOT');
+    expect(html).toContain('Configured root · /root/research-project');
+    expect(html).toContain('Exact working directory · /root/research-project/packages/app');
+    expect(html).toContain('remote workspace / test');
+    expect(html).toContain('Connection v2 · Grant v3');
+    expect(html).toContain('a'.repeat(64));
+    expect(html).toContain('not a remote sandbox');
+    expect(html).toContain('change server state');
   });
 
   it('renders no approval surface when no command is pending', () => {

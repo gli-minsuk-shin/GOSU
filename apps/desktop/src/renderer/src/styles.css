@@ -1586,6 +1586,39 @@ textarea:focus {
   gap: 7px;
 }
 
+.ssh-command-import-form {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.ssh-command-import-form textarea {
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.ssh-registration-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+
+.ssh-registration-divider::before,
+.ssh-registration-divider::after {
+  height: 1px;
+  flex: 1 1 auto;
+  background: var(--line);
+  content: '';
+}
+
+.ssh-root-warning {
+  color: var(--red);
+  font-size: var(--font-caption);
+}
+
 .ssh-connection-row,
 .ssh-connections-card .connection-item {
   display: flex;

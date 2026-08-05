@@ -273,6 +273,7 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     ssh,
     reportUnexpectedWorkspaceError,
+    workspace,
   );
   registerLiteratureIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),

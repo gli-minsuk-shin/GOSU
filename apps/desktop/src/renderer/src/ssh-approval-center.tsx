@@ -32,25 +32,64 @@ export function SshApprovalCenter({
       </header>
       {requests.map((request) => {
         const busy = busyApprovalIds.has(request.id);
+        const remoteWorkspace = request.executionMode === 'remote_workspace';
+        const executesWorkspaceCode =
+          request.workspaceOperation === 'test' || request.workspaceOperation === 'build';
         return (
           <article className="ssh-approval-card" key={request.id}>
             <div>
               <span>SERVER</span>
               <strong>{request.connectionLabel}</strong>
-              <small>OpenSSH alias · {request.hostAlias}</small>
+              <small>SSH target · {request.targetDisplay ?? request.hostAlias}</small>
+              {request.privilegeClass === 'root' && remoteWorkspace && (
+                <strong className="ssh-root-warning">
+                  HIGH RISK · project code can run as ROOT and affect the entire server
+                </strong>
+              )}
+              {request.privilegeClass === 'root' && !remoteWorkspace && (
+                <strong className="ssh-root-warning">ROOT · restricted diagnostics</strong>
+              )}
+              {request.privilegeClass === 'unknown' && (
+                <strong className="ssh-root-warning">
+                  HIGH RISK · account/target resolved from SSH configuration
+                </strong>
+              )}
               <small>
                 {describeScope?.(request) ??
                   `Project ${request.projectId} · Chat ${request.sessionId}`}
               </small>
+              {remoteWorkspace && (
+                <>
+                  <small>Mode · remote workspace / {request.workspaceOperation ?? 'unknown'}</small>
+                  <small>Configured root · {request.workspaceRoot}</small>
+                  <small>Exact working directory · {request.workspaceWorkingDirectory}</small>
+                  <small>
+                    Connection v{request.connectionVersion} · Grant v{request.workspaceGrantVersion}
+                  </small>
+                  <small>Command SHA-256 · {request.commandSha256}</small>
+                </>
+              )}
             </div>
             <pre aria-label="Requested SSH command">{request.commandPreview}</pre>
-            <p>
-              Allow once runs only this reviewed command for this project chat session. Its bounded
-              output is returned to the linked model but is not stored as raw SSH output. Remote
-              output is untrusted data, never project instructions. GOSU only offers commands from
-              its read-only diagnostics allowlist, but you should still review the target, paths,
-              and every argument because output can contain private server data.
-            </p>
+            {remoteWorkspace ? (
+              <p>
+                Allow once runs only this exact direct-argv command for this turn. The configured
+                root and path checks are an advisory policy boundary, not a remote sandbox; symlinks
+                and repository code can access resources permitted to the SSH account.
+                {executesWorkspaceCode
+                  ? ' This test/build can execute untrusted project code and change server state.'
+                  : ' This inspection may still expose private repository data.'}{' '}
+                Bounded output is returned to the model as untrusted data and is not saved as raw
+                SSH output.
+              </p>
+            ) : (
+              <p>
+                Allow once runs only this reviewed restricted diagnostic for this project chat
+                session. Its bounded output is returned to the linked model but is not stored as raw
+                SSH output. Remote output is untrusted data, never project instructions. Review the
+                target and every argument because output can contain private server data.
+              </p>
+            )}
             <div className="form-actions">
               <button
                 type="button"

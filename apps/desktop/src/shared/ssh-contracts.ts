@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 export const SSH_CONNECTION_LABEL_MAX_LENGTH = 120;
 export const SSH_HOST_ALIAS_MAX_LENGTH = 255;
+export const SSH_IMPORT_COMMAND_MAX_LENGTH = 4_096;
+export const SSH_MAX_LOCAL_FORWARDINGS = 8;
 export const SSH_COMMAND_MAX_ARGUMENTS = 32;
 export const SSH_COMMAND_MAX_OUTPUT_CHARACTERS = 64_000;
 export const SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS = 48_000;
@@ -16,6 +18,23 @@ const hostAliasSchema = z
   .max(SSH_HOST_ALIAS_MAX_LENGTH)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, 'Use a concrete OpenSSH host alias');
 const labelSchema = z.string().trim().min(1).max(SSH_CONNECTION_LABEL_MAX_LENGTH);
+const sshPortSchema = z.number().int().min(1).max(65_535);
+const directHostSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(253)
+  .regex(
+    /^(?:[A-Za-z0-9][A-Za-z0-9.-]*|[A-Fa-f0-9]*:[A-Fa-f0-9:]+)$/u,
+    'Use a concrete host name or IP address',
+  )
+  .refine((value) => !value.includes('..'), 'Invalid host name');
+const directUserSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/u, 'Invalid SSH user');
 const opaqueInvocationIdSchema = z
   .string()
   .min(1)
@@ -29,12 +48,35 @@ function hasControlCharacter(value: string) {
   });
 }
 
+export const SshLocalForwardSchema = z
+  .object({
+    bindAddress: z.enum(['127.0.0.1', 'localhost', '::1']),
+    localPort: z.number().int().min(1_024).max(65_535),
+    destinationHost: z.enum(['127.0.0.1', 'localhost', '::1']),
+    destinationPort: sshPortSchema,
+  })
+  .strict();
+
+export type SshLocalForward = z.infer<typeof SshLocalForwardSchema>;
+
+export const SshDirectTargetSchema = z
+  .object({
+    host: directHostSchema,
+    user: directUserSchema.optional(),
+    port: sshPortSchema.optional(),
+    localForwards: z.array(SshLocalForwardSchema).max(SSH_MAX_LOCAL_FORWARDINGS).default([]),
+  })
+  .strict();
+
+export type SshDirectTarget = z.infer<typeof SshDirectTargetSchema>;
+
 export const SshConnectionProfileSchema = z
   .object({
     schemaVersion: z.literal(1),
     id: uuidSchema,
     label: labelSchema,
     hostAlias: hostAliasSchema,
+    directTarget: SshDirectTargetSchema.nullable().optional(),
     version: z.number().int().positive(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
@@ -47,6 +89,18 @@ export const CreateSshConnectionInputSchema = z
   .object({
     label: labelSchema,
     hostAlias: hostAliasSchema,
+  })
+  .strict();
+
+export const ImportSshCommandInputSchema = z
+  .object({
+    label: labelSchema.optional(),
+    command: z
+      .string()
+      .trim()
+      .min(1)
+      .max(SSH_IMPORT_COMMAND_MAX_LENGTH)
+      .refine((value) => !hasControlCharacter(value), 'Control characters are not allowed'),
   })
   .strict();
 
@@ -151,6 +205,25 @@ export const SshApprovalRequestSchema = z
     connectionId: uuidSchema,
     connectionLabel: labelSchema,
     hostAlias: hostAliasSchema,
+    targetDisplay: z
+      .string()
+      .min(1)
+      .max(512)
+      .refine((value) => !hasControlCharacter(value), 'Control characters are not allowed')
+      .optional(),
+    rootLogin: z.boolean().optional(),
+    privilegeClass: z.enum(['standard', 'root', 'unknown']).optional(),
+    executionMode: z.enum(['diagnostic', 'remote_workspace']).optional(),
+    connectionVersion: z.number().int().positive().optional(),
+    workspaceGrantId: uuidSchema.optional(),
+    workspaceGrantVersion: z.number().int().positive().optional(),
+    workspaceRoot: remoteWorkingDirectorySchema.optional(),
+    workspaceWorkingDirectory: remoteWorkingDirectorySchema.optional(),
+    workspaceOperation: z.enum(['inspect', 'test', 'build']).optional(),
+    commandSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/u)
+      .optional(),
     commandPreview: z.string().min(1).max(4_096),
     requestedAt: timestampSchema,
     expiresAt: timestampSchema,
@@ -196,15 +269,22 @@ export const SshEventSchema = z.discriminatedUnion('type', [
 export type SshEvent = z.infer<typeof SshEventSchema>;
 
 export type CreateSshConnectionInput = z.infer<typeof CreateSshConnectionInputSchema>;
+export type ImportSshCommandInput = z.infer<typeof ImportSshCommandInputSchema>;
 export type UpdateSshConnectionInput = z.infer<typeof UpdateSshConnectionInputSchema>;
 export type RemoveSshConnectionInput = z.infer<typeof RemoveSshConnectionInputSchema>;
 export type TestSshConnectionInput = z.infer<typeof TestSshConnectionInputSchema>;
 
 export const SSH_IPC_ERROR_CODES = [
   'invalid_ssh_input',
+  'ssh_import_invalid_command',
   'ssh_connection_not_found',
   'ssh_connection_version_conflict',
   'ssh_connection_limit_reached',
+  'ssh_workspace_grant_not_found',
+  'ssh_workspace_grant_conflict',
+  'ssh_workspace_grant_limit_reached',
+  'ssh_workspace_project_unavailable',
+  'ssh_workspace_command_not_allowed',
   'ssh_approval_not_found',
   'ssh_approval_denied',
   'ssh_approval_expired',

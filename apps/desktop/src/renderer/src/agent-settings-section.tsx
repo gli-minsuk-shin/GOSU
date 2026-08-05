@@ -389,10 +389,11 @@ export function AgentSettingsSection({
           </span>
           <small>
             Board and Objective can be read live. Board changes remain proposals and require Apply.
-            A separate Main-process SSH broker can run one typed remote command only after Allow
-            once and only from a read-only diagnostics allowlist. Codex native modes cannot grant
-            themselves scripts, mutation tools, broader capabilities, or access another project's
-            data.
+            A separate Main-process SSH broker can run bounded Git inspection and, in an explicitly
+            granted Workspace mode, approved direct-argv tests/builds that may execute project code.
+            Every command requires a fresh Allow once decision. Raw shells, TTY, transfer,
+            unattended execution, broader capabilities, and access to another project's data remain
+            unavailable.
           </small>
         </div>
         <div className="form-actions">
