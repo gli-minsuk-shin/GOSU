@@ -10,9 +10,18 @@ import type {
   CodexDynamicToolSpec,
   CodexDynamicToolTimeoutOverride,
 } from '../src/main/codex-app-server';
-import type { ProjectAgentSsh, ProjectAgentVault } from '../src/main/project-agent-tools';
+import type {
+  ProjectAgentLiterature,
+  ProjectAgentSsh,
+  ProjectAgentVault,
+} from '../src/main/project-agent-tools';
+import type {
+  ProjectChatPdfAttachmentClaimer,
+  ProjectChatPdfAttachmentsForAgent,
+} from '../src/main/project-chat-attachment-service';
 import {
   buildProjectChatPrompt,
+  explicitlyAuthorizesLiteratureSearch,
   ProjectChatService,
   type ProjectChatStorage,
 } from '../src/main/project-chat-service';
@@ -28,6 +37,10 @@ import type {
   UpdateProjectChatProfileInput,
 } from '../src/shared/project-chat-contracts';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
+import type {
+  LiteratureSearchInput,
+  LiteratureSearchReceipt,
+} from '../src/shared/literature-contracts';
 import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 
 function dynamicToolDelivery(
@@ -35,6 +48,23 @@ function dynamicToolDelivery(
 ): CodexDynamicToolDelivery {
   return { outcome, abortSignal: new AbortController().signal };
 }
+
+describe('Literature command authorization', () => {
+  it('recognizes direct Korean and English requests but denies unrelated or negative text', () => {
+    expect(
+      explicitlyAuthorizesLiteratureSearch(
+        'Tabular foundation model을 literature search해서 Literature section에 넣어줘.',
+      ),
+    ).toBe(true);
+    expect(explicitlyAuthorizesLiteratureSearch('관련 논문을 찾아서 문헌 표에 추가해줘.')).toBe(
+      true,
+    );
+    expect(explicitlyAuthorizesLiteratureSearch('Summarize the attached PDF.')).toBe(false);
+    expect(explicitlyAuthorizesLiteratureSearch("Don't search papers; explain the metric.")).toBe(
+      false,
+    );
+  });
+});
 
 class MemoryWorkspaceStorage {
   state: WorkspaceSnapshot | null = null;
@@ -285,6 +315,7 @@ class MemoryChatStorage implements ProjectChatStorage {
           : input.responseDepth === 'deep'
             ? 'high'
             : 'medium'),
+      webSearchMode: input.webSearchMode ?? 'cached',
       contextScope: input.contextScope,
       localNotesVault: input.localNotesVault ?? null,
       customInstructions: input.customInstructions,
@@ -338,6 +369,7 @@ class FakeCodex extends EventEmitter {
   readonly prompts: string[] = [];
   readonly developerInstructions: string[] = [];
   readonly responseVerbosities: Array<'low' | 'medium' | 'high' | null> = [];
+  readonly webSearchModes: Array<'disabled' | 'cached' | 'live' | undefined> = [];
   readonly turnSettings: Array<{
     collaborationModeId: string | null;
     expectedCollaborationModeCatalogVersion: string | null;
@@ -375,6 +407,7 @@ class FakeCodex extends EventEmitter {
   async startThread(input: {
     developerInstructions?: string;
     responseVerbosity?: 'low' | 'medium' | 'high' | null;
+    webSearchMode?: 'disabled' | 'cached' | 'live';
     dynamicTools?: readonly CodexDynamicToolSpec[];
     dynamicToolHandler?: CodexDynamicToolHandler;
     dynamicToolTimeouts?: readonly CodexDynamicToolTimeoutOverride[];
@@ -382,6 +415,7 @@ class FakeCodex extends EventEmitter {
     this.threadCount += 1;
     this.developerInstructions.push(input.developerInstructions ?? '');
     this.responseVerbosities.push(input.responseVerbosity ?? null);
+    this.webSearchModes.push(input.webSearchMode);
     this.dynamicTools.push(input.dynamicTools ?? []);
     this.dynamicToolHandlers.push(input.dynamicToolHandler);
     this.dynamicToolTimeouts.push(input.dynamicToolTimeouts ?? []);
@@ -510,7 +544,10 @@ function localNotesVaultFixture() {
   return { vault, vaultId, noteId, contentSha256, content };
 }
 
-async function fixture(vault?: ProjectAgentVault) {
+async function fixture(
+  vault?: ProjectAgentVault,
+  pdfAttachments?: ProjectChatPdfAttachmentClaimer,
+) {
   const workspaceStorage = new MemoryWorkspaceStorage();
   const workspace = new WorkspaceService(workspaceStorage);
   const projectA = await workspace.createProject({ name: 'Project Alpha' });
@@ -539,15 +576,42 @@ async function fixture(vault?: ProjectAgentVault) {
     cancelSession: vi.fn(() => 0),
     cancelProject: vi.fn(() => 0),
   };
+  const literature: ProjectAgentLiterature = {
+    search: vi.fn(async (input: LiteratureSearchInput): Promise<LiteratureSearchReceipt> => ({
+      run: {
+        schemaVersion: 1,
+        id: 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd',
+        projectId: input.projectId,
+        provider: 'crossref',
+        query: input.query,
+        fromYear: input.fromYear ?? null,
+        toYear: input.toYear ?? null,
+        requestedLimit: input.limit ?? 25,
+        status: 'complete',
+        foundCount: 2,
+        newCount: 2,
+        updatedCount: 0,
+        unchangedCount: 0,
+        createdAt: '2026-08-05T00:00:00.000Z',
+        completedAt: '2026-08-05T00:00:01.000Z',
+      },
+      foundCount: 2,
+      newCount: 2,
+      updatedCount: 0,
+      unchangedCount: 0,
+    })),
+  };
   const chat = new ProjectChatService({
     storage,
     workspace,
     codex,
+    literature,
     ssh,
+    ...(pdfAttachments ? { pdfAttachments } : {}),
     ...(vault ? { vault } : {}),
     prepareProjectDirectory: async (projectId) => `/isolated/${projectId}`,
   });
-  return { workspace, storage, codex, chat, ssh, projectA, projectB, taskA };
+  return { workspace, storage, codex, chat, literature, ssh, projectA, projectB, taskA };
 }
 
 async function activeLocalNotesTurn(
@@ -599,6 +663,73 @@ function waitForTurnCompleted(chat: ProjectChatService, turnId: string) {
 }
 
 describe('ProjectChatService', () => {
+  it('keeps attached PDF text out of durable messages/prompts and revokes a claimed capability on startup failure', async () => {
+    const attachmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const privatePdfText = 'PRIVATE_PDF_TEXT_MUST_NOT_BE_PERSISTED';
+    const claimed: ProjectChatPdfAttachmentsForAgent = {
+      catalog: () => [
+        {
+          attachmentId,
+          label: 'PDF 1',
+          sourceSha256: 'b'.repeat(64),
+          pageCount: 1,
+          extractedCharacters: privatePdfText.length,
+          truncated: false,
+          textAvailable: true,
+        },
+      ],
+      read: () => ({
+        attachmentId,
+        label: 'PDF 1',
+        sourceSha256: 'b'.repeat(64),
+        pageCount: 1,
+        startPage: 1,
+        endPage: 1,
+        content: privatePdfText,
+        contentSha256: 'c'.repeat(64),
+        truncated: false,
+      }),
+      revoke: vi.fn(),
+    };
+    const attachmentService = { claim: vi.fn(() => claimed) };
+    const environment = await fixture(undefined, attachmentService);
+    environment.storage.failNextSave = true;
+
+    await expect(
+      environment.chat.send({
+        projectId: environment.projectA.id,
+        message: 'Analyze the attached paper.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        attachmentIds: [attachmentId],
+      }),
+    ).rejects.toThrow();
+
+    expect(attachmentService.claim).toHaveBeenCalledOnce();
+    expect(claimed.revoke).toHaveBeenCalledOnce();
+    expect(JSON.stringify(environment.storage.messages)).not.toContain(privatePdfText);
+    expect(JSON.stringify(environment.codex.prompts)).not.toContain(privatePdfText);
+  });
+
+  it('does not claim an attachment capability for ordinary text-only turns', async () => {
+    const attachmentService = {
+      claim: vi.fn(() => {
+        throw new Error('must_not_claim');
+      }),
+    };
+    const environment = await fixture(undefined, attachmentService);
+
+    await expect(
+      environment.chat.send({
+        projectId: environment.projectA.id,
+        message: 'Summarize the project.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).resolves.toMatchObject({ projectId: environment.projectA.id });
+    expect(attachmentService.claim).not.toHaveBeenCalled();
+  });
+
   it('builds bounded active Board context from only the selected project', async () => {
     const { workspace, projectA, taskA } = await fixture();
     await workspace.updateBoardSettings({
@@ -1224,6 +1355,7 @@ describe('ProjectChatService', () => {
     expect((await chat.snapshot({ projectId: projectA.id })).profile).toMatchObject({
       version: 0,
       harnessMode: 'context',
+      webSearchMode: 'cached',
       customInstructions: '',
     });
 
@@ -1232,6 +1364,7 @@ describe('ProjectChatService', () => {
       expectedVersion: 0,
       harnessMode: 'planner',
       responseDepth: 'deep',
+      webSearchMode: 'live',
       contextScope: 'board',
       customInstructions: 'Prefer falsifiable next steps.',
     });
@@ -1257,6 +1390,7 @@ describe('ProjectChatService', () => {
     expect(attempt).toMatchObject({
       harnessMode: 'planner',
       responseDepth: 'deep',
+      webSearchMode: 'live',
       contextScope: 'board',
       profileVersion: 1,
       instructionRevisionId: profile.instructionRevision?.id,
@@ -1277,6 +1411,7 @@ describe('ProjectChatService', () => {
     expect(codex.developerInstructions[0]).not.toContain('Harness mode');
     expect(codex.developerInstructions[0]).not.toContain('Prefer falsifiable next steps.');
     expect(codex.developerInstructions[0]).toContain('explicitly provided GOSU tools');
+    expect(codex.webSearchModes[0]).toBe('live');
     expect(codex.prompts[0]).toContain('Prefer falsifiable next steps.');
     expect(codex.turnSettings[0]).toMatchObject({
       collaborationModeId: 'plan',
@@ -1385,6 +1520,7 @@ describe('ProjectChatService', () => {
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_workspace');
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('list_local_notes');
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_local_note');
+    expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('search_literature');
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('list_ssh_workspaces');
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('run_ssh_workspace_command');
     expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('/Users/');
@@ -1435,6 +1571,85 @@ describe('ProjectChatService', () => {
       assemblyVersion: 3,
       localNotesVaultId: vaultId,
     });
+  });
+
+  it('binds Literature search to the active project and excludes it from legacy reviewer turns', async () => {
+    const { chat, codex, literature, storage, projectA, projectB } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Search for tabular foundation models and add them to Literature.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const handler = codex.dynamicToolHandlers[0]!;
+    const result = await handler(
+      {
+        threadId: codex.turnThreads.get(receipt.turnId)!,
+        turnId: receipt.turnId,
+        callId: 'literature-search-1',
+        namespace: 'gosu_project',
+        tool: 'search_literature',
+        arguments: { query: 'tabular foundation models', limit: 10 },
+      },
+      dynamicToolDelivery(),
+    );
+    expect(result.success).toBe(true);
+    expect(JSON.parse(result.contentItems[0]!.text)).toMatchObject({
+      provider: 'crossref',
+      metadataOnly: true,
+      persisted: true,
+      newCount: 2,
+    });
+    expect(literature.search).toHaveBeenCalledExactlyOnceWith(
+      { projectId: projectA.id, query: 'tabular foundation models', limit: 10 },
+      expect.any(AbortSignal),
+    );
+    expect(JSON.stringify(result)).not.toContain(projectB.id);
+    codex.complete(receipt.turnId, { reply: 'Added two metadata records.', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+
+    const reviewer = await chat.updateProfile({
+      projectId: projectB.id,
+      expectedVersion: 0,
+      harnessMode: 'reviewer',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      localNotesVault: null,
+      customInstructions: '',
+    });
+    const reviewerReceipt = await chat.send({
+      projectId: projectB.id,
+      message: 'Review this project.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      profileVersion: reviewer.version,
+    });
+    expect(JSON.stringify(codex.dynamicTools[1])).not.toContain('search_literature');
+    codex.complete(reviewerReceipt.turnId, { reply: 'Review complete.', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectB.id).messages).toHaveLength(2));
+  });
+
+  it('does not grant Literature mutation to an unrelated or explicitly denied user turn', async () => {
+    const { chat, codex, storage, projectA, projectB } = await fixture();
+    const unrelated = await chat.send({
+      projectId: projectA.id,
+      message: 'Summarize the attached evidence.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('search_literature');
+    codex.complete(unrelated.turnId, { reply: 'Summary complete.', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+
+    const denied = await chat.send({
+      projectId: projectB.id,
+      message: 'Do not search literature; just explain the current objective.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(JSON.stringify(codex.dynamicTools[1])).not.toContain('search_literature');
+    codex.complete(denied.turnId, { reply: 'Objective explained.', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectB.id).messages).toHaveLength(2));
   });
 
   it('keeps Local Notes source receipts when the structured response is invalid', async () => {

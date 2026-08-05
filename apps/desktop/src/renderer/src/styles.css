@@ -3737,9 +3737,79 @@ textarea:focus {
 
 .chat-composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 86px;
+  grid-template-columns: 48px minmax(0, 1fr) 86px;
   gap: 8px;
   align-items: stretch;
+}
+
+.chat-pdf-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 2px 8px;
+}
+
+.chat-pdf-chip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1px 7px;
+  max-width: min(340px, 100%);
+  padding: 6px 7px 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--blue) 34%, var(--line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--blue) 7%, var(--surface));
+}
+
+.chat-pdf-chip > span {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--font-caption);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-pdf-chip small {
+  grid-column: 1;
+  color: var(--subtle);
+  font-size: calc(var(--font-caption) - 1px);
+}
+
+.chat-pdf-chip button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  padding: 2px 5px;
+  border: 0;
+  background: transparent;
+  color: var(--subtle);
+}
+
+.chat-pdf-privacy {
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+
+.chat-attach-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: var(--font-title);
+}
+
+.chat-attach-button span {
+  color: var(--subtle);
+  font-size: calc(var(--font-caption) - 1px);
+  font-weight: 700;
 }
 
 .chat-composer textarea {

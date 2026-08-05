@@ -17,6 +17,7 @@ import {
   type CodexCollaborationModeDescriptor,
   type ProjectChatPersonality,
   type ProjectChatResponseVerbosity,
+  type ProjectChatWebSearchMode,
 } from '../shared/project-chat-contracts';
 import type { CodexAvailability } from '../shared/runtime-contracts';
 import { createInvocation, recordModelReroute, toModelCatalog } from './model-catalog';
@@ -37,6 +38,7 @@ export type CodexModel = {
 
 export type CodexPersonality = Exclude<ProjectChatPersonality, 'auto'>;
 export type CodexResponseVerbosity = Exclude<ProjectChatResponseVerbosity, 'auto'>;
+export type CodexWebSearchMode = ProjectChatWebSearchMode;
 
 export type CodexJsonValue =
   | null
@@ -223,6 +225,7 @@ const CODEX_COLLABORATION_MODE_MAX_REASONING_CHARACTERS = 128;
 
 const CODEX_PERSONALITIES = new Set<CodexPersonality>(['none', 'friendly', 'pragmatic']);
 const CODEX_RESPONSE_VERBOSITIES = new Set<CodexResponseVerbosity>(['low', 'medium', 'high']);
+const CODEX_WEB_SEARCH_MODES = new Set<CodexWebSearchMode>(['disabled', 'cached', 'live']);
 
 type DynamicToolRegistration = {
   readonly tools: ReadonlySet<string>;
@@ -491,18 +494,25 @@ export function buildCodexThreadParameters(input: {
   developerInstructions?: string;
   dynamicTools?: readonly CodexDynamicToolSpec[];
   responseVerbosity?: CodexResponseVerbosity | null;
+  webSearchMode?: CodexWebSearchMode;
 }) {
   if (input.responseVerbosity && !CODEX_RESPONSE_VERBOSITIES.has(input.responseVerbosity)) {
     throw new Error('codex_response_verbosity_invalid');
   }
+  if (input.webSearchMode !== undefined && !CODEX_WEB_SEARCH_MODES.has(input.webSearchMode)) {
+    throw new Error('codex_web_search_mode_invalid');
+  }
+  const webSearchMode = input.webSearchMode ?? 'disabled';
   return {
     cwd: input.cwd,
     serviceName: 'gosu_desktop',
     approvalPolicy: 'never',
     sandbox: 'read-only',
-    config: input.responseVerbosity
-      ? { ...SAFE_PROJECT_CONFIG, model_verbosity: input.responseVerbosity }
-      : SAFE_PROJECT_CONFIG,
+    config: {
+      ...SAFE_PROJECT_CONFIG,
+      web_search: webSearchMode,
+      ...(input.responseVerbosity ? { model_verbosity: input.responseVerbosity } : {}),
+    },
     ephemeral: true,
     environments: [],
     dynamicTools: input.dynamicTools ?? [],
@@ -823,6 +833,7 @@ export class CodexAppServer extends EventEmitter {
     dynamicToolHandler?: CodexDynamicToolHandler;
     dynamicToolTimeouts?: readonly CodexDynamicToolTimeoutOverride[];
     responseVerbosity?: CodexResponseVerbosity | null;
+    webSearchMode?: CodexWebSearchMode;
   }) {
     await this.start();
     const dynamicTools = input.dynamicTools ?? [];

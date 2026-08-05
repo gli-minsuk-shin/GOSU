@@ -48,9 +48,15 @@ import type {
   CodexDynamicToolTimeoutOverride,
   CodexPersonality,
   CodexResponseVerbosity,
+  CodexWebSearchMode,
 } from './codex-app-server';
 import {
+  ProjectChatPdfAttachmentError,
+  type ProjectChatPdfAttachmentClaimer,
+} from './project-chat-attachment-service';
+import {
   ProjectAgentToolSession,
+  type ProjectAgentLiterature,
   type ProjectAgentSsh,
   type ProjectAgentVault,
 } from './project-agent-tools';
@@ -109,6 +115,7 @@ export interface ProjectChatCodex {
     dynamicTools?: readonly CodexDynamicToolSpec[];
     dynamicToolHandler?: CodexDynamicToolHandler;
     dynamicToolTimeouts?: readonly CodexDynamicToolTimeoutOverride[];
+    webSearchMode?: CodexWebSearchMode;
   }): Promise<{ threadId: string }>;
   runTurn(input: {
     threadId: string;
@@ -152,6 +159,14 @@ export class ProjectChatServiceError extends Error {
       | 'chat_session_limit_reached'
       | 'local_notes_vault_not_selected'
       | 'local_notes_vault_changed'
+      | 'pdf_attachment_invalid'
+      | 'pdf_attachment_too_large'
+      | 'pdf_attachment_too_many'
+      | 'pdf_attachment_encrypted'
+      | 'pdf_attachment_page_limit'
+      | 'pdf_attachment_extraction_failed'
+      | 'pdf_attachment_expired'
+      | 'pdf_attachment_scope_mismatch'
       | 'action_not_found'
       | 'action_not_proposed'
       | 'codex_unavailable',
@@ -211,6 +226,23 @@ function nativeExecutionKind(
 ): ProjectChatNativeExecutionKind {
   if (legacyReviewerCompatibility) return 'legacy-reviewer';
   return collaborationModeId === 'plan' ? 'plan' : 'default';
+}
+
+const LITERATURE_SUBJECT_PATTERN =
+  /(?:\bliterature\b|\bpapers?\b|\bpublications?\b|\breferences?\b|\bbibliograph(?:y|ies|ic)\b|논문|문헌|참고문헌|레퍼런스)/iu;
+const LITERATURE_ACTION_PATTERN =
+  /(?:\bsearch(?:ing)?\b|\bfind\b|\blook\s+up\b|\bdiscover\b|\badd\b|\bsave\b|\binsert\b|\bimport\b|\bcollect\b|\bsurvey\b|\breview\b|\bupdate\b|검색|찾|조사|추가|넣|저장|수집|정리|업데이트|갱신|리뷰)/iu;
+const LITERATURE_DENIAL_PATTERN =
+  /(?:\bdo\s+not\b|\bdon't\b|\bwithout\s+(?:searching|finding|adding|saving|importing)\b|검색\s*(?:하지\s*마|하지\s*말|없이)|찾지\s*마|추가하지\s*마|넣지\s*마)/iu;
+
+export function explicitlyAuthorizesLiteratureSearch(message: string) {
+  const normalized = message.normalize('NFKC').trim();
+  return (
+    normalized.length > 0 &&
+    !LITERATURE_DENIAL_PATTERN.test(normalized) &&
+    LITERATURE_SUBJECT_PATTERN.test(normalized) &&
+    LITERATURE_ACTION_PATTERN.test(normalized)
+  );
 }
 
 function modelProvenance(invocation: ModelInvocation) {
@@ -336,7 +368,9 @@ export class ProjectChatService extends EventEmitter {
       workspace: WorkspaceService;
       codex: ProjectChatCodex;
       vault?: ProjectAgentVault;
+      literature?: ProjectAgentLiterature;
       ssh?: ProjectAgentSsh;
+      pdfAttachments?: ProjectChatPdfAttachmentClaimer;
       prepareProjectDirectory(projectId: string): Promise<string>;
     },
   ) {
@@ -500,6 +534,8 @@ export class ProjectChatService extends EventEmitter {
     this.startingProjects.add(command.projectId);
     let startingSessionKey: string | undefined;
     let startingSessionRegistered = false;
+    let createdAgentTools: ProjectAgentToolSession | undefined;
+    let agentToolsTransferred = false;
     try {
       await this.requireActiveProject(command.projectId);
       let priorChat: ProjectChatSnapshot;
@@ -592,6 +628,21 @@ export class ProjectChatService extends EventEmitter {
         legacyReviewerCompatibility,
       );
       const attemptId = randomUUID();
+      let pdfAttachments;
+      if (command.attachmentIds && command.attachmentIds.length > 0) {
+        try {
+          pdfAttachments = this.dependencies.pdfAttachments?.claim(
+            command.projectId,
+            session.id,
+            command.attachmentIds,
+          );
+        } catch (error) {
+          if (error instanceof ProjectChatPdfAttachmentError) {
+            throw new ProjectChatServiceError(error.code);
+          }
+          throw error;
+        }
+      }
       const agentTools = new ProjectAgentToolSession({
         projectId: command.projectId,
         sessionId: session.id,
@@ -599,8 +650,15 @@ export class ProjectChatService extends EventEmitter {
         workspace: this.dependencies.workspace,
         vault: this.dependencies.vault ?? UNAVAILABLE_AGENT_VAULT,
         localNotesVault: profile.localNotesVault ?? null,
+        ...(pdfAttachments ? { pdfAttachments } : {}),
+        ...(executionKind !== 'legacy-reviewer' &&
+        this.dependencies.literature &&
+        explicitlyAuthorizesLiteratureSearch(command.message)
+          ? { literature: this.dependencies.literature }
+          : {}),
         ...(this.dependencies.ssh ? { ssh: this.dependencies.ssh } : {}),
       });
+      createdAgentTools = agentTools;
       const assembled = assembleProjectChatPrompt({
         snapshot,
         projectId: command.projectId,
@@ -650,6 +708,7 @@ export class ProjectChatService extends EventEmitter {
         collaborationModeId: resolvedCollaborationModeId,
         personality,
         responseVerbosity,
+        webSearchMode: profile.webSearchMode,
         contextScope,
         profileVersion: profile.version,
         instructionRevisionId: profile.instructionRevision?.id ?? null,
@@ -685,6 +744,7 @@ export class ProjectChatService extends EventEmitter {
           assembled.developerInstructions,
           agentTools,
           responseVerbosity === 'auto' ? null : responseVerbosity,
+          profile.webSearchMode,
         );
         ephemeralThreadId = threadId;
         connectionEpoch = this.codexConnectionEpoch;
@@ -732,6 +792,7 @@ export class ProjectChatService extends EventEmitter {
         this.activeByTransport.set(activeTransport, active);
         this.activeTransportBySession.set(startingSessionKey, activeTransport);
         activeRegistered = true;
+        agentToolsTransferred = true;
         this.emitEvent({
           type: 'turn.started',
           projectId: command.projectId,
@@ -771,6 +832,8 @@ export class ProjectChatService extends EventEmitter {
         }
         if (!activeRegistered) {
           agentTools.revokeSshCapability();
+          agentTools.revokeLiteratureCapability();
+          agentTools.revokePdfCapability();
           if (this.liveAgentToolsBySession.get(startingSessionKey) === agentTools) {
             this.liveAgentToolsBySession.delete(startingSessionKey);
           }
@@ -788,6 +851,9 @@ export class ProjectChatService extends EventEmitter {
         throw new ProjectChatServiceError('codex_unavailable');
       }
     } finally {
+      if (createdAgentTools && !agentToolsTransferred) {
+        await createdAgentTools.finalizeSourceAppendix().catch(() => undefined);
+      }
       this.startingProjects.delete(command.projectId);
       if (startingSessionRegistered && startingSessionKey) {
         this.startingSessions.delete(startingSessionKey);
@@ -814,6 +880,8 @@ export class ProjectChatService extends EventEmitter {
     const active = activeTransport ? this.activeByTransport.get(activeTransport) : undefined;
     if (!active) throw new ProjectChatServiceError('chat_not_active');
     active.agentTools.revokeSshCapability();
+    active.agentTools.revokeLiteratureCapability();
+    active.agentTools.revokePdfCapability();
     this.dependencies.ssh?.cancelSession(command.projectId, sessionId);
     await this.dependencies.codex.interruptTurn(active.threadId, active.turnId);
     return { accepted: true } as const;
@@ -1012,12 +1080,14 @@ export class ProjectChatService extends EventEmitter {
     developerInstructions: string,
     agentTools: ProjectAgentToolSession,
     responseVerbosity: CodexResponseVerbosity | null,
+    webSearchMode: CodexWebSearchMode,
   ) {
     const started = await this.dependencies.codex.startThread({
       cwd,
       modelId,
       developerInstructions,
       responseVerbosity,
+      webSearchMode,
       dynamicTools: agentTools.dynamicTools,
       dynamicToolHandler: agentTools.handler,
       dynamicToolTimeouts: agentTools.dynamicToolTimeouts,
@@ -1081,6 +1151,8 @@ export class ProjectChatService extends EventEmitter {
     if (active.terminal) return;
     active.terminal = true;
     active.agentTools.revokeSshCapability();
+    active.agentTools.revokeLiteratureCapability();
+    active.agentTools.revokePdfCapability();
     void this.persistTerminal(active, status)
       .then((persistedStatus) => this.clearActive(active, persistedStatus))
       .catch(async () => {

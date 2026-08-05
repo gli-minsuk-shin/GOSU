@@ -187,9 +187,10 @@ function insertProjectChatAttempt(database: Database.Database, attempt: ProjectC
       `insert into project_chat_attempts(
          id,project_id,session_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
          requested_model_id,reasoning_option_id,harness_mode,response_depth,
-         collaboration_mode_id,personality,response_verbosity,context_scope,profile_version,
+         collaboration_mode_id,personality,response_verbosity,web_search_mode,context_scope,
+         profile_version,
          instruction_revision_id,prompt_provenance_json,status,error_code,created_at,updated_at
-       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       attempt.id,
@@ -207,6 +208,7 @@ function insertProjectChatAttempt(database: Database.Database, attempt: ProjectC
       attempt.collaborationModeId ?? null,
       attempt.personality ?? null,
       attempt.responseVerbosity ?? null,
+      attempt.webSearchMode ?? null,
       attempt.contextScope ?? null,
       attempt.profileVersion ?? null,
       attempt.instructionRevisionId ?? null,
@@ -1096,6 +1098,9 @@ export class LocalDatabase {
         response_verbosity text not null default 'auto' check (
           response_verbosity in ('auto','low','medium','high')
         ),
+        web_search_mode text not null default 'cached' check (
+          web_search_mode in ('disabled','cached','live')
+        ),
         context_scope text not null check (context_scope in ('project','board','objective')),
         local_notes_vault_id text check (
           local_notes_vault_id is null or length(local_notes_vault_id) = 64
@@ -1138,6 +1143,9 @@ export class LocalDatabase {
         ),
         response_verbosity text check (
           response_verbosity is null or response_verbosity in ('auto','low','medium','high')
+        ),
+        web_search_mode text check (
+          web_search_mode is null or web_search_mode in ('disabled','cached','live')
         ),
         context_scope text check (
           context_scope is null or context_scope in ('project','board','objective')
@@ -1242,6 +1250,10 @@ export class LocalDatabase {
           "alter table project_chat_attempts add column response_verbosity text check (response_verbosity is null or response_verbosity in ('auto','low','medium','high'))",
         ],
         [
+          'web_search_mode',
+          "alter table project_chat_attempts add column web_search_mode text check (web_search_mode is null or web_search_mode in ('disabled','cached','live'))",
+        ],
+        [
           'context_scope',
           "alter table project_chat_attempts add column context_scope text check (context_scope is null or context_scope in ('project','board','objective'))",
         ],
@@ -1281,6 +1293,10 @@ export class LocalDatabase {
         [
           'response_verbosity',
           "alter table project_chat_profiles add column response_verbosity text not null default 'auto' check (response_verbosity in ('auto','low','medium','high'))",
+        ],
+        [
+          'web_search_mode',
+          "alter table project_chat_profiles add column web_search_mode text not null default 'cached' check (web_search_mode in ('disabled','cached','live'))",
         ],
         [
           'local_notes_vault_id',
@@ -1791,7 +1807,8 @@ export class LocalDatabase {
     const row = this.require()
       .prepare(
         `select p.project_id,p.version,p.harness_mode,p.response_depth,
-                p.collaboration_mode_id,p.personality,p.response_verbosity,p.context_scope,
+                p.collaboration_mode_id,p.personality,p.response_verbosity,p.web_search_mode,
+                p.context_scope,
                 p.local_notes_vault_id,p.local_notes_vault_name,
                 p.instruction_revision_id,p.updated_at,r.content,r.content_sha256,r.created_at
          from project_chat_profiles p
@@ -1837,10 +1854,10 @@ export class LocalDatabase {
             .prepare(
               `insert into project_chat_profiles(
                project_id,version,harness_mode,response_depth,collaboration_mode_id,
-               personality,response_verbosity,context_scope,
+               personality,response_verbosity,web_search_mode,context_scope,
                local_notes_vault_id,local_notes_vault_name,
                instruction_revision_id,created_at,updated_at
-             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
              on conflict(project_id) do update set
                version=excluded.version,
                harness_mode=excluded.harness_mode,
@@ -1848,6 +1865,7 @@ export class LocalDatabase {
                collaboration_mode_id=excluded.collaboration_mode_id,
                personality=excluded.personality,
                response_verbosity=excluded.response_verbosity,
+               web_search_mode=excluded.web_search_mode,
                context_scope=excluded.context_scope,
                local_notes_vault_id=excluded.local_notes_vault_id,
                local_notes_vault_name=excluded.local_notes_vault_name,
@@ -1863,6 +1881,7 @@ export class LocalDatabase {
               command.collaborationModeId,
               command.personality,
               command.responseVerbosity,
+              command.webSearchMode,
               command.contextScope,
               command.localNotesVault?.id ?? null,
               command.localNotesVault?.name ?? null,
@@ -1981,7 +2000,8 @@ export class LocalDatabase {
         .prepare(
           `select id,project_id,session_id,user_message_id,retry_of_attempt_id,thread_id,turn_id,model_json,
                   requested_model_id,reasoning_option_id,harness_mode,response_depth,
-                  collaboration_mode_id,personality,response_verbosity,context_scope,profile_version,
+                  collaboration_mode_id,personality,response_verbosity,web_search_mode,
+                  context_scope,profile_version,
                   instruction_revision_id,prompt_provenance_json,status,error_code,created_at,updated_at
            from project_chat_attempts where project_id=? and id=?`,
         )
@@ -2008,6 +2028,7 @@ export class LocalDatabase {
         current.collaborationModeId !== requestedTerminal.collaborationModeId ||
         current.personality !== requestedTerminal.personality ||
         current.responseVerbosity !== requestedTerminal.responseVerbosity ||
+        current.webSearchMode !== requestedTerminal.webSearchMode ||
         current.contextScope !== requestedTerminal.contextScope ||
         current.profileVersion !== requestedTerminal.profileVersion ||
         current.instructionRevisionId !== requestedTerminal.instructionRevisionId ||
@@ -2079,7 +2100,8 @@ export class LocalDatabase {
         `select a.id,a.project_id,a.session_id,a.user_message_id,a.retry_of_attempt_id,
                 a.thread_id,a.turn_id,a.model_json,a.requested_model_id,a.reasoning_option_id,
                 a.harness_mode,a.response_depth,a.collaboration_mode_id,a.personality,
-                a.response_verbosity,a.context_scope,a.profile_version,a.instruction_revision_id,
+                a.response_verbosity,a.web_search_mode,a.context_scope,a.profile_version,
+                a.instruction_revision_id,
                 a.prompt_provenance_json,a.status,a.error_code,a.created_at,a.updated_at
          from project_chat_attempts a
          join project_chat_session_messages sm on sm.message_id=a.user_message_id
@@ -2115,7 +2137,8 @@ export class LocalDatabase {
            select a.id,a.project_id,a.session_id,a.user_message_id,a.retry_of_attempt_id,
                   a.thread_id,a.turn_id,a.model_json,a.requested_model_id,a.reasoning_option_id,
                   a.harness_mode,a.response_depth,a.collaboration_mode_id,a.personality,
-                  a.response_verbosity,a.context_scope,a.profile_version,a.instruction_revision_id,
+                  a.response_verbosity,a.web_search_mode,a.context_scope,a.profile_version,
+                  a.instruction_revision_id,
                   a.prompt_provenance_json,a.status,a.error_code,a.created_at,a.updated_at,sm.ordinal
            from project_chat_attempts a
            join project_chat_session_messages sm on sm.message_id=a.user_message_id
@@ -2724,6 +2747,7 @@ type ProjectChatAttemptRow = {
   collaboration_mode_id: string | null;
   personality: 'auto' | 'none' | 'friendly' | 'pragmatic' | null;
   response_verbosity: 'auto' | 'low' | 'medium' | 'high' | null;
+  web_search_mode: 'disabled' | 'cached' | 'live' | null;
   context_scope: 'project' | 'board' | 'objective' | null;
   profile_version: number | null;
   instruction_revision_id: string | null;
@@ -2747,6 +2771,7 @@ type ProjectChatProfileRow = {
   collaboration_mode_id: string | null;
   personality: 'auto' | 'none' | 'friendly' | 'pragmatic';
   response_verbosity: 'auto' | 'low' | 'medium' | 'high';
+  web_search_mode: 'disabled' | 'cached' | 'live';
   context_scope: 'project' | 'board' | 'objective';
   local_notes_vault_id: string | null;
   local_notes_vault_name: string | null;
@@ -2803,6 +2828,7 @@ function toChatAttempt(row: ProjectChatAttemptRow) {
     ...(hasNativeSettings ? { collaborationModeId: row.collaboration_mode_id } : {}),
     ...(row.personality ? { personality: row.personality } : {}),
     ...(row.response_verbosity ? { responseVerbosity: row.response_verbosity } : {}),
+    ...(row.web_search_mode ? { webSearchMode: row.web_search_mode } : {}),
     ...(row.context_scope ? { contextScope: row.context_scope } : {}),
     ...(row.profile_version === null ? {} : { profileVersion: row.profile_version }),
     ...(row.profile_version === null ? {} : { instructionRevisionId: row.instruction_revision_id }),
@@ -2841,6 +2867,7 @@ function toChatProfile(row: ProjectChatProfileRow) {
     collaborationModeId: row.collaboration_mode_id,
     personality: row.personality,
     responseVerbosity: row.response_verbosity,
+    webSearchMode: row.web_search_mode,
     contextScope: row.context_scope,
     localNotesVault:
       row.local_notes_vault_id && row.local_notes_vault_name

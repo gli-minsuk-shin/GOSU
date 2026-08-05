@@ -218,6 +218,7 @@ describe('Project chat contracts', () => {
       collaborationModeId: 'plan',
       personality: 'auto',
       responseVerbosity: 'high',
+      webSearchMode: 'cached',
     });
     expect(
       ProjectChatProfileSchema.parse({
@@ -232,6 +233,7 @@ describe('Project chat contracts', () => {
       collaborationModeId: null,
       personality: 'auto',
       responseVerbosity: 'auto',
+      webSearchMode: 'cached',
     });
     expect(() =>
       UpdateProjectChatProfileInputSchema.parse({
@@ -257,8 +259,31 @@ describe('Project chat contracts', () => {
       collaborationModeId: 'default',
       personality: 'auto',
       responseVerbosity: 'medium',
+      webSearchMode: 'cached',
       localNotesVault: { id: 'a'.repeat(64), name: 'Research Notes' },
     });
+    expect(
+      UpdateProjectChatProfileInputSchema.parse({
+        projectId,
+        expectedVersion: 0,
+        harnessMode: 'context',
+        responseDepth: 'standard',
+        webSearchMode: 'live',
+        contextScope: 'project',
+        customInstructions: '',
+      }).webSearchMode,
+    ).toBe('live');
+    expect(() =>
+      UpdateProjectChatProfileInputSchema.parse({
+        projectId,
+        expectedVersion: 0,
+        harnessMode: 'context',
+        responseDepth: 'standard',
+        webSearchMode: 'browser',
+        contextScope: 'project',
+        customInstructions: '',
+      }),
+    ).toThrow();
     expect(() =>
       UpdateProjectChatProfileInputSchema.parse({
         projectId,

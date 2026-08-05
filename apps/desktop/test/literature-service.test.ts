@@ -347,6 +347,87 @@ describe('LiteratureService', () => {
     expect(JSON.stringify(storage.candidates)).not.toContain('abstract');
   });
 
+  it('cancels an externally aborted search without committing candidates', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const complete = vi.spyOn(storage, 'completeLiteratureSearch');
+    let requestStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      requestStarted = resolve;
+    });
+    const cancellableProvider = new CrossrefLiteratureProvider({
+      fetch: vi.fn(
+        async (_input, init) =>
+          await new Promise<Response>((_resolve, reject) => {
+            requestStarted();
+            init?.signal?.addEventListener(
+              'abort',
+              () => reject(new DOMException('Aborted', 'AbortError')),
+              { once: true },
+            );
+          }),
+      ),
+    });
+    const controller = new AbortController();
+    const pending = service(storage, { provider: cancellableProvider }).search(
+      { projectId: PROJECT_ID, query: 'cancelled literature search' },
+      controller.signal,
+    );
+
+    await started;
+    controller.abort('turn_cancelled');
+
+    await expect(pending).rejects.toEqual(
+      expect.objectContaining<Partial<LiteratureServiceError>>({
+        code: 'literature_provider_unavailable',
+      }),
+    );
+    expect(complete).not.toHaveBeenCalled();
+    expect(storage.runs).toHaveLength(1);
+    expect(storage.runs[0]?.status).toBe('cancelled');
+  });
+
+  it('rechecks external cancellation after provider return and before the atomic merge', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const complete = vi.spyOn(storage, 'completeLiteratureSearch');
+    const initialSnapshot = await workspace().snapshot();
+    let releaseRevalidation!: () => void;
+    const revalidationStarted = new Promise<void>((resolve) => {
+      releaseRevalidation = resolve;
+    });
+    let snapshotCalls = 0;
+    let unblock!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const delayedWorkspace = {
+      snapshot: vi.fn(async () => {
+        snapshotCalls += 1;
+        if (snapshotCalls === 2) {
+          releaseRevalidation();
+          await blocked;
+        }
+        return initialSnapshot;
+      }),
+    } as unknown as WorkspaceService;
+    const controller = new AbortController();
+    const pending = service(storage, {
+      workspace: delayedWorkspace,
+      provider: provider([{ DOI: '10.1000/cancel-race', title: ['Cancel race'] }]),
+    }).search({ projectId: PROJECT_ID, query: 'cancel before merge' }, controller.signal);
+
+    await revalidationStarted;
+    controller.abort('turn_cancelled');
+    unblock();
+
+    await expect(pending).rejects.toEqual(
+      expect.objectContaining<Partial<LiteratureServiceError>>({
+        code: 'literature_provider_unavailable',
+      }),
+    );
+    expect(complete).not.toHaveBeenCalled();
+    expect(storage.runs[0]?.status).toBe('cancelled');
+  });
+
   it('maps Crossref throttling to the bounded rate-limit error and closes the durable run', async () => {
     const storage = new MemoryLiteratureStorage();
     const rateLimited = new CrossrefLiteratureProvider({

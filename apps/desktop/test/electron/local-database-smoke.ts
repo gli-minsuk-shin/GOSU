@@ -1236,6 +1236,7 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
         legacyProfile.collaborationModeId === 'plan' &&
         legacyProfile.personality === 'auto' &&
         legacyProfile.responseVerbosity === 'high' &&
+        legacyProfile.webSearchMode === 'cached' &&
         legacyProfile.localNotesVault === null &&
         legacyProfile.customInstructions === 'Legacy profile instructions.',
       'legacy_profile_v050_migration_failed',
@@ -1255,6 +1256,7 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
       collaborationModeId: 'research-orchestrator-v2',
       personality: 'friendly',
       responseVerbosity: 'low',
+      webSearchMode: 'live',
       contextScope: 'board',
       localNotesVault: { id: 'f'.repeat(64), name: 'Migrated Vault' },
       customInstructions: 'Legacy profile instructions.',
@@ -1264,6 +1266,7 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
         updated.collaborationModeId === 'research-orchestrator-v2' &&
         updated.personality === 'friendly' &&
         updated.responseVerbosity === 'low' &&
+        updated.webSearchMode === 'live' &&
         updated.localNotesVault?.id === 'f'.repeat(64),
       'legacy_profile_v050_grant_update_failed',
     );
@@ -1293,7 +1296,8 @@ void app.whenReady().then(async () => {
     invariant(
       database.getProjectChatProfile(chatProjectId).version === 0 &&
         database.getProjectChatProfile(chatProjectId).collaborationModeId === null &&
-        database.getProjectChatProfile(chatProjectId).responseVerbosity === 'auto',
+        database.getProjectChatProfile(chatProjectId).responseVerbosity === 'auto' &&
+        database.getProjectChatProfile(chatProjectId).webSearchMode === 'cached',
       'default_chat_profile_missing',
     );
     const chatProfile = database.updateProjectChatProfile({
@@ -1304,6 +1308,7 @@ void app.whenReady().then(async () => {
       collaborationModeId: 'research-orchestrator-v2',
       personality: 'pragmatic',
       responseVerbosity: 'high',
+      webSearchMode: 'live',
       contextScope: 'board',
       localNotesVault: { id: 'a'.repeat(64), name: 'Fixture Vault' },
       customInstructions: 'Prefer reproducible experiments.',
@@ -1312,7 +1317,8 @@ void app.whenReady().then(async () => {
     invariant(
       chatProfile.collaborationModeId === 'research-orchestrator-v2' &&
         chatProfile.personality === 'pragmatic' &&
-        chatProfile.responseVerbosity === 'high',
+        chatProfile.responseVerbosity === 'high' &&
+        chatProfile.webSearchMode === 'live',
       'chat_profile_native_settings_missing',
     );
     invariant(
@@ -1426,6 +1432,7 @@ void app.whenReady().then(async () => {
       collaborationModeId: 'research-orchestrator-v2',
       personality: 'pragmatic',
       responseVerbosity: 'high',
+      webSearchMode: 'live',
       contextScope: 'board',
       profileVersion: chatProfile.version,
       instructionRevisionId: chatProfile.instructionRevision?.id ?? null,
@@ -2002,6 +2009,7 @@ void app.whenReady().then(async () => {
           'research-orchestrator-v2' &&
         reopened.getChatAttempt(chatProjectId, completedAttemptId)?.personality === 'pragmatic' &&
         reopened.getChatAttempt(chatProjectId, completedAttemptId)?.responseVerbosity === 'high' &&
+        reopened.getChatAttempt(chatProjectId, completedAttemptId)?.webSearchMode === 'live' &&
         reopened.getChatAttempt(chatProjectId, completedAttemptId)?.profileVersion === 1 &&
         reopened.getChatAttempt(chatProjectId, completedAttemptId)?.promptProvenance
           ?.promptSha256 === 'e'.repeat(64),
@@ -2015,6 +2023,7 @@ void app.whenReady().then(async () => {
           'research-orchestrator-v2' &&
         reopened.getProjectChatProfile(chatProjectId).personality === 'pragmatic' &&
         reopened.getProjectChatProfile(chatProjectId).responseVerbosity === 'high' &&
+        reopened.getProjectChatProfile(chatProjectId).webSearchMode === 'live' &&
         reopened.getProjectChatProfile(chatProjectId).localNotesVault?.id === 'a'.repeat(64) &&
         reopened.getProjectChatProfile(chatProjectId).localNotesVault?.name === 'Fixture Vault' &&
         reopened.getProjectChatProfile(chatProjectId).instructionRevision?.id ===

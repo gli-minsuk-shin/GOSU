@@ -7,8 +7,10 @@ import {
   resolveEffectiveCodexModel,
   resolveLatestMessageScrollTop,
   resolveProjectChatScrollIntent,
+  shouldAcceptPdfPickerResult,
 } from '../src/renderer/src/project-chat-view';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
+import { describeError } from '../src/renderer/src/ui-primitives';
 
 const project = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -20,6 +22,27 @@ const project = {
 } as const;
 
 describe('advanced Project Chat controls', () => {
+  it('describes bounded PDF failures without exposing local details', () => {
+    expect(describeError(new Error('pdf_attachment_too_large'))).toContain('20 MB');
+    expect(describeError(new Error('pdf_attachment_encrypted'))).toContain('Password-protected');
+    expect(describeError(new Error('pdf_attachment_scope_mismatch'))).not.toContain('/Users/');
+  });
+
+  it('discards a PDF picker result after session change, replacement, or unmount', () => {
+    expect(
+      shouldAcceptPdfPickerResult(true, 'project-a/session-a', 'project-a/session-a', 2, 2),
+    ).toBe(true);
+    expect(
+      shouldAcceptPdfPickerResult(true, 'project-a/session-a', 'project-a/session-b', 2, 2),
+    ).toBe(false);
+    expect(
+      shouldAcceptPdfPickerResult(true, 'project-a/session-a', 'project-a/session-a', 2, 3),
+    ).toBe(false);
+    expect(
+      shouldAcceptPdfPickerResult(false, 'project-a/session-a', 'project-a/session-a', 2, 2),
+    ).toBe(false);
+  });
+
   it('anchors a tall latest response below the transcript inset instead of clipping its header', () => {
     expect(
       resolveLatestMessageScrollTop({
@@ -222,9 +245,12 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Board + Objective');
     expect(html).toContain('Board + Objective read tools');
     expect(html).toContain('Local Notes not authorized');
+    expect(html).toContain('Cached web');
     expect(html).toContain('Authorize…');
     expect(html).toContain('SSH requires Allow once');
     expect(html).toContain('Raw shells, TTY, transfer, unattended execution, secrets');
+    expect(html).toContain('aria-label="Attach PDF files"');
+    expect(html).toContain('Attach up to 3 PDFs for this one turn');
     expect(html).toContain('Edit in Settings…');
   });
 

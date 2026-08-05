@@ -26,6 +26,9 @@ import { CrossrefLiteratureProvider } from './literature-crossref';
 import { registerLiteratureIpc } from './literature-ipc';
 import { LiteratureService } from './literature-service';
 import { createLiteratureTransferPlatform } from './literature-transfer-platform';
+import { registerProjectChatAttachmentIpc } from './project-chat-attachment-ipc';
+import { createProjectChatAttachmentPicker } from './project-chat-attachment-platform';
+import { ProjectChatAttachmentService } from './project-chat-attachment-service';
 import { registerProjectChatIpc } from './project-chat-ipc';
 import { ProjectChatService } from './project-chat-service';
 import { createSshCommandRunner } from './ssh-command-runner';
@@ -71,19 +74,14 @@ const gitWorkspace = new GitWorkspaceService({
   workspace,
   rootDirectory: () => join(app.getPath('userData'), 'git-workspaces'),
 });
-const projectChat = new ProjectChatService({
-  storage: database,
-  workspace,
-  codex,
-  vault,
-  ssh,
-  async prepareProjectDirectory(projectId) {
-    const directory = join(app.getPath('userData'), 'project-chat-workspaces', projectId);
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    return directory;
+let mainWindow: BrowserWindow | undefined;
+const projectChatAttachments = new ProjectChatAttachmentService({
+  choosePdfFiles: createProjectChatAttachmentPicker(() => mainWindow),
+  async validateScope(projectId, sessionId) {
+    const snapshot = await projectChat.snapshot({ projectId, sessionId });
+    if (snapshot.session?.id !== sessionId) throw new Error('pdf_attachment_scope_mismatch');
   },
 });
-let mainWindow: BrowserWindow | undefined;
 const literature = new LiteratureService({
   storage: database,
   workspace,
@@ -94,6 +92,20 @@ const literature = new LiteratureService({
       `GOSU/${app.getVersion()} (+https://github.com/gli-minsuk-shin/GOSU)`,
   }),
   transfer: createLiteratureTransferPlatform(() => mainWindow),
+});
+const projectChat = new ProjectChatService({
+  storage: database,
+  workspace,
+  codex,
+  vault,
+  literature,
+  ssh,
+  pdfAttachments: projectChatAttachments,
+  async prepareProjectDirectory(projectId) {
+    const directory = join(app.getPath('userData'), 'project-chat-workspaces', projectId);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    return directory;
+  },
 });
 const literatureAi = new LiteratureAiService({
   storage: literature,
@@ -264,6 +276,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     projectChat,
     reportUnexpectedWorkspaceError,
   );
+  registerProjectChatAttachmentIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    projectChatAttachments,
+    reportUnexpectedWorkspaceError,
+  );
   registerGitWorkspaceIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     gitWorkspace,
@@ -424,6 +441,7 @@ if (!primaryInstance) {
     if (process.platform !== 'darwin') app.quit();
   });
   app.on('before-quit', () => {
+    projectChatAttachments.dispose();
     literature.shutdown();
     ssh.shutdown();
     codex.stop();

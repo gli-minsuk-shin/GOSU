@@ -135,6 +135,16 @@ export function describeError(error: unknown) {
       'Choose a Local Notes folder before authorizing it for this project.',
     local_notes_vault_changed:
       'The selected Local Notes folder changed. Review it and authorize the current folder again.',
+    pdf_attachment_invalid: 'Choose a valid local PDF file and try again.',
+    pdf_attachment_too_large: 'Each PDF must be 20 MB or smaller.',
+    pdf_attachment_too_many: 'Attach no more than three PDFs to one message.',
+    pdf_attachment_encrypted: 'Password-protected PDFs cannot be read yet.',
+    pdf_attachment_page_limit: 'Each PDF must contain 200 pages or fewer.',
+    pdf_attachment_extraction_failed:
+      'GOSU could not extract text from this PDF. Try another selectable-text PDF.',
+    pdf_attachment_expired: 'This one-time PDF attachment expired. Attach it again.',
+    pdf_attachment_scope_mismatch:
+      'This PDF belongs to another project or chat session. Attach it here again.',
     action_not_found: 'This proposed project action no longer exists.',
     action_not_proposed: 'This project action was already handled.',
     invalid_chat_input: 'Check the chat message and model selection, then try again.',

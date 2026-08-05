@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   ProjectAgentToolSession,
+  type ProjectAgentLiterature,
   type ProjectAgentSsh,
   type ProjectAgentVault,
 } from '../src/main/project-agent-tools';
@@ -15,6 +16,10 @@ import type {
   CodexJsonValue,
 } from '../src/main/codex-app-server';
 import type { LocalNotesVaultGrant } from '../src/shared/project-chat-contracts';
+import type {
+  LiteratureSearchInput,
+  LiteratureSearchReceipt,
+} from '../src/shared/literature-contracts';
 import type {
   SshAgentCommand,
   SshCommandResult,
@@ -38,6 +43,7 @@ const CHAT_SESSION_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const CHAT_ATTEMPT_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const SSH_CONNECTION_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const SSH_GRANT_ID = 'abababab-abab-4bab-8bab-abababababab';
+const LITERATURE_RUN_ID = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
 
 const objectiveFields = {
   goal: 'ALPHA_OBJECTIVE improve deterministic validation accuracy',
@@ -211,6 +217,40 @@ class FakeProjectSsh implements ProjectAgentSsh {
   readonly cancelProject = vi.fn(() => 1);
 }
 
+class FakeProjectLiterature implements ProjectAgentLiterature {
+  readonly search = vi.fn(
+    async (
+      input: LiteratureSearchInput,
+      _signal?: AbortSignal,
+    ): Promise<LiteratureSearchReceipt> => {
+      const completedAt = '2026-08-05T00:00:01.000Z';
+      return {
+        run: {
+          schemaVersion: 1,
+          id: LITERATURE_RUN_ID,
+          projectId: input.projectId,
+          provider: 'crossref',
+          query: input.query,
+          fromYear: input.fromYear ?? null,
+          toYear: input.toYear ?? null,
+          requestedLimit: input.limit ?? 25,
+          status: 'complete',
+          foundCount: 4,
+          newCount: 3,
+          updatedCount: 1,
+          unchangedCount: 0,
+          createdAt: '2026-08-05T00:00:00.000Z',
+          completedAt,
+        },
+        foundCount: 4,
+        newCount: 3,
+        updatedCount: 1,
+        unchangedCount: 0,
+      };
+    },
+  );
+}
+
 async function workspaceFixture() {
   const workspace = new WorkspaceService(new MemoryWorkspaceStorage());
   const projectAlpha = await workspace.createProject({ name: 'Project Alpha' });
@@ -305,6 +345,7 @@ function authorizedSession(
   projectId: string,
   vault = new FakeProjectVault(),
   ssh = new FakeProjectSsh(),
+  literature = new FakeProjectLiterature(),
 ) {
   return {
     session: new ProjectAgentToolSession({
@@ -314,9 +355,11 @@ function authorizedSession(
       workspace,
       vault,
       localNotesVault: { id: ACTIVE_VAULT_ID, name: 'Research Vault' },
+      literature,
       ssh,
     }),
     vault,
+    literature,
     ssh,
   };
 }
@@ -379,7 +422,7 @@ describe('ProjectAgentToolSession', () => {
 
   it('revokes every project-bound read after the project is archived', async () => {
     const { workspace, projectAlpha } = await workspaceFixture();
-    const { session, vault, ssh } = authorizedSession(workspace, projectAlpha.id);
+    const { session, vault, literature, ssh } = authorizedSession(workspace, projectAlpha.id);
     await workspace.setProjectArchived({
       projectId: projectAlpha.id,
       expectedVersion: projectAlpha.version,
@@ -390,6 +433,7 @@ describe('ProjectAgentToolSession', () => {
       toolCall('read_workspace', { section: 'summary' }),
       toolCall('list_local_notes', {}),
       toolCall('read_local_note', { noteId: NOTE_ID }),
+      toolCall('search_literature', { query: 'tabular foundation models' }),
       toolCall('list_ssh_workspaces', {}),
       toolCall('run_ssh_workspace_command', {
         grantId: SSH_GRANT_ID,
@@ -403,6 +447,7 @@ describe('ProjectAgentToolSession', () => {
     }
     expect(vault.listForAgent).not.toHaveBeenCalled();
     expect(vault.readForAgent).not.toHaveBeenCalled();
+    expect(literature.search).not.toHaveBeenCalled();
     expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
     expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
   });
@@ -418,6 +463,7 @@ describe('ProjectAgentToolSession', () => {
       'read_workspace',
       'list_local_notes',
       'read_local_note',
+      'search_literature',
       'list_ssh_workspaces',
       'run_ssh_workspace_command',
     ]);
@@ -453,6 +499,100 @@ describe('ProjectAgentToolSession', () => {
     });
     expect(vault.readForAgent).toHaveBeenCalledWith(ACTIVE_VAULT_ID, NOTE_ID, 4, 32);
     expect(JSON.stringify(readPayload)).not.toContain(RAW_NOTE_PATH);
+  });
+
+  it('injects the active project into bounded Crossref searches and returns persisted counts', async () => {
+    const { workspace, projectAlpha, projectBeta } = await workspaceFixture();
+    const { session, literature } = authorizedSession(workspace, projectAlpha.id);
+    const controller = new AbortController();
+    const call = toolCall('search_literature', {
+      query: 'tabular foundation models',
+      fromYear: 2022,
+      toYear: 2026,
+      limit: 12,
+    });
+
+    const result = await session.handler(call, {
+      outcome: Promise.resolve('delivered'),
+      abortSignal: controller.signal,
+    });
+
+    expect(result.success).toBe(true);
+    expect(resultPayload(result)).toEqual({
+      schemaVersion: 1,
+      provider: 'crossref',
+      metadataOnly: true,
+      persisted: true,
+      runId: LITERATURE_RUN_ID,
+      query: 'tabular foundation models',
+      foundCount: 4,
+      newCount: 3,
+      updatedCount: 1,
+      unchangedCount: 0,
+    });
+    expect(literature.search).toHaveBeenCalledExactlyOnceWith(
+      {
+        projectId: projectAlpha.id,
+        query: 'tabular foundation models',
+        fromYear: 2022,
+        toYear: 2026,
+        limit: 12,
+      },
+      expect.any(AbortSignal),
+    );
+    expect(JSON.stringify(resultPayload(result))).not.toContain(projectBeta.id);
+
+    const forged = await invokeTool(
+      session,
+      toolCall('search_literature', {
+        projectId: projectBeta.id,
+        query: 'cross-project request',
+      }),
+    );
+    expect(forged.success).toBe(false);
+    expect(resultPayload(forged)).toEqual({ error: 'invalid_tool_arguments' });
+    expect(literature.search).toHaveBeenCalledOnce();
+  });
+
+  it('validates Literature search bounds and revokes an in-flight search with the turn', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const literature = new FakeProjectLiterature();
+    let observedSignal: AbortSignal | undefined;
+    literature.search.mockImplementationOnce(
+      (_input, signal) =>
+        new Promise<LiteratureSearchReceipt>((_resolve, reject) => {
+          observedSignal = signal;
+          signal?.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+        }),
+    );
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      new FakeProjectSsh(),
+      literature,
+    );
+
+    for (const arguments_ of [
+      { query: '' },
+      { query: 'x', fromYear: 2027, toYear: 2026 },
+      { query: 'x', limit: 51 },
+      { query: 'x', provider: 'another-origin' },
+    ]) {
+      const invalid = await invokeTool(session, toolCall('search_literature', arguments_));
+      expect(resultPayload(invalid)).toEqual({ error: 'invalid_tool_arguments' });
+    }
+    expect(literature.search).not.toHaveBeenCalled();
+
+    const pending = invokeTool(
+      session,
+      toolCall('search_literature', { query: 'cancel this literature search' }),
+    );
+    await vi.waitFor(() => expect(observedSignal).toBeDefined());
+    session.revokeLiteratureCapability();
+    await expect(pending).resolves.toMatchObject({ success: false });
+    expect(resultPayload(await pending)).toEqual({ error: 'literature_search_cancelled' });
+    expect(observedSignal?.aborted).toBe(true);
   });
 
   it('lists only opaque SSH IDs and labels, never aliases or resolved connection data', async () => {
@@ -565,6 +705,7 @@ describe('ProjectAgentToolSession', () => {
       workspace,
       vault,
       localNotesVault: null,
+      literature: new FakeProjectLiterature(),
       ssh: new FakeProjectSsh(),
     });
     const noGrantTools = noGrant.dynamicTools.flatMap((spec) =>
@@ -572,6 +713,7 @@ describe('ProjectAgentToolSession', () => {
     );
     expect(noGrantTools).toEqual([
       'read_workspace',
+      'search_literature',
       'list_ssh_workspaces',
       'run_ssh_workspace_command',
     ]);
@@ -599,6 +741,8 @@ describe('ProjectAgentToolSession', () => {
       ['read_local_note', { noteId: NOTE_ID, path: RAW_NOTE_PATH }],
       ['read_local_note', { noteId: NOTE_ID, offset: -1 }],
       ['read_local_note', { noteId: NOTE_ID, maxCharacters: 24_001 }],
+      ['search_literature', { query: 'x', fromYear: 2027, toYear: 2026 }],
+      ['search_literature', { query: 'x', projectId: randomUUID() }],
     ];
 
     for (const [tool, arguments_] of invalidCalls) {

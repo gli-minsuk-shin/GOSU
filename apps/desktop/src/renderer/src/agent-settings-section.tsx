@@ -8,6 +8,7 @@ import {
   type ProjectChatPersonality,
   type ProjectChatProfile,
   type ProjectChatResponseVerbosity,
+  type ProjectChatWebSearchMode,
   type UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
 import type { VaultSelection } from '../../shared/vault-contracts';
@@ -46,6 +47,28 @@ const CONTEXT_CHOICES: ReadonlyArray<{
   { id: 'objective', label: 'Objective only', description: 'Goal, metric, guardrails, budget' },
 ];
 
+const WEB_SEARCH_CHOICES: ReadonlyArray<{
+  id: ProjectChatWebSearchMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'cached',
+    label: 'Cached (recommended)',
+    description: 'Search an OpenAI-maintained index without fetching arbitrary live pages',
+  },
+  {
+    id: 'live',
+    label: 'Live',
+    description: 'Retrieve current web results when freshness matters',
+  },
+  {
+    id: 'disabled',
+    label: 'Disabled',
+    description: 'Remove the Codex web search tool for this project',
+  },
+];
+
 export function AgentSettingsSection({
   project,
   profile,
@@ -77,6 +100,9 @@ export function AgentSettingsSection({
   const [responseVerbosity, setResponseVerbosity] = useState<ProjectChatResponseVerbosity>(
     () => profile?.responseVerbosity ?? 'auto',
   );
+  const [webSearchMode, setWebSearchMode] = useState<ProjectChatWebSearchMode>(
+    () => profile?.webSearchMode ?? 'cached',
+  );
   const [contextScope, setContextScope] = useState<ProjectChatContextScope>(
     () => profile?.contextScope ?? 'project',
   );
@@ -93,6 +119,7 @@ export function AgentSettingsSection({
     setCollaborationModeId(preserveLegacyReviewer ? null : (profile?.collaborationModeId ?? null));
     setPersonality(profile?.personality ?? 'auto');
     setResponseVerbosity(profile?.responseVerbosity ?? 'auto');
+    setWebSearchMode(profile?.webSearchMode ?? 'cached');
     setContextScope(profile?.contextScope ?? 'project');
     setCustomInstructions(profile?.customInstructions ?? '');
     setLocalNotesVault(profile?.localNotesVault ?? null);
@@ -128,6 +155,7 @@ export function AgentSettingsSection({
     (!legacyReviewerCompatibility && collaborationModeId !== profile.collaborationModeId) ||
     personality !== profile.personality ||
     responseVerbosity !== profile.responseVerbosity ||
+    webSearchMode !== profile.webSearchMode ||
     contextScope !== profile.contextScope ||
     localNotesVault?.id !== profile.localNotesVault?.id ||
     localNotesVault?.name !== profile.localNotesVault?.name ||
@@ -158,6 +186,7 @@ export function AgentSettingsSection({
             : collaborationModeId,
           personality,
           responseVerbosity,
+          webSearchMode,
           contextScope,
           localNotesVault,
           customInstructions,
@@ -208,6 +237,44 @@ export function AgentSettingsSection({
             project capability boundary.
           </span>
         </label>
+      </article>
+
+      <article className="settings-card">
+        <div className="settings-card-heading">
+          <span>WEB SEARCH</span>
+          <h2>Choose web freshness per project</h2>
+          <p>
+            Cached search is the safer default. Live search is useful for current facts, but every
+            result remains untrusted model input.
+          </p>
+        </div>
+        <div className="agent-setting-columns">
+          <fieldset>
+            <legend>Codex web search mode</legend>
+            {WEB_SEARCH_CHOICES.map((choice) => (
+              <label key={choice.id}>
+                <input
+                  type="radio"
+                  name="web-search-mode"
+                  checked={webSearchMode === choice.id}
+                  onChange={() => setWebSearchMode(choice.id)}
+                  disabled={busy}
+                />
+                <span>
+                  <strong>{choice.label}</strong>
+                  <small>{choice.description}</small>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        </div>
+        <div className="agent-notes-disclosure">
+          <strong>Capability boundary</strong>
+          <span>
+            This controls only Codex&apos;s first-party web search tool. It does not enable shell
+            networking, the browser, MCP servers, plugins, or direct page control.
+          </span>
+        </div>
       </article>
 
       <article className="settings-card">
@@ -385,7 +452,8 @@ export function AgentSettingsSection({
         <div className="agent-safety-boundary">
           <strong>Fixed capability boundary</strong>
           <span>
-            Codex sandbox: project-bound reads · no direct shell, files, network, or subagents
+            Codex sandbox: project-bound reads · no direct shell, filesystem, raw network, browser,
+            MCP, or subagents
           </span>
           <small>
             Board and Objective can be read live. Board changes remain proposals and require Apply.
