@@ -651,11 +651,16 @@ field를 포함해 fingerprint를 다시 계산하고 stale AI draft를 무효�
 ranking과 저장에 사용한다.
 
 Evidence table은 page 전체를 밀어내는 unbounded grid item이 아니라 keyboard-focusable한 bounded scroll
-region이다. workspace와 scroll wrapper는 부모 content track 안에서 `min-width: 0`과 `width: 100%`로
-수축하고, 25행 page는 viewport 기반 최대 높이 안에서 가로·세로 scroll을 모두 소유한다. sticky column
-header는 이 region에 고정된다. 가로 overscroll만 table 안에 가두고 세로 overscroll은 바깥 page로
-전달하므로 table 끝에서 아래의 paper detail로 계속 이동할 수 있다. 이 계약은 좁은 창, 접힌 sidebar와
-Extra Large 글자 크기에서도 넓은 column이 잘리거나 wheel 입력이 사라지지 않게 유지한다.
+region이다. workspace와 library card는 명시적인 `minmax(0, 1fr)` grid column을 사용해 1,420px table의
+min-content 폭이 implicit auto track을 넓힌 뒤 parent `overflow: hidden`에 잘리는 일을 막는다. scroll
+wrapper는 부모 content track 안에서 `min-width: 0`·`width: 100%`와 `contain: inline-size`로 수축하고,
+25행 page는 `clamp(320px, 52vh, 620px)`의 실제 block size 안에서 가로·세로 scroll을 모두 소유한다.
+sticky column header는 이 region에 고정된다. macOS overlay scrollbar 설정과 무관한 fallback으로 표 위에
+현재 geometry에서만 활성화되는 `Columns ←/→`, `Top/Bottom` control을 제공하며 ResizeObserver와 scroll
+event로 각 edge 상태를 갱신한다. native wheel·trackpad와 arrow/Page key는 가로채지 않는다. 가로
+overscroll만 table 안에 가두고 세로 overscroll은 바깥 page로 전달하므로 table 끝에서 아래의 paper
+detail로 계속 이동할 수 있다. 이 계약은 좁은 창, 접힌 sidebar와 Extra Large 글자 크기에서도 넓은 column이
+잘리거나 wheel 입력이 사라지지 않게 유지한다.
 
 검색 batch는 후보별 savepoint를 사용한다. DOI와 provider ID가 서로 다른 기존 row를 가리키는 진짜
 identity conflict는 그 후보만 rollback하고 `conflict_count`를 검색 이력과 receipt에 남기며, 나머지 안전한
@@ -1608,7 +1613,10 @@ canonical high-citation 예약, absolute eligibility floor, citation/recent lane
 않는 규칙, sparse Semantic Scholar·rich Crossref 동일 DOI의 deterministic metadata merge, age-adjusted
 momentum, author signal cap과 Crossref 3-lane fallback을 고정한다. Renderer table test는
 서로 다른 query의 상대 score를 비교하지 않고 latest matching run과 same-run layer/rank만 사용하는지
-검사한다. transfer test는
+검사하고, focusable region·명시적 shrinkable grid track·bounded block size·양축 scrollbar와 네 개의
+fallback navigation command를 고정한다. macOS Electron geometry smoke는 실제 production CSS와 25행×11열
+fixture를 BrowserWindow에 넣어 `scrollWidth > clientWidth`, `scrollHeight > clientHeight`와 양축 최대
+offset 이동을 검사하므로 SSR markup·CSS 문자열만으로 scroll 가능성을 추정하지 않는다. transfer test는
 JSON/CSV/BibTeX deterministic round-trip, DOI·fingerprint·
 citation-key consistency, CSV formula injection 방어, HTTPS URL과 8 MB·500건 한도를 확인한다. service와
 IPC test는 active project authorization, project isolation, strict sender/input, additive merge, rate-limit

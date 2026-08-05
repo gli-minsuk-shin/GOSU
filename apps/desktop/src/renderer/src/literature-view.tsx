@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type {
   DeleteLiteratureRecordInput,
@@ -43,6 +43,64 @@ export interface LiteratureViewAdapter {
 
 export interface LiteratureViewRecord extends LiteratureTableRecord {
   record: LiteratureRecord;
+}
+
+export type LiteratureTableScrollCommand = 'left' | 'right' | 'top' | 'bottom';
+
+export type LiteratureTableScrollAvailability = Readonly<{
+  left: boolean;
+  right: boolean;
+  top: boolean;
+  bottom: boolean;
+}>;
+
+const NO_LITERATURE_TABLE_SCROLL: LiteratureTableScrollAvailability = {
+  left: false,
+  right: false,
+  top: false,
+  bottom: false,
+};
+
+export function literatureTableScrollAvailability(
+  element: Pick<
+    HTMLElement,
+    'clientHeight' | 'clientWidth' | 'scrollHeight' | 'scrollLeft' | 'scrollTop' | 'scrollWidth'
+  >,
+): LiteratureTableScrollAvailability {
+  const maxLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+  const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  return {
+    left: element.scrollLeft > 1,
+    right: element.scrollLeft < maxLeft - 1,
+    top: element.scrollTop > 1,
+    bottom: element.scrollTop < maxTop - 1,
+  };
+}
+
+export function moveLiteratureTable(
+  element: Pick<
+    HTMLElement,
+    | 'clientHeight'
+    | 'clientWidth'
+    | 'scrollHeight'
+    | 'scrollLeft'
+    | 'scrollTo'
+    | 'scrollTop'
+    | 'scrollWidth'
+  >,
+  command: LiteratureTableScrollCommand,
+) {
+  const horizontalStep = Math.max(240, Math.round(element.clientWidth * 0.8));
+  const maxLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+  const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  const left =
+    command === 'left'
+      ? Math.max(0, element.scrollLeft - horizontalStep)
+      : command === 'right'
+        ? Math.min(maxLeft, element.scrollLeft + horizontalStep)
+        : element.scrollLeft;
+  const top = command === 'top' ? 0 : command === 'bottom' ? maxTop : element.scrollTop;
+  element.scrollTo({ left, top, behavior: 'auto' });
 }
 
 const COLUMN_LABELS: ReadonlyArray<{
@@ -266,6 +324,8 @@ export function LiteratureTable({
   onSort: (key: LiteratureSortKey) => void;
   onPage: (page: number) => void;
 }) {
+  const scrollRegionRef = useRef<HTMLDivElement>(null);
+  const [scrollAvailability, setScrollAvailability] = useState(NO_LITERATURE_TABLE_SCROLL);
   const result = useMemo(
     () =>
       buildLiteratureTablePage(records, {
@@ -278,6 +338,45 @@ export function LiteratureTable({
       }),
     [page, records, sortDirection, sortKey, statusFilter, textFilter, tierFilter],
   );
+
+  const updateScrollAvailability = useCallback(() => {
+    const element = scrollRegionRef.current;
+    const next = element ? literatureTableScrollAvailability(element) : NO_LITERATURE_TABLE_SCROLL;
+    setScrollAvailability((current) =>
+      current.left === next.left &&
+      current.right === next.right &&
+      current.top === next.top &&
+      current.bottom === next.bottom
+        ? current
+        : next,
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    const element = scrollRegionRef.current;
+    if (!element) {
+      setScrollAvailability(NO_LITERATURE_TABLE_SCROLL);
+      return;
+    }
+    updateScrollAvailability();
+    element.addEventListener('scroll', updateScrollAvailability, { passive: true });
+    window.addEventListener('resize', updateScrollAvailability);
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateScrollAvailability);
+    observer?.observe(element);
+    return () => {
+      observer?.disconnect();
+      element.removeEventListener('scroll', updateScrollAvailability);
+      window.removeEventListener('resize', updateScrollAvailability);
+    };
+  }, [result.page, result.rows.length, updateScrollAvailability]);
+
+  const handleScrollCommand = (command: LiteratureTableScrollCommand) => {
+    const element = scrollRegionRef.current;
+    if (!element) return;
+    moveLiteratureTable(element, command);
+    updateScrollAvailability();
+  };
 
   if (result.total === 0) {
     return (
@@ -296,7 +395,64 @@ export function LiteratureTable({
 
   return (
     <>
-      <div className="literature-table-scroll" tabIndex={0} aria-label="Literature table">
+      <p id="literature-table-scroll-help" className="sr-only">
+        Scroll vertically for more papers and horizontally for additional evidence columns. When
+        focused, the arrow and page keys scroll this table.
+      </p>
+      <div className="literature-table-navigation" aria-label="Evidence table scroll controls">
+        <span>Scroll table</span>
+        <div>
+          <button
+            type="button"
+            className="ghost-button"
+            aria-label="Scroll evidence columns left"
+            aria-controls="literature-evidence-scroll-region"
+            disabled={!scrollAvailability.left}
+            onClick={() => handleScrollCommand('left')}
+          >
+            ← Columns
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            aria-label="Scroll evidence columns right"
+            aria-controls="literature-evidence-scroll-region"
+            disabled={!scrollAvailability.right}
+            onClick={() => handleScrollCommand('right')}
+          >
+            Columns →
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            aria-label="Scroll evidence table to top"
+            aria-controls="literature-evidence-scroll-region"
+            disabled={!scrollAvailability.top}
+            onClick={() => handleScrollCommand('top')}
+          >
+            Top
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            aria-label="Scroll evidence table to bottom"
+            aria-controls="literature-evidence-scroll-region"
+            disabled={!scrollAvailability.bottom}
+            onClick={() => handleScrollCommand('bottom')}
+          >
+            Bottom
+          </button>
+        </div>
+      </div>
+      <div
+        ref={scrollRegionRef}
+        id="literature-evidence-scroll-region"
+        className="literature-table-scroll"
+        role="region"
+        tabIndex={0}
+        aria-label="Literature evidence table"
+        aria-describedby="literature-table-scroll-help"
+      >
         <table className="literature-table">
           <thead>
             <tr>

@@ -6,8 +6,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   LiteratureTable,
   LiteratureView,
+  literatureTableScrollAvailability,
   literatureSearchNotice,
   literatureViewRecord,
+  moveLiteratureTable,
   type LiteratureViewAdapter,
 } from '../src/renderer/src/literature-view';
 import type { LiteratureRecord } from '../src/shared/literature-contracts';
@@ -261,21 +263,60 @@ describe('Literature workspace', () => {
     );
     const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
 
+    expect(html).toContain('id="literature-table-scroll-help"');
+    expect(html).toContain('aria-label="Evidence table scroll controls"');
+    expect(html).toContain('aria-label="Scroll evidence columns right"');
+    expect(html).toContain('aria-label="Scroll evidence table to bottom"');
     expect(html).toMatch(
-      /<div class="literature-table-scroll" tabindex="0" aria-label="Literature table">/u,
+      /<div id="literature-evidence-scroll-region" class="literature-table-scroll" role="region" tabindex="0" aria-label="Literature evidence table" aria-describedby="literature-table-scroll-help">/u,
     );
     expect(styles).toMatch(
-      /\.literature-workspace\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*0;)[^}]*\}/su,
+      /\.literature-workspace\s*\{(?=[^}]*\bgrid-template-columns:\s*minmax\(0, 1fr\);)(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*0;)[^}]*\}/su,
     );
     expect(styles).toMatch(
-      /\.literature-table-scroll\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*0;)(?=[^}]*\bmax-width:\s*100%;)(?=[^}]*\bmin-height:\s*0;)(?=[^}]*\bmax-height:\s*(?:min|clamp)\([^;]+;)(?=[^}]*\boverflow-x:\s*auto;)(?=[^}]*\boverflow-y:\s*auto;)[^}]*\}/su,
+      /\.literature-library-card\s*\{(?=[^}]*\bgrid-template-columns:\s*minmax\(0, 1fr\);)(?=[^}]*\boverflow:\s*hidden;)[^}]*\}/su,
     );
     expect(styles).toMatch(
-      /\.literature-table-scroll\s*\{(?=[^}]*\boverscroll-behavior-x:\s*contain;)(?=[^}]*\boverscroll-behavior-y:\s*auto;)(?=[^}]*\bscrollbar-gutter:\s*stable;)[^}]*\}/su,
+      /\.literature-table-scroll\s*\{(?=[^}]*\bdisplay:\s*block;)(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*0;)(?=[^}]*\bmax-width:\s*100%;)(?=[^}]*\bheight:\s*clamp\(320px, 52vh, 620px\);)(?=[^}]*\bcontain:\s*inline-size;)(?=[^}]*\boverflow-x:\s*auto;)(?=[^}]*\boverflow-y:\s*auto;)[^}]*\}/su,
+    );
+    expect(styles).toMatch(
+      /\.literature-table-scroll\s*\{(?=[^}]*\boverscroll-behavior-x:\s*contain;)(?=[^}]*\boverscroll-behavior-y:\s*auto;)(?=[^}]*\bscrollbar-gutter:\s*stable both-edges;)(?=[^}]*\btouch-action:\s*pan-x pan-y;)[^}]*\}/su,
+    );
+    expect(styles).toMatch(
+      /\.literature-table-scroll::-webkit-scrollbar\s*\{(?=[^}]*\bwidth:\s*12px;)(?=[^}]*\bheight:\s*12px;)[^}]*\}/su,
     );
     expect(styles).toMatch(
       /\.literature-table\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*1420px;)[^}]*\}/su,
     );
+  });
+
+  it('computes table scroll affordances and bounded navigation targets', () => {
+    const scrollTo = vi.fn();
+    const element = {
+      clientHeight: 500,
+      clientWidth: 800,
+      scrollHeight: 1_900,
+      scrollLeft: 100,
+      scrollTop: 300,
+      scrollWidth: 2_000,
+      scrollTo,
+    } as unknown as HTMLElement;
+
+    expect(literatureTableScrollAvailability(element)).toEqual({
+      left: true,
+      right: true,
+      top: true,
+      bottom: true,
+    });
+
+    moveLiteratureTable(element, 'left');
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 0, top: 300, behavior: 'auto' });
+    moveLiteratureTable(element, 'right');
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 740, top: 300, behavior: 'auto' });
+    moveLiteratureTable(element, 'top');
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 100, top: 0, behavior: 'auto' });
+    moveLiteratureTable(element, 'bottom');
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 100, top: 1_400, behavior: 'auto' });
   });
 
   it('keeps table navigation usable when no results match', () => {
