@@ -2474,6 +2474,7 @@ textarea:focus {
 
 .literature-workspace {
   display: grid;
+  width: 100%;
   gap: 14px;
   min-width: 0;
   max-width: 1500px;
@@ -2623,9 +2624,15 @@ textarea:focus {
 }
 
 .literature-table-scroll {
+  width: 100%;
   min-width: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
+  min-height: 0;
+  max-width: 100%;
+  max-height: min(62vh, 680px);
+  overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   scrollbar-gutter: stable;
 }
 

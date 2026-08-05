@@ -573,6 +573,13 @@ identity conflict다. legacy global fingerprint unique index는 weak-only partia
 lookup index로 local migration한다. schema-v1 search run·receipt의 새 `conflictCount`는 legacy payload를
 읽을 때 `0`으로 default하고, SQL migration도 기존 search row에 `conflict_count=0`을 채운다.
 
+Evidence table은 page 전체를 밀어내는 unbounded grid item이 아니라 keyboard-focusable한 bounded scroll
+region이다. workspace와 scroll wrapper는 부모 content track 안에서 `min-width: 0`과 `width: 100%`로
+수축하고, 25행 page는 viewport 기반 최대 높이 안에서 가로·세로 scroll을 모두 소유한다. sticky column
+header는 이 region에 고정된다. 가로 overscroll만 table 안에 가두고 세로 overscroll은 바깥 page로
+전달하므로 table 끝에서 아래의 paper detail로 계속 이동할 수 있다. 이 계약은 좁은 창, 접힌 sidebar와
+Extra Large 글자 크기에서도 넓은 column이 잘리거나 wheel 입력이 사라지지 않게 유지한다.
+
 검색 batch는 후보별 savepoint를 사용한다. DOI와 provider ID가 서로 다른 기존 row를 가리키는 진짜
 identity conflict는 그 후보만 rollback하고 `conflict_count`를 검색 이력과 receipt에 남기며, 나머지 안전한
 후보는 계속 저장한다. `literature_search_conflicts`에는 raw response 대신 ordinal, normalized title·author,
