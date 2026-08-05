@@ -1030,13 +1030,14 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     }
   };
 
-  const renameChatSession = async (session: ProjectChatSession) => {
-    if (chatBusyProjectIds.has(session.projectId) || chatSessionMutation) return;
-    const proposed = window.prompt('Rename chat session', session.title)?.trim();
-    if (!proposed || proposed === session.title) return;
+  const renameChatSession = async (session: ProjectChatSession, title: string) => {
+    if (chatBusyProjectIds.has(session.projectId) || chatSessionMutation) return false;
+    const proposed = title.trim();
+    if (!proposed) return false;
+    if (proposed === session.title) return true;
     if (proposed.length > 120) {
       setWorkspaceError('Chat session names can contain at most 120 characters.');
-      return;
+      return false;
     }
     setChatSessionMutation({ projectId: session.projectId, kind: 'rename' });
     setWorkspaceError(null);
@@ -1046,13 +1047,26 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         sessionId: session.id,
         title: proposed,
       });
-      await Promise.all([
-        loadProjectChat(session.projectId, renamed.id),
-        loadProjectChatSessions(session.projectId),
-      ]);
+      updateProjectChatSessions(
+        session.projectId,
+        (projectChatSessionsRef.current[session.projectId] ?? []).map((candidate) =>
+          candidate.id === renamed.id ? renamed : candidate,
+        ),
+      );
+      const sessionKey = projectChatSessionKey(session.projectId, renamed.id);
+      setChatSnapshots((current) => {
+        const snapshotForSession = current[sessionKey];
+        if (!snapshotForSession?.session) return current;
+        return {
+          ...current,
+          [sessionKey]: { ...snapshotForSession, session: renamed },
+        };
+      });
       setAnnouncement(`Renamed the chat session to ${renamed.title}.`);
+      return true;
     } catch (error) {
       setWorkspaceError(describeError(error));
+      return false;
     } finally {
       setChatSessionMutation(null);
     }
@@ -1532,7 +1546,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 }
                 onSelectSession={(sessionId) => selectChatSession(activeProject.id, sessionId)}
                 onCreateSession={() => void createChatSession(activeProject.id)}
-                onRenameSession={(session) => void renameChatSession(session)}
+                onRenameSession={renameChatSession}
                 onBranchSession={(messageId) => branchChatSession(activeProject.id, messageId)}
                 onSelectedModel={(modelId) => {
                   const selection = selectCodexModel(modelId, selectedReasoning);

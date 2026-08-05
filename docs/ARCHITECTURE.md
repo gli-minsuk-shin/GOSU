@@ -1040,7 +1040,13 @@ flowchart LR
   5,000개와 trim된 title 120자 제한을 적용한다.
 - fixed IPC는 session list, selected-session snapshot, root create, completed-message branch와 rename만
   노출한다. rail은 모든 session을 동시에 표시하고 default·independent·branched·active 상태, branch parent와
-  생성 시각을 보여 준다. 선택 session별 React key와 generation guard가 retry·scroll·늦게 도착한
+  생성 시각을 보여 준다. 각 행의 rename action과 rail 상단의 선택-session action은 같은 inline editor를
+  열며 현재 제목을 선택한 상태로 시작한다. 제목은 trim 후 1–120자로 검증하고 Enter/Save로 저장,
+  Escape/Cancel로 취소한다. IME composition 중 Enter·Escape는 command로 해석하지 않고 실패 시 입력값과
+  editor·입력 focus를 유지하며, 성공·취소 뒤에는 같은 session 행으로 keyboard focus를 복원한다.
+  저장 성공은 project-scoped SQLCipher session row와 Renderer의 session catalog·
+  snapshot metadata만 갱신하므로 session ID, transcript, unsent draft, scroll, unread 표시를 다시
+  hydrate하거나 초기화하지 않는다. 선택 session별 React key와 generation guard가 retry·scroll·늦게 도착한
   hydration을 격리한다. keyed `ProjectChatView`보다 오래 사는 Desktop shell이 unsent composer draft를
   project+session key의 Renderer volatile memory에만 보존해 session을 오간 뒤 복원하고 성공한 send 뒤
   해당 값만 지운다. 같은 소유자가 transcript의 finite nonnegative `scrollTop`도 project+session별 volatile

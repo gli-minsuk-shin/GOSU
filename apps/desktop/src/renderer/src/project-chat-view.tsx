@@ -304,7 +304,10 @@ export function ProjectChatView({
   branchingMessageId?: string | null;
   onSelectSession?: (sessionId: string) => void;
   onCreateSession?: () => void;
-  onRenameSession?: (session: NonNullable<ProjectChatSnapshot['session']>) => void;
+  onRenameSession?: (
+    session: NonNullable<ProjectChatSnapshot['session']>,
+    title: string,
+  ) => boolean | void | Promise<boolean | void>;
   sessionRailWidth?: number;
   onSessionRailWidthChange?: (width: number) => void;
   onBranchSession?: (messageId: string) => Promise<void>;

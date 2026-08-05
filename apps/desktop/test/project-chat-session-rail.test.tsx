@@ -3,7 +3,11 @@ import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import { ProjectChatSessionRail } from '../src/renderer/src/project-chat-session-rail';
+import {
+  projectChatSessionRenameKeyAction,
+  ProjectChatSessionRail,
+  validateProjectChatSessionRename,
+} from '../src/renderer/src/project-chat-session-rail';
 
 const defaultSession = {
   id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -40,6 +44,7 @@ describe('Project Chat session rail', () => {
         creating={false}
         onSelect={() => undefined}
         onCreate={() => undefined}
+        onRename={() => true}
       />,
     );
 
@@ -53,6 +58,46 @@ describe('Project Chat session rail', () => {
     expect(html).toContain('aria-label="Resize project chat sessions sidebar"');
     expect(html).toContain('aria-valuemin="160"');
     expect(html).toContain('aria-valuemax="360"');
+    expect(html).toContain('aria-label="Rename selected project chat session"');
+    expect(html).toContain('aria-label="Rename Project chat"');
+    expect(html).toContain('aria-label="Rename Ablation ideas"');
+  });
+
+  it('validates trimmed session names without hard-coding a visible model flow', () => {
+    expect(validateProjectChatSessionRename('  Better title  ', 'Project chat')).toEqual({
+      status: 'valid',
+      title: 'Better title',
+    });
+    expect(validateProjectChatSessionRename('  Project chat ', 'Project chat')).toEqual({
+      status: 'unchanged',
+      title: 'Project chat',
+    });
+    expect(validateProjectChatSessionRename('   ', 'Project chat')).toEqual({
+      status: 'invalid',
+      message: 'Enter a session name.',
+    });
+    expect(validateProjectChatSessionRename('a'.repeat(120), 'Project chat')).toMatchObject({
+      status: 'valid',
+    });
+    expect(validateProjectChatSessionRename('a'.repeat(121), 'Project chat')).toEqual({
+      status: 'invalid',
+      message: 'Session names can contain at most 120 characters.',
+    });
+  });
+
+  it('maps Enter and Escape while leaving IME composition alone', () => {
+    expect(
+      projectChatSessionRenameKeyAction({ key: 'Enter', isComposing: false, keyCode: 13 }),
+    ).toBe('save');
+    expect(
+      projectChatSessionRenameKeyAction({ key: 'Escape', isComposing: false, keyCode: 27 }),
+    ).toBe('cancel');
+    expect(
+      projectChatSessionRenameKeyAction({ key: 'Enter', isComposing: true, keyCode: 13 }),
+    ).toBeNull();
+    expect(
+      projectChatSessionRenameKeyAction({ key: 'Enter', isComposing: false, keyCode: 229 }),
+    ).toBeNull();
   });
 
   it('uses the persisted rail width variable and removes the horizontal handle on narrow layouts', () => {
@@ -67,5 +112,22 @@ describe('Project Chat session rail', () => {
     expect(styles).toMatch(
       /@media \(max-width: 1180px\)[\s\S]*?\.project-chat-session-resize-handle\s*\{\s*display:\s*none;/u,
     );
+    expect(styles).toMatch(
+      /@media \(max-width: 1180px\)[\s\S]*?\.project-chat-session-row\s*\{[^}]*flex:\s*0 0 214px;/u,
+    );
+    expect(styles).toMatch(
+      /\.project-chat-session-row\.active \.project-chat-session-rename-trigger\s*\{[^}]*opacity:\s*1;/su,
+    );
+    expect(styles).toMatch(/\.project-chat-session-rename-form\s*\{[^}]*grid-column:\s*1 \/ -1;/su);
+  });
+
+  it('uses the inline rename flow instead of a system prompt', () => {
+    const desktopApp = readFileSync(
+      new URL('../src/renderer/src/desktop-app.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(desktopApp).not.toContain("window.prompt('Rename chat session'");
+    expect(desktopApp).toContain('onRenameSession={renameChatSession}');
   });
 });

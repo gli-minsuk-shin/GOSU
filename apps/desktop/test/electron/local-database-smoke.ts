@@ -3142,6 +3142,12 @@ void app.whenReady().then(async () => {
     const afterRollback = new LocalDatabase();
     afterRollback.open();
     invariant(
+      afterRollback
+        .listProjectChatSessions(chatProjectId)
+        .find((session) => session.id === branchedSession.id)?.title === 'Alternative hypothesis',
+      'chat_session_rename_was_not_persisted_after_reopen',
+    );
+    invariant(
       afterRollback.snapshot(chatProjectId).messages.find((message) => message.id === chatMessageId)
         ?.actions[0]?.errorCode === 'application_interrupted',
       'chat_action_interruption_reconciliation_failed',
