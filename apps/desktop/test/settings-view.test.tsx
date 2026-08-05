@@ -145,6 +145,9 @@ describe('separated application Settings', () => {
     expect(html).toContain('content SHA-256, offset, and total character');
     expect(html).toContain('Codex sandbox: project-bound reads');
     expect(html).toContain('no direct shell, filesystem, raw network, browser');
+    expect(html).toContain('foreground Python');
+    expect(html).toContain('experiments are limited to 120 seconds');
+    expect(html).toContain('Raw shells, inline Python');
   });
 
   it('offers detection-only OpenClaw and Hermes add-ons without claiming a connection', () => {

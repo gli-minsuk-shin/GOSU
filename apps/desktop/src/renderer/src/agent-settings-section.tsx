@@ -458,10 +458,11 @@ export function AgentSettingsSection({
           <small>
             Board and Objective can be read live. Board changes remain proposals and require Apply.
             A separate Main-process SSH broker can run bounded Git inspection and, in an explicitly
-            granted Workspace mode, approved direct-argv tests/builds that may execute project code.
-            Every command requires a fresh Allow once decision. Raw shells, TTY, transfer,
-            unattended execution, broader capabilities, and access to another project's data remain
-            unavailable.
+            granted Workspace mode, approved direct-argv tests/builds or a foreground Python
+            experiment entrypoint that may execute project code. Every command requires a fresh
+            Allow once decision; experiments are limited to 120 seconds. Raw shells, inline Python,
+            TTY, transfer, unattended execution, broader capabilities, and access to another
+            project's data remain unavailable.
           </small>
         </div>
         <div className="form-actions">

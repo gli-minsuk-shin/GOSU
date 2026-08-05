@@ -326,7 +326,7 @@ export const SshApprovalRequestSchema = z
     workspaceGrantVersion: z.number().int().positive().optional(),
     workspaceRoot: remoteWorkingDirectorySchema.optional(),
     workspaceWorkingDirectory: remoteWorkingDirectorySchema.optional(),
-    workspaceOperation: z.enum(['inspect', 'test', 'build']).optional(),
+    workspaceOperation: z.enum(['inspect', 'test', 'build', 'experiment']).optional(),
     commandSha256: z
       .string()
       .regex(/^[0-9a-f]{64}$/u)

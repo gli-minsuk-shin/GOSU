@@ -74,6 +74,9 @@ describe('advanced Project Chat controls', () => {
       'image-capable model',
     );
     expect(describeError(new Error('attachment_scope_mismatch'))).not.toContain('/Users/');
+    expect(describeError(new Error('ssh_workspace_command_not_allowed'))).toContain(
+      'relative Python experiment entrypoint',
+    );
   });
 
   it('discards an attachment picker result after session change, replacement, or unmount', () => {
@@ -435,7 +438,11 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('SSH server registered — project access is not granted yet');
     expect(html).toContain('Grant to Agentic study…');
     expect(html).toContain('SSH workspace not granted');
-    expect(html).toContain('Raw shells, TTY, transfer, unattended execution, secrets');
+    expect(html).toContain('foreground Python experiment entrypoints');
+    expect(html).toContain('Experiments are limited to 120 seconds');
+    expect(html).toContain(
+      'Raw shells, inline Python, TTY, transfer, unattended execution, secrets',
+    );
     expect(html).toContain('aria-label="Attach research files"');
     expect(html).toContain(
       'Attach up to 5 documents, presentations, text files, or images for this turn',

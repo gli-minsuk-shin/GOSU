@@ -539,8 +539,9 @@ export function SshConnectionsCard({
         as a tool payload; a summary the model writes in its visible answer becomes chat history.
         Registered servers remain unavailable to a project until a separate workspace grant is
         approved. Diagnostics grants permit bounded Git inspection; Workspace grants may
-        additionally run a strict direct-argv test/build allowlist. Raw shells, inline eval,
-        interactive shells, privilege escalation, file transfer, TTY, and forwarding remain
+        additionally run a strict direct-argv test/build allowlist and one foreground Python
+        experiment entrypoint for at most 120 seconds. Raw shells, inline eval, module or stdin
+        launch, interactive shells, privilege escalation, file transfer, TTY, and forwarding remain
         disabled. Parsed destinations use isolated, non-interactive OpenSSH options.
       </p>
     </article>

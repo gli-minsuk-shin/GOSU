@@ -410,6 +410,62 @@ describe('SSH connection and Allow once service', () => {
     );
   });
 
+  it('runs a bounded foreground Python experiment only after a fresh Allow once decision', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          localForwards: [],
+        },
+      }),
+    );
+    const { runner, execute } = runnerFixture({ stdout: 'metric=0.91\n' });
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const grant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const approval = nextApproval(service);
+    const execution = service.runAgentWorkspaceCommand(
+      workspaceCommandFixture(grant, {
+        command: '/usr/bin/python3',
+        args: ['-u', 'experiments/train.py'],
+        workspaceSubdirectory: 'model',
+        timeoutSeconds: 120,
+      }),
+    );
+    const request = await approval;
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(request).toMatchObject({
+      executionMode: 'remote_workspace',
+      workspaceRoot: '/workspace/research-project',
+      workspaceWorkingDirectory: '/workspace/research-project/model',
+      workspaceOperation: 'experiment',
+      commandPreview: expect.stringContaining("'/usr/bin/python3' '-u' 'experiments/train.py'"),
+    });
+
+    service.resolveApproval({ approvalId: request.id, decision: 'allow_once' });
+
+    await expect(execution).resolves.toMatchObject({ stdout: 'metric=0.91\n' });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(
+      'fixture-gpu',
+      expect.objectContaining({
+        command: '/usr/bin/python3',
+        args: ['-u', 'experiments/train.py'],
+        workingDirectory: '/workspace/research-project/model',
+        timeoutSeconds: 120,
+      }),
+      expect.any(Object),
+      expect.objectContaining({ user: 'researcher', host: '203.0.113.10' }),
+    );
+  });
+
   it.each([
     { workspaceSubdirectory: '../outside' },
     { command: '/bin/bash', args: ['-lc', 'touch owned'] },

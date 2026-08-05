@@ -1068,10 +1068,11 @@ export function ProjectChatView({
               </span>
               <small>
                 Board changes require Apply. Only project-granted remote workspaces are visible.
-                Bounded Git inspection and optional approved direct-argv tests/builds show their
-                exact target, root, arguments, and risk for a fresh one-time approval. Raw shells,
-                TTY, transfer, unattended execution, secrets, Settings, and Trash remain
-                unavailable.
+                Bounded Git inspection, optional approved direct-argv tests/builds, and foreground
+                Python experiment entrypoints show their exact target, root, arguments, and risk for
+                a fresh one-time approval. Experiments are limited to 120 seconds. Raw shells,
+                inline Python, TTY, transfer, unattended execution, secrets, Settings, and Trash
+                remain unavailable.
               </small>
             </div>
           </section>

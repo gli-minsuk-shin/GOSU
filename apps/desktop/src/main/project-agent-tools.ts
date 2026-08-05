@@ -26,9 +26,11 @@ import type { LocalNotesVaultGrant } from '../shared/project-chat-contracts';
 import { repositoryIdentifierForAgent } from '../shared/repository-identifier';
 import {
   SSH_IPC_ERROR_CODES,
+  type ReadProjectSshResourceSnapshotInput,
   type SshAgentCommand,
   type SshCommandResult,
   type SshConnectionProfile,
+  type SshServerResourceSnapshot,
 } from '../shared/ssh-contracts';
 import {
   SSH_WORKSPACE_MAX_ARGUMENTS,
@@ -57,6 +59,7 @@ const MAX_NOTE_CHARACTERS_PER_SESSION = 96_000;
 const MAX_TOOL_RESULT_CHARACTERS = 48_000;
 const SOURCE_FINALIZATION_WAIT_MS = 100;
 const LITERATURE_DYNAMIC_TOOL_TIMEOUT_MS = 125_000;
+const SSH_RESOURCE_DYNAMIC_TOOL_TIMEOUT_MS = 40_000;
 const SSH_DYNAMIC_TOOL_TIMEOUT_MS = 155_000;
 
 const ReadWorkspaceArgumentsSchema = z
@@ -113,6 +116,7 @@ const SearchLiteratureArgumentsSchema = z
     }
   });
 const ListSshWorkspacesArgumentsSchema = z.object({}).strict();
+const ReadSshWorkspaceResourcesArgumentsSchema = z.object({ grantId: z.string().uuid() }).strict();
 const RunSshWorkspaceCommandArgumentsSchema = SshWorkspaceAgentCommandSchema.pick({
   grantId: true,
   command: true,
@@ -255,11 +259,26 @@ const LIST_SSH_WORKSPACES_TOOL = {
   },
 } as const;
 
+const READ_SSH_WORKSPACE_RESOURCES_TOOL = {
+  type: 'function',
+  name: 'read_ssh_workspace_resources',
+  description:
+    'Read one bounded structured CPU, memory, and NVIDIA GPU utilization snapshot for a remote workspace explicitly granted to this active project. Use the opaque grant ID returned by list_ssh_workspaces. This fixed internal probe does not run a model-supplied command and does not require Allow once. Returns only the display label, permission mode, capture status, normalized resource values, and bounded issue codes. Host resolution, users, credentials, connection IDs, workspace roots, paths, command text, and raw probe output are never returned.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      grantId: { type: 'string', format: 'uuid' },
+    },
+    required: ['grantId'],
+    additionalProperties: false,
+  },
+} as const;
+
 const RUN_SSH_WORKSPACE_COMMAND_TOOL = {
   type: 'function',
   name: 'run_ssh_workspace_command',
   description:
-    'Request one bounded direct-argv command in a remote workspace explicitly granted to this project. Use an absolute executable and an optional relative workspace subdirectory. Diagnostics mode permits bounded inspection; Workspace mode also permits a small test/build allowlist that can execute untrusted project code. GOSU shows target, workspace, mode, risk, and exact command and executes only after a fresh Allow once decision. This is an advisory policy boundary, not a hard remote sandbox. Raw shell strings, inline eval, privilege escalation, file transfer, forwarding, TTY, unattended execution, and host-wide destructive commands are unavailable.',
+    'Request one bounded direct-argv command in a remote workspace explicitly granted to this project. Use an absolute executable and an optional relative workspace subdirectory. Diagnostics mode permits bounded inspection. Workspace mode also permits a small test/build allowlist and a foreground Python experiment using /usr/bin/python or /usr/bin/python3, optional -u, a relative .py entrypoint inside the granted workspace, bounded arguments, and at most 120 seconds. These operations can execute untrusted project code. GOSU shows target, workspace, mode, risk, and exact command and executes only after a fresh Allow once decision. This is an advisory policy boundary, not a hard remote sandbox or an unattended job runner. Raw shell strings, inline eval, privilege escalation, file transfer, forwarding, TTY, background execution, and host-wide destructive commands are unavailable.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -344,6 +363,9 @@ export interface ProjectAgentLiterature {
 
 export interface ProjectAgentSsh {
   listConnections(): Promise<readonly SshConnectionProfile[]>;
+  readProjectResourceSnapshot(
+    input: ReadProjectSshResourceSnapshotInput,
+  ): Promise<SshServerResourceSnapshot>;
   runAgentCommand(input: SshAgentCommand, signal?: AbortSignal): Promise<SshCommandResult>;
   listWorkspaceGrants(projectId: string): Promise<readonly GrantedRemoteWorkspace[]>;
   runAgentWorkspaceCommand(
@@ -452,6 +474,7 @@ export class ProjectAgentToolSession {
       ...(this.attachmentsAvailable ? [LIST_ATTACHMENTS_TOOL, READ_ATTACHMENT_TOOL] : []),
       ...(dependencies.literature ? [SEARCH_LITERATURE_TOOL] : []),
       LIST_SSH_WORKSPACES_TOOL,
+      READ_SSH_WORKSPACE_RESOURCES_TOOL,
       RUN_SSH_WORKSPACE_COMMAND_TOOL,
     ];
     this.dynamicTools = [
@@ -473,6 +496,11 @@ export class ProjectAgentToolSession {
             },
           ]
         : []),
+      {
+        namespace: PROJECT_TOOL_NAMESPACE,
+        tool: READ_SSH_WORKSPACE_RESOURCES_TOOL.name,
+        timeoutMs: SSH_RESOURCE_DYNAMIC_TOOL_TIMEOUT_MS,
+      },
       {
         namespace: PROJECT_TOOL_NAMESPACE,
         tool: RUN_SSH_WORKSPACE_COMMAND_TOOL.name,
@@ -731,6 +759,7 @@ export class ProjectAgentToolSession {
     if (
       this.sshCapabilityRevoked &&
       (call.tool === LIST_SSH_WORKSPACES_TOOL.name ||
+        call.tool === READ_SSH_WORKSPACE_RESOURCES_TOOL.name ||
         call.tool === RUN_SSH_WORKSPACE_COMMAND_TOOL.name)
     ) {
       return failure('ssh_cancelled');
@@ -756,6 +785,9 @@ export class ProjectAgentToolSession {
       }
       if (call.tool === LIST_SSH_WORKSPACES_TOOL.name) {
         return await this.listSshWorkspaces(call.arguments);
+      }
+      if (call.tool === READ_SSH_WORKSPACE_RESOURCES_TOOL.name) {
+        return await this.readSshWorkspaceResources(call.arguments);
       }
       if (call.tool === RUN_SSH_WORKSPACE_COMMAND_TOOL.name) {
         return await this.runSshWorkspaceCommand(call, delivery.abortSignal);
@@ -942,6 +974,45 @@ export class ProjectAgentToolSession {
         connectionLabel: connection.label,
         permissionMode: grant.permissionMode,
       })),
+    });
+  }
+
+  private async readSshWorkspaceResources(arguments_: unknown) {
+    const parsed = ReadSshWorkspaceResourcesArgumentsSchema.safeParse(arguments_);
+    if (!parsed.success) return failure('invalid_tool_arguments');
+    if (!this.dependencies.ssh) return failure('ssh_unavailable');
+
+    const workspaces = await this.dependencies.ssh.listWorkspaceGrants(this.dependencies.projectId);
+    const selected = workspaces.find(({ grant }) => grant.id === parsed.data.grantId);
+    if (!selected) return failure('ssh_workspace_grant_not_found');
+
+    const snapshot = await this.dependencies.ssh.readProjectResourceSnapshot({
+      projectId: this.dependencies.projectId,
+      connectionId: selected.connection.id,
+    });
+    if (this.sshCapabilityRevoked) return failure('ssh_cancelled');
+
+    const currentWorkspaces = await this.dependencies.ssh.listWorkspaceGrants(
+      this.dependencies.projectId,
+    );
+    const current = currentWorkspaces.find(
+      ({ grant, connection }) =>
+        grant.id === parsed.data.grantId && connection.id === selected.connection.id,
+    );
+    if (!current) return failure('ssh_workspace_grant_not_found');
+    if (this.sshCapabilityRevoked) return failure('ssh_cancelled');
+
+    return jsonResult({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_telemetry',
+      connectionLabel: current.connection.label,
+      permissionMode: current.grant.permissionMode,
+      capturedAt: snapshot.capturedAt,
+      status: snapshot.status,
+      cpu: snapshot.cpu,
+      memory: snapshot.memory,
+      gpu: snapshot.gpu,
+      issues: snapshot.issues,
     });
   }
 

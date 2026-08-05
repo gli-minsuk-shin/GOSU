@@ -41,6 +41,7 @@ import type {
   LiteratureSearchInput,
   LiteratureSearchReceipt,
 } from '../src/shared/literature-contracts';
+import type { SshServerResourceSnapshot } from '../src/shared/ssh-contracts';
 import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 
 function dynamicToolDelivery(
@@ -704,6 +705,16 @@ async function fixture(vault?: ProjectAgentVault, attachments?: ProjectChatAttac
   const ssh: ProjectAgentSsh = {
     listConnections: vi.fn(async () => []),
     listWorkspaceGrants: vi.fn(async () => []),
+    readProjectResourceSnapshot: vi.fn(async (input): Promise<SshServerResourceSnapshot> => ({
+      schemaVersion: 1,
+      connectionId: input.connectionId,
+      capturedAt: '2026-08-05T00:00:00.000Z',
+      status: 'unavailable',
+      cpu: { state: 'unavailable' },
+      memory: { state: 'unavailable' },
+      gpu: { state: 'unavailable' },
+      issues: ['connection_unavailable'],
+    })),
     runAgentCommand: vi.fn(async () => {
       throw new Error('ssh_unavailable');
     }),
@@ -1851,9 +1862,11 @@ describe('ProjectChatService', () => {
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_local_note');
     expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('search_literature');
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('list_ssh_workspaces');
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_ssh_workspace_resources');
     expect(JSON.stringify(codex.dynamicTools[0])).toContain('run_ssh_workspace_command');
     expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('/Users/');
     expect(codex.dynamicToolTimeouts[0]).toEqual([
+      { namespace: 'gosu_project', tool: 'read_ssh_workspace_resources', timeoutMs: 40_000 },
       { namespace: 'gosu_project', tool: 'run_ssh_workspace_command', timeoutMs: 155_000 },
     ]);
     const handler = codex.dynamicToolHandlers[0]!;
@@ -1932,6 +1945,7 @@ describe('ProjectChatService', () => {
     expect(result.success).toBe(true);
     expect(codex.dynamicToolTimeouts[0]).toEqual([
       { namespace: 'gosu_project', tool: 'search_literature', timeoutMs: 125_000 },
+      { namespace: 'gosu_project', tool: 'read_ssh_workspace_resources', timeoutMs: 40_000 },
       { namespace: 'gosu_project', tool: 'run_ssh_workspace_command', timeoutMs: 155_000 },
     ]);
     expect(JSON.parse(result.contentItems[0]!.text)).toMatchObject({

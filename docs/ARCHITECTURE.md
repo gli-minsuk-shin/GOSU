@@ -332,6 +332,12 @@ summary 입력이 원격 실행을 증명하지 않으며, raw learning curve·r
 아니다. 실제 Runner 연결에서는 검증된 `RunnerEventMessageV1` 중 durable summary만 위 repository port로
 투영하고 raw metric·log·resource sample은 기존 retention 정책대로 memory relay에만 둬야 한다.
 
+Project Chat의 workspace-mode foreground Python experiment는 이 Runner bridge를 대신하지 않는다. 모델이
+사용자가 승인한 짧은 project script를 실행하고 bounded stdout/stderr를 현재 turn에서 분석할 수 있게 하는
+개발 편의 기능이다. 그 출력은 자동으로 metric point나 evidence가 되지 않으며 SQLCipher에 저장되지 않는다.
+Objective lock, budget, signed manifest, lease·fencing, live metric relay, durable lineage와 Stop/Kill을 요구하는
+실험은 향후 `submit_experiment_trial` 계열 Runner control path를 통해서만 실행해야 한다.
+
 ## 8. Desktop 보안 모델
 
 현재 구현된 보안 불변식은 다음과 같다.
@@ -396,10 +402,11 @@ summary 입력이 원격 실행을 증명하지 않으며, raw learning curve·r
   invalid mode는 thread 생성 전에 거절하고, 선택 mode는 profile과 각 attempt에 고정해 silent fallback을
   허용하지 않는다. web result와 page 내용은 untrusted evidence이며 raw search payload를 Renderer,
   Project Chat DB 또는 telemetry에 자동 전달하지 않는다. 나머지 예외는 Main이 turn마다 선언하는
-  `gosu_project` namespace의 typed dynamic tool뿐이다. Board·Objective·Local Notes·SSH workspace catalog
-  조회는 read-only다. 별도 Main broker의 workspace command는 사용자 `Allow once` 뒤 Git inspection 또는
-  선택적으로 project code를 실행할 수 있는 bounded test/build를 수행하므로 side effect가 가능하며 remote
-  sandbox가 아니다. 이 예외는 Codex sandbox 자체에 shell이나 network를 부여하지 않는다. `thread/start`
+  `gosu_project` namespace의 typed dynamic tool뿐이다. Board·Objective·Local Notes·SSH workspace catalog와
+  정규화된 server resource snapshot 조회는 read-only다. 별도 Main broker의 workspace command는 사용자
+  `Allow once` 뒤 Git inspection, bounded test/build 또는 제한된 foreground Python experiment를 수행하므로
+  side effect가 가능하며 remote sandbox가 아니다. 이 예외는 Codex sandbox 자체에 shell이나 network를
+  부여하지 않는다. `thread/start`
   직후 예상 밖 MCP inventory가 0이
   아니면 fail closed하고 thread를 해제한다. server-initiated command·file approval은 Main이 거절하고 그 밖의
   지원하지 않는 request에는 제한된 protocol error만 돌려준다.
@@ -407,9 +414,11 @@ summary 입력이 원격 실행을 증명하지 않으며, raw learning curve·r
   tool 일치, 실제 `turn/start` ID binding, 중복 call ID, turn·thread 호출 수, 동시성,
   argument·result character cap과 기본 10초 timeout을 검사한다. 긴 승인이 필요한 declared tool만
   registration에 고정된 timeout override를 가질 수 있고 override 상한은 180초다. 현재
-  `search_literature`는 discovery provider의 rate limit·fallback을 포함한 125초, `run_ssh_workspace_command`는 최대 30초
-  approval과 120초 execution을 포함한 155초 bound를 사용한다. attachment list/text-read는 기본 10초 transport
-  bound를 유지하며 모델이 timeout을 늘리거나 미등록 tool에 override를 붙일 수 없다. 조기 tool call이
+  `search_literature`는 discovery provider의 rate limit·fallback을 포함한 125초,
+  `read_ssh_workspace_resources`는 고정 probe의 최악 시간을 포함한 40초,
+  `run_ssh_workspace_command`는 최대 30초 approval과 120초 execution을 포함한 155초 bound를 사용한다.
+  attachment list/text-read는 기본 10초 transport bound를 유지하며 모델이 timeout을 늘리거나 미등록
+  tool에 override를 붙일 수 없다. 조기 tool call이
   먼저 도착하면 그 turn ID로
   임시 binding한 뒤 `turn/start` 응답과 반드시 일치하는지 재검사한다. 실제 tool argument는 다시 strict
   Zod schema로 검증한다. handler 성공만으로 읽기 출처를 확정하지 않고, 검증된 tool result를 현재 Codex
@@ -455,7 +464,11 @@ summary 입력이 원격 실행을 증명하지 않으며, raw learning curve·r
   `/usr/bin/nvidia-smi --query-gpu=... --format=csv,noheader,nounits`를 non-interactive OpenSSH argv로
   실행한다. stdout/stderr는 Main에서 strict parser로 CPU utilization·logical processor 수, RAM
   used/total, GPU별 utilization·VRAM·temperature와 bounded issue로 바꾼 뒤 폐기한다. GPU가 없거나 일부
-  probe가 실패해도 가능한 CPU/RAM sample은 `partial`로 유지하며 0%로 가장하지 않는다.
+  probe가 실패해도 가능한 CPU/RAM sample은 `partial`로 유지하며 0%로 가장하지 않는다. Project Chat의
+  `read_ssh_workspace_resources`도 모델이 준 opaque grant ID를 active project grant로 다시 해석한 뒤 같은
+  monitor를 사용한다. 모델에는 connection label, capture 시각·상태, 정규화된 CPU/RAM/GPU 값과 bounded
+  issue만 돌려주며 connection ID, host·user·port, workspace root, probe command와 raw output은 노출하지
+  않는다. 모델은 `force`를 지정할 수 없고 기존 12초 cache를 공유한다.
 - resource snapshot은 connection profile identity와 generation별 12초 in-memory cache 및 in-flight
   coalescing, 전역 최대 4개 capture로 제한한다. Renderer는 Connections 또는 Project Chat이 실제로 보이고
   document가 visible일 때만 15초 polling하며, 실패해도 마지막 sample을 stale로 표시하고
@@ -486,10 +499,14 @@ summary 입력이 원격 실행을 증명하지 않으며, raw learning curve·r
 - system diagnostics와 `run_ssh_workspace_command`는 서로 다른 typed policy다. workspace tool은 exact grant,
   concrete executable, argument array, relative subdirectory와 bounded timeout을 받고 shell·inline eval,
   `sudo`·`su`·`doas`, nested SSH·transfer, TTY·forwarding·background/unattended 실행을 pre-approval에서
-  fail closed한다. `diagnostics` mode는 bounded inspect만, `workspace` mode는 inspect와 작은 test/build
-  allowlist만 허용한다. Git inspect는 subcommand별 argument schema를 사용하고 fsmonitor·hook·pager config와
-  external diff·textconv를 Main이 exact approval preview 전에 비활성화한다. project test/build는 repository code를 해당 remote account 권한으로 실행할 수 있음을
-  승인창에 명시한다. 모든 command는 actual target, root/cwd, operation class와 exact preview를 보여 주는
+  fail closed한다. `diagnostics` mode는 bounded inspect만, `workspace` mode는 inspect, 작은 test/build
+  allowlist와 제한된 foreground Python experiment를 허용한다. experiment는 `/usr/bin/python` 또는
+  `/usr/bin/python3`, optional `-u`, workspace 안의 relative `.py` entrypoint와 bounded argument만 허용하며
+  module·inline eval·stdin script·absolute path·traversal·background 실행을 거절한다. 최대 120초인 foreground
+  trial일 뿐 장기·무인 실행이나 hard remote process kill을 보증하지 않는다. Git inspect는 subcommand별
+  argument schema를 사용하고 fsmonitor·hook·pager config와 external diff·textconv를 Main이 exact approval
+  preview 전에 비활성화한다. project test/build/experiment는 repository code를 해당 remote account 권한으로
+  실행할 수 있음을 승인창에 명시한다. 모든 command는 actual target, root/cwd, operation class와 exact preview를 보여 주는
   30초짜리 `Allow once` 승인을 새로 받아야 하며 승인 후 profile·grant version을 다시 확인한다.
   이미 시작된 profile·grant mutation queue가 끝나기 전에는 이 최종 확인과 transport 시작을 진행하지 않아
   승인과 revoke/update가 겹쳐도 이전 권한으로 실행되지 않는다. Node test는 명시적인 `node --test`만
@@ -1189,7 +1206,7 @@ flowchart LR
   project tool과 별도 `Allow once`를 요구하는 Main-process SSH broker도 명시적 capability 예외이며, SSH
   실행이 Codex child 자체에 shell·network 권한을 부여하지는 않는다. web search는 dynamic tool이 아니라
   `thread/start.config.web_search` 설정이다.
-- 현재 `gosu_project` namespace는 항상 `read_workspace`, SSH workspace list/run을 제공한다. explicit
+- 현재 `gosu_project` namespace는 항상 `read_workspace`, SSH workspace list/resource-read/run을 제공한다. explicit
   literature-search command가 있는 non-legacy turn에는 `search_literature`, 승인된 Vault가 있으면
   `list_local_notes`·`read_local_note`, 현재 turn 연구 파일이 첨부됐으면 `list_turn_attachments`·
   `read_turn_attachment_text`가 추가된다. legacy reviewer에는 Literature mutation tool이 없다.
@@ -1206,9 +1223,10 @@ flowchart LR
   `no_registered_connections|workspace_grant_required` setup state만 반환해 모델이 transport 실패와 승인
   누락을 혼동하지 않게 한다. global registry의 ungranted connection label/profile, 다른 project의 grant,
   actual target·user·root는 모델에 노출하지 않는다. command tool의
-  project·session·attempt·turn·tool-call·connection binding은
+  resource-read는 grant ID만 받고 active project의 grant와 connection을 Main에서 재검증해 정규화된
+  CPU/RAM/GPU snapshot만 반환한다. project·session·attempt·turn·tool-call·connection binding은
   모델 argument가 아니라 Main이 주입하고 grant를 다시 조회한다. 최대 20개 argument는 별도 token으로
-  검증하며 absolute executable, relative workspace subdirectory와 mode별 inspect/test/build allowlist를
+  검증하며 absolute executable, relative workspace subdirectory와 mode별 inspect/test/build/experiment allowlist를
   적용한다. raw shell·inline interpreter eval, privilege escalation, nested transport·transfer, TTY·forwarding과
   unattended execution은 approval UI 전에 fail closed한다.
 - approval center는 actual target, ROOT/HIGH RISK, connection label, project/session, workspace root/cwd,
@@ -1248,7 +1266,7 @@ flowchart LR
   보존하고, 동일 version의 여러 excerpt만 하나의 source entry로 합친다.
 - tool access는 UI section 자체나 database table 접근이 아니라 module capability다. 현재 구현된
   Board·Goal & Metrics·승인된 Local Notes, 현재 turn 첨부 연구 파일, 명시적 additive Literature search와
-  active project에 grant된 SSH workspace의 opaque ID·label·mode만 사용할 수 있다. Literature table 전체를 임의
+  active project에 grant된 SSH workspace의 opaque ID·label·mode 및 정규화된 resource snapshot만 사용할 수 있다. Literature table 전체를 임의
   조회·수정하는 도구는 없고 search receipt만 돌아온다. SSH host resolution·credential·private-key path·
   remote root, Settings·Project Trash는 list tool에 노출하지 않으며 Experiments·Manuscript·Review·
   References·Lecture는 domain service가 완성되기 전에는 접근 가능한 것처럼 표시하지 않는다. Board
@@ -1369,8 +1387,10 @@ flowchart LR
 
 Project Chat에는 pinned local [Codex App Server](https://learn.chatgpt.com/docs/app-server)의 native
 thread/turn/item agent loop와 dynamic tools를 사용해 active project의 Board·Objective와 명시적으로
-승인한 Local Notes를 읽고, 현재 project에 grant된 OpenSSH alias/direct target에 exact Allow-once
-workspace command를 요청하는 bounded tool loop가 구현되어 있다. GOSU가 별도의 planner/reviewer loop를
+승인한 Local Notes, project-scoped CPU/RAM/GPU snapshot을 읽고, 현재 project에 grant된 OpenSSH
+alias/direct target에 exact Allow-once workspace command를 요청하는 bounded tool loop가 구현되어 있다.
+Workspace mode에서는 최대 120초의 제한된 foreground Python experiment도 같은 승인 경계로 요청할 수
+있다. GOSU가 별도의 planner/reviewer loop를
 재작성하지 않고 Codex가 제공하는
 collaboration mode·reasoning·personality·verbosity를 조합한다.
 다만 이는 navigation UI나 DB를 자유롭게 조작하는 agent가 아니며 mutation은 검증된 proposal과 사용자
@@ -1522,9 +1542,9 @@ credential을 사용할 수는 있지만 GOSU 자체 GitHub account lifecycle을
 command importer와 project-scoped remote workspace broker는 구현됐지만 interactive terminal, PTY, file
 transfer, active port forwarding, unattended command, remote patch RPC와 Runner 설치·복구 connector는 계획
 상태다. importer에 포함된 loopback `-L`은 inactive plan일 뿐 tunnel을 열지 않는다. workspace mode는
-concrete executable과 inspect/test/build allowlist만 허용하며 raw shell이나 임의 source patch surface가
-아니다. test/build는 project code를 remote account 권한으로 실행할 수 있고 lexical root 검사는 sandbox가
-아니므로 사용자가 HIGH-RISK `Allow once`를 확인해야 한다. local
+concrete executable과 inspect/test/build/foreground-experiment allowlist만 허용하며 raw shell이나 임의
+source patch surface가 아니다. test/build/experiment는 project code를 remote account 권한으로 실행할 수
+있고 lexical root 검사는 sandbox가 아니므로 사용자가 HIGH-RISK `Allow once`를 확인해야 한다. local
 OpenSSH transport를 timeout·cancel로 종료해도 연결이 이미 끊어진 뒤 remote process tree가 종료됐다고
 보증할 수 없으므로 장기 workload는 SSH broker가 아니라 lease·fencing·reconciliation이 있는 Runner를
 사용해야 한다. raw SSH output은 현재 turn memory에만 있고 durable transcript가 아니며, approval request·
@@ -1757,7 +1777,7 @@ output 비노출 IPC를 고정한다. resource summary test는 CPU/RAM/GPU meter
 명시적인 partial/no-GPU 상태와 접근 가능한 label을 검사하고, session state/view test는 scroll 위치의
 project/session 격리·saved zero·invalid value 거절·bottom default·viewport clamp·smooth replay 금지를 고정한다.
 workspace policy test는 project grant isolation, canonical root·relative cwd,
-mode별 concrete executable·inspect/test/build allowlist, root diagnostic 축소, shell·inline eval·privilege·
+mode별 concrete executable·inspect/test/build/experiment allowlist, root diagnostic 축소, shell·inline eval·privilege·
 transfer·forwarding 거절, approval exact target/root/mode/command binding·profile/grant revalidation·TTL·capacity·
 Allow once·scope cancel, output crop·untrusted marker를 고정한다. Project Agent
 통합 test는 모델이 project/session/connection binding을 위조하거나 다른 project grant를 선택할 수 없고
@@ -1848,7 +1868,8 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
   shell/browser/MCP 비활성 유지, PDF path/bytes/raw-text non-retention·scope·TTL·single-use·budget·revoke
 - SSH broker 변경: global alias/direct-target registry와 project-scoped workspace grant 분리, deterministic
   command import·inactive loopback `-L`, credential·raw paste·raw output 비보존, root 축소 diagnostics와
-  mode별 concrete executable·inspect/test/build policy, actual target/root/operation exact Allow once binding,
+  mode별 concrete executable·inspect/test/build/foreground-experiment policy, project-scoped structured resource
+  read, actual target/root/operation exact Allow once binding,
   profile/grant CAS revalidation과 in-flight mutation/approval 경합, cancellation-only navigation IPC,
   OpenSSH argument array·direct `-F none`·
   background fork 차단·client diagnostic 격리, timeout·capacity·local transport cancel, remote kill·hard

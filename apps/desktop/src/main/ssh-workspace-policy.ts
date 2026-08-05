@@ -1,10 +1,18 @@
 import { posix } from 'node:path';
 
-import type {
-  RemoteWorkspaceGrant,
-  SshWorkspaceAgentCommand,
-  SshWorkspaceOperationClass,
+import {
+  SSH_WORKSPACE_MAX_ARGUMENTS,
+  type RemoteWorkspaceGrant,
+  type SshWorkspaceAgentCommand,
+  type SshWorkspaceOperationClass,
 } from '../shared/ssh-workspace-contracts';
+import { SSH_COMMAND_MAX_TIMEOUT_SECONDS } from '../shared/ssh-contracts';
+
+/*
+ * Keep this stricter than the general direct-argv boundary. Experiment arguments are intentionally
+ * plain values rather than shell fragments, response files, or interpreter switches.
+ */
+const PYTHON_EXPERIMENT_SHELL_META_PATTERN = /[\n\r\0`$&|;<>()[\]{}*?!~@'"\\]/u;
 
 const ALLOWED_EXECUTABLE_DIRECTORIES = new Set(['/bin', '/usr/bin']);
 
@@ -28,6 +36,8 @@ const FORBIDDEN_EXECUTABLES = new Set([
 ]);
 
 const SHELL_META_PATTERN = /[\n\r\0`]|\$\(|\$\{|&&|\|\||[<>|;]/u;
+const PYTHON_EXPERIMENT_ENTRYPOINT_PATTERN =
+  /^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*\.py$/u;
 
 function executableBasename(command: string) {
   const directory = posix.dirname(command);
@@ -48,21 +58,17 @@ export function resolveWorkspaceWorkingDirectory(
 
 function argumentStaysInWorkspace(argument: string, canonicalRoot: string) {
   if (SHELL_META_PATTERN.test(argument)) return false;
-  if (
-    argument === '..' ||
-    argument.startsWith('../') ||
-    argument.endsWith('/..') ||
-    argument.includes('/../')
-  ) {
-    return false;
-  }
   const values =
     argument.startsWith('--') && argument.includes('=')
       ? [argument.slice(argument.indexOf('=') + 1)]
       : [argument];
   return values.every(
     (value) =>
-      !value.startsWith('/') || value === canonicalRoot || value.startsWith(`${canonicalRoot}/`),
+      value !== '..' &&
+      !value.startsWith('../') &&
+      !value.endsWith('/..') &&
+      !value.includes('/../') &&
+      (!value.startsWith('/') || value === canonicalRoot || value.startsWith(`${canonicalRoot}/`)),
   );
 }
 
@@ -219,9 +225,33 @@ function classifyTestOrBuild(
   return null;
 }
 
+function classifyPythonExperiment(
+  command: SshWorkspaceAgentCommand,
+): SshWorkspaceOperationClass | null {
+  if (command.command !== '/usr/bin/python' && command.command !== '/usr/bin/python3') return null;
+  if (command.timeoutSeconds > SSH_COMMAND_MAX_TIMEOUT_SECONDS) return null;
+  if (command.args.length > SSH_WORKSPACE_MAX_ARGUMENTS) return null;
+  if (command.args.some((argument) => PYTHON_EXPERIMENT_SHELL_META_PATTERN.test(argument))) {
+    return null;
+  }
+
+  const entrypointArguments = command.args[0] === '-u' ? command.args.slice(1) : command.args;
+  if (
+    entrypointArguments.length === 0 ||
+    !PYTHON_EXPERIMENT_ENTRYPOINT_PATTERN.test(entrypointArguments[0]!)
+  ) {
+    return null;
+  }
+  const scriptArguments = entrypointArguments.slice(1);
+  return scriptArguments.some((argument) => ['-', '-m', '--module'].includes(argument))
+    ? null
+    : 'experiment';
+}
+
 /**
  * An advisory command policy for a normal SSH account. It prevents raw-shell construction and
- * obvious host-wide paths, but executing project tests/builds can run arbitrary repository code.
+ * obvious host-wide paths, but executing project tests, builds, or experiments can run arbitrary
+ * repository code.
  */
 export function classifyWorkspaceCommand(
   command: SshWorkspaceAgentCommand,
@@ -236,6 +266,8 @@ export function classifyWorkspaceCommand(
   if (basename === 'git') return classifyGit(command.args);
   if (grant.permissionMode !== 'workspace') return null;
   if (hasBlockedLauncherOption(basename, command.args)) return null;
+  const experiment = classifyPythonExperiment(command);
+  if (experiment) return experiment;
   return classifyTestOrBuild(basename, command.args);
 }
 

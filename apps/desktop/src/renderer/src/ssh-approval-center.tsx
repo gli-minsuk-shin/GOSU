@@ -1,4 +1,8 @@
-import type { ResolveSshApprovalInput, SshApprovalRequest } from '../../shared/ssh-contracts';
+import {
+  SSH_COMMAND_MAX_TIMEOUT_SECONDS,
+  type ResolveSshApprovalInput,
+  type SshApprovalRequest,
+} from '../../shared/ssh-contracts';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -34,7 +38,10 @@ export function SshApprovalCenter({
         const busy = busyApprovalIds.has(request.id);
         const remoteWorkspace = request.executionMode === 'remote_workspace';
         const executesWorkspaceCode =
-          request.workspaceOperation === 'test' || request.workspaceOperation === 'build';
+          request.workspaceOperation === 'test' ||
+          request.workspaceOperation === 'build' ||
+          request.workspaceOperation === 'experiment';
+        const runsForegroundExperiment = request.workspaceOperation === 'experiment';
         return (
           <article className="ssh-approval-card" key={request.id}>
             <div>
@@ -76,9 +83,11 @@ export function SshApprovalCenter({
                 Allow once runs only this exact direct-argv command for this turn. The configured
                 root and path checks are an advisory policy boundary, not a remote sandbox; symlinks
                 and repository code can access resources permitted to the SSH account.
-                {executesWorkspaceCode
-                  ? ' This test/build can execute untrusted project code and change server state.'
-                  : ' This inspection may still expose private repository data.'}{' '}
+                {runsForegroundExperiment
+                  ? ` This foreground Python experiment can execute untrusted project code and change server state. GOSU waits for it for at most ${SSH_COMMAND_MAX_TIMEOUT_SECONDS} seconds; this is not an unattended job runner.`
+                  : executesWorkspaceCode
+                    ? ' This test/build can execute untrusted project code and change server state.'
+                    : ' This inspection may still expose private repository data.'}{' '}
                 Bounded output is returned to the model as untrusted data and is not saved as raw
                 SSH output.
               </p>
