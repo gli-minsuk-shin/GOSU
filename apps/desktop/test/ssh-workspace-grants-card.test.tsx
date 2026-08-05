@@ -90,7 +90,10 @@ describe('project-scoped remote workspace settings', () => {
     expect(html).toContain('Remote workspace access');
     expect(html).toContain('1 granted to Remote research');
     expect(html).toContain('/root/research-project');
-    expect(html).toContain('Workspace · inspection and approved tests/builds');
+    expect(html).toContain(
+      'Workspace · inspection, approved tests/builds, and foreground Python experiments',
+    );
+    expect(html).toContain('experiments may execute repository code');
     expect(html).toContain('HIGH RISK · ROOT account');
     expect(html).toContain('not a remote sandbox');
     expect(html).toContain('Every command still requires a separate Allow once decision');

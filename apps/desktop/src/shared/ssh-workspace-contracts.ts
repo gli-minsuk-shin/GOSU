@@ -136,7 +136,7 @@ export const SshWorkspaceAgentCommandSchema = SshAgentCommandSchema.omit({
 
 export type SshWorkspaceAgentCommand = z.infer<typeof SshWorkspaceAgentCommandSchema>;
 
-export const SshWorkspaceOperationClassSchema = z.enum(['inspect', 'test', 'build']);
+export const SshWorkspaceOperationClassSchema = z.enum(['inspect', 'test', 'build', 'experiment']);
 export type SshWorkspaceOperationClass = z.infer<typeof SshWorkspaceOperationClassSchema>;
 
 export const GrantedRemoteWorkspaceSchema = z

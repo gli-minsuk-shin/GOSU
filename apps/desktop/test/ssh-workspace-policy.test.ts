@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   RemoteWorkspaceGrantSchema,
   RemoteWorkspaceRootSchema,
+  SshWorkspaceAgentCommandSchema,
+  SshWorkspaceOperationClassSchema,
   type SshWorkspaceAgentCommand,
 } from '../src/shared/ssh-workspace-contracts';
 import {
@@ -86,8 +88,75 @@ describe('remote workspace boundary', () => {
     ['/usr/bin/go', ['test', './...'], 'test'],
     ['/usr/bin/cargo', ['build', '--locked'], 'build'],
     ['/usr/bin/cmake', ['--build', 'build'], 'build'],
+    ['/usr/bin/python', ['experiments/baseline.py'], 'experiment'],
+    ['/usr/bin/python3', ['-u', 'experiments/train_v2.py'], 'experiment'],
+    ['/usr/bin/python3', ['experiments/train.py', '--epochs', '1', '--seed', '3'], 'experiment'],
   ] as const)('classifies bounded direct argv %s', (executable, args, expected) => {
     expect(classifyWorkspaceCommand(command(executable, args), grant)).toBe(expected);
+  });
+
+  it('accepts experiment as a versioned operation and caps all workspace commands at 120 seconds', () => {
+    expect(SshWorkspaceOperationClassSchema.parse('experiment')).toBe('experiment');
+    expect(
+      classifyWorkspaceCommand(
+        command('/usr/bin/python3', ['-u', 'experiments/train.py'], {
+          timeoutSeconds: 120,
+        }),
+        grant,
+      ),
+    ).toBe('experiment');
+    expect(
+      SshWorkspaceAgentCommandSchema.safeParse(
+        command('/usr/bin/python3', ['experiments/train.py'], { timeoutSeconds: 121 }),
+      ).success,
+    ).toBe(false);
+    expect(
+      classifyWorkspaceCommand(
+        command('/usr/bin/python3', ['experiments/train.py'], { timeoutSeconds: 121 }),
+        grant,
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['/bin/python3', ['experiments/train.py']],
+    ['/usr/bin/python3', []],
+    ['/usr/bin/python3', ['-u']],
+    ['/usr/bin/python3', ['-uu', 'experiments/train.py']],
+    ['/usr/bin/python3', ['-m', 'training']],
+    ['/usr/bin/python3', ['-c', 'print(1)']],
+    ['/usr/bin/python3', ['-']],
+    ['/usr/bin/python3', ['experiments/train']],
+    ['/usr/bin/python3', ['/root/research-project/experiments/train.py']],
+    ['/usr/bin/python3', ['../outside.py']],
+    ['/usr/bin/python3', ['experiments/../outside.py']],
+    ['/usr/bin/python3', ['experiments/train.py;touch-owned']],
+    ['/usr/bin/python3', ['experiments/train.py', '--config=/etc/secret.toml']],
+    ['/usr/bin/python3', ['experiments/train.py', '--config=../../secret.toml']],
+    ['/usr/bin/python3', ['experiments/train.py', '--config=experiments/../secret.toml']],
+    ['/usr/bin/python3', ['experiments/train.py', '-m', 'other.module']],
+    ['/usr/bin/python3', ['experiments/train.py', '-']],
+    ['/usr/bin/python3', ['experiments/train.py', '--name', 'trial&background']],
+    ['/usr/bin/python3', ['experiments/train.py', '@arguments.txt']],
+  ] as const)(
+    'does not classify unsafe Python argv as an experiment: %s %j',
+    (executable, args) => {
+      expect(classifyWorkspaceCommand(command(executable, args), grant)).toBeNull();
+    },
+  );
+
+  it('enforces the shared 20-argument workspace cap in the policy as well as the schema', () => {
+    const tooManyArguments = [
+      'experiments/train.py',
+      ...Array.from({ length: 20 }, (_, index) => String(index)),
+    ];
+    expect(
+      classifyWorkspaceCommand(command('/usr/bin/python3', tooManyArguments), grant),
+    ).toBeNull();
+    expect(
+      SshWorkspaceAgentCommandSchema.safeParse(command('/usr/bin/python3', tooManyArguments))
+        .success,
+    ).toBe(false);
   });
 
   it.each([
@@ -118,6 +187,12 @@ describe('remote workspace boundary', () => {
     );
     expect(
       classifyWorkspaceCommand(command('/usr/bin/python3', ['-m', 'pytest']), diagnostics),
+    ).toBe(null);
+    expect(
+      classifyWorkspaceCommand(
+        command('/usr/bin/python3', ['-u', 'experiments/train.py']),
+        diagnostics,
+      ),
     ).toBe(null);
   });
 

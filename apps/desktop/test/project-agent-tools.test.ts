@@ -25,6 +25,7 @@ import type {
   SshAgentCommand,
   SshCommandResult,
   SshConnectionProfile,
+  SshServerResourceSnapshot,
 } from '../src/shared/ssh-contracts';
 import type {
   GrantedRemoteWorkspace,
@@ -178,6 +179,42 @@ class FakeProjectSsh implements ProjectAgentSsh {
     },
   ];
   readonly listConnections = vi.fn(async () => structuredClone(this.connections));
+  readonly readProjectResourceSnapshot = vi.fn(
+    async (input: {
+      projectId: string;
+      connectionId: string;
+    }): Promise<SshServerResourceSnapshot> => ({
+      schemaVersion: 1,
+      connectionId: input.connectionId,
+      capturedAt: '2026-08-05T00:00:02.000Z',
+      status: 'ready',
+      cpu: {
+        state: 'available',
+        utilizationPercent: 37.5,
+        logicalProcessorCount: 64,
+      },
+      memory: {
+        state: 'available',
+        usedBytes: 68_719_476_736,
+        totalBytes: 137_438_953_472,
+        utilizationPercent: 50,
+      },
+      gpu: {
+        state: 'available',
+        devices: [
+          {
+            index: 0,
+            name: 'NVIDIA RTX 3080',
+            utilizationPercent: 82,
+            memoryUsedBytes: 8_589_934_592,
+            memoryTotalBytes: 10_737_418_240,
+            temperatureC: 71,
+          },
+        ],
+      },
+      issues: [],
+    }),
+  );
   readonly listWorkspaceGrants = vi.fn(
     async (projectId: string): Promise<readonly GrantedRemoteWorkspace[]> => [
       {
@@ -465,6 +502,7 @@ describe('ProjectAgentToolSession', () => {
       toolCall('read_local_note', { noteId: NOTE_ID }),
       toolCall('search_literature', { query: 'tabular foundation models' }),
       toolCall('list_ssh_workspaces', {}),
+      toolCall('read_ssh_workspace_resources', { grantId: SSH_GRANT_ID }),
       toolCall('run_ssh_workspace_command', {
         grantId: SSH_GRANT_ID,
         command: '/usr/bin/git',
@@ -495,12 +533,17 @@ describe('ProjectAgentToolSession', () => {
       'read_local_note',
       'search_literature',
       'list_ssh_workspaces',
+      'read_ssh_workspace_resources',
       'run_ssh_workspace_command',
     ]);
     const declaredCatalog = JSON.stringify(session.dynamicTools);
     expect(declaredCatalog).toContain('searchTags');
     expect(declaredCatalog).toContain('workflow provenance labels');
     expect(declaredCatalog).toContain('provider-supplied subjects');
+    expect(declaredCatalog).toContain('foreground Python experiment');
+    expect(declaredCatalog).toContain('/usr/bin/python3');
+    expect(declaredCatalog).toContain('at most 120 seconds');
+    expect(declaredCatalog).toContain('not a hard remote sandbox or an unattended job runner');
 
     const listed = await invokeTool(
       session,
@@ -813,6 +856,84 @@ describe('ProjectAgentToolSession', () => {
     expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
   });
 
+  it('reads only normalized resource telemetry for a currently granted SSH workspace', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
+
+    const result = await invokeTool(
+      session,
+      toolCall('read_ssh_workspace_resources', { grantId: SSH_GRANT_ID }),
+    );
+    const payload = resultPayload(result);
+    const serialized = result.contentItems[0]!.text;
+
+    expect(result.success).toBe(true);
+    expect(payload).toEqual({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_telemetry',
+      connectionLabel: 'Training GPU',
+      permissionMode: 'workspace',
+      capturedAt: '2026-08-05T00:00:02.000Z',
+      status: 'ready',
+      cpu: {
+        state: 'available',
+        utilizationPercent: 37.5,
+        logicalProcessorCount: 64,
+      },
+      memory: {
+        state: 'available',
+        usedBytes: 68_719_476_736,
+        totalBytes: 137_438_953_472,
+        utilizationPercent: 50,
+      },
+      gpu: {
+        state: 'available',
+        devices: [
+          {
+            index: 0,
+            name: 'NVIDIA RTX 3080',
+            utilizationPercent: 82,
+            memoryUsedBytes: 8_589_934_592,
+            memoryTotalBytes: 10_737_418_240,
+            temperatureC: 71,
+          },
+        ],
+      },
+      issues: [],
+    });
+    expect(ssh.readProjectResourceSnapshot).toHaveBeenCalledExactlyOnceWith({
+      projectId: projectAlpha.id,
+      connectionId: SSH_CONNECTION_ID,
+    });
+    expect(ssh.listWorkspaceGrants).toHaveBeenCalledTimes(2);
+    expect(serialized).not.toContain(SSH_CONNECTION_ID);
+    expect(serialized).not.toContain(SSH_GRANT_ID);
+    expect(serialized).not.toContain('/workspace');
+    expect(serialized).not.toContain('private-resolved-alias');
+    expect(serialized).not.toContain('sensitive-gpu.example.test');
+    expect(serialized).not.toContain('sensitive-remote-user');
+    expect(serialized).not.toContain('nvidia-smi');
+    expect(serialized).not.toContain('stdout');
+  });
+
+  it('withholds a completed resource snapshot when its project grant is revoked mid-read', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
+    ssh.listWorkspaceGrants
+      .mockResolvedValueOnce(await ssh.listWorkspaceGrants(projectAlpha.id))
+      .mockResolvedValueOnce([]);
+
+    const result = await invokeTool(
+      session,
+      toolCall('read_ssh_workspace_resources', { grantId: SSH_GRANT_ID }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(resultPayload(result)).toEqual({ error: 'ssh_workspace_grant_not_found' });
+    expect(ssh.readProjectResourceSnapshot).toHaveBeenCalledOnce();
+    expect(JSON.stringify(result)).not.toContain('NVIDIA RTX 3080');
+  });
+
   it('injects the active project and session into approved SSH tool requests', async () => {
     const { workspace, projectAlpha } = await workspaceFixture();
     const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
@@ -869,6 +990,10 @@ describe('ProjectAgentToolSession', () => {
 
     session.revokeSshCapability();
     const listed = await invokeTool(session, toolCall('list_ssh_workspaces', {}));
+    const resources = await invokeTool(
+      session,
+      toolCall('read_ssh_workspace_resources', { grantId: SSH_GRANT_ID }),
+    );
     const executed = await invokeTool(
       session,
       toolCall('run_ssh_workspace_command', {
@@ -883,10 +1008,12 @@ describe('ProjectAgentToolSession', () => {
     );
 
     expect(resultPayload(listed)).toEqual({ error: 'ssh_cancelled' });
+    expect(resultPayload(resources)).toEqual({ error: 'ssh_cancelled' });
     expect(resultPayload(executed)).toEqual({ error: 'ssh_cancelled' });
     expect(workspaceResult.success).toBe(true);
     expect(ssh.cancelSession).toHaveBeenCalledExactlyOnceWith(projectAlpha.id, CHAT_SESSION_ID);
     expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
+    expect(ssh.readProjectResourceSnapshot).not.toHaveBeenCalled();
     expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
   });
 
@@ -910,6 +1037,7 @@ describe('ProjectAgentToolSession', () => {
       'read_workspace',
       'search_literature',
       'list_ssh_workspaces',
+      'read_ssh_workspace_resources',
       'run_ssh_workspace_command',
     ]);
     const unauthorized = await invokeTool(noGrant, toolCall('list_local_notes', {}));
@@ -938,6 +1066,8 @@ describe('ProjectAgentToolSession', () => {
       ['read_local_note', { noteId: NOTE_ID, maxCharacters: 24_001 }],
       ['search_literature', { query: 'x', fromYear: 2027, toYear: 2026 }],
       ['search_literature', { query: 'x', projectId: randomUUID() }],
+      ['read_ssh_workspace_resources', { grantId: 'not-a-grant-id' }],
+      ['read_ssh_workspace_resources', { grantId: SSH_GRANT_ID, connectionId: SSH_CONNECTION_ID }],
     ];
 
     for (const [tool, arguments_] of invalidCalls) {

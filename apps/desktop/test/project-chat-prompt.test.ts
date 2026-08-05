@@ -91,7 +91,7 @@ describe('Project chat prompt assembly', () => {
     expect(first.provenance).toMatchObject({
       assemblyVersion: 3,
       profileVersion: 3,
-      baseInstructionVersion: 18,
+      baseInstructionVersion: 19,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -152,6 +152,24 @@ describe('Project chat prompt assembly', () => {
       'only the bounded title, DOI, and provider ID identifiers',
     );
     expect(first.developerInstructions).toContain('requires a fresh user Allow once decision');
+    expect(first.developerInstructions).toContain('runs a foreground experiment');
+    expect(first.developerInstructions).toContain('/usr/bin/python3');
+    expect(first.developerInstructions).toContain('at most 120 seconds');
+    expect(first.developerInstructions).toContain(
+      'The foreground experiment path does not provide unattended execution',
+    );
+    expect(first.developerInstructions).toContain('the Runner control path is still required');
+    expect(first.developerInstructions).toContain(
+      'read a bounded structured CPU, memory, and GPU resource snapshot',
+    );
+    expect(first.developerInstructions).toContain('call read_ssh_workspace_resources');
+    expect(first.developerInstructions).toContain('does not require a command approval');
+    expect(first.developerInstructions).toContain(
+      'Never try to obtain the same data by sending nvidia-smi',
+    );
+    expect(first.developerInstructions).toContain(
+      'do not claim live resource visibility unless the resource tool returns a successful snapshot',
+    );
     expect(first.developerInstructions).toContain('workspace_grant_required');
     expect(first.developerInstructions).toContain(
       'do not claim transport or authentication failed',
@@ -163,7 +181,7 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(18);
+    expect(first.provenance.baseInstructionVersion).toBe(19);
     expect(first.developerInstructions).toContain(
       'Core & canonical is an eligibility-gated maximum, never a quota',
     );

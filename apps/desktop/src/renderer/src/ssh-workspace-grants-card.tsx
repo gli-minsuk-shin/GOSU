@@ -270,7 +270,7 @@ export function SshWorkspaceGrantsCard({
               >
                 <option value="diagnostics">Diagnostics · Git inspection only</option>
                 <option value="workspace" disabled={!selectedConnection?.directTarget}>
-                  Workspace · inspection plus approved tests/builds
+                  Workspace · inspection, approved tests/builds, and foreground Python experiments
                   {!selectedConnection?.directTarget ? ' · paste a direct SSH command first' : ''}
                 </option>
               </select>
@@ -283,8 +283,9 @@ export function SshWorkspaceGrantsCard({
                 disabled={busy}
               />
               <span>
-                I understand this is an advisory policy boundary, not a remote sandbox. Tests and
-                builds may execute repository code with the SSH account’s privileges.
+                I understand this is an advisory policy boundary, not a remote sandbox. Tests,
+                builds, and foreground Python experiments may execute repository code with the SSH
+                account’s privileges.
                 {selectedConnection?.directTarget?.user === 'root'
                   ? ' HIGH RISK: this selected account is root.'
                   : !selectedConnection?.directTarget?.user
@@ -321,7 +322,7 @@ export function SshWorkspaceGrantsCard({
                     <span>{grant.canonicalRoot}</span>
                     <small>
                       {grant.permissionMode === 'workspace'
-                        ? 'Workspace · inspection and approved tests/builds'
+                        ? 'Workspace · inspection, approved tests/builds, and foreground Python experiments'
                         : 'Diagnostics · Git inspection only'}{' '}
                       · grant v{grant.version}
                     </small>

@@ -192,7 +192,7 @@ export function describeError(error: unknown) {
     ssh_workspace_project_unavailable:
       'Remote workspace access is available only for an active, non-archived project.',
     ssh_workspace_command_not_allowed:
-      'GOSU blocked this remote workspace command or permission mode. Use a smaller Git inspection or an approved direct test/build command.',
+      'GOSU blocked this remote workspace command or permission mode. Use a smaller Git inspection, an approved direct test/build command, or a relative Python experiment entrypoint.',
     ssh_approval_not_found: 'This SSH approval is no longer pending.',
     ssh_approval_denied: 'The SSH command was denied and was not started.',
     ssh_approval_expired: 'The SSH approval expired and the command was not started.',

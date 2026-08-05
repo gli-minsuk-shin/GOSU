@@ -114,7 +114,9 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('Remove');
     expect(html).toContain('Allow once');
     expect(html).toContain('Diagnostics grants permit bounded Git inspection');
-    expect(html).toContain('Raw shells, inline eval, interactive shells');
+    expect(html).toContain('foreground Python');
+    expect(html).toContain('at most 120 seconds');
+    expect(html).toContain('Raw shells, inline eval, module or stdin launch, interactive shells');
 
     const serverRowIndex = html.indexOf('Fixture training server');
     expect(serverRowIndex).toBeGreaterThan(-1);
@@ -392,6 +394,33 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('a'.repeat(64));
     expect(html).toContain('not a remote sandbox');
     expect(html).toContain('change server state');
+  });
+
+  it('labels a foreground Python experiment and preserves the one-time approval boundary', () => {
+    const experimentApproval: SshApprovalRequest = {
+      ...approval,
+      executionMode: 'remote_workspace',
+      privilegeClass: 'standard',
+      connectionVersion: 2,
+      workspaceGrantId: '66666666-6666-4666-8666-666666666666',
+      workspaceGrantVersion: 3,
+      workspaceRoot: '/workspace/research-project',
+      workspaceWorkingDirectory: '/workspace/research-project',
+      workspaceOperation: 'experiment',
+      commandSha256: 'b'.repeat(64),
+      commandPreview:
+        "cd '/workspace/research-project' && exec '/usr/bin/python3' '-u' 'experiments/train.py'",
+    };
+    const html = renderToStaticMarkup(
+      <SshApprovalCenter requests={[experimentApproval]} onResolve={vi.fn()} />,
+    );
+
+    expect(html).toContain('remote workspace / experiment');
+    expect(html).toContain('foreground Python experiment');
+    expect(html).toContain('at most 120 seconds');
+    expect(html).toContain('not an unattended job runner');
+    expect(html).toContain('Allow once');
+    expect(html).toContain('untrusted project code and change server state');
   });
 
   it('renders no approval surface when no command is pending', () => {
