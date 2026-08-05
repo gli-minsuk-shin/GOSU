@@ -7,12 +7,15 @@ import { app, safeStorage } from 'electron';
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import {
   LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT,
+  LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW,
   LITERATURE_MAX_SEARCH_RESULTS,
   LiteratureRecordSchema,
+  LiteratureSearchConflictSchema,
   LiteratureSearchRunSchema,
   type LiteratureAiAnnotationUpdate,
   type LiteratureAiProvenance,
   type LiteratureRecord,
+  type LiteratureSearchConflict,
   type LiteratureSearchRun,
 } from '../shared/literature-contracts';
 import {
@@ -54,6 +57,7 @@ const INTERRUPTED_CHAT_ATTEMPT_RECEIPT =
   'GOSU closed before this Codex turn finished. Retry when ready.';
 const PROJECT_CHAT_SESSIONS_MIGRATION = 'project-chat-sessions-v1';
 const LITERATURE_MANUAL_RELEVANCE_MIGRATION = 'literature-manual-relevance-v2';
+const LITERATURE_WEAK_FINGERPRINT_MIGRATION = 'literature-weak-fingerprint-v1';
 const DEFAULT_PROJECT_CHAT_SESSION_TITLE = 'Project chat';
 
 export type LocalLiteratureAiAnnotationUpdate = LiteratureAiAnnotationUpdate &
@@ -362,8 +366,20 @@ type LiteratureSearchRunRow = Readonly<{
   new_count: number;
   updated_count: number;
   unchanged_count: number;
+  conflict_count: number;
   created_at: string;
   completed_at: string | null;
+}>;
+
+type LiteratureSearchConflictRow = Readonly<{
+  ordinal: number;
+  provider: string;
+  provider_record_id: string | null;
+  doi: string | null;
+  fingerprint: string;
+  title: string;
+  authors_json: string;
+  published_year: number | null;
 }>;
 
 function stringArrayJson(value: string) {
@@ -424,7 +440,25 @@ function toLocalLiteratureRecord(row: LiteratureRecordRow): LiteratureRecord {
   });
 }
 
-function toLocalLiteratureSearchRun(row: LiteratureSearchRunRow): LiteratureSearchRun {
+function toLocalLiteratureSearchConflict(
+  row: LiteratureSearchConflictRow,
+): LiteratureSearchConflict {
+  return LiteratureSearchConflictSchema.parse({
+    ordinal: row.ordinal,
+    provider: 'crossref',
+    providerRecordId: row.provider_record_id,
+    doi: row.doi,
+    fingerprint: row.fingerprint,
+    title: row.title,
+    authors: stringArrayJson(row.authors_json),
+    publishedYear: row.published_year,
+  });
+}
+
+function toLocalLiteratureSearchRun(
+  row: LiteratureSearchRunRow,
+  conflicts: readonly LiteratureSearchConflict[] = [],
+): LiteratureSearchRun {
   return LiteratureSearchRunSchema.parse({
     schemaVersion: 1,
     id: row.id,
@@ -435,13 +469,29 @@ function toLocalLiteratureSearchRun(row: LiteratureSearchRunRow): LiteratureSear
     fromYear: row.from_year,
     toYear: row.to_year,
     status: row.status,
-    foundCount: row.new_count + row.updated_count + row.unchanged_count,
+    foundCount: row.new_count + row.updated_count + row.unchanged_count + row.conflict_count,
     newCount: row.new_count,
     updatedCount: row.updated_count,
     unchangedCount: row.unchanged_count,
+    conflictCount: row.conflict_count,
+    conflicts,
     createdAt: row.created_at,
     completedAt: row.completed_at,
   });
+}
+
+function listLiteratureSearchConflicts(
+  database: Database.Database,
+  runId: string,
+): LiteratureSearchConflict[] {
+  const rows = database
+    .prepare(
+      `select ordinal,provider,provider_record_id,doi,fingerprint,title,authors_json,published_year
+       from literature_search_conflicts where search_run_id=? order by ordinal
+       limit ${LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW}`,
+    )
+    .all(runId) as LiteratureSearchConflictRow[];
+  return rows.map(toLocalLiteratureSearchConflict);
 }
 
 function citationKeyBase(candidate: LiteratureProviderCandidate) {
@@ -543,16 +593,13 @@ function findLiteratureRecord(
         .get(projectId, candidate.provider, candidate.providerId) as
         LiteratureRecordRow | undefined)
     : undefined;
-  const byFingerprint = database
-    .prepare('select * from literature_records where project_id=? and fingerprint=? limit 1')
-    .get(projectId, candidate.fingerprint) as LiteratureRecordRow | undefined;
-  const identities = [byDoi, byProvider, byFingerprint].filter(
+  const strongIdentities = [byDoi, byProvider].filter(
     (record): record is LiteratureRecordRow => record !== undefined,
   );
-  if (new Set(identities.map((record) => record.id)).size > 1) {
+  if (new Set(strongIdentities.map((record) => record.id)).size > 1) {
     throw new LiteratureStorageError('identity_conflict');
   }
-  const matched = byDoi ?? byProvider ?? byFingerprint;
+  const matched = byDoi ?? byProvider;
   if (matched && candidate.doi && matched.doi && candidate.doi !== matched.doi) {
     throw new LiteratureStorageError('identity_conflict');
   }
@@ -566,7 +613,29 @@ function findLiteratureRecord(
   ) {
     throw new LiteratureStorageError('identity_conflict');
   }
-  return matched;
+  if (matched) return matched;
+
+  const fingerprintMatches = database
+    .prepare(
+      `select * from literature_records
+       where project_id=? and fingerprint=? order by created_at,id`,
+    )
+    .all(projectId, candidate.fingerprint) as LiteratureRecordRow[];
+  const candidateHasStrongIdentity = Boolean(candidate.doi || candidate.providerId);
+  if (!candidateHasStrongIdentity) {
+    if (fingerprintMatches.length > 1) {
+      throw new LiteratureStorageError('identity_conflict');
+    }
+    const weakMatch = fingerprintMatches[0];
+    if (weakMatch && (weakMatch.doi !== null || weakMatch.provider_record_id !== null)) {
+      throw new LiteratureStorageError('identity_conflict');
+    }
+    return weakMatch;
+  }
+  if (fingerprintMatches.length !== 1) return undefined;
+  const weakMatch = fingerprintMatches[0]!;
+  if (weakMatch.doi === null && weakMatch.provider_record_id === null) return weakMatch;
+  return undefined;
 }
 
 function requireNoLiteratureIdentityCollision(
@@ -588,12 +657,7 @@ function requireNoLiteratureIdentityCollision(
         )
         .get(projectId, state.source_provider, state.provider_record_id, recordId)
     : undefined;
-  const fingerprintCollision = database
-    .prepare(
-      'select 1 from literature_records where project_id=? and fingerprint=? and id<>? limit 1',
-    )
-    .get(projectId, state.fingerprint, recordId);
-  if (doiCollision || providerCollision || fingerprintCollision) {
+  if (doiCollision || providerCollision) {
     throw new LiteratureStorageError('identity_conflict');
   }
 }
@@ -807,6 +871,28 @@ function migrateLiteratureManualRelevance(database: Database.Database) {
     .immediate();
 }
 
+function migrateLiteratureWeakFingerprint(database: Database.Database) {
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(LITERATURE_WEAK_FINGERPRINT_MIGRATION);
+  if (migrationApplied) return;
+  database
+    .transaction(() => {
+      database.exec(`
+        drop index if exists literature_record_fingerprint_identity;
+        create unique index if not exists literature_record_weak_fingerprint_identity
+          on literature_records(project_id,fingerprint)
+          where doi is null and provider_record_id is null;
+        create index if not exists literature_records_by_fingerprint
+          on literature_records(project_id,fingerprint);
+      `);
+      database
+        .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+        .run(LITERATURE_WEAK_FINGERPRINT_MIGRATION, new Date().toISOString());
+    })
+    .immediate();
+}
+
 export class LocalDatabase {
   private database: Database.Database | undefined;
   private workspaceOutboxOrderingReady = false;
@@ -983,7 +1069,10 @@ export class LocalDatabase {
       create unique index if not exists literature_record_provider_identity
         on literature_records(project_id,source_provider,provider_record_id)
         where provider_record_id is not null;
-      create unique index if not exists literature_record_fingerprint_identity
+      create unique index if not exists literature_record_weak_fingerprint_identity
+        on literature_records(project_id,fingerprint)
+        where doi is null and provider_record_id is null;
+      create index if not exists literature_records_by_fingerprint
         on literature_records(project_id,fingerprint);
       create unique index if not exists literature_record_citation_key
         on literature_records(project_id,citation_key) where citation_key is not null;
@@ -1002,6 +1091,7 @@ export class LocalDatabase {
         new_count integer not null default 0 check (new_count >= 0),
         updated_count integer not null default 0 check (updated_count >= 0),
         unchanged_count integer not null default 0 check (unchanged_count >= 0),
+        conflict_count integer not null default 0 check (conflict_count >= 0),
         created_at text not null,
         completed_at text
       );
@@ -1016,6 +1106,22 @@ export class LocalDatabase {
       );
       create index if not exists literature_search_hits_by_record
         on literature_search_hits(record_id,search_run_id);
+      create table if not exists literature_search_conflicts (
+        search_run_id text not null references literature_search_runs(id) on delete cascade,
+        ordinal integer not null check (ordinal between 1 and 50),
+        provider text not null check (provider='crossref'),
+        provider_record_id text check (
+          provider_record_id is null or length(provider_record_id) between 1 and 2048
+        ),
+        doi text check (doi is null or length(doi) between 1 and 512),
+        fingerprint text not null check (length(fingerprint)=64),
+        title text not null check (length(title) between 1 and 2000),
+        authors_json text not null check (length(authors_json) <= 32768),
+        published_year integer check (
+          published_year is null or published_year between 1000 and 3000
+        ),
+        primary key(search_run_id,ordinal)
+      );
       create table if not exists local_schema_migrations (
         id text primary key,
         applied_at text not null
@@ -1190,6 +1296,16 @@ export class LocalDatabase {
         on project_chat_actions(message_id,created_at,id);
     `);
       migrateLiteratureManualRelevance(database);
+      migrateLiteratureWeakFingerprint(database);
+      const literatureSearchColumns = database.pragma(
+        'table_info(literature_search_runs)',
+      ) as Array<{ name: string }>;
+      if (!literatureSearchColumns.some((column) => column.name === 'conflict_count')) {
+        database.exec(
+          `alter table literature_search_runs add column conflict_count integer not null default 0
+           check (conflict_count >= 0)`,
+        );
+      }
       const sshConnectionColumns = database.pragma('table_info(ssh_connections)') as Array<{
         name: string;
       }>;
@@ -2269,14 +2385,17 @@ export class LocalDatabase {
   }
 
   listLiteratureSearchRuns(projectId: string): LiteratureSearchRun[] {
-    const rows = this.require()
+    const database = this.require();
+    const rows = database
       .prepare(
         `select id,project_id,provider,query,requested_limit,from_year,to_year,status,
-                new_count,updated_count,unchanged_count,created_at,completed_at
+                new_count,updated_count,unchanged_count,conflict_count,created_at,completed_at
          from literature_search_runs where project_id=? order by created_at desc,id desc limit 20`,
       )
       .all(projectId) as LiteratureSearchRunRow[];
-    return rows.map(toLocalLiteratureSearchRun);
+    return rows.map((row) =>
+      toLocalLiteratureSearchRun(row, listLiteratureSearchConflicts(database, row.id)),
+    );
   }
 
   beginLiteratureSearch(input: LiteratureSearchRun) {
@@ -2285,7 +2404,9 @@ export class LocalDatabase {
       input.foundCount !== 0 ||
       input.newCount !== 0 ||
       input.updatedCount !== 0 ||
-      input.unchangedCount !== 0
+      input.unchangedCount !== 0 ||
+      input.conflictCount !== 0 ||
+      input.conflicts.length !== 0
     ) {
       throw new Error('invalid_literature_search_start');
     }
@@ -2294,8 +2415,8 @@ export class LocalDatabase {
         .prepare(
           `insert or ignore into literature_search_runs(
              id,schema_version,project_id,provider,query,requested_limit,from_year,to_year,status,
-             new_count,updated_count,unchanged_count,created_at,completed_at
-           ) values(?,1,?,?,?,?,?,?,'running',0,0,0,?,null)`,
+             new_count,updated_count,unchanged_count,conflict_count,created_at,completed_at
+           ) values(?,1,?,?,?,?,?,?,'running',0,0,0,0,?,null)`,
         )
         .run(
           input.id,
@@ -2325,7 +2446,7 @@ export class LocalDatabase {
         const run = database
           .prepare(
             `select id,project_id,provider,query,requested_limit,from_year,to_year,status,
-                    new_count,updated_count,unchanged_count,created_at,completed_at
+                    new_count,updated_count,unchanged_count,conflict_count,created_at,completed_at
              from literature_search_runs where project_id=? and id=?`,
           )
           .get(projectId, runId) as LiteratureSearchRunRow | undefined;
@@ -2333,12 +2454,56 @@ export class LocalDatabase {
         let added = 0;
         let updated = 0;
         let skipped = 0;
+        let conflicts = 0;
+        const conflictDetails: LiteratureSearchConflict[] = [];
+        const upsertOne = database.transaction((candidate: LiteratureProviderCandidate) =>
+          upsertLiteratureCandidate(database, projectId, candidate, completedAt),
+        );
         const insertHit = database.prepare(
           `insert into literature_search_hits(search_run_id,ordinal,record_id,outcome)
            values(?,?,?,?)`,
         );
+        const insertConflict = database.prepare(
+          `insert into literature_search_conflicts(
+             search_run_id,ordinal,provider,provider_record_id,doi,fingerprint,title,authors_json,
+             published_year
+           ) values(?,?,?,?,?,?,?,?,?)`,
+        );
         for (const [index, candidate] of candidates.entries()) {
-          const result = upsertLiteratureCandidate(database, projectId, candidate, completedAt);
+          let result: ReturnType<typeof upsertLiteratureCandidate>;
+          try {
+            result = upsertOne(candidate);
+          } catch (error) {
+            if (error instanceof LiteratureStorageError && error.code === 'identity_conflict') {
+              const conflict = LiteratureSearchConflictSchema.parse({
+                ordinal: index + 1,
+                provider: candidate.provider,
+                providerRecordId: candidate.providerId ?? null,
+                doi: candidate.doi ?? null,
+                fingerprint: candidate.fingerprint,
+                title: candidate.title,
+                authors: candidate.authors,
+                publishedYear: candidate.publishedYear ?? null,
+              });
+              insertConflict.run(
+                runId,
+                conflict.ordinal,
+                conflict.provider,
+                conflict.providerRecordId,
+                conflict.doi,
+                conflict.fingerprint,
+                conflict.title,
+                JSON.stringify(conflict.authors),
+                conflict.publishedYear,
+              );
+              if (conflictDetails.length < LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW) {
+                conflictDetails.push(conflict);
+              }
+              conflicts += 1;
+              continue;
+            }
+            throw error;
+          }
           if (result.outcome === 'new') added += 1;
           else if (result.outcome === 'updated') updated += 1;
           else skipped += 1;
@@ -2347,24 +2512,30 @@ export class LocalDatabase {
         const changed = database
           .prepare(
             `update literature_search_runs set
-               status='complete',new_count=?,updated_count=?,unchanged_count=?,completed_at=?
+               status='complete',new_count=?,updated_count=?,unchanged_count=?,conflict_count=?,
+               completed_at=?
              where project_id=? and id=? and status='running'`,
           )
-          .run(added, updated, skipped, completedAt, projectId, runId).changes;
+          .run(added, updated, skipped, conflicts, completedAt, projectId, runId).changes;
         if (changed !== 1) throw new Error('literature_search_state_conflict');
         return {
           foundCount: candidates.length,
           newCount: added,
           updatedCount: updated,
           unchangedCount: skipped,
-          run: toLocalLiteratureSearchRun({
-            ...run,
-            status: 'complete',
-            new_count: added,
-            updated_count: updated,
-            unchanged_count: skipped,
-            completed_at: completedAt,
-          }),
+          conflictCount: conflicts,
+          run: toLocalLiteratureSearchRun(
+            {
+              ...run,
+              status: 'complete',
+              new_count: added,
+              updated_count: updated,
+              unchanged_count: skipped,
+              conflict_count: conflicts,
+              completed_at: completedAt,
+            },
+            conflictDetails,
+          ),
         };
       })
       .immediate();

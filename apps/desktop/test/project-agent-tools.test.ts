@@ -235,17 +235,31 @@ class FakeProjectLiterature implements ProjectAgentLiterature {
           toYear: input.toYear ?? null,
           requestedLimit: input.limit ?? 25,
           status: 'complete',
-          foundCount: 4,
+          foundCount: 5,
           newCount: 3,
           updatedCount: 1,
           unchangedCount: 0,
+          conflictCount: 1,
+          conflicts: [
+            {
+              ordinal: 5,
+              provider: 'crossref',
+              providerRecordId: '10.1000/gosu.conflict',
+              doi: '10.1000/gosu.conflict',
+              fingerprint: 'c'.repeat(64),
+              title: 'Ambiguous metadata fixture',
+              authors: ['Ada Researcher'],
+              publishedYear: 2026,
+            },
+          ],
           createdAt: '2026-08-05T00:00:00.000Z',
           completedAt,
         },
-        foundCount: 4,
+        foundCount: 5,
         newCount: 3,
         updatedCount: 1,
         unchangedCount: 0,
+        conflictCount: 1,
       };
     },
   );
@@ -525,10 +539,20 @@ describe('ProjectAgentToolSession', () => {
       persisted: true,
       runId: LITERATURE_RUN_ID,
       query: 'tabular foundation models',
-      foundCount: 4,
+      foundCount: 5,
       newCount: 3,
       updatedCount: 1,
       unchangedCount: 0,
+      conflictCount: 1,
+      conflicts: [
+        {
+          ordinal: 5,
+          doi: '10.1000/gosu.conflict',
+          providerRecordId: '10.1000/gosu.conflict',
+          title: 'Ambiguous metadata fixture',
+        },
+      ],
+      omittedConflictCount: 0,
     });
     expect(literature.search).toHaveBeenCalledExactlyOnceWith(
       {
@@ -552,6 +576,69 @@ describe('ProjectAgentToolSession', () => {
     expect(forged.success).toBe(false);
     expect(resultPayload(forged)).toEqual({ error: 'invalid_tool_arguments' });
     expect(literature.search).toHaveBeenCalledOnce();
+  });
+
+  it('bounds conflict disclosure after a successful maximum-size Literature search', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const literature = new FakeProjectLiterature();
+    const completedAt = '2026-08-05T00:00:01.000Z';
+    const conflicts = Array.from({ length: 3 }, (_, index) => ({
+      ordinal: index + 1,
+      provider: 'crossref' as const,
+      providerRecordId: `crossref-${index}-${'p'.repeat(2_000)}`,
+      doi: `10.1000/${'d'.repeat(490)}${index}`,
+      fingerprint: `${index}`.repeat(64),
+      title: `${index}:${'t'.repeat(1_998)}`,
+      authors: ['Ada Researcher'],
+      publishedYear: 2026,
+    }));
+    literature.search.mockResolvedValueOnce({
+      run: {
+        schemaVersion: 1,
+        id: LITERATURE_RUN_ID,
+        projectId: projectAlpha.id,
+        provider: 'crossref',
+        query: 'maximum conflict preview',
+        fromYear: null,
+        toYear: null,
+        requestedLimit: 50,
+        status: 'complete',
+        foundCount: 50,
+        newCount: 0,
+        updatedCount: 0,
+        unchangedCount: 0,
+        conflictCount: 50,
+        conflicts,
+        createdAt: '2026-08-05T00:00:00.000Z',
+        completedAt,
+      },
+      foundCount: 50,
+      newCount: 0,
+      updatedCount: 0,
+      unchangedCount: 0,
+      conflictCount: 50,
+    });
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      new FakeProjectSsh(),
+      literature,
+    );
+
+    const result = await invokeTool(
+      session,
+      toolCall('search_literature', { query: 'maximum conflict preview', limit: 50 }),
+    );
+    const payload = resultPayload(result) as {
+      conflicts: unknown[];
+      omittedConflictCount: number;
+    };
+
+    expect(result.success).toBe(true);
+    expect(payload.conflicts).toHaveLength(3);
+    expect(payload.omittedConflictCount).toBe(47);
+    expect(JSON.stringify(payload).length).toBeLessThan(48_000);
   });
 
   it('validates Literature search bounds and revokes an in-flight search with the turn', async () => {

@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import {
   LITERATURE_IPC_ERROR_CODES,
+  LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW,
   LITERATURE_MAX_SEARCH_RESULTS,
   type LiteratureSearchInput,
   type LiteratureSearchReceipt,
@@ -197,7 +198,7 @@ const SEARCH_LITERATURE_TOOL = {
   type: 'function',
   name: 'search_literature',
   description:
-    'Search bounded Crossref bibliographic metadata and additively merge the normalized results into the active GOSU project Literature table. Use only when the user explicitly asks to search for or add literature. Project identity is injected by GOSU and cannot be selected by the model. Matching DOI, provider ID, or metadata fingerprint updates the existing row instead of creating a duplicate. This tool does not read paper full text, PDFs, or abstracts; never present its metadata-only results as verified paper evidence.',
+    'Search bounded Crossref bibliographic metadata and additively merge the normalized results into the active GOSU project Literature table. Use only when the user explicitly asks to search for or add literature. Project identity is injected by GOSU and cannot be selected by the model. DOI and same-provider record ID are strong identities; metadata fingerprint is only a fallback for records without a strong identity, so distinct DOI works are preserved. Ambiguous candidates are skipped and reported without changing saved papers. This tool does not read paper full text, PDFs, or abstracts; never present its metadata-only results as verified paper evidence.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -879,6 +880,20 @@ export class ProjectAgentToolSession {
         newCount: receipt.newCount,
         updatedCount: receipt.updatedCount,
         unchangedCount: receipt.unchangedCount,
+        conflictCount: receipt.conflictCount,
+        conflicts: receipt.run.conflicts
+          .slice(0, LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW)
+          .map((conflict) => ({
+            ordinal: conflict.ordinal,
+            doi: conflict.doi,
+            providerRecordId: conflict.providerRecordId,
+            title: conflict.title,
+          })),
+        omittedConflictCount: Math.max(
+          0,
+          receipt.conflictCount -
+            Math.min(receipt.run.conflicts.length, LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW),
+        ),
       });
     } catch (error) {
       if (signal.aborted) return failure('literature_search_cancelled');

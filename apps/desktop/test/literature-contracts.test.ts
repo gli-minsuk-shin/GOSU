@@ -6,6 +6,7 @@ import {
   LiteratureAiAnnotationUpdateSchema,
   LiteratureRecordSchema,
   LiteratureSearchInputSchema,
+  LiteratureSearchReceiptSchema,
   OrganizeLiteratureInputSchema,
 } from '../src/shared/literature-contracts';
 import { unwrapLiteratureIpcResult } from '../src/shared/literature-ipc-result';
@@ -85,6 +86,38 @@ describe('literature IPC contracts', () => {
       LiteratureAiAnnotationUpdateSchema.safeParse({ ...update, expectedVersion: undefined })
         .success,
     ).toBe(false);
+  });
+
+  it('defaults conflict counts for compatible schema-v1 search receipts', () => {
+    const timestamp = new Date().toISOString();
+    const legacyReceipt = {
+      run: {
+        schemaVersion: 1,
+        id: randomUUID(),
+        projectId: randomUUID(),
+        provider: 'crossref',
+        query: 'legacy search receipt',
+        fromYear: null,
+        toYear: null,
+        requestedLimit: 25,
+        status: 'complete',
+        foundCount: 1,
+        newCount: 1,
+        updatedCount: 0,
+        unchangedCount: 0,
+        createdAt: timestamp,
+        completedAt: timestamp,
+      },
+      foundCount: 1,
+      newCount: 1,
+      updatedCount: 0,
+      unchangedCount: 0,
+    };
+
+    expect(LiteratureSearchReceiptSchema.parse(legacyReceipt)).toMatchObject({
+      conflictCount: 0,
+      run: { conflictCount: 0, conflicts: [] },
+    });
   });
 
   it('exposes only bounded public error codes across the preload boundary', () => {

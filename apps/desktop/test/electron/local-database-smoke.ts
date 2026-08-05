@@ -89,6 +89,8 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
     newCount: 0,
     updatedCount: 0,
     unchangedCount: 0,
+    conflictCount: 0,
+    conflicts: [],
     createdAt: fixedTimestamp,
     completedAt: null,
   };
@@ -310,12 +312,19 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
   const providerIdentity = database
     .listLiteratureRecords(projectId)
     .find((record) => record.doi === '10.1000/gosu.provider-enriched');
+  const providerFallbackIdentity = database
+    .listLiteratureRecords(projectId)
+    .find(
+      (record) =>
+        record.providerRecordId === 'https://api.crossref.org/works/provider-only-fixture',
+    );
   invariant(
-    database.countLiteratureRecords(projectId) === 2 &&
+    database.countLiteratureRecords(projectId) === 3 &&
       providerIdentity?.doi === '10.1000/gosu.provider-enriched' &&
       providerIdentity?.fingerprint ===
-        literatureFingerprint('Provider identity changed title', authors, 2025),
-    'literature_provider_dedupe_or_fingerprint_refresh_failed',
+        literatureFingerprint('Provider identity changed title', authors, 2025) &&
+      providerFallbackIdentity?.doi === null,
+    'literature_provider_identity_or_fingerprint_refresh_failed',
   );
 
   const fingerprintTitle = 'Fingerprint-only identity';
@@ -344,8 +353,33 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
     fixedTimestamp,
   );
   invariant(
-    database.countLiteratureRecords(projectId) === 3,
+    database.countLiteratureRecords(projectId) === 4,
     'literature_fingerprint_dedupe_failed',
+  );
+  database.upsertLiteratureCandidates(
+    projectId,
+    [
+      {
+        provider: 'crossref',
+        providerId: '10.1000/gosu.fingerprint-enriched',
+        doi: '10.1000/gosu.fingerprint-enriched',
+        fingerprint,
+        title: fingerprintTitle,
+        authors,
+        publishedYear: 2024,
+        topics: ['provider metadata'],
+      },
+    ],
+    fixedTimestamp,
+  );
+  const enrichedFingerprintRecord = database
+    .listLiteratureRecords(projectId)
+    .find((record) => record.doi === '10.1000/gosu.fingerprint-enriched');
+  invariant(
+    database.countLiteratureRecords(projectId) === 4 &&
+      enrichedFingerprintRecord?.provider === 'crossref' &&
+      enrichedFingerprintRecord.reviewStatus === 'screening',
+    'literature_weak_fingerprint_was_not_safely_enriched',
   );
 
   database.upsertLiteratureCandidates(
@@ -365,7 +399,7 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
   );
   invariant(
     database.countLiteratureRecords(otherProjectId) === 1 &&
-      database.countLiteratureRecords(projectId) === 3,
+      database.countLiteratureRecords(projectId) === 4,
     'literature_project_isolation_failed',
   );
 
@@ -518,7 +552,7 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
     reopened.listLiteratureSearchRuns(projectId).length === 3,
     'literature_runs_not_reopened',
   );
-  invariant(reopened.countLiteratureRecords(projectId) === 2, 'literature_records_not_reopened');
+  invariant(reopened.countLiteratureRecords(projectId) === 3, 'literature_records_not_reopened');
   invariant(
     reopened.countLiteratureRecords(otherProjectId) === 1,
     'literature_other_project_not_reopened',
@@ -543,6 +577,183 @@ function verifyLiteratureBoundsAndIdentity(fixedTimestamp: string) {
       citationKey: `Identity${index}`,
     }));
     database.upsertLiteratureCandidates(identityProjectId, identityCandidates, fixedTimestamp);
+
+    const sharedFingerprintProjectId = randomUUID();
+    const sharedFingerprintTitle =
+      'A physics-informed residual correction framework for pretrained tabular foundation model based battery health prognostics';
+    const sharedFingerprintAuthors = ['Zhiqiang Li'];
+    const sharedFingerprint = literatureFingerprint(
+      sharedFingerprintTitle,
+      sharedFingerprintAuthors,
+      2026,
+    );
+    const sharedFingerprintCandidates = ['10.2139/ssrn.6778930', '10.2139/ssrn.6862081'].map(
+      (doi) => ({
+        provider: 'crossref' as const,
+        providerId: doi,
+        doi,
+        fingerprint: sharedFingerprint,
+        title: sharedFingerprintTitle,
+        authors: sharedFingerprintAuthors,
+        publishedYear: 2026,
+        topics: [],
+      }),
+    );
+    const sharedFingerprintRunId = randomUUID();
+    invariant(
+      database.beginLiteratureSearch({
+        schemaVersion: 1,
+        id: sharedFingerprintRunId,
+        projectId: sharedFingerprintProjectId,
+        provider: 'crossref',
+        query: 'tabular foundation model',
+        fromYear: null,
+        toYear: null,
+        requestedLimit: 25,
+        status: 'running',
+        foundCount: 0,
+        newCount: 0,
+        updatedCount: 0,
+        unchangedCount: 0,
+        conflictCount: 0,
+        conflicts: [],
+        createdAt: fixedTimestamp,
+        completedAt: null,
+      }),
+      'literature_shared_fingerprint_search_start_failed',
+    );
+    const sharedFingerprintReceipt = database.completeLiteratureSearch(
+      sharedFingerprintProjectId,
+      sharedFingerprintRunId,
+      sharedFingerprintCandidates,
+      fixedTimestamp,
+    );
+    const sharedFingerprintRecords = database.listLiteratureRecords(sharedFingerprintProjectId);
+    invariant(
+      sharedFingerprintReceipt.foundCount === 2 &&
+        sharedFingerprintReceipt.newCount === 2 &&
+        sharedFingerprintReceipt.conflictCount === 0 &&
+        sharedFingerprintRecords.length === 2 &&
+        new Set(sharedFingerprintRecords.map((record) => record.doi)).size === 2 &&
+        sharedFingerprintRecords.every((record) => record.fingerprint === sharedFingerprint),
+      'literature_distinct_dois_with_shared_fingerprint_were_not_preserved',
+    );
+    const repeatedSharedFingerprintRunId = randomUUID();
+    invariant(
+      database.beginLiteratureSearch({
+        ...sharedFingerprintReceipt.run,
+        id: repeatedSharedFingerprintRunId,
+        status: 'running',
+        foundCount: 0,
+        newCount: 0,
+        updatedCount: 0,
+        unchangedCount: 0,
+        conflictCount: 0,
+        conflicts: [],
+        completedAt: null,
+      }),
+      'literature_shared_fingerprint_repeat_start_failed',
+    );
+    const repeatedSharedFingerprintReceipt = database.completeLiteratureSearch(
+      sharedFingerprintProjectId,
+      repeatedSharedFingerprintRunId,
+      sharedFingerprintCandidates,
+      fixedTimestamp,
+    );
+    invariant(
+      repeatedSharedFingerprintReceipt.unchangedCount === 2 &&
+        repeatedSharedFingerprintReceipt.conflictCount === 0 &&
+        database.countLiteratureRecords(sharedFingerprintProjectId) === 2,
+      'literature_distinct_dois_with_shared_fingerprint_were_not_idempotent',
+    );
+    let ambiguousWeakImportRejected = false;
+    try {
+      database.upsertLiteratureCandidates(
+        sharedFingerprintProjectId,
+        [
+          {
+            provider: 'import',
+            fingerprint: sharedFingerprint,
+            title: sharedFingerprintTitle,
+            authors: sharedFingerprintAuthors,
+            publishedYear: 2026,
+            topics: [],
+          },
+        ],
+        fixedTimestamp,
+      );
+    } catch (error) {
+      ambiguousWeakImportRejected =
+        error instanceof LiteratureStorageError && error.code === 'identity_conflict';
+    }
+    invariant(
+      ambiguousWeakImportRejected &&
+        database.countLiteratureRecords(sharedFingerprintProjectId) === 2,
+      'literature_ambiguous_weak_fingerprint_was_not_rejected',
+    );
+
+    const singleStrongProjectId = randomUUID();
+    const singleStrongFingerprint = literatureFingerprint(
+      'One strong record with coarse metadata',
+      ['Shared Author'],
+      2026,
+    );
+    database.upsertLiteratureCandidates(
+      singleStrongProjectId,
+      [
+        {
+          provider: 'crossref',
+          providerId: '10.1000/gosu.single-strong',
+          doi: '10.1000/gosu.single-strong',
+          fingerprint: singleStrongFingerprint,
+          title: 'One strong record with coarse metadata',
+          authors: ['Shared Author'],
+          publishedYear: 2026,
+          topics: [],
+        },
+      ],
+      fixedTimestamp,
+    );
+    const singleStrongRecord = database.listLiteratureRecords(singleStrongProjectId)[0]!;
+    const weakImport = {
+      provider: 'import' as const,
+      fingerprint: singleStrongFingerprint,
+      title: singleStrongRecord.title,
+      authors: singleStrongRecord.authors,
+      ...(singleStrongRecord.publishedYear
+        ? { publishedYear: singleStrongRecord.publishedYear }
+        : {}),
+      topics: [],
+      reviewStatus: 'included' as const,
+    };
+    for (const deleted of [false, true]) {
+      if (deleted) {
+        invariant(
+          database.deleteLiteratureRecord(
+            singleStrongProjectId,
+            singleStrongRecord.id,
+            singleStrongRecord.version,
+            fixedTimestamp,
+          ),
+          'literature_single_strong_delete_fixture_failed',
+        );
+      }
+      let weakStrongCollisionRejected = false;
+      try {
+        database.upsertLiteratureCandidates(singleStrongProjectId, [weakImport], fixedTimestamp);
+      } catch (error) {
+        weakStrongCollisionRejected =
+          error instanceof LiteratureStorageError && error.code === 'identity_conflict';
+      }
+      invariant(
+        weakStrongCollisionRejected &&
+          database.countLiteratureRecords(singleStrongProjectId) === (deleted ? 0 : 1),
+        deleted
+          ? 'literature_weak_fingerprint_resurrected_deleted_strong_record'
+          : 'literature_weak_fingerprint_merged_into_strong_record',
+      );
+    }
+
     let identityConflictRejected = false;
     try {
       database.upsertLiteratureCandidates(
@@ -581,6 +792,92 @@ function verifyLiteratureBoundsAndIdentity(fixedTimestamp: string) {
           .listLiteratureRecords(identityProjectId)
           .some((record) => record.citationKey === 'MustRollBack'),
       'literature_identity_conflict_was_not_atomic',
+    );
+
+    const isolatedConflictRunId = randomUUID();
+    invariant(
+      database.beginLiteratureSearch({
+        schemaVersion: 1,
+        id: isolatedConflictRunId,
+        projectId: identityProjectId,
+        provider: 'crossref',
+        query: 'isolated strong identity conflict',
+        fromYear: null,
+        toYear: null,
+        requestedLimit: 5,
+        status: 'running',
+        foundCount: 0,
+        newCount: 0,
+        updatedCount: 0,
+        unchangedCount: 0,
+        conflictCount: 0,
+        conflicts: [],
+        createdAt: fixedTimestamp,
+        completedAt: null,
+      }),
+      'literature_isolated_conflict_search_start_failed',
+    );
+    const safeSearchCandidate = {
+      provider: 'crossref' as const,
+      providerId: '10.1000/gosu.identity-safe-search',
+      doi: '10.1000/gosu.identity-safe-search',
+      fingerprint: literatureFingerprint('Safe search candidate', ['Safe Author'], 2026),
+      title: 'Safe search candidate',
+      authors: ['Safe Author'],
+      publishedYear: 2026,
+      topics: [],
+    };
+    const isolatedConflictReceipt = database.completeLiteratureSearch(
+      identityProjectId,
+      isolatedConflictRunId,
+      [
+        ...Array.from({ length: 4 }, (_, index) => ({
+          provider: 'crossref' as const,
+          providerId: identityCandidates[1]!.providerId,
+          doi: identityCandidates[0]!.doi,
+          fingerprint: literatureFingerprint(
+            `Conflicting strong identities from search ${index}`,
+            ['Identity Author'],
+            2026,
+          ),
+          title: `Conflicting strong identities from search ${index}`,
+          authors: ['Identity Author'],
+          publishedYear: 2026,
+          topics: [],
+        })),
+        safeSearchCandidate,
+      ],
+      fixedTimestamp,
+    );
+    const isolatedConflictRun = database
+      .listLiteratureSearchRuns(identityProjectId)
+      .find((run) => run.id === isolatedConflictRunId);
+    const identityRecordsAfterSearch = database.listLiteratureRecords(identityProjectId);
+    invariant(
+      isolatedConflictReceipt.foundCount === 5 &&
+        isolatedConflictReceipt.newCount === 1 &&
+        isolatedConflictReceipt.updatedCount === 0 &&
+        isolatedConflictReceipt.unchangedCount === 0 &&
+        isolatedConflictReceipt.conflictCount === 4 &&
+        isolatedConflictReceipt.run.status === 'complete' &&
+        isolatedConflictReceipt.run.conflictCount === 4 &&
+        isolatedConflictReceipt.run.conflicts.length === 3 &&
+        isolatedConflictReceipt.run.conflicts[0]?.doi === identityCandidates[0]!.doi &&
+        isolatedConflictReceipt.run.conflicts[0]?.providerRecordId ===
+          identityCandidates[1]!.providerId &&
+        isolatedConflictRun?.status === 'complete' &&
+        isolatedConflictRun.conflictCount === 4 &&
+        isolatedConflictRun.conflicts.length === 3 &&
+        isolatedConflictRun.conflicts[0]?.title === 'Conflicting strong identities from search 0' &&
+        identityRecordsAfterSearch.some((record) => record.doi === safeSearchCandidate.doi) &&
+        identityCandidates.every((candidate) =>
+          identityRecordsAfterSearch.some(
+            (record) =>
+              record.doi === candidate.doi && record.providerRecordId === candidate.providerId,
+          ),
+        ) &&
+        identityRecordsAfterSearch.length === identityCandidates.length + 1,
+      'literature_search_identity_conflict_was_not_isolated',
     );
 
     for (const mismatch of [
@@ -649,6 +946,8 @@ function verifyLiteratureBoundsAndIdentity(fixedTimestamp: string) {
         newCount: 0,
         updatedCount: 0,
         unchangedCount: 0,
+        conflictCount: 0,
+        conflicts: [],
         createdAt: fixedTimestamp,
         completedAt: null,
       }),
@@ -767,7 +1066,15 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
         raw
           .prepare('delete from local_schema_migrations where id=?')
           .run('literature-manual-relevance-v2');
+        raw
+          .prepare('delete from local_schema_migrations where id=?')
+          .run('literature-weak-fingerprint-v1');
         raw.exec(`
+          drop index literature_record_weak_fingerprint_identity;
+          drop index literature_records_by_fingerprint;
+          create unique index literature_record_fingerprint_identity
+            on literature_records(project_id,fingerprint);
+          alter table literature_search_runs drop column conflict_count;
           alter table literature_records rename column manual_relevance to manual_relevance_v2;
           alter table literature_records add column manual_relevance text check (
             manual_relevance is null or length(manual_relevance) between 1 and 64
@@ -809,6 +1116,13 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
     try {
       inspected.pragma(`key="x'${keyHex}'"`);
       const columns = inspected.pragma('table_info(literature_records)') as Array<{ name: string }>;
+      const searchColumns = inspected.pragma('table_info(literature_search_runs)') as Array<{
+        name: string;
+      }>;
+      const indexes = inspected.pragma('index_list(literature_records)') as Array<{
+        name: string;
+        unique: number;
+      }>;
       const table = inspected
         .prepare("select sql from sqlite_master where type='table' and name='literature_records'")
         .get() as { sql: string };
@@ -824,6 +1138,21 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
           table.sql,
         ),
         'literature_relevance_migration_schema_is_not_4000',
+      );
+      invariant(
+        searchColumns.some((column) => column.name === 'conflict_count'),
+        'literature_search_conflict_count_was_not_migrated',
+      );
+      invariant(
+        !indexes.some((index) => index.name === 'literature_record_fingerprint_identity') &&
+          indexes.some(
+            (index) =>
+              index.name === 'literature_record_weak_fingerprint_identity' && index.unique === 1,
+          ) &&
+          indexes.some(
+            (index) => index.name === 'literature_records_by_fingerprint' && index.unique === 0,
+          ),
+        'literature_fingerprint_identity_index_was_not_migrated',
       );
     } finally {
       inspected.close();

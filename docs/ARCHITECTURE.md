@@ -537,21 +537,40 @@ HTTPS source URL allowlist로 즉시 정규화하고 raw response와 abstract는
 “문헌을 검색하지 마” turn에는 tool 자체가 없다. 이 lexical Main-process gate는 PDF·Local Notes·web
 content 안의 prompt injection이 뒤늦게 write capability를 만들지 못하게 한다. legacy reviewer에도
 mutation tool을 주지 않는다. model argument에는 project ID가 없고 Main closure가 active project를
-주입·재검증한다. tool은 기존 LiteratureService의 Crossref 검색과 DOI→provider ID→fingerprint dedupe를
+주입·재검증한다. tool은 기존 LiteratureService의 Crossref 검색과 strong identity 우선 dedupe를
 그대로 사용해 additive merge만 수행하며 삭제하거나 사람 annotation을 바꿀 수 없다. Codex에는
-`runId`, query와 found/new/updated/unchanged count를 담은 metadata-only receipt만 반환하고 paper 목록,
-abstract와 raw provider payload는 보내지 않는다. cancel signal은 LiteratureService까지 전달되고 취소·
+`runId`, query와 found/new/updated/unchanged/conflict count를 담은 metadata-only receipt를 반환한다. 충돌이
+있을 때만 사람이 식별할 수 있도록 앞의 최대 3개 후보의 ordinal·title·DOI·provider record ID와 생략
+개수를 제한적으로 함께 반환하며, 정상 paper 목록·author·abstract와 raw provider payload는 보내지 않는다. cancel signal은
+LiteratureService까지 전달되고 취소·
 timeout 뒤의 결과는 commit하거나 terminal reply 뒤에 채택하지 않는다.
 
-`literature_records`, `literature_search_runs`, `literature_search_hits`는 Workspace snapshot이나 다른
-모듈의 table이 아닌 Literature 모듈 소유다. 모든 query와 mutation은 Main에서 active project 존재 여부를
+`literature_records`, `literature_search_runs`, `literature_search_hits`,
+`literature_search_conflicts`는 Workspace snapshot이나 다른 모듈의 table이 아닌 Literature 모듈 소유다.
+모든 query와 mutation은 Main에서 active project 존재 여부를
 다시 검사하고 project ID를 SQL predicate에 포함한다. 앱 재시작 중 남은 `running` search는 `failed`로
 reconcile하고, 최근 검색은 `Search again` 입력으로 복원할 수 있다. 자동 background scheduler는 아직
 없으므로 continual review는 사용자가 같은 검색이나 새 검색을 다시 실행할 때 additive merge하는
 형태다. active evidence table은 프로젝트당 500건으로 제한하고 검색·import가 한도를 넘으면 일부만
-반영하지 않고 transaction 전체를 거절한다. 동일성은 normalized DOI, 같은 provider record ID, metadata
-fingerprint 순서로 판정하며 세 identity가 서로 다른 기존 row를 가리키면 임의 merge 없이 전체 작업을
-거절한다. 새 검색은
+반영하지 않고 transaction 전체를 거절한다. normalized DOI와 같은 provider의 record ID만 strong
+identity다. `title + 첫 저자 + 연도` metadata fingerprint는 DOI와 provider ID가 모두 없는 record의 weak
+fallback이며, 서로 다른 strong identity가 같은 fingerprint를 공유하는 것은 허용한다. 따라서 동일 제목의
+서로 다른 DOI version이나 supplementary component를 자동 병합하지 않는다. strong candidate는 DOI 또는
+provider ID로 먼저 찾고, strong match가 없을 때 fingerprint가 가리키는 유일한 weak-only record만
+enrichment할 수 있다. weak candidate가 여러 strong record와 같은 fingerprint를 공유하면 임의 병합 없이
+identity conflict다. legacy global fingerprint unique index는 weak-only partial unique index와 non-unique
+lookup index로 local migration한다. schema-v1 search run·receipt의 새 `conflictCount`는 legacy payload를
+읽을 때 `0`으로 default하고, SQL migration도 기존 search row에 `conflict_count=0`을 채운다.
+
+검색 batch는 후보별 savepoint를 사용한다. DOI와 provider ID가 서로 다른 기존 row를 가리키는 진짜
+identity conflict는 그 후보만 rollback하고 `conflict_count`를 검색 이력과 receipt에 남기며, 나머지 안전한
+후보는 계속 저장한다. `literature_search_conflicts`에는 raw response 대신 ordinal, normalized title·author,
+DOI·provider ID·fingerprint·year만 local SQLCipher에 저장한다. 즉시 notice와 recent search tooltip에서 최대
+3개 식별자와 생략 개수를 보여 주므로 어떤 후보가 보류됐는지 확인할 수 있고, run list와 Project Chat
+tool payload도 같은 3개 preview 상한을 적용해 이미 commit된 검색이 응답 크기 때문에 실패한 것처럼
+보이지 않게 한다. 자동 merge는 하지 않는다. 반면 record
+한도나 저장소 오류는 여전히 검색 transaction 전체를 거절하고, file
+import의 모호한 identity도 전체 import를 fail-closed하여 사람 annotation을 잘못 연결하지 않는다. 새 검색은
 기존 record를 지우지 않으며 source metadata만 갱신하고 사람의 topics·summary·relevance·review status는
 보존한다. source field나 fingerprint가 실제로 바뀌면 기존 metadata에 근거한 AI draft와 provenance는
 무효화해 다음 AI batch 후보로 되돌린다. 삭제는 active table에서 숨기는 soft delete이고 hard-delete
@@ -577,10 +596,12 @@ formula injection을 방지한다. BibTeX citation key는 안정적으로 생성
 붙인다. parser는 `%` line comment와 `@string`·`@preamble`·`@comment` special entry를 건너뛰지만 external
 macro `#` concatenation은 지원하지 않고 명시적으로 거절한다. export에는 source metadata와 사람이 검토한
 field만 포함하고 AI annotation, provider raw
-ID, project ID, local version·삭제 상태는 제외한다. import는 DOI→provider ID→fingerprint로 기존 row와
-병합하고 manual review는 복원할 수 있지만 AI provenance를 신뢰해 가져오지 않으며 Crossref source를
-generic import source로 강등하지 않는다. Zotero local mirror·citation insertion·PDF 확인과 background
-alert는 후속 adapter 범위다.
+ID, project ID, local version·삭제 상태는 제외한다. import는 DOI strong match를 우선하고 strong identity가
+없는 candidate와 row 사이에서만 fingerprint fallback을 사용한다. strong identity가 없어서 어느 DOI
+record인지 증명할 수 없는 manual review는 임의로 붙이지 않고 import 전체를 거절한다. 안전하게 일치한
+manual review는 복원할 수 있지만 AI provenance를 신뢰해 가져오지 않으며 Crossref source를 generic import
+source로 강등하지 않는다. Zotero local mirror·citation insertion·PDF 확인과 background alert는 후속
+adapter 범위다.
 
 ### Git Workspace 경계
 
@@ -1416,8 +1437,10 @@ abstract 제외를 검사한다. transfer test는 JSON/CSV/BibTeX deterministic 
 citation-key consistency, CSV formula injection 방어, HTTPS URL과 8 MB·500건 한도를 확인한다. service와
 IPC test는 active project authorization, project isolation, strict sender/input, additive merge, rate-limit
 failure isolation, basename-only dialog receipt와 record version conflict를 고정한다. SQLCipher smoke는
-DOI→provider→fingerprint dedupe, Crossref/import trust merge, manual·AI annotation atomic CAS, soft delete,
-source refresh 뒤 stale AI invalidation, search run restart reconciliation을 실제 Electron ABI close/reopen으로
+strong DOI/provider 우선 identity와 weak fingerprint fallback, 동일 fingerprint·서로 다른 DOI 보존,
+ambiguous weak import 거절, 후보별 search conflict 격리와 normalized conflict detail·`conflict_count`·index migration,
+Crossref/import trust merge, manual·AI annotation atomic CAS, soft delete, source refresh 뒤 stale AI
+invalidation, search run restart reconciliation을 실제 Electron ABI close/reopen으로
 검증한다. AI test는 최대 50개
 metadata-only prompt, dynamic model·reasoning provenance, manual annotation 비노출, exact record/version
 response와 malformed·hallucinated·stale batch 전체 거절을 검사한다.
@@ -1467,8 +1490,9 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
   OpenSSH argument array·direct `-F none`·
   background fork 차단·client diagnostic 격리, timeout·capacity·local transport cancel, remote kill·hard
   confinement 비보증과 ephemeral approval metadata
-- Literature 변경: active project 격리, Crossref fixed-origin·bounded metadata normalization, DOI→provider→
-  fingerprint dedupe, source/manual/AI field ownership, optimistic annotation conflict, no-abstract retention,
+- Literature 변경: active project 격리, Crossref fixed-origin·bounded metadata normalization, strong
+  DOI/provider identity와 weak fingerprint fallback, 동일 fingerprint·다른 DOI 보존, true conflict 격리,
+  source/manual/AI field ownership, optimistic annotation conflict, no-abstract retention,
   Main-owned no-symlink transfer, deterministic JSON/CSV/BibTeX와 metadata-only Codex provenance,
   Project Chat의 explicit command gate·injected project identity·receipt-only 결과·cancel/late-result 봉인
 - Runner 변경: signature·policy rejection, fence race, Stop·Kill race, exact JSON wire, Podman argument

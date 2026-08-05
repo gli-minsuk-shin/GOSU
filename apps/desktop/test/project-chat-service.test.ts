@@ -592,6 +592,8 @@ async function fixture(
         newCount: 2,
         updatedCount: 0,
         unchangedCount: 0,
+        conflictCount: 0,
+        conflicts: [],
         createdAt: '2026-08-05T00:00:00.000Z',
         completedAt: '2026-08-05T00:00:01.000Z',
       },
@@ -599,6 +601,7 @@ async function fixture(
       newCount: 2,
       updatedCount: 0,
       unchangedCount: 0,
+      conflictCount: 0,
     })),
   };
   const chat = new ProjectChatService({

@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   LiteratureTable,
   LiteratureView,
+  literatureSearchNotice,
   literatureViewRecord,
   type LiteratureViewAdapter,
 } from '../src/renderer/src/literature-view';
@@ -68,6 +69,95 @@ const adapter: LiteratureViewAdapter = {
 };
 
 describe('Literature workspace', () => {
+  it('reports an isolated identity conflict without presenting the entire search as failed', () => {
+    const completedAt = '2026-08-05T00:00:01.000Z';
+    const notice = literatureSearchNotice({
+      run: {
+        schemaVersion: 1,
+        id: '33333333-3333-4333-8333-333333333333',
+        projectId: project.id,
+        provider: 'crossref',
+        query: 'tabular foundation model',
+        fromYear: null,
+        toYear: null,
+        requestedLimit: 25,
+        status: 'complete',
+        foundCount: 25,
+        newCount: 23,
+        updatedCount: 0,
+        unchangedCount: 1,
+        conflictCount: 1,
+        conflicts: [
+          {
+            ordinal: 25,
+            provider: 'crossref',
+            providerRecordId: '10.1000/gosu.conflict',
+            doi: '10.1000/gosu.conflict',
+            fingerprint: 'b'.repeat(64),
+            title: 'Ambiguous metadata fixture',
+            authors: ['Ada Researcher'],
+            publishedYear: 2026,
+          },
+        ],
+        createdAt: '2026-08-05T00:00:00.000Z',
+        completedAt,
+      },
+      foundCount: 25,
+      newCount: 23,
+      updatedCount: 0,
+      unchangedCount: 1,
+      conflictCount: 1,
+    });
+
+    expect(notice).toContain('Search complete: 25 found');
+    expect(notice).toContain('1 ambiguous result was skipped');
+    expect(notice).toContain('without changing saved papers');
+    expect(notice).toContain('Skipped: DOI 10.1000/gosu.conflict');
+  });
+
+  it('bounds conflict identifiers while reporting the omitted count', () => {
+    const conflicts = Array.from({ length: 3 }, (_, index) => ({
+      ordinal: index + 1,
+      provider: 'crossref' as const,
+      providerRecordId: `10.1000/gosu.conflict-${index + 1}`,
+      doi: `10.1000/gosu.conflict-${index + 1}`,
+      fingerprint: `${index + 1}`.repeat(64),
+      title: `Ambiguous metadata fixture ${index + 1}`,
+      authors: ['Ada Researcher'],
+      publishedYear: 2026,
+    }));
+    const notice = literatureSearchNotice({
+      run: {
+        schemaVersion: 1,
+        id: '44444444-4444-4444-8444-444444444444',
+        projectId: project.id,
+        provider: 'crossref',
+        query: 'tabular foundation model',
+        fromYear: null,
+        toYear: null,
+        requestedLimit: 25,
+        status: 'complete',
+        foundCount: 25,
+        newCount: 20,
+        updatedCount: 0,
+        unchangedCount: 1,
+        conflictCount: 4,
+        conflicts,
+        createdAt: '2026-08-05T00:00:00.000Z',
+        completedAt: '2026-08-05T00:00:01.000Z',
+      },
+      foundCount: 25,
+      newCount: 20,
+      updatedCount: 0,
+      unchangedCount: 1,
+      conflictCount: 4,
+    });
+
+    expect(notice).toContain('DOI 10.1000/gosu.conflict-1');
+    expect(notice).toContain('DOI 10.1000/gosu.conflict-3');
+    expect(notice).toContain('+1 more');
+  });
+
   it('exposes continual search, dialog-based interchange, and a clearly unavailable AI action', () => {
     const html = renderToStaticMarkup(<LiteratureView project={project} adapter={adapter} />);
 

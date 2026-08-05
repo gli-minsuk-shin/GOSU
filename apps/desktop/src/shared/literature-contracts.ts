@@ -4,6 +4,7 @@ import { z } from 'zod';
 export const LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT = 500;
 export const LITERATURE_MAX_RECORDS_PER_PAGE = LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT;
 export const LITERATURE_MAX_SEARCH_RESULTS = 50;
+export const LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW = 3;
 export const LITERATURE_MAX_AI_RECORDS = 50;
 export const LITERATURE_MAX_TRANSFER_BYTES = 8 * 1024 * 1024;
 
@@ -87,6 +88,19 @@ export const LiteratureRecordSchema = z
   })
   .strict();
 
+export const LiteratureSearchConflictSchema = z
+  .object({
+    ordinal: z.number().int().min(1).max(LITERATURE_MAX_SEARCH_RESULTS),
+    provider: z.literal('crossref'),
+    providerRecordId: nullableText(2_048),
+    doi: nullableText(512),
+    fingerprint: sha256Schema,
+    title: boundedText(2_000),
+    authors: z.array(boundedText(300)).max(100),
+    publishedYear: z.number().int().min(1000).max(3000).nullable(),
+  })
+  .strict();
+
 export const LiteratureSearchRunSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -102,6 +116,11 @@ export const LiteratureSearchRunSchema = z
     newCount: z.number().int().nonnegative(),
     updatedCount: z.number().int().nonnegative(),
     unchangedCount: z.number().int().nonnegative(),
+    conflictCount: z.number().int().nonnegative().default(0),
+    conflicts: z
+      .array(LiteratureSearchConflictSchema)
+      .max(LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW)
+      .default([]),
     createdAt: timestampSchema,
     completedAt: timestampSchema.nullable(),
   })
@@ -133,6 +152,7 @@ export const LiteratureSearchReceiptSchema = z
     newCount: z.number().int().nonnegative(),
     updatedCount: z.number().int().nonnegative(),
     unchangedCount: z.number().int().nonnegative(),
+    conflictCount: z.number().int().nonnegative().default(0),
   })
   .strict();
 
@@ -326,6 +346,7 @@ export type LiteratureTransferFormat = z.infer<typeof LiteratureTransferFormatSc
 export type LiteratureAiProvenance = z.infer<typeof LiteratureAiProvenanceSchema>;
 export type LiteratureAiAnnotations = z.infer<typeof LiteratureAiAnnotationsSchema>;
 export type LiteratureRecord = z.infer<typeof LiteratureRecordSchema>;
+export type LiteratureSearchConflict = z.infer<typeof LiteratureSearchConflictSchema>;
 export type LiteratureSearchRun = z.infer<typeof LiteratureSearchRunSchema>;
 export type LiteratureSearchInput = z.infer<typeof LiteratureSearchInputSchema>;
 export type LiteratureSearchReceipt = z.infer<typeof LiteratureSearchReceiptSchema>;
