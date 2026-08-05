@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
@@ -47,5 +49,23 @@ describe('Project Chat session rail', () => {
     expect(html).toContain('Branched from Project chat');
     expect(html).toContain('aria-current="page"');
     expect(html).toContain('Turn active');
+    expect(html).toContain('role="separator"');
+    expect(html).toContain('aria-label="Resize project chat sessions sidebar"');
+    expect(html).toContain('aria-valuemin="160"');
+    expect(html).toContain('aria-valuemax="360"');
+  });
+
+  it('uses the persisted rail width variable and removes the horizontal handle on narrow layouts', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(styles).toMatch(
+      /\.project-chat-workspace\s*\{[^}]*grid-template-columns:\s*var\(--project-chat-session-rail-width, 184px\) minmax\(0, 1fr\);/su,
+    );
+    expect(styles).toMatch(
+      /\.project-chat-session-resize-handle\s*\{[^}]*position:\s*absolute;[^}]*right:\s*0;/su,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 1180px\)[\s\S]*?\.project-chat-session-resize-handle\s*\{\s*display:\s*none;/u,
+    );
   });
 });

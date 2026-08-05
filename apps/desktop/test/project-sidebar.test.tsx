@@ -93,7 +93,7 @@ describe('folder-style project sidebar', () => {
     const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
 
     expect(styles).toMatch(
-      /\.desktop-shell\s*\{[^}]*--sidebar-width:\s*280px;[^}]*--titlebar-height:\s*46px;[^}]*grid-template:\s*var\(--titlebar-height\) minmax\(0, 1fr\) \/ var\(--sidebar-width\) minmax\(\s*0,\s*1fr\s*\);[^}]*transition:\s*grid-template-columns 240ms/su,
+      /\.desktop-shell\s*\{[^}]*--sidebar-width:\s*var\(--project-sidebar-width, 280px\);[^}]*--titlebar-height:\s*46px;[^}]*grid-template:\s*var\(--titlebar-height\) minmax\(0, 1fr\) \/ var\(--sidebar-width\) minmax\(\s*0,\s*1fr\s*\);[^}]*transition:\s*grid-template-columns 240ms/su,
     );
     expect(styles).toMatch(
       /\.desktop-shell\.sidebar-collapsed\s*\{\s*--sidebar-width:\s*0px;\s*\}/su,
@@ -144,11 +144,41 @@ describe('folder-style project sidebar', () => {
     const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
 
     expect(styles).toMatch(
-      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.desktop-shell,\s*\.desktop-nav\s*\{\s*transition:\s*none;/su,
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.desktop-shell,\s*\.desktop-nav,\s*\.resize-handle::after\s*\{\s*transition:\s*none;/su,
     );
     expect(styles).toMatch(
       /@media \(max-width: 860px\)[\s\S]*?\.desktop-shell\.sidebar-collapsed \.desktop-nav\s*\{\s*display:\s*none;/u,
     );
+  });
+
+  it('exposes a mouse and keyboard accessible persisted sidebar resize separator', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+    const source = readFileSync(
+      new URL('../src/renderer/src/desktop-app.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('label="Resize projects sidebar"');
+    expect(source).toContain("'--project-sidebar-width': `${projectNavigation.sidebarWidth}px`");
+    expect(source).toContain('saveProjectNavigationState(window.localStorage, projectNavigation)');
+    expect(styles).toMatch(
+      /\.project-sidebar-resize-handle\s*\{[^}]*position:\s*absolute;[^}]*left:\s*calc\(var\(--sidebar-width\) - 5px\);/su,
+    );
+    expect(styles).toMatch(/\.desktop-shell\.sidebar-resizing\s*\{\s*transition:\s*none;/su);
+  });
+
+  it('stacks the session rail before two maximized sidebars can consume the chat pane', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(styles).toMatch(
+      /@media \(max-width: 1180px\)[\s\S]*?\.project-chat-workspace\s*\{\s*grid-template:\s*auto minmax\(0, 1fr\) \/ 1fr;\s*\}[\s\S]*?\.project-chat-session-resize-handle\s*\{\s*display:\s*none;/u,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 1180px\)[\s\S]*?\.project-chat-session-list\s*\{[^}]*display:\s*flex;[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/u,
+    );
+    expect(861).toBeLessThanOrEqual(1180);
+    expect(styles).not.toContain('min(var(--project-sidebar-width, 280px), 34vw)');
+    expect(styles).not.toContain('min(var(--project-chat-session-rail-width, 184px), 32%)');
   });
 
   it('takes a collapsed sidebar out of keyboard and accessibility navigation', () => {

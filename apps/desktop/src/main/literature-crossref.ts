@@ -1,4 +1,9 @@
-import type { LiteratureRecord, LiteratureReviewStatus } from '../shared/literature-contracts';
+import type {
+  LiteratureProvider,
+  LiteratureRankingSignals,
+  LiteratureRecord,
+  LiteratureReviewStatus,
+} from '../shared/literature-contracts';
 import { literatureFingerprint as transferFingerprint, normalizeDoi } from './literature-transfer';
 
 const CROSSREF_WORKS_ENDPOINT = 'https://api.crossref.org/v1/works';
@@ -25,7 +30,7 @@ const CROSSREF_SELECTED_FIELDS = [
 ].join(',');
 
 export type LiteratureProviderCandidate = Readonly<{
-  provider: 'crossref' | 'import';
+  provider: LiteratureProvider;
   providerId?: string | undefined;
   doi?: string | undefined;
   fingerprint: string;
@@ -40,6 +45,7 @@ export type LiteratureProviderCandidate = Readonly<{
   citationKey?: string | undefined;
   reviewStatus?: LiteratureReviewStatus | undefined;
   manualAnnotations?: LiteratureRecord['manualAnnotations'] | undefined;
+  discovery?: LiteratureRankingSignals | undefined;
 }>;
 
 export class LiteratureProviderError extends Error {
@@ -64,6 +70,7 @@ export type CrossrefSearchOptions = Readonly<{
   signal?: AbortSignal | undefined;
   fromYear?: number | undefined;
   toYear?: number | undefined;
+  sort?: 'relevance' | 'citation' | 'published' | undefined;
 }>;
 
 export function literatureFingerprint(
@@ -241,6 +248,9 @@ async function waitUntil(timestamp: number, signal?: AbortSignal) {
 }
 
 export class CrossrefLiteratureProvider {
+  readonly providerId = 'crossref' as const;
+  readonly policyId = 'crossref-basic' as const;
+  readonly policyVersion = 1;
   private readonly fetch: Fetch;
   private readonly timeoutMs: number;
   private readonly contactEmail: string | undefined;
@@ -284,6 +294,13 @@ export class CrossrefLiteratureProvider {
     url.searchParams.set('query.bibliographic', normalizedQuery);
     url.searchParams.set('rows', rows.toString());
     url.searchParams.set('select', CROSSREF_SELECTED_FIELDS);
+    if (options.sort === 'citation') {
+      url.searchParams.set('sort', 'is-referenced-by-count');
+      url.searchParams.set('order', 'desc');
+    } else if (options.sort === 'published') {
+      url.searchParams.set('sort', 'published');
+      url.searchParams.set('order', 'desc');
+    }
     const fromYear = validFilterYear(options.fromYear);
     const toYear = validFilterYear(options.toYear);
     if (options.fromYear !== undefined && fromYear === undefined) {

@@ -8,6 +8,7 @@ import {
   parseProjectNavigationState,
   pruneProjectNavigationState,
   saveProjectNavigationState,
+  setProjectSidebarWidth,
   showAllProjectsLocally,
   showProjectLocally,
   toggleProjectFolder,
@@ -44,6 +45,7 @@ describe('local project navigation state', () => {
       hiddenGroupExpanded: true,
       archivedGroupExpanded: true,
       sidebarCollapsed: true,
+      sidebarWidth: 336,
     } as const;
 
     expect(saveProjectNavigationState(storage, state)).toBe(true);
@@ -65,6 +67,7 @@ describe('local project navigation state', () => {
       hiddenGroupExpanded: false,
       archivedGroupExpanded: false,
       sidebarCollapsed: false,
+      sidebarWidth: 280,
     });
   });
 
@@ -91,6 +94,17 @@ describe('local project navigation state', () => {
 
     expect(collapsed).toEqual({ ...state, sidebarCollapsed: true });
     expect(expanded).toEqual(state);
+  });
+
+  it('clamps a persisted project sidebar width without losing it when collapsed', () => {
+    expect(setProjectSidebarWidth(DEFAULT_PROJECT_NAVIGATION_STATE, 80).sidebarWidth).toBe(220);
+    expect(setProjectSidebarWidth(DEFAULT_PROJECT_NAVIGATION_STATE, 900).sidebarWidth).toBe(440);
+
+    const resized = setProjectSidebarWidth(DEFAULT_PROJECT_NAVIGATION_STATE, 347.6);
+    expect(toggleProjectSidebar(resized)).toMatchObject({
+      sidebarCollapsed: true,
+      sidebarWidth: 348,
+    });
   });
 
   it('hides, restores, and reveals projects locally without affecting unrelated folders', () => {

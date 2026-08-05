@@ -147,6 +147,19 @@ describe('separated application Settings', () => {
     expect(html).toContain('no direct shell, filesystem, raw network, browser');
   });
 
+  it('offers detection-only OpenClaw and Hermes add-ons without claiming a connection', () => {
+    const html = renderSettings('agent');
+
+    expect(html).toContain('OPTIONAL AGENT ADD-ONS');
+    expect(html).toContain('OpenClaw');
+    expect(html).toContain('Hermes Agent');
+    expect(html).toContain('Detect local installation');
+    expect(html).toContain('without running it');
+    expect(html).toContain('No installer, credentials, process launch, chat routing');
+    expect(html).not.toContain('Connected to OpenClaw');
+    expect(html).not.toContain('Connected to Hermes');
+  });
+
   it('keeps a migrated Reviewer profile in compatibility mode until a native mode is chosen', () => {
     const html = renderSettings('agent', {
       ...defaultProjectChatProfile(snapshot.projects[0]!.id),

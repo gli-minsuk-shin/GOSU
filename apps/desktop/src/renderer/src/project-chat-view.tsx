@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import {
   defaultProjectChatProfile,
@@ -27,7 +27,9 @@ import { shouldSendChatMessage } from './chat-keyboard';
 import type { CodexModel } from './connections-view';
 import type { VaultRuntimeState } from './notes-view';
 import { ProjectChatMarkdown } from './project-chat-markdown';
+import { isProjectChatNearBottom, resolveProjectChatArrival } from './project-chat-scroll';
 import { ProjectChatSessionRail } from './project-chat-session-rail';
+import { PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH } from './project-chat-session-state';
 
 const QUICK_PROMPTS = [
   '현재 프로젝트 상황을 요약해줘',
@@ -107,6 +109,18 @@ export function shouldPersistProjectChatScrollPosition(
 
 export function shouldInitializeProjectChatScroll(loading: boolean, snapshotReady: boolean) {
   return !loading && snapshotReady;
+}
+
+export function resolveUnreadAssistantMessageId(
+  messages: readonly Pick<ProjectChatSnapshot['messages'][number], 'id' | 'role'>[],
+  unreadAssistantMessageId: string | null,
+) {
+  if (!unreadAssistantMessageId) return null;
+  return messages.some(
+    (message) => message.role === 'assistant' && message.id === unreadAssistantMessageId,
+  )
+    ? unreadAssistantMessageId
+    : null;
 }
 
 export type ProjectChatScrollIntent = 'top' | 'bottom' | 'latest-start' | 'none';
@@ -238,9 +252,13 @@ export function ProjectChatView({
   onSelectSession = () => undefined,
   onCreateSession = () => undefined,
   onRenameSession,
+  sessionRailWidth = PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH,
+  onSessionRailWidthChange = () => undefined,
   onBranchSession = async () => undefined,
   initialAdvancedOpen = false,
   initialScrollTop = null,
+  unreadAssistantMessageId = null,
+  onUnreadAssistantMessageSeen = () => undefined,
   onScrollTopChange = () => undefined,
   sshAccess = NO_PROJECT_CHAT_SSH_ACCESS,
   onOpenSshWorkspaceSetup = () => undefined,
@@ -283,9 +301,13 @@ export function ProjectChatView({
   onSelectSession?: (sessionId: string) => void;
   onCreateSession?: () => void;
   onRenameSession?: (session: NonNullable<ProjectChatSnapshot['session']>) => void;
+  sessionRailWidth?: number;
+  onSessionRailWidthChange?: (width: number) => void;
   onBranchSession?: (messageId: string) => Promise<void>;
   initialAdvancedOpen?: boolean;
   initialScrollTop?: number | null;
+  unreadAssistantMessageId?: string | null;
+  onUnreadAssistantMessageSeen?: (assistantMessageId: string) => void;
   onScrollTopChange?: (scrollTop: number) => void;
   sshAccess?: ProjectChatSshAccess;
   onOpenSshWorkspaceSetup?: () => void;
@@ -311,6 +333,10 @@ export function ProjectChatView({
   const [contextScope, setContextScope] = useState<ProjectChatContextScope>('project');
   const [pdfAttachments, setPdfAttachments] = useState<readonly ProjectChatPdfAttachment[]>([]);
   const [choosingPdfAttachments, setChoosingPdfAttachments] = useState(false);
+  const [scrollAffordance, setScrollAffordance] = useState({
+    nearBottom: true,
+    newAssistantMessageAvailable: false,
+  });
   const pdfAttachmentsRef = useRef(pdfAttachments);
   const releasePdfAttachmentHandlerRef = useRef(onReleasePdfAttachment);
   const attachmentScopeRef = useRef('');
@@ -318,10 +344,14 @@ export function ProjectChatView({
   const mountedRef = useRef(true);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const latestMessageRef = useRef<HTMLElement>(null);
+  const unreadAssistantMessageRef = useRef<HTMLElement>(null);
   const observedLatestMessageIdRef = useRef<string | null>(null);
+  const observedLatestContentRevisionRef = useRef<string | null>(null);
+  const nearBottomRef = useRef(true);
   const wasInFlightRef = useRef(inFlight);
   const initializedScrollSessionKeyRef = useRef<string | null>(null);
   const onScrollTopChangeRef = useRef(onScrollTopChange);
+  const onUnreadAssistantMessageSeenRef = useRef(onUnreadAssistantMessageSeen);
   const draftSessionKey = `${project.id}\u0000${selectedSessionId ?? ''}`;
   attachmentScopeRef.current = draftSessionKey;
   const hydratedSessionKeyRef = useRef(draftSessionKey);
@@ -444,7 +474,16 @@ export function ProjectChatView({
   const selectionWarning =
     modelSelectionWarning ?? collaborationModeWarning ?? personalityWarning ?? localNotesWarning;
   const snapshotReady = snapshot !== null;
+  const resolvedUnreadAssistantMessageId = resolveUnreadAssistantMessageId(
+    snapshot?.messages ?? [],
+    unreadAssistantMessageId,
+  );
   const latestMessageId = snapshot?.messages.at(-1)?.id ?? null;
+  const latestMessage = snapshot?.messages.at(-1) ?? null;
+  const latestMessageRole = latestMessage?.role ?? null;
+  const latestContentRevision = latestMessage
+    ? `${latestMessage.id}\u0000${latestMessage.status}\u0000${latestMessage.completedAt ?? ''}\u0000${latestMessage.content}`
+    : null;
   const sshWorkspaceSetupNeeded =
     sshAccess.state === 'ready' &&
     sshAccess.registeredConnectionCount > 0 &&
@@ -462,39 +501,92 @@ export function ProjectChatView({
     onScrollTopChangeRef.current = onScrollTopChange;
   }, [onScrollTopChange]);
 
+  useEffect(() => {
+    onUnreadAssistantMessageSeenRef.current = onUnreadAssistantMessageSeen;
+  }, [onUnreadAssistantMessageSeen]);
+
   useLayoutEffect(() => {
     const transcript = transcriptRef.current;
     if (!transcript || !shouldInitializeProjectChatScroll(loading, snapshotReady)) return;
     if (initializedScrollSessionKeyRef.current !== draftSessionKey) {
       initializedScrollSessionKeyRef.current = draftSessionKey;
       observedLatestMessageIdRef.current = latestMessageId;
+      observedLatestContentRevisionRef.current = latestContentRevision;
       wasInFlightRef.current = inFlight;
       transcript.scrollTop = resolveInitialProjectChatScrollTop({
         savedScrollTop: initialScrollTop,
         scrollHeight: transcript.scrollHeight,
         clientHeight: transcript.clientHeight,
       });
+      const nearBottom = isProjectChatNearBottom(
+        transcript.scrollTop,
+        transcript.scrollHeight,
+        transcript.clientHeight,
+      );
+      nearBottomRef.current = nearBottom;
+      setScrollAffordance({
+        nearBottom,
+        newAssistantMessageAvailable: resolvedUnreadAssistantMessageId !== null && !nearBottom,
+      });
+      if (nearBottom && resolvedUnreadAssistantMessageId) {
+        onUnreadAssistantMessageSeenRef.current(resolvedUnreadAssistantMessageId);
+      }
       return;
     }
-    const intent = resolveProjectChatScrollIntent({
-      observedLatestMessageId: observedLatestMessageIdRef.current,
-      latestMessageId,
-      wasInFlight: wasInFlightRef.current,
-      inFlight,
+    const previousLatestMessageId = observedLatestMessageIdRef.current;
+    const previousContentRevision = observedLatestContentRevisionRef.current;
+    const arrival = resolveProjectChatArrival({
+      nearBottom: nearBottomRef.current,
+      latestRole: latestMessageRole,
+      latestMessageIdChanged: latestMessageId !== previousLatestMessageId,
+      latestContentChanged: latestContentRevision !== previousContentRevision,
     });
+    observedLatestMessageIdRef.current = latestMessageId;
+    observedLatestContentRevisionRef.current = latestContentRevision;
+    const inFlightStarted = !wasInFlightRef.current && inFlight;
     wasInFlightRef.current = inFlight;
     const latestMessage = latestMessageRef.current;
-    if (intent === 'none') return;
+    if (arrival.announceNewAssistantMessage) {
+      setScrollAffordance((current) => ({
+        ...current,
+        newAssistantMessageAvailable: resolvedUnreadAssistantMessageId !== null,
+      }));
+      return;
+    }
+    const intent =
+      arrival.intent === 'none' && inFlightStarted && nearBottomRef.current
+        ? 'bottom'
+        : arrival.intent;
+    if (intent === 'none') {
+      if (resolvedUnreadAssistantMessageId && nearBottomRef.current) {
+        onUnreadAssistantMessageSeenRef.current(resolvedUnreadAssistantMessageId);
+        setScrollAffordance((current) => ({
+          ...current,
+          newAssistantMessageAvailable: false,
+        }));
+      } else if (resolvedUnreadAssistantMessageId) {
+        setScrollAffordance((current) => ({
+          ...current,
+          newAssistantMessageAvailable: true,
+        }));
+      } else {
+        setScrollAffordance((current) => ({
+          ...current,
+          newAssistantMessageAvailable: false,
+        }));
+      }
+      return;
+    }
     if (intent === 'bottom') {
-      observedLatestMessageIdRef.current = latestMessageId;
       transcript.scrollTop = transcript.scrollHeight;
+      nearBottomRef.current = true;
+      setScrollAffordance({ nearBottom: true, newAssistantMessageAvailable: false });
+      if (resolvedUnreadAssistantMessageId) {
+        onUnreadAssistantMessageSeenRef.current(resolvedUnreadAssistantMessageId);
+      }
       return;
     }
-    if (intent === 'top' || !latestMessage) {
-      observedLatestMessageIdRef.current = null;
-      transcript.scrollTop = 0;
-      return;
-    }
+    if (!latestMessage) return;
     observedLatestMessageIdRef.current = latestMessageId;
     const transcriptBounds = transcript.getBoundingClientRect();
     const messageBounds = latestMessage.getBoundingClientRect();
@@ -507,7 +599,64 @@ export function ProjectChatView({
       messageTop: messageBounds.top,
       topInset,
     });
-  }, [draftSessionKey, inFlight, initialScrollTop, latestMessageId, loading, snapshotReady]);
+    const nearBottom = isProjectChatNearBottom(
+      transcript.scrollTop,
+      transcript.scrollHeight,
+      transcript.clientHeight,
+    );
+    nearBottomRef.current = nearBottom;
+    setScrollAffordance({ nearBottom, newAssistantMessageAvailable: false });
+    if (resolvedUnreadAssistantMessageId) {
+      onUnreadAssistantMessageSeenRef.current(resolvedUnreadAssistantMessageId);
+    }
+  }, [
+    draftSessionKey,
+    inFlight,
+    initialScrollTop,
+    latestContentRevision,
+    latestMessageId,
+    latestMessageRole,
+    loading,
+    snapshotReady,
+    resolvedUnreadAssistantMessageId,
+  ]);
+
+  const jumpToLatest = (target: 'bottom' | 'new-message') => {
+    const transcript = transcriptRef.current;
+    if (!transcript) return;
+    const targetMessage =
+      target === 'new-message' ? unreadAssistantMessageRef.current : latestMessageRef.current;
+    if (target === 'new-message') {
+      if (!targetMessage) return;
+      const transcriptBounds = transcript.getBoundingClientRect();
+      const messageBounds = targetMessage.getBoundingClientRect();
+      const topInset = Number.parseFloat(window.getComputedStyle(transcript).paddingTop) || 0;
+      transcript.scrollTop = resolveLatestMessageScrollTop({
+        currentScrollTop: transcript.scrollTop,
+        scrollHeight: transcript.scrollHeight,
+        clientHeight: transcript.clientHeight,
+        transcriptTop: transcriptBounds.top,
+        messageTop: messageBounds.top,
+        topInset,
+      });
+      targetMessage.focus({ preventScroll: true });
+    } else {
+      transcript.scrollTop = transcript.scrollHeight;
+    }
+    const nearBottom = isProjectChatNearBottom(
+      transcript.scrollTop,
+      transcript.scrollHeight,
+      transcript.clientHeight,
+    );
+    nearBottomRef.current = nearBottom;
+    setScrollAffordance({ nearBottom, newAssistantMessageAvailable: false });
+    if (target === 'new-message' && resolvedUnreadAssistantMessageId) {
+      onUnreadAssistantMessageSeenRef.current(resolvedUnreadAssistantMessageId);
+    } else if (target === 'bottom' && nearBottom && resolvedUnreadAssistantMessageId) {
+      onUnreadAssistantMessageSeenRef.current(resolvedUnreadAssistantMessageId);
+    }
+    onScrollTopChangeRef.current(transcript.scrollTop);
+  };
 
   useLayoutEffect(
     () => () => {
@@ -616,7 +765,10 @@ export function ProjectChatView({
   };
 
   return (
-    <div className="project-chat-workspace">
+    <div
+      className="project-chat-workspace"
+      style={{ '--project-chat-session-rail-width': `${sessionRailWidth}px` } as CSSProperties}
+    >
       <ProjectChatSessionRail
         sessions={sessions}
         selectedSessionId={selectedSessionId}
@@ -626,6 +778,8 @@ export function ProjectChatView({
         renameDisabled={projectBusy}
         onSelect={onSelectSession}
         onCreate={onCreateSession}
+        width={sessionRailWidth}
+        onWidthChange={onSessionRailWidthChange}
         {...(onRenameSession ? { onRename: onRenameSession } : {})}
       />
       <section
@@ -856,154 +1010,191 @@ export function ProjectChatView({
           </section>
         )}
 
-        <div
-          className="chat-transcript"
-          ref={transcriptRef}
-          aria-live="polite"
-          onScroll={(event) => {
-            if (
-              shouldPersistProjectChatScrollPosition(
-                initializedScrollSessionKeyRef.current,
-                draftSessionKey,
-              )
-            ) {
-              onScrollTopChangeRef.current(event.currentTarget.scrollTop);
-            }
-          }}
-        >
-          {loading ? (
-            <div className="chat-loading">암호화된 프로젝트 대화를 불러오는 중…</div>
-          ) : !snapshot?.messages.length ? (
-            <div className="chat-welcome">
-              <span className="welcome-kicker">PROJECT CONVERSATION</span>
-              <h2>{project.name}를 대화로 진행해보세요</h2>
-              <p>
-                연구 방향을 논의하거나 작업 생성을 요청할 수 있습니다. Kanban 변경은 AI가 제안하고,
-                사용자가 Apply한 뒤에만 반영됩니다.
-              </p>
-              <div className="quick-prompts">
-                {QUICK_PROMPTS.map((prompt) => (
-                  <button
-                    type="button"
-                    key={prompt}
-                    onClick={() => {
-                      updateDraft(prompt);
-                      setRetryOfAttemptId(null);
-                    }}
-                  >
-                    {prompt}
-                    <span>↗</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            snapshot.messages.map((message, messageIndex) => {
-              const retrySource =
-                message.role === 'assistant' &&
-                (message.status === 'failed' || message.status === 'interrupted')
-                  ? findRetrySource(snapshot, message, messageIndex)
-                  : null;
-              const attempt = message.attemptId
-                ? snapshot.attempts?.find((candidate) => candidate.id === message.attemptId)
-                : undefined;
-              const nativeAttempt = attempt?.collaborationModeId !== undefined;
-              return (
-                <article
-                  ref={messageIndex === snapshot.messages.length - 1 ? latestMessageRef : undefined}
-                  className={`chat-message ${message.role} ${message.status}`}
-                  key={message.id}
-                >
-                  <header>
-                    <strong>{message.role === 'user' ? 'You' : 'GOSU'}</strong>
-                    <span>{formatTime(message.completedAt)}</span>
-                  </header>
-                  <div className="message-copy">
-                    <ProjectChatMarkdown source={message.content} />
-                  </div>
-                  {(message.model || attempt?.harnessMode || nativeAttempt) && (
-                    <footer className="message-provenance">
-                      {message.model?.resolvedModelId ?? 'Codex'}
-                      {message.model?.reasoningOptionId
-                        ? ` · reasoning ${message.model.reasoningOptionId}`
-                        : ''}
-                      {nativeAttempt
-                        ? attempt?.collaborationModeId
-                          ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
-                          : ' · Codex default mode'
-                        : attempt?.harnessMode
-                          ? ` · legacy ${HARNESS_LABELS[attempt.harnessMode]}`
-                          : ''}
-                      {attempt?.personality && attempt.personality !== 'auto'
-                        ? ` · ${PERSONALITY_LABELS[attempt.personality]}`
-                        : ''}
-                      {attempt?.responseVerbosity
-                        ? ` · ${VERBOSITY_LABELS[attempt.responseVerbosity]}`
-                        : attempt?.responseDepth
-                          ? ` · legacy ${DEPTH_LABELS[attempt.responseDepth]}`
-                          : ''}
-                      {attempt?.contextScope ? ` · ${CONTEXT_LABELS[attempt.contextScope]}` : ''}
-                    </footer>
-                  )}
-                  {retrySource && (
-                    <footer className="failed-turn-recovery">
-                      <span>Saved failed attempt · the connection may now be recovered</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          updateDraft(retrySource.content);
-                          setRetryOfAttemptId(retrySource.attemptId);
-                        }}
-                      >
-                        {retrySource.attemptId ? 'Retry this turn' : 'Use message again'}
-                      </button>
-                    </footer>
-                  )}
-                  {message.status === 'complete' && (
-                    <footer className="chat-message-branch">
-                      <button
-                        type="button"
-                        className="ghost-button"
-                        disabled={inFlight || branchingMessageId !== null}
-                        onClick={() => void onBranchSession(message.id)}
-                      >
-                        {branchingMessageId === message.id
-                          ? 'Creating branch…'
-                          : '⑂ Branch from here'}
-                      </button>
-                    </footer>
-                  )}
-                  {message.actions.length > 0 && (
-                    <div className="chat-actions">
-                      {message.actions.map((action) => (
-                        <ChatActionCard
-                          key={action.id}
-                          action={action}
-                          tasks={tasks}
-                          statusLabels={board.columnLabels}
-                          busy={applyingActionId === action.id}
-                          onApply={() => void onApplyAction(action)}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </article>
+        <div className="chat-transcript-region">
+          <div
+            className="chat-transcript"
+            ref={transcriptRef}
+            aria-live="polite"
+            onScroll={(event) => {
+              const transcript = event.currentTarget;
+              const nearBottom = isProjectChatNearBottom(
+                transcript.scrollTop,
+                transcript.scrollHeight,
+                transcript.clientHeight,
               );
-            })
-          )}
-          {inFlight && (
-            <article className="chat-message assistant thinking" role="status">
-              <header>
-                <strong>GOSU</strong>
-                <span>Codex turn active</span>
-              </header>
-              <div className="thinking-line">
-                <i />
-                <i />
-                <i />
-                <span>프로젝트 컨텍스트를 검토하고 있습니다</span>
+              nearBottomRef.current = nearBottom;
+              setScrollAffordance((current) => ({
+                nearBottom,
+                newAssistantMessageAvailable: nearBottom
+                  ? false
+                  : current.newAssistantMessageAvailable,
+              }));
+              if (nearBottom && resolvedUnreadAssistantMessageId) {
+                onUnreadAssistantMessageSeenRef.current(resolvedUnreadAssistantMessageId);
+              }
+              if (
+                shouldPersistProjectChatScrollPosition(
+                  initializedScrollSessionKeyRef.current,
+                  draftSessionKey,
+                )
+              ) {
+                onScrollTopChangeRef.current(transcript.scrollTop);
+              }
+            }}
+          >
+            {loading ? (
+              <div className="chat-loading">암호화된 프로젝트 대화를 불러오는 중…</div>
+            ) : !snapshot?.messages.length ? (
+              <div className="chat-welcome">
+                <span className="welcome-kicker">PROJECT CONVERSATION</span>
+                <h2>{project.name}를 대화로 진행해보세요</h2>
+                <p>
+                  연구 방향을 논의하거나 작업 생성을 요청할 수 있습니다. Kanban 변경은 AI가
+                  제안하고, 사용자가 Apply한 뒤에만 반영됩니다.
+                </p>
+                <div className="quick-prompts">
+                  {QUICK_PROMPTS.map((prompt) => (
+                    <button
+                      type="button"
+                      key={prompt}
+                      onClick={() => {
+                        updateDraft(prompt);
+                        setRetryOfAttemptId(null);
+                      }}
+                    >
+                      {prompt}
+                      <span>↗</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </article>
+            ) : (
+              snapshot.messages.map((message, messageIndex) => {
+                const retrySource =
+                  message.role === 'assistant' &&
+                  (message.status === 'failed' || message.status === 'interrupted')
+                    ? findRetrySource(snapshot, message, messageIndex)
+                    : null;
+                const attempt = message.attemptId
+                  ? snapshot.attempts?.find((candidate) => candidate.id === message.attemptId)
+                  : undefined;
+                const nativeAttempt = attempt?.collaborationModeId !== undefined;
+                const isLatestMessage = messageIndex === snapshot.messages.length - 1;
+                const isUnreadAssistantMessage =
+                  message.role === 'assistant' && message.id === resolvedUnreadAssistantMessageId;
+                return (
+                  <article
+                    ref={(element) => {
+                      if (isLatestMessage) latestMessageRef.current = element;
+                      if (isUnreadAssistantMessage) unreadAssistantMessageRef.current = element;
+                    }}
+                    tabIndex={isLatestMessage || isUnreadAssistantMessage ? -1 : undefined}
+                    className={`chat-message ${message.role} ${message.status}`}
+                    key={message.id}
+                  >
+                    <header>
+                      <strong>{message.role === 'user' ? 'You' : 'GOSU'}</strong>
+                      <span>{formatTime(message.completedAt)}</span>
+                    </header>
+                    <div className="message-copy">
+                      <ProjectChatMarkdown source={message.content} />
+                    </div>
+                    {(message.model || attempt?.harnessMode || nativeAttempt) && (
+                      <footer className="message-provenance">
+                        {message.model?.resolvedModelId ?? 'Codex'}
+                        {message.model?.reasoningOptionId
+                          ? ` · reasoning ${message.model.reasoningOptionId}`
+                          : ''}
+                        {nativeAttempt
+                          ? attempt?.collaborationModeId
+                            ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
+                            : ' · Codex default mode'
+                          : attempt?.harnessMode
+                            ? ` · legacy ${HARNESS_LABELS[attempt.harnessMode]}`
+                            : ''}
+                        {attempt?.personality && attempt.personality !== 'auto'
+                          ? ` · ${PERSONALITY_LABELS[attempt.personality]}`
+                          : ''}
+                        {attempt?.responseVerbosity
+                          ? ` · ${VERBOSITY_LABELS[attempt.responseVerbosity]}`
+                          : attempt?.responseDepth
+                            ? ` · legacy ${DEPTH_LABELS[attempt.responseDepth]}`
+                            : ''}
+                        {attempt?.contextScope ? ` · ${CONTEXT_LABELS[attempt.contextScope]}` : ''}
+                      </footer>
+                    )}
+                    {retrySource && (
+                      <footer className="failed-turn-recovery">
+                        <span>Saved failed attempt · the connection may now be recovered</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            updateDraft(retrySource.content);
+                            setRetryOfAttemptId(retrySource.attemptId);
+                          }}
+                        >
+                          {retrySource.attemptId ? 'Retry this turn' : 'Use message again'}
+                        </button>
+                      </footer>
+                    )}
+                    {message.status === 'complete' && (
+                      <footer className="chat-message-branch">
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          disabled={inFlight || branchingMessageId !== null}
+                          onClick={() => void onBranchSession(message.id)}
+                        >
+                          {branchingMessageId === message.id
+                            ? 'Creating branch…'
+                            : '⑂ Branch from here'}
+                        </button>
+                      </footer>
+                    )}
+                    {message.actions.length > 0 && (
+                      <div className="chat-actions">
+                        {message.actions.map((action) => (
+                          <ChatActionCard
+                            key={action.id}
+                            action={action}
+                            tasks={tasks}
+                            statusLabels={board.columnLabels}
+                            busy={applyingActionId === action.id}
+                            onApply={() => void onApplyAction(action)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                );
+              })
+            )}
+            {inFlight && (
+              <article className="chat-message assistant thinking" role="status">
+                <header>
+                  <strong>GOSU</strong>
+                  <span>Codex turn active</span>
+                </header>
+                <div className="thinking-line">
+                  <i />
+                  <i />
+                  <i />
+                  <span>프로젝트 컨텍스트를 검토하고 있습니다</span>
+                </div>
+              </article>
+            )}
+          </div>
+          {!scrollAffordance.nearBottom && (
+            <button
+              type="button"
+              className="chat-jump-to-latest"
+              onClick={() => jumpToLatest('bottom')}
+              aria-label="Jump to the latest message"
+              title="Jump to latest"
+            >
+              <span aria-hidden="true">↓</span>
+              Latest
+            </button>
           )}
         </div>
 
@@ -1075,6 +1266,19 @@ export function ProjectChatView({
                 Files stay local; PDF text read by GOSU is sent only to the selected model for this
                 turn.
               </span>
+            </div>
+          )}
+          {scrollAffordance.newAssistantMessageAvailable && (
+            <div className="chat-new-message-notice-wrap" role="status" aria-live="polite">
+              <button
+                type="button"
+                className="chat-new-message-notice"
+                onClick={() => jumpToLatest('new-message')}
+              >
+                <span aria-hidden="true">↓</span>
+                New GOSU message
+                <small>View unread response</small>
+              </button>
             </div>
           )}
           <div className="chat-composer">

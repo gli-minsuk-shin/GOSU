@@ -9,14 +9,18 @@ import {
   LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT,
   LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW,
   LITERATURE_MAX_SEARCH_RESULTS,
+  LiteratureDiscoveryCoverageSchema,
+  LiteratureDiscoverySummarySchema,
   LiteratureRecordSchema,
   LiteratureSearchConflictSchema,
   LiteratureSearchRunSchema,
   type LiteratureAiAnnotationUpdate,
   type LiteratureAiProvenance,
+  type LiteratureDiscoveryCoverage,
   type LiteratureRecord,
   type LiteratureSearchConflict,
   type LiteratureSearchRun,
+  type LiteratureTierCounts,
 } from '../shared/literature-contracts';
 import {
   ProjectChatActionSchema,
@@ -48,7 +52,7 @@ import type {
   WorkspacePendingSummary,
   WorkspaceSnapshot,
 } from '../shared/workspace-contracts';
-import type { LiteratureProviderCandidate } from './literature-crossref';
+import { literatureFingerprint, type LiteratureProviderCandidate } from './literature-crossref';
 import { LiteratureStorageError } from './literature-storage-error';
 import { WorkspaceDataRecoveryError } from './workspace-storage-error';
 
@@ -58,6 +62,8 @@ const INTERRUPTED_CHAT_ATTEMPT_RECEIPT =
 const PROJECT_CHAT_SESSIONS_MIGRATION = 'project-chat-sessions-v1';
 const LITERATURE_MANUAL_RELEVANCE_MIGRATION = 'literature-manual-relevance-v2';
 const LITERATURE_WEAK_FINGERPRINT_MIGRATION = 'literature-weak-fingerprint-v1';
+const LITERATURE_DISCOVERY_MIGRATION = 'literature-balanced-discovery-v1';
+const LITERATURE_DISCOVERY_COVERAGE_MIGRATION = 'literature-discovery-coverage-v1';
 const DEFAULT_PROJECT_CHAT_SESSION_TITLE = 'Project chat';
 
 export type LocalLiteratureAiAnnotationUpdate = LiteratureAiAnnotationUpdate &
@@ -347,6 +353,7 @@ type LiteratureRecordRow = Readonly<{
   ai_study_type: string | null;
   ai_limitations_json: string;
   ai_model_provenance_json: string | null;
+  current_discovery_json: string | null;
   annotation_version: number;
   version: number;
   created_at: string;
@@ -358,6 +365,8 @@ type LiteratureSearchRunRow = Readonly<{
   id: string;
   project_id: string;
   provider: string;
+  policy_id: string;
+  policy_version: number;
   query: string;
   requested_limit: number;
   from_year: number | null;
@@ -367,6 +376,12 @@ type LiteratureSearchRunRow = Readonly<{
   updated_count: number;
   unchanged_count: number;
   conflict_count: number;
+  retrieved_count: number;
+  selected_count: number;
+  core_count: number;
+  rising_count: number;
+  broad_count: number;
+  discovery_coverage_json: string | null;
   created_at: string;
   completed_at: string | null;
 }>;
@@ -433,6 +448,9 @@ function toLocalLiteratureRecord(row: LiteratureRecordRow): LiteratureRecord {
           provenance: recordJson(row.ai_model_provenance_json),
         }
       : null,
+    discovery: row.current_discovery_json
+      ? LiteratureDiscoverySummarySchema.parse(recordJson(row.current_discovery_json))
+      : null,
     version: row.version,
     annotationVersion: row.annotation_version,
     createdAt: row.created_at,
@@ -445,7 +463,7 @@ function toLocalLiteratureSearchConflict(
 ): LiteratureSearchConflict {
   return LiteratureSearchConflictSchema.parse({
     ordinal: row.ordinal,
-    provider: 'crossref',
+    provider: row.provider,
     providerRecordId: row.provider_record_id,
     doi: row.doi,
     fingerprint: row.fingerprint,
@@ -463,13 +481,33 @@ function toLocalLiteratureSearchRun(
     schemaVersion: 1,
     id: row.id,
     projectId: row.project_id,
-    provider: 'crossref',
+    provider: row.provider,
+    policyId: row.policy_id,
+    policyVersion: row.policy_version,
     query: row.query,
     requestedLimit: row.requested_limit,
     fromYear: row.from_year,
     toYear: row.to_year,
     status: row.status,
     foundCount: row.new_count + row.updated_count + row.unchanged_count + row.conflict_count,
+    retrievedCount: row.retrieved_count,
+    selectedCount: row.selected_count,
+    ...(row.policy_id === 'balanced-three-layer'
+      ? {
+          tierCounts: {
+            core: row.core_count,
+            rising: row.rising_count,
+            broad: row.broad_count,
+          },
+        }
+      : {}),
+    ...(row.discovery_coverage_json
+      ? {
+          coverage: LiteratureDiscoveryCoverageSchema.parse(
+            recordJson(row.discovery_coverage_json),
+          ),
+        }
+      : {}),
     newCount: row.new_count,
     updatedCount: row.updated_count,
     unchangedCount: row.unchanged_count,
@@ -555,6 +593,41 @@ function candidateState(candidate: LiteratureProviderCandidate) {
     work_type: candidate.workType ?? null,
     citation_count: candidate.citationCount ?? null,
     source_url: candidate.sourceUrl ?? null,
+  };
+}
+
+function mergedProviderCandidateState(
+  existing: LiteratureRecordRow,
+  candidate: LiteratureProviderCandidate,
+  state: ReturnType<typeof candidateState>,
+) {
+  const identity = {
+    provider_record_id:
+      state.provider_record_id ??
+      (state.source_provider === existing.source_provider ? existing.provider_record_id : null),
+    doi: state.doi ?? existing.doi,
+  };
+  if (candidate.provider !== 'semantic-scholar') return { ...state, ...identity };
+
+  // Semantic Scholar can return a strong DOI/paper identity while omitting optional metadata.
+  // Promoting that trusted source must not turn already-known fields into null or empty arrays.
+  const authorsJson = candidate.authors.length > 0 ? state.authors_json : existing.authors_json;
+  const publishedYear = state.published_year ?? existing.published_year;
+  return {
+    ...state,
+    ...identity,
+    authors_json: authorsJson,
+    container_title: state.container_title ?? existing.container_title,
+    published_year: publishedYear,
+    topics_json: candidate.topics.length > 0 ? state.topics_json : existing.topics_json,
+    work_type: state.work_type ?? existing.work_type,
+    citation_count: state.citation_count ?? existing.citation_count,
+    source_url: state.source_url ?? existing.source_url,
+    fingerprint: literatureFingerprint(
+      state.title,
+      stringArrayJson(authorsJson),
+      publishedYear ?? undefined,
+    ),
   };
 }
 
@@ -718,16 +791,19 @@ function upsertLiteratureCandidate(
       .get(projectId, id) as LiteratureRecordRow;
     return { outcome: 'new' as const, record: toLocalLiteratureRecord(inserted) };
   }
-  const refreshSource = candidate.provider === 'crossref' || existing.source_provider === 'import';
+  const providerPriority: Record<string, number> = {
+    import: 0,
+    crossref: 1,
+    'semantic-scholar': 2,
+  };
+  const refreshSource =
+    existing.source_provider === 'import' ||
+    (candidate.provider !== 'import' &&
+      (providerPriority[candidate.provider] ?? 0) >=
+        (providerPriority[existing.source_provider] ?? 0));
   const importReview = candidate.provider === 'import';
   const merged = refreshSource
-    ? {
-        ...state,
-        provider_record_id:
-          state.provider_record_id ??
-          (state.source_provider === existing.source_provider ? existing.provider_record_id : null),
-        doi: state.doi ?? existing.doi,
-      }
+    ? mergedProviderCandidateState(existing, candidate, state)
     : candidateState({
         provider: existing.source_provider as LiteratureProviderCandidate['provider'],
         ...(existing.provider_record_id ? { providerId: existing.provider_record_id } : {}),
@@ -889,6 +965,155 @@ function migrateLiteratureWeakFingerprint(database: Database.Database) {
       database
         .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
         .run(LITERATURE_WEAK_FINGERPRINT_MIGRATION, new Date().toISOString());
+    })
+    .immediate();
+}
+
+function migrateLiteratureDiscovery(database: Database.Database) {
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(LITERATURE_DISCOVERY_MIGRATION);
+  if (migrationApplied) return;
+  database
+    .transaction(() => {
+      const addColumn = (table: string, name: string, definition: string) => {
+        const columns = database.pragma(`table_info(${table})`) as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === name)) {
+          database.exec(`alter table ${table} add column ${name} ${definition}`);
+        }
+      };
+      addColumn(
+        'literature_records',
+        'current_discovery_json',
+        'text check (current_discovery_json is null or length(current_discovery_json) <= 16384)',
+      );
+      addColumn(
+        'literature_search_runs',
+        'policy_id',
+        "text not null default 'crossref-basic' check (policy_id in ('crossref-basic','balanced-three-layer'))",
+      );
+      addColumn(
+        'literature_search_runs',
+        'policy_version',
+        'integer not null default 1 check (policy_version > 0)',
+      );
+      addColumn(
+        'literature_search_runs',
+        'retrieved_count',
+        'integer not null default 0 check (retrieved_count >= 0)',
+      );
+      addColumn(
+        'literature_search_runs',
+        'selected_count',
+        'integer not null default 0 check (selected_count >= 0)',
+      );
+      addColumn(
+        'literature_search_runs',
+        'core_count',
+        'integer not null default 0 check (core_count >= 0)',
+      );
+      addColumn(
+        'literature_search_runs',
+        'rising_count',
+        'integer not null default 0 check (rising_count >= 0)',
+      );
+      addColumn(
+        'literature_search_runs',
+        'broad_count',
+        'integer not null default 0 check (broad_count >= 0)',
+      );
+      addColumn(
+        'literature_search_hits',
+        'discovery_tier',
+        "text check (discovery_tier is null or discovery_tier in ('core','rising','broad'))",
+      );
+      addColumn(
+        'literature_search_hits',
+        'tier_rank',
+        'integer check (tier_rank is null or tier_rank > 0)',
+      );
+      addColumn(
+        'literature_search_hits',
+        'overall_score',
+        'real check (overall_score is null or overall_score between 0 and 1)',
+      );
+      addColumn(
+        'literature_search_hits',
+        'ranking_signals_json',
+        'text check (ranking_signals_json is null or length(ranking_signals_json) <= 16384)',
+      );
+
+      database
+        .prepare(
+          `update literature_search_runs set
+             retrieved_count=new_count+updated_count+unchanged_count+conflict_count,
+             selected_count=new_count+updated_count+unchanged_count+conflict_count
+           where status='complete' and retrieved_count=0 and selected_count=0`,
+        )
+        .run();
+
+      const conflictSchema = database
+        .prepare(
+          "select sql from sqlite_master where type='table' and name='literature_search_conflicts'",
+        )
+        .get() as { sql: string | null } | undefined;
+      if (/provider\s*=\s*'crossref'/iu.test(conflictSchema?.sql ?? '')) {
+        database.exec(`
+          alter table literature_search_conflicts rename to literature_search_conflicts_legacy;
+          create table literature_search_conflicts (
+            search_run_id text not null references literature_search_runs(id) on delete cascade,
+            ordinal integer not null check (ordinal between 1 and 50),
+            provider text not null check (provider in ('crossref','semantic-scholar')),
+            provider_record_id text check (
+              provider_record_id is null or length(provider_record_id) between 1 and 2048
+            ),
+            doi text check (doi is null or length(doi) between 1 and 512),
+            fingerprint text not null check (length(fingerprint)=64),
+            title text not null check (length(title) between 1 and 2000),
+            authors_json text not null check (length(authors_json) <= 32768),
+            published_year integer check (
+              published_year is null or published_year between 1000 and 3000
+            ),
+            primary key(search_run_id,ordinal)
+          );
+          insert into literature_search_conflicts(
+            search_run_id,ordinal,provider,provider_record_id,doi,fingerprint,title,authors_json,
+            published_year
+          )
+          select search_run_id,ordinal,provider,provider_record_id,doi,fingerprint,title,
+                 authors_json,published_year
+          from literature_search_conflicts_legacy;
+          drop table literature_search_conflicts_legacy;
+        `);
+      }
+      database
+        .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+        .run(LITERATURE_DISCOVERY_MIGRATION, new Date().toISOString());
+    })
+    .immediate();
+}
+
+function migrateLiteratureDiscoveryCoverage(database: Database.Database) {
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(LITERATURE_DISCOVERY_COVERAGE_MIGRATION);
+  if (migrationApplied) return;
+  database
+    .transaction(() => {
+      const columns = database.pragma('table_info(literature_search_runs)') as Array<{
+        name: string;
+      }>;
+      if (!columns.some((column) => column.name === 'discovery_coverage_json')) {
+        database.exec(
+          `alter table literature_search_runs add column discovery_coverage_json text
+           check (
+             discovery_coverage_json is null or length(discovery_coverage_json) <= 4096
+           )`,
+        );
+      }
+      database
+        .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+        .run(LITERATURE_DISCOVERY_COVERAGE_MIGRATION, new Date().toISOString());
     })
     .immediate();
 }
@@ -1058,6 +1283,9 @@ export class LocalDatabase {
         ai_model_provenance_json text check (
           ai_model_provenance_json is null or length(ai_model_provenance_json) <= 16384
         ),
+        current_discovery_json text check (
+          current_discovery_json is null or length(current_discovery_json) <= 16384
+        ),
         annotation_version integer not null default 0 check (annotation_version >= 0),
         version integer not null check (version > 0),
         created_at text not null,
@@ -1083,6 +1311,10 @@ export class LocalDatabase {
         schema_version integer not null check (schema_version = 1),
         project_id text not null,
         provider text not null check (length(provider) between 1 and 64),
+        policy_id text not null default 'crossref-basic' check (
+          policy_id in ('crossref-basic','balanced-three-layer')
+        ),
+        policy_version integer not null default 1 check (policy_version > 0),
         query text not null check (length(query) between 1 and 1000),
         requested_limit integer not null check (requested_limit between 1 and 50),
         from_year integer check (from_year is null or from_year between 1000 and 3000),
@@ -1092,6 +1324,14 @@ export class LocalDatabase {
         updated_count integer not null default 0 check (updated_count >= 0),
         unchanged_count integer not null default 0 check (unchanged_count >= 0),
         conflict_count integer not null default 0 check (conflict_count >= 0),
+        retrieved_count integer not null default 0 check (retrieved_count >= 0),
+        selected_count integer not null default 0 check (selected_count >= 0),
+        core_count integer not null default 0 check (core_count >= 0),
+        rising_count integer not null default 0 check (rising_count >= 0),
+        broad_count integer not null default 0 check (broad_count >= 0),
+        discovery_coverage_json text check (
+          discovery_coverage_json is null or length(discovery_coverage_json) <= 4096
+        ),
         created_at text not null,
         completed_at text
       );
@@ -1102,6 +1342,14 @@ export class LocalDatabase {
         ordinal integer not null check (ordinal > 0),
         record_id text not null references literature_records(id) on delete cascade,
         outcome text not null check (outcome in ('new','updated','unchanged')),
+        discovery_tier text check (
+          discovery_tier is null or discovery_tier in ('core','rising','broad')
+        ),
+        tier_rank integer check (tier_rank is null or tier_rank > 0),
+        overall_score real check (overall_score is null or overall_score between 0 and 1),
+        ranking_signals_json text check (
+          ranking_signals_json is null or length(ranking_signals_json) <= 16384
+        ),
         primary key(search_run_id,ordinal)
       );
       create index if not exists literature_search_hits_by_record
@@ -1109,7 +1357,7 @@ export class LocalDatabase {
       create table if not exists literature_search_conflicts (
         search_run_id text not null references literature_search_runs(id) on delete cascade,
         ordinal integer not null check (ordinal between 1 and 50),
-        provider text not null check (provider='crossref'),
+        provider text not null check (provider in ('crossref','semantic-scholar')),
         provider_record_id text check (
           provider_record_id is null or length(provider_record_id) between 1 and 2048
         ),
@@ -1306,6 +1554,8 @@ export class LocalDatabase {
            check (conflict_count >= 0)`,
         );
       }
+      migrateLiteratureDiscovery(database);
+      migrateLiteratureDiscoveryCoverage(database);
       const sshConnectionColumns = database.pragma('table_info(ssh_connections)') as Array<{
         name: string;
       }>;
@@ -2388,8 +2638,9 @@ export class LocalDatabase {
     const database = this.require();
     const rows = database
       .prepare(
-        `select id,project_id,provider,query,requested_limit,from_year,to_year,status,
-                new_count,updated_count,unchanged_count,conflict_count,created_at,completed_at
+        `select id,project_id,provider,policy_id,policy_version,query,requested_limit,from_year,to_year,status,
+                new_count,updated_count,unchanged_count,conflict_count,retrieved_count,selected_count,
+                core_count,rising_count,broad_count,discovery_coverage_json,created_at,completed_at
          from literature_search_runs where project_id=? order by created_at desc,id desc limit 20`,
       )
       .all(projectId) as LiteratureSearchRunRow[];
@@ -2406,6 +2657,12 @@ export class LocalDatabase {
       input.updatedCount !== 0 ||
       input.unchangedCount !== 0 ||
       input.conflictCount !== 0 ||
+      (input.retrievedCount ?? 0) !== 0 ||
+      (input.selectedCount ?? 0) !== 0 ||
+      (input.tierCounts?.core ?? 0) !== 0 ||
+      (input.tierCounts?.rising ?? 0) !== 0 ||
+      (input.tierCounts?.broad ?? 0) !== 0 ||
+      input.coverage !== undefined ||
       input.conflicts.length !== 0
     ) {
       throw new Error('invalid_literature_search_start');
@@ -2414,14 +2671,18 @@ export class LocalDatabase {
       this.require()
         .prepare(
           `insert or ignore into literature_search_runs(
-             id,schema_version,project_id,provider,query,requested_limit,from_year,to_year,status,
-             new_count,updated_count,unchanged_count,conflict_count,created_at,completed_at
-           ) values(?,1,?,?,?,?,?,?,'running',0,0,0,0,?,null)`,
+             id,schema_version,project_id,provider,policy_id,policy_version,query,requested_limit,
+             from_year,to_year,status,new_count,updated_count,unchanged_count,conflict_count,
+             retrieved_count,selected_count,core_count,rising_count,broad_count,
+             discovery_coverage_json,created_at,completed_at
+           ) values(?,1,?,?,?,?,?,?,?,?,'running',0,0,0,0,0,0,0,0,0,null,?,null)`,
         )
         .run(
           input.id,
           input.projectId,
           input.provider,
+          input.policyId ?? 'crossref-basic',
+          input.policyVersion ?? 1,
           input.query,
           input.requestedLimit,
           input.fromYear,
@@ -2436,6 +2697,12 @@ export class LocalDatabase {
     runId: string,
     candidates: readonly LiteratureProviderCandidate[],
     completedAt: string,
+    discovery?: Readonly<{
+      retrievedCount: number;
+      selectedCount: number;
+      tierCounts: LiteratureTierCounts;
+      coverage?: LiteratureDiscoveryCoverage;
+    }>,
   ) {
     if (candidates.length > LITERATURE_MAX_SEARCH_RESULTS) {
       throw new LiteratureStorageError('record_limit_reached');
@@ -2445,23 +2712,52 @@ export class LocalDatabase {
       .transaction(() => {
         const run = database
           .prepare(
-            `select id,project_id,provider,query,requested_limit,from_year,to_year,status,
-                    new_count,updated_count,unchanged_count,conflict_count,created_at,completed_at
+            `select id,project_id,provider,policy_id,policy_version,query,requested_limit,from_year,to_year,status,
+                    new_count,updated_count,unchanged_count,conflict_count,retrieved_count,selected_count,
+                    core_count,rising_count,broad_count,discovery_coverage_json,created_at,completed_at
              from literature_search_runs where project_id=? and id=?`,
           )
           .get(projectId, runId) as LiteratureSearchRunRow | undefined;
         if (!run || run.status !== 'running') throw new Error('literature_search_state_conflict');
+        const selectedTierCounts =
+          discovery?.tierCounts ??
+          candidates.reduce<LiteratureTierCounts>(
+            (counts, candidate) =>
+              candidate.discovery
+                ? {
+                    ...counts,
+                    [candidate.discovery.tier]: counts[candidate.discovery.tier] + 1,
+                  }
+                : counts,
+            { core: 0, rising: 0, broad: 0 },
+          );
+        const selectedCount = discovery?.selectedCount ?? candidates.length;
+        const retrievedCount = discovery?.retrievedCount ?? candidates.length;
+        const coverage = discovery?.coverage
+          ? LiteratureDiscoveryCoverageSchema.parse(discovery.coverage)
+          : undefined;
+        if (
+          selectedCount !== candidates.length ||
+          retrievedCount < selectedCount ||
+          selectedTierCounts.core + selectedTierCounts.rising + selectedTierCounts.broad >
+            selectedCount
+        ) {
+          throw new Error('invalid_literature_discovery_summary');
+        }
         let added = 0;
         let updated = 0;
         let skipped = 0;
         let conflicts = 0;
+        const tierCounts: LiteratureTierCounts = { core: 0, rising: 0, broad: 0 };
         const conflictDetails: LiteratureSearchConflict[] = [];
         const upsertOne = database.transaction((candidate: LiteratureProviderCandidate) =>
           upsertLiteratureCandidate(database, projectId, candidate, completedAt),
         );
         const insertHit = database.prepare(
-          `insert into literature_search_hits(search_run_id,ordinal,record_id,outcome)
-           values(?,?,?,?)`,
+          `insert into literature_search_hits(
+             search_run_id,ordinal,record_id,outcome,discovery_tier,tier_rank,overall_score,
+             ranking_signals_json
+           ) values(?,?,?,?,?,?,?,?)`,
         );
         const insertConflict = database.prepare(
           `insert into literature_search_conflicts(
@@ -2507,16 +2803,58 @@ export class LocalDatabase {
           if (result.outcome === 'new') added += 1;
           else if (result.outcome === 'updated') updated += 1;
           else skipped += 1;
-          insertHit.run(runId, index + 1, result.record.id, result.outcome);
+          const ranking = candidate.discovery;
+          if (ranking) tierCounts[ranking.tier] += 1;
+          insertHit.run(
+            runId,
+            index + 1,
+            result.record.id,
+            result.outcome,
+            ranking?.tier ?? null,
+            ranking?.tierRank ?? null,
+            ranking?.overallScore ?? null,
+            ranking ? JSON.stringify(ranking) : null,
+          );
+          if (ranking) {
+            const summary = LiteratureDiscoverySummarySchema.parse({
+              ...ranking,
+              searchRunId: runId,
+              query: run.query,
+              policyId: run.policy_id,
+              policyVersion: run.policy_version,
+              classifiedAt: completedAt,
+            });
+            database
+              .prepare(
+                `update literature_records set current_discovery_json=?
+                 where project_id=? and id=? and deleted_at is null`,
+              )
+              .run(JSON.stringify(summary), projectId, result.record.id);
+          }
         }
         const changed = database
           .prepare(
             `update literature_search_runs set
                status='complete',new_count=?,updated_count=?,unchanged_count=?,conflict_count=?,
-               completed_at=?
+               retrieved_count=?,selected_count=?,core_count=?,rising_count=?,broad_count=?,
+               discovery_coverage_json=?,completed_at=?
              where project_id=? and id=? and status='running'`,
           )
-          .run(added, updated, skipped, conflicts, completedAt, projectId, runId).changes;
+          .run(
+            added,
+            updated,
+            skipped,
+            conflicts,
+            retrievedCount,
+            selectedCount,
+            tierCounts.core,
+            tierCounts.rising,
+            tierCounts.broad,
+            coverage ? JSON.stringify(coverage) : null,
+            completedAt,
+            projectId,
+            runId,
+          ).changes;
         if (changed !== 1) throw new Error('literature_search_state_conflict');
         return {
           foundCount: candidates.length,
@@ -2524,6 +2862,9 @@ export class LocalDatabase {
           updatedCount: updated,
           unchangedCount: skipped,
           conflictCount: conflicts,
+          retrievedCount,
+          selectedCount,
+          tierCounts,
           run: toLocalLiteratureSearchRun(
             {
               ...run,
@@ -2532,6 +2873,12 @@ export class LocalDatabase {
               updated_count: updated,
               unchanged_count: skipped,
               conflict_count: conflicts,
+              retrieved_count: retrievedCount,
+              selected_count: selectedCount,
+              core_count: tierCounts.core,
+              rising_count: tierCounts.rising,
+              broad_count: tierCounts.broad,
+              discovery_coverage_json: coverage ? JSON.stringify(coverage) : null,
               completed_at: completedAt,
             },
             conflictDetails,

@@ -21,6 +21,11 @@ const record = (
   doi: `10.1000/${id}`,
   type: 'journal-article',
   citedBy: 0,
+  discoveryTier: 'unclassified',
+  importanceScore: null,
+  discoveryRunId: null,
+  discoveryTierRank: null,
+  discoveryClassifiedAt: null,
   reviewStatus: 'unreviewed',
   source: 'crossref',
   ...overrides,
@@ -96,5 +101,91 @@ describe('literature table model', () => {
       sortKey: 'citedBy',
       sortDirection: 'ascending',
     });
+    expect(nextLiteratureSort('title', 'ascending', 'importance')).toEqual({
+      sortKey: 'importance',
+      sortDirection: 'descending',
+    });
+  });
+
+  it('sorts the latest matching search first without comparing scores across searches', () => {
+    const result = buildLiteratureTablePage(
+      [
+        record('older-high-score', {
+          discoveryTier: 'core',
+          importanceScore: 0.99,
+          discoveryRunId: 'older-run',
+          discoveryTierRank: 1,
+          discoveryClassifiedAt: '2026-08-01T00:00:00.000Z',
+        }),
+        record('newer-broad', {
+          discoveryTier: 'broad',
+          importanceScore: 0.95,
+          discoveryRunId: 'newer-run',
+          discoveryTierRank: 1,
+          discoveryClassifiedAt: '2026-08-05T00:00:00.000Z',
+        }),
+        record('newer-core-rank-two', {
+          discoveryTier: 'core',
+          importanceScore: 0.01,
+          discoveryRunId: 'newer-run',
+          discoveryTierRank: 2,
+          discoveryClassifiedAt: '2026-08-05T00:00:00.000Z',
+        }),
+        record('newer-core-rank-one', {
+          discoveryTier: 'core',
+          importanceScore: 0.001,
+          discoveryRunId: 'newer-run',
+          discoveryTierRank: 1,
+          discoveryClassifiedAt: '2026-08-05T00:00:00.000Z',
+        }),
+      ],
+      {
+        text: '',
+        reviewStatus: 'all',
+        sortKey: 'importance',
+        sortDirection: 'descending',
+        page: 1,
+      },
+    );
+
+    expect(result.rows.map(({ id }) => id)).toEqual([
+      'newer-core-rank-one',
+      'newer-core-rank-two',
+      'newer-broad',
+      'older-high-score',
+    ]);
+  });
+
+  it('keeps equal-time records from different searches stable instead of comparing scores', () => {
+    const result = buildLiteratureTablePage(
+      [
+        record('first-run-low-score', {
+          discoveryTier: 'broad',
+          importanceScore: 0.01,
+          discoveryRunId: 'first-run',
+          discoveryTierRank: 10,
+          discoveryClassifiedAt: '2026-08-05T00:00:00.000Z',
+        }),
+        record('second-run-high-score', {
+          discoveryTier: 'core',
+          importanceScore: 0.99,
+          discoveryRunId: 'second-run',
+          discoveryTierRank: 1,
+          discoveryClassifiedAt: '2026-08-05T00:00:00.000Z',
+        }),
+      ],
+      {
+        text: '',
+        reviewStatus: 'all',
+        sortKey: 'importance',
+        sortDirection: 'descending',
+        page: 1,
+      },
+    );
+
+    expect(result.rows.map(({ id }) => id)).toEqual([
+      'first-run-low-score',
+      'second-run-high-score',
+    ]);
   });
 });

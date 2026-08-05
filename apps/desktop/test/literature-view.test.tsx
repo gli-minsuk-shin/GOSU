@@ -48,6 +48,25 @@ const rawPaper: LiteratureRecord = {
     relevance: 'Matches the primary metric design.',
   },
   aiAnnotations: null,
+  discovery: {
+    tier: 'core',
+    matchedLayers: ['core', 'broad'],
+    tierRank: 1,
+    overallScore: 0.91,
+    relevanceScore: 0.95,
+    authorityScore: 0.82,
+    momentumScore: 0.36,
+    citationVelocityProxy: 4.2,
+    influentialCitationCount: 8,
+    maxAuthorHIndex: 64,
+    reasons: ['high-query-relevance', 'high-citation-impact', 'prominent-author-signal'],
+    signalSources: ['semantic-scholar'],
+    searchRunId: '33333333-3333-4333-8333-333333333333',
+    query: 'agentic research evaluation',
+    policyId: 'balanced-three-layer',
+    policyVersion: 1,
+    classifiedAt: '2026-08-04T00:00:00.000Z',
+  },
   createdAt: '2026-08-04T00:00:00.000Z',
   updatedAt: '2026-08-04T00:00:00.000Z',
 };
@@ -107,12 +126,20 @@ describe('Literature workspace', () => {
       updatedCount: 0,
       unchangedCount: 1,
       conflictCount: 1,
+      coverage: {
+        source: 'crossref',
+        availableSignals: ['relevance', 'citation-authority'],
+        degradationReasons: ['semantic-scholar-unavailable', 'crossref-recent-lane-unavailable'],
+      },
     });
 
-    expect(notice).toContain('Search complete: 25 found');
+    expect(notice).toContain('Deep search complete: 25 selected');
     expect(notice).toContain('1 ambiguous result was skipped');
     expect(notice).toContain('without changing saved papers');
     expect(notice).toContain('Skipped: DOI 10.1000/gosu.conflict');
+    expect(notice).toContain('Reduced signal coverage');
+    expect(notice).toContain('Semantic Scholar Unavailable');
+    expect(notice).toContain('available: Relevance, Citation Authority');
   });
 
   it('bounds conflict identifiers while reporting the omitted count', () => {
@@ -161,8 +188,13 @@ describe('Literature workspace', () => {
   it('exposes continual search, dialog-based interchange, and a clearly unavailable AI action', () => {
     const html = renderToStaticMarkup(<LiteratureView project={project} adapter={adapter} />);
 
-    expect(html).toContain('Search and continue this review');
-    expect(html).toContain('New results merge');
+    expect(html).toContain('Deep search and continue this review');
+    expect(html).toContain('Fixed three-layer policy');
+    expect(html).toContain('Core &amp; canonical');
+    expect(html).toContain('Rising &amp; recent');
+    expect(html).toContain('Broad discovery');
+    expect(html).toContain('latest matching search');
+    expect(html).toContain('scores are only comparable within the same search');
     expect(html).toContain('Import');
     expect(html).toContain('Export JSON');
     expect(html).toContain('Export CSV');
@@ -190,6 +222,7 @@ describe('Literature workspace', () => {
 
     for (const heading of [
       'Title',
+      'Last discovery layer',
       'Authors',
       'Journal / venue',
       'Year',
@@ -205,6 +238,8 @@ describe('Literature workspace', () => {
     expect(html).toContain(paper.title);
     expect(html).toContain(paper.doi);
     expect(html).toContain('evaluation');
+    expect(html).toContain('Core &amp; canonical');
+    expect(html).toContain('91 / 100 · within search');
     expect(html.match(/>evaluation</gu)).toHaveLength(1);
     expect(html).toContain('page 1 of 1');
   });
@@ -239,7 +274,7 @@ describe('Literature workspace', () => {
       /\.literature-table-scroll\s*\{(?=[^}]*\boverscroll-behavior-x:\s*contain;)(?=[^}]*\boverscroll-behavior-y:\s*auto;)(?=[^}]*\bscrollbar-gutter:\s*stable;)[^}]*\}/su,
     );
     expect(styles).toMatch(
-      /\.literature-table\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*1220px;)[^}]*\}/su,
+      /\.literature-table\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*1420px;)[^}]*\}/su,
     );
   });
 
@@ -282,5 +317,11 @@ describe('Literature workspace', () => {
     expect(source).toContain('aiCandidates.map');
     expect(source).not.toContain('record.abstract');
     expect(source).not.toContain('>Abstract<');
+  });
+
+  it('projects the latest discovery search identity and rank for query-safe table sorting', () => {
+    expect(paper.discoveryRunId).toBe(rawPaper.discovery?.searchRunId);
+    expect(paper.discoveryTierRank).toBe(rawPaper.discovery?.tierRank);
+    expect(paper.discoveryClassifiedAt).toBe(rawPaper.discovery?.classifiedAt);
   });
 });

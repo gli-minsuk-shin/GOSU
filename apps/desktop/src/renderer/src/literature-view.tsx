@@ -5,6 +5,7 @@ import type {
   DeleteLiteratureRecordReceipt,
   LiteratureExportReceipt,
   LiteratureExportRequest,
+  LiteratureDiscoveryCoverage,
   LiteratureImportReceipt,
   LiteratureImportRequest,
   LiteratureLibrary,
@@ -15,6 +16,7 @@ import type {
   LiteratureSearchReceipt,
   LiteratureSearchRun,
   LiteratureTransferFormat,
+  LiteratureDiscoveryTier,
   ListLiteratureInput,
   OrganizeLiteratureInput,
   UpdateLiteratureAnnotationsInput,
@@ -48,6 +50,7 @@ const COLUMN_LABELS: ReadonlyArray<{
   label: string;
 }> = [
   { key: 'title', label: 'Title' },
+  { key: 'importance', label: 'Last discovery layer' },
   { key: 'authors', label: 'Authors' },
   { key: 'venue', label: 'Journal / venue' },
   { key: 'year', label: 'Year' },
@@ -60,6 +63,40 @@ const COLUMN_LABELS: ReadonlyArray<{
 ];
 
 const REVIEW_STATUSES = ['unreviewed', 'screening', 'included', 'excluded', 'reviewed'] as const;
+const DISCOVERY_LAYERS = [
+  {
+    id: 'core',
+    title: 'Core & canonical',
+    description: 'Most relevant anchors, including established highly cited work.',
+  },
+  {
+    id: 'rising',
+    title: 'Rising & recent',
+    description: 'Recent work with strong relevance and estimated citation momentum.',
+  },
+  {
+    id: 'broad',
+    title: 'Broad discovery',
+    description: 'Wider recall for screening beyond the obvious papers.',
+  },
+] as const satisfies ReadonlyArray<{
+  id: LiteratureDiscoveryTier;
+  title: string;
+  description: string;
+}>;
+
+function discoveryLayerTitle(tier: LiteratureDiscoveryTier | 'unclassified') {
+  return DISCOVERY_LAYERS.find(({ id }) => id === tier)?.title ?? 'Imported / unclassified';
+}
+
+function literatureCoverageSummary(coverage: LiteratureDiscoveryCoverage | undefined) {
+  if (!coverage) return '';
+  const available = coverage.availableSignals.map(formatLabel).join(', ');
+  if (coverage.degradationReasons.length === 0) {
+    return ` Discovery signals: ${available}.`;
+  }
+  return ` Reduced signal coverage (${coverage.degradationReasons.map(formatLabel).join(', ')}); available: ${available}.`;
+}
 
 function literatureErrorMessage(error: unknown) {
   const code = error instanceof Error ? (error.message.split(':')[0] ?? '') : '';
@@ -98,7 +135,14 @@ function literatureErrorMessage(error: unknown) {
 }
 
 export function literatureSearchNotice(result: LiteratureSearchReceipt) {
-  const summary = `Search complete: ${result.foundCount} found, ${result.newCount} added, ${result.updatedCount} updated, ${result.unchangedCount} unchanged.`;
+  const tierCounts = result.tierCounts ?? result.run.tierCounts;
+  const coverage = result.coverage ?? result.run.coverage;
+  const retrieval =
+    result.retrievedCount === undefined ? '' : `${result.retrievedCount} candidates screened; `;
+  const layers = tierCounts
+    ? ` Layers: ${tierCounts.core} core, ${tierCounts.rising} rising, ${tierCounts.broad} broad.`
+    : '';
+  const summary = `Deep search complete: ${retrieval}${result.foundCount} selected, ${result.newCount} added, ${result.updatedCount} updated, ${result.unchangedCount} unchanged.${layers}${literatureCoverageSummary(coverage)}`;
   if (result.conflictCount === 0) return summary;
   const conflictSummary = literatureConflictSummary(result.run.conflicts, result.conflictCount);
   const details = conflictSummary.length > 0 ? ` Skipped: ${conflictSummary}.` : '';
@@ -121,7 +165,7 @@ function literatureConflictIdentifier(conflict: LiteratureSearchConflict) {
   const identities = [
     conflict.doi ? `DOI ${conflict.doi}` : '',
     conflict.providerRecordId && conflict.providerRecordId !== conflict.doi
-      ? `Crossref ${conflict.providerRecordId}`
+      ? `${formatLabel(conflict.provider)} ${conflict.providerRecordId}`
       : '',
   ].filter(Boolean);
   return identities.length > 0
@@ -152,6 +196,11 @@ export function literatureViewRecord(record: LiteratureRecord): LiteratureViewRe
     doi: record.doi ?? '',
     type: record.workType ?? '',
     citedBy: record.citationCount,
+    discoveryTier: record.discovery?.tier ?? 'unclassified',
+    importanceScore: record.discovery?.overallScore ?? null,
+    discoveryRunId: record.discovery?.searchRunId ?? null,
+    discoveryTierRank: record.discovery?.tierRank ?? null,
+    discoveryClassifiedAt: record.discovery?.classifiedAt ?? null,
     reviewStatus: record.reviewStatus,
     source: record.provider,
     record,
@@ -197,6 +246,7 @@ export function LiteratureTable({
   selectedId,
   textFilter,
   statusFilter,
+  tierFilter = 'all',
   sortKey,
   sortDirection,
   page,
@@ -208,6 +258,7 @@ export function LiteratureTable({
   selectedId: string | null;
   textFilter: string;
   statusFilter: string;
+  tierFilter?: string;
   sortKey: LiteratureSortKey;
   sortDirection: LiteratureSortDirection;
   page: number;
@@ -220,11 +271,12 @@ export function LiteratureTable({
       buildLiteratureTablePage(records, {
         text: textFilter,
         reviewStatus: statusFilter,
+        discoveryTier: tierFilter,
         sortKey,
         sortDirection,
         page,
       }),
-    [page, records, sortDirection, sortKey, statusFilter, textFilter],
+    [page, records, sortDirection, sortKey, statusFilter, textFilter, tierFilter],
   );
 
   if (result.total === 0) {
@@ -271,6 +323,18 @@ export function LiteratureTable({
                   >
                     <span>{record.title}</span>
                   </button>
+                </td>
+                <td>
+                  <div className="literature-discovery-cell">
+                    <span className={`literature-layer-chip ${record.discoveryTier}`}>
+                      {discoveryLayerTitle(record.discoveryTier)}
+                    </span>
+                    {record.importanceScore !== null && (
+                      <small>
+                        {Math.round(record.importanceScore * 100)} / 100 · within search
+                      </small>
+                    )}
+                  </div>
                 </td>
                 <td>{record.authors.join(', ') || 'Unknown'}</td>
                 <td>{record.venue || '—'}</td>
@@ -406,6 +470,47 @@ function LiteratureDetail({
           <strong>{formatLabel(record.provider)}</strong>
         </div>
       </div>
+
+      {record.discovery && (
+        <section className="literature-discovery-summary" aria-label="Discovery ranking">
+          <div>
+            <span className={`literature-layer-chip ${record.discovery.tier}`}>
+              {discoveryLayerTitle(record.discovery.tier)}
+            </span>
+            <strong>{Math.round(record.discovery.overallScore * 100)} / 100 · within search</strong>
+          </div>
+          <p>
+            {record.discovery.reasons.map(formatLabel).join(' · ')}. This score is only comparable
+            with papers from the same search; it is a discovery ranking, not verified evidence
+            quality.
+          </p>
+          <dl className="literature-ai-facts">
+            <div>
+              <dt>Relevance</dt>
+              <dd>{Math.round(record.discovery.relevanceScore * 100)}</dd>
+            </div>
+            <div>
+              <dt>Citation authority</dt>
+              <dd>{Math.round(record.discovery.authorityScore * 100)}</dd>
+            </div>
+            <div>
+              <dt>Estimated momentum</dt>
+              <dd>{Math.round(record.discovery.momentumScore * 100)}</dd>
+            </div>
+            <div>
+              <dt>Highest author h-index signal</dt>
+              <dd>{record.discovery.maxAuthorHIndex ?? 'Unavailable'}</dd>
+            </div>
+          </dl>
+          <small>
+            Latest matching search “{record.discovery.query}” · classified{' '}
+            {new Date(record.discovery.classifiedAt).toLocaleString()} · policy{' '}
+            {record.discovery.policyId} v{record.discovery.policyVersion} · metadata from{' '}
+            {record.discovery.signalSources.map(formatLabel).join(' + ')} · author prominence is
+            only a capped supporting signal.
+          </small>
+        </section>
+      )}
 
       {record.aiAnnotations &&
         (record.aiAnnotations.summary || record.aiAnnotations.topics.length > 0) && (
@@ -551,12 +656,25 @@ export function LiteratureView({
   const [toYear, setToYear] = useState('');
   const [textFilter, setTextFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [sortKey, setSortKey] = useState<LiteratureSortKey>('year');
+  const [tierFilter, setTierFilter] = useState('all');
+  const [sortKey, setSortKey] = useState<LiteratureSortKey>('importance');
   const [sortDirection, setSortDirection] = useState<LiteratureSortDirection>('descending');
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = records.find((record) => record.id === selectedId) ?? null;
+  const latestSearchCoverage = recentSearches[0]?.coverage;
   const tableRecords = useMemo(() => records.map(literatureViewRecord), [records]);
+  const layerCounts = useMemo(
+    () =>
+      tableRecords.reduce<Record<'core' | 'rising' | 'broad' | 'unclassified', number>>(
+        (counts, record) => ({
+          ...counts,
+          [record.discoveryTier]: counts[record.discoveryTier] + 1,
+        }),
+        { core: 0, rising: 0, broad: 0, unclassified: 0 },
+      ),
+    [tableRecords],
+  );
   const aiCandidates = useMemo(
     () => records.filter((record) => record.aiAnnotations === null).slice(0, 50),
     [records],
@@ -644,8 +762,10 @@ export function LiteratureView({
     <div className="literature-workspace">
       <section className="literature-search-card" aria-labelledby="literature-search-title">
         <header className="literature-library-heading">
-          <strong id="literature-search-title">Search and continue this review</strong>
-          <span>New results merge into this project’s existing evidence table.</span>
+          <strong id="literature-search-title">Deep search and continue this review</strong>
+          <span>
+            One search screens relevance, citation authority, recent momentum, and broad recall.
+          </span>
         </header>
         <form
           className="literature-search-form"
@@ -710,16 +830,16 @@ export function LiteratureView({
             className="primary-button"
             disabled={Boolean(busy) || query.trim().length < 2}
           >
-            {busy === 'search'
-              ? 'Searching…'
-              : records.length > 0
-                ? 'Search again'
-                : 'Search papers'}
+            {busy === 'search' ? 'Searching…' : records.length > 0 ? 'Search again' : 'Deep search'}
           </button>
         </form>
         <p className="literature-search-help">
-          <strong>Continual review:</strong> each search is additive. Matching DOI or provider
-          records update in place instead of creating duplicate rows.
+          <strong>Fixed three-layer policy:</strong> Core balances relevance with established
+          citation impact; Rising age-normalizes early attention; Broad preserves recall for human
+          screening. Verified author metrics are a small supporting signal, never a name-based
+          allowlist. Each search is additive and matching identities update in place. A paper’s
+          saved layer comes from its latest matching search, and scores are only comparable within
+          the same search.
         </p>
         {recentSearches.length > 0 && (
           <div className="literature-recent-searches" aria-label="Recent literature searches">
@@ -729,7 +849,7 @@ export function LiteratureView({
                 type="button"
                 key={search.id}
                 disabled={Boolean(busy)}
-                title={`Reuse “${search.query}”${search.fromYear ? ` from ${search.fromYear}` : ''}${search.toYear ? ` through ${search.toYear}` : ''}${search.conflicts.length > 0 ? `; skipped ${literatureConflictSummary(search.conflicts, search.conflictCount)}` : ''}`}
+                title={`Reuse “${search.query}”${search.fromYear ? ` from ${search.fromYear}` : ''}${search.toYear ? ` through ${search.toYear}` : ''}${search.conflicts.length > 0 ? `; skipped ${literatureConflictSummary(search.conflicts, search.conflictCount)}` : ''}${literatureCoverageSummary(search.coverage)}`}
                 onClick={() => {
                   setQuery(search.query);
                   setFromYear(search.fromYear?.toString() ?? '');
@@ -741,6 +861,14 @@ export function LiteratureView({
               </button>
             ))}
           </div>
+        )}
+        {latestSearchCoverage && latestSearchCoverage.degradationReasons.length > 0 && (
+          <p className="literature-coverage-warning" role="status">
+            <strong>Latest search used reduced signal coverage:</strong>{' '}
+            {latestSearchCoverage.degradationReasons.map(formatLabel).join(', ')}. Available:{' '}
+            {latestSearchCoverage.availableSignals.map(formatLabel).join(', ')}. Saved papers and
+            manual review remain available.
+          </p>
         )}
       </section>
 
@@ -768,6 +896,7 @@ export function LiteratureView({
             <span>
               {totalRecords.toLocaleString()} saved in this project
               {totalRecords > records.length ? ` · ${records.length} loaded` : ''}
+              {' · '}layers show each paper’s latest matching search
             </span>
           </div>
           <div className="literature-library-actions">
@@ -844,6 +973,24 @@ export function LiteratureView({
             separate from human review notes.
           </p>
         )}
+        <div className="literature-layer-grid" aria-label="Latest matching search discovery layers">
+          {DISCOVERY_LAYERS.map((layer) => (
+            <button
+              type="button"
+              key={layer.id}
+              className={`literature-layer-card ${layer.id}${tierFilter === layer.id ? ' active' : ''}`}
+              aria-pressed={tierFilter === layer.id}
+              onClick={() => {
+                setTierFilter((current) => (current === layer.id ? 'all' : layer.id));
+                setPage(1);
+              }}
+            >
+              <span>{layer.title}</span>
+              <strong>{layerCounts[layer.id]}</strong>
+              <small>{layer.description}</small>
+            </button>
+          ))}
+        </div>
         <div className="literature-filter-bar">
           <label>
             <span>Filter evidence table</span>
@@ -856,6 +1003,29 @@ export function LiteratureView({
                 setPage(1);
               }}
             />
+          </label>
+          <label>
+            <span>Discovery layer</span>
+            <select
+              aria-label="Discovery layer filter"
+              value={tierFilter}
+              onChange={(event) => {
+                setTierFilter(event.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="all">All discovery layers</option>
+              {DISCOVERY_LAYERS.map((layer) => (
+                <option key={layer.id} value={layer.id}>
+                  {layer.title} ({layerCounts[layer.id]})
+                </option>
+              ))}
+              {layerCounts.unclassified > 0 && (
+                <option value="unclassified">
+                  Imported / unclassified ({layerCounts.unclassified})
+                </option>
+              )}
+            </select>
           </label>
           <label>
             <span>Review status</span>
@@ -887,6 +1057,7 @@ export function LiteratureView({
             selectedId={selectedId}
             textFilter={textFilter}
             statusFilter={statusFilter}
+            tierFilter={tierFilter}
             sortKey={sortKey}
             sortDirection={sortDirection}
             page={page}

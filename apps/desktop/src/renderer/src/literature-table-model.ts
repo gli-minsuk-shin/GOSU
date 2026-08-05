@@ -12,6 +12,7 @@ export type LiteratureSortKey =
   | 'doi'
   | 'type'
   | 'citedBy'
+  | 'importance'
   | 'reviewStatus'
   | 'source';
 
@@ -27,6 +28,11 @@ export interface LiteratureTableRecord {
   doi: string;
   type: string;
   citedBy: number | null;
+  discoveryTier: 'core' | 'rising' | 'broad' | 'unclassified';
+  importanceScore: number | null;
+  discoveryRunId: string | null;
+  discoveryTierRank: number | null;
+  discoveryClassifiedAt: string | null;
   reviewStatus: string;
   source: string;
 }
@@ -34,6 +40,7 @@ export interface LiteratureTableRecord {
 export interface LiteratureTableQuery {
   text: string;
   reviewStatus: string;
+  discoveryTier?: string;
   sortKey: LiteratureSortKey;
   sortDirection: LiteratureSortDirection;
   page: number;
@@ -51,7 +58,45 @@ export interface LiteratureTablePage<RecordType extends LiteratureTableRecord> {
 const compareText = (left: string, right: string) =>
   left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
 
-function sortValue(record: LiteratureTableRecord, key: LiteratureSortKey): string | number {
+const DISCOVERY_TIER_PRIORITY: Readonly<Record<LiteratureTableRecord['discoveryTier'], number>> = {
+  unclassified: 0,
+  broad: 1,
+  rising: 2,
+  core: 3,
+};
+
+function discoveryTimestamp(record: LiteratureTableRecord) {
+  if (!record.discoveryClassifiedAt) return Number.NEGATIVE_INFINITY;
+  const timestamp = Date.parse(record.discoveryClassifiedAt);
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+}
+
+function compareDiscoveryImportance(left: LiteratureTableRecord, right: LiteratureTableRecord) {
+  const leftTimestamp = discoveryTimestamp(left);
+  const rightTimestamp = discoveryTimestamp(right);
+  const classifiedAt =
+    leftTimestamp === rightTimestamp ? 0 : leftTimestamp < rightTimestamp ? -1 : 1;
+  if (classifiedAt !== 0) return classifiedAt;
+
+  const sameSearch = left.discoveryRunId !== null && left.discoveryRunId === right.discoveryRunId;
+  if (!sameSearch) return 0;
+
+  const tier =
+    DISCOVERY_TIER_PRIORITY[left.discoveryTier] - DISCOVERY_TIER_PRIORITY[right.discoveryTier];
+  if (tier !== 0) return tier;
+
+  const leftRank = left.discoveryTierRank;
+  const rightRank = right.discoveryTierRank;
+  if (leftRank === rightRank) return 0;
+  if (leftRank === null) return -1;
+  if (rightRank === null) return 1;
+  return rightRank - leftRank;
+}
+
+function sortValue(
+  record: LiteratureTableRecord,
+  key: Exclude<LiteratureSortKey, 'importance'>,
+): string | number {
   switch (key) {
     case 'authors':
       return record.authors.join(' ');
@@ -100,17 +145,23 @@ export function buildLiteratureTablePage<RecordType extends LiteratureTableRecor
     .filter(
       (record) =>
         matchesText(record, query.text) &&
+        ((query.discoveryTier ?? 'all') === 'all' ||
+          record.discoveryTier === query.discoveryTier) &&
         (query.reviewStatus === 'all' || record.reviewStatus === query.reviewStatus),
     )
     .map((record, index) => ({ record, index }));
 
   filtered.sort((left, right) => {
-    const leftValue = sortValue(left.record, query.sortKey);
-    const rightValue = sortValue(right.record, query.sortKey);
-    const compared =
-      typeof leftValue === 'number' && typeof rightValue === 'number'
+    const compared = (() => {
+      if (query.sortKey === 'importance') {
+        return compareDiscoveryImportance(left.record, right.record);
+      }
+      const leftValue = sortValue(left.record, query.sortKey);
+      const rightValue = sortValue(right.record, query.sortKey);
+      return typeof leftValue === 'number' && typeof rightValue === 'number'
         ? leftValue - rightValue
         : compareText(String(leftValue), String(rightValue));
+    })();
     const directed = query.sortDirection === 'ascending' ? compared : -compared;
     return directed === 0 ? left.index - right.index : directed;
   });
@@ -138,7 +189,9 @@ export function nextLiteratureSort(
     return {
       sortKey: requestedKey,
       sortDirection:
-        requestedKey === 'year' || requestedKey === 'citedBy' ? 'descending' : 'ascending',
+        requestedKey === 'year' || requestedKey === 'citedBy' || requestedKey === 'importance'
+          ? 'descending'
+          : 'ascending',
     };
   }
   return {

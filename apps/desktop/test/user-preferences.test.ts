@@ -57,6 +57,7 @@ describe('local user preferences', () => {
       appearance: 'light',
       textSize: 'large',
       defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+      agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
     });
   });
 
@@ -78,6 +79,7 @@ describe('local user preferences', () => {
       appearance: 'light',
       textSize: 'large',
       defaultBoardTemplate: customBoardTemplate,
+      agentAddOns: { openclaw: 'detect-local', hermes: 'disabled' },
     } as const;
     expect(saveUserPreferences(storage, preferences)).toBe(true);
     expect(loadUserPreferences(storage)).toEqual(preferences);
@@ -104,7 +106,17 @@ describe('local user preferences', () => {
       appearance: 'dark',
       textSize: 'extra-large',
       defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+      agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
     });
+  });
+
+  it('fails closed for unknown add-on preferences while preserving valid choices', () => {
+    expect(
+      parseUserPreferences({
+        ...DEFAULT_USER_PREFERENCES,
+        agentAddOns: { openclaw: 'connect-and-run', hermes: 'detect-local' },
+      }).agentAddOns,
+    ).toEqual({ openclaw: 'disabled', hermes: 'detect-local' });
   });
 
   it('applies validated data attributes to the document root', () => {

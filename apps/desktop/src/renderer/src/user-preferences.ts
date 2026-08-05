@@ -4,6 +4,12 @@ import {
   resolveWorkspaceBoardSettings,
   type WorkspaceBoardSettings,
 } from '../../shared/workspace-contracts';
+import {
+  AGENT_ADD_ON_IDS,
+  isAgentAddOnPreference,
+  type AgentAddOnId,
+  type AgentAddOnPreference,
+} from '../../shared/agent-addon-contracts';
 
 export const APPEARANCE_OPTIONS = ['system', 'dark', 'light'] as const;
 export const TEXT_SIZE_OPTIONS = ['compact', 'default', 'large', 'extra-large'] as const;
@@ -16,6 +22,7 @@ export type UserPreferences = Readonly<{
   appearance: AppearancePreference;
   textSize: TextSizePreference;
   defaultBoardTemplate: WorkspaceBoardSettings;
+  agentAddOns: Readonly<Record<AgentAddOnId, AgentAddOnPreference>>;
 }>;
 
 type PreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>;
@@ -27,6 +34,10 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   appearance: 'system',
   textSize: 'default',
   defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+  agentAddOns: {
+    openclaw: 'disabled',
+    hermes: 'disabled',
+  },
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -42,6 +53,13 @@ export function parseUserPreferences(value: unknown): UserPreferences {
     TEXT_SIZE_OPTIONS.find((option) => option === value.textSize) ??
     DEFAULT_USER_PREFERENCES.textSize;
   const template = WorkspaceBoardSettingsSchema.safeParse(value.defaultBoardTemplate);
+  const storedAddOns = isRecord(value.agentAddOns) ? value.agentAddOns : {};
+  const agentAddOns = Object.fromEntries(
+    AGENT_ADD_ON_IDS.map((id) => [
+      id,
+      isAgentAddOnPreference(storedAddOns[id]) ? storedAddOns[id] : 'disabled',
+    ]),
+  ) as Record<AgentAddOnId, AgentAddOnPreference>;
   return {
     schemaVersion: 1,
     appearance,
@@ -49,6 +67,7 @@ export function parseUserPreferences(value: unknown): UserPreferences {
     defaultBoardTemplate: template.success
       ? template.data
       : resolveWorkspaceBoardSettings(undefined),
+    agentAddOns,
   };
 }
 
@@ -67,6 +86,7 @@ function defaultUserPreferences(): UserPreferences {
   return {
     ...DEFAULT_USER_PREFERENCES,
     defaultBoardTemplate: resolveWorkspaceBoardSettings(undefined),
+    agentAddOns: { ...DEFAULT_USER_PREFERENCES.agentAddOns },
   };
 }
 

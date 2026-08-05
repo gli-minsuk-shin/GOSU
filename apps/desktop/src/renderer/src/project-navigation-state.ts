@@ -6,11 +6,15 @@ export type ProjectNavigationState = Readonly<{
   hiddenGroupExpanded: boolean;
   archivedGroupExpanded: boolean;
   sidebarCollapsed: boolean;
+  sidebarWidth: number;
 }>;
 
 type NavigationStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
 export const PROJECT_NAVIGATION_STORAGE_KEY = 'gosu:project-navigation:v1';
+export const PROJECT_SIDEBAR_MIN_WIDTH = 220;
+export const PROJECT_SIDEBAR_MAX_WIDTH = 440;
+export const PROJECT_SIDEBAR_DEFAULT_WIDTH = 280;
 
 export const DEFAULT_PROJECT_NAVIGATION_STATE: ProjectNavigationState = Object.freeze({
   schemaVersion: 1,
@@ -20,6 +24,7 @@ export const DEFAULT_PROJECT_NAVIGATION_STATE: ProjectNavigationState = Object.f
   hiddenGroupExpanded: false,
   archivedGroupExpanded: false,
   sidebarCollapsed: false,
+  sidebarWidth: PROJECT_SIDEBAR_DEFAULT_WIDTH,
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,6 +36,13 @@ function uniqueStrings(value: unknown) {
   return [...new Set(value.filter((item): item is string => typeof item === 'string'))].slice(
     0,
     500,
+  );
+}
+
+export function clampProjectSidebarWidth(value: unknown) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return PROJECT_SIDEBAR_DEFAULT_WIDTH;
+  return Math.round(
+    Math.min(PROJECT_SIDEBAR_MAX_WIDTH, Math.max(PROJECT_SIDEBAR_MIN_WIDTH, value)),
   );
 }
 
@@ -47,6 +59,7 @@ export function parseProjectNavigationState(value: unknown): ProjectNavigationSt
     archivedGroupExpanded:
       typeof value.archivedGroupExpanded === 'boolean' ? value.archivedGroupExpanded : false,
     sidebarCollapsed: typeof value.sidebarCollapsed === 'boolean' ? value.sidebarCollapsed : false,
+    sidebarWidth: clampProjectSidebarWidth(value.sidebarWidth),
   };
 }
 
@@ -128,6 +141,13 @@ export function showAllProjectsLocally(state: ProjectNavigationState): ProjectNa
 
 export function toggleProjectSidebar(state: ProjectNavigationState): ProjectNavigationState {
   return { ...state, sidebarCollapsed: !state.sidebarCollapsed };
+}
+
+export function setProjectSidebarWidth(
+  state: ProjectNavigationState,
+  sidebarWidth: number,
+): ProjectNavigationState {
+  return { ...state, sidebarWidth: clampProjectSidebarWidth(sidebarWidth) };
 }
 
 function defaultProjectNavigationState(): ProjectNavigationState {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import type {
   CodexCollaborationModeCatalog,
@@ -54,10 +54,13 @@ import {
 import { ProjectChatView, resolveEffectiveCodexModel } from './project-chat-view';
 import {
   activeSessionIdsForProject,
+  loadProjectChatLayoutState,
   projectChatSessionKey,
   resolveProjectChatSessionId,
+  saveProjectChatLayoutState,
   VolatileProjectChatDrafts,
   VolatileProjectChatScrollPositions,
+  VolatileProjectChatUnreadAssistantMessages,
 } from './project-chat-session-state';
 import { RepositoryView } from './repository-view';
 import {
@@ -68,8 +71,11 @@ import {
 import {
   hideProjectLocally,
   loadProjectNavigationState,
+  PROJECT_SIDEBAR_MAX_WIDTH,
+  PROJECT_SIDEBAR_MIN_WIDTH,
   pruneProjectNavigationState,
   saveProjectNavigationState,
+  setProjectSidebarWidth,
   showAllProjectsLocally,
   showProjectLocally,
   toggleProjectSidebar,
@@ -81,6 +87,7 @@ import {
   type GlobalWorkspaceTabId,
   type ProjectWorkspaceTabId,
 } from './project-sidebar';
+import { ResizeHandle } from './resize-handle';
 import { SettingsView, type SettingsCategory } from './settings-view';
 import { SshApprovalCenter } from './ssh-approval-center';
 import {
@@ -163,6 +170,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [projectNavigation, setProjectNavigation] = useState<ProjectNavigationState>(() =>
     loadProjectNavigationState(window.localStorage),
   );
+  const [projectChatLayout, setProjectChatLayout] = useState(() =>
+    loadProjectChatLayoutState(window.localStorage),
+  );
+  const [sidebarResizing, setSidebarResizing] = useState(false);
 
   const [models, setModels] = useState<CodexModel[]>([]);
   const [collaborationModes, setCollaborationModes] = useState<CodexCollaborationModeDescriptor[]>(
@@ -216,6 +227,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     () => new Set(),
   );
   const [chatInFlight, setChatInFlight] = useState<Record<string, boolean>>({});
+  const [chatUnreadAssistantMessageIds, setChatUnreadAssistantMessageIds] = useState<
+    Record<string, string>
+  >({});
   const [applyingChatActionId, setApplyingChatActionId] = useState<string | null>(null);
   const [preferences, setPreferences] = useState(initialPreferences);
   const chatLoadGuard = useRef(new ProjectChatLoadGuard());
@@ -228,6 +242,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const projectChatSessionsRef = useRef(projectChatSessions);
   const chatDraftsRef = useRef(new VolatileProjectChatDrafts());
   const chatScrollPositionsRef = useRef(new VolatileProjectChatScrollPositions());
+  const chatUnreadAssistantMessagesRef = useRef(new VolatileProjectChatUnreadAssistantMessages());
   const visibleChatSshScopeRef = useRef<{ projectId: string; sessionId: string } | null>(null);
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
 
@@ -293,6 +308,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   }, [projectNavigation]);
 
   useEffect(() => {
+    saveProjectChatLayoutState(window.localStorage, projectChatLayout);
+  }, [projectChatLayout]);
+
+  useEffect(() => {
     activeChatSessionIdsRef.current = activeChatSessionIds;
   }, [activeChatSessionIds]);
 
@@ -356,6 +375,17 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     return sessions;
   };
 
+  const updateUnreadAssistantMessage = (sessionKey: string, messageId: string | null) => {
+    setChatUnreadAssistantMessageIds((current) => {
+      if ((current[sessionKey] ?? null) === messageId) return current;
+      if (messageId !== null) return { ...current, [sessionKey]: messageId };
+      if (!(sessionKey in current)) return current;
+      const next = { ...current };
+      delete next[sessionKey];
+      return next;
+    });
+  };
+
   const loadProjectChat = async (projectId: string, requestedSessionId?: string) => {
     if (!projectId) return null;
     let sessions = projectChatSessionsRef.current[projectId] ?? [];
@@ -384,6 +414,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       if (!chatLoadGuard.current.canApply(loadToken)) return null;
       const resolvedSessionId = next.session?.id ?? sessionId;
       const resolvedSessionKey = projectChatSessionKey(projectId, resolvedSessionId);
+      updateUnreadAssistantMessage(
+        resolvedSessionKey,
+        chatUnreadAssistantMessagesRef.current.observe(projectId, resolvedSessionId, next.messages),
+      );
       setChatSnapshots((current) => ({
         ...current,
         [resolvedSessionKey]: mergeProjectChatSnapshot(current[resolvedSessionKey], next),
@@ -509,6 +543,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           return;
         }
         if (event.type === 'turn.completed') {
+          chatUnreadAssistantMessagesRef.current.noteCompletedTurn(
+            event.projectId,
+            event.sessionId,
+            event.turnId,
+          );
           setChatInFlight((current) => ({ ...current, [sessionKey]: false }));
           void Promise.all([
             loadProjectChat(event.projectId, event.sessionId),
@@ -1071,7 +1110,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
 
   return (
     <main
-      className={`desktop-shell${projectNavigation.sidebarCollapsed ? ' sidebar-collapsed' : ''}`}
+      className={`desktop-shell${projectNavigation.sidebarCollapsed ? ' sidebar-collapsed' : ''}${sidebarResizing ? ' sidebar-resizing' : ''}`}
+      style={
+        {
+          '--project-sidebar-width': `${projectNavigation.sidebarWidth}px`,
+        } as CSSProperties
+      }
     >
       <header className="titlebar">
         <ProjectSidebarToggle
@@ -1203,6 +1247,21 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           ready={Boolean(vault)}
         />
       </aside>
+      {!projectNavigation.sidebarCollapsed && (
+        <ResizeHandle
+          className="project-sidebar-resize-handle"
+          label="Resize projects sidebar"
+          value={projectNavigation.sidebarWidth}
+          min={PROJECT_SIDEBAR_MIN_WIDTH}
+          max={PROJECT_SIDEBAR_MAX_WIDTH}
+          onChange={(sidebarWidth) =>
+            updateProjectNavigation(
+              setProjectSidebarWidth(projectNavigationRef.current, sidebarWidth),
+            )
+          }
+          onDraggingChange={setSidebarResizing}
+        />
+      )}
 
       <section
         className={
@@ -1411,6 +1470,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 vault={vault}
                 vaultState={vaultState}
                 sessions={activeProjectSessions}
+                sessionRailWidth={projectChatLayout.sessionRailWidth}
+                onSessionRailWidthChange={(sessionRailWidth) =>
+                  setProjectChatLayout({ schemaVersion: 1, sessionRailWidth })
+                }
                 selectedSessionId={activeProjectChatSessionId}
                 initialDraft={chatDraftsRef.current.read(
                   activeProject.id,
@@ -1423,6 +1486,22 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   activeProject.id,
                   activeProjectChatSessionId,
                 )}
+                unreadAssistantMessageId={
+                  activeProjectChatSessionKey
+                    ? (chatUnreadAssistantMessageIds[activeProjectChatSessionKey] ?? null)
+                    : null
+                }
+                onUnreadAssistantMessageSeen={(assistantMessageId) => {
+                  if (!activeProjectChatSessionId || !activeProjectChatSessionKey) return;
+                  updateUnreadAssistantMessage(
+                    activeProjectChatSessionKey,
+                    chatUnreadAssistantMessagesRef.current.acknowledge(
+                      activeProject.id,
+                      activeProjectChatSessionId,
+                      assistantMessageId,
+                    ),
+                  );
+                }}
                 onScrollTopChange={(scrollTop) =>
                   chatScrollPositionsRef.current.write(
                     activeProject.id,

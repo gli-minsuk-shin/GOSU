@@ -22,6 +22,9 @@ import {
 import {
   LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT,
   type LiteratureAiProvenance,
+  type LiteratureDiscoveryCoverage,
+  type LiteratureDiscoveryTier,
+  type LiteratureRankingSignals,
 } from '../../src/shared/literature-contracts';
 import type {
   ProjectRecord,
@@ -560,6 +563,314 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
   reopened.close();
 }
 
+function verifySparseSemanticScholarMerge(fixedTimestamp: string) {
+  const database = new LocalDatabase();
+  database.open();
+  const projectId = randomUUID();
+  const doi = '10.1000/gosu.sparse-semantic';
+  const title = 'Durable provider metadata';
+  const authors = ['Ada Researcher', 'Grace Scientist'];
+  const originalFingerprint = literatureFingerprint(title, authors, 2018);
+  const original = database.upsertLiteratureCandidates(
+    projectId,
+    [
+      {
+        provider: 'crossref',
+        providerId: doi,
+        doi,
+        fingerprint: originalFingerprint,
+        title,
+        authors,
+        containerTitle: 'Journal of Durable Metadata',
+        publishedYear: 2018,
+        topics: ['durable metadata', 'research systems'],
+        workType: 'journal-article',
+        citationCount: 72,
+        sourceUrl: `https://doi.org/${doi}`,
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(original.imported === 1, 'sparse_semantic_fixture_was_not_inserted');
+  const inserted = database.listLiteratureRecords(projectId)[0]!;
+  const manual = database.updateLiteratureManualAnnotations({
+    projectId,
+    recordId: inserted.id,
+    expectedVersion: inserted.version,
+    expectedAnnotationVersion: inserted.annotationVersion,
+    manualTopics: ['human verified'],
+    manualSummary: 'Preserve this human review.',
+    manualRelevance: 'Directly relevant',
+    reviewStatus: 'included',
+    updatedAt: fixedTimestamp,
+  })!;
+  const provenance: LiteratureAiProvenance = {
+    invocation: {
+      schemaVersion: 1,
+      invocationId: randomUUID(),
+      providerId: 'codex',
+      requestedModelId: null,
+      resolvedModelId: 'fixture-model',
+      catalogVersion: 'fixture-catalog',
+      reasoningOptionId: 'high',
+      startedAt: fixedTimestamp,
+    },
+    inputSha256: 'c'.repeat(64),
+    generatedAt: fixedTimestamp,
+    metadataOnly: true,
+  };
+  const annotated = database.applyLiteratureAiAnnotations(
+    projectId,
+    [
+      {
+        recordId: manual.id,
+        expectedVersion: manual.version,
+        expectedAnnotationVersion: manual.annotationVersion,
+        topics: ['provider metadata'],
+        summary: 'AI summary before provider promotion',
+        relevance: 'high',
+        studyType: '',
+        limitations: [],
+        provenance,
+      },
+    ],
+    fixedTimestamp,
+  )![0]!;
+  const sparseSemanticCandidate = {
+    provider: 'semantic-scholar' as const,
+    providerId: 'semantic-sparse-fixture',
+    doi,
+    fingerprint: literatureFingerprint(title, [], undefined),
+    title,
+    authors: [],
+    topics: [],
+  };
+
+  const promotion = database.upsertLiteratureCandidates(
+    projectId,
+    [sparseSemanticCandidate],
+    fixedTimestamp,
+  );
+  const promoted = database.listLiteratureRecords(projectId)[0]!;
+  invariant(
+    promotion.updated === 1 &&
+      promoted.provider === 'semantic-scholar' &&
+      promoted.providerRecordId === 'semantic-sparse-fixture' &&
+      promoted.authors.join('|') === authors.join('|') &&
+      promoted.containerTitle === 'Journal of Durable Metadata' &&
+      promoted.publishedYear === 2018 &&
+      promoted.sourceTopics.join('|') === 'durable metadata|research systems' &&
+      promoted.workType === 'journal-article' &&
+      promoted.citationCount === 72 &&
+      promoted.sourceUrl === `https://doi.org/${doi}` &&
+      promoted.fingerprint === originalFingerprint &&
+      promoted.manualAnnotations.summary === 'Preserve this human review.' &&
+      promoted.reviewStatus === 'included' &&
+      promoted.aiAnnotations === null &&
+      promoted.annotationVersion === annotated.annotationVersion + 1,
+    'sparse_semantic_provider_promotion_erased_known_metadata',
+  );
+
+  const refreshedAi = database.applyLiteratureAiAnnotations(
+    projectId,
+    [
+      {
+        recordId: promoted.id,
+        expectedVersion: promoted.version,
+        expectedAnnotationVersion: promoted.annotationVersion,
+        topics: ['preserved metadata'],
+        summary: 'AI summary after provider promotion',
+        relevance: 'high',
+        studyType: '',
+        limitations: [],
+        provenance,
+      },
+    ],
+    fixedTimestamp,
+  )![0]!;
+  const noOp = database.upsertLiteratureCandidates(
+    projectId,
+    [sparseSemanticCandidate],
+    fixedTimestamp,
+  );
+  const afterNoOp = database.listLiteratureRecords(projectId)[0]!;
+  invariant(
+    noOp.skipped === 1 &&
+      afterNoOp.version === refreshedAi.version &&
+      afterNoOp.annotationVersion === refreshedAi.annotationVersion &&
+      afterNoOp.aiAnnotations?.summary === 'AI summary after provider promotion',
+    'repeated_sparse_semantic_refresh_invalidated_unchanged_ai',
+  );
+
+  const richerTitle = 'Richer Semantic Scholar metadata';
+  const richerAuthors = ['Ada Researcher', 'Katherine Scholar'];
+  const richer = database.upsertLiteratureCandidates(
+    projectId,
+    [
+      {
+        provider: 'semantic-scholar',
+        providerId: 'semantic-sparse-fixture',
+        doi,
+        fingerprint: literatureFingerprint(richerTitle, richerAuthors, 2024),
+        title: richerTitle,
+        authors: richerAuthors,
+        containerTitle: 'Semantic Systems Conference',
+        publishedYear: 2024,
+        topics: ['foundation models'],
+        workType: 'Conference',
+        citationCount: 99,
+        sourceUrl: 'https://www.semanticscholar.org/paper/semantic-sparse-fixture',
+      },
+    ],
+    fixedTimestamp,
+  );
+  const enriched = database.listLiteratureRecords(projectId)[0]!;
+  invariant(
+    richer.updated === 1 &&
+      enriched.title === richerTitle &&
+      enriched.authors.join('|') === richerAuthors.join('|') &&
+      enriched.containerTitle === 'Semantic Systems Conference' &&
+      enriched.publishedYear === 2024 &&
+      enriched.sourceTopics.join('|') === 'foundation models' &&
+      enriched.workType === 'Conference' &&
+      enriched.citationCount === 99 &&
+      enriched.fingerprint === literatureFingerprint(richerTitle, richerAuthors, 2024) &&
+      enriched.manualAnnotations.summary === 'Preserve this human review.' &&
+      enriched.aiAnnotations === null,
+    'explicit_richer_semantic_metadata_was_not_applied',
+  );
+  database.close();
+
+  const reopened = new LocalDatabase();
+  reopened.open();
+  const durable = reopened.listLiteratureRecords(projectId)[0];
+  invariant(
+    durable?.provider === 'semantic-scholar' &&
+      durable.title === richerTitle &&
+      durable.manualAnnotations.summary === 'Preserve this human review.',
+    'semantic_metadata_merge_was_not_durable',
+  );
+  reopened.close();
+}
+
+function verifyLiteratureDiscoveryPersistence(fixedTimestamp: string) {
+  const database = new LocalDatabase();
+  database.open();
+  const projectId = randomUUID();
+  const runId = randomUUID();
+  const query = 'deep literature discovery';
+  invariant(
+    database.beginLiteratureSearch({
+      schemaVersion: 1,
+      id: runId,
+      projectId,
+      provider: 'balanced',
+      policyId: 'balanced-three-layer',
+      policyVersion: 1,
+      query,
+      fromYear: null,
+      toYear: null,
+      requestedLimit: 3,
+      status: 'running',
+      foundCount: 0,
+      retrievedCount: 0,
+      selectedCount: 0,
+      tierCounts: { core: 0, rising: 0, broad: 0 },
+      newCount: 0,
+      updatedCount: 0,
+      unchangedCount: 0,
+      conflictCount: 0,
+      conflicts: [],
+      createdAt: fixedTimestamp,
+      completedAt: null,
+    }),
+    'literature_discovery_search_start_failed',
+  );
+  const discovery = (
+    tier: LiteratureDiscoveryTier,
+    tierRank: number,
+    score: number,
+  ): LiteratureRankingSignals => ({
+    tier,
+    matchedLayers: tier === 'broad' ? ['broad'] : [tier, 'broad'],
+    tierRank,
+    overallScore: score,
+    relevanceScore: score,
+    authorityScore: tier === 'core' ? 0.9 : 0.3,
+    momentumScore: tier === 'rising' ? 0.9 : 0.2,
+    citationVelocityProxy: tier === 'rising' ? 12.5 : 1,
+    influentialCitationCount: tier === 'core' ? 100 : 2,
+    maxAuthorHIndex: tier === 'core' ? 80 : 10,
+    reasons:
+      tier === 'core'
+        ? ['high-query-relevance', 'high-citation-impact']
+        : tier === 'rising'
+          ? ['recent-publication', 'estimated-citation-momentum']
+          : ['broad-recall'],
+    signalSources: ['semantic-scholar'],
+  });
+  const candidates = (['core', 'rising', 'broad'] as const).map((tier, index) => ({
+    provider: 'semantic-scholar' as const,
+    providerId: `discovery-${tier}`,
+    doi: `10.1000/gosu.discovery.${tier}`,
+    fingerprint: literatureFingerprint(`Discovery ${tier}`, ['Discovery Author'], 2026 - index),
+    title: `Discovery ${tier}`,
+    authors: ['Discovery Author'],
+    publishedYear: 2026 - index,
+    topics: ['discovery'],
+    citationCount: 100 - index,
+    discovery: discovery(tier, 1, 0.9 - index * 0.1),
+  }));
+  const coverage: LiteratureDiscoveryCoverage = {
+    source: 'semantic-scholar',
+    availableSignals: ['relevance', 'citation-authority', 'recent-momentum'],
+    degradationReasons: ['author-metrics-unavailable'],
+  };
+  const receipt = database.completeLiteratureSearch(projectId, runId, candidates, fixedTimestamp, {
+    retrievedCount: 137,
+    selectedCount: 3,
+    tierCounts: { core: 1, rising: 1, broad: 1 },
+    coverage,
+  });
+  invariant(
+    receipt.retrievedCount === 137 &&
+      receipt.selectedCount === 3 &&
+      receipt.tierCounts.core === 1 &&
+      receipt.tierCounts.rising === 1 &&
+      receipt.tierCounts.broad === 1 &&
+      receipt.run.coverage?.source === 'semantic-scholar' &&
+      receipt.run.coverage.degradationReasons[0] === 'author-metrics-unavailable',
+    'literature_discovery_counts_were_not_persisted',
+  );
+  const records = database.listLiteratureRecords(projectId);
+  invariant(
+    records.every(
+      (record) =>
+        record.discovery?.searchRunId === runId &&
+        record.discovery.query === query &&
+        record.discovery.policyId === 'balanced-three-layer',
+    ) && new Set(records.map((record) => record.discovery?.tier)).size === 3,
+    'literature_discovery_provenance_was_not_persisted',
+  );
+  database.close();
+
+  const reopened = new LocalDatabase();
+  reopened.open();
+  const [savedRun] = reopened.listLiteratureSearchRuns(projectId);
+  invariant(
+    savedRun?.retrievedCount === 137 &&
+      savedRun.selectedCount === 3 &&
+      savedRun.tierCounts?.core === 1 &&
+      savedRun.coverage?.availableSignals.includes('citation-authority') === true &&
+      savedRun.coverage.degradationReasons.includes('author-metrics-unavailable') &&
+      reopened
+        .listLiteratureRecords(projectId)
+        .every((record) => record.discovery !== undefined && record.discovery !== null),
+    'literature_discovery_provenance_was_not_durable',
+  );
+  reopened.close();
+}
+
 function verifyLiteratureBoundsAndIdentity(fixedTimestamp: string) {
   const database = new LocalDatabase();
   database.open();
@@ -616,6 +927,9 @@ function verifyLiteratureBoundsAndIdentity(fixedTimestamp: string) {
         updatedCount: 0,
         unchangedCount: 0,
         conflictCount: 0,
+        retrievedCount: 0,
+        selectedCount: 0,
+        tierCounts: { core: 0, rising: 0, broad: 0 },
         conflicts: [],
         createdAt: fixedTimestamp,
         completedAt: null,
@@ -649,6 +963,9 @@ function verifyLiteratureBoundsAndIdentity(fixedTimestamp: string) {
         updatedCount: 0,
         unchangedCount: 0,
         conflictCount: 0,
+        retrievedCount: 0,
+        selectedCount: 0,
+        tierCounts: { core: 0, rising: 0, broad: 0 },
         conflicts: [],
         completedAt: null,
       }),
@@ -1015,6 +1332,7 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
   app.setPath('userData', legacyUserData);
   try {
     const projectId = randomUUID();
+    const legacySearchRunId = randomUUID();
     const bootstrap = new LocalDatabase();
     bootstrap.open();
     bootstrap.upsertLiteratureCandidates(
@@ -1069,11 +1387,47 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
         raw
           .prepare('delete from local_schema_migrations where id=?')
           .run('literature-weak-fingerprint-v1');
+        raw
+          .prepare('delete from local_schema_migrations where id=?')
+          .run('literature-balanced-discovery-v1');
+        raw
+          .prepare('delete from local_schema_migrations where id=?')
+          .run('literature-discovery-coverage-v1');
         raw.exec(`
           drop index literature_record_weak_fingerprint_identity;
           drop index literature_records_by_fingerprint;
           create unique index literature_record_fingerprint_identity
             on literature_records(project_id,fingerprint);
+          alter table literature_records drop column current_discovery_json;
+          alter table literature_search_runs drop column policy_id;
+          alter table literature_search_runs drop column policy_version;
+          alter table literature_search_runs drop column retrieved_count;
+          alter table literature_search_runs drop column selected_count;
+          alter table literature_search_runs drop column core_count;
+          alter table literature_search_runs drop column rising_count;
+          alter table literature_search_runs drop column broad_count;
+          alter table literature_search_runs drop column discovery_coverage_json;
+          alter table literature_search_hits drop column discovery_tier;
+          alter table literature_search_hits drop column tier_rank;
+          alter table literature_search_hits drop column overall_score;
+          alter table literature_search_hits drop column ranking_signals_json;
+          drop table literature_search_conflicts;
+          create table literature_search_conflicts (
+            search_run_id text not null references literature_search_runs(id) on delete cascade,
+            ordinal integer not null check (ordinal between 1 and 50),
+            provider text not null check (provider='crossref'),
+            provider_record_id text check (
+              provider_record_id is null or length(provider_record_id) between 1 and 2048
+            ),
+            doi text check (doi is null or length(doi) between 1 and 512),
+            fingerprint text not null check (length(fingerprint)=64),
+            title text not null check (length(title) between 1 and 2000),
+            authors_json text not null check (length(authors_json) <= 32768),
+            published_year integer check (
+              published_year is null or published_year between 1000 and 3000
+            ),
+            primary key(search_run_id,ordinal)
+          );
           alter table literature_search_runs drop column conflict_count;
           alter table literature_records rename column manual_relevance to manual_relevance_v2;
           alter table literature_records add column manual_relevance text check (
@@ -1082,6 +1436,20 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
           update literature_records set manual_relevance=manual_relevance_v2;
           alter table literature_records drop column manual_relevance_v2;
         `);
+        raw
+          .prepare(
+            `insert into literature_search_runs(
+               id,schema_version,project_id,provider,query,requested_limit,from_year,to_year,status,
+               new_count,updated_count,unchanged_count,created_at,completed_at
+             ) values(?,1,?,'crossref',?,25,null,null,'complete',1,0,0,?,?)`,
+          )
+          .run(
+            legacySearchRunId,
+            projectId,
+            'legacy completed discovery',
+            fixedTimestamp,
+            fixedTimestamp,
+          );
       })();
     } finally {
       raw.close();
@@ -1110,6 +1478,15 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
       expanded?.manualAnnotations.relevance === expandedValue,
       'migrated_literature_relevance_limit_was_not_applied',
     );
+    const migratedLegacyRun = migrated
+      .listLiteratureSearchRuns(projectId)
+      .find(({ id }) => id === legacySearchRunId);
+    invariant(
+      migratedLegacyRun?.retrievedCount === 1 &&
+        migratedLegacyRun.selectedCount === 1 &&
+        migratedLegacyRun.tierCounts === undefined,
+      'legacy_literature_search_counts_were_not_backfilled_safely',
+    );
     migrated.close();
 
     const inspected = new Database(join(legacyUserData, 'gosu.db'));
@@ -1119,12 +1496,20 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
       const searchColumns = inspected.pragma('table_info(literature_search_runs)') as Array<{
         name: string;
       }>;
+      const hitColumns = inspected.pragma('table_info(literature_search_hits)') as Array<{
+        name: string;
+      }>;
       const indexes = inspected.pragma('index_list(literature_records)') as Array<{
         name: string;
         unique: number;
       }>;
       const table = inspected
         .prepare("select sql from sqlite_master where type='table' and name='literature_records'")
+        .get() as { sql: string };
+      const conflictTable = inspected
+        .prepare(
+          "select sql from sqlite_master where type='table' and name='literature_search_conflicts'",
+        )
         .get() as { sql: string };
       invariant(
         columns
@@ -1142,6 +1527,25 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
       invariant(
         searchColumns.some((column) => column.name === 'conflict_count'),
         'literature_search_conflict_count_was_not_migrated',
+      );
+      invariant(
+        columns.some((column) => column.name === 'current_discovery_json') &&
+          [
+            'policy_id',
+            'policy_version',
+            'retrieved_count',
+            'selected_count',
+            'core_count',
+            'rising_count',
+            'broad_count',
+            'discovery_coverage_json',
+          ].every((name) => searchColumns.some((column) => column.name === name)) &&
+          ['discovery_tier', 'tier_rank', 'overall_score', 'ranking_signals_json'].every((name) =>
+            hitColumns.some((column) => column.name === name),
+          ) &&
+          /provider\s+text\s+not\s+null\s+check/iu.test(conflictTable.sql) &&
+          conflictTable.sql.includes("'semantic-scholar'"),
+        'literature_discovery_schema_was_not_migrated',
       );
       invariant(
         !indexes.some((index) => index.name === 'literature_record_fingerprint_identity') &&
@@ -2607,6 +3011,8 @@ void app.whenReady().then(async () => {
     verifyLegacyProfileMigration(temporaryUserData, fixedTimestamp);
     verifyLiteratureRelevanceMigration(temporaryUserData, fixedTimestamp);
     verifyLiteraturePersistence(fixedTimestamp);
+    verifySparseSemanticScholarMerge(fixedTimestamp);
+    verifyLiteratureDiscoveryPersistence(fixedTimestamp);
     verifyLiteratureBoundsAndIdentity(fixedTimestamp);
 
     process.stdout.write('local SQLCipher workspace smoke test passed\n');

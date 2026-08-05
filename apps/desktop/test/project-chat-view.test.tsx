@@ -10,12 +10,17 @@ import {
   resolveInitialProjectChatScrollTop,
   resolveLatestMessageScrollTop,
   resolveProjectChatScrollIntent,
+  resolveUnreadAssistantMessageId,
   shouldInitializeProjectChatScroll,
   shouldPersistProjectChatScrollPosition,
   shouldAcceptPdfPickerResult,
 } from '../src/renderer/src/project-chat-view';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
 import { describeError } from '../src/renderer/src/ui-primitives';
+import {
+  isProjectChatNearBottom,
+  resolveProjectChatArrival,
+} from '../src/renderer/src/project-chat-scroll';
 
 const project = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -110,6 +115,83 @@ describe('advanced Project Chat controls', () => {
 
     expect(transcriptRule).toBeDefined();
     expect(transcriptRule).not.toContain('scroll-behavior: smooth');
+  });
+
+  it('shows latest controls only after the reader leaves the transcript bottom threshold', () => {
+    expect(isProjectChatNearBottom(900, 1_600, 600)).toBe(false);
+    expect(isProjectChatNearBottom(910, 1_600, 600)).toBe(true);
+    expect(isProjectChatNearBottom(1_000, 1_600, 600)).toBe(true);
+    expect(isProjectChatNearBottom(0, 400, 600)).toBe(true);
+  });
+
+  it('preserves a reader position and announces assistant arrivals away from the bottom', () => {
+    expect(
+      resolveProjectChatArrival({
+        nearBottom: false,
+        latestRole: 'assistant',
+        latestMessageIdChanged: true,
+        latestContentChanged: true,
+      }),
+    ).toEqual({ intent: 'none', announceNewAssistantMessage: true });
+
+    expect(
+      resolveProjectChatArrival({
+        nearBottom: false,
+        latestRole: 'assistant',
+        latestMessageIdChanged: false,
+        latestContentChanged: true,
+      }),
+    ).toEqual({ intent: 'none', announceNewAssistantMessage: true });
+  });
+
+  it('follows assistant output only when the reader was already near the bottom', () => {
+    expect(
+      resolveProjectChatArrival({
+        nearBottom: true,
+        latestRole: 'assistant',
+        latestMessageIdChanged: true,
+        latestContentChanged: true,
+      }),
+    ).toEqual({ intent: 'latest-start', announceNewAssistantMessage: false });
+
+    expect(
+      resolveProjectChatArrival({
+        nearBottom: true,
+        latestRole: 'assistant',
+        latestMessageIdChanged: false,
+        latestContentChanged: true,
+      }),
+    ).toEqual({ intent: 'bottom', announceNewAssistantMessage: false });
+  });
+
+  it("does not announce the reader's own message or unchanged content as a new response", () => {
+    expect(
+      resolveProjectChatArrival({
+        nearBottom: false,
+        latestRole: 'user',
+        latestMessageIdChanged: true,
+        latestContentChanged: true,
+      }),
+    ).toEqual({ intent: 'none', announceNewAssistantMessage: false });
+    expect(
+      resolveProjectChatArrival({
+        nearBottom: false,
+        latestRole: 'assistant',
+        latestMessageIdChanged: false,
+        latestContentChanged: false,
+      }),
+    ).toEqual({ intent: 'none', announceNewAssistantMessage: false });
+  });
+
+  it('targets the unread assistant response even when a user message follows it', () => {
+    const messages = [
+      { id: 'assistant-unread', role: 'assistant' },
+      { id: 'user-later', role: 'user' },
+    ] as const;
+
+    expect(resolveUnreadAssistantMessageId(messages, 'assistant-unread')).toBe('assistant-unread');
+    expect(resolveUnreadAssistantMessageId(messages, 'user-later')).toBeNull();
+    expect(resolveUnreadAssistantMessageId(messages, 'missing-assistant')).toBeNull();
   });
 
   it('does not save a loading placeholder as a real session position', () => {
