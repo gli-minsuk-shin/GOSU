@@ -125,6 +125,7 @@ class MemoryLiteratureStorage implements LiteratureStorage {
       newCount: candidates.length,
       updatedCount: 0,
       unchangedCount: 0,
+      conflictCount: 0,
     };
   }
 
@@ -336,6 +337,7 @@ describe('LiteratureService', () => {
       newCount: 1,
       updatedCount: 0,
       unchangedCount: 0,
+      conflictCount: 0,
     });
     expect(result.run).toMatchObject({
       projectId: PROJECT_ID,

@@ -154,8 +154,8 @@ export function normalizeDoi(value: string | null | undefined): string | null {
 
 export const normalizeLiteratureDoi = normalizeDoi;
 
-// DOI is a separate, higher-priority database identity. The fingerprint deliberately
-// matches the provider fallback identity: normalized title + first author + year.
+// DOI and same-provider record IDs are strong identities. This deliberately coarse
+// fingerprint is only a weak fallback for records that do not yet have either one.
 export function literatureFingerprint(input: LiteratureFingerprintInput): string {
   const canonical = [input.title, input.authors?.[0] ?? '', input.publishedYear?.toString() ?? '']
     .join('\u001f')

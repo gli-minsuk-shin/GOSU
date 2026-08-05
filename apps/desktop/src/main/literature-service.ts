@@ -134,6 +134,7 @@ export interface LiteratureStorage {
     newCount: number;
     updatedCount: number;
     unchangedCount: number;
+    conflictCount: number;
     run: LiteratureSearchRun;
   }>;
   failLiteratureSearch(
@@ -249,6 +250,8 @@ export class LiteratureService {
       newCount: 0,
       updatedCount: 0,
       unchangedCount: 0,
+      conflictCount: 0,
+      conflicts: [],
       createdAt,
       completedAt: null,
     });

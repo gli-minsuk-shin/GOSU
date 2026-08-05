@@ -10,6 +10,7 @@ import type {
   LiteratureLibrary,
   LiteratureOrganizeReceipt,
   LiteratureRecord,
+  LiteratureSearchConflict,
   LiteratureSearchInput,
   LiteratureSearchReceipt,
   LiteratureSearchRun,
@@ -18,6 +19,7 @@ import type {
   OrganizeLiteratureInput,
   UpdateLiteratureAnnotationsInput,
 } from '../../shared/literature-contracts';
+import { LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW } from '../../shared/literature-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import {
   buildLiteratureTablePage,
@@ -71,7 +73,7 @@ function literatureErrorMessage(error: unknown) {
     literature_record_limit_reached:
       'This project already has 500 active papers. Remove a paper before adding more; this operation changed nothing.',
     literature_identity_conflict:
-      'The DOI, provider ID, and metadata fingerprint point to different saved papers. GOSU changed nothing so you can review the conflict safely.',
+      'The available paper identities point to different saved records. GOSU changed nothing so you can review the conflict safely.',
     literature_import_invalid:
       'That file could not be imported. Use a GOSU JSON or CSV export, or valid BibTeX.',
     literature_import_too_large:
@@ -93,6 +95,38 @@ function literatureErrorMessage(error: unknown) {
     messages[code] ??
     'The literature operation could not be completed. Saved records were not removed.'
   );
+}
+
+export function literatureSearchNotice(result: LiteratureSearchReceipt) {
+  const summary = `Search complete: ${result.foundCount} found, ${result.newCount} added, ${result.updatedCount} updated, ${result.unchangedCount} unchanged.`;
+  if (result.conflictCount === 0) return summary;
+  const conflictSummary = literatureConflictSummary(result.run.conflicts, result.conflictCount);
+  const details = conflictSummary.length > 0 ? ` Skipped: ${conflictSummary}.` : '';
+  return `${summary} ${result.conflictCount} ambiguous ${result.conflictCount === 1 ? 'result was' : 'results were'} skipped without changing saved papers.${details}`;
+}
+
+function literatureConflictSummary(
+  conflicts: readonly LiteratureSearchConflict[],
+  conflictCount: number,
+) {
+  const identifiers = conflicts
+    .slice(0, LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW)
+    .map(literatureConflictIdentifier);
+  if (identifiers.length === 0) return '';
+  const omitted = Math.max(0, conflictCount - identifiers.length);
+  return `${identifiers.join('; ')}${omitted > 0 ? `; +${omitted} more` : ''}`;
+}
+
+function literatureConflictIdentifier(conflict: LiteratureSearchConflict) {
+  const identities = [
+    conflict.doi ? `DOI ${conflict.doi}` : '',
+    conflict.providerRecordId && conflict.providerRecordId !== conflict.doi
+      ? `Crossref ${conflict.providerRecordId}`
+      : '',
+  ].filter(Boolean);
+  return identities.length > 0
+    ? identities.join(' / ')
+    : `“${conflict.title.slice(0, 120)}${conflict.title.length > 120 ? '…' : ''}”`;
 }
 
 function formatLabel(value: string) {
@@ -630,7 +664,7 @@ export function LiteratureView({
               });
               await refresh();
               setPage(1);
-              return `Search complete: ${result.foundCount} found, ${result.newCount} added, ${result.updatedCount} updated, ${result.unchangedCount} unchanged.`;
+              return literatureSearchNotice(result);
             });
           }}
         >
@@ -695,7 +729,7 @@ export function LiteratureView({
                 type="button"
                 key={search.id}
                 disabled={Boolean(busy)}
-                title={`Reuse “${search.query}”${search.fromYear ? ` from ${search.fromYear}` : ''}${search.toYear ? ` through ${search.toYear}` : ''}`}
+                title={`Reuse “${search.query}”${search.fromYear ? ` from ${search.fromYear}` : ''}${search.toYear ? ` through ${search.toYear}` : ''}${search.conflicts.length > 0 ? `; skipped ${literatureConflictSummary(search.conflicts, search.conflictCount)}` : ''}`}
                 onClick={() => {
                   setQuery(search.query);
                   setFromYear(search.fromYear?.toString() ?? '');
@@ -703,6 +737,7 @@ export function LiteratureView({
                 }}
               >
                 {search.query}
+                {search.conflictCount > 0 ? ` · ${search.conflictCount} skipped` : ''}
               </button>
             ))}
           </div>
