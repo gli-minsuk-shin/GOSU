@@ -232,13 +232,18 @@ describe('folder-style project sidebar', () => {
     expect(html).toContain('Restore');
   });
 
-  it('keeps Connections, Local notes, and Settings as global navigation', () => {
+  it('keeps Connections and Settings global while Research Notes stays project-scoped', () => {
     const html = renderSidebar();
+    const projectNotesPosition = html.indexOf('Research Notes');
+    const workspaceNavigationPosition = html.indexOf('<small>Workspace</small>');
 
     expect(html).toContain('Workspace');
     expect(html).toContain('Connections');
-    expect(html).toContain('Local notes');
+    expect(html).toContain('Research Notes');
     expect(html).toContain('Settings');
+    expect(html.match(/Research Notes/gu)).toHaveLength(1);
+    expect(projectNotesPosition).toBeGreaterThan(-1);
+    expect(projectNotesPosition).toBeLessThan(workspaceNavigationPosition);
   });
 
   it('does not render project children while the active group is minimized', () => {
@@ -253,12 +258,13 @@ describe('folder-style project sidebar', () => {
     expect(html).toContain('Projects');
     expect(html).not.toContain('Active Alpha');
     expect(html).not.toContain('Project chat');
+    expect(html).not.toContain('Research Notes');
   });
 
-  it('marks only a selected global destination active when settings are closed', () => {
+  it('marks the selected project Research Notes destination active', () => {
     const html = renderSidebar({ activeTab: 'notes' });
 
     expect(html).toContain('aria-current="page"');
-    expect(html).toContain('Local notes');
+    expect(html).toContain('Research Notes');
   });
 });

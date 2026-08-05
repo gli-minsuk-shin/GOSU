@@ -14,6 +14,7 @@ import {
   markdownMathSanitizeAttributes,
   remarkBoundedMath,
 } from './markdown-math-policy';
+import type { ReadVaultAttachmentInput, VaultAttachment } from '../../shared/vault-contracts';
 
 const WIKI_LINK_PROTOCOL = 'gosu-wiki:';
 const WIKI_EMBED_PROTOCOL = 'gosu-embed:';
@@ -35,6 +36,7 @@ type MarkdownDocumentProps = {
   vaultFiles: readonly string[];
   onOpenNote: (path: string) => void;
   loadVaultImages?: boolean;
+  readAttachment?: (input: ReadVaultAttachmentInput) => Promise<VaultAttachment>;
 };
 
 export function MarkdownDocument({
@@ -43,6 +45,7 @@ export function MarkdownDocument({
   vaultFiles,
   onOpenNote,
   loadVaultImages = true,
+  readAttachment,
 }: MarkdownDocumentProps) {
   const frontmatter = useMemo(() => extractFrontmatter(source), [source]);
   const components = useMemo<Components>(
@@ -64,10 +67,11 @@ export function MarkdownDocument({
           alt={alt}
           title={title}
           loadVaultImages={loadVaultImages}
+          {...(readAttachment ? { readAttachment } : {})}
         />
       ),
     }),
-    [loadVaultImages, notePath, onOpenNote, vaultFiles],
+    [loadVaultImages, notePath, onOpenNote, readAttachment, vaultFiles],
   );
 
   return (
@@ -159,12 +163,14 @@ function MarkdownImage({
   alt,
   title,
   loadVaultImages,
+  readAttachment,
 }: {
   notePath: string;
   source: string | undefined;
   alt: string | undefined;
   title: string | undefined;
   loadVaultImages: boolean;
+  readAttachment?: (input: ReadVaultAttachmentInput) => Promise<VaultAttachment>;
 }) {
   const attachmentSource = decodeAttachmentSource(source);
   const [state, setState] = useState<
@@ -181,8 +187,11 @@ function MarkdownImage({
     }
     let active = true;
     setState({ status: 'loading' });
-    void window.gosu.vault
-      .readAttachment({ notePath, source: attachmentSource })
+    if (!readAttachment) {
+      setState({ status: 'blocked' });
+      return;
+    }
+    void readAttachment({ notePath, source: attachmentSource })
       .then((attachment) => {
         if (!active) return;
         setState({
@@ -197,7 +206,7 @@ function MarkdownImage({
     return () => {
       active = false;
     };
-  }, [attachmentSource, loadVaultImages, notePath]);
+  }, [attachmentSource, loadVaultImages, notePath, readAttachment]);
 
   const label = alt?.trim() || attachmentSource || 'Markdown image';
   if (state.status !== 'ready') {

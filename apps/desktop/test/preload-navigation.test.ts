@@ -33,9 +33,6 @@ type NavigationApi = {
     onOpenSettings: (listener: () => void) => () => void;
     onToggleSidebar: (listener: () => void) => () => void;
   };
-  vault: {
-    current: () => Promise<unknown>;
-  };
   agentAddOns: {
     status: (ids: readonly AgentAddOnId[]) => Promise<unknown>;
   };
@@ -114,12 +111,8 @@ describe('preload app navigation bridge', () => {
     );
   });
 
-  it('exposes the authoritative current Vault through a fixed IPC channel', async () => {
-    const selection = { id: 'a'.repeat(64), name: 'Notes', root: '/fixture', files: [] };
-    electron.ipcRenderer.invoke.mockResolvedValueOnce(selection);
-
-    await expect(api.vault.current()).resolves.toEqual(selection);
-    expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith('gosu:vault:current');
+  it('does not expose a Vault-wide filesystem bridge to the Renderer', () => {
+    expect('vault' in api).toBe(false);
   });
 
   it('exposes add-on detection through a fixed read-only status channel', async () => {

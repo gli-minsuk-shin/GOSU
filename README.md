@@ -16,7 +16,8 @@ GOSU brings the research loop into one workspace:
 - define a measurable objective and run bounded experiments on a Linux runner;
 - stream metrics without uploading raw datasets, logs, or artifacts to the sync service;
 - write LaTeX, track evidence, review revisions, and export a pinned snapshot to Overleaf;
-- connect GitHub, Zotero, and a read-only selection from an Obsidian vault;
+- connect GitHub and Zotero, and keep a project-scoped Research Notes workspace inside a selected
+  Obsidian Vault;
 - use Codex through a local provider adapter whose model catalog is discovered at runtime; and
 - turn an approved manuscript revision into an editable, source-linked lecture draft.
 
@@ -58,7 +59,7 @@ but it is not yet a deployed end-to-end product:
   only; the remote Runner live bridge is not connected yet;
 - Project Chat uses the local Codex App Server with runtime-discovered model, reasoning, and native
   harness catalogs. Its project-scoped read tools can inspect reviewed Board, Objective, and
-  explicitly granted Local Notes context without exposing raw filesystem paths;
+  explicitly granted Research Notes context without exposing raw filesystem paths;
 - Connections can safely parse a narrow pasted SSH command into a local profile without executing
   or retaining the original text. Registered server rows show ephemeral CPU, RAM, and per-GPU
   usage and can open the existing scoped grant flow for the currently selected project. Each
@@ -68,10 +69,13 @@ but it is not yet a deployed end-to-end product:
   entrypoint remains inside the granted workspace. Every code-executing request requires an exact
   `Allow once` approval and is capped at 120 seconds. Long-running or unattended experiments still
   require the Runner control path, and imported `-L` forwarding remains an inactive plan;
-- the read-only Obsidian reader renders sanitized Markdown, and each project has an app-managed
-  Repository workspace for GitHub HTTPS clone, file tree and Markdown preview, staged/unstaged diff,
-  commit history, local branches, commit, Fetch, fast-forward-only Pull, and reviewed-SHA-only
-  non-force Push; and
+- Research Notes connects one Obsidian Vault locally and creates an isolated
+  `GOSU/<project>/Literature|Papers|Experiments|Project Progress|Idea Development` workspace per
+  project. GOSU writes only its owned templates and deterministic Literature projection; paper
+  notes become user-owned after creation. The reader renders sanitized Markdown and project-local
+  attachments. Each project also has an app-managed Repository workspace for GitHub HTTPS clone,
+  file tree and Markdown preview, staged/unstaged diff, commit history, local branches, commit,
+  Fetch, fast-forward-only Pull, and reviewed-SHA-only non-force Push; and
 - the running Sync API uses an in-memory development store with lab/project authorization,
   optimistic versions, idempotency, SSE, and a non-persistent WebSocket relay;
 - a PostgreSQL schema and tested persistence adapter implement tenant context, transactional

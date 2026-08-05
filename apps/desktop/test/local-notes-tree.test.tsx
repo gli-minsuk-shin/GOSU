@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import { LocalNotesTree } from '../src/renderer/src/notes-view';
+import { ResearchNotesTree } from '../src/renderer/src/notes-view';
 
 const files = [
   'Areas/Vision/Segmentation.md',
@@ -25,7 +25,7 @@ function treeItem(html: string, label: string) {
 
 function renderTree(expandedDirectories: ReadonlySet<string>, selectedPath: string | null = null) {
   return renderToStaticMarkup(
-    <LocalNotesTree
+    <ResearchNotesTree
       files={files}
       expandedDirectories={expandedDirectories}
       selectedPath={selectedPath}
@@ -36,11 +36,11 @@ function renderTree(expandedDirectories: ReadonlySet<string>, selectedPath: stri
   );
 }
 
-describe('LocalNotesTree accessibility and disclosure', () => {
+describe('Research Notes tree accessibility and disclosure', () => {
   it('renders a labelled ARIA tree while keeping collapsed descendants out of the DOM', () => {
     const html = renderTree(new Set(['Areas']));
 
-    expect(html).toMatch(/role="tree"[^>]*aria-label="Local Notes files"/u);
+    expect(html).toMatch(/role="tree"[^>]*aria-label="Research Notes files"/u);
     expect(treeItem(html, 'Areas')).toContain('aria-level="1"');
     expect(treeItem(html, 'Areas')).toContain('aria-expanded="true"');
     expect(treeItem(html, 'Areas')).toContain('aria-posinset="1"');

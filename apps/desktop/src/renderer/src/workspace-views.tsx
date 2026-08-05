@@ -51,7 +51,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   { id: 'experiments', label: 'Experiments', icon: '⌁' },
   { id: 'literature', label: 'Literature', icon: '▤' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
-  { id: 'notes', label: 'Local notes', icon: '◇' },
+  { id: 'notes', label: 'Research Notes', icon: '◇' },
 ];
 
 export const FUTURE_MODULES = [
@@ -104,7 +104,8 @@ export function WorkspacePageHeading({
     literature:
       'Build a living evidence table, enrich it with AI, and move records safely between JSON, CSV, and BibTeX.',
     connections: 'Inspect real local capabilities. No connection state on this page is simulated.',
-    notes: 'Read Markdown from a folder you explicitly select. Note contents stay on this Mac.',
+    notes:
+      'Browse this project’s managed Obsidian research workspace. Note contents stay on this Mac.',
   };
   return (
     <header className={`page-heading page-heading-${activeTab}`}>

@@ -195,6 +195,10 @@ type LiteratureServiceOptions = Readonly<{
   workspace: WorkspaceService;
   provider?: LiteratureDiscoveryProvider;
   transfer: LiteratureTransferPlatform;
+  projection?: Readonly<{
+    syncLiterature(projectId: string): Promise<unknown>;
+    syncReviewedPaper?(record: LiteratureRecord): Promise<unknown>;
+  }>;
   now?: () => Date;
 }>;
 
@@ -203,6 +207,7 @@ export class LiteratureService {
   private readonly workspace: WorkspaceService;
   private readonly provider: LiteratureDiscoveryProvider;
   private readonly transfer: LiteratureTransferPlatform;
+  private readonly projection?: LiteratureServiceOptions['projection'];
   private readonly now: () => Date;
   private readonly activeSearches = new Set<AbortController>();
 
@@ -211,6 +216,7 @@ export class LiteratureService {
     this.workspace = options.workspace;
     this.provider = options.provider ?? new BalancedLiteratureProvider();
     this.transfer = options.transfer;
+    this.projection = options.projection;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -312,6 +318,7 @@ export class LiteratureService {
       );
       const persistedTierCounts = receipt.run.tierCounts ?? discovered.tierCounts;
       const persistedCoverage = receipt.run.coverage ?? discoveryCoverage;
+      await this.projectLiterature(command.projectId);
       return LiteratureSearchReceiptSchema.parse({
         ...receipt,
         retrievedCount: discovered.retrievedCount,
@@ -369,7 +376,17 @@ export class LiteratureService {
       updatedAt: this.now().toISOString(),
     });
     if (!updated) throw new LiteratureServiceError('literature_record_conflict');
-    return LiteratureRecordSchema.parse(updated);
+    const parsed = LiteratureRecordSchema.parse(updated);
+    await this.projectLiterature(command.projectId);
+    if (
+      parsed.manualAnnotations.summary ||
+      parsed.manualAnnotations.relevance ||
+      parsed.reviewStatus === 'included' ||
+      parsed.reviewStatus === 'reviewed'
+    ) {
+      await this.projectReviewedPaper(parsed);
+    }
+    return parsed;
   }
 
   async deleteRecord(input: DeleteLiteratureRecordInput): Promise<DeleteLiteratureRecordReceipt> {
@@ -392,6 +409,7 @@ export class LiteratureService {
     ) {
       throw new LiteratureServiceError('literature_record_conflict');
     }
+    await this.projectLiterature(command.projectId);
     return DeleteLiteratureRecordReceiptSchema.parse({ ...command, deleted: true });
   }
 
@@ -443,6 +461,7 @@ export class LiteratureService {
       if (persistenceError) throw persistenceError;
       throw error;
     }
+    await this.projectLiterature(command.projectId);
     return LiteratureImportReceiptSchema.parse({
       status: 'imported',
       format: selected.format,
@@ -547,6 +566,8 @@ export class LiteratureService {
       this.now().toISOString(),
     );
     if (!stored) throw new LiteratureServiceError('literature_ai_conflict');
+    await this.projectLiterature(projectId);
+    await Promise.all(stored.map((record) => this.projectReviewedPaper(record)));
     return { updatedCount: stored.length, skippedCount: updates.length - stored.length };
   }
 
@@ -563,5 +584,21 @@ export class LiteratureService {
       throw new LiteratureServiceError('literature_project_unavailable');
     }
     return project;
+  }
+
+  private async projectLiterature(projectId: string) {
+    try {
+      await this.projection?.syncLiterature(projectId);
+    } catch {
+      // Obsidian is a recoverable local projection and never rolls back Literature data.
+    }
+  }
+
+  private async projectReviewedPaper(record: LiteratureRecord) {
+    try {
+      await this.projection?.syncReviewedPaper?.(record);
+    } catch {
+      // A paper note remains retryable local output and never blocks the human review save.
+    }
   }
 }

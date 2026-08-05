@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildLocalNotesGrantUpdate } from '../src/renderer/src/local-notes-access-model';
 import type { ProjectChatProfile } from '../src/shared/project-chat-contracts';
 
-describe('Local Notes grant profile update', () => {
+describe('Research Notes grant profile update', () => {
   it('preserves every advanced agent setting while omitting storage-only profile fields', () => {
     const profile: ProjectChatProfile = {
       schemaVersion: 1,

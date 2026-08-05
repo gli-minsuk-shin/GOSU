@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs';
 
+import { Children, isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   LiteratureTable,
   LiteratureDetail,
+  LiteraturePaperNoteAction,
   LiteratureView,
   literatureCoreGateSummary,
   literatureCorePolicyCounts,
@@ -98,6 +100,27 @@ const adapter: LiteratureViewAdapter = {
   importRecords: vi.fn(),
   exportRecords: vi.fn(),
 };
+
+function nodeText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (!isValidElement<{ children?: ReactNode }>(node)) return '';
+  return Children.toArray(node.props.children).map(nodeText).join('');
+}
+
+function findButton(node: ReactNode, label: string): ReactElement<{ onClick?: () => void }> {
+  let match: ReactElement<{ onClick?: () => void }> | undefined;
+  const visit = (candidate: ReactNode) => {
+    if (match || !isValidElement<{ children?: ReactNode; onClick?: () => void }>(candidate)) return;
+    if (candidate.type === 'button' && nodeText(candidate).includes(label)) {
+      match = candidate;
+      return;
+    }
+    Children.forEach(candidate.props.children, visit);
+  };
+  visit(node);
+  if (!match) throw new Error(`Button not found: ${label}`);
+  return match;
+}
 
 describe('Literature workspace', () => {
   it('reports an isolated identity conflict without presenting the entire search as failed', () => {
@@ -341,6 +364,35 @@ describe('Literature workspace', () => {
     expect(html).toContain('AI topic suggestions');
     expect(html).toContain('AI suggestion');
     expect(html).toContain('Manual review topics');
+  });
+
+  it('creates a project-scoped metadata-only Obsidian paper note from the selected record', () => {
+    const onCreatePaperNote = vi.fn().mockResolvedValue(undefined);
+    const action = LiteraturePaperNoteAction({
+      record: rawPaper,
+      busy: false,
+      onCreatePaperNote,
+    });
+
+    const button = findButton(action, 'Create Obsidian paper note');
+    button.props.onClick?.();
+
+    expect(onCreatePaperNote).toHaveBeenCalledWith(rawPaper);
+    expect(renderToStaticMarkup(action)).toContain(
+      'Create a metadata-only Markdown review template in this project&#x27;s Obsidian Papers folder',
+    );
+  });
+
+  it('disables the Obsidian paper-note action while another Literature operation is running', () => {
+    const html = renderToStaticMarkup(
+      <LiteraturePaperNoteAction
+        record={rawPaper}
+        busy
+        onCreatePaperNote={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Create Obsidian paper note<\/button>/u);
   });
 
   it('restores separate Topic and Keyword draft fields from a recent search run', () => {

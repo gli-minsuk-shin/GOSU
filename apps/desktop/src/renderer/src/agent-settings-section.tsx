@@ -145,7 +145,7 @@ export function AgentSettingsSection({
         <div className="settings-card-heading">
           <span>AI AGENT · {project.name}</span>
           <h2>Loading the encrypted project profile…</h2>
-          <p>Board, appearance, and local notes remain available.</p>
+          <p>Board, appearance, and Research Notes remain available.</p>
         </div>
       </article>
     );
@@ -279,8 +279,8 @@ export function AgentSettingsSection({
 
       <article className="settings-card">
         <div className="settings-card-heading">
-          <span>LOCAL NOTES ACCESS</span>
-          <h2>Authorize research notes per project</h2>
+          <span>RESEARCH NOTES ACCESS</span>
+          <h2>Authorize this project’s Obsidian notes</h2>
           <p>
             The agent receives typed, read-only list and read tools. It never receives the Vault
             root, a raw path, shell access, or another project's grant.
@@ -290,28 +290,28 @@ export function AgentSettingsSection({
           <div>
             <strong>
               {vaultState === 'checking'
-                ? 'Checking Local Notes access…'
+                ? 'Checking Research Notes access…'
                 : vaultState === 'unavailable'
-                  ? 'Local Notes status unavailable'
+                  ? 'Research Notes status unavailable'
                   : vault
                     ? vault.name
-                    : 'No Local Notes folder selected'}
+                    : 'No project Research Notes folder connected'}
             </strong>
             <span>
               {vaultState === 'checking'
-                ? 'Waiting for the authoritative Main-process Vault state.'
+                ? 'Waiting for the authoritative project-scoped Vault state.'
                 : vaultState === 'unavailable'
-                  ? 'GOSU could not verify the selected folder. Chats with a saved grant are paused.'
+                  ? 'GOSU could not verify this project’s Obsidian folder. Chats with a saved grant are paused.'
                   : vault
                     ? `${vault.files.length.toLocaleString()} Markdown files available locally`
-                    : 'Open Local notes in the sidebar and choose a folder first.'}
+                    : 'Open Research Notes inside this project and choose an Obsidian Vault first.'}
             </span>
             {vaultState === 'ready' &&
               profile.localNotesVault &&
               profile.localNotesVault.id !== vault?.id && (
                 <small>
-                  The saved grant for {profile.localNotesVault.name} is inactive because the
-                  selected folder changed. GOSU will not silently transfer access.
+                  The saved grant for {profile.localNotesVault.name} is inactive because the project
+                  folder binding changed. GOSU will not silently transfer access.
                 </small>
               )}
           </div>
@@ -326,9 +326,9 @@ export function AgentSettingsSection({
             >
               {vault && localNotesVault?.id === vault.id
                 ? profile.localNotesVault?.id === vault.id
-                  ? 'Current folder authorized'
+                  ? 'Current Research Notes authorized'
                   : 'Selected — save to authorize'
-                : 'Authorize current folder'}
+                : 'Authorize Research Notes'}
             </button>
             {localNotesVault && (
               <button

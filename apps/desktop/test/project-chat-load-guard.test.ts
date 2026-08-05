@@ -12,7 +12,7 @@ import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts'
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 
 describe('ProjectChatLoadGuard', () => {
-  it('hydrates the current project profile for Chat and Local Notes only', () => {
+  it('hydrates the current project profile for Chat and project Research Notes only', () => {
     expect(shouldHydrateProjectChat('chat', 'project-a')).toBe(true);
     expect(shouldHydrateProjectChat('notes', 'project-a')).toBe(true);
     expect(shouldHydrateProjectChat('board', 'project-a')).toBe(false);

@@ -3,12 +3,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  LocalNotesProjectAccess,
-  LocalNotesView,
+  ResearchNotesProjectAccess,
+  ResearchNotesView,
+  researchNotesAttentionMessage,
   type VaultRuntimeState,
 } from '../src/renderer/src/notes-view';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
 import type { ProjectChatProfile } from '../src/shared/project-chat-contracts';
+import type { ResearchNotesWorkspace } from '../src/shared/research-notes-contracts';
 import type { VaultSelection } from '../src/shared/vault-contracts';
 import type { ProjectRecord } from '../src/shared/workspace-contracts';
 
@@ -26,6 +28,21 @@ const vault: VaultSelection = {
   name: 'Research Vault',
   root: '/fixture/research-vault',
   files: ['index.md'],
+};
+
+const workspace: ResearchNotesWorkspace = {
+  schemaVersion: 1,
+  projectId: project.id,
+  projectName: project.name,
+  bindingId: vault.id,
+  vaultId: 'c'.repeat(64),
+  vaultName: 'Research Vault',
+  displayRoot: 'Research Vault/GOSU/Active study',
+  files: ['Literature/Literature Review.md', 'Papers/Papers Index.md'],
+  folders: ['Literature', 'Papers', 'Experiments', 'Project Progress', 'Idea Development'],
+  status: 'ready',
+  attentionCode: null,
+  lastLiteratureSyncAt: '2026-08-06T00:00:00.000Z',
 };
 
 function nodeText(node: ReactNode): string {
@@ -49,10 +66,10 @@ function findButton(node: ReactNode, label: string): ReactElement<{ onClick?: ()
   return match;
 }
 
-function renderLocalNotes(
+function renderResearchNotes(
   options: {
     activeProject?: ProjectRecord | undefined;
-    activeVault?: VaultSelection | null;
+    activeWorkspace?: ResearchNotesWorkspace | null;
     vaultState?: VaultRuntimeState;
     profile?: ProjectChatProfile | undefined;
     profileLoading?: boolean;
@@ -60,7 +77,9 @@ function renderLocalNotes(
   } = {},
 ) {
   const activeProject = Object.hasOwn(options, 'activeProject') ? options.activeProject : project;
-  const activeVault = Object.hasOwn(options, 'activeVault') ? options.activeVault : vault;
+  const activeWorkspace = Object.hasOwn(options, 'activeWorkspace')
+    ? options.activeWorkspace
+    : workspace;
   const profile = Object.hasOwn(options, 'profile')
     ? options.profile
     : defaultProjectChatProfile(project.id);
@@ -69,8 +88,8 @@ function renderLocalNotes(
   const accessBusy = options.accessBusy ?? false;
 
   return renderToStaticMarkup(
-    <LocalNotesView
-      vault={activeVault}
+    <ResearchNotesView
+      workspace={activeWorkspace}
       vaultState={vaultState}
       selectedNote={null}
       busy={false}
@@ -82,15 +101,16 @@ function renderLocalNotes(
       onRead={vi.fn()}
       onSetProjectAccess={vi.fn()}
       onOpenAgentSettings={vi.fn()}
+      onRetry={vi.fn()}
     />,
   );
 }
 
-describe('Local Notes project-agent access', () => {
+describe('Research Notes project-agent access', () => {
   it('sends the exact current grant and opens the provided Agent Settings route', () => {
     const onSetAccess = vi.fn();
     const onOpenSettings = vi.fn();
-    const access = LocalNotesProjectAccess({
+    const access = ResearchNotesProjectAccess({
       vault,
       vaultState: 'ready',
       project,
@@ -110,7 +130,7 @@ describe('Local Notes project-agent access', () => {
 
   it('wires the visible revoke action to an explicit null grant', () => {
     const onSetAccess = vi.fn();
-    const access = LocalNotesProjectAccess({
+    const access = ResearchNotesProjectAccess({
       vault,
       vaultState: 'ready',
       project,
@@ -130,10 +150,10 @@ describe('Local Notes project-agent access', () => {
   });
 
   it('offers direct authorization and an AI Agent Settings shortcut when access is off', () => {
-    const html = renderLocalNotes();
+    const html = renderResearchNotes();
 
     expect(html).toContain('Not authorized for Active study');
-    expect(html).toContain('Research Vault remains local-only');
+    expect(html).toContain('Research Notes remains local-only');
     expect(html).toContain('Authorize for Active study');
     expect(html).toContain('Open AI Agent Settings…');
     expect(html).not.toContain('Revoke access');
@@ -143,7 +163,7 @@ describe('Local Notes project-agent access', () => {
   });
 
   it('recognizes only a matching folder grant and offers an explicit revoke action', () => {
-    const html = renderLocalNotes({
+    const html = renderResearchNotes({
       profile: {
         ...defaultProjectChatProfile(project.id),
         localNotesVault: { id: vault.id, name: vault.name },
@@ -151,14 +171,14 @@ describe('Local Notes project-agent access', () => {
     });
 
     expect(html).toContain('Authorized for Active study');
-    expect(html).toContain('can be listed and read through bounded tools');
+    expect(html).toContain('can be listed and read through bounded chat tools');
     expect(html).toContain('Revoke access');
     expect(html).toContain('Open AI Agent Settings…');
     expect(html).not.toContain('Authorize for Active study');
   });
 
   it('does not silently transfer a stale grant to the currently selected folder', () => {
-    const html = renderLocalNotes({
+    const html = renderResearchNotes({
       profile: {
         ...defaultProjectChatProfile(project.id),
         localNotesVault: { id: 'b'.repeat(64), name: 'Previous Vault' },
@@ -167,7 +187,7 @@ describe('Local Notes project-agent access', () => {
 
     expect(html).toContain('Current folder not authorized for Active study');
     expect(html).toContain(
-      'Previous Vault was authorized previously. Access never transfers silently to Research Vault.',
+      'Previous Vault was authorized previously. Access never transfers silently to another project or Vault.',
     );
     expect(html).toContain('Authorize for Active study');
     expect(html).toContain('Revoke access');
@@ -178,12 +198,12 @@ describe('Local Notes project-agent access', () => {
     {
       name: 'folder verification is still checking',
       props: { vaultState: 'checking' as const },
-      title: 'Checking the Local Notes folder…',
+      title: 'Checking the Research Notes folder…',
     },
     {
       name: 'folder capability is unavailable',
       props: { vaultState: 'unavailable' as const },
-      title: 'Folder unavailable',
+      title: 'Research Notes unavailable',
     },
     {
       name: 'the encrypted project profile is unavailable',
@@ -191,7 +211,7 @@ describe('Local Notes project-agent access', () => {
       title: 'Project access status unavailable',
     },
   ])('fails closed when $name', ({ props, title }) => {
-    const html = renderLocalNotes(props);
+    const html = renderResearchNotes(props);
 
     expect(html).toContain(title);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Authorize for Active study<\/button>/u);
@@ -200,7 +220,7 @@ describe('Local Notes project-agent access', () => {
   });
 
   it('fails closed without an active project and does not show a misleading settings action', () => {
-    const html = renderLocalNotes({ activeProject: undefined });
+    const html = renderResearchNotes({ activeProject: undefined });
 
     expect(html).toContain('Select an active project');
     expect(html).toContain('Choose a project in the sidebar before granting its agent access.');
@@ -210,7 +230,7 @@ describe('Local Notes project-agent access', () => {
   });
 
   it('keeps authorization paused while a matching saved grant is being checked', () => {
-    const html = renderLocalNotes({
+    const html = renderResearchNotes({
       vaultState: 'checking',
       profile: {
         ...defaultProjectChatProfile(project.id),
@@ -218,8 +238,87 @@ describe('Local Notes project-agent access', () => {
       },
     });
 
-    expect(html).toContain('Checking the Local Notes folder…');
+    expect(html).toContain('Checking the Research Notes folder…');
     expect(html).toContain('Revoke access');
     expect(html).not.toContain('>Authorized for Active study<');
+  });
+
+  it('shows the project-scoped managed folders and Literature projection status', () => {
+    const html = renderResearchNotes();
+
+    expect(html).toContain('Research Vault/GOSU/Active study');
+    expect(html).toContain('MANAGED PROJECT FOLDERS');
+    for (const folder of workspace.folders) expect(html).toContain(folder);
+    expect(html).toContain('Literature table synced');
+    expect(html).not.toContain('/fixture/research-vault');
+  });
+
+  it('keeps a project-switch stale note body out of a different project workspace', () => {
+    const html = renderToStaticMarkup(
+      <ResearchNotesView
+        workspace={workspace}
+        vaultState="ready"
+        selectedNote={{ path: 'Other project/secret.md', content: 'PRIVATE OLD PROJECT BODY' }}
+        busy={false}
+        project={project}
+        profile={defaultProjectChatProfile(project.id)}
+        profileLoading={false}
+        accessBusy={false}
+        onChoose={vi.fn()}
+        onRead={vi.fn()}
+        onSetProjectAccess={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+      />,
+    );
+
+    expect(html).not.toContain('PRIVATE OLD PROJECT BODY');
+    expect(html).toContain('Select a Markdown file to read it locally.');
+  });
+
+  it('explains each fail-closed folder reconciliation reason', () => {
+    expect(researchNotesAttentionMessage('folder_name_conflict')).toContain('overwrite');
+    expect(researchNotesAttentionMessage('folder_missing')).toContain('missing');
+    expect(researchNotesAttentionMessage('folder_ownership_changed')).toContain(
+      'ownership marker changed',
+    );
+    expect(researchNotesAttentionMessage('vault_unavailable')).toContain('Vault is unavailable');
+  });
+
+  it('shows a safe retry state while a renamed Obsidian folder has a collision', () => {
+    const html = renderResearchNotes({
+      activeWorkspace: {
+        ...workspace,
+        status: 'rename-pending',
+        attentionCode: 'folder_name_conflict',
+      },
+      profile: {
+        ...defaultProjectChatProfile(project.id),
+        localNotesVault: { id: workspace.bindingId, name: 'Research Notes' },
+      },
+    });
+
+    expect(html).toContain('would overwrite an existing Obsidian folder');
+    expect(html).toContain('>Retry</button>');
+    expect(html).toContain('Research Notes grant inactive');
+    expect(html).not.toContain('>Authorized for Active study<');
+  });
+
+  it('distinguishes project-folder verification from first-time Vault connection', () => {
+    const checking = renderResearchNotes({
+      activeWorkspace: null,
+      vaultState: 'checking',
+    });
+    const unavailable = renderResearchNotes({
+      activeWorkspace: null,
+      vaultState: 'unavailable',
+    });
+    const unconnected = renderResearchNotes({ activeWorkspace: null, vaultState: 'ready' });
+
+    expect(checking).toContain('Opening Research Notes…');
+    expect(checking).not.toContain('Choose Obsidian Vault</button>');
+    expect(unavailable).toContain('Research Notes need attention');
+    expect(unavailable).toContain('Retry project folder');
+    expect(unconnected).toContain('Connect an Obsidian Vault');
+    expect(unconnected).toContain('Choose Obsidian Vault');
   });
 });

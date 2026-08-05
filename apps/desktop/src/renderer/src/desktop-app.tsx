@@ -34,6 +34,7 @@ import type {
   WorkspacePendingSummary,
   WorkspaceSnapshot,
 } from '../../shared/workspace-contracts';
+import type { ResearchNotesWorkspace } from '../../shared/research-notes-contracts';
 import { BoardView } from './board-view';
 import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
@@ -41,7 +42,7 @@ import { ExperimentsView, type ExperimentsViewAdapter } from './experiments-view
 import { buildLocalNotesGrantUpdate } from './local-notes-access-model';
 import { LiteratureView, type LiteratureViewAdapter } from './literature-view';
 import {
-  LocalNotesView,
+  ResearchNotesView,
   type SelectedNote,
   type VaultRuntimeState,
   type VaultSelection,
@@ -134,6 +135,7 @@ const literatureAdapter: LiteratureViewAdapter = {
   importRecords: (input) => window.gosu.literature.importRecords(input),
   exportRecords: (input) => window.gosu.literature.exportRecords(input),
   organize: (input) => window.gosu.literature.organize(input),
+  createPaperNote: (input) => window.gosu.researchNotes.createPaperNote(input),
 };
 
 const experimentsAdapter: ExperimentsViewAdapter = {
@@ -210,7 +212,8 @@ function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabI
     tab === 'board' ||
     tab === 'objective' ||
     tab === 'experiments' ||
-    tab === 'literature'
+    tab === 'literature' ||
+    tab === 'notes'
   );
 }
 
@@ -246,8 +249,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     useState<CodexConnectionState>('checking');
   const [codexErrorVisible, setCodexErrorVisible] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeReadiness | null>(null);
-  const [vault, setVault] = useState<VaultSelection | null>(null);
-  const [vaultState, setVaultState] = useState<VaultRuntimeState>('checking');
+  const [researchNotesState, setResearchNotesState] = useState<VaultRuntimeState>('checking');
+  const [researchNotesWorkspace, setResearchNotesWorkspace] =
+    useState<ResearchNotesWorkspace | null>(null);
   const [selectedNote, setSelectedNote] = useState<SelectedNote | null>(null);
   const [noteLoading, setNoteLoading] = useState(false);
   const [apiKeyMode, setApiKeyMode] = useState(false);
@@ -296,7 +300,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [preferences, setPreferences] = useState(initialPreferences);
   const chatLoadGuard = useRef(new ProjectChatLoadGuard());
   const codexBootstrapStarted = useRef(false);
-  const vaultSelectionGeneration = useRef(0);
+  const researchNotesGeneration = useRef(0);
+  const researchNoteReadGeneration = useRef(0);
   const sshWorkspaceLoadGuard = useRef(new SshWorkspaceLoadGuard());
   const sshWorkspaceSetupRequestIdRef = useRef(0);
   const sshResourceRequestsRef = useRef(new Map<string, Promise<void>>());
@@ -319,6 +324,21 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     () => activeProjects.find((project) => project.id === activeProjectId),
     [activeProjectId, activeProjects],
   );
+  const activeResearchNotesSelection = useMemo<VaultSelection | null>(() => {
+    if (
+      !activeProject ||
+      researchNotesWorkspace?.projectId !== activeProject.id ||
+      researchNotesWorkspace.status !== 'ready'
+    ) {
+      return null;
+    }
+    return {
+      id: researchNotesWorkspace.bindingId,
+      name: 'Research Notes',
+      root: researchNotesWorkspace.displayRoot,
+      files: researchNotesWorkspace.files,
+    };
+  }, [activeProject, researchNotesWorkspace]);
   sshWorkspaceLoadGuard.current.activate(activeProject?.id ?? null);
   const activeProjectSshWorkspaces = sshWorkspacesForProject(
     sshWorkspaces,
@@ -595,6 +615,41 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     return request;
   }, []);
 
+  useEffect(() => {
+    if (!activeProject) {
+      researchNoteReadGeneration.current += 1;
+      setResearchNotesWorkspace(null);
+      setResearchNotesState('ready');
+      setSelectedNote(null);
+      return;
+    }
+    const generation = ++researchNotesGeneration.current;
+    researchNoteReadGeneration.current += 1;
+    setResearchNotesState('checking');
+    setNoteLoading(true);
+    setWorkspaceError(null);
+    setSelectedNote(null);
+    setResearchNotesWorkspace(null);
+    void window.gosu.researchNotes
+      .current({ projectId: activeProject.id })
+      .then((next) => {
+        if (researchNotesGeneration.current === generation) {
+          setResearchNotesWorkspace(next);
+          setResearchNotesState('ready');
+        }
+      })
+      .catch((error: unknown) => {
+        if (researchNotesGeneration.current === generation) {
+          setResearchNotesWorkspace(null);
+          setResearchNotesState('unavailable');
+          setWorkspaceError(describeError(error));
+        }
+      })
+      .finally(() => {
+        if (researchNotesGeneration.current === generation) setNoteLoading(false);
+      });
+  }, [activeProject?.id, activeProject?.version]);
+
   const refreshProjectSshResources = useCallback(
     (projectId: string, connectionIds: readonly string[], force = false) => {
       const requestScopes = new Map(
@@ -695,22 +750,6 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     void loadWorkspace()
       .catch((error: unknown) => setWorkspaceError(describeError(error)))
       .finally(() => setWorkspaceLoading(false));
-
-    const vaultGeneration = ++vaultSelectionGeneration.current;
-    void window.gosu.vault
-      .current()
-      .then((selection) => {
-        if (vaultSelectionGeneration.current === vaultGeneration) {
-          setVault(selection);
-          setVaultState('ready');
-        }
-      })
-      .catch(() => {
-        if (vaultSelectionGeneration.current === vaultGeneration) {
-          setVault(null);
-          setVaultState('unavailable');
-        }
-      });
 
     void window.gosu.runtime
       .readiness()
@@ -910,7 +949,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       setCodexStatus(describeError(error));
       if (showRecoveryError) {
         setWorkspaceError(
-          'Codex could not reconnect. Board, settings, and local notes still work.',
+          'Codex could not reconnect. Board, settings, and Research Notes still work.',
         );
         setCodexErrorVisible(true);
       }
@@ -925,43 +964,31 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     void refreshModels();
   }, []);
 
-  const chooseVault = async () => {
+  const chooseResearchNotesVault = async (projectId: string) => {
     if (noteLoading) return;
-    const vaultGeneration = ++vaultSelectionGeneration.current;
-    setVaultState('checking');
+    const generation = ++researchNotesGeneration.current;
+    researchNoteReadGeneration.current += 1;
+    setResearchNotesState('checking');
     setNoteLoading(true);
     setWorkspaceError(null);
     try {
-      const result = await window.gosu.vault.choose();
-      if (vaultSelectionGeneration.current !== vaultGeneration) return;
-      if (result !== null) {
-        setVault(result);
-        setVaultState('ready');
-        setSelectedNote(null);
-        setAnnouncement(`Selected a local folder with ${result.files.length} Markdown files.`);
-      } else {
-        const current = await window.gosu.vault.current();
-        if (vaultSelectionGeneration.current === vaultGeneration) {
-          setVault(current);
-          setVaultState('ready');
-        }
-      }
+      const next = await window.gosu.researchNotes.chooseVault({ projectId });
+      if (researchNotesGeneration.current !== generation) return;
+      setResearchNotesWorkspace(next);
+      setResearchNotesState('ready');
+      setSelectedNote(null);
+      setAnnouncement(
+        next
+          ? `Connected ${next.displayRoot} and prepared the project Research Notes folders.`
+          : 'Obsidian Vault selection was cancelled.',
+      );
     } catch (error) {
-      setWorkspaceError(describeError(error));
-      try {
-        const current = await window.gosu.vault.current();
-        if (vaultSelectionGeneration.current === vaultGeneration) {
-          setVault(current);
-          setVaultState('ready');
-        }
-      } catch {
-        if (vaultSelectionGeneration.current === vaultGeneration) {
-          setVault(null);
-          setVaultState('unavailable');
-        }
+      if (researchNotesGeneration.current === generation) {
+        setResearchNotesState('unavailable');
+        setWorkspaceError(describeError(error));
       }
     } finally {
-      setNoteLoading(false);
+      if (researchNotesGeneration.current === generation) setNoteLoading(false);
     }
   };
 
@@ -1167,7 +1194,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       setAnnouncement(
         grant
           ? `Authorized ${grant.name} for ${project.name} project chat.`
-          : `Revoked Local Notes access for ${project.name}.`,
+          : `Revoked Research Notes access for ${project.name}.`,
       );
     }
   };
@@ -1519,8 +1546,18 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         <Connection name="Runner" state="Not configured" ready={false} />
         <Connection
           name="Obsidian"
-          state={vault ? 'Folder selected' : 'Not selected'}
-          ready={Boolean(vault)}
+          state={
+            researchNotesState === 'checking'
+              ? 'Checking'
+              : researchNotesState === 'unavailable'
+                ? 'Unavailable'
+                : researchNotesWorkspace?.status === 'ready'
+                  ? 'Project folder ready'
+                  : researchNotesWorkspace?.status === 'rename-pending'
+                    ? 'Rename needs attention'
+                    : 'Not connected'
+          }
+          ready={researchNotesWorkspace?.status === 'ready'}
         />
       </aside>
       {!projectNavigation.sidebarCollapsed && (
@@ -1640,8 +1677,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 !activeProjectChatSnapshot?.profile,
               )}
               collaborationModes={collaborationModes}
-              vault={vault}
-              vaultState={vaultState}
+              vault={activeResearchNotesSelection}
+              vaultState={researchNotesState}
               onUpdateAgentProfile={updateProjectChatProfile}
             />
           </>
@@ -1743,8 +1780,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 selectedModel={selectedModel}
                 selectedReasoning={selectedReasoning}
                 applyingActionId={applyingChatActionId}
-                vault={vault}
-                vaultState={vaultState}
+                vault={activeResearchNotesSelection}
+                vaultState={researchNotesState}
                 sessions={activeProjectSessions}
                 sessionRailWidth={projectChatLayout.sessionRailWidth}
                 onSessionRailWidthChange={(sessionRailWidth) =>
@@ -1850,9 +1887,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     return false;
                   }
                   const savedLocalNotesGrant = activeProjectChatSnapshot?.profile?.localNotesVault;
-                  if (savedLocalNotesGrant && vaultState !== 'ready') {
+                  if (
+                    savedLocalNotesGrant &&
+                    (researchNotesState !== 'ready' ||
+                      activeResearchNotesSelection?.id !== savedLocalNotesGrant.id)
+                  ) {
                     setWorkspaceError(
-                      'Local Notes capability status is unavailable. GOSU paused this turn so a hidden saved grant cannot be used. Reopen Local notes and try again.',
+                      'Research Notes access cannot be verified for this project. GOSU paused this turn so a stale or hidden grant cannot be used. Open Research Notes and review the project folder.',
                     );
                     return false;
                   }
@@ -2226,10 +2267,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 }
               />
             )}
-            {activeTab === 'notes' && (
-              <LocalNotesView
-                vault={vault}
-                vaultState={vaultState}
+            {activeTab === 'notes' && activeProject && (
+              <ResearchNotesView
+                workspace={researchNotesWorkspace}
+                vaultState={researchNotesState}
                 selectedNote={selectedNote}
                 busy={noteLoading}
                 project={activeProject}
@@ -2242,17 +2283,61 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   busyAction !== null ||
                   Boolean(activeProject && chatBusyProjectIds.has(activeProject.id))
                 }
-                onChoose={() => void chooseVault()}
-                onRead={(path) => {
-                  if (noteLoading) return;
+                onChoose={() => void chooseResearchNotesVault(activeProject.id)}
+                onRetry={() => {
+                  const generation = ++researchNotesGeneration.current;
+                  researchNoteReadGeneration.current += 1;
+                  setResearchNotesState('checking');
                   setNoteLoading(true);
                   setWorkspaceError(null);
-                  void window.gosu.vault
-                    .read(path)
-                    .then((note) => setSelectedNote(note as SelectedNote))
-                    .catch((error: unknown) => setWorkspaceError(describeError(error)))
-                    .finally(() => setNoteLoading(false));
+                  void window.gosu.researchNotes
+                    .current({ projectId: activeProject.id })
+                    .then((next) => {
+                      if (researchNotesGeneration.current === generation) {
+                        setResearchNotesWorkspace(next);
+                        setResearchNotesState('ready');
+                        setAnnouncement('Retried the Obsidian project folder reconciliation.');
+                      }
+                    })
+                    .catch((error: unknown) => {
+                      if (researchNotesGeneration.current !== generation) return;
+                      setResearchNotesState('unavailable');
+                      setWorkspaceError(describeError(error));
+                    })
+                    .finally(() => {
+                      if (researchNotesGeneration.current === generation) setNoteLoading(false);
+                    });
                 }}
+                onRead={(path) => {
+                  if (noteLoading) return;
+                  const generation = ++researchNoteReadGeneration.current;
+                  const projectId = activeProject.id;
+                  setNoteLoading(true);
+                  setWorkspaceError(null);
+                  void window.gosu.researchNotes
+                    .read({ projectId, path })
+                    .then((note) => {
+                      if (researchNoteReadGeneration.current === generation) {
+                        setSelectedNote(note as SelectedNote);
+                      }
+                    })
+                    .catch((error: unknown) => {
+                      if (researchNoteReadGeneration.current === generation) {
+                        setWorkspaceError(describeError(error));
+                      }
+                    })
+                    .finally(() => {
+                      if (researchNoteReadGeneration.current === generation) {
+                        setNoteLoading(false);
+                      }
+                    });
+                }}
+                readAttachment={(input) =>
+                  window.gosu.researchNotes.readAttachment({
+                    projectId: activeProject.id,
+                    ...input,
+                  })
+                }
                 onSetProjectAccess={(grant) => {
                   if (!activeProject) return;
                   const profile = activeProjectChatSnapshot?.profile;

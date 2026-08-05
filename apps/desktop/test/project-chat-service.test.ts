@@ -663,8 +663,8 @@ function localNotesVaultFixture() {
   const content = 'PRIVATE_NOTE_BODY';
   const vault: ProjectAgentVault = {
     descriptor: () => ({ id: vaultId, name: 'Research Notes' }),
-    matchesGrant: (candidate) => candidate === vaultId,
-    validateGrant: async (candidate) => {
+    matchesGrant: (_projectId, candidate) => candidate === vaultId,
+    validateGrant: async (_projectId, candidate) => {
       if (candidate !== vaultId) throw new Error('vault_grant_stale');
     },
     listForAgent: async () => ({
@@ -1903,7 +1903,7 @@ describe('ProjectChatService', () => {
     });
     await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
     const assistant = storage.snapshot(projectA.id).messages[1]!;
-    expect(assistant.content).toContain('Local Notes accessed');
+    expect(assistant.content).toContain('Research Notes accessed');
     expect(assistant.content).toContain('Baseline evidence');
     expect(assistant.content).toContain(contentSha256);
     // Visible model replies are durable project chat. Explicit authorization therefore also
@@ -2029,7 +2029,7 @@ describe('ProjectChatService', () => {
     const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
     expect(assistant).toMatchObject({ status: 'failed' });
     expect(assistant.content).toContain('invalid project response');
-    expect(assistant.content).toContain('Local Notes accessed');
+    expect(assistant.content).toContain('Research Notes accessed');
     expect(assistant.content).toContain(contentSha256);
     expect(assistant.content).not.toContain(content);
   });
@@ -2049,7 +2049,7 @@ describe('ProjectChatService', () => {
 
       const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
       expect(assistant.status).toBe(status === 'interrupted' ? 'interrupted' : 'failed');
-      expect(assistant.content).toContain('Local Notes accessed');
+      expect(assistant.content).toContain('Research Notes accessed');
       expect(assistant.content).toContain(contentSha256);
       expect(assistant.content).not.toContain(content);
     }
@@ -2108,7 +2108,7 @@ describe('ProjectChatService', () => {
     const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
     expect(codex.revoked).toContain(threadId);
     expect(assistant).toMatchObject({ status: 'interrupted' });
-    expect(assistant.content).toContain('Local Notes accessed');
+    expect(assistant.content).toContain('Research Notes accessed');
     expect(assistant.content).toContain(contentSha256);
   });
 
@@ -2153,7 +2153,7 @@ describe('ProjectChatService', () => {
 
     const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
     expect(assistant).toMatchObject({ status: 'failed' });
-    expect(assistant.content).toContain('Local Notes accessed');
+    expect(assistant.content).toContain('Research Notes accessed');
     expect(assistant.content).toContain(contentSha256);
     expect(assistant.content).not.toContain(content);
   });

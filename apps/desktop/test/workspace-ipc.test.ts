@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { ProjectChatServiceError } from '../src/main/project-chat-service';
 import { registerWorkspaceIpc } from '../src/main/workspace-ipc';
@@ -43,6 +43,9 @@ function handlersFor(
   projectChatIdleGuard?: Readonly<{
     runWhenProjectChatIdle<T>(projectId: string, operation: () => Promise<T>): Promise<T>;
   }>,
+  projectLifecycle?: Readonly<{
+    projectRenamed(project: Awaited<ReturnType<WorkspaceService['renameProject']>>): Promise<void>;
+  }>,
 ) {
   const handlers = new Map<string, (...arguments_: unknown[]) => unknown>();
   registerWorkspaceIpc(
@@ -50,6 +53,7 @@ function handlersFor(
     workspace,
     reportUnexpected,
     projectChatIdleGuard,
+    projectLifecycle,
   );
   return handlers;
 }
@@ -213,6 +217,36 @@ describe('workspace IPC boundary', () => {
       'project.trash',
       'project.restore',
     ]);
+  });
+
+  it('notifies the project lifecycle after rename without rolling back the canonical project', async () => {
+    const storage = new MemoryStorage();
+    const workspace = new WorkspaceService(storage);
+    const projectRenamed = vi.fn(async () => {
+      throw new Error('Obsidian unavailable');
+    });
+    const handlers = handlersFor(workspace, undefined, undefined, { projectRenamed });
+    const project = await successful<{ id: string; version: number }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!,
+      { name: 'Lifecycle projection' },
+    );
+
+    const renamed = await successful<{ id: string; name: string; version: number }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.renameProject)!,
+      {
+        projectId: project.id,
+        expectedVersion: project.version,
+        name: 'Renamed projection',
+      },
+    );
+
+    expect(renamed).toMatchObject({ id: project.id, name: 'Renamed projection', version: 2 });
+    expect(projectRenamed).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: project.id, name: 'Renamed projection', version: 2 }),
+    );
+    await expect(workspace.snapshot()).resolves.toMatchObject({
+      projects: [expect.objectContaining({ id: project.id, name: 'Renamed projection' })],
+    });
   });
 
   it('rejects malformed project lifecycle commands without reflecting input', async () => {
