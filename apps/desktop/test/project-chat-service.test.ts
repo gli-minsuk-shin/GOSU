@@ -2723,6 +2723,8 @@ describe('ProjectChatService', () => {
     expect(listed.success).toBe(true);
     expect(JSON.parse(listed.contentItems[0]!.text)).toEqual({
       schemaVersion: 1,
+      setupState: 'no_registered_connections',
+      registeredConnectionCount: 0,
       workspaces: [],
     });
     expect(ssh.listWorkspaceGrants).toHaveBeenCalledOnce();

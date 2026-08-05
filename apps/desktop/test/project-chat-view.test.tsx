@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -5,8 +7,11 @@ import {
   ProjectChatView,
   reconcileProjectChatSessionUiState,
   resolveEffectiveCodexModel,
+  resolveInitialProjectChatScrollTop,
   resolveLatestMessageScrollTop,
   resolveProjectChatScrollIntent,
+  shouldInitializeProjectChatScroll,
+  shouldPersistProjectChatScrollPosition,
   shouldAcceptPdfPickerResult,
 } from '../src/renderer/src/project-chat-view';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
@@ -65,6 +70,58 @@ describe('advanced Project Chat controls', () => {
         topInset: 18,
       }),
     ).toBe(400);
+  });
+
+  it('restores a saved session position or opens unseen history directly at the bottom', () => {
+    expect(
+      resolveInitialProjectChatScrollTop({
+        savedScrollTop: null,
+        scrollHeight: 1_600,
+        clientHeight: 600,
+      }),
+    ).toBe(1_000);
+    expect(
+      resolveInitialProjectChatScrollTop({
+        savedScrollTop: 640,
+        scrollHeight: 1_600,
+        clientHeight: 600,
+      }),
+    ).toBe(640);
+    expect(
+      resolveInitialProjectChatScrollTop({
+        savedScrollTop: 2_000,
+        scrollHeight: 1_600,
+        clientHeight: 600,
+      }),
+    ).toBe(1_000);
+    expect(
+      resolveInitialProjectChatScrollTop({
+        savedScrollTop: 120,
+        scrollHeight: 400,
+        clientHeight: 600,
+      }),
+    ).toBe(0);
+  });
+
+  it('does not animate programmatic transcript restoration through old history', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+    const transcriptRule = styles.match(/(?:^|\n)\.chat-transcript\s*\{(?<body>[^}]*)\}/u)?.groups
+      ?.body;
+
+    expect(transcriptRule).toBeDefined();
+    expect(transcriptRule).not.toContain('scroll-behavior: smooth');
+  });
+
+  it('does not save a loading placeholder as a real session position', () => {
+    const sessionKey = `${project.id}\u0000session-a`;
+    expect(shouldPersistProjectChatScrollPosition(null, sessionKey)).toBe(false);
+    expect(shouldPersistProjectChatScrollPosition(`${project.id}\u0000session-b`, sessionKey)).toBe(
+      false,
+    );
+    expect(shouldPersistProjectChatScrollPosition(sessionKey, sessionKey)).toBe(true);
+    expect(shouldInitializeProjectChatScroll(true, false)).toBe(false);
+    expect(shouldInitializeProjectChatScroll(false, false)).toBe(false);
+    expect(shouldInitializeProjectChatScroll(false, true)).toBe(true);
   });
 
   it('waits for the terminal assistant snapshot before moving away from the active turn bottom', () => {
@@ -228,6 +285,8 @@ describe('advanced Project Chat controls', () => {
         onCancel={vi.fn()}
         onApplyAction={vi.fn()}
         initialAdvancedOpen
+        sshAccess={{ state: 'ready', registeredConnectionCount: 1, grantedWorkspaceCount: 0 }}
+        onOpenSshWorkspaceSetup={vi.fn()}
       />,
     );
 
@@ -248,6 +307,9 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Cached web');
     expect(html).toContain('Authorize…');
     expect(html).toContain('SSH requires Allow once');
+    expect(html).toContain('SSH server registered — project access is not granted yet');
+    expect(html).toContain('Grant to Agentic study…');
+    expect(html).toContain('SSH workspace not granted');
     expect(html).toContain('Raw shells, TTY, transfer, unattended execution, secrets');
     expect(html).toContain('aria-label="Attach PDF files"');
     expect(html).toContain('Attach up to 3 PDFs for this one turn');

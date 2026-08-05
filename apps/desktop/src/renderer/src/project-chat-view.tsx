@@ -52,6 +52,18 @@ export type ProjectChatSessionUiState = Readonly<{
   advancedOpen: boolean;
 }>;
 
+export type ProjectChatSshAccess = Readonly<{
+  state: 'checking' | 'ready' | 'unavailable';
+  registeredConnectionCount: number;
+  grantedWorkspaceCount: number;
+}>;
+
+const NO_PROJECT_CHAT_SSH_ACCESS: ProjectChatSshAccess = Object.freeze({
+  state: 'checking',
+  registeredConnectionCount: 0,
+  grantedWorkspaceCount: 0,
+});
+
 export function resolveLatestMessageScrollTop({
   currentScrollTop,
   scrollHeight,
@@ -70,6 +82,31 @@ export function resolveLatestMessageScrollTop({
   const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
   const messageContentTop = currentScrollTop + messageTop - transcriptTop;
   return Math.min(maxScrollTop, Math.max(0, messageContentTop - topInset));
+}
+
+export function resolveInitialProjectChatScrollTop({
+  savedScrollTop,
+  scrollHeight,
+  clientHeight,
+}: Readonly<{
+  savedScrollTop: number | null;
+  scrollHeight: number;
+  clientHeight: number;
+}>) {
+  const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+  if (savedScrollTop === null || !Number.isFinite(savedScrollTop)) return maxScrollTop;
+  return Math.min(maxScrollTop, Math.max(0, savedScrollTop));
+}
+
+export function shouldPersistProjectChatScrollPosition(
+  initializedSessionKey: string | null,
+  activeSessionKey: string,
+) {
+  return initializedSessionKey === activeSessionKey;
+}
+
+export function shouldInitializeProjectChatScroll(loading: boolean, snapshotReady: boolean) {
+  return !loading && snapshotReady;
 }
 
 export type ProjectChatScrollIntent = 'top' | 'bottom' | 'latest-start' | 'none';
@@ -203,6 +240,10 @@ export function ProjectChatView({
   onRenameSession,
   onBranchSession = async () => undefined,
   initialAdvancedOpen = false,
+  initialScrollTop = null,
+  onScrollTopChange = () => undefined,
+  sshAccess = NO_PROJECT_CHAT_SSH_ACCESS,
+  onOpenSshWorkspaceSetup = () => undefined,
 }: {
   project: ProjectRecord;
   tasks: readonly WorkspaceTask[];
@@ -244,6 +285,10 @@ export function ProjectChatView({
   onRenameSession?: (session: NonNullable<ProjectChatSnapshot['session']>) => void;
   onBranchSession?: (messageId: string) => Promise<void>;
   initialAdvancedOpen?: boolean;
+  initialScrollTop?: number | null;
+  onScrollTopChange?: (scrollTop: number) => void;
+  sshAccess?: ProjectChatSshAccess;
+  onOpenSshWorkspaceSetup?: () => void;
 }) {
   const [sessionUi, setSessionUi] = useState<ProjectChatSessionUiState>({
     draft: initialDraft,
@@ -275,6 +320,8 @@ export function ProjectChatView({
   const latestMessageRef = useRef<HTMLElement>(null);
   const observedLatestMessageIdRef = useRef<string | null>(null);
   const wasInFlightRef = useRef(inFlight);
+  const initializedScrollSessionKeyRef = useRef<string | null>(null);
+  const onScrollTopChangeRef = useRef(onScrollTopChange);
   const draftSessionKey = `${project.id}\u0000${selectedSessionId ?? ''}`;
   attachmentScopeRef.current = draftSessionKey;
   const hydratedSessionKeyRef = useRef(draftSessionKey);
@@ -396,11 +443,39 @@ export function ProjectChatView({
       : null;
   const selectionWarning =
     modelSelectionWarning ?? collaborationModeWarning ?? personalityWarning ?? localNotesWarning;
+  const snapshotReady = snapshot !== null;
   const latestMessageId = snapshot?.messages.at(-1)?.id ?? null;
+  const sshWorkspaceSetupNeeded =
+    sshAccess.state === 'ready' &&
+    sshAccess.registeredConnectionCount > 0 &&
+    sshAccess.grantedWorkspaceCount === 0;
+  const sshWorkspaceStatus =
+    sshAccess.state === 'checking'
+      ? 'SSH workspace access checking'
+      : sshAccess.state === 'unavailable'
+        ? 'SSH workspace status unavailable'
+        : sshAccess.grantedWorkspaceCount > 0
+          ? `${sshAccess.grantedWorkspaceCount} SSH workspace${sshAccess.grantedWorkspaceCount === 1 ? '' : 's'} granted`
+          : 'SSH workspace not granted';
+
+  useEffect(() => {
+    onScrollTopChangeRef.current = onScrollTopChange;
+  }, [onScrollTopChange]);
 
   useLayoutEffect(() => {
     const transcript = transcriptRef.current;
-    if (!transcript) return;
+    if (!transcript || !shouldInitializeProjectChatScroll(loading, snapshotReady)) return;
+    if (initializedScrollSessionKeyRef.current !== draftSessionKey) {
+      initializedScrollSessionKeyRef.current = draftSessionKey;
+      observedLatestMessageIdRef.current = latestMessageId;
+      wasInFlightRef.current = inFlight;
+      transcript.scrollTop = resolveInitialProjectChatScrollTop({
+        savedScrollTop: initialScrollTop,
+        scrollHeight: transcript.scrollHeight,
+        clientHeight: transcript.clientHeight,
+      });
+      return;
+    }
     const intent = resolveProjectChatScrollIntent({
       observedLatestMessageId: observedLatestMessageIdRef.current,
       latestMessageId,
@@ -432,7 +507,23 @@ export function ProjectChatView({
       messageTop: messageBounds.top,
       topInset,
     });
-  }, [inFlight, latestMessageId]);
+  }, [draftSessionKey, inFlight, initialScrollTop, latestMessageId, loading, snapshotReady]);
+
+  useLayoutEffect(
+    () => () => {
+      const transcript = transcriptRef.current;
+      if (
+        transcript &&
+        shouldPersistProjectChatScrollPosition(
+          initializedScrollSessionKeyRef.current,
+          draftSessionKey,
+        )
+      ) {
+        onScrollTopChangeRef.current(transcript.scrollTop);
+      }
+    },
+    [draftSessionKey],
+  );
 
   useEffect(() => {
     const previousIdentity = hydratedSessionKeyRef.current;
@@ -614,6 +705,25 @@ export function ProjectChatView({
               Agent controls
             </button>
           </div>
+          {sshWorkspaceSetupNeeded && (
+            <div className="chat-ssh-setup-notice" role="status">
+              <div>
+                <strong>SSH server registered — project access is not granted yet</strong>
+                <span>
+                  Choose one specific remote project folder before {project.name} Project Chat can
+                  use the server.
+                </span>
+              </div>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={onOpenSshWorkspaceSetup}
+                disabled={projectBusy}
+              >
+                Grant to {project.name}…
+              </button>
+            </div>
+          )}
         </header>
 
         {advancedOpen && (
@@ -732,7 +842,8 @@ export function ProjectChatView({
             <div className="chat-agent-boundary">
               <strong>Project capability boundary</strong>
               <span>
-                Board + Objective read tools · {localNotesStatus} · SSH requires Allow once
+                Board + Objective read tools · {localNotesStatus} · {sshWorkspaceStatus} · SSH
+                requires Allow once
               </span>
               <small>
                 Board changes require Apply. Only project-granted remote workspaces are visible.
@@ -745,7 +856,21 @@ export function ProjectChatView({
           </section>
         )}
 
-        <div className="chat-transcript" ref={transcriptRef} aria-live="polite">
+        <div
+          className="chat-transcript"
+          ref={transcriptRef}
+          aria-live="polite"
+          onScroll={(event) => {
+            if (
+              shouldPersistProjectChatScrollPosition(
+                initializedScrollSessionKeyRef.current,
+                draftSessionKey,
+              )
+            ) {
+              onScrollTopChangeRef.current(event.currentTarget.scrollTop);
+            }
+          }}
+        >
           {loading ? (
             <div className="chat-loading">암호화된 프로젝트 대화를 불러오는 중…</div>
           ) : !snapshot?.messages.length ? (

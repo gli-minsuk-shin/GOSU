@@ -1,7 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import { SshWorkspaceGrantsCard } from '../src/renderer/src/ssh-workspace-grants-card';
+import {
+  acknowledgeSshWorkspaceSetupRequest,
+  resolveSshWorkspaceSetupConnectionId,
+  shouldHandleSshWorkspaceSetupRequest,
+  SshWorkspaceGrantsCard,
+} from '../src/renderer/src/ssh-workspace-grants-card';
 import type { GrantedRemoteWorkspace } from '../src/shared/ssh-workspace-contracts';
 import type { ProjectRecord } from '../src/shared/workspace-contracts';
 
@@ -41,6 +46,32 @@ const workspace: GrantedRemoteWorkspace = {
 };
 
 describe('project-scoped remote workspace settings', () => {
+  it('preselects an explicitly requested server or the sole available server only', () => {
+    expect(resolveSshWorkspaceSetupConnectionId('server-b', ['server-a', 'server-b'])).toBe(
+      'server-b',
+    );
+    expect(resolveSshWorkspaceSetupConnectionId(null, ['server-a'])).toBe('server-a');
+    expect(resolveSshWorkspaceSetupConnectionId(null, ['server-a', 'server-b'])).toBe('');
+    expect(resolveSshWorkspaceSetupConnectionId('already-granted', ['server-a'])).toBe('');
+  });
+
+  it('applies a setup request only to its active project and only once', () => {
+    const request = {
+      requestId: 2,
+      projectId: project.id,
+      connectionId: workspace.connection.id,
+    } as const;
+
+    expect(shouldHandleSshWorkspaceSetupRequest(request, project.id, 1)).toBe(true);
+    expect(shouldHandleSshWorkspaceSetupRequest(request, project.id, 2)).toBe(false);
+    expect(
+      shouldHandleSshWorkspaceSetupRequest(request, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 1),
+    ).toBe(false);
+    expect(shouldHandleSshWorkspaceSetupRequest(request, null, 1)).toBe(false);
+    expect(acknowledgeSshWorkspaceSetupRequest(request, 1)).toBe(request);
+    expect(acknowledgeSshWorkspaceSetupRequest(request, 2)).toBeNull();
+  });
+
   it('shows explicit project scope, root, permission mode, and high-risk confirmation', () => {
     const html = renderToStaticMarkup(
       <SshWorkspaceGrantsCard
@@ -51,6 +82,8 @@ describe('project-scoped remote workspace settings', () => {
         onCreate={vi.fn()}
         onUpdate={vi.fn()}
         onRemove={vi.fn()}
+        onTest={vi.fn()}
+        testStatus={{ [workspace.connection.id]: 'Ready' }}
       />,
     );
 
@@ -61,6 +94,8 @@ describe('project-scoped remote workspace settings', () => {
     expect(html).toContain('HIGH RISK · ROOT account');
     expect(html).toContain('not a remote sandbox');
     expect(html).toContain('Every command still requires a separate Allow once decision');
+    expect(html).toContain('Test server');
+    expect(html).toContain('Ready');
   });
 
   it('keeps registered servers unavailable when there is no active project', () => {

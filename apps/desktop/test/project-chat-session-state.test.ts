@@ -5,6 +5,7 @@ import {
   projectChatSessionKey,
   resolveProjectChatSessionId,
   VolatileProjectChatDrafts,
+  VolatileProjectChatScrollPositions,
 } from '../src/renderer/src/project-chat-session-state';
 
 const projectId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -60,5 +61,31 @@ describe('Project Chat session state', () => {
     drafts.write(projectId, sessions[0].id, '');
     expect(drafts.read(projectId, sessions[0].id)).toBe('');
     expect(drafts.read(projectId, sessions[1].id)).toBe('second-session draft');
+  });
+
+  it('keeps finite scroll positions isolated and distinguishes the top from no saved position', () => {
+    const positions = new VolatileProjectChatScrollPositions();
+    expect(positions.read(projectId, sessions[0].id)).toBeNull();
+
+    expect(positions.write(projectId, sessions[0].id, 0)).toBe(true);
+    expect(positions.write(projectId, sessions[1].id, 640.5)).toBe(true);
+    expect(positions.write('dddddddd-dddd-4ddd-8ddd-dddddddddddd', sessions[0].id, 120)).toBe(true);
+
+    expect(positions.read(projectId, sessions[0].id)).toBe(0);
+    expect(positions.read(projectId, sessions[1].id)).toBe(640.5);
+    expect(positions.read('dddddddd-dddd-4ddd-8ddd-dddddddddddd', sessions[0].id)).toBe(120);
+  });
+
+  it('rejects invalid positions and bounds unexpectedly large layout values', () => {
+    const positions = new VolatileProjectChatScrollPositions();
+    positions.write(projectId, sessions[0].id, 42);
+
+    expect(positions.write(projectId, sessions[0].id, Number.NaN)).toBe(false);
+    expect(positions.write(projectId, sessions[0].id, Number.POSITIVE_INFINITY)).toBe(false);
+    expect(positions.write(projectId, sessions[0].id, -1)).toBe(false);
+    expect(positions.read(projectId, sessions[0].id)).toBe(42);
+
+    expect(positions.write(projectId, sessions[1].id, Number.MAX_SAFE_INTEGER)).toBe(true);
+    expect(positions.read(projectId, sessions[1].id)).toBe(10_000_000);
   });
 });

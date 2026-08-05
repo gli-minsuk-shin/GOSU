@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { SshConnectionProfile } from '../../shared/ssh-contracts';
 import type {
@@ -11,6 +11,42 @@ import type { ProjectRecord } from '../../shared/workspace-contracts';
 
 type MaybePromise<T> = T | Promise<T>;
 
+export type SshWorkspaceSetupRequest = Readonly<{
+  requestId: number;
+  projectId: string;
+  connectionId: string | null;
+}>;
+
+export function resolveSshWorkspaceSetupConnectionId(
+  requestedConnectionId: string | null,
+  availableConnectionIds: readonly string[],
+) {
+  if (requestedConnectionId) {
+    return availableConnectionIds.includes(requestedConnectionId) ? requestedConnectionId : '';
+  }
+  return availableConnectionIds.length === 1 ? (availableConnectionIds[0] ?? '') : '';
+}
+
+export function shouldHandleSshWorkspaceSetupRequest(
+  request: SshWorkspaceSetupRequest | null,
+  activeProjectId: string | null,
+  handledRequestId: number,
+) {
+  return Boolean(
+    request &&
+    activeProjectId &&
+    request.projectId === activeProjectId &&
+    request.requestId > handledRequestId,
+  );
+}
+
+export function acknowledgeSshWorkspaceSetupRequest(
+  current: SshWorkspaceSetupRequest | null,
+  handledRequestId: number,
+) {
+  return current?.requestId === handledRequestId ? null : current;
+}
+
 export type SshWorkspaceGrantsCardProps = Readonly<{
   project: ProjectRecord | null;
   connections: readonly SshConnectionProfile[];
@@ -19,6 +55,10 @@ export type SshWorkspaceGrantsCardProps = Readonly<{
   onCreate: (input: CreateRemoteWorkspaceGrantInput) => MaybePromise<unknown>;
   onUpdate: (input: UpdateRemoteWorkspaceGrantInput) => MaybePromise<unknown>;
   onRemove: (input: RemoveRemoteWorkspaceGrantInput) => MaybePromise<unknown>;
+  onTest?: (connectionId: string) => MaybePromise<unknown>;
+  testStatus?: Readonly<Record<string, string>>;
+  setupRequest?: SshWorkspaceSetupRequest | null;
+  onSetupRequestHandled?: (requestId: number) => void;
 }>;
 
 export function SshWorkspaceGrantsCard({
@@ -29,12 +69,19 @@ export function SshWorkspaceGrantsCard({
   onCreate,
   onUpdate,
   onRemove,
+  onTest,
+  testStatus = {},
+  setupRequest = null,
+  onSetupRequestHandled = () => undefined,
 }: SshWorkspaceGrantsCardProps) {
   const [connectionId, setConnectionId] = useState('');
   const [canonicalRoot, setCanonicalRoot] = useState('');
   const [permissionMode, setPermissionMode] = useState<'diagnostics' | 'workspace'>('diagnostics');
   const [confirmed, setConfirmed] = useState(false);
   const [editingGrantId, setEditingGrantId] = useState<string | null>(null);
+  const handledSetupRequestIdRef = useRef(0);
+  const cardRef = useRef<HTMLElement>(null);
+  const connectionSelectRef = useRef<HTMLSelectElement>(null);
   const selectedConnection = connections.find((connection) => connection.id === connectionId);
   const editingWorkspace = workspaces.find(({ grant }) => grant.id === editingGrantId);
   const grantedConnectionIds = useMemo(
@@ -54,6 +101,37 @@ export function SshWorkspaceGrantsCard({
     setConfirmed(false);
   }, [project?.id]);
 
+  useEffect(() => {
+    if (
+      !project ||
+      !setupRequest ||
+      !shouldHandleSshWorkspaceSetupRequest(
+        setupRequest,
+        project.id,
+        handledSetupRequestIdRef.current,
+      ) ||
+      connections.length === 0
+    ) {
+      return;
+    }
+    handledSetupRequestIdRef.current = setupRequest.requestId;
+    onSetupRequestHandled(setupRequest.requestId);
+    setEditingGrantId(null);
+    setConnectionId(
+      resolveSshWorkspaceSetupConnectionId(
+        setupRequest.connectionId,
+        availableConnections.map((connection) => connection.id),
+      ),
+    );
+    setCanonicalRoot('');
+    setPermissionMode('diagnostics');
+    setConfirmed(false);
+    window.requestAnimationFrame(() => {
+      cardRef.current?.scrollIntoView({ behavior: 'auto', block: 'start' });
+      connectionSelectRef.current?.focus({ preventScroll: true });
+    });
+  }, [availableConnections, connections.length, onSetupRequestHandled, project, setupRequest]);
+
   const reset = () => {
     setEditingGrantId(null);
     setConnectionId('');
@@ -63,7 +141,11 @@ export function SshWorkspaceGrantsCard({
   };
 
   return (
-    <article className="card ssh-workspace-card" aria-labelledby="ssh-workspace-heading">
+    <article
+      className="card ssh-workspace-card"
+      aria-labelledby="ssh-workspace-heading"
+      ref={cardRef}
+    >
       <header className="card-head">
         <div>
           <span>PROJECT-SCOPED SSH</span>
@@ -117,6 +199,7 @@ export function SshWorkspaceGrantsCard({
             <label>
               Registered server
               <select
+                ref={connectionSelectRef}
                 value={connectionId}
                 onChange={(event) => {
                   const nextConnectionId = event.target.value;
@@ -141,6 +224,21 @@ export function SshWorkspaceGrantsCard({
                 ))}
               </select>
             </label>
+            {selectedConnection && onTest && (
+              <div className="ssh-workspace-connection-check">
+                <span>{testStatus[selectedConnection.id] ?? 'Not tested in this session'}</span>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={busy}
+                  onClick={() => {
+                    void Promise.resolve(onTest(selectedConnection.id)).catch(() => undefined);
+                  }}
+                >
+                  Test selected server
+                </button>
+              </div>
+            )}
             <label>
               Canonical remote workspace root
               <input
@@ -150,13 +248,14 @@ export function SshWorkspaceGrantsCard({
                   setConfirmed(false);
                 }}
                 maxLength={1024}
-                placeholder="/root/my-research-project"
+                placeholder={`/root/${project.slug || 'my-research-project'}`}
                 spellCheck={false}
                 required
                 disabled={busy}
               />
               <small>
-                Use a specific project directory. `/`, `/root`, and system directories are blocked.
+                Enter an existing project directory on this server. `/`, `/root`, and system
+                directories are blocked.
               </small>
             </label>
             <label>
@@ -229,8 +328,23 @@ export function SshWorkspaceGrantsCard({
                     {connection.directTarget?.user === 'root' && (
                       <strong className="ssh-root-warning">HIGH RISK · ROOT account</strong>
                     )}
+                    {onTest && (
+                      <small>{testStatus[connection.id] ?? 'Not tested in this session'}</small>
+                    )}
                   </div>
                   <div className="form-actions">
+                    {onTest && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy}
+                        onClick={() => {
+                          void Promise.resolve(onTest(connection.id)).catch(() => undefined);
+                        }}
+                      >
+                        Test server
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="secondary-button"
