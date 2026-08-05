@@ -1,7 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { access, chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { constants, rmSync } from 'node:fs';
+import {
+  access,
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
@@ -103,6 +113,21 @@ type JsonRpcMessage = {
   result?: unknown;
   error?: { code: number; message: string };
   params?: unknown;
+};
+
+type BoundModelInvocation = {
+  threadId: string;
+  invocation: ModelInvocation;
+  catalog: ModelCatalog;
+  hasLocalImages: boolean;
+  imageRerouteRejected: boolean;
+};
+
+type EarlyModelReroute = {
+  threadId: string;
+  toModel: string;
+  targets?: readonly string[];
+  overflowed?: boolean;
 };
 
 const SAFE_PROJECT_CONFIG = {
@@ -222,6 +247,11 @@ const CODEX_COLLABORATION_MODE_MAX_ID_CHARACTERS = 128;
 const CODEX_COLLABORATION_MODE_MAX_NAME_CHARACTERS = 256;
 const CODEX_COLLABORATION_MODE_MAX_MODEL_CHARACTERS = 256;
 const CODEX_COLLABORATION_MODE_MAX_REASONING_CHARACTERS = 128;
+const CODEX_EARLY_MODEL_REROUTE_TARGET_LIMIT = 32;
+export const GOSU_STALE_RUNTIME_DIRECTORY_MIN_AGE_MS = 24 * 60 * 60 * 1_000;
+const GOSU_STALE_RUNTIME_DIRECTORY_MINIMUM_ALLOWED_AGE_MS = 60 * 60 * 1_000;
+const GOSU_STALE_RUNTIME_DIRECTORY_PATTERN =
+  /^(?:gosu-codex-runtime|gosu-chat-image)-[A-Za-z0-9_-]{6,64}$/u;
 
 const CODEX_PERSONALITIES = new Set<CodexPersonality>(['none', 'friendly', 'pragmatic']);
 const CODEX_RESPONSE_VERBOSITIES = new Set<CodexResponseVerbosity>(['low', 'medium', 'high']);
@@ -248,6 +278,63 @@ type DynamicToolDeliveryController = Readonly<{
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function catalogModelAcceptsImages(catalog: ModelCatalog, modelId: string) {
+  const model = catalog.models.find((candidate) => candidate.modelId === modelId);
+  return model?.modalities.includes('image') === true;
+}
+
+export async function cleanupStaleGosuRuntimeDirectories(
+  options: Readonly<{
+    temporaryRoot?: string;
+    now?: number;
+    minimumAgeMs?: number;
+  }> = {},
+) {
+  const temporaryRoot = options.temporaryRoot ?? tmpdir();
+  const now = options.now ?? Date.now();
+  const minimumAgeMs = options.minimumAgeMs ?? GOSU_STALE_RUNTIME_DIRECTORY_MIN_AGE_MS;
+  if (
+    !isAbsolute(temporaryRoot) ||
+    !Number.isFinite(now) ||
+    !Number.isFinite(minimumAgeMs) ||
+    minimumAgeMs < GOSU_STALE_RUNTIME_DIRECTORY_MINIMUM_ALLOWED_AGE_MS
+  ) {
+    throw new Error('invalid_stale_runtime_cleanup_boundary');
+  }
+
+  let entries;
+  try {
+    entries = await readdir(temporaryRoot, { withFileTypes: true });
+  } catch (error) {
+    const code = isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
+    if (code === 'ENOENT') return 0;
+    throw error;
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    // Dirent.isDirectory() is deliberately checked before lstat so a matching symlink is never
+    // followed or removed by this crash-recovery sweep.
+    if (!entry.isDirectory() || !GOSU_STALE_RUNTIME_DIRECTORY_PATTERN.test(entry.name)) continue;
+    const candidate = join(temporaryRoot, entry.name);
+    try {
+      const metadata = await lstat(candidate);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) continue;
+      const ageMs = now - metadata.mtimeMs;
+      if (!Number.isFinite(ageMs) || ageMs < minimumAgeMs) continue;
+      await rm(candidate, { recursive: true, force: false });
+      removed += 1;
+    } catch (error) {
+      const code = isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
+      // Another process may legitimately remove a stale candidate between inspection and cleanup.
+      // Any other per-entry failure is also isolated: an unreadable matching directory must not
+      // block cleanup of later owned candidates or prevent GOSU from starting.
+      if (code !== 'ENOENT') continue;
+    }
+  }
+  return removed;
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, expected: readonly string[]) {
@@ -526,6 +613,7 @@ export function buildCodexThreadParameters(input: {
 export function buildCodexTurnParameters(input: {
   threadId: string;
   prompt: string;
+  localImagePaths?: readonly string[];
   requestedModelId: string | null;
   reasoningOptionId: string | null;
   cwd: string;
@@ -546,10 +634,23 @@ export function buildCodexTurnParameters(input: {
   if (input.collaborationMode && !input.requestedModelId) {
     throw new Error('codex_collaboration_mode_model_required');
   }
+  const localImagePaths = input.localImagePaths ?? [];
+  if (
+    localImagePaths.length > 5 ||
+    new Set(localImagePaths).size !== localImagePaths.length ||
+    localImagePaths.some(
+      (path) => !isAbsolute(path) || path.length > 1_024 || path.includes('\u0000'),
+    )
+  ) {
+    throw new Error('codex_local_image_input_invalid');
+  }
   return {
     threadId: input.threadId,
     ...(input.clientUserMessageId ? { clientUserMessageId: input.clientUserMessageId } : {}),
-    input: [{ type: 'text', text: input.prompt, text_elements: [] }],
+    input: [
+      { type: 'text', text: input.prompt, text_elements: [] },
+      ...localImagePaths.map((path) => ({ type: 'localImage' as const, path })),
+    ],
     cwd: input.cwd,
     environments: [],
     runtimeWorkspaceRoots: [],
@@ -748,11 +849,9 @@ export class CodexAppServer extends EventEmitter {
   }
   private starting: Promise<void> | undefined;
   private catalog: ModelCatalog | undefined;
-  private readonly invocations = new Map<
-    string,
-    { threadId: string; invocation: ModelInvocation }
-  >();
-  private readonly earlyReroutes = new Map<string, { threadId: string; toModel: string }>();
+  private readonly invocations = new Map<string, BoundModelInvocation>();
+  private readonly earlyReroutes = new Map<string, EarlyModelReroute>();
+  private connectionEpoch = 0;
   private readonly volatileStateHomes = new Map<ChildProcessWithoutNullStreams, string>();
   private readonly dynamicToolRegistrations = new Map<string, DynamicToolRegistration>();
   private readonly ownedThreadIds = new Set<string>();
@@ -867,6 +966,7 @@ export class CodexAppServer extends EventEmitter {
   async runTurn(input: {
     threadId: string;
     prompt: string;
+    localImagePaths?: readonly string[];
     requestedModelId: string | null;
     reasoningOptionId: string | null;
     cwd: string;
@@ -923,6 +1023,10 @@ export class CodexAppServer extends EventEmitter {
     if (input.personality && resolvedModel?.metadata?.supportsPersonality !== true) {
       throw new Error('codex_model_personality_unsupported');
     }
+    if ((input.localImagePaths?.length ?? 0) > 0 && !resolvedModel?.modalities.includes('image')) {
+      throw new Error('attachment_model_modality_unsupported');
+    }
+    const connectionEpoch = this.connectionEpoch;
     const result = (await this.request(
       'turn/start',
       buildCodexTurnParameters({
@@ -934,15 +1038,33 @@ export class CodexAppServer extends EventEmitter {
     )) as {
       turn?: { id?: string };
     };
+    if (connectionEpoch !== this.connectionEpoch) {
+      throw new Error('codex_connection_changed_during_turn_start');
+    }
     const turnId = result.turn?.id;
     if (!turnId) throw new Error('codex_turn_id_missing');
-    this.bindDynamicToolTurn(input.threadId, turnId);
     const earlyReroute = this.earlyReroutes.get(turnId);
     this.earlyReroutes.delete(turnId);
     if (earlyReroute?.threadId === input.threadId) {
+      const targets = earlyReroute.targets ?? [earlyReroute.toModel];
+      if (
+        (input.localImagePaths?.length ?? 0) > 0 &&
+        (earlyReroute.overflowed ||
+          targets.some((target) => !catalogModelAcceptsImages(catalog, target)))
+      ) {
+        await this.interruptImageModalityViolation(input.threadId, turnId);
+        throw new Error('attachment_model_modality_unsupported');
+      }
       invocation = recordModelReroute(invocation, earlyReroute.toModel);
     }
-    this.invocations.set(turnId, { threadId: input.threadId, invocation });
+    this.bindDynamicToolTurn(input.threadId, turnId);
+    this.invocations.set(turnId, {
+      threadId: input.threadId,
+      invocation,
+      catalog,
+      hasLocalImages: (input.localImagePaths?.length ?? 0) > 0,
+      imageRerouteRejected: false,
+    });
     this.emitBoundaryEvent('invocation', { threadId: input.threadId, turnId, invocation });
     return {
       turnId,
@@ -956,6 +1078,23 @@ export class CodexAppServer extends EventEmitter {
 
   async interruptTurn(threadId: string, turnId: string) {
     await this.request('turn/interrupt', { threadId, turnId });
+  }
+
+  private async interruptImageModalityViolation(threadId: string, turnId: string) {
+    // Once an image turn leaves the catalog snapshot that authorized its inputs, no tool call or
+    // later completion is trusted. Interrupt first; if that cannot be confirmed, terminate the
+    // local App Server connection so the caller observes a failed turn instead of a fallback.
+    this.revokeDynamicTools(threadId);
+    try {
+      await this.interruptTurn(threadId, turnId);
+    } catch {
+      const child = this.process;
+      if (child) {
+        this.disconnect(child, new Error('attachment_model_modality_unsupported'), true, true);
+      } else {
+        this.emitBoundaryEvent('diagnostic', 'attachment_model_modality_unsupported');
+      }
+    }
   }
 
   async releaseThread(threadId: string) {
@@ -992,7 +1131,17 @@ export class CodexAppServer extends EventEmitter {
 
   stop() {
     const child = this.process;
-    if (child) this.disconnect(child, new Error('codex_app_server_stopped'), true);
+    if (child) this.disconnect(child, new Error('codex_app_server_stopped'), true, true);
+    // before-quit cannot await filesystem work. Any unbound directory is still owned by this
+    // process, so close the remaining cleanup barrier synchronously as a final safeguard.
+    for (const volatileStateHome of this.volatileStateHomes.values()) {
+      try {
+        rmSync(volatileStateHome, { recursive: true, force: true });
+      } catch {
+        // Preserve shutdown progress. An age-bounded startup sweep handles crash leftovers.
+      }
+    }
+    this.volatileStateHomes.clear();
   }
 
   private async startInternal() {
@@ -1119,25 +1268,74 @@ export class CodexAppServer extends EventEmitter {
       const reroute = message.params as { threadId?: string; turnId?: string; toModel?: string };
       const current = reroute.turnId ? this.invocations.get(reroute.turnId) : undefined;
       if (current && current.threadId === reroute.threadId && reroute.toModel) {
-        const invocation = recordModelReroute(current.invocation, reroute.toModel);
-        this.invocations.set(reroute.turnId!, { ...current, invocation });
-        this.emitBoundaryEvent('invocation', {
-          threadId: current.threadId,
-          turnId: reroute.turnId,
-          invocation,
-        });
-      } else if (!current && reroute.threadId && reroute.turnId && reroute.toModel) {
-        if (this.earlyReroutes.size >= 256) {
-          const oldestTurnId = this.earlyReroutes.keys().next().value as string | undefined;
-          if (oldestTurnId) this.earlyReroutes.delete(oldestTurnId);
+        if (
+          current.hasLocalImages &&
+          !catalogModelAcceptsImages(current.catalog, reroute.toModel)
+        ) {
+          if (!current.imageRerouteRejected) {
+            this.invocations.set(reroute.turnId!, {
+              ...current,
+              imageRerouteRejected: true,
+            });
+            this.emitBoundaryEvent('notification', {
+              method: 'gosu/attachment-model-modality-rejected',
+              params: { threadId: current.threadId, turnId: reroute.turnId },
+            });
+            void this.interruptImageModalityViolation(current.threadId, reroute.turnId!);
+          }
+        } else if (!current.imageRerouteRejected) {
+          const invocation = recordModelReroute(current.invocation, reroute.toModel);
+          this.invocations.set(reroute.turnId!, { ...current, invocation });
+          this.emitBoundaryEvent('invocation', {
+            threadId: current.threadId,
+            turnId: reroute.turnId,
+            invocation,
+          });
         }
-        this.earlyReroutes.set(reroute.turnId, {
-          threadId: reroute.threadId,
-          toModel: reroute.toModel,
-        });
+      } else if (!current && reroute.threadId && reroute.turnId && reroute.toModel) {
+        const previous = this.earlyReroutes.get(reroute.turnId);
+        if (!previous || previous.threadId === reroute.threadId) {
+          if (!previous && this.earlyReroutes.size >= 256) {
+            this.disconnect(
+              child,
+              new Error('codex_early_model_reroute_capacity_exceeded'),
+              true,
+              true,
+            );
+            return;
+          }
+          const previousTargets = previous?.targets ?? (previous ? [previous.toModel] : []);
+          const overflowed =
+            previous?.overflowed === true ||
+            previousTargets.length >= CODEX_EARLY_MODEL_REROUTE_TARGET_LIMIT;
+          this.earlyReroutes.set(reroute.turnId, {
+            threadId: reroute.threadId,
+            toModel: reroute.toModel,
+            targets: overflowed ? previousTargets : [...previousTargets, reroute.toModel],
+            overflowed,
+          });
+        }
       }
     }
     if (message.method) {
+      if (message.method === 'turn/completed' && isRecord(message.params)) {
+        const turn = message.params.turn;
+        const threadId = message.params.threadId;
+        const turnId = isRecord(turn) && typeof turn.id === 'string' ? turn.id : undefined;
+        const current = turnId ? this.invocations.get(turnId) : undefined;
+        if (
+          current &&
+          isRecord(turn) &&
+          current.threadId === threadId &&
+          current.imageRerouteRejected
+        ) {
+          message.params = {
+            ...message.params,
+            turn: { ...turn, status: 'failed' },
+            gosuErrorCode: 'attachment_model_modality_unsupported',
+          };
+        }
+      }
       this.emitBoundaryEvent('notification', { method: message.method, params: message.params });
       if (message.method === 'turn/completed') {
         const turn = isRecord(message.params) ? message.params.turn : undefined;
@@ -1382,9 +1580,15 @@ export class CodexAppServer extends EventEmitter {
     }
   }
 
-  private disconnect(child: ChildProcessWithoutNullStreams, error: Error, terminate = false) {
+  private disconnect(
+    child: ChildProcessWithoutNullStreams,
+    error: Error,
+    terminate = false,
+    cleanupImmediately = false,
+  ) {
     if (this.process !== child) return;
     this.process = undefined;
+    this.connectionEpoch += 1;
     if (terminate && child.exitCode === null && !child.killed) child.kill('SIGTERM');
     for (const entry of this.pending.values()) {
       clearTimeout(entry.timeout);
@@ -1399,8 +1603,20 @@ export class CodexAppServer extends EventEmitter {
     const volatileStateHome = this.volatileStateHomes.get(child);
     this.volatileStateHomes.delete(child);
     if (volatileStateHome) {
-      const cleanup = () => void rm(volatileStateHome, { recursive: true, force: true });
-      if (child.exitCode === null) child.once('close', cleanup);
+      const cleanup = () => {
+        void rm(volatileStateHome, { recursive: true, force: true }).catch(() => undefined);
+      };
+      if (cleanupImmediately) {
+        try {
+          rmSync(volatileStateHome, { recursive: true, force: true });
+        } catch {
+          // App shutdown must continue; the close barrier and next startup sweep remain available.
+        }
+        // A SIGTERM handler can touch CODEX_SQLITE_HOME after the synchronous barrier. Sweep the
+        // same owned path again after the child has actually closed.
+        if (child.exitCode === null) child.once('close', cleanup);
+        else cleanup();
+      } else if (child.exitCode === null) child.once('close', cleanup);
       else cleanup();
     }
     this.emitBoundaryEvent('diagnostic', error.message);

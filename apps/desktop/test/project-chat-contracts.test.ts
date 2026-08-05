@@ -119,6 +119,23 @@ describe('Project chat contracts', () => {
     ).toThrow();
   });
 
+  it('accepts the specific image-modality failure as durable attempt provenance', () => {
+    const now = new Date().toISOString();
+    expect(
+      ProjectChatAttemptSchema.parse({
+        id: randomUUID(),
+        projectId: randomUUID(),
+        userMessageId: randomUUID(),
+        requestedModelId: 'text-only-model',
+        reasoningOptionId: null,
+        status: 'failed',
+        errorCode: 'attachment_model_modality_unsupported',
+        createdAt: now,
+        updatedAt: now,
+      }).errorCode,
+    ).toBe('attachment_model_modality_unsupported');
+  });
+
   it('keeps session catalogs strict, project-scoped, and compatible with legacy snapshots', () => {
     const projectId = randomUUID();
     const otherProjectId = randomUUID();

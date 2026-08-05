@@ -1,4 +1,15 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +20,7 @@ import {
   buildCodexInitializeParameters,
   buildCodexThreadParameters,
   buildCodexTurnParameters,
+  cleanupStaleGosuRuntimeDirectories,
   CodexAppServer,
   codexServerRequestResponse,
   assertNoProjectMcpServers,
@@ -24,6 +36,75 @@ import {
 import { toModelCatalog } from '../src/main/model-catalog';
 
 describe('Codex App Server process boundary', () => {
+  it('removes only old owned runtime directories and never follows matching symlinks', async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), 'gosu-runtime-cleanup-test-'));
+    const staleCodex = join(temporaryRoot, 'gosu-codex-runtime-stale1');
+    const staleImage = join(temporaryRoot, 'gosu-chat-image-stale2');
+    const freshCodex = join(temporaryRoot, 'gosu-codex-runtime-fresh1');
+    const nearMiss = join(temporaryRoot, 'gosu-codex-runtime-x');
+    const symlinkTarget = join(temporaryRoot, 'unrelated-target');
+    const matchingSymlink = join(temporaryRoot, 'gosu-chat-image-linked1');
+    const now = Date.parse('2026-08-05T00:00:00.000Z');
+    try {
+      await Promise.all(
+        [staleCodex, staleImage, freshCodex, nearMiss, symlinkTarget].map((directory) =>
+          mkdir(directory),
+        ),
+      );
+      await writeFile(join(staleCodex, 'state.sqlite'), 'fixture');
+      await writeFile(join(staleImage, 'image.jpg'), 'fixture');
+      await writeFile(join(symlinkTarget, 'keep.txt'), 'fixture');
+      await symlink(symlinkTarget, matchingSymlink);
+      const old = new Date(now - 48 * 60 * 60 * 1_000);
+      await Promise.all([utimes(staleCodex, old, old), utimes(staleImage, old, old)]);
+
+      await expect(cleanupStaleGosuRuntimeDirectories({ temporaryRoot, now })).resolves.toBe(2);
+      await expect(stat(staleCodex)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(staleImage)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect((await stat(freshCodex)).isDirectory()).toBe(true);
+      expect((await stat(nearMiss)).isDirectory()).toBe(true);
+      expect((await lstat(matchingSymlink)).isSymbolicLink()).toBe(true);
+      expect(await readFile(join(symlinkTarget, 'keep.txt'), 'utf8')).toBe('fixture');
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('synchronously removes the owned volatile Codex directory during shutdown', async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), 'gosu-codex-stop-test-'));
+    const volatileStateHome = join(temporaryRoot, 'gosu-codex-runtime-owned1');
+    await mkdir(volatileStateHome);
+    await writeFile(join(volatileStateHome, 'state.sqlite'), 'fixture');
+    const server = new CodexAppServer();
+    const child = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      killed: false,
+      kill: (_signal?: string) => {
+        child.killed = true;
+        return true;
+      },
+    });
+    const internal = server as unknown as {
+      process: typeof child | undefined;
+      volatileStateHomes: Map<typeof child, string>;
+    };
+    internal.process = child;
+    internal.volatileStateHomes.set(child, volatileStateHome);
+    try {
+      server.stop();
+      await expect(stat(volatileStateHome)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(internal.volatileStateHomes.size).toBe(0);
+      await mkdir(volatileStateHome);
+      await writeFile(join(volatileStateHome, 'late-state.sqlite'), 'late fixture');
+      child.emit('close');
+      await vi.waitFor(async () => {
+        await expect(stat(volatileStateHome)).rejects.toMatchObject({ code: 'ENOENT' });
+      });
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
   it('reports the installed GOSU version without a duplicated model-client constant', () => {
     expect(buildCodexInitializeParameters('9.8.7')).toEqual({
       clientInfo: { name: 'gosu_desktop', title: 'GOSU', version: '9.8.7' },
@@ -716,6 +797,388 @@ describe('Codex App Server process boundary', () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it('rejects native image inputs before turn start when the resolved model is text-only', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    vi.spyOn(server, 'listModelCatalog').mockResolvedValue(
+      toModelCatalog(
+        [
+          {
+            id: 'text-only-model',
+            model: 'text-only-model',
+            displayName: 'Text only model',
+            hidden: false,
+            isDefault: true,
+            inputModalities: ['text'],
+          },
+        ],
+        '2026-08-05T00:00:00.000Z',
+      ),
+    );
+    const request = vi.fn();
+    (server as unknown as { request: typeof request }).request = request;
+
+    await expect(
+      server.runTurn({
+        threadId: 'thread-image-unsupported',
+        prompt: 'Inspect the attached figure.',
+        localImagePaths: ['/private/tmp/gosu-chat-image-normalized.jpg'],
+        requestedModelId: null,
+        reasoningOptionId: null,
+        cwd: '/isolated/project',
+      }),
+    ).rejects.toThrow('attachment_model_modality_unsupported');
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'unknown', rejectedModelId: 'catalog-miss' },
+    { name: 'text-only', rejectedModelId: 'text-only-model' },
+  ])(
+    'interrupts an image turn when any early reroute target is $name, even if a later target is valid',
+    async ({ rejectedModelId }) => {
+      const server = new CodexAppServer();
+      const catalog = toModelCatalog(
+        [
+          {
+            id: 'image-default',
+            model: 'image-default',
+            displayName: 'Image default',
+            hidden: false,
+            isDefault: true,
+            inputModalities: ['text', 'image'],
+          },
+          {
+            id: 'image-reroute',
+            model: 'image-reroute',
+            displayName: 'Image reroute',
+            hidden: false,
+            isDefault: false,
+            inputModalities: ['text', 'image'],
+          },
+          {
+            id: 'text-only-model',
+            model: 'text-only-model',
+            displayName: 'Text only',
+            hidden: false,
+            isDefault: false,
+            inputModalities: ['text'],
+          },
+        ],
+        '2026-08-05T00:00:00.000Z',
+      );
+      vi.spyOn(server, 'start').mockResolvedValue();
+      vi.spyOn(server, 'listModelCatalog').mockResolvedValue(catalog);
+      const child = {};
+      const internal = server as unknown as {
+        process: unknown;
+        request: (method: string, params: unknown) => Promise<unknown>;
+        handleLine: (child: unknown, line: string) => void;
+        invocations: Map<string, unknown>;
+      };
+      internal.process = child;
+      const request = vi.fn(async (method: string) => {
+        if (method === 'turn/start') {
+          for (const toModel of [rejectedModelId, 'image-reroute']) {
+            internal.handleLine(
+              child,
+              JSON.stringify({
+                method: 'model/rerouted',
+                params: { threadId: 'thread-image-early', turnId: 'turn-image-early', toModel },
+              }),
+            );
+          }
+          return { turn: { id: 'turn-image-early' } };
+        }
+        if (method === 'turn/interrupt') return { status: 'interrupting' };
+        throw new Error('unexpected_request');
+      });
+      internal.request = request;
+
+      await expect(
+        server.runTurn({
+          threadId: 'thread-image-early',
+          prompt: 'Inspect the attached figure.',
+          localImagePaths: ['/private/tmp/gosu-chat-image-normalized.jpg'],
+          requestedModelId: null,
+          reasoningOptionId: null,
+          cwd: '/isolated/project',
+        }),
+      ).rejects.toThrow('attachment_model_modality_unsupported');
+      expect(request).toHaveBeenCalledWith('turn/interrupt', {
+        threadId: 'thread-image-early',
+        turnId: 'turn-image-early',
+      });
+      expect(internal.invocations.size).toBe(0);
+    },
+  );
+
+  it.each([
+    { name: 'unknown', rejectedModelId: 'catalog-miss' },
+    { name: 'text-only', rejectedModelId: 'text-only-model' },
+  ])(
+    'interrupts and fails an active image turn when a late reroute target is $name',
+    async ({ rejectedModelId }) => {
+      const server = new CodexAppServer();
+      const catalog = toModelCatalog(
+        [
+          {
+            id: 'image-default',
+            model: 'image-default',
+            displayName: 'Image default',
+            hidden: false,
+            isDefault: true,
+            inputModalities: ['text', 'image'],
+          },
+          {
+            id: 'text-only-model',
+            model: 'text-only-model',
+            displayName: 'Text only',
+            hidden: false,
+            isDefault: false,
+            inputModalities: ['text'],
+          },
+        ],
+        '2026-08-05T00:00:00.000Z',
+      );
+      vi.spyOn(server, 'start').mockResolvedValue();
+      const listModelCatalog = vi.spyOn(server, 'listModelCatalog').mockResolvedValue(catalog);
+      const request = vi.fn(async (method: string) => {
+        if (method === 'turn/start') return { turn: { id: 'turn-image-late' } };
+        if (method === 'turn/interrupt') return { status: 'interrupting' };
+        throw new Error('unexpected_request');
+      });
+      const child = {};
+      const internal = server as unknown as {
+        process: unknown;
+        request: typeof request;
+        handleLine: (child: unknown, line: string) => void;
+        invocations: Map<
+          string,
+          { invocation: { resolvedModelId: string }; imageRerouteRejected: boolean }
+        >;
+      };
+      internal.process = child;
+      internal.request = request;
+      const invocationListener = vi.fn();
+      const notificationListener = vi.fn();
+      server.on('invocation', invocationListener);
+      server.on('notification', notificationListener);
+
+      await expect(
+        server.runTurn({
+          threadId: 'thread-image-late',
+          prompt: 'Inspect the attached figure.',
+          localImagePaths: ['/private/tmp/gosu-chat-image-normalized.jpg'],
+          requestedModelId: null,
+          reasoningOptionId: null,
+          cwd: '/isolated/project',
+        }),
+      ).resolves.toMatchObject({
+        turnId: 'turn-image-late',
+        invocation: { resolvedModelId: 'image-default' },
+      });
+      invocationListener.mockClear();
+
+      // A newer catalog must not authorize a reroute for a turn that began with the snapshot above.
+      listModelCatalog.mockResolvedValue(
+        toModelCatalog(
+          [
+            {
+              id: rejectedModelId,
+              model: rejectedModelId,
+              displayName: 'Newly advertised image model',
+              hidden: false,
+              isDefault: true,
+              inputModalities: ['text', 'image'],
+            },
+          ],
+          '2026-08-05T00:00:01.000Z',
+        ),
+      );
+      internal.handleLine(
+        child,
+        JSON.stringify({
+          method: 'model/rerouted',
+          params: {
+            threadId: 'thread-image-late',
+            turnId: 'turn-image-late',
+            toModel: rejectedModelId,
+          },
+        }),
+      );
+
+      await vi.waitFor(() =>
+        expect(request).toHaveBeenCalledWith('turn/interrupt', {
+          threadId: 'thread-image-late',
+          turnId: 'turn-image-late',
+        }),
+      );
+      expect(notificationListener).toHaveBeenCalledWith({
+        method: 'gosu/attachment-model-modality-rejected',
+        params: { threadId: 'thread-image-late', turnId: 'turn-image-late' },
+      });
+      expect(listModelCatalog).toHaveBeenCalledOnce();
+      expect(invocationListener).not.toHaveBeenCalled();
+      expect(internal.invocations.get('turn-image-late')).toMatchObject({
+        invocation: { resolvedModelId: 'image-default' },
+        imageRerouteRejected: true,
+      });
+
+      internal.handleLine(
+        child,
+        JSON.stringify({
+          method: 'turn/completed',
+          params: {
+            threadId: 'thread-image-late',
+            turn: { id: 'turn-image-late', status: 'completed' },
+          },
+        }),
+      );
+      expect(notificationListener).toHaveBeenLastCalledWith({
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-image-late',
+          turn: { id: 'turn-image-late', status: 'failed' },
+          gosuErrorCode: 'attachment_model_modality_unsupported',
+        },
+      });
+      expect(internal.invocations.size).toBe(0);
+    },
+  );
+
+  it('disconnects instead of evicting an early reroute when the global buffer is full', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    vi.spyOn(server, 'listModelCatalog').mockResolvedValue(
+      toModelCatalog(
+        [
+          {
+            id: 'image-default',
+            model: 'image-default',
+            displayName: 'Image default',
+            hidden: false,
+            isDefault: true,
+            inputModalities: ['text', 'image'],
+          },
+        ],
+        '2026-08-05T00:00:00.000Z',
+      ),
+    );
+    const child = {};
+    const internal = server as unknown as {
+      process: unknown;
+      request: (method: string) => Promise<unknown>;
+      handleLine: (child: unknown, line: string) => void;
+      earlyReroutes: Map<string, unknown>;
+    };
+    internal.process = child;
+    internal.request = async (method) => {
+      if (method !== 'turn/start') throw new Error('unexpected_request');
+      internal.handleLine(
+        child,
+        JSON.stringify({
+          method: 'model/rerouted',
+          params: {
+            threadId: 'thread-image-overflow',
+            turnId: 'turn-image-overflow',
+            toModel: 'unknown-model',
+          },
+        }),
+      );
+      for (let index = 0; index < 256; index += 1) {
+        internal.handleLine(
+          child,
+          JSON.stringify({
+            method: 'model/rerouted',
+            params: {
+              threadId: `unrelated-thread-${index}`,
+              turnId: `unrelated-turn-${index}`,
+              toModel: 'unknown-model',
+            },
+          }),
+        );
+      }
+      return { turn: { id: 'turn-image-overflow' } };
+    };
+    const disconnected = vi.fn();
+    server.on('disconnected', disconnected);
+
+    await expect(
+      server.runTurn({
+        threadId: 'thread-image-overflow',
+        prompt: 'Inspect the attached figure.',
+        localImagePaths: ['/private/tmp/gosu-chat-image-normalized.jpg'],
+        requestedModelId: null,
+        reasoningOptionId: null,
+        cwd: '/isolated/project',
+      }),
+    ).rejects.toThrow('codex_connection_changed_during_turn_start');
+    expect(disconnected).toHaveBeenCalledOnce();
+    expect(internal.earlyReroutes.size).toBe(0);
+  });
+
+  it('reports a late image reroute rejection before disconnecting when interrupt fails', async () => {
+    const server = new CodexAppServer();
+    const catalog = toModelCatalog(
+      [
+        {
+          id: 'image-default',
+          model: 'image-default',
+          displayName: 'Image default',
+          hidden: false,
+          isDefault: true,
+          inputModalities: ['text', 'image'],
+        },
+      ],
+      '2026-08-05T00:00:00.000Z',
+    );
+    vi.spyOn(server, 'start').mockResolvedValue();
+    vi.spyOn(server, 'listModelCatalog').mockResolvedValue(catalog);
+    const events: string[] = [];
+    server.on('notification', (notification: { method?: string }) => {
+      if (notification.method === 'gosu/attachment-model-modality-rejected') {
+        events.push('rejected');
+      }
+    });
+    server.on('disconnected', () => events.push('disconnected'));
+    const child = {};
+    const request = vi.fn(async (method: string) => {
+      if (method === 'turn/start') return { turn: { id: 'turn-interrupt-failure' } };
+      if (method === 'turn/interrupt') throw new Error('interrupt_transport_failed');
+      throw new Error('unexpected_request');
+    });
+    const internal = server as unknown as {
+      process: unknown;
+      request: typeof request;
+      handleLine: (child: unknown, line: string) => void;
+    };
+    internal.process = child;
+    internal.request = request;
+    await server.runTurn({
+      threadId: 'thread-interrupt-failure',
+      prompt: 'Inspect the attached figure.',
+      localImagePaths: ['/private/tmp/gosu-chat-image-normalized.jpg'],
+      requestedModelId: null,
+      reasoningOptionId: null,
+      cwd: '/isolated/project',
+    });
+
+    internal.handleLine(
+      child,
+      JSON.stringify({
+        method: 'model/rerouted',
+        params: {
+          threadId: 'thread-interrupt-failure',
+          turnId: 'turn-interrupt-failure',
+          toModel: 'unknown-model',
+        },
+      }),
+    );
+
+    await vi.waitFor(() => expect(events).toEqual(['rejected', 'disconnected']));
+  });
+
   it('builds project chat turns without shell, write, approval, or network access', () => {
     expect(
       buildCodexThreadParameters({
@@ -841,6 +1304,33 @@ describe('Codex App Server process boundary', () => {
       sandboxPolicy: { type: 'readOnly', networkAccess: false },
       outputSchema: { type: 'object' },
     });
+    expect(
+      buildCodexTurnParameters({
+        threadId: 'thread-image',
+        prompt: 'Inspect the normalized image.',
+        localImagePaths: [
+          '/private/tmp/gosu-chat-image-1.jpg',
+          '/private/tmp/gosu-chat-image-2.jpg',
+        ],
+        requestedModelId: null,
+        reasoningOptionId: null,
+        cwd: '/isolated/project',
+      }).input,
+    ).toEqual([
+      { type: 'text', text: 'Inspect the normalized image.', text_elements: [] },
+      { type: 'localImage', path: '/private/tmp/gosu-chat-image-1.jpg' },
+      { type: 'localImage', path: '/private/tmp/gosu-chat-image-2.jpg' },
+    ]);
+    expect(() =>
+      buildCodexTurnParameters({
+        threadId: 'thread-image-invalid',
+        prompt: 'Reject an unbounded local path.',
+        localImagePaths: ['relative-image.jpg'],
+        requestedModelId: null,
+        reasoningOptionId: null,
+        cwd: '/isolated/project',
+      }),
+    ).toThrow('codex_local_image_input_invalid');
     expect(
       buildCodexTurnParameters({
         threadId: 'thread-native',

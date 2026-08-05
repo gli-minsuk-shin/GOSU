@@ -32,7 +32,7 @@ beforeAll(async () => {
 
 beforeEach(() => electron.ipcRenderer.invoke.mockReset());
 
-describe('Project Chat PDF attachment preload bridge', () => {
+describe('Project Chat attachment preload bridge', () => {
   it('maps only opaque scoped inputs to fixed picker and release channels', async () => {
     const projectId = '11111111-1111-4111-8111-111111111111';
     const sessionId = '22222222-2222-4222-8222-222222222222';
@@ -41,13 +41,16 @@ describe('Project Chat PDF attachment preload bridge', () => {
       .mockResolvedValueOnce({ ok: true, value: [] })
       .mockResolvedValueOnce({ ok: true, value: { released: true } });
 
-    await api.projectChat.choosePdfAttachments({ projectId, sessionId });
-    await api.projectChat.releasePdfAttachment({ projectId, sessionId, attachmentId });
+    await api.projectChat.chooseAttachments({ projectId, sessionId });
+    await api.projectChat.releaseAttachment({ projectId, sessionId, attachmentId });
 
     expect(electron.ipcRenderer.invoke.mock.calls).toEqual([
       [PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.choose, { projectId, sessionId }],
       [PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.release, { projectId, sessionId, attachmentId }],
     ]);
+    expect(api.projectChat).not.toHaveProperty('choosePdfAttachments');
+    expect(api.projectChat).not.toHaveProperty('releasePdfAttachment');
+    expect(api.projectChat).not.toHaveProperty('readAttachmentFile');
     expect(api.projectChat).not.toHaveProperty('readPdfFile');
     expect(api.projectChat).not.toHaveProperty('openPath');
   });

@@ -4,9 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ProjectAgentToolSession } from '../src/main/project-agent-tools';
 import type {
-  AgentPdfAttachmentChunk,
-  AgentPdfAttachmentCatalogItem,
-  ProjectChatPdfAttachmentsForAgent,
+  AgentAttachmentCatalogItem,
+  AgentAttachmentChunk,
+  AgentNativeImageInput,
+  ProjectChatAttachmentsForAgent,
 } from '../src/main/project-chat-attachment-service';
 import { WorkspaceService, type WorkspaceStorage } from '../src/main/workspace-service';
 import type { ProjectAgentVault } from '../src/main/project-agent-tools';
@@ -14,8 +15,9 @@ import type { CodexDynamicToolCall, CodexJsonValue } from '../src/main/codex-app
 import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 
 const ATTACHMENT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const IMAGE_ATTACHMENT_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const SOURCE_SHA256 = 'b'.repeat(64);
-const PRIVATE_TEXT = 'PRIVATE_PDF_TEXT_FROM_ACTIVE_TURN';
+const PRIVATE_TEXT = 'PRIVATE_DOCUMENT_TEXT_FROM_ACTIVE_TURN';
 
 class MemoryStorage implements WorkspaceStorage {
   state: WorkspaceSnapshot | null = null;
@@ -43,45 +45,98 @@ const unavailableVault: ProjectAgentVault = {
   },
 };
 
-class FakePdfAttachments implements ProjectChatPdfAttachmentsForAgent {
+class FakeAttachments implements ProjectChatAttachmentsForAgent {
   revoked = false;
-  readonly revoke = vi.fn(() => {
+  readonly revoke = vi.fn(async () => {
     this.revoked = true;
   });
-  catalog(): readonly AgentPdfAttachmentCatalogItem[] {
+  catalog(): readonly AgentAttachmentCatalogItem[] {
     return this.revoked
       ? []
       : [
           {
             attachmentId: ATTACHMENT_ID,
-            label: 'PDF 1',
+            label: 'Attachment 1',
             sourceSha256: SOURCE_SHA256,
-            pageCount: 12,
+            kind: 'document',
+            format: 'docx',
+            unitLabel: 'part',
+            unitCount: 12,
             extractedCharacters: PRIVATE_TEXT.length,
             truncated: false,
             textAvailable: true,
+            visualAvailable: false,
+            reconstructionNotice: 'Document layout was reconstructed as bounded text.',
           },
         ];
   }
   read(
     attachmentId: string,
-    startPage: number,
-    pageCount: number,
+    startUnit: number,
+    unitCount: number,
     maxCharacters: number,
-  ): AgentPdfAttachmentChunk | null {
+  ): AgentAttachmentChunk | null {
     if (this.revoked || attachmentId !== ATTACHMENT_ID) return null;
     const content = PRIVATE_TEXT.slice(0, maxCharacters);
     return {
       attachmentId,
-      label: 'PDF 1',
+      label: 'Attachment 1',
       sourceSha256: SOURCE_SHA256,
-      pageCount: 12,
-      startPage,
-      endPage: Math.min(12, startPage + pageCount - 1),
+      kind: 'document',
+      format: 'docx',
+      unitLabel: 'part',
+      unitCount: 12,
+      startUnit,
+      endUnit: Math.min(12, startUnit + unitCount - 1),
       content,
       contentSha256: 'c'.repeat(64),
       truncated: false,
+      reconstructionNotice: 'Document layout was reconstructed as bounded text.',
     };
+  }
+  nativeImages(): readonly AgentNativeImageInput[] {
+    return [];
+  }
+}
+
+class FakeImageAttachments implements ProjectChatAttachmentsForAgent {
+  revoked = false;
+  readonly revoke = vi.fn(async () => {
+    this.revoked = true;
+  });
+  catalog(): readonly AgentAttachmentCatalogItem[] {
+    return this.revoked
+      ? []
+      : [
+          {
+            attachmentId: IMAGE_ATTACHMENT_ID,
+            label: 'Attachment 1',
+            sourceSha256: SOURCE_SHA256,
+            kind: 'image',
+            format: 'png',
+            unitLabel: 'image',
+            unitCount: 1,
+            extractedCharacters: 0,
+            truncated: false,
+            textAvailable: false,
+            visualAvailable: true,
+          },
+        ];
+  }
+  read(): AgentAttachmentChunk | null {
+    return null;
+  }
+  nativeImages(): readonly AgentNativeImageInput[] {
+    return this.revoked
+      ? []
+      : [
+          {
+            attachmentId: IMAGE_ATTACHMENT_ID,
+            label: 'Attachment 1',
+            sourceSha256: SOURCE_SHA256,
+            path: '/private/tmp/gosu-chat-image-fixture.jpg',
+          },
+        ];
   }
 }
 
@@ -100,11 +155,11 @@ function payload(result: Awaited<ReturnType<ProjectAgentToolSession['handler']>>
   return JSON.parse(result.contentItems[0]!.text) as Record<string, unknown>;
 }
 
-describe('Project Chat one-time PDF tools', () => {
-  it('exposes only opaque PDF metadata, delivers bounded text, and revokes it at terminal', async () => {
+describe('Project Chat one-time attachment tools', () => {
+  it('exposes only opaque metadata, delivers bounded reconstructed text, and revokes it at terminal', async () => {
     const workspace = new WorkspaceService(new MemoryStorage());
-    const project = await workspace.createProject({ name: 'PDF project' });
-    const pdfAttachments = new FakePdfAttachments();
+    const project = await workspace.createProject({ name: 'Document project' });
+    const attachments = new FakeAttachments();
     const session = new ProjectAgentToolSession({
       projectId: project.id,
       sessionId: randomUUID(),
@@ -112,61 +167,79 @@ describe('Project Chat one-time PDF tools', () => {
       workspace,
       vault: unavailableVault,
       localNotesVault: null,
-      pdfAttachments,
+      attachments,
     });
     const tools = session.dynamicTools.flatMap((spec) =>
       spec.type === 'namespace' ? spec.tools.map((tool) => tool.name) : [spec.name],
     );
-    expect(tools).toContain('list_pdf_attachments');
-    expect(tools).toContain('read_pdf_attachment');
+    expect(tools).toContain('list_turn_attachments');
+    expect(tools).toContain('read_turn_attachment_text');
 
     const delivery = {
       outcome: Promise.resolve('delivered' as const),
       abortSignal: new AbortController().signal,
     };
-    const listed = await session.handler(call('list_pdf_attachments', {}), delivery);
+    const listed = await session.handler(call('list_turn_attachments', {}), delivery);
     expect(payload(listed)).toMatchObject({
       oneTime: true,
-      attachments: [{ attachmentId: ATTACHMENT_ID, label: 'PDF 1', pageCount: 12 }],
+      trust: 'untrusted_attachment_evidence',
+      attachments: [
+        {
+          attachmentId: ATTACHMENT_ID,
+          label: 'Attachment 1',
+          kind: 'document',
+          format: 'docx',
+          unitLabel: 'part',
+          unitCount: 12,
+          textAvailable: true,
+          visualAvailable: false,
+        },
+      ],
     });
-    expect(listed.contentItems[0]!.text).not.toContain('private.pdf');
+    expect(listed.contentItems[0]!.text).not.toContain('private.docx');
     expect(listed.contentItems[0]!.text).not.toContain('/Users/');
 
     const read = await session.handler(
-      call('read_pdf_attachment', { attachmentId: ATTACHMENT_ID, startPage: 2, pageCount: 2 }),
+      call('read_turn_attachment_text', {
+        attachmentId: ATTACHMENT_ID,
+        startUnit: 2,
+        unitCount: 2,
+      }),
       delivery,
     );
     expect(payload(read)).toMatchObject({
-      trust: 'untrusted_pdf_evidence',
-      label: 'PDF 1',
+      trust: 'untrusted_attachment_evidence',
+      label: 'Attachment 1',
+      format: 'docx',
+      unitLabel: 'part',
       content: PRIVATE_TEXT,
-      startPage: 2,
-      endPage: 3,
+      startUnit: 2,
+      endUnit: 3,
     });
 
     const appendix = await session.finalizeSourceAppendix();
-    expect(appendix).toContain('PDF attachments accessed');
+    expect(appendix).toContain('Turn attachments accessed');
     expect(appendix).toContain(SOURCE_SHA256);
-    expect(appendix).toContain('pages 2-3');
+    expect(appendix).toContain('parts 2-3');
     expect(appendix).not.toContain(PRIVATE_TEXT);
-    expect(pdfAttachments.revoke).toHaveBeenCalledOnce();
+    expect(attachments.revoke).toHaveBeenCalledOnce();
 
-    const afterTerminal = await session.handler(call('list_pdf_attachments', {}), delivery);
-    expect(payload(afterTerminal)).toEqual({ error: 'pdf_attachment_expired' });
+    const afterTerminal = await session.handler(call('list_turn_attachments', {}), delivery);
+    expect(payload(afterTerminal)).toEqual({ error: 'attachment_expired' });
   });
 
-  it('does not record PDF provenance when the tool payload is discarded', async () => {
+  it('does not record attachment provenance when the tool payload is discarded', async () => {
     const workspace = new WorkspaceService(new MemoryStorage());
-    const project = await workspace.createProject({ name: 'Discarded PDF project' });
+    const project = await workspace.createProject({ name: 'Discarded document project' });
     const session = new ProjectAgentToolSession({
       projectId: project.id,
       workspace,
       vault: unavailableVault,
       localNotesVault: null,
-      pdfAttachments: new FakePdfAttachments(),
+      attachments: new FakeAttachments(),
     });
     const read = await session.handler(
-      call('read_pdf_attachment', { attachmentId: ATTACHMENT_ID }),
+      call('read_turn_attachment_text', { attachmentId: ATTACHMENT_ID }),
       {
         outcome: Promise.resolve('discarded'),
         abortSignal: new AbortController().signal,
@@ -174,5 +247,48 @@ describe('Project Chat one-time PDF tools', () => {
     );
     expect(read.success).toBe(true);
     expect(await session.finalizeSourceAppendix()).toBe('');
+  });
+
+  it('records delivered native images without exposing their temporary local path', async () => {
+    const workspace = new WorkspaceService(new MemoryStorage());
+    const project = await workspace.createProject({ name: 'Image project' });
+    const attachments = new FakeImageAttachments();
+    const session = new ProjectAgentToolSession({
+      projectId: project.id,
+      workspace,
+      vault: unavailableVault,
+      localNotesVault: null,
+      attachments,
+    });
+    const delivery = {
+      outcome: Promise.resolve('delivered' as const),
+      abortSignal: new AbortController().signal,
+    };
+
+    const listed = await session.handler(call('list_turn_attachments', {}), delivery);
+    expect(payload(listed)).toMatchObject({
+      attachments: [
+        {
+          attachmentId: IMAGE_ATTACHMENT_ID,
+          kind: 'image',
+          format: 'png',
+          textAvailable: false,
+          visualAvailable: true,
+        },
+      ],
+    });
+    const read = await session.handler(
+      call('read_turn_attachment_text', { attachmentId: IMAGE_ATTACHMENT_ID }),
+      delivery,
+    );
+    expect(payload(read)).toEqual({ error: 'attachment_text_not_available' });
+
+    session.markNativeImagesDelivered();
+    const appendix = await session.finalizeSourceAppendix();
+    expect(appendix).toContain('Turn attachments accessed');
+    expect(appendix).toContain('Attachment 1 · png');
+    expect(appendix).toContain('images 1-1');
+    expect(appendix).not.toContain('/private/tmp/');
+    expect(attachments.revoke).toHaveBeenCalledOnce();
   });
 });

@@ -6,14 +6,15 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ProjectChatView,
   reconcileProjectChatSessionUiState,
+  resolveFailedTurnRecoveryMode,
   resolveEffectiveCodexModel,
   resolveInitialProjectChatScrollTop,
   resolveLatestMessageScrollTop,
   resolveProjectChatScrollIntent,
   resolveUnreadAssistantMessageId,
+  shouldAcceptAttachmentPickerResult,
   shouldInitializeProjectChatScroll,
   shouldPersistProjectChatScrollPosition,
-  shouldAcceptPdfPickerResult,
 } from '../src/renderer/src/project-chat-view';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
 import { describeError } from '../src/renderer/src/ui-primitives';
@@ -32,25 +33,38 @@ const project = {
 } as const;
 
 describe('advanced Project Chat controls', () => {
-  it('describes bounded PDF failures without exposing local details', () => {
-    expect(describeError(new Error('pdf_attachment_too_large'))).toContain('20 MB');
-    expect(describeError(new Error('pdf_attachment_encrypted'))).toContain('Password-protected');
-    expect(describeError(new Error('pdf_attachment_scope_mismatch'))).not.toContain('/Users/');
+  it('describes bounded attachment failures without exposing local details', () => {
+    expect(describeError(new Error('attachment_too_large'))).toContain('20 MB');
+    expect(describeError(new Error('attachment_total_too_large'))).toContain('50 MB');
+    expect(describeError(new Error('attachment_too_many'))).toContain('five files');
+    expect(describeError(new Error('attachment_capacity_exhausted'))).toContain(
+      'already waiting or being analyzed',
+    );
+    expect(describeError(new Error('attachment_encrypted'))).toContain('Password-protected');
+    expect(describeError(new Error('attachment_model_modality_unsupported'))).toContain(
+      'image-capable model',
+    );
+    expect(describeError(new Error('attachment_scope_mismatch'))).not.toContain('/Users/');
   });
 
-  it('discards a PDF picker result after session change, replacement, or unmount', () => {
+  it('discards an attachment picker result after session change, replacement, or unmount', () => {
     expect(
-      shouldAcceptPdfPickerResult(true, 'project-a/session-a', 'project-a/session-a', 2, 2),
+      shouldAcceptAttachmentPickerResult(true, 'project-a/session-a', 'project-a/session-a', 2, 2),
     ).toBe(true);
     expect(
-      shouldAcceptPdfPickerResult(true, 'project-a/session-a', 'project-a/session-b', 2, 2),
+      shouldAcceptAttachmentPickerResult(true, 'project-a/session-a', 'project-a/session-b', 2, 2),
     ).toBe(false);
     expect(
-      shouldAcceptPdfPickerResult(true, 'project-a/session-a', 'project-a/session-a', 2, 3),
+      shouldAcceptAttachmentPickerResult(true, 'project-a/session-a', 'project-a/session-a', 2, 3),
     ).toBe(false);
     expect(
-      shouldAcceptPdfPickerResult(false, 'project-a/session-a', 'project-a/session-a', 2, 2),
+      shouldAcceptAttachmentPickerResult(false, 'project-a/session-a', 'project-a/session-a', 2, 2),
     ).toBe(false);
+  });
+
+  it('requires a fresh image attachment instead of offering an incomplete saved retry', () => {
+    expect(resolveFailedTurnRecoveryMode('attachment_model_modality_unsupported')).toBe('reattach');
+    expect(resolveFailedTurnRecoveryMode('codex_unavailable')).toBe('retry');
   });
 
   it('anchors a tall latest response below the transcript inset instead of clipping its header', () => {
@@ -393,8 +407,12 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Grant to Agentic study…');
     expect(html).toContain('SSH workspace not granted');
     expect(html).toContain('Raw shells, TTY, transfer, unattended execution, secrets');
-    expect(html).toContain('aria-label="Attach PDF files"');
-    expect(html).toContain('Attach up to 3 PDFs for this one turn');
+    expect(html).toContain('aria-label="Attach research files"');
+    expect(html).toContain(
+      'Attach up to 5 documents, presentations, text files, or images for this turn',
+    );
+    expect(html).toContain('<span>Files</span>');
+    expect(html).not.toContain('Attach PDF files');
     expect(html).toContain('Edit in Settings…');
   });
 

@@ -2234,6 +2234,46 @@ void app.whenReady().then(async () => {
         completedAt: fixedTimestamp,
       },
     );
+    const modalityAttemptId = randomUUID();
+    const modalityUserMessageId = randomUUID();
+    const modalityAttempt: ProjectChatAttempt = {
+      id: modalityAttemptId,
+      projectId: chatProjectId,
+      sessionId: defaultChatSession.id,
+      userMessageId: modalityUserMessageId,
+      requestedModelId: 'text-only-model',
+      reasoningOptionId: null,
+      status: 'starting',
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    };
+    database.beginChatAttempt(modalityAttempt, {
+      id: modalityUserMessageId,
+      projectId: chatProjectId,
+      role: 'user',
+      content: 'Analyze an image with a text-only model.',
+      status: 'complete',
+      actions: [],
+      createdAt: fixedTimestamp,
+      completedAt: fixedTimestamp,
+    });
+    database.finishChatAttempt(
+      {
+        ...modalityAttempt,
+        status: 'failed',
+        errorCode: 'attachment_model_modality_unsupported',
+      },
+      {
+        id: randomUUID(),
+        projectId: chatProjectId,
+        role: 'assistant',
+        content: 'The selected model cannot accept image attachments.',
+        status: 'failed',
+        actions: [],
+        createdAt: fixedTimestamp,
+        completedAt: fixedTimestamp,
+      },
+    );
     const sshConnectionId = randomUUID();
     const sshProfile = {
       schemaVersion: 1 as const,
@@ -2775,7 +2815,12 @@ void app.whenReady().then(async () => {
       ).length === 1,
       'interrupted_chat_attempt_receipt_missing',
     );
-    invariant(reopenedChat.attempts?.length === 2, 'chat_attempt_snapshot_restore_failed');
+    invariant(
+      reopened.getChatAttempt(chatProjectId, modalityAttemptId)?.errorCode ===
+        'attachment_model_modality_unsupported',
+      'chat_attempt_modality_error_restore_failed',
+    );
+    invariant(reopenedChat.attempts?.length === 3, 'chat_attempt_snapshot_restore_failed');
     invariant(
       reopened.claimAction(chatProjectId, chatActionId, fixedTimestamp),
       'chat_action_claim_failed',

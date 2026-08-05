@@ -50,8 +50,8 @@ flowchart LR
     LocalDB["암호화 SQLite\nworkspace snapshot·outbox·model provenance"]
     Codex["로컬 Codex App Server"]
     Vault["선택한 Obsidian 폴더"]
-    PdfFiles["사용자가 선택한 local PDF"]
-    PdfCapability["Main memory one-turn PDF capability\nopaque ID·bounded text"]
+    AttachmentFiles["사용자가 선택한 local 연구 파일"]
+    AttachmentCapability["ephemeral one-turn attachment capability\nMain memory·private temp·opaque IDs"]
     Git["앱 관리형 로컬 Git worktree\nfile·change·history·branch"]
     OpenSSH["system OpenSSH\nalias/direct target·ssh-agent"]
   end
@@ -81,7 +81,7 @@ flowchart LR
   Main --> LocalDB
   Main --> Codex
   Main -->|"read-only"| Vault
-  PdfFiles -->|"Main 고정 dialog·path/bytes 비노출"| Main --> PdfCapability --> Codex
+  AttachmentFiles -->|"Main 고정 dialog·path/bytes 비노출"| Main --> AttachmentCapability --> Codex
   Main -->|"project-scoped typed Git IPC"| Git
   Codex -->|"project profile web_search"| WebSearch
   Main -->|"bounded three-lane metadata search"| SemanticScholar
@@ -137,7 +137,7 @@ flowchart LR
 | Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                      | Semantic Scholar 우선·Crossref fallback의 3-layer discovery, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat additive search 구현; Zotero 앱 연결은 계획됨 |
 | Obsidian Knowledge         | Desktop Vault reader, Markdown renderer, project knowledge port                | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview·프로젝트별 agent grant 구현                                                                                                       |
 | Lecture                    | Owner Web UI 표현                                                              | 생성·편집·출처 연결은 계획됨                                                                                                                                                                   |
-| AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 다중 chat session·동적 model/mode catalog·native harness·project/SSH/Literature tool·project별 web search mode·one-turn PDF capability·thread/turn provenance 구현                             |
+| AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 다중 chat session·동적 model/mode catalog·native harness·project/SSH/Literature tool·project별 web search mode·범용 one-turn 연구 파일 capability·thread/turn provenance 구현                  |
 | Integration Hub            | Desktop Git Workspace·승인형 SSH broker, `packages/integrations` registry      | GitHub HTTPS clone·bounded Git·OpenSSH alias/direct import·프로젝트별 remote workspace grant 구현; GitHub App 계정 연결은 계획됨                                                               |
 | Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                              | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                       |
 
@@ -189,22 +189,22 @@ flowchart TD
 
 ## 6. 데이터 원본과 개인정보 경계
 
-| 데이터                                           | authoritative source                                                                     | Hosted Sync 보관 정책                                                                                                                             |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 앱 관리형 local worktree                                                        | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지                                                                               |
-| 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                                                                  | 연결 상태만; 본문은 금지                                                                                                                          |
-| 서지 metadata, collection, PDF                   | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                              |
-| 검색 문헌 metadata, review annotation, 검색 이력 | 프로젝트별 Desktop Literature SQLCipher tables, Project Chat search와 선택한 import file | 현재 Hosted Sync·outbox 대상이 아님; raw provider response·원문·abstract·로컬 file path·API key 금지                                              |
-| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                                             | 원본 금지; 상태와 명시적 summary metric만                                                                                                         |
-| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                           | 협업 metadata 저장 대상                                                                                                                           |
-| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store                                      | 금지                                                                                                                                              |
-| SSH connection profile                           | 모든 local project가 공유하는 Desktop SQLCipher registry                                 | Hosted Sync 금지; alias 또는 정규화된 direct host·user·port·inactive `-L`; secret·원본 command 금지                                               |
-| SSH remote workspace grant                       | 프로젝트별 Desktop SQLCipher table                                                       | Hosted Sync 금지; connection ID·canonical root·permission mode만 저장                                                                             |
-| SSH command output                               | 해당 Project Chat turn의 Main-process memory와 ephemeral tool result                     | raw output 저장·동기화 금지; 모델이 답변에 포함한 문장만 대화 정책 적용                                                                           |
-| SSH approval request·outcome metadata            | 현재 app process의 in-memory broker event                                                | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지                                                                           |
-| Project Chat 첨부 PDF                            | 사용자가 dialog에서 선택한 local file                                                    | path·원본 bytes·추출 text를 SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; Main memory의 해당 turn에서 모델이 요청한 bounded text만 전송 |
-| Codex web search result·tool payload             | 해당 Codex turn의 ephemeral provider context                                             | GOSU DB·outbox에 저장하지 않음; 최종 답변의 URL·요약만 visible chat 정책 적용                                                                     |
-| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                                           | 금지                                                                                                                                              |
+| 데이터                                           | authoritative source                                                                     | Hosted Sync 보관 정책                                                                                                                                    |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 앱 관리형 local worktree                                                        | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지                                                                                      |
+| 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                                                                  | 연결 상태만; 본문은 금지                                                                                                                                 |
+| 서지 metadata, collection, PDF                   | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                                     |
+| 검색 문헌 metadata, review annotation, 검색 이력 | 프로젝트별 Desktop Literature SQLCipher tables, Project Chat search와 선택한 import file | 현재 Hosted Sync·outbox 대상이 아님; raw provider response·원문·abstract·로컬 file path·API key 금지                                                     |
+| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                                             | 원본 금지; 상태와 명시적 summary metric만                                                                                                                |
+| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                           | 협업 metadata 저장 대상                                                                                                                                  |
+| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store                                      | 금지                                                                                                                                                     |
+| SSH connection profile                           | 모든 local project가 공유하는 Desktop SQLCipher registry                                 | Hosted Sync 금지; alias 또는 정규화된 direct host·user·port·inactive `-L`; secret·원본 command 금지                                                      |
+| SSH remote workspace grant                       | 프로젝트별 Desktop SQLCipher table                                                       | Hosted Sync 금지; connection ID·canonical root·permission mode만 저장                                                                                    |
+| SSH command output                               | 해당 Project Chat turn의 Main-process memory와 ephemeral tool result                     | raw output 저장·동기화 금지; 모델이 답변에 포함한 문장만 대화 정책 적용                                                                                  |
+| SSH approval request·outcome metadata            | 현재 app process의 in-memory broker event                                                | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지                                                                                  |
+| Project Chat 첨부 연구 파일                      | 사용자가 dialog에서 선택한 local file                                                    | path·원본 bytes·추출 text·정규화 image를 SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; 해당 turn에서 bounded text 또는 image만 provider에 전송 |
+| Codex web search result·tool payload             | 해당 Codex turn의 ephemeral provider context                                             | GOSU DB·outbox에 저장하지 않음; 최종 답변의 URL·요약만 visible chat 정책 적용                                                                            |
+| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                                           | 금지                                                                                                                                                     |
 
 Hosted Sync에 저장하지 않는다는 것과 LLM에 전혀 전송하지 않는다는 것은 다르다. Local Notes는 기본적으로
 Mac 안에만 남지만, 사용자가 특정 Vault를 특정 project agent에 승인한 경우 그 turn에서 agent가 실제로
@@ -216,13 +216,17 @@ answer에 인용하거나 요약하면 그 문장은 보이는 대화이므로 �
 receipt에 별도로 display title, opaque note ID 일부, content SHA-256과 excerpt 여부를 붙인다. 이 승인은
 project별이며 다른 project나 새로 선택한 Vault로 자동 승계하지 않는다.
 
-Project Chat의 PDF도 같은 구분을 따른다. 사용자가 현재 project·session에서 직접 고른 PDF는 Main이
-memory-only one-turn capability로 추출하며 파일 경로·원본 bytes·추출 본문을 prompt envelope, 보이는 user
-message, SQLCipher, outbox 또는 telemetry에 넣지 않는다. 모델이 `read_pdf_attachment`로 실제 요청한
-bounded excerpt만 선택한 provider로 전달된다. 다만 모델이 그 excerpt를 visible answer에 인용하거나
-요약하면 해당 문장은 보이는 대화 정책을 따른다. Codex first-party web search의 raw result와 tool
-payload도 GOSU persistence에는 들어오지 않고, 모델이 최종 답변에 쓴 URL과 설명만 보이는 대화로 남는다.
-provider 측 web-search retention은 GOSU가 통제하는 local retention 경계와 별개다.
+Project Chat 첨부도 같은 구분을 따른다. 사용자가 현재 project·session에서 직접 고른 연구 파일은 Main의
+ephemeral one-turn capability로만 처리하며 파일 경로·원본 bytes·추출 본문·정규화 image를 durable prompt
+envelope, 보이는 user message, GOSU SQLCipher, outbox 또는 telemetry에 넣지 않는다. 문서·슬라이드는 모델이
+`read_turn_attachment_text`로 실제 요청한 bounded reconstruction만 provider로 전달한다. 그림은
+metadata를 제거한 private temporary JPEG를 image modality가 확인된 Codex turn의 `localImage` input으로만
+전달하고 terminal에서 제거한다. 전달 과정에서 bounded tool result와 image path가 mode `0700`의
+ephemeral Codex SQLite runtime에 잠시 기록될 수 있지만 장기 `CODEX_HOME`·GOSU DB와 분리하고 위의
+shutdown·startup cleanup 경계를 적용한다. 모델이 excerpt나 그림 분석을 visible answer에 쓰면 해당 문장은 보이는
+대화 정책을 따른다. Codex first-party web search의 raw result와 tool payload도 GOSU persistence에는
+들어오지 않고, 모델이 최종 답변에 쓴 URL과 설명만 보이는 대화로 남는다. provider 측 attachment·
+web-search retention은 GOSU가 통제하는 local retention 경계와 별개다.
 
 `isSummary: true`인 Runner metric만 run summary projection에 들어간다. 그 외 metric point, log,
 resource sample, artifact reference는 WebSocket으로 실시간 relay할 수 있지만 memory store도 값을
@@ -331,10 +335,12 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   `CODEX_HOME`을 사용하며 최초 한 번만 기존 로컬 Codex 인증을 mode `0600`으로 가져온다. import
   marker가 남으므로 GOSU에서 로그아웃한 뒤 다음 실행에 개인 Codex 인증을 몰래 재수입하지 않는다.
   인증정보는 Hosted Sync로 보내지 않는다.
-- Project Chat의 Codex SQLite runtime은 mode `0700` 임시 디렉터리로 분리하고 child 종료 후 삭제한다.
-  process config에서 transcript history, analytics, OTel export와 user-prompt logging을 끈다. 실제
-  integration test는 ephemeral prompt가 장기 `CODEX_HOME`에 남지 않고 임시 SQLite에만 존재했다가
-  cleanup되는지 검사한다.
+- Project Chat의 Codex SQLite runtime은 mode `0700` 임시 디렉터리로 분리하고 child 종료·앱 종료 시
+  삭제한다. 정상 종료가 동기 삭제를 마친 뒤 child `close`에서도 한 번 더 정리해 late write를 없앤다.
+  process config에서 transcript history, analytics, OTel export와 user-prompt logging을 끈다. crash 뒤
+  남은 정확한 `gosu-codex-runtime-*`·`gosu-chat-image-*` 디렉터리는 symlink와 최근·유사 이름을 제외하고
+  24시간 age-bound를 넘은 경우에만 다음 primary-instance 시작에서 정리한다. 실제 integration test는
+  ephemeral prompt가 장기 `CODEX_HOME`에 남지 않고 임시 SQLite에만 존재했다가 cleanup되는지 검사한다.
 - model picker는 paginated `model/list` 전체 결과를 사용한다. 새 catalog를 가져올 때마다 snapshot
   event를 내보내 SQLCipher에 저장하고, `turn/start` 직전에도 cached catalog를 authority로 재사용하지 않고
   provider에서 fresh catalog를 받아 explicit model·reasoning ID를 다시 검증한다. 사라진 ID는 provider
@@ -371,7 +377,7 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   argument·result character cap과 기본 10초 timeout을 검사한다. 긴 승인이 필요한 declared tool만
   registration에 고정된 timeout override를 가질 수 있고 override 상한은 180초다. 현재
   `search_literature`는 discovery provider의 rate limit·fallback을 포함한 125초, `run_ssh_workspace_command`는 최대 30초
-  approval과 120초 execution을 포함한 155초 bound를 사용한다. PDF list/read는 기본 10초 transport
+  approval과 120초 execution을 포함한 155초 bound를 사용한다. attachment list/text-read는 기본 10초 transport
   bound를 유지하며 모델이 timeout을 늘리거나 미등록 tool에 override를 붙일 수 없다. 조기 tool call이
   먼저 도착하면 그 turn ID로
   임시 binding한 뒤 `turn/start` 응답과 반드시 일치하는지 재검사한다. 실제 tool argument는 다시 strict
@@ -382,9 +388,10 @@ durable sequence를 가리킨다. invalid manifest는 lineage가 없으므로 sp
   가능성을 되돌릴 수 없으므로 `uncertain`으로 정산하고 출처에는 `delivery unconfirmed`를 붙인다. App
   Server는 provider의 thread ID를 MCP inventory await 전에 동기적으로 예약하고, Project Chat router도
   active thread ID의 단일 소유권을 검사한다. provider가 기존 ID를 동시에 다시 반환해도 기존 project
-  handler·Vault/PDF grant를 덮어쓰거나 unsubscribe하지 않고 두 번째 start를 거절한다. terminal·cancel은
-  thread registration과 Literature·PDF·SSH capability를 revoke하고, 늦게 끝난 handler 결과를 채택하지
-  않는다. raw tool call·note/PDF body는 Project Chat DB, Renderer, telemetry에 자동 전달하지 않는다.
+  handler·Vault/attachment grant를 덮어쓰거나 unsubscribe하지 않고 두 번째 start를 거절한다.
+  terminal·cancel은 thread registration과 Literature·attachment·SSH capability를 revoke하고, 늦게 끝난
+  handler 결과를 채택하지 않는다. raw tool call·note/attachment body와 temporary image path는 Project
+  Chat DB, Renderer, telemetry에 자동 전달하지 않는다.
   모델이 visible reply에 인용한 text는 raw payload가 아니라 보이는 대화의 privacy 정책을 따른다.
 - Codex의 reasoning, command output, file diff, tool payload는 Project Chat DB나 Renderer로 전달하지
   않는다. Renderer에는 보이는 최종 답변, turn 상태, 검증된 action receipt만 보낸다.
@@ -508,28 +515,72 @@ Repository의 Markdown preview도 같은 sanitize·link 정책을 재사용하�
 읽지 않도록 Vault image loader를 명시적으로 끈다. Repository-local raster preview는 별도의 bounded
 Git asset IPC가 생기기 전까지 blocked placeholder로 표시한다.
 
-### Project Chat PDF attachment 경계
+### Project Chat 연구 파일 attachment 경계
 
-Project Chat composer의 PDF 첨부는 Renderer가 path나 bytes를 전달하는 범용 file API가 아니다. Main의
-고정 dialog가 `.pdf`만 선택하고 `O_NOFOLLOW`로 regular file을 연 뒤 20 MiB 한도와 `%PDF-` magic을
-검사한다. 한 메시지에는 최대 3개, 파일당 최대 200 page, 선택 전체의 추출 text는 최대 60,000자다.
-PDF.js parser는 Main에서 bytes만 받아 15초 timeout 안에 text layer를 추출하며 worker fetch, WASM,
-image decoder, XFA와 font rendering을 끈다. 암호화·손상·한도 초과·추출 실패는 path를 포함하지 않는
-typed error로 끝난다.
+Project Chat composer의 첨부는 Renderer가 임의 path나 bytes를 전달하는 범용 file API가 아니다. Main의
+고정 dialog가 PDF, DOCX, PPTX, HWPX, TXT·Markdown·CSV·JSON·LaTeX와 PNG·JPEG·GIF·WebP·
+TIFF·BMP·AVIF만 선택한다. Main은 `O_NOFOLLOW`로 regular file을 열고 extension별 signature·package
+manifest를 다시 확인한다. 한 메시지는 최대 5개, 파일당 20 MiB, 실제 turn claim 전체 50 MiB, 문서당
+최대 500 unit이고 text tool의 turn 전체 예산은 60,000자다. 이미지가 문서의 extraction 예산을 나눠
+갖지 않으며 동시에 살아 있는 staged·claimed capability는 25개, 정규화 image는 20개로 제한한다.
+암호화·손상·위장 형식·한도 초과·추출 실패는 path를 포함하지 않는 typed error로 끝난다.
 
-추출 결과는 `projectId + sessionId`에 묶인 15분 TTL, single-claim, memory-only capability다. 모델에는
-filename과 path 대신 `PDF 1` 같은 label, opaque UUID, source SHA-256, page count와 excerpt 상태만
-보인다. 첨부가 있는 turn에만 `list_pdf_attachments`와 `read_pdf_attachment`가 catalog에 나타나며 read는
-호출당 최대 8 page·24,000자, turn 전체 최대 60,000자다. PDF text는 untrusted evidence이고 prompt
-envelope나 durable user message에 선제 삽입하지 않는다. verified tool result가 Codex stdin에 실제
-전달된 read만 terminal source appendix에 label, opaque ID prefix, page range, source hash, excerpt와
-delivery 상태로 남기며 raw text·filename·path는 남기지 않는다. turn 완료·실패·cancel, startup 실패,
-session 전환과 app 종료는 staged/claimed capability를 revoke하고 late result를 채택하지 않는다.
+PDF.js는 15초 timeout 안에 selectable text만 추출하며 worker fetch, WASM, image decoder, XFA와 font
+rendering을 끈다. DOCX·PPTX·HWPX parser는 ZIP central directory와 각 local header의 flag·method·name·
+size·offset을 교차 확인하고 local payload range의 alias·overlap을 거절한다. 선택 part는 raw inflater의 실제
+output 상한, declared size, CRC-32, entry 수·크기·compression ratio·전체 expanded-byte budget을 모두
+통과해야 하며 traversal·Unicode/case duplicate·symlink·encryption도 거절한다. DTD·ENTITY, 외부
+relationship, unknown relationship target mode, macro와 embedded object는 읽지 않는다. bounded structural
+XML scanner는 OOXML의
+transitional/strict namespace와 HWPX OWPML namespace를 expanded name으로 확인하고 foreign subtree를
+text·reference 후보에서 제외하므로 comment·CDATA·foreign element/attribute가 manifest, relationship,
+본문을 가장할 수 없다. XML QName과 namespace prefix는 case-sensitive이고 단 하나의 optional colon만
+허용하며, `xml`·`xmlns` 예약 binding을 바꿀 수 없고 attribute entity는 parser에서 정확히 한 번만
+decode한다. DOCX는 root office-document
+relationship과 유효한 paragraph/run·section-property
+구조가 실제 참조한 body·header/footer·foot/endnote만, PPTX는 `presentation.xml`의 `sldIdLst` relationship
+순서와 각 slide가 단독으로 참조한 speaker note만, HWPX는 canonical mimetype·manifest와 직접 content
+spine section만 재구성한다. Word note container는 note root의 unique direct child여야 한다. slide/section
+unit cap은 reconstruction 전에 적용하고 여러 slide가 같은 note part를 재사용하면 거절한다. orphan·삭제
+part는 모델에 보내지 않는다. 구형 binary `.ppt`는 전체 CFB scan이
+삭제·비관련 stream을 노출할 수 있어 picker와 공개 계약에서 제외하며 사용자가 `.pptx`로 export해야 한다.
+이 결과는 정확한 Office layout·chart·animation을 재현하지 않는다.
 
-현재는 selectable text만 지원한다. OCR, figure·table의 visual understanding과 Zotero/Literature record에
-대한 durable PDF 연결은 아직 없다. 또한 parser가 별도 utility process가 아니라 privileged Main에 있어
-timeout이 동기 CPU 정지나 native crash를 hard-isolate하지 못하므로, production hardening에서는 제한된
-utility process로 옮겨야 한다.
+그림은 signature와 decoded format을 교차 확인하고 40 megapixel·16,384 source edge를 넘으면 거절한다.
+첫 animation frame만 EXIF orientation에 맞춰 최대 2,048 edge, 4 MiB 이하의 metadata-free JPEG로 만들고
+투명 배경은 흰색으로 합성한다. 정규화 파일은 mode `0700` private temp directory와 mode `0600` random
+filename으로만 만들며 model catalog가 image modality를 명시한 경우에만 Codex App Server의 native
+`localImage` input으로 보낸다. model capability가 없거나 사라지면 text fallback을 꾸미지 않고 turn을
+차단한다. image turn은 시작 때 사용한 정확한 catalog snapshot을 유지하고 모든 early/late
+`model/rerouted` target을 다시 확인한다. unknown 또는 text-only target이면 dynamic tool을 revoke하고
+내부 rejection event로 Project Chat의 terminal code와 image receipt를 먼저 봉인한 뒤 turn을 interrupt한다.
+따라서 interrupt 확인 중 App Server 연결이 끊겨도 일반 연결 오류로 완화되지 않으며, 완료 event 역시
+modality-specific failure로 고정한다. turn 시작 전 reroute buffer가 전역 상한에 닿으면 오래된 검증 기록을
+버리지 않고 App Server 연결을 끊어 fail closed한다. terminal receipt 저장을 한 번 복구해야 하는 경우에도
+동일한 modality error와 non-retryable 분류를 유지한다. 해당 경우 image source receipt를 폐기하고 saved
+retry 없이 model을 다시 고른 뒤 재첨부하도록 한다.
+
+descriptor와 추출 text는 `projectId + sessionId`에 묶인 15분 TTL, single-claim, Main-memory capability다.
+정규화 image와 Codex의 ephemeral turn state는 사용자 데이터 저장소와 분리된 mode `0700` private temp
+directory에만 잠시 존재한다. 정상 terminal·shutdown에서는 즉시 제거하고 crash 잔여물은 위 age-bounded
+startup sweep이 처리한다.
+모델에는 filename과 path 대신 `Attachment 1` 같은 label, opaque UUID, source SHA-256, format·unit count와
+excerpt 상태만 보인다. 첨부가 있는 turn에만 `list_turn_attachments`와
+`read_turn_attachment_text`가 catalog에 나타나며 read는 호출당 최대 8 unit·24,000자, turn 전체 최대
+60,000자다. 모든 attachment text와 image는 untrusted evidence이고 prompt envelope나 durable user
+message에 선제 삽입하지 않는다. 실제 전달된 read와 native image만 terminal source appendix에 label,
+opaque ID prefix, unit range, source hash와 excerpt 상태로 남기며 raw body·filename·path는 남기지 않는다.
+turn 완료·실패·cancel, startup 실패, session 전환과 app 종료는 staged/claimed capability와 temporary
+image를 revoke하고 late result를 채택하지 않는다. image modality 거절 attempt에는 첨부 ID나 path를
+durable retry payload로 저장하지 않으므로 saved retry를 허용하지 않는다. UI는 message text만 복원하고
+image-capable model을 고른 뒤 파일을 다시 첨부해 resend하도록 안내한다.
+
+현재 PDF OCR, Office/HWPX embedded image·chart 이해, `.ppt`·`.hwp`·`.doc` 지원, 다중 animation frame과
+Zotero/Literature record의 durable full-text 연결은 없다. parser와 native image codec이 별도 utility
+process가 아니라 privileged Main에 있어 timeout이 동기 CPU 정지나 native crash를 hard-isolate하지
+못한다. 특히 PDF.js의 `getTextContent()`는 page text를 materialize한 뒤 60,000자 budget을 적용하므로
+압축된 악성 PDF의 pre-materialization 메모리·CPU를 hard bound하지 못한다. production hardening에서는
+모든 document/image parser를 killable·resource-limited utility process로 옮겨야 한다.
 
 ### Literature Discovery & Review 경계
 
@@ -910,7 +961,7 @@ flowchart LR
   ToolGateway["ProjectAgentToolSession\nproject-bound capabilities"]
   Codex["isolated Codex App Server\nstructured final response"]
   Vault["selected Local Notes\nopaque IDs·bounded chunks"]
-  Pdf["one-turn PDF memory\nopaque IDs·bounded pages"]
+  Attachments["ephemeral turn attachments\nopaque IDs·bounded units·normalized images"]
   Literature["LiteratureService\n3-layer discovery·additive merge"]
   LiteratureDB["Literature SQLCipher tables"]
   Web["Codex first-party web search\ncached/live"]
@@ -924,7 +975,7 @@ flowchart LR
   Codex -->|"item/tool/call"| ToolGateway
   ToolGateway -->|"Board·Objective"| Workspace
   ToolGateway -->|"explicit project grant"| Vault
-  Pdf -->|"claimed project+session capability"| ToolGateway
+  Attachments -->|"claimed project+session capability"| ToolGateway
   ToolGateway -->|"explicit user command"| Literature --> LiteratureDB
   ToolGateway -->|"project grant·exact approved argv"| SSH
   Codex -->|"profile web_search config"| Web
@@ -1050,15 +1101,16 @@ flowchart LR
   `thread/start.config.web_search` 설정이다.
 - 현재 `gosu_project` namespace는 항상 `read_workspace`, SSH workspace list/run을 제공한다. explicit
   literature-search command가 있는 non-legacy turn에는 `search_literature`, 승인된 Vault가 있으면
-  `list_local_notes`·`read_local_note`, PDF가 첨부됐으면 `list_pdf_attachments`·`read_pdf_attachment`가
-  추가된다. legacy reviewer에는 Literature mutation tool이 없다.
+  `list_local_notes`·`read_local_note`, 현재 turn 연구 파일이 첨부됐으면 `list_turn_attachments`·
+  `read_turn_attachment_text`가 추가된다. legacy reviewer에는 Literature mutation tool이 없다.
   `read_workspace`는 active project ID를 handler closure에 묶어 Board와 최신 Objective만 반환하며
   모델 argument로 project ID를 받지 않는다. repository는 credential·URL·SSH 주소를 제외한 canonical
   `owner/repository` label만 agent context에 포함한다. Local Notes tool은 profile grant가 현재 선택 Vault와
   일치할 때만 catalog에 나타난다. list는 opaque note ID와 display title만 반환하고 read는 호출당
-  24,000자, ephemeral turn당 합계 96,000자로 제한한다. PDF read는 호출당 8 page·24,000자와 turn당
-  60,000자다. 동시 호출은 read 전에 budget을 reserve하고 모든 tool 결과는 직렬화 후 48,000자 안으로
-  축약한다. note/PDF/web text와 tool result는 untrusted evidence이며 그 안의 지시를 실행하지 않는다.
+  24,000자, ephemeral turn당 합계 96,000자로 제한한다. attachment text read는 호출당 8 unit·24,000자와
+  turn당 60,000자다. 동시 호출은 read 전에 budget을 reserve하고 모든 tool 결과는 직렬화 후 48,000자
+  안으로 축약한다. note/attachment/web text와 image·tool result는 untrusted evidence이며 그 안의 지시를
+  실행하지 않는다.
 - SSH workspace list tool은 active project의 grant만 읽어 opaque grant ID, connection label과 permission
   mode를 반환한다. grant가 없을 때는 bounded `registeredConnectionCount`와
   `no_registered_connections|workspace_grant_required` setup state만 반환해 모델이 transport 실패와 승인
@@ -1092,20 +1144,21 @@ flowchart LR
   표시하지 않고 project busy 상태만 보여 준다. timeout·output cap·transport failure는 typed error로 끝나 다른
   Project Chat capability를 중단시키지 않지만, local abort 뒤 remote process 종료는 보증하지 않는다.
   approval event·binding·outcome은 현재 memory-only라 restart 후 감사 원본으로 쓸 수 없다.
-- agent가 실제로 읽은 note와 PDF excerpt는 성공·invalid response·중단·실패·turn 등록 실패를 포함한
-  모든 terminal assistant receipt 끝에 각각 sanitized title 또는 opaque PDF label, opaque ID prefix,
-  content/source SHA-256, page range와 excerpt 여부를 남긴다. 자동 source appendix에는 raw note/PDF body,
-  filename, root/path와 tool arguments를 넣지 않는다. 다만 모델이 evidence를 visible reply에 직접 인용·
-  요약하면 그 reply는 SQLCipher message와 향후 Hosted Sync 대상이다. terminal 경로는 pending note/PDF
-  delivery를 최대 100ms 동안 bounded settlement한 뒤 App Server의 해당
+- agent가 실제로 읽은 note·attachment text와 App Server가 받아들인 native image는 성공·invalid
+  response·중단·실패·turn 등록 실패를 포함한 모든 terminal assistant receipt 끝에 sanitized title 또는
+  opaque attachment label, opaque ID prefix, content/source SHA-256, unit range와 excerpt 여부를 남긴다.
+  자동 source appendix에는 raw note/attachment body, filename, temporary image path, root/path와 tool
+  arguments를 넣지 않는다. 다만 모델이 evidence를 visible reply에 직접 인용·요약하면 그 reply는
+  SQLCipher message와 향후 Hosted Sync 대상이다. terminal 경로는 pending note/attachment delivery를 최대
+  100ms 동안 bounded settlement한 뒤 App Server의 해당
   thread tool registration을 동기적으로 revoke한다. revoke로 확정된 `uncertain` 결과까지 한 microtask
   안에서 반영한 다음 `Local Notes accessed` appendix를 봉인한다. timeout 뒤 완료된 handler는 note
   result를 Codex로 보내거나 receipt를 뒤늦게 변경할 수 없다. source identity는
   `note ID + content SHA-256` pair이므로 같은 note의 서로 다른 content version을 한 turn에서 읽어도 각각
   보존하고, 동일 version의 여러 excerpt만 하나의 source entry로 합친다.
 - tool access는 UI section 자체나 database table 접근이 아니라 module capability다. 현재 구현된
-  Board·Goal & Metrics·승인된 Local Notes, 현재 turn 첨부 PDF, 명시적 additive Literature search와 active
-  project에 grant된 SSH workspace의 opaque ID·label·mode만 사용할 수 있다. Literature table 전체를 임의
+  Board·Goal & Metrics·승인된 Local Notes, 현재 turn 첨부 연구 파일, 명시적 additive Literature search와
+  active project에 grant된 SSH workspace의 opaque ID·label·mode만 사용할 수 있다. Literature table 전체를 임의
   조회·수정하는 도구는 없고 search receipt만 돌아온다. SSH host resolution·credential·private-key path·
   remote root, Settings·Project Trash는 list tool에 노출하지 않으며 Experiments·Manuscript·Review·
   References·Lecture는 domain service가 완성되기 전에는 접근 가능한 것처럼 표시하지 않는다. Board
@@ -1131,7 +1184,7 @@ flowchart LR
 - turn prompt에는 현재 프로젝트의 이름·repository 식별자, Board 제목과 canonical status/display
   label mapping, 최대 200개 active Task의 bounded metadata, 최신 Objective와 해당 프로젝트의
   bounded visible history만 선제적으로 넣는다. archived Task는 개수만 제공한다. 다른 프로젝트,
-  연구 파일과 secret은 포함하지 않는다. Vault 본문, PDF text와 web result는 선제 context에 넣지 않고
+  연구 파일과 secret은 포함하지 않는다. Vault 본문, attachment text·image와 web result는 선제 context에 넣지 않고
   승인·첨부·profile에 의해 허용된 현재 turn capability로 model이 요청한 bounded evidence만 제공한다.
 - snapshot은 현재 active turn ID를 포함한다. 창 재생성이나 Renderer reload가 `turn.started` event를
   놓쳐도 Thinking·Stop 상태를 복구하며, load generation과 event sequence guard가 오래된 snapshot이
@@ -1388,8 +1441,9 @@ OpenSSH transport를 timeout·cancel로 종료해도 연결이 이미 끊어진 
 command hash·binding·allowed/denied/expired/cancelled outcome도 해당 app process/turn 수명의 event일 뿐
 append-only audit가 아니다. Project Chat의 인터넷 기능은 Codex first-party cached/live search이며 일반
 browser, 임의 URL download나 page control이 아니다. web provider 측 retention은 GOSU local DB 정책만으로
-통제할 수 없다. PDF 첨부는 해당 turn의 selectable-text 분석일 뿐 OCR·visual figure/table 이해,
-Zotero/Literature record attachment 또는 paper full-text verification이 아니다. Literature는 metadata
+통제할 수 없다. 연구 파일 첨부는 해당 turn의 bounded reconstruction 또는 정규화 image 분석일 뿐이다.
+PDF OCR·figure/table visual 이해, Office/HWPX layout·embedded object 복원, Zotero/Literature record
+attachment 또는 paper full-text verification을 뜻하지 않는다. Literature는 metadata
 검색·review table까지 구현됐지만 systematic-review full-text 근거 검증, Zotero 동기화, 예약된 background
 alert와 Hosted collaboration은 아직 보증하지 않는다. DMG 설정은 있으나
 Developer ID 서명·notarization·auto-update를 보증하지 않는다. 개발 DMG는 ad-hoc signature만 사용한다.
@@ -1544,12 +1598,22 @@ test는 legacy·unknown mode가 `disabled`로 복구되고 Settings가 자동 in
 제공하거나 감지 결과를 연결 상태로 표현하지 않는지 검증한다. Codex Project Chat 테스트는 add-on
 preference와 무관하게 기존 기본 경로를 계속 검증한다.
 
-PDF attachment test는 trusted IPC sender와 strict project/session DTO, Renderer path 비노출,
-symlink·가짜 magic·oversize·encrypted·page-limit·extraction-timeout 거절을 검사한다. TTL·single claim,
-project/session forgery, 3개·20 MiB·200 page·총 60,000자·호출당 8 page/24,000자 한도, session 전환·
-terminal·startup failure·cancel revoke와 late picker/result 폐기를 고정한다. raw bytes/text가 prompt,
-message, SQLCipher·telemetry에 남지 않고 delivered/uncertain read만 bounded source appendix를 만드는지도
-검증한다. PDF parse나 web/literature provider 장애는 Board·Local Notes와 기존 Literature table을 막지 않아야 한다.
+attachment test는 trusted IPC sender와 strict project/session DTO, Renderer path 비노출, symlink·가짜
+magic·oversize·encrypted·extraction-timeout과 legacy `.ppt`를 거절한다. OOXML/HWPX는 ZIP central/local
+불일치, understated output·CRC·payload alias/overlap, bomb·traversal·duplicate path·DTD/ENTITY·외부
+relationship, orphan part, relationship order, shared note, pre-reconstruction unit cap, comment·CDATA·
+foreign element/attribute namespace spoofing, malformed QName·case-folded prefix·nested/duplicate note
+container·double entity decode·reserved namespace rebinding·unknown relationship target mode를, image는
+decoded format·pixel/edge cap·metadata 제거·
+animation first-frame 정책을 검사한다. TTL·single claim, project/session forgery, 5개·파일당 20 MiB·turn
+전체 50 MiB·500 unit·총 60,000자·호출당 8 unit/24,000자·live capability/image 한도, session 전환·
+terminal·startup failure·cancel revoke와 late picker/result 폐기를 고정한다. text-only model과 catalog
+snapshot에 없거나 image modality가 없는 early/late reroute는 interrupt·tool revoke·modality failure로
+fail closed하고 buffer saturation·terminal persistence recovery에서도 image source receipt와 불완전한 saved
+retry를 막으며 raw bytes/text,
+filename과 temporary path가 prompt, message, SQLCipher·telemetry에 남지 않으며 실제 전달된 read/native
+image만 bounded source appendix를 만드는지도 검증한다. parser나 web/literature provider 장애는 Board·
+Local Notes와 기존 Literature table을 막지 않아야 한다.
 
 Local Notes tree test는 입력 순서와 무관한 directory-first natural ordering, duplicate와 malformed path
 제외, nested·sibling expansion 보존, 현재 note ancestor reveal을 고정한다. Renderer test는 접힌 descendant가
@@ -1809,8 +1873,9 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
 - Literature의 citation·author·momentum ranking이 높다는 것과 paper full text를 읽어 연구 품질이나
   systematic-review evidence를 검증했다는 것은 다르다. 이 score는 discovery 우선순위일 뿐이며 Zotero
   자동 동기화와 background alert도 아직 수행하지 않는다.
-- Project Chat web search가 있다는 것과 browser·임의 URL fetch 권한이 있다는 것은 다르다. PDF 첨부도
-  one-turn selectable-text excerpt capability이지 durable reference attachment·OCR·원문 검증이 아니다.
+- Project Chat web search가 있다는 것과 browser·임의 URL fetch 권한이 있다는 것은 다르다. 연구 파일
+  첨부도 one-turn bounded reconstruction·normalized-image capability이지 durable reference attachment·
+  OCR·Office layout 복원·원문 검증이 아니다.
 - macOS package 설정이 있다는 것과 배포 artifact가 서명·notarization됐다는 것은 다르다.
 - manifest에 `allowlist` enum이 있다는 것과 Runner network 실행이 허용된다는 것은 다르다. 현재는
   명시적으로 거부된다.
@@ -1843,9 +1908,10 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
       동일한 LiteratureService policy, cancel/late-result 봉인을 유지하는가?
 - [ ] Project Chat web search 변경이면 actual mode를 profile·attempt에 기록하고 silent fallback 없이
       `disabled|cached|live`만 허용하는가? shell, browser, Apps, MCP와 general network가 계속 꺼져 있는가?
-- [ ] PDF attachment 변경이면 local path·원본 bytes·raw extracted text를 저장·동기화하지 않고
-      project/session scope, TTL, single claim, 개수·size·page·character budget, untrusted marker와 모든
-      terminal/startup/session-transition revoke를 유지하는가?
+- [ ] Project Chat attachment 변경이면 local path·원본 bytes·raw extracted text·temporary image를 저장·
+      동기화하지 않고 project/session scope, TTL, single claim, 개수·size·unit·character·pixel·archive
+      budget, format authenticity, image modality fail-closed, untrusted marker와 모든 terminal/startup/
+      session-transition revoke를 유지하는가?
 - [ ] 실패·cancel·negative result provenance가 사라지지 않는가?
 - [ ] 외부 장애가 독립 모듈을 막지 않는가?
 - [ ] 구현 상태와 계획 상태를 README·architecture에서 정확히 구분했는가?

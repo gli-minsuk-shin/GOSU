@@ -135,16 +135,25 @@ export function describeError(error: unknown) {
       'Choose a Local Notes folder before authorizing it for this project.',
     local_notes_vault_changed:
       'The selected Local Notes folder changed. Review it and authorize the current folder again.',
-    pdf_attachment_invalid: 'Choose a valid local PDF file and try again.',
-    pdf_attachment_too_large: 'Each PDF must be 20 MB or smaller.',
-    pdf_attachment_too_many: 'Attach no more than three PDFs to one message.',
-    pdf_attachment_encrypted: 'Password-protected PDFs cannot be read yet.',
-    pdf_attachment_page_limit: 'Each PDF must contain 200 pages or fewer.',
-    pdf_attachment_extraction_failed:
-      'GOSU could not extract text from this PDF. Try another selectable-text PDF.',
-    pdf_attachment_expired: 'This one-time PDF attachment expired. Attach it again.',
-    pdf_attachment_scope_mismatch:
-      'This PDF belongs to another project or chat session. Attach it here again.',
+    attachment_invalid:
+      'This file is damaged or does not match its file type. Choose a valid local file.',
+    attachment_unsupported:
+      'This file type is not supported yet. Use PDF, DOCX, PPTX, HWPX, text, or a common raster image. Export legacy .ppt files as .pptx first.',
+    attachment_too_large: 'Each attachment must be 20 MB or smaller and within decode limits.',
+    attachment_total_too_large: 'The attachments in one message must total 50 MB or less.',
+    attachment_too_many: 'Attach no more than five files to one message.',
+    attachment_encrypted: 'Password-protected attachments cannot be read yet.',
+    attachment_archive_limit:
+      'This document expands beyond the safe archive limit and was not opened.',
+    attachment_extraction_failed:
+      'GOSU could not safely reconstruct content from this file. Try exporting it again.',
+    attachment_expired: 'This one-time attachment expired. Attach it again.',
+    attachment_scope_mismatch:
+      'This file belongs to another project or chat session. Attach it here again.',
+    attachment_capacity_exhausted:
+      'Too many one-time files are already waiting or being analyzed. Send or remove them, then try again.',
+    attachment_model_modality_unsupported:
+      'The selected model cannot inspect images. Choose an image-capable model, attach the image again, and resend.',
     action_not_found: 'This proposed project action no longer exists.',
     action_not_proposed: 'This project action was already handled.',
     invalid_chat_input: 'Check the chat message and model selection, then try again.',

@@ -1,11 +1,11 @@
 import {
-  ChooseProjectChatPdfAttachmentsInputSchema,
-  ReleaseProjectChatPdfAttachmentInputSchema,
+  ChooseProjectChatAttachmentsInputSchema,
+  ReleaseProjectChatAttachmentInputSchema,
 } from '../shared/project-chat-attachment-contracts';
 import { PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS } from '../shared/project-chat-attachment-channels';
 import type { ProjectChatIpcResult } from '../shared/project-chat-ipc-result';
 import {
-  ProjectChatPdfAttachmentError,
+  ProjectChatAttachmentError,
   type ProjectChatAttachmentService,
 } from './project-chat-attachment-service';
 
@@ -17,13 +17,13 @@ export function registerProjectChatAttachmentIpc(
   reportUnexpected: (error: unknown) => void = () => undefined,
 ) {
   register(PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.choose, (input) => {
-    const parsed = ChooseProjectChatPdfAttachmentsInputSchema.safeParse(input);
+    const parsed = ChooseProjectChatAttachmentsInputSchema.safeParse(input);
     return parsed.success
       ? safely(() => service.choose(parsed.data), reportUnexpected)
       : invalidInput();
   });
   register(PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.release, (input) => {
-    const parsed = ReleaseProjectChatPdfAttachmentInputSchema.safeParse(input);
+    const parsed = ReleaseProjectChatAttachmentInputSchema.safeParse(input);
     return parsed.success
       ? safely(() => service.release(parsed.data), reportUnexpected)
       : invalidInput();
@@ -41,7 +41,7 @@ async function safely<T>(
   try {
     return { ok: true, value: await operation() };
   } catch (error) {
-    if (error instanceof ProjectChatPdfAttachmentError) {
+    if (error instanceof ProjectChatAttachmentError) {
       return { ok: false, error: { code: error.code } };
     }
     try {
