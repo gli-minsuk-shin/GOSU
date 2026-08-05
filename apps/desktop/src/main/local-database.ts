@@ -23,6 +23,11 @@ import {
   type LiteratureTierCounts,
 } from '../shared/literature-contracts';
 import {
+  LiteratureSearchTagsSchema,
+  mergeLiteratureSearchTags,
+  type LiteratureSearchTags,
+} from '../shared/literature-search-tags';
+import {
   ProjectChatActionSchema,
   ProjectChatAttemptSchema,
   ProjectChatMessageSchema,
@@ -64,6 +69,7 @@ const LITERATURE_MANUAL_RELEVANCE_MIGRATION = 'literature-manual-relevance-v2';
 const LITERATURE_WEAK_FINGERPRINT_MIGRATION = 'literature-weak-fingerprint-v1';
 const LITERATURE_DISCOVERY_MIGRATION = 'literature-balanced-discovery-v1';
 const LITERATURE_DISCOVERY_COVERAGE_MIGRATION = 'literature-discovery-coverage-v1';
+const LITERATURE_SEARCH_TAGS_MIGRATION = 'literature-search-tags-v1';
 const DEFAULT_PROJECT_CHAT_SESSION_TITLE = 'Project chat';
 
 export type LocalLiteratureAiAnnotationUpdate = LiteratureAiAnnotationUpdate &
@@ -346,6 +352,7 @@ type LiteratureRecordRow = Readonly<{
   container_title: string | null;
   published_year: number | null;
   topics_json: string;
+  search_tags_json: string;
   work_type: string | null;
   citation_count: number | null;
   source_url: string | null;
@@ -375,6 +382,7 @@ type LiteratureSearchRunRow = Readonly<{
   policy_id: string;
   policy_version: number;
   query: string;
+  search_tags_json: string;
   requested_limit: number;
   from_year: number | null;
   to_year: number | null;
@@ -421,6 +429,10 @@ function recordJson(value: string | null) {
   return parsed as Readonly<Record<string, unknown>>;
 }
 
+function literatureSearchTagsJson(value: string): LiteratureSearchTags {
+  return LiteratureSearchTagsSchema.parse(JSON.parse(value) as unknown);
+}
+
 function toLocalLiteratureRecord(row: LiteratureRecordRow): LiteratureRecord {
   return LiteratureRecordSchema.parse({
     schemaVersion: 1,
@@ -435,6 +447,7 @@ function toLocalLiteratureRecord(row: LiteratureRecordRow): LiteratureRecord {
     containerTitle: row.container_title,
     publishedYear: row.published_year,
     sourceTopics: stringArrayJson(row.topics_json),
+    searchTags: literatureSearchTagsJson(row.search_tags_json),
     workType: row.work_type,
     citationCount: row.citation_count,
     sourceUrl: row.source_url,
@@ -492,6 +505,7 @@ function toLocalLiteratureSearchRun(
     policyId: row.policy_id,
     policyVersion: row.policy_version,
     query: row.query,
+    searchTags: literatureSearchTagsJson(row.search_tags_json),
     requestedLimit: row.requested_limit,
     fromYear: row.from_year,
     toYear: row.to_year,
@@ -747,6 +761,7 @@ function upsertLiteratureCandidate(
   projectId: string,
   candidate: LiteratureProviderCandidate,
   updatedAt: string,
+  runSearchTags?: LiteratureSearchTags,
 ) {
   const existing = findLiteratureRecord(database, projectId, candidate);
   requireLiteratureRecordCapacity(database, projectId, existing);
@@ -754,15 +769,16 @@ function upsertLiteratureCandidate(
   if (!existing) {
     const id = randomUUID();
     const manual = candidate.manualAnnotations ?? { topics: [], summary: '', relevance: '' };
+    const searchTags = mergeLiteratureSearchTags(candidate.searchTags, runSearchTags);
     database
       .prepare(
         `insert into literature_records(
            id,schema_version,project_id,source_provider,provider_record_id,doi,fingerprint,title,
-           authors_json,container_title,published_year,topics_json,work_type,citation_count,
+           authors_json,container_title,published_year,topics_json,search_tags_json,work_type,citation_count,
            source_url,citation_key,review_status,manual_topics_json,manual_summary,manual_relevance,
            ai_topics_json,ai_summary,ai_relevance,ai_study_type,ai_limitations_json,
            ai_model_provenance_json,annotation_version,version,created_at,updated_at,deleted_at
-         ) values(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,null)`,
+         ) values(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,null)`,
       )
       .run(
         id,
@@ -776,6 +792,7 @@ function upsertLiteratureCandidate(
         state.container_title,
         state.published_year,
         state.topics_json,
+        JSON.stringify(searchTags),
         state.work_type,
         state.citation_count,
         state.source_url,
@@ -839,6 +856,13 @@ function upsertLiteratureCandidate(
     importReview && candidate.citationKey
       ? nextCitationKey(database, projectId, candidate, existing.id)
       : existing.citation_key;
+  const searchTags = mergeLiteratureSearchTags(
+    literatureSearchTagsJson(existing.search_tags_json),
+    candidate.searchTags,
+    runSearchTags,
+  );
+  const searchTagsJson = JSON.stringify(searchTags);
+  const searchTagsChanged = existing.search_tags_json !== searchTagsJson;
   const sourceChanged =
     existing.source_provider !== merged.source_provider ||
     existing.provider_record_id !== merged.provider_record_id ||
@@ -860,6 +884,7 @@ function upsertLiteratureCandidate(
     existing.manual_relevance !== (manual.relevance || null);
   const changed =
     sourceChanged ||
+    searchTagsChanged ||
     existing.citation_key !== citationKey ||
     existing.review_status !== reviewStatus ||
     existing.manual_topics_json !== JSON.stringify(manual.topics) ||
@@ -872,7 +897,7 @@ function upsertLiteratureCandidate(
     .prepare(
       `update literature_records set
          source_provider=?,provider_record_id=?,doi=?,fingerprint=?,title=?,authors_json=?,container_title=?,
-         published_year=?,topics_json=?,work_type=?,citation_count=?,source_url=?,citation_key=?,
+         published_year=?,topics_json=?,search_tags_json=?,work_type=?,citation_count=?,source_url=?,citation_key=?,
          review_status=?,manual_topics_json=?,manual_summary=?,manual_relevance=?,
          ai_topics_json=?,ai_summary=?,ai_relevance=?,ai_study_type=?,ai_limitations_json=?,
          ai_model_provenance_json=?,
@@ -889,6 +914,7 @@ function upsertLiteratureCandidate(
       merged.container_title,
       merged.published_year,
       merged.topics_json,
+      searchTagsJson,
       merged.work_type,
       merged.citation_count,
       merged.source_url,
@@ -1125,6 +1151,32 @@ function migrateLiteratureDiscoveryCoverage(database: Database.Database) {
     .immediate();
 }
 
+function migrateLiteratureSearchTags(database: Database.Database) {
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(LITERATURE_SEARCH_TAGS_MIGRATION);
+  if (migrationApplied) return;
+  database
+    .transaction(() => {
+      const addColumn = (table: string) => {
+        const columns = database.pragma(`table_info(${table})`) as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === 'search_tags_json')) {
+          database.exec(
+            `alter table ${table} add column search_tags_json text not null
+             default '{"topics":[],"keywords":[]}'
+             check (length(search_tags_json) <= 32768)`,
+          );
+        }
+      };
+      addColumn('literature_records');
+      addColumn('literature_search_runs');
+      database
+        .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+        .run(LITERATURE_SEARCH_TAGS_MIGRATION, new Date().toISOString());
+    })
+    .immediate();
+}
+
 export class LocalDatabase {
   private database: Database.Database | undefined;
   private workspaceOutboxOrderingReady = false;
@@ -1260,6 +1312,9 @@ export class LocalDatabase {
           published_year is null or published_year between 1000 and 3000
         ),
         topics_json text not null check (length(topics_json) <= 32768),
+        search_tags_json text not null default '{"topics":[],"keywords":[]}' check (
+          length(search_tags_json) <= 32768
+        ),
         work_type text check (work_type is null or length(work_type) between 1 and 120),
         citation_count integer check (citation_count is null or citation_count >= 0),
         source_url text check (source_url is null or length(source_url) between 1 and 2048),
@@ -1323,6 +1378,9 @@ export class LocalDatabase {
         ),
         policy_version integer not null default 1 check (policy_version > 0),
         query text not null check (length(query) between 1 and 1000),
+        search_tags_json text not null default '{"topics":[],"keywords":[]}' check (
+          length(search_tags_json) <= 32768
+        ),
         requested_limit integer not null check (requested_limit between 1 and 50),
         from_year integer check (from_year is null or from_year between 1000 and 3000),
         to_year integer check (to_year is null or to_year between 1000 and 3000),
@@ -1569,6 +1627,7 @@ export class LocalDatabase {
       }
       migrateLiteratureDiscovery(database);
       migrateLiteratureDiscoveryCoverage(database);
+      migrateLiteratureSearchTags(database);
       const sshConnectionColumns = database.pragma('table_info(ssh_connections)') as Array<{
         name: string;
       }>;
@@ -2660,7 +2719,7 @@ export class LocalDatabase {
     const database = this.require();
     const rows = database
       .prepare(
-        `select id,project_id,provider,policy_id,policy_version,query,requested_limit,from_year,to_year,status,
+        `select id,project_id,provider,policy_id,policy_version,query,search_tags_json,requested_limit,from_year,to_year,status,
                 new_count,updated_count,unchanged_count,conflict_count,retrieved_count,selected_count,
                 core_count,rising_count,broad_count,discovery_coverage_json,created_at,completed_at
          from literature_search_runs where project_id=? order by created_at desc,id desc limit 20`,
@@ -2693,11 +2752,11 @@ export class LocalDatabase {
       this.require()
         .prepare(
           `insert or ignore into literature_search_runs(
-             id,schema_version,project_id,provider,policy_id,policy_version,query,requested_limit,
+             id,schema_version,project_id,provider,policy_id,policy_version,query,search_tags_json,requested_limit,
              from_year,to_year,status,new_count,updated_count,unchanged_count,conflict_count,
              retrieved_count,selected_count,core_count,rising_count,broad_count,
              discovery_coverage_json,created_at,completed_at
-           ) values(?,1,?,?,?,?,?,?,?,?,'running',0,0,0,0,0,0,0,0,0,null,?,null)`,
+           ) values(?,1,?,?,?,?,?,?,?,?,?,'running',0,0,0,0,0,0,0,0,0,null,?,null)`,
         )
         .run(
           input.id,
@@ -2706,6 +2765,7 @@ export class LocalDatabase {
           input.policyId ?? 'crossref-basic',
           input.policyVersion ?? 1,
           input.query,
+          JSON.stringify(input.searchTags ?? { topics: [], keywords: [] }),
           input.requestedLimit,
           input.fromYear,
           input.toYear,
@@ -2734,7 +2794,7 @@ export class LocalDatabase {
       .transaction(() => {
         const run = database
           .prepare(
-            `select id,project_id,provider,policy_id,policy_version,query,requested_limit,from_year,to_year,status,
+            `select id,project_id,provider,policy_id,policy_version,query,search_tags_json,requested_limit,from_year,to_year,status,
                     new_count,updated_count,unchanged_count,conflict_count,retrieved_count,selected_count,
                     core_count,rising_count,broad_count,discovery_coverage_json,created_at,completed_at
              from literature_search_runs where project_id=? and id=?`,
@@ -2772,8 +2832,9 @@ export class LocalDatabase {
         let conflicts = 0;
         const tierCounts: LiteratureTierCounts = { core: 0, rising: 0, broad: 0 };
         const conflictDetails: LiteratureSearchConflict[] = [];
+        const runSearchTags = literatureSearchTagsJson(run.search_tags_json);
         const upsertOne = database.transaction((candidate: LiteratureProviderCandidate) =>
-          upsertLiteratureCandidate(database, projectId, candidate, completedAt),
+          upsertLiteratureCandidate(database, projectId, candidate, completedAt, runSearchTags),
         );
         const insertHit = database.prepare(
           `insert into literature_search_hits(

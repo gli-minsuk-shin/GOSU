@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildLiteratureSearchTagOptions,
   buildLiteratureTablePage,
   LITERATURE_PAGE_SIZE,
   MAX_VISIBLE_LITERATURE_RECORDS,
@@ -17,7 +18,10 @@ const record = (
   authors: ['Ada Researcher'],
   venue: 'GOSU Transactions',
   year: 2026,
-  topics: ['agentic research'],
+  searchTags: { topics: ['agentic research'], keywords: [] },
+  sourceTopics: [],
+  manualTopics: [],
+  aiTopics: [],
   doi: `10.1000/${id}`,
   type: 'journal-article',
   citedBy: 0,
@@ -38,7 +42,7 @@ describe('literature table model', () => {
         record('one', { title: 'Learning systems', reviewStatus: 'included' }),
         record('two', {
           authors: ['Grace Hopper'],
-          topics: ['compilers'],
+          searchTags: { topics: ['compilers'], keywords: [] },
           reviewStatus: 'excluded',
         }),
       ],
@@ -52,6 +56,70 @@ describe('literature table model', () => {
     );
 
     expect(result.rows.map(({ id }) => id)).toEqual(['two']);
+  });
+
+  it('filters typed search tags by exact normalized key without matching other topic sources', () => {
+    const records = [
+      record('exact-topic', {
+        searchTags: { topics: ['ＲＡＧ'], keywords: [] },
+      }),
+      record('substring', {
+        searchTags: { topics: ['ragged evaluation'], keywords: [] },
+      }),
+      record('keyword', {
+        searchTags: { topics: [], keywords: ['RAG'] },
+      }),
+      record('other-source', {
+        searchTags: { topics: [], keywords: [] },
+        sourceTopics: ['RAG'],
+        manualTopics: ['RAG'],
+        aiTopics: ['RAG'],
+      }),
+    ];
+    const query = {
+      text: '',
+      reviewStatus: 'all',
+      sortKey: 'title' as const,
+      sortDirection: 'ascending' as const,
+      page: 1,
+    };
+
+    expect(
+      buildLiteratureTablePage(records, { ...query, searchTag: 'topics:rag' }).rows.map(
+        ({ id }) => id,
+      ),
+    ).toEqual(['exact-topic']);
+    expect(
+      buildLiteratureTablePage(records, { ...query, searchTag: 'keywords:rag' }).rows.map(
+        ({ id }) => id,
+      ),
+    ).toEqual(['keyword']);
+    expect(
+      buildLiteratureTablePage(records, { ...query, searchTag: 'untagged' }).rows.map(
+        ({ id }) => id,
+      ),
+    ).toEqual(['other-source']);
+  });
+
+  it('builds separate, stable Topic and Keyword filter options with paper counts', () => {
+    const options = buildLiteratureSearchTagOptions([
+      record('one', {
+        searchTags: { topics: ['Tabular FM'], keywords: ['benchmark'] },
+      }),
+      record('two', {
+        searchTags: { topics: ['tabular fm'], keywords: ['Benchmark', 'few-shot'] },
+      }),
+      record('three', {
+        searchTags: { topics: ['benchmark'], keywords: [] },
+      }),
+    ]);
+
+    expect(options).toEqual([
+      { key: 'topics:benchmark', kind: 'topics', label: 'benchmark', count: 1 },
+      { key: 'topics:tabular fm', kind: 'topics', label: 'Tabular FM', count: 2 },
+      { key: 'keywords:benchmark', kind: 'keywords', label: 'benchmark', count: 2 },
+      { key: 'keywords:few-shot', kind: 'keywords', label: 'few-shot', count: 1 },
+    ]);
   });
 
   it('sorts missing numeric metadata last when descending and keeps equal values stable', () => {

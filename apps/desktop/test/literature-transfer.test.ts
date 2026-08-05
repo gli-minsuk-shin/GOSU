@@ -30,6 +30,10 @@ function record(title: string, overrides: Partial<LiteratureRecord> = {}): Liter
     containerTitle: 'Journal of Reproducible Systems',
     publishedYear: 2026,
     sourceTopics: ['Research systems'],
+    searchTags: {
+      topics: ['Tabular foundation models', 'Scientific machine learning'],
+      keywords: ['tabpfn', 'in-context learning'],
+    },
     workType: 'journal-article',
     citationCount: 12,
     sourceUrl: 'https://doi.org/10.1000/example',
@@ -119,12 +123,29 @@ describe('literature JSON exchange', () => {
     const reverse = serializeLiteratureJson([second, first]);
 
     expect(forward).toBe(reverse);
-    expect(JSON.parse(forward)).toMatchObject({ schemaVersion: 1, kind: 'gosu.literature' });
+    expect(JSON.parse(forward)).toMatchObject({ schemaVersion: 2, kind: 'gosu.literature' });
     expect(forward).not.toContain('provider-secret');
     expect(forward).not.toContain('private-ai');
     expect(forward).not.toContain('projectId');
     expect(forward).not.toContain('aiAnnotations');
-    expect(parseLiteratureJson(forward)).toHaveLength(2);
+    const restored = parseLiteratureJson(forward);
+    expect(restored).toHaveLength(2);
+    expect(restored[0]?.searchTags).toEqual(first.searchTags);
+    expect(serializeLiteratureJson(restored)).toBe(forward);
+  });
+
+  it('accepts legacy v1 JSON records and defaults their search tags to empty', () => {
+    const legacy = JSON.parse(serializeLiteratureJson([record('Legacy JSON paper')])) as {
+      schemaVersion: number;
+      records: Array<Record<string, unknown>>;
+    };
+    legacy.schemaVersion = 1;
+    delete legacy.records[0]?.searchTags;
+
+    expect(parseLiteratureJson(JSON.stringify(legacy))[0]?.searchTags).toEqual({
+      topics: [],
+      keywords: [],
+    });
   });
 
   it('rejects insecure URLs and reports record-count overflow as import overflow', () => {
@@ -180,6 +201,7 @@ describe('literature CSV exchange', () => {
     const csv = serializeLiteratureCsv(records);
     const restored = parseLiteratureCsv(csv);
 
+    expect(csv.split('\n')[0]).toContain('search_topics,search_keywords');
     expect(csv).toContain("'=SUM(1,1)");
     expect(csv).toContain("''=literal");
     expect(restored.map((item) => item.title).sort()).toEqual(
@@ -192,6 +214,19 @@ describe('literature CSV exchange', () => {
     ).toBe(true);
     expect(csv).not.toContain('private-ai');
     expect(csv).not.toContain('provider-secret');
+    expect(restored[0]?.searchTags).toEqual(records[0]?.searchTags);
+    expect(serializeLiteratureCsv(restored)).toBe(csv);
+  });
+
+  it('accepts the exact legacy CSV header and defaults search tags to empty', () => {
+    const legacyHeader =
+      'title,authors,container_title,published_year,work_type,doi,source_url,source_topics,citation_count,citation_key,review_status,manual_topics,manual_summary,manual_relevance,fingerprint,metadata_only';
+    const legacyRow = '"Legacy CSV paper","[]","","","","","","[]","","","","[]","","","","true"';
+
+    expect(parseLiteratureCsv(`${legacyHeader}\n${legacyRow}\n`)[0]).toMatchObject({
+      title: 'Legacy CSV paper',
+      searchTags: { topics: [], keywords: [] },
+    });
   });
 
   it('uses bounded error types', () => {

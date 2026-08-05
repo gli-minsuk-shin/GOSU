@@ -5,12 +5,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   LiteratureTable,
+  LiteratureDetail,
   LiteratureView,
   literatureCoreGateSummary,
   literatureCorePolicyCounts,
   literatureLayerCounts,
   literatureTableScrollAvailability,
   literatureSearchNotice,
+  literatureSearchTagDraft,
   literatureViewRecord,
   moveLiteratureTable,
   resetLiteratureTableVerticalPosition,
@@ -40,6 +42,10 @@ const rawPaper: LiteratureRecord = {
   containerTitle: 'GOSU Transactions',
   publishedYear: 2026,
   sourceTopics: ['evaluation', 'agents'],
+  searchTags: {
+    topics: ['Agentic systems'],
+    keywords: ['evaluation'],
+  },
   doi: '10.1000/gosu.1',
   workType: 'journal-article',
   citationCount: 55,
@@ -195,6 +201,11 @@ describe('Literature workspace', () => {
     const html = renderToStaticMarkup(<LiteratureView project={project} adapter={adapter} />);
 
     expect(html).toContain('Deep search and continue this review');
+    expect(html).toContain('Topic tags');
+    expect(html).toContain('Keyword tags');
+    expect(html).toContain('leaving both fields blank uses the normalized search query');
+    expect(html).toContain('aria-label="Search tag filter"');
+    expect(html).toContain('All search tags');
     expect(html).toContain('Fixed policy v2');
     expect(html).toContain('Core is a maximum, never a quota');
     expect(html).toContain('Venue metadata and author h-index never promote a paper by themselves');
@@ -218,7 +229,7 @@ describe('Literature workspace', () => {
     expect(html).not.toContain('type="file"');
   });
 
-  it('renders the required evidence columns, DOI, topics, and bounded pagination', () => {
+  it('renders the required evidence columns, DOI, typed search tags, and bounded pagination', () => {
     const html = renderToStaticMarkup(
       <LiteratureTable
         records={[paper]}
@@ -240,7 +251,7 @@ describe('Literature workspace', () => {
       'Authors',
       'Journal / venue',
       'Year',
-      'Topics',
+      'Search tags',
       'DOI',
       'Cited by',
       'Type',
@@ -252,11 +263,96 @@ describe('Literature workspace', () => {
     expect(html).toContain(paper.title);
     expect(html).toContain(paper.doi);
     expect(html).toContain('evaluation');
+    expect(html).toContain('Agentic systems');
+    expect(html).toContain('aria-label="Filter by topic tag Agentic systems"');
+    expect(html).toContain('aria-label="Filter by keyword tag evaluation"');
     expect(html).toContain('Core &amp; canonical');
     expect(html).toContain('91 / 100 · within search');
     expect(html).toContain('55 citations · 10 influential');
     expect(html.match(/>evaluation</gu)).toHaveLength(1);
     expect(html).toContain('page 1 of 1');
+  });
+
+  it('keeps an active exact search tag visible when it is beyond the default chip preview', () => {
+    const manyTags = literatureViewRecord({
+      ...rawPaper,
+      searchTags: {
+        topics: ['first', 'second', 'third', 'selected later'],
+        keywords: ['fifth'],
+      },
+    });
+    const html = renderToStaticMarkup(
+      <LiteratureTable
+        records={[manyTags]}
+        selectedId={null}
+        textFilter=""
+        statusFilter="all"
+        searchTagFilter="topics:selected later"
+        sortKey="searchTags"
+        sortDirection="ascending"
+        page={1}
+        onSelect={vi.fn()}
+        onSort={vi.fn()}
+        onPage={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('aria-label="Filter by topic tag selected later"');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('>+2</small>');
+  });
+
+  it('renders search, manual, AI, and provider topics as visibly separate sources', () => {
+    const record = {
+      ...rawPaper,
+      aiAnnotations: {
+        topics: ['AI suggestion'],
+        summary: 'Metadata-only summary',
+        relevance: 'medium' as const,
+        studyType: 'benchmark',
+        limitations: ['Full text unavailable'],
+        provenance: {
+          invocation: {
+            schemaVersion: 1,
+            invocationId: '66666666-6666-4666-8666-666666666666',
+            providerId: 'codex',
+            requestedModelId: 'fixture-model',
+            resolvedModelId: 'fixture-model',
+            reasoningOptionId: null,
+            catalogVersion: 'fixture-catalog',
+            startedAt: '2026-08-04T00:00:00.000Z',
+          },
+          inputSha256: 'b'.repeat(64),
+          generatedAt: '2026-08-04T00:00:00.000Z',
+          metadataOnly: true as const,
+        },
+      },
+    } satisfies LiteratureRecord;
+    const html = renderToStaticMarkup(
+      <LiteratureDetail record={record} busy={false} onSave={vi.fn()} onDelete={vi.fn()} />,
+    );
+
+    expect(html).toContain('aria-label="Search provenance tags"');
+    expect(html).toContain('Search tags');
+    expect(html).toContain('Agentic systems');
+    expect(html).toContain('aria-label="Source keywords"');
+    expect(html).toContain('Source keywords');
+    expect(html).toContain('agents');
+    expect(html).toContain('AI topic suggestions');
+    expect(html).toContain('AI suggestion');
+    expect(html).toContain('Manual review topics');
+  });
+
+  it('restores separate Topic and Keyword draft fields from a recent search run', () => {
+    expect(
+      literatureSearchTagDraft({
+        searchTags: { topics: ['Tabular FM', 'Evaluation'], keywords: ['TabPFN', 'benchmark'] },
+      }),
+    ).toEqual({
+      topicText: 'Tabular FM, Evaluation',
+      keywordText: 'TabPFN, benchmark',
+    });
+    expect(literatureSearchTagDraft({})).toEqual({ topicText: '', keywordText: '' });
   });
 
   it('keeps the evidence table in a bounded, keyboard-focusable two-axis scroll region', () => {

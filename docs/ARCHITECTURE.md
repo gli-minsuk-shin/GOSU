@@ -586,7 +586,10 @@ process가 아니라 privileged Main에 있어 timeout이 동기 CPU 정지나 n
 
 프로젝트 folder의 `Literature`는 하나의 고정 `balanced-three-layer` discovery policy를 사용해 서지
 metadata를 찾고, 결과를 해당 프로젝트의 암호화 SQLCipher evidence table에 누적한다. 검색어와 선택적인
-출판 연도 범위를 typed command로 보내며 한 번에 최대 50건을 저장한다. Main process의
+출판 연도 범위뿐 아니라 이번 검색을 분류하는 `Topic tags`와 `Keyword tags`를 typed command로 보내며
+한 번에 최대 50건을 저장한다. 두 태그 입력이 모두 비어 있으면 정규화한 검색어 하나를 Topic tag로
+사용해 출처 없는 행이 생기는 것을 줄인다. 이 태그는 provider subject, 사람이 편집하는 topic, AI가 제안한
+topic과 별도 provenance다. Main process의
 `BalancedLiteratureProvider` port가 Semantic Scholar를 우선 사용한다. 그 provider가 실패하거나 유효한
 후보를 만들지 못하면 Crossref의 세 검색 lane으로 자동 degrade하고, 결과가 요청 수보다 적거나
 citation·recent 정렬 lane이 빠지면 Crossref pool을 보강 조회해 두 provider 후보를 dedupe한 뒤 한 번 더
@@ -668,9 +671,11 @@ content 안의 prompt injection이 뒤늦게 write capability를 만들지 못�
 mutation tool을 주지 않는다. model argument에는 project ID가 없고 Main closure가 active project를
 주입·재검증한다. tool은 Renderer와 동일한 `LiteratureService`와 고정 3-layer policy를 호출하므로
 대화로 검색해도 Core·Rising·Broad 선별, strong identity dedupe와 additive merge를 우회하거나 임의
-weight·유명인 목록으로 바꿀 수 없다. 삭제와 사람 annotation 수정도 허용하지 않는다.
+weight·유명인 목록으로 바꿀 수 없다. tool argument의 짧은 Topic·Keyword tag도 같은 typed command로
+전달되며 긴 질문이나 provider metadata에서 임의 tag를 꾸며내지 않는다. 삭제와 사람 annotation 수정도
+허용하지 않는다.
 
-Codex에는 `runId`, query, provider·policy ID/version, 실제 signal coverage·degradation reason,
+Codex에는 `runId`, query, 그 run에 실제 적용된 Topic·Keyword tag, provider·policy ID/version, 실제 signal coverage·degradation reason,
 retrieved/selected count, 세 layer count와
 found/new/updated/unchanged/conflict count만 metadata-only receipt로 반환한다. 충돌이 있을 때만 사람이
 식별할 수 있도록 앞의 최대 3개 후보의 ordinal·title·DOI·provider record ID와 생략 개수를 제한적으로
@@ -683,7 +688,12 @@ LiteratureService까지 전달되고 취소·timeout 뒤의 결과는 commit하�
 `literature_records`, `literature_search_runs`, `literature_search_hits`,
 `literature_search_conflicts`는 Workspace snapshot이나 다른 모듈의 table이 아닌 Literature 모듈 소유다.
 `literature_search_runs`는 provider·policy version, retrieved/selected count와 layer별 실제 저장 count를
-남기고 signal coverage와 degradation reason도 저장한다. 각 hit는 당시 layer·tier rank·score·signal
+남기고 signal coverage, degradation reason과 그 검색에서 적용한 typed tag도 저장한다. matching record는
+여러 검색의 tag를 `NFKC → 공백 정규화 → 대소문자 무시` key로 중복 제거해 누적하되 첫 표시 철자와 입력
+순서를 보존한다. Topic과 Keyword는 같은 글자여도 서로 다른 종류로 유지한다. 새 tag만 추가된 refresh도
+record version을 올린 `updated` 결과이지만 source 변경이 아니므로 AI draft를 무효화하거나 annotation
+version을 올리지 않는다. 실패·취소된 run과 identity conflict로 보류된 후보에는 tag를 적용하지 않는다.
+각 hit는 당시 layer·tier rank·score·signal
 source·reason을 보존해 검색 이력을 재현할 수 있고, record에는 그 논문이 마지막으로 매칭된 검색의
 discovery summary만 별도로 둔다. 따라서 다음 continual search가 같은 paper를 다른 layer로 분류해도
 과거 run의 판정은 덮어쓰지 않는다. Evidence table의 기본 importance 정렬은 서로 다른 query에서 나온
@@ -697,7 +707,11 @@ table에서 함께 보여 주며 DB tier enum에는 추가하지 않는다. impo
 `unclassified`로 남는다.
 모든 query와 mutation은 Main에서 active project 존재 여부를
 다시 검사하고 project ID를 SQL predicate에 포함한다. 앱 재시작 중 남은 `running` search는 `failed`로
-reconcile하고, 최근 검색은 `Search again` 입력으로 복원할 수 있다. 자동 background scheduler는 아직
+reconcile하고, 최근 검색은 query·연도·Topic·Keyword tag를 `Search again` 입력으로 복원할 수 있다.
+Evidence table은 provider·manual·AI topic을 합치지 않고 검색 provenance tag만 별도 열에 표시한다. 종류가
+적힌 chip을 누르면 정규화된 `종류 + 정확한 tag`로 filter하며 substring은 사용하지 않는다. filter는
+Topic·Keyword·Untagged를 구분하고 상세 화면도 Search tags, Manual review topics, AI topic suggestions,
+Source keywords를 서로 다른 영역으로 보여 준다. 자동 background scheduler는 아직
 없으므로 continual review는 사용자가 같은 검색이나 새 검색을 다시 실행할 때 additive merge하는
 형태다. active evidence table은 프로젝트당 500건으로 제한하고 검색·import가 한도를 넘으면 일부만
 반영하지 않고 transaction 전체를 거절한다. normalized DOI와 같은 provider의 record ID만 strong
@@ -759,8 +773,10 @@ Import와 Export는 Renderer가 path나 file body를 넘기는 범용 파일 IPC
 JSON, CSV, BibTeX 한 파일만 고르고 8 MB·500 record·regular-file·no-symlink 정책으로 같은 file handle에서
 읽는다. export는 선택한 directory의 private 0600 temporary regular file에 쓰고 `fsync`한 뒤 atomic rename해
 기존 파일을 부분적으로 손상시키거나 destination symlink를 따라가지 않는다. Renderer에는 basename,
-건수와 export SHA-256만 돌려준다. JSON/CSV는 versioned deterministic interchange이고 CSV는 spreadsheet
-formula injection을 방지한다. BibTeX citation key는 안정적으로 생성하고 project 내 collision에 suffix를
+건수와 export SHA-256만 돌려준다. JSON v2와 새 CSV column은 누적 search Topic·Keyword tag를 보존하고,
+legacy JSON v1·기존 CSV는 빈 search tag로 안전하게 import한다. JSON/CSV는 versioned deterministic
+interchange이고 CSV는 spreadsheet formula injection을 방지한다. BibTeX는 provider `keywords`와 분리된
+`gosusearchtopics`·`gosusearchkeywords` custom field로 tag를 왕복한다. citation key는 안정적으로 생성하고 project 내 collision에 suffix를
 붙인다. parser는 `%` line comment와 `@string`·`@preamble`·`@comment` special entry를 건너뛰지만 external
 macro `#` concatenation은 지원하지 않고 명시적으로 거절한다. export에는 source metadata와 사람이 검토한
 field만 포함하고 AI annotation, provider raw
@@ -1709,13 +1725,14 @@ strong DOI/provider 우선 identity와 weak fingerprint fallback, 동일 fingerp
 ambiguous weak import 거절, 후보별 search conflict 격리와 normalized conflict detail·`conflict_count`·index migration,
 Crossref/import trust merge, sparse Semantic Scholar refresh의 기존 metadata·annotation 보존과 richer refresh의
 stale AI invalidation, manual·AI annotation atomic CAS, soft delete, discovery policy·layer count·coverage·hit
-provenance의 durability와 search run restart reconciliation을 실제 Electron ABI close/reopen으로
+provenance의 durability, 검색별 typed tag 누적·정규화 idempotence·tag-only AI 보존·conflict/failure 비적용과
+search run restart reconciliation을 실제 Electron ABI close/reopen으로
 검증한다. AI test는 최대 50개
 metadata-only prompt, dynamic model·reasoning provenance, manual annotation 비노출, exact record/version
 response와 malformed·hallucinated·stale batch 전체 거절을 검사한다.
 Project Chat Literature tool test는 trusted top-level message의 direct subject+action authorization과
 negative command·검색 정책 meta-question denial, injected active project ID, cross-project 차단,
-strict query/year/limit, additive dedupe,
+strict query/year/limit/tag, additive dedupe와 적용 tag receipt,
 metadata-only count receipt, legacy reviewer exclusion과 125초 timeout override를 검사한다. cancel·terminal
 뒤 늦은 provider completion은 commit·tool delivery·visible receipt를 만들지 않아야 한다.
 
@@ -1763,13 +1780,14 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 - Literature 변경: active project 격리, Semantic Scholar·Crossref fixed-origin과 bounded metadata
   normalization, strong
   DOI/provider identity와 weak fingerprint fallback, 동일 fingerprint·다른 DOI 보존, true conflict 격리,
-  source/manual/AI field ownership, optimistic annotation conflict, no-abstract retention,
+  source/search-tag/manual/AI field ownership, optimistic annotation conflict, no-abstract retention,
   Main-owned no-symlink transfer, deterministic JSON/CSV/BibTeX와 metadata-only Codex provenance,
   Semantic Scholar fixed-origin·3-lane candidate pool·linear author bound·role-balanced sample·partial
   coverage, 부족한 pool의 Crossref supplement·combined rerank, cross-provider rich metadata merge,
   deterministic 3-layer ranking·Core canonical reserve와
   hit-level policy provenance, Project Chat의 shared policy·explicit command gate·injected project
-  identity·receipt-only 결과·cancel/late-result 봉인
+  identity·typed search tag·receipt-only 결과·cancel/late-result 봉인, 검색 tag의 누적·정확 filter와
+  provider/manual/AI topic 분리, legacy JSON/CSV·BibTeX tag round-trip
 - Runner 변경: signature·policy rejection, fence race, Stop·Kill race, exact JSON wire, Podman argument
   array와 fail-closed 설정
 - connector 변경: deterministic fake response, capability 정확성, credential·원문 미저장
@@ -1920,7 +1938,8 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
       fail closed하는가? lexical root를 sandbox라 부르거나 local abort를 remote kill 보증, ephemeral metadata를
       durable 감사 원본이라 부르지 않는가?
 - [ ] Literature 변경이면 provider raw response·abstract·local path를 저장하지 않고 project isolation,
-      source/manual/AI ownership, deterministic transfer와 metadata-only AI provenance를 유지하는가?
+      source/search-tag/manual/AI ownership, tag의 additive typed provenance, deterministic transfer와
+      metadata-only AI provenance를 유지하는가?
       ranking 변경이면 fixed policy version, deterministic layer quota, capped author signal, momentum의
       proxy 표기, absolute eligibility floor, lane coverage·degradation, hit-level provenance와 기존 run의
       재현성을 유지하는가? 서로 다른 query의 상대 score를 직접 비교하지 않는가?

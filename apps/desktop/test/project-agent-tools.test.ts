@@ -20,6 +20,7 @@ import type {
   LiteratureSearchInput,
   LiteratureSearchReceipt,
 } from '../src/shared/literature-contracts';
+import { resolveLiteratureSearchTags } from '../src/shared/literature-search-tags';
 import type {
   SshAgentCommand,
   SshCommandResult,
@@ -237,6 +238,7 @@ class FakeProjectLiterature implements ProjectAgentLiterature {
           projectId: input.projectId,
           provider: 'crossref',
           query: input.query,
+          searchTags: resolveLiteratureSearchTags(input.query, input.searchTags),
           fromYear: input.fromYear ?? null,
           toYear: input.toYear ?? null,
           requestedLimit: input.limit ?? 25,
@@ -495,6 +497,10 @@ describe('ProjectAgentToolSession', () => {
       'list_ssh_workspaces',
       'run_ssh_workspace_command',
     ]);
+    const declaredCatalog = JSON.stringify(session.dynamicTools);
+    expect(declaredCatalog).toContain('searchTags');
+    expect(declaredCatalog).toContain('workflow provenance labels');
+    expect(declaredCatalog).toContain('provider-supplied subjects');
 
     const listed = await invokeTool(
       session,
@@ -535,6 +541,10 @@ describe('ProjectAgentToolSession', () => {
     const controller = new AbortController();
     const call = toolCall('search_literature', {
       query: 'tabular foundation models',
+      searchTags: {
+        topics: ['Tabular learning'],
+        keywords: ['foundation models', 'TabPFN'],
+      },
       fromYear: 2022,
       toYear: 2026,
       limit: 12,
@@ -555,6 +565,10 @@ describe('ProjectAgentToolSession', () => {
       persisted: true,
       runId: LITERATURE_RUN_ID,
       query: 'tabular foundation models',
+      searchTags: {
+        topics: ['Tabular learning'],
+        keywords: ['foundation models', 'TabPFN'],
+      },
       foundCount: 5,
       retrievedCount: 5,
       selectedCount: 5,
@@ -585,6 +599,10 @@ describe('ProjectAgentToolSession', () => {
       {
         projectId: projectAlpha.id,
         query: 'tabular foundation models',
+        searchTags: {
+          topics: ['Tabular learning'],
+          keywords: ['foundation models', 'TabPFN'],
+        },
         fromYear: 2022,
         toYear: 2026,
         limit: 12,
@@ -693,6 +711,13 @@ describe('ProjectAgentToolSession', () => {
       { query: 'x', limit: 1 },
       { query: 'x', limit: 2 },
       { query: 'x', limit: 51 },
+      { query: 'x', searchTags: { topics: Array.from({ length: 13 }, (_, index) => `t${index}`) } },
+      {
+        query: 'x',
+        searchTags: { keywords: Array.from({ length: 25 }, (_, index) => `k${index}`) },
+      },
+      { query: 'x', searchTags: { topics: ['t'.repeat(121)] } },
+      { query: 'x', searchTags: { topics: ['topic'], source: 'provider' } },
       { query: 'x', provider: 'another-origin' },
     ]) {
       const invalid = await invokeTool(session, toolCall('search_literature', arguments_));
