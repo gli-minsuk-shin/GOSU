@@ -58,7 +58,10 @@
 html,
 body,
 #root {
-  min-height: 100%;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 body {
@@ -99,9 +102,13 @@ button:disabled {
 
 .desktop-shell {
   --sidebar-width: 280px;
+  --titlebar-height: 46px;
   display: grid;
-  grid-template: 58px minmax(0, 1fr) / var(--sidebar-width) minmax(0, 1fr);
-  min-height: 100vh;
+  grid-template: var(--titlebar-height) minmax(0, 1fr) / var(--sidebar-width) minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   background:
     radial-gradient(circle at 72% 0, rgba(104, 148, 63, 0.12), transparent 38%), var(--bg);
   transition: grid-template-columns 240ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -112,25 +119,29 @@ button:disabled {
 }
 
 .titlebar {
+  grid-row: 1;
   grid-column: 1 / -1;
   -webkit-app-region: drag;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 20px 0 84px;
+  min-width: 0;
+  height: var(--titlebar-height);
+  gap: 8px;
+  padding: 0 18px 0 84px;
   border-bottom: 1px solid var(--line);
   background: light-dark(rgba(250, 252, 249, 0.96), rgba(8, 11, 9, 0.94));
+  z-index: 2;
 }
 
 .titlebar .logo {
   display: grid;
   place-items: center;
-  width: 27px;
-  height: 27px;
-  border-radius: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
   background: var(--green);
   color: var(--green-ink);
-  font-size: var(--font-section);
+  font-size: var(--font-body);
   font-weight: 900;
 }
 
@@ -138,8 +149,8 @@ button:disabled {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -166,13 +177,18 @@ button:disabled {
 }
 
 .titlebar strong {
-  font-size: var(--font-section);
+  flex: 0 0 auto;
+  font-size: var(--font-body-large);
   letter-spacing: 0.11em;
 }
 
-.titlebar > span {
+.titlebar > span:not(.sync-pill) {
+  min-width: 0;
+  overflow: hidden;
   color: var(--muted);
-  font-size: var(--font-body);
+  font-size: var(--font-control);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .titlebar .titlebar-spacer {
@@ -188,8 +204,9 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 27px;
-  padding: 5px 10px;
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 3px 9px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: light-dark(#ffffff, #121713);
@@ -237,7 +254,10 @@ button:disabled {
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   opacity: 1;
   transform: translateX(0);
   visibility: visible;
@@ -686,7 +706,9 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   padding: 32px clamp(24px, 4vw, 54px) 60px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 
@@ -2982,7 +3004,7 @@ textarea:focus {
   grid-template-columns: 184px minmax(0, 1fr);
   gap: 10px;
   width: 100%;
-  height: max(560px, calc(100vh - 104px));
+  height: max(560px, calc(100vh - 92px));
   min-height: 0;
 }
 
@@ -4717,12 +4739,12 @@ textarea:focus {
 @media (max-width: 860px) {
   .desktop-shell {
     --sidebar-width: 0px;
-    grid-template: 58px auto minmax(0, 1fr) / 1fr;
+    grid-template: var(--titlebar-height) auto minmax(0, 1fr) / 1fr;
     transition: none;
   }
 
   .desktop-shell.sidebar-collapsed {
-    grid-template: 58px minmax(0, 1fr) / 1fr;
+    grid-template: var(--titlebar-height) minmax(0, 1fr) / 1fr;
   }
 
   .desktop-nav {
@@ -4731,6 +4753,7 @@ textarea:focus {
     display: grid;
     grid-template-columns: repeat(6, 1fr);
     gap: 4px;
+    max-height: min(320px, 40vh);
     padding: 8px 12px;
     border-right: 0;
     border-bottom: 1px solid var(--line);
@@ -4787,7 +4810,7 @@ textarea:focus {
 
   .project-chat-workspace {
     grid-template: auto minmax(500px, 1fr) / 1fr;
-    height: calc(100vh - 152px);
+    height: calc(100vh - 140px);
   }
 
   .project-chat-session-rail {

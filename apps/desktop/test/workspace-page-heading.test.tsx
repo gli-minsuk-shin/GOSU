@@ -23,10 +23,10 @@ describe('workspace page heading', () => {
 
     expect(shouldShowActiveProjectPageHeading('chat')).toBe(false);
     expect(styles).toMatch(
-      /\.project-chat-workspace\s*\{[^}]*height:\s*max\(560px, calc\(100vh - 104px\)\);/su,
+      /\.project-chat-workspace\s*\{[^}]*height:\s*max\(560px, calc\(100vh - 92px\)\);/su,
     );
     expect(styles).toMatch(
-      /@media \(max-width: 860px\)[\s\S]*?\.project-chat-workspace\s*\{[^}]*height:\s*calc\(100vh - 152px\);/u,
+      /@media \(max-width: 860px\)[\s\S]*?\.project-chat-workspace\s*\{[^}]*height:\s*calc\(100vh - 140px\);/u,
     );
   });
 

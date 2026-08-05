@@ -93,7 +93,7 @@ describe('folder-style project sidebar', () => {
     const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
 
     expect(styles).toMatch(
-      /\.desktop-shell\s*\{[^}]*--sidebar-width:\s*280px;[^}]*grid-template:\s*58px minmax\(0, 1fr\) \/ var\(--sidebar-width\) minmax\(0, 1fr\);[^}]*transition:\s*grid-template-columns 240ms/su,
+      /\.desktop-shell\s*\{[^}]*--sidebar-width:\s*280px;[^}]*--titlebar-height:\s*46px;[^}]*grid-template:\s*var\(--titlebar-height\) minmax\(0, 1fr\) \/ var\(--sidebar-width\) minmax\(\s*0,\s*1fr\s*\);[^}]*transition:\s*grid-template-columns 240ms/su,
     );
     expect(styles).toMatch(
       /\.desktop-shell\.sidebar-collapsed\s*\{\s*--sidebar-width:\s*0px;\s*\}/su,
@@ -105,6 +105,39 @@ describe('folder-style project sidebar', () => {
       /\.desktop-shell\.sidebar-collapsed \.desktop-nav\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;[^}]*visibility:\s*hidden;/su,
     );
     expect(styles).not.toContain('.desktop-nav[hidden]');
+  });
+
+  it('uses one compact titlebar height across desktop and responsive layouts', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(styles).toMatch(
+      /\.titlebar\s*\{[^}]*grid-row:\s*1;[^}]*grid-column:\s*1 \/ -1;[^}]*height:\s*var\(--titlebar-height\);/su,
+    );
+    expect(styles).toMatch(
+      /\.titlebar \.logo\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px;[^}]*border-radius:\s*7px;/su,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 860px\)[\s\S]*?grid-template:\s*var\(--titlebar-height\) auto minmax\(0, 1fr\) \/ 1fr;[\s\S]*?grid-template:\s*var\(--titlebar-height\) minmax\(0, 1fr\) \/ 1fr;[\s\S]*?\.desktop-nav\s*\{[^}]*max-height:\s*min\(320px, 40vh\);/u,
+    );
+    expect(styles).not.toMatch(/grid-template:\s*58px/u);
+  });
+
+  it('pins window chrome and delegates scrolling to the sidebar and page panes', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(styles).toMatch(
+      /html,\s*body,\s*#root\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/su,
+    );
+    expect(styles).toMatch(
+      /\.desktop-shell\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/su,
+    );
+    expect(styles).not.toMatch(/\.desktop-shell\s*\{[^}]*min-height:\s*100vh;/su);
+    expect(styles).toMatch(
+      /\.desktop-nav\s*\{[^}]*grid-row:\s*2;[^}]*grid-column:\s*1;[^}]*min-height:\s*0;[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior:\s*contain;[^}]*scrollbar-gutter:\s*stable;/su,
+    );
+    expect(styles).toMatch(
+      /\.desktop-content\s*\{[^}]*grid-row:\s*2;[^}]*grid-column:\s*2;[^}]*min-height:\s*0;[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior:\s*contain;[^}]*scrollbar-gutter:\s*stable;/su,
+    );
   });
 
   it('keeps responsive collapse behavior and respects reduced-motion preferences', () => {
