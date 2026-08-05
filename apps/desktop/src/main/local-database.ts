@@ -36,6 +36,10 @@ import {
   type UpdateProjectChatProfileInput,
 } from '../shared/project-chat-contracts';
 import { SshConnectionProfileSchema, type SshConnectionProfile } from '../shared/ssh-contracts';
+import {
+  RemoteWorkspaceGrantSchema,
+  type RemoteWorkspaceGrant,
+} from '../shared/ssh-workspace-contracts';
 import type {
   WorkspaceOperation,
   WorkspacePendingSummary,
@@ -893,12 +897,30 @@ export class LocalDatabase {
         schema_version integer not null check (schema_version = 1),
         label text not null check (length(label) between 1 and 120),
         host_alias text not null check (length(host_alias) between 1 and 255),
+        direct_target_json text check (
+          direct_target_json is null or length(direct_target_json) between 2 and 16384
+        ),
         version integer not null check (version > 0),
         created_at text not null,
         updated_at text not null
       );
       create index if not exists ssh_connections_by_label
         on ssh_connections(label,id);
+      create table if not exists ssh_workspace_grants (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null check (length(project_id) = 36),
+        connection_id text not null check (length(connection_id) = 36),
+        canonical_root text not null check (length(canonical_root) between 1 and 1024),
+        permission_mode text not null check (permission_mode in ('diagnostics','workspace')),
+        version integer not null check (version > 0),
+        created_at text not null,
+        updated_at text not null,
+        unique(project_id,connection_id),
+        foreign key(connection_id) references ssh_connections(id) on delete cascade
+      );
+      create index if not exists ssh_workspace_grants_by_project
+        on ssh_workspace_grants(project_id,connection_id,id);
       create table if not exists literature_records (
         id text primary key check (length(id) = 36),
         schema_version integer not null check (schema_version = 1),
@@ -1160,6 +1182,15 @@ export class LocalDatabase {
         on project_chat_actions(message_id,created_at,id);
     `);
       migrateLiteratureManualRelevance(database);
+      const sshConnectionColumns = database.pragma('table_info(ssh_connections)') as Array<{
+        name: string;
+      }>;
+      if (!sshConnectionColumns.some((column) => column.name === 'direct_target_json')) {
+        database.exec(
+          `alter table ssh_connections add column direct_target_json text
+           check (direct_target_json is null or length(direct_target_json) between 2 and 16384)`,
+        );
+      }
       database
         .prepare(
           `update project_chat_actions
@@ -2467,7 +2498,7 @@ export class LocalDatabase {
   listSshConnections(): SshConnectionProfile[] {
     const rows = this.require()
       .prepare(
-        `select id,schema_version,label,host_alias,version,created_at,updated_at
+        `select id,schema_version,label,host_alias,direct_target_json,version,created_at,updated_at
          from ssh_connections order by label collate nocase asc,id asc`,
       )
       .all() as SshConnectionRow[];
@@ -2479,14 +2510,15 @@ export class LocalDatabase {
     const result = this.require()
       .prepare(
         `insert or ignore into ssh_connections(
-           id,schema_version,label,host_alias,version,created_at,updated_at
-         ) values(?,?,?,?,?,?,?)`,
+           id,schema_version,label,host_alias,direct_target_json,version,created_at,updated_at
+         ) values(?,?,?,?,?,?,?,?)`,
       )
       .run(
         profile.id,
         profile.schemaVersion,
         profile.label,
         profile.hostAlias,
+        profile.directTarget ? JSON.stringify(profile.directTarget) : null,
         profile.version,
         profile.createdAt,
         profile.updatedAt,
@@ -2500,13 +2532,14 @@ export class LocalDatabase {
     const result = this.require()
       .prepare(
         `update ssh_connections set
-           schema_version=?,label=?,host_alias=?,version=?,updated_at=?
+           schema_version=?,label=?,host_alias=?,direct_target_json=?,version=?,updated_at=?
          where id=? and version=?`,
       )
       .run(
         profile.schemaVersion,
         profile.label,
         profile.hostAlias,
+        profile.directTarget ? JSON.stringify(profile.directTarget) : null,
         profile.version,
         profile.updatedAt,
         profile.id,
@@ -2520,6 +2553,74 @@ export class LocalDatabase {
       .prepare('delete from ssh_connections where id=? and version=?')
       .run(connectionId, expectedVersion);
     return result.changes === 1;
+  }
+
+  listSshWorkspaceGrants(projectId: string): RemoteWorkspaceGrant[] {
+    const rows = this.require()
+      .prepare(
+        `select id,schema_version,project_id,connection_id,canonical_root,permission_mode,
+                version,created_at,updated_at
+         from ssh_workspace_grants where project_id=? order by connection_id asc,id asc`,
+      )
+      .all(projectId) as SshWorkspaceGrantRow[];
+    return rows.map(toSshWorkspaceGrant);
+  }
+
+  createSshWorkspaceGrant(input: RemoteWorkspaceGrant) {
+    const grant = RemoteWorkspaceGrantSchema.parse(input);
+    return (
+      this.require()
+        .prepare(
+          `insert or ignore into ssh_workspace_grants(
+             id,schema_version,project_id,connection_id,canonical_root,permission_mode,
+             version,created_at,updated_at
+           ) values(?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          grant.id,
+          grant.schemaVersion,
+          grant.projectId,
+          grant.connectionId,
+          grant.canonicalRoot,
+          grant.permissionMode,
+          grant.version,
+          grant.createdAt,
+          grant.updatedAt,
+        ).changes === 1
+    );
+  }
+
+  updateSshWorkspaceGrant(input: RemoteWorkspaceGrant, expectedVersion: number) {
+    const grant = RemoteWorkspaceGrantSchema.parse(input);
+    if (grant.version !== expectedVersion + 1) {
+      throw new Error('ssh_workspace_grant_version_sequence_invalid');
+    }
+    return (
+      this.require()
+        .prepare(
+          `update ssh_workspace_grants set
+             canonical_root=?,permission_mode=?,version=?,updated_at=?
+           where id=? and project_id=? and connection_id=? and version=?`,
+        )
+        .run(
+          grant.canonicalRoot,
+          grant.permissionMode,
+          grant.version,
+          grant.updatedAt,
+          grant.id,
+          grant.projectId,
+          grant.connectionId,
+          expectedVersion,
+        ).changes === 1
+    );
+  }
+
+  removeSshWorkspaceGrant(projectId: string, grantId: string, expectedVersion: number) {
+    return (
+      this.require()
+        .prepare('delete from ssh_workspace_grants where project_id=? and id=? and version=?')
+        .run(projectId, grantId, expectedVersion).changes === 1
+    );
   }
 
   close() {
@@ -2551,6 +2652,19 @@ type SshConnectionRow = {
   schema_version: number;
   label: string;
   host_alias: string;
+  direct_target_json: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type SshWorkspaceGrantRow = {
+  id: string;
+  schema_version: number;
+  project_id: string;
+  connection_id: string;
+  canonical_root: string;
+  permission_mode: string;
   version: number;
   created_at: string;
   updated_at: string;
@@ -2562,6 +2676,21 @@ function toSshConnection(row: SshConnectionRow) {
     id: row.id,
     label: row.label,
     hostAlias: row.host_alias,
+    directTarget: row.direct_target_json ? (JSON.parse(row.direct_target_json) as unknown) : null,
+    version: row.version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function toSshWorkspaceGrant(row: SshWorkspaceGrantRow) {
+  return RemoteWorkspaceGrantSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    projectId: row.project_id,
+    connectionId: row.connection_id,
+    canonicalRoot: row.canonical_root,
+    permissionMode: row.permission_mode,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

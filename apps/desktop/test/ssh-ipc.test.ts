@@ -9,15 +9,21 @@ import {
 } from '../src/main/ssh-connection-service';
 import { SSH_IPC_CHANNELS } from '../src/shared/ssh-channels';
 import { unwrapSshIpcResult } from '../src/shared/ssh-ipc-result';
+import type { WorkspaceService } from '../src/main/workspace-service';
 
 type Handler = (...arguments_: unknown[]) => unknown;
 
-function registerFixture(service: Partial<SshConnectionService>, reportUnexpected = vi.fn()) {
+function registerFixture(
+  service: Partial<SshConnectionService>,
+  reportUnexpected = vi.fn(),
+  workspace?: Partial<WorkspaceService>,
+) {
   const handlers = new Map<string, Handler>();
   registerSshIpc(
     (channel, handler) => handlers.set(channel, handler),
     service as SshConnectionService,
     reportUnexpected,
+    workspace as WorkspaceService | undefined,
   );
   return { handlers, reportUnexpected };
 }
@@ -28,12 +34,74 @@ describe('SSH IPC boundary', () => {
     expect([...handlers.keys()]).toEqual([
       SSH_IPC_CHANNELS.listConnections,
       SSH_IPC_CHANNELS.createConnection,
+      SSH_IPC_CHANNELS.importCommand,
       SSH_IPC_CHANNELS.updateConnection,
       SSH_IPC_CHANNELS.removeConnection,
       SSH_IPC_CHANNELS.testConnection,
+      SSH_IPC_CHANNELS.listWorkspaceGrants,
+      SSH_IPC_CHANNELS.createWorkspaceGrant,
+      SSH_IPC_CHANNELS.updateWorkspaceGrant,
+      SSH_IPC_CHANNELS.removeWorkspaceGrant,
       SSH_IPC_CHANNELS.resolveApproval,
       SSH_IPC_CHANNELS.cancelScope,
     ]);
+  });
+
+  it('passes a bounded SSH command string only to the Main-process importer', async () => {
+    const importCommand = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      id: randomUUID(),
+      label: 'Fixture GPU',
+      hostAlias: 'direct-203.0.113.10-2222',
+      directTarget: null,
+      version: 1,
+      createdAt: '2026-08-05T00:00:00.000Z',
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    }));
+    const { handlers } = registerFixture({ importCommand });
+    const input = {
+      label: 'Fixture GPU',
+      command: 'ssh -p 2222 researcher@203.0.113.10 -L 8080:localhost:8080',
+    };
+
+    await expect(handlers.get(SSH_IPC_CHANNELS.importCommand)?.(input)).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(importCommand).toHaveBeenCalledExactlyOnceWith(input);
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.importCommand)?.({ ...input, extra: 'not-allowed' }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_ssh_input' } });
+  });
+
+  it('authorizes every workspace grant IPC against an active project in Main', async () => {
+    const projectId = randomUUID();
+    const listWorkspaceGrants = vi.fn(async () => []);
+    const snapshot = vi.fn(async () => ({
+      projects: [
+        {
+          id: projectId,
+          name: 'Active project',
+          version: 1,
+        },
+      ],
+    }));
+    const { handlers } = registerFixture(
+      { listWorkspaceGrants },
+      vi.fn(),
+      // This boundary test intentionally supplies only the WorkspaceService method used by IPC.
+      { snapshot } as unknown as Partial<WorkspaceService>,
+    );
+
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.listWorkspaceGrants)?.({ projectId }),
+    ).resolves.toEqual({ ok: true, value: [] });
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.listWorkspaceGrants)?.({ projectId: randomUUID() }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'ssh_workspace_project_unavailable' },
+    });
+    expect(listWorkspaceGrants).toHaveBeenCalledExactlyOnceWith(projectId);
   });
 
   it('validates and cancels only the declared SSH navigation scope', async () => {

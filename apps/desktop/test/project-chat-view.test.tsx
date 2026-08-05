@@ -224,7 +224,7 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Local Notes not authorized');
     expect(html).toContain('Authorize…');
     expect(html).toContain('SSH requires Allow once');
-    expect(html).toContain('secrets, direct local shell or file access');
+    expect(html).toContain('Raw shells, TTY, transfer, unattended execution, secrets');
     expect(html).toContain('Edit in Settings…');
   });
 

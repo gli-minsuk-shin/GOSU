@@ -14,12 +14,19 @@ import type {
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
 import type {
   CreateSshConnectionInput,
+  ImportSshCommandInput,
   RemoveSshConnectionInput,
   SshApprovalRequest,
   SshConnectionProfile,
   SshEvent,
   UpdateSshConnectionInput,
 } from '../../shared/ssh-contracts';
+import type {
+  CreateRemoteWorkspaceGrantInput,
+  GrantedRemoteWorkspace,
+  RemoveRemoteWorkspaceGrantInput,
+  UpdateRemoteWorkspaceGrantInput,
+} from '../../shared/ssh-workspace-contracts';
 import type {
   CreateProjectInput,
   ProjectRecord,
@@ -75,6 +82,7 @@ import {
 } from './project-sidebar';
 import { SettingsView, type SettingsCategory } from './settings-view';
 import { SshApprovalCenter } from './ssh-approval-center';
+import { SshWorkspaceLoadGuard, sshWorkspacesForProject } from './ssh-workspace-load-guard';
 import { Connection, describeError } from './ui-primitives';
 import {
   applyUserPreferences,
@@ -170,6 +178,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [apiKeyMode, setApiKeyMode] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [sshConnections, setSshConnections] = useState<readonly SshConnectionProfile[]>([]);
+  const [sshWorkspaces, setSshWorkspaces] = useState<readonly GrantedRemoteWorkspace[]>([]);
   const [sshConnectionBusy, setSshConnectionBusy] = useState<string | null>(null);
   const [sshConnectionState, setSshConnectionState] = useState<
     'checking' | 'ready' | 'unavailable'
@@ -201,6 +210,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const chatLoadGuard = useRef(new ProjectChatLoadGuard());
   const codexBootstrapStarted = useRef(false);
   const vaultSelectionGeneration = useRef(0);
+  const sshWorkspaceLoadGuard = useRef(new SshWorkspaceLoadGuard());
   const projectNavigationRef = useRef(projectNavigation);
   const activeChatSessionIdsRef = useRef(activeChatSessionIds);
   const projectChatSessionsRef = useRef(projectChatSessions);
@@ -217,6 +227,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     () => activeProjects.find((project) => project.id === activeProjectId),
     [activeProjectId, activeProjects],
   );
+  sshWorkspaceLoadGuard.current.activate(activeProject?.id ?? null);
   const activeTasks = useMemo(
     () => snapshot?.tasks.filter((task) => task.projectId === activeProjectId) ?? [],
     [activeProjectId, snapshot],
@@ -386,6 +397,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     return connections;
   };
 
+  const loadSshWorkspaces = async (projectId: string) => {
+    const token = sshWorkspaceLoadGuard.current.begin(projectId);
+    try {
+      const workspaces = await window.gosu.ssh.listWorkspaceGrants({ projectId });
+      if (sshWorkspaceLoadGuard.current.accepts(token)) {
+        setSshWorkspaces(workspaces);
+      }
+      return workspaces;
+    } catch (error) {
+      if (sshWorkspaceLoadGuard.current.accepts(token)) throw error;
+      return [];
+    }
+  };
+
   useEffect(() => {
     void loadWorkspace()
       .catch((error: unknown) => setWorkspaceError(describeError(error)))
@@ -421,6 +446,17 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       setSshConnectionState('unavailable');
     });
   }, []);
+
+  useEffect(() => {
+    setSshWorkspaces([]);
+    if (!activeProject) {
+      return;
+    }
+    void loadSshWorkspaces(activeProject.id).catch((error: unknown) => {
+      setSshWorkspaces([]);
+      setWorkspaceError(describeError(error));
+    });
+  }, [activeProject?.id]);
 
   useEffect(
     () =>
@@ -633,11 +669,36 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setWorkspaceError(null);
     try {
       await action();
-      await loadSshConnections();
+      await Promise.all([
+        loadSshConnections(),
+        ...(activeProject ? [loadSshWorkspaces(activeProject.id)] : []),
+      ]);
       setAnnouncement(successMessage);
       return true;
     } catch (error) {
       if (hasErrorCode(error, 'ssh_unavailable')) setSshConnectionState('unavailable');
+      setWorkspaceError(describeError(error));
+      return false;
+    } finally {
+      setSshConnectionBusy(null);
+    }
+  };
+
+  const runSshWorkspaceAction = async (
+    key: string,
+    projectId: string,
+    action: () => Promise<unknown>,
+    successMessage: string,
+  ) => {
+    if (sshConnectionBusy !== null) return false;
+    setSshConnectionBusy(key);
+    setWorkspaceError(null);
+    try {
+      await action();
+      await loadSshWorkspaces(projectId);
+      setAnnouncement(successMessage);
+      return true;
+    } catch (error) {
       setWorkspaceError(describeError(error));
       return false;
     } finally {
@@ -1636,6 +1697,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     `Registered ${input.label} for approved Project Chat commands.`,
                   )
                 }
+                onImportSshCommand={(input: ImportSshCommandInput) =>
+                  runSshConnectionAction(
+                    'import',
+                    () => window.gosu.ssh.importCommand(input),
+                    `Parsed and registered ${input.label ?? 'the SSH server'} locally.`,
+                  )
+                }
                 onUpdateSshConnection={(input: UpdateSshConnectionInput) =>
                   runSshConnectionAction(
                     `update:${input.connectionId}`,
@@ -1662,6 +1730,32 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   );
                 }}
                 onTestSshConnection={testSshConnection}
+                activeProject={activeProject ?? null}
+                sshWorkspaces={sshWorkspacesForProject(sshWorkspaces, activeProject?.id ?? null)}
+                onCreateSshWorkspace={(input: CreateRemoteWorkspaceGrantInput) =>
+                  runSshWorkspaceAction(
+                    `workspace-create:${input.projectId}:${input.connectionId}`,
+                    input.projectId,
+                    () => window.gosu.ssh.createWorkspaceGrant(input),
+                    'Granted this project access to the remote workspace.',
+                  )
+                }
+                onUpdateSshWorkspace={(input: UpdateRemoteWorkspaceGrantInput) =>
+                  runSshWorkspaceAction(
+                    `workspace-update:${input.grantId}`,
+                    input.projectId,
+                    () => window.gosu.ssh.updateWorkspaceGrant(input),
+                    'Updated the project remote workspace grant.',
+                  )
+                }
+                onRemoveSshWorkspace={(input: RemoveRemoteWorkspaceGrantInput) =>
+                  runSshWorkspaceAction(
+                    `workspace-remove:${input.grantId}`,
+                    input.projectId,
+                    () => window.gosu.ssh.removeWorkspaceGrant(input),
+                    'Revoked the project remote workspace grant.',
+                  )
+                }
               />
             )}
             {activeTab === 'notes' && (

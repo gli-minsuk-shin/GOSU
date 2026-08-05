@@ -3,7 +3,12 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { SSH_COMMAND_MAX_OUTPUT_CHARACTERS, type SshAgentCommand } from '../shared/ssh-contracts';
+import {
+  SSH_COMMAND_MAX_OUTPUT_CHARACTERS,
+  SshDirectTargetSchema,
+  type SshAgentCommand,
+  type SshDirectTarget,
+} from '../shared/ssh-contracts';
 
 const DEFAULT_EXECUTABLE = process.platform === 'darwin' ? '/usr/bin/ssh' : 'ssh';
 const KILL_GRACE_MS = 500;
@@ -43,6 +48,7 @@ export type SshCommandRunOptions = Readonly<{
 
 export type SshRunnableCommand = Readonly<{
   hostAlias: string;
+  directTarget?: SshDirectTarget;
   command: string;
   args?: readonly string[];
   workingDirectory?: string;
@@ -55,11 +61,13 @@ export interface SshCommandRunner {
     hostAlias: string,
     timeoutSeconds?: number,
     options?: SshCommandRunOptions,
+    directTarget?: SshDirectTarget,
   ): Promise<void>;
   execute(
     hostAlias: string,
     command: SshAgentCommand,
     options?: SshCommandRunOptions,
+    directTarget?: SshDirectTarget,
   ): Promise<SshProcessResult>;
 }
 
@@ -127,6 +135,8 @@ function safeOptions(timeoutSeconds: number) {
     '-o',
     'Tunnel=no',
     '-o',
+    'GatewayPorts=no',
+    '-o',
     `ConnectTimeout=${connectTimeout}`,
     '-T',
     '-n',
@@ -147,10 +157,30 @@ export function buildRemoteCommand(
 }
 
 export function buildSshArguments(hostAlias: string, command: SshAgentCommand) {
+  return buildSshArgumentsForTarget(hostAlias, command);
+}
+
+function directTargetArguments(target: SshDirectTarget | undefined) {
+  if (!target) return [] as const;
+  const parsed = SshDirectTargetSchema.parse(target);
+  return [
+    '-F',
+    'none',
+    ...(parsed.user ? ['-l', parsed.user] : []),
+    ...(parsed.port ? ['-p', String(parsed.port)] : []),
+  ] as const;
+}
+
+export function buildSshArgumentsForTarget(
+  hostAlias: string,
+  command: SshAgentCommand,
+  directTarget?: SshDirectTarget,
+) {
   return [
     ...safeOptions(command.timeoutSeconds),
+    ...directTargetArguments(directTarget),
     '--',
-    hostAlias,
+    directTarget?.host ?? hostAlias,
     buildRemoteCommand(command),
   ] as const;
 }
@@ -229,6 +259,9 @@ function validateRequest(command: SshRunnableCommand) {
     ) ||
     (command.workingDirectory !== undefined && !command.workingDirectory.startsWith('/'))
   ) {
+    throw new SshCommandRunnerError('connection_failed');
+  }
+  if (command.directTarget && !SshDirectTargetSchema.safeParse(command.directTarget).success) {
     throw new SshCommandRunnerError('connection_failed');
   }
 }
@@ -392,8 +425,9 @@ export function createSshCommandRunner(
     return run(
       [
         ...safeOptions(command.timeoutSeconds),
+        ...directTargetArguments(command.directTarget),
         '--',
-        command.hostAlias,
+        command.directTarget?.host ?? command.hostAlias,
         buildRemoteCommand(command),
       ],
       command.timeoutSeconds,
@@ -406,14 +440,29 @@ export function createSshCommandRunner(
       hostAlias: string,
       timeoutSeconds = 10,
       runOptions: SshCommandRunOptions = {},
+      directTarget?: SshDirectTarget,
     ) {
       const safeTimeout = Math.max(1, Math.min(10, Math.floor(timeoutSeconds)));
-      await callable({ hostAlias, command: 'true', timeoutSeconds: safeTimeout }, runOptions);
+      await callable(
+        {
+          hostAlias,
+          ...(directTarget ? { directTarget } : {}),
+          command: 'true',
+          timeoutSeconds: safeTimeout,
+        },
+        runOptions,
+      );
     },
-    execute(hostAlias: string, input: SshAgentCommand, runOptions: SshCommandRunOptions = {}) {
+    execute(
+      hostAlias: string,
+      input: SshAgentCommand,
+      runOptions: SshCommandRunOptions = {},
+      directTarget?: SshDirectTarget,
+    ) {
       return callable(
         {
           hostAlias,
+          ...(directTarget ? { directTarget } : {}),
           command: input.command,
           args: input.args,
           ...(input.workingDirectory === undefined

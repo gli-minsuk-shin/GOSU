@@ -55,6 +55,7 @@ import {
   SshEventSchema,
   type CancelSshScopeInput,
   type CreateSshConnectionInput,
+  type ImportSshCommandInput,
   type RemoveSshConnectionInput,
   type ResolveSshApprovalInput,
   type SshConnectionProfile,
@@ -63,6 +64,14 @@ import {
   type UpdateSshConnectionInput,
 } from '../shared/ssh-contracts';
 import { unwrapSshIpcResult } from '../shared/ssh-ipc-result';
+import type {
+  CreateRemoteWorkspaceGrantInput,
+  GrantedRemoteWorkspace,
+  ListRemoteWorkspaceGrantsInput,
+  RemoteWorkspaceGrant,
+  RemoveRemoteWorkspaceGrantInput,
+  UpdateRemoteWorkspaceGrantInput,
+} from '../shared/ssh-workspace-contracts';
 import type {
   ReadVaultAttachmentInput,
   VaultAttachment,
@@ -291,12 +300,22 @@ const api = {
       invokeSsh<readonly SshConnectionProfile[]>(SSH_IPC_CHANNELS.listConnections),
     createConnection: (input: CreateSshConnectionInput) =>
       invokeSsh<SshConnectionProfile>(SSH_IPC_CHANNELS.createConnection, input),
+    importCommand: (input: ImportSshCommandInput) =>
+      invokeSsh<SshConnectionProfile>(SSH_IPC_CHANNELS.importCommand, input),
     updateConnection: (input: UpdateSshConnectionInput) =>
       invokeSsh<SshConnectionProfile>(SSH_IPC_CHANNELS.updateConnection, input),
     removeConnection: (input: RemoveSshConnectionInput) =>
       invokeSsh<{ removed: true }>(SSH_IPC_CHANNELS.removeConnection, input),
     testConnection: (connectionId: string) =>
       invokeSsh<SshConnectionTestResult>(SSH_IPC_CHANNELS.testConnection, { connectionId }),
+    listWorkspaceGrants: (input: ListRemoteWorkspaceGrantsInput) =>
+      invokeSsh<readonly GrantedRemoteWorkspace[]>(SSH_IPC_CHANNELS.listWorkspaceGrants, input),
+    createWorkspaceGrant: (input: CreateRemoteWorkspaceGrantInput) =>
+      invokeSsh<RemoteWorkspaceGrant>(SSH_IPC_CHANNELS.createWorkspaceGrant, input),
+    updateWorkspaceGrant: (input: UpdateRemoteWorkspaceGrantInput) =>
+      invokeSsh<RemoteWorkspaceGrant>(SSH_IPC_CHANNELS.updateWorkspaceGrant, input),
+    removeWorkspaceGrant: (input: RemoveRemoteWorkspaceGrantInput) =>
+      invokeSsh<{ removed: true }>(SSH_IPC_CHANNELS.removeWorkspaceGrant, input),
     resolveApproval: (input: ResolveSshApprovalInput) =>
       invokeSsh<{ outcome: 'allowed' | 'denied' }>(SSH_IPC_CHANNELS.resolveApproval, input),
     cancelScope: (input: CancelSshScopeInput) =>

@@ -1,11 +1,20 @@
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
 import type {
   CreateSshConnectionInput,
+  ImportSshCommandInput,
   RemoveSshConnectionInput,
   SshConnectionProfile,
   UpdateSshConnectionInput,
 } from '../../shared/ssh-contracts';
+import type {
+  CreateRemoteWorkspaceGrantInput,
+  GrantedRemoteWorkspace,
+  RemoveRemoteWorkspaceGrantInput,
+  UpdateRemoteWorkspaceGrantInput,
+} from '../../shared/ssh-workspace-contracts';
+import type { ProjectRecord } from '../../shared/workspace-contracts';
 import { SshConnectionsCard } from './ssh-connections-card';
+import { SshWorkspaceGrantsCard } from './ssh-workspace-grants-card';
 import { Boundary, CardHead, RuntimeCard } from './ui-primitives';
 
 export type CodexModel = {
@@ -36,9 +45,15 @@ export function ConnectionsView({
   sshBusy,
   sshTestStatus,
   onCreateSshConnection,
+  onImportSshCommand,
   onUpdateSshConnection,
   onRemoveSshConnection,
   onTestSshConnection,
+  activeProject,
+  sshWorkspaces,
+  onCreateSshWorkspace,
+  onUpdateSshWorkspace,
+  onRemoveSshWorkspace,
 }: {
   runtime: RuntimeReadiness | null;
   models: readonly CodexModel[];
@@ -59,9 +74,15 @@ export function ConnectionsView({
   sshBusy: boolean;
   sshTestStatus: Readonly<Record<string, string>>;
   onCreateSshConnection: (input: CreateSshConnectionInput) => Promise<unknown>;
+  onImportSshCommand: (input: ImportSshCommandInput) => Promise<unknown>;
   onUpdateSshConnection: (input: UpdateSshConnectionInput) => Promise<unknown>;
   onRemoveSshConnection: (input: RemoveSshConnectionInput) => Promise<unknown>;
   onTestSshConnection: (connectionId: string) => Promise<unknown>;
+  activeProject: ProjectRecord | null;
+  sshWorkspaces: readonly GrantedRemoteWorkspace[];
+  onCreateSshWorkspace: (input: CreateRemoteWorkspaceGrantInput) => Promise<unknown>;
+  onUpdateSshWorkspace: (input: UpdateRemoteWorkspaceGrantInput) => Promise<unknown>;
+  onRemoveSshWorkspace: (input: RemoveRemoteWorkspaceGrantInput) => Promise<unknown>;
 }) {
   return (
     <section className="connection-grid">
@@ -150,9 +171,19 @@ export function ConnectionsView({
         busy={sshBusy}
         testStatus={sshTestStatus}
         onCreate={onCreateSshConnection}
+        onImport={onImportSshCommand}
         onUpdate={onUpdateSshConnection}
         onRemove={onRemoveSshConnection}
         onTest={onTestSshConnection}
+      />
+      <SshWorkspaceGrantsCard
+        project={activeProject}
+        connections={sshConnections}
+        workspaces={sshWorkspaces}
+        busy={sshBusy}
+        onCreate={onCreateSshWorkspace}
+        onUpdate={onUpdateSshWorkspace}
+        onRemove={onRemoveSshWorkspace}
       />
       <article className="card">
         <CardHead title="Local-first boundary" detail="Eligibility policy · delivery is off" />

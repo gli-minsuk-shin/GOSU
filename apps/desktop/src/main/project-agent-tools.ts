@@ -6,11 +6,16 @@ import type { LocalNotesVaultGrant } from '../shared/project-chat-contracts';
 import { repositoryIdentifierForAgent } from '../shared/repository-identifier';
 import {
   SSH_IPC_ERROR_CODES,
-  SshAgentCommandSchema,
   type SshAgentCommand,
   type SshCommandResult,
   type SshConnectionProfile,
 } from '../shared/ssh-contracts';
+import {
+  SSH_WORKSPACE_MAX_ARGUMENTS,
+  SshWorkspaceAgentCommandSchema,
+  type GrantedRemoteWorkspace,
+  type SshWorkspaceAgentCommand,
+} from '../shared/ssh-workspace-contracts';
 import type { AgentVaultNoteChunk, AgentVaultNoteList } from '../shared/vault-contracts';
 import { resolveWorkspaceBoardSettings } from '../shared/workspace-contracts';
 import type {
@@ -48,12 +53,12 @@ const ReadNoteArgumentsSchema = z
     maxCharacters: z.number().int().min(1).max(MAX_NOTE_CHARACTERS_PER_CALL).optional(),
   })
   .strict();
-const ListSshConnectionsArgumentsSchema = z.object({}).strict();
-const RunSshCommandArgumentsSchema = SshAgentCommandSchema.pick({
-  connectionId: true,
+const ListSshWorkspacesArgumentsSchema = z.object({}).strict();
+const RunSshWorkspaceCommandArgumentsSchema = SshWorkspaceAgentCommandSchema.pick({
+  grantId: true,
   command: true,
   args: true,
-  workingDirectory: true,
+  workspaceSubdirectory: true,
   timeoutSeconds: true,
 });
 
@@ -109,11 +114,11 @@ const READ_NOTE_TOOL = {
   },
 } as const;
 
-const LIST_SSH_CONNECTIONS_TOOL = {
+const LIST_SSH_WORKSPACES_TOOL = {
   type: 'function',
-  name: 'list_ssh_connections',
+  name: 'list_ssh_workspaces',
   description:
-    'List the opaque IDs and display labels of SSH server aliases registered locally on this Mac. Host resolution, credentials, private-key paths, and SSH config are never returned.',
+    'List only remote workspaces explicitly granted to the active GOSU project. Returns opaque grant IDs, connection labels, and permission modes. Host resolution, credentials, workspace roots, private-key paths, and SSH config are never returned.',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -121,15 +126,15 @@ const LIST_SSH_CONNECTIONS_TOOL = {
   },
 } as const;
 
-const RUN_SSH_COMMAND_TOOL = {
+const RUN_SSH_WORKSPACE_COMMAND_TOOL = {
   type: 'function',
-  name: 'run_ssh_command',
+  name: 'run_ssh_workspace_command',
   description:
-    'Request one bounded, non-interactive read or diagnostic command on a registered SSH connection. Use an absolute executable under /bin, /sbin, /usr/bin, or /usr/sbin. GOSU applies a fixed read-only executable/argument allowlist, shows the exact target and command, and executes only after a fresh Allow once decision. Scripts, mutation, interactive shells, privilege escalation, file transfer, forwarding, TTY, and unattended execution are unavailable.',
+    'Request one bounded direct-argv command in a remote workspace explicitly granted to this project. Use an absolute executable and an optional relative workspace subdirectory. Diagnostics mode permits bounded inspection; Workspace mode also permits a small test/build allowlist that can execute untrusted project code. GOSU shows target, workspace, mode, risk, and exact command and executes only after a fresh Allow once decision. This is an advisory policy boundary, not a hard remote sandbox. Raw shell strings, inline eval, privilege escalation, file transfer, forwarding, TTY, unattended execution, and host-wide destructive commands are unavailable.',
   inputSchema: {
     type: 'object',
     properties: {
-      connectionId: { type: 'string', format: 'uuid' },
+      grantId: { type: 'string', format: 'uuid' },
       command: {
         type: 'string',
         minLength: 1,
@@ -138,13 +143,13 @@ const RUN_SSH_COMMAND_TOOL = {
       },
       args: {
         type: 'array',
-        maxItems: 32,
+        maxItems: SSH_WORKSPACE_MAX_ARGUMENTS,
         items: { type: 'string', maxLength: 1_024 },
       },
-      workingDirectory: { type: 'string', minLength: 1, maxLength: 1_024, pattern: '^/' },
+      workspaceSubdirectory: { type: 'string', maxLength: 512 },
       timeoutSeconds: { type: 'integer', minimum: 5, maximum: 120 },
     },
-    required: ['connectionId', 'command'],
+    required: ['grantId', 'command'],
     additionalProperties: false,
   },
 } as const;
@@ -186,6 +191,11 @@ export interface ProjectAgentVault {
 export interface ProjectAgentSsh {
   listConnections(): Promise<readonly SshConnectionProfile[]>;
   runAgentCommand(input: SshAgentCommand, signal?: AbortSignal): Promise<SshCommandResult>;
+  listWorkspaceGrants(projectId: string): Promise<readonly GrantedRemoteWorkspace[]>;
+  runAgentWorkspaceCommand(
+    input: SshWorkspaceAgentCommand,
+    signal?: AbortSignal,
+  ): Promise<SshCommandResult>;
   cancelSession(projectId: string, sessionId: string): number;
   cancelProject(projectId: string): number;
 }
@@ -274,23 +284,23 @@ export class ProjectAgentToolSession {
           WORKSPACE_TOOL,
           LIST_NOTES_TOOL,
           READ_NOTE_TOOL,
-          LIST_SSH_CONNECTIONS_TOOL,
-          RUN_SSH_COMMAND_TOOL,
+          LIST_SSH_WORKSPACES_TOOL,
+          RUN_SSH_WORKSPACE_COMMAND_TOOL,
         ]
-      : [WORKSPACE_TOOL, LIST_SSH_CONNECTIONS_TOOL, RUN_SSH_COMMAND_TOOL];
+      : [WORKSPACE_TOOL, LIST_SSH_WORKSPACES_TOOL, RUN_SSH_WORKSPACE_COMMAND_TOOL];
     this.dynamicTools = [
       {
         type: 'namespace',
         name: PROJECT_TOOL_NAMESPACE,
         description:
-          'Project-bound GOSU capabilities plus globally registered local SSH aliases. Project and session identity are injected by the Main process. SSH execution always requires a fresh user Allow once decision and never exposes credentials or a local shell.',
+          'Project-bound GOSU capabilities, including only remote workspaces explicitly granted to this active project. Project and session identity, connection, and workspace root are injected and revalidated by the Main process. Every SSH command requires a fresh user Allow once decision and never exposes credentials or a local shell.',
         tools,
       },
     ];
     this.dynamicToolTimeouts = [
       {
         namespace: PROJECT_TOOL_NAMESPACE,
-        tool: RUN_SSH_COMMAND_TOOL.name,
+        tool: RUN_SSH_WORKSPACE_COMMAND_TOOL.name,
         timeoutMs: SSH_DYNAMIC_TOOL_TIMEOUT_MS,
       },
     ];
@@ -425,7 +435,8 @@ export class ProjectAgentToolSession {
     if (call.namespace !== PROJECT_TOOL_NAMESPACE) return failure('tool_not_allowed');
     if (
       this.sshCapabilityRevoked &&
-      (call.tool === LIST_SSH_CONNECTIONS_TOOL.name || call.tool === RUN_SSH_COMMAND_TOOL.name)
+      (call.tool === LIST_SSH_WORKSPACES_TOOL.name ||
+        call.tool === RUN_SSH_WORKSPACE_COMMAND_TOOL.name)
     ) {
       return failure('ssh_cancelled');
     }
@@ -434,11 +445,11 @@ export class ProjectAgentToolSession {
     try {
       await this.requireActiveProject();
       if (call.tool === WORKSPACE_TOOL.name) return await this.readWorkspace(call.arguments);
-      if (call.tool === LIST_SSH_CONNECTIONS_TOOL.name) {
-        return await this.listSshConnections(call.arguments);
+      if (call.tool === LIST_SSH_WORKSPACES_TOOL.name) {
+        return await this.listSshWorkspaces(call.arguments);
       }
-      if (call.tool === RUN_SSH_COMMAND_TOOL.name) {
-        return await this.runSshCommand(call, delivery.abortSignal);
+      if (call.tool === RUN_SSH_WORKSPACE_COMMAND_TOOL.name) {
+        return await this.runSshWorkspaceCommand(call, delivery.abortSignal);
       }
       if (!this.localNotesAvailable || !this.dependencies.localNotesVault) {
         return failure('local_notes_not_authorized');
@@ -582,34 +593,39 @@ export class ProjectAgentToolSession {
     return jsonResult(createBoardPayload());
   }
 
-  private async listSshConnections(arguments_: unknown) {
-    const parsed = ListSshConnectionsArgumentsSchema.safeParse(arguments_);
+  private async listSshWorkspaces(arguments_: unknown) {
+    const parsed = ListSshWorkspacesArgumentsSchema.safeParse(arguments_);
     if (!parsed.success) return failure('invalid_tool_arguments');
-    if (!this.dependencies.ssh) return jsonResult({ schemaVersion: 1, connections: [] });
-    const connections = await this.dependencies.ssh.listConnections();
+    if (!this.dependencies.ssh) return jsonResult({ schemaVersion: 1, workspaces: [] });
+    const workspaces = await this.dependencies.ssh.listWorkspaceGrants(this.dependencies.projectId);
     if (this.sshCapabilityRevoked) return failure('ssh_cancelled');
     return jsonResult({
       schemaVersion: 1,
-      connections: connections.map((connection) => ({
-        id: connection.id,
-        label: connection.label,
+      workspaces: workspaces.map(({ grant, connection }) => ({
+        grantId: grant.id,
+        connectionLabel: connection.label,
+        permissionMode: grant.permissionMode,
       })),
     });
   }
 
-  private async runSshCommand(call: CodexDynamicToolCall, toolAbortSignal: AbortSignal) {
-    const parsed = RunSshCommandArgumentsSchema.safeParse(call.arguments);
+  private async runSshWorkspaceCommand(call: CodexDynamicToolCall, toolAbortSignal: AbortSignal) {
+    const parsed = RunSshWorkspaceCommandArgumentsSchema.safeParse(call.arguments);
     if (!parsed.success) return failure('invalid_tool_arguments');
     if (!this.dependencies.ssh || !this.dependencies.sessionId || !this.dependencies.attemptId) {
       return failure('ssh_unavailable');
     }
-    const result = await this.dependencies.ssh.runAgentCommand(
+    const workspaces = await this.dependencies.ssh.listWorkspaceGrants(this.dependencies.projectId);
+    const selected = workspaces.find(({ grant }) => grant.id === parsed.data.grantId);
+    if (!selected) return failure('ssh_workspace_grant_not_found');
+    const result = await this.dependencies.ssh.runAgentWorkspaceCommand(
       {
         projectId: this.dependencies.projectId,
         sessionId: this.dependencies.sessionId,
         attemptId: this.dependencies.attemptId,
         turnId: call.turnId,
         toolCallId: call.callId,
+        connectionId: selected.connection.id,
         ...parsed.data,
       },
       AbortSignal.any([this.sshScopeController.signal, toolAbortSignal]),

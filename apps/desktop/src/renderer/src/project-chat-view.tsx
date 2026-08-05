@@ -604,9 +604,10 @@ export function ProjectChatView({
                 Board + Objective read tools · {localNotesStatus} · SSH requires Allow once
               </span>
               <small>
-                Board changes require Apply. Remote commands show their exact server alias and typed
-                arguments for one-time approval and are limited to a read-only diagnostics
-                allowlist; secrets, direct local shell or file access, Settings, and Trash remain
+                Board changes require Apply. Only project-granted remote workspaces are visible.
+                Bounded Git inspection and optional approved direct-argv tests/builds show their
+                exact target, root, arguments, and risk for a fresh one-time approval. Raw shells,
+                TTY, transfer, unattended execution, secrets, Settings, and Trash remain
                 unavailable.
               </small>
             </div>

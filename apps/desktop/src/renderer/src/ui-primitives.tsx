@@ -141,10 +141,21 @@ export function describeError(error: unknown) {
     codex_unavailable: 'Codex is unavailable. Board and local notes remain usable.',
     chat_unavailable: 'Project chat is unavailable. Existing local messages were not replaced.',
     invalid_ssh_input: 'Check the SSH server name or alias and try again.',
+    ssh_import_invalid_command:
+      'Use ssh with only -p, -l, one user@host destination, and optional loopback-only -L forwarding.',
     ssh_connection_not_found: 'This SSH server profile no longer exists. Refresh Connections.',
     ssh_connection_version_conflict:
       'This SSH server profile changed since it was opened. The newer version was not overwritten.',
     ssh_connection_limit_reached: 'This Mac has reached the SSH server profile limit.',
+    ssh_workspace_grant_not_found:
+      'This project remote workspace grant no longer exists. Refresh Connections.',
+    ssh_workspace_grant_conflict:
+      'This project remote workspace grant changed since it was opened. Review the latest version.',
+    ssh_workspace_grant_limit_reached: 'This project has reached the remote workspace grant limit.',
+    ssh_workspace_project_unavailable:
+      'Remote workspace access is available only for an active, non-archived project.',
+    ssh_workspace_command_not_allowed:
+      'GOSU blocked this remote workspace command or permission mode. Use a smaller Git inspection or an approved direct test/build command.',
     ssh_approval_not_found: 'This SSH approval is no longer pending.',
     ssh_approval_denied: 'The SSH command was denied and was not started.',
     ssh_approval_expired: 'The SSH approval expired and the command was not started.',
