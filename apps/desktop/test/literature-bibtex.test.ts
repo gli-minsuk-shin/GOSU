@@ -22,6 +22,10 @@ function record(title: string, overrides: Partial<LiteratureRecord> = {}): Liter
     containerTitle: 'Journal of Reliable Agents',
     publishedYear: 2026,
     sourceTopics: ['Research OS', 'Literature review'],
+    searchTags: {
+      topics: ['Tabular, foundation models', 'Scientific ML'],
+      keywords: ['tabpfn', 'in-context learning'],
+    },
     workType: 'journal-article',
     citationCount: 42,
     sourceUrl: 'https://doi.org/10.1000/example',
@@ -97,6 +101,11 @@ describe('literature BibTeX transfer', () => {
     expect(forward).not.toContain('private-model');
     expect(forward.toLowerCase()).not.toContain('abstract =');
     expect(forward).toContain('metadataonly = {true}');
+    expect(forward).toContain('keywords = {Research OS, Literature review}');
+    expect(forward).toContain(
+      'gosusearchtopics = {["Tabular, foundation models","Scientific ML"]}',
+    );
+    expect(forward).toContain('gosusearchkeywords = {["tabpfn","in-context learning"]}');
 
     const duplicateA = record('Same title', { doi: '10.1000/b' });
     const duplicateB = record('Same title', {
@@ -120,9 +129,15 @@ describe('literature BibTeX transfer', () => {
       doi: '10.1000/example',
       citationCount: 42,
       reviewStatus: 'reviewed',
+      sourceTopics: ['Research OS', 'Literature review'],
+      searchTags: {
+        topics: ['Tabular, foundation models', 'Scientific ML'],
+        keywords: ['tabpfn', 'in-context learning'],
+      },
       metadataOnly: true,
     });
     expect(restored?.manualAnnotations).toEqual(source.manualAnnotations);
+    expect(serializeLiteratureBibtex(restored ? [restored] : [])).toBe(serialized);
 
     const external = `@article{Turing1950Computing,
       title = {Computing {Machinery} and Intelligence},
@@ -138,6 +153,7 @@ describe('literature BibTeX transfer', () => {
       publishedYear: 1950,
       doi: '10.1093/mind/lix.236.433',
       citationKey: 'Turing1950Computing',
+      searchTags: { topics: [], keywords: [] },
     });
   });
 

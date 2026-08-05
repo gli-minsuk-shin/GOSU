@@ -1,6 +1,11 @@
 import { ModelInvocationSchema } from '@gosu/contracts';
 import { z } from 'zod';
 
+import {
+  LiteratureSearchInputTagsSchema,
+  LiteratureSearchTagsSchema,
+} from './literature-search-tags';
+
 export const LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT = 500;
 export const LITERATURE_MAX_RECORDS_PER_PAGE = LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT;
 export const LITERATURE_MAX_SEARCH_RESULTS = 50;
@@ -162,6 +167,7 @@ export const LiteratureRecordSchema = z
     containerTitle: nullableText(1_000),
     publishedYear: z.number().int().min(1000).max(3000).nullable(),
     sourceTopics: z.array(topicSchema).max(50),
+    searchTags: LiteratureSearchTagsSchema.optional(),
     workType: nullableText(120),
     citationCount: z.number().int().nonnegative().nullable(),
     sourceUrl: z
@@ -204,6 +210,7 @@ export const LiteratureSearchRunSchema = z
     policyId: LiteratureDiscoveryPolicySchema.optional(),
     policyVersion: z.number().int().positive().optional(),
     query: boundedText(1_000),
+    searchTags: LiteratureSearchTagsSchema.optional(),
     fromYear: z.number().int().min(1000).max(3000).nullable(),
     toYear: z.number().int().min(1000).max(3000).nullable(),
     requestedLimit: z.number().int().min(1).max(LITERATURE_MAX_SEARCH_RESULTS),
@@ -230,6 +237,7 @@ export const LiteratureSearchInputSchema = z
   .object({
     projectId: uuidSchema,
     query: boundedText(1_000),
+    searchTags: LiteratureSearchInputTagsSchema.optional(),
     fromYear: optionalYearSchema,
     toYear: optionalYearSchema,
     limit: z.number().int().min(1).max(LITERATURE_MAX_SEARCH_RESULTS).optional(),

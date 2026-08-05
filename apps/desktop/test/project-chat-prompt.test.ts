@@ -91,6 +91,7 @@ describe('Project chat prompt assembly', () => {
     expect(first.provenance).toMatchObject({
       assemblyVersion: 3,
       profileVersion: 3,
+      baseInstructionVersion: 18,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -127,6 +128,19 @@ describe('Project chat prompt assembly', () => {
       'DOCX, PPTX, and HWPX text reconstruction does not preserve exact page layout',
     );
     expect(first.developerInstructions).toContain('fixed balanced-three-layer policy');
+    expect(first.developerInstructions).toContain('supply a few focused searchTags');
+    expect(first.developerInstructions).toContain(
+      'topics for broad research themes and keywords for specific methods',
+    );
+    expect(first.developerInstructions).toContain(
+      'accumulate as workflow provenance on successfully matched records',
+    );
+    expect(first.developerInstructions).toContain(
+      'separate from provider topics and bibliographic evidence',
+    );
+    expect(first.developerInstructions).toContain(
+      'never promote or otherwise affect a discovery layer',
+    );
     expect(first.developerInstructions).toContain('call estimated momentum real-time popularity');
     expect(first.developerInstructions).toContain(
       'which providers or sorted lanes were degraded and which discovery signals remained available',
@@ -149,7 +163,7 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(17);
+    expect(first.provenance.baseInstructionVersion).toBe(18);
     expect(first.developerInstructions).toContain(
       'Core & canonical is an eligibility-gated maximum, never a quota',
     );

@@ -45,6 +45,7 @@ export type LiteratureProviderCandidate = Readonly<{
   citationKey?: string | undefined;
   reviewStatus?: LiteratureReviewStatus | undefined;
   manualAnnotations?: LiteratureRecord['manualAnnotations'] | undefined;
+  searchTags?: LiteratureRecord['searchTags'] | undefined;
   discovery?: LiteratureRankingSignals | undefined;
 }>;
 

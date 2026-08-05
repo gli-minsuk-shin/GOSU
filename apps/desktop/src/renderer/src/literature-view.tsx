@@ -23,6 +23,15 @@ import type {
 } from '../../shared/literature-contracts';
 import { LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW } from '../../shared/literature-contracts';
 import {
+  EMPTY_LITERATURE_SEARCH_TAGS,
+  LITERATURE_MAX_SEARCH_KEYWORD_TAGS,
+  LITERATURE_MAX_SEARCH_TOPIC_TAGS,
+  literatureSearchTagKey,
+  parseLiteratureSearchTagText,
+  type LiteratureSearchTagKind,
+  type LiteratureSearchTags,
+} from '../../shared/literature-search-tags';
+import {
   BALANCED_LITERATURE_POLICY_ID,
   BALANCED_LITERATURE_POLICY_VERSION,
   LITERATURE_CANONICAL_MIN_AGE_YEARS,
@@ -37,6 +46,7 @@ import {
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import {
   buildLiteratureTablePage,
+  buildLiteratureSearchTagOptions,
   nextLiteratureSort,
   type LiteratureSortDirection,
   type LiteratureSortKey,
@@ -130,7 +140,7 @@ const COLUMN_LABELS: ReadonlyArray<{
   { key: 'authors', label: 'Authors' },
   { key: 'venue', label: 'Journal / venue' },
   { key: 'year', label: 'Year' },
-  { key: 'topics', label: 'Topics' },
+  { key: 'searchTags', label: 'Search tags' },
   { key: 'doi', label: 'DOI' },
   { key: 'citedBy', label: 'Cited by' },
   { key: 'type', label: 'Type' },
@@ -351,18 +361,16 @@ function formatLabel(value: string) {
 }
 
 export function literatureViewRecord(record: LiteratureRecord): LiteratureViewRecord {
-  const topics = [
-    ...record.manualAnnotations.topics,
-    ...(record.aiAnnotations?.topics ?? []),
-    ...record.sourceTopics,
-  ].filter((topic, index, all) => all.indexOf(topic) === index);
   return {
     id: record.id,
     title: record.title,
     authors: record.authors,
     venue: record.containerTitle ?? '',
     year: record.publishedYear,
-    topics,
+    searchTags: record.searchTags ?? EMPTY_LITERATURE_SEARCH_TAGS,
+    sourceTopics: record.sourceTopics,
+    manualTopics: record.manualAnnotations.topics,
+    aiTopics: record.aiAnnotations?.topics ?? [],
     doi: record.doi ?? '',
     type: record.workType ?? '',
     citedBy: record.citationCount,
@@ -382,6 +390,41 @@ function parseYear(value: string) {
   if (!trimmed) return undefined;
   const parsed = Number.parseInt(trimmed, 10);
   return Number.isInteger(parsed) ? parsed : undefined;
+}
+
+export function literatureSearchTagDraft(
+  search: Pick<LiteratureSearchRun, 'searchTags'>,
+): Readonly<{ topicText: string; keywordText: string }> {
+  return {
+    topicText: (search.searchTags?.topics ?? []).join(', '),
+    keywordText: (search.searchTags?.keywords ?? []).join(', '),
+  };
+}
+
+type VisibleLiteratureSearchTag = Readonly<{
+  kind: LiteratureSearchTagKind;
+  label: string;
+  key: string;
+}>;
+
+function visibleLiteratureSearchTags(
+  tags: LiteratureSearchTags,
+  activeFilter: string,
+  maximum = 3,
+): readonly VisibleLiteratureSearchTag[] {
+  const all = (['topics', 'keywords'] as const).flatMap((kind) =>
+    tags[kind].map((label) => ({ kind, label, key: literatureSearchTagKey(kind, label) })),
+  );
+  const activeIndex = all.findIndex(({ key }) => key === activeFilter);
+  if (activeIndex > 0) {
+    const [active] = all.splice(activeIndex, 1);
+    if (active) all.unshift(active);
+  }
+  return all.slice(0, maximum);
+}
+
+function searchTagKindLabel(kind: LiteratureSearchTagKind) {
+  return kind === 'topics' ? 'Topic' : 'Keyword';
 }
 
 function LiteratureSortButton({
@@ -417,24 +460,28 @@ export function LiteratureTable({
   textFilter,
   statusFilter,
   tierFilter = 'all',
+  searchTagFilter = 'all',
   sortKey,
   sortDirection,
   page,
   onSelect,
   onSort,
   onPage,
+  onSearchTagFilter = () => undefined,
 }: {
   records: readonly LiteratureViewRecord[];
   selectedId: string | null;
   textFilter: string;
   statusFilter: string;
   tierFilter?: string;
+  searchTagFilter?: string;
   sortKey: LiteratureSortKey;
   sortDirection: LiteratureSortDirection;
   page: number;
   onSelect: (recordId: string) => void;
   onSort: (key: LiteratureSortKey) => void;
   onPage: (page: number) => void;
+  onSearchTagFilter?: (filter: string) => void;
 }) {
   const scrollRegionRef = useRef<HTMLDivElement>(null);
   const [scrollAvailability, setScrollAvailability] = useState(NO_LITERATURE_TABLE_SCROLL);
@@ -444,11 +491,12 @@ export function LiteratureTable({
         text: textFilter,
         reviewStatus: statusFilter,
         discoveryTier: tierFilter,
+        searchTag: searchTagFilter,
         sortKey,
         sortDirection,
         page,
       }),
-    [page, records, sortDirection, sortKey, statusFilter, textFilter, tierFilter],
+    [page, records, searchTagFilter, sortDirection, sortKey, statusFilter, textFilter, tierFilter],
   );
 
   const updateScrollAvailability = useCallback(() => {
@@ -496,6 +544,7 @@ export function LiteratureTable({
     statusFilter,
     textFilter,
     tierFilter,
+    searchTagFilter,
     updateScrollAvailability,
   ]);
 
@@ -627,13 +676,29 @@ export function LiteratureTable({
                 <td>{record.venue || '—'}</td>
                 <td>{record.year ?? '—'}</td>
                 <td>
-                  <div className="literature-topic-list">
-                    {record.topics.slice(0, 3).map((topic) => (
-                      <span className="literature-topic-chip" key={topic}>
-                        {topic}
-                      </span>
+                  <div className="literature-topic-list literature-search-tag-list">
+                    {visibleLiteratureSearchTags(record.searchTags, searchTagFilter).map((tag) => (
+                      <button
+                        type="button"
+                        className={`literature-search-tag-chip ${tag.kind}`}
+                        key={tag.key}
+                        aria-label={`Filter by ${searchTagKindLabel(tag.kind).toLocaleLowerCase()} tag ${tag.label}`}
+                        aria-pressed={searchTagFilter === tag.key}
+                        onClick={() =>
+                          onSearchTagFilter(searchTagFilter === tag.key ? 'all' : tag.key)
+                        }
+                      >
+                        <span>{searchTagKindLabel(tag.kind)}</span>
+                        {tag.label}
+                      </button>
                     ))}
-                    {record.topics.length > 3 && <small>+{record.topics.length - 3}</small>}
+                    {record.searchTags.topics.length + record.searchTags.keywords.length === 0 &&
+                      '—'}
+                    {record.searchTags.topics.length + record.searchTags.keywords.length > 3 && (
+                      <small>
+                        +{record.searchTags.topics.length + record.searchTags.keywords.length - 3}
+                      </small>
+                    )}
                   </div>
                 </td>
                 <td>{record.doi || '—'}</td>
@@ -677,7 +742,7 @@ export function LiteratureTable({
   );
 }
 
-function LiteratureDetail({
+export function LiteratureDetail({
   record,
   busy,
   onSave,
@@ -758,6 +823,49 @@ function LiteratureDetail({
         </div>
       </div>
 
+      <section className="literature-tag-sources" aria-label="Search provenance tags">
+        <div>
+          <strong>Search tags</strong>
+          <small>Accumulated from the searches that found this paper</small>
+        </div>
+        {(record.searchTags?.topics.length ?? 0) + (record.searchTags?.keywords.length ?? 0) > 0 ? (
+          <div className="literature-topic-list literature-search-tag-list">
+            {(record.searchTags?.topics ?? []).map((label) => (
+              <span className="literature-search-tag-chip topics" key={`topic:${label}`}>
+                <span>Topic</span>
+                {label}
+              </span>
+            ))}
+            {(record.searchTags?.keywords ?? []).map((label) => (
+              <span className="literature-search-tag-chip keywords" key={`keyword:${label}`}>
+                <span>Keyword</span>
+                {label}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p>No search tags yet. Imported papers remain available under the Untagged filter.</p>
+        )}
+      </section>
+
+      <section className="literature-tag-sources" aria-label="Source keywords">
+        <div>
+          <strong>Source keywords</strong>
+          <small>Provider metadata; never used as a GOSU search tag</small>
+        </div>
+        {record.sourceTopics.length > 0 ? (
+          <div className="literature-topic-list">
+            {record.sourceTopics.map((topic) => (
+              <span className="literature-topic-chip" key={topic}>
+                {topic}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p>No source keywords provided.</p>
+        )}
+      </section>
+
       {record.discovery && (
         <section className="literature-discovery-summary" aria-label="Discovery ranking">
           <div>
@@ -822,13 +930,18 @@ function LiteratureDetail({
                 <dd>{record.aiAnnotations.studyType || 'Not assessable from metadata alone'}</dd>
               </div>
             </dl>
-            <div className="literature-topic-list">
-              {record.aiAnnotations.topics.map((topic) => (
-                <span className="literature-topic-chip" key={topic}>
-                  {topic}
-                </span>
-              ))}
-            </div>
+            {record.aiAnnotations.topics.length > 0 && (
+              <div className="literature-ai-topic-suggestions">
+                <strong>AI topic suggestions</strong>
+                <div className="literature-topic-list">
+                  {record.aiAnnotations.topics.map((topic) => (
+                    <span className="literature-topic-chip" key={topic}>
+                      {topic}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
             {record.aiAnnotations.limitations.length > 0 && (
               <div className="literature-ai-limitations">
                 <strong>Metadata limitations</strong>
@@ -860,7 +973,7 @@ function LiteratureDetail({
         }}
       >
         <label>
-          Manual topics
+          Manual review topics
           <input
             value={topics}
             maxLength={1000}
@@ -947,11 +1060,14 @@ export function LiteratureView({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
+  const [topicTagText, setTopicTagText] = useState('');
+  const [keywordTagText, setKeywordTagText] = useState('');
   const [fromYear, setFromYear] = useState('');
   const [toYear, setToYear] = useState('');
   const [textFilter, setTextFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [tierFilter, setTierFilter] = useState('all');
+  const [searchTagFilter, setSearchTagFilter] = useState('all');
   const [sortKey, setSortKey] = useState<LiteratureSortKey>('importance');
   const [sortDirection, setSortDirection] = useState<LiteratureSortDirection>('descending');
   const [page, setPage] = useState(1);
@@ -959,12 +1075,31 @@ export function LiteratureView({
   const selected = records.find((record) => record.id === selectedId) ?? null;
   const latestSearchCoverage = recentSearches[0]?.coverage;
   const tableRecords = useMemo(() => records.map(literatureViewRecord), [records]);
+  const searchTagOptions = useMemo(
+    () => buildLiteratureSearchTagOptions(tableRecords),
+    [tableRecords],
+  );
+  const topicTagOptions = searchTagOptions.filter(({ kind }) => kind === 'topics');
+  const keywordTagOptions = searchTagOptions.filter(({ kind }) => kind === 'keywords');
+  const untaggedCount = tableRecords.filter(
+    ({ searchTags }) => searchTags.topics.length === 0 && searchTags.keywords.length === 0,
+  ).length;
   const layerCounts = useMemo(() => literatureLayerCounts(tableRecords), [tableRecords]);
   const corePolicyCounts = useMemo(() => literatureCorePolicyCounts(records), [records]);
   const aiCandidates = useMemo(
     () => records.filter((record) => record.aiAnnotations === null).slice(0, 50),
     [records],
   );
+
+  useEffect(() => {
+    const valid =
+      searchTagFilter === 'all' ||
+      (searchTagFilter === 'untagged' && untaggedCount > 0) ||
+      searchTagOptions.some(({ key }) => key === searchTagFilter);
+    if (valid) return;
+    setSearchTagFilter('all');
+    setPage(1);
+  }, [searchTagFilter, searchTagOptions, untaggedCount]);
 
   const refresh = async () => {
     const next = await adapter.list({ projectId: project.id });
@@ -1065,6 +1200,16 @@ export function LiteratureView({
               const result = await adapter.search({
                 projectId: project.id,
                 query: query.trim(),
+                searchTags: {
+                  topics: parseLiteratureSearchTagText(topicTagText).slice(
+                    0,
+                    LITERATURE_MAX_SEARCH_TOPIC_TAGS,
+                  ),
+                  keywords: parseLiteratureSearchTagText(keywordTagText).slice(
+                    0,
+                    LITERATURE_MAX_SEARCH_KEYWORD_TAGS,
+                  ),
+                },
                 ...(start ? { fromYear: start } : {}),
                 ...(end ? { toYear: end } : {}),
               });
@@ -1074,7 +1219,7 @@ export function LiteratureView({
             });
           }}
         >
-          <label>
+          <label className="literature-search-query">
             Research question or keywords
             <input
               value={query}
@@ -1085,7 +1230,27 @@ export function LiteratureView({
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
-          <label>
+          <label className="literature-search-tag-field">
+            Topic tags
+            <input
+              value={topicTagText}
+              maxLength={1500}
+              placeholder="e.g. tabular foundation models, evaluation"
+              disabled={Boolean(busy)}
+              onChange={(event) => setTopicTagText(event.target.value)}
+            />
+          </label>
+          <label className="literature-search-tag-field">
+            Keyword tags
+            <input
+              value={keywordTagText}
+              maxLength={3000}
+              placeholder="e.g. TabPFN, few-shot, benchmark"
+              disabled={Boolean(busy)}
+              onChange={(event) => setKeywordTagText(event.target.value)}
+            />
+          </label>
+          <label className="literature-search-year">
             From year
             <input
               type="number"
@@ -1098,7 +1263,7 @@ export function LiteratureView({
               onChange={(event) => setFromYear(event.target.value)}
             />
           </label>
-          <label>
+          <label className="literature-search-year">
             To year
             <input
               type="number"
@@ -1119,6 +1284,10 @@ export function LiteratureView({
             {busy === 'search' ? 'Searching…' : records.length > 0 ? 'Search again' : 'Deep search'}
           </button>
         </form>
+        <p className="literature-search-tag-help">
+          Topic and Keyword tags accumulate on matching papers across searches. Separate tags with
+          commas; leaving both fields blank uses the normalized search query as a Topic tag.
+        </p>
         <p className="literature-search-help">
           <strong>Fixed policy v{BALANCED_LITERATURE_POLICY_VERSION}:</strong> Core is a maximum,
           never a quota. High-impact relevant papers must appear in the relevance lane with a
@@ -1145,7 +1314,10 @@ export function LiteratureView({
                 disabled={Boolean(busy)}
                 title={`Reuse “${search.query}”${search.fromYear ? ` from ${search.fromYear}` : ''}${search.toYear ? ` through ${search.toYear}` : ''}${search.conflicts.length > 0 ? `; skipped ${literatureConflictSummary(search.conflicts, search.conflictCount)}` : ''}${literatureCoverageSummary(search.coverage)}`}
                 onClick={() => {
+                  const tagDraft = literatureSearchTagDraft(search);
                   setQuery(search.query);
+                  setTopicTagText(tagDraft.topicText);
+                  setKeywordTagText(tagDraft.keywordText);
                   setFromYear(search.fromYear?.toString() ?? '');
                   setToYear(search.toYear?.toString() ?? '');
                 }}
@@ -1299,12 +1471,44 @@ export function LiteratureView({
             <input
               type="search"
               value={textFilter}
-              placeholder="Filter title, author, topic, venue, or DOI"
+              placeholder="Filter title, author, tags, venue, or DOI"
               onChange={(event) => {
                 setTextFilter(event.target.value);
                 setPage(1);
               }}
             />
+          </label>
+          <label>
+            <span>Search tag</span>
+            <select
+              aria-label="Search tag filter"
+              value={searchTagFilter}
+              onChange={(event) => {
+                setSearchTagFilter(event.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="all">All search tags</option>
+              {topicTagOptions.length > 0 && (
+                <optgroup label="Topics">
+                  {topicTagOptions.map((option) => (
+                    <option key={option.key} value={option.key}>
+                      {option.label} ({option.count})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {keywordTagOptions.length > 0 && (
+                <optgroup label="Keywords">
+                  {keywordTagOptions.map((option) => (
+                    <option key={option.key} value={option.key}>
+                      {option.label} ({option.count})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {untaggedCount > 0 && <option value="untagged">Untagged ({untaggedCount})</option>}
+            </select>
           </label>
           <label>
             <span>Discovery layer</span>
@@ -1361,12 +1565,17 @@ export function LiteratureView({
               textFilter={textFilter}
               statusFilter={statusFilter}
               tierFilter={tierFilter}
+              searchTagFilter={searchTagFilter}
               sortKey={sortKey}
               sortDirection={sortDirection}
               page={page}
               onSelect={setSelectedId}
               onSort={handleSort}
               onPage={setPage}
+              onSearchTagFilter={(filter) => {
+                setSearchTagFilter(filter);
+                setPage(1);
+              }}
             />
           )}
         </div>

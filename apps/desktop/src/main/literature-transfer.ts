@@ -8,8 +8,9 @@ import {
   type LiteratureRecord,
   type LiteratureReviewStatus,
 } from '../shared/literature-contracts';
+import { LiteratureSearchTagsSchema } from '../shared/literature-search-tags';
 
-export const LITERATURE_TRANSFER_SCHEMA_VERSION = 1;
+export const LITERATURE_TRANSFER_SCHEMA_VERSION = 2;
 export const LITERATURE_TRANSFER_MAX_RECORDS = LITERATURE_MAX_RECORDS_PER_PAGE;
 export const LITERATURE_TRANSFER_MAX_INPUT_BYTES = LITERATURE_MAX_TRANSFER_BYTES;
 export const LITERATURE_TRANSFER_MAX_OUTPUT_BYTES = LITERATURE_MAX_TRANSFER_BYTES;
@@ -68,6 +69,7 @@ const TransferRecordSchema = z
     doi: nullableText(512),
     sourceUrl: httpsUrlSchema.nullable(),
     sourceTopics: stringList(50, 240),
+    searchTags: LiteratureSearchTagsSchema,
     citationCount: z.number().int().nonnegative().nullable(),
     fingerprint: z.string().regex(/^[0-9a-f]{64}$/u),
     citationKey: safeText(160),
@@ -84,6 +86,7 @@ const ImportRecordSchema = TransferRecordSchema.partial({
   doi: true,
   sourceUrl: true,
   sourceTopics: true,
+  searchTags: true,
   citationCount: true,
   fingerprint: true,
   citationKey: true,
@@ -95,17 +98,39 @@ const ImportRecordSchema = TransferRecordSchema.partial({
   authors: stringList(100, 300).default([]),
 });
 
-const JsonEnvelopeSchema = z
+const JsonEnvelopeV1Schema = z
+  .object({
+    schemaVersion: z.literal(1),
+    kind: z.literal('gosu.literature'),
+    records: z
+      .array(ImportRecordSchema.omit({ searchTags: true }))
+      .max(LITERATURE_TRANSFER_MAX_RECORDS),
+  })
+  .strict();
+
+const JsonEnvelopeV2Schema = z
   .object({
     schemaVersion: z.literal(LITERATURE_TRANSFER_SCHEMA_VERSION),
     kind: z.literal('gosu.literature'),
-    records: z.array(ImportRecordSchema).max(LITERATURE_TRANSFER_MAX_RECORDS),
+    records: z
+      .array(ImportRecordSchema.required({ searchTags: true }))
+      .max(LITERATURE_TRANSFER_MAX_RECORDS),
   })
   .strict();
+
+const JsonEnvelopeSchema = z.discriminatedUnion('schemaVersion', [
+  JsonEnvelopeV1Schema,
+  JsonEnvelopeV2Schema,
+]);
 
 export type LiteratureTransferRecord = z.infer<typeof TransferRecordSchema>;
 export type LiteratureJsonEnvelopeV1 = Readonly<{
   schemaVersion: 1;
+  kind: 'gosu.literature';
+  records: readonly Omit<LiteratureTransferRecord, 'searchTags'>[];
+}>;
+export type LiteratureJsonEnvelopeV2 = Readonly<{
+  schemaVersion: 2;
   kind: 'gosu.literature';
   records: readonly LiteratureTransferRecord[];
 }>;
@@ -116,7 +141,7 @@ export type LiteratureFingerprintInput = Readonly<{
   doi?: string | null | undefined;
 }>;
 
-const csvColumns = [
+const legacyCsvColumns = [
   'title',
   'authors',
   'container_title',
@@ -133,6 +158,13 @@ const csvColumns = [
   'manual_relevance',
   'fingerprint',
   'metadata_only',
+] as const;
+
+const csvColumns = [
+  ...legacyCsvColumns.slice(0, 8),
+  'search_topics',
+  'search_keywords',
+  ...legacyCsvColumns.slice(8),
 ] as const;
 
 export function normalizeDoi(value: string | null | undefined): string | null {
@@ -180,6 +212,7 @@ export function toLiteratureTransferRecord(record: LiteratureRecord): Literature
     doi,
     sourceUrl: record.sourceUrl,
     sourceTopics: record.sourceTopics,
+    searchTags: record.searchTags ?? { topics: [], keywords: [] },
     citationCount: record.citationCount,
     fingerprint: literatureFingerprint(record),
     citationKey: record.citationKey,
@@ -202,6 +235,7 @@ export function normalizeLiteratureTransferRecord(input: unknown): LiteratureTra
     doi,
     sourceUrl: parsed.sourceUrl ?? null,
     sourceTopics: parsed.sourceTopics ?? [],
+    searchTags: parsed.searchTags ?? { topics: [], keywords: [] },
     citationCount: parsed.citationCount ?? null,
     fingerprint: literatureFingerprint(parsed),
     citationKey: parsed.citationKey ?? '',
@@ -214,8 +248,8 @@ export function normalizeLiteratureTransferRecord(input: unknown): LiteratureTra
 export function serializeLiteratureJson(
   records: readonly (LiteratureRecord | LiteratureTransferRecord)[],
 ): string {
-  const envelope: LiteratureJsonEnvelopeV1 = {
-    schemaVersion: 1,
+  const envelope: LiteratureJsonEnvelopeV2 = {
+    schemaVersion: LITERATURE_TRANSFER_SCHEMA_VERSION,
     kind: 'gosu.literature',
     records: normalizeAndSortRecords(records, 'literature_export_too_large'),
   };
@@ -255,6 +289,8 @@ export function serializeLiteratureCsv(
         record.doi ?? '',
         record.sourceUrl ?? '',
         JSON.stringify(record.sourceTopics),
+        JSON.stringify(record.searchTags.topics),
+        JSON.stringify(record.searchTags.keywords),
         record.citationCount?.toString() ?? '',
         record.citationKey,
         record.reviewStatus,
@@ -277,10 +313,12 @@ export function parseLiteratureCsv(content: string): LiteratureTransferRecord[] 
     const rows = parseCsvRows(stripByteOrderMark(content));
     if (rows.length === 0) return [];
     const header = rows[0]?.map((value) => value.trim().toLowerCase()) ?? [];
-    if (
-      header.length !== csvColumns.length ||
-      header.some((value, index) => value !== csvColumns[index])
-    ) {
+    const columns = matchesCsvHeader(header, csvColumns)
+      ? csvColumns
+      : matchesCsvHeader(header, legacyCsvColumns)
+        ? legacyCsvColumns
+        : null;
+    if (columns === null) {
       throw new LiteratureTransferError('literature_import_invalid');
     }
     if (rows.length - 1 > LITERATURE_TRANSFER_MAX_RECORDS) {
@@ -290,11 +328,11 @@ export function parseLiteratureCsv(content: string): LiteratureTransferRecord[] 
       .slice(1)
       .filter((row) => row.some((value) => value.trim() !== ''))
       .map((row) => {
-        if (row.length !== csvColumns.length) {
+        if (row.length !== columns.length) {
           throw new LiteratureTransferError('literature_import_invalid');
         }
         const values = Object.fromEntries(
-          csvColumns.map((column, index) => [column, unprotectCsvCell(row[index] ?? '')]),
+          columns.map((column, index) => [column, unprotectCsvCell(row[index] ?? '')]),
         );
         return normalizeLiteratureTransferRecord({
           title: values.title,
@@ -305,6 +343,10 @@ export function parseLiteratureCsv(content: string): LiteratureTransferRecord[] 
           doi: emptyToNull(values.doi),
           sourceUrl: emptyToNull(values.source_url),
           sourceTopics: parseListCell(values.source_topics),
+          searchTags: {
+            topics: parseListCell(values.search_topics),
+            keywords: parseListCell(values.search_keywords),
+          },
           citationCount: parseNullableInteger(values.citation_count),
           citationKey: values.citation_key,
           reviewStatus: values.review_status || 'unreviewed',
@@ -386,6 +428,8 @@ function stableTransferRecordKey(record: LiteratureTransferRecord): string {
     record.workType,
     record.sourceUrl,
     record.sourceTopics,
+    record.searchTags.topics,
+    record.searchTags.keywords,
     record.citationCount,
     record.reviewStatus,
     record.manualAnnotations.topics,
@@ -399,6 +443,12 @@ function hasUnsafeControl(value: string): boolean {
     const code = character.codePointAt(0) ?? 0;
     return code <= 31 || (code >= 127 && code <= 159);
   });
+}
+
+function matchesCsvHeader(header: readonly string[], expected: readonly string[]): boolean {
+  return (
+    header.length === expected.length && header.every((value, index) => value === expected[index])
+  );
 }
 
 function assertInputBound(content: string): void {

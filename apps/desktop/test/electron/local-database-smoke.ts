@@ -25,6 +25,7 @@ import {
   type LiteratureDiscoveryCoverage,
   type LiteratureDiscoveryTier,
   type LiteratureRankingSignals,
+  type LiteratureSearchRun,
 } from '../../src/shared/literature-contracts';
 import type {
   ProjectRecord,
@@ -559,6 +560,211 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
   invariant(
     reopened.countLiteratureRecords(otherProjectId) === 1,
     'literature_other_project_not_reopened',
+  );
+  reopened.close();
+}
+
+function verifyLiteratureSearchTagPersistence(fixedTimestamp: string) {
+  const database = new LocalDatabase();
+  database.open();
+  const projectId = randomUUID();
+  const doi = '10.1000/gosu.search-tags';
+  const candidate = {
+    provider: 'crossref' as const,
+    providerId: 'crossref-search-tags',
+    doi,
+    fingerprint: literatureFingerprint('Tagged literature fixture', ['Tag Researcher'], 2026),
+    title: 'Tagged literature fixture',
+    authors: ['Tag Researcher'],
+    containerTitle: 'Journal of Search Provenance',
+    publishedYear: 2026,
+    topics: ['provider subject'],
+    workType: 'journal-article',
+    citationCount: 7,
+    sourceUrl: `https://doi.org/${doi}`,
+  };
+  const run = (
+    query: string,
+    searchTags: LiteratureSearchRun['searchTags'],
+  ): LiteratureSearchRun => ({
+    schemaVersion: 1,
+    id: randomUUID(),
+    projectId,
+    provider: 'crossref',
+    query,
+    searchTags,
+    fromYear: null,
+    toYear: null,
+    requestedLimit: 10,
+    status: 'running',
+    foundCount: 0,
+    newCount: 0,
+    updatedCount: 0,
+    unchangedCount: 0,
+    conflictCount: 0,
+    conflicts: [],
+    createdAt: fixedTimestamp,
+    completedAt: null,
+  });
+
+  const firstRun = run('tabular foundation models', {
+    topics: ['Tabular foundation models'],
+    keywords: ['TabPFN'],
+  });
+  invariant(database.beginLiteratureSearch(firstRun), 'literature_tag_search_start_failed');
+  invariant(
+    database.completeLiteratureSearch(projectId, firstRun.id, [candidate], fixedTimestamp)
+      .newCount === 1,
+    'literature_tag_search_insert_failed',
+  );
+  const inserted = database.listLiteratureRecords(projectId)[0]!;
+  const provenance: LiteratureAiProvenance = {
+    invocation: {
+      schemaVersion: 1,
+      invocationId: randomUUID(),
+      providerId: 'codex',
+      requestedModelId: null,
+      resolvedModelId: 'fixture-model',
+      catalogVersion: 'fixture-catalog',
+      reasoningOptionId: null,
+      startedAt: fixedTimestamp,
+    },
+    inputSha256: 'd'.repeat(64),
+    generatedAt: fixedTimestamp,
+    metadataOnly: true,
+  };
+  const annotated = database.applyLiteratureAiAnnotations(
+    projectId,
+    [
+      {
+        recordId: inserted.id,
+        expectedVersion: inserted.version,
+        expectedAnnotationVersion: inserted.annotationVersion,
+        topics: ['AI suggestion'],
+        summary: 'Keep this draft across tag-only updates.',
+        relevance: 'high',
+        studyType: '',
+        limitations: [],
+        provenance,
+      },
+    ],
+    fixedTimestamp,
+  )![0]!;
+
+  const secondRun = run('in-context tabular learning', {
+    topics: ['ＴＡＢＵＬＡＲ foundation models', 'In-context learning'],
+    keywords: ['tabpfn', 'benchmarks'],
+  });
+  invariant(database.beginLiteratureSearch(secondRun), 'literature_second_tag_search_start_failed');
+  const accumulatedReceipt = database.completeLiteratureSearch(
+    projectId,
+    secondRun.id,
+    [candidate],
+    fixedTimestamp,
+  );
+  const accumulated = database.listLiteratureRecords(projectId)[0]!;
+  invariant(
+    accumulatedReceipt.updatedCount === 1 &&
+      accumulated.version === annotated.version + 1 &&
+      accumulated.annotationVersion === annotated.annotationVersion &&
+      accumulated.aiAnnotations?.summary === 'Keep this draft across tag-only updates.' &&
+      accumulated.searchTags?.topics.join('|') ===
+        'Tabular foundation models|In-context learning' &&
+      accumulated.searchTags.keywords.join('|') === 'TabPFN|benchmarks',
+    'literature_search_tags_were_not_accumulated_safely',
+  );
+
+  const duplicateRun = run('same normalized tags', {
+    topics: ['tabular FOUNDATION models', 'in-context learning'],
+    keywords: ['ＴａｂＰＦＮ', 'BENCHMARKS'],
+  });
+  invariant(database.beginLiteratureSearch(duplicateRun), 'literature_duplicate_tag_start_failed');
+  const duplicateReceipt = database.completeLiteratureSearch(
+    projectId,
+    duplicateRun.id,
+    [candidate],
+    fixedTimestamp,
+  );
+  const afterDuplicate = database.listLiteratureRecords(projectId)[0]!;
+  invariant(
+    duplicateReceipt.unchangedCount === 1 && afterDuplicate.version === accumulated.version,
+    'literature_search_tag_normalization_was_not_idempotent',
+  );
+
+  database.upsertLiteratureCandidates(
+    projectId,
+    [
+      {
+        provider: 'crossref',
+        providerId: 'crossref-other-tag-record',
+        doi: '10.1000/gosu.search-tags.other',
+        fingerprint: literatureFingerprint('Other tagged identity', ['Tag Researcher'], 2025),
+        title: 'Other tagged identity',
+        authors: ['Tag Researcher'],
+        publishedYear: 2025,
+        topics: [],
+      },
+    ],
+    fixedTimestamp,
+  );
+  const conflictRun = run('conflicting tag search', {
+    topics: ['Must not be applied'],
+    keywords: ['conflict'],
+  });
+  invariant(database.beginLiteratureSearch(conflictRun), 'literature_conflict_tag_start_failed');
+  const conflictReceipt = database.completeLiteratureSearch(
+    projectId,
+    conflictRun.id,
+    [
+      {
+        ...candidate,
+        providerId: 'crossref-other-tag-record',
+      },
+    ],
+    fixedTimestamp,
+  );
+  invariant(
+    conflictReceipt.conflictCount === 1 &&
+      database
+        .listLiteratureRecords(projectId)
+        .every(
+          (record) =>
+            !record.searchTags?.topics.includes('Must not be applied') &&
+            !record.searchTags?.keywords.includes('conflict'),
+        ),
+    'literature_identity_conflict_received_search_tags',
+  );
+
+  const failedRun = run('failed tag search', {
+    topics: ['Failure must not apply'],
+    keywords: [],
+  });
+  invariant(database.beginLiteratureSearch(failedRun), 'literature_failed_tag_start_failed');
+  invariant(
+    database.failLiteratureSearch(projectId, failedRun.id, 'failed', fixedTimestamp),
+    'literature_failed_tag_run_not_reconciled',
+  );
+  invariant(
+    database
+      .listLiteratureRecords(projectId)
+      .every((record) => !record.searchTags?.topics.includes('Failure must not apply')),
+    'literature_failed_search_received_tags',
+  );
+  database.close();
+
+  const reopened = new LocalDatabase();
+  reopened.open();
+  const durableRecord = reopened
+    .listLiteratureRecords(projectId)
+    .find((record) => record.doi === doi);
+  const durableRun = reopened
+    .listLiteratureSearchRuns(projectId)
+    .find((search) => search.id === secondRun.id);
+  invariant(
+    durableRecord?.searchTags?.topics.join('|') ===
+      'Tabular foundation models|In-context learning' &&
+      durableRun?.searchTags?.keywords.join('|') === 'tabpfn|benchmarks',
+    'literature_search_tags_were_not_durable',
   );
   reopened.close();
 }
@@ -1393,12 +1599,16 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
         raw
           .prepare('delete from local_schema_migrations where id=?')
           .run('literature-discovery-coverage-v1');
+        raw
+          .prepare('delete from local_schema_migrations where id=?')
+          .run('literature-search-tags-v1');
         raw.exec(`
           drop index literature_record_weak_fingerprint_identity;
           drop index literature_records_by_fingerprint;
           create unique index literature_record_fingerprint_identity
             on literature_records(project_id,fingerprint);
           alter table literature_records drop column current_discovery_json;
+          alter table literature_records drop column search_tags_json;
           alter table literature_search_runs drop column policy_id;
           alter table literature_search_runs drop column policy_version;
           alter table literature_search_runs drop column retrieved_count;
@@ -1407,6 +1617,7 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
           alter table literature_search_runs drop column rising_count;
           alter table literature_search_runs drop column broad_count;
           alter table literature_search_runs drop column discovery_coverage_json;
+          alter table literature_search_runs drop column search_tags_json;
           alter table literature_search_hits drop column discovery_tier;
           alter table literature_search_hits drop column tier_rank;
           alter table literature_search_hits drop column overall_score;
@@ -1484,6 +1695,8 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
     invariant(
       migratedLegacyRun?.retrievedCount === 1 &&
         migratedLegacyRun.selectedCount === 1 &&
+        migratedLegacyRun.searchTags?.topics.length === 0 &&
+        migratedLegacyRun.searchTags.keywords.length === 0 &&
         migratedLegacyRun.tierCounts === undefined,
       'legacy_literature_search_counts_were_not_backfilled_safely',
     );
@@ -1530,6 +1743,7 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
       );
       invariant(
         columns.some((column) => column.name === 'current_discovery_json') &&
+          columns.some((column) => column.name === 'search_tags_json') &&
           [
             'policy_id',
             'policy_version',
@@ -1539,6 +1753,7 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
             'rising_count',
             'broad_count',
             'discovery_coverage_json',
+            'search_tags_json',
           ].every((name) => searchColumns.some((column) => column.name === name)) &&
           ['discovery_tier', 'tier_rank', 'overall_score', 'ranking_signals_json'].every((name) =>
             hitColumns.some((column) => column.name === name),
@@ -3056,6 +3271,7 @@ void app.whenReady().then(async () => {
     verifyLegacyProfileMigration(temporaryUserData, fixedTimestamp);
     verifyLiteratureRelevanceMigration(temporaryUserData, fixedTimestamp);
     verifyLiteraturePersistence(fixedTimestamp);
+    verifyLiteratureSearchTagPersistence(fixedTimestamp);
     verifySparseSemanticScholarMerge(fixedTimestamp);
     verifyLiteratureDiscoveryPersistence(fixedTimestamp);
     verifyLiteratureBoundsAndIdentity(fixedTimestamp);

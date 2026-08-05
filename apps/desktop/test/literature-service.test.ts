@@ -343,12 +343,31 @@ describe('LiteratureService', () => {
     });
     expect(result.run).toMatchObject({
       projectId: PROJECT_ID,
+      searchTags: { topics: ['research fixtures'], keywords: [] },
       fromYear: 2020,
       toYear: 2026,
       requestedLimit: 50,
       status: 'complete',
     });
     expect(JSON.stringify(storage.candidates)).not.toContain('abstract');
+  });
+
+  it('persists explicit topic and keyword provenance tags on each search run', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const result = await service(storage, { provider: provider([]) }).search({
+      projectId: PROJECT_ID,
+      query: 'a long research question remains provider input',
+      searchTags: {
+        topics: ['#Tabular foundation models', 'tabular foundation models'],
+        keywords: ['TabPFN', 'in-context   learning'],
+      },
+    });
+
+    expect(result.run.searchTags).toEqual({
+      topics: ['Tabular foundation models'],
+      keywords: ['TabPFN', 'in-context learning'],
+    });
+    expect(storage.runs[0]?.searchTags).toEqual(result.run.searchTags);
   });
 
   it('persists and returns the discovery signal coverage used by Project Chat receipts', async () => {

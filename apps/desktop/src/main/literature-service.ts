@@ -35,6 +35,7 @@ import {
   type LiteratureSearchRun,
   type UpdateLiteratureAnnotationsInput,
 } from '../shared/literature-contracts';
+import { resolveLiteratureSearchTags } from '../shared/literature-search-tags';
 import type { WorkspaceService } from './workspace-service';
 import { parseLiteratureBibtex, serializeLiteratureBibtex } from './literature-bibtex';
 import { LiteratureProviderError, type LiteratureProviderCandidate } from './literature-crossref';
@@ -81,6 +82,7 @@ function transferCandidate(record: LiteratureTransferRecord): LiteratureProvider
     citationKey: record.citationKey,
     reviewStatus: record.reviewStatus,
     manualAnnotations: record.manualAnnotations,
+    ...(record.searchTags ? { searchTags: record.searchTags } : {}),
   };
 }
 
@@ -245,6 +247,7 @@ export class LiteratureService {
       throw new LiteratureServiceError('literature_provider_unavailable');
     }
     const createdAt = this.now().toISOString();
+    const searchTags = resolveLiteratureSearchTags(command.query, command.searchTags);
     const run = LiteratureSearchRunSchema.parse({
       schemaVersion: 1,
       id: randomUUID(),
@@ -253,6 +256,7 @@ export class LiteratureService {
       policyId: this.provider.policyId,
       policyVersion: this.provider.policyVersion,
       query: command.query,
+      searchTags,
       fromYear: command.fromYear ?? null,
       toYear: command.toYear ?? null,
       requestedLimit: command.limit ?? 50,

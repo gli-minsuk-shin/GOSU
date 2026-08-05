@@ -92,6 +92,8 @@ function serializeEntry(record: LiteratureTransferRecord, citationKey: string): 
     ['doi', record.doi],
     ['url', record.sourceUrl],
     ['keywords', record.sourceTopics.join(', ') || null],
+    ['gosusearchtopics', serializeSearchTagList(record.searchTags.topics)],
+    ['gosusearchkeywords', serializeSearchTagList(record.searchTags.keywords)],
     ['citationcount', record.citationCount?.toString() ?? null],
     ['gosuworktype', record.workType],
     ['gosureviewstatus', record.reviewStatus],
@@ -125,6 +127,10 @@ function entryToTransferRecord(entry: ParsedBibtexEntry): LiteratureTransferReco
     doi,
     sourceUrl: emptyToNull(entry.fields.url),
     sourceTopics: splitTerms(entry.fields.keywords ?? ''),
+    searchTags: {
+      topics: parseSearchTagList(entry.fields.gosusearchtopics ?? ''),
+      keywords: parseSearchTagList(entry.fields.gosusearchkeywords ?? ''),
+    },
     citationCount: parseOptionalInteger(entry.fields.citationcount),
     fingerprint,
     citationKey:
@@ -366,6 +372,21 @@ function splitTerms(value: string): string[] {
     .split(/[;,]/u)
     .map((term) => term.trim())
     .filter(Boolean);
+}
+
+function serializeSearchTagList(values: readonly string[]): string | null {
+  return values.length === 0 ? null : JSON.stringify(values);
+}
+
+function parseSearchTagList(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  if (!trimmed.startsWith('[')) return splitTerms(trimmed);
+  const parsed: unknown = JSON.parse(trimmed);
+  if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
+    throw new Error('Expected a search-tag list');
+  }
+  return parsed;
 }
 
 function parseOptionalInteger(value: string | undefined): number | null {

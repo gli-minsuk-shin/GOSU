@@ -10,6 +10,13 @@ import {
   type LiteratureSearchReceipt,
 } from '../shared/literature-contracts';
 import {
+  LITERATURE_MAX_SEARCH_KEYWORD_TAGS,
+  LITERATURE_MAX_SEARCH_TAG_LENGTH,
+  LITERATURE_MAX_SEARCH_TOPIC_TAGS,
+  LiteratureSearchInputTagsSchema,
+  resolveLiteratureSearchTags,
+} from '../shared/literature-search-tags';
+import {
   PROJECT_CHAT_MAX_ATTACHMENT_CHARACTERS_PER_TOOL_CALL,
   PROJECT_CHAT_MAX_ATTACHMENT_EXTRACTED_CHARACTERS,
   PROJECT_CHAT_MAX_ATTACHMENT_UNITS,
@@ -90,6 +97,7 @@ const ReadAttachmentArgumentsSchema = z
 const SearchLiteratureArgumentsSchema = z
   .object({
     query: z.string().trim().min(1).max(1_000),
+    searchTags: LiteratureSearchInputTagsSchema.optional(),
     fromYear: z.number().int().min(1000).max(3000).optional(),
     toYear: z.number().int().min(1000).max(3000).optional(),
     limit: z.number().int().min(3).max(LITERATURE_MAX_SEARCH_RESULTS).optional(),
@@ -203,11 +211,29 @@ const SEARCH_LITERATURE_TOOL = {
   type: 'function',
   name: 'search_literature',
   description:
-    "Run GOSU's fixed bounded three-layer literature discovery policy and additively merge the selected metadata into the active project Literature table. Core & canonical balances relevance with established citation impact, Rising & recent uses age-adjusted estimated momentum, and Broad discovery preserves recall. Verified author impact is only a capped supporting signal; the model cannot supply names, weights, provider URLs, or override the policy. Use only when the user explicitly asks to search for or add literature. Project identity is injected by GOSU. Ambiguous identities are skipped without changing saved papers. This tool reads bibliographic metadata, not paper full text, PDFs, or abstracts; never present discovery ranks as verified evidence quality.",
+    "Run GOSU's fixed bounded three-layer literature discovery policy and additively merge the selected metadata into the active project Literature table. Attach a few concise searchTags topics and keywords so records remain grouped by the searches that found them. These accumulating tags are workflow provenance labels, separate from provider topics and bibliographic evidence, and never change ranking. Core & canonical balances relevance with established citation impact, Rising & recent uses age-adjusted estimated momentum, and Broad discovery preserves recall. Verified author impact is only a capped supporting signal; the model cannot supply names, weights, provider URLs, or override the policy. Use only when the user explicitly asks to search for or add literature. Project identity is injected by GOSU. Ambiguous identities are skipped without changing saved papers. This tool reads bibliographic metadata, not paper full text, PDFs, or abstracts; never present discovery ranks as verified evidence quality.",
   inputSchema: {
     type: 'object',
     properties: {
       query: { type: 'string', minLength: 1, maxLength: 1_000 },
+      searchTags: {
+        type: 'object',
+        description:
+          'Concise workflow provenance labels applied to every successfully matched record in this search. Topics are broad research themes; keywords are specific methods, models, datasets, or tasks. They are not evidence or provider-supplied subjects.',
+        properties: {
+          topics: {
+            type: 'array',
+            maxItems: LITERATURE_MAX_SEARCH_TOPIC_TAGS,
+            items: { type: 'string', minLength: 1, maxLength: LITERATURE_MAX_SEARCH_TAG_LENGTH },
+          },
+          keywords: {
+            type: 'array',
+            maxItems: LITERATURE_MAX_SEARCH_KEYWORD_TAGS,
+            items: { type: 'string', minLength: 1, maxLength: LITERATURE_MAX_SEARCH_TAG_LENGTH },
+          },
+        },
+        additionalProperties: false,
+      },
       fromYear: { type: 'integer', minimum: 1000, maximum: 3000 },
       toYear: { type: 'integer', minimum: 1000, maximum: 3000 },
       limit: { type: 'integer', minimum: 3, maximum: LITERATURE_MAX_SEARCH_RESULTS },
@@ -939,6 +965,9 @@ export class ProjectAgentToolSession {
         persisted: true,
         runId: receipt.run.id,
         query: receipt.run.query,
+        searchTags:
+          receipt.run.searchTags ??
+          resolveLiteratureSearchTags(receipt.run.query, parsed.data.searchTags),
         foundCount: receipt.foundCount,
         retrievedCount: receipt.retrievedCount ?? receipt.run.retrievedCount ?? receipt.foundCount,
         selectedCount: receipt.selectedCount ?? receipt.run.selectedCount ?? receipt.foundCount,

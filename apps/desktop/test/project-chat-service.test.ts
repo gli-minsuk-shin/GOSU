@@ -721,6 +721,7 @@ async function fixture(vault?: ProjectAgentVault, attachments?: ProjectChatAttac
         projectId: input.projectId,
         provider: 'crossref',
         query: input.query,
+        ...(input.searchTags ? { searchTags: input.searchTags } : {}),
         fromYear: input.fromYear ?? null,
         toYear: input.toYear ?? null,
         requestedLimit: input.limit ?? 25,
@@ -1917,7 +1918,14 @@ describe('ProjectChatService', () => {
         callId: 'literature-search-1',
         namespace: 'gosu_project',
         tool: 'search_literature',
-        arguments: { query: 'tabular foundation models', limit: 10 },
+        arguments: {
+          query: 'tabular foundation models',
+          searchTags: {
+            topics: ['Tabular learning'],
+            keywords: ['foundation models', 'TabPFN'],
+          },
+          limit: 10,
+        },
       },
       dynamicToolDelivery(),
     );
@@ -1930,10 +1938,22 @@ describe('ProjectChatService', () => {
       provider: 'crossref',
       metadataOnly: true,
       persisted: true,
+      searchTags: {
+        topics: ['Tabular learning'],
+        keywords: ['foundation models', 'TabPFN'],
+      },
       newCount: 2,
     });
     expect(literature.search).toHaveBeenCalledExactlyOnceWith(
-      { projectId: projectA.id, query: 'tabular foundation models', limit: 10 },
+      {
+        projectId: projectA.id,
+        query: 'tabular foundation models',
+        searchTags: {
+          topics: ['Tabular learning'],
+          keywords: ['foundation models', 'TabPFN'],
+        },
+        limit: 10,
+      },
       expect.any(AbortSignal),
     );
     expect(JSON.stringify(result)).not.toContain(projectB.id);

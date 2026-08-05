@@ -1,4 +1,9 @@
 import { LITERATURE_MAX_RECORDS_PER_PAGE } from '../../shared/literature-contracts';
+import {
+  literatureSearchTagKey,
+  type LiteratureSearchTagKind,
+  type LiteratureSearchTags,
+} from '../../shared/literature-search-tags';
 
 export const LITERATURE_PAGE_SIZE = 25;
 export const MAX_VISIBLE_LITERATURE_RECORDS = LITERATURE_MAX_RECORDS_PER_PAGE;
@@ -8,7 +13,7 @@ export type LiteratureSortKey =
   | 'authors'
   | 'venue'
   | 'year'
-  | 'topics'
+  | 'searchTags'
   | 'doi'
   | 'type'
   | 'citedBy'
@@ -24,7 +29,10 @@ export interface LiteratureTableRecord {
   authors: readonly string[];
   venue: string;
   year: number | null;
-  topics: readonly string[];
+  searchTags: LiteratureSearchTags;
+  sourceTopics: readonly string[];
+  manualTopics: readonly string[];
+  aiTopics: readonly string[];
   doi: string;
   type: string;
   citedBy: number | null;
@@ -41,10 +49,18 @@ export interface LiteratureTableQuery {
   text: string;
   reviewStatus: string;
   discoveryTier?: string;
+  searchTag?: string;
   sortKey: LiteratureSortKey;
   sortDirection: LiteratureSortDirection;
   page: number;
   pageSize?: number;
+}
+
+export interface LiteratureSearchTagOption {
+  key: string;
+  kind: LiteratureSearchTagKind;
+  label: string;
+  count: number;
 }
 
 export interface LiteratureTablePage<RecordType extends LiteratureTableRecord> {
@@ -104,8 +120,8 @@ function sortValue(
       return record.venue;
     case 'year':
       return record.year ?? -1;
-    case 'topics':
-      return record.topics.join(' ');
+    case 'searchTags':
+      return [...record.searchTags.topics, ...record.searchTags.keywords].join(' ');
     case 'doi':
       return record.doi;
     case 'citedBy':
@@ -128,11 +144,55 @@ function matchesText(record: LiteratureTableRecord, query: string) {
     record.title,
     record.authors.join(' '),
     record.venue,
-    record.topics.join(' '),
+    record.searchTags.topics.join(' '),
+    record.searchTags.keywords.join(' '),
+    record.sourceTopics.join(' '),
+    record.manualTopics.join(' '),
+    record.aiTopics.join(' '),
     record.doi,
     record.type,
     record.source,
   ].some((value) => value.toLocaleLowerCase().includes(needle));
+}
+
+export function literatureRecordMatchesSearchTag(
+  record: LiteratureTableRecord,
+  filter: string | undefined,
+) {
+  if (!filter || filter === 'all') return true;
+  if (filter === 'untagged') {
+    return record.searchTags.topics.length === 0 && record.searchTags.keywords.length === 0;
+  }
+  return (['topics', 'keywords'] as const).some((kind) =>
+    record.searchTags[kind].some((label) => literatureSearchTagKey(kind, label) === filter),
+  );
+}
+
+export function buildLiteratureSearchTagOptions(
+  records: readonly LiteratureTableRecord[],
+): readonly LiteratureSearchTagOption[] {
+  const options = new Map<string, LiteratureSearchTagOption>();
+  for (const record of records) {
+    const countedForRecord = new Set<string>();
+    for (const kind of ['topics', 'keywords'] as const) {
+      for (const label of record.searchTags[kind]) {
+        const key = literatureSearchTagKey(kind, label);
+        if (countedForRecord.has(key)) continue;
+        countedForRecord.add(key);
+        const current = options.get(key);
+        options.set(key, {
+          key,
+          kind,
+          label: current?.label ?? label,
+          count: (current?.count ?? 0) + 1,
+        });
+      }
+    }
+  }
+  return [...options.values()].sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === 'topics' ? -1 : 1;
+    return compareText(left.label, right.label);
+  });
 }
 
 export function buildLiteratureTablePage<RecordType extends LiteratureTableRecord>(
@@ -147,6 +207,7 @@ export function buildLiteratureTablePage<RecordType extends LiteratureTableRecor
         matchesText(record, query.text) &&
         ((query.discoveryTier ?? 'all') === 'all' ||
           record.discoveryTier === query.discoveryTier) &&
+        literatureRecordMatchesSearchTag(record, query.searchTag) &&
         (query.reviewStatus === 'all' || record.reviewStatus === query.reviewStatus),
     )
     .map((record, index) => ({ record, index }));
