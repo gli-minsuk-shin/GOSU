@@ -22,10 +22,14 @@ updates the versioned workspace snapshot and appends its idempotent outbox opera
 transaction. A failed commit publishes neither change. Task and objective updates require the
 caller's expected entity version instead of silently applying last-write-wins.
 
-Obsidian access is read-only, ignores symlinks, enforces the selected root, and rejects files other
-than bounded Markdown documents. Navigation and privileged IPC are accepted only from the exact
-packaged renderer URL or an explicit-port loopback development origin and its main frame. Packaged
-builds ignore development URL environment overrides.
+Research Notes connects one Obsidian Vault and creates an owned `GOSU/<project>` folder with
+Literature, Papers, Experiments, Project Progress, and Idea Development sections. General Vault
+content stays read-only. GOSU writes only initial templates, its deterministic Literature table,
+and one-time paper-note drafts inside the owned project folder. Project-scoped IPC rejects symlinks,
+root escape, stale binding and ownership changes; the Renderer has no Vault-wide filesystem bridge.
+Navigation and privileged IPC are accepted only from the exact packaged renderer URL or an
+explicit-port loopback development origin and its main frame. Packaged builds ignore development
+URL environment overrides.
 
 ## Runnable local slice
 
@@ -38,7 +42,8 @@ and supports:
 - creating, renaming, and moving tasks across `Backlog / Planned / In Progress / Review / Done`;
 - defining a goal, primary metric, lineage hashes, budget, and stop policy;
 - freezing an objective revision locally and explicitly starting the next version;
-- reading a selected Obsidian folder as rendered, sanitized Markdown;
+- browsing each project's managed Obsidian Research Notes tree as rendered, sanitized Markdown;
+- projecting Literature searches into `Literature Review.md` and creating non-overwritten paper notes;
 - using project-scoped Codex chats with runtime-discovered models, reasoning, and native modes;
 - inspecting an app-managed Git workspace and reviewing its branches, history, and changes;
 - building and incrementally updating a project literature review table;

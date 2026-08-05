@@ -10,7 +10,7 @@ function paths(files: readonly string[], expandedDirectories: ReadonlySet<string
   return localNotesTreeRows(files, expandedDirectories).map((row) => row.path);
 }
 
-describe('Local Notes folder tree model', () => {
+describe('Research Notes folder tree model', () => {
   it('sorts folders before files naturally at every level and deduplicates input paths', () => {
     const files = [
       'Root 10.md',

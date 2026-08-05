@@ -77,6 +77,10 @@ describe('advanced Project Chat controls', () => {
     expect(describeError(new Error('ssh_workspace_command_not_allowed'))).toContain(
       'relative Python experiment entrypoint',
     );
+    expect(describeError(new Error('research_notes_folder_conflict'))).toContain(
+      'cannot be safely replaced',
+    );
+    expect(describeError(new Error('research_notes_note_not_found'))).not.toContain('/Users/');
   });
 
   it('discards an attachment picker result after session change, replacement, or unmount', () => {
@@ -431,7 +435,7 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Personality');
     expect(html).toContain('Board + Objective');
     expect(html).toContain('Board + Objective read tools');
-    expect(html).toContain('Local Notes not authorized');
+    expect(html).toContain('Research Notes not authorized');
     expect(html).toContain('Cached web');
     expect(html).toContain('Authorize…');
     expect(html).toContain('SSH requires Allow once');
@@ -608,7 +612,7 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('aria-label="Create a new project chat session"');
   });
 
-  it('pauses a saved Local Notes grant while Main-process capability status is unavailable', () => {
+  it('pauses a saved Research Notes grant while Main-process capability status is unavailable', () => {
     const profile = {
       ...defaultProjectChatProfile(project.id),
       localNotesVault: { id: 'a'.repeat(64), name: 'Research Vault' },
@@ -643,8 +647,54 @@ describe('advanced Project Chat controls', () => {
       />,
     );
 
-    expect(html).toContain('Local Notes status unavailable');
-    expect(html).toContain('This turn is paused to prevent a hidden grant mismatch.');
+    expect(html).toContain('Research Notes status unavailable');
+    expect(html).toContain('This turn is paused to prevent stale or cross-project note access.');
     expect(html).not.toContain('Authorize…');
+  });
+
+  it('pauses a saved Research Notes grant when another project binding is active', () => {
+    const profile = {
+      ...defaultProjectChatProfile(project.id),
+      localNotesVault: { id: 'a'.repeat(64), name: 'Previous Research Notes' },
+    };
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile,
+        }}
+        loading={false}
+        inFlight={false}
+        models={[]}
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={{
+          id: 'b'.repeat(64),
+          name: 'Current project Research Notes',
+          root: 'Obsidian/GOSU/Current project',
+          files: [],
+        }}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Previous Research Notes grant inactive');
+    expect(html).toContain('This turn is paused to prevent stale or cross-project note access.');
+    expect(html).toMatch(/<button[^>]*class="primary-button chat-send"[^>]*disabled=""/u);
+    expect(html).toContain('Authorize…');
   });
 });

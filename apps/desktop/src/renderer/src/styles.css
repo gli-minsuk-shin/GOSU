@@ -2219,6 +2219,62 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.research-notes-empty-actions,
+.literature-detail-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.research-notes-attention {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 10px;
+}
+
+.research-notes-managed-summary {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--green) 4%, var(--surface-soft));
+}
+
+.research-notes-managed-summary > span {
+  color: var(--green);
+  font-size: var(--font-kicker);
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.research-notes-managed-summary ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.research-notes-managed-summary li {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+
+.research-notes-managed-summary small {
+  color: var(--subtle);
+  font-size: var(--font-caption);
+  line-height: 1.45;
+}
+
 .local-notes-tree {
   display: grid;
   gap: 2px;
@@ -3126,6 +3182,11 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
   gap: 18px;
 }
 
+.literature-detail-heading-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
 .literature-detail-heading h2 {
   margin: 4px 0 5px;
   font-size: clamp(18px, 2vw, 23px);
@@ -3336,6 +3397,10 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
   .literature-detail-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .literature-detail-heading-actions {
+    justify-content: flex-start;
   }
 }
 

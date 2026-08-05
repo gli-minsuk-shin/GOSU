@@ -145,7 +145,7 @@ const LIST_NOTES_TOOL = {
   type: 'function',
   name: 'list_local_notes',
   description:
-    'List opaque IDs and display titles for Local Notes explicitly authorized for this project. Paths and the Vault root are never exposed.',
+    'List opaque IDs and display titles for Research Notes explicitly authorized for this project. Paths and the Vault root are never exposed.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -341,15 +341,17 @@ type PendingAttachmentCall = {
 };
 
 export interface ProjectAgentVault {
-  descriptor(): LocalNotesVaultGrant | null;
-  matchesGrant(vaultId: string): boolean;
-  validateGrant(expectedVaultId: string): Promise<void>;
+  descriptor(projectId: string): LocalNotesVaultGrant | null;
+  matchesGrant(projectId: string, vaultId: string): boolean;
+  validateGrant(projectId: string, expectedVaultId: string): Promise<void>;
   listForAgent(
+    projectId: string,
     expectedVaultId: string,
     query?: string,
     requestedLimit?: number,
   ): Promise<AgentVaultNoteList>;
   readForAgent(
+    projectId: string,
     expectedVaultId: string,
     noteId: string,
     requestedOffset?: number,
@@ -465,7 +467,7 @@ export class ProjectAgentToolSession {
   ) {
     this.localNotesAvailable = Boolean(
       dependencies.localNotesVault &&
-      dependencies.vault.matchesGrant(dependencies.localNotesVault.id),
+      dependencies.vault.matchesGrant(dependencies.projectId, dependencies.localNotesVault.id),
     );
     this.attachmentsAvailable = (dependencies.attachments?.catalog().length ?? 0) > 0;
     const tools = [
@@ -577,7 +579,7 @@ export class ProjectAgentToolSession {
       (source) =>
         `- ${safeSourceTitle(source.title)} · note ${source.noteId.slice(0, 12)} · SHA-256 ${source.contentSha256}${source.truncated ? ' · excerpted' : ''}${source.deliveryUnconfirmed ? ' · delivery unconfirmed' : ''}`,
     );
-    if (noteLines.length > 0) sections.push(`Local Notes accessed\n${noteLines.join('\n')}`);
+    if (noteLines.length > 0) sections.push(`Research Notes accessed\n${noteLines.join('\n')}`);
     const attachmentLines = [
       ...this.attachmentSources.values(),
       ...this.nativeImageSources.values(),
@@ -801,7 +803,12 @@ export class ProjectAgentToolSession {
       if (!this.localNotesAvailable || !this.dependencies.localNotesVault) {
         return failure('local_notes_not_authorized');
       }
-      if (!this.dependencies.vault.matchesGrant(this.dependencies.localNotesVault.id)) {
+      if (
+        !this.dependencies.vault.matchesGrant(
+          this.dependencies.projectId,
+          this.dependencies.localNotesVault.id,
+        )
+      ) {
         return failure('local_notes_authorization_stale');
       }
       if (call.tool === LIST_NOTES_TOOL.name) return await this.listNotes(call.arguments);
@@ -1173,6 +1180,7 @@ export class ProjectAgentToolSession {
       return failure('invalid_tool_arguments');
     }
     const result = await this.dependencies.vault.listForAgent(
+      this.dependencies.projectId,
       this.dependencies.localNotesVault.id,
       parsed.data.query,
       parsed.data.limit,
@@ -1202,6 +1210,7 @@ export class ProjectAgentToolSession {
     let note: AgentVaultNoteChunk;
     try {
       note = await this.dependencies.vault.readForAgent(
+        this.dependencies.projectId,
         this.dependencies.localNotesVault.id,
         parsed.data.noteId,
         parsed.data.offset,

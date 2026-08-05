@@ -132,9 +132,28 @@ export function describeError(error: unknown) {
     chat_session_limit_reached:
       'This project has reached its local chat-session limit. Rename and reuse an existing chat.',
     local_notes_vault_not_selected:
-      'Choose a Local Notes folder before authorizing it for this project.',
+      'Connect this project’s Research Notes folder before authorizing it for chat.',
     local_notes_vault_changed:
-      'The selected Local Notes folder changed. Review it and authorize the current folder again.',
+      'This project’s Research Notes binding changed. Review the Obsidian folder and authorize it again.',
+    invalid_research_notes_input: 'Check the Research Notes request and try again.',
+    research_notes_project_not_found:
+      'This Research Notes project no longer exists. Reload the workspace and try again.',
+    research_notes_project_unavailable:
+      'Research Notes are available only while this project is active. Restore it first.',
+    research_notes_vault_not_selected:
+      'Choose an Obsidian Vault before opening this project’s Research Notes.',
+    research_notes_vault_changed:
+      'The selected Obsidian Vault changed. GOSU kept the existing project notes untouched.',
+    research_notes_folder_conflict:
+      'That Obsidian project folder already exists and cannot be safely replaced.',
+    research_notes_folder_unavailable:
+      'This project’s Obsidian folder is unavailable. Existing notes were not changed.',
+    research_notes_note_not_found:
+      'This note is no longer available inside the selected project folder.',
+    research_notes_record_not_found:
+      'This Literature record is no longer available, so no paper note was created.',
+    research_notes_unavailable:
+      'Research Notes are unavailable. Existing Obsidian files were not changed.',
     attachment_invalid:
       'This file is damaged or does not match its file type. Choose a valid local file.',
     attachment_unsupported:
@@ -157,7 +176,7 @@ export function describeError(error: unknown) {
     action_not_found: 'This proposed project action no longer exists.',
     action_not_proposed: 'This project action was already handled.',
     invalid_chat_input: 'Check the chat message and model selection, then try again.',
-    codex_unavailable: 'Codex is unavailable. Board and local notes remain usable.',
+    codex_unavailable: 'Codex is unavailable. Board and Research Notes remain usable.',
     chat_unavailable: 'Project chat is unavailable. Existing local messages were not replaced.',
     invalid_experiment_input: 'Check the experiment fields and try again.',
     experiment_project_not_found:

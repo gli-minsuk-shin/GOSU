@@ -289,6 +289,10 @@ function service(
     workspace?: WorkspaceService;
     provider?: LiteratureDiscoveryProvider;
     transfer?: LiteratureTransferPlatform;
+    projection?: Readonly<{
+      syncLiterature(projectId: string): Promise<unknown>;
+      syncReviewedPaper?(record: LiteratureRecord): Promise<unknown>;
+    }>;
   } = {},
 ) {
   return new LiteratureService({
@@ -296,6 +300,7 @@ function service(
     workspace: options.workspace ?? workspace(),
     provider: options.provider ?? provider(),
     transfer: options.transfer ?? transfer(),
+    ...(options.projection ? { projection: options.projection } : {}),
     now: () => NOW,
   });
 }
@@ -368,6 +373,42 @@ describe('LiteratureService', () => {
       keywords: ['TabPFN', 'in-context learning'],
     });
     expect(storage.runs[0]?.searchTags).toEqual(result.run.searchTags);
+  });
+
+  it('projects saved searches and reviewed records to Research Notes without rolling back Literature', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const saved = record();
+    storage.records.push(saved);
+    const syncLiterature = vi
+      .fn<(projectId: string) => Promise<unknown>>()
+      .mockRejectedValue(new Error('Obsidian offline'));
+    const syncReviewedPaper = vi
+      .fn<(record: LiteratureRecord) => Promise<unknown>>()
+      .mockRejectedValue(new Error('Obsidian offline'));
+    const literature = service(storage, {
+      provider: provider([]),
+      projection: { syncLiterature, syncReviewedPaper },
+    });
+
+    await expect(
+      literature.search({ projectId: PROJECT_ID, query: 'projected evidence' }),
+    ).resolves.toMatchObject({ foundCount: 0 });
+    const updated = await literature.updateAnnotations({
+      projectId: PROJECT_ID,
+      recordId: saved.id,
+      expectedVersion: saved.version,
+      expectedAnnotationVersion: saved.annotationVersion,
+      reviewStatus: 'included',
+      manualTopics: ['projected'],
+      manualSummary: 'Keep this evidence.',
+      manualRelevance: 'Directly relevant.',
+    });
+
+    expect(updated.reviewStatus).toBe('included');
+    expect(syncLiterature).toHaveBeenCalledTimes(2);
+    expect(syncLiterature).toHaveBeenNthCalledWith(1, PROJECT_ID);
+    expect(syncLiterature).toHaveBeenNthCalledWith(2, PROJECT_ID);
+    expect(syncReviewedPaper).toHaveBeenCalledExactlyOnceWith(updated);
   });
 
   it('persists and returns the discovery signal coverage used by Project Chat receipts', async () => {
@@ -689,6 +730,39 @@ describe('LiteratureService', () => {
       ),
     ).resolves.toEqual({ updatedCount: 1, skippedCount: 0 });
     expect(apply).toHaveBeenCalledOnce();
+  });
+
+  it('creates one-time Research Notes paper projections after metadata-only AI organization', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const item = record();
+    storage.records.push(item);
+    const syncLiterature = vi.fn(async () => undefined);
+    const syncReviewedPaper = vi.fn(async () => undefined);
+    const literature = service(storage, {
+      projection: { syncLiterature, syncReviewedPaper },
+    });
+
+    await literature.applyAiAnnotations(
+      PROJECT_ID,
+      [
+        {
+          recordId: item.id,
+          expectedVersion: item.version,
+          expectedAnnotationVersion: item.annotationVersion,
+          topics: ['organized'],
+          summary: 'Metadata-only summary',
+          relevance: 'high',
+          studyType: 'benchmark',
+          limitations: ['Full text not reviewed'],
+        },
+      ],
+      provenance(),
+    );
+
+    expect(syncLiterature).toHaveBeenCalledExactlyOnceWith(PROJECT_ID);
+    expect(syncReviewedPaper).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: item.id, projectId: PROJECT_ID }),
+    );
   });
 
   it('does not silently truncate a legacy library above the active-record bound', async () => {

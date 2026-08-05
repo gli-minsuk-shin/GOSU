@@ -105,6 +105,7 @@ class FakeProjectVault implements ProjectAgentVault {
   activeVaultId: string | null = ACTIVE_VAULT_ID;
   readonly listForAgent = vi.fn(
     async (
+      _projectId: string,
       expectedVaultId: string,
       _query?: string,
       _requestedLimit?: number,
@@ -115,6 +116,7 @@ class FakeProjectVault implements ProjectAgentVault {
   );
   readonly readForAgent = vi.fn(
     async (
+      _projectId: string,
       expectedVaultId: string,
       noteId: string,
       requestedOffset = 0,
@@ -142,15 +144,15 @@ class FakeProjectVault implements ProjectAgentVault {
     },
   );
 
-  descriptor(): LocalNotesVaultGrant | null {
+  descriptor(_projectId: string): LocalNotesVaultGrant | null {
     return this.activeVaultId ? { id: this.activeVaultId, name: 'Research Vault' } : null;
   }
 
-  matchesGrant(vaultId: string) {
+  matchesGrant(_projectId: string, vaultId: string) {
     return this.activeVaultId === vaultId;
   }
 
-  async validateGrant(expectedVaultId: string) {
+  async validateGrant(_projectId: string, expectedVaultId: string) {
     this.assertGrant(expectedVaultId);
   }
 
@@ -555,7 +557,7 @@ describe('ProjectAgentToolSession', () => {
       notes: [{ noteId: NOTE_ID, title: 'Result study' }],
       truncated: false,
     });
-    expect(vault.listForAgent).toHaveBeenCalledWith(ACTIVE_VAULT_ID, 'result', 7);
+    expect(vault.listForAgent).toHaveBeenCalledWith(projectAlpha.id, ACTIVE_VAULT_ID, 'result', 7);
     expect(JSON.stringify(resultPayload(listed))).not.toContain(RAW_NOTE_PATH);
 
     const read = await invokeTool(
@@ -574,7 +576,13 @@ describe('ProjectAgentToolSession', () => {
       offset: 4,
       sessionCharactersRemaining: 96_000 - 32,
     });
-    expect(vault.readForAgent).toHaveBeenCalledWith(ACTIVE_VAULT_ID, NOTE_ID, 4, 32);
+    expect(vault.readForAgent).toHaveBeenCalledWith(
+      projectAlpha.id,
+      ACTIVE_VAULT_ID,
+      NOTE_ID,
+      4,
+      32,
+    );
     expect(JSON.stringify(readPayload)).not.toContain(RAW_NOTE_PATH);
   });
 
@@ -1229,7 +1237,7 @@ describe('ProjectAgentToolSession', () => {
     expect(read.success).toBe(true);
 
     const appendix = await session.finalizeSourceAppendix();
-    expect(appendix).toContain('Local Notes accessed');
+    expect(appendix).toContain('Research Notes accessed');
     expect(appendix).toContain('Result  study');
     expect(appendix).toContain(NOTE_SHA256);
     expect(appendix).toContain(NOTE_ID.slice(0, 12));
@@ -1317,7 +1325,7 @@ describe('ProjectAgentToolSession', () => {
     expect(pendingRead.success).toBe(true);
 
     const appendix = await session.finalizeSourceAppendix();
-    expect(appendix).toContain('Local Notes accessed');
+    expect(appendix).toContain('Research Notes accessed');
     expect(appendix).toContain(NOTE_SHA256);
     expect(appendix).toContain('delivery unconfirmed');
     expect(appendix.match(new RegExp(NOTE_SHA256, 'gu'))).toHaveLength(1);

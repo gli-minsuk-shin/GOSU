@@ -140,7 +140,8 @@ describe('separated application Settings', () => {
     expect(html).toContain('Disabled');
     expect(html).toContain('does not enable shell networking, the browser, MCP servers');
     expect(html).toContain('PROJECT INSTRUCTIONS');
-    expect(html).toContain('LOCAL NOTES ACCESS');
+    expect(html).toContain('RESEARCH NOTES ACCESS');
+    expect(html).toContain('Authorize this project’s Obsidian notes');
     expect(html).toContain('Listing notes sends their display titles and opaque IDs');
     expect(html).toContain('content SHA-256, offset, and total character');
     expect(html).toContain('Codex sandbox: project-bound reads');

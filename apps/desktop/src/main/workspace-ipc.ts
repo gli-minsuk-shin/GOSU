@@ -24,12 +24,16 @@ type InputSchema<T> = Readonly<{
   safeParse(value: unknown): { success: true; data: T } | { success: false };
 }>;
 type ProjectChatIdleGuard = Pick<ProjectChatService, 'runWhenProjectChatIdle'>;
+type ProjectLifecycle = Readonly<{
+  projectRenamed(project: Awaited<ReturnType<WorkspaceService['renameProject']>>): Promise<void>;
+}>;
 
 export function registerWorkspaceIpc(
   register: RegisterHandler,
   workspace: WorkspaceService,
   reportUnexpected: (error: unknown) => void = () => undefined,
   projectChatIdleGuard?: ProjectChatIdleGuard,
+  projectLifecycle?: ProjectLifecycle,
 ) {
   register(WORKSPACE_IPC_CHANNELS.snapshot, () =>
     safely(() => workspace.snapshot(), reportUnexpected),
@@ -49,7 +53,16 @@ export function registerWorkspaceIpc(
     withValidatedInput(
       input,
       RenameProjectInputSchema,
-      (command) => workspace.renameProject(command),
+      (command) => {
+        const rename = async () => {
+          const project = await workspace.renameProject(command);
+          await projectLifecycle?.projectRenamed(project).catch(() => undefined);
+          return project;
+        };
+        return projectChatIdleGuard
+          ? projectChatIdleGuard.runWhenProjectChatIdle(command.projectId, rename)
+          : rename();
+      },
       reportUnexpected,
     ),
   );

@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import type { LocalNotesVaultGrant, ProjectChatProfile } from '../../shared/project-chat-contracts';
-import type { VaultSelection } from '../../shared/vault-contracts';
+import type { ResearchNotesWorkspace } from '../../shared/research-notes-contracts';
+import type {
+  ReadVaultAttachmentInput,
+  VaultAttachment,
+  VaultSelection,
+} from '../../shared/vault-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import {
   localNotesTreeRows,
@@ -17,7 +22,7 @@ export type VaultRuntimeState = 'checking' | 'ready' | 'unavailable';
 
 const EMPTY_EXPANDED_DIRECTORIES: ReadonlySet<string> = new Set();
 
-export function LocalNotesTree({
+export function ResearchNotesTree({
   files,
   expandedDirectories,
   selectedPath,
@@ -97,7 +102,7 @@ export function LocalNotesTree({
   };
 
   return (
-    <div className="local-notes-tree" role="tree" aria-label="Local Notes files">
+    <div className="local-notes-tree" role="tree" aria-label="Research Notes files">
       {rows.map((row, index) => {
         const directory = row.kind === 'directory';
         const expanded = directory && expandedDirectories.has(row.path);
@@ -142,8 +147,9 @@ export function LocalNotesTree({
   );
 }
 
-export function LocalNotesView({
+export function ResearchNotesView({
   vault,
+  workspace,
   vaultState,
   selectedNote,
   busy,
@@ -155,8 +161,11 @@ export function LocalNotesView({
   onRead,
   onSetProjectAccess,
   onOpenAgentSettings,
+  onRetry,
+  readAttachment,
 }: {
-  vault: VaultSelection | null;
+  vault?: VaultSelection | null;
+  workspace?: ResearchNotesWorkspace | null;
   vaultState: VaultRuntimeState;
   selectedNote: SelectedNote | null;
   busy: boolean;
@@ -168,10 +177,23 @@ export function LocalNotesView({
   onRead: (path: string) => void;
   onSetProjectAccess: (grant: LocalNotesVaultGrant | null) => void;
   onOpenAgentSettings: () => void;
+  onRetry?: () => void;
+  readAttachment?: (input: ReadVaultAttachmentInput) => Promise<VaultAttachment>;
 }) {
+  const managed = workspace !== undefined;
+  const effectiveVault: VaultSelection | null = workspace
+    ? {
+        id: workspace.bindingId,
+        name: 'Research Notes',
+        root: workspace.displayRoot,
+        files: workspace.files,
+      }
+    : (vault ?? null);
+  vault = effectiveVault;
   const vaultId = vault?.id ?? null;
   const selectedNotePath =
     selectedNote && vault?.files.includes(selectedNote.path) ? selectedNote.path : null;
+  const visibleSelectedNote = selectedNotePath ? selectedNote : null;
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
   const [treeState, setTreeState] = useState<{
     vaultId: string | null;
@@ -199,8 +221,8 @@ export function LocalNotesView({
     }));
   }, [selectedNotePath, vaultId]);
   const accessPanel = (
-    <LocalNotesProjectAccess
-      vault={vault}
+    <ResearchNotesProjectAccess
+      vault={workspace?.status === 'rename-pending' ? null : vault}
       vaultState={vaultState}
       project={project}
       profile={profile}
@@ -212,22 +234,47 @@ export function LocalNotesView({
   );
 
   if (!vault) {
+    const checking = managed && vaultState === 'checking';
+    const unavailable = managed && vaultState === 'unavailable';
     return (
       <section className="empty-state">
         <div className="empty-card">
           <div className="empty-mark">◇</div>
-          <h1>Open a local Markdown folder</h1>
+          <h1>
+            {checking
+              ? 'Opening Research Notes…'
+              : unavailable
+                ? 'Research Notes need attention'
+                : managed
+                  ? 'Connect an Obsidian Vault'
+                  : 'Open a local Markdown folder'}
+          </h1>
           <p>
-            GOSU receives read-only access to the folder you select. File contents are not sent to
-            Hosted Sync automatically. If you later authorize this folder for a project agent,
-            listing sends note display titles and opaque IDs to the configured LLM; reading also
-            sends a bounded excerpt, content hash, offset, and total character count for that chat
-            turn. The model may quote or summarize that data in the visible project chat, which is
-            stored locally and may later be synchronized.
+            {checking
+              ? 'GOSU is verifying the Obsidian Vault and this project’s isolated managed folder.'
+              : unavailable
+                ? 'GOSU could not verify this project’s Obsidian folder. Existing files were not changed. Retry the connection or choose the Vault again.'
+                : managed
+                  ? `Choose your Obsidian Vault once. GOSU creates only this project's managed GOSU folder with Literature, Papers, Experiments, Project Progress, and Idea Development notes. General Vault content remains read-only and is never sent to Hosted Sync automatically.`
+                  : 'GOSU receives read-only access to the folder you select. File contents are not sent to Hosted Sync automatically.'}
           </p>
-          <button type="button" className="primary-button" onClick={onChoose} disabled={busy}>
-            {busy ? 'Opening…' : 'Choose folder'}
-          </button>
+          <div className="research-notes-empty-actions">
+            {unavailable && onRetry && (
+              <button type="button" className="primary-button" onClick={onRetry} disabled={busy}>
+                {busy ? 'Retrying…' : 'Retry project folder'}
+              </button>
+            )}
+            {!checking && (
+              <button
+                type="button"
+                className={unavailable ? 'secondary-button' : 'primary-button'}
+                onClick={onChoose}
+                disabled={busy}
+              >
+                {busy ? 'Opening…' : managed ? 'Choose Obsidian Vault' : 'Choose folder'}
+              </button>
+            )}
+          </div>
           {accessPanel}
         </div>
       </section>
@@ -257,9 +304,34 @@ export function LocalNotesView({
         <header>
           <strong title={vault.root}>{vault.root}</strong>
           <button type="button" className="secondary-button" onClick={onChoose} disabled={busy}>
-            Change folder
+            {managed ? 'Change Vault' : 'Change folder'}
           </button>
         </header>
+        {workspace?.status === 'rename-pending' && (
+          <div className="notice error research-notes-attention" role="status">
+            <span>{researchNotesAttentionMessage(workspace.attentionCode)}</span>
+            {onRetry && (
+              <button type="button" className="ghost-button" onClick={onRetry} disabled={busy}>
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+        {workspace && (
+          <section className="research-notes-managed-summary" aria-label="Managed project folders">
+            <span>MANAGED PROJECT FOLDERS</span>
+            <ul>
+              {workspace.folders.map((folder) => (
+                <li key={folder}>{folder}</li>
+              ))}
+            </ul>
+            <small>
+              {workspace.lastLiteratureSyncAt
+                ? `Literature table synced ${new Date(workspace.lastLiteratureSyncAt).toLocaleString()}`
+                : 'Literature table will sync after the first Literature search or update.'}
+            </small>
+          </section>
+        )}
         {accessPanel}
         <p className="note-agent-disclosure">
           Access is project-specific and stays off until you explicitly authorize this folder here
@@ -269,11 +341,11 @@ export function LocalNotesView({
         </p>
         {vault.files.length === 0 && <p className="column-empty">No Markdown files found</p>}
         {vault.files.length > 0 && (
-          <LocalNotesTree
+          <ResearchNotesTree
             key={vault.id}
             files={vault.files}
             expandedDirectories={expandedDirectories}
-            selectedPath={selectedNote?.path ?? null}
+            selectedPath={visibleSelectedNote?.path ?? null}
             busy={busy}
             onToggleDirectory={(path) =>
               updateExpandedDirectories((current) => toggleLocalNotesDirectory(current, path))
@@ -284,8 +356,8 @@ export function LocalNotesView({
       </aside>
       <article className="note-reader">
         <header>
-          <span>{selectedNote?.path ?? 'Select a Markdown file to read it locally.'}</span>
-          {selectedNote && (
+          <span>{visibleSelectedNote?.path ?? 'Select a Markdown file to read it locally.'}</span>
+          {visibleSelectedNote && (
             <div className="note-reader-mode" aria-label="Markdown display mode">
               <button
                 type="button"
@@ -309,17 +381,18 @@ export function LocalNotesView({
         <div className="note-reader-body">
           {busy ? (
             <p className="note-reader-state">Reading…</p>
-          ) : selectedNote ? (
+          ) : visibleSelectedNote ? (
             mode === 'rendered' ? (
               <MarkdownDocument
-                key={selectedNote.path}
-                notePath={selectedNote.path}
-                source={selectedNote.content}
+                key={visibleSelectedNote.path}
+                notePath={visibleSelectedNote.path}
+                source={visibleSelectedNote.content}
                 vaultFiles={vault.files}
                 onOpenNote={openNote}
+                {...(readAttachment ? { readAttachment } : {})}
               />
             ) : (
-              <pre className="markdown-source">{selectedNote.content}</pre>
+              <pre className="markdown-source">{visibleSelectedNote.content}</pre>
             )
           ) : (
             <p className="note-reader-state">No note selected.</p>
@@ -330,7 +403,9 @@ export function LocalNotesView({
   );
 }
 
-export function LocalNotesProjectAccess({
+export const LocalNotesView = ResearchNotesView;
+
+export function ResearchNotesProjectAccess({
   vault,
   vaultState,
   project,
@@ -378,30 +453,32 @@ export function LocalNotesProjectAccess({
       description = 'Open AI Agent Settings to retry loading this project profile.';
       tone = 'warning';
     } else if (vaultState === 'checking') {
-      title = 'Checking the Local Notes folder…';
-      description = 'Authorization stays paused until the selected folder is verified.';
+      title = 'Checking the Research Notes folder…';
+      description = 'Authorization stays paused until this project’s Obsidian folder is verified.';
       tone = 'checking';
     } else if (vaultState === 'unavailable') {
       title = savedGrant
         ? `${savedGrant.name} grant saved · status unavailable`
-        : 'Folder unavailable';
+        : 'Research Notes unavailable';
       description = savedGrant
-        ? 'The saved grant is paused because GOSU cannot verify the current folder.'
-        : 'Choose the folder again before authorizing project access.';
+        ? 'The saved grant is paused because GOSU cannot verify this project’s Obsidian folder.'
+        : 'Choose the Obsidian Vault again before authorizing project access.';
       tone = 'warning';
     } else if (!vault) {
-      title = savedGrant ? `${savedGrant.name} grant inactive` : 'Choose a folder to authorize';
+      title = savedGrant
+        ? `${savedGrant.name} grant inactive`
+        : 'Connect Research Notes to authorize';
       description = savedGrant
-        ? 'The previously authorized folder is not currently selected. Access was not transferred.'
-        : `No Local Notes folder is authorized for ${project.name}.`;
+        ? 'The previously authorized Research Notes binding is not currently available. Access was not transferred.'
+        : `No Research Notes folder is authorized for ${project.name}.`;
       tone = 'inactive';
     } else if (authorized) {
       title = `Authorized for ${project.name}`;
-      description = `${vault.name} can be listed and read through bounded tools in this project's chat.`;
+      description = `Only this project’s managed Obsidian folder can be listed and read through bounded chat tools.`;
       tone = 'authorized';
     } else if (savedGrant) {
       title = `Current folder not authorized for ${project.name}`;
-      description = `${savedGrant.name} was authorized previously. Access never transfers silently to ${vault.name}.`;
+      description = `${savedGrant.name} was authorized previously. Access never transfers silently to another project or Vault.`;
       tone = 'warning';
     } else {
       title = `Not authorized for ${project.name}`;
@@ -416,7 +493,7 @@ export function LocalNotesProjectAccess({
       aria-label="Project agent access"
       aria-live="polite"
     >
-      <span>PROJECT AGENT ACCESS</span>
+      <span>RESEARCH NOTES AGENT ACCESS</span>
       <strong>{title}</strong>
       <p>{description}</p>
       <div className="local-notes-access-actions">
@@ -452,4 +529,24 @@ export function LocalNotesProjectAccess({
       </div>
     </section>
   );
+}
+
+export const LocalNotesTree = ResearchNotesTree;
+export const LocalNotesProjectAccess = ResearchNotesProjectAccess;
+
+export function researchNotesAttentionMessage(
+  attentionCode: ResearchNotesWorkspace['attentionCode'],
+) {
+  switch (attentionCode) {
+    case 'folder_name_conflict':
+      return 'The renamed project folder would overwrite an existing Obsidian folder. GOSU kept the original folder unchanged.';
+    case 'folder_missing':
+      return 'The linked Obsidian project folder is missing. GOSU did not recreate or replace it automatically.';
+    case 'folder_ownership_changed':
+      return 'The project folder ownership marker changed. GOSU stopped managed writes and left every file untouched.';
+    case 'vault_unavailable':
+      return 'The linked Obsidian Vault is unavailable. GOSU kept the existing folder binding for a safe retry.';
+    default:
+      return 'The Obsidian project folder could not be reconciled safely. Existing notes were left untouched.';
+  }
 }

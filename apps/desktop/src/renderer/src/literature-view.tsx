@@ -44,6 +44,10 @@ import {
   LITERATURE_RISING_MIN_RELEVANCE_SCORE,
 } from '../../shared/literature-ranking-policy';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
+import type {
+  CreateResearchPaperNoteInput,
+  ResearchPaperNoteReceipt,
+} from '../../shared/research-notes-contracts';
 import {
   buildLiteratureTablePage,
   buildLiteratureSearchTagOptions,
@@ -61,6 +65,7 @@ export interface LiteratureViewAdapter {
   importRecords: (input: LiteratureImportRequest) => Promise<LiteratureImportReceipt>;
   exportRecords: (input: LiteratureExportRequest) => Promise<LiteratureExportReceipt>;
   organize?: (input: OrganizeLiteratureInput) => Promise<LiteratureOrganizeReceipt>;
+  createPaperNote?: (input: CreateResearchPaperNoteInput) => Promise<ResearchPaperNoteReceipt>;
 }
 
 export interface LiteratureViewRecord extends LiteratureTableRecord {
@@ -747,6 +752,7 @@ export function LiteratureDetail({
   busy,
   onSave,
   onDelete,
+  onCreatePaperNote,
 }: {
   record: LiteratureRecord;
   busy: boolean;
@@ -758,6 +764,7 @@ export function LiteratureDetail({
     reviewStatus: LiteratureRecord['reviewStatus'];
   }) => Promise<void>;
   onDelete: (record: LiteratureRecord) => Promise<void>;
+  onCreatePaperNote?: (record: LiteratureRecord) => Promise<void>;
 }) {
   const [topics, setTopics] = useState(record.manualAnnotations.topics.join(', '));
   const [summary, setSummary] = useState(record.manualAnnotations.summary);
@@ -779,17 +786,26 @@ export function LiteratureDetail({
           <h2 id="literature-detail-title">{record.title}</h2>
           <p>{record.authors.join(', ') || 'Unknown authors'}</p>
         </div>
-        {record.sourceUrl && (
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => {
-              if (record.sourceUrl) void window.gosu.openExternal(record.sourceUrl);
-            }}
-          >
-            Open source ↗
-          </button>
-        )}
+        <div className="literature-detail-heading-actions">
+          {onCreatePaperNote && (
+            <LiteraturePaperNoteAction
+              record={record}
+              busy={busy}
+              onCreatePaperNote={onCreatePaperNote}
+            />
+          )}
+          {record.sourceUrl && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                if (record.sourceUrl) void window.gosu.openExternal(record.sourceUrl);
+              }}
+            >
+              Open source ↗
+            </button>
+          )}
+        </div>
       </header>
 
       <div className="literature-detail-grid">
@@ -1036,6 +1052,28 @@ export function LiteratureDetail({
         </div>
       </form>
     </section>
+  );
+}
+
+export function LiteraturePaperNoteAction({
+  record,
+  busy,
+  onCreatePaperNote,
+}: {
+  record: LiteratureRecord;
+  busy: boolean;
+  onCreatePaperNote: (record: LiteratureRecord) => Promise<void>;
+}) {
+  return (
+    <button
+      type="button"
+      className="secondary-button"
+      disabled={busy}
+      title="Create a metadata-only Markdown review template in this project's Obsidian Papers folder"
+      onClick={() => void onCreatePaperNote(record)}
+    >
+      Create Obsidian paper note
+    </button>
   );
 }
 
@@ -1624,6 +1662,21 @@ export function LiteratureView({
               return 'Deleted the paper from this project’s Literature table.';
             });
           }}
+          {...(adapter.createPaperNote
+            ? {
+                onCreatePaperNote: async (record: LiteratureRecord) => {
+                  await run(`paper-note:${record.id}`, async () => {
+                    const receipt = await adapter.createPaperNote!({
+                      projectId: project.id,
+                      recordId: record.id,
+                    });
+                    return receipt.created
+                      ? `Created ${receipt.path} in this project’s Research Notes.`
+                      : `${receipt.path} already exists. GOSU left your note unchanged.`;
+                  });
+                },
+              }
+            : {})}
         />
       )}
     </div>

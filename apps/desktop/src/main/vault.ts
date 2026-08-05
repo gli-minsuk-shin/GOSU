@@ -28,8 +28,17 @@ type VaultState = Readonly<{
   selection: VaultSelection;
 }>;
 
+type MaybePromise<T> = T | Promise<T>;
+
+export type VaultRootStorage = Readonly<{
+  loadRoot(): MaybePromise<string | null>;
+  saveRoot(root: string): MaybePromise<void>;
+}>;
+
 export class VaultAccess {
   private state?: VaultState;
+
+  constructor(private readonly storage?: VaultRootStorage) {}
 
   async choose(window: BrowserWindow) {
     const result = await dialog.showOpenDialog(window, {
@@ -37,14 +46,25 @@ export class VaultAccess {
       properties: ['openDirectory', 'createDirectory'],
     });
     if (result.canceled || !result.filePaths[0]) return null;
-    const reader = await VaultReader.open(result.filePaths[0]);
+    return this.connect(result.filePaths[0]);
+  }
+
+  async restore() {
+    const root = await this.storage?.loadRoot();
+    if (!root) return null;
+    return this.connect(root, false);
+  }
+
+  async connect(root: string, persist = true) {
+    const reader = await VaultReader.open(root);
     const files = await reader.listMarkdown();
     const selection: VaultSelection = {
       id: sha256(`${reader.root}\0${reader.identityKey()}`),
-      name: basename(reader.root).slice(0, 256) || 'Local Notes',
+      name: basename(reader.root).slice(0, 256) || 'Obsidian Vault',
       root: reader.root,
       files,
     };
+    if (persist) await this.storage?.saveRoot(reader.root);
     this.state = { reader, selection };
     return structuredClone(selection);
   }

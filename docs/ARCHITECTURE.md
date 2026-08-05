@@ -49,7 +49,7 @@ flowchart LR
     Main["Electron Main\nIPC·파일·Codex·로컬 DB"]
     LocalDB["암호화 SQLite\nworkspace snapshot·outbox·model provenance"]
     Codex["로컬 Codex App Server"]
-    Vault["선택한 Obsidian 폴더"]
+    Vault["선택한 Obsidian Vault\nproject별 Research Notes"]
     AttachmentFiles["사용자가 선택한 local 연구 파일"]
     AttachmentCapability["ephemeral one-turn attachment capability\nMain memory·private temp·opaque IDs"]
     Git["앱 관리형 로컬 Git worktree\nfile·change·history·branch"]
@@ -80,7 +80,7 @@ flowchart LR
   Renderer -->|"allowlisted IPC"| Main
   Main --> LocalDB
   Main --> Codex
-  Main -->|"read-only"| Vault
+  Main -->|"project-scoped read\nowned projection write"| Vault
   AttachmentFiles -->|"Main 고정 dialog·path/bytes 비노출"| Main --> AttachmentCapability --> Codex
   Main -->|"project-scoped typed Git IPC"| Git
   Codex -->|"project profile web_search"| WebSearch
@@ -135,7 +135,7 @@ flowchart LR
 | Manuscript                 | Desktop Repository workspace와 향후 manuscript module                          | 앱 관리형 Git worktree·파일/Markdown preview·change/history/branch·commit 구현; LaTeX compile·PDF preview는 계획됨                                                                             |
 | Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                       | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                        |
 | Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                      | Semantic Scholar 우선·Crossref fallback의 3-layer discovery, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat additive search 구현; Zotero 앱 연결은 계획됨 |
-| Obsidian Knowledge         | Desktop Vault reader, Markdown renderer, project knowledge port                | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview·프로젝트별 agent grant 구현                                                                                                       |
+| Obsidian Knowledge         | Desktop Research Notes service, bounded Vault adapter, Markdown renderer       | Vault root 복원·프로젝트별 owned folder·기본 note 구조·Literature/Papers projection·안전한 rename·GFM/wiki-link/raster preview·프로젝트별 agent grant 구현                                     |
 | Lecture                    | Owner Web UI 표현                                                              | 생성·편집·출처 연결은 계획됨                                                                                                                                                                   |
 | AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 다중 chat session·동적 model/mode catalog·native harness·project/SSH/Literature tool·project별 web search mode·범용 one-turn 연구 파일 capability·thread/turn provenance 구현                  |
 | Integration Hub            | Desktop Git Workspace·승인형 SSH broker, `packages/integrations` registry      | GitHub HTTPS clone·bounded Git·OpenSSH alias/direct import·프로젝트별 remote workspace grant·휘발성 CPU/RAM/GPU snapshot 구현; GitHub App 계정 연결은 계획됨                                   |
@@ -192,7 +192,7 @@ flowchart TD
 | 데이터                                           | authoritative source                                                                     | Hosted Sync 보관 정책                                                                                                                                    |
 | ------------------------------------------------ | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 앱 관리형 local worktree                                                        | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지                                                                                      |
-| 선택한 Markdown과 첨부                           | 사용자의 Obsidian Vault                                                                  | 연결 상태만; 본문은 금지                                                                                                                                 |
+| 프로젝트 Research Notes Markdown과 첨부          | 사용자의 Obsidian Vault 아래 `GOSU/<project>`; Literature 원본은 별도 SQLCipher          | Vault·project 연결 상태만; 본문·절대 경로는 금지                                                                                                         |
 | 서지 metadata, collection, PDF                   | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                                     |
 | 검색 문헌 metadata, review annotation, 검색 이력 | 프로젝트별 Desktop Literature SQLCipher tables, Project Chat search와 선택한 import file | 현재 Hosted Sync·outbox 대상이 아님; raw provider response·원문·abstract·로컬 file path·API key 금지                                                     |
 | 실험 idea lineage·검토 outcome·summary metric    | 프로젝트별 Desktop Experiment SQLCipher tables                                           | 현재 Hosted Sync·workspace outbox 대상이 아님; raw Runner metric·log·artifact는 저장하지 않음                                                            |
@@ -208,13 +208,13 @@ flowchart TD
 | Codex web search result·tool payload             | 해당 Codex turn의 ephemeral provider context                                             | GOSU DB·outbox에 저장하지 않음; 최종 답변의 URL·요약만 visible chat 정책 적용                                                                            |
 | tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                                           | 금지                                                                                                                                                     |
 
-Hosted Sync에 저장하지 않는다는 것과 LLM에 전혀 전송하지 않는다는 것은 다르다. Local Notes는 기본적으로
+Hosted Sync에 저장하지 않는다는 것과 LLM에 전혀 전송하지 않는다는 것은 다르다. Research Notes는 기본적으로
 Mac 안에만 남지만, 사용자가 특정 Vault를 특정 project agent에 승인한 경우 그 turn에서 agent가 실제로
 list한 note의 display title·opaque ID와, 실제 read한 bounded excerpt·content SHA-256·offset·전체 문자 수가
 설정된 Codex/LLM provider로 전송된다. Vault root·상대 path·전체 tool payload는 모델에 주지 않고 원본 note
 file이나 raw tool payload를 자동 저장·동기화하지 않는다. 다만 모델이 이 metadata나 excerpt를 visible
 answer에 인용하거나 요약하면 그 문장은 보이는 대화이므로 암호화 local DB에 저장되고 향후 Hosted Sync
-대상이 될 수 있다. Local Notes와 Agent Settings 화면은 승인 전에 이 점을 명시한다. GOSU는 모든 terminal
+대상이 될 수 있다. Research Notes와 Agent Settings 화면은 승인 전에 이 점을 명시한다. GOSU는 모든 terminal
 receipt에 별도로 display title, opaque note ID 일부, content SHA-256과 excerpt 여부를 붙인다. 이 승인은
 project별이며 다른 project나 새로 선택한 Vault로 자동 승계하지 않는다.
 
@@ -359,13 +359,14 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   Vite 개발 모드에서만 exact trusted origin의 inline refresh bootstrap과 HMR WebSocket을 허용한다.
 - SQLite key는 random 32-byte 값이며 `safeStorage`로 봉인한다. 암호화 기능이 없으면 local DB를
   열지 않는다.
-- Obsidian reader는 사용자가 고른 root 아래의 bounded Markdown만 읽는다. symlink, root escape,
-  과도한 파일 크기·개수·깊이를 거부한다. grant ID는 canonical root와 root device·inode에 묶이고 매
-  list/read 전후에 root identity를 재검사한다. `VaultAccess`는 reader와 selection을 하나의 immutable
-  state로 완성한 뒤 원자적으로 교체하며, 전환 중이던 accessor는 `vault_grant_stale`로 실패한다.
-  Renderer는 `gosu:vault:current`에서 Main의 authoritative selection을 다시 받아 reload 뒤 표시와 실제
-  capability가 어긋나지 않게 한다. agent read는 root나 path를 받지 않고 Vault ID와 note ID를 Main에서
-  다시 해석한다. `O_NOFOLLOW`로 연 file descriptor의 device·inode와 post-open canonical target을 읽기
+- Obsidian reader는 사용자가 고른 Vault의 현재 project root 아래 bounded Markdown만 Renderer와 agent에
+  제공한다. symlink, root escape, 과도한 파일 크기·개수·깊이를 거부한다. Vault ID는 canonical root와
+  root device·inode에, project grant는 별도 binding ID와 ownership marker에 묶이고 매 list/read와 managed
+  write 전후에 identity를 재검사한다. `VaultAccess`는 reader와 selection을 하나의 immutable state로 완성한
+  뒤 원자적으로 교체하며, 전환 중이던 accessor는 `vault_grant_stale`로 실패한다. Renderer에는 Vault-wide
+  `current/read/write` bridge가 없고 project ID가 포함된 Research Notes IPC만 있다. agent read는 root나
+  path를 받지 않고 active project ID, binding ID와 note ID를 Main에서 다시 해석한다. `O_NOFOLLOW`로 연
+  file descriptor의 device·inode와 post-open canonical target을 읽기
   전후에 비교한다. Node의 path API만으로 ancestor 전체를 descriptor-relative하게 고정할 수는 없으므로,
   정교한 local directory-swap race를 완전히 닫으려면 후속 native `openat` traversal이 필요하다.
 - Codex child는 허용된 최소 환경만 상속하고 stdio JSON-RPC로 initialize한다. GOSU 전용
@@ -402,7 +403,7 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   invalid mode는 thread 생성 전에 거절하고, 선택 mode는 profile과 각 attempt에 고정해 silent fallback을
   허용하지 않는다. web result와 page 내용은 untrusted evidence이며 raw search payload를 Renderer,
   Project Chat DB 또는 telemetry에 자동 전달하지 않는다. 나머지 예외는 Main이 turn마다 선언하는
-  `gosu_project` namespace의 typed dynamic tool뿐이다. Board·Objective·Local Notes·SSH workspace catalog와
+  `gosu_project` namespace의 typed dynamic tool뿐이다. Board·Objective·Research Notes·SSH workspace catalog와
   정규화된 server resource snapshot 조회는 read-only다. 별도 Main broker의 workspace command는 사용자
   `Allow once` 뒤 Git inspection, bounded test/build 또는 제한된 foreground Python experiment를 수행하므로
   side effect가 가능하며 remote sandbox가 아니다. 이 예외는 Codex sandbox 자체에 shell이나 network를
@@ -526,18 +527,67 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   expired/cancelled event, command binding과 outcome metadata도 현재 app process와 turn 수명의 ephemeral
   상태이며 durable append-only audit가 아니다. connection label 자체도 tenant secret으로 사용하지 않는다.
 
+### Project-scoped Obsidian Research Notes 경계
+
+Research Notes는 임의 local folder browser가 아니라 사용자가 한 번 선택한 Obsidian Vault 안에 만드는
+project-scoped workspace다. Vault root의 canonical path와 device/inode identity는 Main process의
+`VaultReader`가 검증하고, root 선택은 암호화 local cache에만 보존한다. Renderer에는 absolute root나
+Vault 전체 file 목록을 내보내지 않으며 `current`, `read`, `readAttachment`, Literature projection과 paper
+note 생성으로 제한된 typed Research Notes IPC만 제공한다.
+
+각 active project는 SQLCipher에 저장한 64-hex `bindingId`와 Vault ID를 가지며, 기본 root는
+`GOSU/<safe project name>`이다. NFKC 정규화·separator/control 제거·UTF-8 byte 제한을 통과한 이름만 쓰고,
+프로젝트 root에는 숨은 `.gosu-project.json` ownership marker를 둔다. marker의 project ID, binding ID,
+Vault ID가 모두 일치할 때만 다음 기본 구조를 생성하거나 읽는다.
+
+- `Literature/Literature Review.md`
+- `Papers/Papers Index.md`와 선택된 paper note
+- `Experiments/Experiment Log.md`
+- `Project Progress/Project Progress.md`
+- `Idea Development/Idea Development.md`
+
+기존 사용자 folder가 같은 이름을 쓰면 덮어쓰지 않고 project ID prefix가 붙은 독립 folder를 최초
+할당한다. symlink, root escape, marker 변경, file/directory 충돌과 과도하게 큰 managed file은 fail
+closed한다. 일반 Vault content는 계속 read-only이며 GOSU write 권한은 ownership marker가 있는 project
+root의 초기 template, 고정 Literature projection, 사용자가 명시적으로 만드는 paper note에만 있다.
+generic path write/delete/rename IPC는 Renderer에 제공하지 않는다.
+
+Literature의 authoritative source는 project별 SQLCipher table이다. 검색·import·manual review·AI metadata
+정리가 commit된 뒤 `Literature Review.md`를 deterministic sort와 source digest로 다시 만든다. 이 파일은
+`GOSU-MANAGED-FILE` marker가 있는 경우에만 atomic replace하며 사용자가 같은 경로에 만든 일반 Markdown은
+덮어쓰지 않는다. projection 실패는 Literature commit을 rollback하지 않고 다음 진입·변경에서 재시도할
+수 있으며, 같은 content면 파일을 다시 교체하지 않는다. `Papers` note는 명시적 UI action, 사람의
+review/inclusion 또는 metadata-only AI 정리 시 한 번만
+생성한다. 생성 뒤에는 user-owned라 GOSU가 다시 덮어쓰지 않고, full text를 읽지 않았다면
+`metadata_only: true`, `full_text_reviewed: false`를 유지한다.
+
+project rename은 workspace DB rename을 먼저 commit한 뒤 owned Obsidian folder move를 시도한다. 성공하면
+marker와 display root를 갱신한다. Vault offline, destination collision, source missing 또는 ownership 변경이면
+원래 folder를 그대로 두고 `rename-pending`과 bounded attention code를 저장한다. Research Notes 화면에서
+상태를 설명하고 안전한 retry를 제공하며, pending 동안 agent tool grant는 비활성이다. project Archive나
+Trash는 Obsidian file을 삭제하지 않는다. 같은 Vault를 다시 선택해도 기존 binding과 충돌 회피 suffix를
+재사용하고, macOS에서 이름의 대소문자만 바꾸는 rename도 같은 directory identity를 확인해 처리한다.
+
+Project Chat grant는 Vault 전체 ID가 아니라 active project의 `bindingId`에 묶인다. Main은 매 turn 전에
+project·binding·Vault root identity·ownership marker를 다시 확인한다. 목록은 project-relative Markdown의
+opaque ID와 title만, 읽기는 bounded excerpt만 반환한다. 다른 project, 일반 Vault content, absolute path와
+managed tool payload는 노출하지 않는다.
+
+이 결정의 배경, 대안과 rollback 경계는
+[`ADR 0002`](adr/0002-project-scoped-obsidian-research-notes.md)에 고정한다.
+
 ### Markdown reader 경계
 
-Local Notes의 기본 화면은 Markdown 원문이 아니라 CommonMark와 GFM의 heading, list, table, task
+Research Notes의 기본 화면은 Markdown 원문이 아니라 CommonMark와 GFM의 heading, list, table, task
 list, blockquote, code block, footnote를 렌더링한다. 사용자는 같은 화면의 `Source` toggle로 원문을
 확인할 수 있다. 표시 크기와 색상은 전역 Appearance 설정의 font scale·theme token을 그대로
 사용한다.
 
-왼쪽 file explorer는 Main이 이미 검증해 반환한 bounded `VaultSelection.files` snapshot만 Renderer에서
+왼쪽 file explorer는 Main이 이미 검증해 반환한 bounded `ResearchNotesWorkspace.files` snapshot만 Renderer에서
 directory-first natural order의 tree로 만든다. 폴더는 기본적으로 접혀 있고 같은 row를 다시 누르면
 열림·닫힘이 전환되며, sibling과 접힌 subtree의 기존 expansion은 보존한다. 파일 또는 Markdown
 wiki-link를 열면 해당 note의 ancestor만 펼쳐 현재 파일을 드러낸다. expansion과 roving keyboard focus는
-Vault별 volatile UI state라 localStorage·Hosted Sync·LLM context에 저장하지 않고 새 Vault에서는
+project binding별 volatile UI state라 localStorage·Hosted Sync·LLM context에 저장하지 않고 새 binding에서는
 초기화한다. tree model은 absolute·dot-segment·empty component·control character·과도한 길이·non-Markdown·
 file/directory 충돌 path를 normalize하지 않고 제외한다. `role="tree"`/`treeitem`, `aria-expanded`·
 `aria-selected`, 방향키·Home/End navigation을 제공하며 읽는 동안에도 폴더 탐색은 유지한다. 현재 contract는
@@ -559,7 +609,7 @@ KaTeX는 `trust: false`, `strict: warn`, `maxExpand: 1000`, `maxSize: 20`을 사
 넘은 수식은 없애지 않고 inline 또는 fenced TeX code로 보여 주며, 긴 display 수식은 reader 안에서
 가로 scroll한다. 일반 prose와 긴 URL·무공백 token은 document 폭 안에서 줄바꿈하고, KaTeX의
 `white-space: nowrap`으로 폭을 유지해야 하는 긴 inline 수식은 해당 수식 자체가 가로 scroll region이
-된다. display 수식·code block·넓은 GFM table도 각각 자기 block 안에서 scroll하므로 바깥 Local Notes나
+된다. display 수식·code block·넓은 GFM table도 각각 자기 block 안에서 scroll하므로 바깥 Research Notes나
 Repository layout을 밀어내거나 문서 끝의 전역 scrollbar에 의존하지 않는다. KaTeX CSS와 font는 앱
 package에 포함되고 Appearance font scale과 theme을 상속하며 외부 network를 요청하지 않는다. `Source`
 mode는 이 파이프라인을 거치지 않아 원문 delimiter를 그대로 표시한다.
@@ -734,7 +784,7 @@ fail-closed하며 Broad에 명시적인 reason을 저장한다.
 “문헌을 검색하지 마” turn에는 tool 자체가 없다. 현재 paper와 관련된 새 논문이나 project 연구 주제에
 관한 외부 discovery는 명시적 search action이 있으면 계속 허용하되, saved/existing/library scope는
 외부 검색 mutation으로 승격하지 않는다. 이 lexical
-Main-process gate는 PDF·Local Notes·web
+Main-process gate는 PDF·Research Notes·web
 content 안의 prompt injection이 뒤늦게 write capability를 만들지 못하게 한다. legacy reviewer에도
 mutation tool을 주지 않는다. model argument에는 project ID가 없고 Main closure가 active project를
 주입·재검증한다. tool은 Renderer와 동일한 `LiteratureService`와 고정 3-layer policy를 호출하므로
@@ -944,7 +994,7 @@ network call 중 움직여도 새 commit은 전송하지 않고 상태 경합으
 
 Git file tree와 raw file/diff/history는 로컬 조회 결과다. Hosted DB, workspace outbox, telemetry 또는
 Project Chat context에 자동 포함하지 않는다. GitHub remote 장애나 Git 설치 실패는 Repository 화면의
-bounded error로 격리하며 Kanban, Objective, Local Notes와 기존 Project Chat을 중단시키지 않는다.
+bounded error로 격리하며 Kanban, Objective, Research Notes와 기존 Project Chat을 중단시키지 않는다.
 
 ### 현재 로컬 workspace 흐름
 
@@ -1007,7 +1057,7 @@ flowchart LR
 - Renderer의 `project-sidebar.tsx`는 모든 Active project 이름을 folder tree로 보여주고, 여러 folder의
   Chat·Board·Goal & Metrics 하위 항목을 동시에 펼칠 수 있다. folder row를 누르면 그 project를 선택하며
   같은 row를 다시 누르면 하위 항목만 접고 현재 작업 화면은 유지한다. Hidden과 Archived는 별도
-  recovery group으로 표시하고 Connections·Local Notes·Settings는 project 밖의 global navigation으로 둔다.
+  recovery group으로 표시하고 Connections·Settings는 project 밖의 global navigation, Research Notes는 각 project folder 안의 navigation으로 둔다.
 - folder 펼침, Active group 접힘, `Hide locally`, 왼쪽 project sidebar 전체의 접힘 상태와 사용자가
   drag 또는 keyboard separator로 조정한 폭은 개인 Mac의 navigation preference다.
   `project-navigation-state.ts`가 UUID 목록, boolean과 bounded width만 versioned
@@ -1061,7 +1111,7 @@ flowchart LR
   ChatService["ProjectChatService\ndurable attempt router"]
   ToolGateway["ProjectAgentToolSession\nproject-bound capabilities"]
   Codex["isolated Codex App Server\nstructured final response"]
-  Vault["selected Local Notes\nopaque IDs·bounded chunks"]
+  Vault["project Research Notes\nopaque IDs·bounded chunks"]
   Attachments["ephemeral turn attachments\nopaque IDs·bounded units·normalized images"]
   Literature["LiteratureService\n3-layer discovery·additive merge"]
   LiteratureDB["Literature SQLCipher tables"]
@@ -1162,22 +1212,24 @@ flowchart LR
 - project profile은 provider가 발견한 nullable opaque Codex collaboration mode ID,
   `auto`·`none`·`friendly`·`pragmatic` personality, `auto`·`low`·`medium`·`high` native verbosity,
   `disabled`·`cached`·`live` web search mode, `project`·`board`·`objective` context scope, nullable
-  project-local Vault grant와 최대 4,000자의 custom instruction을 소유한다. web search 기본값은
+  project-local Research Notes binding grant와 최대 4,000자의 custom instruction을 소유한다. web search 기본값은
   `cached`이며 profile migration과 attempt row에도 실제 turn 설정을 보존한다. v0.6의
   `context`·`planner`·`reviewer`와 `concise`·`standard`·`deep` column은
   migration·과거 receipt 판독을 위해 남기되 새 UI의 harness 원본으로 사용하지 않는다.
   Settings의 저장은 profile version CAS를 사용하고 stale edit는 `chat_profile_conflict`로 끝난다.
-  Vault grant 저장 시 Main이 현재 선택된 Vault의 opaque ID와 이름을 다시 대조한다. folder가 바뀌면
-  기존 grant는 inactive이며 자동 이전하지 않는다. active turn 중 profile 변경은 거절해 한 turn의
-  capability snapshot을 고정한다. Renderer reload 때도 Main의 현재 Vault를 typed IPC로 hydrate하며 stale
-  hydration response가 이후의 새 folder 선택을 덮지 못하도록 generation guard를 둔다. Chat composer의
+  Research Notes grant 저장 시 Main이 active project의 opaque binding ID와 고정 display name을 다시 대조한다.
+  project folder나 Vault가 바뀌면 기존 grant는 inactive이며 자동 이전하지 않는다. active turn 중 profile
+  변경은 거절해 한 turn의 capability snapshot을 고정한다. Renderer reload 때도 Main의 현재 project
+  Research Notes workspace를 typed IPC로 hydrate하며 stale hydration response가 이후의 새 Vault 선택이나
+  project 전환을 덮지 못하도록 generation guard를 둔다. Chat composer의
   capability status는 grant가 없거나 inactive일 때 project AI Agent Settings로 가는 `Authorize…` 동선을
-  제공한다. Local Notes 화면도 진입 시 현재 active project의 암호화 profile을 hydrate하고, project 이름과
+  제공한다. Research Notes 화면도 진입 시 현재 active project의 암호화 profile을 hydrate하고, project 이름과
   `authorized`·`not authorized`·`inactive`·`checking`·`unavailable` 상태를 함께 표시한다. 사용자는 이
   화면에서 현재 folder를 직접 승인하거나 기존 grant를 즉시 해제할 수 있고, 같은 project의 AI Agent
   Settings로 바로 이동할 수 있다. 직접 변경은 storage-only profile field를 spread하지 않고 허용된 설정
-  field를 명시적으로 보존한 CAS command만 전송한다. 승인은 Main이 확인한 exact Vault ID·이름과 active
-  turn 없음이 모두 충족될 때만 가능하며, 저장 직전에 선택 folder의 canonical root와 device·inode identity도
+  field를 명시적으로 보존한 CAS command만 전송한다. 승인은 Main이 확인한 exact project binding ID·이름과
+  active turn 없음이 모두 충족될 때만 가능하며, 저장 직전에 선택 Vault와 project folder의 canonical root,
+  device·inode identity 및 ownership marker도
   다시 검증한다. 해제는 Vault가 사라졌거나 상태 확인이 실패했어도 가능하다. Notes 진입 hydration이 진행
   중이면 direct action을 잠근다. Hydration busy state는 단일 current ID가 아니라 project별 in-flight set으로
   추적해 다른 project의 동시에 끝나는 snapshot이 이 잠금을 풀 수 없게 한다. local profile mutation은 진행
@@ -1185,7 +1237,7 @@ flowchart LR
   지연된 이전 snapshot이 새 grant를 화면에서 되돌릴 수 없다.
   authoritative status를 아직 확인 중이거나 IPC 오류로 확인하지 못했는데 저장된 grant가 있으면 chat
   send를 차단해 Main의 숨은 기존 capability가 UI 표시와 다르게 사용되지 않게 한다. Agent Settings의
-  grant·revoke button은 profile 저장 전 local draft임을 label로 표시하고, Local Notes의 direct action은
+  grant·revoke button은 profile 저장 전 local draft임을 label로 표시하고, Research Notes의 direct action은
   성공한 CAS 저장 결과를 즉시 상태에 반영한다.
   custom instruction 변경은 append-only revision과 content hash를 남기며 이전 attempt의 의미를
   덮어쓰지 않는다. Chat 화면의 per-turn override는 profile을 수정하지 않고 해당 attempt에만 고정된다.
@@ -1195,7 +1247,7 @@ flowchart LR
   message는 모두 별도의 untrusted JSON envelope에 넣는다.
   context는 최대 48,000자, history는 최근 40개·24,000자, assembled prompt는 160,000자로 제한한다.
   policy·legacy compatibility·custom·context·history·message·최종 prompt의 SHA-256과
-  profile/instruction revision, workspace revision, dynamic tool catalog hash, 실제 활성 Vault ID,
+  profile/instruction revision, workspace revision, dynamic tool catalog hash, 실제 활성 Research Notes binding ID,
   Codex mode catalog hash, 선택 mode·personality·verbosity·effective reasoning, configured web search mode와
   truncation 여부를 attempt provenance assembly v3와 attempt row에 기록한다. 이전 assembly v1·v2
   provenance는 계속 읽을 수 있다.
@@ -1212,7 +1264,7 @@ flowchart LR
   `read_turn_attachment_text`가 추가된다. legacy reviewer에는 Literature mutation tool이 없다.
   `read_workspace`는 active project ID를 handler closure에 묶어 Board와 최신 Objective만 반환하며
   모델 argument로 project ID를 받지 않는다. repository는 credential·URL·SSH 주소를 제외한 canonical
-  `owner/repository` label만 agent context에 포함한다. Local Notes tool은 profile grant가 현재 선택 Vault와
+  `owner/repository` label만 agent context에 포함한다. Research Notes tool은 profile grant가 현재 project binding과
   일치할 때만 catalog에 나타난다. list는 opaque note ID와 display title만 반환하고 read는 호출당
   24,000자, ephemeral turn당 합계 96,000자로 제한한다. attachment text read는 호출당 8 unit·24,000자와
   turn당 60,000자다. 동시 호출은 read 전에 budget을 reserve하고 모든 tool 결과는 직렬화 후 48,000자
@@ -1247,7 +1299,7 @@ flowchart LR
   유지된다. abort·deny·expire·정상 종료마다 listener를 제거하며 timeout 응답을 먼저 보냈더라도 실제
   handler가 settle할 때까지 해당 in-flight capacity를 유지해 zombie 작업이 동시 실행 상한을 우회하지
   못하게 한다. Stop은 project/session lookup과 Codex
-  interrupt보다 먼저, terminal notification은 Local Notes delivery settlement와 receipt persistence보다 먼저
+  interrupt보다 먼저, terminal notification은 Research Notes delivery settlement와 receipt persistence보다 먼저
   live SSH capability와 transport를 동기적으로 폐기한다. Renderer는 `turn.started` 전 startup 동안 Stop을
   표시하지 않고 project busy 상태만 보여 준다. timeout·output cap·transport failure는 typed error로 끝나 다른
   Project Chat capability를 중단시키지 않지만, local abort 뒤 remote process 종료는 보증하지 않는다.
@@ -1260,12 +1312,12 @@ flowchart LR
   SQLCipher message와 향후 Hosted Sync 대상이다. terminal 경로는 pending note/attachment delivery를 최대
   100ms 동안 bounded settlement한 뒤 App Server의 해당
   thread tool registration을 동기적으로 revoke한다. revoke로 확정된 `uncertain` 결과까지 한 microtask
-  안에서 반영한 다음 `Local Notes accessed` appendix를 봉인한다. timeout 뒤 완료된 handler는 note
+  안에서 반영한 다음 `Research Notes accessed` appendix를 봉인한다. timeout 뒤 완료된 handler는 note
   result를 Codex로 보내거나 receipt를 뒤늦게 변경할 수 없다. source identity는
   `note ID + content SHA-256` pair이므로 같은 note의 서로 다른 content version을 한 turn에서 읽어도 각각
   보존하고, 동일 version의 여러 excerpt만 하나의 source entry로 합친다.
 - tool access는 UI section 자체나 database table 접근이 아니라 module capability다. 현재 구현된
-  Board·Goal & Metrics·승인된 Local Notes, 현재 turn 첨부 연구 파일, 명시적 additive Literature search와
+  Board·Goal & Metrics·승인된 Research Notes, 현재 turn 첨부 연구 파일, 명시적 additive Literature search와
   active project에 grant된 SSH workspace의 opaque ID·label·mode 및 정규화된 resource snapshot만 사용할 수 있다. Literature table 전체를 임의
   조회·수정하는 도구는 없고 search receipt만 돌아온다. SSH host resolution·credential·private-key path·
   remote root, Settings·Project Trash는 list tool에 노출하지 않으며 Experiments·Manuscript·Review·
@@ -1298,7 +1350,7 @@ flowchart LR
   놓쳐도 Thinking·Stop 상태를 복구하며, load generation과 event sequence guard가 오래된 snapshot이
   새 turn 상태나 action receipt를 덮지 못하게 한다.
 - 앱 시작과 사용자의 Reconnect는 Codex account 상태와 전체 동적 model catalog를 다시 확인한다.
-  연결이 끊기면 이전 catalog를 폐기하며 Board·Settings·Local notes는 계속 동작한다. 선택한 model이
+  연결이 끊기면 이전 catalog를 폐기하며 Board·Settings·Research Notes는 계속 동작한다. 선택한 model이
   없어졌을 때 다른 model로 조용히 바꾸지 않는다.
 - model별 reasoning option과 personality 지원 여부는 paginated `model/list` catalog가 제공한 실제 값만
   사용한다. `supportedReasoningEfforts[].reasoningEffort`의 opaque ID를 option ID와 짧은 label에 그대로
@@ -1315,7 +1367,7 @@ flowchart LR
   `math-inline`·`math-display` marker class만 보존한 **뒤에** bundled `rehype-katex`가 local HTML/MathML을
   생성한다. KaTeX는 `trust: false`, `strict: warn`, `maxExpand: 1000`, `maxSize: 20`으로 제한한다.
   공통 math policy는 문서당 수식 개수·개별·총 TeX 길이도 제한하고 초과 source를 code fallback으로
-  보존해 Local Notes와 Chat 사이의 안전 설정이 갈라지지 않게 한다.
+  보존해 Research Notes와 Chat 사이의 안전 설정이 갈라지지 않게 한다.
   link는 정확한 HTTPS만 Main의 external-browser IPC로 열고 image는 remote fetch 대신 blocked placeholder로
   바꾼다. 깨진 수식은 escaped error/fallback으로 해당 message 안에 남아 transcript 전체를 throw하지
   않으며 원문과 message provenance는 그대로 유지한다. KaTeX CSS와 font는 package에 묶여 theme·font
@@ -1387,7 +1439,7 @@ flowchart LR
 
 Project Chat에는 pinned local [Codex App Server](https://learn.chatgpt.com/docs/app-server)의 native
 thread/turn/item agent loop와 dynamic tools를 사용해 active project의 Board·Objective와 명시적으로
-승인한 Local Notes, project-scoped CPU/RAM/GPU snapshot을 읽고, 현재 project에 grant된 OpenSSH
+승인한 Research Notes, project-scoped CPU/RAM/GPU snapshot을 읽고, 현재 project에 grant된 OpenSSH
 alias/direct target에 exact Allow-once workspace command를 요청하는 bounded tool loop가 구현되어 있다.
 Workspace mode에서는 최대 120초의 제한된 foreground Python experiment도 같은 승인 경계로 요청할 수
 있다. GOSU가 별도의 planner/reviewer loop를
@@ -1685,7 +1737,7 @@ prompt provenance의 재시작 복원도 확인한다. 이 검사는 native ABI�
 
 Project Agent tool test는 active project 밖의 Board·Objective가 섞이지 않는지, forged project
 argument·credential 포함 repository와 raw path가 차단되는지, grant가 없거나 선택 Vault가 바뀌면 note
-tool이 없거나 실패하는지 검증한다. Local Notes는 opaque ID, 호출당 24,000자·동시 호출을 포함한 turn당
+tool이 없거나 실패하는지 검증한다. Research Notes는 opaque ID, 호출당 24,000자·동시 호출을 포함한 turn당
 96,000자 budget, high-escaping 직렬화 cap, 큰 Board 축약, tail-only excerpt와 모든 terminal source
 appendix를 검사한다. 자동 appendix에는 본문과 absolute path가 남지 않아야 하지만, 승인된 note를 모델이
 visible answer에 인용한 경우 그 인용문이 durable chat에 저장되는 것도 명시적으로 검증한다. Codex App
@@ -1696,7 +1748,7 @@ Project Agent tool test는 discard 뒤 late completion 봉인, terminal의 bound
 transport revoke, write-in-progress 출처의 `delivery unconfirmed`, 같은 note의 서로 다른 content hash
 보존도 담당한다. Project Chat service test는 project 간 thread ID 충돌이 기존 owner를 덮어쓰지 않는지
 확인한다. result 직렬화 크기와 동시 note budget·큰 Board 축약도 Project Agent tool test가 담당한다.
-SQLCipher smoke는 Local Notes grant column이 없던 실제 v0.5 profile schema를 열어 nullable grant로
+SQLCipher smoke는 Research Notes의 legacy `local_notes` grant column이 없던 실제 v0.5 profile schema를 열어 nullable grant로
 migration한 뒤 새 grant를 저장할 수 있는지도 확인한다.
 
 Project Chat web-search test는 `disabled|cached|live`가 정확한 `thread/start.config.web_search`로 전달되고
@@ -1727,9 +1779,9 @@ fail closed하고 buffer saturation·terminal persistence recovery에서도 imag
 retry를 막으며 raw bytes/text,
 filename과 temporary path가 prompt, message, SQLCipher·telemetry에 남지 않으며 실제 전달된 read/native
 image만 bounded source appendix를 만드는지도 검증한다. parser나 web/literature provider 장애는 Board·
-Local Notes와 기존 Literature table을 막지 않아야 한다.
+Research Notes와 기존 Literature table을 막지 않아야 한다.
 
-Local Notes tree test는 입력 순서와 무관한 directory-first natural ordering, duplicate와 malformed path
+Research Notes tree test는 입력 순서와 무관한 directory-first natural ordering, duplicate와 malformed path
 제외, nested·sibling expansion 보존, 현재 note ancestor reveal을 고정한다. Renderer test는 접힌 descendant가
 DOM에 없고 directory의 `aria-expanded`, 현재 file의 `aria-selected`·`aria-current`, visible row의 단일
 roving tab stop과 tree level·position metadata가 일치하는지 검사한다. Markdown document test는 inline·
@@ -1782,7 +1834,7 @@ transfer·forwarding 거절, approval exact target/root/mode/command binding·pr
 Allow once·scope cancel, output crop·untrusted marker를 고정한다. Project Agent
 통합 test는 모델이 project/session/connection binding을 위조하거나 다른 project grant를 선택할 수 없고
 허용된 workspace command도 승인 전에는 실행되지
-않으며 navigation·send startup·startup Stop 경합, 실패하거나 지연된 Stop, pending Local Notes delivery가
+않으며 navigation·send startup·startup Stop 경합, 실패하거나 지연된 Stop, pending Research Notes delivery가
 있는 terminal turn과 app shutdown이 pending approval과 local transport를 즉시 폐기하는지 확인한다. remote
 process-tree 종료와 durable approval audit는 현재 구현·테스트 보증 밖이다.
 
@@ -1856,6 +1908,10 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 - relay 변경: Origin·native runner 인증, project isolation, duplicate·stale, backpressure, retention
 - Desktop IPC 변경: trusted sender, untrusted frame, path escape, 크기 제한, secret 비노출
 - Desktop menu·Settings 변경: fixed no-payload navigation event, early-event buffer, 표준 macOS role 보존
+- Research Notes 변경: Vault-wide Renderer bridge 부재, strict project/binding IPC, root·project ownership
+  identity, path traversal·ancestor/project-root symlink·foreign marker·managed-file collision·크기 제한,
+  project isolation, default folder/template idempotency, deterministic Literature projection, one-time
+  user-owned paper note, rename success·collision `rename-pending`, stale project 전환 응답 폐기
 - Project lifecycle 변경: Active/Archived/Trash의 중복 없는 분류, archive/unarchive stale version,
   archived mutation·chat·agent tool 차단, active-turn lifecycle gate, Archived→Trash→restore 상태 보존,
   두 단계 Trash UI, 같은 UUID와 task·objective·chat·outbox 보존
@@ -2010,6 +2066,9 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
 - Literature의 citation·author·momentum ranking이 높다는 것과 paper full text를 읽어 연구 품질이나
   systematic-review evidence를 검증했다는 것은 다르다. 이 score는 discovery 우선순위일 뿐이며 Zotero
   자동 동기화와 background alert도 아직 수행하지 않는다.
+- Obsidian의 `Literature Review.md`가 보인다는 것과 그 파일이 Literature 원본이라는 것은 다르다.
+  authoritative source는 SQLCipher이며 managed file은 재생성 가능한 metadata-only projection이다. `Papers`
+  note도 생성 시점의 metadata 초안이고 full text 검증이나 Zotero PDF 보관을 의미하지 않는다.
 - Project Chat web search가 있다는 것과 browser·임의 URL fetch 권한이 있다는 것은 다르다. 연구 파일
   첨부도 one-turn bounded reconstruction·normalized-image capability이지 durable reference attachment·
   OCR·Office layout 복원·원문 검증이 아니다.
@@ -2044,6 +2103,10 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
       재현성을 유지하는가? 서로 다른 query의 상대 score를 직접 비교하지 않는가?
       Project Chat search면 trusted user-message authorization, Main-injected project ID, receipt-only result와
       동일한 LiteratureService policy, cancel/late-result 봉인을 유지하는가?
+- [ ] Research Notes 변경이면 Renderer에 Vault-wide path/read/write/delete 권한을 추가하지 않고 active
+      project ID·binding ID·ownership marker·Vault identity를 모두 재검증하는가? 일반 Vault file과
+      user-owned paper note를 덮어쓰지 않는가? Literature SQLCipher 원본과 deterministic Markdown projection,
+      rename-pending/retry, project 전환 generation guard와 Hosted Sync 본문 금지를 유지하는가?
 - [ ] Project Chat web search 변경이면 actual mode를 profile·attempt에 기록하고 silent fallback 없이
       `disabled|cached|live`만 허용하는가? shell, browser, Apps, MCP와 general network가 계속 꺼져 있는가?
 - [ ] Project Chat attachment 변경이면 local path·원본 bytes·raw extracted text·temporary image를 저장·

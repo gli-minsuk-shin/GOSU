@@ -15,7 +15,6 @@ import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspac
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
 import { SshEventSchema } from '../shared/ssh-contracts';
-import { ReadVaultAttachmentInputSchema } from '../shared/vault-contracts';
 import { buildMacApplicationMenuTemplate } from './application-menu';
 import { registerAgentAddOnIpc } from './agent-addon-ipc';
 import { createAgentAddOnRegistry } from './agent-addon-service';
@@ -38,6 +37,8 @@ import { createProjectChatAttachmentPicker } from './project-chat-attachment-pla
 import { ProjectChatAttachmentService } from './project-chat-attachment-service';
 import { registerProjectChatIpc } from './project-chat-ipc';
 import { ProjectChatService } from './project-chat-service';
+import { registerResearchNotesIpc } from './research-notes-ipc';
+import { ResearchNotesProjectLinkSchema, ResearchNotesService } from './research-notes-service';
 import { createSshCommandRunner } from './ssh-command-runner';
 import { SshConnectionService } from './ssh-connection-service';
 import { registerSshIpc } from './ssh-ipc';
@@ -70,7 +71,23 @@ const codex = new CodexAppServer({
 });
 const agentAddOns = createAgentAddOnRegistry();
 const database = new LocalDatabase();
-const vault = new VaultAccess();
+const vault = new VaultAccess({
+  loadRoot() {
+    const value = database.get('research-notes', 'obsidian-vault-root')?.value;
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      Array.isArray(value) ||
+      typeof (value as { root?: unknown }).root !== 'string'
+    ) {
+      return null;
+    }
+    return (value as { root: string }).root;
+  },
+  saveRoot(root) {
+    database.cache('research-notes', 'obsidian-vault-root', { root });
+  },
+});
 const ssh = new SshConnectionService(database, createSshCommandRunner());
 const workspace = new WorkspaceService({
   load: () => database.loadWorkspaceState(),
@@ -85,6 +102,21 @@ const experimentWorkspace = new ExperimentWorkspaceService({
 const gitWorkspace = new GitWorkspaceService({
   workspace,
   rootDirectory: () => join(app.getPath('userData'), 'git-workspaces'),
+});
+const researchNotes = new ResearchNotesService({
+  storage: {
+    loadProjectLink(projectId) {
+      const value = database.get('research-notes-project', projectId)?.value;
+      const parsed = ResearchNotesProjectLinkSchema.safeParse(value);
+      return parsed.success ? parsed.data : null;
+    },
+    saveProjectLink(link) {
+      database.cache('research-notes-project', link.projectId, link, Date.parse(link.updatedAt));
+    },
+  },
+  literature: database,
+  workspace,
+  vault,
 });
 let mainWindow: BrowserWindow | undefined;
 const projectChatAttachments = new ProjectChatAttachmentService({
@@ -109,12 +141,13 @@ const literature = new LiteratureService({
     }),
   }),
   transfer: createLiteratureTransferPlatform(() => mainWindow),
+  projection: researchNotes,
 });
 const projectChat = new ProjectChatService({
   storage: database,
   workspace,
   codex,
-  vault,
+  vault: researchNotes,
   literature,
   ssh,
   attachments: projectChatAttachments,
@@ -287,6 +320,7 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     workspace,
     reportUnexpectedWorkspaceError,
     projectChat,
+    researchNotes,
   );
   registerProjectChatIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
@@ -314,6 +348,15 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     literature,
     literatureAi,
+    reportUnexpectedWorkspaceError,
+  );
+  registerResearchNotesIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    researchNotes,
+    (projectId) => {
+      if (!mainWindow) return Promise.reject(new Error('research_notes_unavailable'));
+      return researchNotes.chooseVault({ projectId }, mainWindow);
+    },
     reportUnexpectedWorkspaceError,
   );
   registerExperimentWorkspaceIpc(
@@ -375,16 +418,6 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     codex.loginApiKey(typeof apiKey === 'string' ? apiKey : ''),
   );
   handle('gosu:codex:logout', () => codex.logout());
-  handle('gosu:vault:current', () => vault.current());
-  handle('gosu:vault:choose', () => (mainWindow ? vault.choose(mainWindow) : null));
-  handle('gosu:vault:read', (_event, relativePath) =>
-    vault.readMarkdown(typeof relativePath === 'string' ? relativePath : ''),
-  );
-  handle('gosu:vault:read-attachment', (_event, input) => {
-    const parsed = ReadVaultAttachmentInputSchema.safeParse(input);
-    if (!parsed.success) throw new Error('invalid_vault_attachment_input');
-    return vault.readAttachment(parsed.data);
-  });
   handle('gosu:external:open', (_event, url) =>
     typeof url === 'string' && url.startsWith('https://')
       ? shell.openExternal(url)
@@ -419,6 +452,7 @@ if (!primaryInstance) {
     let localData = localDataReadiness();
     try {
       database.open();
+      await vault.restore().catch(() => null);
     } catch (error) {
       localData = localDataReadiness(error);
     }

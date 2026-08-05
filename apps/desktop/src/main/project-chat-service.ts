@@ -549,7 +549,7 @@ export class ProjectChatService extends EventEmitter {
     return this.runProjectChatMutation(command.projectId, async () => {
       await this.requireActiveProject(command.projectId);
       if (command.localNotesVault) {
-        const selectedVault = this.dependencies.vault?.descriptor() ?? null;
+        const selectedVault = this.dependencies.vault?.descriptor(command.projectId) ?? null;
         if (!selectedVault) {
           throw new ProjectChatServiceError('local_notes_vault_not_selected');
         }
@@ -560,7 +560,10 @@ export class ProjectChatService extends EventEmitter {
           throw new ProjectChatServiceError('local_notes_vault_changed');
         }
         try {
-          await this.dependencies.vault!.validateGrant(command.localNotesVault.id);
+          await this.dependencies.vault!.validateGrant(
+            command.projectId,
+            command.localNotesVault.id,
+          );
         } catch {
           throw new ProjectChatServiceError('local_notes_vault_changed');
         }

@@ -36,7 +36,7 @@ const QUICK_PROMPTS = [
   '현재 프로젝트 상황을 요약해줘',
   '다음으로 할 연구 작업 3개를 제안해줘',
   '목표 metric 기준으로 가장 중요한 리스크를 찾아줘',
-  '승인된 Local Notes를 검토하고 프로젝트에 활용할 근거를 정리해줘',
+  '승인된 Research Notes를 검토하고 프로젝트에 활용할 근거를 정리해줘',
 ] as const;
 
 export type ProjectChatTurnControls = Readonly<{
@@ -486,17 +486,17 @@ export function ProjectChatView({
   );
   const localNotesStatus =
     vaultState === 'checking'
-      ? 'Local Notes access checking'
+      ? 'Research Notes access checking'
       : vaultState === 'unavailable'
-        ? 'Local Notes status unavailable'
+        ? 'Research Notes status unavailable'
         : localNotesAvailable
-          ? `${localNotesGrant?.name ?? 'Local Notes'} authorized`
+          ? `${localNotesGrant?.name ?? 'Research Notes'} authorized`
           : localNotesGrant
             ? `${localNotesGrant.name} grant inactive`
-            : 'Local Notes not authorized';
+            : 'Research Notes not authorized';
   const localNotesWarning =
-    localNotesGrant && vaultState !== 'ready'
-      ? 'GOSU cannot verify the Main-process Local Notes capability yet. This turn is paused to prevent a hidden grant mismatch.'
+    localNotesGrant && !localNotesAvailable
+      ? 'GOSU cannot verify this project’s Research Notes binding. This turn is paused to prevent stale or cross-project note access.'
       : null;
   const selectionWarning =
     modelSelectionWarning ??
@@ -824,7 +824,7 @@ export function ProjectChatView({
             </span>
             <div>
               <strong>GOSU Project Copilot</strong>
-              <span>현재 프로젝트 Board, Objective, 승인된 Local Notes를 활용합니다</span>
+              <span>현재 프로젝트 Board, Objective, 승인된 Research Notes를 활용합니다</span>
             </div>
           </div>
           <div className="chat-model-controls">
@@ -1040,8 +1040,8 @@ export function ProjectChatView({
                 ))}
               </select>
               <small>
-                Scope controls preloaded context. Authorized Local Notes remain available through
-                bounded read tools.
+                Scope controls preloaded context. Authorized project Research Notes remain available
+                through bounded read tools.
               </small>
             </div>
             <div className="chat-agent-profile-summary">
@@ -1302,7 +1302,7 @@ export function ProjectChatView({
                 type="button"
                 className="retry-context"
                 onClick={onOpenAgentSettings}
-                title="Authorize the selected Local Notes folder for this project"
+                title="Authorize this project’s Research Notes folder"
               >
                 Authorize…
               </button>

@@ -75,6 +75,19 @@ import {
   type UpdateProjectChatProfileInput,
 } from '../shared/project-chat-contracts';
 import { unwrapProjectChatIpcResult } from '../shared/project-chat-ipc-result';
+import { RESEARCH_NOTES_IPC_CHANNELS } from '../shared/research-notes-channels';
+import type {
+  CreateResearchPaperNoteInput,
+  ReadResearchNoteAttachmentInput,
+  ReadResearchNoteInput,
+  ResearchNotesProjectInput,
+  ResearchNotesWorkspace,
+  ResearchPaperNoteReceipt,
+} from '../shared/research-notes-contracts';
+import {
+  type ResearchNotesIpcResult,
+  unwrapResearchNotesIpcResult,
+} from '../shared/research-notes-ipc-result';
 import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
 import {
   SshEventSchema,
@@ -101,11 +114,7 @@ import type {
   RemoveRemoteWorkspaceGrantInput,
   UpdateRemoteWorkspaceGrantInput,
 } from '../shared/ssh-workspace-contracts';
-import type {
-  ReadVaultAttachmentInput,
-  VaultAttachment,
-  VaultSelection,
-} from '../shared/vault-contracts';
+import type { VaultAttachment } from '../shared/vault-contracts';
 import type {
   CreateProjectInput,
   CreateTaskInput,
@@ -165,6 +174,14 @@ async function invokeExperiment<T>(channel: string, input: unknown): Promise<T> 
     error: { code: 'experiment_unavailable' },
   }));
   return unwrapExperimentIpcResult<T>(result);
+}
+
+async function invokeResearchNotes<T>(channel: string, input: unknown): Promise<T> {
+  const result = (await ipcRenderer.invoke(channel, input).catch(() => ({
+    ok: false,
+    error: { code: 'research_notes_unavailable' },
+  }))) as ResearchNotesIpcResult<T>;
+  return unwrapResearchNotesIpcResult(result);
 }
 
 async function invokeSsh<T>(channel: string, input?: unknown): Promise<T> {
@@ -415,12 +432,34 @@ const api = {
       };
     },
   },
-  vault: {
-    current: () => ipcRenderer.invoke('gosu:vault:current') as Promise<VaultSelection | null>,
-    choose: () => ipcRenderer.invoke('gosu:vault:choose') as Promise<VaultSelection | null>,
-    read: (relativePath: string) => ipcRenderer.invoke('gosu:vault:read', relativePath),
-    readAttachment: (input: ReadVaultAttachmentInput) =>
-      ipcRenderer.invoke('gosu:vault:read-attachment', input) as Promise<VaultAttachment>,
+  researchNotes: {
+    current: (input: ResearchNotesProjectInput) =>
+      invokeResearchNotes<ResearchNotesWorkspace | null>(
+        RESEARCH_NOTES_IPC_CHANNELS.current,
+        input,
+      ),
+    chooseVault: (input: ResearchNotesProjectInput) =>
+      invokeResearchNotes<ResearchNotesWorkspace | null>(
+        RESEARCH_NOTES_IPC_CHANNELS.chooseVault,
+        input,
+      ),
+    read: (input: ReadResearchNoteInput) =>
+      invokeResearchNotes<{ path: string; content: string }>(
+        RESEARCH_NOTES_IPC_CHANNELS.read,
+        input,
+      ),
+    readAttachment: (input: ReadResearchNoteAttachmentInput) =>
+      invokeResearchNotes<VaultAttachment>(RESEARCH_NOTES_IPC_CHANNELS.readAttachment, input),
+    syncLiterature: (input: ResearchNotesProjectInput) =>
+      invokeResearchNotes<{ syncedAt: string | null }>(
+        RESEARCH_NOTES_IPC_CHANNELS.syncLiterature,
+        input,
+      ),
+    createPaperNote: (input: CreateResearchPaperNoteInput) =>
+      invokeResearchNotes<ResearchPaperNoteReceipt>(
+        RESEARCH_NOTES_IPC_CHANNELS.createPaperNote,
+        input,
+      ),
   },
   workspace: {
     snapshot: () => invokeWorkspace<WorkspaceSnapshot>(WORKSPACE_IPC_CHANNELS.snapshot),

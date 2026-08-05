@@ -109,7 +109,7 @@ describe('Project chat prompt assembly', () => {
       localNotesVaultId: null,
     });
     expect(first.developerInstructions).toContain('explicitly provided GOSU tools');
-    expect(first.developerInstructions).toContain('read Local Notes by opaque ID');
+    expect(first.developerInstructions).toContain('read Research Notes by opaque ID');
     expect(first.developerInstructions).toContain(
       "search bounded bibliographic metadata into this active project's Literature table",
     );
