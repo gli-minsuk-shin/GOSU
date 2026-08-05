@@ -60,9 +60,11 @@ but it is not yet a deployed end-to-end product:
   harness catalogs. Its project-scoped read tools can inspect reviewed Board, Objective, and
   explicitly granted Local Notes context without exposing raw filesystem paths;
 - Connections can safely parse a narrow pasted SSH command into a local profile without executing
-  or retaining the original text. Each project can separately grant one remote workspace root;
-  Project Chat can inspect Git and request bounded tests/builds only after an exact `Allow once`
-  approval. Imported `-L` forwarding remains an inactive plan;
+  or retaining the original text. Registered server rows show ephemeral CPU, RAM, and per-GPU
+  usage and can open the existing scoped grant flow for the currently selected project. Each
+  project can separately grant one remote workspace root; Project Chat shows resource samples only
+  for that project's grants and can inspect Git or request bounded tests/builds only after an exact
+  `Allow once` approval. Imported `-L` forwarding remains an inactive plan;
 - the read-only Obsidian reader renders sanitized Markdown, and each project has an app-managed
   Repository workspace for GitHub HTTPS clone, file tree and Markdown preview, staged/unstaged diff,
   commit history, local branches, commit, Fetch, fast-forward-only Pull, and reviewed-SHA-only

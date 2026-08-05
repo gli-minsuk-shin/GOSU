@@ -138,7 +138,7 @@ flowchart LR
 | Obsidian Knowledge         | Desktop Vault reader, Markdown renderer, project knowledge port                | read-only 선택·GFM 렌더링·wiki-link 탐색·로컬 raster preview·프로젝트별 agent grant 구현                                                                                                       |
 | Lecture                    | Owner Web UI 표현                                                              | 생성·편집·출처 연결은 계획됨                                                                                                                                                                   |
 | AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 다중 chat session·동적 model/mode catalog·native harness·project/SSH/Literature tool·project별 web search mode·범용 one-turn 연구 파일 capability·thread/turn provenance 구현                  |
-| Integration Hub            | Desktop Git Workspace·승인형 SSH broker, `packages/integrations` registry      | GitHub HTTPS clone·bounded Git·OpenSSH alias/direct import·프로젝트별 remote workspace grant 구현; GitHub App 계정 연결은 계획됨                                                               |
+| Integration Hub            | Desktop Git Workspace·승인형 SSH broker, `packages/integrations` registry      | GitHub HTTPS clone·bounded Git·OpenSSH alias/direct import·프로젝트별 remote workspace grant·휘발성 CPU/RAM/GPU snapshot 구현; GitHub App 계정 연결은 계획됨                                   |
 | Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                              | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                       |
 
 ## 5. 의존성 규칙
@@ -202,6 +202,7 @@ flowchart TD
 | SSH connection profile                           | 모든 local project가 공유하는 Desktop SQLCipher registry                                 | Hosted Sync 금지; alias 또는 정규화된 direct host·user·port·inactive `-L`; secret·원본 command 금지                                                      |
 | SSH remote workspace grant                       | 프로젝트별 Desktop SQLCipher table                                                       | Hosted Sync 금지; connection ID·canonical root·permission mode만 저장                                                                                    |
 | SSH command output                               | 해당 Project Chat turn의 Main-process memory와 ephemeral tool result                     | raw output 저장·동기화 금지; 모델이 답변에 포함한 문장만 대화 정책 적용                                                                                  |
+| SSH server resource snapshot                     | Desktop Main-process 12초 cache와 Renderer의 마지막 구조화 sample                        | SQLCipher·Hosted Sync·outbox·telemetry·chat prompt 저장 금지; CPU/RAM/GPU 숫자와 bounded issue만 IPC에 노출하고 raw probe output 금지                    |
 | SSH approval request·outcome metadata            | 현재 app process의 in-memory broker event                                                | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지                                                                                  |
 | Project Chat 첨부 연구 파일                      | 사용자가 dialog에서 선택한 local file                                                    | path·원본 bytes·추출 text·정규화 image를 SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; 해당 turn에서 bounded text 또는 image만 provider에 전송 |
 | Codex web search result·tool payload             | 해당 Codex turn의 ephemeral provider context                                             | GOSU DB·outbox에 저장하지 않음; 최종 답변의 URL·요약만 visible chat 정책 적용                                                                            |
@@ -445,6 +446,26 @@ summary 입력이 원격 실행을 증명하지 않으며, raw learning curve·r
   ordering일 뿐이며 global transport profile 등록 → project-scoped workspace grant → command별 `Allow once`
   경계를 합치거나 완화하지 않는다. 기존 import·Test·Edit·Remove와 Project Chat CTA의 grant form
   focus·신규 server preselection은 그대로 유지한다.
+- 각 등록 server row의 `Link to <active project>`는 grant를 즉시 만들지 않고 기존 project-scoped grant
+  form을 해당 connection으로 미리 선택해 연다. 이미 grant된 row는 project 이름을 포함한 `Linked` 상태를
+  표시하고, active project가 없으면 연결 동작을 비활성화한다. 따라서 canonical remote root,
+  `diagnostics|workspace` mode와 HIGH-RISK 확인을 생략할 수 없다.
+- server resource monitor는 Renderer나 모델이 command를 구성하는 범용 SSH API가 아니다. Main만
+  `/bin/cat /proc/stat /proc/meminfo`, 짧은 local sampling interval 뒤의 `/proc/stat`, 고정된
+  `/usr/bin/nvidia-smi --query-gpu=... --format=csv,noheader,nounits`를 non-interactive OpenSSH argv로
+  실행한다. stdout/stderr는 Main에서 strict parser로 CPU utilization·logical processor 수, RAM
+  used/total, GPU별 utilization·VRAM·temperature와 bounded issue로 바꾼 뒤 폐기한다. GPU가 없거나 일부
+  probe가 실패해도 가능한 CPU/RAM sample은 `partial`로 유지하며 0%로 가장하지 않는다.
+- resource snapshot은 connection profile identity와 generation별 12초 in-memory cache 및 in-flight
+  coalescing, 전역 최대 4개 capture로 제한한다. Renderer는 Connections 또는 Project Chat이 실제로 보이고
+  document가 visible일 때만 15초 polling하며, 실패해도 마지막 sample을 stale로 표시하고
+  Board·chat·grant 상태를 실패시키지 않는다. profile update·remove·import 변경은 진행 중인 이전 probe를
+  무효화하며, Renderer도 profile generation이 바뀐 뒤 도착한 응답과 더 오래된 sample을 버린다.
+  Connections는 global registry를 볼 수 있지만 Project Chat resource list는 Main이
+  active project를 다시 검증한 뒤 그 project에 grant된 connection만 반환한다. Project Chat의 server별
+  `Refresh`도 project ID와 connection ID를 함께 받는 별도 IPC에서 active project와 현재 grant를 다시
+  검증하고 그 server 하나만 probe한다. project 전환 뒤 이전 project snapshot은 새 chat UI에 투영하지
+  않는다.
 - Connections의 별도 importer는 전체 `ssh -p ... user@host -L ...` 문자열을 shell이나 LLM으로 실행하지
   않고 bounded parser로 분해한다. `ssh`, `-p`, `-l`, 하나의 destination과 loopback-only `-L`만 허용하고
   remote command, quoting·expansion, key/config/proxy/jump, reverse/dynamic forwarding, TTY와 agent forwarding
@@ -1508,7 +1529,11 @@ OpenSSH transport를 timeout·cancel로 종료해도 연결이 이미 끊어진 
 보증할 수 없으므로 장기 workload는 SSH broker가 아니라 lease·fencing·reconciliation이 있는 Runner를
 사용해야 한다. raw SSH output은 현재 turn memory에만 있고 durable transcript가 아니며, approval request·
 command hash·binding·allowed/denied/expired/cancelled outcome도 해당 app process/turn 수명의 event일 뿐
-append-only audit가 아니다. Project Chat의 인터넷 기능은 Codex first-party cached/live search이며 일반
+append-only audit가 아니다. Connections와 Project Chat의 CPU/RAM/GPU snapshot은 Linux `/proc`와
+선택적인 NVIDIA CLI에서 읽은 순간 진단일 뿐 run lineage, 장기 monitoring, GPU accounting, experiment
+metric, budget 근거나 Runner heartbeat가 아니다. sample history는 저장하지 않고 host별 비-NVIDIA
+accelerator와 container 내부 accounting도 현재 보증하지 않는다. Project Chat의 인터넷 기능은 Codex
+first-party cached/live search이며 일반
 browser, 임의 URL download나 page control이 아니다. web provider 측 retention은 GOSU local DB 정책만으로
 통제할 수 없다. 연구 파일 첨부는 해당 turn의 bounded reconstruction 또는 정규화 image 분석일 뿐이다.
 PDF OCR·figure/table visual 이해, Office/HWPX layout·embedded object 복원, Zotero/Literature record
@@ -1724,7 +1749,12 @@ IPC, narrow full-command parser, trailing loopback `-L` normalization·inactive 
 dangerous option·remote command·shell syntax 거절, direct target의 `-F none`과 imported forwarding 미적용,
 OpenSSH safe option·argument quoting·environment, background fork 차단, client diagnostic 비공개 격리와
 remote stderr 보존을 검증한다. Renderer test는 grant setup의 sole-server preselection·명시적 risk confirmation
-유지와 Project Chat의 project-grant CTA를 검사하고, session state/view test는 scroll 위치의
+유지, 등록 row의 active-project 연결/linked/비활성 상태와 Project Chat의 project-grant CTA를 검사한다.
+resource monitor test는 고정 command, `/proc` delta와 memory parser, 다중 GPU CSV·`N/A`·GPU
+없음·malformed output, partial/unavailable snapshot, profile generation별 12초 cache·동일 profile
+coalescing·전역 concurrency 4 제한, project grant isolation, server별 refresh의 단일-target 보장과 raw
+output 비노출 IPC를 고정한다. resource summary test는 CPU/RAM/GPU meter, 여러 GPU, stale last sample,
+명시적인 partial/no-GPU 상태와 접근 가능한 label을 검사하고, session state/view test는 scroll 위치의
 project/session 격리·saved zero·invalid value 거절·bottom default·viewport clamp·smooth replay 금지를 고정한다.
 workspace policy test는 project grant isolation, canonical root·relative cwd,
 mode별 concrete executable·inspect/test/build allowlist, root diagnostic 축소, shell·inline eval·privilege·

@@ -7,8 +7,12 @@ import type {
   SshConnectionProfile,
   UpdateSshConnectionInput,
 } from '../../shared/ssh-contracts';
+import type { ProjectRecord } from '../../shared/workspace-contracts';
+import { SshResourceSummary, type SshResourceUiState } from './ssh-resource-summary';
 
 type MaybePromise<T> = T | Promise<T>;
+const EMPTY_LINKED_CONNECTION_IDS: ReadonlySet<string> = new Set();
+const EMPTY_RESOURCE_STATES: Readonly<Record<string, SshResourceUiState>> = {};
 
 const SSH_HOST_ALIAS_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 
@@ -97,7 +101,41 @@ export type SshConnectionsCardProps = Readonly<{
   onUpdate: (input: UpdateSshConnectionInput) => MaybePromise<unknown>;
   onRemove: (input: RemoveSshConnectionInput) => MaybePromise<unknown>;
   onTest: (connectionId: string) => MaybePromise<unknown>;
+  activeProject?: ProjectRecord | null;
+  linkedConnectionIds?: ReadonlySet<string>;
+  resourceStates?: Readonly<Record<string, SshResourceUiState>>;
+  onRefreshResource?: (connectionId: string) => MaybePromise<unknown>;
+  onOpenWorkspaceSetup?: (connectionId: string) => void;
 }>;
+
+export function SshProjectLinkControl({
+  connectionId,
+  activeProject,
+  linked,
+  busy,
+  onOpenWorkspaceSetup,
+}: Readonly<{
+  connectionId: string;
+  activeProject: ProjectRecord | null;
+  linked: boolean;
+  busy: boolean;
+  onOpenWorkspaceSetup: (connectionId: string) => void;
+}>) {
+  if (linked && activeProject) {
+    return <span className="ssh-project-link-badge">Linked to {activeProject.name}</span>;
+  }
+  return (
+    <button
+      type="button"
+      className="secondary-button"
+      onClick={() => onOpenWorkspaceSetup(connectionId)}
+      disabled={busy || !activeProject}
+      title={activeProject ? undefined : 'Select an active project to link'}
+    >
+      {activeProject ? `Link to ${activeProject.name}…` : 'Select project to link'}
+    </button>
+  );
+}
 
 export function SshConnectionsCard({
   connections,
@@ -108,6 +146,11 @@ export function SshConnectionsCard({
   onUpdate,
   onRemove,
   onTest,
+  activeProject = null,
+  linkedConnectionIds = EMPTY_LINKED_CONNECTION_IDS,
+  resourceStates = EMPTY_RESOURCE_STATES,
+  onRefreshResource = () => undefined,
+  onOpenWorkspaceSetup = () => undefined,
 }: SshConnectionsCardProps) {
   const [label, setLabel] = useState('');
   const [hostAlias, setHostAlias] = useState('');
@@ -145,6 +188,8 @@ export function SshConnectionsCard({
         ) : (
           connections.map((connection) => {
             const editing = editingId === connection.id;
+            const linkedToActiveProject = linkedConnectionIds.has(connection.id);
+            const resourceState = resourceStates[connection.id] ?? { phase: 'idle' };
             return (
               <section className="connection-item" key={connection.id}>
                 {editing ? (
@@ -253,7 +298,7 @@ export function SshConnectionsCard({
                   </form>
                 ) : (
                   <>
-                    <div>
+                    <div className="ssh-connection-details">
                       <strong>{connection.label}</strong>
                       <span>
                         {connection.directTarget
@@ -273,7 +318,25 @@ export function SshConnectionsCard({
                         {testStatus[connection.id] ?? `Connection profile v${connection.version}`}
                       </small>
                     </div>
+                    <SshResourceSummary state={resourceState} serverLabel={connection.label} />
                     <div className="form-actions">
+                      <SshProjectLinkControl
+                        connectionId={connection.id}
+                        activeProject={activeProject}
+                        linked={linkedToActiveProject}
+                        busy={busy}
+                        onOpenWorkspaceSetup={onOpenWorkspaceSetup}
+                      />
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() =>
+                          invokeWithoutUnhandledRejection(() => onRefreshResource(connection.id))
+                        }
+                        disabled={busy || resourceState.phase === 'loading'}
+                      >
+                        {resourceState.phase === 'loading' ? 'Refreshing…' : 'Refresh usage'}
+                      </button>
                       <button
                         type="button"
                         className="secondary-button"

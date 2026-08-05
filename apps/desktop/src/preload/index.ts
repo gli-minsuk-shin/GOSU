@@ -81,11 +81,15 @@ import {
   type CancelSshScopeInput,
   type CreateSshConnectionInput,
   type ImportSshCommandInput,
+  type ListProjectSshResourceSnapshotsInput,
+  type ReadProjectSshResourceSnapshotInput,
+  type ReadSshResourceSnapshotInput,
   type RemoveSshConnectionInput,
   type ResolveSshApprovalInput,
   type SshConnectionProfile,
   type SshConnectionTestResult,
   type SshEvent,
+  type SshServerResourceSnapshot,
   type UpdateSshConnectionInput,
 } from '../shared/ssh-contracts';
 import { unwrapSshIpcResult } from '../shared/ssh-ipc-result';
@@ -378,6 +382,15 @@ const api = {
       invokeSsh<{ removed: true }>(SSH_IPC_CHANNELS.removeConnection, input),
     testConnection: (connectionId: string) =>
       invokeSsh<SshConnectionTestResult>(SSH_IPC_CHANNELS.testConnection, { connectionId }),
+    readResourceSnapshot: (input: ReadSshResourceSnapshotInput) =>
+      invokeSsh<SshServerResourceSnapshot>(SSH_IPC_CHANNELS.readResourceSnapshot, input),
+    readProjectResourceSnapshot: (input: ReadProjectSshResourceSnapshotInput) =>
+      invokeSsh<SshServerResourceSnapshot>(SSH_IPC_CHANNELS.readProjectResourceSnapshot, input),
+    listProjectResourceSnapshots: (input: ListProjectSshResourceSnapshotsInput) =>
+      invokeSsh<readonly SshServerResourceSnapshot[]>(
+        SSH_IPC_CHANNELS.listProjectResourceSnapshots,
+        input,
+      ),
     listWorkspaceGrants: (input: ListRemoteWorkspaceGrantsInput) =>
       invokeSsh<readonly GrantedRemoteWorkspace[]>(SSH_IPC_CHANNELS.listWorkspaceGrants, input),
     createWorkspaceGrant: (input: CreateRemoteWorkspaceGrantInput) =>

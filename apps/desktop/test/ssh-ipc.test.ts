@@ -38,6 +38,9 @@ describe('SSH IPC boundary', () => {
       SSH_IPC_CHANNELS.updateConnection,
       SSH_IPC_CHANNELS.removeConnection,
       SSH_IPC_CHANNELS.testConnection,
+      SSH_IPC_CHANNELS.readResourceSnapshot,
+      SSH_IPC_CHANNELS.readProjectResourceSnapshot,
+      SSH_IPC_CHANNELS.listProjectResourceSnapshots,
       SSH_IPC_CHANNELS.listWorkspaceGrants,
       SSH_IPC_CHANNELS.createWorkspaceGrant,
       SSH_IPC_CHANNELS.updateWorkspaceGrant,
@@ -45,6 +48,33 @@ describe('SSH IPC boundary', () => {
       SSH_IPC_CHANNELS.resolveApproval,
       SSH_IPC_CHANNELS.cancelScope,
     ]);
+  });
+
+  it('validates the global fixed resource snapshot request before invoking Main', async () => {
+    const connectionId = randomUUID();
+    const readResourceSnapshot = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      connectionId,
+      capturedAt: '2026-08-06T00:00:00.000Z',
+      status: 'unavailable' as const,
+      cpu: { state: 'unavailable' as const },
+      memory: { state: 'unavailable' as const },
+      gpu: { state: 'unavailable' as const },
+      issues: ['connection_unavailable' as const],
+    }));
+    const { handlers } = registerFixture({ readResourceSnapshot });
+
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.readResourceSnapshot)?.({ connectionId, force: true }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.readResourceSnapshot)?.({
+        connectionId,
+        force: true,
+        command: 'private arbitrary command',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_ssh_input' } });
+    expect(readResourceSnapshot).toHaveBeenCalledExactlyOnceWith({ connectionId, force: true });
   });
 
   it('passes a bounded SSH command string only to the Main-process importer', async () => {
@@ -76,6 +106,18 @@ describe('SSH IPC boundary', () => {
   it('authorizes every workspace grant IPC against an active project in Main', async () => {
     const projectId = randomUUID();
     const listWorkspaceGrants = vi.fn(async () => []);
+    const listProjectResourceSnapshots = vi.fn(async () => []);
+    const readProjectResourceSnapshot = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      connectionId: randomUUID(),
+      capturedAt: '2026-08-06T00:00:00.000Z',
+      status: 'unavailable' as const,
+      cpu: { state: 'unavailable' as const },
+      memory: { state: 'unavailable' as const },
+      gpu: { state: 'unavailable' as const },
+      issues: ['connection_unavailable' as const],
+    }));
+    const connectionId = randomUUID();
     const snapshot = vi.fn(async () => ({
       projects: [
         {
@@ -86,7 +128,7 @@ describe('SSH IPC boundary', () => {
       ],
     }));
     const { handlers } = registerFixture(
-      { listWorkspaceGrants },
+      { listWorkspaceGrants, listProjectResourceSnapshots, readProjectResourceSnapshot },
       vi.fn(),
       // This boundary test intentionally supplies only the WorkspaceService method used by IPC.
       { snapshot } as unknown as Partial<WorkspaceService>,
@@ -101,7 +143,46 @@ describe('SSH IPC boundary', () => {
       ok: false,
       error: { code: 'ssh_workspace_project_unavailable' },
     });
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.listProjectResourceSnapshots)?.({
+        projectId,
+        force: true,
+      }),
+    ).resolves.toEqual({ ok: true, value: [] });
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.listProjectResourceSnapshots)?.({
+        projectId: randomUUID(),
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'ssh_workspace_project_unavailable' },
+    });
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.readProjectResourceSnapshot)?.({
+        projectId,
+        connectionId,
+        force: true,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.readProjectResourceSnapshot)?.({
+        projectId: randomUUID(),
+        connectionId,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'ssh_workspace_project_unavailable' },
+    });
     expect(listWorkspaceGrants).toHaveBeenCalledExactlyOnceWith(projectId);
+    expect(listProjectResourceSnapshots).toHaveBeenCalledExactlyOnceWith({
+      projectId,
+      force: true,
+    });
+    expect(readProjectResourceSnapshot).toHaveBeenCalledExactlyOnceWith({
+      projectId,
+      connectionId,
+      force: true,
+    });
   });
 
   it('validates and cancels only the declared SSH navigation scope', async () => {

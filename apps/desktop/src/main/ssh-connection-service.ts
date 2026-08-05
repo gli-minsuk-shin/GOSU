@@ -5,6 +5,9 @@ import {
   SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS,
   CreateSshConnectionInputSchema,
   ImportSshCommandInputSchema,
+  ListProjectSshResourceSnapshotsInputSchema,
+  ReadProjectSshResourceSnapshotInputSchema,
+  ReadSshResourceSnapshotInputSchema,
   RemoveSshConnectionInputSchema,
   ResolveSshApprovalInputSchema,
   SshAgentCommandSchema,
@@ -14,6 +17,9 @@ import {
   UpdateSshConnectionInputSchema,
   type CreateSshConnectionInput,
   type ImportSshCommandInput,
+  type ListProjectSshResourceSnapshotsInput,
+  type ReadProjectSshResourceSnapshotInput,
+  type ReadSshResourceSnapshotInput,
   type RemoveSshConnectionInput,
   type ResolveSshApprovalInput,
   type SshAgentCommand,
@@ -22,6 +28,7 @@ import {
   type SshConnectionProfile,
   type SshConnectionTestResult,
   type SshEvent,
+  type SshServerResourceSnapshot,
   type TestSshConnectionInput,
   type UpdateSshConnectionInput,
 } from '../shared/ssh-contracts';
@@ -48,6 +55,7 @@ import {
   type SshProcessResult,
 } from './ssh-command-runner';
 import { SshCommandImportError, parseSshConnectionCommand } from './ssh-command-import';
+import { SshResourceCaptureInvalidatedError, SshResourceMonitor } from './ssh-resource-monitor';
 import {
   classifyWorkspaceCommand,
   hardenWorkspaceCommand,
@@ -449,6 +457,9 @@ function connectionPrivilegeClass(profile: SshConnectionProfile) {
 export type SshConnectionServiceOptions = Readonly<{
   approvalTimeoutMs?: number;
   now?: () => Date;
+  resourceSnapshotTtlMs?: number;
+  resourceSampleDelayMs?: number;
+  resourceDelay?: (milliseconds: number) => Promise<void>;
 }>;
 
 export class SshConnectionService extends EventEmitter {
@@ -459,6 +470,7 @@ export class SshConnectionService extends EventEmitter {
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly approvalTtlMs: number;
   private readonly now: () => number;
+  private readonly resourceMonitor: SshResourceMonitor;
   private shuttingDown = false;
 
   constructor(
@@ -471,6 +483,16 @@ export class SshConnectionService extends EventEmitter {
     this.runner = runner;
     this.approvalTtlMs = Math.max(1, options.approvalTimeoutMs ?? DEFAULT_APPROVAL_TTL_MS);
     this.now = () => (options.now ?? (() => new Date()))().getTime();
+    this.resourceMonitor = new SshResourceMonitor(runner, {
+      ...(options.resourceSnapshotTtlMs === undefined
+        ? {}
+        : { cacheTtlMs: options.resourceSnapshotTtlMs }),
+      ...(options.resourceSampleDelayMs === undefined
+        ? {}
+        : { sampleDelayMs: options.resourceSampleDelayMs }),
+      ...(options.resourceDelay === undefined ? {} : { delay: options.resourceDelay }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
   }
 
   async listConnections(): Promise<readonly SshConnectionProfile[]> {
@@ -502,6 +524,44 @@ export class SshConnectionService extends EventEmitter {
           left.connection.label.localeCompare(right.connection.label) ||
           left.grant.id.localeCompare(right.grant.id),
       );
+  }
+
+  async readResourceSnapshot(
+    input: ReadSshResourceSnapshotInput,
+  ): Promise<SshServerResourceSnapshot> {
+    const command = ReadSshResourceSnapshotInputSchema.parse(input);
+    const connection = await this.requireConnection(command.connectionId);
+    return this.readBoundedResourceSnapshot(connection, command.force === true);
+  }
+
+  async listProjectResourceSnapshots(
+    input: ListProjectSshResourceSnapshotsInput,
+  ): Promise<readonly SshServerResourceSnapshot[]> {
+    const command = ListProjectSshResourceSnapshotsInputSchema.parse(input);
+    const workspaces = await this.listWorkspaceGrants(command.projectId);
+    const snapshots: SshServerResourceSnapshot[] = [];
+    for (let offset = 0; offset < workspaces.length; offset += 4) {
+      const batch = workspaces.slice(offset, offset + 4);
+      snapshots.push(
+        ...(await Promise.all(
+          batch.map(({ connection }) =>
+            this.readBoundedResourceSnapshot(connection, command.force === true),
+          ),
+        )),
+      );
+    }
+    return snapshots;
+  }
+
+  async readProjectResourceSnapshot(
+    input: ReadProjectSshResourceSnapshotInput,
+  ): Promise<SshServerResourceSnapshot> {
+    const command = ReadProjectSshResourceSnapshotInputSchema.parse(input);
+    const workspace = (await this.listWorkspaceGrants(command.projectId)).find(
+      ({ connection }) => connection.id === command.connectionId,
+    );
+    if (!workspace) throw new SshConnectionServiceError('ssh_workspace_grant_not_found');
+    return this.readBoundedResourceSnapshot(workspace.connection, command.force === true);
   }
 
   createWorkspaceGrant(input: CreateRemoteWorkspaceGrantInput): Promise<RemoteWorkspaceGrant> {
@@ -650,6 +710,7 @@ export class SshConnectionService extends EventEmitter {
         if (!(await this.storage.updateSshConnection(updated, matching.version))) {
           throw await this.classifyWriteMiss(matching.id);
         }
+        this.resourceMonitor.invalidate(matching.id);
         return copy(updated);
       }
       if (existing.length >= MAX_CONNECTIONS) {
@@ -689,6 +750,7 @@ export class SshConnectionService extends EventEmitter {
       if (!(await this.storage.updateSshConnection(profile, command.expectedVersion))) {
         throw await this.classifyWriteMiss(command.connectionId);
       }
+      this.resourceMonitor.invalidate(command.connectionId);
       return copy(profile);
     });
   }
@@ -706,6 +768,7 @@ export class SshConnectionService extends EventEmitter {
       );
       if (!removed) throw await this.classifyWriteMiss(command.connectionId);
       this.cancelWhere((entry) => entry.connectionId === command.connectionId);
+      this.resourceMonitor.invalidate(command.connectionId);
       return { removed: true };
     });
   }
@@ -942,12 +1005,27 @@ export class SshConnectionService extends EventEmitter {
 
   shutdown() {
     this.shuttingDown = true;
+    this.resourceMonitor.invalidate();
     return this.cancelWhere(() => true);
   }
 
   private async requireConnection(connectionId: string) {
     await this.mutationTail;
     return this.readRequiredConnection(connectionId);
+  }
+
+  private async readBoundedResourceSnapshot(
+    connection: SshConnectionProfile,
+    force: boolean,
+  ): Promise<SshServerResourceSnapshot> {
+    try {
+      return await this.resourceMonitor.read(connection, force ? { force: true } : {});
+    } catch (error) {
+      if (error instanceof SshResourceCaptureInvalidatedError) {
+        throw new SshConnectionServiceError('ssh_unavailable');
+      }
+      throw error;
+    }
   }
 
   private async readRequiredConnection(connectionId: string) {

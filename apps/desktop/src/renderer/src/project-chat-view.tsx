@@ -30,6 +30,7 @@ import { ProjectChatMarkdown } from './project-chat-markdown';
 import { isProjectChatNearBottom, resolveProjectChatArrival } from './project-chat-scroll';
 import { ProjectChatSessionRail } from './project-chat-session-rail';
 import { PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH } from './project-chat-session-state';
+import { SshResourceSummary, type SshResourceUiState } from './ssh-resource-summary';
 
 const QUICK_PROMPTS = [
   '현재 프로젝트 상황을 요약해줘',
@@ -60,11 +61,20 @@ export type ProjectChatSshAccess = Readonly<{
   grantedWorkspaceCount: number;
 }>;
 
+export type ProjectChatSshServer = Readonly<{
+  connectionId: string;
+  label: string;
+  canonicalRoot: string;
+  permissionMode: 'diagnostics' | 'workspace';
+  resourceState: SshResourceUiState;
+}>;
+
 const NO_PROJECT_CHAT_SSH_ACCESS: ProjectChatSshAccess = Object.freeze({
   state: 'checking',
   registeredConnectionCount: 0,
   grantedWorkspaceCount: 0,
 });
+const NO_PROJECT_CHAT_SSH_SERVERS: readonly ProjectChatSshServer[] = Object.freeze([]);
 
 export function resolveLatestMessageScrollTop({
   currentScrollTop,
@@ -265,7 +275,9 @@ export function ProjectChatView({
   onUnreadAssistantMessageSeen = () => undefined,
   onScrollTopChange = () => undefined,
   sshAccess = NO_PROJECT_CHAT_SSH_ACCESS,
+  sshServers = NO_PROJECT_CHAT_SSH_SERVERS,
   onOpenSshWorkspaceSetup = () => undefined,
+  onRefreshSshResource = async () => undefined,
 }: {
   project: ProjectRecord;
   tasks: readonly WorkspaceTask[];
@@ -317,7 +329,9 @@ export function ProjectChatView({
   onUnreadAssistantMessageSeen?: (assistantMessageId: string) => void;
   onScrollTopChange?: (scrollTop: number) => void;
   sshAccess?: ProjectChatSshAccess;
+  sshServers?: readonly ProjectChatSshServer[];
   onOpenSshWorkspaceSetup?: () => void;
+  onRefreshSshResource?: (connectionId: string) => Promise<unknown>;
 }) {
   const [sessionUi, setSessionUi] = useState<ProjectChatSessionUiState>({
     draft: initialDraft,
@@ -894,6 +908,42 @@ export function ProjectChatView({
                 Grant to {project.name}…
               </button>
             </div>
+          )}
+          {sshServers.length > 0 && (
+            <section className="chat-ssh-resources" aria-label="Linked server resources">
+              <header>
+                <strong>Linked server resources</strong>
+                <span>Visible only to {project.name}</span>
+              </header>
+              <div className="chat-ssh-resource-list">
+                {sshServers.map((server) => (
+                  <article className="chat-ssh-resource" key={server.connectionId}>
+                    <div className="chat-ssh-resource-heading">
+                      <div>
+                        <strong>{server.label}</strong>
+                        <span>
+                          {server.permissionMode === 'workspace' ? 'Workspace' : 'Diagnostics'} ·{' '}
+                          {server.canonicalRoot}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => void onRefreshSshResource(server.connectionId)}
+                        disabled={projectBusy || server.resourceState.phase === 'loading'}
+                      >
+                        {server.resourceState.phase === 'loading' ? 'Refreshing…' : 'Refresh usage'}
+                      </button>
+                    </div>
+                    <SshResourceSummary
+                      state={server.resourceState}
+                      serverLabel={server.label}
+                      compact
+                    />
+                  </article>
+                ))}
+              </div>
+            </section>
           )}
         </header>
 

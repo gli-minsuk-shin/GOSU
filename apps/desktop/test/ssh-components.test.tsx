@@ -6,10 +6,15 @@ import { ConnectionsView } from '../src/renderer/src/connections-view';
 import { SshApprovalCenter } from '../src/renderer/src/ssh-approval-center';
 import {
   SshConnectionsCard,
+  SshProjectLinkControl,
   canEditSshHostAlias,
   validateSshHostAliasInput,
 } from '../src/renderer/src/ssh-connections-card';
-import type { SshApprovalRequest, SshConnectionProfile } from '../src/shared/ssh-contracts';
+import type {
+  SshApprovalRequest,
+  SshConnectionProfile,
+  SshServerResourceSnapshot,
+} from '../src/shared/ssh-contracts';
 
 const connection: SshConnectionProfile = {
   schemaVersion: 1,
@@ -19,6 +24,22 @@ const connection: SshConnectionProfile = {
   version: 2,
   createdAt: '2026-08-04T00:00:00.000Z',
   updatedAt: '2026-08-04T00:00:00.000Z',
+};
+
+const resourceSnapshot: SshServerResourceSnapshot = {
+  schemaVersion: 1,
+  connectionId: connection.id,
+  capturedAt: '2026-08-06T01:02:03.000Z',
+  status: 'partial',
+  cpu: { state: 'available', utilizationPercent: 24, logicalProcessorCount: 16 },
+  memory: {
+    state: 'available',
+    usedBytes: 4 * 1024 ** 3,
+    totalBytes: 16 * 1024 ** 3,
+    utilizationPercent: 25,
+  },
+  gpu: { state: 'not_detected' },
+  issues: ['gpu_not_detected'],
 };
 
 const approval: SshApprovalRequest = {
@@ -163,6 +184,97 @@ describe('independent SSH connection UI', () => {
     expect(emptyStateIndex).toBeLessThan(html.indexOf('How to add an SSH server'));
     expect(emptyStateIndex).toBeLessThan(html.indexOf('Parse and register'));
     expect(emptyStateIndex).toBeLessThan(html.indexOf('Register server'));
+  });
+
+  it('shows resource usage and links each registered server through the active project setup', () => {
+    const html = renderToStaticMarkup(
+      <SshConnectionsCard
+        connections={[connection]}
+        busy={false}
+        onCreate={vi.fn()}
+        onImport={vi.fn()}
+        onUpdate={vi.fn()}
+        onRemove={vi.fn()}
+        onTest={vi.fn()}
+        activeProject={{
+          id: '33333333-3333-4333-8333-333333333333',
+          name: 'Active research',
+          slug: 'active-research',
+          version: 1,
+          createdAt: '2026-08-06T00:00:00.000Z',
+          updatedAt: '2026-08-06T00:00:00.000Z',
+        }}
+        resourceStates={{ [connection.id]: { phase: 'ready', snapshot: resourceSnapshot } }}
+        onRefreshResource={vi.fn()}
+        onOpenWorkspaceSetup={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Link to Active research…');
+    expect(html).toContain('Refresh usage');
+    expect(html).toContain('CPU utilization 24%');
+    expect(html).toContain('Memory utilization 25%');
+    expect(html).toContain('No NVIDIA GPU detected');
+  });
+
+  it('shows an explicit linked state and disables linking when no project is selected', () => {
+    const linkedHtml = renderToStaticMarkup(
+      <SshConnectionsCard
+        connections={[connection]}
+        busy={false}
+        onCreate={vi.fn()}
+        onImport={vi.fn()}
+        onUpdate={vi.fn()}
+        onRemove={vi.fn()}
+        onTest={vi.fn()}
+        activeProject={{
+          id: '33333333-3333-4333-8333-333333333333',
+          name: 'Active research',
+          slug: 'active-research',
+          version: 1,
+          createdAt: '2026-08-06T00:00:00.000Z',
+          updatedAt: '2026-08-06T00:00:00.000Z',
+        }}
+        linkedConnectionIds={new Set([connection.id])}
+      />,
+    );
+    const noProjectHtml = renderToStaticMarkup(
+      <SshConnectionsCard
+        connections={[connection]}
+        busy={false}
+        onCreate={vi.fn()}
+        onImport={vi.fn()}
+        onUpdate={vi.fn()}
+        onRemove={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+
+    expect(linkedHtml).toContain('Linked to Active research');
+    expect(linkedHtml).not.toContain('Link to Active research…');
+    expect(noProjectHtml).toMatch(/<button[^>]*disabled=""[^>]*>Select project to link<\/button>/u);
+  });
+
+  it('routes the exact registered server into the existing project grant setup', () => {
+    const onOpenWorkspaceSetup = vi.fn();
+    const control = SshProjectLinkControl({
+      connectionId: connection.id,
+      activeProject: {
+        id: '33333333-3333-4333-8333-333333333333',
+        name: 'Active research',
+        slug: 'active-research',
+        version: 1,
+        createdAt: '2026-08-06T00:00:00.000Z',
+        updatedAt: '2026-08-06T00:00:00.000Z',
+      },
+      linked: false,
+      busy: false,
+      onOpenWorkspaceSetup,
+    });
+
+    findButton(control, 'Link to Active research').props.onClick?.();
+    expect(onOpenWorkspaceSetup).toHaveBeenCalledTimes(1);
+    expect(onOpenWorkspaceSetup).toHaveBeenCalledWith(connection.id);
   });
 
   it('accepts only a concrete SSH config Host alias', () => {

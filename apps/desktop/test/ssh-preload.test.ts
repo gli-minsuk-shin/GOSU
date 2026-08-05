@@ -63,6 +63,9 @@ describe('SSH preload bridge', () => {
       'updateConnection',
       'removeConnection',
       'testConnection',
+      'readResourceSnapshot',
+      'readProjectResourceSnapshot',
+      'listProjectResourceSnapshots',
       'listWorkspaceGrants',
       'createWorkspaceGrant',
       'updateWorkspaceGrant',
@@ -95,6 +98,9 @@ describe('SSH preload bridge', () => {
     });
     await api.ssh.removeConnection({ connectionId, expectedVersion: 2 });
     await api.ssh.testConnection(connectionId);
+    await api.ssh.readResourceSnapshot({ connectionId, force: true });
+    await api.ssh.readProjectResourceSnapshot({ projectId, connectionId, force: true });
+    await api.ssh.listProjectResourceSnapshots({ projectId, force: true });
     await api.ssh.listWorkspaceGrants({ projectId });
     await api.ssh.createWorkspaceGrant({
       projectId,
@@ -130,6 +136,9 @@ describe('SSH preload bridge', () => {
       ],
       [SSH_IPC_CHANNELS.removeConnection, { connectionId, expectedVersion: 2 }],
       [SSH_IPC_CHANNELS.testConnection, { connectionId }],
+      [SSH_IPC_CHANNELS.readResourceSnapshot, { connectionId, force: true }],
+      [SSH_IPC_CHANNELS.readProjectResourceSnapshot, { projectId, connectionId, force: true }],
+      [SSH_IPC_CHANNELS.listProjectResourceSnapshots, { projectId, force: true }],
       [SSH_IPC_CHANNELS.listWorkspaceGrants, { projectId }],
       [
         SSH_IPC_CHANNELS.createWorkspaceGrant,

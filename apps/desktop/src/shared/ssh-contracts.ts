@@ -140,6 +140,113 @@ export const SshConnectionTestResultSchema = z
 
 export type SshConnectionTestResult = z.infer<typeof SshConnectionTestResultSchema>;
 
+export const ReadSshResourceSnapshotInputSchema = z
+  .object({
+    connectionId: uuidSchema,
+    force: z.boolean().optional(),
+  })
+  .strict();
+
+export type ReadSshResourceSnapshotInput = z.infer<typeof ReadSshResourceSnapshotInputSchema>;
+
+export const ListProjectSshResourceSnapshotsInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    force: z.boolean().optional(),
+  })
+  .strict();
+
+export type ListProjectSshResourceSnapshotsInput = z.infer<
+  typeof ListProjectSshResourceSnapshotsInputSchema
+>;
+
+export const ReadProjectSshResourceSnapshotInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    connectionId: uuidSchema,
+    force: z.boolean().optional(),
+  })
+  .strict();
+
+export type ReadProjectSshResourceSnapshotInput = z.infer<
+  typeof ReadProjectSshResourceSnapshotInputSchema
+>;
+
+const resourceUtilizationSchema = z.number().finite().min(0).max(100);
+const resourceBytesSchema = z.number().int().nonnegative().safe();
+
+export const SshServerResourceIssueSchema = z.enum([
+  'connection_unavailable',
+  'cpu_unavailable',
+  'memory_unavailable',
+  'gpu_not_detected',
+  'gpu_unavailable',
+  'probe_output_invalid',
+]);
+
+export type SshServerResourceIssue = z.infer<typeof SshServerResourceIssueSchema>;
+
+const SshCpuResourceSchema = z.discriminatedUnion('state', [
+  z
+    .object({
+      state: z.literal('available'),
+      utilizationPercent: resourceUtilizationSchema,
+      logicalProcessorCount: z.number().int().positive().max(1_048_576),
+    })
+    .strict(),
+  z.object({ state: z.literal('unavailable') }).strict(),
+]);
+
+const SshMemoryResourceSchema = z.discriminatedUnion('state', [
+  z
+    .object({
+      state: z.literal('available'),
+      usedBytes: resourceBytesSchema,
+      totalBytes: resourceBytesSchema.positive(),
+      utilizationPercent: resourceUtilizationSchema,
+    })
+    .strict(),
+  z.object({ state: z.literal('unavailable') }).strict(),
+]);
+
+const SshGpuDeviceResourceSchema = z
+  .object({
+    index: z.number().int().nonnegative().max(65_535),
+    name: z.string().trim().min(1).max(256),
+    utilizationPercent: resourceUtilizationSchema.nullable(),
+    memoryUsedBytes: resourceBytesSchema,
+    memoryTotalBytes: resourceBytesSchema.positive(),
+    temperatureC: z.number().finite().min(-273.15).max(1_000).nullable(),
+  })
+  .strict();
+
+const SshGpuResourceSchema = z.discriminatedUnion('state', [
+  z
+    .object({
+      state: z.literal('available'),
+      devices: z.array(SshGpuDeviceResourceSchema).min(1).max(64),
+    })
+    .strict(),
+  z.object({ state: z.literal('not_detected') }).strict(),
+  z.object({ state: z.literal('unavailable') }).strict(),
+]);
+
+export const SshServerResourceSnapshotSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    connectionId: uuidSchema,
+    capturedAt: timestampSchema,
+    status: z.enum(['ready', 'partial', 'unavailable']),
+    cpu: SshCpuResourceSchema,
+    memory: SshMemoryResourceSchema,
+    gpu: SshGpuResourceSchema,
+    issues: z.array(SshServerResourceIssueSchema).max(6),
+  })
+  .strict()
+  .refine((value) => new Set(value.issues).size === value.issues.length, 'Duplicate issues');
+
+export type SshServerResourceSnapshot = z.infer<typeof SshServerResourceSnapshotSchema>;
+
 const safeCommandTokenSchema = z
   .string()
   .min(1)

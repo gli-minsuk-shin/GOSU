@@ -11,6 +11,7 @@ import {
   type SshCommandRunner,
   type SshCommandRunOptions,
   type SshProcessResult,
+  type SshRunnableCommand,
 } from '../src/main/ssh-command-runner';
 import {
   SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS,
@@ -258,6 +259,76 @@ describe('SSH connection and Allow once service', () => {
         expectedVersion: updated.version,
       }),
     ).resolves.toEqual({ removed: true });
+  });
+
+  it('reports resources only for servers granted to the requested project', async () => {
+    const storage = new MemorySshStorage(connectionFixture());
+    storage.profiles.set(
+      '77777777-7777-4777-8777-777777777777',
+      connectionFixture({
+        id: '77777777-7777-4777-8777-777777777777',
+        label: 'Unlinked server',
+        hostAlias: 'unlinked-server',
+      }),
+    );
+    const responses = [
+      {
+        stdout:
+          'cpu 100 0 50 850 0 0 0 0\ncpu0 100 0 50 850 0 0 0 0\nMemTotal: 1000 kB\nMemAvailable: 250 kB\n',
+      },
+      { stdout: 'cpu 120 0 50 930 0 0 0 0\ncpu0 120 0 50 930 0 0 0 0\n' },
+      { stdout: '0, Fixture GPU, 50, 512, 1024, 60\n' },
+    ];
+    const run = vi.fn(async (_command: SshRunnableCommand): Promise<SshProcessResult> => ({
+      exitCode: 0,
+      stderr: '',
+      truncated: false,
+      durationMs: 5,
+      ...(responses.shift() ?? { stdout: '' }),
+    }));
+    const runner = run as unknown as SshCommandRunner;
+    runner.execute = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      durationMs: 5,
+    }));
+    runner.testConnection = vi.fn(async () => undefined);
+    const service = new SshConnectionService(storage, runner, {
+      now: () => NOW,
+      resourceSampleDelayMs: 0,
+    });
+    await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace',
+      permissionMode: 'diagnostics',
+      confirmWorkspaceRisk: true,
+    });
+
+    await expect(
+      service.listProjectResourceSnapshots({ projectId: PROJECT_ID, force: true }),
+    ).resolves.toMatchObject([{ connectionId: CONNECTION_ID, status: 'ready' }]);
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(run.mock.calls.every(([command]) => command.hostAlias === 'fixture-gpu')).toBe(true);
+    await expect(
+      service.listProjectResourceSnapshots({ projectId: OTHER_PROJECT_ID }),
+    ).resolves.toEqual([]);
+    await expect(
+      service.readProjectResourceSnapshot({
+        projectId: PROJECT_ID,
+        connectionId: CONNECTION_ID,
+      }),
+    ).resolves.toMatchObject({ connectionId: CONNECTION_ID, status: 'ready' });
+    await expect(
+      service.readProjectResourceSnapshot({
+        projectId: OTHER_PROJECT_ID,
+        connectionId: CONNECTION_ID,
+        force: true,
+      }),
+    ).rejects.toMatchObject({ code: 'ssh_workspace_grant_not_found' });
+    expect(run).toHaveBeenCalledTimes(3);
   });
 
   it('requires a normalized direct target before enabling test/build workspace mode', async () => {
