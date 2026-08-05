@@ -21,6 +21,7 @@ export type CodexModel = {
   modelId: string;
   displayName: string;
   isDefault: boolean;
+  modalities?: readonly string[];
   reasoningOptions: Array<{ id: string; label: string; isDefault: boolean }>;
   supportsPersonality?: boolean;
 };

@@ -41,9 +41,9 @@ import type {
 import { unwrapLiteratureIpcResult } from '../shared/literature-ipc-result';
 import { PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS } from '../shared/project-chat-attachment-channels';
 import type {
-  ChooseProjectChatPdfAttachmentsInput,
-  ProjectChatPdfAttachment,
-  ReleaseProjectChatPdfAttachmentInput,
+  ChooseProjectChatAttachmentsInput,
+  ProjectChatAttachment,
+  ReleaseProjectChatAttachmentInput,
 } from '../shared/project-chat-attachment-contracts';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import {
@@ -241,12 +241,12 @@ const api = {
       invokeProjectChat<ProjectChatProfile>(PROJECT_CHAT_IPC_CHANNELS.updateProfile, input),
     send: (input: SendProjectChatMessageInput) =>
       invokeProjectChat<ProjectChatTurnReceipt>(PROJECT_CHAT_IPC_CHANNELS.send, input),
-    choosePdfAttachments: (input: ChooseProjectChatPdfAttachmentsInput) =>
-      invokeProjectChat<ProjectChatPdfAttachment[]>(
+    chooseAttachments: (input: ChooseProjectChatAttachmentsInput) =>
+      invokeProjectChat<ProjectChatAttachment[]>(
         PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.choose,
         input,
       ),
-    releasePdfAttachment: (input: ReleaseProjectChatPdfAttachmentInput) =>
+    releaseAttachment: (input: ReleaseProjectChatAttachmentInput) =>
       invokeProjectChat<{ released: true }>(PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.release, input),
     cancel: (projectId: string, sessionId?: string) =>
       invokeProjectChat<{ accepted: true }>(PROJECT_CHAT_IPC_CHANNELS.cancel, {

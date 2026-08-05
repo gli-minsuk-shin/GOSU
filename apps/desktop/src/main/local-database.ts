@@ -199,8 +199,9 @@ function insertProjectChatAttempt(database: Database.Database, attempt: ProjectC
          requested_model_id,reasoning_option_id,harness_mode,response_depth,
          collaboration_mode_id,personality,response_verbosity,web_search_mode,context_scope,
          profile_version,
-         instruction_revision_id,prompt_provenance_json,status,error_code,created_at,updated_at
-       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         instruction_revision_id,prompt_provenance_json,status,error_code,error_code_v2,
+         created_at,updated_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       attempt.id,
@@ -224,10 +225,15 @@ function insertProjectChatAttempt(database: Database.Database, attempt: ProjectC
       attempt.instructionRevisionId ?? null,
       attempt.promptProvenance ? JSON.stringify(attempt.promptProvenance) : null,
       attempt.status,
+      legacyProjectChatAttemptErrorCode(attempt.errorCode),
       attempt.errorCode ?? null,
       attempt.createdAt,
       attempt.updatedAt,
     );
+}
+
+function legacyProjectChatAttemptErrorCode(errorCode: ProjectChatAttempt['errorCode']) {
+  return errorCode === 'attachment_model_modality_unsupported' ? null : (errorCode ?? null);
 }
 
 function insertProjectChatSession(database: Database.Database, session: ProjectChatSession) {
@@ -294,7 +300,8 @@ function reconcileInterruptedChatAttempts(database: Database.Database, reconcile
   }>;
   const interrupt = database.prepare(
     `update project_chat_attempts
-     set status='interrupted',error_code='application_interrupted',updated_at=?
+     set status='interrupted',error_code='application_interrupted',
+         error_code_v2='application_interrupted',updated_at=?
      where id=? and project_id=? and status in ('starting','running')`,
   );
   const hasReceipt = database.prepare(
@@ -1519,6 +1526,12 @@ export class LocalDatabase {
             'codex_unavailable','invalid_response','application_interrupted','user_interrupted'
           )
         ),
+        error_code_v2 text check (
+          error_code_v2 is null or error_code_v2 in (
+            'codex_unavailable','attachment_model_modality_unsupported','invalid_response',
+            'application_interrupted','user_interrupted'
+          )
+        ),
         created_at text not null,
         updated_at text not null
       );
@@ -1634,6 +1647,10 @@ export class LocalDatabase {
         [
           'prompt_provenance_json',
           'alter table project_chat_attempts add column prompt_provenance_json text check (prompt_provenance_json is null or length(prompt_provenance_json) <= 16384)',
+        ],
+        [
+          'error_code_v2',
+          "alter table project_chat_attempts add column error_code_v2 text check (error_code_v2 is null or error_code_v2 in ('codex_unavailable','attachment_model_modality_unsupported','invalid_response','application_interrupted','user_interrupted'))",
         ],
       ] as const;
       for (const [name, statement] of attemptMigrations) {
@@ -2339,7 +2356,8 @@ export class LocalDatabase {
     const result = this.require()
       .prepare(
         `update project_chat_attempts set
-           thread_id=?,turn_id=?,model_json=?,status='running',error_code=null,updated_at=?
+           thread_id=?,turn_id=?,model_json=?,status='running',error_code=null,
+           error_code_v2=null,updated_at=?
          where project_id=? and session_id=? and id=? and user_message_id=? and status='starting'`,
       )
       .run(
@@ -2368,7 +2386,8 @@ export class LocalDatabase {
                   requested_model_id,reasoning_option_id,harness_mode,response_depth,
                   collaboration_mode_id,personality,response_verbosity,web_search_mode,
                   context_scope,profile_version,
-                  instruction_revision_id,prompt_provenance_json,status,error_code,created_at,updated_at
+                  instruction_revision_id,prompt_provenance_json,status,error_code,error_code_v2,
+                  created_at,updated_at
            from project_chat_attempts where project_id=? and id=?`,
         )
         .get(requestedTerminal.projectId, requestedTerminal.id) as
@@ -2434,7 +2453,7 @@ export class LocalDatabase {
       const updated = database
         .prepare(
           `update project_chat_attempts set
-             thread_id=?,turn_id=?,model_json=?,status=?,error_code=?,updated_at=?
+             thread_id=?,turn_id=?,model_json=?,status=?,error_code=?,error_code_v2=?,updated_at=?
            where project_id=? and id=? and user_message_id=? and status in ('starting','running')`,
         )
         .run(
@@ -2442,6 +2461,7 @@ export class LocalDatabase {
           terminal.turnId ?? null,
           terminal.model ? JSON.stringify(terminal.model) : null,
           terminal.status,
+          legacyProjectChatAttemptErrorCode(terminal.errorCode),
           terminal.errorCode ?? null,
           terminal.updatedAt,
           terminal.projectId,
@@ -2468,7 +2488,8 @@ export class LocalDatabase {
                 a.harness_mode,a.response_depth,a.collaboration_mode_id,a.personality,
                 a.response_verbosity,a.web_search_mode,a.context_scope,a.profile_version,
                 a.instruction_revision_id,
-                a.prompt_provenance_json,a.status,a.error_code,a.created_at,a.updated_at
+                a.prompt_provenance_json,a.status,a.error_code,a.error_code_v2,
+                a.created_at,a.updated_at
          from project_chat_attempts a
          join project_chat_session_messages sm on sm.message_id=a.user_message_id
          where a.project_id=? and a.id=? and sm.session_id=?`,
@@ -2505,7 +2526,8 @@ export class LocalDatabase {
                   a.harness_mode,a.response_depth,a.collaboration_mode_id,a.personality,
                   a.response_verbosity,a.web_search_mode,a.context_scope,a.profile_version,
                   a.instruction_revision_id,
-                  a.prompt_provenance_json,a.status,a.error_code,a.created_at,a.updated_at,sm.ordinal
+                  a.prompt_provenance_json,a.status,a.error_code,a.error_code_v2,
+                  a.created_at,a.updated_at,sm.ordinal
            from project_chat_attempts a
            join project_chat_session_messages sm on sm.message_id=a.user_message_id
            where sm.session_id=? and a.project_id=?
@@ -3277,6 +3299,13 @@ type ProjectChatAttemptRow = {
     | 'application_interrupted'
     | 'user_interrupted'
     | null;
+  error_code_v2:
+    | 'codex_unavailable'
+    | 'attachment_model_modality_unsupported'
+    | 'invalid_response'
+    | 'application_interrupted'
+    | 'user_interrupted'
+    | null;
   created_at: string;
   updated_at: string;
 };
@@ -3354,7 +3383,9 @@ function toChatAttempt(row: ProjectChatAttemptRow) {
       ? { promptProvenance: JSON.parse(row.prompt_provenance_json) as unknown }
       : {}),
     status: row.status,
-    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    ...((row.error_code_v2 ?? row.error_code)
+      ? { errorCode: row.error_code_v2 ?? row.error_code! }
+      : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });

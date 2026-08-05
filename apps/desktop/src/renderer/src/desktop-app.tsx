@@ -1542,16 +1542,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onSelectedReasoning={setSelectedReasoning}
                 onRefreshModels={() => void refreshModels()}
                 onOpenAgentSettings={openAgentSettings}
-                onChoosePdfAttachments={() => {
+                onChooseAttachments={() => {
                   if (!activeProjectChatSessionId) return Promise.resolve([]);
-                  return window.gosu.projectChat.choosePdfAttachments({
+                  return window.gosu.projectChat.chooseAttachments({
                     projectId: activeProject.id,
                     sessionId: activeProjectChatSessionId,
                   });
                 }}
-                onReleasePdfAttachment={(attachment) =>
+                onReleaseAttachment={(attachment) =>
                   window.gosu.projectChat
-                    .releasePdfAttachment({
+                    .releaseAttachment({
                       projectId: attachment.projectId,
                       sessionId: attachment.sessionId,
                       attachmentId: attachment.id,

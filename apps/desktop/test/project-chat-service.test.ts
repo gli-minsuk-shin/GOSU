@@ -16,8 +16,8 @@ import type {
   ProjectAgentVault,
 } from '../src/main/project-agent-tools';
 import type {
-  ProjectChatPdfAttachmentClaimer,
-  ProjectChatPdfAttachmentsForAgent,
+  ProjectChatAttachmentClaimer,
+  ProjectChatAttachmentsForAgent,
 } from '../src/main/project-chat-attachment-service';
 import {
   buildProjectChatPrompt,
@@ -504,6 +504,7 @@ class FakeCodex extends EventEmitter {
   readonly released: string[] = [];
   readonly revoked: string[] = [];
   readonly prompts: string[] = [];
+  readonly localImagePathSets: Array<readonly string[]> = [];
   readonly developerInstructions: string[] = [];
   readonly responseVerbosities: Array<'low' | 'medium' | 'high' | null> = [];
   readonly webSearchModes: Array<'disabled' | 'cached' | 'live' | undefined> = [];
@@ -565,6 +566,7 @@ class FakeCodex extends EventEmitter {
     threadId: string;
     requestedModelId: string | null;
     reasoningOptionId: string | null;
+    localImagePaths?: readonly string[];
     collaborationModeId?: string | null;
     expectedCollaborationModeCatalogVersion?: string | null;
     personality?: 'none' | 'friendly' | 'pragmatic' | null;
@@ -574,6 +576,7 @@ class FakeCodex extends EventEmitter {
     const turnId = `turn-${this.turnCount}`;
     this.turnThreads.set(turnId, input.threadId);
     this.prompts.push(input.prompt);
+    this.localImagePathSets.push([...(input.localImagePaths ?? [])]);
     this.turnSettings.push({
       collaborationModeId: input.collaborationModeId ?? null,
       expectedCollaborationModeCatalogVersion:
@@ -681,10 +684,7 @@ function localNotesVaultFixture() {
   return { vault, vaultId, noteId, contentSha256, content };
 }
 
-async function fixture(
-  vault?: ProjectAgentVault,
-  pdfAttachments?: ProjectChatPdfAttachmentClaimer,
-) {
+async function fixture(vault?: ProjectAgentVault, attachments?: ProjectChatAttachmentClaimer) {
   const workspaceStorage = new MemoryWorkspaceStorage();
   const workspace = new WorkspaceService(workspaceStorage);
   const projectA = await workspace.createProject({ name: 'Project Alpha' });
@@ -747,7 +747,7 @@ async function fixture(
     codex,
     literature,
     ssh,
-    ...(pdfAttachments ? { pdfAttachments } : {}),
+    ...(attachments ? { attachments } : {}),
     ...(vault ? { vault } : {}),
     prepareProjectDirectory: async (projectId) => `/isolated/${projectId}`,
   });
@@ -803,33 +803,41 @@ function waitForTurnCompleted(chat: ProjectChatService, turnId: string) {
 }
 
 describe('ProjectChatService', () => {
-  it('keeps attached PDF text out of durable messages/prompts and revokes a claimed capability on startup failure', async () => {
+  it('keeps reconstructed attachment text out of durable messages/prompts and revokes a claimed capability on startup failure', async () => {
     const attachmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    const privatePdfText = 'PRIVATE_PDF_TEXT_MUST_NOT_BE_PERSISTED';
-    const claimed: ProjectChatPdfAttachmentsForAgent = {
+    const privateDocumentText = 'PRIVATE_DOCUMENT_TEXT_MUST_NOT_BE_PERSISTED';
+    const claimed: ProjectChatAttachmentsForAgent = {
       catalog: () => [
         {
           attachmentId,
-          label: 'PDF 1',
+          label: 'Attachment 1',
           sourceSha256: 'b'.repeat(64),
-          pageCount: 1,
-          extractedCharacters: privatePdfText.length,
+          kind: 'document',
+          format: 'docx',
+          unitLabel: 'section',
+          unitCount: 1,
+          extractedCharacters: privateDocumentText.length,
           truncated: false,
           textAvailable: true,
+          visualAvailable: false,
         },
       ],
       read: () => ({
         attachmentId,
-        label: 'PDF 1',
+        label: 'Attachment 1',
         sourceSha256: 'b'.repeat(64),
-        pageCount: 1,
-        startPage: 1,
-        endPage: 1,
-        content: privatePdfText,
+        kind: 'document',
+        format: 'docx',
+        unitLabel: 'section',
+        unitCount: 1,
+        startUnit: 1,
+        endUnit: 1,
+        content: privateDocumentText,
         contentSha256: 'c'.repeat(64),
         truncated: false,
       }),
-      revoke: vi.fn(),
+      nativeImages: () => [],
+      revoke: vi.fn(async () => undefined),
     };
     const attachmentService = { claim: vi.fn(() => claimed) };
     const environment = await fixture(undefined, attachmentService);
@@ -847,8 +855,188 @@ describe('ProjectChatService', () => {
 
     expect(attachmentService.claim).toHaveBeenCalledOnce();
     expect(claimed.revoke).toHaveBeenCalledOnce();
-    expect(JSON.stringify(environment.storage.messages)).not.toContain(privatePdfText);
-    expect(JSON.stringify(environment.codex.prompts)).not.toContain(privatePdfText);
+    expect(JSON.stringify(environment.storage.messages)).not.toContain(privateDocumentText);
+    expect(JSON.stringify(environment.codex.prompts)).not.toContain(privateDocumentText);
+  });
+
+  it('delivers only normalized local image paths to Codex and never persists them', async () => {
+    const attachmentId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const privateImagePath = '/private/tmp/gosu-chat-image-normalized-fixture.jpg';
+    const claimed: ProjectChatAttachmentsForAgent = {
+      catalog: () => [
+        {
+          attachmentId,
+          label: 'Attachment 1',
+          sourceSha256: 'e'.repeat(64),
+          kind: 'image',
+          format: 'png',
+          unitLabel: 'image',
+          unitCount: 1,
+          extractedCharacters: 0,
+          truncated: false,
+          textAvailable: false,
+          visualAvailable: true,
+        },
+      ],
+      read: () => null,
+      nativeImages: () => [
+        {
+          attachmentId,
+          label: 'Attachment 1',
+          sourceSha256: 'e'.repeat(64),
+          path: privateImagePath,
+        },
+      ],
+      revoke: vi.fn(async () => undefined),
+    };
+    const attachmentService = { claim: vi.fn(() => claimed) };
+    const environment = await fixture(undefined, attachmentService);
+
+    const receipt = await environment.chat.send({
+      projectId: environment.projectA.id,
+      message: 'Analyze the attached figure.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      attachmentIds: [attachmentId],
+    });
+
+    expect(environment.codex.localImagePathSets.at(-1)).toEqual([privateImagePath]);
+    expect(JSON.stringify(environment.storage.messages)).not.toContain(privateImagePath);
+    expect(JSON.stringify(environment.codex.prompts)).not.toContain(privateImagePath);
+
+    environment.codex.complete(receipt.turnId, { reply: 'Figure reviewed.', actions: [] });
+    await vi.waitFor(() => expect(claimed.revoke).toHaveBeenCalledOnce());
+  });
+
+  it('durably records an image modality rejection and requires the image to be attached again', async () => {
+    const attachmentId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const claimed: ProjectChatAttachmentsForAgent = {
+      catalog: () => [
+        {
+          attachmentId,
+          label: 'Attachment 1',
+          sourceSha256: 'f'.repeat(64),
+          kind: 'image',
+          format: 'png',
+          unitLabel: 'image',
+          unitCount: 1,
+          extractedCharacters: 0,
+          truncated: false,
+          textAvailable: false,
+          visualAvailable: true,
+        },
+      ],
+      read: () => null,
+      nativeImages: () => [
+        {
+          attachmentId,
+          label: 'Attachment 1',
+          sourceSha256: 'f'.repeat(64),
+          path: '/private/tmp/gosu-chat-image-modality-fixture.jpg',
+        },
+      ],
+      revoke: vi.fn(async () => undefined),
+    };
+    const environment = await fixture(undefined, { claim: () => claimed });
+    environment.codex.beforeRunReturns = () => {
+      throw new Error('attachment_model_modality_unsupported');
+    };
+
+    await expect(
+      environment.chat.send({
+        projectId: environment.projectA.id,
+        message: 'Analyze this figure with the selected model.',
+        requestedModelId: 'text-only-model',
+        reasoningOptionId: null,
+        attachmentIds: [attachmentId],
+      }),
+    ).rejects.toThrow('attachment_model_modality_unsupported');
+
+    const snapshot = environment.storage.snapshot(environment.projectA.id);
+    expect(snapshot.attempts?.[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'attachment_model_modality_unsupported',
+    });
+    expect(snapshot.messages.at(-1)).toMatchObject({ role: 'assistant', status: 'failed' });
+    expect(snapshot.messages.at(-1)?.content).toContain('cannot accept image attachments');
+    expect(claimed.revoke).toHaveBeenCalledOnce();
+    await expect(
+      environment.chat.send({
+        projectId: environment.projectA.id,
+        message: 'Analyze this figure with a newly selected model.',
+        requestedModelId: 'image-capable-model',
+        reasoningOptionId: null,
+        retryOfAttemptId: snapshot.attempts![0]!.id,
+      }),
+    ).rejects.toThrow('chat_attempt_not_retryable');
+  });
+
+  it('preserves a late image-model rejection through terminal persistence recovery', async () => {
+    const attachmentId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const claimed: ProjectChatAttachmentsForAgent = {
+      catalog: () => [
+        {
+          attachmentId,
+          label: 'Attachment 1',
+          sourceSha256: 'a'.repeat(64),
+          kind: 'image',
+          format: 'png',
+          unitLabel: 'image',
+          unitCount: 1,
+          extractedCharacters: 0,
+          truncated: false,
+          textAvailable: false,
+          visualAvailable: true,
+        },
+      ],
+      read: () => null,
+      nativeImages: () => [
+        {
+          attachmentId,
+          label: 'Attachment 1',
+          sourceSha256: 'a'.repeat(64),
+          path: '/private/tmp/gosu-chat-image-late-reroute.jpg',
+        },
+      ],
+      revoke: vi.fn(async () => undefined),
+    };
+    const environment = await fixture(undefined, { claim: () => claimed });
+    const receipt = await environment.chat.send({
+      projectId: environment.projectA.id,
+      message: 'Analyze this image without a model fallback.',
+      requestedModelId: 'image-capable-model',
+      reasoningOptionId: null,
+      attachmentIds: [attachmentId],
+    });
+    const completed = waitForTurnCompleted(environment.chat, receipt.turnId);
+    const threadId = environment.codex.turnThreads.get(receipt.turnId)!;
+
+    environment.storage.failNextAssistantSave = true;
+    environment.codex.emit('notification', {
+      method: 'gosu/attachment-model-modality-rejected',
+      params: { threadId, turnId: receipt.turnId },
+    });
+    environment.codex.emit('disconnected');
+    await completed;
+
+    const snapshot = environment.storage.snapshot(environment.projectA.id);
+    expect(snapshot.attempts?.[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'attachment_model_modality_unsupported',
+    });
+    expect(snapshot.messages.at(-1)?.content).toContain('cannot accept image attachments');
+    expect(snapshot.messages.at(-1)?.content).not.toContain('Turn attachments accessed');
+    expect(claimed.revoke).toHaveBeenCalledOnce();
+    await expect(
+      environment.chat.send({
+        projectId: environment.projectA.id,
+        sessionId: receipt.sessionId,
+        message: 'Retry without silently changing the model.',
+        requestedModelId: 'image-capable-model',
+        reasoningOptionId: null,
+        retryOfAttemptId: snapshot.attempts?.[0]?.id,
+      }),
+    ).rejects.toThrow('chat_attempt_not_retryable');
   });
 
   it('does not claim an attachment capability for ordinary text-only turns', async () => {

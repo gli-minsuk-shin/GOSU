@@ -4080,12 +4080,12 @@ textarea:focus {
 
 .chat-composer {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) 86px;
+  grid-template-columns: 58px minmax(0, 1fr) 86px;
   gap: 8px;
   align-items: stretch;
 }
 
-.chat-pdf-attachments {
+.chat-attachments {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4093,7 +4093,7 @@ textarea:focus {
   margin: 0 2px 8px;
 }
 
-.chat-pdf-chip {
+.chat-attachment-chip {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 1px 7px;
@@ -4104,7 +4104,7 @@ textarea:focus {
   background: color-mix(in srgb, var(--blue) 7%, var(--surface));
 }
 
-.chat-pdf-chip > span {
+.chat-attachment-chip > span {
   overflow: hidden;
   color: var(--text);
   font-size: var(--font-caption);
@@ -4113,13 +4113,13 @@ textarea:focus {
   white-space: nowrap;
 }
 
-.chat-pdf-chip small {
+.chat-attachment-chip small {
   grid-column: 1;
   color: var(--subtle);
   font-size: calc(var(--font-caption) - 1px);
 }
 
-.chat-pdf-chip button {
+.chat-attachment-chip button {
   grid-column: 2;
   grid-row: 1 / span 2;
   align-self: center;
@@ -4129,7 +4129,7 @@ textarea:focus {
   color: var(--subtle);
 }
 
-.chat-pdf-privacy {
+.chat-attachment-privacy {
   color: var(--subtle);
   font-size: var(--font-caption);
 }

@@ -19,7 +19,8 @@ function catalogHash(models: readonly CodexModel[]) {
     isDefault: model.isDefault,
     defaultReasoningEffort: model.defaultReasoningEffort ?? null,
     reasoning: model.supportedReasoningEfforts ?? [],
-    modalities: model.inputModalities ?? ['text', 'image'],
+    // Do not invent visual support when an older provider catalog omits capability metadata.
+    modalities: model.inputModalities ?? ['text'],
     supportsPersonality: model.supportsPersonality ?? false,
     upgrade: model.upgrade ?? null,
   }));
@@ -46,7 +47,7 @@ export function toModelCatalog(
       displayName: model.displayName,
       catalogVersion,
       isDefault: model.isDefault,
-      modalities: model.inputModalities ?? ['text', 'image'],
+      modalities: model.inputModalities ?? ['text'],
       reasoningOptions: (model.supportedReasoningEfforts ?? []).map((option) => ({
         id: option.reasoningEffort,
         // The App Server owns this opaque vocabulary. Keep the picker compact and let future

@@ -51,8 +51,8 @@ import type {
   CodexWebSearchMode,
 } from './codex-app-server';
 import {
-  ProjectChatPdfAttachmentError,
-  type ProjectChatPdfAttachmentClaimer,
+  ProjectChatAttachmentError,
+  type ProjectChatAttachmentClaimer,
 } from './project-chat-attachment-service';
 import {
   ProjectAgentToolSession,
@@ -120,6 +120,7 @@ export interface ProjectChatCodex {
   runTurn(input: {
     threadId: string;
     prompt: string;
+    localImagePaths?: readonly string[];
     requestedModelId: string | null;
     reasoningOptionId: string | null;
     cwd: string;
@@ -159,14 +160,18 @@ export class ProjectChatServiceError extends Error {
       | 'chat_session_limit_reached'
       | 'local_notes_vault_not_selected'
       | 'local_notes_vault_changed'
-      | 'pdf_attachment_invalid'
-      | 'pdf_attachment_too_large'
-      | 'pdf_attachment_too_many'
-      | 'pdf_attachment_encrypted'
-      | 'pdf_attachment_page_limit'
-      | 'pdf_attachment_extraction_failed'
-      | 'pdf_attachment_expired'
-      | 'pdf_attachment_scope_mismatch'
+      | 'attachment_invalid'
+      | 'attachment_unsupported'
+      | 'attachment_too_large'
+      | 'attachment_total_too_large'
+      | 'attachment_too_many'
+      | 'attachment_encrypted'
+      | 'attachment_archive_limit'
+      | 'attachment_extraction_failed'
+      | 'attachment_capacity_exhausted'
+      | 'attachment_expired'
+      | 'attachment_scope_mismatch'
+      | 'attachment_model_modality_unsupported'
       | 'action_not_found'
       | 'action_not_proposed'
       | 'codex_unavailable',
@@ -187,6 +192,7 @@ type ActiveTurn = {
   invocation: ModelInvocation;
   finalResponseText: string | null;
   agentTools: ProjectAgentToolSession;
+  terminalErrorCode: 'attachment_model_modality_unsupported' | null;
   terminal: boolean;
 };
 
@@ -200,6 +206,8 @@ const UNAVAILABLE_AGENT_VAULT: ProjectAgentVault = {
 
 const FAILURE_COPY = {
   unavailable: 'Codex could not complete this turn. Check the local connection and try again.',
+  attachmentModelModalityUnsupported:
+    'The selected model cannot accept image attachments. Choose an image-capable model, attach the image again, and resend this message.',
   invalid: 'Codex returned an invalid project response. Please try the request again.',
   interrupted: 'This Codex turn was stopped.',
   persistence:
@@ -437,7 +445,7 @@ export class ProjectChatService extends EventEmitter {
       vault?: ProjectAgentVault;
       literature?: ProjectAgentLiterature;
       ssh?: ProjectAgentSsh;
-      pdfAttachments?: ProjectChatPdfAttachmentClaimer;
+      attachments?: ProjectChatAttachmentClaimer;
       prepareProjectDirectory(projectId: string): Promise<string>;
     },
   ) {
@@ -645,7 +653,10 @@ export class ProjectChatService extends EventEmitter {
           command.retryOfAttemptId,
         );
         if (!retryTarget) throw new ProjectChatServiceError('chat_attempt_not_found');
-        if (retryTarget.status !== 'failed' && retryTarget.status !== 'interrupted') {
+        if (
+          (retryTarget.status !== 'failed' && retryTarget.status !== 'interrupted') ||
+          retryTarget.errorCode === 'attachment_model_modality_unsupported'
+        ) {
           throw new ProjectChatServiceError('chat_attempt_not_retryable');
         }
       }
@@ -695,16 +706,19 @@ export class ProjectChatService extends EventEmitter {
         legacyReviewerCompatibility,
       );
       const attemptId = randomUUID();
-      let pdfAttachments;
+      let attachments;
       if (command.attachmentIds && command.attachmentIds.length > 0) {
         try {
-          pdfAttachments = this.dependencies.pdfAttachments?.claim(
+          if (!this.dependencies.attachments) {
+            throw new ProjectChatAttachmentError('attachment_expired');
+          }
+          attachments = this.dependencies.attachments.claim(
             command.projectId,
             session.id,
             command.attachmentIds,
           );
         } catch (error) {
-          if (error instanceof ProjectChatPdfAttachmentError) {
+          if (error instanceof ProjectChatAttachmentError) {
             throw new ProjectChatServiceError(error.code);
           }
           throw error;
@@ -717,7 +731,7 @@ export class ProjectChatService extends EventEmitter {
         workspace: this.dependencies.workspace,
         vault: this.dependencies.vault ?? UNAVAILABLE_AGENT_VAULT,
         localNotesVault: profile.localNotesVault ?? null,
-        ...(pdfAttachments ? { pdfAttachments } : {}),
+        ...(attachments ? { attachments } : {}),
         ...(executionKind !== 'legacy-reviewer' &&
         this.dependencies.literature &&
         explicitlyAuthorizesLiteratureSearch(command.message)
@@ -815,9 +829,13 @@ export class ProjectChatService extends EventEmitter {
         );
         ephemeralThreadId = threadId;
         connectionEpoch = this.codexConnectionEpoch;
+        const nativeImages = attachments?.nativeImages() ?? [];
         const result = await this.dependencies.codex.runTurn({
           threadId,
           prompt: assembled.prompt,
+          ...(nativeImages.length
+            ? { localImagePaths: nativeImages.map((image) => image.path) }
+            : {}),
           requestedModelId: command.requestedModelId,
           reasoningOptionId: command.reasoningOptionId,
           cwd,
@@ -827,6 +845,7 @@ export class ProjectChatService extends EventEmitter {
           expectedCollaborationModeCatalogVersion: collaborationModeCatalog.catalogVersion,
           personality: personality === 'auto' ? null : personality,
         });
+        agentTools.markNativeImagesDelivered();
         ephemeralTurnId = result.turnId;
         if (connectionEpoch !== this.codexConnectionEpoch) {
           throw new Error('codex_connection_changed_during_turn_start');
@@ -853,6 +872,7 @@ export class ProjectChatService extends EventEmitter {
           invocation: result.invocation,
           finalResponseText: null,
           agentTools,
+          terminalErrorCode: null,
           terminal: false,
         };
         const activeTransport = transportIdentity(threadId, result.turnId);
@@ -900,21 +920,33 @@ export class ProjectChatService extends EventEmitter {
         if (!activeRegistered) {
           agentTools.revokeSshCapability();
           agentTools.revokeLiteratureCapability();
-          agentTools.revokePdfCapability();
+          agentTools.revokeAttachmentCapability();
           if (this.liveAgentToolsBySession.get(startingSessionKey) === agentTools) {
             this.liveAgentToolsBySession.delete(startingSessionKey);
           }
           const sourceAppendix = await agentTools.finalizeSourceAppendix();
+          const attachmentModelModalityUnsupported =
+            error instanceof Error && error.message === 'attachment_model_modality_unsupported';
+          const failureCode: NonNullable<ProjectChatAttempt['errorCode']> = interruptUnconfirmed
+            ? 'application_interrupted'
+            : attachmentModelModalityUnsupported
+              ? 'attachment_model_modality_unsupported'
+              : 'codex_unavailable';
+          const failureCopy = attachmentModelModalityUnsupported
+            ? FAILURE_COPY.attachmentModelModalityUnsupported
+            : interruptUnconfirmed
+              ? FAILURE_COPY.interruptUnconfirmed
+              : FAILURE_COPY.unavailable;
           await this.finishAttemptBeforeTurn(
             currentAttempt,
-            appendSourceProvenance(
-              interruptUnconfirmed ? FAILURE_COPY.interruptUnconfirmed : FAILURE_COPY.unavailable,
-              sourceAppendix,
-            ),
-            interruptUnconfirmed ? 'application_interrupted' : 'codex_unavailable',
+            appendSourceProvenance(failureCopy, sourceAppendix),
+            failureCode,
           );
         }
         if (error instanceof ProjectChatServiceError) throw error;
+        if (error instanceof Error && error.message === 'attachment_model_modality_unsupported') {
+          throw new ProjectChatServiceError('attachment_model_modality_unsupported');
+        }
         throw new ProjectChatServiceError('codex_unavailable');
       }
     } finally {
@@ -948,7 +980,7 @@ export class ProjectChatService extends EventEmitter {
     if (!active) throw new ProjectChatServiceError('chat_not_active');
     active.agentTools.revokeSshCapability();
     active.agentTools.revokeLiteratureCapability();
-    active.agentTools.revokePdfCapability();
+    active.agentTools.revokeAttachmentCapability();
     this.dependencies.ssh?.cancelSession(command.projectId, sessionId);
     await this.dependencies.codex.interruptTurn(active.threadId, active.turnId);
     return { accepted: true } as const;
@@ -1193,6 +1225,11 @@ export class ProjectChatService extends EventEmitter {
 
   private processNotification(active: ActiveTurn, notification: CodexNotification) {
     if (active.terminal || !isRecord(notification.params)) return;
+    if (notification.method === 'gosu/attachment-model-modality-rejected') {
+      active.terminalErrorCode = 'attachment_model_modality_unsupported';
+      active.agentTools.rejectNativeImageDelivery();
+      return;
+    }
     if (notification.method === 'item/completed') {
       const item = notification.params.item;
       if (
@@ -1208,6 +1245,10 @@ export class ProjectChatService extends EventEmitter {
     if (notification.method !== 'turn/completed') return;
     const turn = notification.params.turn;
     const status = isRecord(turn) ? turn.status : undefined;
+    if (notification.params.gosuErrorCode === 'attachment_model_modality_unsupported') {
+      active.terminalErrorCode = 'attachment_model_modality_unsupported';
+      active.agentTools.rejectNativeImageDelivery();
+    }
     this.beginFinalize(
       active,
       status === 'completed' || status === 'interrupted' ? status : 'failed',
@@ -1219,20 +1260,30 @@ export class ProjectChatService extends EventEmitter {
     active.terminal = true;
     active.agentTools.revokeSshCapability();
     active.agentTools.revokeLiteratureCapability();
-    active.agentTools.revokePdfCapability();
+    active.agentTools.revokeAttachmentCapability();
     void this.persistTerminal(active, status)
       .then((persistedStatus) => this.clearActive(active, persistedStatus))
       .catch(async () => {
         try {
           const sourceAppendix = await active.agentTools.finalizeSourceAppendix();
+          const modalityUnsupported =
+            active.terminalErrorCode === 'attachment_model_modality_unsupported';
+          const fallbackStatus = modalityUnsupported ? 'failed' : 'interrupted';
           await this.saveAssistant(
             active,
-            'interrupted',
-            appendSourceProvenance(FAILURE_COPY.persistence, sourceAppendix),
+            fallbackStatus,
+            appendSourceProvenance(
+              modalityUnsupported
+                ? FAILURE_COPY.attachmentModelModalityUnsupported
+                : FAILURE_COPY.persistence,
+              sourceAppendix,
+            ),
             [],
-            'application_interrupted',
+            modalityUnsupported
+              ? 'attachment_model_modality_unsupported'
+              : 'application_interrupted',
           );
-          this.clearActive(active, 'interrupted');
+          this.clearActive(active, fallbackStatus);
         } catch {
           this.clearActive(active, 'failed');
         }
@@ -1300,12 +1351,19 @@ export class ProjectChatService extends EventEmitter {
 
   private async finishFailed(active: ActiveTurn): Promise<'failed'> {
     const sourceAppendix = await active.agentTools.finalizeSourceAppendix();
+    const modalityUnsupported =
+      active.terminalErrorCode === 'attachment_model_modality_unsupported';
     await this.saveAssistant(
       active,
       'failed',
-      appendSourceProvenance(FAILURE_COPY.unavailable, sourceAppendix),
+      appendSourceProvenance(
+        modalityUnsupported
+          ? FAILURE_COPY.attachmentModelModalityUnsupported
+          : FAILURE_COPY.unavailable,
+        sourceAppendix,
+      ),
       [],
-      'codex_unavailable',
+      modalityUnsupported ? 'attachment_model_modality_unsupported' : 'codex_unavailable',
     );
     return 'failed';
   }

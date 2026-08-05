@@ -13,8 +13,8 @@ import {
   type ProjectChatWebSearchMode,
 } from '../../shared/project-chat-contracts';
 import {
-  PROJECT_CHAT_MAX_PDF_ATTACHMENTS,
-  type ProjectChatPdfAttachment,
+  PROJECT_CHAT_MAX_ATTACHMENTS,
+  type ProjectChatAttachment,
 } from '../../shared/project-chat-attachment-contracts';
 import {
   resolveWorkspaceBoardSettings,
@@ -153,7 +153,7 @@ export function reconcileProjectChatSessionUiState(
     : { draft: initialDraft, retryOfAttemptId: null, advancedOpen: false };
 }
 
-export function shouldAcceptPdfPickerResult(
+export function shouldAcceptAttachmentPickerResult(
   mounted: boolean,
   expectedScope: string,
   currentScope: string,
@@ -161,6 +161,10 @@ export function shouldAcceptPdfPickerResult(
   currentGeneration: number,
 ) {
   return mounted && expectedScope === currentScope && expectedGeneration === currentGeneration;
+}
+
+export function resolveFailedTurnRecoveryMode(errorCode?: string) {
+  return errorCode === 'attachment_model_modality_unsupported' ? 'reattach' : 'retry';
 }
 
 const HARNESS_LABELS: Record<ProjectChatHarnessMode, string> = {
@@ -236,8 +240,8 @@ export function ProjectChatView({
   onSelectedReasoning,
   onRefreshModels,
   onOpenAgentSettings,
-  onChoosePdfAttachments = async () => [],
-  onReleasePdfAttachment = async () => undefined,
+  onChooseAttachments = async () => [],
+  onReleaseAttachment = async () => undefined,
   onAttachmentError = () => undefined,
   onSend,
   onCancel,
@@ -280,8 +284,8 @@ export function ProjectChatView({
   onSelectedReasoning: (reasoningId: string | null) => void;
   onRefreshModels: () => void;
   onOpenAgentSettings: () => void;
-  onChoosePdfAttachments?: () => Promise<readonly ProjectChatPdfAttachment[]>;
-  onReleasePdfAttachment?: (attachment: ProjectChatPdfAttachment) => Promise<void>;
+  onChooseAttachments?: () => Promise<readonly ProjectChatAttachment[]>;
+  onReleaseAttachment?: (attachment: ProjectChatAttachment) => Promise<void>;
   onAttachmentError?: (error: unknown) => void;
   onSend: (
     message: string,
@@ -331,14 +335,14 @@ export function ProjectChatView({
   const [personality, setPersonality] = useState<ProjectChatPersonality>('auto');
   const [responseVerbosity, setResponseVerbosity] = useState<ProjectChatResponseVerbosity>('auto');
   const [contextScope, setContextScope] = useState<ProjectChatContextScope>('project');
-  const [pdfAttachments, setPdfAttachments] = useState<readonly ProjectChatPdfAttachment[]>([]);
-  const [choosingPdfAttachments, setChoosingPdfAttachments] = useState(false);
+  const [attachments, setAttachments] = useState<readonly ProjectChatAttachment[]>([]);
+  const [choosingAttachments, setChoosingAttachments] = useState(false);
   const [scrollAffordance, setScrollAffordance] = useState({
     nearBottom: true,
     newAssistantMessageAvailable: false,
   });
-  const pdfAttachmentsRef = useRef(pdfAttachments);
-  const releasePdfAttachmentHandlerRef = useRef(onReleasePdfAttachment);
+  const attachmentsRef = useRef(attachments);
+  const releaseAttachmentHandlerRef = useRef(onReleaseAttachment);
   const attachmentScopeRef = useRef('');
   const attachmentPickerGenerationRef = useRef(0);
   const mountedRef = useRef(true);
@@ -359,23 +363,23 @@ export function ProjectChatView({
     setDraft(value);
     onDraftChange(value);
   };
-  const releasePdfAttachment = (attachment: ProjectChatPdfAttachment) => {
-    setPdfAttachments((current) => {
+  const releaseAttachment = (attachment: ProjectChatAttachment) => {
+    setAttachments((current) => {
       const next = current.filter((candidate) => candidate.id !== attachment.id);
-      pdfAttachmentsRef.current = next;
+      attachmentsRef.current = next;
       return next;
     });
-    void onReleasePdfAttachment(attachment).catch(onAttachmentError);
+    void onReleaseAttachment(attachment).catch(onAttachmentError);
   };
-  const choosePdfAttachments = async () => {
-    if (choosingPdfAttachments || pdfAttachments.length >= PROJECT_CHAT_MAX_PDF_ATTACHMENTS) return;
+  const chooseAttachments = async () => {
+    if (choosingAttachments || attachments.length >= PROJECT_CHAT_MAX_ATTACHMENTS) return;
     const scope = draftSessionKey;
     const generation = ++attachmentPickerGenerationRef.current;
-    setChoosingPdfAttachments(true);
+    setChoosingAttachments(true);
     try {
-      const selected = await onChoosePdfAttachments();
+      const selected = await onChooseAttachments();
       if (
-        !shouldAcceptPdfPickerResult(
+        !shouldAcceptAttachmentPickerResult(
           mountedRef.current,
           scope,
           attachmentScopeRef.current,
@@ -384,23 +388,23 @@ export function ProjectChatView({
         )
       ) {
         for (const attachment of selected) {
-          void releasePdfAttachmentHandlerRef.current(attachment).catch(() => undefined);
+          void releaseAttachmentHandlerRef.current(attachment).catch(() => undefined);
         }
         return;
       }
-      const currentAttachments = pdfAttachmentsRef.current;
+      const currentAttachments = attachmentsRef.current;
       const existingIds = new Set(currentAttachments.map((attachment) => attachment.id));
       const additions = selected.filter((attachment) => !existingIds.has(attachment.id));
-      const remaining = PROJECT_CHAT_MAX_PDF_ATTACHMENTS - currentAttachments.length;
+      const remaining = PROJECT_CHAT_MAX_ATTACHMENTS - currentAttachments.length;
       const accepted = additions.slice(0, remaining);
       const rejected = additions.slice(remaining);
-      setPdfAttachments((current) => {
+      setAttachments((current) => {
         const next = [...current, ...accepted];
-        pdfAttachmentsRef.current = next;
+        attachmentsRef.current = next;
         return next;
       });
       for (const attachment of rejected) {
-        void onReleasePdfAttachment(attachment).catch(() => undefined);
+        void onReleaseAttachment(attachment).catch(() => undefined);
       }
     } catch (error) {
       if (mountedRef.current && attachmentPickerGenerationRef.current === generation) {
@@ -408,7 +412,7 @@ export function ProjectChatView({
       }
     } finally {
       if (mountedRef.current && attachmentPickerGenerationRef.current === generation) {
-        setChoosingPdfAttachments(false);
+        setChoosingAttachments(false);
       }
     }
   };
@@ -453,6 +457,12 @@ export function ProjectChatView({
     personality !== 'auto' && selectedDescriptor?.supportsPersonality === false
       ? 'The selected model does not support Codex personality controls. Choose Auto or another model.'
       : null;
+  const imageAttachmentWarning =
+    attachments.some((attachment) => attachment.visualAvailable) &&
+    selectedDescriptor?.modalities !== undefined &&
+    !selectedDescriptor.modalities.includes('image')
+      ? 'The selected model cannot inspect images. Choose an image-capable model or remove the image attachment.'
+      : null;
   const localNotesGrant = snapshot?.profile?.localNotesVault ?? null;
   const localNotesAvailable = Boolean(
     vaultState === 'ready' && localNotesGrant && vault?.id === localNotesGrant.id,
@@ -472,7 +482,11 @@ export function ProjectChatView({
       ? 'GOSU cannot verify the Main-process Local Notes capability yet. This turn is paused to prevent a hidden grant mismatch.'
       : null;
   const selectionWarning =
-    modelSelectionWarning ?? collaborationModeWarning ?? personalityWarning ?? localNotesWarning;
+    modelSelectionWarning ??
+    collaborationModeWarning ??
+    personalityWarning ??
+    imageAttachmentWarning ??
+    localNotesWarning;
   const snapshotReady = snapshot !== null;
   const resolvedUnreadAssistantMessageId = resolveUnreadAssistantMessageId(
     snapshot?.messages ?? [],
@@ -679,35 +693,35 @@ export function ProjectChatView({
     if (previousIdentity === draftSessionKey) return;
     hydratedSessionKeyRef.current = draftSessionKey;
     attachmentPickerGenerationRef.current += 1;
-    setChoosingPdfAttachments(false);
+    setChoosingAttachments(false);
     setSessionUi((current) =>
       reconcileProjectChatSessionUiState(previousIdentity, draftSessionKey, current, initialDraft),
     );
-    const staleAttachments = pdfAttachmentsRef.current;
-    pdfAttachmentsRef.current = [];
-    setPdfAttachments([]);
+    const staleAttachments = attachmentsRef.current;
+    attachmentsRef.current = [];
+    setAttachments([]);
     for (const attachment of staleAttachments) {
-      void onReleasePdfAttachment(attachment).catch(() => undefined);
+      void onReleaseAttachment(attachment).catch(() => undefined);
     }
   }, [draftSessionKey, initialDraft]);
 
   useEffect(() => {
-    pdfAttachmentsRef.current = pdfAttachments;
-  }, [pdfAttachments]);
+    attachmentsRef.current = attachments;
+  }, [attachments]);
 
   useEffect(() => {
-    releasePdfAttachmentHandlerRef.current = onReleasePdfAttachment;
-  }, [onReleasePdfAttachment]);
+    releaseAttachmentHandlerRef.current = onReleaseAttachment;
+  }, [onReleaseAttachment]);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       attachmentPickerGenerationRef.current += 1;
-      for (const attachment of pdfAttachmentsRef.current) {
-        void releasePdfAttachmentHandlerRef.current(attachment).catch(() => undefined);
+      for (const attachment of attachmentsRef.current) {
+        void releaseAttachmentHandlerRef.current(attachment).catch(() => undefined);
       }
-      pdfAttachmentsRef.current = [];
+      attachmentsRef.current = [];
     };
   }, []);
 
@@ -746,16 +760,16 @@ export function ProjectChatView({
       message,
       retryOfAttemptId ?? undefined,
       controls,
-      pdfAttachments.map((attachment) => attachment.id),
+      attachments.map((attachment) => attachment.id),
     ).then((accepted) => {
-      if (pdfAttachments.length > 0) {
+      if (attachments.length > 0) {
         if (!accepted) {
-          for (const attachment of pdfAttachments) {
-            void onReleasePdfAttachment(attachment).catch(() => undefined);
+          for (const attachment of attachments) {
+            void onReleaseAttachment(attachment).catch(() => undefined);
           }
         }
-        pdfAttachmentsRef.current = [];
-        setPdfAttachments([]);
+        attachmentsRef.current = [];
+        setAttachments([]);
       }
       if (accepted) {
         updateDraft('');
@@ -1070,14 +1084,17 @@ export function ProjectChatView({
               </div>
             ) : (
               snapshot.messages.map((message, messageIndex) => {
-                const retrySource =
+                const attempt = message.attemptId
+                  ? snapshot.attempts?.find((candidate) => candidate.id === message.attemptId)
+                  : undefined;
+                const failedTurnSource =
                   message.role === 'assistant' &&
                   (message.status === 'failed' || message.status === 'interrupted')
                     ? findRetrySource(snapshot, message, messageIndex)
                     : null;
-                const attempt = message.attemptId
-                  ? snapshot.attempts?.find((candidate) => candidate.id === message.attemptId)
-                  : undefined;
+                const recoveryMode = resolveFailedTurnRecoveryMode(attempt?.errorCode);
+                const retrySource = recoveryMode === 'retry' ? failedTurnSource : null;
+                const reattachSource = recoveryMode === 'reattach' ? failedTurnSource : null;
                 const nativeAttempt = attempt?.collaborationModeId !== undefined;
                 const isLatestMessage = messageIndex === snapshot.messages.length - 1;
                 const isUnreadAssistantMessage =
@@ -1134,6 +1151,22 @@ export function ProjectChatView({
                           }}
                         >
                           {retrySource.attemptId ? 'Retry this turn' : 'Use message again'}
+                        </button>
+                      </footer>
+                    )}
+                    {reattachSource && (
+                      <footer className="failed-turn-recovery">
+                        <span>
+                          Select an image-capable model, attach the image again, and resend
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            updateDraft(reattachSource.content);
+                            setRetryOfAttemptId(null);
+                          }}
+                        >
+                          Use message again
                         </button>
                       </footer>
                     )}
@@ -1242,19 +1275,25 @@ export function ProjectChatView({
               wait for it to finish.
             </div>
           )}
-          {pdfAttachments.length > 0 && (
-            <div className="chat-pdf-attachments" aria-label="PDF attachments">
-              {pdfAttachments.map((attachment) => (
-                <span className="chat-pdf-chip" key={attachment.id}>
+          {attachments.length > 0 && (
+            <div className="chat-attachments" aria-label="Turn attachments">
+              {attachments.map((attachment) => (
+                <span className="chat-attachment-chip" key={attachment.id}>
                   <span title={attachment.displayName}>{attachment.displayName}</span>
-                  <small>
-                    {attachment.pageCount}p
-                    {!attachment.textAvailable ? ' · no selectable text' : ''}
+                  <small title={attachment.reconstructionNotice}>
+                    {attachment.format.toUpperCase()}
+                    {attachment.visualAvailable
+                      ? ` · ${attachment.imageWidth}×${attachment.imageHeight}`
+                      : ` · ${attachment.unitCount} ${attachment.unitLabel}${attachment.unitCount === 1 ? '' : 's'}`}
+                    {!attachment.textAvailable && !attachment.visualAvailable
+                      ? ' · no extractable content'
+                      : ''}
+                    {attachment.visualAvailable ? ' · visual input' : ''}
                     {attachment.truncated ? ' · excerpted' : ''}
                   </small>
                   <button
                     type="button"
-                    onClick={() => releasePdfAttachment(attachment)}
+                    onClick={() => releaseAttachment(attachment)}
                     aria-label={`Remove ${attachment.displayName}`}
                     disabled={loading || projectBusy}
                   >
@@ -1262,9 +1301,9 @@ export function ProjectChatView({
                   </button>
                 </span>
               ))}
-              <span className="chat-pdf-privacy">
-                Files stay local; PDF text read by GOSU is sent only to the selected model for this
-                turn.
+              <span className="chat-attachment-privacy">
+                Originals stay local. Bounded reconstructed text and normalized images are shared
+                only with the selected model for this turn.
               </span>
             </div>
           )}
@@ -1285,18 +1324,18 @@ export function ProjectChatView({
             <button
               type="button"
               className="chat-attach-button"
-              onClick={() => void choosePdfAttachments()}
+              onClick={() => void chooseAttachments()}
               disabled={
                 loading ||
                 projectBusy ||
-                choosingPdfAttachments ||
-                pdfAttachments.length >= PROJECT_CHAT_MAX_PDF_ATTACHMENTS
+                choosingAttachments ||
+                attachments.length >= PROJECT_CHAT_MAX_ATTACHMENTS
               }
-              aria-label="Attach PDF files"
-              title="Attach up to 3 PDFs for this one turn"
+              aria-label="Attach research files"
+              title="Attach up to 5 documents, presentations, text files, or images for this turn"
             >
-              {choosingPdfAttachments ? '…' : '＋'}
-              <span>PDF</span>
+              {choosingAttachments ? '…' : '＋'}
+              <span>Files</span>
             </button>
             <textarea
               value={draft}

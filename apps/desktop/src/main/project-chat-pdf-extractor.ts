@@ -1,8 +1,8 @@
 import type { PDFDocumentLoadingTask, TextItem } from 'pdfjs-dist/types/src/display/api';
 
 import {
-  PROJECT_CHAT_MAX_PDF_EXTRACTED_CHARACTERS,
-  PROJECT_CHAT_MAX_PDF_PAGES,
+  PROJECT_CHAT_MAX_ATTACHMENT_EXTRACTED_CHARACTERS,
+  PROJECT_CHAT_MAX_ATTACHMENT_UNITS,
 } from '../shared/project-chat-attachment-contracts';
 
 export type ExtractedPdfPage = Readonly<{ pageNumber: number; text: string }>;
@@ -44,12 +44,12 @@ function pageText(items: readonly unknown[]) {
 
 export async function extractProjectChatPdf(
   bytes: Uint8Array,
-  maxCharacters = PROJECT_CHAT_MAX_PDF_EXTRACTED_CHARACTERS,
+  maxCharacters = PROJECT_CHAT_MAX_ATTACHMENT_EXTRACTED_CHARACTERS,
   timeoutMs = 15_000,
 ): Promise<ExtractedProjectChatPdf> {
   const boundedCharacters = Math.max(
     1,
-    Math.min(Math.trunc(maxCharacters), PROJECT_CHAT_MAX_PDF_EXTRACTED_CHARACTERS),
+    Math.min(Math.trunc(maxCharacters), PROJECT_CHAT_MAX_ATTACHMENT_EXTRACTED_CHARACTERS),
   );
   let loadingTask: PDFDocumentLoadingTask | undefined;
   let timeout: NodeJS.Timeout | undefined;
@@ -80,7 +80,7 @@ export async function extractProjectChatPdf(
     if (document.numPages < 1) {
       throw new ProjectChatPdfExtractionError('pdf_attachment_invalid');
     }
-    if (document.numPages > PROJECT_CHAT_MAX_PDF_PAGES) {
+    if (document.numPages > PROJECT_CHAT_MAX_ATTACHMENT_UNITS) {
       throw new ProjectChatPdfExtractionError('pdf_attachment_page_limit');
     }
     const pages: ExtractedPdfPage[] = [];

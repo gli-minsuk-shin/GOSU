@@ -18,7 +18,7 @@ import { ReadVaultAttachmentInputSchema } from '../shared/vault-contracts';
 import { buildMacApplicationMenuTemplate } from './application-menu';
 import { registerAgentAddOnIpc } from './agent-addon-ipc';
 import { createAgentAddOnRegistry } from './agent-addon-service';
-import { CodexAppServer } from './codex-app-server';
+import { cleanupStaleGosuRuntimeDirectories, CodexAppServer } from './codex-app-server';
 import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
 import { registerGitWorkspaceIpc } from './git-workspace-ipc';
@@ -81,10 +81,10 @@ const gitWorkspace = new GitWorkspaceService({
 });
 let mainWindow: BrowserWindow | undefined;
 const projectChatAttachments = new ProjectChatAttachmentService({
-  choosePdfFiles: createProjectChatAttachmentPicker(() => mainWindow),
+  chooseFiles: createProjectChatAttachmentPicker(() => mainWindow),
   async validateScope(projectId, sessionId) {
     const snapshot = await projectChat.snapshot({ projectId, sessionId });
-    if (snapshot.session?.id !== sessionId) throw new Error('pdf_attachment_scope_mismatch');
+    if (snapshot.session?.id !== sessionId) throw new Error('attachment_scope_mismatch');
   },
 });
 const literature = new LiteratureService({
@@ -110,7 +110,7 @@ const projectChat = new ProjectChatService({
   vault,
   literature,
   ssh,
-  pdfAttachments: projectChatAttachments,
+  attachments: projectChatAttachments,
   async prepareProjectDirectory(projectId) {
     const directory = join(app.getPath('userData'), 'project-chat-workspaces', projectId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -386,9 +386,10 @@ if (!primaryInstance) {
   app.quit();
 } else {
   installLocalSupervisorGuard();
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     app.setName('GOSU');
     setDevelopmentDockIcon();
+    await cleanupStaleGosuRuntimeDirectories().catch(() => undefined);
     const trustedRenderer = createTrustedRenderer({
       developmentUrl: process.env.ELECTRON_RENDERER_URL,
       isPackaged: app.isPackaged,
@@ -455,7 +456,7 @@ if (!primaryInstance) {
     if (process.platform !== 'darwin') app.quit();
   });
   app.on('before-quit', () => {
-    projectChatAttachments.dispose();
+    projectChatAttachments.disposeImmediately();
     literature.shutdown();
     ssh.shutdown();
     codex.stop();

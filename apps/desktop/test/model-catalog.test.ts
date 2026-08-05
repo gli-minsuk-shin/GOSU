@@ -69,6 +69,7 @@ describe('dynamic Codex model catalog', () => {
     );
 
     expect(catalog.models[0]?.reasoningOptions).toEqual([]);
+    expect(catalog.models[0]?.modalities).toEqual(['text']);
   });
 
   it('records the exact selected model, catalog snapshot and later reroute', () => {

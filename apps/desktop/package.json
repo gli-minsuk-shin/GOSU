@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.14.1",
+  "version": "0.14.2",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -22,6 +22,7 @@
     "@gosu/contracts": "workspace:*",
     "@openai/codex": "0.146.0",
     "better-sqlite3-multiple-ciphers": "12.11.1",
+    "fflate": "0.8.3",
     "katex": "0.16.47",
     "pdfjs-dist": "6.2.108",
     "react": "19.2.8",
@@ -32,6 +33,7 @@
     "remark-frontmatter": "5.0.0",
     "remark-gfm": "4.0.1",
     "remark-math": "6.0.0",
+    "sharp": "0.35.3",
     "unist-util-visit": "5.1.0",
     "zod": "4.4.3"
   },
@@ -57,7 +59,9 @@
     "asarUnpack": [
       "node_modules/@openai/codex/**",
       "node_modules/@openai/codex-*/**",
-      "node_modules/better-sqlite3-multiple-ciphers/**"
+      "node_modules/better-sqlite3-multiple-ciphers/**",
+      "node_modules/@img/**",
+      "node_modules/sharp/**"
     ],
     "files": [
       "out/**/*",

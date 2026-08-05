@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { ProjectChatPdfAttachmentIdsSchema } from './project-chat-attachment-contracts';
+import { ProjectChatAttachmentIdsSchema } from './project-chat-attachment-contracts';
 import { WORKSPACE_TASK_STATUSES } from './workspace-contracts';
 
 export const PROJECT_CHAT_MAX_MESSAGE_LENGTH = 12_000;
@@ -380,6 +380,7 @@ export const PROJECT_CHAT_ATTEMPT_STATUSES = [
 
 export const PROJECT_CHAT_ATTEMPT_ERROR_CODES = [
   'codex_unavailable',
+  'attachment_model_modality_unsupported',
   'invalid_response',
   'application_interrupted',
   'user_interrupted',
@@ -578,7 +579,7 @@ export const SendProjectChatMessageInputSchema = z
     responseVerbosity: responseVerbositySchema.optional(),
     contextScope: contextScopeSchema.optional(),
     profileVersion: z.number().int().nonnegative().optional(),
-    attachmentIds: ProjectChatPdfAttachmentIdsSchema.optional(),
+    attachmentIds: ProjectChatAttachmentIdsSchema.optional(),
   })
   .strict();
 
