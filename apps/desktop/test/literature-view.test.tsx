@@ -209,6 +209,40 @@ describe('Literature workspace', () => {
     expect(html).toContain('page 1 of 1');
   });
 
+  it('keeps the evidence table in a bounded, keyboard-focusable two-axis scroll region', () => {
+    const html = renderToStaticMarkup(
+      <LiteratureTable
+        records={[paper]}
+        selectedId={null}
+        textFilter=""
+        statusFilter="all"
+        sortKey="year"
+        sortDirection="descending"
+        page={1}
+        onSelect={vi.fn()}
+        onSort={vi.fn()}
+        onPage={vi.fn()}
+      />,
+    );
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(html).toMatch(
+      /<div class="literature-table-scroll" tabindex="0" aria-label="Literature table">/u,
+    );
+    expect(styles).toMatch(
+      /\.literature-workspace\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*0;)[^}]*\}/su,
+    );
+    expect(styles).toMatch(
+      /\.literature-table-scroll\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*0;)(?=[^}]*\bmax-width:\s*100%;)(?=[^}]*\bmin-height:\s*0;)(?=[^}]*\bmax-height:\s*(?:min|clamp)\([^;]+;)(?=[^}]*\boverflow-x:\s*auto;)(?=[^}]*\boverflow-y:\s*auto;)[^}]*\}/su,
+    );
+    expect(styles).toMatch(
+      /\.literature-table-scroll\s*\{(?=[^}]*\boverscroll-behavior-x:\s*contain;)(?=[^}]*\boverscroll-behavior-y:\s*auto;)(?=[^}]*\bscrollbar-gutter:\s*stable;)[^}]*\}/su,
+    );
+    expect(styles).toMatch(
+      /\.literature-table\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*1220px;)[^}]*\}/su,
+    );
+  });
+
   it('keeps table navigation usable when no results match', () => {
     const html = renderToStaticMarkup(
       <LiteratureTable
