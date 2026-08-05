@@ -2513,6 +2513,7 @@ textarea:focus {
 
 .literature-workspace {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   width: 100%;
   gap: 14px;
   min-width: 0;
@@ -2609,6 +2610,7 @@ textarea:focus {
 
 .literature-library-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 470px;
   overflow: hidden;
 }
@@ -2714,17 +2716,81 @@ textarea:focus {
   clip-path: inset(50%);
 }
 
+.literature-table-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.literature-table-navigation > span {
+  color: var(--muted);
+  font-size: var(--font-caption);
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.literature-table-navigation > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.literature-table-navigation button {
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: var(--font-caption);
+}
+
 .literature-table-scroll {
+  display: block;
   width: 100%;
   min-width: 0;
   min-height: 0;
   max-width: 100%;
-  max-height: min(62vh, 680px);
+  height: clamp(320px, 52vh, 620px);
+  max-height: 620px;
+  contain: inline-size;
   overflow-x: auto;
   overflow-y: auto;
   overscroll-behavior-x: contain;
   overscroll-behavior-y: auto;
-  scrollbar-gutter: stable;
+  scrollbar-color: color-mix(in srgb, var(--muted) 66%, transparent) var(--surface-soft);
+  scrollbar-gutter: stable both-edges;
+  scrollbar-width: auto;
+  touch-action: pan-x pan-y;
+}
+
+.literature-table-scroll::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.literature-table-scroll::-webkit-scrollbar-track {
+  background: var(--surface-soft);
+}
+
+.literature-table-scroll::-webkit-scrollbar-thumb {
+  border: 3px solid var(--surface-soft);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 66%, transparent);
+}
+
+.literature-table-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text) 72%, transparent);
+}
+
+.literature-table-scroll::-webkit-scrollbar-corner {
+  background: var(--surface-soft);
 }
 
 .literature-table {

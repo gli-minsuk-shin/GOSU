@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -13,6 +13,7 @@
     "package:mac:dev": "pnpm build && electron-builder --mac dmg --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false",
     "package:mac:release": "pnpm build && electron-builder --mac dmg --publish never --config.forceCodeSigning=true",
     "smoke:local-db:mac": "electron-builder install-app-deps && electron-vite build --config test/electron/electron.vite.config.ts && electron out/local-database-smoke/main.cjs",
+    "smoke:literature-scroll:mac": "electron-vite build --config test/electron/literature-scroll.electron.vite.config.ts && electron out/literature-scroll-smoke/main.cjs",
     "lint": "eslint src electron.vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
