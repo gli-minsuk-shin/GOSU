@@ -134,12 +134,17 @@ describe('separated application Settings', () => {
     expect(html).toContain('Answer verbosity');
     expect(html).toContain('Personality');
     expect(html).toContain('Local context scope');
+    expect(html).toContain('WEB SEARCH');
+    expect(html).toContain('Cached (recommended)');
+    expect(html).toContain('Live');
+    expect(html).toContain('Disabled');
+    expect(html).toContain('does not enable shell networking, the browser, MCP servers');
     expect(html).toContain('PROJECT INSTRUCTIONS');
     expect(html).toContain('LOCAL NOTES ACCESS');
     expect(html).toContain('Listing notes sends their display titles and opaque IDs');
     expect(html).toContain('content SHA-256, offset, and total character');
     expect(html).toContain('Codex sandbox: project-bound reads');
-    expect(html).toContain('no direct shell, files, network, or subagents');
+    expect(html).toContain('no direct shell, filesystem, raw network, browser');
   });
 
   it('keeps a migrated Reviewer profile in compatibility mode until a native mode is chosen', () => {

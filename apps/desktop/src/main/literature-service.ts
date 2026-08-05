@@ -225,9 +225,15 @@ export class LiteratureService {
     });
   }
 
-  async search(input: LiteratureSearchInput): Promise<LiteratureSearchReceipt> {
+  async search(
+    input: LiteratureSearchInput,
+    externalSignal?: AbortSignal,
+  ): Promise<LiteratureSearchReceipt> {
     const command = LiteratureSearchInputSchema.parse(input);
     await this.requireActiveProject(command.projectId);
+    if (externalSignal?.aborted) {
+      throw new LiteratureServiceError('literature_provider_unavailable');
+    }
     const createdAt = this.now().toISOString();
     const run = LiteratureSearchRunSchema.parse({
       schemaVersion: 1,
@@ -250,6 +256,9 @@ export class LiteratureService {
       throw new LiteratureServiceError('literature_unavailable');
     }
     const controller = new AbortController();
+    const forwardAbort = () => controller.abort(externalSignal?.reason);
+    externalSignal?.addEventListener('abort', forwardAbort, { once: true });
+    if (externalSignal?.aborted) controller.abort(externalSignal.reason);
     this.activeSearches.add(controller);
     try {
       const candidates = await this.provider.search(command.query, run.requestedLimit, {
@@ -258,6 +267,7 @@ export class LiteratureService {
         toYear: command.toYear,
       });
       await this.requireActiveProject(command.projectId);
+      if (controller.signal.aborted) throw new LiteratureProviderError('cancelled');
       const receipt = await this.storage.completeLiteratureSearch(
         command.projectId,
         run.id,
@@ -285,6 +295,7 @@ export class LiteratureService {
       }
       throw error;
     } finally {
+      externalSignal?.removeEventListener('abort', forwardAbort);
       this.activeSearches.delete(controller);
     }
   }

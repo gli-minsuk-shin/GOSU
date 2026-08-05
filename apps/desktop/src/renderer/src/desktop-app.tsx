@@ -1406,7 +1406,24 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onSelectedReasoning={setSelectedReasoning}
                 onRefreshModels={() => void refreshModels()}
                 onOpenAgentSettings={openAgentSettings}
-                onSend={async (message, retryOfAttemptId, controls) => {
+                onChoosePdfAttachments={() => {
+                  if (!activeProjectChatSessionId) return Promise.resolve([]);
+                  return window.gosu.projectChat.choosePdfAttachments({
+                    projectId: activeProject.id,
+                    sessionId: activeProjectChatSessionId,
+                  });
+                }}
+                onReleasePdfAttachment={(attachment) =>
+                  window.gosu.projectChat
+                    .releasePdfAttachment({
+                      projectId: attachment.projectId,
+                      sessionId: attachment.sessionId,
+                      attachmentId: attachment.id,
+                    })
+                    .then(() => undefined)
+                }
+                onAttachmentError={(error) => setWorkspaceError(describeError(error))}
+                onSend={async (message, retryOfAttemptId, controls, attachmentIds) => {
                   if (
                     !activeProjectChatSessionId ||
                     !activeProjectChatSessionKey ||
@@ -1483,6 +1500,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       message,
                       requestedModelId: selectedModel,
                       reasoningOptionId: selectedReasoning,
+                      ...(attachmentIds.length > 0 ? { attachmentIds: [...attachmentIds] } : {}),
                       ...controls,
                       ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
                     });

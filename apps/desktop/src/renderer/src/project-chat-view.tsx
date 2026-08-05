@@ -10,7 +10,12 @@ import {
   type ProjectChatResponseDepth,
   type ProjectChatResponseVerbosity,
   type ProjectChatSnapshot,
+  type ProjectChatWebSearchMode,
 } from '../../shared/project-chat-contracts';
+import {
+  PROJECT_CHAT_MAX_PDF_ATTACHMENTS,
+  type ProjectChatPdfAttachment,
+} from '../../shared/project-chat-attachment-contracts';
 import {
   resolveWorkspaceBoardSettings,
   type ProjectRecord,
@@ -97,6 +102,16 @@ export function reconcileProjectChatSessionUiState(
     : { draft: initialDraft, retryOfAttemptId: null, advancedOpen: false };
 }
 
+export function shouldAcceptPdfPickerResult(
+  mounted: boolean,
+  expectedScope: string,
+  currentScope: string,
+  expectedGeneration: number,
+  currentGeneration: number,
+) {
+  return mounted && expectedScope === currentScope && expectedGeneration === currentGeneration;
+}
+
 const HARNESS_LABELS: Record<ProjectChatHarnessMode, string> = {
   context: 'Copilot',
   planner: 'Planner',
@@ -127,6 +142,12 @@ const CONTEXT_LABELS: Record<ProjectChatContextScope, string> = {
   project: 'Board + Objective',
   board: 'Board only',
   objective: 'Objective only',
+};
+
+const WEB_SEARCH_LABELS: Record<ProjectChatWebSearchMode, string> = {
+  cached: 'Cached web',
+  live: 'Live web',
+  disabled: 'Web off',
 };
 
 export function resolveEffectiveCodexModel(
@@ -164,6 +185,9 @@ export function ProjectChatView({
   onSelectedReasoning,
   onRefreshModels,
   onOpenAgentSettings,
+  onChoosePdfAttachments = async () => [],
+  onReleasePdfAttachment = async () => undefined,
+  onAttachmentError = () => undefined,
   onSend,
   onCancel,
   onApplyAction,
@@ -197,10 +221,14 @@ export function ProjectChatView({
   onSelectedReasoning: (reasoningId: string | null) => void;
   onRefreshModels: () => void;
   onOpenAgentSettings: () => void;
+  onChoosePdfAttachments?: () => Promise<readonly ProjectChatPdfAttachment[]>;
+  onReleasePdfAttachment?: (attachment: ProjectChatPdfAttachment) => Promise<void>;
+  onAttachmentError?: (error: unknown) => void;
   onSend: (
     message: string,
     retryOfAttemptId: string | undefined,
     controls: ProjectChatTurnControls,
+    attachmentIds: readonly string[],
   ) => Promise<boolean>;
   onCancel: () => void;
   onApplyAction: (action: ProjectChatAction) => Promise<void>;
@@ -236,15 +264,76 @@ export function ProjectChatView({
   const [personality, setPersonality] = useState<ProjectChatPersonality>('auto');
   const [responseVerbosity, setResponseVerbosity] = useState<ProjectChatResponseVerbosity>('auto');
   const [contextScope, setContextScope] = useState<ProjectChatContextScope>('project');
+  const [pdfAttachments, setPdfAttachments] = useState<readonly ProjectChatPdfAttachment[]>([]);
+  const [choosingPdfAttachments, setChoosingPdfAttachments] = useState(false);
+  const pdfAttachmentsRef = useRef(pdfAttachments);
+  const releasePdfAttachmentHandlerRef = useRef(onReleasePdfAttachment);
+  const attachmentScopeRef = useRef('');
+  const attachmentPickerGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const latestMessageRef = useRef<HTMLElement>(null);
   const observedLatestMessageIdRef = useRef<string | null>(null);
   const wasInFlightRef = useRef(inFlight);
   const draftSessionKey = `${project.id}\u0000${selectedSessionId ?? ''}`;
+  attachmentScopeRef.current = draftSessionKey;
   const hydratedSessionKeyRef = useRef(draftSessionKey);
   const updateDraft = (value: string) => {
     setDraft(value);
     onDraftChange(value);
+  };
+  const releasePdfAttachment = (attachment: ProjectChatPdfAttachment) => {
+    setPdfAttachments((current) => {
+      const next = current.filter((candidate) => candidate.id !== attachment.id);
+      pdfAttachmentsRef.current = next;
+      return next;
+    });
+    void onReleasePdfAttachment(attachment).catch(onAttachmentError);
+  };
+  const choosePdfAttachments = async () => {
+    if (choosingPdfAttachments || pdfAttachments.length >= PROJECT_CHAT_MAX_PDF_ATTACHMENTS) return;
+    const scope = draftSessionKey;
+    const generation = ++attachmentPickerGenerationRef.current;
+    setChoosingPdfAttachments(true);
+    try {
+      const selected = await onChoosePdfAttachments();
+      if (
+        !shouldAcceptPdfPickerResult(
+          mountedRef.current,
+          scope,
+          attachmentScopeRef.current,
+          generation,
+          attachmentPickerGenerationRef.current,
+        )
+      ) {
+        for (const attachment of selected) {
+          void releasePdfAttachmentHandlerRef.current(attachment).catch(() => undefined);
+        }
+        return;
+      }
+      const currentAttachments = pdfAttachmentsRef.current;
+      const existingIds = new Set(currentAttachments.map((attachment) => attachment.id));
+      const additions = selected.filter((attachment) => !existingIds.has(attachment.id));
+      const remaining = PROJECT_CHAT_MAX_PDF_ATTACHMENTS - currentAttachments.length;
+      const accepted = additions.slice(0, remaining);
+      const rejected = additions.slice(remaining);
+      setPdfAttachments((current) => {
+        const next = [...current, ...accepted];
+        pdfAttachmentsRef.current = next;
+        return next;
+      });
+      for (const attachment of rejected) {
+        void onReleasePdfAttachment(attachment).catch(() => undefined);
+      }
+    } catch (error) {
+      if (mountedRef.current && attachmentPickerGenerationRef.current === generation) {
+        onAttachmentError(error);
+      }
+    } finally {
+      if (mountedRef.current && attachmentPickerGenerationRef.current === generation) {
+        setChoosingPdfAttachments(false);
+      }
+    }
   };
   const board = useMemo(() => resolveWorkspaceBoardSettings(project.board), [project.board]);
   const selectedCollaborationMode = collaborationModeId
@@ -349,10 +438,38 @@ export function ProjectChatView({
     const previousIdentity = hydratedSessionKeyRef.current;
     if (previousIdentity === draftSessionKey) return;
     hydratedSessionKeyRef.current = draftSessionKey;
+    attachmentPickerGenerationRef.current += 1;
+    setChoosingPdfAttachments(false);
     setSessionUi((current) =>
       reconcileProjectChatSessionUiState(previousIdentity, draftSessionKey, current, initialDraft),
     );
+    const staleAttachments = pdfAttachmentsRef.current;
+    pdfAttachmentsRef.current = [];
+    setPdfAttachments([]);
+    for (const attachment of staleAttachments) {
+      void onReleasePdfAttachment(attachment).catch(() => undefined);
+    }
   }, [draftSessionKey, initialDraft]);
+
+  useEffect(() => {
+    pdfAttachmentsRef.current = pdfAttachments;
+  }, [pdfAttachments]);
+
+  useEffect(() => {
+    releasePdfAttachmentHandlerRef.current = onReleasePdfAttachment;
+  }, [onReleasePdfAttachment]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      attachmentPickerGenerationRef.current += 1;
+      for (const attachment of pdfAttachmentsRef.current) {
+        void releasePdfAttachmentHandlerRef.current(attachment).catch(() => undefined);
+      }
+      pdfAttachmentsRef.current = [];
+    };
+  }, []);
 
   useEffect(() => {
     const profile = snapshot?.profile ?? defaultProjectChatProfile(project.id);
@@ -385,7 +502,21 @@ export function ProjectChatView({
       profileVersion: snapshot?.profile?.version ?? 0,
       ...(legacyReviewerCompatibility ? {} : { collaborationModeId }),
     };
-    void onSend(message, retryOfAttemptId ?? undefined, controls).then((accepted) => {
+    void onSend(
+      message,
+      retryOfAttemptId ?? undefined,
+      controls,
+      pdfAttachments.map((attachment) => attachment.id),
+    ).then((accepted) => {
+      if (pdfAttachments.length > 0) {
+        if (!accepted) {
+          for (const attachment of pdfAttachments) {
+            void onReleasePdfAttachment(attachment).catch(() => undefined);
+          }
+        }
+        pdfAttachmentsRef.current = [];
+        setPdfAttachments([]);
+      }
       if (accepted) {
         updateDraft('');
         setRetryOfAttemptId(null);
@@ -761,6 +892,8 @@ export function ProjectChatView({
                 ? 'Codex default mode'
                 : (selectedCollaborationMode?.displayName ?? collaborationModeId)}{' '}
             · {VERBOSITY_LABELS[responseVerbosity]} · {localNotesStatus}
+            {' · '}
+            {WEB_SEARCH_LABELS[snapshot?.profile?.webSearchMode ?? 'cached']}
             {vaultState === 'ready' && !localNotesAvailable && (
               <button
                 type="button"
@@ -793,7 +926,49 @@ export function ProjectChatView({
               wait for it to finish.
             </div>
           )}
+          {pdfAttachments.length > 0 && (
+            <div className="chat-pdf-attachments" aria-label="PDF attachments">
+              {pdfAttachments.map((attachment) => (
+                <span className="chat-pdf-chip" key={attachment.id}>
+                  <span title={attachment.displayName}>{attachment.displayName}</span>
+                  <small>
+                    {attachment.pageCount}p
+                    {!attachment.textAvailable ? ' · no selectable text' : ''}
+                    {attachment.truncated ? ' · excerpted' : ''}
+                  </small>
+                  <button
+                    type="button"
+                    onClick={() => releasePdfAttachment(attachment)}
+                    aria-label={`Remove ${attachment.displayName}`}
+                    disabled={loading || projectBusy}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              <span className="chat-pdf-privacy">
+                Files stay local; PDF text read by GOSU is sent only to the selected model for this
+                turn.
+              </span>
+            </div>
+          )}
           <div className="chat-composer">
+            <button
+              type="button"
+              className="chat-attach-button"
+              onClick={() => void choosePdfAttachments()}
+              disabled={
+                loading ||
+                projectBusy ||
+                choosingPdfAttachments ||
+                pdfAttachments.length >= PROJECT_CHAT_MAX_PDF_ATTACHMENTS
+              }
+              aria-label="Attach PDF files"
+              title="Attach up to 3 PDFs for this one turn"
+            >
+              {choosingPdfAttachments ? '…' : '＋'}
+              <span>PDF</span>
+            </button>
             <textarea
               value={draft}
               onChange={(event) => {

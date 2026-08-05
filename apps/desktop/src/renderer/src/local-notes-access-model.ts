@@ -16,6 +16,7 @@ export function buildLocalNotesGrantUpdate(
     collaborationModeId: profile.collaborationModeId,
     personality: profile.personality,
     responseVerbosity: profile.responseVerbosity,
+    webSearchMode: profile.webSearchMode,
     contextScope: profile.contextScope,
     localNotesVault,
     customInstructions: profile.customInstructions,

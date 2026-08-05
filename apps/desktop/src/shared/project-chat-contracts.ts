@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { ProjectChatPdfAttachmentIdsSchema } from './project-chat-attachment-contracts';
 import { WORKSPACE_TASK_STATUSES } from './workspace-contracts';
 
 export const PROJECT_CHAT_MAX_MESSAGE_LENGTH = 12_000;
@@ -15,6 +16,7 @@ export const PROJECT_CHAT_RESPONSE_DEPTHS = ['concise', 'standard', 'deep'] as c
 export const PROJECT_CHAT_CONTEXT_SCOPES = ['project', 'board', 'objective'] as const;
 export const PROJECT_CHAT_PERSONALITIES = ['auto', 'none', 'friendly', 'pragmatic'] as const;
 export const PROJECT_CHAT_RESPONSE_VERBOSITIES = ['auto', 'low', 'medium', 'high'] as const;
+export const PROJECT_CHAT_WEB_SEARCH_MODES = ['disabled', 'cached', 'live'] as const;
 export const PROJECT_CHAT_NATIVE_EXECUTION_KINDS = ['default', 'plan', 'legacy-reviewer'] as const;
 
 const timestampSchema = z.string().datetime({ offset: true });
@@ -26,6 +28,7 @@ const responseDepthSchema = z.enum(PROJECT_CHAT_RESPONSE_DEPTHS);
 const contextScopeSchema = z.enum(PROJECT_CHAT_CONTEXT_SCOPES);
 const personalitySchema = z.enum(PROJECT_CHAT_PERSONALITIES);
 const responseVerbositySchema = z.enum(PROJECT_CHAT_RESPONSE_VERBOSITIES);
+const webSearchModeSchema = z.enum(PROJECT_CHAT_WEB_SEARCH_MODES);
 const nativeExecutionKindSchema = z.enum(PROJECT_CHAT_NATIVE_EXECUTION_KINDS);
 const opaqueCollaborationModeIdSchema = z
   .string()
@@ -111,6 +114,8 @@ const ProjectChatProfileWireSchema = z
     collaborationModeId: opaqueCollaborationModeIdSchema.nullable().optional(),
     personality: personalitySchema.optional(),
     responseVerbosity: responseVerbositySchema.optional(),
+    // Optional at the wire boundary so legacy profiles inherit the safer cached-search default.
+    webSearchMode: webSearchModeSchema.optional(),
     contextScope: contextScopeSchema,
     // Optional at the wire boundary so profiles created by older desktop builds remain readable.
     localNotesVault: LocalNotesVaultGrantSchema.nullable().optional(),
@@ -149,6 +154,7 @@ export const ProjectChatProfileSchema = ProjectChatProfileWireSchema.transform((
   personality: profile.personality ?? 'auto',
   responseVerbosity:
     profile.responseVerbosity ?? legacyDepthToResponseVerbosity(profile.responseDepth),
+  webSearchMode: profile.webSearchMode ?? 'cached',
 }));
 
 export type ProjectChatProfile = z.infer<typeof ProjectChatProfileSchema>;
@@ -157,6 +163,7 @@ export type ProjectChatResponseDepth = z.infer<typeof responseDepthSchema>;
 export type ProjectChatContextScope = z.infer<typeof contextScopeSchema>;
 export type ProjectChatPersonality = z.infer<typeof personalitySchema>;
 export type ProjectChatResponseVerbosity = z.infer<typeof responseVerbositySchema>;
+export type ProjectChatWebSearchMode = z.infer<typeof webSearchModeSchema>;
 export type ProjectChatNativeExecutionKind = z.infer<typeof nativeExecutionKindSchema>;
 
 export function defaultProjectChatProfile(projectId: string): ProjectChatProfile {
@@ -169,6 +176,7 @@ export function defaultProjectChatProfile(projectId: string): ProjectChatProfile
     collaborationModeId: null,
     personality: 'auto',
     responseVerbosity: 'auto',
+    webSearchMode: 'cached',
     contextScope: 'project',
     localNotesVault: null,
     customInstructions: '',
@@ -187,6 +195,8 @@ export const UpdateProjectChatProfileInputSchema = z
     collaborationModeId: opaqueCollaborationModeIdSchema.nullable().optional(),
     personality: personalitySchema.optional(),
     responseVerbosity: responseVerbositySchema.optional(),
+    // Legacy clients omitted this field and therefore receive the cached-search default.
+    webSearchMode: webSearchModeSchema.optional(),
     contextScope: contextScopeSchema,
     // Legacy clients omitted this field and therefore retain the safe no-access default.
     localNotesVault: LocalNotesVaultGrantSchema.nullable().optional(),
@@ -202,6 +212,7 @@ export const UpdateProjectChatProfileInputSchema = z
     personality: profile.personality ?? 'auto',
     responseVerbosity:
       profile.responseVerbosity ?? legacyDepthToResponseVerbosity(profile.responseDepth),
+    webSearchMode: profile.webSearchMode ?? 'cached',
   }));
 
 export type UpdateProjectChatProfileInput = z.input<typeof UpdateProjectChatProfileInputSchema>;
@@ -393,6 +404,8 @@ export const ProjectChatAttemptSchema = z
     collaborationModeId: opaqueCollaborationModeIdSchema.nullable().optional(),
     personality: personalitySchema.optional(),
     responseVerbosity: responseVerbositySchema.optional(),
+    // Optional so attempts written before per-project web search modes remain readable.
+    webSearchMode: webSearchModeSchema.optional(),
     contextScope: contextScopeSchema.optional(),
     profileVersion: z.number().int().nonnegative().optional(),
     instructionRevisionId: uuidSchema.nullable().optional(),
@@ -565,6 +578,7 @@ export const SendProjectChatMessageInputSchema = z
     responseVerbosity: responseVerbositySchema.optional(),
     contextScope: contextScopeSchema.optional(),
     profileVersion: z.number().int().nonnegative().optional(),
+    attachmentIds: ProjectChatPdfAttachmentIdsSchema.optional(),
   })
   .strict();
 

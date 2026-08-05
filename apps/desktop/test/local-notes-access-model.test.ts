@@ -14,6 +14,7 @@ describe('Local Notes grant profile update', () => {
       collaborationModeId: 'future-native-mode',
       personality: 'pragmatic',
       responseVerbosity: 'high',
+      webSearchMode: 'live',
       contextScope: 'objective',
       localNotesVault: { id: 'a'.repeat(64), name: 'Previous Vault' },
       customInstructions: 'Keep evidence and project decisions traceable.',
@@ -37,6 +38,7 @@ describe('Local Notes grant profile update', () => {
       collaborationModeId: 'future-native-mode',
       personality: 'pragmatic',
       responseVerbosity: 'high',
+      webSearchMode: 'live',
       contextScope: 'objective',
       localNotesVault: nextGrant,
       customInstructions: 'Keep evidence and project decisions traceable.',
@@ -56,6 +58,7 @@ describe('Local Notes grant profile update', () => {
       collaborationModeId: null,
       personality: 'auto',
       responseVerbosity: 'auto',
+      webSearchMode: 'disabled',
       contextScope: 'project',
       localNotesVault: { id: 'a'.repeat(64), name: 'Research Vault' },
       customInstructions: '',
@@ -66,6 +69,7 @@ describe('Local Notes grant profile update', () => {
     expect(buildLocalNotesGrantUpdate(profile, null)).toMatchObject({
       projectId: profile.projectId,
       expectedVersion: 0,
+      webSearchMode: 'disabled',
       localNotesVault: null,
     });
   });

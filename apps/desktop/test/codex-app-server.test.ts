@@ -791,6 +791,35 @@ describe('Codex App Server process boundary', () => {
     expect(
       buildCodexThreadParameters({ cwd: '/isolated/project', modelId: null }),
     ).not.toHaveProperty('baseInstructions');
+    for (const webSearchMode of ['disabled', 'cached', 'live'] as const) {
+      expect(
+        buildCodexThreadParameters({
+          cwd: '/isolated/project',
+          modelId: null,
+          webSearchMode,
+        }),
+      ).toMatchObject({
+        approvalPolicy: 'never',
+        sandbox: 'read-only',
+        config: {
+          web_search: webSearchMode,
+          features: {
+            browser_use: false,
+            in_app_browser: false,
+            network_proxy: false,
+            shell_tool: false,
+          },
+          mcp_servers: {},
+        },
+      });
+    }
+    expect(() =>
+      buildCodexThreadParameters({
+        cwd: '/isolated/project',
+        modelId: null,
+        webSearchMode: 'browser' as 'live',
+      }),
+    ).toThrow('codex_web_search_mode_invalid');
     expect(
       buildCodexTurnParameters({
         threadId: 'thread-1',
