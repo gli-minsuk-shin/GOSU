@@ -36,6 +36,7 @@ import type {
 import { BoardView } from './board-view';
 import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
+import { ExperimentsView, type ExperimentsViewAdapter } from './experiments-view';
 import { buildLocalNotesGrantUpdate } from './local-notes-access-model';
 import { LiteratureView, type LiteratureViewAdapter } from './literature-view';
 import {
@@ -127,6 +128,14 @@ const literatureAdapter: LiteratureViewAdapter = {
   organize: (input) => window.gosu.literature.organize(input),
 };
 
+const experimentsAdapter: ExperimentsViewAdapter = {
+  list: (input) => window.gosu.experiments.list(input),
+  createIdea: (input) => window.gosu.experiments.createIdea(input),
+  updateIdea: (input) => window.gosu.experiments.updateIdea(input),
+  recordMetric: (input) => window.gosu.experiments.recordMetric(input),
+  onEvent: (listener) => window.gosu.experiments.onEvent(listener),
+};
+
 function createProjectCommand(
   input: ProjectDraft,
   preferences: UserPreferences,
@@ -151,6 +160,7 @@ function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabI
     tab === 'repository' ||
     tab === 'board' ||
     tab === 'objective' ||
+    tab === 'experiments' ||
     tab === 'literature'
   );
 }
@@ -1788,6 +1798,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     'Started an editable objective revision.',
                   )
                 }
+              />
+            )}
+            {activeTab === 'experiments' && activeProject && (
+              <ExperimentsView
+                key={activeProject.id}
+                project={activeProject}
+                objective={activeObjective}
+                adapter={experimentsAdapter}
+                onOpenObjective={() => selectProjectTab(activeProject.id, 'objective')}
               />
             )}
             {activeTab === 'literature' && activeProject && (

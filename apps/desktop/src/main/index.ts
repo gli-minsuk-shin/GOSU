@@ -11,6 +11,7 @@ import {
 } from 'electron';
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
+import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
 import { SshEventSchema } from '../shared/ssh-contracts';
@@ -30,6 +31,8 @@ import { registerLiteratureIpc } from './literature-ipc';
 import { SemanticScholarLiteratureProvider } from './literature-semantic-scholar';
 import { LiteratureService } from './literature-service';
 import { createLiteratureTransferPlatform } from './literature-transfer-platform';
+import { registerExperimentWorkspaceIpc } from './experiment-workspace-ipc';
+import { ExperimentWorkspaceService } from './experiment-workspace-service';
 import { registerProjectChatAttachmentIpc } from './project-chat-attachment-ipc';
 import { createProjectChatAttachmentPicker } from './project-chat-attachment-platform';
 import { ProjectChatAttachmentService } from './project-chat-attachment-service';
@@ -74,6 +77,10 @@ const workspace = new WorkspaceService({
   commit: (state, operation) => database.commitWorkspaceState(state, operation),
   pendingChanges: () => database.pendingWorkspaceChanges(),
   pendingSummary: () => database.pendingWorkspaceSummary(),
+});
+const experimentWorkspace = new ExperimentWorkspaceService({
+  storage: database,
+  workspace,
 });
 const gitWorkspace = new GitWorkspaceService({
   workspace,
@@ -309,6 +316,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     literatureAi,
     reportUnexpectedWorkspaceError,
   );
+  registerExperimentWorkspaceIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    experimentWorkspace,
+    reportUnexpectedWorkspaceError,
+  );
   registerAgentAddOnIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     agentAddOns,
@@ -436,6 +448,15 @@ if (!primaryInstance) {
           mainWindow.webContents.send(SSH_IPC_CHANNELS.event, SshEventSchema.parse(event));
         } catch {
           console.error('[GOSU] SSH approval renderer event delivery failed.');
+        }
+      }
+    });
+    experimentWorkspace.onEvent((event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send(EXPERIMENT_WORKSPACE_IPC_CHANNELS.event, event);
+        } catch {
+          console.error('[GOSU] Experiment workspace renderer event delivery failed.');
         }
       }
     });

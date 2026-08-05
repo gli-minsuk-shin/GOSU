@@ -7,6 +7,19 @@ import type {
   AgentAddOnStatusRequest,
 } from '../shared/agent-addon-contracts';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
+import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
+import {
+  ExperimentWorkspaceEventSchema,
+  type CreateExperimentIdeaInput,
+  type ExperimentIdea,
+  type ExperimentMetricPoint,
+  type ExperimentWorkspaceEvent,
+  type ExperimentWorkspaceSnapshot,
+  type ListExperimentWorkspaceInput,
+  type RecordExperimentMetricInput,
+  type UpdateExperimentIdeaInput,
+} from '../shared/experiment-workspace-contracts';
+import { unwrapExperimentIpcResult } from '../shared/experiment-workspace-ipc-result';
 import { GIT_WORKSPACE_IPC_CHANNELS } from '../shared/git-workspace-channels';
 import type {
   GitCommitInput,
@@ -140,6 +153,14 @@ async function invokeLiterature<T>(channel: string, input: unknown): Promise<T> 
     error: { code: 'literature_unavailable' },
   }));
   return unwrapLiteratureIpcResult<T>(result);
+}
+
+async function invokeExperiment<T>(channel: string, input: unknown): Promise<T> {
+  const result = await ipcRenderer.invoke(channel, input).catch(() => ({
+    ok: false,
+    error: { code: 'experiment_unavailable' },
+  }));
+  return unwrapExperimentIpcResult<T>(result);
 }
 
 async function invokeSsh<T>(channel: string, input?: unknown): Promise<T> {
@@ -319,6 +340,30 @@ const api = {
       invokeLiterature<LiteratureExportReceipt>(LITERATURE_IPC_CHANNELS.exportRecords, input),
     organize: (input: OrganizeLiteratureInput) =>
       invokeLiterature<LiteratureOrganizeReceipt>(LITERATURE_IPC_CHANNELS.organize, input),
+  },
+  experiments: {
+    list: (input: ListExperimentWorkspaceInput) =>
+      invokeExperiment<ExperimentWorkspaceSnapshot>(EXPERIMENT_WORKSPACE_IPC_CHANNELS.list, input),
+    createIdea: (input: CreateExperimentIdeaInput) =>
+      invokeExperiment<ExperimentIdea>(EXPERIMENT_WORKSPACE_IPC_CHANNELS.createIdea, input),
+    updateIdea: (input: UpdateExperimentIdeaInput) =>
+      invokeExperiment<ExperimentIdea>(EXPERIMENT_WORKSPACE_IPC_CHANNELS.updateIdea, input),
+    recordMetric: (input: RecordExperimentMetricInput) =>
+      invokeExperiment<ExperimentMetricPoint>(
+        EXPERIMENT_WORKSPACE_IPC_CHANNELS.recordMetric,
+        input,
+      ),
+    onEvent: (listener: (event: ExperimentWorkspaceEvent) => void) => {
+      if (typeof listener !== 'function') throw new Error('invalid_experiment_event_listener');
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const parsed = ExperimentWorkspaceEventSchema.safeParse(value);
+        if (parsed.success) listener(parsed.data);
+      };
+      ipcRenderer.on(EXPERIMENT_WORKSPACE_IPC_CHANNELS.event, handler);
+      return () => {
+        ipcRenderer.removeListener(EXPERIMENT_WORKSPACE_IPC_CHANNELS.event, handler);
+      };
+    },
   },
   ssh: {
     listConnections: () =>

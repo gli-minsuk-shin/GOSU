@@ -1,0 +1,1014 @@
+.experiments-shell {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+  max-width: 1500px;
+}
+
+.experiments-runtime-card,
+.experiments-objective-notice,
+.experiment-card,
+.experiment-report {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(145deg, var(--surface), var(--surface-soft));
+}
+
+.experiments-runtime-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 18px;
+}
+
+.experiments-runtime-copy {
+  min-width: 0;
+}
+
+.experiments-runtime-copy h2,
+.experiment-card-head h2,
+.experiment-idea-inspector h2,
+.experiment-report-hero h2 {
+  margin: 4px 0 3px;
+  letter-spacing: -0.025em;
+}
+
+.experiments-runtime-copy h2,
+.experiment-card-head h2 {
+  font-size: var(--font-section);
+}
+
+.experiments-runtime-copy p,
+.experiment-card-head p,
+.experiment-recorder-card > p,
+.experiment-idea-inspector header p,
+.experiment-report-hero p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.55;
+}
+
+.experiments-runtime-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.experiment-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  gap: 7px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--muted);
+  font-size: var(--font-meta);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.experiment-status-pill i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.experiment-status-pill.local {
+  border-color: color-mix(in srgb, var(--green) 35%, var(--line));
+  color: var(--green);
+}
+
+.experiment-status-pill.runner {
+  border-color: color-mix(in srgb, var(--orange) 35%, var(--line));
+  color: var(--orange);
+}
+
+.experiments-objective-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 15px;
+  border-color: color-mix(in srgb, var(--orange) 30%, var(--line));
+  background: color-mix(in srgb, var(--orange) 6%, var(--surface));
+}
+
+.experiments-objective-notice > div {
+  display: grid;
+  gap: 3px;
+}
+
+.experiments-objective-notice strong {
+  font-size: var(--font-body);
+}
+
+.experiments-objective-notice span {
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.experiments-error {
+  max-width: none;
+  margin: 0;
+}
+
+.experiment-tabs {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  gap: 3px;
+  padding: 4px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft);
+  scrollbar-width: thin;
+}
+
+.experiment-tabs button {
+  min-width: 112px;
+  min-height: 34px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.experiment-tabs button.active {
+  background: var(--surface-raised);
+  color: var(--green);
+  box-shadow: 0 1px 5px light-dark(rgba(30, 55, 34, 0.1), rgba(0, 0, 0, 0.25));
+}
+
+.experiments-loading {
+  display: grid;
+  place-items: center;
+  min-height: 300px;
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  color: var(--muted);
+}
+
+.experiment-panel {
+  min-width: 0;
+}
+
+.experiment-trajectory-layout,
+.experiment-idea-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.55fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.experiment-card {
+  padding: 18px;
+}
+
+.experiment-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+
+.experiment-card-head > div:first-child {
+  min-width: 0;
+}
+
+.experiment-series-picker {
+  flex: 0 1 430px;
+  min-width: min(100%, 290px);
+}
+
+.experiment-chart-figure {
+  min-width: 0;
+  margin: 0;
+}
+
+.experiment-chart-figure svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 260px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background:
+    linear-gradient(to bottom, transparent, color-mix(in srgb, var(--green) 2%, transparent)),
+    var(--surface-raised);
+}
+
+.experiment-chart-gridline {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.experiment-chart-axis-label,
+.experiment-chart-guide-label {
+  fill: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.experiment-chart-guide-label {
+  font-weight: 750;
+}
+
+.experiment-chart-guide-label.target {
+  fill: var(--blue);
+}
+
+.experiment-chart-guide {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 7 6;
+}
+
+.experiment-chart-guide.target {
+  stroke: var(--blue);
+}
+
+.experiment-chart-value-line,
+.experiment-chart-best-line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.experiment-chart-value-line {
+  stroke: var(--green);
+  stroke-width: 3;
+}
+
+.experiment-chart-best-line {
+  stroke: color-mix(in srgb, var(--green) 60%, var(--blue));
+  stroke-width: 2;
+  stroke-dasharray: 6 6;
+}
+
+.experiment-chart-marker {
+  cursor: pointer;
+  color: var(--experiment-outcome);
+}
+
+.experiment-chart-marker circle {
+  fill: var(--surface);
+  stroke: currentColor;
+  stroke-width: 3;
+  transition:
+    r 130ms ease,
+    stroke-width 130ms ease;
+}
+
+.experiment-chart-marker text {
+  fill: currentColor;
+  font-size: 9px;
+  font-weight: 900;
+  pointer-events: none;
+}
+
+.experiment-chart-marker:hover circle,
+.experiment-chart-marker:focus-visible circle,
+.experiment-chart-marker.selected circle {
+  stroke-width: 5;
+}
+
+.experiment-chart-marker:focus {
+  outline: none;
+}
+
+.experiment-chart-marker:focus-visible circle {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 65%, transparent));
+}
+
+.experiment-chart-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px 14px;
+  padding: 11px 4px 1px;
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.experiment-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.experiment-chart-legend i {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--experiment-outcome);
+  border-radius: 50%;
+  color: var(--experiment-outcome);
+  font-style: normal;
+  font-weight: 900;
+}
+
+.experiment-outcome-planned {
+  --experiment-outcome: var(--subtle);
+}
+
+.experiment-outcome-running {
+  --experiment-outcome: var(--blue);
+}
+
+.experiment-outcome-success {
+  --experiment-outcome: var(--green);
+}
+
+.experiment-outcome-partial {
+  --experiment-outcome: var(--orange);
+}
+
+.experiment-outcome-failed {
+  --experiment-outcome: var(--red);
+}
+
+.experiment-outcome-inconclusive {
+  --experiment-outcome: light-dark(#6756a6, #b59aff);
+}
+
+.experiment-chart-empty,
+.experiment-graph-empty {
+  display: grid;
+  place-items: center;
+  min-height: 300px;
+  gap: 8px;
+  padding: 32px;
+  border: 1px dashed var(--line);
+  border-radius: 11px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.experiment-chart-empty strong,
+.experiment-graph-empty strong {
+  color: var(--text);
+  font-size: var(--font-section);
+}
+
+.experiment-graph-empty span,
+.experiment-chart-empty span {
+  max-width: 520px;
+}
+
+.experiment-trajectory-side,
+.experiment-idea-layout > aside {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.experiment-recorder-card h3,
+.experiment-selection-card h3 {
+  margin: 5px 0 6px;
+  font-size: var(--font-section);
+}
+
+.experiment-stack-form {
+  display: grid;
+  gap: 11px;
+  margin-top: 14px;
+}
+
+.experiment-stack-form label small {
+  color: var(--subtle);
+  font-weight: 500;
+}
+
+.experiment-project-scope {
+  display: block;
+  margin-top: 11px;
+  color: var(--subtle);
+}
+
+.experiment-inline-empty {
+  margin: 12px 0 0;
+  padding: 13px;
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.experiment-selection-card > strong {
+  display: block;
+  margin: 10px 0 12px;
+  color: var(--green);
+  font-size: clamp(24px, 3vw, 34px);
+  letter-spacing: -0.04em;
+}
+
+.experiment-selection-card dl,
+.experiment-provenance-receipt dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.experiment-selection-card dl > div,
+.experiment-provenance-receipt dl > div {
+  display: grid;
+  grid-template-columns: minmax(80px, 0.45fr) minmax(0, 1fr);
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.experiment-selection-card dt,
+.experiment-provenance-receipt dt {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.experiment-selection-card dd,
+.experiment-provenance-receipt dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--font-control);
+  font-weight: 650;
+}
+
+.experiment-data-disclosure {
+  margin-top: 13px;
+  border-top: 1px solid var(--line);
+}
+
+.experiment-data-disclosure summary {
+  width: max-content;
+  max-width: 100%;
+  padding: 11px 2px 2px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.experiment-table-scroll {
+  max-width: 100%;
+  max-height: 320px;
+  margin-top: 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  scrollbar-gutter: stable both-edges;
+}
+
+.experiment-table-scroll table {
+  width: 100%;
+  min-width: 700px;
+  border-collapse: collapse;
+  font-size: var(--font-control);
+}
+
+.experiment-table-scroll th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: var(--surface-raised);
+  color: var(--muted);
+  text-align: left;
+}
+
+.experiment-table-scroll th,
+.experiment-table-scroll td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.experiment-table-scroll tr.selected td {
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+}
+
+.experiment-graph-toolbar {
+  align-items: flex-end;
+}
+
+.experiment-graph-actions {
+  display: flex;
+  align-items: flex-end;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.experiment-graph-actions label {
+  min-width: 150px;
+}
+
+.experiment-idea-composer {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--green) 32%, var(--line));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--green) 5%, var(--surface-raised));
+}
+
+.experiment-idea-composer > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.experiment-idea-composer > header div {
+  display: grid;
+  gap: 3px;
+}
+
+.experiment-idea-composer > header span {
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.experiment-idea-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(180px, 0.5fr);
+  gap: 10px;
+}
+
+.experiment-idea-form-grid .full-width {
+  grid-column: 1 / -1;
+}
+
+.experiments-integrity-warning {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--red) 38%, var(--line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--red) 7%, transparent);
+  color: var(--red);
+  font-size: var(--font-control);
+}
+
+.experiment-graph-scroll {
+  width: 100%;
+  min-height: clamp(360px, 54vh, 620px);
+  max-height: 620px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background:
+    radial-gradient(circle, var(--line-strong) 1px, transparent 1px), var(--surface-raised);
+  background-size: 22px 22px;
+  scrollbar-gutter: stable both-edges;
+  overscroll-behavior: contain;
+}
+
+.experiment-lineage-edge {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 2;
+  transition: opacity 130ms ease;
+}
+
+.experiment-lineage-edge.filtered {
+  opacity: 0.08;
+}
+
+.experiment-lineage-node {
+  color: var(--experiment-outcome);
+  cursor: pointer;
+  transition: opacity 130ms ease;
+}
+
+.experiment-lineage-node rect {
+  fill: color-mix(in srgb, var(--experiment-outcome) 7%, var(--surface));
+  stroke: color-mix(in srgb, var(--experiment-outcome) 65%, var(--line));
+  stroke-width: 2;
+}
+
+.experiment-lineage-node:hover rect,
+.experiment-lineage-node:focus-visible rect,
+.experiment-lineage-node.selected rect {
+  stroke-width: 4;
+}
+
+.experiment-lineage-node:focus {
+  outline: none;
+}
+
+.experiment-lineage-node:focus-visible rect {
+  filter: drop-shadow(0 0 5px color-mix(in srgb, currentColor 50%, transparent));
+}
+
+.experiment-lineage-node.filtered {
+  opacity: 0.12;
+  pointer-events: none;
+}
+
+.experiment-node-label {
+  fill: currentColor;
+  font-size: var(--font-meta);
+  font-weight: 900;
+}
+
+.experiment-node-title {
+  fill: var(--text);
+  font-size: var(--font-control);
+  font-weight: 750;
+}
+
+.experiment-node-outcome {
+  fill: currentColor;
+  font-size: var(--font-caption);
+  font-weight: 750;
+}
+
+.experiment-accessible-idea-list {
+  display: grid;
+  gap: 6px;
+  max-height: 280px;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.experiment-accessible-idea-list button {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  text-align: left;
+}
+
+.experiment-accessible-idea-list button[aria-current='true'] {
+  border-color: var(--green);
+}
+
+.experiment-accessible-idea-list span {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.experiment-idea-inspector > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.experiment-idea-inspector > header > div {
+  min-width: 0;
+}
+
+.experiment-outcome-badge {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--experiment-outcome) 45%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--experiment-outcome) 8%, var(--surface));
+  color: var(--experiment-outcome);
+  font-size: var(--font-meta);
+  font-weight: 800;
+}
+
+.experiment-form-actions,
+.experiment-report-actions {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.experiment-idea-inspector > small {
+  display: block;
+  margin-top: 12px;
+  color: var(--subtle);
+}
+
+.experiment-report {
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+}
+
+.experiment-report-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.experiment-report-hero > div:first-child {
+  min-width: 0;
+}
+
+.experiment-report-hero h2 {
+  max-width: 980px;
+  font-size: clamp(22px, 3vw, 36px);
+}
+
+.experiment-report-hero p {
+  max-width: 960px;
+  font-size: var(--font-body-large);
+}
+
+.experiment-report-actions {
+  flex: 0 1 430px;
+  justify-content: flex-end;
+}
+
+.experiment-report-actions .experiment-series-picker {
+  flex: 1 1 300px;
+}
+
+.experiment-report-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.experiment-report-stats > div {
+  display: grid;
+  place-items: center;
+  min-height: 92px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-raised);
+  text-align: center;
+}
+
+.experiment-report-stats strong {
+  color: var(--green);
+  font-size: clamp(22px, 3vw, 32px);
+  letter-spacing: -0.04em;
+}
+
+.experiment-report-stats span {
+  color: var(--muted);
+  font-size: var(--font-meta);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.experiment-report-section {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-raised);
+}
+
+.experiment-report-section-heading {
+  display: grid;
+  gap: 3px;
+}
+
+.experiment-report-section-heading h3 {
+  margin: 0;
+  font-size: clamp(18px, 2.4vw, 24px);
+}
+
+.experiment-report-outcomes {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(90px, 1fr));
+  gap: 8px;
+}
+
+.experiment-report-outcomes > div {
+  display: grid;
+  place-items: center;
+  gap: 2px;
+  min-height: 80px;
+  border: 1px solid color-mix(in srgb, var(--experiment-outcome) 32%, var(--line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--experiment-outcome) 5%, var(--surface));
+}
+
+.experiment-report-outcomes i {
+  color: var(--experiment-outcome);
+  font-style: normal;
+  font-weight: 900;
+}
+
+.experiment-report-outcomes strong {
+  font-size: var(--font-section);
+}
+
+.experiment-report-outcomes span {
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+
+.experiment-best-path {
+  display: grid;
+  gap: 8px;
+}
+
+.experiment-best-path ol {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.experiment-best-path li {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: var(--font-control);
+}
+
+.experiment-best-path li:not(:last-child)::after {
+  content: '→';
+  position: absolute;
+  right: -16px;
+  color: var(--subtle);
+}
+
+.experiment-best-path li span {
+  color: var(--experiment-outcome);
+  font-weight: 900;
+}
+
+.experiment-phase-list {
+  display: grid;
+  gap: 7px;
+}
+
+.experiment-phase-list > div {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 43px;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.experiment-phase-list span {
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.experiment-phase-list b {
+  color: var(--green);
+}
+
+.experiment-provenance-receipt dl {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .experiment-chart-marker circle,
+  .experiment-lineage-edge,
+  .experiment-lineage-node {
+    transition: none;
+  }
+}
+
+@media (max-width: 1180px) {
+  .experiment-trajectory-layout,
+  .experiment-idea-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .experiment-trajectory-side,
+  .experiment-idea-layout > aside {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .experiments-runtime-card,
+  .experiments-objective-notice,
+  .experiment-card-head,
+  .experiment-report-hero {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .experiments-runtime-status,
+  .experiment-graph-actions,
+  .experiment-report-actions {
+    justify-content: flex-start;
+  }
+
+  .experiment-series-picker {
+    flex-basis: auto;
+    width: 100%;
+  }
+
+  .experiment-trajectory-side,
+  .experiment-idea-layout > aside {
+    grid-template-columns: 1fr;
+  }
+
+  .experiment-report-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .experiment-report-outcomes {
+    grid-template-columns: repeat(3, minmax(90px, 1fr));
+  }
+
+  .experiment-provenance-receipt dl {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .experiments-runtime-status,
+  .experiment-graph-actions,
+  .experiment-form-actions,
+  .experiment-report-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .experiment-status-pill {
+    justify-content: center;
+  }
+
+  .experiment-idea-form-grid,
+  .experiment-report-stats,
+  .experiment-report-outcomes {
+    grid-template-columns: 1fr;
+  }
+
+  .experiment-idea-form-grid .full-width {
+    grid-column: auto;
+  }
+
+  .experiment-chart-figure svg {
+    min-width: 680px;
+  }
+
+  .experiment-chart-figure {
+    overflow-x: auto;
+  }
+
+  .experiment-phase-list > div {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .experiment-report {
+    padding: 14px;
+  }
+}
+
+@media print {
+  .desktop-nav,
+  .titlebar,
+  .experiments-runtime-card,
+  .experiments-objective-notice,
+  .experiment-tabs,
+  .experiment-report-actions {
+    display: none !important;
+  }
+
+  .desktop-content {
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  .experiment-report {
+    border: 0;
+    background: white;
+    color: #182019;
+  }
+}
