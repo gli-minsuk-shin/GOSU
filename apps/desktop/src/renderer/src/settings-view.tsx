@@ -18,6 +18,7 @@ import { AgentSettingsSection } from './agent-settings-section';
 import { BoardSettingsForm } from './board-settings-form';
 import type { VaultRuntimeState } from './notes-view';
 import { ProjectSettingsSection } from './project-settings-section';
+import { SSH_RESOURCE_REFRESH_INTERVAL_OPTIONS } from './ssh-resource-refresh-policy';
 import {
   type AppearancePreference,
   type TextSizePreference,
@@ -47,7 +48,7 @@ const TEXT_SIZE_CHOICES: ReadonlyArray<{
   { id: 'extra-large', label: 'Extra large', description: '18 px base', sample: 'Aa' },
 ];
 
-export type SettingsCategory = 'appearance' | 'board' | 'projects' | 'agent';
+export type SettingsCategory = 'appearance' | 'board' | 'projects' | 'servers' | 'agent';
 
 export function SettingsView({
   preferences,
@@ -129,6 +130,16 @@ export function SettingsView({
           <i aria-hidden="true">◇</i>
           <strong>Projects</strong>
           <span>Rename, archive, Trash, restore</span>
+        </button>
+        <button
+          type="button"
+          className={activeCategory === 'servers' ? 'active' : ''}
+          aria-current={activeCategory === 'servers' ? 'page' : undefined}
+          onClick={() => selectCategory('servers')}
+        >
+          <i aria-hidden="true">⌁</i>
+          <strong>Servers</strong>
+          <span>Status refresh interval</span>
         </button>
         <button
           type="button"
@@ -246,6 +257,45 @@ export function SettingsView({
             onTrashProject={onTrashProject}
             onRestoreProject={onRestoreProject}
           />
+        ) : activeCategory === 'servers' ? (
+          <article className="settings-card server-monitoring-settings-card">
+            <div className="settings-card-heading">
+              <span>SERVER MONITORING</span>
+              <h2>Choose how often server status refreshes</h2>
+              <p>
+                GOSU refreshes CPU, memory, and GPU usage only while Connections or Project Chat is
+                visible. Manual refresh remains available beside every server.
+              </p>
+            </div>
+            <div
+              className="preference-options server-refresh-options"
+              role="group"
+              aria-label="Server status refresh interval"
+            >
+              {SSH_RESOURCE_REFRESH_INTERVAL_OPTIONS.map((choice) => (
+                <button
+                  type="button"
+                  className={preferences.sshResourceRefreshInterval === choice.id ? 'selected' : ''}
+                  aria-pressed={preferences.sshResourceRefreshInterval === choice.id}
+                  key={choice.id}
+                  onClick={() =>
+                    onChange({ ...preferences, sshResourceRefreshInterval: choice.id })
+                  }
+                >
+                  <i aria-hidden="true">{choice.id === 'manual' ? '↻' : '◷'}</i>
+                  <strong>{choice.label}</strong>
+                  <span>{choice.description}</span>
+                </button>
+              ))}
+            </div>
+            <div className="settings-preview server-refresh-preview">
+              <span>LOCAL-ONLY PREFERENCE</span>
+              <p>
+                The selected schedule applies when you return to Connections or Project Chat. It
+                does not alter the remote server or send monitoring data to Hosted Sync.
+              </p>
+            </div>
+          </article>
         ) : (
           <>
             <AgentAddOnsSection

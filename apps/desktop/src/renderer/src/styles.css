@@ -1772,10 +1772,19 @@ textarea:focus {
 
 .ssh-resource-summary-status {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   min-width: 0;
   gap: 10px;
+}
+
+.ssh-resource-summary-status > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 4px 10px;
 }
 
 .ssh-resource-summary-status strong {
@@ -1788,6 +1797,30 @@ textarea:focus {
   color: var(--subtle);
   font-size: var(--font-caption);
   overflow-wrap: anywhere;
+}
+
+.ssh-resource-summary-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: var(--font-caption);
+  font-weight: 720;
+  gap: 4px;
+}
+
+.ssh-resource-summary-toggle:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.ssh-resource-summary.collapsed {
+  padding-block: 7px;
 }
 
 .ssh-resource-meters {
@@ -3882,6 +3915,10 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
   background: var(--surface-soft);
 }
 
+.ssh-resource-summary.compact.collapsed {
+  padding-block: 5px;
+}
+
 .chat-identity {
   display: flex;
   align-items: center;
@@ -4741,6 +4778,14 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
 
 .text-size-options {
   grid-template-columns: repeat(4, minmax(130px, 1fr));
+}
+
+.server-refresh-options {
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+}
+
+.server-refresh-options button {
+  min-height: 102px;
 }
 
 .preference-options button {
@@ -5772,6 +5817,7 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
 
   .appearance-options,
   .text-size-options,
+  .server-refresh-options,
   .agent-choice-grid,
   .agent-setting-columns {
     grid-template-columns: repeat(2, minmax(130px, 1fr));
@@ -5810,6 +5856,7 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
 @media (max-width: 620px) {
   .appearance-options,
   .text-size-options,
+  .server-refresh-options,
   .agent-choice-grid,
   .agent-setting-columns {
     grid-template-columns: 1fr;

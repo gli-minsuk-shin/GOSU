@@ -56,6 +56,7 @@ describe('local user preferences', () => {
       schemaVersion: 1,
       appearance: 'light',
       textSize: 'large',
+      sshResourceRefreshInterval: '1m',
       defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
       agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
     });
@@ -78,6 +79,7 @@ describe('local user preferences', () => {
       schemaVersion: 1,
       appearance: 'light',
       textSize: 'large',
+      sshResourceRefreshInterval: '5m',
       defaultBoardTemplate: customBoardTemplate,
       agentAddOns: { openclaw: 'detect-local', hermes: 'disabled' },
     } as const;
@@ -105,6 +107,7 @@ describe('local user preferences', () => {
       schemaVersion: 1,
       appearance: 'dark',
       textSize: 'extra-large',
+      sshResourceRefreshInterval: '1m',
       defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
       agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
     });
@@ -117,6 +120,15 @@ describe('local user preferences', () => {
         agentAddOns: { openclaw: 'connect-and-run', hermes: 'detect-local' },
       }).agentAddOns,
     ).toEqual({ openclaw: 'disabled', hermes: 'detect-local' });
+  });
+
+  it('falls back to one-minute server monitoring for an unknown refresh interval', () => {
+    expect(
+      parseUserPreferences({
+        ...DEFAULT_USER_PREFERENCES,
+        sshResourceRefreshInterval: 'continuous',
+      }).sshResourceRefreshInterval,
+    ).toBe('1m');
   });
 
   it('applies validated data attributes to the document root', () => {

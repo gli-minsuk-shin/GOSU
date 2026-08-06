@@ -52,7 +52,7 @@ const snapshot: WorkspaceSnapshot = {
 };
 
 function renderSettings(
-  initialCategory: 'appearance' | 'board' | 'projects' | 'agent',
+  initialCategory: 'appearance' | 'board' | 'projects' | 'servers' | 'agent',
   agentProfile = defaultProjectChatProfile(snapshot.projects[0]!.id),
 ) {
   return renderToStaticMarkup(
@@ -162,6 +162,23 @@ describe('separated application Settings', () => {
     expect(html).toContain('No installer, credentials, process launch, chat routing');
     expect(html).not.toContain('Connected to OpenClaw');
     expect(html).not.toContain('Connected to Hermes');
+  });
+
+  it('offers persisted manual through ten-minute server refresh choices', () => {
+    const html = renderSettings('servers');
+
+    expect(html).toContain('SERVER MONITORING');
+    expect(html).toContain('Manual');
+    expect(html).toContain('30 seconds');
+    expect(html).toContain('1 minute');
+    expect(html).toContain('5 minutes');
+    expect(html).toContain('10 minutes');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('only while Connections or Project Chat is visible');
+    const selectedChoice = html
+      .match(/<button[^>]*aria-pressed="true"[^>]*>.*?<\/button>/g)
+      ?.find((button) => button.includes('1 minute'));
+    expect(selectedChoice).toContain('<strong>1 minute</strong>');
   });
 
   it('keeps a migrated Reviewer profile in compatibility mode until a native mode is chosen', () => {

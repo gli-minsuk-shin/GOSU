@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 import type { SshServerResourceSnapshot } from '../../shared/ssh-contracts';
 
 export type SshResourceUiState =
@@ -71,27 +73,32 @@ export function SshResourceSummary({
   state,
   serverLabel,
   compact = false,
+  defaultCollapsed = false,
 }: Readonly<{
   state: SshResourceUiState;
   serverLabel: string;
   compact?: boolean;
+  defaultCollapsed?: boolean;
 }>) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const snapshot = state.phase === 'idle' ? undefined : state.snapshot;
   if (!snapshot) {
     return (
       <section
-        className={`ssh-resource-summary ${compact ? 'compact' : ''}`}
+        className={`ssh-resource-summary ${compact ? 'compact' : ''} ${collapsed ? 'collapsed' : ''}`}
         aria-label={`${serverLabel} resource usage`}
       >
         <div className="ssh-resource-summary-status">
-          <strong>Server usage</strong>
-          <span>
-            {state.phase === 'loading'
-              ? 'Reading usage…'
-              : state.phase === 'idle'
-                ? 'Usage not loaded'
-                : 'Usage unavailable'}
-          </span>
+          <div>
+            <strong>Server usage</strong>
+            <span>
+              {state.phase === 'loading'
+                ? 'Reading usage…'
+                : state.phase === 'idle'
+                  ? 'Usage not loaded'
+                  : 'Usage unavailable'}
+            </span>
+          </div>
         </div>
       </section>
     );
@@ -102,54 +109,68 @@ export function SshResourceSummary({
 
   return (
     <section
-      className={`ssh-resource-summary ${compact ? 'compact' : ''}`}
+      className={`ssh-resource-summary ${compact ? 'compact' : ''} ${collapsed ? 'collapsed' : ''}`}
       aria-label={`${serverLabel} resource usage`}
     >
       <div className="ssh-resource-summary-status">
-        <strong>Server usage</strong>
-        <span>
-          {snapshotStatus(state, snapshot)} ·{' '}
-          <time dateTime={snapshot.capturedAt}>
-            Last updated {formatSampleTime(snapshot.capturedAt)}
-          </time>
-        </span>
+        <div>
+          <strong>Server usage</strong>
+          <span>
+            {snapshotStatus(state, snapshot)} ·{' '}
+            <time dateTime={snapshot.capturedAt}>
+              Last updated {formatSampleTime(snapshot.capturedAt)}
+            </time>
+          </span>
+        </div>
+        <button
+          type="button"
+          className="ssh-resource-summary-toggle"
+          aria-expanded={!collapsed}
+          aria-label={`${collapsed ? 'Show' : 'Minimize'} resource details for ${serverLabel}`}
+          onClick={() => setCollapsed((current) => !current)}
+        >
+          <span aria-hidden="true">{collapsed ? '⌄' : '⌃'}</span>
+          {collapsed ? 'Show details' : 'Minimize'}
+        </button>
       </div>
-      <div className="ssh-resource-meters">
-        {snapshot.cpu.state === 'available' ? (
-          <ResourceMeter
-            label="CPU"
-            value={snapshot.cpu.utilizationPercent}
-            detail={`${snapshot.cpu.logicalProcessorCount} logical processors`}
-          />
-        ) : (
-          <UnavailableMetric label="CPU" />
-        )}
-        {snapshot.memory.state === 'available' ? (
-          <ResourceMeter
-            label="Memory"
-            value={snapshot.memory.utilizationPercent}
-            detail={`${formatSshResourceBytes(snapshot.memory.usedBytes)} / ${formatSshResourceBytes(snapshot.memory.totalBytes)}`}
-          />
-        ) : (
-          <UnavailableMetric label="Memory" />
-        )}
-        {snapshot.gpu.state === 'available' ? (
-          availableGpuDevices.map((gpu) => (
-            <div className="ssh-resource-gpu" key={gpu.index}>
-              <ResourceMeter
-                label={`GPU ${gpu.index}`}
-                value={gpu.utilizationPercent}
-                detail={`${gpu.name} · ${formatSshResourceBytes(gpu.memoryUsedBytes)} / ${formatSshResourceBytes(gpu.memoryTotalBytes)} VRAM${gpu.temperatureC === null ? '' : ` · ${gpu.temperatureC} °C`}`}
-              />
-            </div>
-          ))
-        ) : (
-          <UnavailableMetric
-            label="GPU"
-            detail={snapshot.gpu.state === 'not_detected' ? 'No NVIDIA GPU detected' : undefined}
-          />
-        )}
-      </div>
+      {!collapsed && (
+        <div className="ssh-resource-meters">
+          {snapshot.cpu.state === 'available' ? (
+            <ResourceMeter
+              label="CPU"
+              value={snapshot.cpu.utilizationPercent}
+              detail={`${snapshot.cpu.logicalProcessorCount} logical processors`}
+            />
+          ) : (
+            <UnavailableMetric label="CPU" />
+          )}
+          {snapshot.memory.state === 'available' ? (
+            <ResourceMeter
+              label="Memory"
+              value={snapshot.memory.utilizationPercent}
+              detail={`${formatSshResourceBytes(snapshot.memory.usedBytes)} / ${formatSshResourceBytes(snapshot.memory.totalBytes)}`}
+            />
+          ) : (
+            <UnavailableMetric label="Memory" />
+          )}
+          {snapshot.gpu.state === 'available' ? (
+            availableGpuDevices.map((gpu) => (
+              <div className="ssh-resource-gpu" key={gpu.index}>
+                <ResourceMeter
+                  label={`GPU ${gpu.index}`}
+                  value={gpu.utilizationPercent}
+                  detail={`${gpu.name} · ${formatSshResourceBytes(gpu.memoryUsedBytes)} / ${formatSshResourceBytes(gpu.memoryTotalBytes)} VRAM${gpu.temperatureC === null ? '' : ` · ${gpu.temperatureC} °C`}`}
+                />
+              </div>
+            ))
+          ) : (
+            <UnavailableMetric
+              label="GPU"
+              detail={snapshot.gpu.state === 'not_detected' ? 'No NVIDIA GPU detected' : undefined}
+            />
+          )}
+        </div>
+      )}
       {issueLabels.length > 0 && (
         <small className="ssh-resource-issues">{issueLabels.join(' · ')}</small>
       )}
