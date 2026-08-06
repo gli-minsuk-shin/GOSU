@@ -602,6 +602,16 @@ file/directory 충돌 path를 normalize하지 않고 제외한다. `role="tree"`
 Markdown path만 제공하므로 읽을 수 있는 Markdown을 포함한 폴더만 표시하고 empty 또는 attachment-only
 folder를 열거하기 위해 Main capability를 넓히지 않는다.
 
+file explorer 전체는 persistent toggle로 최소화할 수 있다. 넓은 창에서는 270px explorer가 44px 세로
+restore rail로 줄고, 860px 이하의 stacked layout에서는 44px 상단 strip으로 줄어 Markdown reader가 남은
+폭이나 높이를 즉시 회수한다. toggle DOM은 열림·닫힘 동안 유지하고 `aria-controls`·`aria-expanded`와
+명시적인 Show/Hide label을 제공하므로 keyboard focus가 사라지지 않는다. 숨은 explorer detail은
+`hidden`으로 focus·accessibility navigation에서 제외하지만 React subtree는 mounted 상태로 두어 선택 note,
+Rendered/Source mode, directory expansion과 reader scroll을 초기화하지 않는다. 이 compact preference만
+versioned localStorage `gosu:research-notes-layout:v1`에 저장해 project를 바꾸거나 앱을 다시 열어도 유지하며,
+malformed·legacy storage는 안전한 expanded default로 복구한다. layout transition은 grid track만 180ms로
+보간하고 `prefers-reduced-motion`에서는 제거한다.
+
 Markdown은 선택한 Vault에서 왔더라도 신뢰하지 않는다. Renderer는 raw HTML을 해석하지 않고,
 Markdown AST를 `rehype-sanitize` allowlist로 정리한 뒤 React element로 만든다. `script`, event
 handler, `iframe`, `object`, 임의 style과 SVG는 reader DOM에 들어갈 수 없다. frontmatter는 코드를
@@ -1815,8 +1825,12 @@ display MathML, frontmatter·inline/fenced code 제외, escaped·unmatched dolla
 가로 scroll 계약, 기존 wiki-link·attachment·HTTPS·raw HTML 경계를 함께 검증한다. 별도 Electron Chromium
 smoke는 지원하는 최소 창 크기·최대 sidebar·오류 notice·기본/Extra Large 글자 조합에서 Research Notes와
 Repository preview의 `scrollHeight > clientHeight`, 실제 `scrollTop` 이동, viewer 폭 보존과 code block의
-local `scrollLeft` 이동을 함께 검사한다. route helper test는 active project의 Notes·Repository에만 bounded
-document layout class가 적용되는지도 고정한다.
+local `scrollLeft` 이동을 함께 검사한다. 같은 smoke의 compact tree scenario는 wide/stacked window에서
+270px explorer가 44px rail/strip으로 줄어 reader가 공간을 회수하는지, restore 뒤 geometry가 돌아오는지,
+toggle focus와 ARIA state가 유지되는지, 긴 folder/file 이름과 selected path가 Extra Large 글자에서도
+ellipsis containment를 지키는지 검증한다. layout-state test는 missing·legacy·malformed·storage 예외를
+expanded default로 복구하고 explicit collapse만 저장하는 계약을 고정한다. route helper test는 active
+project의 Notes·Repository에만 bounded document layout class가 적용되는지도 고정한다.
 
 Project Chat session test는 legacy single-chat DB가 default session으로 lossless migration되는지,
 root session isolation, completed-message branch prefix와 이후 source history 차단, cross-project·

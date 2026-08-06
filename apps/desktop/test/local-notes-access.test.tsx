@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { Children, isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
@@ -74,6 +76,8 @@ function renderResearchNotes(
     profile?: ProjectChatProfile | undefined;
     profileLoading?: boolean;
     accessBusy?: boolean;
+    folderTreeCollapsed?: boolean;
+    noteBusy?: boolean;
   } = {},
 ) {
   const activeProject = Object.hasOwn(options, 'activeProject') ? options.activeProject : project;
@@ -86,13 +90,15 @@ function renderResearchNotes(
   const vaultState = options.vaultState ?? 'ready';
   const profileLoading = options.profileLoading ?? false;
   const accessBusy = options.accessBusy ?? false;
+  const folderTreeCollapsed = options.folderTreeCollapsed ?? false;
+  const noteBusy = options.noteBusy ?? false;
 
   return renderToStaticMarkup(
     <ResearchNotesView
       workspace={activeWorkspace}
       vaultState={vaultState}
       selectedNote={null}
-      busy={false}
+      busy={noteBusy}
       project={activeProject}
       profile={profile}
       profileLoading={profileLoading}
@@ -102,6 +108,8 @@ function renderResearchNotes(
       onSetProjectAccess={vi.fn()}
       onOpenAgentSettings={vi.fn()}
       onRetry={vi.fn()}
+      folderTreeCollapsed={folderTreeCollapsed}
+      onFolderTreeCollapsedChange={vi.fn()}
     />,
   );
 }
@@ -251,6 +259,48 @@ describe('Research Notes project-agent access', () => {
     for (const folder of workspace.folders) expect(html).toContain(folder);
     expect(html).toContain('Literature table synced');
     expect(html).not.toContain('/fixture/research-vault');
+  });
+
+  it('keeps one accessible folder-tree toggle and the reader visible when expanded', () => {
+    const html = renderResearchNotes();
+
+    expect(html).toContain('class="notes-layout"');
+    expect(html).toContain('class="note-list"');
+    expect(html).toContain('class="ghost-button research-notes-folder-tree-toggle"');
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('aria-label="Hide Research Notes folder tree"');
+    expect(html).toContain('class="research-notes-tree-details"');
+    expect(html).toContain('class="note-reader"');
+    expect(html.match(/research-notes-folder-tree-toggle/gu)).toHaveLength(1);
+  });
+
+  it('hides only the navigation details and leaves a usable restore control and reader', () => {
+    const html = renderResearchNotes({ folderTreeCollapsed: true, noteBusy: true });
+
+    expect(html).toContain('class="notes-layout folder-tree-collapsed"');
+    expect(html).toContain('class="note-list collapsed"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-label="Show Research Notes folder tree"');
+    expect(html).toMatch(
+      /<strong[^>]*hidden=""[^>]*>Research Vault\/GOSU\/Active study<\/strong>/u,
+    );
+    expect(html).toMatch(/class="research-notes-tree-details" hidden=""/u);
+    expect(html).toContain('class="note-reader"');
+    expect(html).toContain('Reading…');
+    expect(html).not.toMatch(/research-notes-folder-tree-toggle"[^>]*disabled/u);
+  });
+
+  it('persists the controlled layout from DesktopApp instead of resetting it per project', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/desktop-app.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('loadResearchNotesLayoutState(window.localStorage)');
+    expect(source).toContain(
+      'saveResearchNotesLayoutState(window.localStorage, researchNotesLayout)',
+    );
+    expect(source).toContain('folderTreeCollapsed={researchNotesLayout.folderTreeCollapsed}');
   });
 
   it('keeps a project-switch stale note body out of a different project workspace', () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import type { LocalNotesVaultGrant, ProjectChatProfile } from '../../shared/project-chat-contracts';
 import type { ResearchNotesWorkspace } from '../../shared/research-notes-contracts';
@@ -163,6 +163,8 @@ export function ResearchNotesView({
   onOpenAgentSettings,
   onRetry,
   readAttachment,
+  folderTreeCollapsed = false,
+  onFolderTreeCollapsedChange = () => undefined,
 }: {
   vault?: VaultSelection | null;
   workspace?: ResearchNotesWorkspace | null;
@@ -179,7 +181,10 @@ export function ResearchNotesView({
   onOpenAgentSettings: () => void;
   onRetry?: () => void;
   readAttachment?: (input: ReadVaultAttachmentInput) => Promise<VaultAttachment>;
+  folderTreeCollapsed?: boolean;
+  onFolderTreeCollapsedChange?: (collapsed: boolean) => void;
 }) {
+  const folderTreeDetailsId = useId();
   const managed = workspace !== undefined;
   const effectiveVault: VaultSelection | null = workspace
     ? {
@@ -299,60 +304,89 @@ export function ResearchNotesView({
   };
 
   return (
-    <section className="notes-layout">
-      <aside className="note-list" aria-label="Markdown files">
-        <header>
-          <strong title={vault.root}>{vault.root}</strong>
+    <section className={`notes-layout${folderTreeCollapsed ? ' folder-tree-collapsed' : ''}`}>
+      <aside
+        className={`note-list${folderTreeCollapsed ? ' collapsed' : ''}`}
+        aria-label="Markdown files"
+      >
+        <header className="research-notes-tree-header">
+          <strong title={vault.root} hidden={folderTreeCollapsed}>
+            {vault.root}
+          </strong>
+          <button
+            type="button"
+            className="ghost-button research-notes-folder-tree-toggle"
+            aria-controls={folderTreeDetailsId}
+            aria-expanded={!folderTreeCollapsed}
+            aria-label={
+              folderTreeCollapsed
+                ? 'Show Research Notes folder tree'
+                : 'Hide Research Notes folder tree'
+            }
+            title={folderTreeCollapsed ? 'Show folder tree' : 'Hide folder tree'}
+            onClick={() => onFolderTreeCollapsedChange(!folderTreeCollapsed)}
+          >
+            <span aria-hidden="true">{folderTreeCollapsed ? '›' : '‹'}</span>
+          </button>
+        </header>
+        <div
+          id={folderTreeDetailsId}
+          className="research-notes-tree-details"
+          hidden={folderTreeCollapsed}
+        >
           <button type="button" className="secondary-button" onClick={onChoose} disabled={busy}>
             {managed ? 'Change Vault' : 'Change folder'}
           </button>
-        </header>
-        {workspace?.status === 'rename-pending' && (
-          <div className="notice error research-notes-attention" role="status">
-            <span>{researchNotesAttentionMessage(workspace.attentionCode)}</span>
-            {onRetry && (
-              <button type="button" className="ghost-button" onClick={onRetry} disabled={busy}>
-                Retry
-              </button>
-            )}
-          </div>
-        )}
-        {workspace && (
-          <section className="research-notes-managed-summary" aria-label="Managed project folders">
-            <span>MANAGED PROJECT FOLDERS</span>
-            <ul>
-              {workspace.folders.map((folder) => (
-                <li key={folder}>{folder}</li>
-              ))}
-            </ul>
-            <small>
-              {workspace.lastLiteratureSyncAt
-                ? `Literature table synced ${new Date(workspace.lastLiteratureSyncAt).toLocaleString()}`
-                : 'Literature table will sync after the first Literature search or update.'}
-            </small>
-          </section>
-        )}
-        {accessPanel}
-        <p className="note-agent-disclosure">
-          Access is project-specific and stays off until you explicitly authorize this folder here
-          or in AI Agent Settings. Once authorized, listing sends display titles and opaque IDs;
-          reading also sends the requested excerpt, content hash, offset, and total length to the
-          configured LLM. Visible replies may be stored and synchronized.
-        </p>
-        {vault.files.length === 0 && <p className="column-empty">No Markdown files found</p>}
-        {vault.files.length > 0 && (
-          <ResearchNotesTree
-            key={vault.id}
-            files={vault.files}
-            expandedDirectories={expandedDirectories}
-            selectedPath={visibleSelectedNote?.path ?? null}
-            busy={busy}
-            onToggleDirectory={(path) =>
-              updateExpandedDirectories((current) => toggleLocalNotesDirectory(current, path))
-            }
-            onOpenFile={openNote}
-          />
-        )}
+          {workspace?.status === 'rename-pending' && (
+            <div className="notice error research-notes-attention" role="status">
+              <span>{researchNotesAttentionMessage(workspace.attentionCode)}</span>
+              {onRetry && (
+                <button type="button" className="ghost-button" onClick={onRetry} disabled={busy}>
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
+          {workspace && (
+            <section
+              className="research-notes-managed-summary"
+              aria-label="Managed project folders"
+            >
+              <span>MANAGED PROJECT FOLDERS</span>
+              <ul>
+                {workspace.folders.map((folder) => (
+                  <li key={folder}>{folder}</li>
+                ))}
+              </ul>
+              <small>
+                {workspace.lastLiteratureSyncAt
+                  ? `Literature table synced ${new Date(workspace.lastLiteratureSyncAt).toLocaleString()}`
+                  : 'Literature table will sync after the first Literature search or update.'}
+              </small>
+            </section>
+          )}
+          {accessPanel}
+          <p className="note-agent-disclosure">
+            Access is project-specific and stays off until you explicitly authorize this folder here
+            or in AI Agent Settings. Once authorized, listing sends display titles and opaque IDs;
+            reading also sends the requested excerpt, content hash, offset, and total length to the
+            configured LLM. Visible replies may be stored and synchronized.
+          </p>
+          {vault.files.length === 0 && <p className="column-empty">No Markdown files found</p>}
+          {vault.files.length > 0 && (
+            <ResearchNotesTree
+              key={vault.id}
+              files={vault.files}
+              expandedDirectories={expandedDirectories}
+              selectedPath={visibleSelectedNote?.path ?? null}
+              busy={busy}
+              onToggleDirectory={(path) =>
+                updateExpandedDirectories((current) => toggleLocalNotesDirectory(current, path))
+              }
+              onOpenFile={openNote}
+            />
+          )}
+        </div>
       </aside>
       <article className="note-reader">
         <header>

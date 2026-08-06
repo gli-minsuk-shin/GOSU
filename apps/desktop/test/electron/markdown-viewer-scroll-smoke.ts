@@ -18,6 +18,52 @@ type ScrollMetrics = Readonly<{
   wideOverflowX: string;
 }>;
 
+type RectMetrics = Readonly<{
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  width: number;
+  height: number;
+}>;
+
+type CompactNotesGeometry = ScrollMetrics &
+  Readonly<{
+    layout: RectMetrics;
+    tree: RectMetrics;
+    reader: RectMetrics;
+    readerHeader: RectMetrics;
+    readerBody: RectMetrics;
+    toggle: RectMetrics;
+    detailsDisplay: string;
+    toggleExpanded: string | null;
+    toggleLabel: string | null;
+    longTreeNameClientWidth: number;
+    longTreeNameScrollWidth: number;
+    longTreeNameOverflow: string;
+    longTreeNameTextOverflow: string;
+    longTreeNameWhiteSpace: string;
+    readerPathClientWidth: number;
+    readerPathScrollWidth: number;
+    readerPathOverflow: string;
+    readerPathTextOverflow: string;
+    readerPathWhiteSpace: string;
+  }>;
+
+type CompactNotesScenario = Readonly<{
+  name: 'stacked' | 'wide';
+  width: number;
+  height: number;
+}>;
+
+type CompactNotesScenarioMetrics = Readonly<{
+  expanded: CompactNotesGeometry;
+  collapsed: CompactNotesGeometry;
+  expandedAgain: CompactNotesGeometry;
+  collapseToggleFocused: boolean;
+  restoreToggleFocused: boolean;
+}>;
+
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -37,6 +83,103 @@ function longDocument() {
     ${paragraphs}
     <pre data-wide-content><code>${code}</code></pre>
   </div>`;
+}
+
+function researchNotesTreeMarkup() {
+  const folders = ['Literature', 'Papers', 'Experiments', 'Project Progress', 'Idea Development'];
+  const longFilename = `${'Long research note filename '.repeat(8)}with equations and evidence.md`;
+
+  return folders
+    .map(
+      (folder, folderIndex) => `<div>
+        <button class="local-notes-tree-row directory" role="treeitem" aria-expanded="true">
+          <span class="local-notes-tree-disclosure expanded"></span>
+          <span class="local-notes-tree-icon"></span>
+          <span class="local-notes-tree-label">${folder}</span>
+        </button>
+        ${Array.from(
+          { length: 5 },
+          (_, fileIndex) => `<button
+            class="local-notes-tree-row file${folderIndex === 0 && fileIndex === 0 ? ' selected' : ''}"
+            role="treeitem"
+            style="padding-inline-start: 26px"
+          >
+            <span class="local-notes-tree-disclosure"></span>
+            <span class="local-notes-tree-icon"></span>
+            <span class="local-notes-tree-label"${folderIndex === 0 && fileIndex === 0 ? ' data-long-tree-name' : ''}>${
+              folderIndex === 0 && fileIndex === 0
+                ? longFilename
+                : `${folder} research note ${fileIndex + 1}.md`
+            }</span>
+          </button>`,
+        ).join('')}
+      </div>`,
+    )
+    .join('');
+}
+
+function compactResearchNotesFixtureMarkup(styles: string) {
+  const selectedPath = `Literature/${'Selected research note path '.repeat(8)}canonical review.md`;
+
+  return `<!doctype html>
+<html data-text-size="extra-large">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      ${styles.replaceAll('</style>', '<\\/style>')}
+      *, *::before, *::after {
+        animation-duration: 0s !important;
+        transition-duration: 0s !important;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="desktop-shell" style="--project-sidebar-width: 280px">
+      <header class="titlebar"><strong>GOSU</strong><span>Research Notes compact tree</span></header>
+      <aside class="desktop-nav"></aside>
+      <section class="desktop-content desktop-content-document">
+        <section class="notes-layout">
+          <aside class="note-list" aria-label="Markdown files">
+            <header class="research-notes-tree-header">
+              <strong data-tree-root title="GOSU/Maximum width research project fixture">GOSU/Maximum width research project fixture</strong>
+              <button
+                id="fixture-research-notes-tree-toggle"
+                type="button"
+                class="ghost-button research-notes-folder-tree-toggle"
+                aria-controls="fixture-research-notes-tree-details"
+                aria-expanded="true"
+                aria-label="Hide Research Notes folder tree"
+                title="Hide folder tree"
+              >‹</button>
+            </header>
+            <div id="fixture-research-notes-tree-details" class="research-notes-tree-details">
+              <button type="button" class="secondary-button">Change Vault</button>
+              <section class="research-notes-managed-summary">
+                <span>MANAGED PROJECT FOLDERS</span>
+                <ul><li>Literature</li><li>Papers</li><li>Experiments</li></ul>
+              </section>
+              <section class="local-notes-project-access authorized">
+                <span>RESEARCH NOTES AGENT ACCESS</span>
+                <strong>Authorized for this project</strong>
+                <p>This project folder can be read through bounded chat tools.</p>
+              </section>
+              <div class="local-notes-tree" role="tree" aria-label="Research Notes files">
+                ${researchNotesTreeMarkup()}
+              </div>
+            </div>
+          </aside>
+          <article class="note-reader">
+            <header>
+              <span data-reader-path>${selectedPath}</span>
+              <div class="note-reader-mode"><button class="active">Rendered</button><button>Source</button></div>
+            </header>
+            <div class="note-reader-body" data-scroll-region>${longDocument()}</div>
+          </article>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>`;
 }
 
 function fixtureMarkup(
@@ -146,6 +289,258 @@ function verifyMetrics(
   invariant(metrics.wideScrollLeft > 0, `${scenario}_code_could_not_scroll_horizontally`);
 }
 
+function nearlyEqual(left: number, right: number, tolerance = 1.1) {
+  return Math.abs(left - right) <= tolerance;
+}
+
+function sameRect(left: RectMetrics, right: RectMetrics, prefix: string) {
+  invariant(nearlyEqual(left.top, right.top), `${prefix}_top_shifted`);
+  invariant(nearlyEqual(left.right, right.right), `${prefix}_right_shifted`);
+  invariant(nearlyEqual(left.bottom, right.bottom), `${prefix}_bottom_shifted`);
+  invariant(nearlyEqual(left.left, right.left), `${prefix}_left_shifted`);
+  invariant(nearlyEqual(left.width, right.width), `${prefix}_width_shifted`);
+  invariant(nearlyEqual(left.height, right.height), `${prefix}_height_shifted`);
+}
+
+function verifyContained(
+  child: RectMetrics,
+  container: RectMetrics,
+  scenario: string,
+  label: string,
+) {
+  invariant(child.top >= container.top - 1, `${scenario}_${label}_escaped_top`);
+  invariant(child.left >= container.left - 1, `${scenario}_${label}_escaped_left`);
+  invariant(child.right <= container.right + 1, `${scenario}_${label}_escaped_right`);
+  invariant(child.bottom <= container.bottom + 1, `${scenario}_${label}_escaped_bottom`);
+}
+
+function verifyCompactNotesScroll(metrics: CompactNotesGeometry, scenario: string) {
+  verifyMetrics('notes', 'extra-large', metrics);
+  verifyContained(metrics.readerHeader, metrics.reader, scenario, 'reader_header');
+  verifyContained(metrics.readerBody, metrics.reader, scenario, 'reader_body');
+}
+
+function verifyCompactNotesScenario(
+  scenario: CompactNotesScenario,
+  metrics: CompactNotesScenarioMetrics,
+) {
+  const prefix = `notes_compact_${scenario.name}`;
+
+  sameRect(metrics.expanded.layout, metrics.collapsed.layout, `${prefix}_layout`);
+  invariant(metrics.collapsed.detailsDisplay === 'none', `${prefix}_details_remain_visible`);
+  invariant(metrics.collapsed.toggleExpanded === 'false', `${prefix}_toggle_not_collapsed`);
+  invariant(
+    metrics.collapsed.toggleLabel === 'Show Research Notes folder tree',
+    `${prefix}_restore_toggle_label_missing`,
+  );
+  verifyContained(metrics.collapsed.toggle, metrics.collapsed.tree, prefix, 'restore_toggle');
+  invariant(metrics.collapseToggleFocused, `${prefix}_toggle_lost_focus_after_collapse`);
+  invariant(metrics.restoreToggleFocused, `${prefix}_toggle_lost_focus_after_restore`);
+
+  sameRect(metrics.expanded.layout, metrics.expandedAgain.layout, `${prefix}_restored_layout`);
+  sameRect(metrics.expanded.tree, metrics.expandedAgain.tree, `${prefix}_restored_tree`);
+  sameRect(metrics.expanded.reader, metrics.expandedAgain.reader, `${prefix}_restored_reader`);
+  invariant(metrics.expandedAgain.toggleExpanded === 'true', `${prefix}_toggle_not_restored`);
+
+  if (scenario.name === 'wide') {
+    invariant(metrics.collapsed.tree.width <= 46, `${prefix}_tree_is_not_compact`);
+    invariant(
+      metrics.collapsed.reader.width > metrics.expanded.reader.width + 150,
+      `${prefix}_reader_did_not_expand_horizontally`,
+    );
+    invariant(
+      nearlyEqual(metrics.expanded.reader.top, metrics.collapsed.reader.top),
+      `${prefix}_reader_top_shifted`,
+    );
+    invariant(
+      nearlyEqual(metrics.expanded.reader.right, metrics.collapsed.reader.right),
+      `${prefix}_reader_right_shifted`,
+    );
+    invariant(
+      nearlyEqual(metrics.expanded.reader.bottom, metrics.collapsed.reader.bottom),
+      `${prefix}_reader_bottom_shifted`,
+    );
+  } else {
+    invariant(metrics.collapsed.tree.height <= 46, `${prefix}_tree_is_not_compact`);
+    invariant(
+      metrics.collapsed.reader.height > metrics.expanded.reader.height + 100,
+      `${prefix}_reader_did_not_expand_vertically`,
+    );
+    invariant(
+      nearlyEqual(metrics.expanded.reader.left, metrics.collapsed.reader.left),
+      `${prefix}_reader_left_shifted`,
+    );
+    invariant(
+      nearlyEqual(metrics.expanded.reader.right, metrics.collapsed.reader.right),
+      `${prefix}_reader_right_shifted`,
+    );
+    invariant(
+      nearlyEqual(metrics.expanded.reader.bottom, metrics.collapsed.reader.bottom),
+      `${prefix}_reader_bottom_shifted`,
+    );
+  }
+
+  invariant(
+    metrics.expanded.longTreeNameScrollWidth > metrics.expanded.longTreeNameClientWidth,
+    `${prefix}_long_tree_filename_did_not_overflow`,
+  );
+  invariant(
+    metrics.expanded.longTreeNameOverflow === 'hidden',
+    `${prefix}_long_tree_filename_overflow_not_hidden`,
+  );
+  invariant(
+    metrics.expanded.longTreeNameTextOverflow === 'ellipsis',
+    `${prefix}_long_tree_filename_missing_ellipsis`,
+  );
+  invariant(
+    metrics.expanded.longTreeNameWhiteSpace === 'nowrap',
+    `${prefix}_long_tree_filename_wrapped`,
+  );
+  invariant(
+    metrics.collapsed.readerPathScrollWidth > metrics.collapsed.readerPathClientWidth,
+    `${prefix}_long_reader_path_did_not_overflow_${metrics.collapsed.readerPathClientWidth}_${metrics.collapsed.readerPathScrollWidth}_reader_${metrics.collapsed.reader.width}_header_${metrics.collapsed.readerHeader.width}`,
+  );
+  invariant(
+    metrics.collapsed.readerPathOverflow === 'hidden',
+    `${prefix}_long_reader_path_overflow_not_hidden`,
+  );
+  invariant(
+    metrics.collapsed.readerPathTextOverflow === 'ellipsis',
+    `${prefix}_long_reader_path_missing_ellipsis`,
+  );
+  invariant(
+    metrics.collapsed.readerPathWhiteSpace === 'nowrap',
+    `${prefix}_long_reader_path_wrapped`,
+  );
+
+  verifyCompactNotesScroll(metrics.expanded, `${prefix}_expanded`);
+  verifyCompactNotesScroll(metrics.collapsed, `${prefix}_collapsed`);
+  verifyCompactNotesScroll(metrics.expandedAgain, `${prefix}_restored`);
+}
+
+async function measureCompactNotesScenario(
+  window: BrowserWindow,
+  styles: string,
+  scenario: CompactNotesScenario,
+) {
+  await window.setSize(scenario.width, scenario.height);
+  await window.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(compactResearchNotesFixtureMarkup(styles))}`,
+  );
+
+  return (await window.webContents.executeJavaScript(`
+    (async () => {
+      const layout = document.querySelector('.notes-layout');
+      const tree = document.querySelector('.note-list');
+      const details = document.querySelector('.research-notes-tree-details');
+      const toggle = document.querySelector('#fixture-research-notes-tree-toggle');
+      const treeRoot = document.querySelector('[data-tree-root]');
+      const reader = document.querySelector('.note-reader');
+      const readerHeader = document.querySelector('.note-reader > header');
+      const readerBody = document.querySelector('[data-scroll-region]');
+      const readerPath = document.querySelector('[data-reader-path]');
+      const longTreeName = document.querySelector('[data-long-tree-name]');
+      const wide = document.querySelector('[data-wide-content]');
+      const elements = [layout, tree, details, toggle, treeRoot, reader, readerHeader, readerBody, readerPath, longTreeName, wide];
+      if (elements.some((element) => !(element instanceof HTMLElement))) {
+        throw new Error('missing_research_notes_compact_geometry_element');
+      }
+
+      let collapsed = false;
+      const render = () => {
+        layout.classList.toggle('folder-tree-collapsed', collapsed);
+        tree.classList.toggle('collapsed', collapsed);
+        details.hidden = collapsed;
+        treeRoot.hidden = collapsed;
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        toggle.setAttribute('aria-label', collapsed ? 'Show Research Notes folder tree' : 'Hide Research Notes folder tree');
+        toggle.setAttribute('title', collapsed ? 'Show folder tree' : 'Hide folder tree');
+        toggle.textContent = collapsed ? '›' : '‹';
+      };
+      toggle.addEventListener('click', () => {
+        collapsed = !collapsed;
+        render();
+      });
+
+      const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const rect = (element) => {
+        const value = element.getBoundingClientRect();
+        return {
+          top: value.top,
+          right: value.right,
+          bottom: value.bottom,
+          left: value.left,
+          width: value.width,
+          height: value.height,
+        };
+      };
+      const read = () => {
+        readerBody.scrollTop = readerBody.scrollHeight;
+        wide.scrollLeft = wide.scrollWidth;
+        const regionStyle = getComputedStyle(readerBody);
+        const wideStyle = getComputedStyle(wide);
+        const treeNameStyle = getComputedStyle(longTreeName);
+        const readerPathStyle = getComputedStyle(readerPath);
+        return {
+          layout: rect(layout),
+          tree: rect(tree),
+          reader: rect(reader),
+          readerHeader: rect(readerHeader),
+          readerBody: rect(readerBody),
+          toggle: rect(toggle),
+          detailsDisplay: getComputedStyle(details).display,
+          toggleExpanded: toggle.getAttribute('aria-expanded'),
+          toggleLabel: toggle.getAttribute('aria-label'),
+          clientWidth: readerBody.clientWidth,
+          scrollWidth: readerBody.scrollWidth,
+          clientHeight: readerBody.clientHeight,
+          scrollHeight: readerBody.scrollHeight,
+          scrollLeft: readerBody.scrollLeft,
+          scrollTop: readerBody.scrollTop,
+          overflowX: regionStyle.overflowX,
+          overflowY: regionStyle.overflowY,
+          wideClientWidth: wide.clientWidth,
+          wideScrollWidth: wide.scrollWidth,
+          wideScrollLeft: wide.scrollLeft,
+          wideOverflowX: wideStyle.overflowX,
+          longTreeNameClientWidth: longTreeName.clientWidth,
+          longTreeNameScrollWidth: longTreeName.scrollWidth,
+          longTreeNameOverflow: treeNameStyle.overflow,
+          longTreeNameTextOverflow: treeNameStyle.textOverflow,
+          longTreeNameWhiteSpace: treeNameStyle.whiteSpace,
+          readerPathClientWidth: readerPath.clientWidth,
+          readerPathScrollWidth: readerPath.scrollWidth,
+          readerPathOverflow: readerPathStyle.overflow,
+          readerPathTextOverflow: readerPathStyle.textOverflow,
+          readerPathWhiteSpace: readerPathStyle.whiteSpace,
+        };
+      };
+
+      await nextFrame();
+      const expanded = read();
+
+      toggle.focus();
+      toggle.click();
+      await nextFrame();
+      const collapsedMetrics = read();
+      const collapseToggleFocused = document.activeElement === toggle;
+
+      toggle.click();
+      await nextFrame();
+      const expandedAgain = read();
+      const restoreToggleFocused = document.activeElement === toggle;
+
+      return {
+        expanded,
+        collapsed: collapsedMetrics,
+        expandedAgain,
+        collapseToggleFocused,
+        restoreToggleFocused,
+      };
+    })()
+  `)) as CompactNotesScenarioMetrics;
+}
+
 async function run() {
   const styles = readFileSync(resolve(process.cwd(), 'src/renderer/src/styles.css'), 'utf8');
   const window = new BrowserWindow({
@@ -168,7 +563,18 @@ async function run() {
         verifyMetrics(surface, textSize, await readMetrics(window));
       }
     }
-    console.log('Markdown viewers vertical and local horizontal scroll smoke test passed');
+    for (const scenario of [
+      { name: 'stacked', width: 820, height: 780 },
+      { name: 'wide', width: 1480, height: 930 },
+    ] as const) {
+      verifyCompactNotesScenario(
+        scenario,
+        await measureCompactNotesScenario(window, styles, scenario),
+      );
+    }
+    console.log(
+      'Markdown viewers scroll and Research Notes compact tree geometry smoke test passed',
+    );
   } finally {
     window.destroy();
   }

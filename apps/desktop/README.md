@@ -43,6 +43,8 @@ and supports:
 - defining a goal, primary metric, lineage hashes, budget, and stop policy;
 - freezing an objective revision locally and explicitly starting the next version;
 - browsing each project's managed Obsidian Research Notes tree as rendered, sanitized Markdown;
+- minimizing the Research Notes folder tree into a persistent 44px restore rail so the mounted
+  Markdown reader reclaims the available space without losing the selected note or tree state;
 - projecting Literature searches into `Literature Review.md` and creating non-overwritten paper notes;
 - using project-scoped Codex chats with runtime-discovered models, reasoning, and native modes;
 - independently minimizing the Project Chat sessions rail and model/server detail panel so the
@@ -118,9 +120,11 @@ pnpm --filter @gosu/desktop smoke:local-db:mac
 It creates and removes an isolated temporary user-data directory. It is intentionally separate from
 the cross-platform Vitest suite.
 
-The Markdown viewer geometry smoke test opens real Chromium layout at GOSU's minimum supported window
-size. It verifies that Research Notes and Repository Markdown previews own a usable vertical scroll
-range while wide code remains horizontally scrollable inside its own block:
+The Markdown viewer geometry smoke test opens real Chromium layouts at compact and wide window
+sizes. It verifies that Research Notes and Repository Markdown previews own a usable vertical scroll
+range while wide code remains horizontally scrollable inside its own block. It also collapses and
+restores the Research Notes folder tree with extra-large text and long paths, checking that the
+reader reclaims space, the persistent toggle keeps keyboard focus, and the viewer stays contained:
 
 ```bash
 pnpm --filter @gosu/desktop smoke:markdown-viewer-scroll:mac
