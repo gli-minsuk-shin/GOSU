@@ -14,6 +14,7 @@ export type WorkspaceTabId =
   | 'objective'
   | 'experiments'
   | 'literature'
+  | 'lecture'
   | 'connections'
   | 'notes';
 
@@ -50,6 +51,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
   { id: 'experiments', label: 'Experiments', icon: '⌁' },
   { id: 'literature', label: 'Literature', icon: '▤' },
+  { id: 'lecture', label: 'Lecture notes & slides', icon: '▹' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
   { id: 'notes', label: 'Research Notes', icon: '◇' },
 ];
@@ -57,7 +59,6 @@ export const WORKSPACE_TABS: ReadonlyArray<{
 export const FUTURE_MODULES = [
   ['Manuscript', '¶'],
   ['Review', '✓'],
-  ['Lecture slides', '▹'],
 ] as const;
 
 const EMPTY_OBJECTIVE: ObjectiveDraft = {
@@ -103,6 +104,8 @@ export function WorkspacePageHeading({
       'Trace ideas into experiments, follow metric progress, and build a report from stored evidence.',
     literature:
       'Build a living evidence table, enrich it with AI, and move records safely between JSON, CSV, and BibTeX.',
+    lecture:
+      'Combine papers and experiments across projects into editable lecture notes and timed talk slides.',
     connections: 'Inspect real local capabilities. No connection state on this page is simulated.',
     notes:
       'Browse this project’s managed Obsidian research workspace. Note contents stay on this Mac.',
@@ -126,7 +129,7 @@ export function WorkspacePageHeading({
 }
 
 export function shouldShowActiveProjectPageHeading(activeTab: WorkspaceTabId) {
-  return activeTab !== 'chat' && activeTab !== 'notes';
+  return activeTab !== 'chat' && activeTab !== 'notes' && activeTab !== 'lecture';
 }
 
 export function WorkspaceUnavailable({ onRetry }: { onRetry: () => void }) {

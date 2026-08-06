@@ -232,18 +232,20 @@ describe('folder-style project sidebar', () => {
     expect(html).toContain('Restore');
   });
 
-  it('keeps Connections and Settings global while Research Notes stays project-scoped', () => {
+  it('keeps Lecture Studio, Connections, and Settings global while Research Notes stays project-scoped', () => {
     const html = renderSidebar();
     const projectNotesPosition = html.indexOf('Research Notes');
     const workspaceNavigationPosition = html.indexOf('<small>Workspace</small>');
 
     expect(html).toContain('Workspace');
     expect(html).toContain('Connections');
+    expect(html).toContain('Lecture notes &amp; slides');
     expect(html).toContain('Research Notes');
     expect(html).toContain('Settings');
     expect(html.match(/Research Notes/gu)).toHaveLength(1);
     expect(projectNotesPosition).toBeGreaterThan(-1);
     expect(projectNotesPosition).toBeLessThan(workspaceNavigationPosition);
+    expect(html.indexOf('Lecture notes &amp; slides')).toBeGreaterThan(workspaceNavigationPosition);
   });
 
   it('does not render project children while the active group is minimized', () => {

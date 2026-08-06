@@ -45,6 +45,8 @@ import { desktopContentClassName } from './desktop-content-layout';
 import { ExperimentsView, type ExperimentsViewAdapter } from './experiments-view';
 import { buildLocalNotesGrantUpdate } from './local-notes-access-model';
 import { LiteratureView, type LiteratureViewAdapter } from './literature-view';
+import { VolatileLectureStudioDrafts } from './lecture-studio-session-state';
+import { LectureStudioView, type LectureStudioViewAdapter } from './lecture-studio-view';
 import {
   ResearchNotesView,
   type SelectedNote,
@@ -160,6 +162,17 @@ const experimentsAdapter: ExperimentsViewAdapter = {
   updateIdea: (input) => window.gosu.experiments.updateIdea(input),
   recordMetric: (input) => window.gosu.experiments.recordMetric(input),
   onEvent: (listener) => window.gosu.experiments.onEvent(listener),
+};
+
+const lectureStudioAdapter: LectureStudioViewAdapter = {
+  list: (input) => window.gosu.lectureStudio.list(input),
+  detail: (input) => window.gosu.lectureStudio.detail(input),
+  candidates: (input) => window.gosu.lectureStudio.candidates(input),
+  create: (input) => window.gosu.lectureStudio.create(input),
+  generate: (input) => window.gosu.lectureStudio.generate(input),
+  send: (input) => window.gosu.lectureStudio.send(input),
+  cancel: (input) => window.gosu.lectureStudio.cancel(input),
+  onEvent: (listener) => window.gosu.lectureStudio.onEvent(listener),
 };
 
 function createProjectCommand(
@@ -329,6 +342,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const activeChatSessionIdsRef = useRef(activeChatSessionIds);
   const projectChatSessionsRef = useRef(projectChatSessions);
   const chatDraftsRef = useRef(new VolatileProjectChatDrafts());
+  const lectureStudioDraftsRef = useRef(new VolatileLectureStudioDrafts());
   const chatScrollPositionsRef = useRef(new VolatileProjectChatScrollPositions());
   const chatUnreadAssistantMessagesRef = useRef(new VolatileProjectChatUnreadAssistantMessages());
   const visibleChatSshScopeRef = useRef<{ projectId: string; sessionId: string } | null>(null);
@@ -2331,6 +2345,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 project={activeProject}
                 adapter={literatureAdapter}
                 aiAvailable={codexConnectionState === 'ready'}
+                requestedModelId={selectedModel}
+                reasoningOptionId={selectedReasoning}
+              />
+            )}
+            {activeTab === 'lecture' && (
+              <LectureStudioView
+                projects={snapshot.projects}
+                adapter={lectureStudioAdapter}
+                draftStore={lectureStudioDraftsRef.current}
                 requestedModelId={selectedModel}
                 reasoningOptionId={selectedReasoning}
               />

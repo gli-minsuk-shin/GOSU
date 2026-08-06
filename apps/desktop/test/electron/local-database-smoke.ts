@@ -8,6 +8,7 @@ import { app, safeStorage } from 'electron';
 
 import { LocalDatabase } from '../../src/main/local-database';
 import { ExperimentWorkspaceStorageError } from '../../src/main/experiment-workspace-storage-error';
+import { LectureStudioStorageError } from '../../src/main/lecture-studio-storage-error';
 import { literatureFingerprint } from '../../src/main/literature-crossref';
 import { LiteratureStorageError } from '../../src/main/literature-storage-error';
 import { WorkspaceService } from '../../src/main/workspace-service';
@@ -16,6 +17,12 @@ import type {
   ProjectChatAttempt,
   ProjectChatMessage,
 } from '../../src/shared/project-chat-contracts';
+import {
+  LECTURE_STUDIO_MAX_STUDIOS,
+  type LectureStudio,
+  type LectureStudioMessage,
+  type LectureStudioRevision,
+} from '../../src/shared/lecture-studio-contracts';
 import {
   EXPERIMENT_MAX_IDEAS_PER_PROJECT,
   EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
@@ -197,15 +204,46 @@ function verifyExperimentPersistence(fixedTimestamp: string) {
   });
   competing.close();
   invariant(secondPoint.sequence === 2, 'experiment_metric_sequence_was_not_project_unique');
+  const otherProjectPoint = database.appendExperimentMetricPoint({
+    ...metricDraft,
+    id: randomUUID(),
+    projectId: otherProjectId,
+    ideaId: otherRootIdea.id,
+  });
   invariant(
-    database.appendExperimentMetricPoint({
-      ...metricDraft,
-      id: randomUUID(),
-      projectId: otherProjectId,
-      ideaId: otherRootIdea.id,
-    }).sequence === 1,
+    otherProjectPoint.sequence === 1,
     'experiment_metric_sequence_crossed_project_boundary',
   );
+
+  const missingIdeaId = randomUUID();
+  const metricTails = database.listExperimentMetricTails({
+    projectId,
+    ideaIds: [childIdea.id, otherRootIdea.id, childIdea.id, missingIdeaId],
+    perIdeaLimit: 2,
+  });
+  invariant(
+    metricTails.length === 3 &&
+      metricTails[0]?.ideaId === childIdea.id &&
+      metricTails[0]?.metricPointTotal === 2 &&
+      metricTails[0]?.metricPoints.map((point) => point.sequence).join(',') === '1,2' &&
+      metricTails[1]?.ideaId === otherRootIdea.id &&
+      metricTails[1]?.metricPointTotal === 0 &&
+      metricTails[1]?.metricPoints.length === 0 &&
+      metricTails[2]?.ideaId === missingIdeaId &&
+      metricTails[2]?.metricPointTotal === 0,
+    'experiment_metric_tail_query_was_not_bounded_or_project_scoped',
+  );
+  let invalidMetricTailQueryRejected = false;
+  try {
+    database.listExperimentMetricTails({
+      projectId,
+      ideaIds: ['not-an-idea-id'],
+      perIdeaLimit: 1,
+    });
+  } catch {
+    invalidMetricTailQueryRejected = true;
+  }
+  invariant(invalidMetricTailQueryRejected, 'experiment_metric_tail_query_was_not_validated');
 
   let missingMetricIdeaRejected = false;
   try {
@@ -370,6 +408,16 @@ function verifyExperimentPersistence(fixedTimestamp: string) {
         durablePoints.at(-1)?.sequence === EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
       'experiment_metric_points_did_not_persist_in_sequence',
     );
+    const durableTail = reopened.listExperimentMetricTails({
+      projectId,
+      ideaIds: [childIdea.id],
+      perIdeaLimit: 3,
+    });
+    invariant(
+      durableTail[0]?.metricPointTotal === EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT &&
+        durableTail[0]?.metricPoints.map((point) => point.sequence).join(',') === '4998,4999,5000',
+      'experiment_metric_tail_did_not_return_latest_points_in_ascending_order',
+    );
     invariant(
       reopened.getExperimentIdea(projectId, childIdea.id)?.title === updatedChild.title,
       'experiment_idea_update_did_not_persist',
@@ -407,6 +455,331 @@ function verifyExperimentPersistence(fixedTimestamp: string) {
   } finally {
     reopened.close();
   }
+}
+
+function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
+  const projectId = randomUUID();
+  const recordId = randomUUID();
+  const studio: LectureStudio = {
+    schemaVersion: 1,
+    id: randomUUID(),
+    title: 'SQLCipher lecture boundary',
+    kind: 'talk',
+    durationMinutes: 20,
+    outputProjectId: projectId,
+    sourceProjectIds: [projectId],
+    sourceSelection: {
+      literature: [{ projectId, recordId }],
+      experiments: [],
+    },
+    status: 'draft',
+    activeAttemptId: null,
+    currentRevision: 0,
+    version: 1,
+    lastErrorCode: null,
+    createdAt: fixedTimestamp,
+    updatedAt: fixedTimestamp,
+  };
+  const userMessage = (attemptId: string, content: string): LectureStudioMessage => ({
+    schemaVersion: 1,
+    id: randomUUID(),
+    studioId: studio.id,
+    role: 'user',
+    status: 'complete',
+    content,
+    attemptId,
+    revision: null,
+    invocation: null,
+    createdAt: fixedTimestamp,
+    completedAt: fixedTimestamp,
+  });
+  const revisionFixture = (revision: number, attemptId: string): LectureStudioRevision => ({
+    schemaVersion: 1,
+    id: randomUUID(),
+    studioId: studio.id,
+    revision,
+    attemptId,
+    sourceManifest: {
+      schemaVersion: 1,
+      selectedProjectIds: [projectId],
+      literature: [
+        {
+          sourceLabel: 'L1',
+          projectId,
+          projectName: 'SQLCipher fixture project',
+          recordId,
+          recordVersion: 1,
+          annotationVersion: 0,
+          title: 'A bounded lecture source',
+          authors: ['Ada Researcher'],
+          containerTitle: 'Fixture Journal',
+          publishedYear: 2026,
+          doi: '10.0000/gosu.fixture',
+          citationKey: 'researcher2026bounded',
+          reviewStatus: 'included',
+          topics: ['lecture studio'],
+          metadataSummary: 'A metadata-only fixture for encrypted persistence.',
+          metadataOnly: true,
+        },
+      ],
+      experiments: [],
+    },
+    sourceManifestSha256: 'a'.repeat(64),
+    lectureNotesMarkdown: `# Lecture notes revision ${revision}`,
+    slidesMarkdown: `# Slides revision ${revision}`,
+    artifacts: [
+      {
+        kind: 'lecture-notes',
+        relativePath: `Lecture Studio/fixture/revision-${revision}/lecture-notes.md`,
+        contentSha256: 'b'.repeat(64),
+        savedAt: fixedTimestamp,
+      },
+      {
+        kind: 'slides',
+        relativePath: `Lecture Studio/fixture/revision-${revision}/slides.md`,
+        contentSha256: 'c'.repeat(64),
+        savedAt: fixedTimestamp,
+      },
+    ],
+    invocation: {
+      schemaVersion: 1,
+      invocationId: randomUUID(),
+      providerId: 'codex',
+      requestedModelId: null,
+      resolvedModelId: 'fixture-model',
+      catalogVersion: 'fixture-catalog',
+      reasoningOptionId: null,
+      startedAt: fixedTimestamp,
+    },
+    createdAt: fixedTimestamp,
+  });
+  const assistantMessage = (
+    attemptId: string,
+    revision: number,
+    id: string = randomUUID(),
+  ): LectureStudioMessage => ({
+    schemaVersion: 1,
+    id,
+    studioId: studio.id,
+    role: 'assistant',
+    status: 'complete',
+    content: `Completed lecture revision ${revision}.`,
+    attemptId,
+    revision,
+    invocation: revisionFixture(revision, attemptId).invocation,
+    createdAt: fixedTimestamp,
+    completedAt: fixedTimestamp,
+  });
+
+  const database = new LocalDatabase();
+  database.open();
+  invariant(database.createLectureStudio(studio), 'lecture_studio_insert_failed');
+  const summaries = database.listLectureStudios();
+  invariant(summaries.length === 1, 'lecture_studio_summary_missing');
+  invariant(
+    !('sourceSelection' in (summaries[0] as unknown as Record<string, unknown>)),
+    'lecture_studio_list_leaked_source_selection',
+  );
+  const initialDetail = database.getLectureStudioDetail(studio.id);
+  invariant(initialDetail !== null, 'lecture_studio_detail_missing');
+  invariant(
+    initialDetail.studio.sourceSelection.literature[0]?.recordId === recordId,
+    'lecture_studio_detail_lost_source_selection',
+  );
+  invariant(
+    initialDetail.messages.length === 0 && initialDetail.revisions.length === 0,
+    'lecture_studio_detail_started_with_history',
+  );
+
+  const failedAttemptId = randomUUID();
+  const failedUser = userMessage(failedAttemptId, 'This edit must fail.');
+  const failedGenerating = database.beginLectureStudioTurn({
+    studioId: studio.id,
+    expectedVersion: studio.version,
+    attemptId: failedAttemptId,
+    userMessage: failedUser,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(failedGenerating?.status === 'generating', 'lecture_failed_turn_did_not_begin');
+  invariant(
+    database.beginLectureStudioTurn({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      attemptId: randomUUID(),
+      userMessage: null,
+      updatedAt: fixedTimestamp,
+    }) === null,
+    'lecture_duplicate_begin_was_not_rejected',
+  );
+  const failedStudio = database.failLectureStudioTurn({
+    studioId: studio.id,
+    attemptId: failedAttemptId,
+    errorCode: 'fixture_failed',
+    messageStatus: 'failed',
+    updatedAt: fixedTimestamp,
+  });
+  invariant(failedStudio?.status === 'failed', 'lecture_failed_turn_was_not_finalized');
+  invariant(
+    database.listLectureStudioMessages(studio.id, 10)[0]?.status === 'failed',
+    'lecture_failed_user_message_remained_complete',
+  );
+
+  const interruptedAttemptId = randomUUID();
+  const interruptedUser = userMessage(interruptedAttemptId, 'This edit is interrupted by restart.');
+  const interruptedGenerating = database.beginLectureStudioTurn({
+    studioId: studio.id,
+    expectedVersion: failedStudio.version,
+    attemptId: interruptedAttemptId,
+    userMessage: interruptedUser,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(interruptedGenerating !== null, 'lecture_interrupted_turn_did_not_begin');
+  database.close();
+
+  const reopened = new LocalDatabase();
+  reopened.open();
+  const interruptedStudio = reopened.getLectureStudio(studio.id);
+  invariant(
+    interruptedStudio?.status === 'failed' &&
+      interruptedStudio.lastErrorCode === 'application_interrupted',
+    'lecture_restart_did_not_reconcile_generating_studio',
+  );
+  invariant(
+    reopened
+      .listLectureStudioMessages(studio.id, 10)
+      .find((message) => message.id === interruptedUser.id)?.status === 'interrupted',
+    'lecture_restart_did_not_interrupt_active_user_message',
+  );
+
+  const successfulAttemptId = randomUUID();
+  const successfulUser = userMessage(successfulAttemptId, 'Generate the first revision.');
+  const successfulGenerating = reopened.beginLectureStudioTurn({
+    studioId: studio.id,
+    expectedVersion: interruptedStudio.version,
+    attemptId: successfulAttemptId,
+    userMessage: successfulUser,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(successfulGenerating !== null, 'lecture_successful_turn_did_not_begin');
+  const firstRevision = revisionFixture(1, successfulAttemptId);
+  const firstAssistant = assistantMessage(successfulAttemptId, 1);
+  const readyStudio = reopened.completeLectureStudioTurn({
+    studio: {
+      ...successfulGenerating,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 1,
+      version: successfulGenerating.version + 1,
+      lastErrorCode: null,
+      updatedAt: fixedTimestamp,
+    },
+    revision: firstRevision,
+    assistantMessage: firstAssistant,
+  });
+  invariant(
+    readyStudio?.status === 'ready' && readyStudio.currentRevision === 1,
+    'lecture_completion_was_not_persisted',
+  );
+  invariant(
+    reopened.getCurrentLectureStudioRevision(studio.id)?.id === firstRevision.id,
+    'lecture_current_revision_missing',
+  );
+
+  const atomicAttemptId = randomUUID();
+  const atomicUser = userMessage(atomicAttemptId, 'Force an atomic completion rollback.');
+  const atomicGenerating = reopened.beginLectureStudioTurn({
+    studioId: studio.id,
+    expectedVersion: readyStudio.version,
+    attemptId: atomicAttemptId,
+    userMessage: atomicUser,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(atomicGenerating !== null, 'lecture_atomic_turn_did_not_begin');
+  let atomicCompletionRejected = false;
+  try {
+    reopened.completeLectureStudioTurn({
+      studio: {
+        ...atomicGenerating,
+        status: 'ready',
+        activeAttemptId: null,
+        currentRevision: 2,
+        version: atomicGenerating.version + 1,
+        lastErrorCode: null,
+        updatedAt: fixedTimestamp,
+      },
+      revision: revisionFixture(2, atomicAttemptId),
+      assistantMessage: assistantMessage(atomicAttemptId, 2, firstAssistant.id),
+    });
+  } catch {
+    atomicCompletionRejected = true;
+  }
+  invariant(atomicCompletionRejected, 'lecture_atomic_completion_fixture_did_not_fail');
+  invariant(
+    reopened.getLectureStudio(studio.id)?.status === 'generating' &&
+      reopened.listLectureStudioRevisions(studio.id, 10).length === 1 &&
+      reopened.getLectureStudioRevision(studio.id, 2) === null,
+    'lecture_completion_transaction_did_not_roll_back',
+  );
+  invariant(
+    reopened.failLectureStudioTurn({
+      studioId: studio.id,
+      attemptId: atomicAttemptId,
+      errorCode: 'fixture_atomic_failure',
+      messageStatus: 'failed',
+      updatedAt: fixedTimestamp,
+    })?.status === 'failed',
+    'lecture_atomic_turn_cleanup_failed',
+  );
+  invariant(
+    reopened.listLectureStudioMessages(studio.id, 2).length === 2 &&
+      reopened.listLectureStudioRevisions(studio.id, 1).length === 1,
+    'lecture_history_queries_were_not_bounded',
+  );
+  let invalidLimitRejected = false;
+  try {
+    reopened.listLectureStudioMessages(studio.id, 0);
+  } catch (error) {
+    invalidLimitRejected =
+      error instanceof Error && error.message === 'invalid_lecture_query_limit';
+  }
+  invariant(invalidLimitRejected, 'lecture_invalid_history_limit_was_not_rejected');
+  reopened.close();
+
+  const persisted = new LocalDatabase();
+  persisted.open();
+  invariant(
+    persisted.getCurrentLectureStudioRevision(studio.id)?.id === firstRevision.id &&
+      persisted
+        .listLectureStudioMessages(studio.id, 10)
+        .find((message) => message.id === atomicUser.id)?.status === 'failed',
+    'lecture_history_was_not_persisted_after_reopen',
+  );
+  for (let index = 1; index < LECTURE_STUDIO_MAX_STUDIOS; index += 1) {
+    const capacityProjectId = randomUUID();
+    invariant(
+      persisted.createLectureStudio({
+        ...studio,
+        id: randomUUID(),
+        title: `Capacity fixture ${index}`,
+        outputProjectId: capacityProjectId,
+        sourceProjectIds: [capacityProjectId],
+        sourceSelection: {
+          literature: [{ projectId: capacityProjectId, recordId: randomUUID() }],
+          experiments: [],
+        },
+      }),
+      'lecture_capacity_fixture_insert_failed',
+    );
+  }
+  let capacityRejected = false;
+  try {
+    persisted.createLectureStudio({ ...studio, id: randomUUID(), title: 'Over capacity' });
+  } catch (error) {
+    capacityRejected =
+      error instanceof LectureStudioStorageError && error.code === 'capacity_reached';
+  }
+  invariant(capacityRejected, 'lecture_studio_capacity_error_was_not_typed');
+  persisted.close();
 }
 
 function verifyLiteraturePersistence(fixedTimestamp: string) {
@@ -4101,6 +4474,7 @@ void app.whenReady().then(async () => {
     verifyLiteratureDiscoveryPersistence(fixedTimestamp);
     verifyLiteratureBoundsAndIdentity(fixedTimestamp);
     verifyExperimentPersistence(fixedTimestamp);
+    verifyLectureStudioListDetailBoundary(fixedTimestamp);
 
     process.stdout.write('local SQLCipher workspace smoke test passed\n');
     app.exit(0);

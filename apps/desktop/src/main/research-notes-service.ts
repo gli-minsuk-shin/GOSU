@@ -5,6 +5,10 @@ import type { BrowserWindow } from 'electron';
 import { z } from 'zod';
 
 import type { LiteratureRecord } from '../shared/literature-contracts';
+import type {
+  LectureStudioArtifact,
+  PendingLectureRevisionArtifacts,
+} from '../shared/lecture-studio-contracts';
 import type { LocalNotesVaultGrant } from '../shared/project-chat-contracts';
 import {
   CreateResearchPaperNoteInputSchema,
@@ -26,8 +30,11 @@ import type { AgentVaultNoteChunk, AgentVaultNoteList } from '../shared/vault-co
 import type { ProjectRecord } from '../shared/workspace-contracts';
 import {
   RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES,
+  RESEARCH_NOTES_MAX_PENDING_BUNDLE_SCAN,
   safeResearchNotesFolderName,
   ResearchNotesManagedFiles,
+  type ResearchNotesMarkdownBundleFile,
+  type ResearchNotesPendingMarkdownBundle,
 } from './research-notes-managed-files';
 import {
   researchPaperNoteFileName,
@@ -42,6 +49,9 @@ const MAX_AGENT_NOTE_CHARACTERS = 24_000;
 const MAX_AGENT_MARKDOWN_CHARACTERS = 1_000_000;
 const MAX_AGENT_MARKDOWN_TITLE_BYTES = 180;
 const AGENT_MARKDOWN_ARTIFACT_ID_CHARACTERS = 16;
+const MAX_PENDING_LECTURE_PROJECT_SCAN = 32;
+const LECTURE_NOTES_FILE_NAME = 'Lecture Notes.md';
+const LECTURE_SLIDES_FILE_NAME = 'Slides.md';
 
 export function researchNotesAgentMarkdownArtifactId(
   projectId: string,
@@ -60,6 +70,7 @@ export const ResearchNotesAgentMarkdownCategorySchema = z.enum([
   'experiments',
   'project-progress',
   'idea-development',
+  'lectures',
 ]);
 
 export type ResearchNotesAgentMarkdownCategory = z.infer<
@@ -144,12 +155,25 @@ export type RecoverResearchNoteForAgentInput = z.infer<
   typeof RecoverResearchNoteForAgentInputSchema
 >;
 
+export type SaveLectureRevisionArtifactsInput = Readonly<{
+  outputProjectId: string;
+  studioId: string;
+  studioTitle: string;
+  revision: number;
+  attemptId: string;
+  sourceManifestSha256: string;
+  lectureNotesMarkdown: string;
+  slidesMarkdown: string;
+  createdAt: string;
+}>;
+
 const RESEARCH_NOTES_AGENT_CATEGORY_FOLDERS = {
   literature: 'Literature',
   papers: 'Papers',
   experiments: 'Experiments',
   'project-progress': 'Project Progress',
   'idea-development': 'Idea Development',
+  lectures: 'Lecture Notes & Slides',
 } as const satisfies Record<
   ResearchNotesAgentMarkdownCategory,
   (typeof RESEARCH_NOTES_DEFAULT_FOLDERS)[number]
@@ -272,6 +296,50 @@ function safeAgentMarkdownFileStem(title: string) {
   return result || 'Research Note';
 }
 
+function lectureRevisionBundleId(input: SaveLectureRevisionArtifactsInput, bindingId: string) {
+  return sha256(
+    [
+      input.outputProjectId,
+      bindingId,
+      input.studioId,
+      String(input.revision),
+      input.sourceManifestSha256,
+    ].join('\0'),
+  );
+}
+
+function pendingRevisionJournal(
+  pending: PendingLectureRevisionArtifacts,
+): ResearchNotesPendingMarkdownBundle {
+  const relativeBundlePath = safeProjectPath(pending.relativeBundlePath);
+  const notes = pending.artifacts.find((artifact) => artifact.kind === 'lecture-notes');
+  const slides = pending.artifacts.find((artifact) => artifact.kind === 'slides');
+  if (
+    !notes ||
+    !slides ||
+    notes.relativePath !== `${relativeBundlePath}/${LECTURE_NOTES_FILE_NAME}` ||
+    slides.relativePath !== `${relativeBundlePath}/${LECTURE_SLIDES_FILE_NAME}`
+  ) {
+    throw new ResearchNotesServiceError('research_notes_folder_conflict');
+  }
+  return {
+    schemaVersion: 1,
+    kind: 'lecture-revision',
+    projectId: pending.outputProjectId,
+    bindingId: pending.bindingId,
+    vaultId: pending.vaultId,
+    bundleId: pending.bundleId,
+    studioId: pending.studioId,
+    revision: pending.revision,
+    attemptId: pending.attemptId,
+    sourceManifestSha256: pending.sourceManifestSha256,
+    files: [
+      { name: LECTURE_NOTES_FILE_NAME, contentSha256: notes.contentSha256 },
+      { name: LECTURE_SLIDES_FILE_NAME, contentSha256: slides.contentSha256 },
+    ],
+  };
+}
+
 function initialTemplates(project: ProjectRecord) {
   const frontmatter = (kind: string) =>
     `---\ngosu_schema_version: 1\ngosu_document_kind: ${JSON.stringify(kind)}\ngosu_project_id: ${JSON.stringify(project.id)}\n---\n`;
@@ -284,6 +352,8 @@ function initialTemplates(project: ProjectRecord) {
 }
 
 export class ResearchNotesService {
+  private pendingLectureProjectScanCursor = 0;
+
   constructor(
     private readonly dependencies: Readonly<{
       storage: ResearchNotesStorage;
@@ -506,6 +576,180 @@ export class ResearchNotesService {
       contentSha256: sha256(command.content),
       artifactId,
     });
+  }
+
+  async saveRevisionArtifacts(
+    input: SaveLectureRevisionArtifactsInput,
+  ): Promise<readonly [LectureStudioArtifact, LectureStudioArtifact]> {
+    const descriptor = this.descriptor(input.outputProjectId);
+    if (!descriptor) {
+      throw new ResearchNotesServiceError('research_notes_vault_not_selected');
+    }
+    const { link } = await this.requireReadyLink(input.outputProjectId, descriptor.id);
+    await this.assertOwnership(link);
+    const selection = this.requireVault(link.vaultId);
+    const bundle = this.lectureRevisionBundle(input, link);
+    const writer = new ResearchNotesManagedFiles(selection.root);
+    await writer.createUserMarkdownBundle(
+      link.folderName,
+      bundle.relativeBundlePath,
+      bundle.files,
+      bundle.journal,
+      this.ownership(link),
+    );
+    await this.confirmAgentMarkdownWrite(input.outputProjectId, descriptor.id, link);
+    return bundle.artifacts;
+  }
+
+  async assertRevisionDestination(outputProjectId: string) {
+    const descriptor = this.descriptor(outputProjectId);
+    if (!descriptor) {
+      throw new ResearchNotesServiceError('research_notes_vault_not_selected');
+    }
+    const { link } = await this.requireReadyLink(outputProjectId, descriptor.id);
+    await this.assertOwnership(link);
+    const selection = this.requireVault(link.vaultId);
+    await new ResearchNotesManagedFiles(selection.root).assertUserMarkdownBundleDestination(
+      link.folderName,
+      'Lecture Notes & Slides',
+      this.ownership(link),
+    );
+    await this.confirmAgentMarkdownWrite(outputProjectId, descriptor.id, link);
+  }
+
+  async listPendingRevisionArtifacts(
+    requestedLimit = RESEARCH_NOTES_MAX_PENDING_BUNDLE_SCAN,
+  ): Promise<readonly PendingLectureRevisionArtifacts[]> {
+    const selection = this.dependencies.vault.current();
+    if (!selection) return [];
+    const limit = Math.max(
+      1,
+      Math.min(Math.trunc(requestedLimit), RESEARCH_NOTES_MAX_PENDING_BUNDLE_SCAN),
+    );
+    const snapshot = await this.dependencies.workspace.snapshot();
+    const pending: PendingLectureRevisionArtifacts[] = [];
+    const projects = snapshot.projects;
+    const projectCount = Math.min(projects.length, MAX_PENDING_LECTURE_PROJECT_SCAN);
+    const start =
+      projects.length === 0 ? 0 : this.pendingLectureProjectScanCursor % projects.length;
+    for (let offset = 0; offset < projectCount; offset += 1) {
+      const project = projects[(start + offset) % projects.length]!;
+      if (pending.length >= limit) break;
+      const link = this.dependencies.storage.loadProjectLink(project.id);
+      if (
+        !link ||
+        link.status !== 'ready' ||
+        link.vaultId !== selection.id ||
+        !this.dependencies.vault.matchesGrant(link.vaultId)
+      ) {
+        continue;
+      }
+      try {
+        await this.assertOwnership(link);
+        const entries = await new ResearchNotesManagedFiles(
+          selection.root,
+        ).listPendingUserMarkdownBundles(
+          link.folderName,
+          'Lecture Notes & Slides',
+          this.ownership(link),
+          limit - pending.length,
+        );
+        for (const entry of entries) {
+          const notes = entry.journal.files.find((file) => file.name === LECTURE_NOTES_FILE_NAME);
+          const slides = entry.journal.files.find((file) => file.name === LECTURE_SLIDES_FILE_NAME);
+          if (!notes || !slides) continue;
+          pending.push({
+            outputProjectId: entry.journal.projectId,
+            bindingId: entry.journal.bindingId,
+            vaultId: entry.journal.vaultId,
+            bundleId: entry.journal.bundleId,
+            relativeBundlePath: entry.relativeBundlePath,
+            studioId: entry.journal.studioId,
+            revision: entry.journal.revision,
+            attemptId: entry.journal.attemptId,
+            sourceManifestSha256: entry.journal.sourceManifestSha256,
+            artifacts: [
+              {
+                kind: 'lecture-notes',
+                relativePath: `${entry.relativeBundlePath}/${LECTURE_NOTES_FILE_NAME}`,
+                contentSha256: notes.contentSha256,
+              },
+              {
+                kind: 'slides',
+                relativePath: `${entry.relativeBundlePath}/${LECTURE_SLIDES_FILE_NAME}`,
+                contentSha256: slides.contentSha256,
+              },
+            ],
+          });
+        }
+      } catch {
+        // Recovery is best effort per project; never let one unavailable folder block another.
+      }
+    }
+    if (projects.length > 0) {
+      this.pendingLectureProjectScanCursor = (start + projectCount) % projects.length;
+    }
+    return pending;
+  }
+
+  async confirmPendingRevisionArtifacts(pending: PendingLectureRevisionArtifacts) {
+    const link = await this.requirePendingRevisionLink(pending);
+    const selection = this.requireVault(link.vaultId);
+    await new ResearchNotesManagedFiles(selection.root).confirmUserMarkdownBundle(
+      link.folderName,
+      pending.relativeBundlePath,
+      pendingRevisionJournal(pending),
+      this.ownership(link),
+    );
+    await this.assertOwnership(link);
+  }
+
+  async rollbackPendingRevisionArtifacts(pending: PendingLectureRevisionArtifacts) {
+    const link = await this.requirePendingRevisionLink(pending);
+    const selection = this.requireVault(link.vaultId);
+    await new ResearchNotesManagedFiles(selection.root).rollbackUserMarkdownBundle(
+      link.folderName,
+      pending.relativeBundlePath,
+      pendingRevisionJournal(pending),
+      this.ownership(link),
+    );
+    await this.assertOwnership(link);
+  }
+
+  async confirmRevisionArtifacts(input: SaveLectureRevisionArtifactsInput) {
+    const descriptor = this.descriptor(input.outputProjectId);
+    if (!descriptor) {
+      throw new ResearchNotesServiceError('research_notes_vault_not_selected');
+    }
+    const { link } = await this.requireReadyLink(input.outputProjectId, descriptor.id);
+    await this.assertOwnership(link);
+    const selection = this.requireVault(link.vaultId);
+    const bundle = this.lectureRevisionBundle(input, link);
+    await new ResearchNotesManagedFiles(selection.root).confirmUserMarkdownBundle(
+      link.folderName,
+      bundle.relativeBundlePath,
+      bundle.journal,
+      this.ownership(link),
+    );
+    await this.confirmAgentMarkdownWrite(input.outputProjectId, descriptor.id, link);
+  }
+
+  async rollbackRevisionArtifacts(input: SaveLectureRevisionArtifactsInput) {
+    const descriptor = this.descriptor(input.outputProjectId);
+    if (!descriptor) {
+      throw new ResearchNotesServiceError('research_notes_vault_not_selected');
+    }
+    const { link } = await this.requireReadyLink(input.outputProjectId, descriptor.id);
+    await this.assertOwnership(link);
+    const selection = this.requireVault(link.vaultId);
+    const bundle = this.lectureRevisionBundle(input, link);
+    await new ResearchNotesManagedFiles(selection.root).rollbackUserMarkdownBundle(
+      link.folderName,
+      bundle.relativeBundlePath,
+      bundle.journal,
+      this.ownership(link),
+    );
+    await this.confirmAgentMarkdownWrite(input.outputProjectId, descriptor.id, link);
   }
 
   async recoverMarkdownForAgent(
@@ -759,6 +1003,63 @@ export class ResearchNotesService {
     return files.filter((path) => path.startsWith(prefix)).map((path) => path.slice(prefix.length));
   }
 
+  private lectureRevisionBundle(
+    input: SaveLectureRevisionArtifactsInput,
+    link: ResearchNotesProjectLink,
+  ) {
+    if (
+      !Number.isInteger(input.revision) ||
+      input.revision < 1 ||
+      !/^[0-9a-f]{64}$/u.test(input.sourceManifestSha256) ||
+      !/^\S+$/u.test(input.attemptId)
+    ) {
+      throw new ResearchNotesServiceError('research_notes_folder_conflict');
+    }
+    const wrap = (kind: 'lecture-notes' | 'slides', markdown: string) => {
+      const body = markdown.trim();
+      if (!body) throw new ResearchNotesServiceError('research_notes_folder_conflict');
+      return `---\ngosu_schema_version: 1\ngosu_document_kind: ${JSON.stringify(kind)}\ngosu_lecture_studio_id: ${JSON.stringify(input.studioId)}\ngosu_lecture_revision: ${input.revision}\ngosu_source_manifest_sha256: ${JSON.stringify(input.sourceManifestSha256)}\ngosu_generated_at: ${JSON.stringify(input.createdAt)}\n---\n\n${body}\n`;
+    };
+    const notesContent = wrap('lecture-notes', input.lectureNotesMarkdown);
+    const slidesContent = wrap('slides', input.slidesMarkdown);
+    const bundleId = lectureRevisionBundleId(input, link.bindingId);
+    const revisionLabel = String(input.revision).padStart(4, '0');
+    const folderName = `${safeAgentMarkdownFileStem(input.studioTitle)}--r${revisionLabel}--${bundleId.slice(0, AGENT_MARKDOWN_ARTIFACT_ID_CHARACTERS)}`;
+    const relativeBundlePath = safeProjectPath(`Lecture Notes & Slides/${folderName}`);
+    const files: readonly ResearchNotesMarkdownBundleFile[] = [
+      { name: LECTURE_NOTES_FILE_NAME, content: notesContent },
+      { name: LECTURE_SLIDES_FILE_NAME, content: slidesContent },
+    ];
+    const journal: ResearchNotesPendingMarkdownBundle = {
+      schemaVersion: 1,
+      kind: 'lecture-revision',
+      projectId: input.outputProjectId,
+      bindingId: link.bindingId,
+      vaultId: link.vaultId,
+      bundleId,
+      studioId: input.studioId,
+      revision: input.revision,
+      attemptId: input.attemptId,
+      sourceManifestSha256: input.sourceManifestSha256,
+      files: files.map((file) => ({ name: file.name, contentSha256: sha256(file.content) })),
+    };
+    const artifacts: readonly [LectureStudioArtifact, LectureStudioArtifact] = [
+      {
+        kind: 'lecture-notes',
+        relativePath: `${relativeBundlePath}/${LECTURE_NOTES_FILE_NAME}`,
+        contentSha256: sha256(notesContent),
+        savedAt: input.createdAt,
+      },
+      {
+        kind: 'slides',
+        relativePath: `${relativeBundlePath}/${LECTURE_SLIDES_FILE_NAME}`,
+        contentSha256: sha256(slidesContent),
+        savedAt: input.createdAt,
+      },
+    ];
+    return { relativeBundlePath, files, journal, artifacts };
+  }
+
   private async requireReadyLink(projectId: string, expectedBindingId: string) {
     const project = await this.requireActiveProject(projectId);
     const link = this.dependencies.storage.loadProjectLink(projectId);
@@ -767,6 +1068,21 @@ export class ResearchNotesService {
     }
     this.requireVault(link.vaultId);
     return { project, link };
+  }
+
+  private async requirePendingRevisionLink(pending: PendingLectureRevisionArtifacts) {
+    const link = this.dependencies.storage.loadProjectLink(pending.outputProjectId);
+    if (
+      !link ||
+      link.status !== 'ready' ||
+      link.bindingId !== pending.bindingId ||
+      link.vaultId !== pending.vaultId
+    ) {
+      throw new ResearchNotesServiceError('research_notes_folder_unavailable');
+    }
+    this.requireVault(link.vaultId);
+    await this.assertOwnership(link);
+    return link;
   }
 
   private async confirmAgentMarkdownWrite(

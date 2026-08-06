@@ -19,7 +19,8 @@ GOSU brings the research loop into one workspace:
 - connect GitHub and Zotero, and keep a project-scoped Research Notes workspace inside a selected
   Obsidian Vault;
 - use Codex through a local provider adapter whose model catalog is discovered at runtime; and
-- turn an approved manuscript revision into an editable, source-linked lecture draft.
+- synthesize selected papers and experiments from several projects into editable lecture notes,
+  teaching slides, or a timed research talk in a workspace-level Lecture Studio.
 
 The initial desktop target is macOS. Experiment workloads run in isolated Linux containers.
 
@@ -70,10 +71,19 @@ but it is not yet a deployed end-to-end product:
   `Allow once` approval and is capped at 120 seconds. Long-running or unattended experiments still
   require the Runner control path, and imported `-L` forwarding remains an inactive plan;
 - Research Notes connects one Obsidian Vault locally and creates an isolated
-  `GOSU/<project>/Literature|Papers|Experiments|Project Progress|Idea Development` workspace per
+  `GOSU/<project>/Literature|Papers|Experiments|Project Progress|Idea Development|Lecture Notes & Slides`
+  workspace per
   project. GOSU writes only its owned templates and deterministic Literature projection; paper
   notes become user-owned after creation. The reader renders sanitized Markdown and project-local
-  attachments. Each project also has an app-managed Repository workspace for GitHub HTTPS clone,
+  attachments;
+- the workspace-level Lecture Studio can combine reviewed Literature metadata and recorded
+  Experiment evidence from multiple active projects. It creates lecture notes and teaching slides,
+  or a 10/20/30/50-minute talk deck, then keeps revisions in a dedicated Codex chat that is separate
+  from Project Chat. Every accepted revision is immutable in local SQLCipher and is written as new
+  Markdown artifacts under one explicitly selected source project's `Lecture Notes & Slides`
+  Research Notes folder. Selected evidence and current documents are never silently truncated; an
+  oversized revision stops before model execution with an actionable error; and
+- each project also has an app-managed Repository workspace for GitHub HTTPS clone,
   file tree and Markdown preview, staged/unstaged diff, commit history, local branches, commit,
   Fetch, fast-forward-only Pull, and reviewed-SHA-only non-force Push; and
 - the running Sync API uses an in-memory development store with lab/project authorization,

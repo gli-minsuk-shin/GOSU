@@ -1024,6 +1024,7 @@ function localNotesVaultFixture() {
         experiments: 'Experiments',
         'project-progress': 'Project Progress',
         'idea-development': 'Idea Development',
+        lectures: 'Lecture Notes & Slides',
       } as const;
       return {
         schemaVersion: 1,

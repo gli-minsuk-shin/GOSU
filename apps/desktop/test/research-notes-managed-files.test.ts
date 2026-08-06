@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -18,6 +19,7 @@ import {
   ResearchNotesManagedFiles,
   safeResearchNotesFolderName,
   type ResearchNotesOwnership,
+  type ResearchNotesPendingMarkdownBundle,
 } from '../src/main/research-notes-managed-files';
 
 const temporaryDirectories: string[] = [];
@@ -33,6 +35,61 @@ async function temporaryVault() {
   const root = await mkdtemp(join(tmpdir(), 'gosu-research-notes-files-'));
   temporaryDirectories.push(root);
   return realpath(root);
+}
+
+function pendingJournal(bundleId: string, attemptId: string): ResearchNotesPendingMarkdownBundle {
+  return {
+    schemaVersion: 1,
+    kind: 'lecture-revision',
+    projectId: OWNERSHIP.projectId,
+    bindingId: OWNERSHIP.bindingId,
+    vaultId: OWNERSHIP.vaultId,
+    bundleId,
+    studioId: '33333333-3333-4333-8333-333333333333',
+    revision: 1,
+    attemptId,
+    sourceManifestSha256: 'c'.repeat(64),
+    files: [
+      { name: 'Lecture Notes.md', contentSha256: '0'.repeat(64) },
+      { name: 'Slides.md', contentSha256: '0'.repeat(64) },
+    ],
+  };
+}
+
+async function pendingFixture() {
+  const root = await temporaryVault();
+  const writer = new ResearchNotesManagedFiles(root);
+  await writer.createProjectWorkspace(
+    'Research Project',
+    OWNERSHIP,
+    ['Lecture Notes & Slides'],
+    {},
+  );
+  return { root, projectRoot: join(root, 'GOSU', 'Research Project'), writer };
+}
+
+async function createPendingBundle(
+  writer: ResearchNotesManagedFiles,
+  relativeBundlePath: string,
+  bundleId: string,
+  attemptId: string,
+) {
+  await writer.createUserMarkdownBundle(
+    'Research Project',
+    relativeBundlePath,
+    [
+      { name: 'Lecture Notes.md', content: `# Notes for ${relativeBundlePath}\n` },
+      { name: 'Slides.md', content: `# Slides for ${relativeBundlePath}\n` },
+    ],
+    pendingJournal(bundleId, attemptId),
+    OWNERSHIP,
+  );
+}
+
+async function pendingIndexFiles(projectRoot: string) {
+  return (await readdir(join(projectRoot, '.gosu-pending-bundles'))).filter((name) =>
+    name.endsWith('.json'),
+  );
 }
 
 afterEach(async () => {
@@ -377,6 +434,131 @@ describe('ResearchNotesManagedFiles', () => {
     await expect(
       writer.renameProjectWorkspace('Old Name', 'New Name', renamedOwnership),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('ResearchNotesManagedFiles pending bundle index', () => {
+  it('finds a pending bundle after more than 256 confirmed revision folders', async () => {
+    const { projectRoot, writer } = await pendingFixture();
+    const lectureRoot = join(projectRoot, 'Lecture Notes & Slides');
+    await Promise.all(
+      Array.from({ length: 300 }, (_, index) =>
+        mkdir(join(lectureRoot, `confirmed-${String(index).padStart(3, '0')}`)),
+      ),
+    );
+    const relativeBundlePath = 'Lecture Notes & Slides/zz-pending';
+    await createPendingBundle(
+      writer,
+      relativeBundlePath,
+      'd'.repeat(64),
+      '44444444-4444-4444-8444-444444444444',
+    );
+
+    const pending = await writer.listPendingUserMarkdownBundles(
+      'Research Project',
+      'Lecture Notes & Slides',
+      OWNERSHIP,
+    );
+
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.relativeBundlePath).toBe(relativeBundlePath);
+  });
+
+  it('durably rotates a bounded scan so active entries cannot starve later ones', async () => {
+    const { writer } = await pendingFixture();
+    const paths = [
+      'Lecture Notes & Slides/a',
+      'Lecture Notes & Slides/b',
+      'Lecture Notes & Slides/c',
+    ];
+    const attempts = [
+      '44444444-4444-4444-8444-444444444444',
+      '55555555-5555-4555-8555-555555555555',
+      '66666666-6666-4666-8666-666666666666',
+    ];
+    for (const [index, path] of paths.entries()) {
+      await createPendingBundle(writer, path!, String(index + 1).repeat(64), attempts[index]!);
+    }
+
+    const discovered = new Set<string>();
+    for (let index = 0; index < paths.length; index += 1) {
+      const [entry] = await writer.listPendingUserMarkdownBundles(
+        'Research Project',
+        'Lecture Notes & Slides',
+        OWNERSHIP,
+        1,
+      );
+      expect(entry).toBeDefined();
+      discovered.add(entry!.relativeBundlePath);
+    }
+
+    expect(discovered).toEqual(new Set(paths));
+  });
+
+  it('cleans orphan indexes without removing a conflicting user target', async () => {
+    const { projectRoot, writer } = await pendingFixture();
+    const missingPath = 'Lecture Notes & Slides/missing-target';
+    await createPendingBundle(
+      writer,
+      missingPath,
+      'e'.repeat(64),
+      '44444444-4444-4444-8444-444444444444',
+    );
+    await rm(join(projectRoot, missingPath), { recursive: true });
+
+    await expect(
+      writer.listPendingUserMarkdownBundles(
+        'Research Project',
+        'Lecture Notes & Slides',
+        OWNERSHIP,
+      ),
+    ).resolves.toEqual([]);
+    expect(await pendingIndexFiles(projectRoot)).toEqual([]);
+
+    const conflictPath = 'Lecture Notes & Slides/user-conflict';
+    await createPendingBundle(
+      writer,
+      conflictPath,
+      'f'.repeat(64),
+      '55555555-5555-4555-8555-555555555555',
+    );
+    await rm(join(projectRoot, conflictPath), { recursive: true });
+    await writeFile(join(projectRoot, conflictPath), 'user-owned conflict\n', 'utf8');
+
+    await expect(
+      writer.listPendingUserMarkdownBundles(
+        'Research Project',
+        'Lecture Notes & Slides',
+        OWNERSHIP,
+      ),
+    ).resolves.toEqual([]);
+    await expect(readFile(join(projectRoot, conflictPath), 'utf8')).resolves.toBe(
+      'user-owned conflict\n',
+    );
+    expect(await pendingIndexFiles(projectRoot)).toHaveLength(1);
+  });
+
+  it('finishes index cleanup when confirmation removed the journal first', async () => {
+    const { projectRoot, writer } = await pendingFixture();
+    const relativeBundlePath = 'Lecture Notes & Slides/confirmed-before-index-cleanup';
+    await createPendingBundle(
+      writer,
+      relativeBundlePath,
+      '9'.repeat(64),
+      '44444444-4444-4444-8444-444444444444',
+    );
+    const bundlePath = join(projectRoot, relativeBundlePath);
+    await rm(join(bundlePath, '.gosu-pending-bundle.json'));
+
+    await expect(
+      writer.listPendingUserMarkdownBundles(
+        'Research Project',
+        'Lecture Notes & Slides',
+        OWNERSHIP,
+      ),
+    ).resolves.toEqual([]);
+    expect((await readdir(bundlePath)).sort()).toEqual(['Lecture Notes.md', 'Slides.md']);
+    expect(await pendingIndexFiles(projectRoot)).toEqual([]);
   });
 });
 

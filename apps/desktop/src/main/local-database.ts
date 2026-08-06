@@ -37,6 +37,21 @@ import {
   type LiteratureSearchTags,
 } from '../shared/literature-search-tags';
 import {
+  LECTURE_STUDIO_MAX_MESSAGES,
+  LECTURE_STUDIO_MAX_REVISIONS,
+  LECTURE_STUDIO_MAX_STUDIOS,
+  LectureStudioDetailSchema,
+  LectureStudioMessageSchema,
+  LectureStudioRevisionSchema,
+  LectureStudioSchema,
+  LectureStudioSummarySchema,
+  type LectureStudio,
+  type LectureStudioDetail,
+  type LectureStudioMessage,
+  type LectureStudioRevision,
+  type LectureStudioSummary,
+} from '../shared/lecture-studio-contracts';
+import {
   AbandonProjectChatResearchNoteSaveInputSchema,
   ConfirmProjectChatResearchNoteSaveInputSchema,
   MarkProjectChatResearchNoteSaveUncertainInputSchema,
@@ -91,6 +106,7 @@ import {
   type LiteratureProviderCandidate,
 } from './literature-crossref';
 import { LiteratureStorageError } from './literature-storage-error';
+import { LectureStudioStorageError } from './lecture-studio-storage-error';
 import { WorkspaceDataRecoveryError } from './workspace-storage-error';
 
 const MAX_WORKSPACE_STATE_BYTES = 8 * 1024 * 1024;
@@ -106,6 +122,7 @@ const LITERATURE_SEARCH_TAGS_MIGRATION = 'literature-search-tags-v1';
 const LITERATURE_HUGGING_FACE_PROVIDER_MIGRATION = 'literature-hugging-face-provider-v1';
 const LITERATURE_CANONICAL_IDENTITY_MIGRATION = 'literature-canonical-identity-v1';
 const DEFAULT_PROJECT_CHAT_SESSION_TITLE = 'Project chat';
+const LECTURE_STUDIO_STORAGE_QUERY_LIMIT = 100;
 const ExperimentMetricPointDraftSchema = ExperimentMetricPointSchema.omit({ sequence: true });
 
 type ProjectChatResearchNoteSaveReceiptRow = Readonly<{
@@ -656,6 +673,72 @@ type ExperimentMetricPointRow = Readonly<{
   recorded_at: string;
 }>;
 
+type ExperimentMetricTailRow = ExperimentMetricPointRow &
+  Readonly<{
+    metric_point_total: number;
+    tail_rank: number;
+  }>;
+
+const ExperimentMetricTailQuerySchema = z
+  .object({
+    projectId: ExperimentIdeaSchema.shape.projectId,
+    ideaIds: z.array(ExperimentIdeaSchema.shape.id).max(EXPERIMENT_MAX_IDEAS_PER_PROJECT),
+    perIdeaLimit: z.number().int().positive().max(EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT),
+  })
+  .strict();
+
+type LectureStudioRow = Readonly<{
+  id: string;
+  schema_version: number;
+  title: string;
+  kind: LectureStudio['kind'];
+  duration_minutes: number | null;
+  output_project_id: string;
+  source_project_ids_json: string;
+  source_selection_json: string;
+  status: LectureStudio['status'];
+  active_attempt_id: string | null;
+  current_revision: number;
+  version: number;
+  last_error_code: string | null;
+  created_at: string;
+  updated_at: string;
+}>;
+
+type LectureStudioSummaryRow = Omit<
+  LectureStudioRow,
+  'source_project_ids_json' | 'source_selection_json'
+>;
+
+type LectureStudioMessageRow = Readonly<{
+  id: string;
+  schema_version: number;
+  studio_id: string;
+  role: LectureStudioMessage['role'];
+  status: LectureStudioMessage['status'];
+  content: string;
+  attempt_id: string | null;
+  revision: number | null;
+  invocation_json: string | null;
+  created_at: string;
+  completed_at: string;
+}>;
+
+type LectureStudioRevisionRow = Readonly<{
+  id: string;
+  schema_version: number;
+  studio_id: string;
+  revision: number;
+  attempt_id: string;
+  source_manifest_json: string;
+  source_manifest_sha256: string;
+  lecture_notes_markdown: string;
+  slides_markdown: string;
+  artifacts_json: string;
+  invocation_json: string;
+  created_at: string;
+}>;
+
 function toExperimentIdea(row: ExperimentIdeaRow): ExperimentIdea {
   return ExperimentIdeaSchema.parse({
     schemaVersion: row.schema_version,
@@ -698,6 +781,142 @@ function toExperimentMetricPoint(row: ExperimentMetricPointRow): ExperimentMetri
     trialId: row.trial_id,
     recordedAt: row.recorded_at,
   });
+}
+
+function toLectureStudio(row: LectureStudioRow): LectureStudio {
+  return LectureStudioSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    title: row.title,
+    kind: row.kind,
+    durationMinutes: row.duration_minutes,
+    outputProjectId: row.output_project_id,
+    sourceProjectIds: JSON.parse(row.source_project_ids_json) as unknown,
+    sourceSelection: JSON.parse(row.source_selection_json) as unknown,
+    status: row.status,
+    activeAttemptId: row.active_attempt_id,
+    currentRevision: row.current_revision,
+    version: row.version,
+    lastErrorCode: row.last_error_code,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function toLectureStudioSummary(row: LectureStudioSummaryRow): LectureStudioSummary {
+  return LectureStudioSummarySchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    title: row.title,
+    kind: row.kind,
+    durationMinutes: row.duration_minutes,
+    outputProjectId: row.output_project_id,
+    status: row.status,
+    activeAttemptId: row.active_attempt_id,
+    currentRevision: row.current_revision,
+    version: row.version,
+    lastErrorCode: row.last_error_code,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function toLectureStudioMessage(row: LectureStudioMessageRow): LectureStudioMessage {
+  return LectureStudioMessageSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    studioId: row.studio_id,
+    role: row.role,
+    status: row.status,
+    content: row.content,
+    attemptId: row.attempt_id,
+    revision: row.revision,
+    invocation: row.invocation_json === null ? null : JSON.parse(row.invocation_json),
+    createdAt: row.created_at,
+    completedAt: row.completed_at,
+  });
+}
+
+function toLectureStudioRevision(row: LectureStudioRevisionRow): LectureStudioRevision {
+  return LectureStudioRevisionSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    studioId: row.studio_id,
+    revision: row.revision,
+    attemptId: row.attempt_id,
+    sourceManifest: JSON.parse(row.source_manifest_json) as unknown,
+    sourceManifestSha256: row.source_manifest_sha256,
+    lectureNotesMarkdown: row.lecture_notes_markdown,
+    slidesMarkdown: row.slides_markdown,
+    artifacts: JSON.parse(row.artifacts_json) as unknown,
+    invocation: JSON.parse(row.invocation_json) as unknown,
+    createdAt: row.created_at,
+  });
+}
+
+function insertLectureStudioMessage(database: Database.Database, input: LectureStudioMessage) {
+  const message = LectureStudioMessageSchema.parse(structuredClone(input));
+  database
+    .prepare(
+      `insert into lecture_studio_messages(
+         id,schema_version,studio_id,role,status,content,attempt_id,revision,
+         invocation_json,created_at,completed_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      message.id,
+      message.schemaVersion,
+      message.studioId,
+      message.role,
+      message.status,
+      message.content,
+      message.attemptId,
+      message.revision,
+      message.invocation === null ? null : JSON.stringify(message.invocation),
+      message.createdAt,
+      message.completedAt,
+    );
+}
+
+function insertLectureStudioRevision(database: Database.Database, input: LectureStudioRevision) {
+  const revision = LectureStudioRevisionSchema.parse(structuredClone(input));
+  database
+    .prepare(
+      `insert into lecture_studio_revisions(
+         id,schema_version,studio_id,revision,attempt_id,source_manifest_json,
+         source_manifest_sha256,lecture_notes_markdown,slides_markdown,artifacts_json,
+         invocation_json,created_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      revision.id,
+      revision.schemaVersion,
+      revision.studioId,
+      revision.revision,
+      revision.attemptId,
+      JSON.stringify(revision.sourceManifest),
+      revision.sourceManifestSha256,
+      revision.lectureNotesMarkdown,
+      revision.slidesMarkdown,
+      JSON.stringify(revision.artifacts),
+      JSON.stringify(revision.invocation),
+      revision.createdAt,
+    );
+}
+
+function lectureStudioStorageQueryLimit(limit: number) {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('invalid_lecture_query_limit');
+  return Math.min(limit, LECTURE_STUDIO_STORAGE_QUERY_LIMIT);
+}
+
+function throwMappedLectureStudioStorageError(error: unknown): never {
+  if (
+    error instanceof Error &&
+    /lecture_(?:studio|message|revision)_limit_reached/u.test(error.message)
+  ) {
+    throw new LectureStudioStorageError('capacity_reached');
+  }
+  throw error;
 }
 
 function stringArrayJson(value: string) {
@@ -2164,6 +2383,116 @@ export class LocalDatabase {
         begin
           select raise(abort,'experiment_metric_point_append_only');
         end;
+      create table if not exists lecture_studios (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        title text not null check (length(title) between 1 and 160),
+        kind text not null check (kind in ('lecture','talk')),
+        duration_minutes integer check (duration_minutes in (10,20,30,50)),
+        output_project_id text not null check (length(output_project_id) = 36),
+        source_project_ids_json text not null check (
+          length(source_project_ids_json) between 2 and 16384
+        ),
+        source_selection_json text not null check (
+          length(source_selection_json) between 2 and 65536
+        ),
+        status text not null check (status in ('draft','generating','ready','failed')),
+        active_attempt_id text check (
+          active_attempt_id is null or length(active_attempt_id) = 36
+        ),
+        current_revision integer not null check (current_revision >= 0),
+        version integer not null check (version > 0),
+        last_error_code text check (
+          last_error_code is null or length(last_error_code) between 1 and 128
+        ),
+        created_at text not null,
+        updated_at text not null,
+        check ((status = 'generating') = (active_attempt_id is not null)),
+        check (status = 'failed' or last_error_code is null),
+        check (
+          (kind = 'talk' and duration_minutes is not null) or
+          (kind = 'lecture' and duration_minutes is null)
+        )
+      );
+      create index if not exists lecture_studios_by_updated_at
+        on lecture_studios(updated_at desc,id);
+      create trigger if not exists lecture_studios_limit
+        before insert on lecture_studios
+        when (select count(*) from lecture_studios) >= ${LECTURE_STUDIO_MAX_STUDIOS}
+        begin
+          select raise(abort,'lecture_studio_limit_reached');
+        end;
+      create table if not exists lecture_studio_messages (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        studio_id text not null check (length(studio_id) = 36),
+        role text not null check (role in ('user','assistant')),
+        status text not null check (status in ('complete','failed','interrupted')),
+        content text not null check (length(content) between 1 and 32000),
+        attempt_id text check (attempt_id is null or length(attempt_id) = 36),
+        revision integer check (revision is null or revision > 0),
+        invocation_json text check (
+          invocation_json is null or length(invocation_json) between 2 and 8192
+        ),
+        created_at text not null,
+        completed_at text not null,
+        foreign key(studio_id) references lecture_studios(id) on delete cascade,
+        check (role = 'assistant' or (revision is null and invocation_json is null))
+      );
+      create index if not exists lecture_studio_messages_by_studio
+        on lecture_studio_messages(studio_id,created_at,id);
+      create unique index if not exists lecture_studio_one_assistant_per_attempt
+        on lecture_studio_messages(studio_id,attempt_id)
+        where role='assistant' and attempt_id is not null;
+      create trigger if not exists lecture_studio_messages_limit
+        before insert on lecture_studio_messages
+        when (
+          select count(*) from lecture_studio_messages where studio_id=new.studio_id
+        ) >= ${LECTURE_STUDIO_MAX_MESSAGES}
+        begin
+          select raise(abort,'lecture_message_limit_reached');
+        end;
+      create table if not exists lecture_studio_revisions (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        studio_id text not null check (length(studio_id) = 36),
+        revision integer not null check (revision > 0),
+        attempt_id text not null check (length(attempt_id) = 36),
+        source_manifest_json text not null check (
+          length(source_manifest_json) between 2 and 1048576
+        ),
+        source_manifest_sha256 text not null check (length(source_manifest_sha256) = 64),
+        lecture_notes_markdown text not null check (
+          length(lecture_notes_markdown) between 1 and 200000
+        ),
+        slides_markdown text not null check (length(slides_markdown) between 1 and 200000),
+        artifacts_json text not null check (length(artifacts_json) between 2 and 32768),
+        invocation_json text not null check (length(invocation_json) between 2 and 8192),
+        created_at text not null,
+        unique(studio_id,revision),
+        unique(studio_id,attempt_id),
+        foreign key(studio_id) references lecture_studios(id) on delete cascade
+      );
+      create index if not exists lecture_studio_revisions_by_studio
+        on lecture_studio_revisions(studio_id,revision);
+      create trigger if not exists lecture_studio_revisions_limit
+        before insert on lecture_studio_revisions
+        when (
+          select count(*) from lecture_studio_revisions where studio_id=new.studio_id
+        ) >= ${LECTURE_STUDIO_MAX_REVISIONS}
+        begin
+          select raise(abort,'lecture_revision_limit_reached');
+        end;
+      create trigger if not exists lecture_studio_revisions_update_guard
+        before update on lecture_studio_revisions
+        begin
+          select raise(abort,'lecture_revision_append_only');
+        end;
+      create trigger if not exists lecture_studio_revisions_delete_guard
+        before delete on lecture_studio_revisions
+        begin
+          select raise(abort,'lecture_revision_append_only');
+        end;
       create table if not exists local_schema_migrations (
         id text primary key,
         applied_at text not null
@@ -2647,6 +2976,26 @@ export class LocalDatabase {
         const reconciledAt = new Date().toISOString();
         reconcileInterruptedChatAttempts(initializedDatabase, reconciledAt);
         reconcileCommittedResearchNoteReceipts(initializedDatabase, reconciledAt);
+        initializedDatabase
+          .prepare(
+            `update lecture_studio_messages
+             set status='interrupted',completed_at=?
+             where role='user' and status='complete' and exists (
+               select 1 from lecture_studios studio
+               where studio.id=lecture_studio_messages.studio_id
+                 and studio.status='generating'
+                 and studio.active_attempt_id=lecture_studio_messages.attempt_id
+             )`,
+          )
+          .run(reconciledAt);
+        initializedDatabase
+          .prepare(
+            `update lecture_studios
+             set status='failed',active_attempt_id=null,last_error_code='application_interrupted',
+                 version=version+1,updated_at=?
+             where status='generating'`,
+          )
+          .run(reconciledAt);
         this.workspaceOutboxOrderingReady = backfillLegacyWorkspaceRevisions(initializedDatabase);
         if (this.workspaceOutboxOrderingReady) reconcileWorkspaceOutboxStatus(initializedDatabase);
       })();
@@ -4033,6 +4382,51 @@ export class LocalDatabase {
     return rows.map(toExperimentMetricPoint);
   }
 
+  listExperimentMetricTails(
+    input: Readonly<{
+      projectId: string;
+      ideaIds: readonly string[];
+      perIdeaLimit: number;
+    }>,
+  ) {
+    const query = ExperimentMetricTailQuerySchema.parse(input);
+    const ideaIds = [...new Set(query.ideaIds)];
+    if (ideaIds.length === 0) return [];
+    const placeholders = ideaIds.map(() => '?').join(',');
+    const rows = this.require()
+      .prepare(
+        `with ranked as (
+           select points.*,
+                  count(*) over (partition by points.idea_id) as metric_point_total,
+                  row_number() over (
+                    partition by points.idea_id order by points.sequence desc
+                  ) as tail_rank
+           from experiment_metric_points points
+           where points.project_id=? and points.idea_id in (${placeholders})
+         )
+         select * from ranked where tail_rank<=?
+         order by idea_id asc,sequence asc`,
+      )
+      .all(query.projectId, ...ideaIds, query.perIdeaLimit) as ExperimentMetricTailRow[];
+    const tails = new Map(
+      ideaIds.map((ideaId) => [
+        ideaId,
+        {
+          ideaId,
+          metricPoints: [] as ExperimentMetricPoint[],
+          metricPointTotal: 0,
+        },
+      ]),
+    );
+    for (const row of rows) {
+      const tail = tails.get(row.idea_id);
+      if (!tail) continue;
+      tail.metricPointTotal = row.metric_point_total;
+      tail.metricPoints.push(toExperimentMetricPoint(row));
+    }
+    return ideaIds.map((ideaId) => tails.get(ideaId)!);
+  }
+
   getExperimentIdea(projectId: string, ideaId: string): ExperimentIdea | null {
     const row = this.require()
       .prepare('select * from experiment_ideas where project_id=? and id=?')
@@ -4183,6 +4577,341 @@ export class LocalDatabase {
           .prepare('select * from experiment_metric_points where id=?')
           .get(point.id) as ExperimentMetricPointRow;
         return toExperimentMetricPoint(row);
+      })
+      .immediate();
+  }
+
+  listLectureStudios(): LectureStudioSummary[] {
+    const rows = this.require()
+      .prepare(
+        `select id,schema_version,title,kind,duration_minutes,output_project_id,
+                status,active_attempt_id,current_revision,version,last_error_code,
+                created_at,updated_at
+         from lecture_studios order by updated_at desc,id asc`,
+      )
+      .all() as LectureStudioSummaryRow[];
+    return rows.map(toLectureStudioSummary);
+  }
+
+  getLectureStudio(studioId: string): LectureStudio | null {
+    const row = this.require().prepare('select * from lecture_studios where id=?').get(studioId) as
+      LectureStudioRow | undefined;
+    return row ? toLectureStudio(row) : null;
+  }
+
+  getLectureStudioDetail(studioId: string): LectureStudioDetail | null {
+    const database = this.require();
+    return database.transaction(() => {
+      const studioRow = database
+        .prepare('select * from lecture_studios where id=?')
+        .get(studioId) as LectureStudioRow | undefined;
+      if (!studioRow) return null;
+      const messageRows = database
+        .prepare(
+          `select * from (
+             select * from lecture_studio_messages
+             where studio_id=? order by created_at desc,id desc limit 50
+           ) order by created_at asc,id asc`,
+        )
+        .all(studioId) as LectureStudioMessageRow[];
+      const revisionRows = database
+        .prepare(
+          `select * from lecture_studio_revisions
+           where studio_id=? order by revision desc limit 1`,
+        )
+        .all(studioId) as LectureStudioRevisionRow[];
+      return LectureStudioDetailSchema.parse({
+        schemaVersion: 1,
+        studio: toLectureStudio(studioRow),
+        messages: messageRows.map(toLectureStudioMessage),
+        revisions: revisionRows.map(toLectureStudioRevision),
+      });
+    })();
+  }
+
+  listLectureStudioMessages(studioId: string, limit: number): LectureStudioMessage[] {
+    const safeLimit = lectureStudioStorageQueryLimit(limit);
+    const rows = this.require()
+      .prepare(
+        `select * from (
+           select * from lecture_studio_messages
+           where studio_id=? order by created_at desc,id desc limit ?
+         ) order by created_at asc,id asc`,
+      )
+      .all(studioId, safeLimit) as LectureStudioMessageRow[];
+    return rows.map(toLectureStudioMessage);
+  }
+
+  listLectureStudioRevisions(studioId: string, limit: number): LectureStudioRevision[] {
+    const safeLimit = lectureStudioStorageQueryLimit(limit);
+    const rows = this.require()
+      .prepare(
+        `select * from (
+           select * from lecture_studio_revisions
+           where studio_id=? order by revision desc limit ?
+         ) order by revision asc`,
+      )
+      .all(studioId, safeLimit) as LectureStudioRevisionRow[];
+    return rows.map(toLectureStudioRevision);
+  }
+
+  getCurrentLectureStudioRevision(studioId: string): LectureStudioRevision | null {
+    const row = this.require()
+      .prepare(
+        `select r.* from lecture_studio_revisions r
+         join lecture_studios s on s.id=r.studio_id and s.current_revision=r.revision
+         where r.studio_id=?`,
+      )
+      .get(studioId) as LectureStudioRevisionRow | undefined;
+    return row ? toLectureStudioRevision(row) : null;
+  }
+
+  getLectureStudioRevision(studioId: string, revision: number): LectureStudioRevision | null {
+    if (!Number.isSafeInteger(revision) || revision < 1) {
+      throw new Error('invalid_lecture_revision');
+    }
+    const row = this.require()
+      .prepare(
+        `select * from lecture_studio_revisions
+         where studio_id=? and revision=?`,
+      )
+      .get(studioId, revision) as LectureStudioRevisionRow | undefined;
+    return row ? toLectureStudioRevision(row) : null;
+  }
+
+  createLectureStudio(input: LectureStudio) {
+    const studio = LectureStudioSchema.parse(structuredClone(input));
+    if (
+      studio.status !== 'draft' ||
+      studio.activeAttemptId !== null ||
+      studio.currentRevision !== 0 ||
+      studio.version !== 1 ||
+      studio.lastErrorCode !== null
+    ) {
+      throw new Error('invalid_lecture_studio_initial_state');
+    }
+    try {
+      return (
+        this.require()
+          .prepare(
+            `insert or ignore into lecture_studios(
+               id,schema_version,title,kind,duration_minutes,output_project_id,
+               source_project_ids_json,source_selection_json,status,active_attempt_id,
+               current_revision,version,last_error_code,created_at,updated_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            studio.id,
+            studio.schemaVersion,
+            studio.title,
+            studio.kind,
+            studio.durationMinutes,
+            studio.outputProjectId,
+            JSON.stringify(studio.sourceProjectIds),
+            JSON.stringify(studio.sourceSelection),
+            studio.status,
+            studio.activeAttemptId,
+            studio.currentRevision,
+            studio.version,
+            studio.lastErrorCode,
+            studio.createdAt,
+            studio.updatedAt,
+          ).changes === 1
+      );
+    } catch (error) {
+      throwMappedLectureStudioStorageError(error);
+    }
+  }
+
+  beginLectureStudioTurn(
+    input: Readonly<{
+      studioId: string;
+      expectedVersion: number;
+      attemptId: string;
+      userMessage: LectureStudioMessage | null;
+      updatedAt: string;
+    }>,
+  ): LectureStudio | null {
+    const database = this.require();
+    if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1) {
+      throw new Error('invalid_lecture_version');
+    }
+    const userMessage =
+      input.userMessage === null
+        ? null
+        : LectureStudioMessageSchema.parse(structuredClone(input.userMessage));
+    if (
+      userMessage &&
+      (userMessage.studioId !== input.studioId ||
+        userMessage.role !== 'user' ||
+        userMessage.attemptId !== input.attemptId ||
+        userMessage.status !== 'complete')
+    ) {
+      throw new Error('invalid_lecture_user_message');
+    }
+    try {
+      return database
+        .transaction(() => {
+          const changed = database
+            .prepare(
+              `update lecture_studios
+               set status='generating',active_attempt_id=?,last_error_code=null,
+                   version=version+1,updated_at=?
+               where id=? and version=? and status in ('draft','ready','failed')
+                 and active_attempt_id is null`,
+            )
+            .run(input.attemptId, input.updatedAt, input.studioId, input.expectedVersion);
+          if (changed.changes !== 1) return null;
+          const capacity = database
+            .prepare(
+              `select
+                 (select count(*) from lecture_studio_messages where studio_id=?) as message_count,
+                 (select count(*) from lecture_studio_revisions where studio_id=?) as revision_count`,
+            )
+            .get(input.studioId, input.studioId) as {
+            message_count: number;
+            revision_count: number;
+          };
+          const requiredMessages = userMessage === null ? 1 : 2;
+          if (
+            capacity.revision_count >= LECTURE_STUDIO_MAX_REVISIONS ||
+            capacity.message_count + requiredMessages > LECTURE_STUDIO_MAX_MESSAGES
+          ) {
+            throw new LectureStudioStorageError('capacity_reached');
+          }
+          if (userMessage) insertLectureStudioMessage(database, userMessage);
+          const row = database
+            .prepare('select * from lecture_studios where id=?')
+            .get(input.studioId) as LectureStudioRow;
+          return toLectureStudio(row);
+        })
+        .immediate();
+    } catch (error) {
+      if (error instanceof LectureStudioStorageError) throw error;
+      throwMappedLectureStudioStorageError(error);
+    }
+  }
+
+  completeLectureStudioTurn(
+    input: Readonly<{
+      studio: LectureStudio;
+      revision: LectureStudioRevision;
+      assistantMessage: LectureStudioMessage | null;
+    }>,
+  ): LectureStudio | null {
+    const studio = LectureStudioSchema.parse(structuredClone(input.studio));
+    const revision = LectureStudioRevisionSchema.parse(structuredClone(input.revision));
+    const assistantMessage =
+      input.assistantMessage === null
+        ? null
+        : LectureStudioMessageSchema.parse(structuredClone(input.assistantMessage));
+    if (
+      studio.status !== 'ready' ||
+      studio.activeAttemptId !== null ||
+      studio.lastErrorCode !== null ||
+      revision.studioId !== studio.id ||
+      revision.revision !== studio.currentRevision ||
+      (assistantMessage !== null &&
+        (assistantMessage.studioId !== studio.id ||
+          assistantMessage.role !== 'assistant' ||
+          assistantMessage.status !== 'complete' ||
+          assistantMessage.attemptId !== revision.attemptId ||
+          assistantMessage.revision !== revision.revision))
+    ) {
+      throw new Error('invalid_lecture_completion');
+    }
+    const database = this.require();
+    try {
+      return database
+        .transaction(() => {
+          const existingRow = database
+            .prepare('select * from lecture_studios where id=?')
+            .get(studio.id) as LectureStudioRow | undefined;
+          if (!existingRow) return null;
+          const existing = toLectureStudio(existingRow);
+          const configurationChanged =
+            studio.title !== existing.title ||
+            studio.kind !== existing.kind ||
+            studio.durationMinutes !== existing.durationMinutes ||
+            studio.outputProjectId !== existing.outputProjectId ||
+            JSON.stringify(studio.sourceProjectIds) !== JSON.stringify(existing.sourceProjectIds) ||
+            JSON.stringify(studio.sourceSelection) !== JSON.stringify(existing.sourceSelection);
+          if (
+            existing.status !== 'generating' ||
+            existing.activeAttemptId !== revision.attemptId ||
+            studio.version !== existing.version + 1 ||
+            studio.currentRevision !== existing.currentRevision + 1 ||
+            configurationChanged
+          ) {
+            return null;
+          }
+          const changed = database
+            .prepare(
+              `update lecture_studios
+               set status='ready',active_attempt_id=null,current_revision=?,version=?,
+                   last_error_code=null,updated_at=?
+               where id=? and version=? and status='generating' and active_attempt_id=?`,
+            )
+            .run(
+              studio.currentRevision,
+              studio.version,
+              studio.updatedAt,
+              studio.id,
+              existing.version,
+              revision.attemptId,
+            );
+          if (changed.changes !== 1) return null;
+          insertLectureStudioRevision(database, revision);
+          if (assistantMessage) insertLectureStudioMessage(database, assistantMessage);
+          const row = database
+            .prepare('select * from lecture_studios where id=?')
+            .get(studio.id) as LectureStudioRow;
+          return toLectureStudio(row);
+        })
+        .immediate();
+    } catch (error) {
+      throwMappedLectureStudioStorageError(error);
+    }
+  }
+
+  failLectureStudioTurn(
+    input: Readonly<{
+      studioId: string;
+      attemptId: string;
+      errorCode: string;
+      messageStatus: 'failed' | 'interrupted';
+      updatedAt: string;
+    }>,
+  ): LectureStudio | null {
+    if (input.errorCode.trim().length < 1 || input.errorCode.length > 128) {
+      throw new Error('invalid_lecture_error_code');
+    }
+    if (input.messageStatus !== 'failed' && input.messageStatus !== 'interrupted') {
+      throw new Error('invalid_lecture_message_status');
+    }
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const changed = database
+          .prepare(
+            `update lecture_studios
+             set status='failed',active_attempt_id=null,last_error_code=?,
+                 version=version+1,updated_at=?
+             where id=? and status='generating' and active_attempt_id=?`,
+          )
+          .run(input.errorCode, input.updatedAt, input.studioId, input.attemptId);
+        if (changed.changes !== 1) return null;
+        database
+          .prepare(
+            `update lecture_studio_messages
+             set status=?,completed_at=?
+             where studio_id=? and attempt_id=? and role='user' and status='complete'`,
+          )
+          .run(input.messageStatus, input.updatedAt, input.studioId, input.attemptId);
+        const row = database
+          .prepare('select * from lecture_studios where id=?')
+          .get(input.studioId) as LectureStudioRow;
+        return toLectureStudio(row);
       })
       .immediate();
   }
