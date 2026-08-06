@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 
 import {
   SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS,
+  SSH_APPROVAL_DEFAULT_TTL_MS,
   CreateSshConnectionInputSchema,
   ImportSshCommandInputSchema,
   ListProjectSshResourceSnapshotsInputSchema,
@@ -147,7 +148,6 @@ type ActiveExecution = Readonly<{
 
 const MAX_CONNECTIONS = 100;
 const MAX_WORKSPACE_GRANTS_PER_PROJECT = 32;
-const DEFAULT_APPROVAL_TTL_MS = 30_000;
 export const SSH_MAX_PENDING_APPROVALS = 16;
 export const SSH_MAX_PENDING_APPROVALS_PER_TURN = 4;
 export const SSH_MAX_ACTIVE_EXECUTIONS = 4;
@@ -530,7 +530,7 @@ export class SshConnectionService extends EventEmitter {
     super();
     this.storage = storage;
     this.runner = runner;
-    this.approvalTtlMs = Math.max(1, options.approvalTimeoutMs ?? DEFAULT_APPROVAL_TTL_MS);
+    this.approvalTtlMs = Math.max(1, options.approvalTimeoutMs ?? SSH_APPROVAL_DEFAULT_TTL_MS);
     this.now = () => (options.now ?? (() => new Date()))().getTime();
     this.resourceMonitor = new SshResourceMonitor(runner, {
       ...(options.resourceSnapshotTtlMs === undefined
@@ -1104,6 +1104,22 @@ export class SshConnectionService extends EventEmitter {
     }
     this.startApproved(pending);
     return { outcome: 'allowed' };
+  }
+
+  listPendingApprovals(projectId: string, sessionId: string): readonly SshApprovalRequest[] {
+    const now = this.now();
+    const requests: SshApprovalRequest[] = [];
+    for (const pending of [...this.pendingApprovals.values()]) {
+      if (pending.command.projectId !== projectId || pending.command.sessionId !== sessionId) {
+        continue;
+      }
+      if (now >= Date.parse(pending.request.expiresAt)) {
+        this.rejectPending(pending, 'expired', 'ssh_approval_expired');
+        continue;
+      }
+      requests.push(copy(pending.request));
+    }
+    return SshApprovalRequestSchema.array().parse(requests);
   }
 
   cancelApproval(approvalId: string) {

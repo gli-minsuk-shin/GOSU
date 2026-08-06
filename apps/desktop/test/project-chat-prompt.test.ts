@@ -91,7 +91,7 @@ describe('Project chat prompt assembly', () => {
     expect(first.provenance).toMatchObject({
       assemblyVersion: 3,
       profileVersion: 3,
-      baseInstructionVersion: 21,
+      baseInstructionVersion: 22,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -152,6 +152,15 @@ describe('Project chat prompt assembly', () => {
       'only the bounded title, DOI, and provider ID identifiers',
     );
     expect(first.developerInstructions).toContain('requires a fresh user Allow once decision');
+    expect(first.developerInstructions).toContain(
+      'ssh_approval_expired, state that the approval expired before the user made a choice',
+    );
+    expect(first.developerInstructions).toContain(
+      'never describe expiry as a cancellation or denial',
+    );
+    expect(first.developerInstructions).toContain(
+      'Describe cancellation only for ssh_approval_cancelled or ssh_cancelled',
+    );
     expect(first.developerInstructions).toContain('typed file listing');
     expect(first.developerInstructions).toContain('list and read the relevant files first');
     expect(first.developerInstructions).toContain(
@@ -203,7 +212,7 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(21);
+    expect(first.provenance.baseInstructionVersion).toBe(22);
     expect(first.developerInstructions).toContain(
       'Core & canonical is an eligibility-gated maximum, never a quota',
     );

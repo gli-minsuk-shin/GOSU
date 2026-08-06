@@ -8,6 +8,7 @@ import {
   type SshConnectionService,
 } from '../src/main/ssh-connection-service';
 import { SSH_IPC_CHANNELS } from '../src/shared/ssh-channels';
+import type { SshApprovalRequest } from '../src/shared/ssh-contracts';
 import { unwrapSshIpcResult } from '../src/shared/ssh-ipc-result';
 import type { WorkspaceService } from '../src/main/workspace-service';
 
@@ -45,6 +46,7 @@ describe('SSH IPC boundary', () => {
       SSH_IPC_CHANNELS.createWorkspaceGrant,
       SSH_IPC_CHANNELS.updateWorkspaceGrant,
       SSH_IPC_CHANNELS.removeWorkspaceGrant,
+      SSH_IPC_CHANNELS.listPendingApprovals,
       SSH_IPC_CHANNELS.resolveApproval,
       SSH_IPC_CHANNELS.cancelScope,
     ]);
@@ -205,6 +207,55 @@ describe('SSH IPC boundary', () => {
 
     expect(cancelSession).toHaveBeenCalledExactlyOnceWith(projectId, sessionId);
     expect(cancelProject).toHaveBeenCalledExactlyOnceWith(projectId);
+  });
+
+  it('lists approvals only for one validated active project and exact session', async () => {
+    const projectId = randomUUID();
+    const sessionId = randomUUID();
+    const approval: SshApprovalRequest = {
+      schemaVersion: 1,
+      id: randomUUID(),
+      projectId,
+      sessionId,
+      attemptId: randomUUID(),
+      turnId: 'turn-recovery',
+      toolCallId: 'tool-recovery',
+      connectionId: randomUUID(),
+      connectionLabel: 'Fixture GPU',
+      hostAlias: 'fixture-gpu',
+      commandPreview: "exec 'true'",
+      requestedAt: '2026-08-06T00:00:00.000Z',
+      expiresAt: '2026-08-06T00:05:00.000Z',
+    };
+    const listPendingApprovals = vi.fn(() => [approval]);
+    const snapshot = vi.fn(async () => ({
+      projects: [{ id: projectId, name: 'Active project', version: 1 }],
+    }));
+    const { handlers } = registerFixture({ listPendingApprovals }, vi.fn(), {
+      snapshot,
+    } as unknown as Partial<WorkspaceService>);
+
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.listPendingApprovals)?.({ projectId, sessionId }),
+    ).resolves.toEqual({ ok: true, value: [approval] });
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.listPendingApprovals)?.({
+        projectId,
+        sessionId,
+        unexpected: true,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_ssh_input' } });
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.listPendingApprovals)?.({
+        projectId: randomUUID(),
+        sessionId,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'ssh_workspace_project_unavailable' },
+    });
+
+    expect(listPendingApprovals).toHaveBeenCalledExactlyOnceWith(projectId, sessionId);
   });
 
   it('rejects malformed aliases before invoking the service', async () => {

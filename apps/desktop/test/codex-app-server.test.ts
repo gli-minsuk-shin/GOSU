@@ -2003,7 +2003,7 @@ describe('Codex App Server process boundary', () => {
         modelId: null,
         dynamicTools,
         dynamicToolHandler: handler,
-        dynamicToolTimeouts: [{ namespace: null, tool: 'read_note', timeoutMs: 180_001 }],
+        dynamicToolTimeouts: [{ namespace: null, tool: 'read_note', timeoutMs: 450_001 }],
       }),
     ).rejects.toThrow('codex_dynamic_tool_timeout_override_invalid');
   });

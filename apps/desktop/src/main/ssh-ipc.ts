@@ -4,6 +4,7 @@ import {
   CancelSshScopeInputSchema,
   CreateSshConnectionInputSchema,
   ImportSshCommandInputSchema,
+  ListPendingSshApprovalsInputSchema,
   ListProjectSshResourceSnapshotsInputSchema,
   ReadProjectSshResourceSnapshotInputSchema,
   ReadSshResourceSnapshotInputSchema,
@@ -133,6 +134,16 @@ export function registerSshIpc(
       RemoveRemoteWorkspaceGrantInputSchema,
       workspace,
       (command) => service.removeWorkspaceGrant(command),
+      reportUnexpected,
+    ),
+  );
+  register(SSH_IPC_CHANNELS.listPendingApprovals, (input) =>
+    withActiveProjectInput(
+      input,
+      ListPendingSshApprovalsInputSchema,
+      workspace,
+      (command) =>
+        Promise.resolve(service.listPendingApprovals(command.projectId, command.sessionId)),
       reportUnexpected,
     ),
   );

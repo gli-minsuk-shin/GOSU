@@ -61,6 +61,13 @@ import {
   type ProjectChatSshServer,
 } from './project-chat-view';
 import {
+  enqueueVisibleSshApproval,
+  mergeHydratedSshApprovals,
+  rememberResolvedSshApproval,
+  removeSshApproval,
+  shouldPresentSshApproval,
+} from './ssh-approval-state';
+import {
   activeSessionIdsForProject,
   loadProjectChatLayoutState,
   projectChatSessionKey,
@@ -321,6 +328,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const chatScrollPositionsRef = useRef(new VolatileProjectChatScrollPositions());
   const chatUnreadAssistantMessagesRef = useRef(new VolatileProjectChatUnreadAssistantMessages());
   const visibleChatSshScopeRef = useRef<{ projectId: string; sessionId: string } | null>(null);
+  const sshResolvedApprovalIdsRef = useRef<ReadonlySet<string>>(new Set());
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
 
   const activeProjects = useMemo(() => visibleProjects(snapshot?.projects ?? []), [snapshot]);
@@ -902,19 +910,49 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     () =>
       window.gosu.ssh.onEvent((event: SshEvent) => {
         if (event.type === 'approval.requested') {
-          setSshApprovals((current) => [
-            ...current.filter((request) => request.id !== event.request.id),
-            event.request,
-          ]);
+          const visibleScope = visibleChatSshScopeRef.current;
+          if (sshResolvedApprovalIdsRef.current.has(event.request.id)) return;
+          if (
+            !shouldPresentSshApproval(
+              event.request,
+              visibleScope,
+              sshResolvedApprovalIdsRef.current,
+            )
+          ) {
+            void window.gosu.ssh
+              .resolveApproval({
+                approvalId: event.request.id,
+                decision: 'deny',
+              })
+              .catch(() => undefined);
+            return;
+          }
+          setSshApprovals((current) =>
+            enqueueVisibleSshApproval(
+              current,
+              event.request,
+              visibleChatSshScopeRef.current,
+              sshResolvedApprovalIdsRef.current,
+            ),
+          );
           return;
         }
-        setSshApprovals((current) => current.filter((request) => request.id !== event.approvalId));
+        sshResolvedApprovalIdsRef.current = rememberResolvedSshApproval(
+          sshResolvedApprovalIdsRef.current,
+          event.approvalId,
+        );
+        setSshApprovals((current) => removeSshApproval(current, event.approvalId));
         setSshApprovalBusyIds((current) => {
           if (!current.has(event.approvalId)) return current;
           const next = new Set(current);
           next.delete(event.approvalId);
           return next;
         });
+        if (event.outcome === 'expired') {
+          setWorkspaceError(
+            'The server approval expired before a choice was made. Ask Project Chat to retry, then use the centered Allow once dialog.',
+          );
+        }
       }),
     [],
   );
@@ -1114,7 +1152,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setWorkspaceError(null);
     try {
       await window.gosu.ssh.resolveApproval({ approvalId, decision });
-      setSshApprovals((current) => current.filter((request) => request.id !== approvalId));
+      sshResolvedApprovalIdsRef.current = rememberResolvedSshApproval(
+        sshResolvedApprovalIdsRef.current,
+        approvalId,
+      );
+      setSshApprovals((current) => removeSshApproval(current, approvalId));
     } catch (error) {
       const description = describeError(error);
       if (
@@ -1122,7 +1164,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         hasErrorCode(error, 'ssh_approval_expired') ||
         hasErrorCode(error, 'ssh_approval_cancelled')
       ) {
-        setSshApprovals((current) => current.filter((request) => request.id !== approvalId));
+        sshResolvedApprovalIdsRef.current = rememberResolvedSshApproval(
+          sshResolvedApprovalIdsRef.current,
+          approvalId,
+        );
+        setSshApprovals((current) => removeSshApproval(current, approvalId));
       }
       setWorkspaceError(description);
     } finally {
@@ -1421,6 +1467,37 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     activeProject && activeProjectChatSessionId
       ? projectChatSessionKey(activeProject.id, activeProjectChatSessionId)
       : null;
+
+  useEffect(() => {
+    if (
+      activeSurface !== 'workspace' ||
+      activeTab !== 'chat' ||
+      !activeProjectId ||
+      !activeProjectChatSessionId
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const scope = {
+      projectId: activeProjectId,
+      sessionId: activeProjectChatSessionId,
+    };
+    void window.gosu.ssh
+      .listPendingApprovals(scope)
+      .then((requests) => {
+        if (cancelled) return;
+        setSshApprovals((current) =>
+          mergeHydratedSshApprovals(current, requests, scope, sshResolvedApprovalIdsRef.current),
+        );
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectChatSessionId, activeProjectId, activeSurface, activeTab]);
+
   const activeProjectChatSnapshot = activeProjectChatSessionKey
     ? chatSnapshots[activeProjectChatSessionKey]
     : undefined;

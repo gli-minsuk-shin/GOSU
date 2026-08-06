@@ -15,6 +15,7 @@ import {
 } from '../src/main/ssh-command-runner';
 import {
   SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS,
+  SSH_APPROVAL_DEFAULT_TTL_MS,
   type SshAgentCommand,
   type SshApprovalRequest,
   type SshConnectionProfile,
@@ -1107,6 +1108,68 @@ describe('SSH connection and Allow once service', () => {
     await expect(rejection).resolves.toEqual(
       expect.objectContaining<Partial<SshConnectionServiceError>>({ code: 'ssh_approval_expired' }),
     );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('defaults approval recovery to a five-minute TTL', async () => {
+    const { runner } = runnerFixture();
+    const service = new SshConnectionService(new MemorySshStorage(), runner, { now: () => NOW });
+    const approval = nextApproval(service);
+    const rejection = service.runAgentCommand(commandFixture()).catch((error: unknown) => error);
+    const request = await approval;
+
+    expect(Date.parse(request.expiresAt) - Date.parse(request.requestedAt)).toBe(
+      SSH_APPROVAL_DEFAULT_TTL_MS,
+    );
+    service.resolveApproval({ approvalId: request.id, decision: 'deny' });
+    await rejection;
+  });
+
+  it('recovers copied, unexpired approvals for only the exact project and session scope', async () => {
+    let now = NOW;
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(new MemorySshStorage(), runner, { now: () => now });
+    const requests: SshApprovalRequest[] = [];
+    const resolvedEvents: Array<{ approvalId: string; outcome: string }> = [];
+    service.on('event', (event) => {
+      if (event.type === 'approval.requested') requests.push(event.request);
+      else resolvedEvents.push(event);
+    });
+    const executionA = service.runAgentCommand(commandFixture()).catch((error: unknown) => error);
+    const executionB = service
+      .runAgentCommand(commandFixture({ sessionId: SESSION_B }))
+      .catch((error: unknown) => error);
+    const executionOtherProject = service
+      .runAgentCommand(commandFixture({ projectId: OTHER_PROJECT_ID }))
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => expect(requests).toHaveLength(3));
+
+    const recovered = service.listPendingApprovals(PROJECT_ID, SESSION_A);
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({ projectId: PROJECT_ID, sessionId: SESSION_A });
+    (recovered[0] as { connectionLabel: string }).connectionLabel = 'mutated renderer copy';
+    expect(service.listPendingApprovals(PROJECT_ID, SESSION_A)[0]?.connectionLabel).toBe(
+      'Fixture GPU',
+    );
+    expect(service.listPendingApprovals(PROJECT_ID, SESSION_B)).toHaveLength(1);
+    expect(service.listPendingApprovals(OTHER_PROJECT_ID, SESSION_A)).toHaveLength(1);
+
+    now = new Date(NOW.getTime() + SSH_APPROVAL_DEFAULT_TTL_MS);
+    expect(service.listPendingApprovals(PROJECT_ID, SESSION_A)).toEqual([]);
+    await expect(executionA).resolves.toEqual(
+      expect.objectContaining<Partial<SshConnectionServiceError>>({ code: 'ssh_approval_expired' }),
+    );
+    expect(resolvedEvents).toContainEqual({
+      type: 'approval.resolved',
+      approvalId: recovered[0]!.id,
+      outcome: 'expired',
+    });
+
+    now = NOW;
+    for (const request of requests.filter((candidate) => candidate.id !== recovered[0]!.id)) {
+      service.resolveApproval({ approvalId: request.id, decision: 'deny' });
+    }
+    await Promise.all([executionB, executionOtherProject]);
     expect(execute).not.toHaveBeenCalled();
   });
 

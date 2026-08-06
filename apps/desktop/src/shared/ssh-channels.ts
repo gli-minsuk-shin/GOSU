@@ -12,6 +12,7 @@ export const SSH_IPC_CHANNELS = {
   createWorkspaceGrant: 'gosu:ssh:create-workspace-grant',
   updateWorkspaceGrant: 'gosu:ssh:update-workspace-grant',
   removeWorkspaceGrant: 'gosu:ssh:remove-workspace-grant',
+  listPendingApprovals: 'gosu:ssh:list-pending-approvals',
   resolveApproval: 'gosu:ssh:resolve-approval',
   cancelScope: 'gosu:ssh:cancel-scope',
   event: 'gosu:ssh:event',

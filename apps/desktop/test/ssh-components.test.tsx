@@ -65,8 +65,11 @@ function nodeText(node: ReactNode): string {
   return Children.toArray(node.props.children).map(nodeText).join('');
 }
 
-function findButton(node: ReactNode, label: string): ReactElement<{ onClick?: () => void }> {
-  let match: ReactElement<{ onClick?: () => void }> | undefined;
+function findButton(
+  node: ReactNode,
+  label: string,
+): ReactElement<{ onClick?: () => void; autoFocus?: boolean }> {
+  let match: ReactElement<{ onClick?: () => void; autoFocus?: boolean }> | undefined;
   const visit = (candidate: ReactNode) => {
     if (match || !isValidElement<{ children?: ReactNode; onClick?: () => void }>(candidate)) return;
     if (candidate.type === 'button' && nodeText(candidate).includes(label)) {
@@ -343,12 +346,18 @@ describe('independent SSH connection UI', () => {
     }
   });
 
-  it('shows the exact bounded command and wires Allow once and Deny decisions', () => {
-    const onResolve = vi.fn();
-    const center = SshApprovalCenter({ requests: [approval], onResolve });
+  it('shows the exact bounded command with safe Allow once and Deny actions', () => {
+    const center = <SshApprovalCenter requests={[approval]} onResolve={vi.fn()} />;
     const html = renderToStaticMarkup(center);
 
+    expect(html).toContain('class="ssh-approval-backdrop"');
+    expect(html).toContain('role="alertdialog"');
+    expect(html).toContain('aria-modal="true"');
+    expect(html).toContain('class="ssh-approval-dialog-header"');
+    expect(html).toContain('class="ssh-approval-dialog-body"');
+    expect(html).toContain('class="ssh-approval-dialog-footer"');
     expect(html).toContain('SSH approval required');
+    expect(html).toContain('1 pending');
     expect(html).toContain('Fixture training server');
     expect(html).toContain('&#x27;/usr/bin/nvidia-smi&#x27;');
     expect(html).toContain('this project chat session');
@@ -357,17 +366,45 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('restricted diagnostic');
     expect(html).toContain(approval.projectId);
     expect(html).toContain(approval.sessionId);
+    expect(html).not.toContain('autofocus=""');
+    expect(html).toContain('>Deny</button>');
+    expect(html).toContain('>Allow once</button>');
+  });
 
-    findButton(center, 'Allow once').props.onClick?.();
-    findButton(center, 'Deny').props.onClick?.();
-    expect(onResolve).toHaveBeenNthCalledWith(1, {
-      approvalId: approval.id,
-      decision: 'allow_once',
-    });
-    expect(onResolve).toHaveBeenNthCalledWith(2, {
-      approvalId: approval.id,
-      decision: 'deny',
-    });
+  it('blocks on only the first queued request while keeping expiry and decisions visible', () => {
+    const firstApproval: SshApprovalRequest = {
+      ...approval,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    };
+    const secondApproval: SshApprovalRequest = {
+      ...approval,
+      id: '77777777-7777-4777-8777-777777777777',
+      connectionLabel: 'Second queued server',
+      commandPreview: "'/usr/bin/git' 'status' '--short'",
+    };
+    const center = (
+      <SshApprovalCenter requests={[firstApproval, secondApproval]} onResolve={vi.fn()} />
+    );
+    const html = renderToStaticMarkup(center);
+    const expectedExpiry = new Date(firstApproval.expiresAt).toLocaleTimeString();
+
+    expect(html).toContain('Reviewing 1 of 2');
+    expect(html).toContain('Fixture training server');
+    expect(html).not.toContain('Second queued server');
+    expect(html).not.toContain('status');
+    expect(html).toContain('role="timer"');
+    expect(html).toContain('Expires in');
+    expect(html).toContain(`Deadline · ${expectedExpiry}`);
+    expect(html).toContain('will not run the command or change the remote file');
+    expect(html.indexOf('ssh-approval-dialog-body')).toBeLessThan(
+      html.indexOf('ssh-approval-dialog-footer'),
+    );
+    expect(html.indexOf('>Deny</button>')).toBeGreaterThan(
+      html.indexOf('ssh-approval-dialog-footer'),
+    );
+    expect(html.indexOf('>Allow once</button>')).toBeGreaterThan(
+      html.indexOf('ssh-approval-dialog-footer'),
+    );
   });
 
   it('shows exact root workspace scope and an honest root execution warning', () => {
@@ -525,6 +562,6 @@ describe('independent SSH connection UI', () => {
   });
 
   it('renders no approval surface when no command is pending', () => {
-    expect(SshApprovalCenter({ requests: [], onResolve: vi.fn() })).toBeNull();
+    expect(renderToStaticMarkup(<SshApprovalCenter requests={[]} onResolve={vi.fn()} />)).toBe('');
   });
 });

@@ -69,6 +69,105 @@ function snapshotStatus(state: SshResourceUiState, snapshot: SshServerResourceSn
   return snapshot.status === 'partial' ? 'Partial' : 'Live sample';
 }
 
+type CompactResourceMetric = Readonly<{
+  label: string;
+  value: string;
+  qualifier?: string;
+  accessibleDetail?: string;
+}>;
+
+export function compactSshResourceMetrics(
+  snapshot?: SshServerResourceSnapshot,
+): readonly CompactResourceMetric[] {
+  if (!snapshot) {
+    return [
+      { label: 'CPU', value: '—' },
+      { label: 'Memory', value: '—' },
+      { label: 'GPU', value: '—' },
+    ];
+  }
+
+  const cpu =
+    snapshot.cpu.state === 'available'
+      ? formatSshResourcePercent(snapshot.cpu.utilizationPercent)
+      : '—';
+  const memory =
+    snapshot.memory.state === 'available'
+      ? formatSshResourcePercent(snapshot.memory.utilizationPercent)
+      : '—';
+
+  if (snapshot.gpu.state !== 'available') {
+    return [
+      { label: 'CPU', value: cpu },
+      { label: 'Memory', value: memory },
+      {
+        label: 'GPU',
+        value: snapshot.gpu.state === 'not_detected' ? 'None' : '—',
+      },
+    ];
+  }
+
+  const gpuCount = snapshot.gpu.devices.length;
+  const reportingGpuValues = snapshot.gpu.devices.flatMap((device) =>
+    device.utilizationPercent === null ? [] : [clampPercent(device.utilizationPercent)],
+  );
+  const reportingGpuCount = reportingGpuValues.length;
+  const gpuValue =
+    reportingGpuCount === 0 ? '—' : formatSshResourcePercent(Math.max(...reportingGpuValues));
+  const isMultiGpu = gpuCount > 1;
+  const qualifier =
+    reportingGpuCount < gpuCount ? `${reportingGpuCount}/${gpuCount} reporting` : undefined;
+
+  return [
+    { label: 'CPU', value: cpu },
+    { label: 'Memory', value: memory },
+    {
+      label: isMultiGpu ? 'GPU max' : 'GPU',
+      value: gpuValue,
+      ...(qualifier ? { qualifier } : {}),
+      ...(isMultiGpu
+        ? {
+            accessibleDetail: `peak utilization across ${reportingGpuCount} of ${gpuCount} GPUs reporting`,
+          }
+        : {}),
+    },
+  ];
+}
+
+function CompactResourceValues({
+  state,
+  snapshot,
+}: Readonly<{
+  state: SshResourceUiState;
+  snapshot: SshServerResourceSnapshot | undefined;
+}>) {
+  const metrics = compactSshResourceMetrics(snapshot);
+  const stale = state.phase === 'error' && snapshot !== undefined;
+
+  return (
+    <span
+      className="ssh-resource-summary-compact-values"
+      aria-label={`${metrics
+        .map(
+          (metric) =>
+            `${metric.label} ${metric.value}${metric.qualifier ? `, ${metric.qualifier}` : ''}${
+              metric.accessibleDetail ? `, ${metric.accessibleDetail}` : ''
+            }`,
+        )
+        .join('; ')}${stale ? '; stale sample' : ''}`}
+    >
+      {metrics.map((metric) => (
+        <span className="ssh-resource-summary-compact-metric" key={metric.label}>
+          <span>{metric.label}</span>
+          <b>{metric.value}</b>
+          {metric.qualifier && <small>{metric.qualifier}</small>}
+        </span>
+      ))}
+      {stale && <span className="ssh-resource-summary-stale">Stale</span>}
+    </span>
+  );
+}
+
 export function SshResourceSummary({
   state,
   serverLabel,
@@ -91,6 +190,7 @@ export function SshResourceSummary({
         <div className="ssh-resource-summary-status">
           <div>
             <strong>Server usage</strong>
+            {collapsed && <CompactResourceValues state={state} snapshot={snapshot} />}
             <span>
               {state.phase === 'loading'
                 ? 'Reading usage…'
@@ -115,6 +215,7 @@ export function SshResourceSummary({
       <div className="ssh-resource-summary-status">
         <div>
           <strong>Server usage</strong>
+          {collapsed && <CompactResourceValues state={state} snapshot={snapshot} />}
           <span>
             {snapshotStatus(state, snapshot)} ·{' '}
             <time dateTime={snapshot.capturedAt}>

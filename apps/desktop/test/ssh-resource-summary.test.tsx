@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   SshResourceSummary,
+  compactSshResourceMetrics,
   formatSshResourceBytes,
   formatSshResourcePercent,
 } from '../src/renderer/src/ssh-resource-summary';
@@ -95,9 +96,61 @@ describe('SSH resource summary', () => {
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('Show resource details for Compact training server');
     expect(html).toContain('Show details');
+    expect(html).toContain('CPU</span><b>37.5%');
+    expect(html).toContain('Memory</span><b>50%');
+    expect(html).toContain('GPU max</span><b>92%');
+    expect(html).toContain('1/2 reporting');
+    expect(html).toContain(
+      'GPU max 92%, 1/2 reporting, peak utilization across 1 of 2 GPUs reporting',
+    );
     expect(html).toContain('Last updated');
     expect(html).toContain('GPU unavailable');
     expect(html).not.toContain('<meter');
+  });
+
+  it('summarizes multi-GPU utilization by the peak without hiding partial telemetry', () => {
+    expect(compactSshResourceMetrics(snapshot)).toEqual([
+      { label: 'CPU', value: '37.5%' },
+      { label: 'Memory', value: '50%' },
+      {
+        label: 'GPU max',
+        value: '92%',
+        qualifier: '1/2 reporting',
+        accessibleDetail: 'peak utilization across 1 of 2 GPUs reporting',
+      },
+    ]);
+  });
+
+  it('makes unavailable resources and stale cached values explicit when minimized', () => {
+    const unavailable: SshServerResourceSnapshot = {
+      ...snapshot,
+      status: 'partial',
+      cpu: { state: 'unavailable' },
+      memory: { state: 'unavailable' },
+      gpu: { state: 'not_detected' },
+      issues: ['cpu_unavailable', 'memory_unavailable', 'gpu_not_detected'],
+    };
+    const unavailableHtml = renderToStaticMarkup(
+      <SshResourceSummary
+        state={{ phase: 'ready', snapshot: unavailable }}
+        serverLabel="CPU-only node"
+        defaultCollapsed
+      />,
+    );
+    const staleHtml = renderToStaticMarkup(
+      <SshResourceSummary
+        state={{ phase: 'error', snapshot }}
+        serverLabel="Stale training server"
+        defaultCollapsed
+      />,
+    );
+
+    expect(unavailableHtml).toContain('CPU</span><b>—');
+    expect(unavailableHtml).toContain('Memory</span><b>—');
+    expect(unavailableHtml).toContain('GPU</span><b>None');
+    expect(staleHtml).toContain('Stale</span>');
+    expect(staleHtml).toContain('stale sample');
+    expect(staleHtml).toContain('Unavailable · showing last sample');
   });
 
   it('keeps the last safe sample visible after refresh failure without exposing an error payload', () => {

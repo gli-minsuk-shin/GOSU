@@ -94,12 +94,14 @@ import {
   type CancelSshScopeInput,
   type CreateSshConnectionInput,
   type ImportSshCommandInput,
+  type ListPendingSshApprovalsInput,
   type ListProjectSshResourceSnapshotsInput,
   type ReadProjectSshResourceSnapshotInput,
   type ReadSshResourceSnapshotInput,
   type RemoveSshConnectionInput,
   type ResolveSshApprovalInput,
   type SshConnectionProfile,
+  type SshApprovalRequest,
   type SshConnectionTestResult,
   type SshEvent,
   type SshServerResourceSnapshot,
@@ -416,6 +418,8 @@ const api = {
       invokeSsh<RemoteWorkspaceGrant>(SSH_IPC_CHANNELS.updateWorkspaceGrant, input),
     removeWorkspaceGrant: (input: RemoveRemoteWorkspaceGrantInput) =>
       invokeSsh<{ removed: true }>(SSH_IPC_CHANNELS.removeWorkspaceGrant, input),
+    listPendingApprovals: (input: ListPendingSshApprovalsInput) =>
+      invokeSsh<readonly SshApprovalRequest[]>(SSH_IPC_CHANNELS.listPendingApprovals, input),
     resolveApproval: (input: ResolveSshApprovalInput) =>
       invokeSsh<{ outcome: 'allowed' | 'denied' }>(SSH_IPC_CHANNELS.resolveApproval, input),
     cancelScope: (input: CancelSshScopeInput) =>
