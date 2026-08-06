@@ -5,6 +5,10 @@ import { SshAgentCommandSchema, SshConnectionProfileSchema } from './ssh-contrac
 export const SSH_WORKSPACE_ROOT_MAX_LENGTH = 1_024;
 export const SSH_WORKSPACE_SUBDIRECTORY_MAX_LENGTH = 512;
 export const SSH_WORKSPACE_MAX_ARGUMENTS = 20;
+export const SSH_WORKSPACE_FILE_PATH_MAX_LENGTH = 512;
+export const SSH_WORKSPACE_FILE_MAX_CHARACTERS = 24_000;
+export const SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS = 16_000;
+export const SSH_WORKSPACE_FILE_LIST_MAX_ENTRIES = 200;
 
 const uuidSchema = z.string().uuid();
 const timestampSchema = z.string().datetime({ offset: true });
@@ -13,6 +17,22 @@ function hasControlCharacter(value: string) {
   return [...value].some((character) => {
     const code = character.codePointAt(0) ?? 0;
     return code <= 31 || (code >= 127 && code <= 159);
+  });
+}
+
+function hasUnicodeFormatCharacter(value: string) {
+  return /\p{Cf}/u.test(value);
+}
+
+function hasUnicodeSurrogateCharacter(value: string) {
+  return /\p{Cs}/u.test(value);
+}
+
+function hasUnsafeWorkspaceFileContentCharacter(value: string) {
+  if (hasUnicodeFormatCharacter(value) || hasUnicodeSurrogateCharacter(value)) return true;
+  return [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return (code <= 31 && code !== 9 && code !== 10 && code !== 13) || (code >= 127 && code <= 159);
   });
 }
 
@@ -38,7 +58,13 @@ const blockedWorkspacePrefixes = new Set([
  */
 export function isAllowedRemoteWorkspaceRoot(value: string) {
   if (!value.startsWith('/') || value === '/' || value.endsWith('/')) return false;
-  if (hasControlCharacter(value) || value.includes('\\')) return false;
+  if (
+    hasControlCharacter(value) ||
+    hasUnicodeFormatCharacter(value) ||
+    hasUnicodeSurrogateCharacter(value) ||
+    value.includes('\\')
+  )
+    return false;
   const segments = value.slice(1).split('/');
   if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
     return false;
@@ -105,14 +131,19 @@ export const RemoveRemoteWorkspaceGrantInputSchema = z
 
 export const ListRemoteWorkspaceGrantsInputSchema = z.object({ projectId: uuidSchema }).strict();
 
-const workspaceSubdirectorySchema = z
+export const RemoteWorkspaceSubdirectorySchema = z
   .string()
   .trim()
   .max(SSH_WORKSPACE_SUBDIRECTORY_MAX_LENGTH)
   .refine((value) => {
     if (value === '') return true;
     if (value.startsWith('/') || value.endsWith('/') || value.includes('\\')) return false;
-    if (hasControlCharacter(value)) return false;
+    if (
+      hasControlCharacter(value) ||
+      hasUnicodeFormatCharacter(value) ||
+      hasUnicodeSurrogateCharacter(value)
+    )
+      return false;
     return value
       .split('/')
       .every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
@@ -121,7 +152,13 @@ const workspaceSubdirectorySchema = z
 const workspaceArgumentSchema = z
   .string()
   .max(1_024)
-  .refine((value) => !hasControlCharacter(value), 'Control characters are not allowed');
+  .refine(
+    (value) =>
+      !hasControlCharacter(value) &&
+      !hasUnicodeFormatCharacter(value) &&
+      !hasUnicodeSurrogateCharacter(value),
+    'Control, Unicode format, and surrogate characters are not allowed',
+  );
 
 export const SshWorkspaceAgentCommandSchema = SshAgentCommandSchema.omit({
   workingDirectory: true,
@@ -130,13 +167,118 @@ export const SshWorkspaceAgentCommandSchema = SshAgentCommandSchema.omit({
     grantId: uuidSchema,
     // Keep room for the hardening flags that Main injects before approval and execution.
     args: z.array(workspaceArgumentSchema).max(SSH_WORKSPACE_MAX_ARGUMENTS).default([]),
-    workspaceSubdirectory: workspaceSubdirectorySchema.optional(),
+    workspaceSubdirectory: RemoteWorkspaceSubdirectorySchema.optional(),
   })
   .strict();
 
 export type SshWorkspaceAgentCommand = z.infer<typeof SshWorkspaceAgentCommandSchema>;
 
-export const SshWorkspaceOperationClassSchema = z.enum(['inspect', 'test', 'build', 'experiment']);
+const blockedWorkspaceFileSegments = new Set(['.git', '.ssh', '.gnupg', '.aws']);
+const blockedWorkspaceFileNames = new Set([
+  '.netrc',
+  '.npmrc',
+  '.pypirc',
+  'authorized_keys',
+  'credentials',
+  'id_dsa',
+  'id_ecdsa',
+  'id_ed25519',
+  'id_rsa',
+  'known_hosts',
+]);
+
+function isAllowedWorkspaceFilePath(value: string) {
+  const segments = value.split('/');
+  const normalizedSegments = segments.map((segment) => segment.toLowerCase());
+  const basename = normalizedSegments.at(-1) ?? '';
+  if (normalizedSegments.some((segment) => blockedWorkspaceFileSegments.has(segment))) return false;
+  if (blockedWorkspaceFileNames.has(basename)) return false;
+  if (basename === '.env' || basename.startsWith('.env.')) return false;
+  if (basename.startsWith('.gosu-write-')) return false;
+  return !['.key', '.p12', '.pem', '.pfx', '.ppk'].some((suffix) => basename.endsWith(suffix));
+}
+
+export const RemoteWorkspaceFilePathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(SSH_WORKSPACE_FILE_PATH_MAX_LENGTH)
+  .refine((value) => {
+    if (value.startsWith('/') || value.endsWith('/') || value.includes('\\')) return false;
+    if (
+      hasControlCharacter(value) ||
+      hasUnicodeFormatCharacter(value) ||
+      hasUnicodeSurrogateCharacter(value)
+    )
+      return false;
+    return value
+      .split('/')
+      .every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
+  }, 'Use a relative workspace file path without traversal')
+  .refine(isAllowedWorkspaceFilePath, 'Sensitive workspace paths are not available');
+
+const workspaceInvocationSchema = SshAgentCommandSchema.pick({
+  projectId: true,
+  sessionId: true,
+  attemptId: true,
+  turnId: true,
+  toolCallId: true,
+  connectionId: true,
+}).extend({
+  grantId: uuidSchema,
+  workspaceSubdirectory: RemoteWorkspaceSubdirectorySchema.optional(),
+});
+
+const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
+
+export const SshWorkspaceFileOperationSchema = z.discriminatedUnion('action', [
+  workspaceInvocationSchema
+    .extend({
+      action: z.literal('list'),
+      maxEntries: z.number().int().min(1).max(SSH_WORKSPACE_FILE_LIST_MAX_ENTRIES).default(100),
+    })
+    .strict(),
+  workspaceInvocationSchema
+    .extend({
+      action: z.literal('read'),
+      relativePath: RemoteWorkspaceFilePathSchema,
+      offset: z.number().int().nonnegative().default(0),
+      maxCharacters: z
+        .number()
+        .int()
+        .min(1)
+        .max(SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS)
+        .default(SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS),
+    })
+    .strict(),
+  workspaceInvocationSchema
+    .extend({
+      action: z.literal('write'),
+      relativePath: RemoteWorkspaceFilePathSchema,
+      content: z
+        .string()
+        .refine(
+          (value) => [...value].length <= SSH_WORKSPACE_FILE_MAX_CHARACTERS,
+          'Workspace file content is too long',
+        )
+        .refine(
+          (value) => !hasUnsafeWorkspaceFileContentCharacter(value),
+          'Unsafe control, Unicode format, or surrogate characters are not allowed',
+        ),
+      expectedSha256: sha256Schema.nullable(),
+    })
+    .strict(),
+]);
+
+export type SshWorkspaceFileOperation = z.infer<typeof SshWorkspaceFileOperationSchema>;
+
+export const SshWorkspaceOperationClassSchema = z.enum([
+  'inspect',
+  'edit',
+  'test',
+  'build',
+  'experiment',
+]);
 export type SshWorkspaceOperationClass = z.infer<typeof SshWorkspaceOperationClassSchema>;
 
 export const GrantedRemoteWorkspaceSchema = z

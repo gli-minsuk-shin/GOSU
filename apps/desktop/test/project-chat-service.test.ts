@@ -721,6 +721,9 @@ async function fixture(vault?: ProjectAgentVault, attachments?: ProjectChatAttac
     runAgentWorkspaceCommand: vi.fn(async () => {
       throw new Error('ssh_unavailable');
     }),
+    runAgentWorkspaceFileOperation: vi.fn(async () => {
+      throw new Error('ssh_unavailable');
+    }),
     cancelSession: vi.fn(() => 0),
     cancelProject: vi.fn(() => 0),
   };
@@ -1867,6 +1870,9 @@ describe('ProjectChatService', () => {
     expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('/Users/');
     expect(codex.dynamicToolTimeouts[0]).toEqual([
       { namespace: 'gosu_project', tool: 'read_ssh_workspace_resources', timeoutMs: 40_000 },
+      { namespace: 'gosu_project', tool: 'list_ssh_workspace_files', timeoutMs: 155_000 },
+      { namespace: 'gosu_project', tool: 'read_ssh_workspace_file', timeoutMs: 155_000 },
+      { namespace: 'gosu_project', tool: 'write_ssh_workspace_file', timeoutMs: 155_000 },
       { namespace: 'gosu_project', tool: 'run_ssh_workspace_command', timeoutMs: 155_000 },
     ]);
     const handler = codex.dynamicToolHandlers[0]!;
@@ -1946,6 +1952,9 @@ describe('ProjectChatService', () => {
     expect(codex.dynamicToolTimeouts[0]).toEqual([
       { namespace: 'gosu_project', tool: 'search_literature', timeoutMs: 125_000 },
       { namespace: 'gosu_project', tool: 'read_ssh_workspace_resources', timeoutMs: 40_000 },
+      { namespace: 'gosu_project', tool: 'list_ssh_workspace_files', timeoutMs: 155_000 },
+      { namespace: 'gosu_project', tool: 'read_ssh_workspace_file', timeoutMs: 155_000 },
+      { namespace: 'gosu_project', tool: 'write_ssh_workspace_file', timeoutMs: 155_000 },
       { namespace: 'gosu_project', tool: 'run_ssh_workspace_command', timeoutMs: 155_000 },
     ]);
     expect(JSON.parse(result.contentItems[0]!.text)).toMatchObject({

@@ -79,6 +79,16 @@ describe('remote workspace boundary', () => {
     expect(resolveWorkspaceWorkingDirectory(grant.canonicalRoot, '../other')).toBe(null);
   });
 
+  it('accepts the maximum combined root and subdirectory working-directory length', () => {
+    const maximumRoot = `/root/${'a'.repeat(1_018)}`;
+    const maximumSubdirectory = 'b'.repeat(512);
+    const resolved = resolveWorkspaceWorkingDirectory(maximumRoot, maximumSubdirectory);
+
+    expect(maximumRoot).toHaveLength(1_024);
+    expect(maximumSubdirectory).toHaveLength(512);
+    expect(resolved).toHaveLength(1_537);
+  });
+
   it.each([
     ['/usr/bin/git', ['status', '--short'], 'inspect'],
     ['/usr/bin/git', ['--no-pager', 'diff', '--stat'], 'inspect'],

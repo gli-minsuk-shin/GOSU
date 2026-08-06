@@ -91,7 +91,7 @@ describe('Project chat prompt assembly', () => {
     expect(first.provenance).toMatchObject({
       assemblyVersion: 3,
       profileVersion: 3,
-      baseInstructionVersion: 19,
+      baseInstructionVersion: 21,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -152,7 +152,29 @@ describe('Project chat prompt assembly', () => {
       'only the bounded title, DOI, and provider ID identifiers',
     );
     expect(first.developerInstructions).toContain('requires a fresh user Allow once decision');
-    expect(first.developerInstructions).toContain('runs a foreground experiment');
+    expect(first.developerInstructions).toContain('typed file listing');
+    expect(first.developerInstructions).toContain('list and read the relevant files first');
+    expect(first.developerInstructions).toContain(
+      'write_ssh_workspace_file with expectedSha256 set to null',
+    );
+    expect(first.developerInstructions).toContain(
+      'pass that exact value as expectedSha256. GOSU rechecks that hash immediately before replacement',
+    );
+    expect(first.developerInstructions).toContain('can still race the final filesystem rename');
+    expect(first.developerInstructions).toContain(
+      'After any failed or commit-uncertain write, read the same path',
+    );
+    expect(first.developerInstructions).toContain(
+      'run the relative .py entrypoint, native test, or build as a separate approved command',
+    );
+    expect(first.developerInstructions).toContain(
+      'Never claim that a file changed, code ran, a test passed, or an experiment completed',
+    );
+    expect(first.developerInstructions).toContain(
+      'block raw shell, delete, rename, chmod, large or binary files',
+    );
+    expect(first.developerInstructions).toContain('Command approval binds argv and cwd');
+    expect(first.developerInstructions).toContain('foreground Python experiment');
     expect(first.developerInstructions).toContain('/usr/bin/python3');
     expect(first.developerInstructions).toContain('at most 120 seconds');
     expect(first.developerInstructions).toContain(
@@ -181,7 +203,7 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(19);
+    expect(first.provenance.baseInstructionVersion).toBe(21);
     expect(first.developerInstructions).toContain(
       'Core & canonical is an eligibility-gated maximum, never a quota',
     );

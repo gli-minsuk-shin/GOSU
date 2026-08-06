@@ -34,9 +34,16 @@ import {
 } from '../shared/ssh-contracts';
 import {
   SSH_WORKSPACE_MAX_ARGUMENTS,
+  SSH_WORKSPACE_FILE_LIST_MAX_ENTRIES,
+  SSH_WORKSPACE_FILE_MAX_CHARACTERS,
+  SSH_WORKSPACE_FILE_PATH_MAX_LENGTH,
+  SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS,
+  RemoteWorkspaceFilePathSchema,
+  RemoteWorkspaceSubdirectorySchema,
   SshWorkspaceAgentCommandSchema,
   type GrantedRemoteWorkspace,
   type SshWorkspaceAgentCommand,
+  type SshWorkspaceFileOperation,
 } from '../shared/ssh-workspace-contracts';
 import type { AgentVaultNoteChunk, AgentVaultNoteList } from '../shared/vault-contracts';
 import { resolveWorkspaceBoardSettings } from '../shared/workspace-contracts';
@@ -50,6 +57,7 @@ import type {
   CodexDynamicToolTimeoutOverride,
 } from './codex-app-server';
 import type { ProjectChatAttachmentsForAgent } from './project-chat-attachment-service';
+import { parseSshWorkspaceFileOutput } from './ssh-workspace-files';
 import type { WorkspaceService } from './workspace-service';
 
 const MAX_BOARD_TASKS = 200;
@@ -117,6 +125,37 @@ const SearchLiteratureArgumentsSchema = z
   });
 const ListSshWorkspacesArgumentsSchema = z.object({}).strict();
 const ReadSshWorkspaceResourcesArgumentsSchema = z.object({ grantId: z.string().uuid() }).strict();
+const ListSshWorkspaceFilesArgumentsSchema = z
+  .object({
+    grantId: z.string().uuid(),
+    workspaceSubdirectory: RemoteWorkspaceSubdirectorySchema.optional(),
+    maxEntries: z.number().int().min(1).max(SSH_WORKSPACE_FILE_LIST_MAX_ENTRIES).optional(),
+  })
+  .strict();
+const ReadSshWorkspaceFileArgumentsSchema = z
+  .object({
+    grantId: z.string().uuid(),
+    workspaceSubdirectory: RemoteWorkspaceSubdirectorySchema.optional(),
+    relativePath: RemoteWorkspaceFilePathSchema,
+    offset: z.number().int().nonnegative().optional(),
+    maxCharacters: z.number().int().min(1).max(SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS).optional(),
+  })
+  .strict();
+const WriteSshWorkspaceFileArgumentsSchema = z
+  .object({
+    grantId: z.string().uuid(),
+    workspaceSubdirectory: RemoteWorkspaceSubdirectorySchema.optional(),
+    relativePath: RemoteWorkspaceFilePathSchema,
+    content: z
+      .string()
+      .max(SSH_WORKSPACE_FILE_MAX_CHARACTERS)
+      .refine((value) => !value.includes('\u0000'), 'NUL bytes are not allowed'),
+    expectedSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/u)
+      .nullable(),
+  })
+  .strict();
 const RunSshWorkspaceCommandArgumentsSchema = SshWorkspaceAgentCommandSchema.pick({
   grantId: true,
   command: true,
@@ -274,6 +313,79 @@ const READ_SSH_WORKSPACE_RESOURCES_TOOL = {
   },
 } as const;
 
+const LIST_SSH_WORKSPACE_FILES_TOOL = {
+  type: 'function',
+  name: 'list_ssh_workspace_files',
+  description:
+    'List a bounded set of regular-file candidates inside a remote workspace explicitly granted to this project in workspace mode. An optional relative workspace subdirectory narrows the listing. This typed operation requires a fresh Allow once decision and returns only relative paths and byte sizes, never the workspace root, connection details, helper command, or raw SSH output. A listed candidate is readable only if a separate approved read confirms it is bounded UTF-8 text. It cannot list outside the granted workspace, follow symlinks, or transfer file bodies.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      grantId: { type: 'string', format: 'uuid' },
+      workspaceSubdirectory: { type: 'string', maxLength: 512 },
+      maxEntries: {
+        type: 'integer',
+        minimum: 1,
+        maximum: SSH_WORKSPACE_FILE_LIST_MAX_ENTRIES,
+      },
+    },
+    required: ['grantId'],
+    additionalProperties: false,
+  },
+} as const;
+
+const READ_SSH_WORKSPACE_FILE_TOOL = {
+  type: 'function',
+  name: 'read_ssh_workspace_file',
+  description:
+    'Read one bounded UTF-8 text chunk from a relative path inside a remote workspace explicitly granted to this project in workspace mode. This typed operation requires a fresh Allow once decision. It returns the exact content chunk, its current full-file SHA-256, offsets, and truncation state without exposing the workspace root, connection details, helper command, or raw SSH output. Read before replacing a file so the returned SHA-256 can be checked again immediately before replacement.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      grantId: { type: 'string', format: 'uuid' },
+      workspaceSubdirectory: { type: 'string', maxLength: 512 },
+      relativePath: {
+        type: 'string',
+        minLength: 1,
+        maxLength: SSH_WORKSPACE_FILE_PATH_MAX_LENGTH,
+      },
+      offset: { type: 'integer', minimum: 0 },
+      maxCharacters: {
+        type: 'integer',
+        minimum: 1,
+        maximum: SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS,
+      },
+    },
+    required: ['grantId', 'relativePath'],
+    additionalProperties: false,
+  },
+} as const;
+
+const WRITE_SSH_WORKSPACE_FILE_TOOL = {
+  type: 'function',
+  name: 'write_ssh_workspace_file',
+  description:
+    'Create or hash-check one bounded UTF-8 text-file replacement at a relative path inside a remote workspace explicitly granted to this project in workspace mode. This typed operation requires a fresh Allow once decision and shows the exact proposed content. Set expectedSha256 to null only to create a file that must not exist. To replace a file, first read it and provide its current SHA-256. GOSU rechecks the file immediately before atomic rename, but another server process can still race that final rename. The typed file broker does not provide delete, rename, chmod, binary/large-file access, symlinks, common secret/key paths, or paths outside the granted workspace.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      grantId: { type: 'string', format: 'uuid' },
+      workspaceSubdirectory: { type: 'string', maxLength: 512 },
+      relativePath: {
+        type: 'string',
+        minLength: 1,
+        maxLength: SSH_WORKSPACE_FILE_PATH_MAX_LENGTH,
+      },
+      content: { type: 'string', maxLength: SSH_WORKSPACE_FILE_MAX_CHARACTERS },
+      expectedSha256: {
+        anyOf: [{ type: 'string', pattern: '^[0-9a-f]{64}$' }, { type: 'null' }],
+      },
+    },
+    required: ['grantId', 'relativePath', 'content', 'expectedSha256'],
+    additionalProperties: false,
+  },
+} as const;
+
 const RUN_SSH_WORKSPACE_COMMAND_TOOL = {
   type: 'function',
   name: 'run_ssh_workspace_command',
@@ -331,6 +443,15 @@ type AttachmentSource = Readonly<{
   deliveryUnconfirmed: boolean;
 }>;
 
+type UnboundRemoteWorkspaceFileOperation = SshWorkspaceFileOperation extends infer Operation
+  ? Operation extends SshWorkspaceFileOperation
+    ? Omit<
+        Operation,
+        'projectId' | 'sessionId' | 'attemptId' | 'turnId' | 'toolCallId' | 'connectionId'
+      >
+    : never
+  : never;
+
 type PendingAttachmentCall = {
   source: AttachmentSource | null;
   sourceReady: boolean;
@@ -374,11 +495,24 @@ export interface ProjectAgentSsh {
     input: SshWorkspaceAgentCommand,
     signal?: AbortSignal,
   ): Promise<SshCommandResult>;
+  runAgentWorkspaceFileOperation(
+    input: SshWorkspaceFileOperation,
+    signal?: AbortSignal,
+  ): Promise<SshCommandResult>;
   cancelSession(projectId: string, sessionId: string): number;
   cancelProject(projectId: string): number;
 }
 
 const knownSshErrors = new Set<string>(SSH_IPC_ERROR_CODES);
+const knownSshWorkspaceFileErrors = new Set<string>([
+  'ssh_workspace_file_not_found',
+  'ssh_workspace_file_conflict',
+  'ssh_workspace_file_not_allowed',
+  'ssh_workspace_file_too_large',
+  'ssh_workspace_file_invalid',
+  'ssh_workspace_file_commit_uncertain',
+  'ssh_workspace_file_helper_unavailable',
+]);
 const knownLiteratureErrors = new Set<string>(LITERATURE_IPC_ERROR_CODES);
 
 function sha256(value: string) {
@@ -400,6 +534,71 @@ function serializeToolResult(value: unknown) {
 function jsonResult(value: unknown): CodexDynamicToolResult {
   const text = serializeToolResult(value);
   return text ? textResult(text) : failure('tool_result_too_large');
+}
+
+function remoteWorkspaceFileResult(
+  operation: SshWorkspaceFileOperation,
+  result: SshCommandResult,
+): CodexDynamicToolResult {
+  if (result.exitCode === 127 && result.stdout.trim() === '') {
+    return failure('ssh_workspace_file_helper_unavailable');
+  }
+  if (result.stderr !== '' || result.truncated) {
+    return failure('ssh_workspace_file_invalid');
+  }
+  let candidate: ReturnType<typeof parseSshWorkspaceFileOutput>;
+  try {
+    candidate = parseSshWorkspaceFileOutput(result.stdout);
+  } catch {
+    return failure('ssh_workspace_file_invalid');
+  }
+  if ('error' in candidate) {
+    if (
+      candidate.action !== operation.action ||
+      !knownSshWorkspaceFileErrors.has(candidate.error)
+    ) {
+      return failure('ssh_workspace_file_invalid');
+    }
+    return failure(candidate.error);
+  }
+  if (result.exitCode !== 0 || candidate.action !== operation.action) {
+    return failure('ssh_workspace_file_invalid');
+  }
+  if (operation.action === 'list') {
+    if (candidate.action !== 'list' || candidate.entries.length > operation.maxEntries) {
+      return failure('ssh_workspace_file_invalid');
+    }
+    return jsonResult(candidate);
+  }
+  if (operation.action === 'read') {
+    if (candidate.action !== 'read') return failure('ssh_workspace_file_invalid');
+    const file = candidate;
+    const deliveredCharacters = [...file.content].length;
+    if (
+      file.relativePath !== operation.relativePath ||
+      file.offset !== operation.offset ||
+      deliveredCharacters > operation.maxCharacters ||
+      (file.truncated
+        ? file.nextOffset !== file.offset + deliveredCharacters
+        : file.nextOffset !== null)
+    ) {
+      return failure('ssh_workspace_file_invalid');
+    }
+    return jsonResult(file);
+  }
+  if (candidate.action !== 'write') return failure('ssh_workspace_file_invalid');
+  const file = candidate;
+  const expectedCreation = operation.expectedSha256 === null;
+  if (
+    file.relativePath !== operation.relativePath ||
+    file.contentSha256 !== sha256(operation.content) ||
+    file.created !== expectedCreation ||
+    file.previousSha256 !== operation.expectedSha256 ||
+    file.sizeBytes !== Buffer.byteLength(operation.content, 'utf8')
+  ) {
+    return failure('ssh_workspace_file_invalid');
+  }
+  return jsonResult(file);
 }
 
 function failure(code: string): CodexDynamicToolResult {
@@ -477,6 +676,9 @@ export class ProjectAgentToolSession {
       ...(dependencies.literature ? [SEARCH_LITERATURE_TOOL] : []),
       LIST_SSH_WORKSPACES_TOOL,
       READ_SSH_WORKSPACE_RESOURCES_TOOL,
+      LIST_SSH_WORKSPACE_FILES_TOOL,
+      READ_SSH_WORKSPACE_FILE_TOOL,
+      WRITE_SSH_WORKSPACE_FILE_TOOL,
       RUN_SSH_WORKSPACE_COMMAND_TOOL,
     ];
     this.dynamicTools = [
@@ -484,7 +686,7 @@ export class ProjectAgentToolSession {
         type: 'namespace',
         name: PROJECT_TOOL_NAMESPACE,
         description:
-          'Project-bound GOSU capabilities, including only remote workspaces explicitly granted to this active project. Project and session identity, connection, and workspace root are injected and revalidated by the Main process. Every SSH command requires a fresh user Allow once decision and never exposes credentials or a local shell.',
+          'Project-bound GOSU capabilities, including only remote workspaces explicitly granted to this active project. Project and session identity, connection, and workspace root are injected and revalidated by the Main process. Every remote file operation and SSH command requires a fresh user Allow once decision and never exposes credentials, helper internals, or a local shell.',
         tools,
       },
     ];
@@ -503,6 +705,15 @@ export class ProjectAgentToolSession {
         tool: READ_SSH_WORKSPACE_RESOURCES_TOOL.name,
         timeoutMs: SSH_RESOURCE_DYNAMIC_TOOL_TIMEOUT_MS,
       },
+      ...[
+        LIST_SSH_WORKSPACE_FILES_TOOL.name,
+        READ_SSH_WORKSPACE_FILE_TOOL.name,
+        WRITE_SSH_WORKSPACE_FILE_TOOL.name,
+      ].map((tool) => ({
+        namespace: PROJECT_TOOL_NAMESPACE,
+        tool,
+        timeoutMs: SSH_DYNAMIC_TOOL_TIMEOUT_MS,
+      })),
       {
         namespace: PROJECT_TOOL_NAMESPACE,
         tool: RUN_SSH_WORKSPACE_COMMAND_TOOL.name,
@@ -762,6 +973,9 @@ export class ProjectAgentToolSession {
       this.sshCapabilityRevoked &&
       (call.tool === LIST_SSH_WORKSPACES_TOOL.name ||
         call.tool === READ_SSH_WORKSPACE_RESOURCES_TOOL.name ||
+        call.tool === LIST_SSH_WORKSPACE_FILES_TOOL.name ||
+        call.tool === READ_SSH_WORKSPACE_FILE_TOOL.name ||
+        call.tool === WRITE_SSH_WORKSPACE_FILE_TOOL.name ||
         call.tool === RUN_SSH_WORKSPACE_COMMAND_TOOL.name)
     ) {
       return failure('ssh_cancelled');
@@ -790,6 +1004,15 @@ export class ProjectAgentToolSession {
       }
       if (call.tool === READ_SSH_WORKSPACE_RESOURCES_TOOL.name) {
         return await this.readSshWorkspaceResources(call.arguments);
+      }
+      if (call.tool === LIST_SSH_WORKSPACE_FILES_TOOL.name) {
+        return await this.listSshWorkspaceFiles(call, delivery.abortSignal);
+      }
+      if (call.tool === READ_SSH_WORKSPACE_FILE_TOOL.name) {
+        return await this.readSshWorkspaceFile(call, delivery.abortSignal);
+      }
+      if (call.tool === WRITE_SSH_WORKSPACE_FILE_TOOL.name) {
+        return await this.writeSshWorkspaceFile(call, delivery.abortSignal);
       }
       if (call.tool === RUN_SSH_WORKSPACE_COMMAND_TOOL.name) {
         return await this.runSshWorkspaceCommand(call, delivery.abortSignal);
@@ -1021,6 +1244,94 @@ export class ProjectAgentToolSession {
       gpu: snapshot.gpu,
       issues: snapshot.issues,
     });
+  }
+
+  private async grantedWorkspaceForFileOperation(grantId: string) {
+    if (!this.dependencies.ssh || !this.dependencies.sessionId || !this.dependencies.attemptId) {
+      throw new Error('ssh_unavailable');
+    }
+    const workspaces = await this.dependencies.ssh.listWorkspaceGrants(this.dependencies.projectId);
+    const selected = workspaces.find(({ grant }) => grant.id === grantId);
+    if (!selected) throw new Error('ssh_workspace_grant_not_found');
+    if (selected.grant.permissionMode !== 'workspace') {
+      throw new Error('ssh_workspace_file_not_allowed');
+    }
+    return selected;
+  }
+
+  private async runSshWorkspaceFileOperation(
+    call: CodexDynamicToolCall,
+    input: UnboundRemoteWorkspaceFileOperation,
+    toolAbortSignal: AbortSignal,
+  ) {
+    const selected = await this.grantedWorkspaceForFileOperation(input.grantId);
+    if (!this.dependencies.ssh || !this.dependencies.sessionId || !this.dependencies.attemptId) {
+      return failure('ssh_unavailable');
+    }
+    const operation = {
+      projectId: this.dependencies.projectId,
+      sessionId: this.dependencies.sessionId,
+      attemptId: this.dependencies.attemptId,
+      turnId: call.turnId,
+      toolCallId: call.callId,
+      connectionId: selected.connection.id,
+      ...input,
+    } as SshWorkspaceFileOperation;
+    const result = await this.dependencies.ssh.runAgentWorkspaceFileOperation(
+      operation,
+      AbortSignal.any([this.sshScopeController.signal, toolAbortSignal]),
+    );
+    if (this.sshCapabilityRevoked) return failure('ssh_cancelled');
+    return remoteWorkspaceFileResult(operation, result);
+  }
+
+  private async listSshWorkspaceFiles(call: CodexDynamicToolCall, toolAbortSignal: AbortSignal) {
+    const parsed = ListSshWorkspaceFilesArgumentsSchema.safeParse(call.arguments);
+    if (!parsed.success) return failure('invalid_tool_arguments');
+    return this.runSshWorkspaceFileOperation(
+      call,
+      {
+        action: 'list',
+        grantId: parsed.data.grantId,
+        workspaceSubdirectory: parsed.data.workspaceSubdirectory,
+        maxEntries: parsed.data.maxEntries ?? 100,
+      },
+      toolAbortSignal,
+    );
+  }
+
+  private async readSshWorkspaceFile(call: CodexDynamicToolCall, toolAbortSignal: AbortSignal) {
+    const parsed = ReadSshWorkspaceFileArgumentsSchema.safeParse(call.arguments);
+    if (!parsed.success) return failure('invalid_tool_arguments');
+    return this.runSshWorkspaceFileOperation(
+      call,
+      {
+        action: 'read',
+        grantId: parsed.data.grantId,
+        workspaceSubdirectory: parsed.data.workspaceSubdirectory,
+        relativePath: parsed.data.relativePath,
+        offset: parsed.data.offset ?? 0,
+        maxCharacters: parsed.data.maxCharacters ?? SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS,
+      },
+      toolAbortSignal,
+    );
+  }
+
+  private async writeSshWorkspaceFile(call: CodexDynamicToolCall, toolAbortSignal: AbortSignal) {
+    const parsed = WriteSshWorkspaceFileArgumentsSchema.safeParse(call.arguments);
+    if (!parsed.success) return failure('invalid_tool_arguments');
+    return this.runSshWorkspaceFileOperation(
+      call,
+      {
+        action: 'write',
+        grantId: parsed.data.grantId,
+        workspaceSubdirectory: parsed.data.workspaceSubdirectory,
+        relativePath: parsed.data.relativePath,
+        content: parsed.data.content,
+        expectedSha256: parsed.data.expectedSha256,
+      },
+      toolAbortSignal,
+    );
   }
 
   private async searchLiterature(arguments_: unknown, toolAbortSignal: AbortSignal) {

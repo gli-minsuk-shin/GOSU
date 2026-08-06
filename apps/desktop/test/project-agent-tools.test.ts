@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -30,6 +30,7 @@ import type {
 import type {
   GrantedRemoteWorkspace,
   SshWorkspaceAgentCommand,
+  SshWorkspaceFileOperation,
 } from '../src/shared/ssh-workspace-contracts';
 import type { AgentVaultNoteChunk, AgentVaultNoteList } from '../src/shared/vault-contracts';
 import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
@@ -258,6 +259,50 @@ class FakeProjectSsh implements ProjectAgentSsh {
       truncated: false,
       durationMs: 12,
     }),
+  );
+  readonly runAgentWorkspaceFileOperation = vi.fn(
+    async (input: SshWorkspaceFileOperation): Promise<SshCommandResult> => {
+      const stdout =
+        input.action === 'list'
+          ? JSON.stringify({
+              schemaVersion: 1,
+              action: 'list',
+              entries: [{ relativePath: 'experiments/baseline.py', sizeBytes: 128 }],
+              truncated: false,
+            })
+          : input.action === 'read'
+            ? JSON.stringify({
+                schemaVersion: 1,
+                action: 'read',
+                relativePath: input.relativePath,
+                content: 'print("baseline")\n',
+                contentSha256: '1'.repeat(64),
+                offset: input.offset,
+                nextOffset: null,
+                totalCharacters: 18,
+                truncated: false,
+              })
+            : JSON.stringify({
+                schemaVersion: 1,
+                action: 'write',
+                relativePath: input.relativePath,
+                created: input.expectedSha256 === null,
+                previousSha256: input.expectedSha256,
+                contentSha256: createHash('sha256').update(input.content, 'utf8').digest('hex'),
+                sizeBytes: Buffer.byteLength(input.content, 'utf8'),
+              });
+      return {
+        schemaVersion: 1,
+        trust: 'untrusted_remote_output',
+        connectionLabel: 'Training GPU',
+        commandSha256: '9'.repeat(64),
+        exitCode: 0,
+        stdout,
+        stderr: '',
+        truncated: false,
+        durationMs: 12,
+      };
+    },
   );
   readonly cancelSession = vi.fn(() => 1);
   readonly cancelProject = vi.fn(() => 1);
@@ -505,6 +550,17 @@ describe('ProjectAgentToolSession', () => {
       toolCall('search_literature', { query: 'tabular foundation models' }),
       toolCall('list_ssh_workspaces', {}),
       toolCall('read_ssh_workspace_resources', { grantId: SSH_GRANT_ID }),
+      toolCall('list_ssh_workspace_files', { grantId: SSH_GRANT_ID }),
+      toolCall('read_ssh_workspace_file', {
+        grantId: SSH_GRANT_ID,
+        relativePath: 'experiments/baseline.py',
+      }),
+      toolCall('write_ssh_workspace_file', {
+        grantId: SSH_GRANT_ID,
+        relativePath: 'experiments/new.py',
+        content: 'print("new")\n',
+        expectedSha256: null,
+      }),
       toolCall('run_ssh_workspace_command', {
         grantId: SSH_GRANT_ID,
         command: '/usr/bin/git',
@@ -520,6 +576,7 @@ describe('ProjectAgentToolSession', () => {
     expect(literature.search).not.toHaveBeenCalled();
     expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
     expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
+    expect(ssh.runAgentWorkspaceFileOperation).not.toHaveBeenCalled();
   });
 
   it('lists and reads only explicitly granted Local Notes through opaque IDs', async () => {
@@ -536,6 +593,9 @@ describe('ProjectAgentToolSession', () => {
       'search_literature',
       'list_ssh_workspaces',
       'read_ssh_workspace_resources',
+      'list_ssh_workspace_files',
+      'read_ssh_workspace_file',
+      'write_ssh_workspace_file',
       'run_ssh_workspace_command',
     ]);
     const declaredCatalog = JSON.stringify(session.dynamicTools);
@@ -546,6 +606,9 @@ describe('ProjectAgentToolSession', () => {
     expect(declaredCatalog).toContain('/usr/bin/python3');
     expect(declaredCatalog).toContain('at most 120 seconds');
     expect(declaredCatalog).toContain('not a hard remote sandbox or an unattended job runner');
+    expect(declaredCatalog).toContain('expectedSha256');
+    expect(declaredCatalog).toContain('hash-check');
+    expect(declaredCatalog).toContain('delete, rename, chmod, binary/large-file access');
 
     const listed = await invokeTool(
       session,
@@ -992,6 +1055,292 @@ describe('ProjectAgentToolSession', () => {
     expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledOnce();
   });
 
+  it('performs typed approved remote file work without exposing SSH helper internals', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
+
+    const listCall = toolCall('list_ssh_workspace_files', {
+      grantId: SSH_GRANT_ID,
+      workspaceSubdirectory: 'packages/app',
+      maxEntries: 25,
+    });
+    const listed = await invokeTool(session, listCall);
+    expect(listed.success).toBe(true);
+    expect(resultPayload(listed)).toEqual({
+      schemaVersion: 1,
+      action: 'list',
+      entries: [{ relativePath: 'experiments/baseline.py', sizeBytes: 128 }],
+      truncated: false,
+    });
+    expect(ssh.runAgentWorkspaceFileOperation).toHaveBeenNthCalledWith(
+      1,
+      {
+        projectId: projectAlpha.id,
+        sessionId: CHAT_SESSION_ID,
+        attemptId: CHAT_ATTEMPT_ID,
+        turnId: listCall.turnId,
+        toolCallId: listCall.callId,
+        connectionId: SSH_CONNECTION_ID,
+        grantId: SSH_GRANT_ID,
+        workspaceSubdirectory: 'packages/app',
+        action: 'list',
+        maxEntries: 25,
+      },
+      expect.any(AbortSignal),
+    );
+
+    const readCall = toolCall('read_ssh_workspace_file', {
+      grantId: SSH_GRANT_ID,
+      workspaceSubdirectory: 'packages/app',
+      relativePath: 'experiments/baseline.py',
+      offset: 0,
+      maxCharacters: 1_024,
+    });
+    const read = await invokeTool(session, readCall);
+    expect(read.success).toBe(true);
+    expect(resultPayload(read)).toEqual({
+      schemaVersion: 1,
+      action: 'read',
+      relativePath: 'experiments/baseline.py',
+      content: 'print("baseline")\n',
+      contentSha256: '1'.repeat(64),
+      offset: 0,
+      nextOffset: null,
+      totalCharacters: 18,
+      truncated: false,
+    });
+    expect(ssh.runAgentWorkspaceFileOperation).toHaveBeenNthCalledWith(
+      2,
+      {
+        projectId: projectAlpha.id,
+        sessionId: CHAT_SESSION_ID,
+        attemptId: CHAT_ATTEMPT_ID,
+        turnId: readCall.turnId,
+        toolCallId: readCall.callId,
+        connectionId: SSH_CONNECTION_ID,
+        grantId: SSH_GRANT_ID,
+        workspaceSubdirectory: 'packages/app',
+        action: 'read',
+        relativePath: 'experiments/baseline.py',
+        offset: 0,
+        maxCharacters: 1_024,
+      },
+      expect.any(AbortSignal),
+    );
+
+    const writeCall = toolCall('write_ssh_workspace_file', {
+      grantId: SSH_GRANT_ID,
+      workspaceSubdirectory: 'packages/app',
+      relativePath: 'experiments/baseline.py',
+      content: 'print("improved")\n',
+      expectedSha256: '1'.repeat(64),
+    });
+    const written = await invokeTool(session, writeCall);
+    expect(written.success).toBe(true);
+    expect(resultPayload(written)).toEqual({
+      schemaVersion: 1,
+      action: 'write',
+      relativePath: 'experiments/baseline.py',
+      created: false,
+      previousSha256: '1'.repeat(64),
+      contentSha256: createHash('sha256').update('print("improved")\n', 'utf8').digest('hex'),
+      sizeBytes: 18,
+    });
+    expect(ssh.runAgentWorkspaceFileOperation).toHaveBeenNthCalledWith(
+      3,
+      {
+        projectId: projectAlpha.id,
+        sessionId: CHAT_SESSION_ID,
+        attemptId: CHAT_ATTEMPT_ID,
+        turnId: writeCall.turnId,
+        toolCallId: writeCall.callId,
+        connectionId: SSH_CONNECTION_ID,
+        grantId: SSH_GRANT_ID,
+        workspaceSubdirectory: 'packages/app',
+        action: 'write',
+        relativePath: 'experiments/baseline.py',
+        content: 'print("improved")\n',
+        expectedSha256: '1'.repeat(64),
+      },
+      expect.any(AbortSignal),
+    );
+
+    const serialized = [listed, read, written]
+      .flatMap((result) => result.contentItems)
+      .map((item) => item.text)
+      .join('\n');
+    expect(serialized).not.toContain('commandSha256');
+    expect(serialized).not.toContain('connectionLabel');
+    expect(serialized).not.toContain('stdout');
+    expect(serialized).not.toContain('/workspace');
+    expect(serialized).not.toContain('sensitive-gpu.example.test');
+  });
+
+  it('fails closed on malformed remote file helper results and maps only known errors', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
+    const baseResult: SshCommandResult = {
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: '9'.repeat(64),
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      durationMs: 12,
+    };
+    ssh.runAgentWorkspaceFileOperation
+      .mockResolvedValueOnce({
+        ...baseResult,
+        exitCode: 127,
+        stderr: '/usr/bin/python3: not found',
+      })
+      .mockResolvedValueOnce({ ...baseResult, exitCode: 1, stdout: '{}' })
+      .mockResolvedValueOnce({ ...baseResult, stderr: 'unexpected helper warning', stdout: '{}' })
+      .mockResolvedValueOnce({ ...baseResult, truncated: true, stdout: '{}' })
+      .mockResolvedValueOnce({ ...baseResult, stdout: '{not-json' })
+      .mockResolvedValueOnce({
+        ...baseResult,
+        exitCode: 1,
+        stdout: JSON.stringify({
+          schemaVersion: 1,
+          action: 'read',
+          error: 'ssh_workspace_file_conflict',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ...baseResult,
+        stdout: JSON.stringify({ schemaVersion: 1, action: 'read', error: 'invented_error' }),
+      })
+      .mockResolvedValueOnce({
+        ...baseResult,
+        stdout: JSON.stringify({
+          schemaVersion: 1,
+          action: 'read',
+          relativePath: 'experiments/baseline.py',
+          content: 'safe',
+          contentSha256: '1'.repeat(64),
+          offset: 0,
+          nextOffset: null,
+          totalCharacters: 4,
+          truncated: false,
+          helperCommand: '/usr/bin/python3 -c sensitive-wrapper',
+        }),
+      });
+
+    for (const expectedError of [
+      'ssh_workspace_file_helper_unavailable',
+      'ssh_workspace_file_invalid',
+      'ssh_workspace_file_invalid',
+      'ssh_workspace_file_invalid',
+      'ssh_workspace_file_invalid',
+      'ssh_workspace_file_conflict',
+      'ssh_workspace_file_invalid',
+      'ssh_workspace_file_invalid',
+    ]) {
+      const result = await invokeTool(
+        session,
+        toolCall('read_ssh_workspace_file', {
+          grantId: SSH_GRANT_ID,
+          relativePath: 'experiments/baseline.py',
+        }),
+      );
+      expect(result.success).toBe(false);
+      expect(resultPayload(result)).toEqual({ error: expectedError });
+    }
+
+    ssh.runAgentWorkspaceFileOperation
+      .mockResolvedValueOnce({
+        ...baseResult,
+        stdout: JSON.stringify({
+          schemaVersion: 1,
+          action: 'list',
+          entries: [
+            { relativePath: 'duplicate.py', sizeBytes: 1 },
+            { relativePath: 'duplicate.py', sizeBytes: 1 },
+          ],
+          truncated: false,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ...baseResult,
+        stdout: JSON.stringify({
+          schemaVersion: 1,
+          action: 'read',
+          relativePath: 'different.py',
+          content: 'safe',
+          contentSha256: '1'.repeat(64),
+          offset: 0,
+          nextOffset: null,
+          totalCharacters: 4,
+          truncated: false,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ...baseResult,
+        stdout: JSON.stringify({
+          schemaVersion: 1,
+          action: 'write',
+          relativePath: 'experiments/new.py',
+          created: true,
+          previousSha256: null,
+          contentSha256: '3'.repeat(64),
+          sizeBytes: 13,
+        }),
+      });
+
+    const inconsistent = [
+      toolCall('list_ssh_workspace_files', { grantId: SSH_GRANT_ID }),
+      toolCall('read_ssh_workspace_file', {
+        grantId: SSH_GRANT_ID,
+        relativePath: 'experiments/baseline.py',
+      }),
+      toolCall('write_ssh_workspace_file', {
+        grantId: SSH_GRANT_ID,
+        relativePath: 'experiments/new.py',
+        content: 'print("new")\n',
+        expectedSha256: null,
+      }),
+    ];
+    for (const call of inconsistent) {
+      const result = await invokeTool(session, call);
+      expect(result.success).toBe(false);
+      expect(resultPayload(result)).toEqual({ error: 'ssh_workspace_file_invalid' });
+    }
+  });
+
+  it('requires workspace permission for every typed remote file operation', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
+    const granted = await ssh.listWorkspaceGrants(projectAlpha.id);
+    ssh.listWorkspaceGrants.mockResolvedValue([
+      {
+        grant: { ...granted[0]!.grant, permissionMode: 'diagnostics' },
+        connection: granted[0]!.connection,
+      },
+    ]);
+
+    for (const call of [
+      toolCall('list_ssh_workspace_files', { grantId: SSH_GRANT_ID }),
+      toolCall('read_ssh_workspace_file', {
+        grantId: SSH_GRANT_ID,
+        relativePath: 'experiments/baseline.py',
+      }),
+      toolCall('write_ssh_workspace_file', {
+        grantId: SSH_GRANT_ID,
+        relativePath: 'experiments/new.py',
+        content: 'print("new")\n',
+        expectedSha256: null,
+      }),
+    ]) {
+      const result = await invokeTool(session, call);
+      expect(result.success).toBe(false);
+      expect(resultPayload(result)).toEqual({ error: 'ssh_workspace_file_not_allowed' });
+    }
+    expect(ssh.runAgentWorkspaceFileOperation).not.toHaveBeenCalled();
+  });
+
   it('revokes current and future SSH calls without revoking project read tools', async () => {
     const { workspace, projectAlpha } = await workspaceFixture();
     const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
@@ -1001,6 +1350,26 @@ describe('ProjectAgentToolSession', () => {
     const resources = await invokeTool(
       session,
       toolCall('read_ssh_workspace_resources', { grantId: SSH_GRANT_ID }),
+    );
+    const files = await invokeTool(
+      session,
+      toolCall('list_ssh_workspace_files', { grantId: SSH_GRANT_ID }),
+    );
+    const file = await invokeTool(
+      session,
+      toolCall('read_ssh_workspace_file', {
+        grantId: SSH_GRANT_ID,
+        relativePath: 'experiments/baseline.py',
+      }),
+    );
+    const write = await invokeTool(
+      session,
+      toolCall('write_ssh_workspace_file', {
+        grantId: SSH_GRANT_ID,
+        relativePath: 'experiments/new.py',
+        content: 'print("new")\n',
+        expectedSha256: null,
+      }),
     );
     const executed = await invokeTool(
       session,
@@ -1017,12 +1386,16 @@ describe('ProjectAgentToolSession', () => {
 
     expect(resultPayload(listed)).toEqual({ error: 'ssh_cancelled' });
     expect(resultPayload(resources)).toEqual({ error: 'ssh_cancelled' });
+    expect(resultPayload(files)).toEqual({ error: 'ssh_cancelled' });
+    expect(resultPayload(file)).toEqual({ error: 'ssh_cancelled' });
+    expect(resultPayload(write)).toEqual({ error: 'ssh_cancelled' });
     expect(resultPayload(executed)).toEqual({ error: 'ssh_cancelled' });
     expect(workspaceResult.success).toBe(true);
     expect(ssh.cancelSession).toHaveBeenCalledExactlyOnceWith(projectAlpha.id, CHAT_SESSION_ID);
     expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
     expect(ssh.readProjectResourceSnapshot).not.toHaveBeenCalled();
     expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
+    expect(ssh.runAgentWorkspaceFileOperation).not.toHaveBeenCalled();
   });
 
   it('does not declare note tools without a grant and rejects a grant that becomes stale', async () => {
@@ -1046,6 +1419,9 @@ describe('ProjectAgentToolSession', () => {
       'search_literature',
       'list_ssh_workspaces',
       'read_ssh_workspace_resources',
+      'list_ssh_workspace_files',
+      'read_ssh_workspace_file',
+      'write_ssh_workspace_file',
       'run_ssh_workspace_command',
     ]);
     const unauthorized = await invokeTool(noGrant, toolCall('list_local_notes', {}));
@@ -1062,7 +1438,7 @@ describe('ProjectAgentToolSession', () => {
 
   it('strictly validates every tool argument and never accepts a raw path', async () => {
     const { workspace, projectAlpha } = await workspaceFixture();
-    const { session, vault } = authorizedSession(workspace, projectAlpha.id);
+    const { session, vault, ssh } = authorizedSession(workspace, projectAlpha.id);
     const invalidCalls: Array<[string, CodexJsonValue]> = [
       ['read_workspace', { section: 'board', extra: true }],
       ['read_workspace', { section: 'notes' }],
@@ -1076,6 +1452,50 @@ describe('ProjectAgentToolSession', () => {
       ['search_literature', { query: 'x', projectId: randomUUID() }],
       ['read_ssh_workspace_resources', { grantId: 'not-a-grant-id' }],
       ['read_ssh_workspace_resources', { grantId: SSH_GRANT_ID, connectionId: SSH_CONNECTION_ID }],
+      ['list_ssh_workspace_files', { grantId: SSH_GRANT_ID, maxEntries: 201 }],
+      ['list_ssh_workspace_files', { grantId: SSH_GRANT_ID, workspaceSubdirectory: '../private' }],
+      ['list_ssh_workspace_files', { grantId: SSH_GRANT_ID, connectionId: SSH_CONNECTION_ID }],
+      ['read_ssh_workspace_file', { grantId: SSH_GRANT_ID, relativePath: '/etc/passwd' }],
+      ['read_ssh_workspace_file', { grantId: SSH_GRANT_ID, relativePath: '../private.txt' }],
+      [
+        'read_ssh_workspace_file',
+        { grantId: SSH_GRANT_ID, relativePath: 'result.txt', offset: -1 },
+      ],
+      [
+        'read_ssh_workspace_file',
+        { grantId: SSH_GRANT_ID, relativePath: 'result.txt', maxCharacters: 16_001 },
+      ],
+      [
+        'write_ssh_workspace_file',
+        { grantId: SSH_GRANT_ID, relativePath: 'result.txt', content: 'missing CAS' },
+      ],
+      [
+        'write_ssh_workspace_file',
+        {
+          grantId: SSH_GRANT_ID,
+          relativePath: 'result.txt',
+          content: 'bad hash',
+          expectedSha256: 'not-a-hash',
+        },
+      ],
+      [
+        'write_ssh_workspace_file',
+        {
+          grantId: SSH_GRANT_ID,
+          relativePath: 'result.txt',
+          content: 'x'.repeat(24_001),
+          expectedSha256: null,
+        },
+      ],
+      [
+        'write_ssh_workspace_file',
+        {
+          grantId: SSH_GRANT_ID,
+          relativePath: 'result.txt',
+          content: 'NUL\u0000content',
+          expectedSha256: null,
+        },
+      ],
     ];
 
     for (const [tool, arguments_] of invalidCalls) {
@@ -1085,6 +1505,7 @@ describe('ProjectAgentToolSession', () => {
     }
     expect(vault.listForAgent).not.toHaveBeenCalled();
     expect(vault.readForAgent).not.toHaveBeenCalled();
+    expect(ssh.runAgentWorkspaceFileOperation).not.toHaveBeenCalled();
   });
 
   it('enforces a cumulative 96,000-character Local Notes budget per turn session', async () => {

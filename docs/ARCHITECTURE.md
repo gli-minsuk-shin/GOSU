@@ -202,6 +202,7 @@ flowchart TD
 | SSH connection profile                           | 모든 local project가 공유하는 Desktop SQLCipher registry                                 | Hosted Sync 금지; alias 또는 정규화된 direct host·user·port·inactive `-L`; secret·원본 command 금지                                                      |
 | SSH remote workspace grant                       | 프로젝트별 Desktop SQLCipher table                                                       | Hosted Sync 금지; connection ID·canonical root·permission mode만 저장                                                                                    |
 | SSH command output                               | 해당 Project Chat turn의 Main-process memory와 ephemeral tool result                     | raw output 저장·동기화 금지; 모델이 답변에 포함한 문장만 대화 정책 적용                                                                                  |
+| SSH workspace text file body                     | 승인된 remote project root의 원본과 해당 turn의 bounded helper/result memory             | SQLCipher·Hosted Sync·outbox·telemetry·Git 자동 저장 금지; exact create/replace 내용은 30초 approval UI에만 표시                                         |
 | SSH server resource snapshot                     | Desktop Main-process 12초 cache와 Renderer의 마지막 구조화 sample                        | SQLCipher·Hosted Sync·outbox·telemetry·chat prompt 저장 금지; CPU/RAM/GPU 숫자와 bounded issue만 IPC에 노출하고 raw probe output 금지                    |
 | SSH approval request·outcome metadata            | 현재 app process의 in-memory broker event                                                | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지                                                                                  |
 | Project Chat 첨부 연구 파일                      | 사용자가 dialog에서 선택한 local file                                                    | path·원본 bytes·추출 text·정규화 image를 SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; 해당 turn에서 bounded text 또는 image만 provider에 전송 |
@@ -404,10 +405,11 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   허용하지 않는다. web result와 page 내용은 untrusted evidence이며 raw search payload를 Renderer,
   Project Chat DB 또는 telemetry에 자동 전달하지 않는다. 나머지 예외는 Main이 turn마다 선언하는
   `gosu_project` namespace의 typed dynamic tool뿐이다. Board·Objective·Research Notes·SSH workspace catalog와
-  정규화된 server resource snapshot 조회는 read-only다. 별도 Main broker의 workspace command는 사용자
-  `Allow once` 뒤 Git inspection, bounded test/build 또는 제한된 foreground Python experiment를 수행하므로
-  side effect가 가능하며 remote sandbox가 아니다. 이 예외는 Codex sandbox 자체에 shell이나 network를
-  부여하지 않는다. `thread/start`
+  정규화된 server resource snapshot 조회는 read-only다. 별도 Main broker의 workspace file operation은
+  사용자 `Allow once` 뒤 bounded UTF-8 file list/read/create/expected-hash-checked atomic replacement를 수행하고, workspace command는
+  별도의 `Allow once` 뒤 Git inspection, bounded test/build 또는 제한된 foreground Python experiment를
+  수행한다. create/replace와 code execution은 side effect가 가능하며 remote sandbox가 아니다. 이 예외는
+  Codex sandbox 자체에 shell이나 network를 부여하지 않는다. `thread/start`
   직후 예상 밖 MCP inventory가 0이
   아니면 fail closed하고 thread를 해제한다. server-initiated command·file approval은 Main이 거절하고 그 밖의
   지원하지 않는 request에는 제한된 protocol error만 돌려준다.
@@ -417,7 +419,9 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   registration에 고정된 timeout override를 가질 수 있고 override 상한은 180초다. 현재
   `search_literature`는 discovery provider의 rate limit·fallback을 포함한 125초,
   `read_ssh_workspace_resources`는 고정 probe의 최악 시간을 포함한 40초,
-  `run_ssh_workspace_command`는 최대 30초 approval과 120초 execution을 포함한 155초 bound를 사용한다.
+  `list_ssh_workspace_files`·`read_ssh_workspace_file`·`write_ssh_workspace_file`와
+  `run_ssh_workspace_command`는 최대 30초 approval을 포함한 155초 bound를 사용한다. command execution
+  자체는 최대 120초이고 file helper는 30초다.
   attachment list/text-read는 기본 10초 transport bound를 유지하며 모델이 timeout을 늘리거나 미등록
   tool에 override를 붙일 수 없다. 조기 tool call이
   먼저 도착하면 그 turn ID로
@@ -499,7 +503,9 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   mode는 사용자가 exact remote root와 project code 실행 위험을 명시적으로 확인해야 한다. direct target의
   user가 `root`면 connection과 approval UI에 ROOT/HIGH RISK를 표시한다. root diagnostics는 file/process
   secret을 읽지 못하는 축소 allowlist만 쓰고, root workspace 실행도 일반 grant보다 안전하다고 주장하지
-  않는다. alias profile과 user를 생략한 direct target은 실제 account privilege를 확정할 수 없으므로
+  않는다. root workspace 실행은 명시적 project grant와 매 operation `Allow once` 뒤에만 남겨 둔
+  prototype-only HIGH-RISK 예외다. hardened production 실행은 root SSH workspace가 아니라 non-root
+  isolated Runner를 사용해야 한다. alias profile과 user를 생략한 direct target은 실제 account privilege를 확정할 수 없으므로
   `unknown`·HIGH RISK로 표시한다. alias에는 `workspace` mode grant를 허용하지 않으며, user를 생략한 direct
   target의 workspace mode도 사용자가 이 불확실성과 code-execution risk를 명시적으로 확인해야 한다. 명시적
   `root`가 아닌 unknown target이 실제 root인지 Main이 감지할 수 없다는 한계가 있다. canonical root와
@@ -517,13 +523,40 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   preview 전에 비활성화한다. project test/build/experiment는 repository code를 해당 remote account 권한으로
   실행할 수 있음을 승인창에 명시한다. 모든 command는 actual target, root/cwd, operation class와 exact preview를 보여 주는
   30초짜리 `Allow once` 승인을 새로 받아야 하며 승인 후 profile·grant version을 다시 확인한다.
+  이 승인은 표시된 executable·argv·cwd에만 결합되고 entrypoint나 test/build가 읽을 repository source file
+  hash에는 결합되지 않는다. 따라서 승인 뒤 launch 전 source가 바뀔 수 있으며 command approval을 immutable
+  source identity 또는 재현성 증명으로 취급하면 안 된다.
   이미 시작된 profile·grant mutation queue가 끝나기 전에는 이 최종 확인과 transport 시작을 진행하지 않아
   승인과 revoke/update가 겹쳐도 이전 권한으로 실행되지 않는다. Node test는 명시적인 `node --test`만
   허용하며 일반 `node script.js`는 test로 분류하지 않는다.
+- remote file access는 raw shell, `scp` 또는 모델이 만든 helper script가 아니라
+  `list_ssh_workspace_files`·`read_ssh_workspace_file`·`write_ssh_workspace_file`의 typed contract다.
+  세 operation 모두 explicit `workspace` mode grant와 매 호출 `Allow once`를 요구하고, Main이
+  project·session·attempt·turn·tool-call·connection과 canonical root를 주입한다. list는 최대 200개의
+  상대 regular-file 후보와 byte size만, read는 최대 16,000자의 UTF-8 chunk·full-file SHA-256·offset을
+  반환한다. create는 `expectedSha256: null`일 때 대상이 없어야 하고, replace는 직전 read에서 받은
+  SHA-256과 기존 file이 일치해야 한다. 승인 UI는 action, relative path, expected/new hash와
+  create/replace의 exact content를 표시한다.
+- file broker의 Python program은 app에 고정된 source이며 `/usr/bin/python3 -I -S -c`로만 실행한다.
+  모델 가변 데이터는 최대 64 KiB strict JSON stdin으로만 전달되고 command argv나 interpreter code가
+  되지 않는다. remote helper는 root와 working directory의 `realpath`를 다시 확인하고 directory file
+  descriptor, `O_NOFOLLOW`, 상대 segment 검증으로 symlink·traversal·root 이탈을 차단한다.
+  `.git`·`.ssh`·`.gnupg`·`.aws`, `.env*`, credential/private-key 형태의 path, binary·NUL·
+  64 KiB 초과 file을 거절한다. write는 같은 directory의 mode 0600 temporary file에 쓴 뒤 fsync하고,
+  create-only hard-link 또는 기존 identity/hash 재검사 뒤 atomic replace와 directory fsync를 사용한다.
+  delete·rename·chmod·parent directory 생성·binary transfer·large artifact download는 제공하지 않는다.
+  이 검사는 accidental overwrite와 path escape를 막는 좁은 broker이며, SSH account나 remote kernel이
+  악의적일 때의 hard sandbox 또는 모든 외부 writer와의 선형화 가능한 filesystem transaction은 아니다.
+  특히 expected SHA 재검사와 final rename 사이에 unrelated process가 path를 바꿀 수 있으므로 이 동작을
+  compare-and-swap 또는 serialization으로 부르지 않는다. remote mutation 뒤 receipt·transport가 실패하면
+  commit outcome도 uncertain하다. agent는 같은 path를 다시 읽어 실제 SHA를 proposed content hash와
+  비교하기 전에는 재시도하거나 변경되지 않았다고 주장하면 안 된다.
 - `/usr/bin/ssh`는 `shell: false` argument array, POSIX token quoting, strict host-key, no TTY·forwarding·
   local command·password prompt 옵션을 사용한다. alias는 사용자의 OpenSSH config와 agent/Keychain을 쓰고,
   direct target은 `-F none`을 사용하고 importer에 제공된 경우에만 user/port를 명시해 config option을
-  상속하지 않는다.
+  상속하지 않는다. 일반 command는 `-n`과 ignored stdin을 유지한다. 오직 app-owned file helper만
+  `-n`을 제거하고 byte cap을 미리 검증한 exact UTF-8 JSON stdin pipe를 사용하며, stdin SHA-256도
+  approved command hash에 포함한다.
   `ForkAfterAuthentication=no`와 `ControlMaster=no`를 강제해 추적 중인 child를 background transport로
   분리하지 못하게 한다. OpenSSH 자체 진단은 process별 권한 `0600` 임시 `-E` log로 격리하고 exit 255는
   이 private diagnostic으로만 분류한 뒤 log directory를 항상 삭제한다. timeout, cancel, grant/profile 삭제,
@@ -1293,7 +1326,8 @@ flowchart LR
   project tool과 별도 `Allow once`를 요구하는 Main-process SSH broker도 명시적 capability 예외이며, SSH
   실행이 Codex child 자체에 shell·network 권한을 부여하지는 않는다. web search는 dynamic tool이 아니라
   `thread/start.config.web_search` 설정이다.
-- 현재 `gosu_project` namespace는 항상 `read_workspace`, SSH workspace list/resource-read/run을 제공한다. explicit
+- 현재 `gosu_project` namespace는 항상 `read_workspace`, SSH workspace list/resource-read,
+  workspace-mode file list/read/write와 command run을 제공한다. explicit
   literature-search command가 있는 non-legacy turn에는 `search_literature`, 승인된 Vault가 있으면
   `list_local_notes`·`read_local_note`, 현재 turn 연구 파일이 첨부됐으면 `list_turn_attachments`·
   `read_turn_attachment_text`가 추가된다. legacy reviewer에는 Literature mutation tool이 없다.
@@ -1309,7 +1343,9 @@ flowchart LR
   mode를 반환한다. grant가 없을 때는 bounded `registeredConnectionCount`와
   `no_registered_connections|workspace_grant_required` setup state만 반환해 모델이 transport 실패와 승인
   누락을 혼동하지 않게 한다. global registry의 ungranted connection label/profile, 다른 project의 grant,
-  actual target·user·root는 모델에 노출하지 않는다. command tool의
+  actual target·user·root는 모델에 노출하지 않는다. file tool은 workspace-mode grant만 허용하고
+  helper command·remote root·raw SSH wrapper를 모델에 돌려주지 않으며 strict receipt의 path·content/hash·
+  offset·size를 원래 request와 다시 대조한다. command tool의
   resource-read는 grant ID만 받고 active project의 grant와 connection을 Main에서 재검증해 정규화된
   CPU/RAM/GPU snapshot만 반환한다. project·session·attempt·turn·tool-call·connection binding은
   모델 argument가 아니라 Main이 주입하고 grant를 다시 조회한다. 최대 20개 argument는 별도 token으로
@@ -1353,12 +1389,13 @@ flowchart LR
   보존하고, 동일 version의 여러 excerpt만 하나의 source entry로 합친다.
 - tool access는 UI section 자체나 database table 접근이 아니라 module capability다. 현재 구현된
   Board·Goal & Metrics·승인된 Research Notes, 현재 turn 첨부 연구 파일, 명시적 additive Literature search와
-  active project에 grant된 SSH workspace의 opaque ID·label·mode 및 정규화된 resource snapshot만 사용할 수 있다. Literature table 전체를 임의
+  active project에 grant된 SSH workspace의 opaque ID·label·mode, 정규화된 resource snapshot과 승인된
+  bounded text file list/read/create/expected-hash-checked atomic replacement만 사용할 수 있다. Literature table 전체를 임의
   조회·수정하는 도구는 없고 search receipt만 돌아온다. SSH host resolution·credential·private-key path·
   remote root, Settings·Project Trash는 list tool에 노출하지 않으며 Experiments·Manuscript·Review·
   References·Lecture는 domain service가 완성되기 전에는 접근 가능한 것처럼 표시하지 않는다. Board
-  쓰기는 기존 `task.create`·`task.update` proposal과 사용자 Apply만 사용하고, SSH workspace command는
-  별도의 project grant와 exact Allow-once broker boundary를 사용한다.
+  쓰기는 기존 `task.create`·`task.update` proposal과 사용자 Apply만 사용하고, SSH workspace file
+  operation과 command는 별도의 project grant와 operation별 exact Allow-once broker boundary를 사용한다.
 - 사용자 메시지를 받으면 Codex를 호출하기 전에 attempt와 user message를 한 transaction으로
   `starting` 상태에 기록한다. `turn/start`가 성공하면 실제 thread ID, turn ID, requested·resolved
   model provenance를 포함해 `running`으로 CAS 전이하고, terminal attempt와 assistant receipt도 한
@@ -1626,12 +1663,19 @@ package 설정과 ICNS의 `ic10` rendition 일치를 검사해 네모 아이콘�
 연결되지 않았다. 앱 관리형 Git Workspace는 동작하지만 GitHub App 설치·PR review·보호 branch gate,
 repository asset preview와 LaTeX compile·PDF preview는 아직 계획 상태다. macOS Keychain의 기존 Git
 credential을 사용할 수는 있지만 GOSU 자체 GitHub account lifecycle을 구현한 것은 아니다. 승인형 SSH
-command importer와 project-scoped remote workspace broker는 구현됐지만 interactive terminal, PTY, file
-transfer, active port forwarding, unattended command, remote patch RPC와 Runner 설치·복구 connector는 계획
-상태다. importer에 포함된 loopback `-L`은 inactive plan일 뿐 tunnel을 열지 않는다. workspace mode는
-concrete executable과 inspect/test/build/foreground-experiment allowlist만 허용하며 raw shell이나 임의
-source patch surface가 아니다. test/build/experiment는 project code를 remote account 권한으로 실행할 수
-있고 lexical root 검사는 sandbox가 아니므로 사용자가 HIGH-RISK `Allow once`를 확인해야 한다. local
+command importer와 project-scoped remote workspace broker는 구현됐지만 interactive terminal, PTY,
+general binary file transfer, active port forwarding, unattended command, delete·rename·large-file patch와
+Runner 설치·복구 connector는 계획 상태다. bounded UTF-8 text file list/read/create/expected-hash-checked atomic replacement는
+구현됐지만 interactive editor 또는 arbitrary filesystem API가 아니다. importer에 포함된 loopback `-L`은
+inactive plan일 뿐 tunnel을 열지 않는다. workspace command mode는 concrete executable과
+inspect/test/build/foreground-experiment allowlist만 허용하며 raw shell이 아니다.
+test/build/experiment는 project code를 remote account 권한으로 실행할 수
+있고 lexical root 검사는 sandbox가 아니므로 사용자가 HIGH-RISK `Allow once`를 확인해야 한다. command
+approval은 argv/cwd만 고정하고 실행 시 읽히는 source file hash를 고정하지 않는다. 명시적 root workspace
+실행은 현재 prototype에서만 HIGH-RISK grant와 Allow-once 뒤 허용하며 hardened production은 non-root
+isolated Runner를 요구한다. hash 재검사 뒤 atomic replacement도 unrelated writer와 경쟁할 수 있고,
+mutation 뒤 receipt·transport 실패는 outcome uncertainty를 남기므로 same-path re-read/hash reconciliation이
+필수다. local
 OpenSSH transport를 timeout·cancel로 종료해도 연결이 이미 끊어진 뒤 remote process tree가 종료됐다고
 보증할 수 없으므로 장기 workload는 SSH broker가 아니라 lease·fencing·reconciliation이 있는 Runner를
 사용해야 한다. raw SSH output은 현재 turn memory에만 있고 durable transcript가 아니며, approval request·
@@ -1883,7 +1927,12 @@ project/session 격리·saved zero·invalid value 거절·bottom default·viewpo
 workspace policy test는 project grant isolation, canonical root·relative cwd,
 mode별 concrete executable·inspect/test/build/experiment allowlist, root diagnostic 축소, shell·inline eval·privilege·
 transfer·forwarding 거절, approval exact target/root/mode/command binding·profile/grant revalidation·TTL·capacity·
-Allow once·scope cancel, output crop·untrusted marker를 고정한다. Project Agent
+Allow once·scope cancel, output crop·untrusted marker를 고정한다. remote file helper test는 app-owned
+Python source와 JSON-only stdin, physical root/no-symlink traversal, secret·binary·oversize 차단,
+bounded list/read, create-only·stale SHA conflict·mode-preserving expected-hash-checked atomic replace·fsync
+receipt와 post-mutation outcome uncertainty 뒤 same-path hash reconciliation 규칙을 검증한다.
+runner test는 helper stdin일 때만 `-n`을 제거하고 exact bounded UTF-8 bytes를 전달하는지 확인하며,
+service/approval test는 stdin hash, exact file preview, grant/profile 재검증과 승인 전 무변경을 고정한다. Project Agent
 통합 test는 모델이 project/session/connection binding을 위조하거나 다른 project grant를 선택할 수 없고
 허용된 workspace command도 승인 전에는 실행되지
 않으며 navigation·send startup·startup Stop 경합, 실패하거나 지연된 Stop, pending Research Notes delivery가
@@ -1977,7 +2026,9 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 - SSH broker 변경: global alias/direct-target registry와 project-scoped workspace grant 분리, deterministic
   command import·inactive loopback `-L`, credential·raw paste·raw output 비보존, root 축소 diagnostics와
   mode별 concrete executable·inspect/test/build/foreground-experiment policy, project-scoped structured resource
-  read, actual target/root/operation exact Allow once binding,
+  read, app-owned fixed helper의 bounded text file list/read/create/expected-hash-checked atomic replacement,
+  external-writer race와 post-mutation outcome uncertainty, physical no-symlink root check와
+  secret/binary/oversize 차단, JSON stdin hash·actual target/root/file action/content exact Allow once binding,
   profile/grant CAS revalidation과 in-flight mutation/approval 경합, cancellation-only navigation IPC,
   OpenSSH argument array·direct `-F none`·
   background fork 차단·client diagnostic 격리, timeout·capacity·local transport cancel, remote kill·hard
@@ -2146,7 +2197,11 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
       command exact approval, concrete executable·argument array·timeout·output non-retention·turn cleanup이
       유지되는가? root secret read, arbitrary shell·inline eval·privilege·transfer·unattended 실행이 승인 전에
       fail closed하는가? lexical root를 sandbox라 부르거나 local abort를 remote kill 보증, ephemeral metadata를
-      durable 감사 원본이라 부르지 않는가?
+      durable 감사 원본이라 부르지 않는가? command approval이 argv/cwd만 고정하고 source file hash를
+      고정하지 않는다는 한계를 표시하는가? remote file replacement를 CAS·serialized transaction이라
+      부르지 않고 external-writer race와 post-mutation outcome uncertainty 뒤 same-path re-read/hash
+      reconciliation을 요구하는가? root workspace execution은 prototype-only HIGH RISK로 표시하고 hardened
+      production을 non-root isolated Runner로 제한하는가?
 - [ ] Literature 변경이면 provider raw response·abstract·local path를 저장하지 않고 project isolation,
       source/search-tag/manual/AI ownership, tag의 additive typed provenance, deterministic transfer와
       metadata-only AI provenance를 유지하는가?

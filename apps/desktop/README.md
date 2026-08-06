@@ -52,6 +52,8 @@ and supports:
 - inspecting an app-managed Git workspace and reviewing its branches, history, and changes;
 - building and incrementally updating a project literature review table;
 - registering a safely parsed SSH destination and granting a remote workspace root to one project;
+- using Project Chat to list/read/create/hash-check bounded remote text-file replacements, then run
+  approved Python, tests, or builds and analyze their bounded output;
 - monitoring registered server CPU, memory, and GPU usage with collapsible status cards and a local
   refresh preference; and
 - showing the number of durable changes waiting in the local outbox.
@@ -86,14 +88,27 @@ does not support interactive authentication.
 For the active project, use **Remote workspace access** to select the server, enter one exact project
 root such as `/workspace/research-project`, choose Diagnostics or Workspace mode, and acknowledge
 the risk. The model cannot create this connection or grant itself; it sees only the opaque workspace
-grant approved for the active project. You can then ask Project Chat to inspect Git or run a bounded
-test/build. Each exact target, root, command, and argument list waits for a fresh **Allow once**
-decision.
+grant approved for the active project. Choose **Workspace** mode when Project Chat needs to work on
+code. You can then ask it to inspect Git, list or read project files, create a new text file, replace
+an existing text file using the SHA from its latest read, and run a bounded Python entrypoint,
+test, or build. File access and execution are separate operations; each exact target, root, action,
+path/content or command/argument list waits for a fresh **Allow once** decision.
 
-This slice has no interactive shell, TTY, file transfer, active tunnel, arbitrary remote patch,
-background task, or unattended experiment execution. Workspace tests/builds execute repository code
-with the SSH account's privileges, and the selected root is a lexical boundary rather than a remote
-sandbox. Long GPU jobs belong on the isolated Runner path.
+The file broker supports bounded UTF-8 text only. It blocks symlinks, traversal, secret/key paths,
+binary and large files, and does not expose delete, rename, chmod, parent-folder creation, or general
+file transfer. Create is create-only. Replacement rechecks the expected SHA immediately before an
+atomic rename, but this is not a compare-and-swap transaction: an unrelated server process can
+change the path between the recheck and final rename. If the file changed but its receipt or SSH
+transport then fails, the outcome is uncertain; re-read the same path and compare its SHA with the
+proposed content before retrying or claiming that nothing changed. This slice also has no
+interactive shell, TTY, active tunnel, raw shell command, background task, or unattended experiment
+execution through the broker. Command approval binds the displayed argv and working directory, not
+the hashes of repository source files that Python, tests, or builds may load; those files can change
+before launch. Approved Python, tests, and builds are untrusted repository code with the SSH
+account's privileges and can access or change anything that account can reach; the selected root is
+not a sandbox for executed code. Root workspace execution remains a prototype-only **HIGH RISK**
+exception behind an explicit project grant and a fresh **Allow once** decision. Hardened production
+execution must use a non-root isolated Runner. Long GPU jobs also belong on that Runner path.
 
 ## Server status monitoring
 

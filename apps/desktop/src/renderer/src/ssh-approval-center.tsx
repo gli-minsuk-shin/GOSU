@@ -37,6 +37,11 @@ export function SshApprovalCenter({
       {requests.map((request) => {
         const busy = busyApprovalIds.has(request.id);
         const remoteWorkspace = request.executionMode === 'remote_workspace';
+        const workspaceFileAction = request.workspaceFileAction;
+        const inspectsWorkspaceFile =
+          workspaceFileAction === 'list' || workspaceFileAction === 'read';
+        const editsWorkspaceFile =
+          workspaceFileAction === 'create' || workspaceFileAction === 'replace';
         const executesWorkspaceCode =
           request.workspaceOperation === 'test' ||
           request.workspaceOperation === 'build' ||
@@ -67,27 +72,59 @@ export function SshApprovalCenter({
               </small>
               {remoteWorkspace && (
                 <>
-                  <small>Mode · remote workspace / {request.workspaceOperation ?? 'unknown'}</small>
+                  <small>
+                    Mode · remote workspace / {request.workspaceOperation ?? 'unknown'}
+                    {workspaceFileAction ? ` / ${workspaceFileAction}` : ''}
+                  </small>
                   <small>Configured root · {request.workspaceRoot}</small>
                   <small>Exact working directory · {request.workspaceWorkingDirectory}</small>
+                  {workspaceFileAction && (
+                    <small>File action · {workspaceFileAction.toUpperCase()}</small>
+                  )}
+                  {request.workspaceFilePath && (
+                    <small>Relative file path · {request.workspaceFilePath}</small>
+                  )}
+                  {request.workspaceFileExpectedSha256 && (
+                    <small>Expected existing SHA-256 · {request.workspaceFileExpectedSha256}</small>
+                  )}
+                  {workspaceFileAction === 'create' && !request.workspaceFileExpectedSha256 && (
+                    <small>Expected existing file · none (create only)</small>
+                  )}
+                  {request.workspaceFileContentSha256 && (
+                    <small>Approved content SHA-256 · {request.workspaceFileContentSha256}</small>
+                  )}
                   <small>
                     Connection v{request.connectionVersion} · Grant v{request.workspaceGrantVersion}
                   </small>
-                  <small>Command SHA-256 · {request.commandSha256}</small>
+                  <small>Request SHA-256 · {request.commandSha256}</small>
                 </>
               )}
             </div>
-            <pre aria-label="Requested SSH command">{request.commandPreview}</pre>
+            <pre aria-label="Requested SSH operation">{request.commandPreview}</pre>
+            {request.workspaceFileContent !== undefined && (
+              <div className="ssh-approved-file-content">
+                <strong>Exact approved file content</strong>
+                <pre aria-label="Exact approved SSH file content">
+                  {request.workspaceFileContent}
+                </pre>
+              </div>
+            )}
             {remoteWorkspace ? (
               <p>
-                Allow once runs only this exact direct-argv command for this turn. The configured
-                root and path checks are an advisory policy boundary, not a remote sandbox; symlinks
-                and repository code can access resources permitted to the SSH account.
-                {runsForegroundExperiment
-                  ? ` This foreground Python experiment can execute untrusted project code and change server state. GOSU waits for it for at most ${SSH_COMMAND_MAX_TIMEOUT_SECONDS} seconds; this is not an unattended job runner.`
-                  : executesWorkspaceCode
-                    ? ' This test/build can execute untrusted project code and change server state.'
-                    : ' This inspection may still expose private repository data.'}{' '}
+                Allow once permits only this exact reviewed operation for this turn. The configured
+                root and path checks are an advisory policy boundary, not a remote sandbox;
+                repository code can access resources permitted to the SSH account.
+                {editsWorkspaceFile
+                  ? ' This creates or replaces one bounded text file with the exact content shown above. GOSU rechecks the existing hash immediately before replacement, but another server process can still race the final rename. The typed file broker does not delete remote files.'
+                  : inspectsWorkspaceFile
+                    ? ' This lists or reads bounded workspace text and may expose private repository data.'
+                    : runsForegroundExperiment
+                      ? ` This foreground Python experiment can execute untrusted project code and change server state. GOSU waits for it for at most ${SSH_COMMAND_MAX_TIMEOUT_SECONDS} seconds; this is not an unattended job runner.`
+                      : executesWorkspaceCode
+                        ? ' This test/build can execute untrusted project code and change server state.'
+                        : ' This inspection may still expose private repository data.'}{' '}
+                {executesWorkspaceCode &&
+                  'Approval binds the executable, arguments, and working directory, not repository file contents; those files can change before launch. '}
                 Bounded output is returned to the model as untrusted data and is not saved as raw
                 SSH output.
               </p>

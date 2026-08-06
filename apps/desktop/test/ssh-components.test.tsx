@@ -10,6 +10,7 @@ import {
   canEditSshHostAlias,
   validateSshHostAliasInput,
 } from '../src/renderer/src/ssh-connections-card';
+import { describeError } from '../src/renderer/src/ui-primitives';
 import type {
   SshApprovalRequest,
   SshConnectionProfile,
@@ -114,9 +115,15 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('Remove');
     expect(html).toContain('Allow once');
     expect(html).toContain('Diagnostics grants permit bounded Git inspection');
+    expect(html).toContain('list/read bounded text files');
+    expect(html).toContain('create a new text file');
+    expect(html).toContain('replace an unchanged text file');
+    expect(html).toContain('Every file action and command requires Allow once');
+    expect(html).toContain('no deletion');
     expect(html).toContain('foreground Python');
     expect(html).toContain('at most 120 seconds');
-    expect(html).toContain('Raw shells, inline eval, module or stdin launch, interactive shells');
+    expect(html).toContain('no deletion, raw shell, inline eval, module launch');
+    expect(html).toContain('general file transfer, TTY, or forwarding action');
 
     const serverRowIndex = html.indexOf('Fixture training server');
     expect(serverRowIndex).toBeGreaterThan(-1);
@@ -394,6 +401,8 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('a'.repeat(64));
     expect(html).toContain('not a remote sandbox');
     expect(html).toContain('change server state');
+    expect(html).toContain('binds the executable, arguments, and working directory');
+    expect(html).toContain('not repository file contents');
   });
 
   it('labels a foreground Python experiment and preserves the one-time approval boundary', () => {
@@ -419,8 +428,100 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('foreground Python experiment');
     expect(html).toContain('at most 120 seconds');
     expect(html).toContain('not an unattended job runner');
+    expect(html).toContain('not repository file contents');
     expect(html).toContain('Allow once');
     expect(html).toContain('untrusted project code and change server state');
+  });
+
+  it('shows the exact bounded remote file change and its optimistic hash boundary', () => {
+    const expectedSha256 = 'c'.repeat(64);
+    const contentSha256 = 'd'.repeat(64);
+    const fileApproval: SshApprovalRequest = {
+      ...approval,
+      executionMode: 'remote_workspace',
+      privilegeClass: 'standard',
+      connectionVersion: 2,
+      workspaceGrantId: '66666666-6666-4666-8666-666666666666',
+      workspaceGrantVersion: 3,
+      workspaceRoot: '/workspace/research-project',
+      workspaceWorkingDirectory: '/workspace/research-project',
+      workspaceOperation: 'edit',
+      workspaceFileAction: 'replace',
+      workspaceFilePath: 'experiments/linear_fit.py',
+      workspaceFileExpectedSha256: expectedSha256,
+      workspaceFileContentSha256: contentSha256,
+      commandSha256: 'e'.repeat(64),
+      commandPreview: `REPLACE experiments/linear_fit.py\n\nprint("result")\n`,
+    };
+    const html = renderToStaticMarkup(
+      <SshApprovalCenter requests={[fileApproval]} onResolve={vi.fn()} />,
+    );
+
+    expect(html).toContain('remote workspace / edit / replace');
+    expect(html).toContain('File action · REPLACE');
+    expect(html).toContain('Relative file path · experiments/linear_fit.py');
+    expect(html).toContain(`Expected existing SHA-256 · ${expectedSha256}`);
+    expect(html).toContain(`Approved content SHA-256 · ${contentSha256}`);
+    expect(html).toContain('print(&quot;result&quot;)');
+    expect(html).toContain('creates or replaces one bounded text file');
+    expect(html).toContain('does not delete remote files');
+    expect(html).toContain('rechecks the existing hash immediately before replacement');
+    expect(html).toContain('another server process can still race the final rename');
+    expect(html).toContain('Allow once');
+  });
+
+  it('distinguishes an approved remote file read from remote code execution', () => {
+    const fileApproval: SshApprovalRequest = {
+      ...approval,
+      executionMode: 'remote_workspace',
+      privilegeClass: 'standard',
+      connectionVersion: 2,
+      workspaceGrantId: '66666666-6666-4666-8666-666666666666',
+      workspaceGrantVersion: 3,
+      workspaceRoot: '/workspace/research-project',
+      workspaceWorkingDirectory: '/workspace/research-project',
+      workspaceOperation: 'inspect',
+      workspaceFileAction: 'read',
+      workspaceFilePath: 'results/metrics.json',
+      commandSha256: 'f'.repeat(64),
+      commandPreview: 'READ results/metrics.json · UTF-8 text · bounded output',
+    };
+    const html = renderToStaticMarkup(
+      <SshApprovalCenter requests={[fileApproval]} onResolve={vi.fn()} />,
+    );
+
+    expect(html).toContain('remote workspace / inspect / read');
+    expect(html).toContain('File action · READ');
+    expect(html).toContain('lists or reads bounded workspace text');
+    expect(html).toContain('may expose private repository data');
+    expect(html).not.toContain('This test/build can execute untrusted project code');
+  });
+
+  it('turns remote file failures into actionable messages without exposing remote paths', () => {
+    const messages = {
+      missing: describeError(
+        new Error('ssh_workspace_file_not_found: /private/server/path/result.py'),
+      ),
+      conflict: describeError(new Error('ssh_workspace_file_conflict: expected=c actual=d')),
+      forbidden: describeError(new Error('ssh_workspace_file_not_allowed: ../../.env')),
+      tooLarge: describeError(new Error('ssh_workspace_file_too_large: 999999')),
+      invalid: describeError(new Error('ssh_workspace_file_invalid: decode failed')),
+      helper: describeError(new Error('ssh_workspace_file_helper_unavailable: server detail')),
+    };
+
+    expect(messages.missing).toContain('no longer exists');
+    expect(messages.conflict).toContain('did not replace it');
+    expect(messages.conflict).toContain('Read the latest version');
+    expect(messages.forbidden).toContain('inside the approved project workspace');
+    expect(messages.tooLarge).toContain('too large');
+    expect(messages.invalid).toContain('Re-read the same path');
+    expect(messages.invalid).toContain('whether a requested write changed it');
+    expect(messages.helper).toContain('/usr/bin/python3');
+    expect(messages.helper).toContain('no retry was started');
+    for (const message of Object.values(messages)) {
+      expect(message).not.toContain('/private/server/path');
+      expect(message).not.toContain('../../.env');
+    }
   });
 
   it('renders no approval surface when no command is pending', () => {
