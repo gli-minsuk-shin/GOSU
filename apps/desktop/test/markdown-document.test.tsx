@@ -214,6 +214,9 @@ $$`);
     const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
 
     expect(styles).toMatch(
+      /\.desktop-content\.desktop-content-chat,\s*\.desktop-content\.desktop-content-notes\s*\{[^}]*padding:\s*18px clamp\(14px, 1\.8vw, 28px\) 28px;/su,
+    );
+    expect(styles).toMatch(
       /\.desktop-content\.desktop-content-document\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/su,
     );
     expect(styles).toMatch(

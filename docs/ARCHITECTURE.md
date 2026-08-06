@@ -672,6 +672,13 @@ flex layout을 사용한다. page heading과 notice는 필요한 높이만 차�
 `.repository-preview`가 세로 scroll을 소유한다. code·table·수식의 가로 scroll은 계속 해당 block 안에만 머문다. 고정된
 `calc(100vh - Npx)` 높이는 titlebar, error notice, Appearance font scale 변화에 취약하므로 사용하지 않는다.
 
+active project의 Research Notes는 Project Chat과 마찬가지로 공용 `WorkspacePageHeading`과 그 안의
+`New project` action을 렌더링하지 않는다. 선택한 Vault root, folder tree, 현재 note path와 Rendered/Source
+mode가 document shell 안에서 필요한 context를 이미 제공하므로 `notes-layout`이 compact content inset부터
+바로 시작하고 회수한 높이를 reader에 돌려준다. active project가 없거나 숨김·archive 상태에서 목적을
+설명해야 하는 empty route는 기존 page heading을 유지한다. 이 최적화는 notes 전용
+`desktop-content-notes` class로 적용해 Repository의 heading·padding과 document scroll chain을 바꾸지 않는다.
+
 Obsidian `[[note]]`, alias와 표준 상대 `.md` link는 raw text 치환이 아닌 Markdown AST 단계에서
 처리한다. 따라서 inline/fenced code 안의 wiki-link 표시는 바뀌지 않는다. 대상은 현재 note 기준의
 exact path를 먼저 사용하고, basename은 Vault에서 유일할 때만 해석한다. missing·ambiguous link나

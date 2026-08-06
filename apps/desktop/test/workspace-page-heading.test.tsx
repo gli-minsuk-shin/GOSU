@@ -30,6 +30,16 @@ describe('workspace page heading', () => {
     );
   });
 
+  it('gives active Research Notes the compact document area without the shared heading', () => {
+    const html = renderToStaticMarkup(
+      <WorkspacePageHeading activeTab="notes" activeProject={undefined} onNewProject={null} />,
+    );
+
+    expect(html).toContain('class="page-heading page-heading-notes"');
+    expect(html).toContain('Research Notes');
+    expect(shouldShowActiveProjectPageHeading('notes')).toBe(false);
+  });
+
   it('keeps other workspace headings on their own surface class', () => {
     const html = renderToStaticMarkup(
       <WorkspacePageHeading

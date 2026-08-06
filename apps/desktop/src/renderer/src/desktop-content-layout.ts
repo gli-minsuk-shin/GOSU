@@ -12,7 +12,10 @@ export function desktopContentClassName({
   if (surface === 'workspace' && tab === 'chat') {
     return 'desktop-content desktop-content-chat';
   }
-  if (surface === 'workspace' && hasActiveProject && (tab === 'notes' || tab === 'repository')) {
+  if (surface === 'workspace' && hasActiveProject && tab === 'notes') {
+    return 'desktop-content desktop-content-document desktop-content-notes';
+  }
+  if (surface === 'workspace' && hasActiveProject && tab === 'repository') {
     return 'desktop-content desktop-content-document';
   }
   return 'desktop-content';

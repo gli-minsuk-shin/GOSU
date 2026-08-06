@@ -43,6 +43,8 @@ and supports:
 - defining a goal, primary metric, lineage hashes, budget, and stop policy;
 - freezing an objective revision locally and explicitly starting the next version;
 - browsing each project's managed Obsidian Research Notes tree as rendered, sanitized Markdown;
+- opening active Research Notes directly at the folder tree and reader with the shared page heading
+  removed and compact Project Chat-sized content insets; empty-project guidance keeps its heading;
 - minimizing the Research Notes folder tree into a persistent 44px restore rail so the mounted
   Markdown reader reclaims the available space without losing the selected note or tree state;
 - projecting Literature searches into `Literature Review.md` and creating non-overwritten paper notes;
