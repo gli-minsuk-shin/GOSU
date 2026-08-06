@@ -96,6 +96,24 @@ an existing text file using the SHA from its latest read, and run a bounded Pyth
 test, or build. File access and execution are separate operations; each exact target, root, action,
 path/content or command/argument list waits for a fresh **Allow once** decision.
 
+Each request opens as a centered blocking alert dialog, and GOSU shows only one approval at a time.
+The exact preview scrolls independently while the decision bar stays visible with sticky **Deny** and
+**Allow once** actions plus a live countdown. Background workspace controls become inert while the
+dialog is open, keyboard focus stays inside it, **Escape** means **Deny**, and **Deny** is the safe
+initial focus. Closing the dialog restores the previously focused control without moving the chat
+scroll position. The default decision window is five minutes. Creating
+or replacing a file and executing the resulting Python, test, or build are always separate requests,
+so approving file content never approves its execution and every operation needs a fresh
+**Allow once** decision. If the Renderer misses an event or the chat remounts, it queries Main for
+the pending request bound to that exact project and session and restores the same dialog. Main owns
+the authoritative pending request in process memory; the Renderer keeps only a volatile presentation
+queue, countdown, and resolved-request ID tombstones. Neither side persists or syncs this state, and
+the tombstones prevent a stale query from resurrecting an already allowed, denied, expired, or cancelled
+dialog. A late event for an already resolved request is ignored, and a request that does not match
+the currently visible project and chat is denied instead of appearing in the wrong workspace.
+Navigating to another project or session still cancels the prior scope rather than carrying its
+approval forward.
+
 The file broker supports bounded UTF-8 text only. It blocks symlinks, traversal, secret/key paths,
 binary and large files, and does not expose delete, rename, chmod, parent-folder creation, or general
 file transfer. Create is create-only. Replacement rechecks the expected SHA immediately before an
@@ -112,12 +130,19 @@ not a sandbox for executed code. Root workspace execution remains a prototype-on
 exception behind an explicit project grant and a fresh **Allow once** decision. Hardened production
 execution must use a non-root isolated Runner. Long GPU jobs also belong on that Runner path.
 
+The Project Chat dynamic-tool budget for these approval-bearing SSH operations is 450 seconds:
+300 seconds for the decision window, up to 120 seconds for command execution, and a 30-second
+transport and settlement margin. The file helper itself remains bounded to 30 seconds.
+
 ## Server status monitoring
 
 Connections shows each registered server with a **Minimize / Show details** control. Project Chat
 uses the same safe resource snapshot but starts with the detailed meters minimized so the transcript
-keeps more space. A minimized card still shows availability, the last sample time, and bounded issues;
-minimizing it does not disable monitoring.
+keeps more space. A minimized card keeps a compact summary directly beside **Server usage**: CPU,
+Memory, and GPU utilization remain visible without reopening the meters. Multi-GPU servers show the
+maximum reported utilization as **GPU max** together with the reporting-device count; unavailable,
+not-detected, and stale samples stay explicit rather than being displayed as zero. Availability, the
+last sample time, and bounded issues also remain visible, and minimizing does not disable monitoring.
 
 **Settings → Servers** controls automatic refresh locally on this Mac. The supported choices are
 Manual, 30 seconds, 1 minute (default), 5 minutes, and 10 minutes. Automatic monitoring runs only

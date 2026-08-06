@@ -8,6 +8,9 @@ export const SSH_COMMAND_MAX_ARGUMENTS = 32;
 export const SSH_COMMAND_MAX_OUTPUT_CHARACTERS = 64_000;
 export const SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS = 48_000;
 export const SSH_COMMAND_MAX_TIMEOUT_SECONDS = 120;
+export const SSH_APPROVAL_DEFAULT_TTL_MS = 5 * 60_000;
+export const SSH_DYNAMIC_TOOL_TIMEOUT_MS =
+  SSH_APPROVAL_DEFAULT_TTL_MS + SSH_COMMAND_MAX_TIMEOUT_SECONDS * 1_000 + 30_000;
 export const SSH_REMOTE_WORKING_DIRECTORY_MAX_LENGTH = 1_537;
 
 const uuidSchema = z.string().uuid();
@@ -409,6 +412,15 @@ export const ResolveSshApprovalInputSchema = z
   .strict();
 
 export type ResolveSshApprovalInput = z.infer<typeof ResolveSshApprovalInputSchema>;
+
+export const ListPendingSshApprovalsInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    sessionId: uuidSchema,
+  })
+  .strict();
+
+export type ListPendingSshApprovalsInput = z.infer<typeof ListPendingSshApprovalsInputSchema>;
 
 export const CancelSshScopeInputSchema = z
   .object({

@@ -189,25 +189,25 @@ flowchart TD
 
 ## 6. 데이터 원본과 개인정보 경계
 
-| 데이터                                           | authoritative source                                                                     | Hosted Sync 보관 정책                                                                                                                                    |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 앱 관리형 local worktree                                                        | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지                                                                                      |
-| 프로젝트 Research Notes Markdown과 첨부          | 사용자의 Obsidian Vault 아래 `GOSU/<project>`; Literature 원본은 별도 SQLCipher          | Vault·project 연결 상태만; 본문·절대 경로는 금지                                                                                                         |
-| 서지 metadata, collection, PDF                   | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                                     |
-| 검색 문헌 metadata, review annotation, 검색 이력 | 프로젝트별 Desktop Literature SQLCipher tables, Project Chat search와 선택한 import file | 현재 Hosted Sync·outbox 대상이 아님; raw provider response·원문·abstract·로컬 file path·API key 금지                                                     |
-| 실험 idea lineage·검토 outcome·summary metric    | 프로젝트별 Desktop Experiment SQLCipher tables                                           | 현재 Hosted Sync·workspace outbox 대상이 아님; raw Runner metric·log·artifact는 저장하지 않음                                                            |
-| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                                             | 원본 금지; 상태와 명시적 summary metric만                                                                                                                |
-| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                           | 협업 metadata 저장 대상                                                                                                                                  |
-| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store                                      | 금지                                                                                                                                                     |
-| SSH connection profile                           | 모든 local project가 공유하는 Desktop SQLCipher registry                                 | Hosted Sync 금지; alias 또는 정규화된 direct host·user·port·inactive `-L`; secret·원본 command 금지                                                      |
-| SSH remote workspace grant                       | 프로젝트별 Desktop SQLCipher table                                                       | Hosted Sync 금지; connection ID·canonical root·permission mode만 저장                                                                                    |
-| SSH command output                               | 해당 Project Chat turn의 Main-process memory와 ephemeral tool result                     | raw output 저장·동기화 금지; 모델이 답변에 포함한 문장만 대화 정책 적용                                                                                  |
-| SSH workspace text file body                     | 승인된 remote project root의 원본과 해당 turn의 bounded helper/result memory             | SQLCipher·Hosted Sync·outbox·telemetry·Git 자동 저장 금지; exact create/replace 내용은 30초 approval UI에만 표시                                         |
-| SSH server resource snapshot                     | Desktop Main-process 12초 cache와 Renderer의 마지막 구조화 sample                        | SQLCipher·Hosted Sync·outbox·telemetry·chat prompt 저장 금지; CPU/RAM/GPU 숫자와 bounded issue만 IPC에 노출하고 raw probe output 금지                    |
-| SSH approval request·outcome metadata            | 현재 app process의 in-memory broker event                                                | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지                                                                                  |
-| Project Chat 첨부 연구 파일                      | 사용자가 dialog에서 선택한 local file                                                    | path·원본 bytes·추출 text·정규화 image를 SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; 해당 turn에서 bounded text 또는 image만 provider에 전송 |
-| Codex web search result·tool payload             | 해당 Codex turn의 ephemeral provider context                                             | GOSU DB·outbox에 저장하지 않음; 최종 답변의 URL·요약만 visible chat 정책 적용                                                                            |
-| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                                           | 금지                                                                                                                                                     |
+| 데이터                                           | authoritative source                                                                     | Hosted Sync 보관 정책                                                                                                                                               |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 앱 관리형 local worktree                                                        | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지                                                                                                 |
+| 프로젝트 Research Notes Markdown과 첨부          | 사용자의 Obsidian Vault 아래 `GOSU/<project>`; Literature 원본은 별도 SQLCipher          | Vault·project 연결 상태만; 본문·절대 경로는 금지                                                                                                                    |
+| 서지 metadata, collection, PDF                   | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                                                |
+| 검색 문헌 metadata, review annotation, 검색 이력 | 프로젝트별 Desktop Literature SQLCipher tables, Project Chat search와 선택한 import file | 현재 Hosted Sync·outbox 대상이 아님; raw provider response·원문·abstract·로컬 file path·API key 금지                                                                |
+| 실험 idea lineage·검토 outcome·summary metric    | 프로젝트별 Desktop Experiment SQLCipher tables                                           | 현재 Hosted Sync·workspace outbox 대상이 아님; raw Runner metric·log·artifact는 저장하지 않음                                                                       |
+| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                                             | 원본 금지; 상태와 명시적 summary metric만                                                                                                                           |
+| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                           | 협업 metadata 저장 대상                                                                                                                                             |
+| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store                                      | 금지                                                                                                                                                                |
+| SSH connection profile                           | 모든 local project가 공유하는 Desktop SQLCipher registry                                 | Hosted Sync 금지; alias 또는 정규화된 direct host·user·port·inactive `-L`; secret·원본 command 금지                                                                 |
+| SSH remote workspace grant                       | 프로젝트별 Desktop SQLCipher table                                                       | Hosted Sync 금지; connection ID·canonical root·permission mode만 저장                                                                                               |
+| SSH command output                               | 해당 Project Chat turn의 Main-process memory와 ephemeral tool result                     | raw output 저장·동기화 금지; 모델이 답변에 포함한 문장만 대화 정책 적용                                                                                             |
+| SSH workspace text file body                     | 승인된 remote project root의 원본과 해당 turn의 bounded helper/result memory             | SQLCipher·Hosted Sync·outbox·telemetry·Git 자동 저장 금지; exact create/replace 내용은 기본 5분 decision window의 centered blocking approval dialog에만 휘발성 표시 |
+| SSH server resource snapshot                     | Desktop Main-process 12초 cache와 Renderer의 마지막 구조화 sample                        | SQLCipher·Hosted Sync·outbox·telemetry·chat prompt 저장 금지; CPU/RAM/GPU 숫자와 bounded issue만 IPC에 노출하고 raw probe output 금지                               |
+| SSH approval request·outcome metadata            | 현재 app process의 in-memory broker event                                                | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지                                                                                             |
+| Project Chat 첨부 연구 파일                      | 사용자가 dialog에서 선택한 local file                                                    | path·원본 bytes·추출 text·정규화 image를 SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; 해당 turn에서 bounded text 또는 image만 provider에 전송            |
+| Codex web search result·tool payload             | 해당 Codex turn의 ephemeral provider context                                             | GOSU DB·outbox에 저장하지 않음; 최종 답변의 URL·요약만 visible chat 정책 적용                                                                                       |
+| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                                           | 금지                                                                                                                                                                |
 
 Hosted Sync에 저장하지 않는다는 것과 LLM에 전혀 전송하지 않는다는 것은 다르다. Research Notes는 기본적으로
 Mac 안에만 남지만, 사용자가 특정 Vault를 특정 project agent에 승인한 경우 그 turn에서 agent가 실제로
@@ -416,12 +416,14 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
 - dynamic tool transport는 thread별 allowlist와 handler를 묶고 strict request envelope, namespace와
   tool 일치, 실제 `turn/start` ID binding, 중복 call ID, turn·thread 호출 수, 동시성,
   argument·result character cap과 기본 10초 timeout을 검사한다. 긴 승인이 필요한 declared tool만
-  registration에 고정된 timeout override를 가질 수 있고 override 상한은 180초다. 현재
+  registration에 고정된 timeout override를 가질 수 있다. 현재
   `search_literature`는 discovery provider의 rate limit·fallback을 포함한 125초,
   `read_ssh_workspace_resources`는 고정 probe의 최악 시간을 포함한 40초,
   `list_ssh_workspace_files`·`read_ssh_workspace_file`·`write_ssh_workspace_file`와
-  `run_ssh_workspace_command`는 최대 30초 approval을 포함한 155초 bound를 사용한다. command execution
-  자체는 최대 120초이고 file helper는 30초다.
+  `run_ssh_workspace_command`는 모두 450초 dynamic-tool budget을 사용한다. 이는 기본 300초 approval
+  decision window, 최대 120초 command execution과 transport·settlement용 30초 margin의 합이다. file helper
+  execution 자체는 최대 30초지만 approval-bearing file tool도 놓친 Renderer event를 query로 복원할 시간을 포함해
+  같은 450초 outer budget을 사용한다.
   attachment list/text-read는 기본 10초 transport bound를 유지하며 모델이 timeout을 늘리거나 미등록
   tool에 override를 붙일 수 없다. 조기 tool call이
   먼저 도착하면 그 turn ID로
@@ -484,9 +486,11 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   실패시키지 않는다. profile update·remove·import 변경은 진행 중인 이전 probe를 무효화하며, Renderer도
   profile generation이 바뀐 뒤 도착한 응답과 더 오래된 sample을 버린다.
   Connections와 Project Chat은 같은 snapshot state를 공유하지만 resource card의 접기 상태는 UI local
-  state다. 접으면 CPU/RAM/GPU meter만 숨기고 live/partial/unavailable 상태, capture 시각과 bounded issue는
-  남긴다. Project Chat card는 좁은 대화 공간을 위해 기본으로 접고 Connections card는 기본으로 펼친다.
-  접기는 polling을 중단하거나 project authorization 경계를 바꾸지 않는다.
+  state다. 접으면 상세 meter만 숨기고 `Server usage` 옆의 compact chip으로 CPU·RAM과 GPU utilization을
+  계속 표시한다. multi-GPU는 reporting device 중 최대값을 `GPU max`로 명시하고 reporting count를 함께
+  표시하며, unavailable·not-detected·stale을 0%로 가장하지 않는다. live/partial/unavailable 상태, capture
+  시각과 bounded issue도 남긴다. Project Chat card는 좁은 대화 공간을 위해 기본으로 접고 Connections
+  card는 기본으로 펼친다. 접기는 polling을 중단하거나 project authorization 경계를 바꾸지 않는다.
   Connections는 global registry를 볼 수 있지만 Project Chat resource list는 Main이
   active project를 다시 검증한 뒤 그 project에 grant된 connection만 반환한다. Project Chat의 server별
   `Refresh`도 project ID와 connection ID를 함께 받는 별도 IPC에서 active project와 현재 grant를 다시
@@ -522,7 +526,8 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   argument schema를 사용하고 fsmonitor·hook·pager config와 external diff·textconv를 Main이 exact approval
   preview 전에 비활성화한다. project test/build/experiment는 repository code를 해당 remote account 권한으로
   실행할 수 있음을 승인창에 명시한다. 모든 command는 actual target, root/cwd, operation class와 exact preview를 보여 주는
-  30초짜리 `Allow once` 승인을 새로 받아야 하며 승인 후 profile·grant version을 다시 확인한다.
+  centered blocking alert dialog에서 기본 5분짜리 `Allow once` 결정을 새로 받아야 하며 승인 후
+  profile·grant version을 다시 확인한다.
   이 승인은 표시된 executable·argv·cwd에만 결합되고 entrypoint나 test/build가 읽을 repository source file
   hash에는 결합되지 않는다. 따라서 승인 뒤 launch 전 source가 바뀔 수 있으며 command approval을 immutable
   source identity 또는 재현성 증명으로 취급하면 안 된다.
@@ -536,7 +541,8 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   상대 regular-file 후보와 byte size만, read는 최대 16,000자의 UTF-8 chunk·full-file SHA-256·offset을
   반환한다. create는 `expectedSha256: null`일 때 대상이 없어야 하고, replace는 직전 read에서 받은
   SHA-256과 기존 file이 일치해야 한다. 승인 UI는 action, relative path, expected/new hash와
-  create/replace의 exact content를 표시한다.
+  create/replace의 exact content를 표시한다. file create/replace 승인과 그 파일을 사용하는 command 실행
+  승인은 결합하지 않으며 각각 별도의 fresh `Allow once` request다.
 - file broker의 Python program은 app에 고정된 source이며 `/usr/bin/python3 -I -S -c`로만 실행한다.
   모델 가변 데이터는 최대 64 KiB strict JSON stdin으로만 전달되고 command argv나 interpreter code가
   되지 않는다. remote helper는 root와 working directory의 `realpath`를 다시 확인하고 directory file
@@ -1359,10 +1365,22 @@ flowchart LR
   검증하며 absolute executable, relative workspace subdirectory와 mode별 inspect/test/build/experiment allowlist를
   적용한다. raw shell·inline interpreter eval, privilege escalation, nested transport·transfer, TTY·forwarding과
   unattended execution은 approval UI 전에 fail closed한다.
-- approval center는 actual target, ROOT/HIGH RISK, connection label, project/session, workspace root/cwd,
-  operation class와 exact remote preview를 표시하며 사용자는 각
-  실행을 `Allow once` 또는 Deny한다. approval은 최대 30초, 전체 pending 16개·turn당 4개, 전체 active
-  4개·turn당 1개다. turn terminal/cancel, connection 삭제와 앱 종료는 pending 요청을 거절하고 active local
+- approval center는 viewport 중앙의 blocking alert dialog로 actual target, ROOT/HIGH RISK, connection label,
+  project/session, workspace root/cwd, operation class와 exact remote preview를 표시한다. request queue에서는
+  한 번에 하나만 보여 주며 긴 preview만 독립적으로 scroll하고 sticky action bar의 `Allow once`·Deny와
+  live countdown은 계속 보인다. dialog가 열리면 같은 Renderer의 background workspace control은 inert가
+  되고 keyboard focus를 dialog 안에 가두며, Escape는 Deny로 처리하고 초기 focus도 Deny에 둔다. 닫힐
+  때는 dialog 전에 focus된 control로 scroll 이동 없이 focus를 복원한다. 기본
+  decision window는 5분이다. 전체 pending 16개·turn당 4개, 전체 active
+  4개·turn당 1개다. Renderer가 event를 놓치거나 Project Chat이 remount돼도 exact project+session을 받는
+  pending-query IPC가 Main의 동일 request를 hydrate한다. query는 다른 project/session request를 반환하지
+  않으며 이미 resolve된 ID의 bounded in-memory tombstone을 확인해 stale response가 allowed·denied·expired·
+  cancelled dialog를 되살리지 못하게 한다. event 자체도 tombstone을 지우지 않으며 현재 visible
+  project+session과 일치하지 않는 새 request는 UI에 넣지 않고 exact approval ID만 Deny한다. pending
+  request의 authoritative state는 Main-process memory에 있고 presentation queue·countdown·resolved-ID
+  tombstone은 Renderer의 volatile state/ref에 있다. 어느 쪽도 SQLCipher·Hosted Sync·outbox·telemetry에
+  persist 또는 sync하지 않는다. turn
+  terminal/cancel, connection 삭제와 앱 종료는 pending 요청을 거절하고 active local
   SSH transport를 abort한다. 화면에서 project/session을 벗어나면 strict project/session payload만 받는
   cancellation-only `gosu:ssh:cancel-scope` IPC와 Project Chat revoke IPC가 Main의 pending·active transport와
   해당 live agent tool session을 찾아 attempt-scoped abort signal과 scope epoch를 폐기한다. revoke epoch는
@@ -1680,7 +1698,9 @@ test/build/experiment는 project code를 remote account 권한으로 실행할 �
 있고 lexical root 검사는 sandbox가 아니므로 사용자가 HIGH-RISK `Allow once`를 확인해야 한다. command
 approval은 argv/cwd만 고정하고 실행 시 읽히는 source file hash를 고정하지 않는다. 명시적 root workspace
 실행은 현재 prototype에서만 HIGH-RISK grant와 Allow-once 뒤 허용하며 hardened production은 non-root
-isolated Runner를 요구한다. hash 재검사 뒤 atomic replacement도 unrelated writer와 경쟁할 수 있고,
+isolated Runner를 요구한다. 현재 approval dialog도 primary Renderer 안의 trusted UI boundary이며 별도의
+Main-owned isolated approval window가 아니다. Renderer compromise까지 포함한 hardened threat model에서는
+승인 전용 child window·최소 preload와 Main의 request binding 검증을 추가해야 한다. hash 재검사 뒤 atomic replacement도 unrelated writer와 경쟁할 수 있고,
 mutation 뒤 receipt·transport 실패는 outcome uncertainty를 남기므로 same-path re-read/hash reconciliation이
 필수다. local
 OpenSSH transport를 timeout·cancel로 종료해도 연결이 이미 끊어진 뒤 remote process tree가 종료됐다고
@@ -1934,7 +1954,9 @@ project/session 격리·saved zero·invalid value 거절·bottom default·viewpo
 workspace policy test는 project grant isolation, canonical root·relative cwd,
 mode별 concrete executable·inspect/test/build/experiment allowlist, root diagnostic 축소, shell·inline eval·privilege·
 transfer·forwarding 거절, approval exact target/root/mode/command binding·profile/grant revalidation·TTL·capacity·
-Allow once·scope cancel, output crop·untrusted marker를 고정한다. remote file helper test는 app-owned
+Allow once·scope cancel, centered blocking alert·single-request presentation·sticky action/countdown,
+exact project+session pending-query hydration·resolved-ID tombstone·memory-only lifecycle와 navigation cancel,
+450초 outer budget을 고정한다. remote file helper test는 app-owned
 Python source와 JSON-only stdin, physical root/no-symlink traversal, secret·binary·oversize 차단,
 bounded list/read, create-only·stale SHA conflict·mode-preserving expected-hash-checked atomic replace·fsync
 receipt와 post-mutation outcome uncertainty 뒤 same-path hash reconciliation 규칙을 검증한다.

@@ -1803,6 +1803,49 @@ textarea:focus {
   font-size: var(--font-meta);
 }
 
+.ssh-resource-summary-compact-values {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--font-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.ssh-resource-summary-compact-metric,
+.ssh-resource-summary-stale {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  white-space: nowrap;
+}
+
+.ssh-resource-summary-compact-metric > span,
+.ssh-resource-summary-compact-metric > small {
+  color: var(--muted);
+  font-size: inherit;
+}
+
+.ssh-resource-summary-compact-metric > b {
+  color: var(--text);
+  font-size: inherit;
+  font-weight: 780;
+}
+
+.ssh-resource-summary-stale {
+  border-color: color-mix(in srgb, var(--orange) 45%, var(--line));
+  background: color-mix(in srgb, var(--orange) 8%, var(--surface-soft));
+  color: var(--orange);
+  font-weight: 760;
+}
+
 .ssh-resource-summary-status span,
 .ssh-resource-summary-status time,
 .ssh-resource-issues {
@@ -1918,12 +1961,38 @@ textarea:focus {
 }
 
 .ssh-approval-dialog {
-  width: min(100%, 580px);
-  padding: 22px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(100%, 720px);
+  max-height: min(calc(100vh - 48px), 760px);
+  max-height: min(calc(100dvh - 48px), 760px);
+  padding: 0;
+  overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--orange) 42%, var(--line));
   border-radius: 16px;
   background: var(--surface);
   box-shadow: 0 28px 100px rgba(0, 0, 0, 0.42);
+}
+
+.ssh-approval-dialog-header,
+.ssh-approval-dialog-footer {
+  position: sticky;
+  z-index: 2;
+  display: flex;
+  gap: 14px;
+  padding: 16px 18px;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+}
+
+.ssh-approval-dialog-header {
+  top: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+}
+
+.ssh-approval-dialog-header > div {
+  min-width: 0;
 }
 
 .ssh-approval-kicker {
@@ -1934,71 +2003,63 @@ textarea:focus {
 }
 
 .ssh-approval-dialog h2 {
-  margin: 8px 0;
+  margin: 5px 0 0;
+  font-size: clamp(20px, 2.2vw, 27px);
 }
 
-.ssh-approval-dialog p {
+.ssh-approval-queue-count {
+  flex: none;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--orange) 12%, var(--surface-soft));
+  color: var(--orange);
+  font-size: var(--font-meta);
+  white-space: nowrap;
+}
+
+.ssh-approval-dialog-body {
+  min-height: 0;
+  padding: 16px 18px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.ssh-approval-dialog-body p {
   color: var(--muted);
   line-height: 1.55;
 }
 
-.ssh-approval-dialog dl {
+.ssh-approval-dialog-footer {
+  bottom: 0;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--line);
+}
+
+.ssh-approval-dialog-footer p {
   display: grid;
-  gap: 8px;
-  margin: 18px 0;
-}
-
-.ssh-approval-dialog dl > div {
-  display: grid;
-  gap: 4px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface-soft);
-}
-
-.ssh-approval-dialog dt {
-  color: var(--subtle);
-  font-size: var(--font-caption);
-}
-
-.ssh-approval-dialog dd {
+  gap: 2px;
+  max-width: 430px;
   margin: 0;
-  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.45;
+}
+
+.ssh-approval-dialog-footer p strong {
+  color: var(--orange);
+}
+
+.ssh-approval-expiry span {
+  display: block;
 }
 
 .ssh-approval-actions {
   display: flex;
+  flex: none;
   justify-content: flex-end;
   gap: 8px;
-}
-
-.ssh-approval-center {
-  position: fixed;
-  z-index: 1000;
-  right: 22px;
-  bottom: 22px;
-  display: grid;
-  gap: 8px;
-  width: min(calc(100vw - 44px), 520px);
-  max-height: min(72vh, 680px);
-  padding: 13px;
-  overflow: auto;
-  border: 1px solid color-mix(in srgb, var(--orange) 42%, var(--line));
-  border-radius: 15px;
-  background: var(--surface);
-  box-shadow: 0 28px 100px rgba(0, 0, 0, 0.42);
-}
-
-.ssh-approval-center > header {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.ssh-approval-center > header span {
-  color: var(--orange);
-  font-size: var(--font-meta);
 }
 
 .ssh-approval-card {
@@ -2010,6 +2071,13 @@ textarea:focus {
   background: var(--surface-soft);
 }
 
+.ssh-approval-card > div:first-child,
+.ssh-approved-file-content {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
 .ssh-approval-card pre {
   max-height: 140px;
   margin: 0;
@@ -2018,6 +2086,7 @@ textarea:focus {
   border-radius: 7px;
   background: var(--bg);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .ssh-approval-card p,
@@ -6204,9 +6273,48 @@ button.chat-toolbar-status {
     justify-content: stretch;
   }
 
+  .ssh-approval-backdrop {
+    padding: 12px;
+  }
+
+  .ssh-approval-dialog {
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+  }
+
+  .ssh-approval-dialog-header,
+  .ssh-approval-dialog-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ssh-approval-queue-count {
+    align-self: flex-start;
+  }
+
   .ssh-connection-actions button,
   .ssh-connections-card .connection-item .form-actions button,
   .ssh-approval-actions button {
     flex: 1;
+  }
+}
+
+@media (max-height: 640px) {
+  .ssh-approval-backdrop {
+    padding: 10px;
+  }
+
+  .ssh-approval-dialog {
+    max-height: calc(100vh - 20px);
+    max-height: calc(100dvh - 20px);
+  }
+
+  .ssh-approval-dialog-header,
+  .ssh-approval-dialog-footer {
+    padding-block: 10px;
+  }
+
+  .ssh-approval-dialog-body {
+    padding-block: 10px;
   }
 }

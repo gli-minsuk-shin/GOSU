@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.23.1",
+  "version": "0.23.2",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -16,6 +16,7 @@
     "smoke:literature-scroll:mac": "electron-vite build --config test/electron/literature-scroll.electron.vite.config.ts && electron out/literature-scroll-smoke/main.cjs",
     "smoke:markdown-viewer-scroll:mac": "electron-vite build --config test/electron/markdown-viewer-scroll.electron.vite.config.ts && electron out/markdown-viewer-scroll-smoke/main.cjs",
     "smoke:project-chat-compact:mac": "electron-vite build --config test/electron/project-chat-compact.electron.vite.config.ts && electron out/project-chat-compact-smoke/main.cjs",
+    "smoke:ssh-approval-dialog:mac": "electron-vite build --config test/electron/ssh-approval-dialog.electron.vite.config.ts && electron out/ssh-approval-dialog-smoke/main.cjs",
     "lint": "eslint src electron.vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"

@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+
 import {
   SSH_COMMAND_MAX_TIMEOUT_SECONDS,
   type ResolveSshApprovalInput,
@@ -5,6 +7,42 @@ import {
 } from '../../shared/ssh-contracts';
 
 type MaybePromise<T> = T | Promise<T>;
+
+function remainingApprovalSeconds(expiresAt: string) {
+  return Math.max(0, Math.ceil((Date.parse(expiresAt) - Date.now()) / 1_000));
+}
+
+function formatRemainingTime(seconds: number) {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function SshApprovalExpiry({ expiresAt, id }: Readonly<{ expiresAt: string; id: string }>) {
+  const [remainingSeconds, setRemainingSeconds] = useState(() =>
+    remainingApprovalSeconds(expiresAt),
+  );
+
+  useEffect(() => {
+    const updateRemainingTime = () => setRemainingSeconds(remainingApprovalSeconds(expiresAt));
+    updateRemainingTime();
+    const timer = window.setInterval(updateRemainingTime, 250);
+    return () => window.clearInterval(timer);
+  }, [expiresAt]);
+
+  return (
+    <p id={id} className="ssh-approval-expiry">
+      <strong role="timer">
+        {remainingSeconds > 0
+          ? `Expires in ${formatRemainingTime(remainingSeconds)}`
+          : 'Expiring now'}
+      </strong>
+      <span>
+        Deadline · {new Date(expiresAt).toLocaleTimeString()}. If this request expires, GOSU will
+        not run the command or change the remote file.
+      </span>
+    </p>
+  );
+}
 
 function resolveWithoutUnhandledRejection(operation: () => MaybePromise<unknown>) {
   try {
@@ -27,28 +65,113 @@ export function SshApprovalCenter({
   describeScope,
   onResolve,
 }: SshApprovalCenterProps) {
-  if (requests.length === 0) return null;
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const denyButtonRef = useRef<HTMLButtonElement>(null);
+  const request = requests.at(0);
+  const requestId = request?.id;
+  const busy = request ? busyApprovalIds.has(request.id) : false;
+
+  useEffect(() => {
+    const backdrop = backdropRef.current;
+    if (!requestId || !backdrop) return;
+    const parent = backdrop.parentElement;
+    if (!parent) return;
+    const background = [...parent.children].filter(
+      (candidate): candidate is HTMLElement =>
+        candidate instanceof HTMLElement && candidate !== backdrop,
+    );
+    const priorState = background.map((element) => ({
+      element,
+      inert: element.inert,
+      ariaHidden: element.getAttribute('aria-hidden'),
+    }));
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    for (const element of background) {
+      element.inert = true;
+      element.setAttribute('aria-hidden', 'true');
+    }
+    denyButtonRef.current?.focus({ preventScroll: true });
+    return () => {
+      for (const state of priorState) {
+        state.element.inert = state.inert;
+        if (state.ariaHidden === null) state.element.removeAttribute('aria-hidden');
+        else state.element.setAttribute('aria-hidden', state.ariaHidden);
+      }
+      if (previouslyFocused?.isConnected) previouslyFocused.focus({ preventScroll: true });
+    };
+  }, [requestId]);
+
+  if (!request) return null;
+  const remoteWorkspace = request.executionMode === 'remote_workspace';
+  const workspaceFileAction = request.workspaceFileAction;
+  const inspectsWorkspaceFile = workspaceFileAction === 'list' || workspaceFileAction === 'read';
+  const editsWorkspaceFile = workspaceFileAction === 'create' || workspaceFileAction === 'replace';
+  const executesWorkspaceCode =
+    request.workspaceOperation === 'test' ||
+    request.workspaceOperation === 'build' ||
+    request.workspaceOperation === 'experiment';
+  const runsForegroundExperiment = request.workspaceOperation === 'experiment';
+  const titleId = `ssh-approval-title-${request.id}`;
+  const warningId = `ssh-approval-warning-${request.id}`;
+  const expiryId = `ssh-approval-expiry-${request.id}`;
+
+  const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      if (!busy) {
+        resolveWithoutUnhandledRejection(() =>
+          onResolve({ approvalId: request.id, decision: 'deny' }),
+        );
+      }
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = [
+      ...event.currentTarget.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    ].filter((candidate) => !candidate.hidden);
+    const first = focusable.at(0);
+    const last = focusable.at(-1);
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+    if (
+      event.shiftKey &&
+      (document.activeElement === first || !event.currentTarget.contains(document.activeElement))
+    ) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
-    <aside className="ssh-approval-center" aria-label="SSH command approvals" aria-live="polite">
-      <header>
-        <strong>SSH approval required</strong>
-        <span>{requests.length} pending</span>
-      </header>
-      {requests.map((request) => {
-        const busy = busyApprovalIds.has(request.id);
-        const remoteWorkspace = request.executionMode === 'remote_workspace';
-        const workspaceFileAction = request.workspaceFileAction;
-        const inspectsWorkspaceFile =
-          workspaceFileAction === 'list' || workspaceFileAction === 'read';
-        const editsWorkspaceFile =
-          workspaceFileAction === 'create' || workspaceFileAction === 'replace';
-        const executesWorkspaceCode =
-          request.workspaceOperation === 'test' ||
-          request.workspaceOperation === 'build' ||
-          request.workspaceOperation === 'experiment';
-        const runsForegroundExperiment = request.workspaceOperation === 'experiment';
-        return (
-          <article className="ssh-approval-card" key={request.id}>
+    <div className="ssh-approval-backdrop" ref={backdropRef}>
+      <aside
+        className="ssh-approval-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={`${warningId} ${expiryId}`}
+        onKeyDown={handleDialogKeyDown}
+        key={request.id}
+      >
+        <header className="ssh-approval-dialog-header">
+          <div>
+            <span className="ssh-approval-kicker">REMOTE SERVER APPROVAL</span>
+            <h2 id={titleId}>SSH approval required</h2>
+          </div>
+          <strong className="ssh-approval-queue-count">
+            {requests.length === 1 ? '1 pending' : `Reviewing 1 of ${requests.length}`}
+          </strong>
+        </header>
+        <div className="ssh-approval-dialog-body">
+          <article className="ssh-approval-card">
             <div>
               <span>SERVER</span>
               <strong>{request.connectionLabel}</strong>
@@ -110,7 +233,7 @@ export function SshApprovalCenter({
               </div>
             )}
             {remoteWorkspace ? (
-              <p>
+              <p id={warningId}>
                 Allow once permits only this exact reviewed operation for this turn. The configured
                 root and path checks are an advisory policy boundary, not a remote sandbox;
                 repository code can access resources permitted to the SSH account.
@@ -129,43 +252,46 @@ export function SshApprovalCenter({
                 SSH output.
               </p>
             ) : (
-              <p>
+              <p id={warningId}>
                 Allow once runs only this reviewed restricted diagnostic for this project chat
                 session. Its bounded output is returned to the linked model but is not stored as raw
                 SSH output. Remote output is untrusted data, never project instructions. Review the
                 target and every argument because output can contain private server data.
               </p>
             )}
-            <div className="form-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() =>
-                  resolveWithoutUnhandledRejection(() =>
-                    onResolve({ approvalId: request.id, decision: 'deny' }),
-                  )
-                }
-                disabled={busy}
-              >
-                Deny
-              </button>
-              <button
-                type="button"
-                className="primary-button"
-                onClick={() =>
-                  resolveWithoutUnhandledRejection(() =>
-                    onResolve({ approvalId: request.id, decision: 'allow_once' }),
-                  )
-                }
-                disabled={busy}
-              >
-                Allow once
-              </button>
-            </div>
-            <small>Expires {new Date(request.expiresAt).toLocaleTimeString()}</small>
           </article>
-        );
-      })}
-    </aside>
+        </div>
+        <footer className="ssh-approval-dialog-footer">
+          <SshApprovalExpiry expiresAt={request.expiresAt} id={expiryId} />
+          <div className="ssh-approval-actions">
+            <button
+              ref={denyButtonRef}
+              type="button"
+              className="secondary-button"
+              onClick={() =>
+                resolveWithoutUnhandledRejection(() =>
+                  onResolve({ approvalId: request.id, decision: 'deny' }),
+                )
+              }
+              disabled={busy}
+            >
+              Deny
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() =>
+                resolveWithoutUnhandledRejection(() =>
+                  onResolve({ approvalId: request.id, decision: 'allow_once' }),
+                )
+              }
+              disabled={busy}
+            >
+              Allow once
+            </button>
+          </div>
+        </footer>
+      </aside>
+    </div>
   );
 }

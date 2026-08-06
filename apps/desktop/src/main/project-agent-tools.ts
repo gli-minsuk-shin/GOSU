@@ -25,6 +25,7 @@ import {
 import type { LocalNotesVaultGrant } from '../shared/project-chat-contracts';
 import { repositoryIdentifierForAgent } from '../shared/repository-identifier';
 import {
+  SSH_DYNAMIC_TOOL_TIMEOUT_MS,
   SSH_IPC_ERROR_CODES,
   type ReadProjectSshResourceSnapshotInput,
   type SshAgentCommand,
@@ -68,7 +69,6 @@ const MAX_TOOL_RESULT_CHARACTERS = 48_000;
 const SOURCE_FINALIZATION_WAIT_MS = 100;
 const LITERATURE_DYNAMIC_TOOL_TIMEOUT_MS = 125_000;
 const SSH_RESOURCE_DYNAMIC_TOOL_TIMEOUT_MS = 40_000;
-const SSH_DYNAMIC_TOOL_TIMEOUT_MS = 155_000;
 
 const ReadWorkspaceArgumentsSchema = z
   .object({ section: z.enum(['summary', 'board', 'objective']).default('summary') })
