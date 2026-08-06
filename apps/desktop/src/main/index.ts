@@ -12,6 +12,8 @@ import {
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
+import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
+import { LectureStudioEventSchema } from '../shared/lecture-studio-contracts';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
 import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
 import { SshEventSchema } from '../shared/ssh-contracts';
@@ -29,6 +31,8 @@ import { BalancedLiteratureProvider } from './literature-discovery';
 import { registerLiteratureIpc } from './literature-ipc';
 import { SemanticScholarLiteratureProvider } from './literature-semantic-scholar';
 import { LiteratureService } from './literature-service';
+import { registerLectureStudioIpc } from './lecture-studio-ipc';
+import { LectureStudioService } from './lecture-studio-service';
 import { createLiteratureTransferPlatform } from './literature-transfer-platform';
 import { registerExperimentWorkspaceIpc } from './experiment-workspace-ipc';
 import { ExperimentWorkspaceService } from './experiment-workspace-service';
@@ -162,6 +166,18 @@ const literatureAi = new LiteratureAiService({
   codex,
   async prepareDirectory(projectId) {
     const directory = join(app.getPath('userData'), 'literature-ai-workspaces', projectId);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    return directory;
+  },
+});
+const lectureStudio = new LectureStudioService({
+  storage: database,
+  sources: database,
+  workspace,
+  artifacts: researchNotes,
+  codex,
+  async prepareDirectory(outputProjectId) {
+    const directory = join(app.getPath('userData'), 'lecture-studio-workspaces', outputProjectId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     return directory;
   },
@@ -355,8 +371,12 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     researchNotes,
     async (projectId) => {
       if (!mainWindow) return Promise.reject(new Error('research_notes_unavailable'));
+      await lectureStudio.reconcilePendingArtifacts().catch(() => undefined);
       const selected = await researchNotes.chooseVault({ projectId }, mainWindow);
-      if (selected) await projectChat.reconcileResearchNoteSaveReceipts().catch(() => undefined);
+      if (selected) {
+        await lectureStudio.reconcilePendingArtifacts().catch(() => undefined);
+        await projectChat.reconcileResearchNoteSaveReceipts().catch(() => undefined);
+      }
       return selected;
     },
     reportUnexpectedWorkspaceError,
@@ -364,6 +384,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   registerExperimentWorkspaceIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     experimentWorkspace,
+    reportUnexpectedWorkspaceError,
+  );
+  registerLectureStudioIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    lectureStudio,
     reportUnexpectedWorkspaceError,
   );
   registerAgentAddOnIpc(
@@ -455,6 +480,7 @@ if (!primaryInstance) {
     try {
       database.open();
       await vault.restore().catch(() => null);
+      await lectureStudio.reconcilePendingArtifacts().catch(() => undefined);
       await projectChat.reconcileResearchNoteSaveReceipts().catch(() => undefined);
       await projectChat.reconcileQueuedTurns().catch(() => undefined);
     } catch (error) {
@@ -495,6 +521,18 @@ if (!primaryInstance) {
           mainWindow.webContents.send(EXPERIMENT_WORKSPACE_IPC_CHANNELS.event, event);
         } catch {
           console.error('[GOSU] Experiment workspace renderer event delivery failed.');
+        }
+      }
+    });
+    lectureStudio.onEvent((event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send(
+            LECTURE_STUDIO_IPC_CHANNELS.event,
+            LectureStudioEventSchema.parse(event),
+          );
+        } catch {
+          console.error('[GOSU] Lecture Studio renderer event delivery failed.');
         }
       }
     });

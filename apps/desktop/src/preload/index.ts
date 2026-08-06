@@ -35,6 +35,24 @@ import type {
 } from '../shared/git-workspace-contracts';
 import { unwrapGitWorkspaceIpcResult } from '../shared/git-workspace-ipc-result';
 import { LITERATURE_IPC_CHANNELS } from '../shared/literature-channels';
+import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
+import {
+  LectureStudioEventSchema,
+  type CancelLectureStudioInput,
+  type CreateLectureStudioInput,
+  type GenerateLectureStudioInput,
+  type LectureSourceCandidates,
+  type LectureStudio,
+  type LectureStudioDetail,
+  type LectureStudioDetailInput,
+  type LectureStudioEvent,
+  type LectureStudioListSnapshot,
+  type LectureStudioTurnReceipt,
+  type ListLectureCandidatesInput,
+  type ListLectureStudiosInput,
+  type SendLectureStudioMessageInput,
+} from '../shared/lecture-studio-contracts';
+import { unwrapLectureStudioIpcResult } from '../shared/lecture-studio-ipc-result';
 import type {
   DeleteLiteratureRecordInput,
   DeleteLiteratureRecordReceipt,
@@ -173,6 +191,14 @@ async function invokeLiterature<T>(channel: string, input: unknown): Promise<T> 
     error: { code: 'literature_unavailable' },
   }));
   return unwrapLiteratureIpcResult<T>(result);
+}
+
+async function invokeLectureStudio<T>(channel: string, input: unknown): Promise<T> {
+  const result = await ipcRenderer.invoke(channel, input).catch(() => ({
+    ok: false,
+    error: { code: 'lecture_unavailable' },
+  }));
+  return unwrapLectureStudioIpcResult<T>(result);
 }
 
 async function invokeExperiment<T>(channel: string, input: unknown): Promise<T> {
@@ -374,6 +400,33 @@ const api = {
       invokeLiterature<LiteratureExportReceipt>(LITERATURE_IPC_CHANNELS.exportRecords, input),
     organize: (input: OrganizeLiteratureInput) =>
       invokeLiterature<LiteratureOrganizeReceipt>(LITERATURE_IPC_CHANNELS.organize, input),
+  },
+  lectureStudio: {
+    list: (input: ListLectureStudiosInput) =>
+      invokeLectureStudio<LectureStudioListSnapshot>(LECTURE_STUDIO_IPC_CHANNELS.list, input),
+    detail: (input: LectureStudioDetailInput) =>
+      invokeLectureStudio<LectureStudioDetail>(LECTURE_STUDIO_IPC_CHANNELS.detail, input),
+    candidates: (input: ListLectureCandidatesInput) =>
+      invokeLectureStudio<LectureSourceCandidates>(LECTURE_STUDIO_IPC_CHANNELS.candidates, input),
+    create: (input: CreateLectureStudioInput) =>
+      invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.create, input),
+    generate: (input: GenerateLectureStudioInput) =>
+      invokeLectureStudio<LectureStudioTurnReceipt>(LECTURE_STUDIO_IPC_CHANNELS.generate, input),
+    send: (input: SendLectureStudioMessageInput) =>
+      invokeLectureStudio<LectureStudioTurnReceipt>(LECTURE_STUDIO_IPC_CHANNELS.send, input),
+    cancel: (input: CancelLectureStudioInput) =>
+      invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.cancel, input),
+    onEvent: (listener: (event: LectureStudioEvent) => void) => {
+      if (typeof listener !== 'function') throw new Error('invalid_lecture_event_listener');
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const parsed = LectureStudioEventSchema.safeParse(value);
+        if (parsed.success) listener(parsed.data);
+      };
+      ipcRenderer.on(LECTURE_STUDIO_IPC_CHANNELS.event, handler);
+      return () => {
+        ipcRenderer.removeListener(LECTURE_STUDIO_IPC_CHANNELS.event, handler);
+      };
+    },
   },
   experiments: {
     list: (input: ListExperimentWorkspaceInput) =>

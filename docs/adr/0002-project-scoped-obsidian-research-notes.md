@@ -46,6 +46,7 @@ UTF-8 byte 제한을 적용한다. 다음 folder와 초기 Markdown을 idempoten
 - `Experiments`
 - `Project Progress`
 - `Idea Development`
+- `Lecture Notes & Slides`
 
 root의 `.gosu-project.json`은 project ID, binding ID와 Vault ID를 기록하는 ownership marker다. 모든
 managed write와 agent read는 marker와 root identity를 다시 검증한다. 기존 사용자 folder와 이름이
@@ -59,6 +60,7 @@ managed write와 agent read는 marker와 root identity를 다시 검증한다. �
 2. `Literature/Literature Review.md` deterministic managed projection
 3. 사용자가 요청하거나 review/metadata 정리한 record의 `Papers/<record>.md` 최초 생성
 4. project별로 승인된 Project Chat이 만드는 category-scoped Markdown artifact의 최초 생성
+5. workspace-level Lecture Studio가 선택한 output project에 publish하는 immutable revision bundle
 
 managed Literature file은 GOSU marker와 project ID가 있는 기존 file만 atomic replace한다. paper note는
 최초 생성 뒤 user-owned이며 다시 덮어쓰지 않는다. Project Chat artifact는 모델의 required structured final
@@ -68,6 +70,11 @@ response가 path 대신 `none` 또는 고정 category, title과 Markdown body를
 Main은 terminal에서 model-tool intake를 먼저 닫고 한 turn당 최대 하나의 bounded artifact를 직접 저장한다.
 동일 attempt idempotency key의 retry는 path와 bytes가 정확히 같을 때만 성공하며 다른 file은 덮어쓰지 않는다.
 Renderer에는 generic filesystem write, delete, rename, Vault-wide read IPC를 제공하지 않는다.
+
+Lecture Studio는 Project Chat grant를 사용하지 않고 output project의 binding·ownership을 별도로 preflight한
+뒤 `Lecture Notes & Slides`에 notes/slides pair를 staged directory journal로 publish한다. 두 file의
+atomic visibility, exact-hash reconciliation과 append-only revision 경계는
+[`ADR 0003`](0003-workspace-level-lecture-studio.md)이 소유한다.
 
 Project Chat artifact write는 파일 작업보다 먼저 body와 absolute Vault path를 제외한 durable receipt를
 SQLCipher에 `staged`로 기록한다. receipt는 project/session/attempt, binding, category, deterministic artifact

@@ -1,0 +1,222 @@
+import { readFileSync } from 'node:fs';
+
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it, vi } from 'vitest';
+
+import type {
+  LectureSourceCandidates,
+  LectureStudio,
+  LectureStudioDetail,
+  LectureStudioMessage,
+  LectureStudioRevision,
+} from '../src/shared/lecture-studio-contracts';
+import {
+  activeLectureSourceProjects,
+  currentLectureStudioRevision,
+  lastLectureMessageId,
+  LectureStudioView,
+  lectureOutputProjectName,
+  lectureStudioMessages,
+  lectureStudioStatusLabel,
+  mergeLectureCandidatePages,
+  toggleLectureProjectSelection,
+  toggleLectureSourceSelection,
+  type LectureStudioViewAdapter,
+} from '../src/renderer/src/lecture-studio-view';
+import { VolatileLectureStudioDrafts } from '../src/renderer/src/lecture-studio-session-state';
+import type { ProjectRecord } from '../src/shared/workspace-contracts';
+
+const project: ProjectRecord = {
+  id: '11111111-1111-4111-8111-111111111111',
+  name: 'Research Alpha',
+  slug: 'research-alpha',
+  version: 1,
+  createdAt: '2026-08-06T00:00:00.000Z',
+  updatedAt: '2026-08-06T00:00:00.000Z',
+};
+
+const adapter: LectureStudioViewAdapter = {
+  list: vi.fn(),
+  detail: vi.fn(),
+  candidates: vi.fn(),
+  create: vi.fn(),
+  generate: vi.fn(),
+  send: vi.fn(),
+  cancel: vi.fn(),
+  onEvent: vi.fn(() => () => undefined),
+};
+
+describe('LectureStudioView', () => {
+  it('presents a workspace-level studio instead of a project-scoped lecture tab', () => {
+    const html = renderToStaticMarkup(
+      <LectureStudioView
+        projects={[project]}
+        adapter={adapter}
+        draftStore={new VolatileLectureStudioDrafts()}
+        requestedModelId={null}
+        reasoningOptionId={null}
+      />,
+    );
+
+    expect(html).toContain('Workspace / Lecture studio');
+    expect(html).toContain('Lecture notes &amp; slides');
+    expect(html).toContain(
+      'Combine reviewed paper metadata and experiment evidence across multiple projects',
+    );
+    expect(html).toContain('New lecture');
+    expect(html).toContain('STUDIOS');
+  });
+
+  it('keeps source, document, and lecture-chat panes independently scrollable', () => {
+    const styles = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(styles).toMatch(/\.lecture-source-projects\s*\{[^}]*overflow:\s*auto;/su);
+    expect(styles).toMatch(/\.lecture-preview-document\s*\{[^}]*overflow:\s*auto;/su);
+    expect(styles).toMatch(/\.lecture-chat-messages\s*\{[^}]*overflow:\s*auto;/su);
+    expect(styles).toMatch(/@media \(max-width: 920px\)/u);
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)/u);
+  });
+
+  it('selects only the current revision and messages of the active lecture', () => {
+    const studio = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      currentRevision: 2,
+    } as LectureStudio;
+    const current = {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      studioId: studio.id,
+      revision: 2,
+    } as LectureStudioRevision;
+    const older = {
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      studioId: studio.id,
+      revision: 1,
+    } as LectureStudioRevision;
+    const selectedMessage = {
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      studioId: studio.id,
+    } as LectureStudioMessage;
+    const detail = {
+      studio,
+      revisions: [older, current],
+      messages: [selectedMessage],
+    } as LectureStudioDetail;
+
+    expect(currentLectureStudioRevision(detail, studio)).toBe(current);
+    expect(lectureStudioMessages(detail, studio.id)).toEqual([selectedMessage]);
+    expect(lectureStudioMessages(detail, null)).toEqual([]);
+  });
+
+  it('keeps archived output project names available without making them creation candidates', () => {
+    const archivedProject = {
+      ...project,
+      name: 'Archived Evidence Project',
+      archivedAt: '2026-08-07T00:00:00.000Z',
+    };
+
+    expect(lectureOutputProjectName([archivedProject], archivedProject.id)).toBe(
+      'Archived Evidence Project',
+    );
+    expect(activeLectureSourceProjects([project, archivedProject])).toEqual([project]);
+  });
+
+  it('provides readable status text in addition to the visual status dot', () => {
+    expect(lectureStudioStatusLabel('draft')).toBe('Draft');
+    expect(lectureStudioStatusLabel('generating')).toBe('Generating');
+    expect(lectureStudioStatusLabel('ready')).toBe('Ready');
+    expect(lectureStudioStatusLabel('failed')).toBe('Failed');
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain(
+      '<span className="sr-only">Status: {lectureStudioStatusLabel(studio.status)}. </span>',
+    );
+  });
+
+  it('merges project-scoped source pages without dropping already loaded records', () => {
+    const page = (records: Array<{ id: string }>, offset: number, total: number) =>
+      ({
+        schemaVersion: 1,
+        projects: [
+          {
+            projectId: project.id,
+            projectName: project.name,
+            literatureRecords: records,
+            literaturePage: {
+              offset,
+              limit: records.length,
+              total,
+              hasMore: offset + records.length < total,
+            },
+            experiments: [],
+            experimentPage: { offset: 0, limit: 100, total: 0, hasMore: false },
+          },
+        ],
+      }) as LectureSourceCandidates;
+
+    const initial = mergeLectureCandidatePages(
+      null,
+      page([{ id: 'paper-1' }, { id: 'paper-2' }], 0, 3),
+    );
+    const merged = mergeLectureCandidatePages(initial, page([{ id: 'paper-3' }], 2, 3));
+
+    expect(merged.projects[0]?.literatureRecords.map(({ id }) => id)).toEqual([
+      'paper-1',
+      'paper-2',
+      'paper-3',
+    ]);
+    expect(merged.projects[0]?.literaturePage).toMatchObject({
+      nextOffset: 3,
+      total: 3,
+      hasMore: false,
+    });
+    expect(merged.projects[0]?.literaturePage).not.toHaveProperty('offset');
+    expect(merged.projects[0]?.literaturePage).not.toHaveProperty('limit');
+  });
+
+  it('caps project and source selection before invalid create payloads reach IPC', () => {
+    const twelveProjects = Array.from({ length: 12 }, (_, index) => `project-${index}`);
+    const rejectedProject = toggleLectureProjectSelection(twelveProjects, 'project-12');
+    expect(rejectedProject.projectIds).toEqual(twelveProjects);
+    expect(rejectedProject.error).toContain('at most 12 projects');
+
+    const oneHundredSources = new Set(
+      Array.from({ length: 100 }, (_, index) => `project:source-${index}`),
+    );
+    const rejectedSource = toggleLectureSourceSelection(oneHundredSources, 'project:source-100', 0);
+    expect(rejectedSource.sourceIds.size).toBe(100);
+    expect(rejectedSource.error).toContain('at most 100 sources in total');
+
+    const removedSource = toggleLectureSourceSelection(oneHundredSources, 'project:source-0', 0);
+    expect(removedSource.sourceIds.size).toBe(99);
+    expect(removedSource.error).toBeNull();
+  });
+
+  it('uses the last message identity so a rolling recent-50 window still detects change', () => {
+    const before = Array.from(
+      { length: 50 },
+      (_, index) => ({ id: `message-${index}` }) as LectureStudioMessage,
+    );
+    const after = [...before.slice(1), { id: 'message-50' } as LectureStudioMessage];
+
+    expect(before).toHaveLength(after.length);
+    expect(lastLectureMessageId(before)).toBe('message-49');
+    expect(lastLectureMessageId(after)).toBe('message-50');
+  });
+
+  it('discloses the bounded chat history and reviewed-metadata evidence boundary', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('the {LECTURE_STUDIO_RECENT_MESSAGE_WINDOW} most recent messages');
+    expect(source).toContain('Reviewed paper metadata');
+    expect(source).toContain('full text is verified');
+  });
+});
