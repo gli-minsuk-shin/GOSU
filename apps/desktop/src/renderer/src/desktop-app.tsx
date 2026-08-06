@@ -1793,7 +1793,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 sessions={activeProjectSessions}
                 sessionRailWidth={projectChatLayout.sessionRailWidth}
                 onSessionRailWidthChange={(sessionRailWidth) =>
-                  setProjectChatLayout({ schemaVersion: 1, sessionRailWidth })
+                  setProjectChatLayout((current) => ({ ...current, sessionRailWidth }))
+                }
+                sessionRailCollapsed={projectChatLayout.sessionRailCollapsed}
+                onSessionRailCollapsedChange={(sessionRailCollapsed) =>
+                  setProjectChatLayout((current) => ({ ...current, sessionRailCollapsed }))
+                }
+                chatDetailsCollapsed={projectChatLayout.chatDetailsCollapsed}
+                onChatDetailsCollapsedChange={(chatDetailsCollapsed) =>
+                  setProjectChatLayout((current) => ({ ...current, chatDetailsCollapsed }))
                 }
                 selectedSessionId={activeProjectChatSessionId}
                 initialDraft={chatDraftsRef.current.read(

@@ -43,11 +43,40 @@ describe('Project Chat session state', () => {
     };
 
     expect(loadProjectChatLayoutState(storage)).toEqual(DEFAULT_PROJECT_CHAT_LAYOUT_STATE);
-    expect(saveProjectChatLayoutState(storage, { schemaVersion: 1, sessionRailWidth: 272 })).toBe(
-      true,
-    );
+    expect(
+      saveProjectChatLayoutState(storage, {
+        schemaVersion: 1,
+        sessionRailWidth: 272,
+        sessionRailCollapsed: true,
+        chatDetailsCollapsed: true,
+      }),
+    ).toBe(true);
     expect(values.has(PROJECT_CHAT_LAYOUT_STORAGE_KEY)).toBe(true);
-    expect(loadProjectChatLayoutState(storage).sessionRailWidth).toBe(272);
+    expect(loadProjectChatLayoutState(storage)).toEqual({
+      schemaVersion: 1,
+      sessionRailWidth: 272,
+      sessionRailCollapsed: true,
+      chatDetailsCollapsed: true,
+    });
+    expect(parseProjectChatLayoutState({ schemaVersion: 1, sessionRailWidth: 272 })).toEqual({
+      schemaVersion: 1,
+      sessionRailWidth: 272,
+      sessionRailCollapsed: false,
+      chatDetailsCollapsed: false,
+    });
+    expect(
+      parseProjectChatLayoutState({
+        schemaVersion: 1,
+        sessionRailWidth: 272,
+        sessionRailCollapsed: 'yes',
+        chatDetailsCollapsed: 1,
+      }),
+    ).toEqual({
+      schemaVersion: 1,
+      sessionRailWidth: 272,
+      sessionRailCollapsed: false,
+      chatDetailsCollapsed: false,
+    });
     expect(
       parseProjectChatLayoutState({ schemaVersion: 1, sessionRailWidth: 20 }).sessionRailWidth,
     ).toBe(160);

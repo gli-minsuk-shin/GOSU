@@ -12,11 +12,15 @@ export const PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH = 184;
 export type ProjectChatLayoutState = Readonly<{
   schemaVersion: 1;
   sessionRailWidth: number;
+  sessionRailCollapsed: boolean;
+  chatDetailsCollapsed: boolean;
 }>;
 
 export const DEFAULT_PROJECT_CHAT_LAYOUT_STATE: ProjectChatLayoutState = Object.freeze({
   schemaVersion: 1,
   sessionRailWidth: PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH,
+  sessionRailCollapsed: false,
+  chatDetailsCollapsed: false,
 });
 
 export function clampProjectChatSessionRailWidth(value: unknown) {
@@ -40,6 +44,8 @@ export function parseProjectChatLayoutState(value: unknown): ProjectChatLayoutSt
   return {
     schemaVersion: 1,
     sessionRailWidth: clampProjectChatSessionRailWidth(record.sessionRailWidth),
+    sessionRailCollapsed: record.sessionRailCollapsed === true,
+    chatDetailsCollapsed: record.chatDetailsCollapsed === true,
   };
 }
 
