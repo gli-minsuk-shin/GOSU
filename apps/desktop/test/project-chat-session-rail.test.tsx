@@ -61,6 +61,46 @@ describe('Project Chat session rail', () => {
     expect(html).toContain('aria-label="Rename selected project chat session"');
     expect(html).toContain('aria-label="Rename Project chat"');
     expect(html).toContain('aria-label="Rename Ablation ideas"');
+    expect(html).toContain('aria-label="Hide project chat sessions"');
+    expect(html).toContain('aria-expanded="true"');
+  });
+
+  it('keeps only an accessible restore control and selected-session summary when minimized', () => {
+    const html = renderToStaticMarkup(
+      <ProjectChatSessionRail
+        sessions={[
+          defaultSession,
+          {
+            ...defaultSession,
+            id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+            title: 'Ablation ideas',
+            isDefault: false,
+          },
+        ]}
+        selectedSessionId={defaultSession.id}
+        activeSessionIds={new Set([defaultSession.id])}
+        creating={false}
+        disabled
+        renameDisabled
+        collapsed
+        onSelect={() => undefined}
+        onCreate={() => undefined}
+        onRename={() => true}
+      />,
+    );
+
+    expect(html).toContain('project-chat-session-rail collapsed');
+    expect(html).toContain('aria-label="Show project chat sessions"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('Selected session: Project chat');
+    expect(html).toContain('class="project-chat-session-list" hidden=""');
+    expect(html).not.toContain('Ablation ideas');
+    expect(html).not.toContain('Create a new project chat session');
+    expect(html).not.toContain('Rename selected project chat session');
+    expect(html).not.toContain('Resize project chat sessions sidebar');
+    expect(html).toMatch(
+      /<button[^>]*aria-label="Show project chat sessions"(?![^>]*disabled)[^>]*>/u,
+    );
   });
 
   it('validates trimmed session names without hard-coding a visible model flow', () => {
@@ -104,7 +144,10 @@ describe('Project Chat session rail', () => {
     const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
 
     expect(styles).toMatch(
-      /\.project-chat-workspace\s*\{[^}]*grid-template-columns:\s*var\(--project-chat-session-rail-width, 184px\) minmax\(0, 1fr\);/su,
+      /\.project-chat-workspace\s*\{[^}]*--project-chat-session-rail-active-width:\s*var\(--project-chat-session-rail-width, 184px\);[^}]*grid-template-columns:\s*var\(--project-chat-session-rail-active-width\) minmax\(0, 1fr\);/su,
+    );
+    expect(styles).toMatch(
+      /\.project-chat-workspace\.session-rail-collapsed\s*\{[^}]*--project-chat-session-rail-active-width:\s*44px;/su,
     );
     expect(styles).toMatch(
       /\.project-chat-session-resize-handle\s*\{[^}]*position:\s*absolute;[^}]*right:\s*0;/su,
@@ -114,6 +157,15 @@ describe('Project Chat session rail', () => {
     );
     expect(styles).toMatch(
       /@media \(max-width: 1180px\)[\s\S]*?\.project-chat-session-row\s*\{[^}]*flex:\s*0 0 214px;/u,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 1180px\)[\s\S]*?\.project-chat-workspace\.session-rail-collapsed\s*\{[^}]*grid-template:\s*44px minmax\(0, 1fr\) \/ 1fr;/u,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 1180px\)[\s\S]*?\.project-chat-session-rail\.collapsed\s*\{[^}]*min-height:\s*44px;[^}]*height:\s*44px;/u,
+    );
+    expect(styles).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.project-chat-workspace,[\s\S]*?transition:\s*none;/u,
     );
     expect(styles).toMatch(
       /\.project-chat-session-row\.active \.project-chat-session-rename-trigger\s*\{[^}]*opacity:\s*1;/su,

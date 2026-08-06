@@ -456,6 +456,84 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Edit in Settings…');
   });
 
+  it('collapses chat details into a critical summary without hiding the conversation controls', () => {
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={false}
+        projectBusy
+        models={[
+          {
+            modelId: 'fixture-live-model',
+            displayName: 'Fixture live model',
+            isDefault: true,
+            reasoningOptions: [{ id: 'provider-high', label: 'Provider high', isDefault: true }],
+          },
+        ]}
+        collaborationModes={[]}
+        selectedModel="fixture-live-model"
+        selectedReasoning="provider-high"
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+        initialAdvancedOpen
+        chatDetailsCollapsed
+        sessionRailCollapsed
+        sshAccess={{ state: 'ready', registeredConnectionCount: 1, grantedWorkspaceCount: 0 }}
+        onOpenSshWorkspaceSetup={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('project-chat-workspace session-rail-collapsed');
+    expect(html).toContain('chat-details-collapsed');
+    expect(html).toContain('chat-toolbar collapsed');
+    expect(html).toContain('Project Copilot');
+    expect(html).toContain('Fixture live model');
+    expect(html).toContain('Provider high');
+    expect(html).toContain('SSH setup needed');
+    expect(html).toContain('aria-label="Show chat details"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toMatch(/aria-label="Show chat details"[^>]*>Show details<\/button>/u);
+    expect(html).not.toMatch(/aria-label="Show chat details"[^>]*disabled=""/u);
+    expect(html).not.toContain('GOSU Project Copilot');
+    expect(html).not.toContain('Linked server resources');
+    expect(html).not.toContain('Refresh usage');
+    expect(html).not.toContain('Advanced agent controls');
+    expect(html).toContain('Another session has an active Codex turn.');
+    expect(html).toContain('aria-label="Attach research files"');
+  });
+
+  it('keeps one bounded chat-detail toggle node so long project names cannot hide keyboard restore', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/project-chat-view.tsx', import.meta.url),
+      'utf8',
+    );
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(source.match(/className="ghost-button chat-details-toggle"/gu)).toHaveLength(1);
+    expect(source).toContain('onChatDetailsCollapsedChange(!chatDetailsCollapsed)');
+    expect(styles).toMatch(
+      /\.chat-toolbar-summary-identity\s*\{[^}]*flex:\s*0 1 220px;[^}]*max-width:\s*220px;[^}]*min-width:\s*0;/su,
+    );
+    expect(styles).toMatch(/\.chat-details-toggle\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;/su);
+  });
+
   it('shows only the project-scoped linked server resources in every chat session shell', () => {
     const html = renderToStaticMarkup(
       <ProjectChatView

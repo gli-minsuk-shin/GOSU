@@ -1,4 +1,12 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 
 import {
   defaultProjectChatProfile,
@@ -268,6 +276,10 @@ export function ProjectChatView({
   onRenameSession,
   sessionRailWidth = PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH,
   onSessionRailWidthChange = () => undefined,
+  sessionRailCollapsed = false,
+  onSessionRailCollapsedChange = () => undefined,
+  chatDetailsCollapsed = false,
+  onChatDetailsCollapsedChange = () => undefined,
   onBranchSession = async () => undefined,
   initialAdvancedOpen = false,
   initialScrollTop = null,
@@ -322,6 +334,10 @@ export function ProjectChatView({
   ) => boolean | void | Promise<boolean | void>;
   sessionRailWidth?: number;
   onSessionRailWidthChange?: (width: number) => void;
+  sessionRailCollapsed?: boolean;
+  onSessionRailCollapsedChange?: (collapsed: boolean) => void;
+  chatDetailsCollapsed?: boolean;
+  onChatDetailsCollapsedChange?: (collapsed: boolean) => void;
   onBranchSession?: (messageId: string) => Promise<void>;
   initialAdvancedOpen?: boolean;
   initialScrollTop?: number | null;
@@ -333,6 +349,7 @@ export function ProjectChatView({
   onOpenSshWorkspaceSetup?: () => void;
   onRefreshSshResource?: (connectionId: string) => Promise<unknown>;
 }) {
+  const chatToolbarDetailsId = useId();
   const [sessionUi, setSessionUi] = useState<ProjectChatSessionUiState>({
     draft: initialDraft,
     retryOfAttemptId: null,
@@ -443,6 +460,16 @@ export function ProjectChatView({
     [collaborationModeId, collaborationModes, models, selectedModel],
   );
   const reasoningOptions = selectedDescriptor?.reasoningOptions ?? [];
+  const effectiveReasoningId =
+    selectedReasoning ?? selectedCollaborationMode?.recommendedReasoningOptionId ?? null;
+  const effectiveReasoning = effectiveReasoningId
+    ? reasoningOptions.find((option) => option.id === effectiveReasoningId)
+    : null;
+  const compactModelLabel =
+    selectedDescriptor?.displayName ?? (selectedModel ? 'Model unavailable' : 'Auto model');
+  const compactReasoningLabel =
+    effectiveReasoning?.label ??
+    (effectiveReasoningId ? 'Reasoning unavailable' : 'Default reasoning');
   const selectedModelMissing = selectedModel !== null && selectedDescriptor === undefined;
   const recommendedModelMissing =
     selectedModel === null &&
@@ -797,7 +824,7 @@ export function ProjectChatView({
 
   return (
     <div
-      className="project-chat-workspace"
+      className={`project-chat-workspace ${sessionRailCollapsed ? 'session-rail-collapsed' : ''}`}
       style={{ '--project-chat-session-rail-width': `${sessionRailWidth}px` } as CSSProperties}
     >
       <ProjectChatSessionRail
@@ -811,144 +838,207 @@ export function ProjectChatView({
         onCreate={onCreateSession}
         width={sessionRailWidth}
         onWidthChange={onSessionRailWidthChange}
+        collapsed={sessionRailCollapsed}
+        onCollapsedChange={onSessionRailCollapsedChange}
         {...(onRenameSession ? { onRename: onRenameSession } : {})}
       />
       <section
-        className={`project-chat-shell ${advancedOpen ? 'agent-controls-open' : ''}`}
+        className={`project-chat-shell ${advancedOpen && !chatDetailsCollapsed ? 'agent-controls-open' : ''} ${chatDetailsCollapsed ? 'chat-details-collapsed' : ''}`}
         aria-label={`${project.name} project chat`}
       >
-        <header className="chat-toolbar">
-          <div className="chat-identity">
-            <span className="chat-orbit" aria-hidden="true">
-              G
-            </span>
-            <div>
-              <strong>GOSU Project Copilot</strong>
-              <span>현재 프로젝트 Board, Objective, 승인된 Research Notes를 활용합니다</span>
-            </div>
-          </div>
-          <div className="chat-model-controls">
-            <label>
-              Model
-              <select
-                value={selectedModel ?? ''}
-                onChange={(event) => onSelectedModel(event.target.value || null)}
-                disabled={projectBusy}
-              >
-                <option value="">Auto · provider recommended</option>
-                {selectedModelMissing && (
-                  <option value={selectedModel} disabled>
-                    Unavailable model · choose again
-                  </option>
-                )}
-                {models.map((model) => (
-                  <option value={model.modelId} key={model.modelId}>
-                    {model.displayName}
-                    {model.isDefault ? ' · default' : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Reasoning
-              <select
-                value={selectedReasoning ?? ''}
-                onChange={(event) => onSelectedReasoning(event.target.value || null)}
-                disabled={
-                  projectBusy || (reasoningOptions.length === 0 && !selectedReasoningMissing)
-                }
-              >
-                <option value="">Model default</option>
-                {selectedReasoningMissing && (
-                  <option value={selectedReasoning} disabled>
-                    Unavailable reasoning · choose again
-                  </option>
-                )}
-                {reasoningOptions.map((option) => (
-                  <option value={option.id} key={option.id}>
-                    {option.label}
-                    {option.isDefault ? ' · default' : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="button"
-              className="ghost-button chat-refresh"
-              onClick={onRefreshModels}
-              disabled={loading || projectBusy}
-            >
-              Refresh
-            </button>
-            <button
-              type="button"
-              className={`secondary-button chat-agent-toggle ${advancedOpen ? 'active' : ''}`}
-              aria-expanded={advancedOpen}
-              onClick={() => setAdvancedOpen((open) => !open)}
-              disabled={projectBusy}
-            >
-              Agent controls
-            </button>
-          </div>
-          {sshWorkspaceSetupNeeded && (
-            <div className="chat-ssh-setup-notice" role="status">
-              <div>
-                <strong>SSH server registered — project access is not granted yet</strong>
-                <span>
-                  Choose one specific remote project folder before {project.name} Project Chat can
-                  use the server.
+        <header className={`chat-toolbar ${chatDetailsCollapsed ? 'collapsed' : ''}`}>
+          {chatDetailsCollapsed && (
+            <div className="chat-toolbar-summary">
+              <div className="chat-toolbar-summary-identity">
+                <span className="chat-orbit" aria-hidden="true">
+                  G
                 </span>
+                <div>
+                  <strong>Project Copilot</strong>
+                  <span>{project.name}</span>
+                </div>
               </div>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={onOpenSshWorkspaceSetup}
-                disabled={projectBusy}
-              >
-                Grant to {project.name}…
-              </button>
+              <div className="chat-toolbar-summary-badges" aria-label="Current chat configuration">
+                <span title={`Model: ${compactModelLabel}`}>{compactModelLabel}</span>
+                <span title={`Reasoning: ${compactReasoningLabel}`}>{compactReasoningLabel}</span>
+                {selectionWarning && <span className="warning">Selection needs attention</span>}
+                {sshWorkspaceSetupNeeded ? (
+                  <button
+                    type="button"
+                    className="chat-toolbar-status warning"
+                    onClick={onOpenSshWorkspaceSetup}
+                    disabled={projectBusy}
+                  >
+                    SSH setup needed
+                  </button>
+                ) : sshServers.length > 0 ? (
+                  <span>
+                    {sshServers.length} linked server{sshServers.length === 1 ? '' : 's'}
+                  </span>
+                ) : null}
+              </div>
             </div>
           )}
-          {sshServers.length > 0 && (
-            <section className="chat-ssh-resources" aria-label="Linked server resources">
-              <header>
-                <strong>Linked server resources</strong>
-                <span>Visible only to {project.name}</span>
-              </header>
-              <div className="chat-ssh-resource-list">
-                {sshServers.map((server) => (
-                  <article className="chat-ssh-resource" key={server.connectionId}>
-                    <div className="chat-ssh-resource-heading">
-                      <div>
-                        <strong>{server.label}</strong>
-                        <span>
-                          {server.permissionMode === 'workspace' ? 'Workspace' : 'Diagnostics'} ·{' '}
-                          {server.canonicalRoot}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        className="ghost-button"
-                        onClick={() => void onRefreshSshResource(server.connectionId)}
-                        disabled={projectBusy || server.resourceState.phase === 'loading'}
-                      >
-                        {server.resourceState.phase === 'loading' ? 'Refreshing…' : 'Refresh usage'}
-                      </button>
+          <div
+            id={chatToolbarDetailsId}
+            className="chat-toolbar-details"
+            hidden={chatDetailsCollapsed}
+          >
+            {!chatDetailsCollapsed && (
+              <>
+                <div className="chat-identity">
+                  <span className="chat-orbit" aria-hidden="true">
+                    G
+                  </span>
+                  <div>
+                    <strong>GOSU Project Copilot</strong>
+                    <span>현재 프로젝트 Board, Objective, 승인된 Research Notes를 활용합니다</span>
+                  </div>
+                </div>
+                <div className="chat-model-controls">
+                  <label>
+                    Model
+                    <select
+                      value={selectedModel ?? ''}
+                      onChange={(event) => onSelectedModel(event.target.value || null)}
+                      disabled={projectBusy}
+                    >
+                      <option value="">Auto · provider recommended</option>
+                      {selectedModelMissing && (
+                        <option value={selectedModel} disabled>
+                          Unavailable model · choose again
+                        </option>
+                      )}
+                      {models.map((model) => (
+                        <option value={model.modelId} key={model.modelId}>
+                          {model.displayName}
+                          {model.isDefault ? ' · default' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Reasoning
+                    <select
+                      value={selectedReasoning ?? ''}
+                      onChange={(event) => onSelectedReasoning(event.target.value || null)}
+                      disabled={
+                        projectBusy || (reasoningOptions.length === 0 && !selectedReasoningMissing)
+                      }
+                    >
+                      <option value="">Model default</option>
+                      {selectedReasoningMissing && (
+                        <option value={selectedReasoning} disabled>
+                          Unavailable reasoning · choose again
+                        </option>
+                      )}
+                      {reasoningOptions.map((option) => (
+                        <option value={option.id} key={option.id}>
+                          {option.label}
+                          {option.isDefault ? ' · default' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="ghost-button chat-refresh"
+                    onClick={onRefreshModels}
+                    disabled={loading || projectBusy}
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    type="button"
+                    className={`secondary-button chat-agent-toggle ${advancedOpen ? 'active' : ''}`}
+                    aria-expanded={advancedOpen}
+                    onClick={() => setAdvancedOpen((open) => !open)}
+                    disabled={projectBusy}
+                  >
+                    Agent controls
+                  </button>
+                </div>
+                {sshWorkspaceSetupNeeded && (
+                  <div className="chat-ssh-setup-notice" role="status">
+                    <div>
+                      <strong>SSH server registered — project access is not granted yet</strong>
+                      <span>
+                        Choose one specific remote project folder before {project.name} Project Chat
+                        can use the server.
+                      </span>
                     </div>
-                    <SshResourceSummary
-                      state={server.resourceState}
-                      serverLabel={server.label}
-                      compact
-                      defaultCollapsed
-                    />
-                  </article>
-                ))}
-              </div>
-            </section>
-          )}
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={onOpenSshWorkspaceSetup}
+                      disabled={projectBusy}
+                    >
+                      Grant to {project.name}…
+                    </button>
+                  </div>
+                )}
+                {sshServers.length > 0 && (
+                  <section className="chat-ssh-resources" aria-label="Linked server resources">
+                    <header>
+                      <strong>Linked server resources</strong>
+                      <span>Visible only to {project.name}</span>
+                    </header>
+                    <div className="chat-ssh-resource-list">
+                      {sshServers.map((server) => (
+                        <article className="chat-ssh-resource" key={server.connectionId}>
+                          <div className="chat-ssh-resource-heading">
+                            <div>
+                              <strong>{server.label}</strong>
+                              <span>
+                                {server.permissionMode === 'workspace'
+                                  ? 'Workspace'
+                                  : 'Diagnostics'}{' '}
+                                · {server.canonicalRoot}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => void onRefreshSshResource(server.connectionId)}
+                              disabled={projectBusy || server.resourceState.phase === 'loading'}
+                            >
+                              {server.resourceState.phase === 'loading'
+                                ? 'Refreshing…'
+                                : 'Refresh usage'}
+                            </button>
+                          </div>
+                          <SshResourceSummary
+                            state={server.resourceState}
+                            serverLabel={server.label}
+                            compact
+                            defaultCollapsed
+                          />
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </>
+            )}
+          </div>
+          <button
+            type="button"
+            className="ghost-button chat-details-toggle"
+            onClick={() => onChatDetailsCollapsedChange(!chatDetailsCollapsed)}
+            aria-controls={chatToolbarDetailsId}
+            aria-expanded={!chatDetailsCollapsed}
+            aria-label={chatDetailsCollapsed ? 'Show chat details' : 'Hide chat details'}
+            title={
+              chatDetailsCollapsed
+                ? 'Show model and server details'
+                : 'Minimize model and server details'
+            }
+          >
+            {chatDetailsCollapsed ? 'Show details' : 'Minimize'}
+          </button>
         </header>
 
-        {advancedOpen && (
+        {advancedOpen && !chatDetailsCollapsed && (
           <section className="chat-agent-controls" aria-label="Advanced agent controls">
             <div className="chat-agent-control-group">
               <span>Codex mode</span>

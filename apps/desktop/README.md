@@ -45,6 +45,8 @@ and supports:
 - browsing each project's managed Obsidian Research Notes tree as rendered, sanitized Markdown;
 - projecting Literature searches into `Literature Review.md` and creating non-overwritten paper notes;
 - using project-scoped Codex chats with runtime-discovered models, reasoning, and native modes;
+- independently minimizing the Project Chat sessions rail and model/server detail panel so the
+  transcript reclaims the available width and height;
 - inspecting an app-managed Git workspace and reviewing its branches, history, and changes;
 - building and incrementally updating a project literature review table;
 - registering a safely parsed SSH destination and granting a remote workspace root to one project;
@@ -57,6 +59,15 @@ Sync delivery/reconciliation worker and multi-user authorization are not connect
 workspace yet. The Sync readiness indicator only reports whether the development API can be
 reached. The remaining research modules are visibly marked as later work rather than populated with
 simulated experiment or manuscript results.
+
+## Compact Project Chat layout
+
+Use the chevron beside **Sessions** to leave a narrow restore rail, and use **Minimize** in the chat
+toolbar to replace the model, agent, and server detail area with one compact status row. The two
+choices are independent and persist locally across restarts. The compact row keeps the effective
+model, reasoning option, model-selection warning, and linked-server or SSH setup state visible;
+conversation warnings and the composer remain available. These visual preferences are not written
+to the project database, Git, Hosted Sync, or model context.
 
 ## Project Chat remote workspace
 
@@ -113,6 +124,15 @@ range while wide code remains horizontally scrollable inside its own block:
 
 ```bash
 pnpm --filter @gosu/desktop smoke:markdown-viewer-scroll:mac
+```
+
+The Project Chat geometry smoke test uses the production stylesheet in real Electron windows with
+extra-large text, a maximum-width project sidebar, long chat history, and populated session/server
+panels. It verifies that each minimize control reclaims space without moving the composer outside
+the chat shell:
+
+```bash
+pnpm --filter @gosu/desktop smoke:project-chat-compact:mac
 ```
 
 The Desktop accepts `GOSU_SYNC_API_URL` as a credential-free base URL. Plain HTTP is limited to

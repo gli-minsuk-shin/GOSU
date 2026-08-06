@@ -1199,8 +1199,18 @@ flowchart LR
   content 상단부터 시작한다. 제거된 heading 높이도 chat viewport에 돌려준다. 새 project 생성은 titlebar에서
   다시 열 수 있는 Projects sidebar의 `＋`에서 계속 제공하며 Board·Repository·Settings 등 다른 surface는
   공통 heading과 action을 유지한다. session rail은 160–360px 범위의 독립 resize separator를 제공하고
-  `gosu:project-chat-layout:v1` local preference로 마지막 폭을 재시작 뒤에도 복원한다. 이 폭은 renderer
-  layout 정보이며 SQLCipher·Hosted Sync·agent context에는 들어가지 않는다. 1,180px 이하에서는 두 저장 폭을
+  `gosu:project-chat-layout:v1` local preference로 마지막 폭, session rail 접힘, chat detail 접힘을 재시작
+  뒤에도 복원한다. 이전 v1 값에 두 boolean이 없으면 펼침으로 migration한다. 이 값들은 Mac의 renderer
+  layout 정보이며 SQLCipher·Hosted Sync·agent context에는 들어가지 않는다. session rail과 chat detail은
+  서로 독립적으로 접을 수 있고 active turn 중에도 layout toggle은 잠기지 않는다. 접힌 session rail은 넓은
+  layout에서 44px restore rail만 남기고 list·rename·resize handle을 keyboard와 accessibility tree에서도
+  제외한다. 1,180px 이하에서는 44px 높이 restore strip으로 바뀐다. 접힌 chat detail은 model·reasoning,
+  selection warning, 연결 server 수 또는 SSH setup 상태와 `Show details`만 한 줄에 남기고 model selector,
+  resource card와 Advanced controls는 공간을 차지하지 않는다. detail toggle은 접힘 전후 같은 DOM node를
+  유지해 keyboard focus를 잃지 않고, 최대 120자 project name 영역은 220px 안에서 shrink·ellipsis되어 restore
+  action을 shell 밖으로 밀지 못한다. composer의 authoritative warning과 conversation control은 계속 보인다.
+  transcript row는 `minmax(0, 1fr)`로 실제 남은 높이를 소유해 detail을 접으면 대화
+  공간을 즉시 돌려받고 composer가 shell 밖으로 밀리지 않는다. 1,180px 이하에서는 두 저장 폭을
   억지로 축소해 drag origin·`aria-valuenow`와 실제 handle 위치를 어긋나게 하지 않고, session rail을
   horizontal row로 전환하며 해당 resize handle을 숨긴다. 따라서 860px mobile navigation 경계 바로 위에서도
   최대 Projects sidebar와 최대 Sessions rail이 나란히 chat 본문을 잠식하지 않는다. chat workspace에는 desktop
@@ -1820,6 +1830,13 @@ session-state test는 unread assistant 뒤에 user message가 추가돼도 exact
 session 도착·session 왕복·duplicate terminal event·acknowledge 뒤 stale event가 unread를 되살리지 않는지
 검사한다. completion intent가 더 늦은 snapshot 요청에 의해 supersede돼도 accepted snapshot까지 남는지,
 더 최신 assistant가 이미 있어도 completed turn ID의 exact assistant를 선택하는지도 별도 race fixture로 고정한다.
+layout-state와 Renderer test는 이전 width-only preference의 펼침 migration, 두 접힘 상태의 독립 persistence,
+접힌 rail의 접근 가능한 restore control, 접힌 detail의 model·reasoning·SSH critical summary, persistent toggle
+node와 120자 project name bound, hidden control의 DOM·keyboard 제외와 active turn 중 toggle 가용성을 고정한다.
+별도 Electron geometry smoke는 production CSS,
+Extra Large 글자, 최대 Projects sidebar, 12개 session과 긴 transcript를 1,060×700·1,480×930 window에서
+실행해 detail collapse의 transcript 높이 회수, rail collapse의 chat 폭 또는 row 높이 회수, shell edge 안정성,
+composer containment와 실제 transcript scroll을 검사한다.
 Markdown test는 GFM과 `$...$`·`$$...$$` KaTeX,
 raw HTML·unsafe URL 차단, 긴 입력과 깨진 수식의 bounded fallback을 검증한다. model catalog test는
 provider가 제공한 opaque reasoning ID와 짧은 label을 그대로 보존하고 임의 fallback하지 않는지 확인한다.

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 
 import {
   PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH,
@@ -58,6 +58,8 @@ export function ProjectChatSessionRail({
   onRename,
   width = PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH,
   onWidthChange = () => undefined,
+  collapsed = false,
+  onCollapsedChange = () => undefined,
 }: {
   sessions: readonly ProjectChatSession[];
   selectedSessionId: string | null;
@@ -73,6 +75,8 @@ export function ProjectChatSessionRail({
   ) => boolean | void | Promise<boolean | void>;
   width?: number;
   onWidthChange?: (width: number) => void;
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }) {
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -82,6 +86,7 @@ export function ProjectChatSessionRail({
   const sessionButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const restoreFocusSessionIdRef = useRef<string | null>(null);
   const suppressComposingSubmitRef = useRef(false);
+  const sessionListId = useId();
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const selectedSession = selectedSessionId ? byId.get(selectedSessionId) : undefined;
 
@@ -193,165 +198,189 @@ export function ProjectChatSessionRail({
   };
 
   return (
-    <aside className="project-chat-session-rail" aria-label="Project chat sessions">
+    <aside
+      className={`project-chat-session-rail ${collapsed ? 'collapsed' : ''}`}
+      aria-label="Project chat sessions"
+    >
       <header>
-        <div>
-          <span>SESSIONS</span>
-          <strong>{sessions.length}</strong>
-        </div>
-        <div className="project-chat-session-actions">
+        <div className="project-chat-session-heading">
+          <div className="project-chat-session-heading-copy">
+            <span>SESSIONS</span>
+            <strong>{sessions.length}</strong>
+          </div>
           <button
             type="button"
-            className="ghost-button"
-            onClick={() => selectedSession && beginRename(selectedSession)}
-            disabled={
-              disabled ||
-              renameDisabled ||
-              creating ||
-              renamingSessionId !== null ||
-              !selectedSession ||
-              !onRename
-            }
-            aria-label="Rename selected project chat session"
-            title={
-              renameDisabled ? 'Wait for the active turn to finish before renaming.' : undefined
-            }
+            className="ghost-button project-chat-session-collapse-toggle"
+            onClick={() => onCollapsedChange(!collapsed)}
+            aria-controls={sessionListId}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? 'Show project chat sessions' : 'Hide project chat sessions'}
+            title={collapsed ? 'Show chat sessions' : 'Minimize chat sessions'}
           >
-            Rename
+            <span aria-hidden="true">{collapsed ? '›' : '‹'}</span>
           </button>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={onCreate}
-            disabled={disabled || creating || renamingSessionId !== null}
-            aria-label="Create a new project chat session"
-          >
-            {creating ? 'Creating…' : '＋ New chat'}
-          </button>
+          {collapsed && selectedSession && (
+            <span className="sr-only">Selected session: {selectedSession.title}</span>
+          )}
         </div>
-      </header>
-      <div className="project-chat-session-list">
-        {sessions.map((session) => {
-          const selected = session.id === selectedSessionId;
-          const parent = session.parentSessionId ? byId.get(session.parentSessionId) : undefined;
-          const renaming = session.id === renamingSessionId;
-          return (
-            <div
-              key={session.id}
-              className={`project-chat-session-row ${selected ? 'active' : ''}`}
+        {!collapsed && (
+          <div className="project-chat-session-actions">
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => selectedSession && beginRename(selectedSession)}
+              disabled={
+                disabled ||
+                renameDisabled ||
+                creating ||
+                renamingSessionId !== null ||
+                !selectedSession ||
+                !onRename
+              }
+              aria-label="Rename selected project chat session"
+              title={
+                renameDisabled ? 'Wait for the active turn to finish before renaming.' : undefined
+              }
             >
-              {renaming ? (
-                <form
-                  className="project-chat-session-rename-form"
-                  aria-label={`Rename ${session.title}`}
-                  aria-busy={savingRename}
-                  noValidate
-                  onSubmit={(event) => submitRename(event, session)}
-                >
-                  <label htmlFor={`project-chat-session-name-${session.id}`}>Session name</label>
-                  <input
-                    ref={renameInputRef}
-                    id={`project-chat-session-name-${session.id}`}
-                    value={renameDraft}
-                    onChange={(event) => {
-                      setRenameDraft(event.currentTarget.value);
-                      if (renameError) setRenameError(null);
-                    }}
-                    onKeyDown={(event) => handleRenameKeyDown(event, session)}
-                    maxLength={PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH}
-                    required
-                    autoComplete="off"
-                    aria-invalid={renameError ? true : undefined}
-                    aria-describedby={
-                      renameError ? `project-chat-session-error-${session.id}` : undefined
-                    }
-                    readOnly={savingRename || disabled || renameDisabled || creating}
-                    aria-disabled={savingRename || disabled || renameDisabled || creating}
-                  />
-                  <div className="project-chat-session-rename-actions">
-                    <button
-                      type="submit"
-                      className="secondary-button"
-                      disabled={savingRename || disabled || renameDisabled || creating}
-                    >
-                      {savingRename ? 'Saving…' : 'Save'}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={cancelRename}
-                      disabled={savingRename}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                  {renameError && (
-                    <small id={`project-chat-session-error-${session.id}`} role="alert">
-                      {renameError}
-                    </small>
-                  )}
-                  {!renameError && renameDisabled && (
-                    <small>Wait for the active turn to finish before renaming.</small>
-                  )}
-                </form>
-              ) : (
-                <>
-                  <button
-                    ref={(node) => {
-                      if (node) sessionButtonRefs.current.set(session.id, node);
-                      else sessionButtonRefs.current.delete(session.id);
-                    }}
-                    type="button"
-                    className={`project-chat-session-item ${selected ? 'active' : ''}`}
-                    aria-current={selected ? 'page' : undefined}
-                    onClick={() => onSelect(session.id)}
-                    disabled={disabled}
+              Rename
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onCreate}
+              disabled={disabled || creating || renamingSessionId !== null}
+              aria-label="Create a new project chat session"
+            >
+              {creating ? 'Creating…' : '＋ New chat'}
+            </button>
+          </div>
+        )}
+      </header>
+      <div id={sessionListId} className="project-chat-session-list" hidden={collapsed}>
+        {!collapsed &&
+          sessions.map((session) => {
+            const selected = session.id === selectedSessionId;
+            const parent = session.parentSessionId ? byId.get(session.parentSessionId) : undefined;
+            const renaming = session.id === renamingSessionId;
+            return (
+              <div
+                key={session.id}
+                className={`project-chat-session-row ${selected ? 'active' : ''}`}
+              >
+                {renaming ? (
+                  <form
+                    className="project-chat-session-rename-form"
+                    aria-label={`Rename ${session.title}`}
+                    aria-busy={savingRename}
+                    noValidate
+                    onSubmit={(event) => submitRename(event, session)}
                   >
-                    <span className="project-chat-session-title">
-                      <i aria-hidden="true">{session.parentSessionId ? '⑂' : '◇'}</i>
-                      <strong title={session.title}>{session.title}</strong>
-                      {activeSessionIds.has(session.id) && <b aria-label="Turn active">●</b>}
-                    </span>
-                    <small>
-                      {session.parentSessionId
-                        ? `Branched from ${parent?.title ?? 'another session'} · ${formatSessionUpdate(session.createdAt)}`
-                        : session.isDefault
-                          ? 'Default session'
-                          : formatSessionUpdate(session.updatedAt)}
-                    </small>
-                  </button>
-                  {onRename && (
+                    <label htmlFor={`project-chat-session-name-${session.id}`}>Session name</label>
+                    <input
+                      ref={renameInputRef}
+                      id={`project-chat-session-name-${session.id}`}
+                      value={renameDraft}
+                      onChange={(event) => {
+                        setRenameDraft(event.currentTarget.value);
+                        if (renameError) setRenameError(null);
+                      }}
+                      onKeyDown={(event) => handleRenameKeyDown(event, session)}
+                      maxLength={PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH}
+                      required
+                      autoComplete="off"
+                      aria-invalid={renameError ? true : undefined}
+                      aria-describedby={
+                        renameError ? `project-chat-session-error-${session.id}` : undefined
+                      }
+                      readOnly={savingRename || disabled || renameDisabled || creating}
+                      aria-disabled={savingRename || disabled || renameDisabled || creating}
+                    />
+                    <div className="project-chat-session-rename-actions">
+                      <button
+                        type="submit"
+                        className="secondary-button"
+                        disabled={savingRename || disabled || renameDisabled || creating}
+                      >
+                        {savingRename ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={cancelRename}
+                        disabled={savingRename}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    {renameError && (
+                      <small id={`project-chat-session-error-${session.id}`} role="alert">
+                        {renameError}
+                      </small>
+                    )}
+                    {!renameError && renameDisabled && (
+                      <small>Wait for the active turn to finish before renaming.</small>
+                    )}
+                  </form>
+                ) : (
+                  <>
                     <button
+                      ref={(node) => {
+                        if (node) sessionButtonRefs.current.set(session.id, node);
+                        else sessionButtonRefs.current.delete(session.id);
+                      }}
                       type="button"
-                      className="project-chat-session-rename-trigger"
-                      onClick={() => beginRename(session)}
-                      disabled={
-                        disabled || renameDisabled || creating || renamingSessionId !== null
-                      }
-                      aria-label={`Rename ${session.title}`}
-                      title={
-                        renameDisabled
-                          ? 'Wait for the active turn to finish before renaming.'
-                          : 'Rename session'
-                      }
+                      className={`project-chat-session-item ${selected ? 'active' : ''}`}
+                      aria-current={selected ? 'page' : undefined}
+                      onClick={() => onSelect(session.id)}
+                      disabled={disabled}
                     >
-                      ✎
+                      <span className="project-chat-session-title">
+                        <i aria-hidden="true">{session.parentSessionId ? '⑂' : '◇'}</i>
+                        <strong title={session.title}>{session.title}</strong>
+                        {activeSessionIds.has(session.id) && <b aria-label="Turn active">●</b>}
+                      </span>
+                      <small>
+                        {session.parentSessionId
+                          ? `Branched from ${parent?.title ?? 'another session'} · ${formatSessionUpdate(session.createdAt)}`
+                          : session.isDefault
+                            ? 'Default session'
+                            : formatSessionUpdate(session.updatedAt)}
+                      </small>
                     </button>
-                  )}
-                </>
-              )}
-            </div>
-          );
-        })}
+                    {onRename && (
+                      <button
+                        type="button"
+                        className="project-chat-session-rename-trigger"
+                        onClick={() => beginRename(session)}
+                        disabled={
+                          disabled || renameDisabled || creating || renamingSessionId !== null
+                        }
+                        aria-label={`Rename ${session.title}`}
+                        title={
+                          renameDisabled
+                            ? 'Wait for the active turn to finish before renaming.'
+                            : 'Rename session'
+                        }
+                      >
+                        ✎
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
       </div>
-      <ResizeHandle
-        className="project-chat-session-resize-handle"
-        label="Resize project chat sessions sidebar"
-        value={width}
-        min={PROJECT_CHAT_SESSION_RAIL_MIN_WIDTH}
-        max={PROJECT_CHAT_SESSION_RAIL_MAX_WIDTH}
-        onChange={onWidthChange}
-      />
+      {!collapsed && (
+        <ResizeHandle
+          className="project-chat-session-resize-handle"
+          label="Resize project chat sessions sidebar"
+          value={width}
+          min={PROJECT_CHAT_SESSION_RAIL_MIN_WIDTH}
+          max={PROJECT_CHAT_SESSION_RAIL_MAX_WIDTH}
+          onChange={onWidthChange}
+        />
+      )}
     </aside>
   );
 }
