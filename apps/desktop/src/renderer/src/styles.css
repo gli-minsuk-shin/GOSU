@@ -755,6 +755,17 @@ button:disabled {
   padding: 18px clamp(14px, 1.8vw, 28px) 28px;
 }
 
+.desktop-content.desktop-content-document {
+  display: flex;
+  flex-direction: column;
+}
+
+.desktop-content-document > .notes-layout,
+.desktop-content-document > .repository-workspace {
+  flex: 1 1 0;
+  min-height: 520px;
+}
+
 .page-heading {
   display: flex;
   align-items: flex-end;
@@ -2166,6 +2177,7 @@ textarea:focus {
 }
 
 .note-list {
+  min-height: 0;
   padding: 12px;
   border-right: 1px solid var(--line);
   overflow: auto;
@@ -2437,6 +2449,10 @@ textarea:focus {
   min-width: 0;
   min-height: 520px;
   overflow: hidden;
+}
+
+.desktop-content-document .note-reader {
+  min-height: 0;
 }
 
 .note-reader header {
@@ -5206,9 +5222,18 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
 }
 
 .repository-workspace {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
   gap: 14px;
   min-width: 0;
+}
+
+.repository-workspace > .repository-split,
+.repository-workspace > .repository-change-layout {
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .repository-toolbar {

@@ -622,6 +622,13 @@ Repository layout을 밀어내거나 문서 끝의 전역 scrollbar에 의존하
 package에 포함되고 Appearance font scale과 theme을 상속하며 외부 network를 요청하지 않는다. `Source`
 mode는 이 파이프라인을 거치지 않아 원문 delimiter를 그대로 표시한다.
 
+Research Notes와 Repository Markdown preview는 document route에서 남은 viewport 높이를 배정받는 bounded
+flex layout을 사용한다. page heading과 notice는 필요한 높이만 차지하고, `notes-layout` 또는
+`repository-workspace`의 바깥 viewer에는 520px floor를 두되 그 안쪽 shrink chain은 `min-height: 0`을
+유지한다. 따라서 긴 문서는 페이지 전체를 계속 늘리지 않고 `.note-reader-body` 또는
+`.repository-preview`가 세로 scroll을 소유한다. code·table·수식의 가로 scroll은 계속 해당 block 안에만 머문다. 고정된
+`calc(100vh - Npx)` 높이는 titlebar, error notice, Appearance font scale 변화에 취약하므로 사용하지 않는다.
+
 Obsidian `[[note]]`, alias와 표준 상대 `.md` link는 raw text 치환이 아닌 Markdown AST 단계에서
 처리한다. 따라서 inline/fenced code 안의 wiki-link 표시는 바뀌지 않는다. 대상은 현재 note 기준의
 exact path를 먼저 사용하고, basename은 Vault에서 유일할 때만 해석한다. missing·ambiguous link나
@@ -1795,7 +1802,11 @@ DOM에 없고 directory의 `aria-expanded`, 현재 file의 `aria-selected`·`ari
 roving tab stop과 tree level·position metadata가 일치하는지 검사한다. Markdown document test는 inline·
 display MathML, frontmatter·inline/fenced code 제외, escaped·unmatched dollar, malformed·unsafe TeX,
 수식 rendering budget의 visible fallback, 긴 prose 줄바꿈과 inline/display 수식·code·table의 local
-가로 scroll 계약, 기존 wiki-link·attachment·HTTPS·raw HTML 경계를 함께 검증한다.
+가로 scroll 계약, 기존 wiki-link·attachment·HTTPS·raw HTML 경계를 함께 검증한다. 별도 Electron Chromium
+smoke는 지원하는 최소 창 크기·최대 sidebar·오류 notice·기본/Extra Large 글자 조합에서 Research Notes와
+Repository preview의 `scrollHeight > clientHeight`, 실제 `scrollTop` 이동, viewer 폭 보존과 code block의
+local `scrollLeft` 이동을 함께 검사한다. route helper test는 active project의 Notes·Repository에만 bounded
+document layout class가 적용되는지도 고정한다.
 
 Project Chat session test는 legacy single-chat DB가 default session으로 lossless migration되는지,
 root session isolation, completed-message branch prefix와 이후 source history 차단, cross-project·
