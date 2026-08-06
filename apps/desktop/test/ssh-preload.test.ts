@@ -70,6 +70,8 @@ describe('SSH preload bridge', () => {
       'createWorkspaceGrant',
       'updateWorkspaceGrant',
       'removeWorkspaceGrant',
+      'enableTrustedWorkspace',
+      'revokeTrustedWorkspace',
       'listPendingApprovals',
       'resolveApproval',
       'cancelScope',
@@ -119,6 +121,14 @@ describe('SSH preload bridge', () => {
       confirmWorkspaceRisk: true,
     });
     await api.ssh.removeWorkspaceGrant({ grantId, projectId, expectedVersion: 2 });
+    await api.ssh.enableTrustedWorkspace({
+      grantId,
+      projectId,
+      expectedVersion: 2,
+      confirmTrustedWorkspaceRisk: true,
+      confirmNoRemoteSandbox: true,
+    });
+    await api.ssh.revokeTrustedWorkspace({ grantId, projectId, expectedVersion: 3 });
     await api.ssh.listPendingApprovals({ projectId, sessionId });
     await api.ssh.resolveApproval({ approvalId, decision: 'allow_once' });
     await api.ssh.cancelScope({ projectId, sessionId });
@@ -164,6 +174,17 @@ describe('SSH preload bridge', () => {
         },
       ],
       [SSH_IPC_CHANNELS.removeWorkspaceGrant, { grantId, projectId, expectedVersion: 2 }],
+      [
+        SSH_IPC_CHANNELS.enableTrustedWorkspace,
+        {
+          grantId,
+          projectId,
+          expectedVersion: 2,
+          confirmTrustedWorkspaceRisk: true,
+          confirmNoRemoteSandbox: true,
+        },
+      ],
+      [SSH_IPC_CHANNELS.revokeTrustedWorkspace, { grantId, projectId, expectedVersion: 3 }],
       [SSH_IPC_CHANNELS.listPendingApprovals, { projectId, sessionId }],
       [SSH_IPC_CHANNELS.resolveApproval, { approvalId, decision: 'allow_once' }],
       [SSH_IPC_CHANNELS.cancelScope, { projectId, sessionId }],

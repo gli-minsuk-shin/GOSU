@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  EnableTrustedRemoteWorkspaceInputSchema,
   SSH_WORKSPACE_FILE_MAX_CHARACTERS,
   SshWorkspaceFileOperationSchema,
 } from '../src/shared/ssh-workspace-contracts';
@@ -16,6 +17,22 @@ const invocation = {
 };
 
 describe('SSH workspace file contracts', () => {
+  it('requires both explicit trusted-workspace confirmations', () => {
+    const base = {
+      projectId: invocation.projectId,
+      grantId: invocation.grantId,
+      expectedVersion: 1,
+      confirmTrustedWorkspaceRisk: true,
+    };
+    expect(EnableTrustedRemoteWorkspaceInputSchema.safeParse(base).success).toBe(false);
+    expect(
+      EnableTrustedRemoteWorkspaceInputSchema.safeParse({
+        ...base,
+        confirmNoRemoteSandbox: true,
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts bounded list, read, create, and expected-hash replacement requests', () => {
     expect(SshWorkspaceFileOperationSchema.parse({ ...invocation, action: 'list' })).toMatchObject({
       action: 'list',

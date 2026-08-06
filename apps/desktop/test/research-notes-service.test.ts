@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,7 @@ import type { BrowserWindow } from 'electron';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ResearchNotesAgentMarkdownReceiptSchema,
   ResearchNotesService,
   type ResearchNotesProjectLink,
   type ResearchNotesStorage,
@@ -119,7 +120,7 @@ async function fixture(input?: {
     vault,
     now: () => NOW,
   });
-  return { root, projects, records, storage, vault, literature, service };
+  return { root, projects, records, storage, vault, literature, workspace, service };
 }
 
 afterEach(async () => {
@@ -189,6 +190,269 @@ describe('ResearchNotesService project workspaces', () => {
     await expect(
       service.readForAgent(OTHER_PROJECT_ID, beta!.bindingId, alphaSecret.noteId),
     ).rejects.toThrow('vault_note_not_found');
+  });
+
+  it('saves agent Markdown only inside the selected Research Notes category folder', async () => {
+    const { root, service } = await fixture();
+    const workspace = await service.current({ projectId: PROJECT_ID });
+    const categories = [
+      ['literature', 'Literature'],
+      ['papers', 'Papers'],
+      ['experiments', 'Experiments'],
+      ['project-progress', 'Project Progress'],
+      ['idea-development', 'Idea Development'],
+    ] as const;
+
+    for (const [category, folder] of categories) {
+      const content = `# ${folder} artifact\n`;
+      const receipt = await service.saveMarkdownForAgent(PROJECT_ID, workspace!.bindingId, {
+        category,
+        title: `${folder} / plan?.md`,
+        content,
+        idempotencyKey: `turn-1:${category}`,
+      });
+
+      expect(receipt).toMatchObject({
+        schemaVersion: 1,
+        projectId: PROJECT_ID,
+        category,
+        created: true,
+        contentSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        artifactId: expect.stringMatching(/^[0-9a-f]{16}$/u),
+      });
+      expect(receipt.path).toMatch(
+        new RegExp(
+          `^${folder.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}/[^/]+--[0-9a-f]{16}\\.md$`,
+          'u',
+        ),
+      );
+      expect(receipt.path).not.toContain(root);
+      expect(receipt).not.toHaveProperty('absolutePath');
+      await expect(
+        readFile(join(root, 'GOSU', 'Alpha Project', receipt.path), 'utf8'),
+      ).resolves.toBe(content);
+    }
+
+    const deceptive = await service.saveMarkdownForAgent(PROJECT_ID, workspace!.bindingId, {
+      category: 'project-progress',
+      title: 'Status\u202Ecod.exe\u2066 zero\u200Bwidth',
+      content: '# Safe title\n',
+      idempotencyKey: 'unicode-format-controls',
+    });
+    expect(deceptive.path).not.toMatch(/[\p{C}]/u);
+    expect(deceptive.path).toMatch(/^Project Progress\/Status cod\.exe zero width--/u);
+  });
+
+  it('retries an agent Markdown write only when the generated path and content are exact', async () => {
+    const { root, service } = await fixture();
+    const workspace = await service.current({ projectId: PROJECT_ID });
+    const input = {
+      category: 'idea-development' as const,
+      title: 'Ablation / `idea`?.md',
+      content: '# Ablation idea\n\nTry a narrower prior.\n',
+      idempotencyKey: 'session-1:turn-9:tool-2',
+    };
+
+    const first = await service.saveMarkdownForAgent(PROJECT_ID, workspace!.bindingId, input);
+    const retried = await service.saveMarkdownForAgent(PROJECT_ID, workspace!.bindingId, input);
+
+    expect(first.path).toMatch(/^Idea Development\/Ablation idea--[0-9a-f]{16}\.md$/u);
+    expect(retried).toEqual({ ...first, created: false });
+    await expect(
+      service.recoverMarkdownForAgent(PROJECT_ID, workspace!.bindingId, {
+        category: input.category,
+        artifactId: first.artifactId,
+        expectedContentSha256: first.contentSha256,
+      }),
+    ).resolves.toEqual({ ...first, created: false });
+    await expect(
+      service.recoverMarkdownForAgent(PROJECT_ID, workspace!.bindingId, {
+        category: input.category,
+        artifactId: first.artifactId,
+        expectedContentSha256: '0'.repeat(64),
+      }),
+    ).rejects.toMatchObject({ code: 'research_notes_save_commit_uncertain' });
+    await expect(
+      service.saveMarkdownForAgent(PROJECT_ID, workspace!.bindingId, {
+        ...input,
+        content: '# A different generated artifact\n',
+      }),
+    ).rejects.toThrow('research_notes_folder_conflict');
+    await expect(
+      service.saveMarkdownForAgent(PROJECT_ID, workspace!.bindingId, {
+        ...input,
+        title: 'A different title',
+      }),
+    ).rejects.toThrow('research_notes_folder_conflict');
+    await expect(readFile(join(root, 'GOSU', 'Alpha Project', first.path), 'utf8')).resolves.toBe(
+      input.content,
+    );
+  });
+
+  it('reports a commit-uncertain error when the Vault grant changes after an agent write', async () => {
+    const { root, service, vault } = await fixture();
+    const workspace = await service.current({ projectId: PROJECT_ID });
+    vi.spyOn(vault, 'validateGrant')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('vault changed after write'));
+    const content = '# Status before handoff\n';
+
+    await expect(
+      service.saveMarkdownForAgent(PROJECT_ID, workspace!.bindingId, {
+        category: 'project-progress',
+        title: 'Status before handoff',
+        content,
+        idempotencyKey: 'commit-uncertain-fixture',
+      }),
+    ).rejects.toMatchObject({ code: 'research_notes_save_commit_uncertain' });
+
+    const files = await readdir(join(root, 'GOSU', 'Alpha Project', 'Project Progress'));
+    const created = files.find((path) => path.startsWith('Status before handoff--'));
+    expect(created).toMatch(/\.md$/u);
+    await expect(
+      readFile(join(root, 'GOSU', 'Alpha Project', 'Project Progress', created!), 'utf8'),
+    ).resolves.toBe(content);
+  });
+
+  it('reports commit-uncertain when the project or binding changes after the file write', async () => {
+    const first = await fixture();
+    const firstWorkspace = await first.service.current({ projectId: PROJECT_ID });
+    const activeSnapshot = await first.workspace.snapshot();
+    const archivedSnapshot: WorkspaceSnapshot = {
+      ...structuredClone(activeSnapshot),
+      projects: activeSnapshot.projects.map((candidate) =>
+        candidate.id === PROJECT_ID
+          ? { ...candidate, archivedAt: '2026-08-06T00:00:01.000Z' }
+          : candidate,
+      ),
+    };
+    vi.mocked(first.workspace.snapshot)
+      .mockResolvedValueOnce(activeSnapshot)
+      .mockResolvedValueOnce(archivedSnapshot);
+
+    await expect(
+      first.service.saveMarkdownForAgent(PROJECT_ID, firstWorkspace!.bindingId, {
+        category: 'project-progress',
+        title: 'Archived during save',
+        content: '# Archived during save\n',
+        idempotencyKey: 'archived-during-save',
+      }),
+    ).rejects.toMatchObject({ code: 'research_notes_save_commit_uncertain' });
+
+    const second = await fixture();
+    const secondWorkspace = await second.service.current({ projectId: PROJECT_ID });
+    const secondSnapshot = await second.workspace.snapshot();
+    vi.mocked(second.workspace.snapshot)
+      .mockResolvedValueOnce(secondSnapshot)
+      .mockImplementationOnce(async () => {
+        const link = second.storage.links.get(PROJECT_ID)!;
+        second.storage.links.set(PROJECT_ID, { ...link, bindingId: 'e'.repeat(64) });
+        return secondSnapshot;
+      });
+
+    await expect(
+      second.service.saveMarkdownForAgent(PROJECT_ID, secondWorkspace!.bindingId, {
+        category: 'project-progress',
+        title: 'Binding changed during save',
+        content: '# Binding changed during save\n',
+        idempotencyKey: 'binding-changed-during-save',
+      }),
+    ).rejects.toMatchObject({ code: 'research_notes_save_commit_uncertain' });
+  });
+
+  it('does not issue a success receipt when the written file changes before final verification', async () => {
+    const { root, service, workspace } = await fixture();
+    const researchWorkspace = await service.current({ projectId: PROJECT_ID });
+    const snapshot = await workspace.snapshot();
+    vi.mocked(workspace.snapshot)
+      .mockResolvedValueOnce(snapshot)
+      .mockImplementationOnce(async () => {
+        const directory = join(root, 'GOSU', 'Alpha Project', 'Project Progress');
+        const file = (await readdir(directory)).find((candidate) =>
+          candidate.startsWith('Concurrent mutation--'),
+        );
+        expect(file).toBeDefined();
+        await writeFile(join(directory, file!), '# Changed by another process\n');
+        return snapshot;
+      });
+
+    await expect(
+      service.saveMarkdownForAgent(PROJECT_ID, researchWorkspace!.bindingId, {
+        category: 'project-progress',
+        title: 'Concurrent mutation',
+        content: '# Intended content\n',
+        idempotencyKey: 'concurrent-mutation',
+      }),
+    ).rejects.toMatchObject({ code: 'research_notes_save_commit_uncertain' });
+  });
+
+  it('accepts only category-scoped project-relative Markdown paths in agent receipts', () => {
+    const receipt = {
+      schemaVersion: 1 as const,
+      projectId: PROJECT_ID,
+      category: 'experiments' as const,
+      path: 'Experiments/Ablation--0123456789abcdef.md',
+      created: true,
+      contentSha256: 'a'.repeat(64),
+      artifactId: '0123456789abcdef',
+    };
+
+    expect(ResearchNotesAgentMarkdownReceiptSchema.parse(receipt)).toEqual(receipt);
+    for (const path of [
+      '/Experiments/Ablation.md',
+      'Experiments\\Ablation.md',
+      'Experiments/../Papers/Ablation.md',
+      'Papers/Ablation.md',
+      'Experiments/Ablation\0.md',
+      'Experiments/Ablation.txt',
+    ]) {
+      expect(() => ResearchNotesAgentMarkdownReceiptSchema.parse({ ...receipt, path })).toThrow();
+    }
+  });
+
+  it('fails closed on stale bindings, changed ownership, NUL input, and oversized content', async () => {
+    const { root, service } = await fixture();
+    const alpha = await service.current({ projectId: PROJECT_ID });
+    const beta = await service.current({ projectId: OTHER_PROJECT_ID });
+    const input = {
+      category: 'project-progress' as const,
+      title: 'Weekly status',
+      content: '# Weekly status\n',
+      idempotencyKey: 'weekly-status-1',
+    };
+
+    await expect(service.saveMarkdownForAgent(PROJECT_ID, beta!.bindingId, input)).rejects.toThrow(
+      'vault_grant_stale',
+    );
+    await expect(
+      service.saveMarkdownForAgent(PROJECT_ID, alpha!.bindingId, {
+        ...input,
+        content: '# Bad\0content\n',
+      }),
+    ).rejects.toThrow();
+    await expect(
+      service.saveMarkdownForAgent(PROJECT_ID, alpha!.bindingId, {
+        ...input,
+        content: 'x'.repeat(1_000_001),
+      }),
+    ).rejects.toThrow();
+    await expect(
+      service.saveMarkdownForAgent(PROJECT_ID, alpha!.bindingId, {
+        ...input,
+        content: '한'.repeat(700_000),
+      }),
+    ).rejects.toThrow('content_exceeds_markdown_byte_limit');
+
+    const markerPath = join(root, 'GOSU', 'Alpha Project', '.gosu-project.json');
+    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as Record<string, unknown>;
+    await writeFile(markerPath, `${JSON.stringify({ ...marker, bindingId: 'f'.repeat(64) })}\n`);
+    await expect(service.saveMarkdownForAgent(PROJECT_ID, alpha!.bindingId, input)).rejects.toThrow(
+      'research_notes_folder_unavailable',
+    );
+    await expect(
+      readFile(join(root, 'GOSU', 'Alpha Project', 'Project Progress', 'Weekly status.md')),
+    ).rejects.toThrow();
   });
 
   it('keeps a collision-safe suffixed project folder ready across reopen', async () => {

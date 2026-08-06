@@ -1,5 +1,5 @@
 export const BALANCED_LITERATURE_POLICY_ID = 'balanced-three-layer' as const;
-export const BALANCED_LITERATURE_POLICY_VERSION = 2;
+export const BALANCED_LITERATURE_POLICY_VERSION = 3;
 
 export const LITERATURE_CORE_MIN_RELEVANCE_SCORE = 0.55;
 export const LITERATURE_CORE_MIN_CITATIONS = 50;

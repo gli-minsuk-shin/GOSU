@@ -46,6 +46,8 @@ describe('SSH IPC boundary', () => {
       SSH_IPC_CHANNELS.createWorkspaceGrant,
       SSH_IPC_CHANNELS.updateWorkspaceGrant,
       SSH_IPC_CHANNELS.removeWorkspaceGrant,
+      SSH_IPC_CHANNELS.enableTrustedWorkspace,
+      SSH_IPC_CHANNELS.revokeTrustedWorkspace,
       SSH_IPC_CHANNELS.listPendingApprovals,
       SSH_IPC_CHANNELS.resolveApproval,
       SSH_IPC_CHANNELS.cancelScope,
@@ -184,6 +186,54 @@ describe('SSH IPC boundary', () => {
       projectId,
       connectionId,
       force: true,
+    });
+  });
+
+  it('requires both trusted-workspace confirmations at the renderer boundary', async () => {
+    const projectId = randomUUID();
+    const grantId = randomUUID();
+    const connectionId = randomUUID();
+    const enableTrustedWorkspace = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      id: grantId,
+      projectId,
+      connectionId,
+      canonicalRoot: '/workspace/project',
+      permissionMode: 'workspace' as const,
+      version: 2,
+      createdAt: '2026-08-06T00:00:00.000Z',
+      updatedAt: '2026-08-06T00:00:00.000Z',
+    }));
+    const snapshot = vi.fn(async () => ({
+      projects: [{ id: projectId, name: 'Active project', version: 1 }],
+    }));
+    const { handlers } = registerFixture({ enableTrustedWorkspace }, vi.fn(), {
+      snapshot,
+    } as unknown as Partial<WorkspaceService>);
+
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.enableTrustedWorkspace)?.({
+        projectId,
+        grantId,
+        expectedVersion: 1,
+        confirmTrustedWorkspaceRisk: true,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_ssh_input' } });
+    await expect(
+      handlers.get(SSH_IPC_CHANNELS.enableTrustedWorkspace)?.({
+        projectId,
+        grantId,
+        expectedVersion: 1,
+        confirmTrustedWorkspaceRisk: true,
+        confirmNoRemoteSandbox: true,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(enableTrustedWorkspace).toHaveBeenCalledExactlyOnceWith({
+      projectId,
+      grantId,
+      expectedVersion: 1,
+      confirmTrustedWorkspaceRisk: true,
+      confirmNoRemoteSandbox: true,
     });
   });
 

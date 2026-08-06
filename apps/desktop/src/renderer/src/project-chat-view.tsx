@@ -9,12 +9,14 @@ import {
 } from 'react';
 
 import {
+  allowsAgentMarkdownCreate,
   defaultProjectChatProfile,
   type CodexCollaborationModeDescriptor,
   type ProjectChatAction,
   type ProjectChatContextScope,
   type ProjectChatHarnessMode,
   type ProjectChatPersonality,
+  type ProjectChatQueuedTurn,
   type ProjectChatResponseDepth,
   type ProjectChatResponseVerbosity,
   type ProjectChatSnapshot,
@@ -31,6 +33,10 @@ import {
   type WorkspaceTaskStatus,
 } from '../../shared/workspace-contracts';
 import type { VaultSelection } from '../../shared/vault-contracts';
+import type {
+  EnableTrustedRemoteWorkspaceInput,
+  RevokeTrustedRemoteWorkspaceInput,
+} from '../../shared/ssh-workspace-contracts';
 import { shouldSendChatMessage } from './chat-keyboard';
 import type { CodexModel } from './connections-view';
 import type { VaultRuntimeState } from './notes-view';
@@ -71,9 +77,13 @@ export type ProjectChatSshAccess = Readonly<{
 
 export type ProjectChatSshServer = Readonly<{
   connectionId: string;
+  grantId: string;
+  grantVersion: number;
   label: string;
   canonicalRoot: string;
   permissionMode: 'diagnostics' | 'workspace';
+  trustedAccessEnabled: boolean;
+  privilegeClass: 'standard' | 'root' | 'unknown';
   resourceState: SshResourceUiState;
 }>;
 
@@ -185,6 +195,18 @@ export function resolveFailedTurnRecoveryMode(errorCode?: string) {
   return errorCode === 'attachment_model_modality_unsupported' ? 'reattach' : 'retry';
 }
 
+export function resolveEditedMessageBranchPoint(
+  messages: readonly Pick<ProjectChatSnapshot['messages'][number], 'id' | 'role' | 'status'>[],
+  userMessageId: string,
+): string | null | undefined {
+  const index = messages.findIndex(
+    (message) => message.id === userMessageId && message.role === 'user',
+  );
+  if (index < 0) return undefined;
+  const preceding = messages[index - 1];
+  return preceding?.status === 'complete' ? preceding.id : null;
+}
+
 const HARNESS_LABELS: Record<ProjectChatHarnessMode, string> = {
   context: 'Copilot',
   planner: 'Planner',
@@ -263,6 +285,10 @@ export function ProjectChatView({
   onAttachmentError = () => undefined,
   onSend,
   onCancel,
+  onUpdateQueuedTurn = async () => undefined,
+  onRemoveQueuedTurn = async () => undefined,
+  onRunQueuedTurnNow = async () => undefined,
+  onEditHistoryMessage = async () => undefined,
   onApplyAction,
   sessions = snapshot?.sessions ?? [],
   selectedSessionId = snapshot?.session?.id ?? null,
@@ -290,6 +316,8 @@ export function ProjectChatView({
   sshServers = NO_PROJECT_CHAT_SSH_SERVERS,
   onOpenSshWorkspaceSetup = () => undefined,
   onRefreshSshResource = async () => undefined,
+  onEnableTrustedWorkspace = async () => false,
+  onRevokeTrustedWorkspace = async () => false,
 }: {
   project: ProjectRecord;
   tasks: readonly WorkspaceTask[];
@@ -318,6 +346,10 @@ export function ProjectChatView({
     attachmentIds: readonly string[],
   ) => Promise<boolean>;
   onCancel: () => void;
+  onUpdateQueuedTurn?: (queueId: string, message: string) => Promise<unknown>;
+  onRemoveQueuedTurn?: (queueId: string) => Promise<unknown>;
+  onRunQueuedTurnNow?: (queueId: string) => Promise<unknown>;
+  onEditHistoryMessage?: (messageId: string, content: string) => Promise<unknown>;
   onApplyAction: (action: ProjectChatAction) => Promise<void>;
   sessions?: readonly NonNullable<ProjectChatSnapshot['session']>[];
   selectedSessionId?: string | null;
@@ -348,6 +380,8 @@ export function ProjectChatView({
   sshServers?: readonly ProjectChatSshServer[];
   onOpenSshWorkspaceSetup?: () => void;
   onRefreshSshResource?: (connectionId: string) => Promise<unknown>;
+  onEnableTrustedWorkspace?: (input: EnableTrustedRemoteWorkspaceInput) => Promise<boolean>;
+  onRevokeTrustedWorkspace?: (input: RevokeTrustedRemoteWorkspaceInput) => Promise<boolean>;
 }) {
   const chatToolbarDetailsId = useId();
   const [sessionUi, setSessionUi] = useState<ProjectChatSessionUiState>({
@@ -370,7 +404,15 @@ export function ProjectChatView({
   const [responseVerbosity, setResponseVerbosity] = useState<ProjectChatResponseVerbosity>('auto');
   const [contextScope, setContextScope] = useState<ProjectChatContextScope>('project');
   const [attachments, setAttachments] = useState<readonly ProjectChatAttachment[]>([]);
+  const [trustedWorkspaceBusyGrantId, setTrustedWorkspaceBusyGrantId] = useState<string | null>(
+    null,
+  );
   const [choosingAttachments, setChoosingAttachments] = useState(false);
+  const [queuedTurnEdit, setQueuedTurnEdit] = useState<{
+    id: string;
+    message: string;
+  } | null>(null);
+  const [queueMutationId, setQueueMutationId] = useState<string | null>(null);
   const [scrollAffordance, setScrollAffordance] = useState({
     nearBottom: true,
     newAssistantMessageAvailable: false,
@@ -511,13 +553,17 @@ export function ProjectChatView({
   const localNotesAvailable = Boolean(
     vaultState === 'ready' && localNotesGrant && vault?.id === localNotesGrant.id,
   );
+  const automaticMarkdownSaveAuthorized =
+    localNotesAvailable && allowsAgentMarkdownCreate(localNotesGrant);
   const localNotesStatus =
     vaultState === 'checking'
       ? 'Research Notes access checking'
       : vaultState === 'unavailable'
         ? 'Research Notes status unavailable'
         : localNotesAvailable
-          ? `${localNotesGrant?.name ?? 'Research Notes'} authorized`
+          ? automaticMarkdownSaveAuthorized
+            ? `${localNotesGrant?.name ?? 'Research Notes'} read + automatic saves authorized`
+            : `${localNotesGrant?.name ?? 'Research Notes'} read-only`
           : localNotesGrant
             ? `${localNotesGrant.name} grant inactive`
             : 'Research Notes not authorized';
@@ -532,6 +578,7 @@ export function ProjectChatView({
     imageAttachmentWarning ??
     localNotesWarning;
   const snapshotReady = snapshot !== null;
+  const queuedTurns = snapshot?.queuedTurns ?? [];
   const resolvedUnreadAssistantMessageId = resolveUnreadAssistantMessageId(
     snapshot?.messages ?? [],
     unreadAssistantMessageId,
@@ -554,6 +601,7 @@ export function ProjectChatView({
         : sshAccess.grantedWorkspaceCount > 0
           ? `${sshAccess.grantedWorkspaceCount} SSH workspace${sshAccess.grantedWorkspaceCount === 1 ? '' : 's'} granted`
           : 'SSH workspace not granted';
+  const trustedWorkspaceCount = sshServers.filter((server) => server.trustedAccessEnabled).length;
 
   useEffect(() => {
     onScrollTopChangeRef.current = onScrollTopChange;
@@ -781,7 +829,7 @@ export function ProjectChatView({
 
   const submit = () => {
     const message = draft.trim();
-    if (!message || loading || projectBusy || selectionWarning) return;
+    if (!message || loading || selectionWarning) return;
     const controls: ProjectChatTurnControls = {
       harnessMode: legacyReviewerCompatibility
         ? 'reviewer'
@@ -820,6 +868,50 @@ export function ProjectChatView({
         setRetryOfAttemptId(null);
       }
     });
+  };
+
+  const enableTrustedWorkspace = async (server: ProjectChatSshServer) => {
+    if (
+      trustedWorkspaceBusyGrantId ||
+      server.permissionMode !== 'workspace' ||
+      server.privilegeClass !== 'standard'
+    ) {
+      return;
+    }
+    const firstConfirmed = window.confirm(
+      `Enable Trusted workspace / Full access for “${server.label}” in ${project.name}?\n\nSupported file and command operations inside ${server.canonicalRoot} will run without a separate Allow once prompt. The trust is bound only to this project, server version, workspace grant, path, and GOSU safety policy.`,
+    );
+    if (!firstConfirmed) return;
+    const secondConfirmed = window.confirm(
+      'Final warning: allowed Python entrypoints, tests, and builds execute with the SSH account’s OS and network permissions and can spawn subprocesses. Typed path limits and the lack of a raw-shell UI do not make this a remote sandbox. The direct GOSU tool surface rejects raw shell, sudo/privileged requests, TTY/forwarding, host mounts, out-of-grant paths, and direct destructive host commands. Those input checks do not constrain code after launch: it may read or change secrets and paths outside the grant, use the network, or start any subprocess the SSH account permits. Enable anyway?',
+    );
+    if (!secondConfirmed) return;
+    setTrustedWorkspaceBusyGrantId(server.grantId);
+    try {
+      await onEnableTrustedWorkspace({
+        projectId: project.id,
+        grantId: server.grantId,
+        expectedVersion: server.grantVersion,
+        confirmTrustedWorkspaceRisk: true,
+        confirmNoRemoteSandbox: true,
+      });
+    } finally {
+      setTrustedWorkspaceBusyGrantId(null);
+    }
+  };
+
+  const revokeTrustedWorkspace = async (server: ProjectChatSshServer) => {
+    if (trustedWorkspaceBusyGrantId) return;
+    setTrustedWorkspaceBusyGrantId(server.grantId);
+    try {
+      await onRevokeTrustedWorkspace({
+        projectId: project.id,
+        grantId: server.grantId,
+        expectedVersion: server.grantVersion,
+      });
+    } finally {
+      setTrustedWorkspaceBusyGrantId(null);
+    }
   };
 
   return (
@@ -944,7 +1036,7 @@ export function ProjectChatView({
                     type="button"
                     className="ghost-button chat-refresh"
                     onClick={onRefreshModels}
-                    disabled={loading || projectBusy}
+                    disabled={loading}
                   >
                     Refresh
                   </button>
@@ -1006,6 +1098,54 @@ export function ProjectChatView({
                                 ? 'Refreshing…'
                                 : 'Refresh usage'}
                             </button>
+                          </div>
+                          <div className="chat-trusted-workspace-control">
+                            <div>
+                              <strong>
+                                {server.trustedAccessEnabled
+                                  ? 'Trusted workspace · Full access'
+                                  : 'Allow once required'}
+                              </strong>
+                              <span>
+                                {server.trustedAccessEnabled
+                                  ? 'Supported bounded operations are auto-approved and audited.'
+                                  : server.permissionMode !== 'workspace'
+                                    ? 'Switch this grant to Workspace before enabling trust.'
+                                    : server.privilegeClass !== 'standard'
+                                      ? 'Trusted mode is unavailable for root or unresolved SSH users.'
+                                      : 'Optional: remove repeated prompts for this exact project workspace.'}
+                              </span>
+                            </div>
+                            {server.trustedAccessEnabled ? (
+                              <button
+                                type="button"
+                                className="ghost-button danger"
+                                onClick={() => void revokeTrustedWorkspace(server)}
+                                disabled={
+                                  projectBusy || trustedWorkspaceBusyGrantId === server.grantId
+                                }
+                              >
+                                {trustedWorkspaceBusyGrantId === server.grantId
+                                  ? 'Revoking…'
+                                  : 'Revoke trust'}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => void enableTrustedWorkspace(server)}
+                                disabled={
+                                  projectBusy ||
+                                  trustedWorkspaceBusyGrantId === server.grantId ||
+                                  server.permissionMode !== 'workspace' ||
+                                  server.privilegeClass !== 'standard'
+                                }
+                              >
+                                {trustedWorkspaceBusyGrantId === server.grantId
+                                  ? 'Enabling…'
+                                  : 'Enable full access…'}
+                              </button>
+                            )}
                           </div>
                           <SshResourceSummary
                             state={server.resourceState}
@@ -1132,7 +1272,8 @@ export function ProjectChatView({
               </select>
               <small>
                 Scope controls preloaded context. Authorized project Research Notes remain available
-                through bounded read tools.
+                through bounded read tools. Create-only automatic Markdown saves require a separate
+                explicit grant in AI Agent Settings.
               </small>
             </div>
             <div className="chat-agent-profile-summary">
@@ -1154,16 +1295,26 @@ export function ProjectChatView({
             <div className="chat-agent-boundary">
               <strong>Project capability boundary</strong>
               <span>
-                Board + Objective read tools · {localNotesStatus} · {sshWorkspaceStatus} · SSH
-                requires Allow once
+                Board + Objective read tools · {localNotesStatus} · {sshWorkspaceStatus} ·{' '}
+                {trustedWorkspaceCount > 0
+                  ? `${trustedWorkspaceCount} trusted workspace${trustedWorkspaceCount === 1 ? '' : 's'}`
+                  : 'SSH requires Allow once'}
               </span>
               <small>
-                Board changes require Apply. Only project-granted remote workspaces are visible.
-                Bounded Git inspection, optional approved direct-argv tests/builds, and foreground
-                Python experiment entrypoints show their exact target, root, arguments, and risk for
-                a fresh one-time approval. Experiments are limited to 120 seconds. Raw shells,
-                inline Python, TTY, transfer, unattended execution, secrets, Settings, and Trash
-                remain unavailable.
+                Board changes require Apply. Research Notes reads stay available to legacy grants,
+                but automatic Markdown saves run only after an explicit create-only grant and never
+                overwrite a different existing file. Only project-granted remote workspaces are
+                visible. Trusted workspace is an explicit, per-grant option that auto-approves and
+                audits only the same bounded operations; it expires when the project, server, grant,
+                path, or safety policy changes and can be revoked above. Without it, Git inspection,
+                direct-argv tests/builds, and foreground Python experiment entrypoints show their
+                exact target, root, arguments, and risk for a fresh one-time approval. Experiments
+                are limited to 120 seconds. The direct GOSU tool surface does not offer raw shells,
+                inline Python, TTY, transfer, unattended execution, secret retrieval, Settings,
+                Trash, sudo/privileged requests, host mounts, or destructive host commands. Code
+                launched through an approved Python, test, or build operation is not contained by
+                those input checks and can reach anything the SSH account permits, including
+                secrets, out-of-grant paths, the network, and subprocesses.
               </small>
             </div>
           </section>
@@ -1317,6 +1468,17 @@ export function ProjectChatView({
                     )}
                     {message.status === 'complete' && (
                       <footer className="chat-message-branch">
+                        {message.role === 'user' && (
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            disabled={branchingMessageId !== null}
+                            onClick={() => void onEditHistoryMessage(message.id, message.content)}
+                            title="Create a new chat branch from this edited message"
+                          >
+                            Edit in new branch
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="ghost-button"
@@ -1388,14 +1550,18 @@ export function ProjectChatView({
             · {VERBOSITY_LABELS[responseVerbosity]} · {localNotesStatus}
             {' · '}
             {WEB_SEARCH_LABELS[snapshot?.profile?.webSearchMode ?? 'cached']}
-            {vaultState === 'ready' && !localNotesAvailable && (
+            {vaultState === 'ready' && !automaticMarkdownSaveAuthorized && (
               <button
                 type="button"
                 className="retry-context"
                 onClick={onOpenAgentSettings}
-                title="Authorize this project’s Research Notes folder"
+                title={
+                  localNotesAvailable
+                    ? 'Enable create-only automatic Markdown saves'
+                    : 'Authorize this project’s Research Notes folder'
+                }
               >
-                Authorize…
+                {localNotesAvailable ? 'Enable automatic saves…' : 'Authorize…'}
               </button>
             )}
             {retryOfAttemptId && (
@@ -1409,6 +1575,119 @@ export function ProjectChatView({
               </button>
             )}
           </div>
+          {queuedTurns.length > 0 && (
+            <section className="chat-turn-queue" aria-label="Queued project chat messages">
+              <header>
+                <strong>Queued · {queuedTurns.length}</strong>
+                <span>Runs in order after the current turn settles</span>
+              </header>
+              <div className="chat-turn-queue-list">
+                {queuedTurns.map((queued: ProjectChatQueuedTurn) => {
+                  const editing = queuedTurnEdit?.id === queued.id;
+                  const mutating = queueMutationId === queued.id;
+                  return (
+                    <article
+                      key={queued.id}
+                      className={`chat-turn-queue-item ${queued.priority} ${queued.status}`}
+                    >
+                      <div className="chat-turn-queue-copy">
+                        {editing ? (
+                          <textarea
+                            value={queuedTurnEdit.message}
+                            maxLength={12_000}
+                            aria-label="Edit queued message"
+                            onChange={(event) =>
+                              setQueuedTurnEdit({ id: queued.id, message: event.target.value })
+                            }
+                          />
+                        ) : (
+                          <span title={queued.message}>{queued.message}</span>
+                        )}
+                        <small>
+                          {queued.status === 'starting'
+                            ? 'Starting…'
+                            : queued.priority === 'next'
+                              ? 'Runs next'
+                              : 'Waiting'}
+                        </small>
+                      </div>
+                      <div className="chat-turn-queue-actions">
+                        {editing ? (
+                          <>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              disabled={mutating || queuedTurnEdit.message.trim().length === 0}
+                              onClick={() => {
+                                const message = queuedTurnEdit.message.trim();
+                                if (!message) return;
+                                setQueueMutationId(queued.id);
+                                void onUpdateQueuedTurn(queued.id, message)
+                                  .catch(() => undefined)
+                                  .finally(() => {
+                                    setQueueMutationId(null);
+                                    setQueuedTurnEdit(null);
+                                  });
+                              }}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              disabled={mutating}
+                              onClick={() => setQueuedTurnEdit(null)}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              disabled={mutating || queued.status !== 'queued'}
+                              onClick={() =>
+                                setQueuedTurnEdit({ id: queued.id, message: queued.message })
+                              }
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              disabled={mutating || queued.status !== 'queued'}
+                              onClick={() => {
+                                setQueueMutationId(queued.id);
+                                void onRemoveQueuedTurn(queued.id)
+                                  .catch(() => undefined)
+                                  .finally(() => setQueueMutationId(null));
+                              }}
+                            >
+                              Remove
+                            </button>
+                            <button
+                              type="button"
+                              className="danger-button"
+                              disabled={mutating || queued.status !== 'queued'}
+                              onClick={() => {
+                                setQueueMutationId(queued.id);
+                                void onRunQueuedTurnNow(queued.id)
+                                  .catch(() => undefined)
+                                  .finally(() => setQueueMutationId(null));
+                              }}
+                            >
+                              Stop current &amp; run now
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          )}
           {selectionWarning && (
             <div className="chat-selection-warning" role="status">
               {selectionWarning}
@@ -1416,8 +1695,7 @@ export function ProjectChatView({
           )}
           {projectBusy && !inFlight && (
             <div className="chat-selection-warning" role="status">
-              Another session has an active Codex turn. Open the session marked ● to stop it, or
-              wait for it to finish.
+              Another session has an active Codex turn. Messages sent here will be queued safely.
             </div>
           )}
           {attachments.length > 0 && (
@@ -1440,7 +1718,7 @@ export function ProjectChatView({
                     type="button"
                     onClick={() => releaseAttachment(attachment)}
                     aria-label={`Remove ${attachment.displayName}`}
-                    disabled={loading || projectBusy}
+                    disabled={loading}
                   >
                     ×
                   </button>
@@ -1471,10 +1749,7 @@ export function ProjectChatView({
               className="chat-attach-button"
               onClick={() => void chooseAttachments()}
               disabled={
-                loading ||
-                projectBusy ||
-                choosingAttachments ||
-                attachments.length >= PROJECT_CHAT_MAX_ATTACHMENTS
+                loading || choosingAttachments || attachments.length >= PROJECT_CHAT_MAX_ATTACHMENTS
               }
               aria-label="Attach research files"
               title="Attach up to 5 documents, presentations, text files, or images for this turn"
@@ -1503,26 +1778,25 @@ export function ProjectChatView({
               }}
               placeholder="예: baseline 재현 작업을 Planned에 추가하고, 이번 주 우선순위를 정해줘"
               maxLength={12_000}
-              disabled={loading || projectBusy}
+              disabled={loading}
               aria-label="Message GOSU project copilot"
             />
-            {inFlight ? (
-              <button type="button" className="danger-button chat-send" onClick={onCancel}>
-                Stop
-              </button>
-            ) : (
+            <div className="chat-send-actions">
+              {inFlight && (
+                <button type="button" className="danger-button chat-stop" onClick={onCancel}>
+                  Stop
+                </button>
+              )}
               <button
                 type="button"
                 className="primary-button chat-send"
                 onClick={submit}
-                disabled={
-                  loading || projectBusy || draft.trim().length === 0 || selectionWarning !== null
-                }
+                disabled={loading || draft.trim().length === 0 || selectionWarning !== null}
               >
-                Send
+                {projectBusy ? 'Queue' : 'Send'}
                 <span>Enter</span>
               </button>
-            )}
+            </div>
           </div>
         </div>
       </section>

@@ -5,10 +5,12 @@ import {
   BranchProjectChatSessionInputSchema,
   CreateProjectChatSessionInputSchema,
   ProjectChatProjectInputSchema,
+  ProjectChatQueuedTurnInputSchema,
   ProjectChatSessionInputSchema,
   ProjectChatSnapshotInputSchema,
   RenameProjectChatSessionInputSchema,
   SendProjectChatMessageInputSchema,
+  UpdateProjectChatQueuedTurnInputSchema,
   UpdateProjectChatProfileInputSchema,
 } from '../shared/project-chat-contracts';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
@@ -70,6 +72,30 @@ export function registerProjectChatIpc(
       input,
       SendProjectChatMessageInputSchema,
       (command) => chat.send(command),
+      reportUnexpected,
+    ),
+  );
+  register(PROJECT_CHAT_IPC_CHANNELS.updateQueuedTurn, (input) =>
+    withInput(
+      input,
+      UpdateProjectChatQueuedTurnInputSchema,
+      (command) => chat.updateQueuedTurn(command),
+      reportUnexpected,
+    ),
+  );
+  register(PROJECT_CHAT_IPC_CHANNELS.removeQueuedTurn, (input) =>
+    withInput(
+      input,
+      ProjectChatQueuedTurnInputSchema,
+      (command) => chat.removeQueuedTurn(command),
+      reportUnexpected,
+    ),
+  );
+  register(PROJECT_CHAT_IPC_CHANNELS.runQueuedTurnNow, (input) =>
+    withInput(
+      input,
+      ProjectChatQueuedTurnInputSchema,
+      (command) => chat.runQueuedTurnNow(command),
       reportUnexpected,
     ),
   );

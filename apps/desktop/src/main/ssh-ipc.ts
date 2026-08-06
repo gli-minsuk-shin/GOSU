@@ -17,8 +17,10 @@ import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
 import type { SshIpcResult } from '../shared/ssh-ipc-result';
 import {
   CreateRemoteWorkspaceGrantInputSchema,
+  EnableTrustedRemoteWorkspaceInputSchema,
   ListRemoteWorkspaceGrantsInputSchema,
   RemoveRemoteWorkspaceGrantInputSchema,
+  RevokeTrustedRemoteWorkspaceInputSchema,
   UpdateRemoteWorkspaceGrantInputSchema,
 } from '../shared/ssh-workspace-contracts';
 import { SshConnectionServiceError, type SshConnectionService } from './ssh-connection-service';
@@ -134,6 +136,24 @@ export function registerSshIpc(
       RemoveRemoteWorkspaceGrantInputSchema,
       workspace,
       (command) => service.removeWorkspaceGrant(command),
+      reportUnexpected,
+    ),
+  );
+  register(SSH_IPC_CHANNELS.enableTrustedWorkspace, (input) =>
+    withActiveProjectInput(
+      input,
+      EnableTrustedRemoteWorkspaceInputSchema,
+      workspace,
+      (command) => service.enableTrustedWorkspace(command),
+      reportUnexpected,
+    ),
+  );
+  register(SSH_IPC_CHANNELS.revokeTrustedWorkspace, (input) =>
+    withActiveProjectInput(
+      input,
+      RevokeTrustedRemoteWorkspaceInputSchema,
+      workspace,
+      (command) => service.revokeTrustedWorkspace(command),
       reportUnexpected,
     ),
   );

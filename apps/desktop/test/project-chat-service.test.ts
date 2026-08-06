@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
 import type { ModelInvocation } from '@gosu/contracts';
@@ -15,9 +15,10 @@ import type {
   ProjectAgentSsh,
   ProjectAgentVault,
 } from '../src/main/project-agent-tools';
-import type {
-  ProjectChatAttachmentClaimer,
-  ProjectChatAttachmentsForAgent,
+import {
+  ProjectChatAttachmentError,
+  type ProjectChatAttachmentClaimer,
+  type ProjectChatAttachmentsForAgent,
 } from '../src/main/project-chat-attachment-service';
 import {
   buildProjectChatPrompt,
@@ -32,11 +33,21 @@ import type {
   ProjectChatEvent,
   ProjectChatMessage,
   ProjectChatProfile,
+  ProjectChatQueuedTurn,
+  ProjectChatResearchNoteSaveReceipt,
+  ProjectChatResearchNoteSaveStage,
   ProjectChatSession,
   ProjectChatSnapshot,
+  AbandonProjectChatResearchNoteSaveInput,
+  ConfirmProjectChatResearchNoteSaveInput,
+  MarkProjectChatResearchNoteSaveUncertainInput,
   UpdateProjectChatProfileInput,
 } from '../src/shared/project-chat-contracts';
-import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
+import {
+  defaultProjectChatProfile,
+  PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION,
+  PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION,
+} from '../src/shared/project-chat-contracts';
 import type {
   LiteratureSearchInput,
   LiteratureSearchReceipt,
@@ -236,6 +247,9 @@ class MemoryChatStorage implements ProjectChatStorage {
   readonly profiles = new Map<string, ProjectChatProfile>();
   readonly sessions = new Map<string, ProjectChatSession[]>();
   readonly sessionMessageIds = new Map<string, string[]>();
+  readonly researchNoteReceipts = new Map<string, ProjectChatResearchNoteSaveReceipt>();
+  readonly queuedTurns = new Map<string, ProjectChatQueuedTurn>();
+  private nextQueueSequence = 1;
   failNextSave = false;
   failNextAssistantSave = false;
   failNextFinishAction = false;
@@ -264,6 +278,24 @@ class MemoryChatStorage implements ProjectChatStorage {
     this.sessionMessageIds.get(session.id)!.push(userMessage.id);
   }
 
+  beginQueuedChatAttempt(
+    queueId: string,
+    attempt: ProjectChatAttempt,
+    userMessage: ProjectChatMessage,
+  ) {
+    const queued = this.queuedTurns.get(queueId);
+    if (
+      !queued ||
+      queued.projectId !== attempt.projectId ||
+      queued.sessionId !== attempt.sessionId ||
+      queued.status !== 'starting'
+    ) {
+      throw new Error('chat_queue_state_conflict');
+    }
+    this.beginChatAttempt(attempt, userMessage);
+    this.queuedTurns.delete(queueId);
+  }
+
   markChatAttemptRunning(attempt: ProjectChatAttempt) {
     if (this.failNextMarkRunning) {
       this.failNextMarkRunning = false;
@@ -275,6 +307,127 @@ class MemoryChatStorage implements ProjectChatStorage {
     }
     this.attempts.set(attempt.id, structuredClone(attempt));
     this.afterMarkRunning?.();
+  }
+
+  stageResearchNoteSave(receipt: ProjectChatResearchNoteSaveStage) {
+    const key = `${receipt.attemptId}:${receipt.artifactId}`;
+    const current = this.researchNoteReceipts.get(key);
+    if (current) {
+      if (
+        current.projectId !== receipt.projectId ||
+        current.sessionId !== receipt.sessionId ||
+        current.bindingId !== receipt.bindingId ||
+        current.expectedContentSha256 !== receipt.expectedContentSha256
+      ) {
+        throw new Error('research_note_save_receipt_conflict');
+      }
+      return;
+    }
+    this.researchNoteReceipts.set(key, {
+      ...structuredClone(receipt),
+      status: 'staged',
+      relativePath: null,
+      updatedAt: receipt.stagedAt,
+      committedAt: null,
+      reportedAt: null,
+    });
+  }
+
+  markResearchNoteSaveUncertain(input: MarkProjectChatResearchNoteSaveUncertainInput) {
+    const key = `${input.attemptId}:${input.artifactId}`;
+    const current = this.researchNoteReceipts.get(key);
+    if (!current) throw new Error('research_note_save_receipt_conflict');
+    if (current.status === 'staged' || current.status === 'uncertain') {
+      this.researchNoteReceipts.set(key, {
+        ...current,
+        status: 'uncertain',
+        updatedAt: input.uncertainAt,
+      });
+    }
+  }
+
+  abandonResearchNoteSave(input: AbandonProjectChatResearchNoteSaveInput) {
+    const key = `${input.attemptId}:${input.artifactId}`;
+    const current = this.researchNoteReceipts.get(key);
+    if (!current) throw new Error('research_note_save_receipt_conflict');
+    if (current.status === 'abandoned') return true;
+    if (current.status === 'committed-unreported' || current.status === 'reported') return false;
+    const message = this.messages.find(
+      (candidate) => candidate.attemptId === current.attemptId && candidate.role === 'assistant',
+    );
+    if (!message) return false;
+    const abandonedSection = `${PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION}\n- ${current.category} artifact ${current.artifactId} · SHA-256 ${current.expectedContentSha256}`;
+    message.content = message.content.replace(
+      `\n\n---\n${PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION}`,
+      '',
+    );
+    if (!message.content.includes(abandonedSection)) {
+      message.content += `\n\n---\n${abandonedSection}`;
+    }
+    this.researchNoteReceipts.set(key, {
+      ...current,
+      status: 'abandoned',
+      reportedAt: input.abandonedAt,
+      updatedAt: input.abandonedAt,
+    });
+    return true;
+  }
+
+  confirmResearchNoteSave(input: ConfirmProjectChatResearchNoteSaveInput) {
+    const key = `${input.attemptId}:${input.artifactId}`;
+    const current = this.researchNoteReceipts.get(key);
+    if (
+      !current ||
+      current.projectId !== input.projectId ||
+      current.sessionId !== input.sessionId ||
+      current.category !== input.category ||
+      current.expectedContentSha256 !== input.contentSha256
+    ) {
+      throw new Error('research_note_save_receipt_conflict');
+    }
+    if (current.status !== 'reported') {
+      this.researchNoteReceipts.set(key, {
+        ...current,
+        status: 'committed-unreported',
+        relativePath: input.relativePath,
+        committedAt: input.confirmedAt,
+        reportedAt: null,
+        updatedAt: input.confirmedAt,
+      });
+      this.reconcileCommittedResearchNoteSaves(input.confirmedAt);
+    }
+  }
+
+  listUnreportedResearchNoteSaves() {
+    return [...this.researchNoteReceipts.values()]
+      .filter((receipt) => ['staged', 'uncertain', 'committed-unreported'].includes(receipt.status))
+      .map((receipt) => structuredClone(receipt));
+  }
+
+  reconcileCommittedResearchNoteSaves(reconciledAt: string) {
+    let count = 0;
+    for (const [key, receipt] of this.researchNoteReceipts) {
+      if (receipt.status !== 'committed-unreported' || !receipt.relativePath) continue;
+      const message = this.messages.find(
+        (candidate) => candidate.attemptId === receipt.attemptId && candidate.role === 'assistant',
+      );
+      if (!message) continue;
+      const abandonedSection = `${PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION}\n- ${receipt.category} artifact ${receipt.artifactId} · SHA-256 ${receipt.expectedContentSha256}`;
+      message.content = message.content
+        .replace(`\n\n---\n${PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION}`, '')
+        .replace(`\n\n---\n${abandonedSection}`, '');
+      if (!message.content.includes(`Research Notes/${receipt.relativePath}`)) {
+        message.content += `\n\n---\nResearch Notes saved\n- Research Notes/${receipt.relativePath} · ${receipt.category} · SHA-256 ${receipt.expectedContentSha256}`;
+      }
+      this.researchNoteReceipts.set(key, {
+        ...receipt,
+        status: 'reported',
+        reportedAt: reconciledAt,
+        updatedAt: reconciledAt,
+      });
+      count += 1;
+    }
+    return count;
   }
 
   finishChatAttempt(attempt: ProjectChatAttempt, assistantMessage: ProjectChatMessage) {
@@ -295,6 +448,7 @@ class MemoryChatStorage implements ProjectChatStorage {
     }
     this.sessionMessageIds.get(attempt.sessionId)!.push(message.id);
     for (const action of message.actions) this.actions.set(action.id, action);
+    this.reconcileCommittedResearchNoteSaves(attempt.updatedAt);
   }
 
   getChatAttempt(projectId: string, sessionId: string, attemptId?: string) {
@@ -330,6 +484,7 @@ class MemoryChatStorage implements ProjectChatStorage {
           (attempt) => attempt.projectId === projectId && visibleIds.has(attempt.userMessageId),
         )
         .map((attempt) => structuredClone(attempt)),
+      queuedTurns: this.listProjectChatQueuedTurns(projectId, session.id),
       messages: this.messages
         .filter((message) => message.projectId === projectId && visibleIds.has(message.id))
         .map((message) => ({
@@ -495,6 +650,169 @@ class MemoryChatStorage implements ProjectChatStorage {
     if (!current || current.status !== 'applying') throw new Error('action_state_conflict');
     this.actions.set(action.id, structuredClone(action));
   }
+
+  listProjectChatQueuedTurns(projectId: string, sessionId: string) {
+    return [...this.queuedTurns.values()]
+      .filter((queued) => queued.projectId === projectId && queued.sessionId === sessionId)
+      .sort(
+        (left, right) =>
+          Number(right.priority === 'next') - Number(left.priority === 'next') ||
+          (left.enqueueSequence ?? 0) - (right.enqueueSequence ?? 0),
+      )
+      .map((queued) => structuredClone(queued));
+  }
+
+  listProjectChatQueuedProjectIds() {
+    return [
+      ...new Set(
+        [...this.queuedTurns.values()]
+          .filter((queued) => queued.status === 'queued')
+          .sort(
+            (left, right) =>
+              (left.enqueueSequence ?? 0) - (right.enqueueSequence ?? 0) ||
+              left.projectId.localeCompare(right.projectId),
+          )
+          .map((queued) => queued.projectId),
+      ),
+    ];
+  }
+
+  enqueueProjectChatTurn(queued: ProjectChatQueuedTurn) {
+    const stored = { ...queued, enqueueSequence: this.nextQueueSequence };
+    this.nextQueueSequence += 1;
+    this.queuedTurns.set(queued.id, structuredClone(stored));
+    return structuredClone(stored);
+  }
+
+  updateProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+    message: string,
+    updatedAt: string,
+  ) {
+    const queued = this.queuedTurns.get(queueId);
+    if (
+      !queued ||
+      queued.projectId !== projectId ||
+      queued.sessionId !== sessionId ||
+      queued.status !== 'queued'
+    ) {
+      return null;
+    }
+    const updated = { ...queued, message, updatedAt };
+    this.queuedTurns.set(queueId, updated);
+    return structuredClone(updated);
+  }
+
+  removeProjectChatQueuedTurn(projectId: string, sessionId: string, queueId: string) {
+    const queued = this.queuedTurns.get(queueId);
+    if (
+      !queued ||
+      queued.projectId !== projectId ||
+      queued.sessionId !== sessionId ||
+      queued.status !== 'queued'
+    ) {
+      return false;
+    }
+    return this.queuedTurns.delete(queueId);
+  }
+
+  prioritizeProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+    updatedAt: string,
+  ) {
+    const queued = this.queuedTurns.get(queueId);
+    if (
+      !queued ||
+      queued.projectId !== projectId ||
+      queued.sessionId !== sessionId ||
+      queued.status !== 'queued'
+    ) {
+      return false;
+    }
+    for (const [id, candidate] of this.queuedTurns) {
+      if (candidate.projectId === projectId && candidate.priority === 'next') {
+        this.queuedTurns.set(id, { ...candidate, priority: 'normal', updatedAt });
+      }
+    }
+    this.queuedTurns.set(queueId, { ...queued, priority: 'next', updatedAt });
+    return true;
+  }
+
+  claimNextProjectChatQueuedTurn(projectId: string) {
+    const queued = [...this.queuedTurns.values()]
+      .filter((candidate) => candidate.projectId === projectId && candidate.status === 'queued')
+      .sort(
+        (left, right) =>
+          Number(right.priority === 'next') - Number(left.priority === 'next') ||
+          (left.enqueueSequence ?? 0) - (right.enqueueSequence ?? 0),
+      )[0];
+    if (!queued) return null;
+    const claimed: ProjectChatQueuedTurn = {
+      ...queued,
+      status: 'starting',
+      updatedAt: new Date().toISOString(),
+    };
+    this.queuedTurns.set(queued.id, claimed);
+    return structuredClone(claimed);
+  }
+
+  finishProjectChatQueuedTurn(projectId: string, sessionId: string, queueId: string) {
+    const queued = this.queuedTurns.get(queueId);
+    if (
+      !queued ||
+      queued.projectId !== projectId ||
+      queued.sessionId !== sessionId ||
+      queued.status !== 'starting'
+    ) {
+      return false;
+    }
+    return this.queuedTurns.delete(queueId);
+  }
+
+  releaseProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+    updatedAt: string,
+  ) {
+    const queued = this.queuedTurns.get(queueId);
+    if (
+      !queued ||
+      queued.projectId !== projectId ||
+      queued.sessionId !== sessionId ||
+      queued.status !== 'starting'
+    ) {
+      return false;
+    }
+    this.queuedTurns.set(queueId, { ...queued, status: 'queued', updatedAt });
+    return true;
+  }
+
+  failProjectChatQueuedTurn(
+    queueId: string,
+    attempt: ProjectChatAttempt,
+    userMessage: ProjectChatMessage,
+    assistantMessage: ProjectChatMessage,
+  ) {
+    const queued = this.queuedTurns.get(queueId);
+    if (
+      !queued ||
+      queued.projectId !== attempt.projectId ||
+      queued.sessionId !== attempt.sessionId ||
+      (queued.status !== 'queued' && queued.status !== 'starting')
+    ) {
+      return false;
+    }
+    this.queuedTurns.delete(queueId);
+    this.attempts.set(attempt.id, structuredClone(attempt));
+    this.messages.push(structuredClone(userMessage), structuredClone(assistantMessage));
+    this.sessionMessageIds.get(queued.sessionId)!.push(userMessage.id, assistantMessage.id);
+    return true;
+  }
 }
 
 class FakeCodex extends EventEmitter {
@@ -624,6 +942,13 @@ class FakeCodex extends EventEmitter {
 
   complete(turnId: string, response: unknown) {
     const threadId = this.turnThreads.get(turnId)!;
+    const normalizedResponse =
+      typeof response === 'object' &&
+      response !== null &&
+      !Array.isArray(response) &&
+      !Object.hasOwn(response, 'researchNote')
+        ? { ...(response as Record<string, unknown>), researchNote: { disposition: 'none' } }
+        : response;
     this.emit('notification', {
       method: 'item/completed',
       params: {
@@ -632,7 +957,10 @@ class FakeCodex extends EventEmitter {
         item: {
           type: 'agentMessage',
           phase: 'final_answer',
-          text: typeof response === 'string' ? response : JSON.stringify(response),
+          text:
+            typeof normalizedResponse === 'string'
+              ? normalizedResponse
+              : JSON.stringify(normalizedResponse),
         },
       },
     });
@@ -655,6 +983,9 @@ function invocation(requestedModelId: string | null): ModelInvocation {
     startedAt: new Date().toISOString(),
   };
 }
+
+const FAILURE_COPY_FOR_EXPIRED_QUEUE_TEST =
+  'This queued message was not run because one or more attached files expired or became unavailable after GOSU restarted. Attach the files again and resend the message.';
 
 function localNotesVaultFixture() {
   const vaultId = 'a'.repeat(64);
@@ -681,6 +1012,29 @@ function localNotesVaultFixture() {
       totalCharacters: content.length,
       truncated: false,
     }),
+    saveMarkdownForAgent: async (projectId, candidate, input) => {
+      if (candidate !== vaultId) throw new Error('vault_grant_stale');
+      const artifactId = createHash('sha256')
+        .update(`${projectId}\0${candidate}\0${input.idempotencyKey}`, 'utf8')
+        .digest('hex')
+        .slice(0, 16);
+      const folders = {
+        literature: 'Literature',
+        papers: 'Papers',
+        experiments: 'Experiments',
+        'project-progress': 'Project Progress',
+        'idea-development': 'Idea Development',
+      } as const;
+      return {
+        schemaVersion: 1,
+        projectId,
+        category: input.category,
+        path: `${folders[input.category]}/Saved artifact--${artifactId}.md`,
+        created: true,
+        contentSha256: createHash('sha256').update(input.content, 'utf8').digest('hex'),
+        artifactId,
+      };
+    },
   };
   return { vault, vaultId, noteId, contentSha256, content };
 }
@@ -1849,7 +2203,11 @@ describe('ProjectChatService', () => {
       harnessMode: 'context',
       responseDepth: 'deep',
       contextScope: 'project',
-      localNotesVault: { id: vaultId, name: 'Research Notes' },
+      localNotesVault: {
+        id: vaultId,
+        name: 'Research Notes',
+        allowAgentMarkdownCreate: true,
+      },
       customInstructions: '',
     });
     const receipt = await chat.send({
@@ -1919,6 +2277,254 @@ describe('ProjectChatService', () => {
       assemblyVersion: 3,
       localNotesVaultId: vaultId,
     });
+  });
+
+  it('persists an authoritative Research Notes save location even when model prose omits it', async () => {
+    const { vault, vaultId } = localNotesVaultFixture();
+    const { chat, codex, storage, projectA } = await fixture(vault);
+    const profile = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'context',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      localNotesVault: {
+        id: vaultId,
+        name: 'Research Notes',
+        allowAgentMarkdownCreate: true,
+      },
+      customInstructions: '',
+    });
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Prepare a reusable evaluation plan.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      profileVersion: profile.version,
+    });
+    const content = '# Evaluation plan\n\nRun three seeded trials.\n';
+    codex.complete(receipt.turnId, {
+      reply: 'The evaluation plan is ready.',
+      actions: [],
+      researchNote: {
+        disposition: 'save',
+        category: 'experiments',
+        title: 'Evaluation plan',
+        content,
+      },
+    });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+
+    const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
+    expect(assistant.content).toContain('The evaluation plan is ready.');
+    expect(assistant.content).toContain('Research Notes saved');
+    expect(assistant.content).toMatch(
+      /Research Notes\/Experiments\/Saved artifact--[0-9a-f]{16}\.md/u,
+    );
+    expect(assistant.content).not.toContain(content);
+  });
+
+  it('recovers an interrupted staged Research Notes receipt exactly once on startup', async () => {
+    const local = localNotesVaultFixture();
+    const artifactId = '8'.repeat(16);
+    const contentSha256 = '9'.repeat(64);
+    const path = `Project Progress/Recovered status--${artifactId}.md`;
+    let recoveryProjectId: string = randomUUID();
+    const vault: ProjectAgentVault = {
+      ...local.vault,
+      recoverMarkdownForAgent: vi.fn(async () => ({
+        schemaVersion: 1 as const,
+        projectId: recoveryProjectId,
+        category: 'project-progress' as const,
+        path,
+        created: false,
+        contentSha256,
+        artifactId,
+      })),
+    };
+    const { chat, codex, storage, projectA } = await fixture(vault);
+    recoveryProjectId = projectA.id;
+    const turn = await chat.send({
+      projectId: projectA.id,
+      message: 'Create a durable progress note.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if ('queued' in turn) throw new Error('unexpected_queued_turn');
+    codex.complete(turn.turnId, {
+      reply: 'The progress note turn finished.',
+      actions: [],
+      researchNote: { disposition: 'none' },
+    });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    const stagedAt = new Date().toISOString();
+    storage.stageResearchNoteSave({
+      schemaVersion: 1,
+      projectId: projectA.id,
+      sessionId: turn.sessionId,
+      attemptId: turn.attemptId,
+      bindingId: local.vaultId,
+      category: 'project-progress',
+      artifactId,
+      expectedContentSha256: contentSha256,
+      stagedAt,
+    });
+
+    await chat.reconcileResearchNoteSaveReceipts();
+    await chat.reconcileResearchNoteSaveReceipts();
+
+    const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
+    expect(assistant.content.split(`Research Notes/${path}`)).toHaveLength(2);
+    expect(storage.listUnreportedResearchNoteSaves()).toHaveLength(0);
+    expect(vault.recoverMarkdownForAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('terminalizes a verified-missing note and lets a late exact save supersede it once', async () => {
+    const local = localNotesVaultFixture();
+    const artifactId = '7'.repeat(16);
+    const contentSha256 = '6'.repeat(64);
+    const path = `Project Progress/Late save--${artifactId}.md`;
+    const vault: ProjectAgentVault = {
+      ...local.vault,
+      recoverMarkdownForAgent: vi.fn(async () => null),
+    };
+    const { chat, codex, storage, projectA } = await fixture(vault);
+    const turn = await chat.send({
+      projectId: projectA.id,
+      message: 'Prepare a progress note that may finish late.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if ('queued' in turn) throw new Error('unexpected_queued_turn');
+    codex.complete(turn.turnId, {
+      reply: 'The progress note attempt is complete.',
+      actions: [],
+      researchNote: { disposition: 'none' },
+    });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    storage.stageResearchNoteSave({
+      schemaVersion: 1,
+      projectId: projectA.id,
+      sessionId: turn.sessionId,
+      attemptId: turn.attemptId,
+      bindingId: local.vaultId,
+      category: 'project-progress',
+      artifactId,
+      expectedContentSha256: contentSha256,
+      stagedAt: new Date().toISOString(),
+    });
+
+    await chat.reconcileResearchNoteSaveReceipts();
+    await chat.reconcileResearchNoteSaveReceipts();
+
+    const abandoned = storage.snapshot(projectA.id).messages.at(-1)!;
+    expect(abandoned.content).toContain(PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION);
+    expect(abandoned.content).not.toContain(PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION);
+    expect(storage.listUnreportedResearchNoteSaves()).toHaveLength(0);
+    expect(vault.recoverMarkdownForAgent).toHaveBeenCalledTimes(1);
+
+    storage.confirmResearchNoteSave({
+      projectId: projectA.id,
+      sessionId: turn.sessionId,
+      attemptId: turn.attemptId,
+      artifactId,
+      category: 'project-progress',
+      relativePath: path,
+      contentSha256,
+      confirmedAt: new Date().toISOString(),
+    });
+
+    const recovered = storage.snapshot(projectA.id).messages.at(-1)!;
+    expect(recovered.content).not.toContain(PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION);
+    expect(recovered.content.split(`Research Notes/${path}`)).toHaveLength(2);
+    expect(storage.listUnreportedResearchNoteSaves()).toHaveLength(0);
+  });
+
+  it('closes every model tool before awaiting the server-owned Markdown write', async () => {
+    const local = localNotesVaultFixture();
+    const originalSave = local.vault.saveMarkdownForAgent.bind(local.vault);
+    let markSaveStarted!: () => void;
+    let releaseSave!: () => void;
+    const saveStarted = new Promise<void>((resolve) => {
+      markSaveStarted = resolve;
+    });
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    const vault: ProjectAgentVault = {
+      ...local.vault,
+      saveMarkdownForAgent: vi.fn(async (projectId, expectedVaultId, input) => {
+        markSaveStarted();
+        await saveGate;
+        return originalSave(projectId, expectedVaultId, input);
+      }),
+    };
+    const { chat, codex, storage, projectA } = await fixture(vault);
+    const profile = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'context',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      localNotesVault: {
+        id: local.vaultId,
+        name: 'Research Notes',
+        allowAgentMarkdownCreate: true,
+      },
+      customInstructions: '',
+    });
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Write a durable test plan.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      profileVersion: profile.version,
+    });
+    const handler = codex.dynamicToolHandlers[0]!;
+
+    codex.complete(receipt.turnId, {
+      reply: 'The test plan is ready.',
+      actions: [],
+      researchNote: {
+        disposition: 'save',
+        category: 'experiments',
+        title: 'Durable test plan',
+        content: '# Durable test plan\n',
+      },
+    });
+    await saveStarted;
+
+    const lateSsh = await handler(
+      {
+        threadId: codex.turnThreads.get(receipt.turnId)!,
+        turnId: receipt.turnId,
+        callId: 'late-ssh-after-terminal',
+        namespace: 'gosu_project',
+        tool: 'list_ssh_workspaces',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+    const lateBoard = await handler(
+      {
+        threadId: codex.turnThreads.get(receipt.turnId)!,
+        turnId: receipt.turnId,
+        callId: 'late-board-after-terminal',
+        namespace: 'gosu_project',
+        tool: 'read_workspace',
+        arguments: { section: 'summary' },
+      },
+      dynamicToolDelivery(),
+    );
+    expect(JSON.parse(lateSsh.contentItems[0]!.text)).toEqual({ error: 'ssh_cancelled' });
+    expect(JSON.parse(lateBoard.contentItems[0]!.text)).toEqual({ error: 'tool_not_allowed' });
+    expect(storage.snapshot(projectA.id).messages).toHaveLength(1);
+
+    releaseSave();
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    expect(storage.snapshot(projectA.id).messages.at(-1)?.content).toContain(
+      'Research Notes saved',
+    );
   });
 
   it('binds Literature search to the active project and excludes it from legacy reviewer turns', async () => {
@@ -2002,6 +2608,49 @@ describe('ProjectChatService', () => {
     expect(JSON.stringify(codex.dynamicTools[1])).not.toContain('search_literature');
     codex.complete(reviewerReceipt.turnId, { reply: 'Review complete.', actions: [] });
     await vi.waitFor(() => expect(storage.snapshot(projectB.id).messages).toHaveLength(2));
+  });
+
+  it('keeps legacy Reviewer compatibility advice-only even with Markdown-create consent', async () => {
+    const local = localNotesVaultFixture();
+    const save = vi.spyOn(local.vault, 'saveMarkdownForAgent');
+    const { chat, codex, storage, projectA } = await fixture(local.vault);
+    const profile = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'reviewer',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      localNotesVault: {
+        id: local.vaultId,
+        name: 'Research Notes',
+        allowAgentMarkdownCreate: true,
+      },
+      customInstructions: '',
+    });
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Review this project.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      profileVersion: profile.version,
+    });
+
+    codex.complete(receipt.turnId, {
+      reply: 'Review complete.',
+      actions: [],
+      researchNote: {
+        disposition: 'save',
+        category: 'project-progress',
+        title: 'Reviewer report',
+        content: '# Reviewer report\n',
+      },
+    });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+
+    expect(save).not.toHaveBeenCalled();
+    const assistant = storage.snapshot(projectA.id).messages.at(-1)!;
+    expect(assistant.content).toContain('Research Notes not saved');
+    expect(assistant.content).toContain('Reviewer compatibility is advice-only');
   });
 
   it('does not grant Literature mutation to a review-only or explicitly denied user turn', async () => {
@@ -2591,7 +3240,7 @@ describe('ProjectChatService', () => {
     });
   });
 
-  it('keeps root sessions isolated and permits only one active turn per project', async () => {
+  it('keeps root sessions isolated and durably queues the next project turn', async () => {
     const { chat, codex, storage, projectA } = await fixture();
     const [defaultSession] = await chat.listSessions({ projectId: projectA.id });
     const secondSession = await chat.createSession({ projectId: projectA.id });
@@ -2603,15 +3252,15 @@ describe('ProjectChatService', () => {
       requestedModelId: null,
       reasoningOptionId: null,
     });
-    await expect(
-      chat.send({
-        projectId: projectA.id,
-        sessionId: secondSession.id,
-        message: 'Do not overlap this project turn',
-        requestedModelId: null,
-        reasoningOptionId: null,
-      }),
-    ).rejects.toThrow('chat_busy');
+    const queued = await chat.send({
+      projectId: projectA.id,
+      sessionId: secondSession.id,
+      message: 'Do not overlap this project turn',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(queued).toMatchObject({ queued: true, sessionId: secondSession.id });
+    if (!('queueId' in queued)) throw new Error('expected queued receipt');
 
     await expect(
       chat.snapshot({ projectId: projectA.id, sessionId: defaultSession!.id }),
@@ -2620,20 +3269,26 @@ describe('ProjectChatService', () => {
       chat.snapshot({ projectId: projectA.id, sessionId: secondSession.id }),
     ).resolves.not.toHaveProperty('activeTurnId');
     expect(storage.snapshot(projectA.id, defaultSession!.id).messages).toHaveLength(1);
-    expect(storage.snapshot(projectA.id, secondSession.id).messages).toHaveLength(0);
+    expect(storage.snapshot(projectA.id, secondSession.id)).toMatchObject({
+      messages: [],
+      queuedTurns: [{ id: queued.queueId, message: 'Do not overlap this project turn' }],
+    });
     codex.complete(first.turnId, { reply: 'Default answer', actions: [] });
     await vi.waitFor(() =>
       expect(storage.snapshot(projectA.id, defaultSession!.id).messages).toHaveLength(2),
     );
 
-    const second = await chat.send({
-      projectId: projectA.id,
-      sessionId: secondSession.id,
-      message: 'Independent session question',
-      requestedModelId: null,
-      reasoningOptionId: null,
-    });
-    codex.complete(second.turnId, { reply: 'Independent answer', actions: [] });
+    await vi.waitFor(() =>
+      expect(
+        [...storage.attempts.values()].find(
+          (attempt) => attempt.sessionId === secondSession.id && attempt.status === 'running',
+        ),
+      ).toBeDefined(),
+    );
+    const second = [...storage.attempts.values()].find(
+      (attempt) => attempt.sessionId === secondSession.id && attempt.status === 'running',
+    )!;
+    codex.complete(second.turnId!, { reply: 'Independent answer', actions: [] });
     await vi.waitFor(() =>
       expect(storage.snapshot(projectA.id, secondSession.id).messages).toHaveLength(2),
     );
@@ -2642,7 +3297,255 @@ describe('ProjectChatService', () => {
     ).toEqual(['Default session question', 'Default answer']);
     expect(
       storage.snapshot(projectA.id, secondSession.id).messages.map((message) => message.content),
-    ).toEqual(['Independent session question', 'Independent answer']);
+    ).toEqual(['Do not overlap this project turn', 'Independent answer']);
+  });
+
+  it('turns an expired queued attachment into a visible failure and continues later work', async () => {
+    const attachmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const release = vi.fn(async () => ({ released: true as const }));
+    const attachments: ProjectChatAttachmentClaimer = {
+      validate: () => {
+        throw new ProjectChatAttachmentError('attachment_expired');
+      },
+      claim: () => {
+        throw new Error('expired_queue_attachment_was_claimed');
+      },
+      release,
+    };
+    const { chat, codex, storage, projectA } = await fixture(undefined, attachments);
+    const [session] = await chat.listSessions({ projectId: projectA.id });
+    const active = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Keep the project occupied',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Analyze the expired attachment',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      attachmentIds: [attachmentId],
+    });
+    await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Continue without an attachment',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    codex.complete(active.turnId, { reply: 'Initial work complete', actions: [] });
+
+    await vi.waitFor(() => {
+      const snapshot = storage.snapshot(projectA.id, session!.id);
+      expect(snapshot.messages.map((message) => message.content)).toContain(
+        FAILURE_COPY_FOR_EXPIRED_QUEUE_TEST,
+      );
+      expect(
+        [...storage.attempts.values()].find(
+          (attempt) =>
+            attempt.status === 'running' &&
+            storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+              'Continue without an attachment',
+        ),
+      ).toBeDefined();
+    });
+    expect(storage.snapshot(projectA.id, session!.id).queuedTurns).toEqual([]);
+    expect(release).toHaveBeenCalledWith({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      attachmentId,
+    });
+    expect(storage.messages.some((message) => message.content.includes('PRIVATE'))).toBe(false);
+  });
+
+  it('reconciles every project queue globally and preserves same-timestamp enqueue order', async () => {
+    const { chat, codex, storage, projectA, projectB } = await fixture();
+    const [firstSession] = await chat.listSessions({ projectId: projectA.id });
+    const laterSession = await chat.createSession({ projectId: projectA.id });
+    const [otherProjectSession] = await chat.listSessions({ projectId: projectB.id });
+    const createdAt = '2026-08-06T00:00:00.000Z';
+    const first = storage.enqueueProjectChatTurn({
+      id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      projectId: projectA.id,
+      sessionId: firstSession!.id,
+      message: 'First globally despite its larger UUID',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      priority: 'normal',
+      status: 'queued',
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const later = storage.enqueueProjectChatTurn({
+      id: '00000000-0000-4000-8000-000000000001',
+      projectId: projectA.id,
+      sessionId: laterSession.id,
+      message: 'Second global project row',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      priority: 'normal',
+      status: 'queued',
+      createdAt,
+      updatedAt: createdAt,
+    });
+    storage.enqueueProjectChatTurn({
+      id: randomUUID(),
+      projectId: projectB.id,
+      sessionId: otherProjectSession!.id,
+      message: 'Other project startup row',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      priority: 'normal',
+      status: 'queued',
+      createdAt,
+      updatedAt: createdAt,
+    });
+    expect(first.enqueueSequence).toBeLessThan(later.enqueueSequence!);
+
+    await expect(chat.reconcileQueuedTurns()).resolves.toBe(2);
+
+    const firstAttempt = [...storage.attempts.values()].find(
+      (attempt) =>
+        attempt.status === 'running' &&
+        storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+          'First globally despite its larger UUID',
+    );
+    expect(firstAttempt).toBeDefined();
+    expect(
+      [...storage.attempts.values()].find(
+        (attempt) =>
+          attempt.status === 'running' &&
+          storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+            'Other project startup row',
+      ),
+    ).toBeDefined();
+    await chat.snapshot({ projectId: projectA.id, sessionId: laterSession.id });
+    expect(storage.snapshot(projectA.id, laterSession.id).messages).toEqual([]);
+
+    codex.complete(firstAttempt!.turnId!, {
+      reply: 'First global answer',
+      actions: [],
+    });
+    await vi.waitFor(() =>
+      expect(
+        [...storage.attempts.values()].find(
+          (attempt) =>
+            attempt.status === 'running' &&
+            storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+              'Second global project row',
+        ),
+      ).toBeDefined(),
+    );
+  });
+
+  it('edits and removes only pending queue rows without changing visible provenance', async () => {
+    const { chat, storage, projectA } = await fixture();
+    const [session] = await chat.listSessions({ projectId: projectA.id });
+    await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Keep this active',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const firstQueued = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Original queued text',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const secondQueued = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Remove this queued text',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (!('queueId' in firstQueued) || !('queueId' in secondQueued)) {
+      throw new Error('expected queued receipts');
+    }
+
+    await chat.updateQueuedTurn({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      queueId: firstQueued.queueId,
+      message: 'Edited safely in the queue',
+    });
+    await chat.removeQueuedTurn({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      queueId: secondQueued.queueId,
+    });
+
+    expect(storage.snapshot(projectA.id, session!.id).queuedTurns).toMatchObject([
+      { id: firstQueued.queueId, message: 'Edited safely in the queue', status: 'queued' },
+    ]);
+    expect(
+      storage.snapshot(projectA.id, session!.id).messages.map((message) => message.content),
+    ).toEqual(['Keep this active']);
+  });
+
+  it('stops the current turn and starts the selected queue row only after settlement', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const [session] = await chat.listSessions({ projectId: projectA.id });
+    const active = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Current work',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const ordinary = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Ordinary next',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const urgent = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Urgent replacement',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (!('queueId' in ordinary) || !('queueId' in urgent)) {
+      throw new Error('expected queued receipts');
+    }
+
+    await chat.runQueuedTurnNow({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      queueId: urgent.queueId,
+    });
+    expect(codex.interrupted).toEqual([{ threadId: 'thread-1', turnId: active.turnId }]);
+    expect(storage.messages.map((message) => message.content)).toEqual(['Current work']);
+
+    codex.emit('notification', {
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-1',
+        turn: { id: active.turnId, status: 'interrupted' },
+      },
+    });
+    await vi.waitFor(() =>
+      expect(
+        [...storage.attempts.values()].find(
+          (attempt) =>
+            attempt.status === 'running' &&
+            storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+              'Urgent replacement',
+        ),
+      ).toBeDefined(),
+    );
+    expect(storage.snapshot(projectA.id, session!.id).queuedTurns).toMatchObject([
+      { id: ordinary.queueId, message: 'Ordinary next', status: 'queued' },
+    ]);
   });
 
   it('branches only through the selected completed message and stops inheriting later history', async () => {

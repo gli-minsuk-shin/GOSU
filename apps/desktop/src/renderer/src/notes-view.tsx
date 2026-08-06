@@ -1,6 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
-import type { LocalNotesVaultGrant, ProjectChatProfile } from '../../shared/project-chat-contracts';
+import {
+  allowsAgentMarkdownCreate,
+  type LocalNotesVaultGrant,
+  type ProjectChatProfile,
+} from '../../shared/project-chat-contracts';
 import type { ResearchNotesWorkspace } from '../../shared/research-notes-contracts';
 import type {
   ReadVaultAttachmentInput,
@@ -368,9 +372,12 @@ export function ResearchNotesView({
           {accessPanel}
           <p className="note-agent-disclosure">
             Access is project-specific and stays off until you explicitly authorize this folder here
-            or in AI Agent Settings. Once authorized, listing sends display titles and opaque IDs;
-            reading also sends the requested excerpt, content hash, offset, and total length to the
-            configured LLM. Visible replies may be stored and synchronized.
+            or in AI Agent Settings. Listing sends display titles and opaque IDs; reading also sends
+            the requested excerpt, content hash, offset, and total length to the configured LLM.
+            Automatic Markdown saving is a separate explicit capability: it creates only new files
+            under this project’s managed folders, never replaces a different existing file, and
+            reports the relative location. Legacy grants remain read-only until upgraded. Visible
+            replies may be stored and synchronized; Research Notes file bodies remain local.
           </p>
           {vault.files.length === 0 && <p className="column-empty">No Markdown files found</p>}
           {vault.files.length > 0 && (
@@ -459,15 +466,16 @@ export function ResearchNotesProjectAccess({
   onOpenSettings: () => void;
 }) {
   const savedGrant = profile?.localNotesVault ?? null;
-  const authorized = Boolean(
+  const readAuthorized = Boolean(
     project && profile && vaultState === 'ready' && vault && savedGrant?.id === vault.id,
   );
+  const automaticMarkdownSaveAuthorized = readAuthorized && allowsAgentMarkdownCreate(savedGrant);
   const canAuthorize = Boolean(
     project &&
     profile &&
     vaultState === 'ready' &&
     vault &&
-    !authorized &&
+    !automaticMarkdownSaveAuthorized &&
     !profileLoading &&
     !busy,
   );
@@ -506,9 +514,15 @@ export function ResearchNotesProjectAccess({
         ? 'The previously authorized Research Notes binding is not currently available. Access was not transferred.'
         : `No Research Notes folder is authorized for ${project.name}.`;
       tone = 'inactive';
-    } else if (authorized) {
-      title = `Authorized for ${project.name}`;
-      description = `Only this project’s managed Obsidian folder can be listed and read through bounded chat tools.`;
+    } else if (automaticMarkdownSaveAuthorized) {
+      title = `Read + automatic Markdown saves authorized for ${project.name}`;
+      description =
+        'Project Chat can use bounded read tools and create new Markdown files in the managed project folders. Automatic saves are create-only and never overwrite an existing note.';
+      tone = 'authorized';
+    } else if (readAuthorized) {
+      title = `Read-only access for ${project.name}`;
+      description =
+        'This legacy grant still permits bounded note listing and reading. Automatic Markdown saves remain off until you explicitly enable them.';
       tone = 'authorized';
     } else if (savedGrant) {
       title = `Current folder not authorized for ${project.name}`;
@@ -530,19 +544,34 @@ export function ResearchNotesProjectAccess({
       <span>RESEARCH NOTES AGENT ACCESS</span>
       <strong>{title}</strong>
       <p>{description}</p>
+      {project && vault && !automaticMarkdownSaveAuthorized && (
+        <small>
+          Enabling automatic Markdown saves lets Project Chat create reusable deliverables in this
+          project’s Research Notes without asking on every task. GOSU reports the relative saved
+          location and cannot replace a different existing file.
+        </small>
+      )}
       <div className="local-notes-access-actions">
-        {project && vault && !authorized && (
+        {project && vault && !automaticMarkdownSaveAuthorized && (
           <button
             type="button"
             className="secondary-button"
             disabled={!canAuthorize}
-            onClick={() => onSetAccess({ id: vault.id, name: vault.name })}
+            onClick={() =>
+              onSetAccess({
+                id: vault.id,
+                name: vault.name,
+                allowAgentMarkdownCreate: true,
+              })
+            }
           >
             {profileLoading
               ? 'Checking access…'
               : busy
                 ? 'Working…'
-                : `Authorize for ${project.name}`}
+                : readAuthorized
+                  ? 'Enable automatic Markdown saves'
+                  : `Authorize read + automatic saves for ${project.name}`}
           </button>
         )}
         {project && savedGrant && (

@@ -43,6 +43,9 @@ const unavailableVault: ProjectAgentVault = {
   readForAgent: async () => {
     throw new Error('vault_not_selected');
   },
+  saveMarkdownForAgent: async () => {
+    throw new Error('vault_not_selected');
+  },
 };
 
 class FakeAttachments implements ProjectChatAttachmentsForAgent {

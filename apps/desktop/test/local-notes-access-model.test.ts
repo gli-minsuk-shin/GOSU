@@ -26,7 +26,11 @@ describe('Research Notes grant profile update', () => {
       },
       updatedAt: '2026-08-04T01:00:00.000Z',
     };
-    const nextGrant = { id: 'b'.repeat(64), name: 'Current Vault' };
+    const nextGrant = {
+      id: 'b'.repeat(64),
+      name: 'Current Vault',
+      allowAgentMarkdownCreate: true,
+    };
 
     const update = buildLocalNotesGrantUpdate(profile, nextGrant);
 

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
-import type {
-  CodexCollaborationModeCatalog,
-  CodexCollaborationModeDescriptor,
-  LocalNotesVaultGrant,
-  ProjectChatAction,
-  ProjectChatEvent,
-  ProjectChatProfile,
-  ProjectChatSession,
-  ProjectChatSnapshot,
-  UpdateProjectChatProfileInput,
+import {
+  allowsAgentMarkdownCreate,
+  type CodexCollaborationModeCatalog,
+  type CodexCollaborationModeDescriptor,
+  type LocalNotesVaultGrant,
+  type ProjectChatAction,
+  type ProjectChatEvent,
+  type ProjectChatProfile,
+  type ProjectChatSession,
+  type ProjectChatSnapshot,
+  type UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
 import type {
@@ -24,8 +25,10 @@ import type {
 } from '../../shared/ssh-contracts';
 import type {
   CreateRemoteWorkspaceGrantInput,
+  EnableTrustedRemoteWorkspaceInput,
   GrantedRemoteWorkspace,
   RemoveRemoteWorkspaceGrantInput,
+  RevokeTrustedRemoteWorkspaceInput,
   UpdateRemoteWorkspaceGrantInput,
 } from '../../shared/ssh-workspace-contracts';
 import type {
@@ -57,6 +60,7 @@ import {
 } from './project-chat-load-guard';
 import {
   ProjectChatView,
+  resolveEditedMessageBranchPoint,
   resolveEffectiveCodexModel,
   type ProjectChatSshServer,
 } from './project-chat-view';
@@ -363,9 +367,18 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const activeProjectSshServers: readonly ProjectChatSshServer[] = activeProjectSshWorkspaces.map(
     ({ connection, grant }) => ({
       connectionId: connection.id,
+      grantId: grant.id,
+      grantVersion: grant.version,
       label: connection.label,
       canonicalRoot: grant.canonicalRoot,
       permissionMode: grant.permissionMode,
+      trustedAccessEnabled: Boolean(grant.trustedAccess),
+      privilegeClass:
+        connection.directTarget?.user === 'root'
+          ? 'root'
+          : connection.directTarget?.user
+            ? 'standard'
+            : 'unknown',
       resourceState: sshResourceStates[connection.id] ?? { phase: 'idle' },
     }),
   );
@@ -883,6 +896,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           ]).catch((error: unknown) => setWorkspaceError(describeError(error)));
           return;
         }
+        if (event.type === 'queue.updated') {
+          void loadProjectChat(event.projectId, event.sessionId).catch((error: unknown) =>
+            setWorkspaceError(describeError(error)),
+          );
+          return;
+        }
         setChatSnapshots((current) => {
           const sessionSnapshot = current[sessionKey];
           if (!sessionSnapshot) return current;
@@ -1258,7 +1277,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     if (saved) {
       setAnnouncement(
         grant
-          ? `Authorized ${grant.name} for ${project.name} project chat.`
+          ? allowsAgentMarkdownCreate(grant)
+            ? `Authorized ${grant.name} reads and create-only automatic Markdown saves for ${project.name} project chat.`
+            : `Kept ${grant.name} read-only for ${project.name} project chat.`
           : `Revoked Research Notes access for ${project.name}.`,
       );
     }
@@ -1936,6 +1957,22 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onRefreshSshResource={(connectionId) =>
                   refreshProjectSshResource(activeProject.id, connectionId, true)
                 }
+                onEnableTrustedWorkspace={(input: EnableTrustedRemoteWorkspaceInput) =>
+                  runSshWorkspaceAction(
+                    `trusted-workspace-enable:${input.grantId}`,
+                    input.projectId,
+                    () => window.gosu.ssh.enableTrustedWorkspace(input),
+                    'Trusted workspace enabled. Supported bounded operations will no longer ask Allow once.',
+                  )
+                }
+                onRevokeTrustedWorkspace={(input: RevokeTrustedRemoteWorkspaceInput) =>
+                  runSshWorkspaceAction(
+                    `trusted-workspace-revoke:${input.grantId}`,
+                    input.projectId,
+                    () => window.gosu.ssh.revokeTrustedWorkspace(input),
+                    'Trusted workspace revoked. Remote operations require Allow once again.',
+                  )
+                }
                 activeSessionIds={activeSessionIdsForProject(
                   activeProject.id,
                   activeChatSessionKeys,
@@ -1981,13 +2018,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 }
                 onAttachmentError={(error) => setWorkspaceError(describeError(error))}
                 onSend={async (message, retryOfAttemptId, controls, attachmentIds) => {
-                  if (
-                    !activeProjectChatSessionId ||
-                    !activeProjectChatSessionKey ||
-                    chatBusyProjectIds.has(activeProject.id) ||
-                    chatStartingSessionKeys.has(activeProjectChatSessionKey) ||
-                    chatInFlight[activeProjectChatSessionKey]
-                  ) {
+                  if (!activeProjectChatSessionId || !activeProjectChatSessionKey) {
                     return false;
                   }
                   const savedLocalNotesGrant = activeProjectChatSnapshot?.profile?.localNotesVault;
@@ -2066,6 +2097,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
                     });
                     await loadProjectChat(activeProject.id, receipt.sessionId);
+                    if ('queued' in receipt) {
+                      setAnnouncement('Queued this message for the selected Project Chat session.');
+                    }
                     setCodexConnectionState('ready');
                     setCodexErrorVisible(false);
                     return true;
@@ -2092,6 +2126,87 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   void window.gosu.projectChat
                     .cancel(activeProject.id, activeProjectChatSessionId)
                     .catch((error: unknown) => setWorkspaceError(describeError(error)));
+                }}
+                onUpdateQueuedTurn={async (queueId, message) => {
+                  if (!activeProjectChatSessionId) return;
+                  try {
+                    await window.gosu.projectChat.updateQueuedTurn({
+                      projectId: activeProject.id,
+                      sessionId: activeProjectChatSessionId,
+                      queueId,
+                      message,
+                    });
+                    await loadProjectChat(activeProject.id, activeProjectChatSessionId);
+                  } catch (error) {
+                    setWorkspaceError(describeError(error));
+                    throw error;
+                  }
+                }}
+                onRemoveQueuedTurn={async (queueId) => {
+                  if (!activeProjectChatSessionId) return;
+                  try {
+                    await window.gosu.projectChat.removeQueuedTurn({
+                      projectId: activeProject.id,
+                      sessionId: activeProjectChatSessionId,
+                      queueId,
+                    });
+                    await loadProjectChat(activeProject.id, activeProjectChatSessionId);
+                  } catch (error) {
+                    setWorkspaceError(describeError(error));
+                    throw error;
+                  }
+                }}
+                onRunQueuedTurnNow={async (queueId) => {
+                  if (!activeProjectChatSessionId) return;
+                  try {
+                    await window.gosu.projectChat.runQueuedTurnNow({
+                      projectId: activeProject.id,
+                      sessionId: activeProjectChatSessionId,
+                      queueId,
+                    });
+                    await loadProjectChat(activeProject.id, activeProjectChatSessionId);
+                  } catch (error) {
+                    setWorkspaceError(describeError(error));
+                    throw error;
+                  }
+                }}
+                onEditHistoryMessage={async (messageId, content) => {
+                  if (!activeProjectChatSessionId || !activeProjectChatSnapshot) return;
+                  const branchPointId = resolveEditedMessageBranchPoint(
+                    activeProjectChatSnapshot.messages,
+                    messageId,
+                  );
+                  if (branchPointId === undefined) return;
+                  try {
+                    const editedSession = branchPointId
+                      ? await window.gosu.projectChat.branchSession({
+                          projectId: activeProject.id,
+                          sourceSessionId: activeProjectChatSessionId,
+                          branchFromMessageId: branchPointId,
+                          title:
+                            `Edit · ${activeProjectChatSnapshot.session?.title ?? 'Project chat'}`.slice(
+                              0,
+                              120,
+                            ),
+                        })
+                      : await window.gosu.projectChat.createSession({
+                          projectId: activeProject.id,
+                          title:
+                            `Edit · ${activeProjectChatSnapshot.session?.title ?? 'Project chat'}`.slice(
+                              0,
+                              120,
+                            ),
+                        });
+                    await loadProjectChatSessions(activeProject.id);
+                    activateChatSession(activeProject.id, editedSession.id);
+                    chatDraftsRef.current.write(activeProject.id, editedSession.id, content);
+                    await loadProjectChat(activeProject.id, editedSession.id);
+                    setAnnouncement(
+                      'Created a new session branch for the edited message. Original history is unchanged.',
+                    );
+                  } catch (error) {
+                    setWorkspaceError(describeError(error));
+                  }
                 }}
                 onApplyAction={async (action: ProjectChatAction) => {
                   if (applyingChatActionId !== null || !activeProjectChatSessionId) return;

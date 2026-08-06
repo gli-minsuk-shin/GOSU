@@ -91,7 +91,7 @@ describe('Project chat prompt assembly', () => {
     expect(first.provenance).toMatchObject({
       assemblyVersion: 3,
       profileVersion: 3,
-      baseInstructionVersion: 22,
+      baseInstructionVersion: 25,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -110,6 +110,23 @@ describe('Project chat prompt assembly', () => {
     });
     expect(first.developerInstructions).toContain('explicitly provided GOSU tools');
     expect(first.developerInstructions).toContain('read Research Notes by opaque ID');
+    expect(first.developerInstructions).toContain(
+      'required structured response field researchNote controls the one reusable Markdown deliverable',
+    );
+    expect(first.developerInstructions).toContain(
+      'even when the user did not separately ask to save it',
+    );
+    expect(first.developerInstructions).toContain(
+      'Set disposition none only for an ordinary short conversational answer',
+    );
+    expect(first.developerInstructions).toContain(
+      'category, title, and the complete Markdown content without YAML frontmatter',
+    );
+    expect(first.developerInstructions).toContain('use project-progress when genuinely ambiguous');
+    expect(first.developerInstructions).toContain(
+      "appends the authoritative 'Research Notes/<relative path>' receipt",
+    );
+    expect(first.developerInstructions).toContain('must not claim that the file was saved');
     expect(first.developerInstructions).toContain(
       "search bounded bibliographic metadata into this active project's Literature table",
     );
@@ -151,7 +168,12 @@ describe('Project chat prompt assembly', () => {
     expect(first.developerInstructions).toContain(
       'only the bounded title, DOI, and provider ID identifiers',
     );
-    expect(first.developerInstructions).toContain('requires a fresh user Allow once decision');
+    expect(first.developerInstructions).toContain(
+      'require a fresh user Allow once decision unless the user explicitly enabled Trusted workspace',
+    );
+    expect(first.developerInstructions).toContain(
+      'auto-approves and audits only the same bounded operations',
+    );
     expect(first.developerInstructions).toContain(
       'ssh_approval_expired, state that the approval expired before the user made a choice',
     );
@@ -212,7 +234,7 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(22);
+    expect(first.provenance.baseInstructionVersion).toBe(25);
     expect(first.developerInstructions).toContain(
       'Core & canonical is an eligibility-gated maximum, never a quota',
     );
@@ -317,6 +339,7 @@ describe('Project chat prompt assembly', () => {
     });
 
     expect(result.developerInstructions).toContain('Legacy reviewer compatibility is active');
+    expect(result.developerInstructions).toContain('set researchNote disposition to none');
     expect(result.provenance).toMatchObject({
       assemblyVersion: 3,
       requestedLegacyHarnessMode: 'reviewer',

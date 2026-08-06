@@ -18,6 +18,10 @@ import {
   type RankedLiteratureSearch,
 } from './literature-ranking';
 import {
+  HuggingFaceLiteratureProvider,
+  type HuggingFacePaperCandidate,
+} from './literature-hugging-face';
+import {
   SemanticScholarLiteratureProvider,
   type SemanticScholarCandidate,
   type SemanticScholarSearchOptions,
@@ -44,6 +48,7 @@ export interface LiteratureDiscoveryProvider {
 type BalancedLiteratureProviderOptions = Readonly<{
   semanticScholar?: SemanticScholarLiteratureProvider;
   crossref?: CrossrefLiteratureProvider;
+  huggingFace?: HuggingFaceLiteratureProvider;
   now?: () => Date;
 }>;
 
@@ -53,11 +58,13 @@ type LiteratureDiscoveryPool = Readonly<{
 }>;
 
 function strongKey(candidate: LiteratureProviderCandidate) {
-  return candidate.doi
-    ? `doi:${candidate.doi}`
-    : candidate.providerId
-      ? `${candidate.provider}:${candidate.providerId}`
-      : `fingerprint:${candidate.fingerprint}`;
+  return candidate.canonicalId
+    ? `canonical:${candidate.canonicalId}`
+    : candidate.doi
+      ? `doi:${candidate.doi}`
+      : candidate.providerId
+        ? `${candidate.provider}:${candidate.providerId}`
+        : `fingerprint:${candidate.fingerprint}`;
 }
 
 function paperKey(paper: SemanticScholarCandidate) {
@@ -176,11 +183,13 @@ export class BalancedLiteratureProvider implements LiteratureDiscoveryProvider {
   readonly policyVersion = BALANCED_LITERATURE_POLICY_VERSION;
   private readonly semanticScholar: SemanticScholarLiteratureProvider;
   private readonly crossref: CrossrefLiteratureProvider;
+  private readonly huggingFace: HuggingFaceLiteratureProvider;
   private readonly now: () => Date;
 
   constructor(options: BalancedLiteratureProviderOptions = {}) {
     this.semanticScholar = options.semanticScholar ?? new SemanticScholarLiteratureProvider();
     this.crossref = options.crossref ?? new CrossrefLiteratureProvider();
+    this.huggingFace = options.huggingFace ?? new HuggingFaceLiteratureProvider();
     this.now = options.now ?? (() => new Date());
   }
 
@@ -192,29 +201,62 @@ export class BalancedLiteratureProvider implements LiteratureDiscoveryProvider {
     const currentYear = this.now().getUTCFullYear();
     const referenceYear = Math.min(options.toYear ?? currentYear, currentYear);
     const target = Math.max(1, Math.min(Math.trunc(limit), 50));
+    const huggingFaceOutcome = this.huggingFacePool(query, options).then(
+      (pool) => ({ pool, error: null }),
+      (error: unknown) => ({ pool: null, error }),
+    );
     let semanticPool: LiteratureDiscoveryPool;
     try {
       semanticPool = await this.semanticScholarPool(query, options, referenceYear);
     } catch (error) {
       if (isCancellation(error)) throw error;
-      return await this.crossrefSearch(query, target, options, referenceYear, [
-        'semantic-scholar-unavailable',
-      ]);
+      const huggingFace = await huggingFaceOutcome;
+      if (isCancellation(huggingFace.error)) throw huggingFace.error;
+      return await this.crossrefSearch(
+        query,
+        target,
+        options,
+        referenceYear,
+        [
+          'semantic-scholar-unavailable',
+          ...(huggingFace.error ? (['hugging-face-unavailable'] as const) : []),
+        ],
+        huggingFace.pool,
+      );
     }
 
-    const semantic = rankLiteratureCandidates(semanticPool.inputs, target, referenceYear);
-    if (semantic.selectedCount === 0) {
-      return await this.crossrefSearch(query, target, options, referenceYear, [
-        'semantic-scholar-no-eligible-results',
-      ]);
+    const huggingFace = await huggingFaceOutcome;
+    if (isCancellation(huggingFace.error)) throw huggingFace.error;
+    const providerReasons: LiteratureDiscoveryDegradationReason[] = huggingFace.error
+      ? ['hugging-face-unavailable']
+      : [];
+    const semanticOnly = this.rankPools([semanticPool], target, referenceYear, providerReasons);
+    const combined = this.rankPools(
+      [semanticPool, ...(huggingFace.pool ? [huggingFace.pool] : [])],
+      target,
+      referenceYear,
+      providerReasons,
+    );
+    // Hugging Face is an additive discovery source. It must not suppress the authority/recent
+    // fallback when Semantic Scholar itself has no eligible or too few results: HF records do not
+    // carry the citation evidence needed by the fixed Core/Rising policy.
+    if (semanticOnly.selectedCount === 0) {
+      return await this.crossrefSearch(
+        query,
+        target,
+        options,
+        referenceYear,
+        ['semantic-scholar-no-eligible-results', ...providerReasons],
+        huggingFace.pool,
+      );
     }
 
     const missingSortedLane = semanticPool.coverage.degradationReasons.some(
       (reason) => reason === 'citation-lane-unavailable' || reason === 'recent-lane-unavailable',
     );
-    const insufficient = semantic.selectedCount < target;
+    const insufficient = semanticOnly.selectedCount < target;
     if (!missingSortedLane && !insufficient) {
-      return { ...semantic, coverage: semanticPool.coverage };
+      return combined;
     }
 
     const supplementReasons: LiteratureDiscoveryDegradationReason[] = insufficient
@@ -224,51 +266,90 @@ export class BalancedLiteratureProvider implements LiteratureDiscoveryProvider {
       const crossrefPool = await this.crossrefPool(query, target, options, referenceYear);
       if (crossrefPool.inputs.length === 0) {
         return {
-          ...semantic,
+          ...combined,
           coverage: {
-            ...semanticPool.coverage,
+            ...combined.coverage,
             degradationReasons: uniqueValues([
-              ...semanticPool.coverage.degradationReasons,
+              ...combined.coverage.degradationReasons,
               ...supplementReasons,
               ...crossrefPool.coverage.degradationReasons,
             ]),
           },
         };
       }
-      const combined = rankLiteratureCandidates(
-        [...semanticPool.inputs, ...crossrefPool.inputs],
+      return this.rankPools(
+        [semanticPool, crossrefPool, ...(huggingFace.pool ? [huggingFace.pool] : [])],
         target,
         referenceYear,
+        [...supplementReasons, ...providerReasons],
       );
-      return {
-        ...combined,
-        coverage: {
-          source: 'combined',
-          availableSignals: uniqueValues([
-            ...semanticPool.coverage.availableSignals,
-            ...crossrefPool.coverage.availableSignals,
-          ]),
-          degradationReasons: uniqueValues([
-            ...semanticPool.coverage.degradationReasons,
-            ...supplementReasons,
-            ...crossrefPool.coverage.degradationReasons,
-          ]),
-        },
-      };
     } catch (error) {
       if (isCancellation(error)) throw error;
       return {
-        ...semantic,
+        ...combined,
         coverage: {
-          ...semanticPool.coverage,
+          ...combined.coverage,
           degradationReasons: uniqueValues([
-            ...semanticPool.coverage.degradationReasons,
+            ...combined.coverage.degradationReasons,
             ...supplementReasons,
             'crossref-supplement-unavailable',
           ]),
         },
       };
     }
+  }
+
+  private rankPools(
+    pools: readonly LiteratureDiscoveryPool[],
+    limit: number,
+    referenceYear: number,
+    additionalReasons: readonly LiteratureDiscoveryDegradationReason[] = [],
+  ): LiteratureProviderSearchResult {
+    const baseInputs = pools
+      .filter((pool) => pool.coverage.source !== 'hugging-face')
+      .flatMap((pool) => pool.inputs);
+    const huggingFaceInputs = pools
+      .filter((pool) => pool.coverage.source === 'hugging-face')
+      .flatMap((pool) => pool.inputs);
+    const inputs = [...baseInputs, ...this.uniqueHuggingFaceInputs(baseInputs, huggingFaceInputs)];
+    const contributing = pools.filter((pool) => pool.inputs.length > 0);
+    const sources = uniqueValues(contributing.map((pool) => pool.coverage.source));
+    return {
+      ...rankLiteratureCandidates(inputs, limit, referenceYear),
+      coverage: {
+        source: sources.length === 1 ? sources[0]! : 'combined',
+        availableSignals: uniqueValues(
+          contributing.flatMap((pool) => pool.coverage.availableSignals),
+        ),
+        degradationReasons: uniqueValues([
+          ...pools.flatMap((pool) => pool.coverage.degradationReasons),
+          ...additionalReasons,
+        ]),
+      },
+    };
+  }
+
+  private uniqueHuggingFaceInputs(
+    baseInputs: readonly LiteratureRankingCandidate[],
+    huggingFaceInputs: readonly LiteratureRankingCandidate[],
+  ) {
+    const identities = new Set(
+      baseInputs.flatMap(({ candidate }) => [
+        ...(candidate.canonicalId ? [`canonical:${candidate.canonicalId}`] : []),
+        `fingerprint:${candidate.fingerprint}`,
+        ...(candidate.doi ? [`doi:${candidate.doi.toLowerCase()}`] : []),
+      ]),
+    );
+    return huggingFaceInputs.filter(({ candidate }) => {
+      const keys = [
+        ...(candidate.canonicalId ? [`canonical:${candidate.canonicalId}`] : []),
+        `fingerprint:${candidate.fingerprint}`,
+        ...(candidate.doi ? [`doi:${candidate.doi.toLowerCase()}`] : []),
+      ];
+      if (keys.some((key) => identities.has(key))) return false;
+      keys.forEach((key) => identities.add(key));
+      return true;
+    });
   }
 
   private async semanticScholarPool(
@@ -391,6 +472,30 @@ export class BalancedLiteratureProvider implements LiteratureDiscoveryProvider {
     };
   }
 
+  private async huggingFacePool(
+    query: string,
+    options: SemanticScholarSearchOptions,
+  ): Promise<LiteratureDiscoveryPool> {
+    const papers: readonly HuggingFacePaperCandidate[] = await this.huggingFace.search(
+      query,
+      DISCOVERY_POOL_SIZE,
+      options,
+    );
+    return {
+      inputs: papers.map(({ candidate }, index) => ({
+        candidate,
+        relevanceRank: index + 1,
+        relevancePoolSize: papers.length,
+        signalSources: ['hugging-face'] as const,
+      })),
+      coverage: {
+        source: 'hugging-face',
+        availableSignals: ['relevance', 'hugging-face-index'],
+        degradationReasons: [],
+      },
+    };
+  }
+
   private async crossrefPool(
     query: string,
     limit: number,
@@ -476,11 +581,22 @@ export class BalancedLiteratureProvider implements LiteratureDiscoveryProvider {
     options: SemanticScholarSearchOptions,
     referenceYear: number,
     initialReasons: readonly LiteratureDiscoveryDegradationReason[],
+    huggingFacePool: LiteratureDiscoveryPool | null = null,
   ): Promise<LiteratureProviderSearchResult> {
-    const pool = await this.crossrefPool(query, limit, options, referenceYear, initialReasons);
-    return {
-      ...rankLiteratureCandidates(pool.inputs, limit, referenceYear),
-      coverage: pool.coverage,
-    };
+    try {
+      const pool = await this.crossrefPool(query, limit, options, referenceYear, initialReasons);
+      return this.rankPools(
+        [pool, ...(huggingFacePool ? [huggingFacePool] : [])],
+        limit,
+        referenceYear,
+      );
+    } catch (error) {
+      if (isCancellation(error)) throw error;
+      if (!huggingFacePool || huggingFacePool.inputs.length === 0) throw error;
+      return this.rankPools([huggingFacePool], limit, referenceYear, [
+        ...initialReasons,
+        'crossref-supplement-unavailable',
+      ]);
+    }
   }
 }

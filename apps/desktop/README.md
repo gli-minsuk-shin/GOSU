@@ -25,8 +25,12 @@ caller's expected entity version instead of silently applying last-write-wins.
 Research Notes connects one Obsidian Vault and creates an owned `GOSU/<project>` folder with
 Literature, Papers, Experiments, Project Progress, and Idea Development sections. General Vault
 content stays read-only. GOSU writes only initial templates, its deterministic Literature table,
-and one-time paper-note drafts inside the owned project folder. Project-scoped IPC rejects symlinks,
-root escape, stale binding and ownership changes; the Renderer has no Vault-wide filesystem bridge.
+one-time paper-note drafts, and one category-scoped create-only Markdown artifact from a completed,
+authorized Project Chat turn inside the owned project folder. The model's required structured final
+response supplies only a disposition, category, title, and Markdown body; Main performs the write,
+chooses the safe relative path, and never overwrites a different file.
+Project-scoped IPC rejects symlinks, root escape, stale binding and ownership changes; the Renderer
+has no Vault-wide filesystem bridge or generic write API.
 Navigation and privileged IPC are accepted only from the exact packaged renderer URL or an
 explicit-port loopback development origin and its main frame. Packaged builds ignore development
 URL environment overrides.
@@ -49,10 +53,16 @@ and supports:
   Markdown reader reclaims the available space without losing the selected note or tree state;
 - projecting Literature searches into `Literature Review.md` and creating non-overwritten paper notes;
 - using project-scoped Codex chats with runtime-discovered models, reasoning, and native modes;
+- queueing additional messages durably per project while a turn is running, with edit, remove,
+  priority **Run now**, and restart recovery across chat sessions;
+- automatically saving reusable Project Chat Markdown deliverables into the authorized project's
+  appropriate Research Notes section and appending the exact relative save location to the chat;
 - independently minimizing the Project Chat sessions rail and model/server detail panel so the
   transcript reclaims the available width and height;
 - inspecting an app-managed Git workspace and reviewing its branches, history, and changes;
 - building and incrementally updating a project literature review table;
+- adding Hugging Face Papers as a bounded metadata-only discovery source beside Semantic Scholar
+  and Crossref, with canonical arXiv identity deduplication;
 - registering a safely parsed SSH destination and granting a remote workspace root to one project;
 - using Project Chat to list/read/create/hash-check bounded remote text-file replacements, then run
   approved Python, tests, or builds and analyze their bounded output;
@@ -65,6 +75,60 @@ Sync delivery/reconciliation worker and multi-user authorization are not connect
 workspace yet. The Sync readiness indicator only reports whether the development API can be
 reached. The remaining research modules are visibly marked as later work rather than populated with
 simulated experiment or manuscript results.
+
+## Automatic Markdown artifacts
+
+Project Chat treats reusable plans, decisions, reports, analyses, experiment records, literature
+notes, paper notes, hypotheses, and idea-development records as Markdown artifacts without needing
+a separate “save this” instruction. It routes only to the five managed Research Notes categories:
+Literature, Papers, Experiments, Project Progress, or Idea Development. Ordinary short replies,
+clarifying questions, raw logs, and the existing managed Literature projection do not create an
+extra file.
+
+The final response contract always requires either `researchNote: { disposition: "none" }` for a
+transient answer or one bounded `disposition: "save"` payload for a durable artifact. Main closes all
+model-tool intake at terminal, validates that payload, and performs the write itself before sealing
+the assistant message. A write succeeds only after the active project folder has been connected and
+the user has explicitly enabled automatic create-only Markdown saves. Legacy grants remain readable
+but do not gain write permission. Main revalidates the active project, binding, Vault identity,
+ownership marker, and final file bytes around the write. It derives a normalized file name with a
+deterministic artifact suffix, creates the file exclusively, and accepts a retry only when the
+generated path and bytes are identical. The model cannot provide a path, reach another project, or
+replace an existing note. Legacy Reviewer compatibility remains advice-only and cannot create a
+file. A server-owned terminal receipt always appends
+`Research Notes/<relative path>` after a confirmed save, even if model prose omits it. An unavailable,
+stale, conflicting, or commit-uncertain write is labeled as not confirmed and never presented as a
+successful save.
+
+Before writing, Main records a durable receipt with the project, session, attempt, binding,
+category, deterministic artifact ID, and expected content SHA-256—but not the Markdown body or
+Vault root. The receipt advances through `staged`, `uncertain`, `committed-unreported`, and
+`reported`. A bounded timeout shows a confirmation-pending notice without claiming a path. App
+restart and a successful Vault reconnection re-read the exact artifact suffix and bytes. A verified
+file is promoted and reported exactly once; a verified absence becomes an explicit `abandoned`
+not-saved receipt. A late exact-byte completion may safely replace that abandoned notice with the
+real relative path.
+
+## Queued Project Chat turns
+
+Sending while the project already has a starting or running turn creates a durable queued turn
+instead of dropping the message. Queue order is project-global across sessions and uses a persisted
+monotonic sequence; **Run now** moves one item ahead without rewriting its creation order and stops
+the current turn first. Before execution, queued text may be edited or removed. Editing a historical
+completed message creates a branch draft rather than mutating immutable history. Restart recovery
+returns interrupted `starting` queue rows to the queue. If a queued attachment has expired, GOSU
+stores one visible failure receipt for that item, releases it, and continues with the next turn;
+attachment bytes and local paths are never persisted in the queue.
+
+## Literature discovery sources
+
+The balanced search uses Semantic Scholar for relevance, citation, recent, and bounded author
+signals; Crossref supplies fallback or supplement lanes. Hugging Face Papers is an additive public
+metadata source for discovering AI papers. GOSU stores neither abstracts nor raw provider payloads.
+HF-only relevance cannot promote a paper into **Core & canonical** or **Rising & recent** because it
+lacks the fixed citation evidence required by those gates. Semantic Scholar and Hugging Face copies
+of the same arXiv work share a normalized `arxiv:<id>` identity across searches, while genuine DOI,
+provider, or arXiv conflicts remain unmerged and visible for review.
 
 ## Compact Project Chat layout
 
@@ -94,16 +158,28 @@ grant approved for the active project. Choose **Workspace** mode when Project Ch
 code. You can then ask it to inspect Git, list or read project files, create a new text file, replace
 an existing text file using the SHA from its latest read, and run a bounded Python entrypoint,
 test, or build. File access and execution are separate operations; each exact target, root, action,
-path/content or command/argument list waits for a fresh **Allow once** decision.
+path/content or command/argument list waits for a fresh **Allow once** decision by default.
 
-Each request opens as a centered blocking alert dialog, and GOSU shows only one approval at a time.
+For an eligible direct-target, non-root Workspace grant, Project Chat also offers the explicit
+two-warning **Trusted workspace / Full access** option. It removes repeated **Allow once** prompts
+only for the existing typed file and command allowlists and is pinned to the exact project, grant
+and connection versions, canonical root, and safety-policy version. Main reserves the global and
+per-turn execution slot before its asynchronous local append-only audit, then rechecks cancellation,
+shutdown, profile, grant, path, and policy immediately before launch. Any grant or connection change
+invalidates the trust. This option does not add raw shell, sudo, secrets, TTY, forwarding, host
+mounts, destructive host commands, or paths outside the grant. It is also not a remote sandbox:
+approved Python, tests, and builds run with the SSH account's OS and network permissions and can
+spawn subprocesses.
+
+In the default Allow-once mode, each request opens as a centered blocking alert dialog, and GOSU
+shows only one approval at a time.
 The exact preview scrolls independently while the decision bar stays visible with sticky **Deny** and
 **Allow once** actions plus a live countdown. Background workspace controls become inert while the
 dialog is open, keyboard focus stays inside it, **Escape** means **Deny**, and **Deny** is the safe
 initial focus. Closing the dialog restores the previously focused control without moving the chat
-scroll position. The default decision window is five minutes. Creating
-or replacing a file and executing the resulting Python, test, or build are always separate requests,
-so approving file content never approves its execution and every operation needs a fresh
+scroll position. The default decision window is five minutes. Creating or replacing a file and
+executing the resulting Python, test, or build are always separate operation classes, so approving
+file content never approves its execution. Without Trusted workspace, every operation needs a fresh
 **Allow once** decision. If the Renderer misses an event or the chat remounts, it queries Main for
 the pending request bound to that exact project and session and restores the same dialog. Main owns
 the authoritative pending request in process memory; the Renderer keeps only a volatile presentation

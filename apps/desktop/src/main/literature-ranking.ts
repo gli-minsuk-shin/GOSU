@@ -31,7 +31,7 @@ export type LiteratureRankingCandidate = Readonly<{
   citationPoolSize?: number | undefined;
   influentialCitationCount?: number | null | undefined;
   maxAuthorHIndex?: number | null | undefined;
-  signalSources: readonly ('crossref' | 'semantic-scholar')[];
+  signalSources: readonly ('crossref' | 'semantic-scholar' | 'hugging-face')[];
 }>;
 
 export type RankedLiteratureSearch = Readonly<{
@@ -117,14 +117,16 @@ function maximumKnown(
 
 const providerPreference: Record<LiteratureProviderCandidate['provider'], number> = {
   import: 0,
-  crossref: 1,
-  'semantic-scholar': 2,
+  'hugging-face': 1,
+  crossref: 2,
+  'semantic-scholar': 3,
 };
 
 const signalSourcePreference: Record<LiteratureRankingCandidate['signalSources'][number], number> =
   {
     crossref: 0,
-    'semantic-scholar': 1,
+    'hugging-face': 1,
+    'semantic-scholar': 2,
   };
 
 function compareText(left: string, right: string) {
@@ -230,9 +232,11 @@ function mergeCandidateMetadata(
   const citationCount = maximumKnown(left.citationCount, right.citationCount);
   const sourceUrl = preferred.sourceUrl ?? alternate.sourceUrl;
   const doi = left.doi ?? right.doi;
+  const canonicalId = left.canonicalId ?? right.canonicalId;
 
   return {
     ...preferred,
+    ...(canonicalId ? { canonicalId } : {}),
     ...(doi ? { doi } : {}),
     fingerprint: literatureFingerprint(title, authors, publishedYear),
     title,
@@ -279,11 +283,13 @@ function mergeRankingInputs(
 }
 
 function stableCandidateKey(candidate: LiteratureProviderCandidate) {
-  return candidate.doi
-    ? `doi:${candidate.doi.toLowerCase()}`
-    : candidate.providerId
-      ? `${candidate.provider}:${candidate.providerId}`
-      : `fingerprint:${candidate.fingerprint}`;
+  return candidate.canonicalId
+    ? `canonical:${candidate.canonicalId}`
+    : candidate.doi
+      ? `doi:${candidate.doi.toLowerCase()}`
+      : candidate.providerId
+        ? `${candidate.provider}:${candidate.providerId}`
+        : `fingerprint:${candidate.fingerprint}`;
 }
 
 function isResearchWork(candidate: LiteratureProviderCandidate) {
@@ -384,7 +390,7 @@ function withDiscovery(scored: ScoredCandidate, tier: LiteratureDiscoveryTier, t
     reasons: reasonsFor(scored, tier),
     signalSources: scored.input.signalSources
       .filter((source, index, all) => all.indexOf(source) === index)
-      .slice(0, 2),
+      .slice(0, 3),
   };
   return { ...scored.input.candidate, discovery } satisfies LiteratureProviderCandidate;
 }

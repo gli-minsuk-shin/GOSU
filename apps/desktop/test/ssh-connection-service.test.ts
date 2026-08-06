@@ -22,6 +22,7 @@ import {
 } from '../src/shared/ssh-contracts';
 import type {
   RemoteWorkspaceGrant,
+  SshTrustedWorkspaceAuditRecord,
   SshWorkspaceAgentCommand,
   SshWorkspaceFileOperation,
 } from '../src/shared/ssh-workspace-contracts';
@@ -37,6 +38,7 @@ const NOW = new Date('2026-08-04T00:00:00.000Z');
 class MemorySshStorage implements SshConnectionStorage {
   readonly profiles = new Map<string, SshConnectionProfile>();
   readonly workspaceGrants = new Map<string, RemoteWorkspaceGrant>();
+  readonly trustedWorkspaceAudit: SshTrustedWorkspaceAuditRecord[] = [];
 
   constructor(profile: SshConnectionProfile | null = connectionFixture()) {
     if (profile) this.profiles.set(profile.id, profile);
@@ -106,6 +108,14 @@ class MemorySshStorage implements SshConnectionStorage {
       return false;
     }
     return this.workspaceGrants.delete(grantId);
+  }
+
+  appendSshTrustedWorkspaceAudit(
+    record: SshTrustedWorkspaceAuditRecord,
+  ): boolean | Promise<boolean> {
+    if (this.trustedWorkspaceAudit.some((entry) => entry.id === record.id)) return false;
+    this.trustedWorkspaceAudit.push(record);
+    return true;
   }
 }
 
@@ -369,6 +379,353 @@ describe('SSH connection and Allow once service', () => {
         confirmWorkspaceRisk: true,
       }),
     ).rejects.toMatchObject({ code: 'ssh_workspace_command_not_allowed' });
+  });
+
+  it('enables audited trusted workspace execution only after explicit two-part consent', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          localForwards: [],
+        },
+      }),
+    );
+    const { runner, execute } = runnerFixture({ stdout: ' M src/model.py\n' });
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const created = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const trusted = await service.enableTrustedWorkspace({
+      projectId: PROJECT_ID,
+      grantId: created.id,
+      expectedVersion: created.version,
+      confirmTrustedWorkspaceRisk: true,
+      confirmNoRemoteSandbox: true,
+    });
+    const events: unknown[] = [];
+    service.on('event', (event) => events.push(event));
+
+    await expect(
+      service.runAgentWorkspaceCommand(
+        workspaceCommandFixture(trusted, { args: ['status', '--short'] }),
+      ),
+    ).resolves.toMatchObject({ stdout: ' M src/model.py\n' });
+
+    expect(events).toEqual([]);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(storage.trustedWorkspaceAudit).toHaveLength(1);
+    expect(storage.trustedWorkspaceAudit[0]).toMatchObject({
+      projectId: PROJECT_ID,
+      grantId: trusted.id,
+      grantVersion: trusted.version,
+      connectionId: CONNECTION_ID,
+      connectionVersion: 1,
+      policyVersion: 1,
+      operation: 'inspect',
+      commandSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
+    await expect(
+      service.runAgentWorkspaceCommand(
+        workspaceCommandFixture(trusted, {
+          command: '/bin/sh',
+          args: ['-c', 'rm -rf /'],
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'ssh_workspace_command_not_allowed' });
+    expect(storage.trustedWorkspaceAudit).toHaveLength(1);
+    expect(execute).toHaveBeenCalledOnce();
+    await expect(
+      service.revokeTrustedWorkspace({
+        projectId: PROJECT_ID,
+        grantId: trusted.id,
+        expectedVersion: trusted.version,
+      }),
+    ).resolves.toMatchObject({ version: trusted.version + 1, trustedAccess: null });
+  });
+
+  it('expires trusted access when the exact server binding changes and returns to Allow once', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          localForwards: [],
+        },
+      }),
+    );
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const created = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const trusted = await service.enableTrustedWorkspace({
+      projectId: PROJECT_ID,
+      grantId: created.id,
+      expectedVersion: created.version,
+      confirmTrustedWorkspaceRisk: true,
+      confirmNoRemoteSandbox: true,
+    });
+    await service.updateConnection({
+      connectionId: CONNECTION_ID,
+      expectedVersion: 1,
+      label: 'Fixture GPU changed',
+      hostAlias: 'fixture-gpu-changed',
+    });
+    await expect(service.listWorkspaceGrants(PROJECT_ID)).resolves.toMatchObject([
+      { grant: { id: trusted.id, trustedAccess: null } },
+    ]);
+
+    const approval = nextApproval(service);
+    const execution = service.runAgentWorkspaceCommand(workspaceCommandFixture(trusted));
+    const request = await approval;
+    expect(execute).not.toHaveBeenCalled();
+    service.resolveApproval({ approvalId: request.id, decision: 'deny' });
+    await expect(execution).rejects.toMatchObject({ code: 'ssh_approval_denied' });
+    expect(storage.trustedWorkspaceAudit).toEqual([]);
+  });
+
+  it('fails closed before transport when the trusted-operation audit cannot be stored', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          localForwards: [],
+        },
+      }),
+    );
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const created = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const trusted = await service.enableTrustedWorkspace({
+      projectId: PROJECT_ID,
+      grantId: created.id,
+      expectedVersion: created.version,
+      confirmTrustedWorkspaceRisk: true,
+      confirmNoRemoteSandbox: true,
+    });
+    vi.spyOn(storage, 'appendSshTrustedWorkspaceAudit').mockReturnValue(false);
+
+    await expect(
+      service.runAgentWorkspaceCommand(workspaceCommandFixture(trusted)),
+    ).rejects.toMatchObject({ code: 'ssh_trusted_workspace_audit_failed' });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('reserves per-turn and global trusted capacity before delayed audits complete', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          localForwards: [],
+        },
+      }),
+    );
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const created = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const trusted = await service.enableTrustedWorkspace({
+      projectId: PROJECT_ID,
+      grantId: created.id,
+      expectedVersion: created.version,
+      confirmTrustedWorkspaceRisk: true,
+      confirmNoRemoteSandbox: true,
+    });
+    const firstAuditStarted = deferredSignal();
+    const fourAuditsStarted = deferredSignal();
+    const releaseAudit = deferredSignal();
+    let auditStarts = 0;
+    vi.spyOn(storage, 'appendSshTrustedWorkspaceAudit').mockImplementation(async (record) => {
+      auditStarts += 1;
+      if (auditStarts === 1) firstAuditStarted.resolve();
+      if (auditStarts === 4) fourAuditsStarted.resolve();
+      await releaseAudit.promise;
+      storage.trustedWorkspaceAudit.push(record);
+      return true;
+    });
+
+    const first = service.runAgentWorkspaceCommand(
+      workspaceCommandFixture(trusted, { toolCallId: 'trusted-tool-a' }),
+    );
+    await firstAuditStarted.promise;
+    await expect(
+      service.runAgentWorkspaceCommand(
+        workspaceCommandFixture(trusted, { toolCallId: 'trusted-tool-b' }),
+      ),
+    ).rejects.toMatchObject({ code: 'ssh_capacity_exceeded' });
+    expect(execute).not.toHaveBeenCalled();
+
+    const otherTurns = ['b', 'c', 'd'].map((suffix) =>
+      service.runAgentWorkspaceCommand(
+        workspaceCommandFixture(trusted, {
+          turnId: `trusted-turn-${suffix}`,
+          toolCallId: `trusted-tool-${suffix}`,
+        }),
+      ),
+    );
+    await fourAuditsStarted.promise;
+    await expect(
+      service.runAgentWorkspaceCommand(
+        workspaceCommandFixture(trusted, {
+          turnId: 'trusted-turn-over-global-cap',
+          toolCallId: 'trusted-tool-over-global-cap',
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'ssh_capacity_exceeded' });
+
+    releaseAudit.resolve();
+    await expect(Promise.all([first, ...otherTurns])).resolves.toHaveLength(4);
+    expect(storage.trustedWorkspaceAudit).toHaveLength(4);
+    expect(execute).toHaveBeenCalledTimes(4);
+  });
+
+  it('cancels a trusted reservation during delayed audit and never starts it later', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          localForwards: [],
+        },
+      }),
+    );
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const created = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const trusted = await service.enableTrustedWorkspace({
+      projectId: PROJECT_ID,
+      grantId: created.id,
+      expectedVersion: created.version,
+      confirmTrustedWorkspaceRisk: true,
+      confirmNoRemoteSandbox: true,
+    });
+    const auditStarted = deferredSignal();
+    const releaseAudit = deferredSignal();
+    const auditFinished = deferredSignal();
+    vi.spyOn(storage, 'appendSshTrustedWorkspaceAudit').mockImplementation(async (record) => {
+      auditStarted.resolve();
+      await releaseAudit.promise;
+      storage.trustedWorkspaceAudit.push(record);
+      auditFinished.resolve();
+      return true;
+    });
+
+    const execution = service.runAgentWorkspaceCommand(workspaceCommandFixture(trusted));
+    await auditStarted.promise;
+    expect(service.cancelSession(PROJECT_ID, SESSION_A)).toBe(1);
+    await expect(execution).rejects.toMatchObject({ code: 'ssh_cancelled' });
+
+    releaseAudit.resolve();
+    await auditFinished.promise;
+    await Promise.resolve();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('cancels a trusted reservation on shutdown and never starts it after delayed audit', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          localForwards: [],
+        },
+      }),
+    );
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const created = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const trusted = await service.enableTrustedWorkspace({
+      projectId: PROJECT_ID,
+      grantId: created.id,
+      expectedVersion: created.version,
+      confirmTrustedWorkspaceRisk: true,
+      confirmNoRemoteSandbox: true,
+    });
+    const auditStarted = deferredSignal();
+    const releaseAudit = deferredSignal();
+    const auditFinished = deferredSignal();
+    vi.spyOn(storage, 'appendSshTrustedWorkspaceAudit').mockImplementation(async (record) => {
+      auditStarted.resolve();
+      await releaseAudit.promise;
+      storage.trustedWorkspaceAudit.push(record);
+      auditFinished.resolve();
+      return true;
+    });
+
+    const execution = service.runAgentWorkspaceCommand(workspaceCommandFixture(trusted));
+    await auditStarted.promise;
+    expect(service.shutdown()).toBe(1);
+    await expect(execution).rejects.toMatchObject({ code: 'ssh_cancelled' });
+
+    releaseAudit.resolve();
+    await auditFinished.promise;
+    await Promise.resolve();
+    expect(execute).not.toHaveBeenCalled();
+    await expect(
+      service.runAgentWorkspaceCommand(
+        workspaceCommandFixture(trusted, { toolCallId: 'after-shutdown' }),
+      ),
+    ).rejects.toMatchObject({ code: 'ssh_unavailable' });
+  });
+
+  it('does not permit trusted workspace mode for root SSH accounts', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: { host: '203.0.113.10', user: 'root', localForwards: [] },
+      }),
+    );
+    const { runner } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const grant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/root/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    await expect(
+      service.enableTrustedWorkspace({
+        projectId: PROJECT_ID,
+        grantId: grant.id,
+        expectedVersion: grant.version,
+        confirmTrustedWorkspaceRisk: true,
+        confirmNoRemoteSandbox: true,
+      }),
+    ).rejects.toMatchObject({ code: 'ssh_trusted_workspace_not_allowed' });
   });
 
   it('binds a root workspace command to exact grant, root, cwd, hash, and fresh approval', async () => {

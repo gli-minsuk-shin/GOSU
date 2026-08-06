@@ -22,7 +22,16 @@ import {
   PROJECT_CHAT_MAX_ATTACHMENT_UNITS,
   PROJECT_CHAT_MAX_ATTACHMENT_UNITS_PER_TOOL_CALL,
 } from '../shared/project-chat-attachment-contracts';
-import type { LocalNotesVaultGrant } from '../shared/project-chat-contracts';
+import {
+  allowsAgentMarkdownCreate,
+  PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION,
+  type ConfirmProjectChatResearchNoteSaveInput,
+  type MarkProjectChatResearchNoteSaveUncertainInput,
+  type ProjectChatResearchNoteSaveStage,
+  ProjectChatResponseResearchNoteSchema,
+  type ProjectChatResponseResearchNote,
+  type LocalNotesVaultGrant,
+} from '../shared/project-chat-contracts';
 import { repositoryIdentifierForAgent } from '../shared/repository-identifier';
 import {
   SSH_DYNAMIC_TOOL_TIMEOUT_MS,
@@ -58,6 +67,13 @@ import type {
   CodexDynamicToolTimeoutOverride,
 } from './codex-app-server';
 import type { ProjectChatAttachmentsForAgent } from './project-chat-attachment-service';
+import {
+  researchNotesAgentMarkdownArtifactId,
+  ResearchNotesAgentMarkdownReceiptSchema,
+  type RecoverResearchNoteForAgentInput,
+  type ResearchNotesAgentMarkdownReceipt,
+  type SaveResearchNoteForAgentInput,
+} from './research-notes-service';
 import { parseSshWorkspaceFileOutput } from './ssh-workspace-files';
 import type { WorkspaceService } from './workspace-service';
 
@@ -69,6 +85,7 @@ const MAX_TOOL_RESULT_CHARACTERS = 48_000;
 const SOURCE_FINALIZATION_WAIT_MS = 100;
 const LITERATURE_DYNAMIC_TOOL_TIMEOUT_MS = 125_000;
 const SSH_RESOURCE_DYNAMIC_TOOL_TIMEOUT_MS = 40_000;
+const RESEARCH_NOTE_SAVE_TIMEOUT_MS = 10_000;
 
 const ReadWorkspaceArgumentsSchema = z
   .object({ section: z.enum(['summary', 'board', 'objective']).default('summary') })
@@ -290,7 +307,7 @@ const LIST_SSH_WORKSPACES_TOOL = {
   type: 'function',
   name: 'list_ssh_workspaces',
   description:
-    'List only remote workspaces explicitly granted to the active GOSU project. Returns opaque grant IDs, connection labels, permission modes, and a bounded setup state. If no workspace is granted, setupState distinguishes no_registered_connections from workspace_grant_required and registeredConnectionCount reports only the number of local registrations. Host resolution, users, credentials, workspace roots, private-key paths, and SSH config are never returned.',
+    'List only remote workspaces explicitly granted to the active GOSU project. Returns opaque grant IDs, connection labels, permission modes, whether the exact workspace currently has user-enabled trusted access, and a bounded setup state. Trusted access only removes repeated Allow once prompts for the same typed policy; it does not add commands or paths. If no workspace is granted, setupState distinguishes no_registered_connections from workspace_grant_required and registeredConnectionCount reports only the number of local registrations. Host resolution, users, credentials, workspace roots, private-key paths, and SSH config are never returned.',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -317,7 +334,7 @@ const LIST_SSH_WORKSPACE_FILES_TOOL = {
   type: 'function',
   name: 'list_ssh_workspace_files',
   description:
-    'List a bounded set of regular-file candidates inside a remote workspace explicitly granted to this project in workspace mode. An optional relative workspace subdirectory narrows the listing. This typed operation requires a fresh Allow once decision and returns only relative paths and byte sizes, never the workspace root, connection details, helper command, or raw SSH output. A listed candidate is readable only if a separate approved read confirms it is bounded UTF-8 text. It cannot list outside the granted workspace, follow symlinks, or transfer file bodies.',
+    'List a bounded set of regular-file candidates inside a remote workspace explicitly granted to this project in workspace mode. An optional relative workspace subdirectory narrows the listing. This typed operation requires Allow once unless the user explicitly enabled trusted access for this exact project, grant, server version, path, and policy. It returns only relative paths and byte sizes, never the workspace root, connection details, helper command, or raw SSH output. A listed candidate is readable only if a separate read confirms it is bounded UTF-8 text. It cannot list outside the granted workspace, follow symlinks, or transfer file bodies.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -338,7 +355,7 @@ const READ_SSH_WORKSPACE_FILE_TOOL = {
   type: 'function',
   name: 'read_ssh_workspace_file',
   description:
-    'Read one bounded UTF-8 text chunk from a relative path inside a remote workspace explicitly granted to this project in workspace mode. This typed operation requires a fresh Allow once decision. It returns the exact content chunk, its current full-file SHA-256, offsets, and truncation state without exposing the workspace root, connection details, helper command, or raw SSH output. Read before replacing a file so the returned SHA-256 can be checked again immediately before replacement.',
+    'Read one bounded UTF-8 text chunk from a relative path inside a remote workspace explicitly granted to this project in workspace mode. This typed operation requires Allow once unless the user explicitly enabled trusted access for this exact bound workspace. It returns the exact content chunk, its current full-file SHA-256, offsets, and truncation state without exposing the workspace root, connection details, helper command, or raw SSH output. Read before replacing a file so the returned SHA-256 can be checked again immediately before replacement.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -365,7 +382,7 @@ const WRITE_SSH_WORKSPACE_FILE_TOOL = {
   type: 'function',
   name: 'write_ssh_workspace_file',
   description:
-    'Create or hash-check one bounded UTF-8 text-file replacement at a relative path inside a remote workspace explicitly granted to this project in workspace mode. This typed operation requires a fresh Allow once decision and shows the exact proposed content. Set expectedSha256 to null only to create a file that must not exist. To replace a file, first read it and provide its current SHA-256. GOSU rechecks the file immediately before atomic rename, but another server process can still race that final rename. The typed file broker does not provide delete, rename, chmod, binary/large-file access, symlinks, common secret/key paths, or paths outside the granted workspace.',
+    'Create or hash-check one bounded UTF-8 text-file replacement at a relative path inside a remote workspace explicitly granted to this project in workspace mode. This typed operation requires Allow once unless the user explicitly enabled trusted access for this exact bound workspace; every trusted auto-approval is audited. Set expectedSha256 to null only to create a file that must not exist. To replace a file, first read it and provide its current SHA-256. GOSU rechecks the file immediately before atomic rename, but another server process can still race that final rename. The typed file broker does not provide delete, rename, chmod, binary/large-file access, symlinks, common secret/key paths, or paths outside the granted workspace.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -390,7 +407,7 @@ const RUN_SSH_WORKSPACE_COMMAND_TOOL = {
   type: 'function',
   name: 'run_ssh_workspace_command',
   description:
-    'Request one bounded direct-argv command in a remote workspace explicitly granted to this project. Use an absolute executable and an optional relative workspace subdirectory. Diagnostics mode permits bounded inspection. Workspace mode also permits a small test/build allowlist and a foreground Python experiment using /usr/bin/python or /usr/bin/python3, optional -u, a relative .py entrypoint inside the granted workspace, bounded arguments, and at most 120 seconds. These operations can execute untrusted project code. GOSU shows target, workspace, mode, risk, and exact command and executes only after a fresh Allow once decision. This is an advisory policy boundary, not a hard remote sandbox or an unattended job runner. Raw shell strings, inline eval, privilege escalation, file transfer, forwarding, TTY, background execution, and host-wide destructive commands are unavailable.',
+    'Request one bounded direct-argv command in a remote workspace explicitly granted to this project. Use an absolute executable and an optional relative workspace subdirectory. Diagnostics mode permits bounded inspection. Workspace mode also permits a small test/build allowlist and a foreground Python experiment using /usr/bin/python or /usr/bin/python3, optional -u, a relative .py entrypoint inside the granted workspace, bounded arguments, and at most 120 seconds. These operations can execute untrusted project code. GOSU requires Allow once unless the user explicitly enabled trusted access for this exact bound workspace; trusted requests are audited and still use the identical command allowlist. This is an advisory policy boundary, not a hard remote sandbox or an unattended job runner. Raw shell strings, inline eval, privilege escalation, file transfer, forwarding, TTY, background execution, and host-wide destructive commands are unavailable.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -421,6 +438,11 @@ type NoteSource = Readonly<{
   truncated: boolean;
   deliveryUnconfirmed: boolean;
 }>;
+
+type SavedResearchNote = Pick<
+  ResearchNotesAgentMarkdownReceipt,
+  'artifactId' | 'category' | 'path' | 'contentSha256' | 'created'
+>;
 
 type PendingNoteCall = {
   source: NoteSource | null;
@@ -478,6 +500,24 @@ export interface ProjectAgentVault {
     requestedOffset?: number,
     requestedCharacters?: number,
   ): Promise<AgentVaultNoteChunk>;
+  saveMarkdownForAgent(
+    projectId: string,
+    expectedVaultId: string,
+    input: SaveResearchNoteForAgentInput,
+  ): Promise<ResearchNotesAgentMarkdownReceipt>;
+  recoverMarkdownForAgent?(
+    projectId: string,
+    expectedVaultId: string,
+    input: RecoverResearchNoteForAgentInput,
+  ): Promise<ResearchNotesAgentMarkdownReceipt | null>;
+}
+
+export interface ProjectAgentResearchNoteReceiptStorage {
+  stageResearchNoteSave(receipt: ProjectChatResearchNoteSaveStage): void | Promise<void>;
+  markResearchNoteSaveUncertain(
+    input: MarkProjectChatResearchNoteSaveUncertainInput,
+  ): void | Promise<void>;
+  confirmResearchNoteSave(input: ConfirmProjectChatResearchNoteSaveInput): void | Promise<void>;
 }
 
 export interface ProjectAgentLiterature {
@@ -514,6 +554,22 @@ const knownSshWorkspaceFileErrors = new Set<string>([
   'ssh_workspace_file_helper_unavailable',
 ]);
 const knownLiteratureErrors = new Set<string>(LITERATURE_IPC_ERROR_CODES);
+const knownResearchNoteSaveErrors = new Set([
+  'local_notes_not_authorized',
+  'research_notes_markdown_create_not_authorized',
+  'local_notes_authorization_stale',
+  'vault_not_selected',
+  'vault_grant_stale',
+  'research_notes_project_not_found',
+  'research_notes_project_unavailable',
+  'research_notes_vault_not_selected',
+  'research_notes_vault_changed',
+  'research_notes_folder_conflict',
+  'research_notes_folder_unavailable',
+  'research_notes_save_commit_uncertain',
+  'research_notes_save_closed',
+  'research_notes_reviewer_read_only',
+]);
 
 function sha256(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -617,6 +673,35 @@ function safeSourceTitle(value: string) {
   );
 }
 
+function researchNoteSaveFailureMessage(code: string) {
+  if (code === 'local_notes_not_authorized' || code === 'vault_not_selected') {
+    return "No file was created because this project's Research Notes folder is not authorized for Project Chat. Open Research Notes, connect the project folder, and authorize it.";
+  }
+  if (
+    code === 'local_notes_authorization_stale' ||
+    code === 'vault_grant_stale' ||
+    code === 'research_notes_vault_changed'
+  ) {
+    return "The Research Notes binding changed, so the save was not confirmed. Open this project's Research Notes and authorize the current folder before retrying.";
+  }
+  if (code === 'research_notes_markdown_create_not_authorized') {
+    return "No file was created because this project's existing Research Notes grant is read-only. Open Research Notes or Agent Settings and explicitly enable automatic create-only Markdown saves.";
+  }
+  if (code === 'research_notes_folder_conflict') {
+    return "The Research Notes target conflicted with an existing file, so nothing was overwritten. Review this project's Research Notes folder before retrying.";
+  }
+  if (code === 'research_notes_save_commit_uncertain') {
+    return 'GOSU could not confirm this create-only write within the bounded wait. It will verify the exact artifact after completion or restart; no saved path is claimed yet.';
+  }
+  if (code === 'research_notes_save_closed') {
+    return 'No Markdown file was created because this turn was already finalizing. Retry the save in a new message.';
+  }
+  if (code === 'research_notes_reviewer_read_only') {
+    return 'No Markdown file was created because legacy Reviewer compatibility is advice-only. Start a normal project chat turn to persist the review in Research Notes.';
+  }
+  return "GOSU could not confirm a Markdown save. Open this project's Research Notes, check the current folder and permission, and verify its contents before retrying.";
+}
+
 function latestObjective(
   snapshot: Awaited<ReturnType<WorkspaceService['snapshot']>>,
   projectId: string,
@@ -632,14 +717,19 @@ export class ProjectAgentToolSession {
   readonly handler: CodexDynamicToolHandler;
   readonly catalogSha256: string;
   readonly localNotesAvailable: boolean;
+  readonly researchNotesMarkdownCreateAvailable: boolean;
   readonly attachmentsAvailable: boolean;
   private noteCharactersRead = 0;
   private attachmentCharactersRead = 0;
   private readonly noteSources = new Map<string, NoteSource>();
+  private readonly savedResearchNotes = new Map<string, SavedResearchNote>();
+  private readonly researchNoteSaveFailures = new Set<string>();
   private readonly attachmentSources = new Map<string, AttachmentSource>();
   private readonly nativeImageSources = new Map<string, AttachmentSource>();
   private readonly pendingNoteCalls = new Set<PendingNoteCall>();
   private readonly pendingAttachmentCalls = new Set<PendingAttachmentCall>();
+  private finalizing = false;
+  private toolIntakeClosed = false;
   private sourcesSealed = false;
   private sourceAppendixFinalization: Promise<string> | null = null;
   private transportRevoker: (() => void) | null = null;
@@ -662,12 +752,16 @@ export class ProjectAgentToolSession {
       attachments?: ProjectChatAttachmentsForAgent;
       literature?: ProjectAgentLiterature;
       ssh?: ProjectAgentSsh;
+      researchNoteReceipts?: ProjectAgentResearchNoteReceiptStorage;
+      researchNoteSaveTimeoutMs?: number;
     },
   ) {
     this.localNotesAvailable = Boolean(
       dependencies.localNotesVault &&
       dependencies.vault.matchesGrant(dependencies.projectId, dependencies.localNotesVault.id),
     );
+    this.researchNotesMarkdownCreateAvailable =
+      this.localNotesAvailable && allowsAgentMarkdownCreate(dependencies.localNotesVault);
     this.attachmentsAvailable = (dependencies.attachments?.catalog().length ?? 0) > 0;
     const tools = [
       WORKSPACE_TOOL,
@@ -686,7 +780,7 @@ export class ProjectAgentToolSession {
         type: 'namespace',
         name: PROJECT_TOOL_NAMESPACE,
         description:
-          'Project-bound GOSU capabilities, including only remote workspaces explicitly granted to this active project. Project and session identity, connection, and workspace root are injected and revalidated by the Main process. Every remote file operation and SSH command requires a fresh user Allow once decision and never exposes credentials, helper internals, or a local shell.',
+          'Project-bound GOSU capabilities, including only remote workspaces explicitly granted to this active project. Project and session identity, connection, and workspace root are injected and revalidated by the Main process. Remote operations require Allow once unless the user explicitly enabled audited trusted access for the exact current project/workspace/server/policy binding. Trusted access never adds commands, paths, credentials, helper internals, or a local shell.',
         tools,
       },
     ];
@@ -731,9 +825,20 @@ export class ProjectAgentToolSession {
     return this.sourceAppendixFinalization;
   }
 
+  beginTerminal() {
+    if (this.toolIntakeClosed) return;
+    this.toolIntakeClosed = true;
+    this.revokeTransport();
+    this.revokeSshCapability();
+    this.revokeLiteratureCapability();
+    this.revokeAttachmentCapability();
+  }
+
   bindTransportRevoker(revoker: () => void) {
     if (this.transportRevoker) throw new Error('agent_tool_transport_already_bound');
-    if (this.sourceAppendixFinalization) throw new Error('agent_tool_sources_already_finalizing');
+    if (this.toolIntakeClosed || this.sourceAppendixFinalization) {
+      throw new Error('agent_tool_sources_already_finalizing');
+    }
     this.transportRevoker = revoker;
   }
 
@@ -786,6 +891,25 @@ export class ProjectAgentToolSession {
 
   private buildSourceAppendix() {
     const sections: string[] = [];
+    const savedNoteLines = [...this.savedResearchNotes.values()].map(
+      (receipt) =>
+        `- Research Notes/${receipt.path} · ${receipt.category} · SHA-256 ${receipt.contentSha256}`,
+    );
+    if (savedNoteLines.length > 0) {
+      sections.push(`Research Notes saved\n${savedNoteLines.join('\n')}`);
+    }
+    if (this.researchNoteSaveFailures.has('research_notes_save_commit_uncertain')) {
+      sections.push(PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION);
+    }
+    const definitiveFailures = [...this.researchNoteSaveFailures].filter(
+      (code) => code !== 'research_notes_save_commit_uncertain',
+    );
+    if (definitiveFailures.length > 0) {
+      const failureLines = definitiveFailures.map(
+        (code) => `- ${researchNoteSaveFailureMessage(code)}`,
+      );
+      sections.push(`Research Notes not saved\n${failureLines.join('\n')}`);
+    }
     const noteLines = [...this.noteSources.values()].map(
       (source) =>
         `- ${safeSourceTitle(source.title)} · note ${source.noteId.slice(0, 12)} · SHA-256 ${source.contentSha256}${source.truncated ? ' · excerpted' : ''}${source.deliveryUnconfirmed ? ' · delivery unconfirmed' : ''}`,
@@ -805,6 +929,8 @@ export class ProjectAgentToolSession {
   }
 
   private async finalizeSources() {
+    this.finalizing = true;
+    this.beginTerminal();
     const deadline = Date.now() + SOURCE_FINALIZATION_WAIT_MS;
     while (this.pendingNoteCalls.size > 0 || this.pendingAttachmentCalls.size > 0) {
       const remaining = deadline - Date.now();
@@ -822,10 +948,6 @@ export class ProjectAgentToolSession {
       ]);
       if (timer) clearTimeout(timer);
     }
-    this.revokeTransport();
-    this.revokeSshCapability();
-    this.revokeLiteratureCapability();
-    this.revokeAttachmentCapability();
     await (this.attachmentRevocation ?? Promise.resolve()).catch(() => undefined);
     this.sourcesSealed = true;
     for (const pending of [...this.pendingNoteCalls]) {
@@ -989,6 +1111,7 @@ export class ProjectAgentToolSession {
     ) {
       return failure('attachment_expired');
     }
+    if (this.toolIntakeClosed) return failure('tool_not_allowed');
     const pendingNoteCall =
       call.tool === READ_NOTE_TOOL.name ? this.beginPendingNoteCall(delivery) : null;
     const pendingAttachmentCall =
@@ -1075,6 +1198,170 @@ export class ProjectAgentToolSession {
     if (project.trashedAt !== undefined) throw new Error('project_trashed');
     if (project.archivedAt !== undefined) throw new Error('project_archived');
     return { snapshot, project };
+  }
+
+  private recordResearchNoteSaveFailure(code: string) {
+    if (!this.sourcesSealed) this.researchNoteSaveFailures.add(code);
+  }
+
+  async persistResponseResearchNote(value: ProjectChatResponseResearchNote, allowCreate = true) {
+    const parsed = ProjectChatResponseResearchNoteSchema.safeParse(value);
+    if (!parsed.success || parsed.data.disposition === 'none') return;
+    const note = parsed.data;
+    if (!allowCreate) {
+      this.recordResearchNoteSaveFailure('research_notes_reviewer_read_only');
+      return;
+    }
+    if (this.finalizing || this.sourcesSealed) {
+      this.recordResearchNoteSaveFailure('research_notes_save_closed');
+      return;
+    }
+    try {
+      await this.requireActiveProject();
+      if (!this.localNotesAvailable || !this.dependencies.localNotesVault) {
+        this.recordResearchNoteSaveFailure('local_notes_not_authorized');
+        return;
+      }
+      if (!this.researchNotesMarkdownCreateAvailable) {
+        this.recordResearchNoteSaveFailure('research_notes_markdown_create_not_authorized');
+        return;
+      }
+      if (
+        !this.dependencies.vault.matchesGrant(
+          this.dependencies.projectId,
+          this.dependencies.localNotesVault.id,
+        )
+      ) {
+        this.recordResearchNoteSaveFailure('local_notes_authorization_stale');
+        return;
+      }
+      if (!this.dependencies.sessionId || !this.dependencies.attemptId) {
+        this.recordResearchNoteSaveFailure('research_notes_folder_unavailable');
+        return;
+      }
+      const idempotencyKey = sha256(
+        [
+          'final-research-note-v1',
+          this.dependencies.projectId,
+          this.dependencies.sessionId,
+          this.dependencies.attemptId,
+        ].join('\0'),
+      );
+      const expectedContentSha256 = sha256(note.content);
+      const artifactId = researchNotesAgentMarkdownArtifactId(
+        this.dependencies.projectId,
+        this.dependencies.localNotesVault.id,
+        idempotencyKey,
+      );
+      const stagedAt = new Date().toISOString();
+      await this.dependencies.researchNoteReceipts?.stageResearchNoteSave({
+        schemaVersion: 1,
+        projectId: this.dependencies.projectId,
+        sessionId: this.dependencies.sessionId,
+        attemptId: this.dependencies.attemptId,
+        bindingId: this.dependencies.localNotesVault.id,
+        category: note.category,
+        artifactId,
+        expectedContentSha256,
+        stagedAt,
+      });
+
+      const markUncertain = async () => {
+        await this.dependencies.researchNoteReceipts?.markResearchNoteSaveUncertain({
+          projectId: this.dependencies.projectId,
+          sessionId: this.dependencies.sessionId!,
+          attemptId: this.dependencies.attemptId!,
+          artifactId,
+          uncertainAt: new Date().toISOString(),
+        });
+      };
+      let terminalWaitExpired = false;
+      const save = this.dependencies.vault
+        .saveMarkdownForAgent(this.dependencies.projectId, this.dependencies.localNotesVault.id, {
+          category: note.category,
+          title: note.title,
+          content: note.content,
+          idempotencyKey,
+        })
+        .then(async (value) => {
+          const receiptResult = ResearchNotesAgentMarkdownReceiptSchema.safeParse(value);
+          if (!receiptResult.success) throw new Error('research_notes_save_commit_uncertain');
+          const receipt = receiptResult.data;
+          if (
+            receipt.projectId !== this.dependencies.projectId ||
+            receipt.category !== note.category ||
+            receipt.artifactId !== artifactId ||
+            receipt.contentSha256 !== expectedContentSha256 ||
+            !receipt.path.endsWith(`--${receipt.artifactId}.md`)
+          ) {
+            throw new Error('research_notes_save_commit_uncertain');
+          }
+          await this.dependencies.researchNoteReceipts?.confirmResearchNoteSave({
+            projectId: this.dependencies.projectId,
+            sessionId: this.dependencies.sessionId!,
+            attemptId: this.dependencies.attemptId!,
+            artifactId: receipt.artifactId,
+            category: receipt.category,
+            relativePath: receipt.path,
+            contentSha256: receipt.contentSha256,
+            confirmedAt: new Date().toISOString(),
+          });
+          if (!terminalWaitExpired && !this.sourcesSealed) {
+            this.savedResearchNotes.set(receipt.artifactId, {
+              artifactId: receipt.artifactId,
+              category: receipt.category,
+              path: receipt.path,
+              contentSha256: receipt.contentSha256,
+              created: receipt.created,
+            });
+          }
+          return receipt;
+        })
+        .catch(async (error: unknown) => {
+          await markUncertain().catch(() => undefined);
+          throw error;
+        });
+      // Convert both branches to fulfillment immediately so a result arriving after the bounded
+      // wait is always observed. A late exact-byte success can still promote uncertain -> committed.
+      const observedSave = save.then(
+        (receipt) => ({ kind: 'saved' as const, receipt }),
+        (error: unknown) => ({ kind: 'failed' as const, error }),
+      );
+      const timeoutMs = Math.max(
+        1,
+        Math.min(
+          this.dependencies.researchNoteSaveTimeoutMs ?? RESEARCH_NOTE_SAVE_TIMEOUT_MS,
+          60_000,
+        ),
+      );
+      let timer: NodeJS.Timeout | undefined;
+      const outcome = await Promise.race([
+        observedSave,
+        new Promise<{ kind: 'timeout' }>((resolve) => {
+          timer = setTimeout(() => {
+            terminalWaitExpired = true;
+            resolve({ kind: 'timeout' });
+          }, timeoutMs);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (outcome.kind === 'timeout') {
+        await markUncertain().catch(() => undefined);
+        this.recordResearchNoteSaveFailure('research_notes_save_commit_uncertain');
+        return;
+      }
+      if (outcome.kind === 'failed') {
+        throw outcome.error;
+      }
+    } catch (error) {
+      const rawCode = error instanceof Error ? error.message : 'tool_failed';
+      const code = rawCode === 'vault_grant_stale' ? 'local_notes_authorization_stale' : rawCode;
+      if (knownResearchNoteSaveErrors.has(code)) {
+        this.recordResearchNoteSaveFailure(code);
+        return;
+      }
+      this.recordResearchNoteSaveFailure('research_notes_save_commit_uncertain');
+    }
   }
 
   private async readWorkspace(arguments_: unknown) {
@@ -1203,6 +1490,7 @@ export class ProjectAgentToolSession {
         grantId: grant.id,
         connectionLabel: connection.label,
         permissionMode: grant.permissionMode,
+        trustedAccess: Boolean(grant.trustedAccess),
       })),
     });
   }
@@ -1371,6 +1659,7 @@ export class ProjectAgentToolSession {
           .slice(0, LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW)
           .map((conflict) => ({
             ordinal: conflict.ordinal,
+            canonicalId: conflict.canonicalId,
             doi: conflict.doi,
             providerRecordId: conflict.providerRecordId,
             title: conflict.title,

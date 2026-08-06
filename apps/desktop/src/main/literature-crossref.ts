@@ -32,6 +32,7 @@ const CROSSREF_SELECTED_FIELDS = [
 export type LiteratureProviderCandidate = Readonly<{
   provider: LiteratureProvider;
   providerId?: string | undefined;
+  canonicalId?: string | undefined;
   doi?: string | undefined;
   fingerprint: string;
   title: string;
@@ -80,6 +81,20 @@ export function literatureFingerprint(
   publishedYear: number | undefined,
 ) {
   return transferFingerprint({ title, authors, publishedYear });
+}
+
+export function normalizeArxivCanonicalId(value: unknown) {
+  if (typeof value !== 'string') return undefined;
+  let normalized = value.trim().toLowerCase();
+  normalized = normalized
+    .replace(/^https?:\/\/(?:www\.)?arxiv\.org\/(?:abs|pdf)\//u, '')
+    .replace(/^arxiv:\s*/u, '')
+    .replace(/\.pdf$/u, '')
+    .replace(/v\d+$/u, '');
+  if (!/^(?:\d{4}\.\d{4,5}|[a-z][a-z0-9.-]*\/\d{7})$/u.test(normalized)) {
+    return undefined;
+  }
+  return `arxiv:${normalized}`;
 }
 
 function text(value: unknown, maximumLength: number) {

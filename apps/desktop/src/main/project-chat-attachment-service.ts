@@ -160,11 +160,13 @@ export interface ProjectChatAttachmentsForAgent {
 }
 
 export interface ProjectChatAttachmentClaimer {
+  validate?(projectId: string, sessionId: string, attachmentIds: readonly string[]): void;
   claim(
     projectId: string,
     sessionId: string,
     attachmentIds: readonly string[],
   ): ProjectChatAttachmentsForAgent;
+  release?(input: ReleaseProjectChatAttachmentInput): Promise<{ released: true }>;
 }
 
 type EphemeralImage = Readonly<{
@@ -610,6 +612,26 @@ export class ProjectChatAttachmentService {
   }
 
   claim(projectId: string, sessionId: string, attachmentIds: readonly string[]) {
+    const records = this.validateRecords(projectId, sessionId, attachmentIds);
+    for (const record of records) {
+      clearTimeout(record.timer);
+      this.staged.delete(record.descriptor.id);
+    }
+    this.claimedAttachmentCount += records.length;
+    return new ClaimedProjectChatAttachments(
+      records,
+      (image) => this.cleanupEphemeralImage(image),
+      (attachmentCount) => {
+        this.claimedAttachmentCount = Math.max(0, this.claimedAttachmentCount - attachmentCount);
+      },
+    );
+  }
+
+  validate(projectId: string, sessionId: string, attachmentIds: readonly string[]) {
+    this.validateRecords(projectId, sessionId, attachmentIds);
+  }
+
+  private validateRecords(projectId: string, sessionId: string, attachmentIds: readonly string[]) {
     if (attachmentIds.length > PROJECT_CHAT_MAX_ATTACHMENTS) {
       throw new ProjectChatAttachmentError('attachment_too_many');
     }
@@ -633,18 +655,7 @@ export class ProjectChatAttachmentService {
     ) {
       throw new ProjectChatAttachmentError('attachment_total_too_large');
     }
-    for (const record of records) {
-      clearTimeout(record.timer);
-      this.staged.delete(record.descriptor.id);
-    }
-    this.claimedAttachmentCount += records.length;
-    return new ClaimedProjectChatAttachments(
-      records,
-      (image) => this.cleanupEphemeralImage(image),
-      (attachmentCount) => {
-        this.claimedAttachmentCount = Math.max(0, this.claimedAttachmentCount - attachmentCount);
-      },
-    );
+    return records;
   }
 
   async dispose() {

@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ProjectChatView,
   reconcileProjectChatSessionUiState,
+  resolveEditedMessageBranchPoint,
   resolveFailedTurnRecoveryMode,
   resolveEffectiveCodexModel,
   resolveInitialProjectChatScrollTop,
@@ -101,6 +102,17 @@ describe('advanced Project Chat controls', () => {
   it('requires a fresh image attachment instead of offering an incomplete saved retry', () => {
     expect(resolveFailedTurnRecoveryMode('attachment_model_modality_unsupported')).toBe('reattach');
     expect(resolveFailedTurnRecoveryMode('codex_unavailable')).toBe('retry');
+  });
+
+  it('branches a historical edit before the original user message instead of mutating it', () => {
+    const messages = [
+      { id: 'assistant-before', role: 'assistant' as const, status: 'complete' as const },
+      { id: 'user-original', role: 'user' as const, status: 'complete' as const },
+      { id: 'assistant-after', role: 'assistant' as const, status: 'complete' as const },
+    ];
+    expect(resolveEditedMessageBranchPoint(messages, 'user-original')).toBe('assistant-before');
+    expect(resolveEditedMessageBranchPoint(messages.slice(1), 'user-original')).toBeNull();
+    expect(resolveEditedMessageBranchPoint(messages, 'missing')).toBeUndefined();
   });
 
   it('anchors a tall latest response below the transcript inset instead of clipping its header', () => {
@@ -444,9 +456,8 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('SSH workspace not granted');
     expect(html).toContain('foreground Python experiment entrypoints');
     expect(html).toContain('Experiments are limited to 120 seconds');
-    expect(html).toContain(
-      'Raw shells, inline Python, TTY, transfer, unattended execution, secrets',
-    );
+    expect(html).toContain('The direct GOSU tool surface does not offer raw shells');
+    expect(html).toContain('can reach anything the SSH account permits');
     expect(html).toContain('aria-label="Attach research files"');
     expect(html).toContain(
       'Attach up to 5 documents, presentations, text files, or images for this turn',
@@ -534,6 +545,27 @@ describe('advanced Project Chat controls', () => {
     expect(styles).toMatch(/\.chat-details-toggle\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;/su);
   });
 
+  it('states the real remote security boundary before enabling trusted workspace access', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/project-chat-view.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('SSH account’s OS and network permissions');
+    expect(source).toContain('can spawn subprocesses');
+    expect(source).toContain(
+      'Typed path limits and the lack of a raw-shell UI do not make this a remote sandbox',
+    );
+    expect(source).toContain('The direct GOSU tool surface rejects raw shell');
+    expect(source).toContain('Those input checks do not constrain code after launch');
+    expect(source).toContain('read or change secrets and paths outside the grant');
+    expect(source).toContain('start any subprocess the SSH account permits');
+    expect(source).toContain('The direct GOSU tool surface does not offer raw shells');
+    expect(source).toContain('can reach anything the SSH account permits');
+    expect(source).toContain('secrets, out-of-grant paths, the network, and subprocesses');
+    expect(source).not.toContain('GOSU still blocks raw shell, secrets and private keys');
+  });
+
   it('shows only the project-scoped linked server resources in every chat session shell', () => {
     const html = renderToStaticMarkup(
       <ProjectChatView
@@ -566,9 +598,13 @@ describe('advanced Project Chat controls', () => {
         sshServers={[
           {
             connectionId: linkedServerSnapshot.connectionId,
+            grantId: '88888888-8888-4888-8888-888888888888',
+            grantVersion: 1,
             label: 'Granted GPU server',
             canonicalRoot: '/workspace/agentic-study',
             permissionMode: 'workspace',
+            trustedAccessEnabled: false,
+            privilegeClass: 'standard',
             resourceState: { phase: 'ready', snapshot: linkedServerSnapshot },
           },
         ]}
@@ -586,6 +622,8 @@ describe('advanced Project Chat controls', () => {
     expect(html).not.toContain('CPU utilization 63%');
     expect(html).not.toContain('GPU 0 utilization 81%');
     expect(html).toContain('Refresh usage');
+    expect(html).toContain('Allow once required');
+    expect(html).toContain('Enable full access…');
     expect(html).not.toContain('SSH server registered — project access is not granted yet');
   });
 
@@ -654,7 +692,7 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('restore this unsent session draft</textarea>');
   });
 
-  it('keeps another session visible while enforcing the single active turn per project', () => {
+  it('keeps another session visible and lets its next message enter the project queue', () => {
     const html = renderToStaticMarkup(
       <ProjectChatView
         project={project}
@@ -687,10 +725,67 @@ describe('advanced Project Chat controls', () => {
     );
 
     expect(html).toContain('Another session has an active Codex turn.');
-    expect(html).toMatch(/<textarea[^>]*disabled=""/u);
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Send/u);
+    expect(html).not.toMatch(/<textarea[^>]*disabled=""/u);
+    expect(html).toContain('>Queue<span>Enter</span>');
     expect(html).not.toContain('>Stop</button>');
     expect(html).toContain('aria-label="Create a new project chat session"');
+  });
+
+  it('shows a compact editable queue with a safe replace-current action', () => {
+    const sessionId = '22222222-2222-4222-8222-222222222222';
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          queuedTurns: [
+            {
+              id: '33333333-3333-4333-8333-333333333333',
+              projectId: project.id,
+              sessionId,
+              message: 'Analyze the queued experiment',
+              requestedModelId: null,
+              reasoningOptionId: null,
+              priority: 'next',
+              status: 'queued',
+              createdAt: '2026-08-06T00:00:00.000Z',
+              updatedAt: '2026-08-06T00:00:00.000Z',
+            },
+          ],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight
+        projectBusy
+        models={[]}
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Queued · 1');
+    expect(html).toContain('Analyze the queued experiment');
+    expect(html).toContain('Runs next');
+    expect(html).toContain('Stop current &amp; run now');
+    expect(html).toContain('>Edit</button>');
+    expect(html).toContain('>Remove</button>');
+    expect(html).toContain('>Stop</button>');
+    expect(html).toContain('>Queue<span>Enter</span>');
   });
 
   it('pauses a saved Research Notes grant while Main-process capability status is unavailable', () => {

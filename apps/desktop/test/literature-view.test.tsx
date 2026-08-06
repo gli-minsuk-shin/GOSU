@@ -78,7 +78,7 @@ const rawPaper: LiteratureRecord = {
     searchRunId: '33333333-3333-4333-8333-333333333333',
     query: 'agentic research evaluation',
     policyId: 'balanced-three-layer',
-    policyVersion: 2,
+    policyVersion: 3,
     classifiedAt: '2026-08-04T00:00:00.000Z',
   },
   createdAt: '2026-08-04T00:00:00.000Z',
@@ -146,6 +146,7 @@ describe('Literature workspace', () => {
             ordinal: 25,
             provider: 'crossref',
             providerRecordId: '10.1000/gosu.conflict',
+            canonicalId: 'arxiv:2608.00001',
             doi: '10.1000/gosu.conflict',
             fingerprint: 'b'.repeat(64),
             title: 'Ambiguous metadata fixture',
@@ -171,7 +172,8 @@ describe('Literature workspace', () => {
     expect(notice).toContain('Deep search complete: 25 selected');
     expect(notice).toContain('1 ambiguous result was skipped');
     expect(notice).toContain('without changing saved papers');
-    expect(notice).toContain('Skipped: DOI 10.1000/gosu.conflict');
+    expect(notice).toContain('arxiv:2608.00001');
+    expect(notice).toContain('DOI 10.1000/gosu.conflict');
     expect(notice).toContain('Reduced signal coverage');
     expect(notice).toContain('Semantic Scholar Unavailable');
     expect(notice).toContain('available: Relevance, Citation Authority');
@@ -182,6 +184,7 @@ describe('Literature workspace', () => {
       ordinal: index + 1,
       provider: 'crossref' as const,
       providerRecordId: `10.1000/gosu.conflict-${index + 1}`,
+      canonicalId: null,
       doi: `10.1000/gosu.conflict-${index + 1}`,
       fingerprint: `${index + 1}`.repeat(64),
       title: `Ambiguous metadata fixture ${index + 1}`,
@@ -229,7 +232,7 @@ describe('Literature workspace', () => {
     expect(html).toContain('leaving both fields blank uses the normalized search query');
     expect(html).toContain('aria-label="Search tag filter"');
     expect(html).toContain('All search tags');
-    expect(html).toContain('Fixed policy v2');
+    expect(html).toContain('Fixed policy v3');
     expect(html).toContain('Core is a maximum, never a quota');
     expect(html).toContain('Venue metadata and author h-index never promote a paper by themselves');
     expect(html).toContain('aria-label="Discovery layer view"');
@@ -519,16 +522,16 @@ describe('Literature workspace', () => {
         ...rawPaper,
         discovery: rawPaper.discovery ? { ...rawPaper.discovery, policyVersion: 1 } : null,
       }),
-    ).toBe('Legacy policy v1 — search again to apply v2');
+    ).toBe('Legacy policy v1 — search again to apply v3');
     expect(
       literatureCoreGateSummary({
         ...rawPaper,
-        discovery: rawPaper.discovery ? { ...rawPaper.discovery, policyVersion: 3 } : null,
+        discovery: rawPaper.discovery ? { ...rawPaper.discovery, policyVersion: 4 } : null,
       }),
-    ).toBe('Policy balanced-three-layer v3 — current v2 Core gate is not interpreted');
+    ).toBe('Policy balanced-three-layer v4 — current v3 Core gate is not interpreted');
   });
 
-  it('separates current v2 Core counts from historical or other-policy labels', () => {
+  it('separates current v3 Core counts from historical or other-policy labels', () => {
     const legacy = {
       ...rawPaper,
       id: '44444444-4444-4444-8444-444444444444',

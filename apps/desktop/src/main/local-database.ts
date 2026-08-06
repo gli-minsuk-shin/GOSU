@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3-multiple-ciphers';
 import { app, safeStorage } from 'electron';
+import { z } from 'zod';
 
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import {
@@ -36,13 +37,23 @@ import {
   type LiteratureSearchTags,
 } from '../shared/literature-search-tags';
 import {
+  AbandonProjectChatResearchNoteSaveInputSchema,
+  ConfirmProjectChatResearchNoteSaveInputSchema,
+  MarkProjectChatResearchNoteSaveUncertainInputSchema,
+  PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION,
+  PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION,
+  PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH,
   ProjectChatActionSchema,
   ProjectChatAttemptSchema,
   ProjectChatMessageSchema,
   PROJECT_CHAT_MAX_BRANCH_DEPTH,
   PROJECT_CHAT_MAX_BRANCH_MESSAGES,
+  PROJECT_CHAT_MAX_QUEUED_TURNS_PER_SESSION,
   PROJECT_CHAT_MAX_SESSIONS_PER_PROJECT,
   ProjectChatProfileSchema,
+  ProjectChatQueuedTurnSchema,
+  ProjectChatResearchNoteSaveReceiptSchema,
+  ProjectChatResearchNoteSaveStageSchema,
   ProjectChatSessionSchema,
   ProjectChatSnapshotSchema,
   UpdateProjectChatProfileInputSchema,
@@ -51,6 +62,12 @@ import {
   type ProjectChatAttempt,
   type ProjectChatMessage,
   type ProjectChatProfile,
+  type ProjectChatQueuedTurn,
+  type ProjectChatResearchNoteSaveReceipt,
+  type ProjectChatResearchNoteSaveStage,
+  type AbandonProjectChatResearchNoteSaveInput,
+  type ConfirmProjectChatResearchNoteSaveInput,
+  type MarkProjectChatResearchNoteSaveUncertainInput,
   type ProjectChatSession,
   type ProjectChatSnapshot,
   type UpdateProjectChatProfileInput,
@@ -58,7 +75,9 @@ import {
 import { SshConnectionProfileSchema, type SshConnectionProfile } from '../shared/ssh-contracts';
 import {
   RemoteWorkspaceGrantSchema,
+  SshTrustedWorkspaceAuditRecordSchema,
   type RemoteWorkspaceGrant,
+  type SshTrustedWorkspaceAuditRecord,
 } from '../shared/ssh-workspace-contracts';
 import type {
   WorkspaceOperation,
@@ -66,7 +85,11 @@ import type {
   WorkspaceSnapshot,
 } from '../shared/workspace-contracts';
 import { ExperimentWorkspaceStorageError } from './experiment-workspace-storage-error';
-import { literatureFingerprint, type LiteratureProviderCandidate } from './literature-crossref';
+import {
+  literatureFingerprint,
+  normalizeArxivCanonicalId,
+  type LiteratureProviderCandidate,
+} from './literature-crossref';
 import { LiteratureStorageError } from './literature-storage-error';
 import { WorkspaceDataRecoveryError } from './workspace-storage-error';
 
@@ -74,13 +97,182 @@ const MAX_WORKSPACE_STATE_BYTES = 8 * 1024 * 1024;
 const INTERRUPTED_CHAT_ATTEMPT_RECEIPT =
   'GOSU closed before this Codex turn finished. Retry when ready.';
 const PROJECT_CHAT_SESSIONS_MIGRATION = 'project-chat-sessions-v1';
+const PROJECT_CHAT_RESEARCH_NOTE_ABANDONED_MIGRATION = 'project-chat-research-note-abandoned-v1';
 const LITERATURE_MANUAL_RELEVANCE_MIGRATION = 'literature-manual-relevance-v2';
 const LITERATURE_WEAK_FINGERPRINT_MIGRATION = 'literature-weak-fingerprint-v1';
 const LITERATURE_DISCOVERY_MIGRATION = 'literature-balanced-discovery-v1';
 const LITERATURE_DISCOVERY_COVERAGE_MIGRATION = 'literature-discovery-coverage-v1';
 const LITERATURE_SEARCH_TAGS_MIGRATION = 'literature-search-tags-v1';
+const LITERATURE_HUGGING_FACE_PROVIDER_MIGRATION = 'literature-hugging-face-provider-v1';
+const LITERATURE_CANONICAL_IDENTITY_MIGRATION = 'literature-canonical-identity-v1';
 const DEFAULT_PROJECT_CHAT_SESSION_TITLE = 'Project chat';
 const ExperimentMetricPointDraftSchema = ExperimentMetricPointSchema.omit({ sequence: true });
+
+type ProjectChatResearchNoteSaveReceiptRow = Readonly<{
+  project_id: string;
+  session_id: string;
+  attempt_id: string;
+  binding_id: string;
+  category: string;
+  artifact_id: string;
+  expected_content_sha256: string;
+  status: string;
+  relative_path: string | null;
+  staged_at: string;
+  updated_at: string;
+  committed_at: string | null;
+  reported_at: string | null;
+}>;
+
+function toProjectChatResearchNoteSaveReceipt(
+  row: ProjectChatResearchNoteSaveReceiptRow,
+): ProjectChatResearchNoteSaveReceipt {
+  return ProjectChatResearchNoteSaveReceiptSchema.parse({
+    schemaVersion: 1,
+    projectId: row.project_id,
+    sessionId: row.session_id,
+    attemptId: row.attempt_id,
+    bindingId: row.binding_id,
+    category: row.category,
+    artifactId: row.artifact_id,
+    expectedContentSha256: row.expected_content_sha256,
+    status: row.status,
+    relativePath: row.relative_path,
+    stagedAt: row.staged_at,
+    updatedAt: row.updated_at,
+    committedAt: row.committed_at,
+    reportedAt: row.reported_at,
+  });
+}
+
+const PROJECT_CHAT_RESEARCH_NOTE_RECEIPT_COLUMNS = `
+  project_id,session_id,attempt_id,binding_id,category,artifact_id,
+  expected_content_sha256,status,relative_path,staged_at,updated_at,committed_at,reported_at
+`;
+
+function committedResearchNoteReceiptsForAttempt(database: Database.Database, attemptId: string) {
+  return (
+    database
+      .prepare(
+        `select ${PROJECT_CHAT_RESEARCH_NOTE_RECEIPT_COLUMNS}
+         from project_chat_research_note_save_receipts
+         where attempt_id=? and status='committed-unreported'
+         order by staged_at,artifact_id`,
+      )
+      .all(attemptId) as ProjectChatResearchNoteSaveReceiptRow[]
+  ).map(toProjectChatResearchNoteSaveReceipt);
+}
+
+function appendResearchNoteSaveReceipts(
+  content: string,
+  receipts: readonly ProjectChatResearchNoteSaveReceipt[],
+) {
+  const serverAppendixSeparator = '\n\n---\n';
+  let resolvedContent = content
+    .split(`${serverAppendixSeparator}${PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION}`)
+    .join('');
+  for (const receipt of receipts) {
+    resolvedContent = resolvedContent
+      .split(`${serverAppendixSeparator}${abandonedResearchNoteSaveSection(receipt)}`)
+      .join('');
+  }
+  const missing = receipts.filter(
+    (receipt) =>
+      receipt.relativePath !== null &&
+      !resolvedContent.includes(`Research Notes/${receipt.relativePath}`),
+  );
+  if (missing.length === 0) return resolvedContent;
+  const appendix = `\n\n---\nResearch Notes saved\n${missing
+    .map(
+      (receipt) =>
+        `- Research Notes/${receipt.relativePath} · ${receipt.category} · SHA-256 ${receipt.expectedContentSha256}`,
+    )
+    .join('\n')}`;
+  const safeAppendix = appendix.slice(0, PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH - 1);
+  const contentBudget = PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH - safeAppendix.length;
+  return `${resolvedContent.slice(0, Math.max(1, contentBudget))}${safeAppendix}`;
+}
+
+function abandonedResearchNoteSaveSection(
+  receipt: Pick<
+    ProjectChatResearchNoteSaveReceipt,
+    'artifactId' | 'category' | 'expectedContentSha256'
+  >,
+) {
+  return `${PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION}\n- ${receipt.category} artifact ${receipt.artifactId} · SHA-256 ${receipt.expectedContentSha256}`;
+}
+
+function appendAbandonedResearchNoteSaveReceipt(
+  content: string,
+  receipt: ProjectChatResearchNoteSaveReceipt,
+) {
+  const section = abandonedResearchNoteSaveSection(receipt);
+  if (content.includes(section)) return content;
+  const serverAppendixSeparator = '\n\n---\n';
+  const resolvedContent = content
+    .split(`${serverAppendixSeparator}${PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION}`)
+    .join('');
+  const appendix = `${serverAppendixSeparator}${section}`;
+  const safeAppendix = appendix.slice(0, PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH - 1);
+  const contentBudget = PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH - safeAppendix.length;
+  return `${resolvedContent.slice(0, Math.max(1, contentBudget))}${safeAppendix}`;
+}
+
+function reportResearchNoteReceipts(
+  database: Database.Database,
+  attemptId: string,
+  reportedAt: string,
+) {
+  return database
+    .prepare(
+      `update project_chat_research_note_save_receipts
+       set status='reported',reported_at=?,updated_at=?
+       where attempt_id=? and status='committed-unreported'`,
+    )
+    .run(reportedAt, reportedAt, attemptId).changes;
+}
+
+function reconcileCommittedResearchNoteReceiptsForAttempt(
+  database: Database.Database,
+  attemptId: string,
+  reportedAt: string,
+) {
+  const receipts = committedResearchNoteReceiptsForAttempt(database, attemptId);
+  if (receipts.length === 0) return 0;
+  const assistant = database
+    .prepare(
+      `select id,content from project_chat_messages
+       where attempt_id=? and role='assistant'
+       order by created_at desc,id desc limit 1`,
+    )
+    .get(attemptId) as { id: string; content: string } | undefined;
+  if (!assistant) return 0;
+  const content = appendResearchNoteSaveReceipts(assistant.content, receipts);
+  if (content !== assistant.content) {
+    database
+      .prepare('update project_chat_messages set content=? where id=?')
+      .run(content, assistant.id);
+  }
+  return reportResearchNoteReceipts(database, attemptId, reportedAt);
+}
+
+function reconcileCommittedResearchNoteReceipts(database: Database.Database, reportedAt: string) {
+  const attempts = database
+    .prepare(
+      `select distinct attempt_id from project_chat_research_note_save_receipts
+       where status='committed-unreported' order by attempt_id`,
+    )
+    .all() as Array<{ attempt_id: string }>;
+  let reported = 0;
+  for (const attempt of attempts) {
+    reported += reconcileCommittedResearchNoteReceiptsForAttempt(
+      database,
+      attempt.attempt_id,
+      reportedAt,
+    );
+  }
+  return reported;
+}
 
 export type LocalLiteratureAiAnnotationUpdate = LiteratureAiAnnotationUpdate &
   Readonly<{ provenance: LiteratureAiProvenance }>;
@@ -355,6 +547,7 @@ type LiteratureRecordRow = Readonly<{
   project_id: string;
   source_provider: string;
   provider_record_id: string | null;
+  canonical_id: string | null;
   doi: string | null;
   fingerprint: string;
   title: string;
@@ -415,6 +608,7 @@ type LiteratureSearchConflictRow = Readonly<{
   ordinal: number;
   provider: string;
   provider_record_id: string | null;
+  canonical_id: string | null;
   doi: string | null;
   fingerprint: string;
   title: string;
@@ -534,6 +728,7 @@ function toLocalLiteratureRecord(row: LiteratureRecordRow): LiteratureRecord {
     projectId: row.project_id,
     provider: row.source_provider,
     providerRecordId: row.provider_record_id,
+    canonicalId: row.canonical_id,
     doi: row.doi,
     fingerprint: row.fingerprint,
     title: row.title,
@@ -579,6 +774,7 @@ function toLocalLiteratureSearchConflict(
     ordinal: row.ordinal,
     provider: row.provider,
     providerRecordId: row.provider_record_id,
+    canonicalId: row.canonical_id,
     doi: row.doi,
     fingerprint: row.fingerprint,
     title: row.title,
@@ -639,7 +835,8 @@ function listLiteratureSearchConflicts(
 ): LiteratureSearchConflict[] {
   const rows = database
     .prepare(
-      `select ordinal,provider,provider_record_id,doi,fingerprint,title,authors_json,published_year
+      `select ordinal,provider,provider_record_id,canonical_id,doi,fingerprint,title,authors_json,
+              published_year
        from literature_search_conflicts where search_run_id=? order by ordinal
        limit ${LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW}`,
     )
@@ -698,6 +895,7 @@ function candidateState(candidate: LiteratureProviderCandidate) {
   return {
     source_provider: candidate.provider,
     provider_record_id: candidate.providerId ?? null,
+    canonical_id: candidate.canonicalId ?? null,
     doi: candidate.doi ?? null,
     fingerprint: candidate.fingerprint,
     title: candidate.title,
@@ -721,6 +919,7 @@ function mergedProviderCandidateState(
       state.provider_record_id ??
       (state.source_provider === existing.source_provider ? existing.provider_record_id : null),
     doi: state.doi ?? existing.doi,
+    canonical_id: state.canonical_id ?? existing.canonical_id,
   };
   if (candidate.provider !== 'semantic-scholar') return { ...state, ...identity };
 
@@ -781,14 +980,30 @@ function findLiteratureRecord(
         .get(projectId, candidate.provider, candidate.providerId) as
         LiteratureRecordRow | undefined)
     : undefined;
-  const strongIdentities = [byDoi, byProvider].filter(
+  const byCanonical = candidate.canonicalId
+    ? (database
+        .prepare(
+          `select * from literature_records
+           where project_id=? and canonical_id=? limit 1`,
+        )
+        .get(projectId, candidate.canonicalId) as LiteratureRecordRow | undefined)
+    : undefined;
+  const strongIdentities = [byDoi, byProvider, byCanonical].filter(
     (record): record is LiteratureRecordRow => record !== undefined,
   );
   if (new Set(strongIdentities.map((record) => record.id)).size > 1) {
     throw new LiteratureStorageError('identity_conflict');
   }
-  const matched = byDoi ?? byProvider;
+  const matched = byDoi ?? byCanonical ?? byProvider;
   if (matched && candidate.doi && matched.doi && candidate.doi !== matched.doi) {
+    throw new LiteratureStorageError('identity_conflict');
+  }
+  if (
+    matched &&
+    candidate.canonicalId &&
+    matched.canonical_id &&
+    candidate.canonicalId !== matched.canonical_id
+  ) {
     throw new LiteratureStorageError('identity_conflict');
   }
   if (
@@ -809,20 +1024,32 @@ function findLiteratureRecord(
        where project_id=? and fingerprint=? order by created_at,id`,
     )
     .all(projectId, candidate.fingerprint) as LiteratureRecordRow[];
-  const candidateHasStrongIdentity = Boolean(candidate.doi || candidate.providerId);
+  const candidateHasStrongIdentity = Boolean(
+    candidate.doi || candidate.providerId || candidate.canonicalId,
+  );
   if (!candidateHasStrongIdentity) {
     if (fingerprintMatches.length > 1) {
       throw new LiteratureStorageError('identity_conflict');
     }
     const weakMatch = fingerprintMatches[0];
-    if (weakMatch && (weakMatch.doi !== null || weakMatch.provider_record_id !== null)) {
+    if (
+      weakMatch &&
+      (weakMatch.doi !== null ||
+        weakMatch.provider_record_id !== null ||
+        weakMatch.canonical_id !== null)
+    ) {
       throw new LiteratureStorageError('identity_conflict');
     }
     return weakMatch;
   }
   if (fingerprintMatches.length !== 1) return undefined;
   const weakMatch = fingerprintMatches[0]!;
-  if (weakMatch.doi === null && weakMatch.provider_record_id === null) return weakMatch;
+  if (
+    weakMatch.doi === null &&
+    weakMatch.provider_record_id === null &&
+    weakMatch.canonical_id === null
+  )
+    return weakMatch;
   return undefined;
 }
 
@@ -845,7 +1072,15 @@ function requireNoLiteratureIdentityCollision(
         )
         .get(projectId, state.source_provider, state.provider_record_id, recordId)
     : undefined;
-  if (doiCollision || providerCollision) {
+  const canonicalCollision = state.canonical_id
+    ? database
+        .prepare(
+          `select 1 from literature_records
+           where project_id=? and canonical_id=? and id<>? limit 1`,
+        )
+        .get(projectId, state.canonical_id, recordId)
+    : undefined;
+  if (doiCollision || providerCollision || canonicalCollision) {
     throw new LiteratureStorageError('identity_conflict');
   }
 }
@@ -867,18 +1102,19 @@ function upsertLiteratureCandidate(
     database
       .prepare(
         `insert into literature_records(
-           id,schema_version,project_id,source_provider,provider_record_id,doi,fingerprint,title,
+           id,schema_version,project_id,source_provider,provider_record_id,canonical_id,doi,fingerprint,title,
            authors_json,container_title,published_year,topics_json,search_tags_json,work_type,citation_count,
            source_url,citation_key,review_status,manual_topics_json,manual_summary,manual_relevance,
            ai_topics_json,ai_summary,ai_relevance,ai_study_type,ai_limitations_json,
            ai_model_provenance_json,annotation_version,version,created_at,updated_at,deleted_at
-         ) values(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,null)`,
+         ) values(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,null)`,
       )
       .run(
         id,
         projectId,
         state.source_provider,
         state.provider_record_id,
+        state.canonical_id,
         state.doi,
         state.fingerprint,
         state.title,
@@ -911,8 +1147,9 @@ function upsertLiteratureCandidate(
   }
   const providerPriority: Record<string, number> = {
     import: 0,
-    crossref: 1,
-    'semantic-scholar': 2,
+    'hugging-face': 1,
+    crossref: 2,
+    'semantic-scholar': 3,
   };
   const refreshSource =
     existing.source_provider === 'import' ||
@@ -925,6 +1162,7 @@ function upsertLiteratureCandidate(
     : candidateState({
         provider: existing.source_provider as LiteratureProviderCandidate['provider'],
         ...(existing.provider_record_id ? { providerId: existing.provider_record_id } : {}),
+        ...(existing.canonical_id ? { canonicalId: existing.canonical_id } : {}),
         ...(existing.doi ? { doi: existing.doi } : {}),
         fingerprint: existing.fingerprint,
         title: existing.title,
@@ -960,6 +1198,7 @@ function upsertLiteratureCandidate(
   const sourceChanged =
     existing.source_provider !== merged.source_provider ||
     existing.provider_record_id !== merged.provider_record_id ||
+    existing.canonical_id !== merged.canonical_id ||
     existing.doi !== merged.doi ||
     existing.fingerprint !== merged.fingerprint ||
     existing.title !== merged.title ||
@@ -990,7 +1229,7 @@ function upsertLiteratureCandidate(
   database
     .prepare(
       `update literature_records set
-         source_provider=?,provider_record_id=?,doi=?,fingerprint=?,title=?,authors_json=?,container_title=?,
+         source_provider=?,provider_record_id=?,canonical_id=?,doi=?,fingerprint=?,title=?,authors_json=?,container_title=?,
          published_year=?,topics_json=?,search_tags_json=?,work_type=?,citation_count=?,source_url=?,citation_key=?,
          review_status=?,manual_topics_json=?,manual_summary=?,manual_relevance=?,
          ai_topics_json=?,ai_summary=?,ai_relevance=?,ai_study_type=?,ai_limitations_json=?,
@@ -1001,6 +1240,7 @@ function upsertLiteratureCandidate(
     .run(
       merged.source_provider,
       merged.provider_record_id,
+      merged.canonical_id,
       merged.doi,
       merged.fingerprint,
       merged.title,
@@ -1271,6 +1511,276 @@ function migrateLiteratureSearchTags(database: Database.Database) {
     .immediate();
 }
 
+function migrateLiteratureHuggingFaceProvider(database: Database.Database) {
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(LITERATURE_HUGGING_FACE_PROVIDER_MIGRATION);
+  if (migrationApplied) return;
+  database
+    .transaction(() => {
+      const schema = database
+        .prepare(
+          "select sql from sqlite_master where type='table' and name='literature_search_conflicts'",
+        )
+        .get() as { sql: string | null } | undefined;
+      if (!/hugging-face/iu.test(schema?.sql ?? '')) {
+        database.exec(`
+          alter table literature_search_conflicts rename to literature_search_conflicts_legacy;
+          create table literature_search_conflicts (
+            search_run_id text not null references literature_search_runs(id) on delete cascade,
+            ordinal integer not null check (ordinal between 1 and 50),
+            provider text not null check (
+              provider in ('crossref','semantic-scholar','hugging-face')
+            ),
+            provider_record_id text check (
+              provider_record_id is null or length(provider_record_id) between 1 and 2048
+            ),
+            doi text check (doi is null or length(doi) between 1 and 512),
+            fingerprint text not null check (length(fingerprint)=64),
+            title text not null check (length(title) between 1 and 2000),
+            authors_json text not null check (length(authors_json) <= 32768),
+            published_year integer check (
+              published_year is null or published_year between 1000 and 3000
+            ),
+            primary key(search_run_id,ordinal)
+          );
+          insert into literature_search_conflicts(
+            search_run_id,ordinal,provider,provider_record_id,doi,fingerprint,title,authors_json,
+            published_year
+          )
+          select search_run_id,ordinal,provider,provider_record_id,doi,fingerprint,title,
+                 authors_json,published_year
+          from literature_search_conflicts_legacy;
+          drop table literature_search_conflicts_legacy;
+        `);
+      }
+      database
+        .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+        .run(LITERATURE_HUGGING_FACE_PROVIDER_MIGRATION, new Date().toISOString());
+    })
+    .immediate();
+}
+
+function migrateProjectChatQueueOrdering(database: Database.Database) {
+  database.exec(`
+    create table if not exists project_chat_queue_sequence (
+      singleton_id integer primary key check (singleton_id = 1),
+      next_sequence integer not null check (next_sequence > 0)
+    );
+    insert or ignore into project_chat_queue_sequence(singleton_id,next_sequence) values(1,1);
+  `);
+  const columns = database.pragma('table_info(project_chat_queued_turns)') as Array<{
+    name: string;
+  }>;
+  if (!columns.some((column) => column.name === 'enqueue_sequence')) {
+    database.exec(
+      `alter table project_chat_queued_turns add column enqueue_sequence integer
+       check (enqueue_sequence is null or enqueue_sequence > 0)`,
+    );
+  }
+  database
+    .transaction(() => {
+      const counter = database
+        .prepare('select next_sequence from project_chat_queue_sequence where singleton_id=1')
+        .get() as { next_sequence: number };
+      const maximum = database
+        .prepare(
+          'select coalesce(max(enqueue_sequence),0) as maximum from project_chat_queued_turns',
+        )
+        .get() as { maximum: number };
+      let nextSequence = Math.max(counter.next_sequence, maximum.maximum + 1);
+      const legacyRows = database
+        .prepare(
+          `select id from project_chat_queued_turns where enqueue_sequence is null
+           order by created_at,id`,
+        )
+        .all() as Array<{ id: string }>;
+      const backfill = database.prepare(
+        `update project_chat_queued_turns set enqueue_sequence=?
+         where id=? and enqueue_sequence is null`,
+      );
+      for (const row of legacyRows) {
+        backfill.run(nextSequence, row.id);
+        nextSequence += 1;
+      }
+      database
+        .prepare(`update project_chat_queue_sequence set next_sequence=? where singleton_id=1`)
+        .run(nextSequence);
+    })
+    .immediate();
+  database.exec(`
+    create unique index if not exists project_chat_queued_turns_enqueue_sequence
+      on project_chat_queued_turns(enqueue_sequence);
+    create index if not exists project_chat_queued_turns_by_project_order
+      on project_chat_queued_turns(project_id,priority,enqueue_sequence);
+  `);
+}
+
+function migrateProjectChatResearchNoteAbandoned(database: Database.Database) {
+  const table = database
+    .prepare(
+      `select sql from sqlite_master
+       where type='table' and name='project_chat_research_note_save_receipts'`,
+    )
+    .get() as { sql: string | null } | undefined;
+  const supportsAbandoned = /['"]abandoned['"]/u.test(table?.sql ?? '');
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(PROJECT_CHAT_RESEARCH_NOTE_ABANDONED_MIGRATION);
+  if (migrationApplied) {
+    if (!supportsAbandoned) throw new Error('research_note_abandoned_schema_invalid');
+    return;
+  }
+  database
+    .transaction(() => {
+      if (!supportsAbandoned) {
+        database.exec(`
+          create table project_chat_research_note_save_receipts_v2 (
+            project_id text not null,
+            session_id text not null references project_chat_sessions(id),
+            attempt_id text not null references project_chat_attempts(id) on delete cascade,
+            binding_id text not null check (length(binding_id) = 64),
+            category text not null check (
+              category in (
+                'literature','papers','experiments','project-progress','idea-development'
+              )
+            ),
+            artifact_id text not null check (length(artifact_id) = 16),
+            expected_content_sha256 text not null check (length(expected_content_sha256) = 64),
+            status text not null check (
+              status in ('staged','uncertain','abandoned','committed-unreported','reported')
+            ),
+            relative_path text check (
+              relative_path is null or length(relative_path) between 1 and 1000
+            ),
+            staged_at text not null,
+            updated_at text not null,
+            committed_at text,
+            reported_at text,
+            primary key(attempt_id,artifact_id),
+            check (
+              (status in ('staged','uncertain','abandoned') and
+                relative_path is null and committed_at is null) or
+              (status in ('committed-unreported','reported') and
+                relative_path is not null and committed_at is not null)
+            ),
+            check ((status in ('reported','abandoned')) = (reported_at is not null))
+          );
+          insert into project_chat_research_note_save_receipts_v2(
+            project_id,session_id,attempt_id,binding_id,category,artifact_id,
+            expected_content_sha256,status,relative_path,staged_at,updated_at,
+            committed_at,reported_at
+          )
+          select project_id,session_id,attempt_id,binding_id,category,artifact_id,
+                 expected_content_sha256,status,relative_path,staged_at,updated_at,
+                 committed_at,reported_at
+          from project_chat_research_note_save_receipts;
+          drop table project_chat_research_note_save_receipts;
+          alter table project_chat_research_note_save_receipts_v2
+            rename to project_chat_research_note_save_receipts;
+          create index project_chat_research_note_receipts_by_status
+            on project_chat_research_note_save_receipts(status,updated_at,attempt_id);
+        `);
+      }
+      database
+        .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+        .run(PROJECT_CHAT_RESEARCH_NOTE_ABANDONED_MIGRATION, new Date().toISOString());
+    })
+    .immediate();
+}
+
+function migrateLiteratureCanonicalIdentity(database: Database.Database) {
+  const columns = database.pragma('table_info(literature_records)') as Array<{ name: string }>;
+  const hasCanonicalId = columns.some((column) => column.name === 'canonical_id');
+  const conflictColumns = database.pragma('table_info(literature_search_conflicts)') as Array<{
+    name: string;
+  }>;
+  const conflictsHaveCanonicalId = conflictColumns.some((column) => column.name === 'canonical_id');
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(LITERATURE_CANONICAL_IDENTITY_MIGRATION);
+  const canonicalIndex = database
+    .prepare(
+      "select sql from sqlite_master where type='index' and name='literature_record_canonical_identity'",
+    )
+    .get() as { sql: string | null } | undefined;
+  const weakFingerprintIndex = database
+    .prepare(
+      "select sql from sqlite_master where type='index' and name='literature_record_weak_fingerprint_identity'",
+    )
+    .get() as { sql: string | null } | undefined;
+  if (
+    migrationApplied &&
+    hasCanonicalId &&
+    conflictsHaveCanonicalId &&
+    /canonical_id\s+is\s+not\s+null/iu.test(canonicalIndex?.sql ?? '') &&
+    /canonical_id\s+is\s+null/iu.test(weakFingerprintIndex?.sql ?? '')
+  ) {
+    return;
+  }
+  database
+    .transaction(() => {
+      if (!hasCanonicalId) {
+        database.exec(
+          `alter table literature_records add column canonical_id text
+           check (canonical_id is null or length(canonical_id) between 1 and 512)`,
+        );
+      }
+      if (!conflictsHaveCanonicalId) {
+        database.exec(
+          `alter table literature_search_conflicts add column canonical_id text
+           check (canonical_id is null or length(canonical_id) between 1 and 512)`,
+        );
+      }
+      const rows = database
+        .prepare(
+          `select id,project_id,provider_record_id,canonical_id from literature_records
+           where source_provider='hugging-face' order by project_id,created_at,id`,
+        )
+        .all() as Array<{
+        id: string;
+        project_id: string;
+        provider_record_id: string | null;
+        canonical_id: string | null;
+      }>;
+      const seen = new Set(
+        (
+          database
+            .prepare(
+              `select project_id,canonical_id from literature_records
+               where canonical_id is not null order by project_id,id`,
+            )
+            .all() as Array<{ project_id: string; canonical_id: string }>
+        ).map((row) => `${row.project_id}\0${row.canonical_id}`),
+      );
+      const update = database.prepare(
+        'update literature_records set canonical_id=? where id=? and canonical_id is null',
+      );
+      for (const row of rows) {
+        if (row.canonical_id !== null) continue;
+        const canonicalId = normalizeArxivCanonicalId(row.provider_record_id);
+        if (!canonicalId) continue;
+        const key = `${row.project_id}\0${canonicalId}`;
+        if (seen.has(key)) continue;
+        update.run(canonicalId, row.id);
+        seen.add(key);
+      }
+      database.exec(`
+        drop index if exists literature_record_canonical_identity;
+        create unique index literature_record_canonical_identity
+          on literature_records(project_id,canonical_id) where canonical_id is not null;
+        drop index if exists literature_record_weak_fingerprint_identity;
+        create unique index literature_record_weak_fingerprint_identity
+          on literature_records(project_id,fingerprint)
+          where doi is null and provider_record_id is null and canonical_id is null;
+      `);
+      database
+        .prepare('insert or replace into local_schema_migrations(id,applied_at) values(?,?)')
+        .run(LITERATURE_CANONICAL_IDENTITY_MIGRATION, new Date().toISOString());
+    })
+    .immediate();
+}
+
 export class LocalDatabase {
   private database: Database.Database | undefined;
   private workspaceOutboxOrderingReady = false;
@@ -1379,6 +1889,9 @@ export class LocalDatabase {
         connection_id text not null check (length(connection_id) = 36),
         canonical_root text not null check (length(canonical_root) between 1 and 1024),
         permission_mode text not null check (permission_mode in ('diagnostics','workspace')),
+        trusted_access_json text check (
+          trusted_access_json is null or length(trusted_access_json) between 2 and 16384
+        ),
         version integer not null check (version > 0),
         created_at text not null,
         updated_at text not null,
@@ -1387,6 +1900,37 @@ export class LocalDatabase {
       );
       create index if not exists ssh_workspace_grants_by_project
         on ssh_workspace_grants(project_id,connection_id,id);
+      create table if not exists ssh_trusted_workspace_audit (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null check (length(project_id) = 36),
+        grant_id text not null check (length(grant_id) = 36),
+        grant_version integer not null check (grant_version > 0),
+        connection_id text not null check (length(connection_id) = 36),
+        connection_version integer not null check (connection_version > 0),
+        policy_version integer not null check (policy_version > 0),
+        session_id text not null check (length(session_id) = 36),
+        attempt_id text not null check (length(attempt_id) = 36),
+        turn_id text not null check (length(turn_id) between 1 and 256),
+        tool_call_id text not null check (length(tool_call_id) between 1 and 256),
+        operation text not null check (
+          operation in ('inspect','edit','test','build','experiment')
+        ),
+        command_sha256 text not null check (length(command_sha256) = 64),
+        auto_approved_at text not null
+      );
+      create index if not exists ssh_trusted_workspace_audit_by_project
+        on ssh_trusted_workspace_audit(project_id,auto_approved_at desc,id);
+      create trigger if not exists ssh_trusted_workspace_audit_update_guard
+        before update on ssh_trusted_workspace_audit
+        begin
+          select raise(abort,'ssh_trusted_workspace_audit_append_only');
+        end;
+      create trigger if not exists ssh_trusted_workspace_audit_delete_guard
+        before delete on ssh_trusted_workspace_audit
+        begin
+          select raise(abort,'ssh_trusted_workspace_audit_append_only');
+        end;
       create table if not exists literature_records (
         id text primary key check (length(id) = 36),
         schema_version integer not null check (schema_version = 1),
@@ -1394,6 +1938,9 @@ export class LocalDatabase {
         source_provider text not null check (length(source_provider) between 1 and 64),
         provider_record_id text check (
           provider_record_id is null or length(provider_record_id) between 1 and 2048
+        ),
+        canonical_id text check (
+          canonical_id is null or length(canonical_id) between 1 and 512
         ),
         doi text check (doi is null or length(doi) between 1 and 512),
         fingerprint text not null check (length(fingerprint) = 64),
@@ -1516,9 +2063,14 @@ export class LocalDatabase {
       create table if not exists literature_search_conflicts (
         search_run_id text not null references literature_search_runs(id) on delete cascade,
         ordinal integer not null check (ordinal between 1 and 50),
-        provider text not null check (provider in ('crossref','semantic-scholar')),
+        provider text not null check (
+          provider in ('crossref','semantic-scholar','hugging-face')
+        ),
         provider_record_id text check (
           provider_record_id is null or length(provider_record_id) between 1 and 2048
+        ),
+        canonical_id text check (
+          canonical_id is null or length(canonical_id) between 1 and 512
         ),
         doi text check (doi is null or length(doi) between 1 and 512),
         fingerprint text not null check (length(fingerprint)=64),
@@ -1671,6 +2223,19 @@ export class LocalDatabase {
         primary key(session_id,message_id),
         unique(session_id,ordinal)
       );
+      create table if not exists project_chat_queued_turns (
+        id text primary key check (length(id) = 36),
+        project_id text not null,
+        session_id text not null references project_chat_sessions(id) on delete cascade,
+        command_json text not null check (length(command_json) between 2 and 65536),
+        enqueue_sequence integer not null unique check (enqueue_sequence > 0),
+        priority text not null check (priority in ('normal','next')),
+        status text not null check (status in ('queued','starting')),
+        created_at text not null,
+        updated_at text not null
+      );
+      create index if not exists project_chat_queued_turns_by_session
+        on project_chat_queued_turns(project_id,session_id,priority,created_at,id);
       create table if not exists project_chat_instruction_revisions (
         id text primary key check (length(id) = 36),
         project_id text not null,
@@ -1703,6 +2268,9 @@ export class LocalDatabase {
         ),
         local_notes_vault_name text check (
           local_notes_vault_name is null or length(local_notes_vault_name) between 1 and 256
+        ),
+        local_notes_allow_agent_markdown_create integer not null default 0 check (
+          local_notes_allow_agent_markdown_create in (0,1)
         ),
         instruction_revision_id text not null
           references project_chat_instruction_revisions(id),
@@ -1774,6 +2342,39 @@ export class LocalDatabase {
         on project_chat_attempts(project_id,created_at,id);
       create index if not exists project_chat_attempts_by_retry
         on project_chat_attempts(retry_of_attempt_id);
+      create table if not exists project_chat_research_note_save_receipts (
+        project_id text not null,
+        session_id text not null references project_chat_sessions(id),
+        attempt_id text not null references project_chat_attempts(id) on delete cascade,
+        binding_id text not null check (length(binding_id) = 64),
+        category text not null check (
+          category in (
+            'literature','papers','experiments','project-progress','idea-development'
+          )
+        ),
+        artifact_id text not null check (length(artifact_id) = 16),
+        expected_content_sha256 text not null check (length(expected_content_sha256) = 64),
+        status text not null check (
+          status in ('staged','uncertain','abandoned','committed-unreported','reported')
+        ),
+        relative_path text check (
+          relative_path is null or length(relative_path) between 1 and 1000
+        ),
+        staged_at text not null,
+        updated_at text not null,
+        committed_at text,
+        reported_at text,
+        primary key(attempt_id,artifact_id),
+        check (
+          (status in ('staged','uncertain','abandoned') and
+            relative_path is null and committed_at is null) or
+          (status in ('committed-unreported','reported') and
+            relative_path is not null and committed_at is not null)
+        ),
+        check ((status in ('reported','abandoned')) = (reported_at is not null))
+      );
+      create index if not exists project_chat_research_note_receipts_by_status
+        on project_chat_research_note_save_receipts(status,updated_at,attempt_id);
       create table if not exists project_chat_actions (
         id text primary key,
         message_id text not null references project_chat_messages(id) on delete cascade,
@@ -1791,6 +2392,7 @@ export class LocalDatabase {
       create index if not exists project_chat_actions_by_message
         on project_chat_actions(message_id,created_at,id);
     `);
+      migrateProjectChatResearchNoteAbandoned(database);
       migrateLiteratureManualRelevance(database);
       migrateLiteratureWeakFingerprint(database);
       const literatureSearchColumns = database.pragma(
@@ -1805,6 +2407,9 @@ export class LocalDatabase {
       migrateLiteratureDiscovery(database);
       migrateLiteratureDiscoveryCoverage(database);
       migrateLiteratureSearchTags(database);
+      migrateLiteratureHuggingFaceProvider(database);
+      migrateLiteratureCanonicalIdentity(database);
+      migrateProjectChatQueueOrdering(database);
       const sshConnectionColumns = database.pragma('table_info(ssh_connections)') as Array<{
         name: string;
       }>;
@@ -1814,11 +2419,26 @@ export class LocalDatabase {
            check (direct_target_json is null or length(direct_target_json) between 2 and 16384)`,
         );
       }
+      const sshWorkspaceGrantColumns = database.pragma(
+        'table_info(ssh_workspace_grants)',
+      ) as Array<{ name: string }>;
+      if (!sshWorkspaceGrantColumns.some((column) => column.name === 'trusted_access_json')) {
+        database.exec(
+          `alter table ssh_workspace_grants add column trusted_access_json text
+           check (trusted_access_json is null or length(trusted_access_json) between 2 and 16384)`,
+        );
+      }
       database
         .prepare(
           `update project_chat_actions
            set status='failed',error_code='application_interrupted',updated_at=?
            where status='applying'`,
+        )
+        .run(new Date().toISOString());
+      database
+        .prepare(
+          `update project_chat_queued_turns
+           set status='queued',updated_at=? where status='starting'`,
         )
         .run(new Date().toISOString());
       database
@@ -1925,6 +2545,10 @@ export class LocalDatabase {
           'local_notes_vault_name',
           'alter table project_chat_profiles add column local_notes_vault_name text check (local_notes_vault_name is null or length(local_notes_vault_name) between 1 and 256)',
         ],
+        [
+          'local_notes_allow_agent_markdown_create',
+          'alter table project_chat_profiles add column local_notes_allow_agent_markdown_create integer not null default 0 check (local_notes_allow_agent_markdown_create in (0,1))',
+        ],
       ] as const;
       for (const [name, statement] of profileMigrations) {
         if (!profileColumns.some((column) => column.name === name)) database.exec(statement);
@@ -2020,7 +2644,9 @@ export class LocalDatabase {
       }
       const initializedDatabase = database;
       initializedDatabase.transaction(() => {
-        reconcileInterruptedChatAttempts(initializedDatabase, new Date().toISOString());
+        const reconciledAt = new Date().toISOString();
+        reconcileInterruptedChatAttempts(initializedDatabase, reconciledAt);
+        reconcileCommittedResearchNoteReceipts(initializedDatabase, reconciledAt);
         this.workspaceOutboxOrderingReady = backfillLegacyWorkspaceRevisions(initializedDatabase);
         if (this.workspaceOutboxOrderingReady) reconcileWorkspaceOutboxStatus(initializedDatabase);
       })();
@@ -2422,6 +3048,277 @@ export class LocalDatabase {
     return changed === 1 ? this.getProjectChatSession(projectId, sessionId) : null;
   }
 
+  listProjectChatQueuedTurns(projectId: string, sessionId: string): ProjectChatQueuedTurn[] {
+    return (
+      this.require()
+        .prepare(
+          `select id,project_id,session_id,command_json,enqueue_sequence,priority,status,
+                  created_at,updated_at
+           from project_chat_queued_turns
+           where project_id=? and session_id=?
+           order by case priority when 'next' then 0 else 1 end,enqueue_sequence`,
+        )
+        .all(projectId, sessionId) as ProjectChatQueuedTurnRow[]
+    ).map(toChatQueuedTurn);
+  }
+
+  listProjectChatQueuedProjectIds() {
+    return (
+      this.require()
+        .prepare(
+          `select project_id,min(enqueue_sequence) as first_sequence
+           from project_chat_queued_turns where status='queued'
+           group by project_id order by first_sequence,project_id`,
+        )
+        .all() as Array<{ project_id: string }>
+    ).map((row) => row.project_id);
+  }
+
+  enqueueProjectChatTurn(input: ProjectChatQueuedTurn) {
+    const queued = ProjectChatQueuedTurnSchema.parse(structuredClone(input));
+    if (queued.status !== 'queued') throw new Error('chat_queue_invalid_status');
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const session = database
+          .prepare('select 1 from project_chat_sessions where project_id=? and id=?')
+          .get(queued.projectId, queued.sessionId);
+        if (!session) throw new Error('chat_session_not_found');
+        const count = database
+          .prepare(
+            'select count(*) as count from project_chat_queued_turns where project_id=? and session_id=?',
+          )
+          .get(queued.projectId, queued.sessionId) as { count: number };
+        if (count.count >= PROJECT_CHAT_MAX_QUEUED_TURNS_PER_SESSION) {
+          throw new Error('chat_queue_limit_reached');
+        }
+        const counter = database
+          .prepare('select next_sequence from project_chat_queue_sequence where singleton_id=1')
+          .get() as { next_sequence: number };
+        database
+          .prepare(`update project_chat_queue_sequence set next_sequence=? where singleton_id=1`)
+          .run(counter.next_sequence + 1);
+        const stored = ProjectChatQueuedTurnSchema.parse({
+          ...queued,
+          enqueueSequence: counter.next_sequence,
+        });
+        const {
+          id: _id,
+          projectId: _projectId,
+          sessionId: _sessionId,
+          enqueueSequence: _enqueueSequence,
+          priority: _priority,
+          status: _status,
+          createdAt: _createdAt,
+          updatedAt: _updatedAt,
+          ...command
+        } = queued;
+        database
+          .prepare(
+            `insert into project_chat_queued_turns(
+               id,project_id,session_id,command_json,enqueue_sequence,priority,status,
+               created_at,updated_at
+             ) values(?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            stored.id,
+            stored.projectId,
+            stored.sessionId,
+            JSON.stringify(command),
+            stored.enqueueSequence,
+            stored.priority,
+            stored.status,
+            stored.createdAt,
+            stored.updatedAt,
+          );
+        return stored;
+      })
+      .immediate();
+  }
+
+  updateProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+    message: string,
+    updatedAt: string,
+  ) {
+    const changed = this.require()
+      .prepare(
+        `update project_chat_queued_turns
+         set command_json=json_set(command_json,'$.message',?),updated_at=?
+         where id=? and project_id=? and session_id=? and status='queued'`,
+      )
+      .run(message, updatedAt, queueId, projectId, sessionId).changes;
+    if (changed !== 1) return null;
+    return (
+      this.listProjectChatQueuedTurns(projectId, sessionId).find(
+        (queued) => queued.id === queueId,
+      ) ?? null
+    );
+  }
+
+  removeProjectChatQueuedTurn(projectId: string, sessionId: string, queueId: string) {
+    return (
+      this.require()
+        .prepare(
+          `delete from project_chat_queued_turns
+           where id=? and project_id=? and session_id=? and status='queued'`,
+        )
+        .run(queueId, projectId, sessionId).changes === 1
+    );
+  }
+
+  prioritizeProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+    updatedAt: string,
+  ) {
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const target = database
+          .prepare(
+            `select 1 from project_chat_queued_turns
+             where id=? and project_id=? and session_id=? and status='queued'`,
+          )
+          .get(queueId, projectId, sessionId);
+        if (!target) return false;
+        database
+          .prepare(
+            `update project_chat_queued_turns set priority='normal',updated_at=?
+             where project_id=? and priority='next'`,
+          )
+          .run(updatedAt, projectId);
+        database
+          .prepare(
+            `update project_chat_queued_turns set priority='next',updated_at=?
+             where id=? and project_id=? and session_id=? and status='queued'`,
+          )
+          .run(updatedAt, queueId, projectId, sessionId);
+        return true;
+      })
+      .immediate();
+  }
+
+  claimNextProjectChatQueuedTurn(projectId: string) {
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const row = database
+          .prepare(
+            `select id,project_id,session_id,command_json,enqueue_sequence,priority,status,
+                    created_at,updated_at
+             from project_chat_queued_turns
+             where project_id=? and status='queued'
+             order by case priority when 'next' then 0 else 1 end,enqueue_sequence limit 1`,
+          )
+          .get(projectId) as ProjectChatQueuedTurnRow | undefined;
+        if (!row) return null;
+        const updatedAt = new Date().toISOString();
+        const changed = database
+          .prepare(
+            `update project_chat_queued_turns set status='starting',updated_at=?
+             where id=? and project_id=? and session_id=? and status='queued'`,
+          )
+          .run(updatedAt, row.id, row.project_id, row.session_id).changes;
+        if (changed !== 1) return null;
+        return toChatQueuedTurn({ ...row, status: 'starting', updated_at: updatedAt });
+      })
+      .immediate();
+  }
+
+  finishProjectChatQueuedTurn(projectId: string, sessionId: string, queueId: string) {
+    return (
+      this.require()
+        .prepare(
+          `delete from project_chat_queued_turns
+           where id=? and project_id=? and session_id=? and status='starting'`,
+        )
+        .run(queueId, projectId, sessionId).changes === 1
+    );
+  }
+
+  releaseProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+    updatedAt: string,
+  ) {
+    return (
+      this.require()
+        .prepare(
+          `update project_chat_queued_turns set status='queued',updated_at=?
+           where id=? and project_id=? and session_id=? and status='starting'`,
+        )
+        .run(updatedAt, queueId, projectId, sessionId).changes === 1
+    );
+  }
+
+  failProjectChatQueuedTurn(
+    queueId: string,
+    inputAttempt: ProjectChatAttempt,
+    inputUserMessage: ProjectChatMessage,
+    inputAssistantMessage: ProjectChatMessage,
+  ) {
+    const attempt = ProjectChatAttemptSchema.parse(structuredClone(inputAttempt));
+    const userMessage = ProjectChatMessageSchema.parse(structuredClone(inputUserMessage));
+    const assistantMessage = ProjectChatMessageSchema.parse(structuredClone(inputAssistantMessage));
+    if (
+      attempt.status !== 'failed' ||
+      !attempt.sessionId ||
+      attempt.userMessageId !== userMessage.id ||
+      userMessage.role !== 'user' ||
+      userMessage.status !== 'complete' ||
+      userMessage.projectId !== attempt.projectId ||
+      userMessage.attemptId !== attempt.id ||
+      assistantMessage.role !== 'assistant' ||
+      assistantMessage.status !== 'failed' ||
+      assistantMessage.projectId !== attempt.projectId ||
+      assistantMessage.attemptId !== attempt.id
+    ) {
+      throw new Error('chat_queue_failure_receipt_invalid');
+    }
+    const sessionId = attempt.sessionId;
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const queued = database
+          .prepare(
+            `select 1 from project_chat_queued_turns
+             where id=? and project_id=? and session_id=? and status in ('queued','starting')`,
+          )
+          .get(queueId, attempt.projectId, sessionId);
+        if (!queued) return false;
+        if (attempt.retryOfAttemptId) {
+          const retryTarget = database
+            .prepare(
+              `select 1 from project_chat_attempts a
+               join project_chat_session_messages sm on sm.message_id=a.user_message_id
+               where a.project_id=? and a.id=? and sm.session_id=?`,
+            )
+            .get(attempt.projectId, attempt.retryOfAttemptId, sessionId);
+          if (!retryTarget) throw new Error('chat_attempt_retry_target_not_found');
+        }
+        insertProjectChatMessage(database, userMessage);
+        appendProjectChatSessionMessage(database, sessionId, userMessage.id);
+        insertProjectChatAttempt(database, attempt);
+        insertProjectChatMessage(database, assistantMessage);
+        appendProjectChatSessionMessage(database, sessionId, assistantMessage.id);
+        const removed = database
+          .prepare(
+            `delete from project_chat_queued_turns
+             where id=? and project_id=? and session_id=? and status in ('queued','starting')`,
+          )
+          .run(queueId, attempt.projectId, sessionId).changes;
+        if (removed !== 1) throw new Error('chat_queue_state_conflict');
+        touchProjectChatSession(database, sessionId, attempt.updatedAt);
+        return true;
+      })
+      .immediate();
+  }
+
   getProjectChatProfile(projectId: string): ProjectChatProfile {
     const row = this.require()
       .prepare(
@@ -2429,6 +3326,7 @@ export class LocalDatabase {
                 p.collaboration_mode_id,p.personality,p.response_verbosity,p.web_search_mode,
                 p.context_scope,
                 p.local_notes_vault_id,p.local_notes_vault_name,
+                p.local_notes_allow_agent_markdown_create,
                 p.instruction_revision_id,p.updated_at,r.content,r.content_sha256,r.created_at
          from project_chat_profiles p
          join project_chat_instruction_revisions r on r.id=p.instruction_revision_id
@@ -2475,8 +3373,9 @@ export class LocalDatabase {
                project_id,version,harness_mode,response_depth,collaboration_mode_id,
                personality,response_verbosity,web_search_mode,context_scope,
                local_notes_vault_id,local_notes_vault_name,
+               local_notes_allow_agent_markdown_create,
                instruction_revision_id,created_at,updated_at
-             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
              on conflict(project_id) do update set
                version=excluded.version,
                harness_mode=excluded.harness_mode,
@@ -2488,6 +3387,7 @@ export class LocalDatabase {
                context_scope=excluded.context_scope,
                local_notes_vault_id=excluded.local_notes_vault_id,
                local_notes_vault_name=excluded.local_notes_vault_name,
+               local_notes_allow_agent_markdown_create=excluded.local_notes_allow_agent_markdown_create,
                instruction_revision_id=excluded.instruction_revision_id,
                updated_at=excluded.updated_at
              where project_chat_profiles.version=?`,
@@ -2504,6 +3404,7 @@ export class LocalDatabase {
               command.contextScope,
               command.localNotesVault?.id ?? null,
               command.localNotesVault?.name ?? null,
+              command.localNotesVault?.allowAgentMarkdownCreate === true ? 1 : 0,
               instructionRevisionId,
               now,
               now,
@@ -2565,6 +3466,33 @@ export class LocalDatabase {
     })();
   }
 
+  beginQueuedChatAttempt(
+    queueId: string,
+    attempt: ProjectChatAttempt,
+    userMessage: ProjectChatMessage,
+  ) {
+    const database = this.require();
+    database
+      .transaction(() => {
+        const queued = database
+          .prepare(
+            `select 1 from project_chat_queued_turns
+             where id=? and project_id=? and session_id=? and status='starting'`,
+          )
+          .get(queueId, attempt.projectId, attempt.sessionId);
+        if (!queued) throw new Error('chat_queue_state_conflict');
+        this.beginChatAttempt(attempt, userMessage);
+        const removed = database
+          .prepare(
+            `delete from project_chat_queued_turns
+             where id=? and project_id=? and session_id=? and status='starting'`,
+          )
+          .run(queueId, attempt.projectId, attempt.sessionId).changes;
+        if (removed !== 1) throw new Error('chat_queue_state_conflict');
+      })
+      .immediate();
+  }
+
   markChatAttemptRunning(input: ProjectChatAttempt) {
     let attempt = ProjectChatAttemptSchema.parse(structuredClone(input));
     if (!attempt.sessionId) {
@@ -2607,6 +3535,234 @@ export class LocalDatabase {
         attempt.userMessageId,
       );
     if (result.changes !== 1) throw new Error('chat_attempt_state_conflict');
+  }
+
+  stageResearchNoteSave(input: ProjectChatResearchNoteSaveStage) {
+    const receipt = ProjectChatResearchNoteSaveStageSchema.parse(structuredClone(input));
+    const database = this.require();
+    database.transaction(() => {
+      const attempt = database
+        .prepare(
+          `select project_id,session_id,status from project_chat_attempts
+           where id=?`,
+        )
+        .get(receipt.attemptId) as
+        { project_id: string; session_id: string | null; status: string } | undefined;
+      if (
+        !attempt ||
+        attempt.project_id !== receipt.projectId ||
+        attempt.session_id !== receipt.sessionId ||
+        !['starting', 'running'].includes(attempt.status)
+      ) {
+        throw new Error('research_note_save_attempt_conflict');
+      }
+      database
+        .prepare(
+          `insert into project_chat_research_note_save_receipts(
+             project_id,session_id,attempt_id,binding_id,category,artifact_id,
+             expected_content_sha256,status,relative_path,staged_at,updated_at,
+             committed_at,reported_at
+           ) values(?,?,?,?,?,?,?,'staged',null,?,?,null,null)
+           on conflict(attempt_id,artifact_id) do nothing`,
+        )
+        .run(
+          receipt.projectId,
+          receipt.sessionId,
+          receipt.attemptId,
+          receipt.bindingId,
+          receipt.category,
+          receipt.artifactId,
+          receipt.expectedContentSha256,
+          receipt.stagedAt,
+          receipt.stagedAt,
+        );
+      const stored = database
+        .prepare(
+          `select ${PROJECT_CHAT_RESEARCH_NOTE_RECEIPT_COLUMNS}
+           from project_chat_research_note_save_receipts
+           where attempt_id=? and artifact_id=?`,
+        )
+        .get(receipt.attemptId, receipt.artifactId) as
+        ProjectChatResearchNoteSaveReceiptRow | undefined;
+      if (
+        !stored ||
+        stored.project_id !== receipt.projectId ||
+        stored.session_id !== receipt.sessionId ||
+        stored.binding_id !== receipt.bindingId ||
+        stored.category !== receipt.category ||
+        stored.expected_content_sha256 !== receipt.expectedContentSha256
+      ) {
+        throw new Error('research_note_save_receipt_conflict');
+      }
+    })();
+  }
+
+  markResearchNoteSaveUncertain(input: MarkProjectChatResearchNoteSaveUncertainInput) {
+    const command = MarkProjectChatResearchNoteSaveUncertainInputSchema.parse(
+      structuredClone(input),
+    );
+    const database = this.require();
+    const result = database
+      .prepare(
+        `update project_chat_research_note_save_receipts
+         set status='uncertain',updated_at=?
+         where project_id=? and session_id=? and attempt_id=? and artifact_id=?
+           and status in ('staged','uncertain')`,
+      )
+      .run(
+        command.uncertainAt,
+        command.projectId,
+        command.sessionId,
+        command.attemptId,
+        command.artifactId,
+      );
+    if (result.changes > 0) return;
+    const current = database
+      .prepare(
+        `select status from project_chat_research_note_save_receipts
+         where project_id=? and session_id=? and attempt_id=? and artifact_id=?`,
+      )
+      .get(command.projectId, command.sessionId, command.attemptId, command.artifactId) as
+      { status: string } | undefined;
+    if (!current || !['abandoned', 'committed-unreported', 'reported'].includes(current.status)) {
+      throw new Error('research_note_save_receipt_conflict');
+    }
+  }
+
+  abandonResearchNoteSave(input: AbandonProjectChatResearchNoteSaveInput) {
+    const command = AbandonProjectChatResearchNoteSaveInputSchema.parse(structuredClone(input));
+    const database = this.require();
+    return database.transaction(() => {
+      const stored = database
+        .prepare(
+          `select ${PROJECT_CHAT_RESEARCH_NOTE_RECEIPT_COLUMNS}
+           from project_chat_research_note_save_receipts
+           where attempt_id=? and artifact_id=?`,
+        )
+        .get(command.attemptId, command.artifactId) as
+        ProjectChatResearchNoteSaveReceiptRow | undefined;
+      if (
+        !stored ||
+        stored.project_id !== command.projectId ||
+        stored.session_id !== command.sessionId
+      ) {
+        throw new Error('research_note_save_receipt_conflict');
+      }
+      if (stored.status === 'abandoned') return true;
+      if (stored.status === 'committed-unreported' || stored.status === 'reported') return false;
+      if (stored.status !== 'staged' && stored.status !== 'uncertain') {
+        throw new Error('research_note_save_receipt_conflict');
+      }
+      const assistant = database
+        .prepare(
+          `select id,content from project_chat_messages
+           where attempt_id=? and role='assistant'
+           order by created_at desc,id desc limit 1`,
+        )
+        .get(command.attemptId) as { id: string; content: string } | undefined;
+      if (!assistant) return false;
+      const receipt = toProjectChatResearchNoteSaveReceipt(stored);
+      const content = appendAbandonedResearchNoteSaveReceipt(assistant.content, receipt);
+      const updated = database
+        .prepare(
+          `update project_chat_research_note_save_receipts
+           set status='abandoned',updated_at=?,reported_at=?
+           where project_id=? and session_id=? and attempt_id=? and artifact_id=?
+             and status in ('staged','uncertain')`,
+        )
+        .run(
+          command.abandonedAt,
+          command.abandonedAt,
+          command.projectId,
+          command.sessionId,
+          command.attemptId,
+          command.artifactId,
+        );
+      if (updated.changes !== 1) throw new Error('research_note_save_receipt_conflict');
+      if (content !== assistant.content) {
+        database
+          .prepare('update project_chat_messages set content=? where id=?')
+          .run(content, assistant.id);
+      }
+      return true;
+    })();
+  }
+
+  confirmResearchNoteSave(input: ConfirmProjectChatResearchNoteSaveInput) {
+    const command = ConfirmProjectChatResearchNoteSaveInputSchema.parse(structuredClone(input));
+    const database = this.require();
+    database.transaction(() => {
+      const stored = database
+        .prepare(
+          `select ${PROJECT_CHAT_RESEARCH_NOTE_RECEIPT_COLUMNS}
+           from project_chat_research_note_save_receipts
+           where attempt_id=? and artifact_id=?`,
+        )
+        .get(command.attemptId, command.artifactId) as
+        ProjectChatResearchNoteSaveReceiptRow | undefined;
+      if (
+        !stored ||
+        stored.project_id !== command.projectId ||
+        stored.session_id !== command.sessionId ||
+        stored.category !== command.category ||
+        stored.expected_content_sha256 !== command.contentSha256
+      ) {
+        throw new Error('research_note_save_receipt_conflict');
+      }
+      if (stored.relative_path !== null && stored.relative_path !== command.relativePath) {
+        throw new Error('research_note_save_receipt_conflict');
+      }
+      if (
+        stored.status === 'staged' ||
+        stored.status === 'uncertain' ||
+        stored.status === 'abandoned'
+      ) {
+        const promoted = database
+          .prepare(
+            `update project_chat_research_note_save_receipts
+             set status='committed-unreported',relative_path=?,committed_at=?,reported_at=null,
+                 updated_at=?
+             where attempt_id=? and artifact_id=?
+               and status in ('staged','uncertain','abandoned')`,
+          )
+          .run(
+            command.relativePath,
+            command.confirmedAt,
+            command.confirmedAt,
+            command.attemptId,
+            command.artifactId,
+          );
+        if (promoted.changes !== 1) throw new Error('research_note_save_receipt_conflict');
+      } else if (!['committed-unreported', 'reported'].includes(stored.status)) {
+        throw new Error('research_note_save_receipt_conflict');
+      }
+      reconcileCommittedResearchNoteReceiptsForAttempt(
+        database,
+        command.attemptId,
+        command.confirmedAt,
+      );
+    })();
+  }
+
+  listUnreportedResearchNoteSaves() {
+    return (
+      this.require()
+        .prepare(
+          `select ${PROJECT_CHAT_RESEARCH_NOTE_RECEIPT_COLUMNS}
+           from project_chat_research_note_save_receipts
+           where status in ('staged','uncertain','committed-unreported')
+           order by staged_at,attempt_id,artifact_id`,
+        )
+        .all() as ProjectChatResearchNoteSaveReceiptRow[]
+    ).map(toProjectChatResearchNoteSaveReceipt);
+  }
+
+  reconcileCommittedResearchNoteSaves(reconciledAt: string) {
+    const timestamp = z.string().datetime({ offset: true }).parse(reconciledAt);
+    const database = this.require();
+    return database.transaction(() =>
+      reconcileCommittedResearchNoteReceipts(database, timestamp),
+    )();
   }
 
   finishChatAttempt(input: ProjectChatAttempt, inputAssistantMessage: ProjectChatMessage) {
@@ -2680,8 +3836,10 @@ export class LocalDatabase {
       ) {
         throw new Error('chat_attempt_assistant_message_mismatch');
       }
+      const committedReceipts = committedResearchNoteReceiptsForAttempt(database, terminal.id);
       const assistantMessage = ProjectChatMessageSchema.parse({
         ...parsedMessage,
+        content: appendResearchNoteSaveReceipts(parsedMessage.content, committedReceipts),
         attemptId: terminal.id,
         turnId: parsedMessage.turnId ?? terminal.turnId,
         model: parsedMessage.model ?? terminal.model,
@@ -2706,6 +3864,7 @@ export class LocalDatabase {
         );
       if (updated.changes !== 1) throw new Error('chat_attempt_state_conflict');
       insertProjectChatMessage(database, assistantMessage);
+      reportResearchNoteReceipts(database, terminal.id, terminal.updatedAt);
       if (!terminal.sessionId) throw new Error('chat_attempt_session_missing');
       appendProjectChatSessionMessage(database, terminal.sessionId, assistantMessage.id);
       touchProjectChatSession(database, terminal.sessionId, terminal.updatedAt);
@@ -2786,6 +3945,7 @@ export class LocalDatabase {
       session,
       sessions,
       attempts: attempts.map(toChatAttempt),
+      queuedTurns: this.listProjectChatQueuedTurns(projectId, session.id),
       messages: rows.map((row) => ({
         id: row.id,
         projectId: row.project_id,
@@ -3195,9 +4355,9 @@ export class LocalDatabase {
         );
         const insertConflict = database.prepare(
           `insert into literature_search_conflicts(
-             search_run_id,ordinal,provider,provider_record_id,doi,fingerprint,title,authors_json,
-             published_year
-           ) values(?,?,?,?,?,?,?,?,?)`,
+             search_run_id,ordinal,provider,provider_record_id,canonical_id,doi,fingerprint,title,
+             authors_json,published_year
+           ) values(?,?,?,?,?,?,?,?,?,?)`,
         );
         for (const [index, candidate] of candidates.entries()) {
           let result: ReturnType<typeof upsertLiteratureCandidate>;
@@ -3209,6 +4369,7 @@ export class LocalDatabase {
                 ordinal: index + 1,
                 provider: candidate.provider,
                 providerRecordId: candidate.providerId ?? null,
+                canonicalId: candidate.canonicalId ?? null,
                 doi: candidate.doi ?? null,
                 fingerprint: candidate.fingerprint,
                 title: candidate.title,
@@ -3220,6 +4381,7 @@ export class LocalDatabase {
                 conflict.ordinal,
                 conflict.provider,
                 conflict.providerRecordId,
+                conflict.canonicalId,
                 conflict.doi,
                 conflict.fingerprint,
                 conflict.title,
@@ -3534,7 +4696,7 @@ export class LocalDatabase {
     const rows = this.require()
       .prepare(
         `select id,schema_version,project_id,connection_id,canonical_root,permission_mode,
-                version,created_at,updated_at
+                trusted_access_json,version,created_at,updated_at
          from ssh_workspace_grants where project_id=? order by connection_id asc,id asc`,
       )
       .all(projectId) as SshWorkspaceGrantRow[];
@@ -3548,8 +4710,8 @@ export class LocalDatabase {
         .prepare(
           `insert or ignore into ssh_workspace_grants(
              id,schema_version,project_id,connection_id,canonical_root,permission_mode,
-             version,created_at,updated_at
-           ) values(?,?,?,?,?,?,?,?,?)`,
+             trusted_access_json,version,created_at,updated_at
+           ) values(?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(
           grant.id,
@@ -3558,6 +4720,7 @@ export class LocalDatabase {
           grant.connectionId,
           grant.canonicalRoot,
           grant.permissionMode,
+          grant.trustedAccess ? JSON.stringify(grant.trustedAccess) : null,
           grant.version,
           grant.createdAt,
           grant.updatedAt,
@@ -3574,12 +4737,13 @@ export class LocalDatabase {
       this.require()
         .prepare(
           `update ssh_workspace_grants set
-             canonical_root=?,permission_mode=?,version=?,updated_at=?
+             canonical_root=?,permission_mode=?,trusted_access_json=?,version=?,updated_at=?
            where id=? and project_id=? and connection_id=? and version=?`,
         )
         .run(
           grant.canonicalRoot,
           grant.permissionMode,
+          grant.trustedAccess ? JSON.stringify(grant.trustedAccess) : null,
           grant.version,
           grant.updatedAt,
           grant.id,
@@ -3595,6 +4759,37 @@ export class LocalDatabase {
       this.require()
         .prepare('delete from ssh_workspace_grants where project_id=? and id=? and version=?')
         .run(projectId, grantId, expectedVersion).changes === 1
+    );
+  }
+
+  appendSshTrustedWorkspaceAudit(input: SshTrustedWorkspaceAuditRecord) {
+    const record = SshTrustedWorkspaceAuditRecordSchema.parse(input);
+    return (
+      this.require()
+        .prepare(
+          `insert or ignore into ssh_trusted_workspace_audit(
+             id,schema_version,project_id,grant_id,grant_version,connection_id,
+             connection_version,policy_version,session_id,attempt_id,turn_id,tool_call_id,
+             operation,command_sha256,auto_approved_at
+           ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          record.id,
+          record.schemaVersion,
+          record.projectId,
+          record.grantId,
+          record.grantVersion,
+          record.connectionId,
+          record.connectionVersion,
+          record.policyVersion,
+          record.sessionId,
+          record.attemptId,
+          record.turnId,
+          record.toolCallId,
+          record.operation,
+          record.commandSha256,
+          record.autoApprovedAt,
+        ).changes === 1
     );
   }
 
@@ -3640,6 +4835,7 @@ type SshWorkspaceGrantRow = {
   connection_id: string;
   canonical_root: string;
   permission_mode: string;
+  trusted_access_json: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -3666,6 +4862,9 @@ function toSshWorkspaceGrant(row: SshWorkspaceGrantRow) {
     connectionId: row.connection_id,
     canonicalRoot: row.canonical_root,
     permissionMode: row.permission_mode,
+    trustedAccess: row.trusted_access_json
+      ? (JSON.parse(row.trusted_access_json) as unknown)
+      : null,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -3679,6 +4878,18 @@ type ProjectChatSessionRow = {
   is_default: number;
   parent_session_id: string | null;
   branched_from_message_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type ProjectChatQueuedTurnRow = {
+  id: string;
+  project_id: string;
+  session_id: string;
+  command_json: string;
+  enqueue_sequence: number;
+  priority: 'normal' | 'next';
+  status: 'queued' | 'starting';
   created_at: string;
   updated_at: string;
 };
@@ -3734,6 +4945,7 @@ type ProjectChatProfileRow = {
   context_scope: 'project' | 'board' | 'objective';
   local_notes_vault_id: string | null;
   local_notes_vault_name: string | null;
+  local_notes_allow_agent_markdown_create: 0 | 1;
   instruction_revision_id: string;
   updated_at: string;
   content: string;
@@ -3818,6 +5030,24 @@ function toChatSession(row: ProjectChatSessionRow) {
   });
 }
 
+function toChatQueuedTurn(row: ProjectChatQueuedTurnRow) {
+  const command = JSON.parse(row.command_json) as unknown;
+  if (typeof command !== 'object' || command === null || Array.isArray(command)) {
+    throw new Error('chat_queue_payload_invalid');
+  }
+  return ProjectChatQueuedTurnSchema.parse({
+    ...(command as Record<string, unknown>),
+    id: row.id,
+    projectId: row.project_id,
+    sessionId: row.session_id,
+    enqueueSequence: row.enqueue_sequence,
+    priority: row.priority,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
 function toChatProfile(row: ProjectChatProfileRow) {
   return ProjectChatProfileSchema.parse({
     schemaVersion: 1,
@@ -3832,7 +5062,11 @@ function toChatProfile(row: ProjectChatProfileRow) {
     contextScope: row.context_scope,
     localNotesVault:
       row.local_notes_vault_id && row.local_notes_vault_name
-        ? { id: row.local_notes_vault_id, name: row.local_notes_vault_name }
+        ? {
+            id: row.local_notes_vault_id,
+            name: row.local_notes_vault_name,
+            allowAgentMarkdownCreate: row.local_notes_allow_agent_markdown_create === 1,
+          }
         : null,
     customInstructions: row.content,
     instructionRevision: {

@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ResearchNotesManagedFiles,
@@ -207,6 +207,92 @@ describe('ResearchNotesManagedFiles', () => {
     await expect(
       readFile(join(root, 'GOSU', 'Research Project', 'Papers', 'paper.md'), 'utf8'),
     ).resolves.toBe('# First note\n');
+  });
+
+  it('syncs the category directory after an exclusive user Markdown create', async () => {
+    const root = await temporaryVault();
+    await new ResearchNotesManagedFiles(root).createProjectWorkspace(
+      'Research Project',
+      OWNERSHIP,
+      ['Experiments'],
+      {},
+    );
+    const directorySync = vi.fn(async () => undefined);
+    const writer = new ResearchNotesManagedFiles(root, directorySync);
+
+    await expect(
+      writer.createUserMarkdown(
+        'Research Project',
+        'Experiments/Durable result.md',
+        '# Durable result\n',
+        OWNERSHIP,
+      ),
+    ).resolves.toBe(true);
+
+    expect(directorySync).toHaveBeenCalledExactlyOnceWith(
+      join(root, 'GOSU', 'Research Project', 'Experiments'),
+    );
+  });
+
+  it('tolerates only an unsupported directory sync and surfaces real I/O uncertainty', async () => {
+    const root = await temporaryVault();
+    await new ResearchNotesManagedFiles(root).createProjectWorkspace(
+      'Research Project',
+      OWNERSHIP,
+      ['Experiments'],
+      {},
+    );
+    const unsupported = Object.assign(new Error('directory fsync unsupported'), {
+      code: 'EINVAL',
+    });
+    const unsupportedWriter = new ResearchNotesManagedFiles(
+      root,
+      vi.fn(async () => Promise.reject(unsupported)),
+    );
+
+    await expect(
+      unsupportedWriter.createUserMarkdown(
+        'Research Project',
+        'Experiments/Unsupported fsync.md',
+        '# Still created\n',
+        OWNERSHIP,
+      ),
+    ).resolves.toBe(true);
+
+    const ioFailure = Object.assign(new Error('directory fsync failed'), { code: 'EIO' });
+    const failingWriter = new ResearchNotesManagedFiles(
+      root,
+      vi.fn(async () => Promise.reject(ioFailure)),
+    );
+    await expect(
+      failingWriter.createUserMarkdown(
+        'Research Project',
+        'Experiments/Uncertain fsync.md',
+        '# Commit uncertain\n',
+        OWNERSHIP,
+      ),
+    ).rejects.toMatchObject({ code: 'EIO' });
+    await expect(
+      readFile(join(root, 'GOSU', 'Research Project', 'Experiments', 'Uncertain fsync.md'), 'utf8'),
+    ).resolves.toBe('# Commit uncertain\n');
+  });
+
+  it('rejects user Markdown that the Research Notes reader could not reopen', async () => {
+    const root = await temporaryVault();
+    const writer = new ResearchNotesManagedFiles(root);
+    await writer.createProjectWorkspace('Research Project', OWNERSHIP, ['Papers'], {});
+
+    await expect(
+      writer.createUserMarkdown(
+        'Research Project',
+        'Papers/oversized.md',
+        '한'.repeat(700_000),
+        OWNERSHIP,
+      ),
+    ).rejects.toThrow('research_notes_markdown_too_large');
+    await expect(
+      readFile(join(root, 'GOSU', 'Research Project', 'Papers', 'oversized.md')),
+    ).rejects.toThrow();
   });
 
   it('rejects managed and user writes after the ownership marker changes', async () => {

@@ -115,6 +115,9 @@ export function describeError(error: unknown) {
     workspace_unavailable:
       'The encrypted local workspace is unavailable. Your existing data was not replaced.',
     chat_busy: 'This project already has an active Codex turn. Stop it or wait for completion.',
+    chat_queue_not_found: 'That queued message already started, moved, or was removed.',
+    chat_queue_limit_reached:
+      'This chat already has 50 queued messages. Let one run or remove one before adding more.',
     chat_not_active: 'There is no active Codex turn to stop for this project.',
     chat_attempt_not_found:
       'The saved turn to retry is no longer available in this project. Send it as a new turn.',
@@ -154,6 +157,10 @@ export function describeError(error: unknown) {
       'This Literature record is no longer available, so no paper note was created.',
     research_notes_unavailable:
       'Research Notes are unavailable. Existing Obsidian files were not changed.',
+    research_notes_save_commit_uncertain:
+      'The Research Notes save could not be confirmed. Check the project folder before retrying; the file may already exist.',
+    research_notes_markdown_too_large:
+      'This Markdown file is too large for the Research Notes reader. Split it into smaller notes and try again.',
     attachment_invalid:
       'This file is damaged or does not match its file type. Choose a valid local file.',
     attachment_unsupported:
@@ -226,6 +233,12 @@ export function describeError(error: unknown) {
       'The remote write may have committed before confirmation failed. Read the same path and compare its SHA-256 before retrying.',
     ssh_workspace_file_helper_unavailable:
       'This server does not provide the required /usr/bin/python3 file-broker runtime. Configure Python 3 on the server or choose another workspace; no retry was started.',
+    ssh_trusted_workspace_not_allowed:
+      'Trusted workspace requires a standard non-root SSH user and an exact Workspace-mode grant.',
+    ssh_trusted_workspace_expired:
+      'Trusted workspace expired because its project, server, grant, path, or safety policy changed. Retry with Allow once or review and enable trust again.',
+    ssh_trusted_workspace_audit_failed:
+      'GOSU could not record the trusted-operation audit, so the remote operation was not started.',
     ssh_approval_not_found: 'This SSH approval is no longer pending.',
     ssh_approval_denied: 'The SSH command was denied and was not started.',
     ssh_approval_expired: 'The SSH approval expired and the command was not started.',

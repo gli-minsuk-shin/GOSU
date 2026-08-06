@@ -10,13 +10,18 @@ import {
   CreateProjectChatSessionInputSchema,
   PROJECT_CHAT_OUTPUT_SCHEMA,
   PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH,
+  ProjectChatAttemptSchema,
+  ProjectChatMessageSchema,
   ProjectChatProjectInputSchema,
+  ProjectChatQueuedTurnSchema,
+  ProjectChatQueuedTurnInputSchema,
   RenameProjectChatSessionInputSchema,
   ProjectChatSessionInputSchema,
   ProjectChatSnapshotInputSchema,
   ProjectChatSnapshotSchema,
   ProjectChatTurnReceiptSchema,
   SendProjectChatMessageInputSchema,
+  UpdateProjectChatQueuedTurnInputSchema,
   UpdateProjectChatProfileInputSchema,
   legacyDepthToResponseVerbosity,
   legacyHarnessToCollaborationModeId,
@@ -33,6 +38,13 @@ import {
   type ProjectChatNativeExecutionKind,
   type ProjectChatProfile,
   type ProjectChatProjectInput,
+  type ProjectChatQueuedTurn,
+  type ProjectChatQueuedTurnInput,
+  type ProjectChatResearchNoteSaveReceipt,
+  type ProjectChatResearchNoteSaveStage,
+  type AbandonProjectChatResearchNoteSaveInput,
+  type ConfirmProjectChatResearchNoteSaveInput,
+  type MarkProjectChatResearchNoteSaveUncertainInput,
   type RenameProjectChatSessionInput,
   type ProjectChatSession,
   type ProjectChatSessionInput,
@@ -40,6 +52,7 @@ import {
   type ProjectChatSnapshotInput,
   type ProjectChatTurnReceipt,
   type SendProjectChatMessageInput,
+  type UpdateProjectChatQueuedTurnInput,
   type UpdateProjectChatProfileInput,
 } from '../shared/project-chat-contracts';
 import type {
@@ -72,11 +85,24 @@ export interface ProjectChatStorage {
     attempt: ProjectChatAttempt,
     userMessage: ProjectChatMessage,
   ): MaybePromise<void>;
+  beginQueuedChatAttempt(
+    queueId: string,
+    attempt: ProjectChatAttempt,
+    userMessage: ProjectChatMessage,
+  ): MaybePromise<void>;
   markChatAttemptRunning(attempt: ProjectChatAttempt): MaybePromise<void>;
   finishChatAttempt(
     attempt: ProjectChatAttempt,
     assistantMessage: ProjectChatMessage,
   ): MaybePromise<void>;
+  stageResearchNoteSave(receipt: ProjectChatResearchNoteSaveStage): MaybePromise<void>;
+  markResearchNoteSaveUncertain(
+    input: MarkProjectChatResearchNoteSaveUncertainInput,
+  ): MaybePromise<void>;
+  abandonResearchNoteSave(input: AbandonProjectChatResearchNoteSaveInput): MaybePromise<boolean>;
+  confirmResearchNoteSave(input: ConfirmProjectChatResearchNoteSaveInput): MaybePromise<void>;
+  listUnreportedResearchNoteSaves(): MaybePromise<ProjectChatResearchNoteSaveReceipt[]>;
+  reconcileCommittedResearchNoteSaves(reconciledAt: string): MaybePromise<number>;
   getChatAttempt(
     projectId: string,
     sessionId: string,
@@ -102,6 +128,48 @@ export interface ProjectChatStorage {
   ): MaybePromise<ProjectChatAction | null>;
   claimAction(projectId: string, actionId: string, updatedAt: string): MaybePromise<boolean>;
   finishAction(action: ProjectChatAction): MaybePromise<void>;
+  listProjectChatQueuedTurns(
+    projectId: string,
+    sessionId: string,
+  ): MaybePromise<ProjectChatQueuedTurn[]>;
+  listProjectChatQueuedProjectIds(): MaybePromise<string[]>;
+  enqueueProjectChatTurn(queued: ProjectChatQueuedTurn): MaybePromise<ProjectChatQueuedTurn>;
+  updateProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+    message: string,
+    updatedAt: string,
+  ): MaybePromise<ProjectChatQueuedTurn | null>;
+  removeProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+  ): MaybePromise<boolean>;
+  prioritizeProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+    updatedAt: string,
+  ): MaybePromise<boolean>;
+  claimNextProjectChatQueuedTurn(projectId: string): MaybePromise<ProjectChatQueuedTurn | null>;
+  finishProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+  ): MaybePromise<boolean>;
+  releaseProjectChatQueuedTurn(
+    projectId: string,
+    sessionId: string,
+    queueId: string,
+    updatedAt: string,
+  ): MaybePromise<boolean>;
+  failProjectChatQueuedTurn(
+    queueId: string,
+    attempt: ProjectChatAttempt,
+    userMessage: ProjectChatMessage,
+    assistantMessage: ProjectChatMessage,
+  ): MaybePromise<boolean>;
 }
 
 export interface ProjectChatCodex {
@@ -148,6 +216,8 @@ export class ProjectChatServiceError extends Error {
       | 'project_archived'
       | 'project_trashed'
       | 'chat_busy'
+      | 'chat_queue_not_found'
+      | 'chat_queue_limit_reached'
       | 'chat_not_active'
       | 'chat_attempt_not_found'
       | 'chat_attempt_not_retryable'
@@ -202,6 +272,7 @@ const UNAVAILABLE_AGENT_VAULT: ProjectAgentVault = {
   validateGrant: () => Promise.reject(new Error('vault_not_selected')),
   listForAgent: () => Promise.reject(new Error('vault_not_selected')),
   readForAgent: () => Promise.reject(new Error('vault_not_selected')),
+  saveMarkdownForAgent: () => Promise.reject(new Error('vault_not_selected')),
 };
 
 const FAILURE_COPY = {
@@ -214,6 +285,8 @@ const FAILURE_COPY = {
     'GOSU recovered this turn after its first completion receipt could not be saved. Retry when ready.',
   interruptUnconfirmed:
     'GOSU could not confirm that this Codex turn stopped after registration failed. Check the local Codex connection before retrying.',
+  queuedAttachmentUnavailable:
+    'This queued message was not run because one or more attached files expired or became unavailable after GOSU restarted. Attach the files again and resend the message.',
 } as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -413,6 +486,13 @@ function mapSessionStorageError(error: unknown): ProjectChatServiceError {
   throw error;
 }
 
+function mapQueueStorageError(error: unknown): ProjectChatServiceError {
+  if (error instanceof Error && error.message === 'chat_queue_limit_reached') {
+    return new ProjectChatServiceError('chat_queue_limit_reached');
+  }
+  return mapSessionStorageError(error);
+}
+
 function sessionIdentity(projectId: string, sessionId: string) {
   return `${projectId}:${sessionId}`;
 }
@@ -434,6 +514,8 @@ export class ProjectChatService extends EventEmitter {
   private readonly lifecycleLockedProjects = new Set<string>();
   private readonly mutatingProjects = new Set<string>();
   private readonly earlyNotifications = new Map<string, CodexNotification[]>();
+  private readonly drainingQueueProjects = new Set<string>();
+  private readonly stopForQueuedTurnProjects = new Set<string>();
   private actionTail: Promise<void> = Promise.resolve();
   private codexConnectionEpoch = 0;
 
@@ -469,6 +551,66 @@ export class ProjectChatService extends EventEmitter {
     });
   }
 
+  async reconcileResearchNoteSaveReceipts() {
+    const pending = await this.dependencies.storage.listUnreportedResearchNoteSaves();
+    const recover = this.dependencies.vault?.recoverMarkdownForAgent?.bind(this.dependencies.vault);
+    if (recover) {
+      for (const receipt of pending) {
+        if (receipt.status === 'committed-unreported') continue;
+        try {
+          const recovered = await recover(receipt.projectId, receipt.bindingId, {
+            category: receipt.category,
+            artifactId: receipt.artifactId,
+            expectedContentSha256: receipt.expectedContentSha256,
+          });
+          if (!recovered) {
+            await this.dependencies.storage.abandonResearchNoteSave({
+              projectId: receipt.projectId,
+              sessionId: receipt.sessionId,
+              attemptId: receipt.attemptId,
+              artifactId: receipt.artifactId,
+              abandonedAt: new Date().toISOString(),
+            });
+            continue;
+          }
+          await this.dependencies.storage.confirmResearchNoteSave({
+            projectId: receipt.projectId,
+            sessionId: receipt.sessionId,
+            attemptId: receipt.attemptId,
+            artifactId: receipt.artifactId,
+            category: receipt.category,
+            relativePath: recovered.path,
+            contentSha256: recovered.contentSha256,
+            confirmedAt: new Date().toISOString(),
+          });
+        } catch {
+          if (receipt.status === 'staged') {
+            try {
+              await this.dependencies.storage.markResearchNoteSaveUncertain({
+                projectId: receipt.projectId,
+                sessionId: receipt.sessionId,
+                attemptId: receipt.attemptId,
+                artifactId: receipt.artifactId,
+                uncertainAt: new Date().toISOString(),
+              });
+            } catch {
+              // The original durable stage remains available for a later recovery pass.
+            }
+          }
+          // A stale or unavailable Vault remains recoverable on the next launch. Never claim a
+          // location until the artifact suffix and exact content hash can both be verified.
+        }
+      }
+    }
+    return this.dependencies.storage.reconcileCommittedResearchNoteSaves(new Date().toISOString());
+  }
+
+  async reconcileQueuedTurns() {
+    const projectIds = await this.dependencies.storage.listProjectChatQueuedProjectIds();
+    await Promise.all(projectIds.map((projectId) => this.drainQueue(projectId)));
+    return projectIds.length;
+  }
+
   async snapshot(input: ProjectChatSnapshotInput) {
     const command = ProjectChatSnapshotInputSchema.parse(input);
     await this.requireProject(command.projectId);
@@ -487,11 +629,24 @@ export class ProjectChatService extends EventEmitter {
       ? this.activeTransportBySession.get(sessionIdentity(command.projectId, selectedSessionId))
       : undefined;
     const active = activeTransport ? this.activeByTransport.get(activeTransport) : undefined;
-    return ProjectChatSnapshotSchema.parse({
+    const result = ProjectChatSnapshotSchema.parse({
       ...stored,
       profile,
       ...(active ? { activeTurnId: active.turnId } : {}),
     });
+    // A snapshot can select any session, but queue scheduling is project-global. Probe durable
+    // queue metadata first so merely opening an empty project never creates a transient busy state.
+    queueMicrotask(() => void this.resumeQueuedProject(command.projectId));
+    return result;
+  }
+
+  private async resumeQueuedProject(projectId: string) {
+    try {
+      const queuedProjectIds = await this.dependencies.storage.listProjectChatQueuedProjectIds();
+      if (queuedProjectIds.includes(projectId)) await this.drainQueue(projectId);
+    } catch {
+      // Startup reconciliation or the next queue event retries a transient storage failure.
+    }
   }
 
   async listSessions(input: ProjectChatProjectInput) {
@@ -590,7 +745,10 @@ export class ProjectChatService extends EventEmitter {
     }
   }
 
-  async send(input: SendProjectChatMessageInput): Promise<ProjectChatTurnReceipt> {
+  async send(
+    input: SendProjectChatMessageInput,
+    queueContext?: Readonly<{ queueId: string }>,
+  ): Promise<ProjectChatTurnReceipt> {
     const hasExplicitNativeModeSelection = input.collaborationModeId !== undefined;
     const command = SendProjectChatMessageInputSchema.parse(input);
     const requestedSshSessionKey = command.sessionId
@@ -604,9 +762,14 @@ export class ProjectChatService extends EventEmitter {
       this.sshRevokeAllEpochByProject.get(command.projectId) ?? 0;
     if (
       this.lifecycleLockedProjects.has(command.projectId) ||
-      this.mutatingProjects.has(command.projectId) ||
-      this.hasProjectActivity(command.projectId)
+      this.mutatingProjects.has(command.projectId)
     ) {
+      throw new ProjectChatServiceError('chat_busy');
+    }
+    if (!queueContext && this.hasProjectActivity(command.projectId)) {
+      return this.enqueueTurn(command);
+    }
+    if (queueContext && this.hasProjectRunningActivity(command.projectId)) {
       throw new ProjectChatServiceError('chat_busy');
     }
     this.startingProjects.add(command.projectId);
@@ -614,6 +777,7 @@ export class ProjectChatService extends EventEmitter {
     let startingSessionRegistered = false;
     let createdAgentTools: ProjectAgentToolSession | undefined;
     let agentToolsTransferred = false;
+    let queuedTurnFinished = false;
     try {
       await this.requireActiveProject(command.projectId);
       let priorChat: ProjectChatSnapshot;
@@ -734,6 +898,7 @@ export class ProjectChatService extends EventEmitter {
         workspace: this.dependencies.workspace,
         vault: this.dependencies.vault ?? UNAVAILABLE_AGENT_VAULT,
         localNotesVault: profile.localNotesVault ?? null,
+        researchNoteReceipts: this.dependencies.storage,
         ...(attachments ? { attachments } : {}),
         ...(executionKind !== 'legacy-reviewer' &&
         this.dependencies.literature &&
@@ -801,7 +966,17 @@ export class ProjectChatService extends EventEmitter {
         createdAt,
         updatedAt: createdAt,
       };
-      await this.dependencies.storage.beginChatAttempt(startingAttempt, userMessage);
+      if (queueContext) {
+        await this.dependencies.storage.beginQueuedChatAttempt(
+          queueContext.queueId,
+          startingAttempt,
+          userMessage,
+        );
+        queuedTurnFinished = true;
+        this.emitQueueUpdated(command.projectId, session.id);
+      } else {
+        await this.dependencies.storage.beginChatAttempt(startingAttempt, userMessage);
+      }
       const sshScopeRevokedDuringStartup = requestedSshSessionKey
         ? (this.sshScopeEpochBySession.get(requestedSshSessionKey) ?? 0) !==
             sshSessionEpochAtInvocation ||
@@ -892,6 +1067,14 @@ export class ProjectChatService extends EventEmitter {
         const buffered = this.earlyNotifications.get(activeTransport) ?? [];
         this.earlyNotifications.delete(activeTransport);
         for (const notification of buffered) this.processNotification(active, notification);
+        if (this.stopForQueuedTurnProjects.delete(command.projectId)) {
+          active.agentTools.revokeSshCapability();
+          active.agentTools.revokeLiteratureCapability();
+          active.agentTools.revokeAttachmentCapability();
+          void this.dependencies.codex
+            .interruptTurn(active.threadId, active.turnId)
+            .catch(() => undefined);
+        }
         return ProjectChatTurnReceiptSchema.parse({
           projectId: command.projectId,
           sessionId: session.id,
@@ -960,6 +1143,283 @@ export class ProjectChatService extends EventEmitter {
       if (startingSessionRegistered && startingSessionKey) {
         this.startingSessions.delete(startingSessionKey);
       }
+      if (!agentToolsTransferred && this.stopForQueuedTurnProjects.delete(command.projectId)) {
+        queueMicrotask(() => void this.drainQueue(command.projectId));
+      }
+      if (queueContext && startingSessionKey && !queuedTurnFinished) {
+        const queuedSessionId = startingSessionKey.slice(command.projectId.length + 1);
+        try {
+          await this.dependencies.storage.releaseProjectChatQueuedTurn(
+            command.projectId,
+            queuedSessionId,
+            queueContext.queueId,
+            isoNow(),
+          );
+        } catch {
+          // Startup reconciliation restores any durable starting queue row on the next launch.
+        }
+        this.emitQueueUpdated(command.projectId, queuedSessionId);
+      }
+    }
+  }
+
+  async updateQueuedTurn(input: UpdateProjectChatQueuedTurnInput) {
+    const command = UpdateProjectChatQueuedTurnInputSchema.parse(input);
+    await this.requireActiveProject(command.projectId);
+    const updated = await this.dependencies.storage.updateProjectChatQueuedTurn(
+      command.projectId,
+      command.sessionId,
+      command.queueId,
+      command.message,
+      isoNow(),
+    );
+    if (!updated) throw new ProjectChatServiceError('chat_queue_not_found');
+    this.emitQueueUpdated(command.projectId, command.sessionId);
+    return updated;
+  }
+
+  async removeQueuedTurn(input: ProjectChatQueuedTurnInput) {
+    const command = ProjectChatQueuedTurnInputSchema.parse(input);
+    await this.requireActiveProject(command.projectId);
+    const queued = (
+      await this.dependencies.storage.listProjectChatQueuedTurns(
+        command.projectId,
+        command.sessionId,
+      )
+    ).find((candidate) => candidate.id === command.queueId && candidate.status === 'queued');
+    if (!queued) throw new ProjectChatServiceError('chat_queue_not_found');
+    const removed = await this.dependencies.storage.removeProjectChatQueuedTurn(
+      command.projectId,
+      command.sessionId,
+      command.queueId,
+    );
+    if (!removed) throw new ProjectChatServiceError('chat_queue_not_found');
+    for (const attachmentId of queued.attachmentIds ?? []) {
+      await this.dependencies.attachments
+        ?.release?.({
+          projectId: command.projectId,
+          sessionId: command.sessionId,
+          attachmentId,
+        })
+        .catch(() => undefined);
+    }
+    this.emitQueueUpdated(command.projectId, command.sessionId);
+    return { removed: true } as const;
+  }
+
+  async runQueuedTurnNow(input: ProjectChatQueuedTurnInput) {
+    const command = ProjectChatQueuedTurnInputSchema.parse(input);
+    await this.requireActiveProject(command.projectId);
+    const prioritized = await this.dependencies.storage.prioritizeProjectChatQueuedTurn(
+      command.projectId,
+      command.sessionId,
+      command.queueId,
+      isoNow(),
+    );
+    if (!prioritized) throw new ProjectChatServiceError('chat_queue_not_found');
+    this.emitQueueUpdated(command.projectId, command.sessionId);
+
+    const active = [...this.activeByTransport.values()].find(
+      (candidate) => candidate.projectId === command.projectId && !candidate.terminal,
+    );
+    if (active) {
+      active.agentTools.revokeSshCapability();
+      active.agentTools.revokeLiteratureCapability();
+      active.agentTools.revokeAttachmentCapability();
+      this.dependencies.ssh?.cancelSession(active.projectId, active.sessionId);
+      await this.dependencies.codex.interruptTurn(active.threadId, active.turnId);
+    } else if (this.startingProjects.has(command.projectId)) {
+      this.stopForQueuedTurnProjects.add(command.projectId);
+    } else {
+      queueMicrotask(() => void this.drainQueue(command.projectId));
+    }
+    return { accepted: true } as const;
+  }
+
+  private async enqueueTurn(command: SendProjectChatMessageInput) {
+    await this.requireActiveProject(command.projectId);
+    let snapshot: ProjectChatSnapshot;
+    try {
+      snapshot = await this.dependencies.storage.snapshot(command.projectId, command.sessionId);
+    } catch (error) {
+      throw mapSessionStorageError(error);
+    }
+    const session = snapshot.session;
+    if (!session) throw new ProjectChatServiceError('chat_session_not_found');
+    const now = isoNow();
+    const queued = ProjectChatQueuedTurnSchema.parse({
+      ...command,
+      id: randomUUID(),
+      sessionId: session.id,
+      priority: 'normal',
+      status: 'queued',
+      createdAt: now,
+      updatedAt: now,
+    });
+    try {
+      await this.dependencies.storage.enqueueProjectChatTurn(queued);
+    } catch (error) {
+      throw mapQueueStorageError(error);
+    }
+    this.emitQueueUpdated(command.projectId, session.id);
+    return ProjectChatTurnReceiptSchema.parse({
+      projectId: command.projectId,
+      sessionId: session.id,
+      attemptId: queued.id,
+      userMessageId: queued.id,
+      turnId: `queued:${queued.id}`,
+      queueId: queued.id,
+      queued: true,
+    });
+  }
+
+  private async failQueuedAttachmentTurn(queued: ProjectChatQueuedTurn) {
+    const completedAt = isoNow();
+    const attemptId = randomUUID();
+    const userMessageId = randomUUID();
+    const attempt = ProjectChatAttemptSchema.parse({
+      id: attemptId,
+      projectId: queued.projectId,
+      sessionId: queued.sessionId,
+      userMessageId,
+      ...(queued.retryOfAttemptId ? { retryOfAttemptId: queued.retryOfAttemptId } : {}),
+      requestedModelId: queued.requestedModelId,
+      reasoningOptionId: queued.reasoningOptionId,
+      ...(queued.harnessMode ? { harnessMode: queued.harnessMode } : {}),
+      ...(queued.responseDepth ? { responseDepth: queued.responseDepth } : {}),
+      ...(queued.collaborationModeId !== undefined
+        ? { collaborationModeId: queued.collaborationModeId }
+        : {}),
+      ...(queued.personality ? { personality: queued.personality } : {}),
+      ...(queued.responseVerbosity ? { responseVerbosity: queued.responseVerbosity } : {}),
+      ...(queued.contextScope ? { contextScope: queued.contextScope } : {}),
+      ...(queued.profileVersion !== undefined ? { profileVersion: queued.profileVersion } : {}),
+      status: 'failed',
+      createdAt: queued.createdAt,
+      updatedAt: completedAt,
+    });
+    const userMessage = ProjectChatMessageSchema.parse({
+      id: userMessageId,
+      projectId: queued.projectId,
+      role: 'user',
+      content: queued.message,
+      status: 'complete',
+      attemptId,
+      actions: [],
+      createdAt: queued.createdAt,
+      completedAt,
+    });
+    const assistantMessage = ProjectChatMessageSchema.parse({
+      id: randomUUID(),
+      projectId: queued.projectId,
+      role: 'assistant',
+      content: FAILURE_COPY.queuedAttachmentUnavailable,
+      status: 'failed',
+      attemptId,
+      actions: [],
+      createdAt: completedAt,
+      completedAt,
+    });
+    const finished = await this.dependencies.storage.failProjectChatQueuedTurn(
+      queued.id,
+      attempt,
+      userMessage,
+      assistantMessage,
+    );
+    if (!finished) return false;
+    for (const attachmentId of queued.attachmentIds ?? []) {
+      await this.dependencies.attachments
+        ?.release?.({
+          projectId: queued.projectId,
+          sessionId: queued.sessionId,
+          attachmentId,
+        })
+        .catch(() => undefined);
+    }
+    this.emitQueueUpdated(queued.projectId, queued.sessionId);
+    return true;
+  }
+
+  private async drainQueue(projectId: string) {
+    if (
+      this.drainingQueueProjects.has(projectId) ||
+      this.lifecycleLockedProjects.has(projectId) ||
+      this.mutatingProjects.has(projectId) ||
+      this.hasProjectRunningActivity(projectId)
+    ) {
+      return;
+    }
+    this.drainingQueueProjects.add(projectId);
+    try {
+      while (!this.hasProjectRunningActivity(projectId)) {
+        const queued = await this.dependencies.storage.claimNextProjectChatQueuedTurn(projectId);
+        if (!queued) return;
+        this.emitQueueUpdated(queued.projectId, queued.sessionId);
+        if (queued.attachmentIds?.length) {
+          try {
+            if (!this.dependencies.attachments) {
+              throw new ProjectChatAttachmentError('attachment_expired');
+            }
+            this.dependencies.attachments.validate?.(
+              queued.projectId,
+              queued.sessionId,
+              queued.attachmentIds,
+            );
+          } catch (error) {
+            if (error instanceof ProjectChatAttachmentError) {
+              if (await this.failQueuedAttachmentTurn(queued)) continue;
+            }
+            await this.dependencies.storage.releaseProjectChatQueuedTurn(
+              queued.projectId,
+              queued.sessionId,
+              queued.id,
+              isoNow(),
+            );
+            this.emitQueueUpdated(queued.projectId, queued.sessionId);
+            return;
+          }
+        }
+        const {
+          id: _id,
+          projectId: queuedProjectId,
+          sessionId: queuedSessionId,
+          enqueueSequence: _enqueueSequence,
+          priority: _priority,
+          status: _status,
+          createdAt: _createdAt,
+          updatedAt: _updatedAt,
+          ...turn
+        } = queued;
+        try {
+          await this.send(
+            {
+              ...turn,
+              projectId: queuedProjectId,
+              sessionId: queuedSessionId,
+            },
+            { queueId: queued.id },
+          );
+          return;
+        } catch (error) {
+          if (
+            error instanceof ProjectChatServiceError &&
+            (error.code === 'attachment_expired' || error.code === 'attachment_scope_mismatch') &&
+            (await this.failQueuedAttachmentTurn(queued))
+          ) {
+            continue;
+          }
+          await this.dependencies.storage.releaseProjectChatQueuedTurn(
+            queued.projectId,
+            queued.sessionId,
+            queued.id,
+            isoNow(),
+          );
+          this.emitQueueUpdated(queued.projectId, queued.sessionId);
+          return;
+        }
+      }
+    } finally {
+      this.drainingQueueProjects.delete(projectId);
     }
   }
 
@@ -1261,9 +1721,7 @@ export class ProjectChatService extends EventEmitter {
   private beginFinalize(active: ActiveTurn, status: 'completed' | 'interrupted' | 'failed') {
     if (active.terminal) return;
     active.terminal = true;
-    active.agentTools.revokeSshCapability();
-    active.agentTools.revokeLiteratureCapability();
-    active.agentTools.revokeAttachmentCapability();
+    active.agentTools.beginTerminal();
     void this.persistTerminal(active, status)
       .then((persistedStatus) => this.clearActive(active, persistedStatus))
       .catch(async () => {
@@ -1303,11 +1761,11 @@ export class ProjectChatService extends EventEmitter {
   }
 
   private async finishCompleted(active: ActiveTurn): Promise<'complete' | 'failed'> {
-    const sourceAppendix = await active.agentTools.finalizeSourceAppendix();
     const response = active.finalResponseText
       ? parseCodexProjectResponse(active.finalResponseText)
       : null;
     if (!response) {
+      const sourceAppendix = await active.agentTools.finalizeSourceAppendix();
       await this.saveAssistant(
         active,
         'failed',
@@ -1317,6 +1775,11 @@ export class ProjectChatService extends EventEmitter {
       );
       return 'failed';
     }
+    await active.agentTools.persistResponseResearchNote(
+      response.researchNote,
+      active.attempt.harnessMode !== 'reviewer',
+    );
+    const sourceAppendix = await active.agentTools.finalizeSourceAppendix();
     const snapshot = await this.dependencies.workspace.snapshot();
     const project = snapshot.projects.find((candidate) => candidate.id === active.projectId);
     const taskIds = new Set(
@@ -1462,6 +1925,7 @@ export class ProjectChatService extends EventEmitter {
       turnId: active.turnId,
       status,
     });
+    queueMicrotask(() => void this.drainQueue(active.projectId));
   }
 
   private async requireProject(projectId: string) {
@@ -1494,12 +1958,20 @@ export class ProjectChatService extends EventEmitter {
   }
 
   private hasProjectActivity(projectId: string) {
+    return this.drainingQueueProjects.has(projectId) || this.hasProjectRunningActivity(projectId);
+  }
+
+  private hasProjectRunningActivity(projectId: string) {
     const prefix = `${projectId}:`;
     return (
       this.startingProjects.has(projectId) ||
       [...this.startingSessions].some((identity) => identity.startsWith(prefix)) ||
       [...this.activeTransportBySession.keys()].some((identity) => identity.startsWith(prefix))
     );
+  }
+
+  private emitQueueUpdated(projectId: string, sessionId: string) {
+    this.emitEvent({ type: 'queue.updated', projectId, sessionId });
   }
 
   private emitEvent(event: ProjectChatEvent) {
