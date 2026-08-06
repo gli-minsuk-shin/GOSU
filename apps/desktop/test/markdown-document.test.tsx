@@ -228,6 +228,26 @@ $$`);
     );
   });
 
+  it('reclaims the Research Notes reader width with a responsive reduced-motion-safe tree rail', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(styles).toMatch(
+      /\.notes-layout\s*\{[^}]*grid-template-columns:\s*270px minmax\(0, 1fr\);[^}]*transition:\s*grid-template-columns 180ms ease;/su,
+    );
+    expect(styles).toMatch(
+      /\.notes-layout\.folder-tree-collapsed\s*\{[^}]*grid-template-columns:\s*44px minmax\(0, 1fr\);/su,
+    );
+    expect(styles).toMatch(
+      /\.research-notes-tree-details\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/su,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 860px\)[\s\S]*?\.notes-layout\.folder-tree-collapsed\s*\{[^}]*grid-template:\s*44px minmax\(0, 1fr\) \/ minmax\(0, 1fr\);/u,
+    );
+    expect(styles).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.notes-layout,[\s\S]*?transition:\s*none;/u,
+    );
+  });
+
   it('turns prose wiki-links into note links without rewriting inline or fenced code', () => {
     const html = renderMarkdown(
       `Open [[Target|Readable alias]].

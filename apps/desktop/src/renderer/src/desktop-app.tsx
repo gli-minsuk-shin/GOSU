@@ -72,6 +72,10 @@ import {
 } from './project-chat-session-state';
 import { RepositoryView } from './repository-view';
 import {
+  loadResearchNotesLayoutState,
+  saveResearchNotesLayoutState,
+} from './research-notes-layout-state';
+import {
   archivedProjects as archivedPortfolioProjects,
   resolveActiveProjectId,
   visibleProjects,
@@ -235,6 +239,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   );
   const [projectChatLayout, setProjectChatLayout] = useState(() =>
     loadProjectChatLayoutState(window.localStorage),
+  );
+  const [researchNotesLayout, setResearchNotesLayout] = useState(() =>
+    loadResearchNotesLayoutState(window.localStorage),
   );
   const [sidebarResizing, setSidebarResizing] = useState(false);
 
@@ -416,6 +423,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   useEffect(() => {
     saveProjectChatLayoutState(window.localStorage, projectChatLayout);
   }, [projectChatLayout]);
+
+  useEffect(() => {
+    saveResearchNotesLayoutState(window.localStorage, researchNotesLayout);
+  }, [researchNotesLayout]);
 
   useEffect(() => {
     activeChatSessionIdsRef.current = activeChatSessionIds;
@@ -2298,6 +2309,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 accessBusy={
                   busyAction !== null ||
                   Boolean(activeProject && chatBusyProjectIds.has(activeProject.id))
+                }
+                folderTreeCollapsed={researchNotesLayout.folderTreeCollapsed}
+                onFolderTreeCollapsedChange={(folderTreeCollapsed) =>
+                  setResearchNotesLayout((current) => ({ ...current, folderTreeCollapsed }))
                 }
                 onChoose={() => void chooseResearchNotesVault(activeProject.id)}
                 onRetry={() => {
