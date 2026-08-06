@@ -10,6 +10,22 @@ import {
   quotePosixToken,
   type SshCommandError,
 } from '../src/main/ssh-command-runner';
+import {
+  SSH_WORKSPACE_FILE_HELPER_SOURCE,
+  SSH_WORKSPACE_FILE_MAX_STDIN_BYTES,
+} from '../src/main/ssh-workspace-files';
+
+const HELPER_COMMAND = {
+  projectId: '11111111-1111-4111-8111-111111111111',
+  sessionId: '22222222-2222-4222-8222-222222222222',
+  attemptId: '33333333-3333-4333-8333-333333333333',
+  turnId: 'turn-helper',
+  toolCallId: 'tool-helper',
+  connectionId: '44444444-4444-4444-8444-444444444444',
+  command: '/usr/bin/python3',
+  args: ['-I', '-S', '-c', SSH_WORKSPACE_FILE_HELPER_SOURCE],
+  timeoutSeconds: 30,
+};
 
 describe('bounded OpenSSH command runner', () => {
   let directory: string;
@@ -58,6 +74,12 @@ if (alias === 'wait-forever') {
   process.stderr.write('e'.repeat(1000));
 } else if (alias === 'large-output') {
   process.stdout.write('x'.repeat(1000));
+} else if (alias === 'stdin-capture') {
+  const chunks = [];
+  process.stdin.on('data', (chunk) => chunks.push(chunk));
+  process.stdin.on('end', () => {
+    process.stdout.write(JSON.stringify({ args, stdinBase64: Buffer.concat(chunks).toString('base64') }));
+  });
 } else {
   process.stdout.write(JSON.stringify({
     args,
@@ -198,6 +220,65 @@ if (alias === 'wait-forever') {
     const captured = JSON.parse(result.stdout) as { args: string[] };
     expect(captured.args.at(-1)).toBe("exec '/usr/bin/true'");
     expect(result.stdout.match(/"args"/gu)).toHaveLength(1);
+  });
+
+  it('pipes an exact bounded UTF-8 payload only when the Main process opts in', async () => {
+    const stdinText = '{"line":"alpha\\n한글","terminal":null}\n';
+    const result = await createSshCommandRunner(executable).executeWorkspaceFileHelper(
+      'stdin-capture',
+      HELPER_COMMAND,
+      stdinText,
+    );
+    const captured = JSON.parse(result.stdout) as { args: string[]; stdinBase64: string };
+
+    expect(captured.args).not.toContain('-n');
+    expect(Buffer.from(captured.stdinBase64, 'base64')).toEqual(Buffer.from(stdinText, 'utf8'));
+    expect(captured.args.at(-1)).toContain(quotePosixToken(SSH_WORKSPACE_FILE_HELPER_SOURCE));
+  });
+
+  it('retains ignored stdin and OpenSSH -n for ordinary commands', async () => {
+    const result = await createSshCommandRunner(executable)({
+      hostAlias: 'research-gpu',
+      command: '/usr/bin/true',
+      timeoutSeconds: 5,
+    });
+    const captured = JSON.parse(result.stdout) as { args: string[] };
+
+    expect(captured.args).toContain('-n');
+  });
+
+  it('accepts only the exact larger fixed helper on the bounded stdin channel', async () => {
+    const appOwnedSource = `exec(${JSON.stringify('pass\n'.repeat(700))})`;
+    const runner = createSshCommandRunner(executable);
+    const result = await runner.executeWorkspaceFileHelper('stdin-capture', HELPER_COMMAND, '{}');
+    const captured = JSON.parse(result.stdout) as { args: string[] };
+
+    expect(captured.args.at(-1)).toContain(quotePosixToken(SSH_WORKSPACE_FILE_HELPER_SOURCE));
+    expect(() =>
+      runner.executeWorkspaceFileHelper(
+        'stdin-capture',
+        { ...HELPER_COMMAND, args: ['-I', '-S', '-c', appOwnedSource] },
+        '{}',
+      ),
+    ).toThrow(expect.objectContaining<Partial<SshCommandError>>({ kind: 'connection_failed' }));
+    expect(() =>
+      runner({
+        hostAlias: 'research-gpu',
+        command: '/usr/bin/python3',
+        args: ['-c', appOwnedSource],
+        timeoutSeconds: 5,
+      }),
+    ).toThrow(expect.objectContaining<Partial<SshCommandError>>({ kind: 'connection_failed' }));
+  });
+
+  it('rejects a stdin payload larger than 64 KiB before opening SSH', () => {
+    expect(() =>
+      createSshCommandRunner(executable).executeWorkspaceFileHelper(
+        'stdin-capture',
+        HELPER_COMMAND,
+        '한'.repeat(Math.ceil(SSH_WORKSPACE_FILE_MAX_STDIN_BYTES / 3) + 1),
+      ),
+    ).toThrow(expect.objectContaining<Partial<SshCommandError>>({ kind: 'connection_failed' }));
   });
 
   it('returns bounded output and marks truncation without retaining the discarded suffix', async () => {

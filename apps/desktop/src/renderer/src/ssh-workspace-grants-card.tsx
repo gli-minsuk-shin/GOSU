@@ -157,8 +157,10 @@ export function SshWorkspaceGrantsCard({
       </header>
       <p className="privacy">
         A registered server is not automatically available to every project. Grant one canonical
-        workspace root to the active project, then Project Chat can request only bounded direct-argv
-        commands. Every command still requires a separate Allow once decision.
+        workspace root to the active project, then Project Chat can request bounded text file
+        listing, reading, creation, and replacement plus approved direct-argv commands. Every
+        command still requires a separate Allow once decision. Every file action requires its own
+        Allow once decision too; remote deletion is not available.
       </p>
       {!project ? (
         <div className="empty-card">
@@ -270,7 +272,7 @@ export function SshWorkspaceGrantsCard({
               >
                 <option value="diagnostics">Diagnostics · Git inspection only</option>
                 <option value="workspace" disabled={!selectedConnection?.directTarget}>
-                  Workspace · inspection, approved tests/builds, and foreground Python experiments
+                  Workspace · approved text files, tests/builds, and foreground Python experiments
                   {!selectedConnection?.directTarget ? ' · paste a direct SSH command first' : ''}
                 </option>
               </select>
@@ -285,7 +287,9 @@ export function SshWorkspaceGrantsCard({
               <span>
                 I understand this is an advisory policy boundary, not a remote sandbox. Tests,
                 builds, and foreground Python experiments may execute repository code with the SSH
-                account’s privileges.
+                account’s privileges and may access or change anything that account can reach.
+                Approved typed text file creates and replacements change the workspace; the typed
+                file broker does not provide remote deletion.
                 {selectedConnection?.directTarget?.user === 'root'
                   ? ' HIGH RISK: this selected account is root.'
                   : !selectedConnection?.directTarget?.user
@@ -322,7 +326,7 @@ export function SshWorkspaceGrantsCard({
                     <span>{grant.canonicalRoot}</span>
                     <small>
                       {grant.permissionMode === 'workspace'
-                        ? 'Workspace · inspection, approved tests/builds, and foreground Python experiments'
+                        ? 'Workspace · inspection, approved tests/builds, and foreground Python experiments; approved text file list/read/create/replace'
                         : 'Diagnostics · Git inspection only'}{' '}
                       · grant v{grant.version}
                     </small>

@@ -22,6 +22,7 @@ import {
 import type {
   RemoteWorkspaceGrant,
   SshWorkspaceAgentCommand,
+  SshWorkspaceFileOperation,
 } from '../src/shared/ssh-workspace-contracts';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
@@ -154,20 +155,43 @@ function workspaceCommandFixture(
   };
 }
 
+function workspaceFileWriteFixture(
+  grant: RemoteWorkspaceGrant,
+  overrides: Partial<Extract<SshWorkspaceFileOperation, { action: 'write' }>> = {},
+): Extract<SshWorkspaceFileOperation, { action: 'write' }> {
+  return {
+    projectId: grant.projectId,
+    sessionId: SESSION_A,
+    attemptId: ATTEMPT_ID,
+    turnId: 'turn-workspace-file',
+    toolCallId: 'tool-workspace-file',
+    connectionId: grant.connectionId,
+    grantId: grant.id,
+    action: 'write',
+    relativePath: 'experiments/linear_fit.py',
+    content: 'print("metric=1.0")\n',
+    expectedSha256: null,
+    ...overrides,
+  };
+}
+
 function runnerFixture(result?: Partial<SshProcessResult>) {
-  const execute = vi.fn(async (): Promise<SshProcessResult> => ({
+  const resultFactory = async (): Promise<SshProcessResult> => ({
     exitCode: 0,
     stdout: 'Fixture GPU\n',
     stderr: '',
     truncated: false,
     durationMs: 12,
     ...result,
-  }));
+  });
+  const execute = vi.fn(resultFactory);
   const testConnection = vi.fn(async () => undefined);
+  const executeWorkspaceFileHelper = vi.fn(resultFactory);
   const callable = vi.fn() as unknown as SshCommandRunner;
   callable.execute = execute;
+  callable.executeWorkspaceFileHelper = executeWorkspaceFileHelper;
   callable.testConnection = testConnection;
-  return { runner: callable, execute, testConnection };
+  return { runner: callable, execute, executeWorkspaceFileHelper, testConnection };
 }
 
 function nextApproval(service: SshConnectionService) {
@@ -464,6 +488,91 @@ describe('SSH connection and Allow once service', () => {
       expect.any(Object),
       expect.objectContaining({ user: 'researcher', host: '203.0.113.10' }),
     );
+  });
+
+  it('creates one reviewed text file through the fixed helper only after Allow once', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          localForwards: [],
+        },
+      }),
+    );
+    const helperResult = JSON.stringify({
+      schemaVersion: 1,
+      action: 'write',
+      relativePath: 'experiments/linear_fit.py',
+      created: true,
+      previousSha256: null,
+      contentSha256: 'b'.repeat(64),
+      sizeBytes: 20,
+    });
+    const { runner, execute, executeWorkspaceFileHelper } = runnerFixture({ stdout: helperResult });
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const grant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const approvalPromise = nextApproval(service);
+    const execution = service.runAgentWorkspaceFileOperation(workspaceFileWriteFixture(grant));
+    const approval = await approvalPromise;
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(approval).toMatchObject({
+      executionMode: 'remote_workspace',
+      workspaceRoot: '/workspace/research-project',
+      workspaceWorkingDirectory: '/workspace/research-project',
+      workspaceOperation: 'edit',
+      workspaceFileAction: 'create',
+      workspaceFilePath: 'experiments/linear_fit.py',
+      workspaceFileContentSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      commandSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
+    expect(approval.commandPreview).toContain('CREATE WORKSPACE TEXT FILE');
+    expect(approval.commandPreview).not.toContain('print("metric=1.0")');
+    expect(approval.commandPreview).not.toContain('python3');
+    expect(approval.workspaceFileContent).toBe('print("metric=1.0")\n');
+
+    service.resolveApproval({ approvalId: approval.id, decision: 'allow_once' });
+    await expect(execution).resolves.toMatchObject({ stdout: helperResult });
+    expect(execute).not.toHaveBeenCalled();
+    expect(executeWorkspaceFileHelper).toHaveBeenCalledWith(
+      'fixture-gpu',
+      expect.objectContaining({
+        command: '/usr/bin/python3',
+        args: expect.arrayContaining(['-I', '-S', '-c']),
+      }),
+      expect.stringContaining('experiments/linear_fit.py'),
+      expect.objectContaining({ failOnOutputLimit: false }),
+      expect.objectContaining({ user: 'researcher', host: '203.0.113.10' }),
+    );
+  });
+
+  it('rejects remote file access without an explicit workspace-mode grant', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: { host: '203.0.113.10', user: 'researcher', localForwards: [] },
+      }),
+    );
+    const { runner, execute } = runnerFixture();
+    const service = new SshConnectionService(storage, runner);
+    const grant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace',
+      permissionMode: 'diagnostics',
+      confirmWorkspaceRisk: true,
+    });
+
+    await expect(
+      service.runAgentWorkspaceFileOperation(workspaceFileWriteFixture(grant)),
+    ).rejects.toMatchObject({ code: 'ssh_workspace_file_not_allowed' });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it.each([

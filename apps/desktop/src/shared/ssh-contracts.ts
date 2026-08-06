@@ -8,6 +8,7 @@ export const SSH_COMMAND_MAX_ARGUMENTS = 32;
 export const SSH_COMMAND_MAX_OUTPUT_CHARACTERS = 64_000;
 export const SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS = 48_000;
 export const SSH_COMMAND_MAX_TIMEOUT_SECONDS = 120;
+export const SSH_REMOTE_WORKING_DIRECTORY_MAX_LENGTH = 1_537;
 
 const uuidSchema = z.string().uuid();
 const timestampSchema = z.string().datetime({ offset: true });
@@ -46,6 +47,10 @@ function hasControlCharacter(value: string) {
     const code = character.codePointAt(0) ?? 0;
     return code <= 31 || (code >= 127 && code <= 159);
   });
+}
+
+function hasUnicodeSurrogateCharacter(value: string) {
+  return /\p{Cs}/u.test(value);
 }
 
 export const SshLocalForwardSchema = z
@@ -255,13 +260,19 @@ const safeCommandTokenSchema = z
 const safeArgumentSchema = z
   .string()
   .max(1_024)
-  .refine((value) => !hasControlCharacter(value), 'Control characters are not allowed');
+  .refine(
+    (value) => !hasControlCharacter(value) && !hasUnicodeSurrogateCharacter(value),
+    'Control and Unicode surrogate characters are not allowed',
+  );
 const remoteWorkingDirectorySchema = z
   .string()
   .min(1)
-  .max(1_024)
+  .max(SSH_REMOTE_WORKING_DIRECTORY_MAX_LENGTH)
   .startsWith('/')
-  .refine((value) => !hasControlCharacter(value), 'Control characters are not allowed');
+  .refine(
+    (value) => !hasControlCharacter(value) && !hasUnicodeSurrogateCharacter(value),
+    'Control and Unicode surrogate characters are not allowed',
+  );
 
 export const SshAgentCommandSchema = z
   .object({
@@ -326,16 +337,67 @@ export const SshApprovalRequestSchema = z
     workspaceGrantVersion: z.number().int().positive().optional(),
     workspaceRoot: remoteWorkingDirectorySchema.optional(),
     workspaceWorkingDirectory: remoteWorkingDirectorySchema.optional(),
-    workspaceOperation: z.enum(['inspect', 'test', 'build', 'experiment']).optional(),
+    workspaceOperation: z.enum(['inspect', 'edit', 'test', 'build', 'experiment']).optional(),
+    workspaceFileAction: z.enum(['list', 'read', 'create', 'replace']).optional(),
+    workspaceFilePath: z.string().min(1).max(512).optional(),
+    workspaceFileExpectedSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/u)
+      .optional(),
+    workspaceFileContentSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/u)
+      .optional(),
+    workspaceFileContent: z
+      .string()
+      .refine((value) => [...value].length <= 24_000, 'Approved file content is too long')
+      .refine(
+        (value) => !hasUnicodeSurrogateCharacter(value),
+        'Approved file content cannot contain Unicode surrogate characters',
+      )
+      .optional(),
     commandSha256: z
       .string()
       .regex(/^[0-9a-f]{64}$/u)
       .optional(),
-    commandPreview: z.string().min(1).max(4_096),
+    commandPreview: z.string().min(1).max(32_768),
     requestedAt: timestampSchema,
     expiresAt: timestampSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.workspaceFileAction) return;
+    const addIssue = (message: string, path: string) =>
+      context.addIssue({ code: 'custom', message, path: [path] });
+    if (value.executionMode !== 'remote_workspace') {
+      addIssue('Workspace file approvals require remote workspace mode', 'executionMode');
+    }
+    const edit = value.workspaceFileAction === 'create' || value.workspaceFileAction === 'replace';
+    if (value.workspaceOperation !== (edit ? 'edit' : 'inspect')) {
+      addIssue('Workspace file action does not match its operation class', 'workspaceOperation');
+    }
+    if (value.workspaceFileAction !== 'list' && !value.workspaceFilePath) {
+      addIssue('Workspace file path is required', 'workspaceFilePath');
+    }
+    if (edit && !value.workspaceFileContentSha256) {
+      addIssue('Approved file content hash is required', 'workspaceFileContentSha256');
+    }
+    if (edit && value.workspaceFileContent === undefined) {
+      addIssue('Approved file content is required', 'workspaceFileContent');
+    }
+    if (!edit && value.workspaceFileContent !== undefined) {
+      addIssue('Read-only file approval cannot carry write content', 'workspaceFileContent');
+    }
+    if (value.workspaceFileAction === 'replace' && !value.workspaceFileExpectedSha256) {
+      addIssue('Expected file hash is required for replacement', 'workspaceFileExpectedSha256');
+    }
+    if (value.workspaceFileAction === 'create' && value.workspaceFileExpectedSha256) {
+      addIssue(
+        'Create-only approval cannot carry an existing file hash',
+        'workspaceFileExpectedSha256',
+      );
+    }
+  });
 
 export type SshApprovalRequest = z.infer<typeof SshApprovalRequestSchema>;
 
@@ -392,6 +454,13 @@ export const SSH_IPC_ERROR_CODES = [
   'ssh_workspace_grant_limit_reached',
   'ssh_workspace_project_unavailable',
   'ssh_workspace_command_not_allowed',
+  'ssh_workspace_file_not_found',
+  'ssh_workspace_file_conflict',
+  'ssh_workspace_file_not_allowed',
+  'ssh_workspace_file_too_large',
+  'ssh_workspace_file_invalid',
+  'ssh_workspace_file_commit_uncertain',
+  'ssh_workspace_file_helper_unavailable',
   'ssh_approval_not_found',
   'ssh_approval_denied',
   'ssh_approval_expired',

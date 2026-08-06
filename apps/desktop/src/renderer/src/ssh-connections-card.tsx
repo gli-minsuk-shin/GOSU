@@ -539,10 +539,14 @@ export function SshConnectionsCard({
         as a tool payload; a summary the model writes in its visible answer becomes chat history.
         Registered servers remain unavailable to a project until a separate workspace grant is
         approved. Diagnostics grants permit bounded Git inspection; Workspace grants may
-        additionally run a strict direct-argv test/build allowlist and one foreground Python
-        experiment entrypoint for at most 120 seconds. Raw shells, inline eval, module or stdin
-        launch, interactive shells, privilege escalation, file transfer, TTY, and forwarding remain
-        disabled. Parsed destinations use isolated, non-interactive OpenSSH options.
+        additionally list/read bounded text files, create a new text file, replace an unchanged text
+        file, run a strict direct-argv test/build allowlist, and run one foreground Python
+        experiment entrypoint for at most 120 seconds. Every file action and command requires Allow
+        once. The typed broker itself has no deletion, raw shell, inline eval, module launch,
+        interactive shell, privilege escalation, general file transfer, TTY, or forwarding action.
+        Approved Python, tests, and builds are still untrusted code with the SSH account's full
+        accessible privileges; the workspace path does not sandbox that code. Parsed destinations
+        use isolated, non-interactive OpenSSH options.
       </p>
     </article>
   );

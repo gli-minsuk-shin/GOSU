@@ -9,10 +9,15 @@ import {
   type SshAgentCommand,
   type SshDirectTarget,
 } from '../shared/ssh-contracts';
+import {
+  SSH_WORKSPACE_FILE_HELPER_SOURCE,
+  SSH_WORKSPACE_FILE_MAX_STDIN_BYTES,
+} from './ssh-workspace-files';
 
 const DEFAULT_EXECUTABLE = process.platform === 'darwin' ? '/usr/bin/ssh' : 'ssh';
 const KILL_GRACE_MS = 500;
 const CLIENT_DIAGNOSTIC_DIRECTORY_PREFIX = 'gosu-ssh-client-';
+const SSH_COMMAND_MAX_INTERNAL_ARGUMENT_CHARACTERS = 32 * 1024;
 
 export type SshCommandFailureKind =
   | 'unavailable'
@@ -46,6 +51,8 @@ export type SshCommandRunOptions = Readonly<{
   failOnOutputLimit?: boolean;
 }>;
 
+type SshInternalRunOptions = SshCommandRunOptions & Readonly<{ stdinText?: string }>;
+
 export type SshRunnableCommand = Readonly<{
   hostAlias: string;
   directTarget?: SshDirectTarget;
@@ -66,6 +73,13 @@ export interface SshCommandRunner {
   execute(
     hostAlias: string,
     command: SshAgentCommand,
+    options?: SshCommandRunOptions,
+    directTarget?: SshDirectTarget,
+  ): Promise<SshProcessResult>;
+  executeWorkspaceFileHelper(
+    hostAlias: string,
+    command: SshAgentCommand,
+    stdinText: string,
     options?: SshCommandRunOptions,
     directTarget?: SshDirectTarget,
   ): Promise<SshProcessResult>;
@@ -101,7 +115,7 @@ export function quotePosixToken(value: string) {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function safeOptions(timeoutSeconds: number) {
+function safeOptions(timeoutSeconds: number, pipeStdin = false) {
   const connectTimeout = Math.max(1, Math.min(10, Math.floor(timeoutSeconds)));
   return [
     '-o',
@@ -139,7 +153,7 @@ function safeOptions(timeoutSeconds: number) {
     '-o',
     `ConnectTimeout=${connectTimeout}`,
     '-T',
-    '-n',
+    ...(pipeStdin ? [] : ['-n']),
   ] as const;
 }
 
@@ -236,7 +250,7 @@ function isAbortError(signal: AbortSignal | undefined) {
   return signal?.aborted === true;
 }
 
-function validateRequest(command: SshRunnableCommand) {
+function validateRequest(command: SshRunnableCommand, maxArgumentCharacters = 1_024) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/u.test(command.hostAlias)) {
     throw new SshCommandRunnerError('connection_failed');
   }
@@ -251,7 +265,7 @@ function validateRequest(command: SshRunnableCommand) {
     [command.workingDirectory, ...(command.args ?? [])].some(
       (value) =>
         value !== undefined &&
-        (value.length > 1_024 ||
+        (value.length > maxArgumentCharacters ||
           [...value].some((character) => {
             const code = character.codePointAt(0) ?? 0;
             return code <= 31 || (code >= 127 && code <= 159);
@@ -262,6 +276,15 @@ function validateRequest(command: SshRunnableCommand) {
     throw new SshCommandRunnerError('connection_failed');
   }
   if (command.directTarget && !SshDirectTargetSchema.safeParse(command.directTarget).success) {
+    throw new SshCommandRunnerError('connection_failed');
+  }
+}
+
+function validateInternalRunOptions(options: SshInternalRunOptions) {
+  if (
+    options.stdinText !== undefined &&
+    Buffer.byteLength(options.stdinText, 'utf8') > SSH_WORKSPACE_FILE_MAX_STDIN_BYTES
+  ) {
     throw new SshCommandRunnerError('connection_failed');
   }
 }
@@ -282,8 +305,9 @@ export function createSshCommandRunner(
   const run = async (
     arguments_: readonly string[],
     timeoutSeconds: number,
-    runOptions: SshCommandRunOptions = {},
+    runOptions: SshInternalRunOptions = {},
   ) => {
+    validateInternalRunOptions(runOptions);
     if (isAbortError(runOptions.signal)) throw new SshCommandRunnerError('cancelled');
     const clientDiagnostic = await createClientDiagnosticLog();
 
@@ -303,12 +327,20 @@ export function createSshCommandRunner(
         let cancelled = false;
         let forceKillTimer: NodeJS.Timeout | undefined;
 
+        const pipeStdin = runOptions.stdinText !== undefined;
         const child = spawn(executable, isolatedArguments, {
           env: safeEnvironment(),
           shell: false,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: [pipeStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
           windowsHide: true,
         });
+
+        if (pipeStdin) {
+          // The byte cap is validated before spawning. Buffering once avoids
+          // platform newline conversion and sends the exact UTF-8 payload.
+          child.stdin?.on('error', () => undefined);
+          child.stdin?.end(Buffer.from(runOptions.stdinText!, 'utf8'));
+        }
 
         // This stops only the local OpenSSH transport. It does not claim that the
         // remote process tree was terminated after connectivity is lost.
@@ -349,10 +381,10 @@ export function createSshCommandRunner(
           capturedBytes += buffer.byteLength;
           return buffer.byteLength;
         };
-        child.stdout.on('data', (chunk: Buffer | string) => {
+        child.stdout!.on('data', (chunk: Buffer | string) => {
           stdoutBytes += append(stdout, chunk);
         });
-        child.stderr.on('data', (chunk: Buffer | string) => {
+        child.stderr!.on('data', (chunk: Buffer | string) => {
           stderrBytes += append(stderr, chunk);
         });
 
@@ -474,6 +506,49 @@ export function createSshCommandRunner(
           ...runOptions,
           failOnOutputLimit: runOptions.failOnOutputLimit ?? true,
         },
+      );
+    },
+    executeWorkspaceFileHelper(
+      hostAlias: string,
+      input: SshAgentCommand,
+      stdinText: string,
+      runOptions: SshCommandRunOptions = {},
+      directTarget?: SshDirectTarget,
+    ) {
+      const expectedArguments = ['-I', '-S', '-c', SSH_WORKSPACE_FILE_HELPER_SOURCE];
+      if (
+        input.command !== '/usr/bin/python3' ||
+        input.workingDirectory !== undefined ||
+        input.timeoutSeconds !== 30 ||
+        input.args?.length !== expectedArguments.length ||
+        input.args.some((argument, index) => argument !== expectedArguments[index])
+      ) {
+        throw new SshCommandRunnerError('connection_failed');
+      }
+      const runnable: SshRunnableCommand = {
+        hostAlias,
+        ...(directTarget ? { directTarget } : {}),
+        command: input.command,
+        args: input.args,
+        timeoutSeconds: input.timeoutSeconds,
+      };
+      validateRequest(runnable, SSH_COMMAND_MAX_INTERNAL_ARGUMENT_CHARACTERS);
+      const internalOptions: SshInternalRunOptions = {
+        ...runOptions,
+        failOnOutputLimit: runOptions.failOnOutputLimit ?? true,
+        stdinText,
+      };
+      validateInternalRunOptions(internalOptions);
+      return run(
+        [
+          ...safeOptions(input.timeoutSeconds, true),
+          ...directTargetArguments(directTarget),
+          '--',
+          directTarget?.host ?? hostAlias,
+          buildRemoteCommand(input),
+        ],
+        input.timeoutSeconds,
+        internalOptions,
       );
     },
   });

@@ -211,7 +211,21 @@ export function describeError(error: unknown) {
     ssh_workspace_project_unavailable:
       'Remote workspace access is available only for an active, non-archived project.',
     ssh_workspace_command_not_allowed:
-      'GOSU blocked this remote workspace command or permission mode. Use a smaller Git inspection, an approved direct test/build command, or a relative Python experiment entrypoint.',
+      'GOSU blocked this remote workspace command or permission mode. Use an approved bounded text file action, smaller Git inspection, direct test/build command, or relative Python experiment entrypoint.',
+    ssh_workspace_file_not_found:
+      'This remote workspace text file no longer exists. Refresh the file list before continuing.',
+    ssh_workspace_file_conflict:
+      'This remote workspace file changed after review, so GOSU did not replace it. Read the latest version and review a new change.',
+    ssh_workspace_file_not_allowed:
+      'GOSU blocked this remote file path or action. Choose a bounded text file inside the approved project workspace.',
+    ssh_workspace_file_too_large:
+      'This remote file or proposed content is too large for one approved Project Chat action.',
+    ssh_workspace_file_invalid:
+      'The remote file response was invalid or could not be confirmed. Re-read the same path before assuming whether a requested write changed it.',
+    ssh_workspace_file_commit_uncertain:
+      'The remote write may have committed before confirmation failed. Read the same path and compare its SHA-256 before retrying.',
+    ssh_workspace_file_helper_unavailable:
+      'This server does not provide the required /usr/bin/python3 file-broker runtime. Configure Python 3 on the server or choose another workspace; no retry was started.',
     ssh_approval_not_found: 'This SSH approval is no longer pending.',
     ssh_approval_denied: 'The SSH command was denied and was not started.',
     ssh_approval_expired: 'The SSH approval expired and the command was not started.',

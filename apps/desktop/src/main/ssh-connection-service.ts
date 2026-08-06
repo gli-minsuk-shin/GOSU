@@ -11,6 +11,7 @@ import {
   RemoveSshConnectionInputSchema,
   ResolveSshApprovalInputSchema,
   SshAgentCommandSchema,
+  SshApprovalRequestSchema,
   SshCommandResultSchema,
   SshConnectionProfileSchema,
   TestSshConnectionInputSchema,
@@ -39,12 +40,14 @@ import {
   RemoteWorkspaceGrantSchema,
   RemoveRemoteWorkspaceGrantInputSchema,
   SshWorkspaceAgentCommandSchema,
+  SshWorkspaceFileOperationSchema,
   UpdateRemoteWorkspaceGrantInputSchema,
   type CreateRemoteWorkspaceGrantInput,
   type GrantedRemoteWorkspace,
   type RemoteWorkspaceGrant,
   type RemoveRemoteWorkspaceGrantInput,
   type SshWorkspaceAgentCommand,
+  type SshWorkspaceFileOperation,
   type SshWorkspaceOperationClass,
   type UpdateRemoteWorkspaceGrantInput,
 } from '../shared/ssh-workspace-contracts';
@@ -61,6 +64,10 @@ import {
   hardenWorkspaceCommand,
   resolveWorkspaceWorkingDirectory,
 } from './ssh-workspace-policy';
+import {
+  SshWorkspaceFileProtocolError,
+  buildSshWorkspaceFileInvocation,
+} from './ssh-workspace-files';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -106,6 +113,14 @@ type PendingApproval = Readonly<{
 type WorkspaceExecutionBinding = Readonly<{
   grant: RemoteWorkspaceGrant;
   operation: SshWorkspaceOperationClass;
+  workingDirectory?: string;
+  stdinText?: string;
+  approvalPreview?: string;
+  workspaceFileAction?: NonNullable<SshApprovalRequest['workspaceFileAction']>;
+  workspaceFilePath?: string;
+  workspaceFileExpectedSha256?: string;
+  workspaceFileContentSha256?: string;
+  workspaceFileContent?: string;
 }>;
 
 type ExecutionCancellation = Readonly<{
@@ -339,7 +354,7 @@ function executionError(error: unknown) {
   return new SshConnectionServiceError(code[error.kind]);
 }
 
-function hashCommand(command: SshAgentCommand) {
+function hashCommand(command: SshAgentCommand, stdinText?: string) {
   return createHash('sha256')
     .update(
       JSON.stringify({
@@ -347,6 +362,10 @@ function hashCommand(command: SshAgentCommand) {
         args: command.args,
         workingDirectory: command.workingDirectory ?? null,
         timeoutSeconds: command.timeoutSeconds,
+        stdinSha256:
+          stdinText === undefined
+            ? null
+            : createHash('sha256').update(stdinText, 'utf8').digest('hex'),
       }),
       'utf8',
     )
@@ -388,6 +407,7 @@ function boundedCommandResult(
   connectionLabel: string,
   command: SshAgentCommand,
   result: SshProcessResult,
+  stdinText?: string,
 ) {
   const maximumOutput = Math.min(
     SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS,
@@ -399,7 +419,7 @@ function boundedCommandResult(
       schemaVersion: 1 as const,
       trust: 'untrusted_remote_output' as const,
       connectionLabel,
-      commandSha256: hashCommand(command),
+      commandSha256: hashCommand(command, stdinText),
       exitCode: result.exitCode,
       stdout: output.stdout,
       stderr: output.stderr,
@@ -423,8 +443,37 @@ function boundedCommandResult(
 
 function commandPreview(command: SshAgentCommand) {
   const preview = buildRemoteCommand(command);
-  if (preview.length > 4_096) throw new SshConnectionServiceError('ssh_command_not_allowed');
+  if (preview.length > 32_768) throw new SshConnectionServiceError('ssh_command_not_allowed');
   return preview;
+}
+
+function workspaceFileApprovalPreview(operation: SshWorkspaceFileOperation) {
+  if (operation.action === 'list') {
+    return [
+      'LIST WORKSPACE TEXT FILES',
+      `Directory: ${operation.workspaceSubdirectory || '.'}`,
+      `Maximum entries: ${operation.maxEntries}`,
+    ].join('\n');
+  }
+  if (operation.action === 'read') {
+    return [
+      'READ WORKSPACE TEXT FILE',
+      `Path: ${operation.relativePath}`,
+      `Directory: ${operation.workspaceSubdirectory || '.'}`,
+      `Characters: ${operation.offset}-${operation.offset + operation.maxCharacters}`,
+    ].join('\n');
+  }
+  const action = operation.expectedSha256 === null ? 'CREATE' : 'REPLACE';
+  const contentSha256 = createHash('sha256').update(operation.content, 'utf8').digest('hex');
+  return [
+    `${action} WORKSPACE TEXT FILE`,
+    `Path: ${operation.relativePath}`,
+    `Directory: ${operation.workspaceSubdirectory || '.'}`,
+    `Expected existing SHA-256: ${operation.expectedSha256 ?? 'none (create only)'}`,
+    `Approved content SHA-256: ${contentSha256}`,
+    `Approved Unicode scalar count: ${[...operation.content].length}`,
+    `Approved UTF-8 byte count: ${Buffer.byteLength(operation.content, 'utf8')}`,
+  ].join('\n');
 }
 
 function compareConnections(left: SshConnectionProfile, right: SshConnectionProfile) {
@@ -861,6 +910,86 @@ export class SshConnectionService extends EventEmitter {
     return this.requestApprovedExecution(command, profile, signal, { grant, operation });
   }
 
+  async requestWorkspaceFileOperation(
+    input: SshWorkspaceFileOperation,
+    signal?: AbortSignal,
+  ): Promise<SshCommandResult> {
+    if (this.shuttingDown) throw new SshConnectionServiceError('ssh_unavailable');
+    if (signal?.aborted) throw new SshConnectionServiceError('ssh_cancelled');
+    const parsed = SshWorkspaceFileOperationSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new SshConnectionServiceError('ssh_workspace_file_not_allowed');
+    }
+    const operation = parsed.data;
+    const grant = await this.readRequiredWorkspaceGrant(operation.projectId, operation.grantId);
+    if (grant.connectionId !== operation.connectionId) {
+      throw new SshConnectionServiceError('ssh_workspace_grant_not_found');
+    }
+    if (grant.permissionMode !== 'workspace') {
+      throw new SshConnectionServiceError('ssh_workspace_file_not_allowed');
+    }
+    const workingDirectory = resolveWorkspaceWorkingDirectory(
+      grant.canonicalRoot,
+      operation.workspaceSubdirectory,
+    );
+    if (!workingDirectory) {
+      throw new SshConnectionServiceError('ssh_workspace_file_not_allowed');
+    }
+    let helper: ReturnType<typeof buildSshWorkspaceFileInvocation>;
+    try {
+      helper = buildSshWorkspaceFileInvocation(operation, grant.canonicalRoot, workingDirectory);
+    } catch (error) {
+      if (error instanceof SshWorkspaceFileProtocolError) {
+        throw new SshConnectionServiceError(
+          error.kind === 'input_too_large'
+            ? 'ssh_workspace_file_too_large'
+            : 'ssh_workspace_file_invalid',
+        );
+      }
+      throw error;
+    }
+    // This fixed helper is Main-owned and intentionally bypasses the model-facing
+    // 1 KiB argument cap. The runner still validates the bounded internal source.
+    const command: SshAgentCommand = {
+      projectId: operation.projectId,
+      sessionId: operation.sessionId,
+      attemptId: operation.attemptId,
+      turnId: operation.turnId,
+      toolCallId: operation.toolCallId,
+      connectionId: operation.connectionId,
+      command: helper.command,
+      args: [...helper.args],
+      timeoutSeconds: 30,
+    };
+    const profile = await this.requireConnection(command.connectionId);
+    const workspaceFileAction =
+      operation.action === 'write'
+        ? operation.expectedSha256 === null
+          ? ('create' as const)
+          : ('replace' as const)
+        : operation.action;
+    return this.requestApprovedExecution(command, profile, signal, {
+      grant,
+      operation: operation.action === 'write' ? 'edit' : 'inspect',
+      workingDirectory,
+      stdinText: helper.stdinText,
+      approvalPreview: workspaceFileApprovalPreview(operation),
+      workspaceFileAction,
+      ...(operation.action === 'list' ? {} : { workspaceFilePath: operation.relativePath }),
+      ...(operation.action === 'write' && operation.expectedSha256 !== null
+        ? { workspaceFileExpectedSha256: operation.expectedSha256 }
+        : {}),
+      ...(operation.action === 'write'
+        ? {
+            workspaceFileContent: operation.content,
+            workspaceFileContentSha256: createHash('sha256')
+              .update(operation.content, 'utf8')
+              .digest('hex'),
+          }
+        : {}),
+    });
+  }
+
   private requestApprovedExecution(
     command: SshAgentCommand,
     profile: SshConnectionProfile,
@@ -878,7 +1007,7 @@ export class SshConnectionService extends EventEmitter {
     }
     const requestedAt = this.now();
     const approvalId = randomUUID();
-    const request = {
+    const request = SshApprovalRequestSchema.parse({
       schemaVersion: 1 as const,
       id: approvalId,
       projectId: command.projectId,
@@ -897,13 +1026,20 @@ export class SshConnectionService extends EventEmitter {
       workspaceGrantId: workspaceBinding?.grant.id,
       workspaceGrantVersion: workspaceBinding?.grant.version,
       workspaceRoot: workspaceBinding?.grant.canonicalRoot,
-      workspaceWorkingDirectory: workspaceBinding ? command.workingDirectory : undefined,
+      workspaceWorkingDirectory: workspaceBinding
+        ? (workspaceBinding.workingDirectory ?? command.workingDirectory)
+        : undefined,
       workspaceOperation: workspaceBinding?.operation,
-      commandSha256: hashCommand(command),
-      commandPreview: commandPreview(command),
+      workspaceFileAction: workspaceBinding?.workspaceFileAction,
+      workspaceFilePath: workspaceBinding?.workspaceFilePath,
+      workspaceFileExpectedSha256: workspaceBinding?.workspaceFileExpectedSha256,
+      workspaceFileContentSha256: workspaceBinding?.workspaceFileContentSha256,
+      workspaceFileContent: workspaceBinding?.workspaceFileContent,
+      commandSha256: hashCommand(command, workspaceBinding?.stdinText),
+      commandPreview: workspaceBinding?.approvalPreview ?? commandPreview(command),
       requestedAt: new Date(requestedAt).toISOString(),
       expiresAt: new Date(requestedAt + this.approvalTtlMs).toISOString(),
-    } satisfies SshApprovalRequest;
+    } satisfies SshApprovalRequest);
 
     let pending: PendingApproval | undefined;
     const cancellation = linkedCancellation(signal, () => {
@@ -940,6 +1076,10 @@ export class SshConnectionService extends EventEmitter {
 
   runAgentWorkspaceCommand(input: SshWorkspaceAgentCommand, signal?: AbortSignal) {
     return this.requestWorkspaceExecution(input, signal);
+  }
+
+  runAgentWorkspaceFileOperation(input: SshWorkspaceFileOperation, signal?: AbortSignal) {
+    return this.requestWorkspaceFileOperation(input, signal);
   }
 
   resolveApproval(input: ResolveSshApprovalInput): { outcome: 'allowed' | 'denied' } {
@@ -1148,23 +1288,38 @@ export class SshConnectionService extends EventEmitter {
         }
       }
       this.throwIfCancelled(active);
-      const execution = this.runner.execute(
-        profile.hostAlias,
-        pending.command,
-        {
-          signal: active.cancellation.controller.signal,
-          maxOutputCharacters: SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS,
-          failOnOutputLimit: false,
-        },
-        profile.directTarget ?? undefined,
-      );
+      const runOptions = {
+        signal: active.cancellation.controller.signal,
+        maxOutputCharacters: SSH_AGENT_TOOL_MAX_OUTPUT_CHARACTERS,
+        failOnOutputLimit: false,
+      } as const;
+      const execution =
+        pending.workspaceBinding?.stdinText === undefined
+          ? this.runner.execute(
+              profile.hostAlias,
+              pending.command,
+              runOptions,
+              profile.directTarget ?? undefined,
+            )
+          : this.runner.executeWorkspaceFileHelper(
+              profile.hostAlias,
+              pending.command,
+              pending.workspaceBinding.stdinText,
+              runOptions,
+              profile.directTarget ?? undefined,
+            );
       return { execution };
     })
       .then(({ execution }) => execution)
       .then((result) => {
         this.throwIfCancelled(active);
         active.settlement.resolve(
-          boundedCommandResult(pending.profile.label, pending.command, result),
+          boundedCommandResult(
+            pending.profile.label,
+            pending.command,
+            result,
+            pending.workspaceBinding?.stdinText,
+          ),
         );
       })
       .catch((error: unknown) => {
