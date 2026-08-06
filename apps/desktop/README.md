@@ -107,6 +107,14 @@ pnpm --filter @gosu/desktop smoke:local-db:mac
 It creates and removes an isolated temporary user-data directory. It is intentionally separate from
 the cross-platform Vitest suite.
 
+The Markdown viewer geometry smoke test opens real Chromium layout at GOSU's minimum supported window
+size. It verifies that Research Notes and Repository Markdown previews own a usable vertical scroll
+range while wide code remains horizontally scrollable inside its own block:
+
+```bash
+pnpm --filter @gosu/desktop smoke:markdown-viewer-scroll:mac
+```
+
 The Desktop accepts `GOSU_SYNC_API_URL` as a credential-free base URL. Plain HTTP is limited to
 loopback; a remote endpoint must use HTTPS. Electron Main appends the fixed readiness path, rejects
 redirects, bounds the request timeout, validates the GOSU health identity, and returns only a small

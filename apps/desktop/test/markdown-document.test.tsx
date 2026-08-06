@@ -210,6 +210,24 @@ $$`);
     );
   });
 
+  it('keeps Research Notes and Repository previews inside a bounded vertical scroll chain', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+
+    expect(styles).toMatch(
+      /\.desktop-content\.desktop-content-document\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/su,
+    );
+    expect(styles).toMatch(
+      /\.desktop-content-document > \.notes-layout,\s*\.desktop-content-document > \.repository-workspace\s*\{[^}]*flex:\s*1 1 0;[^}]*min-height:\s*520px;/su,
+    );
+    expect(styles).toMatch(/\.desktop-content-document \.note-reader\s*\{[^}]*min-height:\s*0;/su);
+    expect(styles).toMatch(
+      /\.repository-workspace\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*auto;/su,
+    );
+    expect(styles).toMatch(
+      /\.repository-workspace > \.repository-split,\s*\.repository-workspace > \.repository-change-layout\s*\{[^}]*flex:\s*1 1 0;[^}]*min-height:\s*0;/su,
+    );
+  });
+
   it('turns prose wiki-links into note links without rewriting inline or fenced code', () => {
     const html = renderMarkdown(
       `Open [[Target|Readable alias]].

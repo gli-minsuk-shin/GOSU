@@ -38,6 +38,7 @@ import type { ResearchNotesWorkspace } from '../../shared/research-notes-contrac
 import { BoardView } from './board-view';
 import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
+import { desktopContentClassName } from './desktop-content-layout';
 import { ExperimentsView, type ExperimentsViewAdapter } from './experiments-view';
 import { buildLocalNotesGrantUpdate } from './local-notes-access-model';
 import { LiteratureView, type LiteratureViewAdapter } from './literature-view';
@@ -1584,11 +1585,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       )}
 
       <section
-        className={
-          activeSurface === 'workspace' && activeTab === 'chat'
-            ? 'desktop-content desktop-content-chat'
-            : 'desktop-content'
-        }
+        className={desktopContentClassName({
+          surface: activeSurface,
+          tab: activeTab,
+          hasActiveProject: Boolean(activeProject),
+        })}
       >
         <p className="sr-only" aria-live="polite">
           {announcement}
