@@ -4,11 +4,12 @@ import { desktopContentClassName } from '../src/renderer/src/desktop-content-lay
 
 describe('desktop content layout routing', () => {
   it('gives project document viewers the constrained scroll layout', () => {
-    for (const tab of ['notes', 'repository'] as const) {
-      expect(desktopContentClassName({ surface: 'workspace', tab, hasActiveProject: true })).toBe(
-        'desktop-content desktop-content-document',
-      );
-    }
+    expect(
+      desktopContentClassName({ surface: 'workspace', tab: 'notes', hasActiveProject: true }),
+    ).toBe('desktop-content desktop-content-document desktop-content-notes');
+    expect(
+      desktopContentClassName({ surface: 'workspace', tab: 'repository', hasActiveProject: true }),
+    ).toBe('desktop-content desktop-content-document');
   });
 
   it('preserves chat, ordinary workspace, settings, and empty-project layouts', () => {

@@ -126,7 +126,7 @@ export function WorkspacePageHeading({
 }
 
 export function shouldShowActiveProjectPageHeading(activeTab: WorkspaceTabId) {
-  return activeTab !== 'chat';
+  return activeTab !== 'chat' && activeTab !== 'notes';
 }
 
 export function WorkspaceUnavailable({ onRetry }: { onRetry: () => void }) {

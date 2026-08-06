@@ -29,6 +29,7 @@ type RectMetrics = Readonly<{
 
 type CompactNotesGeometry = ScrollMetrics &
   Readonly<{
+    content: RectMetrics;
     layout: RectMetrics;
     tree: RectMetrics;
     reader: RectMetrics;
@@ -137,7 +138,7 @@ function compactResearchNotesFixtureMarkup(styles: string) {
     <main class="desktop-shell" style="--project-sidebar-width: 280px">
       <header class="titlebar"><strong>GOSU</strong><span>Research Notes compact tree</span></header>
       <aside class="desktop-nav"></aside>
-      <section class="desktop-content desktop-content-document">
+      <section class="desktop-content desktop-content-document desktop-content-notes">
         <section class="notes-layout">
           <aside class="note-list" aria-label="Markdown files">
             <header class="research-notes-tree-header">
@@ -325,6 +326,12 @@ function verifyCompactNotesScenario(
   metrics: CompactNotesScenarioMetrics,
 ) {
   const prefix = `notes_compact_${scenario.name}`;
+  const expectedTopInset = scenario.name === 'wide' ? 18 : 14;
+
+  invariant(
+    nearlyEqual(metrics.expanded.layout.top - metrics.expanded.content.top, expectedTopInset),
+    `${prefix}_top_inset_is_not_compact`,
+  );
 
   sameRect(metrics.expanded.layout, metrics.collapsed.layout, `${prefix}_layout`);
   invariant(metrics.collapsed.detailsDisplay === 'none', `${prefix}_details_remain_visible`);
@@ -430,6 +437,7 @@ async function measureCompactNotesScenario(
 
   return (await window.webContents.executeJavaScript(`
     (async () => {
+      const content = document.querySelector('.desktop-content-notes');
       const layout = document.querySelector('.notes-layout');
       const tree = document.querySelector('.note-list');
       const details = document.querySelector('.research-notes-tree-details');
@@ -441,7 +449,7 @@ async function measureCompactNotesScenario(
       const readerPath = document.querySelector('[data-reader-path]');
       const longTreeName = document.querySelector('[data-long-tree-name]');
       const wide = document.querySelector('[data-wide-content]');
-      const elements = [layout, tree, details, toggle, treeRoot, reader, readerHeader, readerBody, readerPath, longTreeName, wide];
+      const elements = [content, layout, tree, details, toggle, treeRoot, reader, readerHeader, readerBody, readerPath, longTreeName, wide];
       if (elements.some((element) => !(element instanceof HTMLElement))) {
         throw new Error('missing_research_notes_compact_geometry_element');
       }
@@ -482,6 +490,7 @@ async function measureCompactNotesScenario(
         const treeNameStyle = getComputedStyle(longTreeName);
         const readerPathStyle = getComputedStyle(readerPath);
         return {
+          content: rect(content),
           layout: rect(layout),
           tree: rect(tree),
           reader: rect(reader),

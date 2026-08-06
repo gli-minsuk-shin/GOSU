@@ -751,7 +751,8 @@ button:disabled {
   scrollbar-gutter: stable;
 }
 
-.desktop-content.desktop-content-chat {
+.desktop-content.desktop-content-chat,
+.desktop-content.desktop-content-notes {
   padding: 18px clamp(14px, 1.8vw, 28px) 28px;
 }
 
@@ -5993,7 +5994,8 @@ button.chat-toolbar-status {
     padding: 24px 18px 48px;
   }
 
-  .desktop-content.desktop-content-chat {
+  .desktop-content.desktop-content-chat,
+  .desktop-content.desktop-content-notes {
     padding: 14px 12px 24px;
   }
 
