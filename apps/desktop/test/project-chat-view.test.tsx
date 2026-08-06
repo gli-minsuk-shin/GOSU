@@ -502,8 +502,11 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Visible only to Agentic study');
     expect(html).toContain('Granted GPU server');
     expect(html).toContain('/workspace/agentic-study');
-    expect(html).toContain('CPU utilization 63%');
-    expect(html).toContain('GPU 0 utilization 81%');
+    expect(html).toContain('Live sample');
+    expect(html).toContain('Show details');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain('CPU utilization 63%');
+    expect(html).not.toContain('GPU 0 utilization 81%');
     expect(html).toContain('Refresh usage');
     expect(html).not.toContain('SSH server registered — project access is not granted yet');
   });

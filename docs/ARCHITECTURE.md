@@ -471,10 +471,18 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   issue만 돌려주며 connection ID, host·user·port, workspace root, probe command와 raw output은 노출하지
   않는다. 모델은 `force`를 지정할 수 없고 기존 12초 cache를 공유한다.
 - resource snapshot은 connection profile identity와 generation별 12초 in-memory cache 및 in-flight
-  coalescing, 전역 최대 4개 capture로 제한한다. Renderer는 Connections 또는 Project Chat이 실제로 보이고
-  document가 visible일 때만 15초 polling하며, 실패해도 마지막 sample을 stale로 표시하고
-  Board·chat·grant 상태를 실패시키지 않는다. profile update·remove·import 변경은 진행 중인 이전 probe를
-  무효화하며, Renderer도 profile generation이 바뀐 뒤 도착한 응답과 더 오래된 sample을 버린다.
+  coalescing, 전역 최대 4개 capture로 제한한다. Renderer의 local-only preference는 자동 갱신을
+  `Manual / 30 seconds / 1 minute / 5 minutes / 10 minutes` 중에서 고르며 기본값은 1분이다. 자동 모드도
+  Connections 또는 Project Chat이 실제로 보이고 document가 visible일 때만 동작한다. recursive timeout은
+  이전 조회가 끝난 뒤 다음 주기를 예약해 느린 server 조회를 겹치지 않게 하고, document가 숨겨지면 예약을
+  취소하며 다시 보일 때 한 번 즉시 갱신한다. Manual은 자동 예약과 화면 복귀 갱신을 모두 끄되 server별
+  명시적 Refresh는 유지한다. 실패해도 마지막 sample을 stale로 표시하고 Board·chat·grant 상태를
+  실패시키지 않는다. profile update·remove·import 변경은 진행 중인 이전 probe를 무효화하며, Renderer도
+  profile generation이 바뀐 뒤 도착한 응답과 더 오래된 sample을 버린다.
+  Connections와 Project Chat은 같은 snapshot state를 공유하지만 resource card의 접기 상태는 UI local
+  state다. 접으면 CPU/RAM/GPU meter만 숨기고 live/partial/unavailable 상태, capture 시각과 bounded issue는
+  남긴다. Project Chat card는 좁은 대화 공간을 위해 기본으로 접고 Connections card는 기본으로 펼친다.
+  접기는 polling을 중단하거나 project authorization 경계를 바꾸지 않는다.
   Connections는 global registry를 볼 수 있지만 Project Chat resource list는 Main이
   active project를 다시 검증한 뒤 그 project에 grant된 connection만 반환한다. Project Chat의 server별
   `Refresh`도 project ID와 connection ID를 함께 받는 별도 IPC에서 active project와 현재 grant를 다시
@@ -1825,8 +1833,10 @@ remote stderr 보존을 검증한다. Renderer test는 grant setup의 sole-serve
 resource monitor test는 고정 command, `/proc` delta와 memory parser, 다중 GPU CSV·`N/A`·GPU
 없음·malformed output, partial/unavailable snapshot, profile generation별 12초 cache·동일 profile
 coalescing·전역 concurrency 4 제한, project grant isolation, server별 refresh의 단일-target 보장과 raw
-output 비노출 IPC를 고정한다. resource summary test는 CPU/RAM/GPU meter, 여러 GPU, stale last sample,
-명시적인 partial/no-GPU 상태와 접근 가능한 label을 검사하고, session state/view test는 scroll 위치의
+output 비노출 IPC를 고정한다. resource refresh policy test는 다섯 주기 mapping, Manual 무예약,
+visible-only lifecycle, 느린 조회 비중첩, 실패 후 재시도와 cleanup 뒤 재예약 금지를 검사한다. resource
+summary test는 CPU/RAM/GPU meter, 여러 GPU, stale last sample, 접힘 상태에서도 남는 시각·issue,
+명시적인 partial/no-GPU 상태와 접근 가능한 toggle label을 검사하고, session state/view test는 scroll 위치의
 project/session 격리·saved zero·invalid value 거절·bottom default·viewport clamp·smooth replay 금지를 고정한다.
 workspace policy test는 project grant isolation, canonical root·relative cwd,
 mode별 concrete executable·inspect/test/build/experiment allowlist, root diagnostic 축소, shell·inline eval·privilege·

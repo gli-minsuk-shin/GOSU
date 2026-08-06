@@ -10,6 +10,10 @@ import {
   type AgentAddOnId,
   type AgentAddOnPreference,
 } from '../../shared/agent-addon-contracts';
+import {
+  isSshResourceRefreshInterval,
+  type SshResourceRefreshInterval,
+} from './ssh-resource-refresh-policy';
 
 export const APPEARANCE_OPTIONS = ['system', 'dark', 'light'] as const;
 export const TEXT_SIZE_OPTIONS = ['compact', 'default', 'large', 'extra-large'] as const;
@@ -21,6 +25,7 @@ export type UserPreferences = Readonly<{
   schemaVersion: 1;
   appearance: AppearancePreference;
   textSize: TextSizePreference;
+  sshResourceRefreshInterval: SshResourceRefreshInterval;
   defaultBoardTemplate: WorkspaceBoardSettings;
   agentAddOns: Readonly<Record<AgentAddOnId, AgentAddOnPreference>>;
 }>;
@@ -33,6 +38,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   schemaVersion: 1,
   appearance: 'system',
   textSize: 'default',
+  sshResourceRefreshInterval: '1m',
   defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
   agentAddOns: {
     openclaw: 'disabled',
@@ -52,6 +58,9 @@ export function parseUserPreferences(value: unknown): UserPreferences {
   const textSize =
     TEXT_SIZE_OPTIONS.find((option) => option === value.textSize) ??
     DEFAULT_USER_PREFERENCES.textSize;
+  const sshResourceRefreshInterval = isSshResourceRefreshInterval(value.sshResourceRefreshInterval)
+    ? value.sshResourceRefreshInterval
+    : DEFAULT_USER_PREFERENCES.sshResourceRefreshInterval;
   const template = WorkspaceBoardSettingsSchema.safeParse(value.defaultBoardTemplate);
   const storedAddOns = isRecord(value.agentAddOns) ? value.agentAddOns : {};
   const agentAddOns = Object.fromEntries(
@@ -64,6 +73,7 @@ export function parseUserPreferences(value: unknown): UserPreferences {
     schemaVersion: 1,
     appearance,
     textSize,
+    sshResourceRefreshInterval,
     defaultBoardTemplate: template.success
       ? template.data
       : resolveWorkspaceBoardSettings(undefined),

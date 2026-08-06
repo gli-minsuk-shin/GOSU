@@ -97,6 +97,7 @@ import {
 import { ResizeHandle } from './resize-handle';
 import { SettingsView, type SettingsCategory } from './settings-view';
 import { SshApprovalCenter } from './ssh-approval-center';
+import { startSshResourceRefreshScheduler } from './ssh-resource-refresh-policy';
 import {
   acknowledgeSshWorkspaceSetupRequest,
   type SshWorkspaceSetupRequest,
@@ -125,7 +126,6 @@ type CodexConnectionState = 'checking' | 'ready' | 'auth-required' | 'unavailabl
 type AppSurface = 'workspace' | 'settings';
 
 type ProjectDraft = Readonly<{ name: string; repository?: string | undefined }>;
-const SSH_RESOURCE_POLL_INTERVAL_MS = 15_000;
 
 const literatureAdapter: LiteratureViewAdapter = {
   list: (input) => window.gosu.literature.list(input),
@@ -790,29 +790,36 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     if (connectionIds.length === 0) return;
 
     const refreshVisibleResources = () => {
-      if (document.hidden) return;
       if (activeTab === 'connections') {
-        for (const connectionId of connectionIds) void refreshSshResource(connectionId, false);
-        return;
+        return Promise.all(
+          connectionIds.map((connectionId) => refreshSshResource(connectionId, false)),
+        );
       }
       if (activeProject) {
-        void refreshProjectSshResources(activeProject.id, connectionIds, false);
+        return refreshProjectSshResources(activeProject.id, connectionIds, false);
       }
+      return Promise.resolve();
     };
-    const handleVisibilityChange = () => refreshVisibleResources();
-    refreshVisibleResources();
-    const interval = window.setInterval(refreshVisibleResources, SSH_RESOURCE_POLL_INTERVAL_MS);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      window.clearInterval(interval);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
+    return startSshResourceRefreshScheduler({
+      interval: preferences.sshResourceRefreshInterval,
+      refresh: refreshVisibleResources,
+      platform: {
+        isVisible: () => !document.hidden,
+        setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+        clearTimeout: (handle) => globalThis.clearTimeout(handle),
+        subscribeVisibility: (callback) => {
+          document.addEventListener('visibilitychange', callback);
+          return () => document.removeEventListener('visibilitychange', callback);
+        },
+      },
+    });
   }, [
     activeProject?.id,
     activeProjectSshConnectionIdsKey,
     activeProjectSshResourceProfilesKey,
     activeSurface,
     activeTab,
+    preferences.sshResourceRefreshInterval,
     refreshProjectSshResources,
     refreshSshResource,
     registeredSshConnectionIdsKey,

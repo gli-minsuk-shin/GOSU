@@ -47,7 +47,9 @@ and supports:
 - using project-scoped Codex chats with runtime-discovered models, reasoning, and native modes;
 - inspecting an app-managed Git workspace and reviewing its branches, history, and changes;
 - building and incrementally updating a project literature review table;
-- registering a safely parsed SSH destination and granting a remote workspace root to one project; and
+- registering a safely parsed SSH destination and granting a remote workspace root to one project;
+- monitoring registered server CPU, memory, and GPU usage with collapsible status cards and a local
+  refresh preference; and
 - showing the number of durable changes waiting in the local outbox.
 
 These records survive an app restart. The pending-change count does not claim cloud delivery: a
@@ -79,6 +81,20 @@ This slice has no interactive shell, TTY, file transfer, active tunnel, arbitrar
 background task, or unattended experiment execution. Workspace tests/builds execute repository code
 with the SSH account's privileges, and the selected root is a lexical boundary rather than a remote
 sandbox. Long GPU jobs belong on the isolated Runner path.
+
+## Server status monitoring
+
+Connections shows each registered server with a **Minimize / Show details** control. Project Chat
+uses the same safe resource snapshot but starts with the detailed meters minimized so the transcript
+keeps more space. A minimized card still shows availability, the last sample time, and bounded issues;
+minimizing it does not disable monitoring.
+
+**Settings → Servers** controls automatic refresh locally on this Mac. The supported choices are
+Manual, 30 seconds, 1 minute (default), 5 minutes, and 10 minutes. Automatic monitoring runs only
+while Connections or Project Chat is visible, pauses when the window is hidden, and waits for one
+sample to finish before scheduling the next. Every server keeps its explicit **Refresh usage** action,
+including in Manual mode. Resource snapshots remain memory-only and are not stored in SQLCipher,
+Hosted Sync, chat history, or telemetry.
 
 The macOS-only storage smoke test runs inside Electron so the native SQLCipher module, `safeStorage`,
 close/reopen recovery, encrypted file header, and transaction rollback are exercised with their

@@ -73,6 +73,31 @@ describe('SSH resource summary', () => {
     expect(html).toContain('GPU 1');
     expect(html).toContain('Utilization unavailable');
     expect(html).not.toContain('GPU 1 utilization 0%');
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('Minimize resource details for Fixture training server');
+    expect(html).toContain('Minimize');
+  });
+
+  it('can start minimized while retaining status and issue context', () => {
+    const partial: SshServerResourceSnapshot = {
+      ...snapshot,
+      status: 'partial',
+      issues: ['gpu_unavailable'],
+    };
+    const html = renderToStaticMarkup(
+      <SshResourceSummary
+        state={{ phase: 'ready', snapshot: partial }}
+        serverLabel="Compact training server"
+        defaultCollapsed
+      />,
+    );
+
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('Show resource details for Compact training server');
+    expect(html).toContain('Show details');
+    expect(html).toContain('Last updated');
+    expect(html).toContain('GPU unavailable');
+    expect(html).not.toContain('<meter');
   });
 
   it('keeps the last safe sample visible after refresh failure without exposing an error payload', () => {

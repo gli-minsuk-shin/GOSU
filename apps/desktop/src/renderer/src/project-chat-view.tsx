@@ -939,6 +939,7 @@ export function ProjectChatView({
                       state={server.resourceState}
                       serverLabel={server.label}
                       compact
+                      defaultCollapsed
                     />
                   </article>
                 ))}
