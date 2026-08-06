@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ProjectAgentToolSession,
   type ProjectAgentLiterature,
+  type ProjectAgentResearchNoteReceiptStorage,
   type ProjectAgentSsh,
   type ProjectAgentVault,
 } from '../src/main/project-agent-tools';
@@ -141,6 +142,40 @@ class FakeProjectVault implements ProjectAgentVault {
             : null,
         totalCharacters,
         truncated: requestedOffset + content.length < totalCharacters,
+      };
+    },
+  );
+  readonly saveMarkdownForAgent = vi.fn(
+    async (
+      projectId: string,
+      expectedVaultId: string,
+      input: {
+        category: 'literature' | 'papers' | 'experiments' | 'project-progress' | 'idea-development';
+        title: string;
+        content: string;
+        idempotencyKey: string;
+      },
+    ) => {
+      this.assertGrant(expectedVaultId);
+      const folders = {
+        literature: 'Literature',
+        papers: 'Papers',
+        experiments: 'Experiments',
+        'project-progress': 'Project Progress',
+        'idea-development': 'Idea Development',
+      } as const;
+      const artifactId = createHash('sha256')
+        .update(`${projectId}\0${expectedVaultId}\0${input.idempotencyKey}`, 'utf8')
+        .digest('hex')
+        .slice(0, 16);
+      return {
+        schemaVersion: 1 as const,
+        projectId,
+        category: input.category,
+        path: `${folders[input.category]}/Saved artifact--${artifactId}.md`,
+        created: true,
+        contentSha256: createHash('sha256').update(input.content, 'utf8').digest('hex'),
+        artifactId,
       };
     },
   );
@@ -337,6 +372,7 @@ class FakeProjectLiterature implements ProjectAgentLiterature {
               ordinal: 5,
               provider: 'crossref',
               providerRecordId: '10.1000/gosu.conflict',
+              canonicalId: null,
               doi: '10.1000/gosu.conflict',
               fingerprint: 'c'.repeat(64),
               title: 'Ambiguous metadata fixture',
@@ -468,7 +504,11 @@ function authorizedSession(
       attemptId: CHAT_ATTEMPT_ID,
       workspace,
       vault,
-      localNotesVault: { id: ACTIVE_VAULT_ID, name: 'Research Vault' },
+      localNotesVault: {
+        id: ACTIVE_VAULT_ID,
+        name: 'Research Vault',
+        allowAgentMarkdownCreate: true,
+      },
       literature,
       ssh,
     }),
@@ -573,6 +613,7 @@ describe('ProjectAgentToolSession', () => {
     }
     expect(vault.listForAgent).not.toHaveBeenCalled();
     expect(vault.readForAgent).not.toHaveBeenCalled();
+    expect(vault.saveMarkdownForAgent).not.toHaveBeenCalled();
     expect(literature.search).not.toHaveBeenCalled();
     expect(ssh.listWorkspaceGrants).not.toHaveBeenCalled();
     expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
@@ -649,6 +690,162 @@ describe('ProjectAgentToolSession', () => {
     expect(JSON.stringify(readPayload)).not.toContain(RAW_NOTE_PATH);
   });
 
+  it('persists one structured response artifact and appends only an authoritative receipt', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const { session, vault } = authorizedSession(workspace, projectAlpha.id);
+    const content = '# Evaluation plan\n\nCompare three seeded trials.\n';
+
+    await session.persistResponseResearchNote({
+      disposition: 'save',
+      category: 'experiments',
+      title: 'Evaluation plan',
+      content,
+    });
+
+    expect(vault.saveMarkdownForAgent).toHaveBeenCalledExactlyOnceWith(
+      projectAlpha.id,
+      ACTIVE_VAULT_ID,
+      expect.objectContaining({
+        category: 'experiments',
+        title: 'Evaluation plan',
+        content,
+        idempotencyKey: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      }),
+    );
+    const appendix = await session.finalizeSourceAppendix();
+    expect(appendix).toContain('Research Notes saved');
+    expect(appendix).toMatch(/Research Notes\/Experiments\/Saved artifact--[0-9a-f]{16}\.md/u);
+    expect(appendix).toContain(createHash('sha256').update(content, 'utf8').digest('hex'));
+    expect(appendix).not.toContain(content);
+    expect(appendix).not.toContain('/Users/');
+  });
+
+  it('stages body-free metadata before writing and promotes a late verified save after timeout', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const vault = new FakeProjectVault();
+    const originalSave = vault.saveMarkdownForAgent.getMockImplementation()!;
+    const events: string[] = [];
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    vault.saveMarkdownForAgent.mockImplementationOnce(async (...arguments_) => {
+      events.push('write');
+      await saveGate;
+      return originalSave(...arguments_);
+    });
+    const receipts: ProjectAgentResearchNoteReceiptStorage = {
+      stageResearchNoteSave: vi.fn(async (receipt) => {
+        events.push('stage');
+        expect(JSON.stringify(receipt)).not.toContain('PRIVATE_MARKDOWN_BODY');
+        expect(JSON.stringify(receipt)).not.toContain('Private title');
+      }),
+      markResearchNoteSaveUncertain: vi.fn(async () => {
+        events.push('uncertain');
+      }),
+      confirmResearchNoteSave: vi.fn(async () => {
+        events.push('confirmed');
+      }),
+    };
+    const session = new ProjectAgentToolSession({
+      projectId: projectAlpha.id,
+      sessionId: CHAT_SESSION_ID,
+      attemptId: CHAT_ATTEMPT_ID,
+      workspace,
+      vault,
+      localNotesVault: {
+        id: ACTIVE_VAULT_ID,
+        name: 'Research Vault',
+        allowAgentMarkdownCreate: true,
+      },
+      researchNoteReceipts: receipts,
+      researchNoteSaveTimeoutMs: 5,
+    });
+
+    await session.persistResponseResearchNote({
+      disposition: 'save',
+      category: 'project-progress',
+      title: 'Private title',
+      content: '# PRIVATE_MARKDOWN_BODY\n',
+    });
+
+    expect(events.slice(0, 3)).toEqual(['stage', 'write', 'uncertain']);
+    expect(receipts.stageResearchNoteSave).toHaveBeenCalledTimes(1);
+    expect(receipts.confirmResearchNoteSave).not.toHaveBeenCalled();
+    const sealedAppendix = await session.finalizeSourceAppendix();
+    expect(sealedAppendix).toContain('Research Notes save confirmation pending');
+    expect(sealedAppendix).toContain('no saved path is claimed yet');
+    expect(sealedAppendix).not.toContain('Research Notes saved');
+
+    releaseSave();
+    await vi.waitFor(() => expect(receipts.confirmResearchNoteSave).toHaveBeenCalledTimes(1));
+    expect(events.at(-1)).toBe('confirmed');
+    expect(await session.finalizeSourceAppendix()).toBe(sealedAppendix);
+  });
+
+  it('does not write for disposition none or without explicit Markdown-create consent', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const vault = new FakeProjectVault();
+    const noGrant = new ProjectAgentToolSession({
+      projectId: projectAlpha.id,
+      sessionId: CHAT_SESSION_ID,
+      attemptId: CHAT_ATTEMPT_ID,
+      workspace,
+      vault,
+      localNotesVault: null,
+    });
+    await noGrant.persistResponseResearchNote({ disposition: 'none' });
+    expect(await noGrant.finalizeSourceAppendix()).toBe('');
+
+    const legacy = new ProjectAgentToolSession({
+      projectId: projectAlpha.id,
+      sessionId: CHAT_SESSION_ID,
+      attemptId: CHAT_ATTEMPT_ID,
+      workspace,
+      vault,
+      localNotesVault: { id: ACTIVE_VAULT_ID, name: 'Legacy read grant' },
+    });
+    expect((await invokeTool(legacy, toolCall('list_local_notes', {}))).success).toBe(true);
+    await legacy.persistResponseResearchNote({
+      disposition: 'save',
+      category: 'project-progress',
+      title: 'Must opt in',
+      content: '# Must opt in\n',
+    });
+
+    expect(vault.saveMarkdownForAgent).not.toHaveBeenCalled();
+    expect(await legacy.finalizeSourceAppendix()).toContain(
+      'existing Research Notes grant is read-only',
+    );
+  });
+
+  it('rejects a mismatched save receipt as commit-uncertain', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const vault = new FakeProjectVault();
+    vault.saveMarkdownForAgent.mockResolvedValueOnce({
+      schemaVersion: 1,
+      projectId: projectAlpha.id,
+      category: 'papers',
+      path: 'Papers/Wrong--0123456789abcdef.md',
+      created: true,
+      contentSha256: 'a'.repeat(64),
+      artifactId: '0123456789abcdef',
+    });
+    const { session } = authorizedSession(workspace, projectAlpha.id, vault);
+
+    await session.persistResponseResearchNote({
+      disposition: 'save',
+      category: 'experiments',
+      title: 'Expected experiment',
+      content: '# Expected experiment\n',
+    });
+
+    const appendix = await session.finalizeSourceAppendix();
+    expect(appendix).toContain('Research Notes save confirmation pending');
+    expect(appendix).toContain('no saved path is claimed yet');
+    expect(appendix).not.toContain('Research Notes saved');
+  });
+
   it('injects the active project into bounded Crossref searches and returns persisted counts', async () => {
     const { workspace, projectAlpha, projectBeta } = await workspaceFixture();
     const { session, literature } = authorizedSession(workspace, projectAlpha.id);
@@ -702,6 +899,7 @@ describe('ProjectAgentToolSession', () => {
       conflicts: [
         {
           ordinal: 5,
+          canonicalId: null,
           doi: '10.1000/gosu.conflict',
           providerRecordId: '10.1000/gosu.conflict',
           title: 'Ambiguous metadata fixture',
@@ -745,6 +943,7 @@ describe('ProjectAgentToolSession', () => {
       ordinal: index + 1,
       provider: 'crossref' as const,
       providerRecordId: `crossref-${index}-${'p'.repeat(2_000)}`,
+      canonicalId: null,
       doi: `10.1000/${'d'.repeat(490)}${index}`,
       fingerprint: `${index}`.repeat(64),
       title: `${index}:${'t'.repeat(1_998)}`,
@@ -867,6 +1066,7 @@ describe('ProjectAgentToolSession', () => {
           grantId: SSH_GRANT_ID,
           connectionLabel: 'Training GPU',
           permissionMode: 'workspace',
+          trustedAccess: false,
         },
       ],
     });
@@ -1398,7 +1598,7 @@ describe('ProjectAgentToolSession', () => {
     expect(ssh.runAgentWorkspaceFileOperation).not.toHaveBeenCalled();
   });
 
-  it('does not declare note tools without a grant and rejects a grant that becomes stale', async () => {
+  it('does not declare read tools without a grant and rejects a grant that becomes stale', async () => {
     const { workspace, projectAlpha } = await workspaceFixture();
     const vault = new FakeProjectVault();
     const noGrant = new ProjectAgentToolSession({
@@ -1427,13 +1627,27 @@ describe('ProjectAgentToolSession', () => {
     const unauthorized = await invokeTool(noGrant, toolCall('list_local_notes', {}));
     expect(unauthorized.success).toBe(false);
     expect(resultPayload(unauthorized)).toEqual({ error: 'local_notes_not_authorized' });
+    await noGrant.persistResponseResearchNote({
+      disposition: 'save',
+      category: 'project-progress',
+      title: 'Plan',
+      content: '# Plan\n',
+    });
+    expect(await noGrant.finalizeSourceAppendix()).toContain('not authorized for Project Chat');
 
     const stale = authorizedSession(workspace, projectAlpha.id, vault).session;
     vault.activeVaultId = REPLACEMENT_VAULT_ID;
     const staleRead = await invokeTool(stale, toolCall('read_local_note', { noteId: NOTE_ID }));
     expect(staleRead.success).toBe(false);
     expect(resultPayload(staleRead)).toEqual({ error: 'local_notes_authorization_stale' });
+    await stale.persistResponseResearchNote({
+      disposition: 'save',
+      category: 'experiments',
+      title: 'Trial',
+      content: '# Trial\n',
+    });
     expect(vault.readForAgent).not.toHaveBeenCalled();
+    expect(vault.saveMarkdownForAgent).not.toHaveBeenCalled();
   });
 
   it('strictly validates every tool argument and never accepts a raw path', async () => {

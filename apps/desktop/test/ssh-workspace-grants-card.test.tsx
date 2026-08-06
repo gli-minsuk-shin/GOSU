@@ -96,7 +96,8 @@ describe('project-scoped remote workspace settings', () => {
     expect(html).toContain('experiments may execute repository code');
     expect(html).toContain('HIGH RISK · ROOT account');
     expect(html).toContain('not a remote sandbox');
-    expect(html).toContain('Every command still requires a separate Allow once decision');
+    expect(html).toContain('every command and file action requires a separate Allow once decision');
+    expect(html).toContain('Trusted workspace access');
     expect(html).toContain('Test server');
     expect(html).toContain('Ready');
   });

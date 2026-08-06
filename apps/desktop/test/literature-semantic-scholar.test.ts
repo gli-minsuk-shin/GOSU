@@ -19,7 +19,10 @@ describe('Semantic Scholar literature provider', () => {
         data: [
           {
             paperId: 'paper-1',
-            externalIds: { DOI: 'https://doi.org/10.1000/S2.1' },
+            externalIds: {
+              DOI: 'https://doi.org/10.1000/S2.1',
+              ArXiv: '2504.10808v2',
+            },
             url: 'https://www.semanticscholar.org/paper/paper-1',
             title: '  A   semantic scholar fixture  ',
             venue: 'Fixture Conference',
@@ -60,6 +63,7 @@ describe('Semantic Scholar literature provider', () => {
       candidate: {
         provider: 'semantic-scholar',
         providerId: 'paper-1',
+        canonicalId: 'arxiv:2504.10808',
         doi: '10.1000/s2.1',
         title: 'A semantic scholar fixture',
         authors: ['Ada Researcher'],

@@ -37,16 +37,23 @@ import {
 import type { SshIpcErrorCode } from '../shared/ssh-ipc-result';
 import {
   CreateRemoteWorkspaceGrantInputSchema,
+  EnableTrustedRemoteWorkspaceInputSchema,
   GrantedRemoteWorkspaceSchema,
   RemoteWorkspaceGrantSchema,
   RemoveRemoteWorkspaceGrantInputSchema,
+  RevokeTrustedRemoteWorkspaceInputSchema,
+  SSH_TRUSTED_WORKSPACE_POLICY_VERSION,
+  SshTrustedWorkspaceAuditRecordSchema,
   SshWorkspaceAgentCommandSchema,
   SshWorkspaceFileOperationSchema,
   UpdateRemoteWorkspaceGrantInputSchema,
   type CreateRemoteWorkspaceGrantInput,
+  type EnableTrustedRemoteWorkspaceInput,
   type GrantedRemoteWorkspace,
   type RemoteWorkspaceGrant,
   type RemoveRemoteWorkspaceGrantInput,
+  type RevokeTrustedRemoteWorkspaceInput,
+  type SshTrustedWorkspaceAuditRecord,
   type SshWorkspaceAgentCommand,
   type SshWorkspaceFileOperation,
   type SshWorkspaceOperationClass,
@@ -92,6 +99,7 @@ export interface SshConnectionStorage {
     grantId: string,
     expectedVersion: number,
   ): MaybePromise<boolean>;
+  appendSshTrustedWorkspaceAudit(record: SshTrustedWorkspaceAuditRecord): MaybePromise<boolean>;
 }
 
 export class SshConnectionServiceError extends Error {
@@ -106,9 +114,10 @@ type PendingApproval = Readonly<{
   profile: SshConnectionProfile;
   command: SshAgentCommand;
   workspaceBinding?: WorkspaceExecutionBinding;
-  timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout;
   cancellation: ExecutionCancellation;
   settlement: ExecutionSettlement;
+  trustedAccess?: NonNullable<RemoteWorkspaceGrant['trustedAccess']>;
 }>;
 
 type WorkspaceExecutionBinding = Readonly<{
@@ -503,6 +512,23 @@ function connectionPrivilegeClass(profile: SshConnectionProfile) {
   return profile.directTarget.user === 'root' ? ('root' as const) : ('standard' as const);
 }
 
+function trustedAccessMatches(grant: RemoteWorkspaceGrant, profile: SshConnectionProfile) {
+  const access = grant.trustedAccess;
+  return Boolean(
+    access &&
+    access.policyVersion === SSH_TRUSTED_WORKSPACE_POLICY_VERSION &&
+    access.projectId === grant.projectId &&
+    access.grantId === grant.id &&
+    access.grantVersion === grant.version &&
+    access.connectionId === grant.connectionId &&
+    access.connectionVersion === profile.version &&
+    access.canonicalRoot === grant.canonicalRoot &&
+    grant.permissionMode === 'workspace' &&
+    Boolean(profile.directTarget) &&
+    connectionPrivilegeClass(profile) === 'standard',
+  );
+}
+
 export type SshConnectionServiceOptions = Readonly<{
   approvalTimeoutMs?: number;
   now?: () => Date;
@@ -515,6 +541,7 @@ export class SshConnectionService extends EventEmitter {
   private readonly storage: SshConnectionStorage;
   private readonly runner: SshCommandRunner;
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly trustedReservations = new Map<string, PendingApproval>();
   private readonly activeExecutions = new Map<string, ActiveExecution>();
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly approvalTtlMs: number;
@@ -562,12 +589,15 @@ export class SshConnectionService extends EventEmitter {
     const byId = new Map(connections.map((connection) => [connection.id, connection]));
     return grants
       .filter((grant) => grant.projectId === projectId && byId.has(grant.connectionId))
-      .map((grant) =>
-        GrantedRemoteWorkspaceSchema.parse({
-          grant,
-          connection: byId.get(grant.connectionId),
-        }),
-      )
+      .map((grant) => {
+        const connection = byId.get(grant.connectionId)!;
+        return GrantedRemoteWorkspaceSchema.parse({
+          grant: trustedAccessMatches(grant, connection)
+            ? grant
+            : { ...grant, trustedAccess: null },
+          connection,
+        });
+      })
       .sort(
         (left, right) =>
           left.connection.label.localeCompare(right.connection.label) ||
@@ -663,6 +693,7 @@ export class SshConnectionService extends EventEmitter {
         ...current,
         canonicalRoot: command.canonicalRoot,
         permissionMode: command.permissionMode,
+        trustedAccess: null,
         version: current.version + 1,
         updatedAt: new Date(this.now()).toISOString(),
       });
@@ -692,6 +723,70 @@ export class SshConnectionService extends EventEmitter {
       }
       this.cancelProject(command.projectId);
       return { removed: true };
+    });
+  }
+
+  enableTrustedWorkspace(input: EnableTrustedRemoteWorkspaceInput): Promise<RemoteWorkspaceGrant> {
+    return this.mutate(async () => {
+      const command = EnableTrustedRemoteWorkspaceInputSchema.parse(input);
+      const current = await this.readRequiredWorkspaceGrant(command.projectId, command.grantId);
+      if (current.version !== command.expectedVersion) {
+        throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
+      }
+      const connection = await this.readRequiredConnection(current.connectionId);
+      if (
+        current.permissionMode !== 'workspace' ||
+        !connection.directTarget ||
+        connectionPrivilegeClass(connection) !== 'standard'
+      ) {
+        throw new SshConnectionServiceError('ssh_trusted_workspace_not_allowed');
+      }
+      const nextVersion = current.version + 1;
+      const enabledAt = new Date(this.now()).toISOString();
+      const grant = RemoteWorkspaceGrantSchema.parse({
+        ...current,
+        trustedAccess: {
+          schemaVersion: 1,
+          policyVersion: SSH_TRUSTED_WORKSPACE_POLICY_VERSION,
+          projectId: current.projectId,
+          grantId: current.id,
+          grantVersion: nextVersion,
+          connectionId: current.connectionId,
+          connectionVersion: connection.version,
+          canonicalRoot: current.canonicalRoot,
+          enabledAt,
+        },
+        version: nextVersion,
+        updatedAt: enabledAt,
+      });
+      if (!(await this.storage.updateSshWorkspaceGrant(grant, command.expectedVersion))) {
+        throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
+      }
+      this.cancelProject(command.projectId);
+      return copy(grant);
+    });
+  }
+
+  revokeTrustedWorkspace(input: RevokeTrustedRemoteWorkspaceInput): Promise<RemoteWorkspaceGrant> {
+    return this.mutate(async () => {
+      const command = RevokeTrustedRemoteWorkspaceInputSchema.parse(input);
+      const current = await this.readRequiredWorkspaceGrant(command.projectId, command.grantId);
+      if (current.version !== command.expectedVersion) {
+        throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
+      }
+      if (!current.trustedAccess) return copy(current);
+      const updatedAt = new Date(this.now()).toISOString();
+      const grant = RemoteWorkspaceGrantSchema.parse({
+        ...current,
+        trustedAccess: null,
+        version: current.version + 1,
+        updatedAt,
+      });
+      if (!(await this.storage.updateSshWorkspaceGrant(grant, command.expectedVersion))) {
+        throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
+      }
+      this.cancelProject(command.projectId);
+      return copy(grant);
     });
   }
 
@@ -990,7 +1085,7 @@ export class SshConnectionService extends EventEmitter {
     });
   }
 
-  private requestApprovedExecution(
+  private async requestApprovedExecution(
     command: SshAgentCommand,
     profile: SshConnectionProfile,
     signal?: AbortSignal,
@@ -998,6 +1093,9 @@ export class SshConnectionService extends EventEmitter {
   ): Promise<SshCommandResult> {
     if (this.shuttingDown) throw new SshConnectionServiceError('ssh_unavailable');
     if (signal?.aborted) throw new SshConnectionServiceError('ssh_cancelled');
+    if (workspaceBinding && trustedAccessMatches(workspaceBinding.grant, profile)) {
+      return this.requestTrustedExecution(command, profile, workspaceBinding, signal);
+    }
     if (
       this.pendingApprovals.size >= SSH_MAX_PENDING_APPROVALS ||
       [...this.pendingApprovals.values()].filter((pending) => sameTurn(pending.command, command))
@@ -1005,11 +1103,46 @@ export class SshConnectionService extends EventEmitter {
     ) {
       throw new SshConnectionServiceError('ssh_capacity_exceeded');
     }
+    const request = this.createApprovalRequest(command, profile, workspaceBinding);
+    const approvalId = request.id;
+
+    let pending: PendingApproval | undefined;
+    const cancellation = linkedCancellation(signal, () => {
+      if (pending && this.rejectPending(pending, 'cancelled', 'ssh_cancelled')) return;
+      const active = this.activeExecutions.get(approvalId);
+      if (active) this.cancelActive(active);
+    });
+    return new Promise<SshCommandResult>((resolve, reject) => {
+      const timer = setTimeout(() => this.expireApproval(approvalId), this.approvalTtlMs);
+      timer.unref?.();
+      const pendingEntry: PendingApproval = {
+        request,
+        profile,
+        command,
+        ...(workspaceBinding ? { workspaceBinding } : {}),
+        timer,
+        cancellation,
+        settlement: singleSettlement(resolve, reject),
+      };
+      pending = pendingEntry;
+      this.pendingApprovals.set(approvalId, pendingEntry);
+      if (cancellation.controller.signal.aborted) {
+        this.rejectPending(pendingEntry, 'cancelled', 'ssh_cancelled');
+        return;
+      }
+      this.emitSshEvent({ type: 'approval.requested', request: copy(request) });
+    });
+  }
+
+  private createApprovalRequest(
+    command: SshAgentCommand,
+    profile: SshConnectionProfile,
+    workspaceBinding?: WorkspaceExecutionBinding,
+  ) {
     const requestedAt = this.now();
-    const approvalId = randomUUID();
-    const request = SshApprovalRequestSchema.parse({
+    return SshApprovalRequestSchema.parse({
       schemaVersion: 1 as const,
-      id: approvalId,
+      id: randomUUID(),
       projectId: command.projectId,
       sessionId: command.sessionId,
       attemptId: command.attemptId,
@@ -1040,33 +1173,126 @@ export class SshConnectionService extends EventEmitter {
       requestedAt: new Date(requestedAt).toISOString(),
       expiresAt: new Date(requestedAt + this.approvalTtlMs).toISOString(),
     } satisfies SshApprovalRequest);
+  }
 
+  private requestTrustedExecution(
+    command: SshAgentCommand,
+    profile: SshConnectionProfile,
+    workspaceBinding: WorkspaceExecutionBinding,
+    signal?: AbortSignal,
+  ): Promise<SshCommandResult> {
+    if (this.executionCapacityReached(command)) {
+      throw new SshConnectionServiceError('ssh_capacity_exceeded');
+    }
+    const trustedAccess = workspaceBinding.grant.trustedAccess;
+    if (!trustedAccess || !trustedAccessMatches(workspaceBinding.grant, profile)) {
+      throw new SshConnectionServiceError('ssh_trusted_workspace_expired');
+    }
+    const request = this.createApprovalRequest(command, profile, workspaceBinding);
+    const audit = SshTrustedWorkspaceAuditRecordSchema.parse({
+      schemaVersion: 1,
+      id: randomUUID(),
+      projectId: command.projectId,
+      grantId: workspaceBinding.grant.id,
+      grantVersion: workspaceBinding.grant.version,
+      connectionId: profile.id,
+      connectionVersion: profile.version,
+      policyVersion: trustedAccess.policyVersion,
+      sessionId: command.sessionId,
+      attemptId: command.attemptId,
+      turnId: command.turnId,
+      toolCallId: command.toolCallId,
+      operation: workspaceBinding.operation,
+      commandSha256: request.commandSha256 ?? hashCommand(command, workspaceBinding.stdinText),
+      autoApprovedAt: new Date(this.now()).toISOString(),
+    });
     let pending: PendingApproval | undefined;
     const cancellation = linkedCancellation(signal, () => {
-      if (pending && this.rejectPending(pending, 'cancelled', 'ssh_cancelled')) return;
-      const active = this.activeExecutions.get(approvalId);
+      const reserved = this.trustedReservations.get(request.id);
+      if (reserved) {
+        this.cancelTrustedReservation(reserved, 'ssh_cancelled');
+        return;
+      }
+      const active = this.activeExecutions.get(request.id);
       if (active) this.cancelActive(active);
+      else if (pending) pending.settlement.reject(new SshConnectionServiceError('ssh_cancelled'));
     });
     return new Promise<SshCommandResult>((resolve, reject) => {
-      const timer = setTimeout(() => this.expireApproval(approvalId), this.approvalTtlMs);
-      timer.unref?.();
-      const pendingEntry: PendingApproval = {
+      pending = {
         request,
         profile,
         command,
-        ...(workspaceBinding ? { workspaceBinding } : {}),
-        timer,
+        workspaceBinding,
         cancellation,
         settlement: singleSettlement(resolve, reject),
+        trustedAccess,
       };
-      pending = pendingEntry;
-      this.pendingApprovals.set(approvalId, pendingEntry);
+      this.trustedReservations.set(request.id, pending);
       if (cancellation.controller.signal.aborted) {
-        this.rejectPending(pendingEntry, 'cancelled', 'ssh_cancelled');
+        this.cancelTrustedReservation(pending, 'ssh_cancelled');
         return;
       }
-      this.emitSshEvent({ type: 'approval.requested', request: copy(request) });
+      void this.auditAndStartTrustedReservation(pending, audit);
     });
+  }
+
+  private async auditAndStartTrustedReservation(
+    pending: PendingApproval,
+    audit: SshTrustedWorkspaceAuditRecord,
+  ) {
+    let auditRecorded: boolean;
+    try {
+      auditRecorded = await this.storage.appendSshTrustedWorkspaceAudit(audit);
+    } catch {
+      auditRecorded = false;
+    }
+    if (!this.trustedReservations.has(pending.request.id)) return;
+    if (!auditRecorded) {
+      this.rejectTrustedReservation(pending, 'ssh_trusted_workspace_audit_failed');
+      return;
+    }
+    if (this.shuttingDown) {
+      this.rejectTrustedReservation(pending, 'ssh_unavailable');
+      return;
+    }
+    if (pending.cancellation.controller.signal.aborted) {
+      this.cancelTrustedReservation(pending, 'ssh_cancelled');
+      return;
+    }
+    if (!this.trustedReservations.delete(pending.request.id)) return;
+    this.startApproved(pending, true);
+  }
+
+  private executionCapacityReached(command: SshAgentCommand) {
+    const reservations = [...this.trustedReservations.values()];
+    return (
+      this.activeExecutions.size + reservations.length >= SSH_MAX_ACTIVE_EXECUTIONS ||
+      [
+        ...this.activeExecutions.values(),
+        ...reservations.map((reservation) => reservation.command),
+      ].filter((entry) => sameTurn(entry, command)).length >= SSH_MAX_ACTIVE_EXECUTIONS_PER_TURN
+    );
+  }
+
+  private cancelTrustedReservation(
+    pending: PendingApproval,
+    code: Extract<SshIpcErrorCode, 'ssh_cancelled'>,
+  ) {
+    if (!this.trustedReservations.delete(pending.request.id)) return false;
+    pending.cancellation.controller.abort();
+    pending.cancellation.detach();
+    pending.settlement.reject(new SshConnectionServiceError(code));
+    return true;
+  }
+
+  private rejectTrustedReservation(
+    pending: PendingApproval,
+    code: Extract<SshIpcErrorCode, 'ssh_trusted_workspace_audit_failed' | 'ssh_unavailable'>,
+  ) {
+    if (!this.trustedReservations.delete(pending.request.id)) return false;
+    pending.cancellation.detach();
+    pending.settlement.reject(new SshConnectionServiceError(code));
+    return true;
   }
 
   /** Alias retained for the project-agent adapter's descriptive method name. */
@@ -1094,11 +1320,7 @@ export class SshConnectionService extends EventEmitter {
       this.rejectPending(pending, 'denied', 'ssh_approval_denied');
       return { outcome: 'denied' };
     }
-    if (
-      this.activeExecutions.size >= SSH_MAX_ACTIVE_EXECUTIONS ||
-      [...this.activeExecutions.values()].filter((active) => sameTurn(active, pending.command))
-        .length >= SSH_MAX_ACTIVE_EXECUTIONS_PER_TURN
-    ) {
+    if (this.executionCapacityReached(pending.command)) {
       this.rejectPending(pending, 'cancelled', 'ssh_capacity_exceeded');
       throw new SshConnectionServiceError('ssh_capacity_exceeded');
     }
@@ -1230,7 +1452,7 @@ export class SshConnectionService extends EventEmitter {
     code: Exclude<SshIpcErrorCode, 'invalid_ssh_input'>,
   ) {
     if (!this.pendingApprovals.delete(pending.request.id)) return false;
-    clearTimeout(pending.timer);
+    if (pending.timer) clearTimeout(pending.timer);
     pending.cancellation.detach();
     pending.cancellation.controller.abort();
     this.emitSshEvent({
@@ -1242,9 +1464,16 @@ export class SshConnectionService extends EventEmitter {
     return true;
   }
 
-  private startApproved(pending: PendingApproval) {
-    if (!this.pendingApprovals.delete(pending.request.id)) return;
-    clearTimeout(pending.timer);
+  private startApproved(pending: PendingApproval, autoApproved = false) {
+    if (!autoApproved && !this.pendingApprovals.delete(pending.request.id)) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    if (this.shuttingDown || pending.cancellation.controller.signal.aborted) {
+      pending.cancellation.detach();
+      pending.settlement.reject(
+        new SshConnectionServiceError(this.shuttingDown ? 'ssh_unavailable' : 'ssh_cancelled'),
+      );
+      return;
+    }
     const active: ActiveExecution = {
       approvalId: pending.request.id,
       projectId: pending.command.projectId,
@@ -1257,16 +1486,19 @@ export class SshConnectionService extends EventEmitter {
       settlement: pending.settlement,
     };
     this.activeExecutions.set(active.approvalId, active);
-    this.emitSshEvent({
-      type: 'approval.resolved',
-      approvalId: pending.request.id,
-      outcome: 'allowed',
-    });
+    if (!autoApproved) {
+      this.emitSshEvent({
+        type: 'approval.resolved',
+        approvalId: pending.request.id,
+        outcome: 'allowed',
+      });
+    }
 
     // Queue the final state check behind any already-started profile/grant mutation. Starting the
     // transport inside the same serialized operation also prevents a later mutation from committing
     // between this check and the runner invocation.
     void this.mutate(async () => {
+      if (this.shuttingDown) throw new SshConnectionServiceError('ssh_unavailable');
       this.throwIfCancelled(active);
       const [connections, grants] = await Promise.all([
         Promise.resolve(this.storage.listSshConnections()),
@@ -1302,7 +1534,15 @@ export class SshConnectionService extends EventEmitter {
         ) {
           throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
         }
+        if (
+          pending.trustedAccess &&
+          (!trustedAccessMatches(grant, profile) ||
+            JSON.stringify(grant.trustedAccess) !== JSON.stringify(pending.trustedAccess))
+        ) {
+          throw new SshConnectionServiceError('ssh_trusted_workspace_expired');
+        }
       }
+      if (this.shuttingDown) throw new SshConnectionServiceError('ssh_unavailable');
       this.throwIfCancelled(active);
       const runOptions = {
         signal: active.cancellation.controller.signal,
@@ -1379,6 +1619,10 @@ export class SshConnectionService extends EventEmitter {
       if (!predicate(pending.command)) continue;
       this.rejectPending(pending, 'cancelled', 'ssh_approval_cancelled');
       cancelled += 1;
+    }
+    for (const reservation of [...this.trustedReservations.values()]) {
+      if (!predicate(reservation.command)) continue;
+      if (this.cancelTrustedReservation(reservation, 'ssh_cancelled')) cancelled += 1;
     }
     for (const active of this.activeExecutions.values()) {
       if (!predicate(active)) continue;

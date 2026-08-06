@@ -129,10 +129,14 @@ describe('Research Notes project-agent access', () => {
       onOpenSettings,
     });
 
-    findButton(access, 'Authorize for Active study').props.onClick?.();
+    findButton(access, 'Authorize read + automatic saves for Active study').props.onClick?.();
     findButton(access, 'Open AI Agent Settings…').props.onClick?.();
 
-    expect(onSetAccess).toHaveBeenCalledWith({ id: vault.id, name: vault.name });
+    expect(onSetAccess).toHaveBeenCalledWith({
+      id: vault.id,
+      name: vault.name,
+      allowAgentMarkdownCreate: true,
+    });
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
@@ -162,11 +166,13 @@ describe('Research Notes project-agent access', () => {
 
     expect(html).toContain('Not authorized for Active study');
     expect(html).toContain('Research Notes remains local-only');
-    expect(html).toContain('Authorize for Active study');
+    expect(html).toContain('Authorize read + automatic saves for Active study');
+    expect(html).toContain('create reusable deliverables');
+    expect(html).toContain('cannot replace a different existing file');
     expect(html).toContain('Open AI Agent Settings…');
     expect(html).not.toContain('Revoke access');
     expect(html).toMatch(
-      /<button type="button" class="secondary-button">Authorize for Active study<\/button>/u,
+      /<button type="button" class="secondary-button">Authorize read \+ automatic saves for Active study<\/button>/u,
     );
   });
 
@@ -174,15 +180,35 @@ describe('Research Notes project-agent access', () => {
     const html = renderResearchNotes({
       profile: {
         ...defaultProjectChatProfile(project.id),
+        localNotesVault: {
+          id: vault.id,
+          name: vault.name,
+          allowAgentMarkdownCreate: true,
+        },
+      },
+    });
+
+    expect(html).toContain('Read + automatic Markdown saves authorized for Active study');
+    expect(html).toContain('create new Markdown files');
+    expect(html).toContain('never overwrite an existing note');
+    expect(html).toContain('Revoke access');
+    expect(html).toContain('Open AI Agent Settings…');
+    expect(html).not.toContain('Authorize read + automatic saves for Active study');
+  });
+
+  it('keeps a legacy matching grant read-only until automatic saves are explicitly enabled', () => {
+    const html = renderResearchNotes({
+      profile: {
+        ...defaultProjectChatProfile(project.id),
         localNotesVault: { id: vault.id, name: vault.name },
       },
     });
 
-    expect(html).toContain('Authorized for Active study');
-    expect(html).toContain('can be listed and read through bounded chat tools');
+    expect(html).toContain('Read-only access for Active study');
+    expect(html).toContain('legacy grant still permits bounded note listing and reading');
+    expect(html).toContain('Automatic Markdown saves remain off');
+    expect(html).toContain('Enable automatic Markdown saves');
     expect(html).toContain('Revoke access');
-    expect(html).toContain('Open AI Agent Settings…');
-    expect(html).not.toContain('Authorize for Active study');
   });
 
   it('does not silently transfer a stale grant to the currently selected folder', () => {
@@ -197,9 +223,9 @@ describe('Research Notes project-agent access', () => {
     expect(html).toContain(
       'Previous Vault was authorized previously. Access never transfers silently to another project or Vault.',
     );
-    expect(html).toContain('Authorize for Active study');
+    expect(html).toContain('Authorize read + automatic saves for Active study');
     expect(html).toContain('Revoke access');
-    expect(html).not.toContain('>Authorized for Active study<');
+    expect(html).not.toContain('>Read + automatic Markdown saves authorized for Active study<');
   });
 
   it.each([
@@ -222,9 +248,11 @@ describe('Research Notes project-agent access', () => {
     const html = renderResearchNotes(props);
 
     expect(html).toContain(title);
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Authorize for Active study<\/button>/u);
+    expect(html).toMatch(
+      /<button[^>]*disabled=""[^>]*>Authorize read \+ automatic saves for Active study<\/button>/u,
+    );
     expect(html).toContain('Open AI Agent Settings…');
-    expect(html).not.toContain('>Authorized for Active study<');
+    expect(html).not.toContain('>Read + automatic Markdown saves authorized for Active study<');
   });
 
   it('fails closed without an active project and does not show a misleading settings action', () => {
@@ -248,7 +276,7 @@ describe('Research Notes project-agent access', () => {
 
     expect(html).toContain('Checking the Research Notes folder…');
     expect(html).toContain('Revoke access');
-    expect(html).not.toContain('>Authorized for Active study<');
+    expect(html).not.toContain('>Read + automatic Markdown saves authorized for Active study<');
   });
 
   it('shows the project-scoped managed folders and Literature projection status', () => {
@@ -350,7 +378,7 @@ describe('Research Notes project-agent access', () => {
     expect(html).toContain('would overwrite an existing Obsidian folder');
     expect(html).toContain('>Retry</button>');
     expect(html).toContain('Research Notes grant inactive');
-    expect(html).not.toContain('>Authorized for Active study<');
+    expect(html).not.toContain('>Read + automatic Markdown saves authorized for Active study<');
   });
 
   it('distinguishes project-folder verification from first-time Vault connection', () => {

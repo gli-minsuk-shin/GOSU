@@ -348,6 +348,7 @@ function literatureConflictSummary(
 
 function literatureConflictIdentifier(conflict: LiteratureSearchConflict) {
   const identities = [
+    conflict.canonicalId ? conflict.canonicalId : '',
     conflict.doi ? `DOI ${conflict.doi}` : '',
     conflict.providerRecordId && conflict.providerRecordId !== conflict.doi
       ? `${formatLabel(conflict.provider)} ${conflict.providerRecordId}`
@@ -1328,15 +1329,17 @@ export function LiteratureView({
         </p>
         <p className="literature-search-help">
           <strong>Fixed policy v{BALANCED_LITERATURE_POLICY_VERSION}:</strong> Core is a maximum,
-          never a quota. High-impact relevant papers must appear in the relevance lane with a
-          within-search normalized rank score of at least{' '}
-          {Math.round(LITERATURE_CORE_MIN_RELEVANCE_SCORE * 100)} and at least{' '}
-          {LITERATURE_CORE_MIN_CITATIONS} citations or {LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS}{' '}
-          influential citations. A limited canonical route uses the same impact floor, a citation
-          lane, and age of at least {LITERATURE_CANONICAL_MIN_AGE_YEARS} years. Rising needs
-          relevance of at least {Math.round(LITERATURE_RISING_MIN_RELEVANCE_SCORE * 100)},
-          publication within the latest {LITERATURE_RISING_MAX_AGE_YEARS + 1} calendar years, and at
-          least {LITERATURE_RISING_MIN_CITATIONS_PER_YEAR} citations/year or{' '}
+          never a quota. Search combines Semantic Scholar, Hugging Face Papers, and a resilient
+          Crossref fallback; Hugging Face index presence never promotes a paper by itself.
+          High-impact relevant papers must appear in the relevance lane with a within-search
+          normalized rank score of at least {Math.round(LITERATURE_CORE_MIN_RELEVANCE_SCORE * 100)}{' '}
+          and at least {LITERATURE_CORE_MIN_CITATIONS} citations or{' '}
+          {LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS} influential citations. A limited canonical
+          route uses the same impact floor, a citation lane, and age of at least{' '}
+          {LITERATURE_CANONICAL_MIN_AGE_YEARS} years. Rising needs relevance of at least{' '}
+          {Math.round(LITERATURE_RISING_MIN_RELEVANCE_SCORE * 100)}, publication within the latest{' '}
+          {LITERATURE_RISING_MAX_AGE_YEARS + 1} calendar years, and at least{' '}
+          {LITERATURE_RISING_MIN_CITATIONS_PER_YEAR} citations/year or{' '}
           {LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS} influential citation. Others remain Broad
           for screening. Venue metadata and author h-index never promote a paper by themselves.
           Existing v1 labels remain historical until that search is run again. Each search is

@@ -158,9 +158,11 @@ export function SshWorkspaceGrantsCard({
       <p className="privacy">
         A registered server is not automatically available to every project. Grant one canonical
         workspace root to the active project, then Project Chat can request bounded text file
-        listing, reading, creation, and replacement plus approved direct-argv commands. Every
-        command still requires a separate Allow once decision. Every file action requires its own
-        Allow once decision too; remote deletion is not available.
+        listing, reading, creation, and replacement plus approved direct-argv commands. By default,
+        every command and file action requires a separate Allow once decision. Project Chat can
+        explicitly enable audited Trusted workspace access for an exact non-root Workspace grant; it
+        removes repeated prompts but never adds raw shell, secrets, privileged operations,
+        outside-grant paths, or remote deletion.
       </p>
       {!project ? (
         <div className="empty-card">

@@ -21,7 +21,12 @@ const optionalYearSchema = z.number().int().min(1000).max(3000).optional();
 const nullableText = (maximum: number) => boundedText(maximum).nullable();
 const topicSchema = boundedText(240);
 
-export const LiteratureProviderSchema = z.enum(['crossref', 'semantic-scholar', 'import']);
+export const LiteratureProviderSchema = z.enum([
+  'crossref',
+  'semantic-scholar',
+  'hugging-face',
+  'import',
+]);
 export const LiteratureSearchProviderSchema = z.enum(['crossref', 'balanced']);
 export const LiteratureDiscoveryTierSchema = z.enum(['core', 'rising', 'broad']);
 export const LiteratureDiscoveryPolicySchema = z.enum(['crossref-basic', 'balanced-three-layer']);
@@ -30,6 +35,7 @@ export const LiteratureDiscoverySignalSchema = z.enum([
   'citation-authority',
   'recent-momentum',
   'author-impact',
+  'hugging-face-index',
 ]);
 export const LiteratureDiscoveryDegradationReasonSchema = z.enum([
   'semantic-scholar-unavailable',
@@ -42,6 +48,7 @@ export const LiteratureDiscoveryDegradationReasonSchema = z.enum([
   'crossref-supplement-unavailable',
   'crossref-citation-lane-unavailable',
   'crossref-recent-lane-unavailable',
+  'hugging-face-unavailable',
 ]);
 export const LiteratureDiscoveryReasonSchema = z.enum([
   'high-query-relevance',
@@ -106,11 +113,11 @@ export const LiteratureTierCountsSchema = z
 
 export const LiteratureDiscoveryCoverageSchema = z
   .object({
-    source: z.enum(['semantic-scholar', 'crossref', 'combined']),
+    source: z.enum(['semantic-scholar', 'crossref', 'hugging-face', 'combined']),
     availableSignals: z
       .array(LiteratureDiscoverySignalSchema)
       .min(1)
-      .max(4)
+      .max(5)
       .refine((signals) => new Set(signals).size === signals.length, {
         message: 'Discovery coverage signals must be unique',
       }),
@@ -139,9 +146,9 @@ export const LiteratureRankingSignalsSchema = z
     maxAuthorHIndex: z.number().int().nonnegative().nullable(),
     reasons: z.array(LiteratureDiscoveryReasonSchema).min(1).max(8),
     signalSources: z
-      .array(z.enum(['crossref', 'semantic-scholar']))
+      .array(z.enum(['crossref', 'semantic-scholar', 'hugging-face']))
       .min(1)
-      .max(2),
+      .max(3),
   })
   .strict();
 
@@ -160,6 +167,7 @@ export const LiteratureRecordSchema = z
     projectId: uuidSchema,
     provider: LiteratureProviderSchema,
     providerRecordId: nullableText(2_048),
+    canonicalId: nullableText(512).optional(),
     doi: nullableText(512),
     fingerprint: sha256Schema,
     title: boundedText(2_000),
@@ -191,8 +199,9 @@ export const LiteratureRecordSchema = z
 export const LiteratureSearchConflictSchema = z
   .object({
     ordinal: z.number().int().min(1).max(LITERATURE_MAX_SEARCH_RESULTS),
-    provider: z.enum(['crossref', 'semantic-scholar']),
+    provider: z.enum(['crossref', 'semantic-scholar', 'hugging-face']),
     providerRecordId: nullableText(2_048),
+    canonicalId: nullableText(512),
     doi: nullableText(512),
     fingerprint: sha256Schema,
     title: boundedText(2_000),

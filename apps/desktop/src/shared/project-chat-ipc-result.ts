@@ -3,6 +3,8 @@ export const PROJECT_CHAT_IPC_ERROR_CODES = [
   'project_archived',
   'project_trashed',
   'chat_busy',
+  'chat_queue_not_found',
+  'chat_queue_limit_reached',
   'chat_not_active',
   'chat_attempt_not_found',
   'chat_attempt_not_retryable',

@@ -59,6 +59,7 @@ flowchart LR
   subgraph External["제한된 외부 연구 discovery"]
     WebSearch["Codex first-party web search\ncached 또는 live"]
     SemanticScholar["고정 Semantic Scholar Graph API\n관련성·고인용·최신 metadata"]
+    HuggingFace["고정 Hugging Face Papers API\nadditive arXiv metadata"]
     Crossref["고정 Crossref works endpoint"]
   end
 
@@ -85,8 +86,9 @@ flowchart LR
   Main -->|"project-scoped typed Git IPC"| Git
   Codex -->|"project profile web_search"| WebSearch
   Main -->|"bounded three-lane metadata search"| SemanticScholar
+  Main -->|"bounded additive metadata search"| HuggingFace
   Main -->|"bounded metadata search"| Crossref
-  Main -->|"Allow once broker"| OpenSSH --> SshHost
+  Main -->|"기본 Allow once 또는\nbounded trusted audit"| OpenSSH --> SshHost
   Main <-->|"readiness·향후 sync worker"| API
   API --> Memory
   API -.->|"런타임 연결 전"| Postgres
@@ -126,20 +128,20 @@ flowchart LR
 제품 모듈은 아직 모두 독립 디렉터리로 분리되어 있지 않다. 새 기능은 아래 소유권을 기준으로
 배치하고, 한 모듈이 다른 모듈의 저장 테이블을 직접 읽지 않게 한다.
 
-| 논리 모듈                  | 현재 코드 소유자                                                               | 구현 수준                                                                                                                                                                                      |
-| -------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                   | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                     |
-| Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                 |
-| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                   | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                       |
-| Experiment Orchestration   | Desktop Experiment workspace, contracts, domain, Runner                        | 프로젝트별 idea lineage·검토 outcome·동결 Objective 기반 summary metric trajectory·evidence report를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨 |
-| Manuscript                 | Desktop Repository workspace와 향후 manuscript module                          | 앱 관리형 Git worktree·파일/Markdown preview·change/history/branch·commit 구현; LaTeX compile·PDF preview는 계획됨                                                                             |
-| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                       | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                        |
-| Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                      | Semantic Scholar 우선·Crossref fallback의 3-layer discovery, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat additive search 구현; Zotero 앱 연결은 계획됨 |
-| Obsidian Knowledge         | Desktop Research Notes service, bounded Vault adapter, Markdown renderer       | Vault root 복원·프로젝트별 owned folder·기본 note 구조·Literature/Papers projection·안전한 rename·GFM/wiki-link/raster preview·프로젝트별 agent grant 구현                                     |
-| Lecture                    | Owner Web UI 표현                                                              | 생성·편집·출처 연결은 계획됨                                                                                                                                                                   |
-| AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 다중 chat session·동적 model/mode catalog·native harness·project/SSH/Literature tool·project별 web search mode·범용 one-turn 연구 파일 capability·thread/turn provenance 구현                  |
-| Integration Hub            | Desktop Git Workspace·승인형 SSH broker, `packages/integrations` registry      | GitHub HTTPS clone·bounded Git·OpenSSH alias/direct import·프로젝트별 remote workspace grant·휘발성 CPU/RAM/GPU snapshot 구현; GitHub App 계정 연결은 계획됨                                   |
-| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                              | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                       |
+| 논리 모듈                  | 현재 코드 소유자                                                               | 구현 수준                                                                                                                                                                                                                                                                |
+| -------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                   | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                                                                                               |
+| Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                                                           |
+| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                   | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                 |
+| Experiment Orchestration   | Desktop Experiment workspace, contracts, domain, Runner                        | 프로젝트별 idea lineage·검토 outcome·동결 Objective 기반 summary metric trajectory·evidence report를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨                                                                           |
+| Manuscript                 | Desktop Repository workspace와 향후 manuscript module                          | 앱 관리형 Git worktree·파일/Markdown preview·change/history/branch·commit 구현; LaTeX compile·PDF preview는 계획됨                                                                                                                                                       |
+| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                       | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                  |
+| Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                      | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨 |
+| Obsidian Knowledge         | Desktop Research Notes service, bounded Vault adapter, Markdown renderer       | Vault root 복원·프로젝트별 owned folder·기본 note 구조·Literature/Papers projection·structured final-response Markdown create·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                              |
+| Lecture                    | Owner Web UI 표현                                                              | 생성·편집·출처 연결은 계획됨                                                                                                                                                                                                                                             |
+| AI Gateway                 | Desktop Project Chat service와 Codex App Server                                | 다중 chat session·project-global durable turn queue·동적 model/mode catalog·native harness·project/SSH/Literature tool·server-owned Research Notes final persistence·프로젝트별 web search mode·범용 one-turn 연구 파일 capability·thread/turn provenance 구현           |
+| Integration Hub            | Desktop Git Workspace·승인형 SSH broker, `packages/integrations` registry      | GitHub HTTPS clone·bounded Git·OpenSSH alias/direct import·프로젝트별 remote workspace grant·Allow-once 또는 bounded trusted execution·휘발성 CPU/RAM/GPU snapshot 구현; GitHub App 계정 연결은 계획됨                                                                   |
+| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                              | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                 |
 
 ## 5. 의존성 규칙
 
@@ -200,11 +202,12 @@ flowchart TD
 | 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                           | 협업 metadata 저장 대상                                                                                                                                             |
 | Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store                                      | 금지                                                                                                                                                                |
 | SSH connection profile                           | 모든 local project가 공유하는 Desktop SQLCipher registry                                 | Hosted Sync 금지; alias 또는 정규화된 direct host·user·port·inactive `-L`; secret·원본 command 금지                                                                 |
-| SSH remote workspace grant                       | 프로젝트별 Desktop SQLCipher table                                                       | Hosted Sync 금지; connection ID·canonical root·permission mode만 저장                                                                                               |
+| SSH remote workspace grant                       | 프로젝트별 Desktop SQLCipher table                                                       | Hosted Sync 금지; connection ID·canonical root·permission mode·선택적인 exact-version trusted policy binding만 저장                                                 |
 | SSH command output                               | 해당 Project Chat turn의 Main-process memory와 ephemeral tool result                     | raw output 저장·동기화 금지; 모델이 답변에 포함한 문장만 대화 정책 적용                                                                                             |
 | SSH workspace text file body                     | 승인된 remote project root의 원본과 해당 turn의 bounded helper/result memory             | SQLCipher·Hosted Sync·outbox·telemetry·Git 자동 저장 금지; exact create/replace 내용은 기본 5분 decision window의 centered blocking approval dialog에만 휘발성 표시 |
 | SSH server resource snapshot                     | Desktop Main-process 12초 cache와 Renderer의 마지막 구조화 sample                        | SQLCipher·Hosted Sync·outbox·telemetry·chat prompt 저장 금지; CPU/RAM/GPU 숫자와 bounded issue만 IPC에 노출하고 raw probe output 금지                               |
-| SSH approval request·outcome metadata            | 현재 app process의 in-memory broker event                                                | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지                                                                                             |
+| SSH Allow-once approval request·outcome metadata | 현재 app process의 in-memory broker event                                                | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지                                                                                             |
+| SSH trusted auto-execution audit                 | 프로젝트별 Desktop SQLCipher append-only table                                           | 실행 전 exact project/grant/connection/policy/turn/tool-call/operation/command hash만 기록; raw command preview·stdout/stderr·secret·Hosted Sync 금지               |
 | Project Chat 첨부 연구 파일                      | 사용자가 dialog에서 선택한 local file                                                    | path·원본 bytes·추출 text·정규화 image를 SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; 해당 turn에서 bounded text 또는 image만 provider에 전송            |
 | Codex web search result·tool payload             | 해당 Codex turn의 ephemeral provider context                                             | GOSU DB·outbox에 저장하지 않음; 최종 답변의 URL·요약만 visible chat 정책 적용                                                                                       |
 | tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                                           | 금지                                                                                                                                                                |
@@ -406,9 +409,11 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   Project Chat DB 또는 telemetry에 자동 전달하지 않는다. 나머지 예외는 Main이 turn마다 선언하는
   `gosu_project` namespace의 typed dynamic tool뿐이다. Board·Objective·Research Notes·SSH workspace catalog와
   정규화된 server resource snapshot 조회는 read-only다. 별도 Main broker의 workspace file operation은
-  사용자 `Allow once` 뒤 bounded UTF-8 file list/read/create/expected-hash-checked atomic replacement를 수행하고, workspace command는
-  별도의 `Allow once` 뒤 Git inspection, bounded test/build 또는 제한된 foreground Python experiment를
-  수행한다. create/replace와 code execution은 side effect가 가능하며 remote sandbox가 아니다. 이 예외는
+  기본 mode에서 사용자 `Allow once` 뒤 bounded UTF-8 file list/read/create/expected-hash-checked atomic
+  replacement를 수행하고, workspace command도 별도의 `Allow once` 뒤 Git inspection, bounded test/build
+  또는 제한된 foreground Python experiment를 수행한다. exact non-root direct-target trusted binding이
+  유효하면 같은 typed validation과 capacity 제한을 유지한 채 dialog만 생략하고 append-only audit를 실행
+  전에 성공시켜야 한다. create/replace와 code execution은 side effect가 가능하며 remote sandbox가 아니다. 이 예외는
   Codex sandbox 자체에 shell이나 network를 부여하지 않는다. `thread/start`
   직후 예상 밖 MCP inventory가 0이
   아니면 fail closed하고 thread를 해제한다. server-initiated command·file approval은 Main이 거절하고 그 밖의
@@ -456,11 +461,23 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   유일한 등록 server를 자동 선택한다. 사용자는 그곳에서 exact remote project root·permission mode·risk를
   별도로 확인해야 하며 UI가 이 승인 단계를 자동 통과하지 않는다. 같은 form과 기존 grant row의 명시적
   `Test server`는 transport/auth 상태만 확인하고 project grant나 command 승인을 대신하지 않는다.
+- `workspace` mode의 direct target이고 명시된 SSH user가 non-root `standard`일 때만 사용자가 두 번의
+  위험 확인으로 `Trusted workspace / Full access`를 추가할 수 있다. 이 mode는 기존 typed
+  list/read/create/hash-checked replace와 inspect/test/build/foreground experiment allowlist에서 반복
+  `Allow once`만 생략하며 raw shell, privilege, secret/key path, TTY·forwarding, host mount, grant 밖 path,
+  destructive host command와 background/unattended 실행을 추가하지 않는다. trust record는 exact
+  project·grant ID/version·connection ID/version·canonical root·policy version에 묶이며 grant/profile 변경,
+  revoke, project/session cancel과 shutdown에 즉시 무효화된다. Main은 async audit 전에 global/per-turn slot을
+  reservation해 동시 경합을 막고, append-only SQLCipher audit가 성공한 뒤 cancellation·shutdown·binding을
+  다시 검사한 경우에만 runner를 시작한다. audit에는 operation과 command hash만 있고 raw preview/output은
+  없다. 다만 허용된 Python·test·build는 SSH account의 OS·network 권한으로 subprocess를 실행할 수 있으므로
+  typed path policy를 remote sandbox로 표현하지 않는다.
 - Connections surface는 global SSH registry의 등록 server card를 Runtime·Codex·project grant보다 먼저
   렌더링하며, card 안에서도 실제 server row 또는 empty state를 onboarding·import·alias 등록 form보다 먼저
   DOM에 배치한다. 이 순서는 first-glance 상태 확인과 keyboard·screen-reader 탐색을 일치시키기 위한 UI
-  ordering일 뿐이며 global transport profile 등록 → project-scoped workspace grant → command별 `Allow once`
-  경계를 합치거나 완화하지 않는다. 기존 import·Test·Edit·Remove와 Project Chat CTA의 grant form
+  ordering일 뿐이며 global transport profile 등록 → project-scoped workspace grant → 기본 command별
+  `Allow once` 또는 별도 trusted binding 경계를 합치거나 자동 승인하지 않는다. 기존
+  import·Test·Edit·Remove와 Project Chat CTA의 grant form
   focus·신규 server preselection은 그대로 유지한다.
 - 각 등록 server row의 `Link to <active project>`는 grant를 즉시 만들지 않고 기존 project-scoped grant
   form을 해당 connection으로 미리 선택해 연다. 이미 grant된 row는 project 이름을 포함한 `Linked` 상태를
@@ -525,9 +542,10 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   trial일 뿐 장기·무인 실행이나 hard remote process kill을 보증하지 않는다. Git inspect는 subcommand별
   argument schema를 사용하고 fsmonitor·hook·pager config와 external diff·textconv를 Main이 exact approval
   preview 전에 비활성화한다. project test/build/experiment는 repository code를 해당 remote account 권한으로
-  실행할 수 있음을 승인창에 명시한다. 모든 command는 actual target, root/cwd, operation class와 exact preview를 보여 주는
-  centered blocking alert dialog에서 기본 5분짜리 `Allow once` 결정을 새로 받아야 하며 승인 후
-  profile·grant version을 다시 확인한다.
+  실행할 수 있음을 승인 UI와 trusted consent에 명시한다. 기본 mode의 command는 actual target, root/cwd,
+  operation class와 exact preview를 보여 주는 centered blocking alert dialog에서 5분짜리 `Allow once`
+  결정을 새로 받고 승인 후 profile·grant version을 다시 확인한다. exact trusted binding이 유효한 경우에만
+  같은 typed validation 뒤 dialog 대신 durable audit-before-execute 경로를 사용한다.
   이 승인은 표시된 executable·argv·cwd에만 결합되고 entrypoint나 test/build가 읽을 repository source file
   hash에는 결합되지 않는다. 따라서 승인 뒤 launch 전 source가 바뀔 수 있으며 command approval을 immutable
   source identity 또는 재현성 증명으로 취급하면 안 된다.
@@ -536,13 +554,15 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   허용하며 일반 `node script.js`는 test로 분류하지 않는다.
 - remote file access는 raw shell, `scp` 또는 모델이 만든 helper script가 아니라
   `list_ssh_workspace_files`·`read_ssh_workspace_file`·`write_ssh_workspace_file`의 typed contract다.
-  세 operation 모두 explicit `workspace` mode grant와 매 호출 `Allow once`를 요구하고, Main이
+  세 operation 모두 explicit `workspace` mode grant가 필요하며 기본 mode에서는 매 호출 `Allow once`,
+  exact trusted binding에서는 같은 validation과 audit-before-execute를 요구한다. Main이
   project·session·attempt·turn·tool-call·connection과 canonical root를 주입한다. list는 최대 200개의
   상대 regular-file 후보와 byte size만, read는 최대 16,000자의 UTF-8 chunk·full-file SHA-256·offset을
   반환한다. create는 `expectedSha256: null`일 때 대상이 없어야 하고, replace는 직전 read에서 받은
   SHA-256과 기존 file이 일치해야 한다. 승인 UI는 action, relative path, expected/new hash와
   create/replace의 exact content를 표시한다. file create/replace 승인과 그 파일을 사용하는 command 실행
-  승인은 결합하지 않으며 각각 별도의 fresh `Allow once` request다.
+  승인은 결합하지 않는다. 기본 mode에서는 각각 별도의 fresh `Allow once` request이고 trusted mode에서도
+  서로 다른 operation과 command hash audit로 남는다.
 - file broker의 Python program은 app에 고정된 source이며 `/usr/bin/python3 -I -S -c`로만 실행한다.
   모델 가변 데이터는 최대 64 KiB strict JSON stdin으로만 전달되고 command argv나 interpreter code가
   되지 않는다. remote helper는 root와 working directory의 `realpath`를 다시 확인하고 directory file
@@ -570,9 +590,11 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   종료를 보증하지 않는다. 장기·무인 workload와 hard confinement는 Runner가 소유해야 한다.
 - raw remote stdout/stderr는 Main memory에서 bounded·cropped `untrusted_remote_output` tool result로 Codex에
   전달한 뒤 폐기하며 SQLCipher, Hosted Sync, outbox와 telemetry에 저장하지 않는다. 모델이 그 결과를
-  visible answer에 요약하면 그 문장만 일반 대화 보존 정책을 따른다. approval request·allowed/denied/
-  expired/cancelled event, command binding과 outcome metadata도 현재 app process와 turn 수명의 ephemeral
-  상태이며 durable append-only audit가 아니다. connection label 자체도 tenant secret으로 사용하지 않는다.
+  visible answer에 요약하면 그 문장만 일반 대화 보존 정책을 따른다. 기본 Allow-once approval
+  request·allowed/denied/expired/cancelled event와 outcome은 현재 app process와 turn 수명의 ephemeral
+  상태다. trusted auto-execution만 transport 시작 전에 project/grant/connection/policy/turn/tool-call,
+  operation과 command SHA-256을 local append-only audit에 기록하며 raw preview·output은 기록하지 않는다.
+  connection label 자체도 tenant secret으로 사용하지 않는다.
 
 ### Project-scoped Obsidian Research Notes 경계
 
@@ -596,8 +618,31 @@ Vault ID가 모두 일치할 때만 다음 기본 구조를 생성하거나 읽�
 기존 사용자 folder가 같은 이름을 쓰면 덮어쓰지 않고 project ID prefix가 붙은 독립 folder를 최초
 할당한다. symlink, root escape, marker 변경, file/directory 충돌과 과도하게 큰 managed file은 fail
 closed한다. 일반 Vault content는 계속 read-only이며 GOSU write 권한은 ownership marker가 있는 project
-root의 초기 template, 고정 Literature projection, 사용자가 명시적으로 만드는 paper note에만 있다.
-generic path write/delete/rename IPC는 Renderer에 제공하지 않는다.
+root의 초기 template, 고정 Literature projection, 사용자가 명시적으로 만드는 paper note와 승인된
+Project Chat의 category-scoped create-only Markdown artifact에만 있다. Renderer에는 generic path
+write/delete/rename IPC를 제공하지 않는다.
+
+Project Chat의 required structured final response는 `researchNote`를 `none` 또는 단일 `save` payload로
+선언한다. `save`는 상대·절대 path 없이 고정 category, title과 Markdown body만 포함하며 terminal에서
+모든 model tool intake를 먼저 닫은 뒤 Main이 직접 저장한다. Main은 category를 `Literature`, `Papers`, `Experiments`, `Project Progress`,
+`Idea Development` 중 하나로 매핑하고 NFKC·control/separator·UTF-8 byte 제한을 적용한 file stem과
+project/binding/attempt의 deterministic 16-hex artifact suffix를 만든다. write는 exclusive create이고
+동일 terminal persistence retry는 생성 path와 bytes가 정확히 같을 때만 idempotent success다. 기존 user note와 managed
+projection은 교체하지 않는다. active project, binding, Vault identity와 ownership marker를 write 직전과
+receipt 확정 전에 다시 확인하며 exact target을 symlink-safe Vault adapter로 다시 읽어 proposed bytes와
+비교한다. write 이후 project·binding·grant·ownership 또는 target 확인이 실패하면 성공으로 가장하지 않고
+`commit uncertain`으로 남겨 사용자가 Research Notes를 확인하게 한다.
+
+Main은 write 시작 전에 Markdown body나 Vault root 없이 project·session·attempt·binding·category,
+deterministic artifact ID와 expected content SHA-256을 SQLCipher receipt journal에 `staged`로 기록한다.
+10초의 bounded terminal wait에서 확정되지 않으면 `uncertain`과 server-owned pending appendix를 남기며
+경로를 주장하지 않는다. exact path와 bytes가 확인되면 `committed-unreported`에서 assistant message와 같은
+transaction으로 상대 경로를 append한 뒤 `reported`가 된다. 앱 시작과 사용자가 Vault를 다시 선택해
+project binding이 ready가 된 직후 `staged|uncertain` receipt를 artifact suffix와 exact hash로 재검증한다.
+연결된 folder가 실제로 사용 가능하지만 artifact가 없으면 pending 문구를 `abandoned` not-saved receipt로
+원자 교체한다. 같은 process의 늦은 exact-byte 성공은 `abandoned`를 다시 promote해 not-saved 문구를 지우고
+성공 경로를 정확히 한 번 붙일 수 있다. Vault offline·stale binding·hash mismatch는 absence로 오인하지 않고
+다음 reconciliation을 위해 `uncertain`에 남긴다.
 
 Literature의 authoritative source는 project별 SQLCipher table이다. 검색·import·manual review·AI metadata
 정리가 commit된 뒤 `Literature Review.md`를 deterministic sort와 source digest로 다시 만든다. 이 파일은
@@ -615,10 +660,15 @@ marker와 display root를 갱신한다. Vault offline, destination collision, so
 Trash는 Obsidian file을 삭제하지 않는다. 같은 Vault를 다시 선택해도 기존 binding과 충돌 회피 suffix를
 재사용하고, macOS에서 이름의 대소문자만 바꾸는 rename도 같은 directory identity를 확인해 처리한다.
 
-Project Chat grant는 Vault 전체 ID가 아니라 active project의 `bindingId`에 묶인다. Main은 매 turn 전에
-project·binding·Vault root identity·ownership marker를 다시 확인한다. 목록은 project-relative Markdown의
-opaque ID와 title만, 읽기는 bounded excerpt만 반환한다. 다른 project, 일반 Vault content, absolute path와
-managed tool payload는 노출하지 않는다.
+Project Chat grant는 Vault 전체 ID가 아니라 active project의 `bindingId`에 묶인다. read grant와
+`allowAgentMarkdownCreate` capability는 분리하며 기존·legacy grant의 capability 부재는 명시적으로 false다.
+Main은 매 turn 전에 project·binding·Vault root identity·ownership marker를 다시 확인한다. 목록은
+project-relative Markdown의 opaque ID와 title만, 읽기는 bounded excerpt만 반환한다. reusable Markdown
+deliverable은 ordinary short reply·clarification·raw log·중복 Literature projection을 제외하고 별도 저장
+지시 없이 structured final response의 단일 create payload로 제출한다. 성공 receipt는 relative path와
+content SHA-256만 반환하고 Main이 terminal answer에
+`Research Notes/<relative path>`를 append하므로 모델이 위치를 빼먹어도 사용자에게 보인다. 다른 project,
+일반 Vault content, absolute path와 managed tool payload는 노출하지 않는다.
 
 이 결정의 배경, 대안과 rollback 경계는
 [`ADR 0002`](adr/0002-project-scoped-obsidian-research-notes.md)에 고정한다.
@@ -778,20 +828,23 @@ metadata를 찾고, 결과를 해당 프로젝트의 암호화 SQLCipher evidenc
 출판 연도 범위뿐 아니라 이번 검색을 분류하는 `Topic tags`와 `Keyword tags`를 typed command로 보내며
 한 번에 최대 50건을 저장한다. 두 태그 입력이 모두 비어 있으면 정규화한 검색어 하나를 Topic tag로
 사용해 출처 없는 행이 생기는 것을 줄인다. 이 태그는 provider subject, 사람이 편집하는 topic, AI가 제안한
-topic과 별도 provenance다. Main process의
-`BalancedLiteratureProvider` port가 Semantic Scholar를 우선 사용한다. 그 provider가 실패하거나 유효한
-후보를 만들지 못하면 Crossref의 세 검색 lane으로 자동 degrade하고, 결과가 요청 수보다 적거나
-citation·recent 정렬 lane이 빠지면 Crossref pool을 보강 조회해 두 provider 후보를 dedupe한 뒤 한 번 더
-공통 ranking한다. 보강 조회도 실패하면 이미 얻은 Semantic Scholar 결과는 버리지 않고 typed
-degradation reason과 함께 반환한다. 이 fallback·supplement는 저장된 table, 수동 review와 다른 프로젝트
-기능을 막지 않는다. 검색 run에는 `semantic-scholar / crossref / combined` 중 실제 source와 사용할 수 있었던
-`relevance / citation-authority / recent-momentum / author-impact` signal, 실패한 provider·lane의 typed
-degradation reason을 함께 기록한다. 따라서 citation·recent·author lookup 일부가 실패한 검색을 완전한
-balanced search처럼 표시하거나 Project Chat이 숨길 수 없다.
+topic과 별도 provenance다. Main process의 `BalancedLiteratureProvider` port는 Semantic Scholar의
+authority-aware 세 lane과 Hugging Face Papers의 additive 검색을 병렬로 시작한다. Hugging Face 결과는
+arXiv paper의 추가 recall만 제공하며 Semantic Scholar 자체의 유효 결과 수와 citation·recent lane 상태를
+대신하지 않는다. Semantic Scholar가 실패하거나 유효 후보를 만들지 못하면 Crossref의 세 검색 lane으로
+자동 degrade하고, Semantic Scholar 결과가 요청 수보다 적거나 citation·recent 정렬 lane이 빠지면
+Hugging Face가 화면 수를 채웠더라도 Crossref pool을 보강 조회한다. 세 source 후보는 canonical arXiv
+identity·DOI·fingerprint로 중복을 줄인 뒤 공통 ranking한다. 보강 조회도 실패하면 이미 얻은 Semantic
+Scholar·Hugging Face 결과는 버리지 않고 typed degradation reason과 함께 반환한다. 이
+fallback·supplement는 저장된 table, 수동 review와 다른 프로젝트 기능을 막지 않는다. 검색 run에는
+`semantic-scholar / crossref / hugging-face / combined` 중 실제 source와 사용할 수 있었던
+`relevance / citation-authority / recent-momentum / author-impact / hugging-face-index` signal, 실패한
+provider·lane의 typed degradation reason을 함께 기록한다. 따라서 citation·recent·author lookup 또는
+Hugging Face 일부가 실패한 검색을 완전한 balanced search처럼 표시하거나 Project Chat이 숨길 수 없다.
 
 Semantic Scholar adapter는 고정 `https://api.semanticscholar.org` origin에서 관련성 검색, citation count
 내림차순 bulk 검색, 최근 4년의 publication date 내림차순 bulk 검색을 각각 수행한다. 각 lane은 정규화된
-상위 100건만 ranking input으로 채택하고 DOI 또는 provider ID로 먼저 중복을 제거한다. paper metadata에서
+상위 100건만 ranking input으로 채택하고 canonical arXiv ID, DOI 또는 provider ID로 먼저 중복을 제거한다. paper metadata에서
 title, author ID·표시명, venue, year·publication date, field, publication type, citation count,
 influential citation count와 HTTPS URL만 가져오며 abstract와 full text는 요청·저장하지 않는다. 후보
 paper는 세 lane을 번갈아 합치고 최대 30,000개 외부 author ID만 선형 시간으로 검사한다. first·last·other
@@ -804,6 +857,14 @@ timeout, 6 MB response 한도,
 credential이며 Hosted Sync, SQLCipher, event, Git과 Renderer에 전달하지 않는다. key가 없어도 공개
 endpoint를 시도하지만 공유 rate limit 때문에 Crossref fallback이 더 자주 사용될 수 있다.
 
+Hugging Face adapter는 고정 `https://huggingface.co/api/papers/search` endpoint만 사용하고 query 250자,
+상위 100건, 요청별 12초 timeout과 6 MB streaming response 한도를 적용한다. 응답에서는 검증 가능한
+modern·legacy arXiv ID, title, author, publication year와 HTTPS paper URL만 정규화하며 highlighted summary,
+abstract·full text, comment와 raw response는 저장하지 않는다. API의 upvote 값도 현재 policy-v3 ranking,
+SQLCipher 또는 provenance에 사용하지 않는다. Hugging Face 후보는 citation·influential-citation 근거가
+없으므로 자체적으로 Core·Rising 자격을 만들지 않고 Broad recall에만 기여한다. provider 실패는
+`hugging-face-unavailable` degradation으로 격리하며 Semantic Scholar·Crossref 검색을 막지 않는다.
+
 Crossref fallback과 supplement도 단일 relevance 결과를 그대로 저장하지 않는다. 고정
 `https://api.crossref.org/v1/works`에서 relevance, `is-referenced-by-count` 내림차순, 최근 출판일
 내림차순 lane을 구성해 같은 local ranker에 넣는다. 응답은 title, author, journal·venue, year, subject,
@@ -812,14 +873,15 @@ DOI, work type, citation count와 HTTPS source URL allowlist로 즉시 정규화
 간격과 15초 timeout, 4 MB response 한도를 사용한다. `GOSU_CROSSREF_MAILTO`와
 `GOSU_CROSSREF_USER_AGENT`는 polite-pool 식별용 선택 설정이며 credential이 아니다.
 
-정규화된 연구 paper 후보는 policy v2에서 다음 세 layer로 한 번만 배정된다. 최대 결과 수 기준
+정규화된 연구 paper 후보는 policy v3에서 다음 세 layer로 한 번만 배정된다. 최대 결과 수 기준
 `Core 40% / Rising 30%`는 강제 quota가 아니라 각각의 최대 상한이다. Core·Rising 자격 후보가 부족하면
 빈자리를 약한 후보로 채우지 않고 Broad로 넘긴다. 이 때문에 실제 layer count는 검색마다 달라질 수 있고,
 모든 후보가 gate를 통과하지 못하면 `Core 0 / Rising 0`도 정상 결과다. Core 상한의 약 25%(Core target이
 있으면 최대 1건 이상)는 citation 정렬 lane에 실제로 나타나고, 최소 citation impact 기준을 넘으며, 출판 후
 5년 이상 지난 고전 후보에만 예약한다.
 
-- **Core & canonical**: year·author와 DOI/provider ID가 있는 연구 후보 중 relevance lane에 실제로
+- **Core & canonical**: year·author와 DOI, provider ID 또는 canonical arXiv ID가 있는 연구 후보 중
+  relevance lane에 실제로
   나타나고 그 검색 결과 안의 정규화 rank score가 0.55 이상이며, 최소 50 citation 또는 10 influential
   citation을 가진 high-impact relevant paper만 일반 Core 후보가 된다. relevance 밖의 canonical reserve는
   같은 impact floor, citation lane과 5년 이상의 age를 모두 요구한다.
@@ -858,7 +920,7 @@ fail-closed하며 Broad에 명시적인 reason을 저장한다.
 Main-process gate는 PDF·Research Notes·web
 content 안의 prompt injection이 뒤늦게 write capability를 만들지 못하게 한다. legacy reviewer에도
 mutation tool을 주지 않는다. model argument에는 project ID가 없고 Main closure가 active project를
-주입·재검증한다. tool은 Renderer와 동일한 `LiteratureService`와 고정 3-layer policy를 호출하므로
+주입·재검증한다. tool은 Renderer와 동일한 `LiteratureService`와 고정 policy-v3 3-layer 규칙을 호출하므로
 대화로 검색해도 Core·Rising·Broad 선별, strong identity dedupe와 additive merge를 우회하거나 임의
 weight·유명인 목록으로 바꿀 수 없다. tool argument의 짧은 Topic·Keyword tag도 같은 typed command로
 전달되며 긴 질문이나 provider metadata에서 임의 tag를 꾸며내지 않는다. 삭제와 사람 annotation 수정도
@@ -867,7 +929,8 @@ weight·유명인 목록으로 바꿀 수 없다. tool argument의 짧은 Topic�
 Codex에는 `runId`, query, 그 run에 실제 적용된 Topic·Keyword tag, provider·policy ID/version, 실제 signal coverage·degradation reason,
 retrieved/selected count, 세 layer count와
 found/new/updated/unchanged/conflict count만 metadata-only receipt로 반환한다. 충돌이 있을 때만 사람이
-식별할 수 있도록 앞의 최대 3개 후보의 ordinal·title·DOI·provider record ID와 생략 개수를 제한적으로
+식별할 수 있도록 앞의 최대 3개 후보의 ordinal·title·DOI·canonical arXiv ID·provider record ID와 생략
+개수를 제한적으로
 함께 반환하며, 정상 paper 목록·author·ranking signal·abstract와 raw provider payload는 보내지 않는다.
 lane failure가 있어도 citation count나 publication year metadata로 관련 signal을 일부 계산할 수 있으므로
 Project Chat은 실패한 provider·정렬 lane과 남아 있던 signal을 구분해 보고한다. cancel signal은
@@ -888,9 +951,9 @@ discovery summary만 별도로 둔다. 따라서 다음 continual search가 같�
 과거 run의 판정은 덮어쓰지 않는다. Evidence table의 기본 importance 정렬은 서로 다른 query에서 나온
 상대 score를 숫자로 비교하지 않는다. `classifiedAt`이 최신인 검색을 먼저 두고, 같은 run 안에서만
 Core→Rising→Broad와 tier rank를 비교한다. UI도 score를 `within search`로 표시하고 각 paper의 Core gate
-통과·실패 이유와 exact v2 threshold를 보여 준다. v1 결과를 조용히 재작성하지 않고 legacy label로 표시하며,
-같은 검색을 다시 실행하면 matching record의 current summary만 v2로 갱신되고 과거 hit provenance는
-보존된다. Core card는 현재 v2 통과 수와 legacy/other-policy 수를 분리해 오래된 citation 0 Core label을 현재
+통과·실패 이유와 exact v3 threshold를 보여 준다. v1·v2 결과를 조용히 재작성하지 않고 legacy label로 표시하며,
+같은 검색을 다시 실행하면 matching record의 current summary만 v3로 갱신되고 과거 hit provenance는
+보존된다. Core card는 현재 v3 통과 수와 legacy/other-policy 수를 분리해 오래된 citation 0 Core label을 현재
 기준 통과처럼 보이지 않게 한다. `Total` quick filter는 Core·Rising·Broad와 import된 `unclassified`를 한
 table에서 함께 보여 주며 DB tier enum에는 추가하지 않는다. import paper는 새 search에서 매칭되기 전까지
 `unclassified`로 남는다.
@@ -903,14 +966,23 @@ Topic·Keyword·Untagged를 구분하고 상세 화면도 Search tags, Manual re
 Source keywords를 서로 다른 영역으로 보여 준다. 자동 background scheduler는 아직
 없으므로 continual review는 사용자가 같은 검색이나 새 검색을 다시 실행할 때 additive merge하는
 형태다. active evidence table은 프로젝트당 500건으로 제한하고 검색·import가 한도를 넘으면 일부만
-반영하지 않고 transaction 전체를 거절한다. normalized DOI와 같은 provider의 record ID만 strong
-identity다. `title + 첫 저자 + 연도` metadata fingerprint는 DOI와 provider ID가 모두 없는 record의 weak
-fallback이며, 서로 다른 strong identity가 같은 fingerprint를 공유하는 것은 허용한다. 따라서 동일 제목의
-서로 다른 DOI version이나 supplementary component를 자동 병합하지 않는다. strong candidate는 DOI 또는
-provider ID로 먼저 찾고, strong match가 없을 때 fingerprint가 가리키는 유일한 weak-only record만
-enrichment할 수 있다. weak candidate가 여러 strong record와 같은 fingerprint를 공유하면 임의 병합 없이
-identity conflict다. legacy global fingerprint unique index는 weak-only partial unique index와 non-unique
-lookup index로 local migration한다. schema-v1 search run·receipt의 새 `conflictCount`는 legacy payload를
+반영하지 않고 transaction 전체를 거절한다. normalized DOI, 같은 provider의 record ID와 canonical arXiv
+ID가 strong identity다. arXiv identity는 `arxiv:` prefix·공식 abs/pdf URL·`.pdf`·version suffix를 제거하고
+modern 또는 legacy ID 문법을 통과한 뒤 소문자 `arxiv:<id>`로 고정한다. Semantic Scholar의
+`externalIds.ArXiv`와 Hugging Face paper ID가 이 identity를 공유하므로 title·author formatting과
+fingerprint가 달라도 같은 project record를 찾는다. `title + 첫 저자 + 연도` metadata fingerprint는 DOI,
+provider ID와 canonical ID가 모두 없는 record의 weak fallback이며, 서로 다른 strong identity가 같은
+fingerprint를 공유하는 것은 허용한다. 따라서 동일 제목의 서로 다른 DOI version이나 supplementary
+component를 자동 병합하지 않는다. strong candidate는 DOI·canonical ID·provider ID를 각각 조회하고 둘
+이상이 서로 다른 저장 record를 가리키거나 기존 strong identity와 모순되면 임의 merge 없이 identity
+conflict다. strong match가 없을 때 fingerprint가 가리키는 유일한 weak-only record만 enrichment할 수 있고,
+weak candidate가 strong record와 fingerprint를 공유해도 임의 병합하지 않는다. source 우선순위는
+`import < hugging-face < crossref < semantic-scholar`이며 낮은 source refresh가 높은 source identity를
+되돌리지 않는다. legacy migration은 record와 conflict table에 nullable `canonical_id`를 추가하고,
+unambiguous Hugging Face provider ID를 backfill하며 project별 canonical partial unique index를 만든다.
+기존 row·annotation·conflict를 보존하고 이미 충돌하는 identity를 migration에서 자동 합치지 않는다.
+weak fingerprint partial unique index도 DOI·provider ID·canonical ID가 모두 null인 row에만 적용하고 별도
+non-unique lookup index를 유지한다. schema-v1 search run·receipt의 새 `conflictCount`는 legacy payload를
 읽을 때 `0`으로 default하고, SQL migration도 기존 search row에 `conflict_count=0`을 채운다.
 Semantic Scholar가 DOI·paper ID는 확인했지만 author·venue·year·topic 같은 optional metadata를 비워서
 보내는 경우에도 이미 저장된 풍부한 값을 null이나 빈 배열로 지우지 않는다. 실제 metadata가 바뀌면 보존한
@@ -920,6 +992,10 @@ field를 포함해 fingerprint를 다시 계산하고 stale AI draft를 무효�
 한쪽 metadata를 버리지 않는다. Semantic Scholar identity를 유지하면서 더 풍부한 title·author·venue·topic,
 알려진 출판 연도, 최대 citation count와 HTTPS source를 deterministic하게 합치고 새 fingerprint를 만든 뒤
 ranking과 저장에 사용한다.
+같은 canonical arXiv ID가 Hugging Face와 Semantic Scholar에서 발견되면 검색 순서나 metadata fingerprint가
+달라도 한 record로 갱신한다. Semantic Scholar source로 승격할 때 그 응답이 생략한 기존 author·venue·year·
+topic·citation·URL은 null이나 빈 배열로 지우지 않는다. 반대로 이후 낮은 우선순위의 Hugging Face refresh가
+Semantic Scholar identity와 citation metadata를 되돌리지 않는다.
 
 Evidence table은 page 전체를 밀어내는 unbounded grid item이 아니라 keyboard-focusable한 bounded scroll
 region이다. workspace와 library card는 명시적인 `minmax(0, 1fr)` grid column을 사용해 1,420px table의
@@ -933,10 +1009,10 @@ overscroll만 table 안에 가두고 세로 overscroll은 바깥 page로 전달�
 detail로 계속 이동할 수 있다. 이 계약은 좁은 창, 접힌 sidebar와 Extra Large 글자 크기에서도 넓은 column이
 잘리거나 wheel 입력이 사라지지 않게 유지한다.
 
-검색 batch는 후보별 savepoint를 사용한다. DOI와 provider ID가 서로 다른 기존 row를 가리키는 진짜
+검색 batch는 후보별 savepoint를 사용한다. DOI, canonical arXiv ID와 provider ID가 서로 다른 기존 row를 가리키는 진짜
 identity conflict는 그 후보만 rollback하고 `conflict_count`를 검색 이력과 receipt에 남기며, 나머지 안전한
 후보는 계속 저장한다. `literature_search_conflicts`에는 raw response 대신 ordinal, normalized title·author,
-DOI·provider ID·fingerprint·year만 local SQLCipher에 저장한다. 즉시 notice와 recent search tooltip에서 최대
+DOI·canonical ID·provider ID·fingerprint·year만 local SQLCipher에 저장한다. 즉시 notice와 recent search tooltip에서 최대
 3개 식별자와 생략 개수를 보여 주므로 어떤 후보가 보류됐는지 확인할 수 있고, run list와 Project Chat
 tool payload도 같은 3개 preview 상한을 적용해 이미 commit된 검색이 응답 크기 때문에 실패한 것처럼
 보이지 않게 한다. 자동 merge는 하지 않는다. 반면 record
@@ -1184,11 +1260,11 @@ flowchart LR
   Codex["isolated Codex App Server\nstructured final response"]
   Vault["project Research Notes\nopaque IDs·bounded chunks"]
   Attachments["ephemeral turn attachments\nopaque IDs·bounded units·normalized images"]
-  Literature["LiteratureService\n3-layer discovery·additive merge"]
+  Literature["LiteratureService\npolicy-v3·HF additive discovery"]
   LiteratureDB["Literature SQLCipher tables"]
   Web["Codex first-party web search\ncached/live"]
-  SSH["SSH broker\nalias/direct target·workspace grant·Allow once"]
-  ChatDB["SQLCipher chat tables\nsessions·visible messages·attempts·receipts"]
+  SSH["SSH broker\nworkspace grant·Allow once/trusted audit"]
+  ChatDB["SQLCipher chat tables\nsessions·messages·attempts·queue·receipts"]
   Approval["Apply action\nclaim→workspace command"]
   Workspace["WorkspaceService\nversion·project validation"]
 
@@ -1333,21 +1409,24 @@ flowchart LR
   truncation 여부를 attempt provenance assembly v3와 attempt row에 기록한다. 이전 assembly v1·v2
   provenance는 계속 읽을 수 있다.
 - 기존 reviewer profile은 migration 호환 경로에서만 조언 전용으로 유지한다. 모델이 구조화 action을
-  반환하더라도 service가 `actions=[]`로 강제한다. 사용자가 새 native mode를 명시하면 legacy reviewer를
+  반환하더라도 service가 `actions=[]`로 강제하고 `researchNote` create도 거부한다. reviewer prompt는
+  `researchNote: none`을 요구하며 위반 시 server-owned not-saved receipt를 남긴다. 사용자가 새 native mode를 명시하면 legacy reviewer를
   벗어난다. native mode를 포함한 모든 turn은 동일한 read-only·no-shell·no-browser·no-subagent 경계를
   사용하고, profile의 Codex first-party web search mode만 general network 금지의 좁은 예외다. GOSU typed
-  project tool과 별도 `Allow once`를 요구하는 Main-process SSH broker도 명시적 capability 예외이며, SSH
+  project tool과 기본 `Allow once` 또는 exact trusted audit를 요구하는 Main-process SSH broker도 명시적
+  capability 예외이며, SSH
   실행이 Codex child 자체에 shell·network 권한을 부여하지는 않는다. web search는 dynamic tool이 아니라
   `thread/start.config.web_search` 설정이다.
 - 현재 `gosu_project` namespace는 항상 `read_workspace`, SSH workspace list/resource-read,
   workspace-mode file list/read/write와 command run을 제공한다. explicit
   literature-search command가 있는 non-legacy turn에는 `search_literature`, 승인된 Vault가 있으면
   `list_local_notes`·`read_local_note`, 현재 turn 연구 파일이 첨부됐으면 `list_turn_attachments`·
-  `read_turn_attachment_text`가 추가된다. legacy reviewer에는 Literature mutation tool이 없다.
+  `read_turn_attachment_text`가 추가된다. legacy reviewer에는 Literature mutation tool이 없다. Research Notes
+  create는 dynamic tool catalog에 없고 required structured final response를 검증한 Main만 수행한다.
   `read_workspace`는 active project ID를 handler closure에 묶어 Board와 최신 Objective만 반환하며
   모델 argument로 project ID를 받지 않는다. repository는 credential·URL·SSH 주소를 제외한 canonical
-  `owner/repository` label만 agent context에 포함한다. Research Notes tool은 profile grant가 현재 project binding과
-  일치할 때만 catalog에 나타난다. list는 opaque note ID와 display title만 반환하고 read는 호출당
+  `owner/repository` label만 agent context에 포함한다. Research Notes list/read tool은 profile의 read grant가
+  현재 project binding과 일치할 때만 catalog에 나타난다. list는 opaque note ID와 display title만 반환하고 read는 호출당
   24,000자, ephemeral turn당 합계 96,000자로 제한한다. attachment text read는 호출당 8 unit·24,000자와
   turn당 60,000자다. 동시 호출은 read 전에 budget을 reserve하고 모든 tool 결과는 직렬화 후 48,000자
   안으로 축약한다. note/attachment/web text와 image·tool result는 untrusted evidence이며 그 안의 지시를
@@ -1365,21 +1444,22 @@ flowchart LR
   검증하며 absolute executable, relative workspace subdirectory와 mode별 inspect/test/build/experiment allowlist를
   적용한다. raw shell·inline interpreter eval, privilege escalation, nested transport·transfer, TTY·forwarding과
   unattended execution은 approval UI 전에 fail closed한다.
-- approval center는 viewport 중앙의 blocking alert dialog로 actual target, ROOT/HIGH RISK, connection label,
+- 기본 Allow-once approval center는 viewport 중앙의 blocking alert dialog로 actual target, ROOT/HIGH RISK, connection label,
   project/session, workspace root/cwd, operation class와 exact remote preview를 표시한다. request queue에서는
   한 번에 하나만 보여 주며 긴 preview만 독립적으로 scroll하고 sticky action bar의 `Allow once`·Deny와
   live countdown은 계속 보인다. dialog가 열리면 같은 Renderer의 background workspace control은 inert가
   되고 keyboard focus를 dialog 안에 가두며, Escape는 Deny로 처리하고 초기 focus도 Deny에 둔다. 닫힐
   때는 dialog 전에 focus된 control로 scroll 이동 없이 focus를 복원한다. 기본
-  decision window는 5분이다. 전체 pending 16개·turn당 4개, 전체 active
+  decision window는 5분이다. 전체 pending 16개·turn당 4개, 전체 active와 trusted reservation을 합쳐
   4개·turn당 1개다. Renderer가 event를 놓치거나 Project Chat이 remount돼도 exact project+session을 받는
   pending-query IPC가 Main의 동일 request를 hydrate한다. query는 다른 project/session request를 반환하지
   않으며 이미 resolve된 ID의 bounded in-memory tombstone을 확인해 stale response가 allowed·denied·expired·
   cancelled dialog를 되살리지 못하게 한다. event 자체도 tombstone을 지우지 않으며 현재 visible
   project+session과 일치하지 않는 새 request는 UI에 넣지 않고 exact approval ID만 Deny한다. pending
   request의 authoritative state는 Main-process memory에 있고 presentation queue·countdown·resolved-ID
-  tombstone은 Renderer의 volatile state/ref에 있다. 어느 쪽도 SQLCipher·Hosted Sync·outbox·telemetry에
-  persist 또는 sync하지 않는다. turn
+  tombstone은 Renderer의 volatile state/ref에 있다. 이 Allow-once 상태는 SQLCipher·Hosted
+  Sync·outbox·telemetry에 persist 또는 sync하지 않는다. trusted path는 dialog state를 만들지 않고 실행 전
+  bounded append-only audit만 별도로 저장한다. turn
   terminal/cancel, connection 삭제와 앱 종료는 pending 요청을 거절하고 active local
   SSH transport를 abort한다. 화면에서 project/session을 벗어나면 strict project/session payload만 받는
   cancellation-only `gosu:ssh:cancel-scope` IPC와 Project Chat revoke IPC가 Main의 pending·active transport와
@@ -1399,7 +1479,8 @@ flowchart LR
   live SSH capability와 transport를 동기적으로 폐기한다. Renderer는 `turn.started` 전 startup 동안 Stop을
   표시하지 않고 project busy 상태만 보여 준다. timeout·output cap·transport failure는 typed error로 끝나 다른
   Project Chat capability를 중단시키지 않지만, local abort 뒤 remote process 종료는 보증하지 않는다.
-  approval event·binding·outcome은 현재 memory-only라 restart 후 감사 원본으로 쓸 수 없다.
+  Allow-once event·binding·outcome은 memory-only라 restart 후 감사 원본으로 쓸 수 없고, trusted audit도
+  raw output이나 remote process completion 증명이 아니라 auto-approval intent metadata다.
 - agent가 실제로 읽은 note·attachment text와 App Server가 받아들인 native image는 성공·invalid
   response·중단·실패·turn 등록 실패를 포함한 모든 terminal assistant receipt 끝에 sanitized title 또는
   opaque attachment label, opaque ID prefix, content/source SHA-256, unit range와 excerpt 여부를 남긴다.
@@ -1412,20 +1493,52 @@ flowchart LR
   result를 Codex로 보내거나 receipt를 뒤늦게 변경할 수 없다. source identity는
   `note ID + content SHA-256` pair이므로 같은 note의 서로 다른 content version을 한 turn에서 읽어도 각각
   보존하고, 동일 version의 여러 excerpt만 하나의 source entry로 합친다.
+- completed Project Chat의 valid structured response가 `researchNote: save`를 선언하면 service는 먼저 모든
+  App Server dynamic-tool intake와 SSH/Literature/attachment capability를 동기적으로 닫는다. 그 다음 explicit
+  `allowAgentMarkdownCreate` capability, active project와 binding을 확인하고 Main-owned create-only writer를
+  직접 await한다. 모델은 이 후속 write 결과를 관찰하거나 저장 성공·경로를 주장할 수 없다. Main은
+  `artifact ID + relative path + content SHA-256` receipt로 결과를 기억하고 terminal assistant message에
+  `Research Notes saved`와 정확한 project-relative path를 server-owned appendix로 붙이고 raw Markdown body와
+  Vault root는 넣지 않는다. authorization·stale binding·folder conflict·commit uncertainty는 별도의
+  `Research Notes not saved` 또는 unconfirmed 안내로 남긴다. 한 completed turn은 최대 하나의 28,000자
+  artifact만 선언할 수 있고 ordinary transient reply는 required `researchNote: none`을 사용한다. invalid,
+  interrupted, failed turn은 structured payload를 저장하지 않는다. 이 create-only write는 사용자가 project
+  profile에 별도로 준 Markdown-create capability와 이 기본 정책이 승인한 제한적
+  local effect이며 일반 Board action의 Apply gate나 generic filesystem write 권한으로 확장되지 않는다.
+- create 전 SQLCipher receipt journal은 expected hash를 `staged`로 고정한다. bounded wait 안에 exact
+  write/read-back이 확인되면 `committed-unreported → reported`, 시간 안에 확정하지 못하면 `uncertain`으로
+  전이한다. restart와 Vault reconnect reconciliation에서 verified-missing은 `abandoned`로 원자 정산하고,
+  offline·stale binding·hash mismatch는 `uncertain`에 남긴다. assistant receipt와 상태 전이는 같은
+  transaction이며 late exact success가 있으면 `abandoned → committed-unreported → reported`로 promote해
+  not-saved 문구를 제거하고 검증된 path를 한 번만 append한다. Markdown body·absolute Vault path는
+  journal에 없다.
 - tool access는 UI section 자체나 database table 접근이 아니라 module capability다. 현재 구현된
-  Board·Goal & Metrics·승인된 Research Notes, 현재 turn 첨부 연구 파일, 명시적 additive Literature search와
+  Board·Goal & Metrics·승인된 Research Notes list/read, server-owned category-scoped final create, 현재 turn 첨부 연구 파일,
+  명시적 additive Literature search와
   active project에 grant된 SSH workspace의 opaque ID·label·mode, 정규화된 resource snapshot과 승인된
   bounded text file list/read/create/expected-hash-checked atomic replacement만 사용할 수 있다. Literature table 전체를 임의
   조회·수정하는 도구는 없고 search receipt만 돌아온다. SSH host resolution·credential·private-key path·
   remote root, Settings·Project Trash는 list tool에 노출하지 않으며 Experiments·Manuscript·Review·
   References·Lecture는 domain service가 완성되기 전에는 접근 가능한 것처럼 표시하지 않는다. Board
   쓰기는 기존 `task.create`·`task.update` proposal과 사용자 Apply만 사용하고, SSH workspace file
-  operation과 command는 별도의 project grant와 operation별 exact Allow-once broker boundary를 사용한다.
+  operation과 command는 별도의 project grant와 기본 operation별 exact Allow-once 또는 exact trusted
+  binding의 audit-before-execute 경계를 사용한다.
 - 사용자 메시지를 받으면 Codex를 호출하기 전에 attempt와 user message를 한 transaction으로
   `starting` 상태에 기록한다. `turn/start`가 성공하면 실제 thread ID, turn ID, requested·resolved
   model provenance를 포함해 `running`으로 CAS 전이하고, terminal attempt와 assistant receipt도 한
   transaction으로 저장한다. process 재시작 시 남아 있는 `starting`·`running` attempt는
   `application_interrupted`로 바꾸고 정확히 하나의 보이는 중단 receipt를 만든다.
+- 같은 project에 starting/running turn이 있으면 새 send는 message와 model/profile 선택, opaque attachment
+  ID만 `project_chat_queued_turns`에 저장하고 즉시 queued receipt를 반환한다. session당 최대 50개를
+  허용하지만 실행 순서는 session별이 아니라 project-global이며, DB counter가 enqueue transaction에서
+  배정한 unique monotonic `enqueue_sequence`를 사용해 같은 timestamp·UUID 정렬이나 재시작에도 FIFO가
+  바뀌지 않는다. claim은 project에서 `next` priority를 먼저, 같은 priority에서는 sequence 순서로 한 row를
+  `starting`으로 원자 전이한다. `Run now`는 한 row에 `next` priority를 주고 현재 turn을 취소한 뒤
+  시작하며, queued row는 실행 전 edit/remove할 수 있다. 완료된 과거 message edit는 원문을 바꾸지 않고
+  그 지점의 branch draft를 만든다. 앱 시작은 남은 `starting` queue row를 `queued`로 복구하고 모든 queued
+  project를 drain한다. attachment capability가 TTL/restart로 사라졌으면 해당 row를 hot-loop하지 않고
+  user message와 명확한 failed assistant receipt로 원자 정산하고 다음 row를 계속한다. queue DB에는 file
+  body·원본 path가 없다.
 - 실패·중단 attempt는 UI에서 삭제하지 않는다. 사용자는 `Retry this turn`으로 원래 attempt를 명시해
   새 attempt를 만들 수 있고 `retryOfAttemptId`로 lineage를 남긴다. 실패한 partial history는 새 model
   prompt에 완료된 대화처럼 재주입하지 않는다. attempt ID가 없던 이전 버전의 실패 receipt도 바로 앞
@@ -1537,8 +1650,9 @@ flowchart LR
 Project Chat에는 pinned local [Codex App Server](https://learn.chatgpt.com/docs/app-server)의 native
 thread/turn/item agent loop와 dynamic tools를 사용해 active project의 Board·Objective와 명시적으로
 승인한 Research Notes, project-scoped CPU/RAM/GPU snapshot을 읽고, 현재 project에 grant된 OpenSSH
-alias/direct target에 exact Allow-once workspace command를 요청하는 bounded tool loop가 구현되어 있다.
-Workspace mode에서는 최대 120초의 제한된 foreground Python experiment도 같은 승인 경계로 요청할 수
+alias/direct target에 기본 exact Allow-once 또는 exact trusted audit-before-execute workspace command를
+요청하는 bounded tool loop가 구현되어 있다. Workspace mode에서는 최대 120초의 제한된 foreground
+Python experiment도 같은 typed policy와 선택한 승인 경계로 요청할 수
 있다. GOSU가 별도의 planner/reviewer loop를
 재작성하지 않고 Codex가 제공하는
 collaboration mode·reasoning·personality·verbosity를 조합한다.
@@ -1694,8 +1808,10 @@ Runner 설치·복구 connector는 계획 상태다. bounded UTF-8 text file lis
 구현됐지만 interactive editor 또는 arbitrary filesystem API가 아니다. importer에 포함된 loopback `-L`은
 inactive plan일 뿐 tunnel을 열지 않는다. workspace command mode는 concrete executable과
 inspect/test/build/foreground-experiment allowlist만 허용하며 raw shell이 아니다.
-test/build/experiment는 project code를 remote account 권한으로 실행할 수
-있고 lexical root 검사는 sandbox가 아니므로 사용자가 HIGH-RISK `Allow once`를 확인해야 한다. command
+test/build/experiment는 project code를 remote account 권한으로 실행할 수 있고 lexical root 검사는
+sandbox가 아니다. 기본 mode는 HIGH-RISK `Allow once`를 매 operation 확인하며, eligible non-root direct
+target에 사용자가 별도로 켠 trusted mode는 같은 위험·allowlist를 유지한 채 반복 dialog 대신 실행 전
+append-only audit를 사용한다. command
 approval은 argv/cwd만 고정하고 실행 시 읽히는 source file hash를 고정하지 않는다. 명시적 root workspace
 실행은 현재 prototype에서만 HIGH-RISK grant와 Allow-once 뒤 허용하며 hardened production은 non-root
 isolated Runner를 요구한다. 현재 approval dialog도 primary Renderer 안의 trusted UI boundary이며 별도의
@@ -1707,7 +1823,10 @@ OpenSSH transport를 timeout·cancel로 종료해도 연결이 이미 끊어진 
 보증할 수 없으므로 장기 workload는 SSH broker가 아니라 lease·fencing·reconciliation이 있는 Runner를
 사용해야 한다. raw SSH output은 현재 turn memory에만 있고 durable transcript가 아니며, approval request·
 command hash·binding·allowed/denied/expired/cancelled outcome도 해당 app process/turn 수명의 event일 뿐
-append-only audit가 아니다. Connections와 Project Chat의 CPU/RAM/GPU snapshot은 Linux `/proc`와
+append-only audit가 아니다. 이는 기본 Allow-once 경로의 한계이며 trusted auto-execution은 별도 SQLCipher
+append-only table에 exact binding·operation·command SHA-256을 transport 시작 전에 기록한다. 그 audit도
+raw command·output, remote completion 또는 workload lineage 증명은 아니다. Connections와 Project Chat의
+CPU/RAM/GPU snapshot은 Linux `/proc`와
 선택적인 NVIDIA CLI에서 읽은 순간 진단일 뿐 run lineage, 장기 monitoring, GPU accounting, experiment
 metric, budget 근거나 Runner heartbeat가 아니다. sample history는 저장하지 않고 host별 비-NVIDIA
 accelerator와 container 내부 accounting도 현재 보증하지 않는다. Project Chat의 인터넷 기능은 Codex
@@ -1843,7 +1962,12 @@ prompt provenance의 재시작 복원도 확인한다. 이 검사는 native ABI�
 
 Project Agent tool test는 active project 밖의 Board·Objective가 섞이지 않는지, forged project
 argument·credential 포함 repository와 raw path가 차단되는지, grant가 없거나 선택 Vault가 바뀌면 note
-tool이 없거나 실패하는지 검증한다. Research Notes는 opaque ID, 호출당 24,000자·동시 호출을 포함한 turn당
+read tool이 없거나 stale error로 실패하는지 검증한다. structured response test는 required `none|save`,
+28,000자 cap, 모델이 path를 주입할 수 없는 category/title/content schema, explicit create capability,
+fixed folder mapping, deterministic attempt idempotency suffix, create-only collision, cross-project·ownership 차단,
+post-write exact-byte read-back, commit uncertainty와 server-owned relative-path receipt를 검사한다. terminal
+race test는 느린 local write를 기다리는 동안에도 model tool과 SSH capability가 이미 닫혔음을 고정한다.
+Research Notes read는 opaque ID, 호출당 24,000자·동시 호출을 포함한 turn당
 96,000자 budget, high-escaping 직렬화 cap, 큰 Board 축약, tail-only excerpt와 모든 terminal source
 appendix를 검사한다. 자동 appendix에는 본문과 absolute path가 남지 않아야 하지만, 승인된 note를 모델이
 visible answer에 인용한 경우 그 인용문이 durable chat에 저장되는 것도 명시적으로 검증한다. Codex App
@@ -1855,7 +1979,11 @@ transport revoke, write-in-progress 출처의 `delivery unconfirmed`, 같은 not
 보존도 담당한다. Project Chat service test는 project 간 thread ID 충돌이 기존 owner를 덮어쓰지 않는지
 확인한다. result 직렬화 크기와 동시 note budget·큰 Board 축약도 Project Agent tool test가 담당한다.
 SQLCipher smoke는 Research Notes의 legacy `local_notes` grant column이 없던 실제 v0.5 profile schema를 열어 nullable grant로
-migration한 뒤 새 grant를 저장할 수 있는지도 확인한다.
+migration한 뒤 새 grant를 저장할 수 있는지도 확인한다. 기존 grant에는
+`local_notes_allow_agent_markdown_create=0`을 적용해 read-only로 유지하고 새 explicit grant의 true가 재시작
+뒤에도 복원되는지 검증한다. receipt test는 body·absolute path를 저장하지 않는 stage, uncertain timeout,
+commit 뒤 assistant appendix와 `reported`의 원자성, restart recovery, Vault reconnect의 verified-missing
+`abandoned`, offline·stale 상태 보존과 late exact success의 단일 promote를 고정한다.
 
 Project Chat web-search test는 `disabled|cached|live`가 정확한 `thread/start.config.web_search`로 전달되고
 legacy profile은 `cached`로 migration되는지, profile·attempt가 SQLCipher reopen 뒤 mode를 보존하는지,
@@ -1906,7 +2034,10 @@ project의 Notes·Repository에만 bounded document layout class가 적용되는
 Project Chat session test는 legacy single-chat DB가 default session으로 lossless migration되는지,
 root session isolation, completed-message branch prefix와 이후 source history 차단, cross-project·
 cross-session snapshot/cancel/retry/action 거절, duplicate·stale event guard와 project당 단일 active turn을
-검증한다. Renderer test는 session create/select/rename/branch, active session 표시, 다른 session에서
+검증한다. queue test는 같은 timestamp에서도 단조 `enqueue_sequence`가 project 전체 session의 FIFO를
+고정하는지, `next` priority·edit/remove·Run now, startup의 `starting → queued` 복구와 drain, attachment
+expiry를 durable failed user/assistant receipt로 원자 정산한 뒤 다음 row가 진행되는지, message body 외
+file path·bytes가 queue DB에 남지 않는지 검사한다. Renderer test는 session create/select/rename/branch, active session 표시, 다른 session에서
 composer 잠금과 selected-session Stop, 긴 최신 답변의 top anchor, 짧은 답변의 bottom clamp와
 terminal-event/snapshot 순서 경합을 검사한다. scroll helper test는 96px near-bottom 기준, history를 읽는
 중 assistant stream의 viewport 보존·알림, bottom auto-follow, user message와 무변경 snapshot의 no-op을
@@ -1956,7 +2087,9 @@ mode별 concrete executable·inspect/test/build/experiment allowlist, root diagn
 transfer·forwarding 거절, approval exact target/root/mode/command binding·profile/grant revalidation·TTL·capacity·
 Allow once·scope cancel, centered blocking alert·single-request presentation·sticky action/countdown,
 exact project+session pending-query hydration·resolved-ID tombstone·memory-only lifecycle와 navigation cancel,
-450초 outer budget을 고정한다. remote file helper test는 app-owned
+450초 outer budget을 고정한다. trusted test는 non-root standard direct target과 두 단계 consent, exact
+project/grant/connection/root/policy version binding, global·turn reservation, audit-before-run 실패의 fail-closed,
+grant/profile mutation·revoke·cancel·shutdown 뒤 재검사와 append-only update/delete guard를 고정한다. remote file helper test는 app-owned
 Python source와 JSON-only stdin, physical root/no-symlink traversal, secret·binary·oversize 차단,
 bounded list/read, create-only·stale SHA conflict·mode-preserving expected-hash-checked atomic replace·fsync
 receipt와 post-mutation outcome uncertainty 뒤 same-path hash reconciliation 규칙을 검증한다.
@@ -1966,12 +2099,17 @@ service/approval test는 stdin hash, exact file preview, grant/profile 재검증
 허용된 workspace command도 승인 전에는 실행되지
 않으며 navigation·send startup·startup Stop 경합, 실패하거나 지연된 Stop, pending Research Notes delivery가
 있는 terminal turn과 app shutdown이 pending approval과 local transport를 즉시 폐기하는지 확인한다. remote
-process-tree 종료와 durable approval audit는 현재 구현·테스트 보증 밖이다.
+process-tree 종료와 기본 Allow-once request/outcome의 durable audit는 현재 구현·테스트 보증 밖이다. trusted
+auto-execution의 append-only audit는 intent와 command hash를 보존하지만 remote completion 증명은 아니다.
 
 Literature test는 Semantic Scholar fixed origin, relevance·citation·recent lane, year filter, author batch
-bound, API key header, timeout·streaming response size·429 mapping과 raw abstract 제외를 검사한다.
+bound, API key header, timeout·streaming response size·429 mapping과 raw abstract 제외를 검사한다. Hugging
+Face test는 fixed Papers endpoint, modern·legacy arXiv normalization, bounded query/result/year filter,
+timeout·cancel·response size·invalid response, summary 비보존과 additive failure isolation을 검사한다.
 Discovery test는 lane별 성공·실패 coverage, 빈 보강 pool에서도 유지되는 degradation provenance,
-불완전 Semantic Scholar pool의 Crossref 보강·combined rerank, 30,000-ID 선형 bound와 first·last·other
+불완전 Semantic Scholar pool의 Crossref 보강·combined rerank, Hugging Face만 target을 채워도 Semantic
+Scholar 부족분의 Crossref 보강을 생략하지 않는 규칙, canonical arXiv cross-provider dedupe,
+30,000-ID 선형 bound와 first·last·other
 author의 균형 selection·partial coverage를
 검사한다. deterministic rank test는 Core/Rising 최대 상한과 Broad 재분배, citation 0·venue 유무와 무관한
 Core fail-closed, 미래 연도와 불완전 서지 identity 차단, DOI dedupe, junk type 제외, Core 안의 canonical
@@ -1989,12 +2127,14 @@ JSON/CSV/BibTeX deterministic round-trip, DOI·fingerprint·
 citation-key consistency, CSV formula injection 방어, HTTPS URL과 8 MB·500건 한도를 확인한다. service와
 IPC test는 active project authorization, project isolation, strict sender/input, additive merge, rate-limit
 failure isolation, basename-only dialog receipt와 record version conflict를 고정한다. SQLCipher smoke는
-strong DOI/provider 우선 identity와 weak fingerprint fallback, 동일 fingerprint·서로 다른 DOI 보존,
-ambiguous weak import 거절, 후보별 search conflict 격리와 normalized conflict detail·`conflict_count`·index migration,
+strong DOI/provider/canonical arXiv 우선 identity와 weak fingerprint fallback, 동일 fingerprint·서로 다른
+DOI 보존, Hugging Face→Semantic Scholar canonical merge와 provider priority, ambiguous weak import 거절,
+후보별 search conflict 격리와 normalized canonical conflict detail·`conflict_count`·index migration,
 Crossref/import trust merge, sparse Semantic Scholar refresh의 기존 metadata·annotation 보존과 richer refresh의
 stale AI invalidation, manual·AI annotation atomic CAS, soft delete, discovery policy·layer count·coverage·hit
 provenance의 durability, 검색별 typed tag 누적·정규화 idempotence·tag-only AI 보존·conflict/failure 비적용과
-search run restart reconciliation을 실제 Electron ABI close/reopen으로
+search run restart reconciliation, pre-canonical legacy DB의 column/index migration·HF backfill·기존 conflict
+보존을 실제 Electron ABI close/reopen으로
 검증한다. AI test는 최대 50개
 metadata-only prompt, dynamic model·reasoning provenance, manual annotation 비노출, exact record/version
 response와 malformed·hallucinated·stale batch 전체 거절을 검사한다.
@@ -2041,7 +2181,9 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
 - Research Notes 변경: Vault-wide Renderer bridge 부재, strict project/binding IPC, root·project ownership
   identity, path traversal·ancestor/project-root symlink·foreign marker·managed-file collision·크기 제한,
   project isolation, default folder/template idempotency, deterministic Literature projection, one-time
-  user-owned paper note, rename success·collision `rename-pending`, stale project 전환 응답 폐기
+  user-owned paper note, category-scoped agent artifact의 path 비노출·create-only·retry idempotency·저장 위치
+  receipt·`staged|uncertain|committed-unreported|reported|abandoned` reconciliation·commit uncertainty,
+  rename success·collision `rename-pending`, stale project 전환 응답 폐기
 - Project lifecycle 변경: Active/Archived/Trash의 중복 없는 분류, archive/unarchive stale version,
   archived mutation·chat·agent tool 차단, active-turn lifecycle gate, Archived→Trash→restore 상태 보존,
   두 단계 Trash UI, 같은 UUID와 task·objective·chat·outbox 보존
@@ -2051,24 +2193,27 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
   personality 지원, profile CAS, instruction revision, prompt hash·bound·truncation, project 격리,
   legacy reviewer action suppression, dynamic model/mode/reasoning provenance, session migration·branch lineage·
   project/session event isolation, sanitized Markdown·KaTeX, web-search mode provenance·no silent fallback과
-  shell/browser/MCP 비활성 유지, PDF path/bytes/raw-text non-retention·scope·TTL·single-use·budget·revoke
+  shell/browser/MCP 비활성 유지, PDF path/bytes/raw-text non-retention·scope·TTL·single-use·budget·revoke,
+  project-global monotonic durable queue·restart drain·attachment expiry terminalization·edit/remove/Run-now
 - SSH broker 변경: global alias/direct-target registry와 project-scoped workspace grant 분리, deterministic
   command import·inactive loopback `-L`, credential·raw paste·raw output 비보존, root 축소 diagnostics와
   mode별 concrete executable·inspect/test/build/foreground-experiment policy, project-scoped structured resource
   read, app-owned fixed helper의 bounded text file list/read/create/expected-hash-checked atomic replacement,
   external-writer race와 post-mutation outcome uncertainty, physical no-symlink root check와
-  secret/binary/oversize 차단, JSON stdin hash·actual target/root/file action/content exact Allow once binding,
+  secret/binary/oversize 차단, JSON stdin hash·actual target/root/file action/content exact Allow once binding과
+  eligible trusted binding의 exact version·capacity reservation·append-only audit-before-execute,
   profile/grant CAS revalidation과 in-flight mutation/approval 경합, cancellation-only navigation IPC,
   OpenSSH argument array·direct `-F none`·
   background fork 차단·client diagnostic 격리, timeout·capacity·local transport cancel, remote kill·hard
   confinement 비보증과 ephemeral approval metadata
-- Literature 변경: active project 격리, Semantic Scholar·Crossref fixed-origin과 bounded metadata
-  normalization, strong
-  DOI/provider identity와 weak fingerprint fallback, 동일 fingerprint·다른 DOI 보존, true conflict 격리,
+- Literature 변경: active project 격리, Semantic Scholar·Crossref·Hugging Face Papers fixed-origin과 bounded
+  metadata normalization, additive HF가 Semantic Scholar 부족분의 Crossref fallback을 막지 않는 규칙,
+  policy-v3 provenance, strong DOI/provider/canonical arXiv identity와 weak fingerprint fallback, 동일
+  fingerprint·다른 DOI 보존, canonical migration·provider priority·true conflict 격리,
   source/search-tag/manual/AI field ownership, optimistic annotation conflict, no-abstract retention,
   Main-owned no-symlink transfer, deterministic JSON/CSV/BibTeX와 metadata-only Codex provenance,
   Semantic Scholar fixed-origin·3-lane candidate pool·linear author bound·role-balanced sample·partial
-  coverage, 부족한 pool의 Crossref supplement·combined rerank, cross-provider rich metadata merge,
+  coverage, 부족한 pool의 Crossref supplement·combined rerank, cross-provider rich metadata·canonical merge,
   deterministic 3-layer ranking·Core canonical reserve와
   hit-level policy provenance, Project Chat의 shared policy·explicit command gate·injected project
   identity·typed search tag·receipt-only 결과·cancel/late-result 봉인, 검색 tag의 누적·정확 filter와
@@ -2230,10 +2375,15 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
       고정하지 않는다는 한계를 표시하는가? remote file replacement를 CAS·serialized transaction이라
       부르지 않고 external-writer race와 post-mutation outcome uncertainty 뒤 same-path re-read/hash
       reconciliation을 요구하는가? root workspace execution은 prototype-only HIGH RISK로 표시하고 hardened
-      production을 non-root isolated Runner로 제한하는가?
+      production을 non-root isolated Runner로 제한하는가? trusted mode면 eligibility와 두 단계 consent,
+      exact project/grant/connection/root/policy version, pre-audit capacity reservation, append-only
+      audit-before-execute와 mutation·cancel·shutdown 뒤 재검사를 모두 유지하는가?
 - [ ] Literature 변경이면 provider raw response·abstract·local path를 저장하지 않고 project isolation,
       source/search-tag/manual/AI ownership, tag의 additive typed provenance, deterministic transfer와
       metadata-only AI provenance를 유지하는가?
+      policy-v3 source를 바꾸면 Semantic Scholar authority lane, additive Hugging Face와 Crossref fallback의
+      독립성을 유지하는가? canonical arXiv normalization·partial unique index·conflict provenance와
+      `import < hugging-face < crossref < semantic-scholar` 우선순위를 보존하는가?
       ranking 변경이면 fixed policy version, deterministic layer quota, capped author signal, momentum의
       proxy 표기, absolute eligibility floor, lane coverage·degradation, hit-level provenance와 기존 run의
       재현성을 유지하는가? 서로 다른 query의 상대 score를 직접 비교하지 않는가?
@@ -2242,7 +2392,8 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
 - [ ] Research Notes 변경이면 Renderer에 Vault-wide path/read/write/delete 권한을 추가하지 않고 active
       project ID·binding ID·ownership marker·Vault identity를 모두 재검증하는가? 일반 Vault file과
       user-owned paper note를 덮어쓰지 않는가? Literature SQLCipher 원본과 deterministic Markdown projection,
-      rename-pending/retry, project 전환 generation guard와 Hosted Sync 본문 금지를 유지하는가?
+      receipt journal의 terminal·restart·Vault reconnect 상태 전이, rename-pending/retry, project 전환
+      generation guard와 Hosted Sync 본문 금지를 유지하는가?
 - [ ] Project Chat web search 변경이면 actual mode를 profile·attempt에 기록하고 silent fallback 없이
       `disabled|cached|live`만 허용하는가? shell, browser, Apps, MCP와 general network가 계속 꺼져 있는가?
 - [ ] Project Chat attachment 변경이면 local path·원본 bytes·raw extracted text·temporary image를 저장·

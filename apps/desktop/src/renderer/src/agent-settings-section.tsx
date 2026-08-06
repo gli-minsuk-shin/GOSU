@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import {
   PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH,
+  allowsAgentMarkdownCreate,
   type CodexCollaborationModeDescriptor,
   type LocalNotesVaultGrant,
   type ProjectChatContextScope,
@@ -159,6 +160,8 @@ export function AgentSettingsSection({
     contextScope !== profile.contextScope ||
     localNotesVault?.id !== profile.localNotesVault?.id ||
     localNotesVault?.name !== profile.localNotesVault?.name ||
+    allowsAgentMarkdownCreate(localNotesVault) !==
+      allowsAgentMarkdownCreate(profile.localNotesVault) ||
     customInstructions !== profile.customInstructions;
 
   return (
@@ -280,10 +283,12 @@ export function AgentSettingsSection({
       <article className="settings-card">
         <div className="settings-card-heading">
           <span>RESEARCH NOTES ACCESS</span>
-          <h2>Authorize this project’s Obsidian notes</h2>
+          <h2>Authorize reads and create-only automatic Markdown saves</h2>
           <p>
-            The agent receives typed, read-only list and read tools. It never receives the Vault
-            root, a raw path, shell access, or another project's grant.
+            The agent receives bounded list and read tools. If you explicitly enable automatic
+            saves, it can also create reusable Markdown deliverables in this project’s managed
+            folders without asking on every task. It never receives the Vault root, a raw path,
+            shell access, or another project's grant.
           </p>
         </div>
         <div className="agent-notes-access">
@@ -320,15 +325,30 @@ export function AgentSettingsSection({
               type="button"
               className="secondary-button"
               disabled={
-                vaultState !== 'ready' || !vault || busy || localNotesVault?.id === vault.id
+                vaultState !== 'ready' ||
+                !vault ||
+                busy ||
+                (localNotesVault?.id === vault.id && allowsAgentMarkdownCreate(localNotesVault))
               }
-              onClick={() => vault && setLocalNotesVault({ id: vault.id, name: vault.name })}
+              onClick={() =>
+                vault &&
+                setLocalNotesVault({
+                  id: vault.id,
+                  name: vault.name,
+                  allowAgentMarkdownCreate: true,
+                })
+              }
             >
-              {vault && localNotesVault?.id === vault.id
-                ? profile.localNotesVault?.id === vault.id
-                  ? 'Current Research Notes authorized'
-                  : 'Selected — save to authorize'
-                : 'Authorize Research Notes'}
+              {vault &&
+              localNotesVault?.id === vault.id &&
+              allowsAgentMarkdownCreate(localNotesVault)
+                ? profile.localNotesVault?.id === vault.id &&
+                  allowsAgentMarkdownCreate(profile.localNotesVault)
+                  ? 'Read + automatic saves authorized'
+                  : 'Selected — save to enable automatic saves'
+                : vault && localNotesVault?.id === vault.id
+                  ? 'Enable create-only automatic saves'
+                  : 'Authorize Research Notes'}
             </button>
             {localNotesVault && (
               <button
@@ -350,10 +370,13 @@ export function AgentSettingsSection({
           <span>
             Listing notes sends their display titles and opaque IDs to the configured Codex/LLM.
             Reading sends a bounded excerpt plus its content SHA-256, offset, and total character
-            count for that turn. The model may quote or summarize this data in its visible answer.
-            Visible chat is saved in this project's encrypted local database and is eligible for
-            Hosted Sync. GOSU does not automatically store or sync the raw tool payload, Vault
-            root/path, or source note file; it appends bounded source metadata to the answer.
+            count for that turn. With automatic saves enabled, a reusable Markdown deliverable is
+            written create-only under this project’s Research Notes and the visible answer reports
+            its relative location. A different existing file is never overwritten. The model may
+            quote or summarize read data in its visible answer. Visible chat is saved in this
+            project's encrypted local database and is eligible for Hosted Sync. GOSU does not
+            automatically store or sync the raw tool payload, Vault root/path, source note file, or
+            newly created Markdown body; it appends bounded source and save metadata to the answer.
           </span>
         </div>
       </article>

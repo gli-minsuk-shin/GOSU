@@ -25,6 +25,7 @@ import {
 import type { AgentVaultNoteChunk, AgentVaultNoteList } from '../shared/vault-contracts';
 import type { ProjectRecord } from '../shared/workspace-contracts';
 import {
+  RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES,
   safeResearchNotesFolderName,
   ResearchNotesManagedFiles,
 } from './research-notes-managed-files';
@@ -38,6 +39,121 @@ import type { WorkspaceService } from './workspace-service';
 
 const MAX_AGENT_NOTE_LIST = 100;
 const MAX_AGENT_NOTE_CHARACTERS = 24_000;
+const MAX_AGENT_MARKDOWN_CHARACTERS = 1_000_000;
+const MAX_AGENT_MARKDOWN_TITLE_BYTES = 180;
+const AGENT_MARKDOWN_ARTIFACT_ID_CHARACTERS = 16;
+
+export function researchNotesAgentMarkdownArtifactId(
+  projectId: string,
+  bindingId: string,
+  idempotencyKey: string,
+) {
+  return sha256(`${projectId}\0${bindingId}\0${idempotencyKey}`).slice(
+    0,
+    AGENT_MARKDOWN_ARTIFACT_ID_CHARACTERS,
+  );
+}
+
+export const ResearchNotesAgentMarkdownCategorySchema = z.enum([
+  'literature',
+  'papers',
+  'experiments',
+  'project-progress',
+  'idea-development',
+]);
+
+export type ResearchNotesAgentMarkdownCategory = z.infer<
+  typeof ResearchNotesAgentMarkdownCategorySchema
+>;
+
+export const SaveResearchNoteForAgentInputSchema = z
+  .object({
+    category: ResearchNotesAgentMarkdownCategorySchema,
+    title: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .refine((value) => !value.includes('\0'), 'title_contains_nul'),
+    content: z
+      .string()
+      .min(1)
+      .max(MAX_AGENT_MARKDOWN_CHARACTERS)
+      .refine((value) => !value.includes('\0'), 'content_contains_nul')
+      .refine(
+        (value) => Buffer.byteLength(value, 'utf8') <= RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES,
+        'content_exceeds_markdown_byte_limit',
+      ),
+    idempotencyKey: z
+      .string()
+      .trim()
+      .min(1)
+      .max(256)
+      .refine((value) => !value.includes('\0'), 'idempotency_key_contains_nul'),
+  })
+  .strict();
+
+export type SaveResearchNoteForAgentInput = z.input<typeof SaveResearchNoteForAgentInputSchema>;
+
+export const ResearchNotesAgentMarkdownReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    projectId: z.string().uuid(),
+    category: ResearchNotesAgentMarkdownCategorySchema,
+    path: z.string().trim().min(1).max(1_000),
+    created: z.boolean(),
+    contentSha256: z.string().regex(/^[0-9a-f]{64}$/u),
+    artifactId: z.string().regex(/^[0-9a-f]{16}$/u),
+  })
+  .strict()
+  .superRefine((receipt, context) => {
+    let path: string;
+    try {
+      path = safeProjectPath(receipt.path);
+    } catch {
+      context.addIssue({
+        code: 'custom',
+        path: ['path'],
+        message: 'path_must_be_project_relative',
+      });
+      return;
+    }
+    const expectedPrefix = `${RESEARCH_NOTES_AGENT_CATEGORY_FOLDERS[receipt.category]}/`;
+    if (!path.startsWith(expectedPrefix) || !path.endsWith('.md')) {
+      context.addIssue({
+        code: 'custom',
+        path: ['path'],
+        message: 'path_must_match_category_folder',
+      });
+    }
+  });
+
+export type ResearchNotesAgentMarkdownReceipt = z.infer<
+  typeof ResearchNotesAgentMarkdownReceiptSchema
+>;
+
+export const RecoverResearchNoteForAgentInputSchema = z
+  .object({
+    category: ResearchNotesAgentMarkdownCategorySchema,
+    artifactId: z.string().regex(/^[0-9a-f]{16}$/u),
+    expectedContentSha256: z.string().regex(/^[0-9a-f]{64}$/u),
+  })
+  .strict();
+
+export type RecoverResearchNoteForAgentInput = z.infer<
+  typeof RecoverResearchNoteForAgentInputSchema
+>;
+
+const RESEARCH_NOTES_AGENT_CATEGORY_FOLDERS = {
+  literature: 'Literature',
+  papers: 'Papers',
+  experiments: 'Experiments',
+  'project-progress': 'Project Progress',
+  'idea-development': 'Idea Development',
+} as const satisfies Record<
+  ResearchNotesAgentMarkdownCategory,
+  (typeof RESEARCH_NOTES_DEFAULT_FOLDERS)[number]
+>;
 
 export const ResearchNotesProjectLinkSchema = z
   .object({
@@ -135,6 +251,25 @@ function scopedAttachmentSource(notePath: string, rawSource: string) {
 
 function noteTitle(path: string) {
   return basename(path, '.md').slice(0, 256) || 'Untitled note';
+}
+
+function safeAgentMarkdownFileStem(title: string) {
+  const normalized = title
+    .normalize('NFKC')
+    .replace(/\.md$/iu, '')
+    .replace(/[\p{C}/\\:<>?"*|#^`_$~!(){}]/gu, ' ')
+    .replaceAll('[', ' ')
+    .replaceAll(']', ' ')
+    .replace(/\s+/gu, ' ')
+    .replace(/^[. ]+|[. ]+$/gu, '')
+    .trim();
+  const fallback = normalized || 'Research Note';
+  let result = '';
+  for (const character of fallback) {
+    if (Buffer.byteLength(result + character, 'utf8') > MAX_AGENT_MARKDOWN_TITLE_BYTES) break;
+    result += character;
+  }
+  return result || 'Research Note';
 }
 
 function initialTemplates(project: ProjectRecord) {
@@ -293,6 +428,121 @@ export class ResearchNotesService {
       totalCharacters: note.content.length,
       truncated: nextOffset !== null,
     };
+  }
+
+  async saveMarkdownForAgent(
+    projectId: string,
+    expectedBindingId: string,
+    input: SaveResearchNoteForAgentInput,
+  ): Promise<ResearchNotesAgentMarkdownReceipt> {
+    const command = SaveResearchNoteForAgentInputSchema.parse(input);
+    const { project, link } = await this.requireReadyLink(projectId, expectedBindingId);
+    await this.assertOwnership(link);
+    const selection = this.requireVault(link.vaultId);
+    const artifactId = researchNotesAgentMarkdownArtifactId(
+      project.id,
+      link.bindingId,
+      command.idempotencyKey,
+    );
+    const folder = RESEARCH_NOTES_AGENT_CATEGORY_FOLDERS[command.category];
+    const path = `${folder}/${safeAgentMarkdownFileStem(command.title)}--${artifactId}.md`;
+    const matchingArtifactPaths = (await this.projectFiles(link)).filter((candidate) =>
+      candidate.endsWith(`--${artifactId}.md`),
+    );
+    if (
+      matchingArtifactPaths.length > 1 ||
+      (matchingArtifactPaths[0] !== undefined && matchingArtifactPaths[0] !== path)
+    ) {
+      throw new ResearchNotesServiceError('research_notes_folder_conflict');
+    }
+    const writer = new ResearchNotesManagedFiles(selection.root);
+    let created: boolean;
+    try {
+      created = await writer.createUserMarkdown(
+        link.folderName,
+        path,
+        command.content,
+        this.ownership(link),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        if (
+          error instanceof Error &&
+          (error.message === 'research_notes_vault_changed' ||
+            error.message === 'research_notes_folder_ownership_changed')
+        ) {
+          throw new ResearchNotesServiceError('research_notes_save_commit_uncertain');
+        }
+        throw error;
+      }
+      created = false;
+    }
+    if (!created) {
+      const existing = await this.dependencies.vault.readMarkdown(
+        `${this.relativeRoot(link)}/${path}`,
+      );
+      if (existing.content !== command.content) {
+        throw new ResearchNotesServiceError('research_notes_folder_conflict');
+      }
+    }
+    try {
+      await this.confirmAgentMarkdownWrite(project.id, expectedBindingId, link);
+      const verified = await this.dependencies.vault.readMarkdown(
+        `${this.relativeRoot(link)}/${path}`,
+      );
+      if (verified.content !== command.content) {
+        throw new ResearchNotesServiceError('research_notes_save_commit_uncertain');
+      }
+      await this.confirmAgentMarkdownWrite(project.id, expectedBindingId, link);
+    } catch {
+      throw new ResearchNotesServiceError('research_notes_save_commit_uncertain');
+    }
+    return ResearchNotesAgentMarkdownReceiptSchema.parse({
+      schemaVersion: 1,
+      projectId: project.id,
+      category: command.category,
+      path,
+      created,
+      contentSha256: sha256(command.content),
+      artifactId,
+    });
+  }
+
+  async recoverMarkdownForAgent(
+    projectId: string,
+    expectedBindingId: string,
+    input: RecoverResearchNoteForAgentInput,
+  ): Promise<ResearchNotesAgentMarkdownReceipt | null> {
+    const command = RecoverResearchNoteForAgentInputSchema.parse(input);
+    const { project, link } = await this.requireReadyLink(projectId, expectedBindingId);
+    await this.assertOwnership(link);
+    const suffix = `--${command.artifactId}.md`;
+    const matches = (await this.projectFiles(link)).filter((candidate) =>
+      candidate.endsWith(suffix),
+    );
+    if (matches.length === 0) return null;
+    if (matches.length !== 1) {
+      throw new ResearchNotesServiceError('research_notes_save_commit_uncertain');
+    }
+    const path = matches[0]!;
+    const expectedPrefix = `${RESEARCH_NOTES_AGENT_CATEGORY_FOLDERS[command.category]}/`;
+    if (!path.startsWith(expectedPrefix)) {
+      throw new ResearchNotesServiceError('research_notes_save_commit_uncertain');
+    }
+    const note = await this.dependencies.vault.readMarkdown(`${this.relativeRoot(link)}/${path}`);
+    if (sha256(note.content) !== command.expectedContentSha256) {
+      throw new ResearchNotesServiceError('research_notes_save_commit_uncertain');
+    }
+    await this.confirmAgentMarkdownWrite(project.id, expectedBindingId, link);
+    return ResearchNotesAgentMarkdownReceiptSchema.parse({
+      schemaVersion: 1,
+      projectId: project.id,
+      category: command.category,
+      path,
+      created: false,
+      contentSha256: command.expectedContentSha256,
+      artifactId: command.artifactId,
+    });
   }
 
   async syncLiterature(projectId: string) {
@@ -517,6 +767,29 @@ export class ResearchNotesService {
     }
     this.requireVault(link.vaultId);
     return { project, link };
+  }
+
+  private async confirmAgentMarkdownWrite(
+    projectId: string,
+    expectedBindingId: string,
+    expectedLink: ResearchNotesProjectLink,
+  ) {
+    const project = await this.requireActiveProject(projectId);
+    const currentLink = this.dependencies.storage.loadProjectLink(projectId);
+    if (
+      !currentLink ||
+      currentLink.status !== 'ready' ||
+      currentLink.projectId !== project.id ||
+      currentLink.projectName !== project.name ||
+      currentLink.bindingId !== expectedBindingId ||
+      currentLink.bindingId !== expectedLink.bindingId ||
+      currentLink.vaultId !== expectedLink.vaultId ||
+      currentLink.folderName !== expectedLink.folderName
+    ) {
+      throw new ResearchNotesServiceError('research_notes_save_commit_uncertain');
+    }
+    this.requireVault(currentLink.vaultId);
+    await this.assertOwnership(currentLink);
   }
 
   private async assertOwnership(link: ResearchNotesProjectLink) {

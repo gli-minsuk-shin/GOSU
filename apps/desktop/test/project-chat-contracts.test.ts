@@ -12,9 +12,13 @@ import {
   ProjectChatMessageSchema,
   ProjectChatPromptProvenanceSchema,
   ProjectChatProfileSchema,
+  ProjectChatQueuedTurnSchema,
+  ProjectChatResearchNoteSaveReceiptSchema,
+  ProjectChatResearchNoteSaveStageSchema,
   ProjectChatSessionSchema,
   ProjectChatSnapshotSchema,
   UpdateProjectChatProfileInputSchema,
+  allowsAgentMarkdownCreate,
   defaultProjectChatProfile,
 } from '../src/shared/project-chat-contracts';
 
@@ -32,6 +36,7 @@ describe('Project chat contracts', () => {
     expect(
       CodexProjectResponseSchema.parse({
         reply: 'Review these changes.',
+        researchNote: { disposition: 'none' },
         actions: [
           { type: 'task.create', title: 'Reproduce baseline', status: 'planned' },
           {
@@ -44,6 +49,94 @@ describe('Project chat contracts', () => {
         ],
       }).actions,
     ).toHaveLength(2);
+  });
+
+  it('requires a bounded structured Research Notes disposition', () => {
+    expect(
+      CodexProjectResponseSchema.parse({
+        reply: 'A durable plan is ready.',
+        actions: [],
+        researchNote: {
+          disposition: 'save',
+          category: 'project-progress',
+          title: 'Evaluation decision',
+          content: '# Evaluation decision\n',
+        },
+      }).researchNote,
+    ).toMatchObject({ disposition: 'save', category: 'project-progress' });
+    expect(() =>
+      CodexProjectResponseSchema.parse({ reply: 'Missing disposition.', actions: [] }),
+    ).toThrow();
+    expect(() =>
+      CodexProjectResponseSchema.parse({
+        reply: 'Too large.',
+        actions: [],
+        researchNote: {
+          disposition: 'save',
+          category: 'project-progress',
+          title: 'Oversized',
+          content: 'x'.repeat(28_001),
+        },
+      }),
+    ).toThrow();
+    expect(PROJECT_CHAT_OUTPUT_SCHEMA.required).toContain('researchNote');
+  });
+
+  it('keeps staged Research Notes receipts body-free and validates committed paths', () => {
+    const staged = ProjectChatResearchNoteSaveStageSchema.parse({
+      schemaVersion: 1,
+      projectId: randomUUID(),
+      sessionId: randomUUID(),
+      attemptId: randomUUID(),
+      bindingId: 'a'.repeat(64),
+      category: 'experiments',
+      artifactId: 'b'.repeat(16),
+      expectedContentSha256: 'c'.repeat(64),
+      stagedAt: '2026-08-06T00:00:00.000Z',
+    });
+    expect(Object.keys(staged)).not.toEqual(
+      expect.arrayContaining(['content', 'body', 'markdown', 'title']),
+    );
+    expect(
+      ProjectChatResearchNoteSaveReceiptSchema.parse({
+        ...staged,
+        status: 'committed-unreported',
+        relativePath: `Experiments/Plan--${staged.artifactId}.md`,
+        updatedAt: '2026-08-06T00:00:01.000Z',
+        committedAt: '2026-08-06T00:00:01.000Z',
+        reportedAt: null,
+      }).relativePath,
+    ).toContain('Experiments/');
+    expect(
+      ProjectChatResearchNoteSaveReceiptSchema.parse({
+        ...staged,
+        status: 'abandoned',
+        relativePath: null,
+        updatedAt: '2026-08-06T00:00:02.000Z',
+        committedAt: null,
+        reportedAt: '2026-08-06T00:00:02.000Z',
+      }).status,
+    ).toBe('abandoned');
+    expect(() =>
+      ProjectChatResearchNoteSaveReceiptSchema.parse({
+        ...staged,
+        status: 'abandoned',
+        relativePath: null,
+        updatedAt: '2026-08-06T00:00:02.000Z',
+        committedAt: null,
+        reportedAt: null,
+      }),
+    ).toThrow();
+    expect(() =>
+      ProjectChatResearchNoteSaveReceiptSchema.parse({
+        ...staged,
+        status: 'committed-unreported',
+        relativePath: `../Plan--${staged.artifactId}.md`,
+        updatedAt: '2026-08-06T00:00:01.000Z',
+        committedAt: '2026-08-06T00:00:01.000Z',
+        reportedAt: null,
+      }),
+    ).toThrow();
   });
 
   it('rejects actions attached to another project or message', () => {
@@ -115,6 +208,41 @@ describe('Project chat contracts', () => {
         projectId,
         attempts: [{ ...attempt, projectId: randomUUID() }],
         messages: [message],
+      }),
+    ).toThrow();
+  });
+
+  it('keeps queued turns project/session scoped and bounded', () => {
+    const projectId = randomUUID();
+    const sessionId = randomUUID();
+    const now = new Date().toISOString();
+    const queued = ProjectChatQueuedTurnSchema.parse({
+      id: randomUUID(),
+      projectId,
+      sessionId,
+      message: '  Run this after the current turn  ',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      priority: 'normal',
+      status: 'queued',
+      createdAt: now,
+      updatedAt: now,
+    });
+    expect(queued.message).toBe('Run this after the current turn');
+    expect(() =>
+      ProjectChatSnapshotSchema.parse({
+        schemaVersion: 1,
+        projectId,
+        session: {
+          id: sessionId,
+          projectId,
+          title: 'Project chat',
+          isDefault: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+        queuedTurns: [{ ...queued, sessionId: randomUUID() }],
+        messages: [],
       }),
     ).toThrow();
   });
@@ -262,23 +390,32 @@ describe('Project chat contracts', () => {
         customInstructions: 'x'.repeat(4_001),
       }),
     ).toThrow();
-    expect(
-      UpdateProjectChatProfileInputSchema.parse({
-        projectId,
-        expectedVersion: 0,
-        harnessMode: 'context',
-        responseDepth: 'standard',
-        contextScope: 'project',
-        localNotesVault: { id: 'a'.repeat(64), name: 'Research Notes' },
-        customInstructions: '',
-      }),
-    ).toMatchObject({
+    const legacyReadGrant = UpdateProjectChatProfileInputSchema.parse({
+      projectId,
+      expectedVersion: 0,
+      harnessMode: 'context',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      localNotesVault: { id: 'a'.repeat(64), name: 'Research Notes' },
+      customInstructions: '',
+    });
+    expect(legacyReadGrant).toMatchObject({
       collaborationModeId: 'default',
       personality: 'auto',
       responseVerbosity: 'medium',
       webSearchMode: 'cached',
       localNotesVault: { id: 'a'.repeat(64), name: 'Research Notes' },
     });
+    expect(allowsAgentMarkdownCreate(legacyReadGrant.localNotesVault)).toBe(false);
+    const explicitCreateGrant = UpdateProjectChatProfileInputSchema.parse({
+      ...legacyReadGrant,
+      localNotesVault: {
+        id: 'a'.repeat(64),
+        name: 'Research Notes',
+        allowAgentMarkdownCreate: true,
+      },
+    });
+    expect(allowsAgentMarkdownCreate(explicitCreateGrant.localNotesVault)).toBe(true);
     expect(
       UpdateProjectChatProfileInputSchema.parse({
         projectId,

@@ -47,6 +47,17 @@ describe('literature IPC contracts', () => {
     expect(
       LiteratureRecordSchema.safeParse({
         ...recordFixture(),
+        provider: 'hugging-face',
+        providerRecordId: '2608.00001',
+        doi: null,
+        containerTitle: 'arXiv',
+        workType: 'preprint',
+        sourceUrl: 'https://huggingface.co/papers/2608.00001',
+      }).success,
+    ).toBe(true);
+    expect(
+      LiteratureRecordSchema.safeParse({
+        ...recordFixture(),
         sourceUrl: 'http://example.invalid/paper',
       }).success,
     ).toBe(false);
@@ -136,7 +147,12 @@ describe('literature IPC contracts', () => {
     expect(
       LiteratureDiscoveryCoverageSchema.parse({
         source: 'combined',
-        availableSignals: ['relevance', 'citation-authority', 'recent-momentum'],
+        availableSignals: [
+          'relevance',
+          'citation-authority',
+          'recent-momentum',
+          'hugging-face-index',
+        ],
         degradationReasons: [
           'semantic-scholar-insufficient-results',
           'author-metrics-partial',
@@ -145,7 +161,12 @@ describe('literature IPC contracts', () => {
       }),
     ).toEqual({
       source: 'combined',
-      availableSignals: ['relevance', 'citation-authority', 'recent-momentum'],
+      availableSignals: [
+        'relevance',
+        'citation-authority',
+        'recent-momentum',
+        'hugging-face-index',
+      ],
       degradationReasons: [
         'semantic-scholar-insufficient-results',
         'author-metrics-partial',

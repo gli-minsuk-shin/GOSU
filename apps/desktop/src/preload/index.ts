@@ -67,11 +67,14 @@ import {
   type ProjectChatAction,
   type ProjectChatEvent,
   type ProjectChatProfile,
+  type ProjectChatQueuedTurn,
+  type ProjectChatQueuedTurnInput,
   type ProjectChatSession,
   type RenameProjectChatSessionInput,
   type ProjectChatSnapshot,
   type ProjectChatTurnReceipt,
   type SendProjectChatMessageInput,
+  type UpdateProjectChatQueuedTurnInput,
   type UpdateProjectChatProfileInput,
 } from '../shared/project-chat-contracts';
 import { unwrapProjectChatIpcResult } from '../shared/project-chat-ipc-result';
@@ -110,10 +113,12 @@ import {
 import { unwrapSshIpcResult } from '../shared/ssh-ipc-result';
 import type {
   CreateRemoteWorkspaceGrantInput,
+  EnableTrustedRemoteWorkspaceInput,
   GrantedRemoteWorkspace,
   ListRemoteWorkspaceGrantsInput,
   RemoteWorkspaceGrant,
   RemoveRemoteWorkspaceGrantInput,
+  RevokeTrustedRemoteWorkspaceInput,
   UpdateRemoteWorkspaceGrantInput,
 } from '../shared/ssh-workspace-contracts';
 import type { VaultAttachment } from '../shared/vault-contracts';
@@ -285,6 +290,12 @@ const api = {
       invokeProjectChat<ProjectChatProfile>(PROJECT_CHAT_IPC_CHANNELS.updateProfile, input),
     send: (input: SendProjectChatMessageInput) =>
       invokeProjectChat<ProjectChatTurnReceipt>(PROJECT_CHAT_IPC_CHANNELS.send, input),
+    updateQueuedTurn: (input: UpdateProjectChatQueuedTurnInput) =>
+      invokeProjectChat<ProjectChatQueuedTurn>(PROJECT_CHAT_IPC_CHANNELS.updateQueuedTurn, input),
+    removeQueuedTurn: (input: ProjectChatQueuedTurnInput) =>
+      invokeProjectChat<{ removed: true }>(PROJECT_CHAT_IPC_CHANNELS.removeQueuedTurn, input),
+    runQueuedTurnNow: (input: ProjectChatQueuedTurnInput) =>
+      invokeProjectChat<{ accepted: true }>(PROJECT_CHAT_IPC_CHANNELS.runQueuedTurnNow, input),
     chooseAttachments: (input: ChooseProjectChatAttachmentsInput) =>
       invokeProjectChat<ProjectChatAttachment[]>(
         PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.choose,
@@ -418,6 +429,10 @@ const api = {
       invokeSsh<RemoteWorkspaceGrant>(SSH_IPC_CHANNELS.updateWorkspaceGrant, input),
     removeWorkspaceGrant: (input: RemoveRemoteWorkspaceGrantInput) =>
       invokeSsh<{ removed: true }>(SSH_IPC_CHANNELS.removeWorkspaceGrant, input),
+    enableTrustedWorkspace: (input: EnableTrustedRemoteWorkspaceInput) =>
+      invokeSsh<RemoteWorkspaceGrant>(SSH_IPC_CHANNELS.enableTrustedWorkspace, input),
+    revokeTrustedWorkspace: (input: RevokeTrustedRemoteWorkspaceInput) =>
+      invokeSsh<RemoteWorkspaceGrant>(SSH_IPC_CHANNELS.revokeTrustedWorkspace, input),
     listPendingApprovals: (input: ListPendingSshApprovalsInput) =>
       invokeSsh<readonly SshApprovalRequest[]>(SSH_IPC_CHANNELS.listPendingApprovals, input),
     resolveApproval: (input: ResolveSshApprovalInput) =>

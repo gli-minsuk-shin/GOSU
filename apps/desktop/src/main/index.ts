@@ -353,9 +353,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   registerResearchNotesIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     researchNotes,
-    (projectId) => {
+    async (projectId) => {
       if (!mainWindow) return Promise.reject(new Error('research_notes_unavailable'));
-      return researchNotes.chooseVault({ projectId }, mainWindow);
+      const selected = await researchNotes.chooseVault({ projectId }, mainWindow);
+      if (selected) await projectChat.reconcileResearchNoteSaveReceipts().catch(() => undefined);
+      return selected;
     },
     reportUnexpectedWorkspaceError,
   );
@@ -453,6 +455,8 @@ if (!primaryInstance) {
     try {
       database.open();
       await vault.restore().catch(() => null);
+      await projectChat.reconcileResearchNoteSaveReceipts().catch(() => undefined);
+      await projectChat.reconcileQueuedTurns().catch(() => undefined);
     } catch (error) {
       localData = localDataReadiness(error);
     }

@@ -141,9 +141,13 @@ describe('separated application Settings', () => {
     expect(html).toContain('does not enable shell networking, the browser, MCP servers');
     expect(html).toContain('PROJECT INSTRUCTIONS');
     expect(html).toContain('RESEARCH NOTES ACCESS');
-    expect(html).toContain('Authorize this project’s Obsidian notes');
+    expect(html).toContain('Authorize reads and create-only automatic Markdown saves');
+    expect(html).toContain('create reusable Markdown deliverables');
+    expect(html).toContain('without asking on every task');
     expect(html).toContain('Listing notes sends their display titles and opaque IDs');
     expect(html).toContain('content SHA-256, offset, and total character');
+    expect(html).toContain('A different existing file is never overwritten');
+    expect(html).toContain('newly created Markdown body');
     expect(html).toContain('Codex sandbox: project-bound reads');
     expect(html).toContain('no direct shell, filesystem, raw network, browser');
     expect(html).toContain('foreground Python');

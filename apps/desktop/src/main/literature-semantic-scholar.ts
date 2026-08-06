@@ -1,4 +1,8 @@
-import { literatureFingerprint, LiteratureProviderError } from './literature-crossref';
+import {
+  literatureFingerprint,
+  LiteratureProviderError,
+  normalizeArxivCanonicalId,
+} from './literature-crossref';
 import type { LiteratureProviderCandidate } from './literature-crossref';
 import { normalizeDoi } from './literature-transfer';
 
@@ -131,6 +135,7 @@ export function normalizeSemanticScholarPaper(value: unknown): SemanticScholarCa
       ? (item.externalIds as Record<string, unknown>)
       : {};
   const doi = normalizeDoi(boundedText(externalIds.DOI, 512)) ?? undefined;
+  const canonicalId = normalizeArxivCanonicalId(boundedText(externalIds.ArXiv, 512));
   const sourceUrl = httpsUrl(item.url) ?? (doi ? `https://doi.org/${doi}` : undefined);
   const workTypes = stringList(item.publicationTypes, 4, 120);
   const publicationDate = boundedText(item.publicationDate, 32) ?? null;
@@ -138,6 +143,7 @@ export function normalizeSemanticScholarPaper(value: unknown): SemanticScholarCa
     candidate: {
       provider: 'semantic-scholar',
       providerId,
+      ...(canonicalId ? { canonicalId } : {}),
       ...(doi ? { doi } : {}),
       fingerprint: literatureFingerprint(title, authors.names, publishedYear),
       title,

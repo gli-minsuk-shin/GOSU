@@ -25,6 +25,8 @@ import {
 import {
   PROJECT_CHAT_MAX_BRANCH_DEPTH,
   PROJECT_CHAT_MAX_BRANCH_MESSAGES,
+  PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION,
+  PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION,
 } from '../../src/shared/project-chat-contracts';
 import {
   LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT,
@@ -1432,6 +1434,52 @@ function verifyLiteratureBoundsAndIdentity(fixedTimestamp: string) {
     }));
     database.upsertLiteratureCandidates(identityProjectId, identityCandidates, fixedTimestamp);
 
+    const canonicalArxivProjectId = randomUUID();
+    const canonicalId = 'arxiv:2504.10808';
+    const huggingFaceInsert = database.upsertLiteratureCandidates(
+      canonicalArxivProjectId,
+      [
+        {
+          provider: 'hugging-face',
+          providerId: '2504.10808',
+          canonicalId,
+          fingerprint: '8'.repeat(64),
+          title: 'HF title formatting',
+          authors: ['HF Author Format'],
+          publishedYear: 2025,
+          topics: [],
+        },
+      ],
+      fixedTimestamp,
+    );
+    const semanticScholarMerge = database.upsertLiteratureCandidates(
+      canonicalArxivProjectId,
+      [
+        {
+          provider: 'semantic-scholar',
+          providerId: 'semantic-paper-identity',
+          canonicalId,
+          fingerprint: '9'.repeat(64),
+          title: 'Semantic Scholar canonical title',
+          authors: ['Semantic Author Format'],
+          publishedYear: 2025,
+          topics: ['canonical identity'],
+          citationCount: 42,
+        },
+      ],
+      fixedTimestamp,
+    );
+    const [canonicalRecord] = database.listLiteratureRecords(canonicalArxivProjectId);
+    invariant(
+      huggingFaceInsert.imported === 1 &&
+        semanticScholarMerge.updated === 1 &&
+        database.countLiteratureRecords(canonicalArxivProjectId) === 1 &&
+        canonicalRecord?.canonicalId === canonicalId &&
+        canonicalRecord.provider === 'semantic-scholar' &&
+        canonicalRecord.citationCount === 42,
+      'literature_cross_provider_arxiv_identity_was_not_merged',
+    );
+
     const sharedFingerprintProjectId = randomUUID();
     const sharedFingerprintTitle =
       'A physics-informed residual correction framework for pretrained tabular foundation model based battery health prognostics';
@@ -1915,6 +1963,25 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
       updatedAt: fixedTimestamp,
     });
     invariant(legacyRecord !== null, 'legacy_literature_relevance_fixture_failed');
+    bootstrap.upsertLiteratureCandidates(
+      projectId,
+      [
+        {
+          provider: 'hugging-face',
+          providerId: '2504.10808v2',
+          canonicalId: 'arxiv:2504.10808',
+          fingerprint: literatureFingerprint('Legacy HF canonical paper', ['HF Author'], 2025),
+          title: 'Legacy HF canonical paper',
+          authors: ['HF Author'],
+          publishedYear: 2025,
+          topics: [],
+        },
+      ],
+      fixedTimestamp,
+    );
+    const legacyHuggingFaceRecord = bootstrap
+      .listLiteratureRecords(projectId)
+      .find((record) => record.provider === 'hugging-face')!;
     bootstrap.close();
 
     const keyHex = safeStorage
@@ -1939,9 +2006,17 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
         raw
           .prepare('delete from local_schema_migrations where id=?')
           .run('literature-search-tags-v1');
+        raw
+          .prepare('delete from local_schema_migrations where id=?')
+          .run('literature-hugging-face-provider-v1');
+        raw
+          .prepare('delete from local_schema_migrations where id=?')
+          .run('literature-canonical-identity-v1');
         raw.exec(`
           drop index literature_record_weak_fingerprint_identity;
           drop index literature_records_by_fingerprint;
+          drop index literature_record_canonical_identity;
+          alter table literature_records drop column canonical_id;
           create unique index literature_record_fingerprint_identity
             on literature_records(project_id,fingerprint);
           alter table literature_records drop column current_discovery_json;
@@ -1998,6 +2073,21 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
             fixedTimestamp,
             fixedTimestamp,
           );
+        raw
+          .prepare(
+            `insert into literature_search_conflicts(
+               search_run_id,ordinal,provider,provider_record_id,doi,fingerprint,title,
+               authors_json,published_year
+             ) values(?,1,'crossref',?,?,?,?,?,2024)`,
+          )
+          .run(
+            legacySearchRunId,
+            '10.1000/legacy-conflict',
+            '10.1000/legacy-conflict',
+            literatureFingerprint('Preserved legacy conflict', ['Conflict Author'], 2024),
+            'Preserved legacy conflict',
+            JSON.stringify(['Conflict Author']),
+          );
       })();
     } finally {
       raw.close();
@@ -2005,10 +2095,19 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
 
     const migrated = new LocalDatabase();
     migrated.open();
-    const preserved = migrated.listLiteratureRecords(projectId)[0]!;
+    const migratedRecords = migrated.listLiteratureRecords(projectId);
+    const preserved = migratedRecords.find((record) => record.id === inserted.id)!;
+    const migratedHuggingFaceRecord = migratedRecords.find(
+      (record) => record.id === legacyHuggingFaceRecord.id,
+    );
     invariant(
       preserved.manualAnnotations.relevance === legacyValue,
       'legacy_literature_relevance_was_not_preserved',
+    );
+    invariant(
+      migratedHuggingFaceRecord?.title === legacyHuggingFaceRecord.title &&
+        migratedHuggingFaceRecord.canonicalId === 'arxiv:2504.10808',
+      'legacy_hugging_face_canonical_identity_was_not_preserved',
     );
     const expandedValue = 'r'.repeat(4_000);
     const expanded = migrated.updateLiteratureManualAnnotations({
@@ -2034,6 +2133,10 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
         migratedLegacyRun.selectedCount === 1 &&
         migratedLegacyRun.searchTags?.topics.length === 0 &&
         migratedLegacyRun.searchTags.keywords.length === 0 &&
+        migratedLegacyRun.conflicts[0]?.canonicalId === null &&
+        migratedLegacyRun.conflicts[0]?.doi === '10.1000/legacy-conflict' &&
+        migratedLegacyRun.conflicts[0]?.title === 'Preserved legacy conflict' &&
+        migratedLegacyRun.conflicts[0]?.authors[0] === 'Conflict Author' &&
         migratedLegacyRun.tierCounts === undefined,
       'legacy_literature_search_counts_were_not_backfilled_safely',
     );
@@ -2061,6 +2164,16 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
           "select sql from sqlite_master where type='table' and name='literature_search_conflicts'",
         )
         .get() as { sql: string };
+      const canonicalIndex = inspected
+        .prepare(
+          "select sql from sqlite_master where type='index' and name='literature_record_canonical_identity'",
+        )
+        .get() as { sql: string };
+      const weakFingerprintIndex = inspected
+        .prepare(
+          "select sql from sqlite_master where type='index' and name='literature_record_weak_fingerprint_identity'",
+        )
+        .get() as { sql: string };
       invariant(
         columns
           .filter((column) => column.name.includes('manual_relevance'))
@@ -2081,6 +2194,7 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
       invariant(
         columns.some((column) => column.name === 'current_discovery_json') &&
           columns.some((column) => column.name === 'search_tags_json') &&
+          columns.some((column) => column.name === 'canonical_id') &&
           [
             'policy_id',
             'policy_version',
@@ -2096,7 +2210,9 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
             hitColumns.some((column) => column.name === name),
           ) &&
           /provider\s+text\s+not\s+null\s+check/iu.test(conflictTable.sql) &&
-          conflictTable.sql.includes("'semantic-scholar'"),
+          conflictTable.sql.includes("'semantic-scholar'") &&
+          conflictTable.sql.includes("'hugging-face'") &&
+          /\bcanonical_id\s+text\b/iu.test(conflictTable.sql),
         'literature_discovery_schema_was_not_migrated',
       );
       invariant(
@@ -2107,7 +2223,12 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
           ) &&
           indexes.some(
             (index) => index.name === 'literature_records_by_fingerprint' && index.unique === 0,
-          ),
+          ) &&
+          indexes.some(
+            (index) => index.name === 'literature_record_canonical_identity' && index.unique === 1,
+          ) &&
+          /canonical_id\s+is\s+not\s+null/iu.test(canonicalIndex.sql) &&
+          /canonical_id\s+is\s+null/iu.test(weakFingerprintIndex.sql),
         'literature_fingerprint_identity_index_was_not_migrated',
       );
     } finally {
@@ -2117,7 +2238,8 @@ function verifyLiteratureRelevanceMigration(rootUserData: string, fixedTimestamp
     const reopened = new LocalDatabase();
     reopened.open();
     invariant(
-      reopened.listLiteratureRecords(projectId)[0]?.manualAnnotations.relevance === expandedValue,
+      reopened.listLiteratureRecords(projectId).find((record) => record.id === inserted.id)
+        ?.manualAnnotations.relevance === expandedValue,
       'migrated_literature_relevance_was_not_durable',
     );
     reopened.close();
@@ -2380,6 +2502,54 @@ function verifyLegacySshMigration(rootUserData: string, fixedTimestamp: string) 
       }),
       'migrated_ssh_workspace_grant_create_failed',
     );
+    invariant(
+      migrated.updateSshWorkspaceGrant(
+        {
+          schemaVersion: 1,
+          id: grantId,
+          projectId,
+          connectionId: directConnectionId,
+          canonicalRoot: '/workspace/research-project',
+          permissionMode: 'workspace',
+          trustedAccess: {
+            schemaVersion: 1,
+            policyVersion: 1,
+            projectId,
+            grantId,
+            grantVersion: 2,
+            connectionId: directConnectionId,
+            connectionVersion: 1,
+            canonicalRoot: '/workspace/research-project',
+            enabledAt: fixedTimestamp,
+          },
+          version: 2,
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+        },
+        1,
+      ),
+      'migrated_ssh_trusted_workspace_update_failed',
+    );
+    invariant(
+      migrated.appendSshTrustedWorkspaceAudit({
+        schemaVersion: 1,
+        id: randomUUID(),
+        projectId,
+        grantId,
+        grantVersion: 2,
+        connectionId: directConnectionId,
+        connectionVersion: 1,
+        policyVersion: 1,
+        sessionId: randomUUID(),
+        attemptId: randomUUID(),
+        turnId: 'migration-smoke-turn',
+        toolCallId: 'migration-smoke-tool',
+        operation: 'inspect',
+        commandSha256: 'a'.repeat(64),
+        autoApprovedAt: fixedTimestamp,
+      }),
+      'migrated_ssh_trusted_workspace_audit_failed',
+    );
     migrated.close();
 
     const reopened = new LocalDatabase();
@@ -2390,7 +2560,8 @@ function verifyLegacySshMigration(rootUserData: string, fixedTimestamp: string) 
       'migrated_ssh_profiles_were_not_durable',
     );
     invariant(
-      reopened.listSshWorkspaceGrants(projectId)[0]?.id === grantId,
+      reopened.listSshWorkspaceGrants(projectId)[0]?.id === grantId &&
+        reopened.listSshWorkspaceGrants(projectId)[0]?.trustedAccess?.policyVersion === 1,
       'migrated_ssh_workspace_grant_was_not_durable',
     );
     reopened.close();
@@ -2431,6 +2602,8 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
             harness_mode text not null check (harness_mode in ('context','planner','reviewer')),
             response_depth text not null check (response_depth in ('concise','standard','deep')),
             context_scope text not null check (context_scope in ('project','board','objective')),
+            local_notes_vault_id text,
+            local_notes_vault_name text,
             instruction_revision_id text not null
               references project_chat_instruction_revisions(id),
             created_at text not null,
@@ -2475,8 +2648,9 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
         const insertLegacyProfile = raw.prepare(
           `insert into project_chat_profiles(
              project_id,version,harness_mode,response_depth,context_scope,
+             local_notes_vault_id,local_notes_vault_name,
              instruction_revision_id,created_at,updated_at
-           ) values(?,?,?,?,?,?,?,?)`,
+           ) values(?,?,?,?,?,?,?,?,?,?)`,
         );
         insertLegacyProfile.run(
           projectId,
@@ -2484,6 +2658,8 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
           'planner',
           'deep',
           'board',
+          null,
+          null,
           revisionId,
           fixedTimestamp,
           fixedTimestamp,
@@ -2494,6 +2670,8 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
           'context',
           'standard',
           'project',
+          'e'.repeat(64),
+          'Legacy Read Vault',
           contextRevisionId,
           fixedTimestamp,
           fixedTimestamp,
@@ -2504,6 +2682,8 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
           'reviewer',
           'concise',
           'objective',
+          null,
+          null,
           reviewerRevisionId,
           fixedTimestamp,
           fixedTimestamp,
@@ -2529,6 +2709,8 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
     invariant(
       migrated.getProjectChatProfile(contextProjectId).collaborationModeId === 'default' &&
         migrated.getProjectChatProfile(contextProjectId).responseVerbosity === 'medium' &&
+        migrated.getProjectChatProfile(contextProjectId).localNotesVault
+          ?.allowAgentMarkdownCreate === false &&
         migrated.getProjectChatProfile(reviewerProjectId).collaborationModeId === 'default' &&
         migrated.getProjectChatProfile(reviewerProjectId).responseVerbosity === 'low',
       'legacy_profile_v050_native_mode_mapping_failed',
@@ -2543,7 +2725,11 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
       responseVerbosity: 'low',
       webSearchMode: 'live',
       contextScope: 'board',
-      localNotesVault: { id: 'f'.repeat(64), name: 'Migrated Vault' },
+      localNotesVault: {
+        id: 'f'.repeat(64),
+        name: 'Migrated Vault',
+        allowAgentMarkdownCreate: true,
+      },
       customInstructions: 'Legacy profile instructions.',
     });
     invariant(
@@ -2552,7 +2738,8 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
         updated.personality === 'friendly' &&
         updated.responseVerbosity === 'low' &&
         updated.webSearchMode === 'live' &&
-        updated.localNotesVault?.id === 'f'.repeat(64),
+        updated.localNotesVault?.id === 'f'.repeat(64) &&
+        updated.localNotesVault.allowAgentMarkdownCreate === true,
       'legacy_profile_v050_grant_update_failed',
     );
     migrated.close();
@@ -2595,7 +2782,11 @@ void app.whenReady().then(async () => {
       responseVerbosity: 'high',
       webSearchMode: 'live',
       contextScope: 'board',
-      localNotesVault: { id: 'a'.repeat(64), name: 'Fixture Vault' },
+      localNotesVault: {
+        id: 'a'.repeat(64),
+        name: 'Fixture Vault',
+        allowAgentMarkdownCreate: true,
+      },
       customInstructions: 'Prefer reproducible experiments.',
     });
     invariant(chatProfile?.version === 1, 'chat_profile_initial_update_failed');
@@ -2608,7 +2799,8 @@ void app.whenReady().then(async () => {
     );
     invariant(
       chatProfile.localNotesVault?.id === 'a'.repeat(64) &&
-        chatProfile.localNotesVault.name === 'Fixture Vault',
+        chatProfile.localNotesVault.name === 'Fixture Vault' &&
+        chatProfile.localNotesVault.allowAgentMarkdownCreate === true,
       'chat_profile_local_notes_grant_missing',
     );
     invariant(
@@ -2664,6 +2856,137 @@ void app.whenReady().then(async () => {
       database.snapshot(chatProjectId, independentChatSession.id).messages.length === 0,
       'new_root_chat_inherited_default_history',
     );
+    const queuedTurnId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const queuedTurn = database.enqueueProjectChatTurn({
+      id: queuedTurnId,
+      projectId: chatProjectId,
+      sessionId: independentChatSession.id,
+      message: 'Original durable queued turn',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      priority: 'normal',
+      status: 'queued',
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    });
+    const laterQueuedTurnId = '00000000-0000-4000-8000-000000000001';
+    const laterQueuedTurn = database.enqueueProjectChatTurn({
+      id: laterQueuedTurnId,
+      projectId: chatProjectId,
+      sessionId: independentChatSession.id,
+      message: 'Later same-timestamp durable queued turn',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      priority: 'normal',
+      status: 'queued',
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    });
+    invariant(
+      queuedTurn.enqueueSequence !== undefined &&
+        laterQueuedTurn.enqueueSequence !== undefined &&
+        queuedTurn.enqueueSequence < laterQueuedTurn.enqueueSequence,
+      'project_chat_queue_sequence_not_monotonic',
+    );
+    invariant(
+      database.updateProjectChatQueuedTurn(
+        chatProjectId,
+        independentChatSession.id,
+        queuedTurnId,
+        'Edited durable queued turn',
+        fixedTimestamp,
+      )?.message === 'Edited durable queued turn',
+      'project_chat_queue_edit_failed',
+    );
+    invariant(
+      database.prioritizeProjectChatQueuedTurn(
+        chatProjectId,
+        independentChatSession.id,
+        queuedTurnId,
+        fixedTimestamp,
+      ) && database.claimNextProjectChatQueuedTurn(chatProjectId)?.id === queuedTurnId,
+      'project_chat_queue_claim_failed',
+    );
+    const queueFailureProjectId = randomUUID();
+    const queueFailureSession = database.ensureDefaultProjectChatSession(queueFailureProjectId);
+    const failedQueueId = randomUUID();
+    database.enqueueProjectChatTurn({
+      id: failedQueueId,
+      projectId: queueFailureProjectId,
+      sessionId: queueFailureSession.id,
+      message: 'Queued input with an expired opaque attachment ID',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      attachmentIds: [randomUUID()],
+      priority: 'normal',
+      status: 'queued',
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    });
+    const laterHealthyQueueId = randomUUID();
+    database.enqueueProjectChatTurn({
+      id: laterHealthyQueueId,
+      projectId: queueFailureProjectId,
+      sessionId: queueFailureSession.id,
+      message: 'Later healthy queued input',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      priority: 'normal',
+      status: 'queued',
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    });
+    invariant(
+      database.claimNextProjectChatQueuedTurn(queueFailureProjectId)?.id === failedQueueId,
+      'project_chat_failed_queue_claim_order_changed',
+    );
+    const queueFailureAttemptId = randomUUID();
+    const queueFailureUserMessageId = randomUUID();
+    const queueFailureCompletedAt = new Date(Date.parse(fixedTimestamp) + 500).toISOString();
+    const queueFailureAttempt: ProjectChatAttempt = {
+      id: queueFailureAttemptId,
+      projectId: queueFailureProjectId,
+      sessionId: queueFailureSession.id,
+      userMessageId: queueFailureUserMessageId,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      status: 'failed',
+      createdAt: fixedTimestamp,
+      updatedAt: queueFailureCompletedAt,
+    };
+    const queueFailureUserMessage: ProjectChatMessage = {
+      id: queueFailureUserMessageId,
+      projectId: queueFailureProjectId,
+      role: 'user',
+      content: 'Queued input with an expired opaque attachment ID',
+      status: 'complete',
+      attemptId: queueFailureAttemptId,
+      actions: [],
+      createdAt: fixedTimestamp,
+      completedAt: queueFailureCompletedAt,
+    };
+    const queueFailureAssistantMessage: ProjectChatMessage = {
+      id: randomUUID(),
+      projectId: queueFailureProjectId,
+      role: 'assistant',
+      content: 'The queued attachment expired. Attach it again and resend.',
+      status: 'failed',
+      attemptId: queueFailureAttemptId,
+      actions: [],
+      createdAt: queueFailureCompletedAt,
+      completedAt: queueFailureCompletedAt,
+    };
+    invariant(
+      database.failProjectChatQueuedTurn(
+        failedQueueId,
+        queueFailureAttempt,
+        queueFailureUserMessage,
+        queueFailureAssistantMessage,
+      ) &&
+        database.snapshot(queueFailureProjectId).messages.length === 2 &&
+        database.claimNextProjectChatQueuedTurn(queueFailureProjectId)?.id === laterHealthyQueueId,
+      'project_chat_failed_queue_did_not_release_later_work',
+    );
 
     const interruptedAttemptId = randomUUID();
     const interruptedUserMessageId = randomUUID();
@@ -2702,6 +3025,30 @@ void app.whenReady().then(async () => {
       status: 'running',
     };
     database.markChatAttemptRunning(interruptedRunning);
+    const interruptedResearchNoteArtifactId = '1'.repeat(16);
+    const interruptedResearchNotePath = `Project Progress/Recovered progress--${interruptedResearchNoteArtifactId}.md`;
+    const interruptedResearchNoteSha256 = '2'.repeat(64);
+    database.stageResearchNoteSave({
+      schemaVersion: 1,
+      projectId: chatProjectId,
+      sessionId: defaultChatSession.id,
+      attemptId: interruptedAttemptId,
+      bindingId: 'a'.repeat(64),
+      category: 'project-progress',
+      artifactId: interruptedResearchNoteArtifactId,
+      expectedContentSha256: interruptedResearchNoteSha256,
+      stagedAt: fixedTimestamp,
+    });
+    database.confirmResearchNoteSave({
+      projectId: chatProjectId,
+      sessionId: defaultChatSession.id,
+      attemptId: interruptedAttemptId,
+      artifactId: interruptedResearchNoteArtifactId,
+      category: 'project-progress',
+      relativePath: interruptedResearchNotePath,
+      contentSha256: interruptedResearchNoteSha256,
+      confirmedAt: fixedTimestamp,
+    });
 
     const completedAttemptId = randomUUID();
     const completedUserMessageId = randomUUID();
@@ -2772,6 +3119,27 @@ void app.whenReady().then(async () => {
       status: 'running',
     };
     database.markChatAttemptRunning(completedRunning);
+    const completedResearchNoteArtifactId = '3'.repeat(16);
+    const completedResearchNotePath = `Experiments/Durable plan--${completedResearchNoteArtifactId}.md`;
+    const completedResearchNoteSha256 = '4'.repeat(64);
+    database.stageResearchNoteSave({
+      schemaVersion: 1,
+      projectId: chatProjectId,
+      sessionId: defaultChatSession.id,
+      attemptId: completedAttemptId,
+      bindingId: 'a'.repeat(64),
+      category: 'experiments',
+      artifactId: completedResearchNoteArtifactId,
+      expectedContentSha256: completedResearchNoteSha256,
+      stagedAt: fixedTimestamp,
+    });
+    database.markResearchNoteSaveUncertain({
+      projectId: chatProjectId,
+      sessionId: defaultChatSession.id,
+      attemptId: completedAttemptId,
+      artifactId: completedResearchNoteArtifactId,
+      uncertainAt: fixedTimestamp,
+    });
     const completedAssistantMessageId = randomUUID();
     database.finishChatAttempt(
       { ...completedRunning, status: 'complete' },
@@ -2779,12 +3147,50 @@ void app.whenReady().then(async () => {
         id: completedAssistantMessageId,
         projectId: chatProjectId,
         role: 'assistant',
-        content: 'This attempt completed durably.',
+        content: `This attempt completed durably.\n\n---\n${PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION}`,
         status: 'complete',
         actions: [],
         createdAt: fixedTimestamp,
         completedAt: fixedTimestamp,
       },
+    );
+    invariant(
+      database.abandonResearchNoteSave({
+        projectId: chatProjectId,
+        sessionId: defaultChatSession.id,
+        attemptId: completedAttemptId,
+        artifactId: completedResearchNoteArtifactId,
+        abandonedAt: fixedTimestamp,
+      }) &&
+        database
+          .snapshot(chatProjectId)
+          .messages.find((message) => message.id === completedAssistantMessageId)
+          ?.content.includes(PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION) &&
+        !database
+          .snapshot(chatProjectId)
+          .messages.find((message) => message.id === completedAssistantMessageId)
+          ?.content.includes(PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION),
+      'verified_missing_research_note_was_not_terminalized',
+    );
+    database.confirmResearchNoteSave({
+      projectId: chatProjectId,
+      sessionId: defaultChatSession.id,
+      attemptId: completedAttemptId,
+      artifactId: completedResearchNoteArtifactId,
+      category: 'experiments',
+      relativePath: completedResearchNotePath,
+      contentSha256: completedResearchNoteSha256,
+      confirmedAt: fixedTimestamp,
+    });
+    const lateResearchNoteMessage = database
+      .snapshot(chatProjectId)
+      .messages.find((message) => message.id === completedAssistantMessageId);
+    invariant(
+      lateResearchNoteMessage?.content.includes(`Research Notes/${completedResearchNotePath}`) &&
+        !lateResearchNoteMessage.content.includes(
+          PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION,
+        ),
+      'late_exact_research_note_save_did_not_supersede_abandoned_receipt',
     );
     const modalityAttemptId = randomUUID();
     const modalityUserMessageId = randomUUID();
@@ -3167,6 +3573,21 @@ void app.whenReady().then(async () => {
 
     const reopened = new LocalDatabase();
     reopened.open();
+    invariant(
+      reopened.snapshot(chatProjectId, independentChatSession.id).queuedTurns?.[0]?.id ===
+        queuedTurnId &&
+        reopened.snapshot(chatProjectId, independentChatSession.id).queuedTurns?.[0]?.message ===
+          'Edited durable queued turn' &&
+        reopened.snapshot(chatProjectId, independentChatSession.id).queuedTurns?.[0]?.status ===
+          'queued' &&
+        reopened.snapshot(chatProjectId, independentChatSession.id).queuedTurns?.[1]?.id ===
+          laterQueuedTurnId &&
+        (reopened.snapshot(chatProjectId, independentChatSession.id).queuedTurns?.[0]
+          ?.enqueueSequence ?? 0) <
+          (reopened.snapshot(chatProjectId, independentChatSession.id).queuedTurns?.[1]
+            ?.enqueueSequence ?? 0),
+      'project_chat_queue_restart_reconciliation_failed',
+    );
     let branchMessageLimitRejected = false;
     try {
       reopened.branchProjectChatSession({
@@ -3265,6 +3686,20 @@ void app.whenReady().then(async () => {
       'outbox_summary_revision_failed',
     );
     const reopenedChat = reopened.snapshot(chatProjectId);
+    const completedResearchNoteMessage = reopenedChat.messages.find(
+      (message) => message.id === completedAssistantMessageId,
+    );
+    invariant(
+      completedResearchNoteMessage?.content.includes(
+        `Research Notes/${completedResearchNotePath}`,
+      ) &&
+        !completedResearchNoteMessage.content.includes(
+          PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION,
+        ) &&
+        completedResearchNoteMessage.content.split(`Research Notes/${completedResearchNotePath}`)
+          .length === 2,
+      'completed_research_note_receipt_was_not_reported_exactly_once',
+    );
     const reopenedSsh = reopened.listSshConnections();
     invariant(
       reopenedSsh.length === 1 &&
@@ -3366,6 +3801,22 @@ void app.whenReady().then(async () => {
         (message) => message.attemptId === interruptedAttemptId && message.role === 'assistant',
       ).length === 1,
       'interrupted_chat_attempt_receipt_missing',
+    );
+    const interruptedResearchNoteMessage = reopenedChat.messages.find(
+      (message) => message.attemptId === interruptedAttemptId && message.role === 'assistant',
+    );
+    invariant(
+      interruptedResearchNoteMessage?.content.includes(
+        `Research Notes/${interruptedResearchNotePath}`,
+      ) &&
+        interruptedResearchNoteMessage.content.split(
+          `Research Notes/${interruptedResearchNotePath}`,
+        ).length === 2,
+      'interrupted_research_note_receipt_was_not_reconciled_exactly_once',
+    );
+    invariant(
+      reopened.listUnreportedResearchNoteSaves().length === 0,
+      'reported_research_note_receipt_remained_pending',
     );
     invariant(
       reopened.getChatAttempt(chatProjectId, modalityAttemptId)?.errorCode ===
@@ -3475,6 +3926,37 @@ void app.whenReady().then(async () => {
     }
     invariant(duplicateRejected, 'duplicate_outbox_operation_was_not_rejected');
     reopened.close();
+
+    const receiptMetadata = new Database(join(temporaryUserData, 'gosu.db'));
+    receiptMetadata.pragma(`key="x'${keyHex}'"`);
+    const receiptColumns = receiptMetadata.pragma(
+      'table_info(project_chat_research_note_save_receipts)',
+    ) as Array<{ name: string }>;
+    const receiptTable = receiptMetadata
+      .prepare(
+        `select sql from sqlite_master
+         where type='table' and name='project_chat_research_note_save_receipts'`,
+      )
+      .get() as { sql: string };
+    invariant(
+      receiptColumns.length > 0 &&
+        receiptColumns.every(
+          (column) => !['content', 'body', 'markdown', 'title'].includes(column.name),
+        ),
+      'research_note_receipt_schema_persisted_file_body_metadata',
+    );
+    invariant(
+      /['"]abandoned['"]/u.test(receiptTable.sql),
+      'research_note_abandoned_receipt_schema_was_not_migrated',
+    );
+    const reportedReceiptCount = receiptMetadata
+      .prepare(
+        `select count(*) as count from project_chat_research_note_save_receipts
+         where status='reported'`,
+      )
+      .get() as { count: number };
+    invariant(reportedReceiptCount.count === 2, 'research_note_receipts_were_not_reported_once');
+    receiptMetadata.close();
 
     const afterRollback = new LocalDatabase();
     afterRollback.open();

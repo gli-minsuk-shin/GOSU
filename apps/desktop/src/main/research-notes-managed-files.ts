@@ -6,6 +6,7 @@ import { dirname, relative, resolve, sep } from 'node:path';
 const MARKER_FILE = '.gosu-project.json';
 const MAX_MARKER_BYTES = 16_384;
 const MAX_MANAGED_MARKDOWN_BYTES = 8 * 1_024 * 1_024;
+export const RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES = 2_000_000;
 
 export type ResearchNotesOwnership = Readonly<{
   schemaVersion: 1;
@@ -75,7 +76,9 @@ async function existingKind(path: string) {
   }
 }
 
-async function writeExclusive(path: string, content: string) {
+type DirectorySync = (directory: string) => Promise<void>;
+
+async function writeExclusive(path: string, content: string, directorySync: DirectorySync) {
   const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
   try {
     await handle.writeFile(content, 'utf8');
@@ -83,18 +86,49 @@ async function writeExclusive(path: string, content: string) {
   } finally {
     await handle.close();
   }
+  await syncCreatedDirectoryEntry(dirname(path), directorySync);
 }
 
-async function writeAtomic(path: string, content: string) {
+function directorySyncUnsupported(error: unknown) {
+  const code = (error as NodeJS.ErrnoException).code;
+  return (
+    code === 'EINVAL' ||
+    code === 'ENOTSUP' ||
+    code === 'EOPNOTSUPP' ||
+    code === 'ENOSYS' ||
+    code === 'EISDIR' ||
+    (process.platform === 'win32' && (code === 'EPERM' || code === 'EBADF'))
+  );
+}
+
+async function syncDirectory(directory: string) {
+  const handle = await open(directory, constants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function syncCreatedDirectoryEntry(directory: string, directorySync: DirectorySync) {
+  try {
+    await directorySync(directory);
+  } catch (error) {
+    if (!directorySyncUnsupported(error)) throw error;
+  }
+}
+
+async function writeAtomic(path: string, content: string, directorySync: DirectorySync) {
   const parent = dirname(path);
   const temporary = resolve(parent, `.gosu-write-${randomUUID()}.tmp`);
-  await writeExclusive(temporary, content);
   try {
+    await writeExclusive(temporary, content, directorySync);
     const kind = await existingKind(path);
     if (kind === 'directory' || kind === 'symlink' || kind === 'other') {
       throw new Error('research_notes_folder_conflict');
     }
     await rename(temporary, path);
+    await syncCreatedDirectoryEntry(parent, directorySync);
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
   }
@@ -135,7 +169,10 @@ export function safeResearchNotesFolderName(name: string) {
 }
 
 export class ResearchNotesManagedFiles {
-  constructor(private readonly vaultRoot: string) {}
+  constructor(
+    private readonly vaultRoot: string,
+    private readonly directorySync: DirectorySync = syncDirectory,
+  ) {}
 
   async validateRoot() {
     const canonical = await realpath(this.vaultRoot);
@@ -171,7 +208,11 @@ export class ResearchNotesManagedFiles {
     const markerPath = resolve(projectRoot, MARKER_FILE);
     const markerKind = await existingKind(markerPath);
     if (markerKind === 'missing') {
-      await writeExclusive(markerPath, `${JSON.stringify(ownership, null, 2)}\n`);
+      await writeExclusive(
+        markerPath,
+        `${JSON.stringify(ownership, null, 2)}\n`,
+        this.directorySync,
+      );
     } else {
       const current = await this.readOwnership(folderName);
       if (!current || !sameOwnership(current, ownership)) {
@@ -183,7 +224,9 @@ export class ResearchNotesManagedFiles {
       const target = resolve(projectRoot, path);
       assertInside(projectRoot, target);
       await ensureDirectory(projectRoot, dirname(path));
-      if ((await existingKind(target)) === 'missing') await writeExclusive(target, content);
+      if ((await existingKind(target)) === 'missing') {
+        await writeExclusive(target, content, this.directorySync);
+      }
     }
     await this.validateRoot();
   }
@@ -252,7 +295,7 @@ export class ResearchNotesManagedFiles {
       }
       if (current === content) return;
     }
-    await writeAtomic(target, content);
+    await writeAtomic(target, content, this.directorySync);
     await this.validateRoot();
   }
 
@@ -262,6 +305,9 @@ export class ResearchNotesManagedFiles {
     content: string,
     ownership: ResearchNotesOwnership,
   ) {
+    if (Buffer.byteLength(content, 'utf8') > RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES) {
+      throw new Error('research_notes_markdown_too_large');
+    }
     await this.validateRoot();
     const projectRoot = await this.requireProjectRoot(folderName);
     const target = resolve(projectRoot, relativePath);
@@ -271,7 +317,7 @@ export class ResearchNotesManagedFiles {
     const kind = await existingKind(target);
     if (kind === 'file') return false;
     if (kind !== 'missing') throw new Error('research_notes_folder_conflict');
-    await writeExclusive(target, content);
+    await writeExclusive(target, content, this.directorySync);
     await this.validateRoot();
     return true;
   }
@@ -285,7 +331,7 @@ export class ResearchNotesManagedFiles {
 
   private async writeOwnership(folderName: string, ownership: ResearchNotesOwnership) {
     const marker = resolve(this.vaultRoot, this.projectRelativeRoot(folderName), MARKER_FILE);
-    await writeAtomic(marker, `${JSON.stringify(ownership, null, 2)}\n`);
+    await writeAtomic(marker, `${JSON.stringify(ownership, null, 2)}\n`, this.directorySync);
   }
 
   private async requireProjectRoot(folderName: string) {

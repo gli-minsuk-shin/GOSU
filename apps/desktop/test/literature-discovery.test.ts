@@ -6,6 +6,7 @@ import type {
   LiteratureProviderCandidate,
 } from '../src/main/literature-crossref';
 import { BalancedLiteratureProvider } from '../src/main/literature-discovery';
+import type { HuggingFaceLiteratureProvider } from '../src/main/literature-hugging-face';
 import type { SemanticScholarLiteratureProvider } from '../src/main/literature-semantic-scholar';
 
 function candidate(
@@ -31,10 +32,14 @@ function candidate(
 function providerWithMocks(
   semanticScholar: Pick<SemanticScholarLiteratureProvider, 'search' | 'authorMetrics'>,
   crossref: Pick<CrossrefLiteratureProvider, 'search'>,
+  huggingFace: Pick<HuggingFaceLiteratureProvider, 'search'> = {
+    search: vi.fn(async () => []),
+  },
 ) {
   return new BalancedLiteratureProvider({
     semanticScholar: semanticScholar as SemanticScholarLiteratureProvider,
     crossref: crossref as CrossrefLiteratureProvider,
+    huggingFace: huggingFace as HuggingFaceLiteratureProvider,
     now: () => new Date('2026-08-05T00:00:00.000Z'),
   });
 }
@@ -150,7 +155,7 @@ describe('balanced literature discovery provider', () => {
 
     expect(provider.providerId).toBe('balanced');
     expect(provider.policyId).toBe('balanced-three-layer');
-    expect(provider.policyVersion).toBe(2);
+    expect(provider.policyVersion).toBe(3);
     expect(crossref.search).toHaveBeenCalledTimes(3);
     expect(crossref.search).toHaveBeenNthCalledWith(
       1,
@@ -365,6 +370,143 @@ describe('balanced literature discovery provider', () => {
     );
     expect(result.candidates.some(({ provider }) => provider === 'semantic-scholar')).toBe(true);
     expect(result.candidates.some(({ provider }) => provider === 'crossref')).toBe(true);
+  });
+
+  it('uses Hugging Face Papers as an additive discovery source without promoting citation-free papers to core', async () => {
+    const semanticPaper = (id: string, year: number, citations: number) => ({
+      candidate: candidate(id, {
+        provider: 'semantic-scholar',
+        publishedYear: year,
+        citationCount: citations,
+      }),
+      authorIds: [`author-${id}`],
+      influentialCitationCount: Math.floor(citations / 20),
+      publicationDate: `${year}-01-01`,
+    });
+    const semanticScholar = {
+      search: vi.fn(
+        async (
+          _query: string,
+          _limit: number,
+          options?: { sort?: 'relevance' | 'citation' | 'published' },
+        ) =>
+          options?.sort === 'citation'
+            ? [semanticPaper('classic-hf-test', 2018, 2_000)]
+            : options?.sort === 'published'
+              ? [semanticPaper('recent-hf-test', 2026, 20)]
+              : [semanticPaper('relevant-hf-test', 2024, 300)],
+      ),
+      authorMetrics: vi.fn(async () => new Map()),
+    };
+    const huggingFace = {
+      search: vi.fn(async () => [
+        {
+          candidate: candidate('2608.00001', {
+            provider: 'hugging-face',
+            doi: undefined,
+            fingerprint: 'f'.repeat(64),
+            title: 'Hugging Face only discovery',
+            publishedYear: 2026,
+            citationCount: undefined,
+            containerTitle: 'arXiv',
+            workType: 'preprint',
+            sourceUrl: 'https://huggingface.co/papers/2608.00001',
+          }),
+          upvotes: 42,
+        },
+      ]),
+    };
+    const crossref = { search: vi.fn(async () => []) };
+    const provider = providerWithMocks(semanticScholar, crossref, huggingFace);
+
+    const result = await provider.search('agentic research', 4);
+
+    expect(huggingFace.search).toHaveBeenCalledWith('agentic research', 100, expect.any(Object));
+    expect(result.coverage.source).toBe('combined');
+    expect(result.coverage.availableSignals).toContain('hugging-face-index');
+    const huggingFaceResult = result.candidates.find(
+      ({ provider: source }) => source === 'hugging-face',
+    );
+    expect(huggingFaceResult?.discovery?.signalSources).toContain('hugging-face');
+    expect(huggingFaceResult?.discovery?.tier).toBe('broad');
+    expect(crossref.search).toHaveBeenCalledTimes(3);
+  });
+
+  it('still requests citation-aware fallback lanes when Hugging Face fills the target but Semantic Scholar is empty', async () => {
+    const semanticScholar = {
+      search: vi.fn(async () => []),
+      authorMetrics: vi.fn(),
+    };
+    const huggingFace = {
+      search: vi.fn(async () =>
+        Array.from({ length: 3 }, (_, index) => ({
+          candidate: candidate(`2608.0000${index}`, {
+            provider: 'hugging-face',
+            doi: undefined,
+            fingerprint: `${index}`.repeat(64),
+            publishedYear: 2026,
+            citationCount: undefined,
+            workType: 'preprint',
+            sourceUrl: `https://huggingface.co/papers/2608.0000${index}`,
+          }),
+          upvotes: 100 - index,
+        })),
+      ),
+    };
+    const crossref = {
+      search: vi.fn(async () => [candidate('authority-fallback', { citationCount: 5_000 })]),
+    };
+    const provider = providerWithMocks(semanticScholar, crossref, huggingFace);
+
+    const result = await provider.search('citation-aware fallback', 3);
+
+    expect(crossref.search).toHaveBeenCalledTimes(3);
+    expect(result.candidates.some(({ provider: source }) => source === 'crossref')).toBe(true);
+    expect(result.coverage.availableSignals).toContain('citation-authority');
+  });
+
+  it('deduplicates the same arXiv paper across Semantic Scholar and Hugging Face despite metadata drift', async () => {
+    const semanticCandidate = candidate('semantic-arxiv-paper', {
+      provider: 'semantic-scholar',
+      canonicalId: 'arxiv:2504.10808',
+      fingerprint: 'a'.repeat(64),
+      citationCount: 120,
+    });
+    const semanticScholar = {
+      search: vi.fn(async () => [
+        {
+          candidate: semanticCandidate,
+          authorIds: [],
+          influentialCitationCount: 12,
+          publicationDate: '2025-04-15',
+        },
+      ]),
+      authorMetrics: vi.fn(async () => new Map()),
+    };
+    const huggingFace = {
+      search: vi.fn(async () => [
+        {
+          candidate: candidate('2504.10808', {
+            provider: 'hugging-face',
+            canonicalId: 'arxiv:2504.10808',
+            doi: undefined,
+            fingerprint: 'b'.repeat(64),
+            title: 'Metadata formatting changed',
+            authors: ['Different author format'],
+            citationCount: undefined,
+          }),
+          upvotes: 80,
+        },
+      ]),
+    };
+    const crossref = { search: vi.fn() };
+    const provider = providerWithMocks(semanticScholar, crossref, huggingFace);
+
+    const result = await provider.search('canonical arxiv identity', 1);
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.provider).toBe('semantic-scholar');
+    expect(crossref.search).not.toHaveBeenCalled();
   });
 
   it('samples first, last, and other authors fairly within the 200-author lookup cap', async () => {

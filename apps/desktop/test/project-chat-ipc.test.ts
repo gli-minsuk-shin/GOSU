@@ -45,6 +45,47 @@ describe('Project chat IPC', () => {
     expect(reportUnexpected).not.toHaveBeenCalled();
   });
 
+  it('validates queue edit, remove, and replace-current commands at the IPC boundary', async () => {
+    const projectId = randomUUID();
+    const sessionId = randomUUID();
+    const queueId = randomUUID();
+    const updateQueuedTurn = vi.fn(async (input) => input);
+    const removeQueuedTurn = vi.fn(async () => ({ removed: true as const }));
+    const runQueuedTurnNow = vi.fn(async () => ({ accepted: true as const }));
+    const { handlers } = registerFixture({
+      updateQueuedTurn,
+      removeQueuedTurn,
+      runQueuedTurnNow,
+    });
+
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.updateQueuedTurn)?.({
+        projectId,
+        sessionId,
+        queueId,
+        message: 'Edited queue text',
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.removeQueuedTurn)?.({
+        projectId,
+        sessionId,
+        queueId,
+        unexpected: true,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_chat_input' } });
+    await expect(
+      handlers.get(PROJECT_CHAT_IPC_CHANNELS.runQueuedTurnNow)?.({
+        projectId,
+        sessionId,
+        queueId,
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(updateQueuedTurn).toHaveBeenCalledOnce();
+    expect(removeQueuedTurn).not.toHaveBeenCalled();
+    expect(runQueuedTurnNow).toHaveBeenCalledOnce();
+  });
+
   it('maps unexpected failures to a generic chat error', async () => {
     const cancel = vi.fn(async () => {
       throw new Error('private-path:/Users/researcher/secret');

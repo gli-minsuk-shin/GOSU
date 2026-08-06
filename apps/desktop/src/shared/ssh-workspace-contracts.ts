@@ -9,6 +9,7 @@ export const SSH_WORKSPACE_FILE_PATH_MAX_LENGTH = 512;
 export const SSH_WORKSPACE_FILE_MAX_CHARACTERS = 24_000;
 export const SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS = 16_000;
 export const SSH_WORKSPACE_FILE_LIST_MAX_ENTRIES = 200;
+export const SSH_TRUSTED_WORKSPACE_POLICY_VERSION = 1;
 
 const uuidSchema = z.string().uuid();
 const timestampSchema = z.string().datetime({ offset: true });
@@ -84,6 +85,22 @@ export const RemoteWorkspaceRootSchema = z
 export const RemoteWorkspacePermissionModeSchema = z.enum(['diagnostics', 'workspace']);
 export type RemoteWorkspacePermissionMode = z.infer<typeof RemoteWorkspacePermissionModeSchema>;
 
+export const TrustedRemoteWorkspaceAccessSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    policyVersion: z.number().int().positive(),
+    projectId: uuidSchema,
+    grantId: uuidSchema,
+    grantVersion: z.number().int().positive(),
+    connectionId: uuidSchema,
+    connectionVersion: z.number().int().positive(),
+    canonicalRoot: RemoteWorkspaceRootSchema,
+    enabledAt: timestampSchema,
+  })
+  .strict();
+
+export type TrustedRemoteWorkspaceAccess = z.infer<typeof TrustedRemoteWorkspaceAccessSchema>;
+
 export const RemoteWorkspaceGrantSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -92,6 +109,7 @@ export const RemoteWorkspaceGrantSchema = z
     connectionId: uuidSchema,
     canonicalRoot: RemoteWorkspaceRootSchema,
     permissionMode: RemoteWorkspacePermissionModeSchema,
+    trustedAccess: TrustedRemoteWorkspaceAccessSchema.nullable().optional(),
     version: z.number().int().positive(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
@@ -130,6 +148,24 @@ export const RemoveRemoteWorkspaceGrantInputSchema = z
   .strict();
 
 export const ListRemoteWorkspaceGrantsInputSchema = z.object({ projectId: uuidSchema }).strict();
+
+export const EnableTrustedRemoteWorkspaceInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    grantId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+    confirmTrustedWorkspaceRisk: z.literal(true),
+    confirmNoRemoteSandbox: z.literal(true),
+  })
+  .strict();
+
+export const RevokeTrustedRemoteWorkspaceInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    grantId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
 
 export const RemoteWorkspaceSubdirectorySchema = z
   .string()
@@ -281,6 +317,28 @@ export const SshWorkspaceOperationClassSchema = z.enum([
 ]);
 export type SshWorkspaceOperationClass = z.infer<typeof SshWorkspaceOperationClassSchema>;
 
+export const SshTrustedWorkspaceAuditRecordSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    id: uuidSchema,
+    projectId: uuidSchema,
+    grantId: uuidSchema,
+    grantVersion: z.number().int().positive(),
+    connectionId: uuidSchema,
+    connectionVersion: z.number().int().positive(),
+    policyVersion: z.number().int().positive(),
+    sessionId: uuidSchema,
+    attemptId: uuidSchema,
+    turnId: z.string().min(1).max(256),
+    toolCallId: z.string().min(1).max(256),
+    operation: SshWorkspaceOperationClassSchema,
+    commandSha256: sha256Schema,
+    autoApprovedAt: timestampSchema,
+  })
+  .strict();
+
+export type SshTrustedWorkspaceAuditRecord = z.infer<typeof SshTrustedWorkspaceAuditRecordSchema>;
+
 export const GrantedRemoteWorkspaceSchema = z
   .object({
     grant: RemoteWorkspaceGrantSchema,
@@ -293,3 +351,9 @@ export type CreateRemoteWorkspaceGrantInput = z.infer<typeof CreateRemoteWorkspa
 export type UpdateRemoteWorkspaceGrantInput = z.infer<typeof UpdateRemoteWorkspaceGrantInputSchema>;
 export type RemoveRemoteWorkspaceGrantInput = z.infer<typeof RemoveRemoteWorkspaceGrantInputSchema>;
 export type ListRemoteWorkspaceGrantsInput = z.infer<typeof ListRemoteWorkspaceGrantsInputSchema>;
+export type EnableTrustedRemoteWorkspaceInput = z.infer<
+  typeof EnableTrustedRemoteWorkspaceInputSchema
+>;
+export type RevokeTrustedRemoteWorkspaceInput = z.infer<
+  typeof RevokeTrustedRemoteWorkspaceInputSchema
+>;

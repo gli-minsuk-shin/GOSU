@@ -92,6 +92,8 @@ export const RESEARCH_NOTES_IPC_ERROR_CODES = [
   'research_notes_folder_unavailable',
   'research_notes_note_not_found',
   'research_notes_record_not_found',
+  'research_notes_save_commit_uncertain',
+  'research_notes_markdown_too_large',
   'research_notes_unavailable',
 ] as const;
 

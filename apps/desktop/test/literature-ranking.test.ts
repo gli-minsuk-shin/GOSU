@@ -40,7 +40,7 @@ function rankingInput(
 
 describe('balanced literature ranking', () => {
   it('uses the eligibility-gated policy v2', () => {
-    expect(BALANCED_LITERATURE_POLICY_VERSION).toBe(2);
+    expect(BALANCED_LITERATURE_POLICY_VERSION).toBe(3);
   });
 
   it('fills deterministic bounded Core, Rising, and Broad allocations for eligible papers', () => {
