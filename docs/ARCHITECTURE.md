@@ -1320,6 +1320,11 @@ flowchart LR
   Codex turn이나 SSH 작업을 중단하지 않는다. titlebar의 항상 보이는 panel button과
   `View → Toggle Project Sidebar` (`Control+Command+S`)가 같은 toggle을 호출한다. Main과 preload는
   payload 없는 고정 IPC channel만 노출하며 Renderer load 전 menu 요청은 toggle parity로 합쳐 전달한다.
+  titlebar sidebar button은 34px hit area 안에 22px panel SVG를 사용하고, project section·Workspace
+  navigation icon은 24px cell 안의 18px glyph로 정렬한다. group과 project folder disclosure는 작은
+  font triangle 대신 shared SVG chevron을 18px로 고정한다. 이 icon geometry는 Appearance font scale과
+  macOS fallback font에 종속되지 않으며 기존 row height, label ellipsis, `aria-label`·`aria-expanded`를
+  유지한다.
   Desktop wide layout은 sidebar DOM과 고정된 2열 grid placement를 유지한 채 첫 track만 저장된
   220–440px 폭에서 0px로 전환하고 nav opacity·짧은 translate를 함께 적용한다. resize 중에는 grid
   transition을 끄고 pointer 위치를 직접 따라가며, content를 다른 row/column으로 재배치하지
@@ -2236,7 +2241,8 @@ Project navigation test는 이전 저장값에 sidebar 필드가 없으면 펼�
 group·hidden project 상태를 보존하는지 확인한다. Renderer test는 접힘·펼침 button의 `aria-controls`와
 `aria-expanded`, 46px 공통 titlebar token, viewport height chain과 document overflow 차단, nav·content의
 독립 scroll ownership, 고정 content grid placement, animated zero-width track, stable scrollbar gutter,
-`inert`·`aria-hidden`, responsive·reduced-motion fallback과 focus 이동 순서를 검사한다. 861px regression은
+`inert`·`aria-hidden`, 34px sidebar toggle·22px panel icon·18px navigation/disclosure icon,
+responsive·reduced-motion fallback과 focus 이동 순서를 검사한다. 861px regression은
 두 저장 폭을 최대로 둔 경우에도 1,180px breakpoint가 Sessions를 horizontal row로 바꾸고 숨은 handle이
 stale drag origin을 만들지 않는다는 layout 계약을 고정한다. application menu와 preload test는
 고정 accelerator, 표준 View 동작 보존, 구독 해제, 잘못된 payload 거절과 Renderer 준비 전 toggle parity를

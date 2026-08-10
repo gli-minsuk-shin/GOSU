@@ -89,6 +89,26 @@ describe('folder-style project sidebar', () => {
     expect(collapsed).toContain('aria-expanded="false"');
   });
 
+  it('uses larger fixed sidebar icons and disclosure chevrons without changing labels', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+    const html = renderSidebar();
+
+    expect(styles).toMatch(/\.sidebar-toggle-button\s*\{[^}]*width:\s*34px;[^}]*height:\s*34px;/su);
+    expect(styles).toMatch(
+      /\.sidebar-toggle-button svg\s*\{[^}]*width:\s*22px;[^}]*height:\s*22px;[^}]*stroke-width:\s*1\.6;/su,
+    );
+    expect(styles).toMatch(
+      /\.sidebar-nav-icon\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px;[^}]*font-size:\s*18px;/su,
+    );
+    expect(styles).toMatch(
+      /\.project-folder-chevron \.collapse-chevron,[^}]*\.project-group-toggle > \.collapse-chevron\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;/su,
+    );
+    expect(styles).toMatch(/\.project-folder-icon\s*\{[^}]*font-size:\s*18px;/su);
+    expect(html).toContain('class="sidebar-nav-icon"');
+    expect(html).toContain('class="collapse-chevron"');
+    expect(html).toContain('aria-label="Active projects"');
+  });
+
   it('smoothly collapses the desktop sidebar without moving content between grid rows', () => {
     const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
 
