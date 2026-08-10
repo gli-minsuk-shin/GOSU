@@ -241,7 +241,13 @@ $$`);
       /\.notes-layout\.folder-tree-collapsed\s*\{[^}]*grid-template-columns:\s*44px minmax\(0, 1fr\);/su,
     );
     expect(styles).toMatch(
-      /\.research-notes-tree-details\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/su,
+      /\.research-notes-tree-details\s*\{[^}]*grid-template-rows:\s*minmax\(90px, 1fr\) auto;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/su,
+    );
+    expect(styles).toMatch(
+      /\.research-notes-tree-scroll\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/su,
+    );
+    expect(styles).toMatch(
+      /\.research-notes-sidebar-tools\s*\{[^}]*max-height:\s*min\(46%, 420px\);[^}]*overflow-y:\s*auto;/su,
     );
     expect(styles).toMatch(
       /@media \(max-width: 860px\)[\s\S]*?\.notes-layout\.folder-tree-collapsed\s*\{[^}]*grid-template:\s*44px minmax\(0, 1fr\) \/ minmax\(0, 1fr\);/u,

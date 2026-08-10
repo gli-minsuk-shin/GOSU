@@ -342,72 +342,83 @@ export function ResearchNotesView({
           className="research-notes-tree-details"
           hidden={folderTreeCollapsed}
         >
-          <button type="button" className="secondary-button" onClick={onChoose} disabled={busy}>
-            {managed ? 'Change Vault' : 'Change folder'}
-          </button>
-          {workspace?.status === 'rename-pending' && (
-            <div className="notice error research-notes-attention" role="status">
-              <span>{researchNotesAttentionMessage(workspace.attentionCode)}</span>
-              {onRetry && (
-                <button type="button" className="ghost-button" onClick={onRetry} disabled={busy}>
-                  Retry
-                </button>
+          <div className="research-notes-tree-scroll">
+            {workspace?.status === 'rename-pending' && (
+              <div className="notice error research-notes-attention" role="status">
+                <span>{researchNotesAttentionMessage(workspace.attentionCode)}</span>
+                {onRetry && (
+                  <button type="button" className="ghost-button" onClick={onRetry} disabled={busy}>
+                    Retry
+                  </button>
+                )}
+              </div>
+            )}
+            {vault.files.length === 0 && <p className="column-empty">No Markdown files found</p>}
+            {vault.files.length > 0 && (
+              <ResearchNotesTree
+                key={vault.id}
+                files={vault.files}
+                expandedDirectories={expandedDirectories}
+                selectedPath={visibleSelectedNote?.path ?? null}
+                busy={busy}
+                onToggleDirectory={(path) =>
+                  updateExpandedDirectories((current) => toggleLocalNotesDirectory(current, path))
+                }
+                onOpenFile={openNote}
+              />
+            )}
+          </div>
+          <details className="research-notes-sidebar-tools">
+            <summary>
+              <span className="research-notes-sidebar-tools-chevron" aria-hidden="true" />
+              <span>Search &amp; settings</span>
+            </summary>
+            <div className="research-notes-sidebar-tools-body">
+              <button type="button" className="secondary-button" onClick={onChoose} disabled={busy}>
+                {managed ? 'Change Vault' : 'Change folder'}
+              </button>
+              {workspace && (
+                <section
+                  className="research-notes-managed-summary"
+                  aria-label="Managed project folders"
+                >
+                  <span>MANAGED PROJECT FOLDERS</span>
+                  <ul>
+                    {workspace.folders.map((folder) => (
+                      <li key={folder}>{folder}</li>
+                    ))}
+                  </ul>
+                  <small>
+                    {workspace.lastLiteratureSyncAt
+                      ? `Literature table synced ${new Date(workspace.lastLiteratureSyncAt).toLocaleString()}`
+                      : 'Literature table will sync after the first Literature search or update.'}
+                  </small>
+                </section>
               )}
+              {project && searchAdapter && (
+                <SearchView
+                  adapter={searchAdapter}
+                  scope={{ kind: 'project', projectId: project.id }}
+                  scopeLabel={`${project.name} Research Notes`}
+                  compact
+                  onOpen={(hit) => {
+                    if (hit.target.kind === 'research-note') openNote(hit.target.path);
+                  }}
+                />
+              )}
+              {accessPanel}
+              <p className="note-agent-disclosure">
+                Access is project-specific and stays off until you explicitly authorize this folder
+                here or in AI Agent Settings. Listing sends display titles and opaque IDs; reading
+                also sends the requested excerpt, content hash, offset, and total length to the
+                configured LLM. Automatic Markdown saving is a separate explicit capability: it
+                creates only new files under this project’s managed folders, never replaces a
+                different existing file, and reports the relative location. Legacy grants remain
+                read-only until upgraded. Visible replies may be stored and synchronized; Research
+                Notes file bodies remain local.
+              </p>
             </div>
-          )}
-          {workspace && (
-            <section
-              className="research-notes-managed-summary"
-              aria-label="Managed project folders"
-            >
-              <span>MANAGED PROJECT FOLDERS</span>
-              <ul>
-                {workspace.folders.map((folder) => (
-                  <li key={folder}>{folder}</li>
-                ))}
-              </ul>
-              <small>
-                {workspace.lastLiteratureSyncAt
-                  ? `Literature table synced ${new Date(workspace.lastLiteratureSyncAt).toLocaleString()}`
-                  : 'Literature table will sync after the first Literature search or update.'}
-              </small>
-            </section>
-          )}
-          {project && searchAdapter && (
-            <SearchView
-              adapter={searchAdapter}
-              scope={{ kind: 'project', projectId: project.id }}
-              scopeLabel={`${project.name} Research Notes`}
-              compact
-              onOpen={(hit) => {
-                if (hit.target.kind === 'research-note') openNote(hit.target.path);
-              }}
-            />
-          )}
-          {accessPanel}
-          <p className="note-agent-disclosure">
-            Access is project-specific and stays off until you explicitly authorize this folder here
-            or in AI Agent Settings. Listing sends display titles and opaque IDs; reading also sends
-            the requested excerpt, content hash, offset, and total length to the configured LLM.
-            Automatic Markdown saving is a separate explicit capability: it creates only new files
-            under this project’s managed folders, never replaces a different existing file, and
-            reports the relative location. Legacy grants remain read-only until upgraded. Visible
-            replies may be stored and synchronized; Research Notes file bodies remain local.
-          </p>
-          {vault.files.length === 0 && <p className="column-empty">No Markdown files found</p>}
-          {vault.files.length > 0 && (
-            <ResearchNotesTree
-              key={vault.id}
-              files={vault.files}
-              expandedDirectories={expandedDirectories}
-              selectedPath={visibleSelectedNote?.path ?? null}
-              busy={busy}
-              onToggleDirectory={(path) =>
-                updateExpandedDirectories((current) => toggleLocalNotesDirectory(current, path))
-              }
-              onOpenFile={openNote}
-            />
-          )}
+          </details>
         </div>
       </aside>
       <article className="note-reader">

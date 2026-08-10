@@ -164,7 +164,7 @@ describe('folder-style project sidebar', () => {
     const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
 
     expect(styles).toMatch(
-      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.desktop-shell,\s*\.desktop-nav,\s*\.notes-layout,\s*\.project-chat-workspace,\s*\.resize-handle::after\s*\{\s*transition:\s*none;/su,
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.desktop-shell,\s*\.desktop-nav,\s*\.notes-layout,\s*\.project-chat-workspace,\s*\.research-notes-sidebar-tools-chevron,\s*\.resize-handle::after\s*\{\s*transition:\s*none;/su,
     );
     expect(styles).toMatch(
       /@media \(max-width: 860px\)[\s\S]*?\.desktop-shell\.sidebar-collapsed \.desktop-nav\s*\{\s*display:\s*none;/u,

@@ -775,6 +775,15 @@ file/directory 충돌 path를 normalize하지 않고 제외한다. `role="tree"`
 Markdown path만 제공하므로 읽을 수 있는 Markdown을 포함한 폴더만 표시하고 empty 또는 attachment-only
 folder를 열거하기 위해 Main capability를 넓히지 않는다.
 
+ready workspace의 explorer는 Vault root header 다음에 실제 folder tree를 첫 콘텐츠로 렌더링한다. 중복된
+managed-folder 설명, project 검색, Vault 변경, Agent access와 privacy 설명은 기본적으로 닫힌
+`Search & settings` disclosure로 분리해 폴더를 보기 위해 sidebar를 먼저 scroll하지 않게 한다. folder tree와
+secondary controls는 서로 다른 bounded scroll region을 사용하고, 열린 controls는 explorer 높이의 46%·420px
+중 작은 값까지만 차지하며 tree에는 최소 90px을 남긴다. 안전한 rename reconciliation이 필요한 경우에만
+짧은 attention·Retry 행을 tree 위에 유지한다. 좁은 stacked layout의 explorer 상한은 300px로 두어 Extra
+Large 글자에서도 기본 project folder가 초기 viewport에 남고, 전체 explorer 최소화 상태는 기존 44px strip을
+그대로 사용한다.
+
 file explorer 전체는 persistent toggle로 최소화할 수 있다. 넓은 창에서는 270px explorer가 44px 세로
 restore rail로 줄고, 860px 이하의 stacked layout에서는 44px 상단 strip으로 줄어 Markdown reader가 남은
 폭이나 높이를 즉시 회수한다. toggle DOM은 열림·닫힘 동안 유지하고 `aria-controls`·`aria-expanded`와
