@@ -2661,16 +2661,18 @@ textarea:focus {
 }
 
 .research-notes-tree-details {
-  display: grid;
-  grid-template-rows: minmax(90px, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
+  gap: 6px;
   overflow: hidden;
 }
 
 .research-notes-tree-scroll {
+  flex: 1 1 auto;
   min-width: 0;
-  min-height: 0;
+  min-height: 90px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -2682,34 +2684,37 @@ textarea:focus {
 }
 
 .research-notes-sidebar-tools {
+  flex: 0 1 auto;
+  width: 100%;
   min-width: 0;
+  min-height: 39px;
   max-height: min(46%, 420px);
-  margin-top: 6px;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
   border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
-  overscroll-behavior: contain;
 }
 
-.research-notes-sidebar-tools > summary {
+.research-notes-sidebar-tools.open {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.research-notes-sidebar-tools-toggle {
   display: flex;
+  width: 100%;
   align-items: center;
   min-height: 38px;
   gap: 7px;
   padding: 7px 6px;
   color: var(--muted);
+  background: color-mix(in srgb, var(--surface-soft) 96%, var(--surface));
   font-size: var(--font-control);
   font-weight: 720;
   cursor: pointer;
-  list-style: none;
+  border: 0;
 }
 
-.research-notes-sidebar-tools > summary::-webkit-details-marker {
-  display: none;
-}
-
-.research-notes-sidebar-tools > summary:hover {
+.research-notes-sidebar-tools-toggle:hover {
   color: var(--text);
 }
 
@@ -2723,14 +2728,23 @@ textarea:focus {
   transition: transform 120ms ease;
 }
 
-.research-notes-sidebar-tools[open] .research-notes-sidebar-tools-chevron {
+.research-notes-sidebar-tools.open .research-notes-sidebar-tools-chevron {
   transform: rotate(90deg);
 }
 
 .research-notes-sidebar-tools-body {
   display: grid;
+  min-height: 0;
   gap: 10px;
   padding: 0 4px 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.research-notes-sidebar-tools-body[hidden] {
+  display: none;
 }
 
 .research-notes-sidebar-tools-body > .secondary-button {
@@ -6977,7 +6991,8 @@ button.chat-toolbar-status {
   }
 
   .note-list {
-    max-height: 300px;
+    height: min(360px, 45vh);
+    max-height: none;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }

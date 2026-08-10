@@ -241,13 +241,22 @@ $$`);
       /\.notes-layout\.folder-tree-collapsed\s*\{[^}]*grid-template-columns:\s*44px minmax\(0, 1fr\);/su,
     );
     expect(styles).toMatch(
-      /\.research-notes-tree-details\s*\{[^}]*grid-template-rows:\s*minmax\(90px, 1fr\) auto;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/su,
+      /\.research-notes-tree-details\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*gap:\s*6px;[^}]*overflow:\s*hidden;/su,
     );
     expect(styles).toMatch(
-      /\.research-notes-tree-scroll\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/su,
+      /\.research-notes-tree-scroll\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-height:\s*90px;[^}]*overflow-y:\s*auto;/su,
     );
     expect(styles).toMatch(
-      /\.research-notes-sidebar-tools\s*\{[^}]*max-height:\s*min\(46%, 420px\);[^}]*overflow-y:\s*auto;/su,
+      /\.research-notes-sidebar-tools\s*\{[^}]*flex:\s*0 1 auto;[^}]*min-height:\s*39px;[^}]*max-height:\s*min\(46%, 420px\);[^}]*overflow:\s*hidden;/su,
+    );
+    expect(styles).toMatch(
+      /\.research-notes-sidebar-tools\.open\s*\{[^}]*display:\s*grid;[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\);/su,
+    );
+    expect(styles).toMatch(
+      /\.research-notes-sidebar-tools-body\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*stable;/su,
+    );
+    expect(styles).toMatch(
+      /\.research-notes-sidebar-tools-body\[hidden\]\s*\{[^}]*display:\s*none;/su,
     );
     expect(styles).toMatch(
       /@media \(max-width: 860px\)[\s\S]*?\.notes-layout\.folder-tree-collapsed\s*\{[^}]*grid-template:\s*44px minmax\(0, 1fr\) \/ minmax\(0, 1fr\);/u,

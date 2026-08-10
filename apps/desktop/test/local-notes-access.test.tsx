@@ -301,10 +301,25 @@ describe('Research Notes project-agent access', () => {
     expect(managedSummaryIndex).toBeGreaterThan(toolsIndex);
     expect(accessIndex).toBeGreaterThan(toolsIndex);
     expect(html).toContain('>Search &amp; settings</span>');
-    expect(html).toMatch(/<details class="research-notes-sidebar-tools">/u);
-    expect(html).not.toMatch(/<details class="research-notes-sidebar-tools" open/u);
+    expect(html).toMatch(/<section class="research-notes-sidebar-tools">/u);
+    expect(html).toMatch(/class="research-notes-sidebar-tools-toggle"[^>]*aria-expanded="false"/u);
+    expect(html).toMatch(/class="research-notes-sidebar-tools-body" hidden=""/u);
+    expect(html).not.toContain('class="research-notes-sidebar-tools open"');
     expect(html).toContain('>Change Vault</button>');
     expect(html).toContain('Open AI Agent Settings…');
+  });
+
+  it('keeps an open settings panel mounted across a Vault change so picker focus stays visible', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/notes-view.tsx', import.meta.url),
+      'utf8',
+    );
+    const vaultChangeEffect = source.match(
+      /useEffect\(\(\) => \{\s*setTreeState\(\{[\s\S]*?\}\);\s*\}, \[vaultId\]\);/u,
+    );
+
+    expect(vaultChangeEffect?.[0]).toBeDefined();
+    expect(vaultChangeEffect?.[0]).not.toContain('setSidebarToolsOpen(false)');
   });
 
   it('keeps one accessible folder-tree toggle and the reader visible when expanded', () => {
