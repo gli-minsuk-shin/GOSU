@@ -23,12 +23,12 @@ transaction. A failed commit publishes neither change. Task and objective update
 caller's expected entity version instead of silently applying last-write-wins.
 
 Research Notes connects one Obsidian Vault and creates an owned `GOSU/<project>` folder with
-Literature, Papers, Experiments, Project Progress, and Idea Development sections. General Vault
-content stays read-only. GOSU writes only initial templates, its deterministic Literature table,
-one-time paper-note drafts, and one category-scoped create-only Markdown artifact from a completed,
-authorized Project Chat turn inside the owned project folder. The model's required structured final
-response supplies only a disposition, category, title, and Markdown body; Main performs the write,
-chooses the safe relative path, and never overwrites a different file.
+Literature, Papers, Experiments, Project Progress, Idea Development, and Lecture Notes & Slides
+sections. General Vault content stays read-only. GOSU writes only initial templates, its
+deterministic Literature table, one-time paper-note drafts, category-scoped create-only Markdown
+artifacts from completed authorized Project Chat turns, and immutable Lecture Studio revisions
+inside the selected output project. Model output never supplies a filesystem path: Main chooses the
+safe relative path, verifies ownership and bytes, and never overwrites a different file.
 Project-scoped IPC rejects symlinks, root escape, stale binding and ownership changes; the Renderer
 has no Vault-wide filesystem bridge or generic write API.
 Navigation and privileged IPC are accepted only from the exact packaged renderer URL or an
@@ -68,6 +68,13 @@ and supports:
   approved Python, tests, or builds and analyze their bounded output;
 - monitoring registered server CPU, memory, and GPU usage with collapsible status cards and a local
   refresh preference; and
+- opening a workspace-level Lecture Studio outside project navigation, selecting reviewed papers
+  and recorded experiment evidence across several active projects, choosing one selected project as
+  the Research Notes output owner, and generating lecture notes plus teaching slides or a
+  10/20/30/50-minute talk deck;
+- revising each generated deck in a dedicated Lecture Studio chat without adding its messages to
+  any Project Chat, while previewing rendered Markdown and seeing the exact saved artifact paths;
+  and
 - showing the number of durable changes waiting in the local outbox.
 
 These records survive an app restart. The pending-change count does not claim cloud delivery: a
@@ -75,6 +82,25 @@ Sync delivery/reconciliation worker and multi-user authorization are not connect
 workspace yet. The Sync readiness indicator only reports whether the development API can be
 reached. The remaining research modules are visibly marked as later work rather than populated with
 simulated experiment or manuscript results.
+
+## Lecture Studio
+
+Lecture Studio is a workspace module rather than a child tab of one project. A studio freezes the
+selected project IDs, Literature record IDs, Experiment idea IDs, metric lineage, output project,
+presentation kind, and talk duration. Literature input is metadata-only and defaults to records that
+have been included or reviewed; the UI preserves that evidence status instead of implying that GOSU
+read a paper's full text. Experiment input uses only persisted idea and metric records.
+
+Generation runs through the local Codex App Server with web, shell, filesystem, and dynamic tools
+disabled. Frozen sources, the current documents, and the active edit request are never silently
+truncated: GOSU stops before generation when they cannot fit the bounded model context. Failed,
+cancelled, and restart-interrupted edit requests are excluded from later revision prompts. The
+response must be complete Markdown notes and slides with supplied source labels.
+Each accepted edit creates an append-only local revision and a new pair of Markdown artifacts in
+`GOSU/<output project>/Lecture Notes & Slides`; it does not overwrite an earlier revision. The
+pending artifact journal uses a project-local hidden index, so recovery does not depend on scanning
+confirmed revision folders. Lecture chat is stored separately from Project Chat. The current slice does not export PPTX/PDF,
+compile speaker notes, fetch paper full text, or claim that a timed deck has been rehearsed.
 
 ## Automatic Markdown artifacts
 

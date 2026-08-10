@@ -6,6 +6,7 @@ export const RESEARCH_NOTES_DEFAULT_FOLDERS = Object.freeze([
   'Experiments',
   'Project Progress',
   'Idea Development',
+  'Lecture Notes & Slides',
 ] as const);
 
 export const ResearchNotesAttentionCodeSchema = z.enum([

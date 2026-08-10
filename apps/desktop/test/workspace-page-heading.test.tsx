@@ -66,4 +66,15 @@ describe('workspace page heading', () => {
     expect(html).toContain('JSON, CSV, and BibTeX');
     expect(shouldShowActiveProjectPageHeading('literature')).toBe(true);
   });
+
+  it('lets the workspace-level Lecture Studio own its compact heading', () => {
+    const html = renderToStaticMarkup(
+      <WorkspacePageHeading activeTab="lecture" activeProject={undefined} onNewProject={null} />,
+    );
+
+    expect(html).toContain('page-heading-lecture');
+    expect(html).toContain('Lecture notes &amp; slides');
+    expect(html).toContain('across projects');
+    expect(shouldShowActiveProjectPageHeading('lecture')).toBe(false);
+  });
 });

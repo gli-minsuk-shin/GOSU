@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { BrowserWindow } from 'electron';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -141,7 +141,14 @@ describe('ResearchNotesService project workspaces', () => {
       projectName: 'Alpha Project',
       displayRoot: expect.stringContaining('/GOSU/Alpha Project'),
       status: 'ready',
-      folders: ['Literature', 'Papers', 'Experiments', 'Project Progress', 'Idea Development'],
+      folders: [
+        'Literature',
+        'Papers',
+        'Experiments',
+        'Project Progress',
+        'Idea Development',
+        'Lecture Notes & Slides',
+      ],
     });
     expect(workspace?.files).toEqual(
       expect.arrayContaining([
@@ -201,6 +208,7 @@ describe('ResearchNotesService project workspaces', () => {
       ['experiments', 'Experiments'],
       ['project-progress', 'Project Progress'],
       ['idea-development', 'Idea Development'],
+      ['lectures', 'Lecture Notes & Slides'],
     ] as const;
 
     for (const [category, folder] of categories) {
@@ -241,6 +249,164 @@ describe('ResearchNotesService project workspaces', () => {
     });
     expect(deceptive.path).not.toMatch(/[\p{C}]/u);
     expect(deceptive.path).toMatch(/^Project Progress\/Status cod\.exe zero width--/u);
+  });
+
+  it('atomically reconciles a pending lecture bundle and seals the revision after commit', async () => {
+    const { root, service, storage, vault, literature, workspace } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const base = {
+      outputProjectId: PROJECT_ID,
+      studioId: '33333333-3333-4333-8333-333333333333',
+      studioTitle: 'Cross-project synthesis',
+      revision: 1,
+      sourceManifestSha256: 'b'.repeat(64),
+      lectureNotesMarkdown: '# First notes\n',
+      slidesMarkdown: '# First slides\n',
+      createdAt: NOW.toISOString(),
+    };
+
+    const first = await service.saveRevisionArtifacts({
+      ...base,
+      attemptId: '44444444-4444-4444-8444-444444444444',
+    });
+    const retriedSameAttempt = await service.saveRevisionArtifacts({
+      ...base,
+      attemptId: '44444444-4444-4444-8444-444444444444',
+    });
+    const recoveryInput = {
+      ...base,
+      attemptId: '55555555-5555-4555-8555-555555555555',
+      lectureNotesMarkdown: '# Recovered notes\n',
+      slidesMarkdown: '# Recovered slides\n',
+    };
+    const recoveredWithNewAttempt = await service.saveRevisionArtifacts(recoveryInput);
+
+    expect(retriedSameAttempt).toEqual(first);
+    expect(recoveredWithNewAttempt.map((artifact) => artifact.relativePath)).toEqual(
+      first.map((artifact) => artifact.relativePath),
+    );
+    await expect(
+      readFile(join(root, 'GOSU', 'Alpha Project', first[0].relativePath), 'utf8'),
+    ).resolves.toContain('# Recovered notes');
+    await expect(
+      readFile(
+        join(root, 'GOSU', 'Alpha Project', recoveredWithNewAttempt[0].relativePath),
+        'utf8',
+      ),
+    ).resolves.toContain('# Recovered notes');
+    const bundlePath = dirname(
+      join(root, 'GOSU', 'Alpha Project', recoveredWithNewAttempt[0].relativePath),
+    );
+    await expect(readdir(bundlePath)).resolves.toContain('.gosu-pending-bundle.json');
+
+    const restarted = new ResearchNotesService({
+      storage,
+      literature,
+      workspace,
+      vault,
+      now: () => NOW,
+    });
+    const pending = await restarted.listPendingRevisionArtifacts();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      outputProjectId: PROJECT_ID,
+      studioId: base.studioId,
+      revision: 1,
+      attemptId: recoveryInput.attemptId,
+      sourceManifestSha256: base.sourceManifestSha256,
+      relativeBundlePath: dirname(recoveredWithNewAttempt[0].relativePath),
+    });
+
+    await restarted.confirmPendingRevisionArtifacts(pending[0]!);
+    expect((await readdir(bundlePath)).sort()).toEqual(['Lecture Notes.md', 'Slides.md']);
+    await expect(service.saveRevisionArtifacts(recoveryInput)).rejects.toThrow(
+      'research_notes_folder_conflict',
+    );
+  });
+
+  it('preflights the lecture destination with a cleaned-up write probe', async () => {
+    const { root, service } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const lectureDirectory = join(root, 'GOSU', 'Alpha Project', 'Lecture Notes & Slides');
+    await rm(lectureDirectory, { recursive: true });
+
+    await service.assertRevisionDestination(PROJECT_ID);
+
+    expect(await readdir(lectureDirectory)).toEqual([]);
+  });
+
+  it('never replaces a pending bundle whose immutable journal identity disagrees', async () => {
+    const { root, service } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const input = {
+      outputProjectId: PROJECT_ID,
+      studioId: '33333333-3333-4333-8333-333333333333',
+      studioTitle: 'Identity conflict',
+      revision: 1,
+      attemptId: '44444444-4444-4444-8444-444444444444',
+      sourceManifestSha256: 'd'.repeat(64),
+      lectureNotesMarkdown: '# Original notes\n',
+      slidesMarkdown: '# Original slides\n',
+      createdAt: NOW.toISOString(),
+    };
+    const artifacts = await service.saveRevisionArtifacts(input);
+    const notesPath = join(root, 'GOSU', 'Alpha Project', artifacts[0].relativePath);
+    const bundlePath = dirname(notesPath);
+    const journalPath = join(bundlePath, '.gosu-pending-bundle.json');
+    const journal = JSON.parse(await readFile(journalPath, 'utf8')) as Record<string, unknown>;
+    await writeFile(
+      journalPath,
+      `${JSON.stringify(
+        {
+          ...journal,
+          studioId: '66666666-6666-4666-8666-666666666666',
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    await expect(
+      service.saveRevisionArtifacts({
+        ...input,
+        attemptId: '55555555-5555-4555-8555-555555555555',
+        lectureNotesMarkdown: '# Replacement notes\n',
+        slidesMarkdown: '# Replacement slides\n',
+      }),
+    ).rejects.toThrow('research_notes_folder_conflict');
+    await expect(readFile(notesPath, 'utf8')).resolves.toContain('# Original notes');
+    await expect(readFile(journalPath, 'utf8')).resolves.toContain(
+      '66666666-6666-4666-8666-666666666666',
+    );
+  });
+
+  it('rolls back both pending lecture artifacts as one exact-hash bundle', async () => {
+    const { root, service } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const input = {
+      outputProjectId: PROJECT_ID,
+      studioId: '33333333-3333-4333-8333-333333333333',
+      studioTitle: 'Rollback synthesis',
+      revision: 1,
+      attemptId: '44444444-4444-4444-8444-444444444444',
+      sourceManifestSha256: 'c'.repeat(64),
+      lectureNotesMarkdown: '# Pending notes\n',
+      slidesMarkdown: '# Pending slides\n',
+      createdAt: NOW.toISOString(),
+    };
+    const artifacts = await service.saveRevisionArtifacts(input);
+    const notesPath = join(root, 'GOSU', 'Alpha Project', artifacts[0].relativePath);
+    const slidesPath = join(root, 'GOSU', 'Alpha Project', artifacts[1].relativePath);
+    await expect(readFile(notesPath, 'utf8')).resolves.toContain('# Pending notes');
+    await expect(readFile(slidesPath, 'utf8')).resolves.toContain('# Pending slides');
+
+    const pending = await service.listPendingRevisionArtifacts();
+    expect(pending).toHaveLength(1);
+    await service.rollbackPendingRevisionArtifacts(pending[0]!);
+
+    await expect(readFile(notesPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(slidesPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('retries an agent Markdown write only when the generated path and content are exact', async () => {
