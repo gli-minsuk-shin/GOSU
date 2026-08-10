@@ -63,6 +63,7 @@ describe('Project Chat session rail', () => {
     expect(html).toContain('aria-label="Rename Ablation ideas"');
     expect(html).toContain('aria-label="Hide project chat sessions"');
     expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('class="collapse-chevron"');
   });
 
   it('keeps only an accessible restore control and selected-session summary when minimized', () => {
@@ -92,6 +93,7 @@ describe('Project Chat session rail', () => {
     expect(html).toContain('project-chat-session-rail collapsed');
     expect(html).toContain('aria-label="Show project chat sessions"');
     expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('class="collapse-chevron"');
     expect(html).toContain('Selected session: Project chat');
     expect(html).toContain('class="project-chat-session-list" hidden=""');
     expect(html).not.toContain('Ablation ideas');
@@ -179,6 +181,9 @@ describe('Project Chat session rail', () => {
     );
     expect(styles).toMatch(
       /\.project-chat-workspace\.session-rail-collapsed\s*\{[^}]*--project-chat-session-rail-active-width:\s*44px;/su,
+    );
+    expect(styles).toMatch(
+      /\.collapse-chevron\s*\{[^}]*width:\s*19px;[^}]*height:\s*19px;[^}]*stroke-width:\s*2\.25;/su,
     );
     expect(styles).toMatch(
       /\.project-chat-session-resize-handle\s*\{[^}]*position:\s*absolute;[^}]*right:\s*0;/su,

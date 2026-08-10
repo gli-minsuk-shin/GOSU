@@ -215,6 +215,18 @@ button:disabled {
   stroke-width: 1.35;
 }
 
+.collapse-chevron {
+  display: block;
+  flex: 0 0 auto;
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .titlebar strong {
   flex: 0 0 auto;
   font-size: var(--font-body-large);

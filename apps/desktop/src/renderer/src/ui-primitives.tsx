@@ -1,5 +1,20 @@
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
 
+const COLLAPSE_CHEVRON_PATHS = {
+  up: 'M4.5 12.5 10 7l5.5 5.5',
+  down: 'M4.5 7.5 10 13l5.5-5.5',
+  left: 'M12.5 4.5 7 10l5.5 5.5',
+  right: 'M7.5 4.5 13 10l-5.5 5.5',
+} as const;
+
+export function CollapseChevron({ direction }: { direction: keyof typeof COLLAPSE_CHEVRON_PATHS }) {
+  return (
+    <svg className="collapse-chevron" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <path d={COLLAPSE_CHEVRON_PATHS[direction]} />
+    </svg>
+  );
+}
+
 export function RuntimeCard({ runtime }: { runtime: RuntimeReadiness | null }) {
   const state = runtime?.status ?? 'checking';
   return (

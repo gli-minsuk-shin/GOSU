@@ -20,6 +20,7 @@ import {
 } from './local-notes-tree-model';
 import { MarkdownDocument } from './markdown-document';
 import { SearchView, type SearchViewAdapter } from './search-view';
+import { CollapseChevron } from './ui-primitives';
 
 export type { VaultSelection } from '../../shared/vault-contracts';
 export type SelectedNote = { path: string; content: string };
@@ -333,7 +334,7 @@ export function ResearchNotesView({
             title={folderTreeCollapsed ? 'Show folder tree' : 'Hide folder tree'}
             onClick={() => onFolderTreeCollapsedChange(!folderTreeCollapsed)}
           >
-            <span aria-hidden="true">{folderTreeCollapsed ? '›' : '‹'}</span>
+            <CollapseChevron direction={folderTreeCollapsed ? 'right' : 'left'} />
           </button>
         </header>
         <div

@@ -79,6 +79,7 @@ describe('SSH resource summary', () => {
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain('Minimize resource details for Fixture training server');
     expect(html).toContain('Minimize');
+    expect(html).toContain('class="collapse-chevron"');
   });
 
   it('can start minimized while retaining status and issue context', () => {
@@ -98,6 +99,7 @@ describe('SSH resource summary', () => {
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('Show resource details for Compact training server');
     expect(html).toContain('Show details');
+    expect(html).toContain('class="collapse-chevron"');
     expect(html).toContain('CPU</span><b>37.5%');
     expect(html).toContain('Memory</span><b>50%');
     expect(html).toContain('GPU max</span><b>92%');
