@@ -1737,6 +1737,12 @@ export class ProjectChatService extends EventEmitter {
               projectId: action.projectId,
               title: action.command.title,
               status: action.command.status,
+              ...(action.command.description == null
+                ? {}
+                : { description: action.command.description }),
+              ...(action.command.priority == null ? {} : { priority: action.command.priority }),
+              ...(action.command.dueDate == null ? {} : { dueDate: action.command.dueDate }),
+              ...(action.command.labels === undefined ? {} : { labels: action.command.labels }),
             })
           : await this.dependencies.workspace.updateTask({
               projectId: action.projectId,

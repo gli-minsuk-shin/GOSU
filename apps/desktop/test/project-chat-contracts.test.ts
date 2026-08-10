@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import {
   CodexCollaborationModeCatalogSchema,
   CodexProjectResponseSchema,
+  PROJECT_CHAT_MAX_ACTION_COMMAND_SERIALIZED_LENGTH,
+  PROJECT_CHAT_MAX_TASK_ACTION_DESCRIPTION_LENGTH,
   PROJECT_CHAT_OUTPUT_SCHEMA,
   BranchProjectChatSessionInputSchema,
   CreateProjectChatSessionInputSchema,
@@ -39,7 +41,15 @@ describe('Project chat contracts', () => {
         reply: 'Review these changes.',
         researchNote: { disposition: 'none' },
         actions: [
-          { type: 'task.create', title: 'Reproduce baseline', status: 'planned' },
+          {
+            type: 'task.create',
+            title: 'Reproduce baseline',
+            status: 'planned',
+            description: 'Match the published setup.',
+            priority: 'high',
+            dueDate: '2026-08-14',
+            labels: ['baseline', 'reproduction'],
+          },
           {
             type: 'task.update',
             taskId,
@@ -50,6 +60,86 @@ describe('Project chat contracts', () => {
         ],
       }).actions,
     ).toHaveLength(2);
+    expect(
+      CodexProjectResponseSchema.parse({
+        reply: 'Create this reviewed task.',
+        researchNote: { disposition: 'none' },
+        actions: [
+          {
+            type: 'task.create',
+            title: 'Run seed sweep',
+            status: 'backlog',
+            description: null,
+            priority: null,
+            dueDate: null,
+            labels: [],
+          },
+        ],
+      }).actions[0],
+    ).toMatchObject({ title: 'Run seed sweep', labels: [] });
+  });
+
+  it('rejects task due dates that match the wire shape but do not exist on the calendar', () => {
+    expect(() =>
+      CodexProjectResponseSchema.parse({
+        reply: 'Create this reviewed task.',
+        researchNote: { disposition: 'none' },
+        actions: [
+          {
+            type: 'task.create',
+            title: 'Impossible deadline',
+            status: 'backlog',
+            description: null,
+            priority: null,
+            dueDate: '2026-02-30',
+            labels: [],
+          },
+        ],
+      }),
+    ).toThrow('Due date must be a valid local calendar date');
+  });
+
+  it('keeps task create actions within the local persistence boundary', () => {
+    const validAction = {
+      type: 'task.create' as const,
+      title: 'T'.repeat(240),
+      status: 'in_progress' as const,
+      description: 'D'.repeat(PROJECT_CHAT_MAX_TASK_ACTION_DESCRIPTION_LENGTH),
+      priority: 'urgent' as const,
+      dueDate: '2026-12-31',
+      labels: Array.from({ length: 8 }, (_, index) => `${index}`.padEnd(32, 'x')),
+    };
+    expect(JSON.stringify(validAction).length).toBeLessThanOrEqual(
+      PROJECT_CHAT_MAX_ACTION_COMMAND_SERIALIZED_LENGTH,
+    );
+    expect(
+      CodexProjectResponseSchema.parse({
+        reply: 'Create this reviewed task.',
+        researchNote: { disposition: 'none' },
+        actions: [validAction],
+      }).actions[0],
+    ).toEqual(validAction);
+
+    expect(() =>
+      CodexProjectResponseSchema.parse({
+        reply: 'Description is too long.',
+        researchNote: { disposition: 'none' },
+        actions: [
+          {
+            ...validAction,
+            description: 'D'.repeat(PROJECT_CHAT_MAX_TASK_ACTION_DESCRIPTION_LENGTH + 1),
+          },
+        ],
+      }),
+    ).toThrow();
+
+    expect(() =>
+      CodexProjectResponseSchema.parse({
+        reply: 'Escaped content exceeds persistence.',
+        researchNote: { disposition: 'none' },
+        actions: [{ ...validAction, description: '\u0001'.repeat(800) }],
+      }),
+    ).toThrow('Task action exceeds the local persistence limit');
   });
 
   it('requires a bounded structured Research Notes disposition', () => {

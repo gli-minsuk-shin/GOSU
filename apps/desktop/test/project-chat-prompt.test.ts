@@ -88,10 +88,11 @@ describe('Project chat prompt assembly', () => {
     expect(first.prompt).not.toContain('CROSS_PROJECT_SECRET');
     expect(first.prompt).not.toContain('secret-token');
     expect(first.prompt).not.toContain('researcher:');
+    expect(first.prompt).toContain('"todoSkill":null');
     expect(first.provenance).toMatchObject({
       assemblyVersion: 3,
       profileVersion: 3,
-      baseInstructionVersion: 25,
+      baseInstructionVersion: 27,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -102,6 +103,13 @@ describe('Project chat prompt assembly', () => {
       nativeResponseVerbosity: 'high',
       effectiveReasoningOptionId: 'high',
     });
+    const todoPrompt = assembleProjectChatPrompt({
+      ...input,
+      message: '/todo list overdue',
+    });
+    expect(todoPrompt.prompt).toContain(
+      '"todoSkill":{"skill":"/todo","operation":"list","arguments":"overdue"}',
+    );
     expect(first.provenance.promptSha256).toBe(hash(first.prompt));
     expect(first.provenance.developerInstructionsSha256).toBe(hash(first.developerInstructions));
     expect(first.provenance).toMatchObject({
@@ -109,6 +117,9 @@ describe('Project chat prompt assembly', () => {
       localNotesVaultId: null,
     });
     expect(first.developerInstructions).toContain('explicitly provided GOSU tools');
+    expect(first.developerInstructions).toContain(
+      'GOSU-parsed routing metadata for the /todo skill',
+    );
     expect(first.developerInstructions).toContain('read Research Notes by opaque ID');
     expect(first.developerInstructions).toContain(
       'required structured response field researchNote controls the one reusable Markdown deliverable',
@@ -234,7 +245,7 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(25);
+    expect(first.provenance.baseInstructionVersion).toBe(27);
     expect(first.developerInstructions).toContain(
       'Core & canonical is an eligibility-gated maximum, never a quota',
     );

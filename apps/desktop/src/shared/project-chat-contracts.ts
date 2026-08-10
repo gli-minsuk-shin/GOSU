@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { ProjectChatAttachmentIdsSchema } from './project-chat-attachment-contracts';
-import { WORKSPACE_TASK_STATUSES } from './workspace-contracts';
+import { WORKSPACE_TASK_PRIORITIES, WORKSPACE_TASK_STATUSES } from './workspace-contracts';
 
 export const PROJECT_CHAT_MAX_MESSAGE_LENGTH = 12_000;
 export const PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH = 32_000;
@@ -12,6 +12,8 @@ export const PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH = 120;
 export const PROJECT_CHAT_MAX_BRANCH_DEPTH = 32;
 export const PROJECT_CHAT_MAX_BRANCH_MESSAGES = 5_000;
 export const PROJECT_CHAT_MAX_QUEUED_TURNS_PER_SESSION = 50;
+export const PROJECT_CHAT_MAX_TASK_ACTION_DESCRIPTION_LENGTH = 3_200;
+export const PROJECT_CHAT_MAX_ACTION_COMMAND_SERIALIZED_LENGTH = 4_096;
 
 export const PROJECT_CHAT_HARNESS_MODES = ['context', 'planner', 'reviewer'] as const;
 export const PROJECT_CHAT_RESPONSE_DEPTHS = ['concise', 'standard', 'deep'] as const;
@@ -42,6 +44,20 @@ export const PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION =
 const timestampSchema = z.string().datetime({ offset: true });
 const uuidSchema = z.string().uuid();
 const taskStatusSchema = z.enum(WORKSPACE_TASK_STATUSES);
+const taskPrioritySchema = z.enum(WORKSPACE_TASK_PRIORITIES);
+const taskLabelsSchema = z.array(z.string().trim().min(1).max(32)).max(8);
+const localDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/u)
+  .refine((value) => {
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year!, month! - 1, day));
+    return (
+      date.getUTCFullYear() === year &&
+      date.getUTCMonth() === month! - 1 &&
+      date.getUTCDate() === day
+    );
+  }, 'Due date must be a valid local calendar date');
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
 const harnessModeSchema = z.enum(PROJECT_CHAT_HARNESS_MODES);
 const responseDepthSchema = z.enum(PROJECT_CHAT_RESPONSE_DEPTHS);
@@ -304,27 +320,42 @@ export const ProjectChatPromptProvenanceSchema = z.discriminatedUnion('assemblyV
 
 export type ProjectChatPromptProvenance = z.infer<typeof ProjectChatPromptProvenanceSchema>;
 
-export const ProjectChatActionCommandSchema = z.discriminatedUnion('type', [
-  z
-    .object({
-      type: z.literal('task.create'),
-      title: z.string().trim().min(2).max(240),
-      status: taskStatusSchema,
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal('task.update'),
-      taskId: uuidSchema,
-      expectedVersion: z.number().int().positive(),
-      title: z.string().trim().min(2).max(240).optional(),
-      status: taskStatusSchema.optional(),
-    })
-    .strict()
-    .refine((command) => command.title !== undefined || command.status !== undefined, {
-      message: 'At least one task field must change',
-    }),
-]);
+export const ProjectChatActionCommandSchema = z
+  .discriminatedUnion('type', [
+    z
+      .object({
+        type: z.literal('task.create'),
+        title: z.string().trim().min(2).max(240),
+        status: taskStatusSchema,
+        description: z
+          .string()
+          .trim()
+          .max(PROJECT_CHAT_MAX_TASK_ACTION_DESCRIPTION_LENGTH)
+          .nullable()
+          .optional(),
+        priority: taskPrioritySchema.nullable().optional(),
+        dueDate: localDateSchema.nullable().optional(),
+        labels: taskLabelsSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal('task.update'),
+        taskId: uuidSchema,
+        expectedVersion: z.number().int().positive(),
+        title: z.string().trim().min(2).max(240).optional(),
+        status: taskStatusSchema.optional(),
+      })
+      .strict()
+      .refine((command) => command.title !== undefined || command.status !== undefined, {
+        message: 'At least one task field must change',
+      }),
+  ])
+  .refine(
+    (command) =>
+      JSON.stringify(command).length <= PROJECT_CHAT_MAX_ACTION_COMMAND_SERIALIZED_LENGTH,
+    'Task action exceeds the local persistence limit',
+  );
 
 export type ProjectChatActionCommand = z.infer<typeof ProjectChatActionCommandSchema>;
 
@@ -1011,8 +1042,28 @@ export const PROJECT_CHAT_OUTPUT_SCHEMA = {
               type: { type: 'string', enum: ['task.create'] },
               title: { type: 'string', minLength: 2, maxLength: 240 },
               status: { type: 'string', enum: [...WORKSPACE_TASK_STATUSES] },
+              description: {
+                anyOf: [
+                  {
+                    type: 'string',
+                    maxLength: PROJECT_CHAT_MAX_TASK_ACTION_DESCRIPTION_LENGTH,
+                  },
+                  { type: 'null' },
+                ],
+              },
+              priority: {
+                anyOf: [{ type: 'string', enum: [...WORKSPACE_TASK_PRIORITIES] }, { type: 'null' }],
+              },
+              dueDate: {
+                anyOf: [{ type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' }, { type: 'null' }],
+              },
+              labels: {
+                type: 'array',
+                maxItems: 8,
+                items: { type: 'string', minLength: 1, maxLength: 32 },
+              },
             },
-            required: ['type', 'title', 'status'],
+            required: ['type', 'title', 'status', 'description', 'priority', 'dueDate', 'labels'],
           },
           {
             type: 'object',

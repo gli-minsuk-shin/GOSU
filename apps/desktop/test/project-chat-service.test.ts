@@ -1671,7 +1671,17 @@ describe('ProjectChatService', () => {
 
     codex.complete(receipt.turnId, {
       reply: 'Ablation 작업을 제안했습니다. Apply 후 Board에 반영됩니다.',
-      actions: [{ type: 'task.create', title: 'Run ablation', status: 'planned' }],
+      actions: [
+        {
+          type: 'task.create',
+          title: 'Run ablation',
+          status: 'planned',
+          description: 'Compare the controlled variants.',
+          priority: 'high',
+          dueDate: '2026-08-14',
+          labels: ['ablation', 'experiment'],
+        },
+      ],
     });
 
     await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
@@ -1694,9 +1704,57 @@ describe('ProjectChatService', () => {
     const duplicate = await chat.applyAction({ projectId: projectA.id, actionId: action.id });
     expect(applied.status).toBe('applied');
     expect(duplicate.status).toBe('applied');
+    const created = (await workspace.snapshot()).tasks.filter(
+      (task) => task.title === 'Run ablation',
+    );
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      status: 'planned',
+      description: 'Compare the controlled variants.',
+      priority: 'high',
+      dueDate: '2026-08-14',
+      labels: ['ablation', 'experiment'],
+    });
+  });
+
+  it('rejects an impossible task due date before persisting an actionable proposal', async () => {
+    const { chat, codex, storage, workspace, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: '/todo add impossible deadline --due 2026-02-30',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    codex.complete(receipt.turnId, {
+      reply: 'I prepared the requested task.',
+      actions: [
+        {
+          type: 'task.create',
+          title: 'Impossible deadline',
+          status: 'backlog',
+          description: null,
+          priority: null,
+          dueDate: '2026-02-30',
+          labels: [],
+        },
+      ],
+    });
+
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    const snapshot = storage.snapshot(projectA.id);
+    expect(snapshot.attempts?.[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'invalid_response',
+    });
+    expect(snapshot.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      status: 'failed',
+      actions: [],
+    });
     expect(
-      (await workspace.snapshot()).tasks.filter((task) => task.title === 'Run ablation'),
-    ).toHaveLength(1);
+      (await workspace.snapshot()).tasks.filter((task) => task.title === 'Impossible deadline'),
+    ).toEqual([]);
   });
 
   it('routes interleaved completions to their own project, including early events', async () => {

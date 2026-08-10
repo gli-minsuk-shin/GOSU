@@ -1056,11 +1056,39 @@ textarea:focus {
 .kanban-view-actions {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 7px;
 }
 
 .kanban-view-actions .active {
   border-color: rgba(158, 240, 26, 0.4);
+  color: var(--green);
+}
+
+.board-layout-switch {
+  display: inline-flex;
+  overflow: hidden;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.board-layout-switch button {
+  min-height: 31px;
+  padding: 5px 11px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 680;
+}
+
+.board-layout-switch button.active {
+  background: var(--surface-raised);
+  box-shadow: 0 2px 8px light-dark(rgba(32, 46, 35, 0.1), rgba(0, 0, 0, 0.24));
   color: var(--green);
 }
 
@@ -1464,6 +1492,213 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   gap: 7px;
+}
+
+.todo-task-list {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 1180px);
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: light-dark(rgba(250, 252, 249, 0.88), rgba(12, 16, 13, 0.82));
+}
+
+.todo-list-summary,
+.todo-status-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.todo-list-summary > div {
+  display: grid;
+  gap: 2px;
+}
+
+.todo-list-summary span {
+  color: var(--green);
+  font-size: var(--font-meta);
+  font-weight: 750;
+  letter-spacing: 0.14em;
+}
+
+.todo-list-summary h3,
+.todo-list-summary p,
+.todo-status-group > header,
+.todo-group-empty,
+.todo-task-heading h4,
+.todo-task-description {
+  margin: 0;
+}
+
+.todo-list-summary h3 {
+  font-size: var(--font-section);
+}
+
+.todo-list-summary p {
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.todo-status-groups {
+  display: grid;
+  gap: 9px;
+}
+
+.todo-status-group {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.todo-status-group > header {
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.todo-status-group > header strong {
+  font-size: var(--font-control);
+}
+
+.todo-status-group > header span {
+  display: grid;
+  place-items: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: light-dark(#e4eae2, #202621);
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.todo-group-items {
+  display: grid;
+}
+
+.todo-group-items > .task-card {
+  margin: 8px;
+}
+
+.todo-group-empty {
+  padding: 10px 12px;
+  color: var(--subtle);
+  font-size: var(--font-meta);
+}
+
+.todo-task-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.todo-task-row:last-child {
+  border-bottom: 0;
+}
+
+.todo-task-row.priority-urgent {
+  box-shadow: inset 3px 0 rgba(255, 129, 119, 0.6);
+}
+
+.todo-task-row.priority-high {
+  box-shadow: inset 3px 0 rgba(255, 159, 102, 0.52);
+}
+
+.todo-task-row.search-target,
+.task-card.search-target {
+  outline: 2px solid color-mix(in srgb, var(--green) 72%, transparent);
+  outline-offset: -2px;
+}
+
+.todo-complete-checkbox {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  margin: 3px 0 0;
+  padding: 0;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+
+.todo-complete-checkbox:disabled {
+  cursor: default;
+}
+
+.todo-task-content {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.todo-task-heading,
+.todo-task-metadata,
+.todo-task-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.todo-task-heading h4 {
+  overflow-wrap: anywhere;
+  font-size: var(--font-body);
+  font-weight: 680;
+  line-height: 1.35;
+}
+
+.todo-task-row.completed .todo-task-heading h4 {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.todo-status-badge {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(158, 240, 26, 0.09);
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 720;
+}
+
+.todo-task-description {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-task-metadata .task-labels {
+  min-width: 0;
+}
+
+.todo-task-actions {
+  align-self: center;
+  justify-content: flex-end;
+}
+
+.todo-task-actions button {
+  min-height: 29px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.todo-task-actions .task-delete-button {
+  border-color: color-mix(in srgb, var(--red) 38%, var(--line));
+  color: var(--red);
 }
 
 .task-version,
@@ -4814,6 +5049,35 @@ button.chat-toolbar-status {
   display: block;
 }
 
+.chat-action-card small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+
+.chat-action-description {
+  margin-top: 7px;
+}
+
+.chat-action-description small {
+  color: var(--subtle);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.chat-action-description p {
+  max-height: 8.4em;
+  margin: 3px 0 0;
+  overflow: auto;
+  color: var(--text);
+  font-size: var(--font-control);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .chat-action-card span {
   margin-bottom: 3px;
   color: var(--green);
@@ -5041,6 +5305,81 @@ button.chat-toolbar-status {
   min-height: 27px;
   padding: 3px 7px;
   font-size: var(--font-caption);
+}
+
+.chat-skill-menu {
+  display: grid;
+  gap: 8px;
+  margin: 0 18px 8px;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--green) 6%);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+}
+
+.chat-skill-menu > header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.chat-skill-menu > header strong {
+  color: var(--green);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-control);
+}
+
+.chat-skill-menu > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.chat-skill-menu button {
+  display: grid;
+  grid-template-columns: minmax(92px, auto) 1fr;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+  color: var(--text);
+  text-align: left;
+}
+
+.chat-skill-menu button:hover {
+  border-color: color-mix(in srgb, var(--green) 55%, var(--line));
+  background: color-mix(in srgb, var(--surface-soft) 90%, var(--green) 10%);
+}
+
+.chat-skill-menu code {
+  color: var(--green);
+  font-size: var(--font-meta);
+  white-space: nowrap;
+}
+
+.chat-skill-menu button span,
+.chat-skill-menu button small {
+  display: block;
+  min-width: 0;
+}
+
+.chat-skill-menu button b {
+  font-size: var(--font-control);
+}
+
+.chat-skill-menu button small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--font-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-composer {
@@ -6449,6 +6788,25 @@ button.chat-toolbar-status {
 }
 
 @media (max-width: 620px) {
+  .kanban-command-bar,
+  .todo-list-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .kanban-view-actions {
+    justify-content: flex-start;
+  }
+
+  .todo-task-row {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .todo-task-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
   .appearance-options,
   .text-size-options,
   .server-refresh-options,

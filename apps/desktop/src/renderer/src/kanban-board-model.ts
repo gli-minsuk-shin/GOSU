@@ -36,6 +36,19 @@ export function resolveKanbanColumns(project: ProjectRecord) {
   }));
 }
 
+export function groupTodoTasksByStatus(project: ProjectRecord, tasks: readonly WorkspaceTask[]) {
+  return resolveKanbanColumns(project).map((column) => ({
+    ...column,
+    tasks: tasks.filter((task) => task.status === column.status),
+  }));
+}
+
+export function resolveTodoReopenStatus(project: ProjectRecord): WorkspaceTaskStatus {
+  return (
+    resolveKanbanColumns(project).find((column) => column.status !== 'done')?.status ?? 'backlog'
+  );
+}
+
 export function filterKanbanTasks(
   tasks: readonly WorkspaceTask[],
   filters: KanbanFilters,

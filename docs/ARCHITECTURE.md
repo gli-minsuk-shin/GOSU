@@ -131,7 +131,7 @@ flowchart LR
 | 논리 모듈                  | 현재 코드 소유자                                                                | 구현 수준                                                                                                                                                                                                                                                                                              |
 | -------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                    | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                                                                                                                             |
-| Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store  | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                                                                                         |
+| Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store  | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, 동일 Task의 Kanban·To-do projection, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                                                    |
 | Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                    | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                                               |
 | Experiment Orchestration   | Desktop Experiment workspace, contracts, domain, Runner                         | 프로젝트별 idea lineage·검토 outcome·동결 Objective 기반 summary metric trajectory·evidence report를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨                                                                                                         |
 | Manuscript                 | Desktop Repository workspace와 향후 manuscript module                           | 앱 관리형 Git worktree·파일/Markdown preview·change/history/branch·commit 구현; LaTeX compile·PDF preview는 계획됨                                                                                                                                                                                     |
@@ -1260,13 +1260,22 @@ flowchart LR
   내부 오류 로거가 project 입력이나 local path를 Main console에 출력하지 않는다. IPC boundary에서
   command input을 먼저 검증해 입력 오류와 persisted snapshot recovery 오류를 구분한다.
 
-### 운영형 Kanban의 소유권과 호환성
+### 운영형 Kanban·To-do의 소유권과 호환성
+
+이 surface의 벤치마크와 범위 결정은 [`BENCHMARK_KANBAN_TODO.md`](BENCHMARK_KANBAN_TODO.md)에
+기록한다. 핵심 결정은 별도 Todo 저장소를 만들지 않고 `WorkspaceTask` 하나를 두 projection에서
+사용하는 것이다.
 
 - 내부 상태 ID `backlog`, `planned`, `in_progress`, `review`, `done`은 sync command와 Project Chat
   action의 안정적인 의미로 유지한다. 사용자는 프로젝트마다 Board 제목, 다섯 column 표시명·순서와
   optional soft WIP limit을 바꿀 수 있지만 새 status ID를 만들거나 기존 ID를 삭제하지 않는다. 각
   column header의 `Rename` 동작과 상단 Board 설정은 같은 reusable editor를 열기 때문에 validation
   규칙이 갈라지지 않는다.
+- `Kanban`과 `To-do`는 같은 `WorkspaceTask` ID, metadata와 optimistic version을 읽는 renderer
+  projection이다. Kanban은 column과 drag workflow를, To-do는 같은 column order의 compact status group과
+  completion checkbox를 제공한다. checkbox 완료는 canonical `done`으로 이동하고, 완료 해제는 별도
+  이전-status history를 가장하지 않고 현재 Board 순서의 첫 non-`done` status로 명시적으로 재개한다.
+  두 view는 composer, query·priority·label·due filter, edit, Task trash와 검색 target focus를 공유한다.
 - `ProjectRecord.board`와 project-level `archivedAt`, Task의 description·priority·due date·labels·
   task-level `archivedAt`은 schema-v1 안의
   optional nested field다. v0.3.2 snapshot에 필드가 없어도 resolver가 런타임 기본값을 제공하며
@@ -1344,7 +1353,7 @@ flowchart LR
   진행 중인 Codex turn 표시와 중지 진입점을 숨기지 않도록 해당 project가 busy인 동안 Hide와 Archive를
   비활성화한다.
   Archive는 이 로컬 preference와 달리 domain command이므로 두 개념을 같은 필드나 API로 합치지 않는다.
-- Renderer의 `board-view.tsx`는 form·drag-and-drop·Delete 확인과 프로젝트별 임시 view state를
+- Renderer의 `board-view.tsx`는 Kanban·To-do view switch, form·drag-and-drop·completion·Delete 확인과 프로젝트별 임시 view state를
   소유한다. `kanban-board-model.ts`는 column resolve, 검색·priority·label·due date filter와 안전한
   drop 판단만 수행하는 pure helper다. 프로젝트 전환 시 `BoardView`를 project ID로 remount해 draft,
   filter, Task trash mode와 drag ID가 다른 프로젝트로 넘어가지 않게 한다.
@@ -1360,6 +1369,17 @@ flowchart LR
 - WIP limit은 현재 column의 전체 active task 수로 계산하는 시각적 경고다. filter 결과만 세거나
   이동을 막지 않는다. 임의 column 추가·삭제, column 내부 수동 ranking, saved view와 bulk edit는
   후속 범위다.
+- Project Chat의 `/todo`는 외부 Codex `SKILL.md`가 아니라 앱에 함께 배포되는 command routing
+  metadata다. Main이 NFKC-normalized exact `/todo` prefix와 `help | add | list | done | move` operation만
+  다시 파싱하고 project/session ID는 인자에서 받지 않는다. 일반 자연어와 slash 입력 모두 active project의
+  같은 bounded Board context와 `task.create`·`task.update` proposal을 사용하며 Apply gate,
+  `expectedVersion`, idempotent action claim을 우회하지 않는다. ambiguous task·column과 equivalent active
+  duplicate는 mutation 없이 확인하거나 기존 task를 안내한다. `task.create`의 description·priority·due
+  date·label은 Apply 카드에 모두 표시해 숨은 mutation이 없게 하며, due date는 형식뿐 아니라 실제 존재하는
+  calendar date인지 structured response boundary에서 검증한다. action description은 모델 출력에서 3,200자로
+  제한하고 전체 serialized command도 SQLCipher `command_json`의 4,096자 한도 이내인지 저장 전에 검증해
+  schema-valid proposal이 persistence 단계에서 사라지지 않게 한다. To-do checkbox의 완료·재개도 현재 Task
+  version을 `expectedVersion`으로 전달하고 stale update는 기존 optimistic conflict 경계에서 중단한다.
 
 ### 로컬 통합 검색 경계
 
@@ -1687,7 +1707,7 @@ flowchart LR
   not-saved 문구를 제거하고 검증된 path를 한 번만 append한다. Markdown body·absolute Vault path는
   journal에 없다.
 - tool access는 UI section 자체나 database table 접근이 아니라 module capability다. 현재 구현된
-  Board·Goal & Metrics·승인된 Research Notes list/read, server-owned category-scoped final create, 현재 turn 첨부 연구 파일,
+  Board·To-do·Goal & Metrics·승인된 Research Notes list/read, server-owned category-scoped final create, 현재 turn 첨부 연구 파일,
   명시적 additive Literature search와
   active project에 grant된 SSH workspace의 opaque ID·label·mode, 정규화된 resource snapshot과 승인된
   bounded text file list/read/create/expected-hash-checked atomic replacement만 사용할 수 있다. Literature table 전체를 임의
@@ -1760,7 +1780,9 @@ flowchart LR
   않으며 원문과 message provenance는 그대로 유지한다. KaTeX CSS와 font는 package에 묶여 theme·font
   scale을 따르고 수식 표시 때문에 외부 network를 요청하지 않는다.
 - Codex final은 JSON Schema와 Zod가 함께 검증하는 `reply + actions` 계약이다. v1 action은
-  `task.create`와 `task.update`뿐이며 모델이 `projectId`를 정할 수 없다.
+  `task.create`와 `task.update`뿐이며 모델이 `projectId`를 정할 수 없다. create proposal은 Board form과
+  같은 optional description·priority·ISO due date·label metadata를 운반할 수 있고 Main이 다시 workspace
+  input contract로 검증한다.
 - 제안 action은 곧바로 실행되지 않는다. 사용자가 Apply하면 SQLCipher row를 `proposed → applying`으로
   원자 claim한 뒤 기존 `WorkspaceService` command를 호출한다. update는 Task의 project 소속과
   optimistic `expectedVersion`을 다시 검사하며 중복 Apply는 새 mutation을 만들지 않는다.

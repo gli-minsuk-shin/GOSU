@@ -7,10 +7,12 @@ import {
   activeKanbanFilterCount,
   canDropKanbanTask,
   filterKanbanTasks,
+  groupTodoTasksByStatus,
   kanbanColumnProgress,
   parseTaskLabels,
   projectTaskLabels,
   resolveKanbanColumns,
+  resolveTodoReopenStatus,
   taskDueState,
 } from '../src/renderer/src/kanban-board-model';
 import type { ProjectRecord, WorkspaceTask } from '../src/shared/workspace-contracts';
@@ -171,5 +173,44 @@ describe('Kanban board model', () => {
         tasks: [movable],
       }),
     ).toBeNull();
+  });
+
+  it('groups the same task records for To-do view and reopens into the first non-done column', () => {
+    const customized = project({
+      board: {
+        title: 'Research flow',
+        columnLabels: {
+          backlog: 'Inbox',
+          planned: 'Next',
+          in_progress: 'Doing',
+          review: 'Verify',
+          done: 'Complete',
+        },
+        columnOrder: ['done', 'planned', 'backlog', 'in_progress', 'review'],
+        wipLimits: {
+          backlog: null,
+          planned: null,
+          in_progress: null,
+          review: null,
+          done: null,
+        },
+      },
+    });
+    const tasks = [
+      task({ id: 'planned-task', status: 'planned' }),
+      task({ id: 'done-task', status: 'done' }),
+    ];
+
+    const groups = groupTodoTasksByStatus(customized, tasks);
+    expect(groups.map(({ status }) => status)).toEqual([
+      'done',
+      'planned',
+      'backlog',
+      'in_progress',
+      'review',
+    ]);
+    expect(groups[0]?.tasks).toEqual([tasks[1]]);
+    expect(groups[1]?.tasks).toEqual([tasks[0]]);
+    expect(resolveTodoReopenStatus(customized)).toBe('planned');
   });
 });
