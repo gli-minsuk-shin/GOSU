@@ -6,6 +6,8 @@ import {
   compactSshResourceMetrics,
   formatSshResourceBytes,
   formatSshResourcePercent,
+  sshConnectionTestStatus,
+  sshResourceErrorReason,
 } from '../src/renderer/src/ssh-resource-summary';
 import type { SshServerResourceSnapshot } from '../src/shared/ssh-contracts';
 
@@ -165,6 +167,68 @@ describe('SSH resource summary', () => {
     expect(html).toContain('37.5%');
     expect(html).not.toContain('/Users/researcher');
     expect(html).not.toContain('stderr');
+  });
+
+  it('explains project grants and separates usage probes from Allow once approvals', () => {
+    const html = renderToStaticMarkup(
+      <SshResourceSummary
+        state={{ phase: 'error', reason: 'project_grant_required' }}
+        serverLabel="Unlinked training server"
+      />,
+    );
+
+    expect(html).toContain('Project link required');
+    expect(html).toContain('grant this server to the active project in Connections');
+    expect(html).toContain('Usage probes do not wait for Allow once');
+    expect(html).toContain('Remote files and commands are separate');
+  });
+
+  it('renders safe authentication, host-key, and nvidia-smi diagnostics without raw output', () => {
+    const unavailable: SshServerResourceSnapshot = {
+      ...snapshot,
+      status: 'unavailable',
+      cpu: { state: 'unavailable' },
+      memory: { state: 'unavailable' },
+      gpu: { state: 'unavailable' },
+      issues: [
+        'connection_unavailable',
+        'authentication_failed',
+        'gpu_unavailable',
+        'nvidia_smi_unavailable',
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <SshResourceSummary state={{ phase: 'ready', snapshot: unavailable }} serverLabel="GPU" />,
+    );
+
+    expect(html).toContain('Authentication failed — check ssh-agent or Keychain in Terminal');
+    expect(html).toContain(
+      'nvidia-smi is not available in the supported server installation locations',
+    );
+    expect(html).not.toContain('.ssh/id_');
+    expect(html).not.toContain('stderr');
+  });
+
+  it('maps test and renderer errors to actionable bounded explanations', () => {
+    expect(
+      sshConnectionTestStatus({
+        connectionId: snapshot.connectionId,
+        reachable: false,
+        code: 'unknown_host_key',
+      }),
+    ).toContain('verify its fingerprint');
+    expect(
+      sshConnectionTestStatus({
+        connectionId: snapshot.connectionId,
+        reachable: false,
+        code: 'authentication_failed',
+      }),
+    ).toContain('ssh-agent');
+    expect(sshResourceErrorReason(new Error('ssh_workspace_grant_not_found'))).toBe(
+      'project_grant_required',
+    );
+    expect(sshResourceErrorReason(new Error('ssh_approval_expired'))).toBe('approval_expired');
+    expect(sshResourceErrorReason(new Error('private transport failure'))).toBe('unavailable');
   });
 
   it('states partial availability and the absence of an NVIDIA GPU explicitly', () => {

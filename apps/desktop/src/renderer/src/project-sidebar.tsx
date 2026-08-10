@@ -13,7 +13,7 @@ export type ProjectWorkspaceTabId = Extract<
   WorkspaceTabId,
   'chat' | 'repository' | 'board' | 'objective' | 'experiments' | 'literature' | 'notes'
 >;
-export type GlobalWorkspaceTabId = Extract<WorkspaceTabId, 'connections' | 'lecture'>;
+export type GlobalWorkspaceTabId = Extract<WorkspaceTabId, 'connections' | 'lecture' | 'search'>;
 
 const PROJECT_TABS: ReadonlyArray<{
   id: ProjectWorkspaceTabId;
@@ -34,6 +34,7 @@ const GLOBAL_TABS: ReadonlyArray<{
   label: string;
   icon: string;
 }> = [
+  { id: 'search', label: 'Search', icon: '⌕' },
   { id: 'lecture', label: 'Lecture notes & slides', icon: '▹' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
 ];

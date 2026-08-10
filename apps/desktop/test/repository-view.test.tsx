@@ -21,7 +21,10 @@ vi.mock('react', async (importOriginal) => {
   return {
     ...actual,
     useEffect: () => undefined,
+    useLayoutEffect: () => undefined,
+    useCallback: <Value,>(callback: Value) => callback,
     useMemo: <Value,>(factory: () => Value) => factory(),
+    useRef: <Value,>(initial: Value) => ({ current: initial }),
     useState: <Value,>(initial: Value) => {
       const index = hookState.index++;
       const overrides = new Map<number, unknown>([
@@ -39,7 +42,7 @@ vi.mock('react', async (importOriginal) => {
   };
 });
 
-import { RepositoryView } from '../src/renderer/src/repository-view';
+import { RepositoryView, repositoryParentDirectories } from '../src/renderer/src/repository-view';
 
 const project: ProjectRecord = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -158,6 +161,15 @@ beforeEach(() => {
 });
 
 describe('RepositoryView change safety', () => {
+  it('expands every parent directory needed for an exact searched file', () => {
+    expect(repositoryParentDirectories('src/research/models/train.ts')).toEqual([
+      'src',
+      'src/research',
+      'src/research/models',
+    ]);
+    expect(repositoryParentDirectories('README.md')).toEqual([]);
+  });
+
   it('shows both the old and new paths for a rename', () => {
     const html = renderToStaticMarkup(
       <RepositoryView project={project} onUpdateRepository={vi.fn()} />,

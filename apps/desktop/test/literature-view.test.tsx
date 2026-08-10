@@ -288,6 +288,10 @@ describe('Literature workspace', () => {
     }
     expect(html).toContain(paper.title);
     expect(html).toContain(paper.doi);
+    expect(html).toContain('href="https://doi.org/10.1000/gosu.1"');
+    expect(html).toContain(`aria-label="Open canonical source for ${paper.title}"`);
+    expect(html).toContain(`aria-label="Open DOI ${paper.doi}"`);
+    expect(html).toContain('Canonical source ↗');
     expect(html).toContain('evaluation');
     expect(html).toContain('Agentic systems');
     expect(html).toContain('aria-label="Filter by topic tag Agentic systems"');

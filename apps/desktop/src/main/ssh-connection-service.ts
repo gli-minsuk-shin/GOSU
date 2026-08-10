@@ -543,6 +543,7 @@ export class SshConnectionService extends EventEmitter {
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly trustedReservations = new Map<string, PendingApproval>();
   private readonly activeExecutions = new Map<string, ActiveExecution>();
+  private readonly lifecycleLockedProjects = new Set<string>();
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly approvalTtlMs: number;
   private readonly now: () => number;
@@ -644,8 +645,10 @@ export class SshConnectionService extends EventEmitter {
   }
 
   createWorkspaceGrant(input: CreateRemoteWorkspaceGrantInput): Promise<RemoteWorkspaceGrant> {
+    const command = CreateRemoteWorkspaceGrantInputSchema.parse(input);
+    this.throwIfProjectLifecycleLocked(command.projectId);
     return this.mutate(async () => {
-      const command = CreateRemoteWorkspaceGrantInputSchema.parse(input);
+      this.throwIfProjectLifecycleLocked(command.projectId);
       const connection = await this.readRequiredConnection(command.connectionId);
       if (command.permissionMode === 'workspace' && !connection.directTarget) {
         throw new SshConnectionServiceError('ssh_workspace_command_not_allowed');
@@ -679,8 +682,10 @@ export class SshConnectionService extends EventEmitter {
   }
 
   updateWorkspaceGrant(input: UpdateRemoteWorkspaceGrantInput): Promise<RemoteWorkspaceGrant> {
+    const command = UpdateRemoteWorkspaceGrantInputSchema.parse(input);
+    this.throwIfProjectLifecycleLocked(command.projectId);
     return this.mutate(async () => {
-      const command = UpdateRemoteWorkspaceGrantInputSchema.parse(input);
+      this.throwIfProjectLifecycleLocked(command.projectId);
       const current = await this.readRequiredWorkspaceGrant(command.projectId, command.grantId);
       if (current.version !== command.expectedVersion) {
         throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
@@ -706,8 +711,10 @@ export class SshConnectionService extends EventEmitter {
   }
 
   removeWorkspaceGrant(input: RemoveRemoteWorkspaceGrantInput): Promise<{ removed: true }> {
+    const command = RemoveRemoteWorkspaceGrantInputSchema.parse(input);
+    this.throwIfProjectLifecycleLocked(command.projectId);
     return this.mutate(async () => {
-      const command = RemoveRemoteWorkspaceGrantInputSchema.parse(input);
+      this.throwIfProjectLifecycleLocked(command.projectId);
       const current = await this.readRequiredWorkspaceGrant(command.projectId, command.grantId);
       if (current.version !== command.expectedVersion) {
         throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
@@ -727,8 +734,10 @@ export class SshConnectionService extends EventEmitter {
   }
 
   enableTrustedWorkspace(input: EnableTrustedRemoteWorkspaceInput): Promise<RemoteWorkspaceGrant> {
+    const command = EnableTrustedRemoteWorkspaceInputSchema.parse(input);
+    this.throwIfProjectLifecycleLocked(command.projectId);
     return this.mutate(async () => {
-      const command = EnableTrustedRemoteWorkspaceInputSchema.parse(input);
+      this.throwIfProjectLifecycleLocked(command.projectId);
       const current = await this.readRequiredWorkspaceGrant(command.projectId, command.grantId);
       if (current.version !== command.expectedVersion) {
         throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
@@ -768,8 +777,10 @@ export class SshConnectionService extends EventEmitter {
   }
 
   revokeTrustedWorkspace(input: RevokeTrustedRemoteWorkspaceInput): Promise<RemoteWorkspaceGrant> {
+    const command = RevokeTrustedRemoteWorkspaceInputSchema.parse(input);
+    this.throwIfProjectLifecycleLocked(command.projectId);
     return this.mutate(async () => {
-      const command = RevokeTrustedRemoteWorkspaceInputSchema.parse(input);
+      this.throwIfProjectLifecycleLocked(command.projectId);
       const current = await this.readRequiredWorkspaceGrant(command.projectId, command.grantId);
       if (current.version !== command.expectedVersion) {
         throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
@@ -1092,6 +1103,7 @@ export class SshConnectionService extends EventEmitter {
     workspaceBinding?: WorkspaceExecutionBinding,
   ): Promise<SshCommandResult> {
     if (this.shuttingDown) throw new SshConnectionServiceError('ssh_unavailable');
+    this.throwIfProjectLifecycleLocked(command.projectId);
     if (signal?.aborted) throw new SshConnectionServiceError('ssh_cancelled');
     if (workspaceBinding && trustedAccessMatches(workspaceBinding.grant, profile)) {
       return this.requestTrustedExecution(command, profile, workspaceBinding, signal);
@@ -1361,6 +1373,27 @@ export class SshConnectionService extends EventEmitter {
     return this.cancelWhere((entry) => entry.projectId === projectId);
   }
 
+  async runWhenProjectsIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
+    const lockedProjectIds = [...new Set(projectIds)].sort();
+    if (
+      lockedProjectIds.some((projectId) => this.lifecycleLockedProjects.has(projectId)) ||
+      this.hasProjectActivity(lockedProjectIds)
+    ) {
+      throw new SshConnectionServiceError('ssh_unavailable');
+    }
+    for (const projectId of lockedProjectIds) this.lifecycleLockedProjects.add(projectId);
+    try {
+      return await this.mutate(async () => {
+        if (this.hasProjectActivity(lockedProjectIds)) {
+          throw new SshConnectionServiceError('ssh_unavailable');
+        }
+        return operation();
+      });
+    } finally {
+      for (const projectId of lockedProjectIds) this.lifecycleLockedProjects.delete(projectId);
+    }
+  }
+
   cancelAttempt(projectId: string, sessionId: string, attemptId: string) {
     return this.cancelWhere(
       (entry) =>
@@ -1439,6 +1472,23 @@ export class SshConnectionService extends EventEmitter {
       () => undefined,
     );
     return result;
+  }
+
+  private throwIfProjectLifecycleLocked(projectId: string) {
+    if (this.lifecycleLockedProjects.has(projectId)) {
+      throw new SshConnectionServiceError('ssh_unavailable');
+    }
+  }
+
+  private hasProjectActivity(projectIds: readonly string[]) {
+    const targets = new Set(projectIds);
+    return (
+      [...this.pendingApprovals.values()].some((entry) => targets.has(entry.command.projectId)) ||
+      [...this.trustedReservations.values()].some((entry) =>
+        targets.has(entry.command.projectId),
+      ) ||
+      [...this.activeExecutions.values()].some((entry) => targets.has(entry.projectId))
+    );
   }
 
   private expireApproval(approvalId: string) {

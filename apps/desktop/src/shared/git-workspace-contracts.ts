@@ -88,6 +88,11 @@ export const GitSwitchBranchInputSchema = GitHeadCommandSchema.extend({
   name: GitExistingBranchNameSchema,
 }).strict();
 
+export const GitFileSearchInputSchema = GitProjectInputSchema.extend({
+  query: z.string().trim().min(1).max(256),
+  limit: z.number().int().min(1).max(51),
+}).strict();
+
 export type GitProjectInput = z.infer<typeof GitProjectInputSchema>;
 export type GitHeadCommand = z.infer<typeof GitHeadCommandSchema>;
 export type GitFileInput = z.infer<typeof GitFileInputSchema>;
@@ -97,10 +102,18 @@ export type GitPathsCommand = z.infer<typeof GitPathsCommandSchema>;
 export type GitCommitInput = z.infer<typeof GitCommitInputSchema>;
 export type GitCreateBranchInput = z.infer<typeof GitCreateBranchInputSchema>;
 export type GitSwitchBranchInput = z.infer<typeof GitSwitchBranchInputSchema>;
+export type GitFileSearchInput = z.infer<typeof GitFileSearchInputSchema>;
 
 export type GitFileEntry = Readonly<{
   path: string;
   kind: 'file' | 'symlink' | 'submodule';
+}>;
+
+export type GitFileSearchResult = Readonly<{
+  entries: readonly GitFileEntry[];
+  scannedEntries: number;
+  truncated: boolean;
+  incomplete: boolean;
 }>;
 
 export type GitChange = Readonly<{

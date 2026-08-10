@@ -4,6 +4,7 @@ import {
   buildLiteratureSearchTagOptions,
   buildLiteratureTablePage,
   LITERATURE_PAGE_SIZE,
+  literaturePageForRecord,
   MAX_VISIBLE_LITERATURE_RECORDS,
   nextLiteratureSort,
   type LiteratureTableRecord,
@@ -15,6 +16,7 @@ const record = (
 ): LiteratureTableRecord => ({
   id,
   title: `Paper ${id}`,
+  canonicalUrl: `https://doi.org/10.1000/${id}`,
   authors: ['Ada Researcher'],
   venue: 'GOSU Transactions',
   year: 2026,
@@ -284,5 +286,29 @@ describe('literature table model', () => {
         ),
       ).toEqual([tier === 'unclassified' ? 'imported' : tier]);
     }
+  });
+
+  it('locates an exact literature record on its rendered evidence-table page', () => {
+    const records = Array.from({ length: 60 }, (_, index) =>
+      record(`paper-${String(index + 1).padStart(2, '0')}`),
+    );
+    expect(
+      literaturePageForRecord(records, 'paper-30', {
+        text: '',
+        reviewStatus: 'all',
+        discoveryTier: 'all',
+        searchTag: 'all',
+        sortKey: 'title',
+        sortDirection: 'ascending',
+      }),
+    ).toBe(2);
+    expect(
+      literaturePageForRecord(records, 'missing', {
+        text: '',
+        reviewStatus: 'all',
+        sortKey: 'title',
+        sortDirection: 'ascending',
+      }),
+    ).toBeNull();
   });
 });

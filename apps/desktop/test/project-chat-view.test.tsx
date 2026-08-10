@@ -256,6 +256,54 @@ describe('advanced Project Chat controls', () => {
     expect(resolveUnreadAssistantMessageId(messages, 'missing-assistant')).toBeNull();
   });
 
+  it('marks the exact searched message as the transcript navigation target', () => {
+    const messageId = '44444444-4444-4444-8444-444444444444';
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [
+            {
+              id: messageId,
+              projectId: project.id,
+              role: 'assistant',
+              content: 'Exact searched evidence',
+              status: 'complete',
+              actions: [],
+              createdAt: '2026-08-04T00:00:00.000Z',
+              completedAt: '2026-08-04T00:00:01.000Z',
+            },
+          ],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={false}
+        models={[]}
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        searchTarget={{ requestId: 3, targetId: messageId }}
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toMatch(/class="chat-message assistant complete search-target"/u);
+    expect(html).toContain('Exact searched evidence');
+  });
+
   it('does not save a loading placeholder as a real session position', () => {
     const sessionKey = `${project.id}\u0000session-a`;
     expect(shouldPersistProjectChatScrollPosition(null, sessionKey)).toBe(false);
@@ -526,7 +574,7 @@ describe('advanced Project Chat controls', () => {
     expect(html).not.toContain('Linked server resources');
     expect(html).not.toContain('Refresh usage');
     expect(html).not.toContain('Advanced agent controls');
-    expect(html).toContain('Another session has an active Codex turn.');
+    expect(html).toContain('A project-wide chat update is finishing.');
     expect(html).toContain('aria-label="Attach research files"');
   });
 
@@ -692,7 +740,21 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('restore this unsent session draft</textarea>');
   });
 
-  it('keeps another session visible and lets its next message enter the project queue', () => {
+  it('lets another session send immediately while showing the active sibling session', () => {
+    const selectedSession = {
+      id: '22222222-2222-4222-8222-222222222222',
+      projectId: project.id,
+      title: 'Selected chat',
+      isDefault: true,
+      createdAt: '2026-08-04T00:00:00.000Z',
+      updatedAt: '2026-08-04T00:00:00.000Z',
+    } as const;
+    const activeSiblingSession = {
+      ...selectedSession,
+      id: '33333333-3333-4333-8333-333333333333',
+      title: 'Running ablation',
+      isDefault: false,
+    } as const;
     const html = renderToStaticMarkup(
       <ProjectChatView
         project={project}
@@ -700,13 +762,17 @@ describe('advanced Project Chat controls', () => {
         snapshot={{
           schemaVersion: 1,
           projectId: project.id,
+          session: selectedSession,
+          sessions: [selectedSession, activeSiblingSession],
           messages: [],
           attempts: [],
           profile: defaultProjectChatProfile(project.id),
         }}
         loading={false}
         inFlight={false}
-        projectBusy
+        sessions={[selectedSession, activeSiblingSession]}
+        selectedSessionId={selectedSession.id}
+        activeSessionIds={new Set([activeSiblingSession.id])}
         models={[]}
         collaborationModes={[]}
         selectedModel={null}
@@ -724,11 +790,51 @@ describe('advanced Project Chat controls', () => {
       />,
     );
 
-    expect(html).toContain('Another session has an active Codex turn.');
+    expect(html).toContain('Running ablation');
+    expect(html).toContain('Turn active');
+    expect(html).not.toContain('Another session has an active Codex turn.');
+    expect(html).not.toContain('A project-wide chat update is finishing.');
     expect(html).not.toMatch(/<textarea[^>]*disabled=""/u);
-    expect(html).toContain('>Queue<span>Enter</span>');
+    expect(html).toContain('>Send<span>Enter</span>');
     expect(html).not.toContain('>Stop</button>');
     expect(html).toContain('aria-label="Create a new project chat session"');
+  });
+
+  it('queues a message only when the selected session is already starting', () => {
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={false}
+        sessionBusy
+        models={[]}
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('>Queue<span>Enter</span>');
+    expect(html).not.toContain('>Stop</button>');
+    expect(html).not.toContain('A project-wide chat update is finishing.');
   });
 
   it('shows a compact editable queue with a safe replace-current action', () => {
@@ -760,7 +866,6 @@ describe('advanced Project Chat controls', () => {
         }}
         loading={false}
         inFlight
-        projectBusy
         models={[]}
         collaborationModes={[]}
         selectedModel={null}

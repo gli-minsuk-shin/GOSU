@@ -375,6 +375,9 @@ export const ProjectChatSessionSchema = z
     isDefault: z.boolean(),
     parentSessionId: uuidSchema.optional(),
     branchedFromMessageId: uuidSchema.optional(),
+    // Present only when an automatic title was committed with exact model provenance. Manual
+    // renames clear this field so a late metadata job can never masquerade as the user's choice.
+    titleModel: ProjectChatModelProvenanceSchema.optional(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
   })
@@ -796,6 +799,14 @@ export const ProjectChatEventSchema = z.discriminatedUnion('type', [
       type: z.literal('queue.updated'),
       projectId: uuidSchema,
       sessionId: uuidSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('session.updated'),
+      projectId: uuidSchema,
+      sessionId: uuidSchema,
+      session: ProjectChatSessionSchema,
     })
     .strict(),
 ]);

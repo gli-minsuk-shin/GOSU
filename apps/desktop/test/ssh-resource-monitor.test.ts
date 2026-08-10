@@ -13,6 +13,7 @@ import type {
   SshProcessResult,
   SshRunnableCommand,
 } from '../src/main/ssh-command-runner';
+import { SshCommandRunnerError } from '../src/main/ssh-command-runner';
 import type { SshConnectionProfile } from '../src/shared/ssh-contracts';
 
 const CONNECTION_ID = '44444444-4444-4444-8444-444444444444';
@@ -138,11 +139,13 @@ describe('SSH fixed resource monitor', () => {
     expect(parseNvidiaSmiResource('0, Fixture, private, 512, 1024, 60')).toBeNull();
   });
 
-  it('uses only the fixed probe commands and preserves CPU and RAM when no GPU is detected', async () => {
+  it('uses only fixed absolute probe candidates and reports when nvidia-smi is absent', async () => {
     const { runner, run } = runnerFixture([
       resultFixture({ stdout: `${CPU_BEFORE}\n${MEMORY}\n` }),
       resultFixture({ stdout: CPU_AFTER }),
       resultFixture({ exitCode: 127, stderr: '/usr/bin/nvidia-smi: not found' }),
+      resultFixture({ exitCode: 127, stderr: '/usr/local/bin/nvidia-smi: not found' }),
+      resultFixture({ exitCode: 127, stderr: '/usr/local/nvidia/bin/nvidia-smi: not found' }),
     ]);
     const monitor = new SshResourceMonitor(runner, {
       now: () => CAPTURED_AT,
@@ -161,8 +164,8 @@ describe('SSH fixed resource monitor', () => {
         totalBytes: 1_024_000,
         utilizationPercent: 75,
       },
-      gpu: { state: 'not_detected' },
-      issues: ['gpu_not_detected'],
+      gpu: { state: 'unavailable' },
+      issues: ['gpu_unavailable', 'nvidia_smi_unavailable'],
     });
     expect(run.mock.calls.map(([command]) => command)).toEqual([
       expect.objectContaining({
@@ -177,7 +180,68 @@ describe('SSH fixed resource monitor', () => {
           '--format=csv,noheader,nounits',
         ],
       }),
+      expect.objectContaining({
+        command: '/usr/local/bin/nvidia-smi',
+        args: [
+          '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu',
+          '--format=csv,noheader,nounits',
+        ],
+      }),
+      expect.objectContaining({
+        command: '/usr/local/nvidia/bin/nvidia-smi',
+        args: [
+          '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu',
+          '--format=csv,noheader,nounits',
+        ],
+      }),
     ]);
+  });
+
+  it('uses a supported alternate nvidia-smi location without PATH lookup or a shell command', async () => {
+    const { runner, run } = runnerFixture([
+      resultFixture({ stdout: `${CPU_BEFORE}\n${MEMORY}\n` }),
+      resultFixture({ stdout: CPU_AFTER }),
+      resultFixture({ exitCode: 127, stderr: '/usr/bin/nvidia-smi: not found' }),
+      resultFixture({ stdout: '0, NVIDIA RTX 3080, 75, 5120, 10240, 64\n' }),
+    ]);
+    const monitor = new SshResourceMonitor(runner, {
+      now: () => CAPTURED_AT,
+      sampleDelayMs: 0,
+    });
+
+    await expect(monitor.read(profileFixture())).resolves.toMatchObject({
+      status: 'ready',
+      gpu: {
+        state: 'available',
+        devices: [{ index: 0, name: 'NVIDIA RTX 3080', utilizationPercent: 75 }],
+      },
+      issues: [],
+    });
+    expect(run.mock.calls.slice(2).map(([command]) => command.command)).toEqual([
+      '/usr/bin/nvidia-smi',
+      '/usr/local/bin/nvidia-smi',
+    ]);
+    expect(
+      run.mock.calls.flatMap(([command]) => [command.command, ...(command.args ?? [])]),
+    ).not.toContain('sh');
+  });
+
+  it('distinguishes an installed nvidia-smi reporting no devices from a missing executable', async () => {
+    const { runner } = runnerFixture([
+      resultFixture({ stdout: `${CPU_BEFORE}\n${MEMORY}\n` }),
+      resultFixture({ stdout: CPU_AFTER }),
+      resultFixture({ exitCode: 1, stderr: 'No devices were found' }),
+    ]);
+    const monitor = new SshResourceMonitor(runner, {
+      now: () => CAPTURED_AT,
+      sampleDelayMs: 0,
+    });
+
+    await expect(monitor.read(profileFixture())).resolves.toMatchObject({
+      status: 'partial',
+      gpu: { state: 'not_detected' },
+      issues: ['gpu_not_detected'],
+    });
   });
 
   it('deduplicates in-flight captures, caches briefly, and lets force bypass only the cache', async () => {
@@ -341,5 +405,27 @@ describe('SSH fixed resource monitor', () => {
     });
     expect(JSON.stringify(snapshot)).not.toContain('.ssh');
     expect(JSON.stringify(snapshot)).not.toContain('private host');
+  });
+
+  it.each([
+    ['unknown_host_key', 'unknown_host_key'],
+    ['authentication_failed', 'authentication_failed'],
+    ['connection_failed', 'connection_failed'],
+    ['timed_out', 'timed_out'],
+    ['unavailable', 'ssh_client_unavailable'],
+  ] as const)('preserves only the bounded %s transport reason', async (kind, issue) => {
+    const { runner } = runnerFixture([
+      new SshCommandRunnerError(kind),
+      new SshCommandRunnerError(kind),
+    ]);
+    const monitor = new SshResourceMonitor(runner, {
+      now: () => CAPTURED_AT,
+      sampleDelayMs: 0,
+    });
+
+    const snapshot = await monitor.read(profileFixture());
+    expect(snapshot.issues).toContain(issue);
+    expect(snapshot.issues).toContain('connection_unavailable');
+    expect(JSON.stringify(snapshot)).not.toContain('stderr');
   });
 });

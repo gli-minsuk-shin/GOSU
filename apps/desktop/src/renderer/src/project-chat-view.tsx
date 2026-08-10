@@ -44,6 +44,7 @@ import { ProjectChatMarkdown } from './project-chat-markdown';
 import { isProjectChatNearBottom, resolveProjectChatArrival } from './project-chat-scroll';
 import { ProjectChatSessionRail } from './project-chat-session-rail';
 import { PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH } from './project-chat-session-state';
+import type { SearchTargetRequest } from './search-results-model';
 import { SshResourceSummary, type SshResourceUiState } from './ssh-resource-summary';
 
 const QUICK_PROMPTS = [
@@ -268,7 +269,8 @@ export function ProjectChatView({
   snapshot,
   loading,
   inFlight,
-  projectBusy = inFlight,
+  sessionBusy = inFlight,
+  projectBusy = false,
   models,
   collaborationModes = [],
   selectedModel,
@@ -312,6 +314,8 @@ export function ProjectChatView({
   unreadAssistantMessageId = null,
   onUnreadAssistantMessageSeen = () => undefined,
   onScrollTopChange = () => undefined,
+  searchTarget = null,
+  onSearchTargetHandled = () => undefined,
   sshAccess = NO_PROJECT_CHAT_SSH_ACCESS,
   sshServers = NO_PROJECT_CHAT_SSH_SERVERS,
   onOpenSshWorkspaceSetup = () => undefined,
@@ -324,6 +328,7 @@ export function ProjectChatView({
   snapshot: ProjectChatSnapshot | null;
   loading: boolean;
   inFlight: boolean;
+  sessionBusy?: boolean;
   projectBusy?: boolean;
   models: readonly CodexModel[];
   collaborationModes: readonly CodexCollaborationModeDescriptor[];
@@ -376,6 +381,8 @@ export function ProjectChatView({
   unreadAssistantMessageId?: string | null;
   onUnreadAssistantMessageSeen?: (assistantMessageId: string) => void;
   onScrollTopChange?: (scrollTop: number) => void;
+  searchTarget?: SearchTargetRequest | null;
+  onSearchTargetHandled?: (requestId: number) => void;
   sshAccess?: ProjectChatSshAccess;
   sshServers?: readonly ProjectChatSshServer[];
   onOpenSshWorkspaceSetup?: () => void;
@@ -425,6 +432,7 @@ export function ProjectChatView({
   const transcriptRef = useRef<HTMLDivElement>(null);
   const latestMessageRef = useRef<HTMLElement>(null);
   const unreadAssistantMessageRef = useRef<HTMLElement>(null);
+  const messageElementsRef = useRef(new Map<string, HTMLElement>());
   const observedLatestMessageIdRef = useRef<string | null>(null);
   const observedLatestContentRevisionRef = useRef<string | null>(null);
   const nearBottomRef = useRef(true);
@@ -727,6 +735,40 @@ export function ProjectChatView({
     resolvedUnreadAssistantMessageId,
   ]);
 
+  useLayoutEffect(() => {
+    if (!searchTarget || loading || !snapshotReady) return;
+    const messageExists =
+      snapshot?.messages.some(({ id }) => id === searchTarget.targetId) ?? false;
+    if (!messageExists) {
+      onSearchTargetHandled(searchTarget.requestId);
+      return;
+    }
+    const transcript = transcriptRef.current;
+    const targetMessage = messageElementsRef.current.get(searchTarget.targetId);
+    if (!transcript || !targetMessage) return;
+    const transcriptBounds = transcript.getBoundingClientRect();
+    const messageBounds = targetMessage.getBoundingClientRect();
+    const topInset = Number.parseFloat(window.getComputedStyle(transcript).paddingTop) || 0;
+    transcript.scrollTop = resolveLatestMessageScrollTop({
+      currentScrollTop: transcript.scrollTop,
+      scrollHeight: transcript.scrollHeight,
+      clientHeight: transcript.clientHeight,
+      transcriptTop: transcriptBounds.top,
+      messageTop: messageBounds.top,
+      topInset,
+    });
+    targetMessage.focus({ preventScroll: true });
+    const nearBottom = isProjectChatNearBottom(
+      transcript.scrollTop,
+      transcript.scrollHeight,
+      transcript.clientHeight,
+    );
+    nearBottomRef.current = nearBottom;
+    setScrollAffordance((current) => ({ ...current, nearBottom }));
+    onScrollTopChangeRef.current(transcript.scrollTop);
+    onSearchTargetHandled(searchTarget.requestId);
+  }, [loading, onSearchTargetHandled, searchTarget, snapshot?.messages, snapshotReady]);
+
   const jumpToLatest = (target: 'bottom' | 'new-message') => {
     const transcript = transcriptRef.current;
     if (!transcript) return;
@@ -926,6 +968,7 @@ export function ProjectChatView({
         creating={creatingSession}
         disabled={loading || branchingMessageId !== null}
         renameDisabled={projectBusy}
+        renameDisabledSessionIds={activeSessionIds}
         onSelect={onSelectSession}
         onCreate={onCreateSession}
         width={sessionRailWidth}
@@ -1395,14 +1438,19 @@ export function ProjectChatView({
                 const isLatestMessage = messageIndex === snapshot.messages.length - 1;
                 const isUnreadAssistantMessage =
                   message.role === 'assistant' && message.id === resolvedUnreadAssistantMessageId;
+                const isSearchTarget = searchTarget?.targetId === message.id;
                 return (
                   <article
                     ref={(element) => {
+                      if (element) messageElementsRef.current.set(message.id, element);
+                      else messageElementsRef.current.delete(message.id);
                       if (isLatestMessage) latestMessageRef.current = element;
                       if (isUnreadAssistantMessage) unreadAssistantMessageRef.current = element;
                     }}
-                    tabIndex={isLatestMessage || isUnreadAssistantMessage ? -1 : undefined}
-                    className={`chat-message ${message.role} ${message.status}`}
+                    tabIndex={
+                      isLatestMessage || isUnreadAssistantMessage || isSearchTarget ? -1 : undefined
+                    }
+                    className={`chat-message ${message.role} ${message.status}${isSearchTarget ? ' search-target' : ''}`}
                     key={message.id}
                   >
                     <header>
@@ -1472,7 +1520,7 @@ export function ProjectChatView({
                           <button
                             type="button"
                             className="ghost-button"
-                            disabled={branchingMessageId !== null}
+                            disabled={sessionBusy || projectBusy || branchingMessageId !== null}
                             onClick={() => void onEditHistoryMessage(message.id, message.content)}
                             title="Create a new chat branch from this edited message"
                           >
@@ -1482,7 +1530,7 @@ export function ProjectChatView({
                         <button
                           type="button"
                           className="ghost-button"
-                          disabled={inFlight || branchingMessageId !== null}
+                          disabled={sessionBusy || projectBusy || branchingMessageId !== null}
                           onClick={() => void onBranchSession(message.id)}
                         >
                           {branchingMessageId === message.id
@@ -1693,9 +1741,9 @@ export function ProjectChatView({
               {selectionWarning}
             </div>
           )}
-          {projectBusy && !inFlight && (
+          {projectBusy && !sessionBusy && (
             <div className="chat-selection-warning" role="status">
-              Another session has an active Codex turn. Messages sent here will be queued safely.
+              A project-wide chat update is finishing. Messages sent here will be queued safely.
             </div>
           )}
           {attachments.length > 0 && (
@@ -1793,7 +1841,7 @@ export function ProjectChatView({
                 onClick={submit}
                 disabled={loading || draft.trim().length === 0 || selectionWarning !== null}
               >
-                {projectBusy ? 'Queue' : 'Send'}
+                {sessionBusy || projectBusy ? 'Queue' : 'Send'}
                 <span>Enter</span>
               </button>
             </div>

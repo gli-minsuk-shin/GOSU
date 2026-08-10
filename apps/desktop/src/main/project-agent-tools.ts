@@ -68,9 +68,11 @@ import type {
 } from './codex-app-server';
 import type { ProjectChatAttachmentsForAgent } from './project-chat-attachment-service';
 import {
+  prepareResearchNotesAgentMarkdown,
   researchNotesAgentMarkdownArtifactId,
   ResearchNotesAgentMarkdownReceiptSchema,
   type RecoverResearchNoteForAgentInput,
+  type ResearchNotesAgentMarkdownOrigin,
   type ResearchNotesAgentMarkdownReceipt,
   type SaveResearchNoteForAgentInput,
 } from './research-notes-service';
@@ -443,6 +445,15 @@ type SavedResearchNote = Pick<
   ResearchNotesAgentMarkdownReceipt,
   'artifactId' | 'category' | 'path' | 'contentSha256' | 'created'
 >;
+
+export type ProjectAgentResearchNoteDocumentContext = Readonly<{
+  sessionName: string | null;
+  creatorId: string | null;
+  creatorName: string | null;
+  relatedDocuments?: readonly string[];
+  relatedPapers?: readonly string[];
+  provenance?: ResearchNotesAgentMarkdownOrigin['provenance'];
+}>;
 
 type PendingNoteCall = {
   source: NoteSource | null;
@@ -1204,7 +1215,11 @@ export class ProjectAgentToolSession {
     if (!this.sourcesSealed) this.researchNoteSaveFailures.add(code);
   }
 
-  async persistResponseResearchNote(value: ProjectChatResponseResearchNote, allowCreate = true) {
+  async persistResponseResearchNote(
+    value: ProjectChatResponseResearchNote,
+    allowCreate = true,
+    documentContext?: ProjectAgentResearchNoteDocumentContext,
+  ) {
     const parsed = ProjectChatResponseResearchNoteSchema.safeParse(value);
     if (!parsed.success || parsed.data.disposition === 'none') return;
     const note = parsed.data;
@@ -1217,7 +1232,7 @@ export class ProjectAgentToolSession {
       return;
     }
     try {
-      await this.requireActiveProject();
+      const { project } = await this.requireActiveProject();
       if (!this.localNotesAvailable || !this.dependencies.localNotesVault) {
         this.recordResearchNoteSaveFailure('local_notes_not_authorized');
         return;
@@ -1247,13 +1262,35 @@ export class ProjectAgentToolSession {
           this.dependencies.attemptId,
         ].join('\0'),
       );
-      const expectedContentSha256 = sha256(note.content);
       const artifactId = researchNotesAgentMarkdownArtifactId(
         this.dependencies.projectId,
         this.dependencies.localNotesVault.id,
         idempotencyKey,
       );
       const stagedAt = new Date().toISOString();
+      const hasTrustedSessionName = Boolean(documentContext?.sessionName);
+      const saveInput: SaveResearchNoteForAgentInput = {
+        category: note.category,
+        title: note.title,
+        content: note.content,
+        idempotencyKey,
+        origin: {
+          createdAt: stagedAt,
+          sessionId: hasTrustedSessionName ? this.dependencies.sessionId : null,
+          sessionName: hasTrustedSessionName ? documentContext!.sessionName : null,
+          creatorId: documentContext?.creatorId ?? 'gosu-system',
+          creatorName: documentContext?.creatorName ?? 'GOSU Project Chat',
+          relatedDocuments: [...(documentContext?.relatedDocuments ?? [])],
+          relatedPapers: [...(documentContext?.relatedPapers ?? [])],
+          provenance: {
+            ...(documentContext?.provenance ?? {}),
+            attempt_id: this.dependencies.attemptId,
+          },
+        },
+      };
+      const expectedContentSha256 = sha256(
+        prepareResearchNotesAgentMarkdown(project, artifactId, saveInput),
+      );
       await this.dependencies.researchNoteReceipts?.stageResearchNoteSave({
         schemaVersion: 1,
         projectId: this.dependencies.projectId,
@@ -1277,12 +1314,11 @@ export class ProjectAgentToolSession {
       };
       let terminalWaitExpired = false;
       const save = this.dependencies.vault
-        .saveMarkdownForAgent(this.dependencies.projectId, this.dependencies.localNotesVault.id, {
-          category: note.category,
-          title: note.title,
-          content: note.content,
-          idempotencyKey,
-        })
+        .saveMarkdownForAgent(
+          this.dependencies.projectId,
+          this.dependencies.localNotesVault.id,
+          saveInput,
+        )
         .then(async (value) => {
           const receiptResult = ResearchNotesAgentMarkdownReceiptSchema.safeParse(value);
           if (!receiptResult.success) throw new Error('research_notes_save_commit_uncertain');

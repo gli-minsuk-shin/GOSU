@@ -60,6 +60,7 @@ export type GitCommandRunner = (
     maxBytes?: number;
     network?: boolean;
     allowUserConfig?: boolean;
+    signal?: AbortSignal;
   }>,
 ) => Promise<string>;
 
@@ -138,6 +139,7 @@ export function createGitCommandRunner(
           timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           maxBuffer: options.maxBytes ?? DEFAULT_MAX_BYTES,
           windowsHide: true,
+          signal: options.signal,
         },
         (error, stdout, stderr) => {
           if (error) {

@@ -317,6 +317,10 @@ export function SshConnectionsCard({
                       <small>
                         {testStatus[connection.id] ?? `Connection profile v${connection.version}`}
                       </small>
+                      <small>
+                        Test checks host trust and non-interactive authentication only. Project
+                        linking and command Allow once approval are separate.
+                      </small>
                     </div>
                     <SshResourceSummary state={resourceState} serverLabel={connection.label} />
                     <div className="form-actions">

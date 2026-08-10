@@ -8,6 +8,7 @@ import {
 import {
   DEFAULT_WORKSPACE_BOARD_SETTINGS,
   resolveWorkspaceBoardSettings,
+  type EmptyProjectTrashReceipt,
   type WorkspaceOperation,
   type WorkspaceSnapshot,
 } from '../src/shared/workspace-contracts';
@@ -15,6 +16,7 @@ import {
 class MemoryWorkspaceStorage implements WorkspaceStorage {
   state: WorkspaceSnapshot | null = null;
   operations: WorkspaceOperation[] = [];
+  trashReceipts = new Map<string, EmptyProjectTrashReceipt>();
 
   load() {
     return this.state === null ? null : structuredClone(this.state);
@@ -23,6 +25,19 @@ class MemoryWorkspaceStorage implements WorkspaceStorage {
   commit(state: WorkspaceSnapshot, operation: WorkspaceOperation) {
     this.state = structuredClone(state);
     this.operations.push(structuredClone(operation));
+  }
+
+  purgeTrash(
+    state: WorkspaceSnapshot,
+    operation: WorkspaceOperation,
+    receipt: EmptyProjectTrashReceipt,
+  ) {
+    this.commit(state, operation);
+    this.trashReceipts.set(receipt.idempotencyKey, structuredClone(receipt));
+  }
+
+  loadTrashPurgeReceipt(idempotencyKey: string) {
+    return structuredClone(this.trashReceipts.get(idempotencyKey) ?? null);
   }
 
   pendingChanges() {
@@ -72,6 +87,64 @@ function expectServiceError(error: unknown, code: WorkspaceServiceError['code'])
 }
 
 describe('WorkspaceService', () => {
+  it('empties only recoverable Trash atomically and returns an idempotent preservation receipt', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const active = await service.createProject({ name: 'Active Research' });
+    const archived = await service.createProject({ name: 'Archived Research' });
+    await service.setProjectArchived({
+      projectId: archived.id,
+      expectedVersion: archived.version,
+      archived: true,
+    });
+    const doomed = await service.createProject({ name: 'Recoverable Draft' });
+    await service.createTask({ projectId: doomed.id, title: 'Temporary task', status: 'backlog' });
+    await service.trashProject({ projectId: doomed.id, expectedVersion: doomed.version });
+    const before = await service.snapshot();
+    const idempotencyKey = '11111111-1111-4111-8111-111111111111';
+
+    const receipt = await service.emptyTrash({
+      expectedWorkspaceRevision: before.revision,
+      idempotencyKey,
+      confirmation: 'EMPTY TRASH',
+    });
+
+    expect(receipt).toMatchObject({
+      idempotencyKey,
+      removedProjects: [{ id: doomed.id, name: doomed.name }],
+      detachedLocalLinks: ['research-notes', 'ssh-workspace-grants'],
+      recoverableInGosu: false,
+    });
+    expect(receipt.preservedExternalData).toEqual([
+      'github-repositories',
+      'local-git-worktrees',
+      'obsidian-research-notes-files',
+      'remote-server-data',
+    ]);
+    expect(receipt.preservedImmutableProvenance).toContain('experiment-lineage-and-metrics');
+    const after = await service.snapshot();
+    expect(after.projects.map((project) => project.id).sort()).toEqual(
+      [active.id, archived.id].sort(),
+    );
+    expect(after.tasks.some((task) => task.projectId === doomed.id)).toBe(false);
+    expect(storage.operations.at(-1)).toMatchObject({
+      id: idempotencyKey,
+      commandType: 'project.trash.empty',
+      entityType: 'workspace',
+    });
+
+    await expect(
+      service.emptyTrash({
+        expectedWorkspaceRevision: 0,
+        idempotencyKey,
+        confirmation: 'EMPTY TRASH',
+      }),
+    ).resolves.toEqual(receipt);
+    expect(storage.operations.filter((operation) => operation.id === idempotencyKey)).toHaveLength(
+      1,
+    );
+  });
+
   it('treats a legacy project without archivedAt or trashedAt as active', async () => {
     const storage = new MemoryWorkspaceStorage();
     storage.state = {

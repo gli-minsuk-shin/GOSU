@@ -33,11 +33,14 @@ import type {
 } from '../../shared/ssh-workspace-contracts';
 import type {
   CreateProjectInput,
+  EmptyProjectTrashInput,
+  EmptyProjectTrashReceipt,
   ProjectRecord,
   WorkspacePendingSummary,
   WorkspaceSnapshot,
 } from '../../shared/workspace-contracts';
 import type { ResearchNotesWorkspace } from '../../shared/research-notes-contracts';
+import type { SearchHit } from '../../shared/search-contracts';
 import { BoardView } from './board-view';
 import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
@@ -85,6 +88,13 @@ import {
 } from './project-chat-session-state';
 import { RepositoryView } from './repository-view';
 import {
+  consumePendingSearchNavigation,
+  objectiveSearchHitIsCurrent,
+  workspaceTabForSearchHit,
+  type PendingSearchNavigation,
+} from './search-results-model';
+import { SearchView, type SearchViewAdapter } from './search-view';
+import {
   loadResearchNotesLayoutState,
   saveResearchNotesLayoutState,
 } from './research-notes-layout-state';
@@ -121,7 +131,13 @@ import {
   type SshWorkspaceSetupRequest,
 } from './ssh-workspace-grants-card';
 import { SshWorkspaceLoadGuard, sshWorkspacesForProject } from './ssh-workspace-load-guard';
-import type { SshResourceUiState } from './ssh-resource-summary';
+import {
+  sshConnectionTestStatus,
+  sshResourceErrorLabel,
+  sshResourceErrorReason,
+  type SshResourceUiErrorReason,
+  type SshResourceUiState,
+} from './ssh-resource-summary';
 import { SshResourceRequestGuard, sshResourceProfilesKey } from './ssh-resource-request-guard';
 import { Connection, describeError } from './ui-primitives';
 import {
@@ -175,6 +191,10 @@ const lectureStudioAdapter: LectureStudioViewAdapter = {
   onEvent: (listener) => window.gosu.lectureStudio.onEvent(listener),
 };
 
+const searchAdapter: SearchViewAdapter = {
+  search: (input) => window.gosu.search.query(input),
+};
+
 function createProjectCommand(
   input: ProjectDraft,
   preferences: UserPreferences,
@@ -212,11 +232,14 @@ function markSshResourcesLoading(
 function markSshResourcesFailed(
   current: Readonly<Record<string, SshResourceUiState>>,
   connectionIds: readonly string[],
+  reason: SshResourceUiErrorReason = 'unavailable',
 ) {
   const next = { ...current };
   for (const connectionId of connectionIds) {
     const snapshot = sshResourceSnapshotFromState(current[connectionId]);
-    next[connectionId] = snapshot ? { phase: 'error', snapshot } : { phase: 'error' };
+    next[connectionId] = snapshot
+      ? { phase: 'error', snapshot, reason }
+      : { phase: 'error', reason };
   }
   return next;
 }
@@ -232,6 +255,41 @@ function mergeSshResourceSnapshots(
     next[snapshot.connectionId] = { phase: 'ready', snapshot };
   }
   return next;
+}
+
+export function mergeProjectChatSessionCatalogUpdate(
+  current: Readonly<Record<string, readonly ProjectChatSession[]>>,
+  session: ProjectChatSession,
+) {
+  const projectSessions = current[session.projectId] ?? [];
+  const found = projectSessions.some((candidate) => candidate.id === session.id);
+  return {
+    ...current,
+    [session.projectId]: found
+      ? projectSessions.map((candidate) =>
+          candidate.id === session.id &&
+          Date.parse(session.updatedAt) >= Date.parse(candidate.updatedAt)
+            ? session
+            : candidate,
+        )
+      : [...projectSessions, session],
+  };
+}
+
+export function mergeProjectChatSessionSnapshotUpdate(
+  current: Readonly<Record<string, ProjectChatSnapshot>>,
+  session: ProjectChatSession,
+) {
+  const sessionKey = projectChatSessionKey(session.projectId, session.id);
+  const snapshot = current[sessionKey];
+  if (!snapshot) return current;
+  if (snapshot.session && Date.parse(snapshot.session.updatedAt) > Date.parse(session.updatedAt)) {
+    return current;
+  }
+  return {
+    ...current,
+    [sessionKey]: { ...snapshot, session },
+  };
 }
 
 function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabId {
@@ -316,6 +374,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [chatSessionMutation, setChatSessionMutation] = useState<{
     projectId: string;
     kind: 'create' | 'branch' | 'rename';
+    sessionId?: string;
     messageId?: string;
   } | null>(null);
   const [chatLoadingSessionKeys, setChatLoadingSessionKeys] = useState<ReadonlySet<string>>(
@@ -334,6 +393,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const codexBootstrapStarted = useRef(false);
   const researchNotesGeneration = useRef(0);
   const researchNoteReadGeneration = useRef(0);
+  const [pendingSearchNavigation, setPendingSearchNavigation] =
+    useState<PendingSearchNavigation | null>(null);
+  const searchNavigationRequestIdRef = useRef(0);
   const sshWorkspaceLoadGuard = useRef(new SshWorkspaceLoadGuard());
   const sshWorkspaceSetupRequestIdRef = useRef(0);
   const sshResourceRequestsRef = useRef(new Map<string, Promise<void>>());
@@ -562,8 +624,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     const loadToken = chatLoadGuard.current.begin(sessionKey);
     setChatLoadingSessionKeys((current) => markProjectChatLoading(current, sessionKey));
     try {
-      const next = await window.gosu.projectChat.snapshot(projectId, sessionId);
+      const loaded = await window.gosu.projectChat.snapshot(projectId, sessionId);
       if (!chatLoadGuard.current.canApply(loadToken)) return null;
+      const catalogSession = loaded.session
+        ? projectChatSessionsRef.current[projectId]?.find(
+            (session) => session.id === loaded.session?.id,
+          )
+        : undefined;
+      const next =
+        loaded.session &&
+        catalogSession &&
+        Date.parse(catalogSession.updatedAt) >= Date.parse(loaded.session.updatedAt)
+          ? { ...loaded, session: catalogSession }
+          : loaded;
       const resolvedSessionId = next.session?.id ?? sessionId;
       const resolvedSessionKey = projectChatSessionKey(projectId, resolvedSessionId);
       updateUnreadAssistantMessage(
@@ -648,10 +721,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             ? mergeSshResourceSnapshots(current, [snapshot])
             : current,
         );
-      } catch {
+      } catch (error) {
         setSshResourceStates((current) =>
           sshResourceRequestGuardRef.current.accepts(token)
-            ? markSshResourcesFailed(current, [connectionId])
+            ? markSshResourcesFailed(current, [connectionId], sshResourceErrorReason(error))
             : current,
         );
       } finally {
@@ -697,6 +770,48 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       });
   }, [activeProject?.id, activeProject?.version]);
 
+  useEffect(() => {
+    const navigation = pendingSearchNavigation;
+    const hit = navigation?.hit;
+    if (
+      !hit ||
+      hit.target.kind !== 'research-note' ||
+      activeTab !== 'notes' ||
+      activeProject?.id !== hit.projectId ||
+      researchNotesState !== 'ready' ||
+      researchNotesWorkspace?.projectId !== hit.projectId
+    ) {
+      return;
+    }
+    setPendingSearchNavigation((current) =>
+      consumePendingSearchNavigation(current, navigation.requestId),
+    );
+    const generation = ++researchNoteReadGeneration.current;
+    setNoteLoading(true);
+    void window.gosu.researchNotes
+      .read({ projectId: hit.projectId, path: hit.target.path })
+      .then((note) => {
+        if (researchNoteReadGeneration.current === generation) {
+          setSelectedNote(note as SelectedNote);
+          setAnnouncement(`Opened ${hit.title} from local search.`);
+        }
+      })
+      .catch((error: unknown) => {
+        if (researchNoteReadGeneration.current === generation) {
+          setWorkspaceError(describeError(error));
+        }
+      })
+      .finally(() => {
+        if (researchNoteReadGeneration.current === generation) setNoteLoading(false);
+      });
+  }, [
+    activeProject?.id,
+    activeTab,
+    pendingSearchNavigation,
+    researchNotesState,
+    researchNotesWorkspace?.projectId,
+  ]);
+
   const refreshProjectSshResources = useCallback(
     (projectId: string, connectionIds: readonly string[], force = false) => {
       const requestScopes = new Map(
@@ -738,15 +853,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             return markSshResourcesFailed(
               mergeSshResourceSnapshots(current, scopedSnapshots),
               missingIds,
+              'project_grant_required',
             );
           });
-        } catch {
+        } catch (error) {
           setSshResourceStates((current) => {
             const currentIds = scopedConnectionIds.filter((connectionId) => {
               const token = requestScopes.get(connectionId);
               return token !== undefined && sshResourceRequestGuardRef.current.accepts(token);
             });
-            return markSshResourcesFailed(current, currentIds);
+            return markSshResourcesFailed(current, currentIds, sshResourceErrorReason(error));
           });
         } finally {
           sshResourceRequestsRef.current.delete(requestKey);
@@ -777,10 +893,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               ? mergeSshResourceSnapshots(current, [snapshot])
               : current,
           );
-        } catch {
+        } catch (error) {
           setSshResourceStates((current) =>
             sshResourceRequestGuardRef.current.accepts(token)
-              ? markSshResourcesFailed(current, [connectionId])
+              ? markSshResourcesFailed(current, [connectionId], sshResourceErrorReason(error))
               : current,
           );
         } finally {
@@ -892,6 +1008,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     () =>
       window.gosu.projectChat.onEvent((event: ProjectChatEvent) => {
         const sessionKey = projectChatSessionKey(event.projectId, event.sessionId);
+        if (event.type === 'session.updated') {
+          chatLoadGuard.current.observeEvent(projectChatCatalogLoadKey(event.projectId));
+          const nextCatalog = mergeProjectChatSessionCatalogUpdate(
+            projectChatSessionsRef.current,
+            event.session,
+          );
+          projectChatSessionsRef.current = nextCatalog;
+          setProjectChatSessions(nextCatalog);
+          setChatSnapshots((current) =>
+            mergeProjectChatSessionSnapshotUpdate(current, event.session),
+          );
+          return;
+        }
         chatLoadGuard.current.observeEvent(sessionKey);
         if (event.type === 'turn.started') {
           setChatInFlight((current) => ({ ...current, [sessionKey]: true }));
@@ -1103,6 +1232,27 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     }
   };
 
+  const emptyProjectTrash = async (
+    input: EmptyProjectTrashInput,
+  ): Promise<EmptyProjectTrashReceipt | null> => {
+    if (busyAction !== null) return null;
+    setBusyAction('project:trash:empty');
+    setWorkspaceError(null);
+    try {
+      const receipt = await window.gosu.workspace.emptyProjectTrash(input);
+      await loadWorkspace();
+      setAnnouncement(
+        `Permanently removed ${receipt.removedProjects.length} project${receipt.removedProjects.length === 1 ? '' : 's'} from GOSU. External research data was preserved.`,
+      );
+      return receipt;
+    } catch (error) {
+      setWorkspaceError(describeError(error));
+      return null;
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const runSshConnectionAction = async (
     key: string,
     action: () => Promise<unknown>,
@@ -1157,20 +1307,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setSshTestStatus((current) => ({ ...current, [connectionId]: 'Testing…' }));
     try {
       const result = await window.gosu.ssh.testConnection(connectionId);
-      const status = result.reachable
-        ? 'Ready'
-        : result.code === 'unknown_host_key'
-          ? 'Host key not trusted'
-          : result.code === 'authentication_failed'
-            ? 'Authentication failed'
-            : result.code === 'timed_out'
-              ? 'Connection timed out'
-              : 'Connection failed';
+      const status = sshConnectionTestStatus(result);
       setSshTestStatus((current) => ({ ...current, [connectionId]: status }));
       setSshConnectionState('ready');
       return result.reachable;
     } catch (error) {
-      setSshTestStatus((current) => ({ ...current, [connectionId]: 'Test unavailable' }));
+      const reason = sshResourceErrorReason(error);
+      setSshTestStatus((current) => ({
+        ...current,
+        [connectionId]: `Test unavailable · ${sshResourceErrorLabel(reason)}`,
+      }));
       setWorkspaceError(describeError(error));
       setSshConnectionState('unavailable');
       return false;
@@ -1325,6 +1471,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   };
 
   const selectProject = (projectId: string) => {
+    setPendingSearchNavigation(null);
     setActiveProjectId(projectId);
     setActiveSurface('workspace');
     setShowProjectForm(false);
@@ -1332,6 +1479,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   };
 
   const selectProjectTab = (projectId: string, tab: ProjectWorkspaceTabId) => {
+    setPendingSearchNavigation(null);
     setActiveProjectId(projectId);
     setActiveSurface('workspace');
     setActiveTab(tab);
@@ -1339,10 +1487,67 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   };
 
   const selectGlobalTab = (tab: GlobalWorkspaceTabId) => {
+    setPendingSearchNavigation(null);
     setActiveSurface('workspace');
     setActiveTab(tab);
     setShowProjectForm(false);
   };
+
+  const openSearchHit = (hit: SearchHit) => {
+    researchNoteReadGeneration.current += 1;
+    const project = snapshot?.projects.find((candidate) => candidate.id === hit.projectId);
+    if (!project || project.trashedAt) {
+      setPendingSearchNavigation(null);
+      setWorkspaceError('This search result no longer belongs to an available project.');
+      return;
+    }
+    if (!objectiveSearchHitIsCurrent(hit, snapshot?.objectives ?? [])) {
+      setPendingSearchNavigation(null);
+      setWorkspaceError(
+        'This Goal & Metrics result is no longer the current objective version. Refresh Search to open the latest version.',
+      );
+      return;
+    }
+    setActiveProjectId(project.id);
+    setShowProjectForm(false);
+    if (project.archivedAt) {
+      setPendingSearchNavigation(null);
+      setSettingsCategory('projects');
+      setActiveSurface('settings');
+      setAnnouncement(`Restore ${project.name} before opening this archived result.`);
+      return;
+    }
+    const shown = showProjectLocally(projectNavigationRef.current, project.id);
+    updateProjectNavigation({
+      ...shown,
+      expandedProjectIds: [...new Set([...shown.expandedProjectIds, project.id])],
+      activeGroupExpanded: true,
+    });
+    const tab = workspaceTabForSearchHit(hit);
+    setPendingSearchNavigation(
+      hit.target.kind === 'objective'
+        ? null
+        : {
+            requestId: ++searchNavigationRequestIdRef.current,
+            hit,
+          },
+    );
+    setActiveSurface('workspace');
+    setActiveTab(tab);
+    if (hit.target.kind === 'project-chat') {
+      activateChatSession(project.id, hit.target.sessionId);
+      void loadProjectChat(project.id, hit.target.sessionId).catch((error: unknown) =>
+        setWorkspaceError(describeError(error)),
+      );
+      setAnnouncement(`Opened ${hit.title} in Project Chat.`);
+      return;
+    }
+    setAnnouncement(`Opened ${project.name} · ${tab}.`);
+  };
+
+  const completeSearchNavigation = useCallback((requestId: number) => {
+    setPendingSearchNavigation((current) => consumePendingSearchNavigation(current, requestId));
+  }, []);
 
   const openAgentSettings = () => {
     setSettingsCategory('agent');
@@ -1420,7 +1625,14 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   };
 
   const renameChatSession = async (session: ProjectChatSession, title: string) => {
-    if (chatBusyProjectIds.has(session.projectId) || chatSessionMutation) return false;
+    const sessionKey = projectChatSessionKey(session.projectId, session.id);
+    if (
+      chatInFlight[sessionKey] ||
+      chatStartingSessionKeys.has(sessionKey) ||
+      chatSessionMutation
+    ) {
+      return false;
+    }
     const proposed = title.trim();
     if (!proposed) return false;
     if (proposed === session.title) return true;
@@ -1428,7 +1640,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       setWorkspaceError('Chat session names can contain at most 120 characters.');
       return false;
     }
-    setChatSessionMutation({ projectId: session.projectId, kind: 'rename' });
+    setChatSessionMutation({
+      projectId: session.projectId,
+      sessionId: session.id,
+      kind: 'rename',
+    });
     setWorkspaceError(null);
     try {
       const renamed = await window.gosu.projectChat.renameSession({
@@ -1442,13 +1658,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           candidate.id === renamed.id ? renamed : candidate,
         ),
       );
-      const sessionKey = projectChatSessionKey(session.projectId, renamed.id);
+      const renamedSessionKey = projectChatSessionKey(session.projectId, renamed.id);
       setChatSnapshots((current) => {
-        const snapshotForSession = current[sessionKey];
+        const snapshotForSession = current[renamedSessionKey];
         if (!snapshotForSession?.session) return current;
         return {
           ...current,
-          [sessionKey]: { ...snapshotForSession, session: renamed },
+          [renamedSessionKey]: { ...snapshotForSession, session: renamed },
         };
       });
       setAnnouncement(`Renamed the chat session to ${renamed.title}.`);
@@ -1536,11 +1752,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const activeProjectChatSnapshot = activeProjectChatSessionKey
     ? chatSnapshots[activeProjectChatSessionKey]
     : undefined;
-  const activeChatSessionKeys = new Set(
-    Object.entries(chatInFlight)
+  const activeChatSessionKeys = new Set([
+    ...Object.entries(chatInFlight)
       .filter(([, inFlight]) => inFlight)
       .map(([key]) => key),
-  );
+    ...chatStartingSessionKeys,
+  ]);
 
   return (
     <main
@@ -1797,6 +2014,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   'Restored the project with its preserved local work.',
                 )
               }
+              onEmptyProjectTrash={emptyProjectTrash}
               category={settingsCategory}
               onCategoryChange={setSettingsCategory}
               agentProject={activeProject}
@@ -1905,7 +2123,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 inFlight={Boolean(
                   activeProjectChatSessionKey && chatInFlight[activeProjectChatSessionKey],
                 )}
-                projectBusy={chatBusyProjectIds.has(activeProject.id)}
+                sessionBusy={Boolean(
+                  activeProjectChatSessionKey &&
+                  (chatInFlight[activeProjectChatSessionKey] ||
+                    chatStartingSessionKeys.has(activeProjectChatSessionKey)),
+                )}
+                projectBusy={Boolean(
+                  chatSessionMutation?.projectId === activeProject.id &&
+                  chatSessionMutation.kind !== 'rename',
+                )}
                 models={models}
                 collaborationModes={collaborationModes}
                 selectedModel={selectedModel}
@@ -1943,6 +2169,17 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     ? (chatUnreadAssistantMessageIds[activeProjectChatSessionKey] ?? null)
                     : null
                 }
+                searchTarget={
+                  pendingSearchNavigation?.hit.projectId === activeProject.id &&
+                  pendingSearchNavigation.hit.target.kind === 'project-chat' &&
+                  pendingSearchNavigation.hit.target.sessionId === activeProjectChatSessionId
+                    ? {
+                        requestId: pendingSearchNavigation.requestId,
+                        targetId: pendingSearchNavigation.hit.target.messageId,
+                      }
+                    : null
+                }
+                onSearchTargetHandled={completeSearchNavigation}
                 onUnreadAssistantMessageSeen={(assistantMessageId) => {
                   if (!activeProjectChatSessionId || !activeProjectChatSessionKey) return;
                   updateUnreadAssistantMessage(
@@ -2256,6 +2493,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 project={activeProject}
                 tasks={activeTasks}
                 busyAction={busyAction}
+                searchTarget={
+                  pendingSearchNavigation?.hit.projectId === activeProject.id &&
+                  pendingSearchNavigation.hit.target.kind === 'board-task'
+                    ? {
+                        requestId: pendingSearchNavigation.requestId,
+                        targetId: pendingSearchNavigation.hit.target.taskId,
+                      }
+                    : null
+                }
+                onSearchTargetHandled={completeSearchNavigation}
                 onCreateTask={(input) =>
                   runWorkspaceAction(
                     'task:create',
@@ -2292,6 +2539,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               <RepositoryView
                 key={`${activeProject.id}:${activeProject.version}`}
                 project={activeProject}
+                searchTarget={
+                  pendingSearchNavigation?.hit.projectId === activeProject.id &&
+                  pendingSearchNavigation.hit.target.kind === 'repository-file'
+                    ? {
+                        requestId: pendingSearchNavigation.requestId,
+                        targetId: pendingSearchNavigation.hit.target.path,
+                      }
+                    : null
+                }
+                onSearchTargetHandled={completeSearchNavigation}
                 onUpdateRepository={(input) =>
                   runWorkspaceAction(
                     `project:repository:${input.projectId}`,
@@ -2336,6 +2593,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 project={activeProject}
                 objective={activeObjective}
                 adapter={experimentsAdapter}
+                searchTarget={
+                  pendingSearchNavigation?.hit.projectId === activeProject.id &&
+                  pendingSearchNavigation.hit.target.kind === 'experiment'
+                    ? {
+                        requestId: pendingSearchNavigation.requestId,
+                        targetId: pendingSearchNavigation.hit.target.ideaId,
+                      }
+                    : null
+                }
+                onSearchTargetHandled={completeSearchNavigation}
                 onOpenObjective={() => selectProjectTab(activeProject.id, 'objective')}
               />
             )}
@@ -2347,6 +2614,24 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 aiAvailable={codexConnectionState === 'ready'}
                 requestedModelId={selectedModel}
                 reasoningOptionId={selectedReasoning}
+                searchTarget={
+                  pendingSearchNavigation?.hit.projectId === activeProject.id &&
+                  pendingSearchNavigation.hit.target.kind === 'literature'
+                    ? {
+                        requestId: pendingSearchNavigation.requestId,
+                        targetId: pendingSearchNavigation.hit.target.recordId,
+                      }
+                    : null
+                }
+                onSearchTargetHandled={completeSearchNavigation}
+              />
+            )}
+            {activeTab === 'search' && (
+              <SearchView
+                adapter={searchAdapter}
+                scope={{ kind: 'global' }}
+                scopeLabel="all projects"
+                onOpen={openSearchHit}
               />
             )}
             {activeTab === 'lecture' && (
@@ -2529,6 +2814,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onFolderTreeCollapsedChange={(folderTreeCollapsed) =>
                   setResearchNotesLayout((current) => ({ ...current, folderTreeCollapsed }))
                 }
+                searchAdapter={searchAdapter}
                 onChoose={() => void chooseResearchNotesVault(activeProject.id)}
                 onRetry={() => {
                   const generation = ++researchNotesGeneration.current;

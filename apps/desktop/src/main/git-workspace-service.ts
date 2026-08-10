@@ -5,6 +5,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import {
   GitExistingBranchNameSchema,
+  GitFileSearchInputSchema,
   GitRelativePathSchema,
   type GitBranch,
   type GitChange,
@@ -15,6 +16,8 @@ import {
   type GitFileEntry,
   type GitFileInput,
   type GitFilePreview,
+  type GitFileSearchInput,
+  type GitFileSearchResult,
   type GitHeadCommand,
   type GitPathsCommand,
   type GitSwitchBranchInput,
@@ -31,6 +34,8 @@ import {
 } from './git-command-runner';
 
 const MAX_TREE_ENTRIES = 5_000;
+const MAX_SEARCH_SCAN_ENTRIES = 20_000;
+const MAX_SEARCH_INDEX_BYTES = 8 * 1024 * 1024;
 const MAX_HISTORY_ENTRIES = 100;
 const MAX_PREVIEW_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 512 * 1024;
@@ -74,6 +79,14 @@ function hasControlCharacter(value: string) {
     const code = character.codePointAt(0) ?? 0;
     return code <= 31 || (code >= 127 && code <= 159);
   });
+}
+
+function normalizeSearchValue(value: string) {
+  return value.normalize('NFKC').toLocaleLowerCase();
+}
+
+function normalizedSearchTokens(query: string) {
+  return normalizeSearchValue(query).split(/\s+/u).filter(Boolean).slice(0, 16);
 }
 
 function isInside(root: string, candidate: string) {
@@ -276,6 +289,24 @@ export class GitWorkspaceService {
 
   snapshot(projectId: string): Promise<GitWorkspaceSnapshot> {
     return this.exclusive(projectId, () => this.snapshotUnlocked(projectId));
+  }
+
+  /** Read-only filename search. Archived projects remain searchable; Trash never does. */
+  searchFiles(input: GitFileSearchInput, signal?: AbortSignal): Promise<GitFileSearchResult> {
+    signal?.throwIfAborted();
+    const command = GitFileSearchInputSchema.parse(input);
+    return this.exclusive(command.projectId, async () => {
+      signal?.throwIfAborted();
+      const { repository } = await this.requireSearchableProject(command.projectId);
+      const root = this.repositoryRoot(command.projectId);
+      if (!repository || !(await pathExists(root))) {
+        return { entries: [], scannedEntries: 0, truncated: false, incomplete: false };
+      }
+      signal?.throwIfAborted();
+      await this.validateRepositoryAt(root, repository);
+      signal?.throwIfAborted();
+      return this.searchFileIndex(root, command.query, command.limit, signal);
+    });
   }
 
   clone(projectId: string): Promise<GitWorkspaceSnapshot> {
@@ -775,6 +806,63 @@ export class GitWorkspaceService {
     };
   }
 
+  private async searchFileIndex(
+    root: string,
+    query: string,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<GitFileSearchResult> {
+    signal?.throwIfAborted();
+    const [pathsOutput, stagesOutput] = await Promise.all([
+      this.runGit(root, ['ls-files', '-co', '--exclude-standard', '-z'], {
+        maxBytes: MAX_SEARCH_INDEX_BYTES,
+        ...(signal ? { signal } : {}),
+      }),
+      this.runGit(root, ['ls-files', '--stage', '-z'], {
+        maxBytes: MAX_SEARCH_INDEX_BYTES,
+        ...(signal ? { signal } : {}),
+      }),
+    ]);
+    const modes = new Map<string, string>();
+    for (const record of stagesOutput.split('\0')) {
+      const separatorIndex = record.indexOf('\t');
+      if (separatorIndex === -1) continue;
+      const metadata = record.slice(0, separatorIndex).split(' ');
+      const path = record.slice(separatorIndex + 1);
+      if (metadata[0] && GitRelativePathSchema.safeParse(path).success) {
+        modes.set(path, metadata[0]);
+      }
+    }
+    const rawPaths = pathsOutput.split('\0').filter(Boolean);
+    const invalidPathFound = rawPaths.some(
+      (path) => !GitRelativePathSchema.safeParse(path).success,
+    );
+    const paths = [
+      ...new Set(rawPaths.filter((path) => GitRelativePathSchema.safeParse(path).success)),
+    ].sort((left, right) => left.localeCompare(right));
+    const visiblePaths = paths.slice(0, MAX_SEARCH_SCAN_ENTRIES);
+    const tokens = normalizedSearchTokens(query);
+    const matches: GitFileEntry[] = [];
+    let scannedEntries = 0;
+    for (const path of visiblePaths) {
+      signal?.throwIfAborted();
+      scannedEntries += 1;
+      const mode = modes.get(path);
+      const kind = mode === '120000' ? 'symlink' : mode === '160000' ? 'submodule' : 'file';
+      if (kind !== 'file' || !tokens.every((token) => normalizeSearchValue(path).includes(token))) {
+        continue;
+      }
+      matches.push({ path, kind });
+      if (matches.length > limit) break;
+    }
+    return {
+      entries: matches.slice(0, limit),
+      scannedEntries,
+      truncated: matches.length > limit,
+      incomplete: invalidPathFound || paths.length > visiblePaths.length,
+    };
+  }
+
   private async indexFingerprint(root: string) {
     const stages = await this.runGit(root, ['ls-files', '--stage', '-z'], {
       maxBytes: 4 * 1024 * 1024,
@@ -863,11 +951,16 @@ export class GitWorkspaceService {
   }
 
   private async requireActiveProject(projectId: string) {
+    const resolved = await this.requireSearchableProject(projectId);
+    if (resolved.project.archivedAt) throw new GitWorkspaceServiceError('project_archived');
+    return resolved;
+  }
+
+  private async requireSearchableProject(projectId: string) {
     const snapshot = await this.workspace.snapshot();
     const project = snapshot.projects.find((candidate) => candidate.id === projectId);
     if (!project) throw new GitWorkspaceServiceError('project_not_found');
     if (project.trashedAt) throw new GitWorkspaceServiceError('project_trashed');
-    if (project.archivedAt) throw new GitWorkspaceServiceError('project_archived');
     return { project, repository: repositoryIdentifierForAgent(project.repository) };
   }
 

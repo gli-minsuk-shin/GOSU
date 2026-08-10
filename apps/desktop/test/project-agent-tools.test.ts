@@ -9,6 +9,10 @@ import {
   type ProjectAgentSsh,
   type ProjectAgentVault,
 } from '../src/main/project-agent-tools';
+import {
+  prepareResearchNotesAgentMarkdown,
+  type SaveResearchNoteForAgentInput,
+} from '../src/main/research-notes-service';
 import { WorkspaceService, type WorkspaceStorage } from '../src/main/workspace-service';
 import type {
   CodexDynamicToolCall,
@@ -146,16 +150,7 @@ class FakeProjectVault implements ProjectAgentVault {
     },
   );
   readonly saveMarkdownForAgent = vi.fn(
-    async (
-      projectId: string,
-      expectedVaultId: string,
-      input: {
-        category: 'literature' | 'papers' | 'experiments' | 'project-progress' | 'idea-development';
-        title: string;
-        content: string;
-        idempotencyKey: string;
-      },
-    ) => {
+    async (projectId: string, expectedVaultId: string, input: SaveResearchNoteForAgentInput) => {
       this.assertGrant(expectedVaultId);
       const folders = {
         literature: 'Literature',
@@ -163,18 +158,28 @@ class FakeProjectVault implements ProjectAgentVault {
         experiments: 'Experiments',
         'project-progress': 'Project Progress',
         'idea-development': 'Idea Development',
+        lectures: 'Lecture Notes & Slides',
       } as const;
       const artifactId = createHash('sha256')
         .update(`${projectId}\0${expectedVaultId}\0${input.idempotencyKey}`, 'utf8')
         .digest('hex')
         .slice(0, 16);
+      const storedContent = prepareResearchNotesAgentMarkdown(
+        {
+          id: projectId,
+          name: 'Project Alpha',
+          updatedAt: input.origin?.createdAt ?? '2026-01-01T00:00:00.000Z',
+        },
+        artifactId,
+        input,
+      );
       return {
         schemaVersion: 1 as const,
         projectId,
         category: input.category,
         path: `${folders[input.category]}/Saved artifact--${artifactId}.md`,
         created: true,
-        contentSha256: createHash('sha256').update(input.content, 'utf8').digest('hex'),
+        contentSha256: createHash('sha256').update(storedContent, 'utf8').digest('hex'),
         artifactId,
       };
     },
@@ -695,12 +700,23 @@ describe('ProjectAgentToolSession', () => {
     const { session, vault } = authorizedSession(workspace, projectAlpha.id);
     const content = '# Evaluation plan\n\nCompare three seeded trials.\n';
 
-    await session.persistResponseResearchNote({
-      disposition: 'save',
-      category: 'experiments',
-      title: 'Evaluation plan',
-      content,
-    });
+    await session.persistResponseResearchNote(
+      {
+        disposition: 'save',
+        category: 'experiments',
+        title: 'Evaluation plan',
+        content,
+      },
+      true,
+      {
+        sessionName: 'Evaluation branch',
+        creatorId: 'gpt-fixture',
+        creatorName: 'GOSU Project Chat',
+        relatedDocuments: ['Experiments/Experiment Log.md'],
+        relatedPapers: ['https://doi.org/10.1000/fixture'],
+        provenance: { invocation_id: 'fixture-invocation' },
+      },
+    );
 
     expect(vault.saveMarkdownForAgent).toHaveBeenCalledExactlyOnceWith(
       projectAlpha.id,
@@ -710,12 +726,26 @@ describe('ProjectAgentToolSession', () => {
         title: 'Evaluation plan',
         content,
         idempotencyKey: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        origin: expect.objectContaining({
+          createdAt: expect.any(String),
+          sessionId: CHAT_SESSION_ID,
+          sessionName: 'Evaluation branch',
+          creatorId: 'gpt-fixture',
+          creatorName: 'GOSU Project Chat',
+          relatedDocuments: ['Experiments/Experiment Log.md'],
+          relatedPapers: ['https://doi.org/10.1000/fixture'],
+          provenance: expect.objectContaining({
+            attempt_id: CHAT_ATTEMPT_ID,
+            invocation_id: 'fixture-invocation',
+          }),
+        }),
       }),
     );
+    const saved = await vault.saveMarkdownForAgent.mock.results[0]!.value;
     const appendix = await session.finalizeSourceAppendix();
     expect(appendix).toContain('Research Notes saved');
     expect(appendix).toMatch(/Research Notes\/Experiments\/Saved artifact--[0-9a-f]{16}\.md/u);
-    expect(appendix).toContain(createHash('sha256').update(content, 'utf8').digest('hex'));
+    expect(appendix).toContain(saved.contentSha256);
     expect(appendix).not.toContain(content);
     expect(appendix).not.toContain('/Users/');
   });

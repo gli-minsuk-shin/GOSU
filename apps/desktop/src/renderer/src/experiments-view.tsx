@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
   type FormEvent,
@@ -30,6 +31,7 @@ import {
   layoutIdeaLineage,
   type ExperimentMetricSeries,
 } from './experiment-trajectory-model';
+import type { SearchTargetRequest } from './search-results-model';
 import './experiments-view.css';
 
 export interface ExperimentsViewAdapter {
@@ -45,6 +47,8 @@ export interface ExperimentsViewProps {
   objective: WorkspaceObjective | undefined;
   adapter: ExperimentsViewAdapter;
   onOpenObjective: () => void;
+  searchTarget?: SearchTargetRequest | null;
+  onSearchTargetHandled?: (requestId: number) => void;
 }
 
 type ExperimentTab = 'trajectory' | 'ideas' | 'report';
@@ -125,6 +129,8 @@ export function ExperimentsView({
   objective,
   adapter,
   onOpenObjective,
+  searchTarget = null,
+  onSearchTargetHandled = () => undefined,
 }: ExperimentsViewProps) {
   const [snapshot, setSnapshot] = useState<ExperimentWorkspaceSnapshot | null>(null);
   const [activeTab, setActiveTab] = useState<ExperimentTab>('trajectory');
@@ -138,6 +144,7 @@ export function ExperimentsView({
   const [ideaComposer, setIdeaComposer] = useState<
     { kind: 'root'; parent: null } | { kind: 'child'; parent: ExperimentIdea } | null
   >(null);
+  const [pendingSearchFocus, setPendingSearchFocus] = useState<SearchTargetRequest | null>(null);
 
   const load = useCallback(
     async (showLoading = false) => {
@@ -206,6 +213,32 @@ export function ExperimentsView({
   const selectedSeries =
     metricSeries.find(({ key }) => key === selectedSeriesKey) ?? metricSeries[0] ?? null;
   const selectedIdea = ideas.find(({ id }) => id === selectedIdeaId) ?? null;
+
+  useEffect(() => {
+    if (!searchTarget || !snapshot) return;
+    if (!ideas.some(({ id }) => id === searchTarget.targetId)) {
+      setError(
+        'The searched experiment idea is no longer available. Refresh Search and try again.',
+      );
+      onSearchTargetHandled(searchTarget.requestId);
+      return;
+    }
+    setActiveTab('ideas');
+    setSelectedIdeaId(searchTarget.targetId);
+    setPendingSearchFocus(searchTarget);
+  }, [ideas, onSearchTargetHandled, searchTarget, snapshot]);
+
+  useLayoutEffect(() => {
+    if (!pendingSearchFocus || activeTab !== 'ideas') return;
+    const element = document.getElementById(
+      `experiment-idea-inspector-${pendingSearchFocus.targetId}`,
+    );
+    if (!element) return;
+    element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
+    element.focus({ preventScroll: true });
+    onSearchTargetHandled(pendingSearchFocus.requestId);
+    setPendingSearchFocus(null);
+  }, [activeTab, onSearchTargetHandled, pendingSearchFocus, selectedIdeaId]);
 
   const createIdea = async (draft: {
     parentIdeaId: string | null;
@@ -1173,7 +1206,11 @@ function IdeaInspector({
   };
 
   return (
-    <article className="experiment-card experiment-idea-inspector">
+    <article
+      id={`experiment-idea-inspector-${idea.id}`}
+      tabIndex={-1}
+      className="experiment-card experiment-idea-inspector"
+    >
       <header>
         <div>
           <span className="eyebrow">SELECTED IDEA {label}</span>

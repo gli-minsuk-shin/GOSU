@@ -4,13 +4,27 @@ import {
   type SshServerResourceIssue,
   type SshServerResourceSnapshot,
 } from '../shared/ssh-contracts';
-import type { SshCommandRunner, SshProcessResult } from './ssh-command-runner';
+import {
+  SshCommandRunnerError,
+  type SshCommandFailureKind,
+  type SshCommandRunner,
+  type SshProcessResult,
+} from './ssh-command-runner';
 
 const DEFAULT_CACHE_TTL_MS = 12_000;
 const DEFAULT_SAMPLE_DELAY_MS = 250;
 const DEFAULT_MAX_CONCURRENT_CAPTURES = 4;
 const PROBE_TIMEOUT_SECONDS = 10;
 const PROBE_OUTPUT_LIMIT = 64_000;
+const NVIDIA_SMI_CANDIDATES = [
+  '/usr/bin/nvidia-smi',
+  '/usr/local/bin/nvidia-smi',
+  '/usr/local/nvidia/bin/nvidia-smi',
+] as const;
+const NVIDIA_SMI_QUERY_ARGS = [
+  '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu',
+  '--format=csv,noheader,nounits',
+] as const;
 const MEBIBYTE = 1_048_576;
 const KIBIBYTE = 1_024;
 
@@ -234,11 +248,18 @@ export function parseNvidiaSmiResource(output: string): GpuResource | null {
   };
 }
 
-function gpuNotDetected(result: SshProcessResult) {
+function nvidiaSmiUnavailable(result: SshProcessResult) {
   return (
+    result.exitCode === 126 ||
     result.exitCode === 127 ||
-    /no devices were found|command not found|not found/iu.test(`${result.stdout}\n${result.stderr}`)
+    /(?:command )?not found|no such file or directory|permission denied/iu.test(
+      `${result.stdout}\n${result.stderr}`,
+    )
   );
+}
+
+function gpuNotDetected(result: SshProcessResult) {
+  return /no devices were found/iu.test(`${result.stdout}\n${result.stderr}`);
 }
 
 function successfulOutput(result: SshProcessResult | null) {
@@ -256,6 +277,22 @@ function snapshotStatus(cpu: CpuResource, memory: MemoryResource, gpu: GpuResour
 
 function uniqueIssues(issues: readonly SshServerResourceIssue[]) {
   return [...new Set(issues)];
+}
+
+function transportResourceIssue(kind: SshCommandFailureKind): SshServerResourceIssue | undefined {
+  switch (kind) {
+    case 'unavailable':
+      return 'ssh_client_unavailable';
+    case 'unknown_host_key':
+    case 'authentication_failed':
+    case 'connection_failed':
+    case 'timed_out':
+      return kind;
+    case 'output_too_large':
+      return 'probe_output_invalid';
+    case 'cancelled':
+      return undefined;
+  }
 }
 
 export class SshResourceMonitor {
@@ -398,6 +435,7 @@ export class SshResourceMonitor {
   private async capture(profile: SshConnectionProfile, token: ResourceCaptureToken) {
     this.assertCurrent(token);
     let processResponses = 0;
+    const transportIssues: SshServerResourceIssue[] = [];
     const run = async (command: string, args: readonly string[]) => {
       try {
         const result = await this.runner(
@@ -412,7 +450,11 @@ export class SshResourceMonitor {
         );
         processResponses += 1;
         return result;
-      } catch {
+      } catch (error) {
+        if (error instanceof SshCommandRunnerError) {
+          const issue = transportResourceIssue(error.kind);
+          if (issue) transportIssues.push(issue);
+        }
         return null;
       }
     };
@@ -426,13 +468,17 @@ export class SshResourceMonitor {
       second = await run('/bin/cat', ['/proc/stat']);
       this.assertCurrent(token);
     }
-    const gpuResult = await run('/usr/bin/nvidia-smi', [
-      '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu',
-      '--format=csv,noheader,nounits',
-    ]);
-    this.assertCurrent(token);
+    let gpuResult: SshProcessResult | null = null;
+    // The remote executable is selected only from this fixed absolute-path allowlist. Commands and
+    // arguments remain separate tokens; no PATH lookup, shell fragment, or model-supplied value is
+    // used. Try the next installation location only when the previous executable is absent.
+    for (const candidate of NVIDIA_SMI_CANDIDATES) {
+      gpuResult = await run(candidate, NVIDIA_SMI_QUERY_ARGS);
+      this.assertCurrent(token);
+      if (!gpuResult || !nvidiaSmiUnavailable(gpuResult)) break;
+    }
 
-    const issues: SshServerResourceIssue[] = [];
+    const issues: SshServerResourceIssue[] = [...transportIssues];
     const cpu =
       first !== null && second !== null && successfulOutput(first) && successfulOutput(second)
         ? calculateLinuxCpuResource(first.stdout, second.stdout)
@@ -443,6 +489,9 @@ export class SshResourceMonitor {
     if (!gpuResult) {
       gpu = { state: 'unavailable' };
       issues.push('gpu_unavailable');
+    } else if (nvidiaSmiUnavailable(gpuResult)) {
+      gpu = { state: 'unavailable' };
+      issues.push('gpu_unavailable', 'nvidia_smi_unavailable');
     } else if (gpuNotDetected(gpuResult)) {
       gpu = { state: 'not_detected' };
       issues.push('gpu_not_detected');

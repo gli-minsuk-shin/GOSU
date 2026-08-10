@@ -41,8 +41,14 @@ import { createProjectChatAttachmentPicker } from './project-chat-attachment-pla
 import { ProjectChatAttachmentService } from './project-chat-attachment-service';
 import { registerProjectChatIpc } from './project-chat-ipc';
 import { ProjectChatService } from './project-chat-service';
+import { ApplicationSearchSource } from './application-search-source';
+import { RepositorySearchSource } from './repository-search-source';
+import { ProjectTrashLifecycle } from './project-trash-lifecycle';
+import { ResearchNotesSearchSource } from './research-notes-search-source';
 import { registerResearchNotesIpc } from './research-notes-ipc';
 import { ResearchNotesProjectLinkSchema, ResearchNotesService } from './research-notes-service';
+import { registerSearchIpc } from './search-ipc';
+import { SearchService } from './search-service';
 import { createSshCommandRunner } from './ssh-command-runner';
 import { SshConnectionService } from './ssh-connection-service';
 import { registerSshIpc } from './ssh-ipc';
@@ -96,6 +102,10 @@ const ssh = new SshConnectionService(database, createSshCommandRunner());
 const workspace = new WorkspaceService({
   load: () => database.loadWorkspaceState(),
   commit: (state, operation) => database.commitWorkspaceState(state, operation),
+  purgeTrash: (state, operation, receipt) =>
+    database.purgeWorkspaceTrash(state, operation, receipt),
+  loadTrashPurgeReceipt: (idempotencyKey) =>
+    database.loadWorkspaceTrashPurgeReceipt(idempotencyKey),
   pendingChanges: () => database.pendingWorkspaceChanges(),
   pendingSummary: () => database.pendingWorkspaceSummary(),
 });
@@ -121,6 +131,12 @@ const researchNotes = new ResearchNotesService({
   literature: database,
   workspace,
   vault,
+});
+const search = new SearchService({
+  workspace,
+  application: new ApplicationSearchSource(database),
+  researchNotes: new ResearchNotesSearchSource(researchNotes),
+  repository: new RepositorySearchSource(gitWorkspace),
 });
 let mainWindow: BrowserWindow | undefined;
 const projectChatAttachments = new ProjectChatAttachmentService({
@@ -182,6 +198,7 @@ const lectureStudio = new LectureStudioService({
     return directory;
   },
 });
+const projectTrashLifecycle = new ProjectTrashLifecycle(projectChat, ssh, lectureStudio);
 let mainWindowRendererLoaded = false;
 let pendingSettingsOpen = false;
 let pendingSidebarToggle = false;
@@ -337,6 +354,7 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     reportUnexpectedWorkspaceError,
     projectChat,
     researchNotes,
+    projectTrashLifecycle,
   );
   registerProjectChatIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
@@ -379,6 +397,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
       }
       return selected;
     },
+    reportUnexpectedWorkspaceError,
+  );
+  registerSearchIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    search,
     reportUnexpectedWorkspaceError,
   );
   registerExperimentWorkspaceIpc(

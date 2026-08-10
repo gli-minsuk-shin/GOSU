@@ -146,6 +146,9 @@ export interface LectureStudioArtifactWriter {
       lectureNotesMarkdown: string;
       slidesMarkdown: string;
       createdAt: string;
+      invocation?: ModelInvocation;
+      relatedDocuments?: readonly string[];
+      relatedPapers?: readonly string[];
     }>,
   ): MaybePromise<readonly [LectureStudioArtifact, LectureStudioArtifact]>;
   confirmRevisionArtifacts(
@@ -275,6 +278,19 @@ function uniqueNonEmpty(values: readonly string[], maximum: number) {
   return result;
 }
 
+function canonicalDoiUrl(doi: string | null) {
+  if (!doi) return null;
+  try {
+    const normalized = doi.trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//iu, '');
+    const result = new URL(`https://doi.org/${normalized}`);
+    return result.origin === 'https://doi.org' && result.username === '' && result.password === ''
+      ? result.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function assistantContent(reply: string, artifacts: readonly LectureStudioArtifact[]) {
   const suffix = `\n\nSaved to Research Notes:\n${artifacts
     .map((artifact) => `- ${artifact.relativePath}`)
@@ -326,6 +342,7 @@ export class LectureStudioService {
   private readonly pendingByThread = new Map<string, PendingTurn>();
   private readonly bufferedByThread = new Map<string, CodexNotification[]>();
   private readonly activeByStudio = new Map<string, ActiveExecution>();
+  private readonly lifecycleLockedProjects = new Set<string>();
   private readonly listeners = new Set<(event: LectureStudioEvent) => void>();
   private pendingArtifactReconciliation: Promise<void> | null = null;
 
@@ -487,7 +504,9 @@ export class LectureStudioService {
 
   async create(input: CreateLectureStudioInput): Promise<LectureStudio> {
     const command = CreateLectureStudioInputSchema.parse(input);
+    this.throwIfProjectsLifecycleLocked([...command.sourceProjectIds, command.outputProjectId]);
     await this.resolveSourceManifest(command.sourceProjectIds, command.sourceSelection);
+    this.throwIfProjectsLifecycleLocked([...command.sourceProjectIds, command.outputProjectId]);
     const now = this.now().toISOString();
     const studio = LectureStudioSchema.parse({
       schemaVersion: 1,
@@ -553,11 +572,37 @@ export class LectureStudioService {
     return cancelled;
   }
 
+  async runWhenProjectsIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
+    const lockedProjectIds = [...new Set(projectIds)].sort();
+    if (lockedProjectIds.some((projectId) => this.lifecycleLockedProjects.has(projectId))) {
+      throw new LectureStudioServiceError('lecture_busy');
+    }
+    for (const projectId of lockedProjectIds) this.lifecycleLockedProjects.add(projectId);
+    try {
+      const targetIds = new Set(lockedProjectIds);
+      const summaries = await this.dependencies.storage.listLectureStudios();
+      const studios = await Promise.all(
+        summaries.map((summary) => this.dependencies.storage.getLectureStudio(summary.id)),
+      );
+      const hasActiveWork = studios.some(
+        (studio) =>
+          studio !== null &&
+          this.studioTouchesProjects(studio, targetIds) &&
+          (studio.status === 'generating' || this.activeByStudio.has(studio.id)),
+      );
+      if (hasActiveWork) throw new LectureStudioServiceError('lecture_busy');
+      return await operation();
+    } finally {
+      for (const projectId of lockedProjectIds) this.lifecycleLockedProjects.delete(projectId);
+    }
+  }
+
   private async runTurn(request: TurnRequest): Promise<LectureStudioTurnReceipt> {
     if (this.activeByStudio.has(request.studioId)) {
       throw new LectureStudioServiceError('lecture_busy');
     }
     const current = await this.requireStudio(request.studioId);
+    this.throwIfProjectsLifecycleLocked([...current.sourceProjectIds, current.outputProjectId]);
     if (current.version !== request.expectedVersion) {
       throw new LectureStudioServiceError('lecture_version_conflict');
     }
@@ -587,6 +632,7 @@ export class LectureStudioService {
       : null;
     let generating: LectureStudio | null;
     try {
+      this.throwIfProjectsLifecycleLocked([...current.sourceProjectIds, current.outputProjectId]);
       generating = await this.dependencies.storage.beginLectureStudioTurn({
         studioId: current.id,
         expectedVersion: current.version,
@@ -711,6 +757,7 @@ export class LectureStudioService {
       const output = this.parseOutput(terminal.text, generating, sourceManifest);
       const completedAt = this.now().toISOString();
       const revisionNumber = generating.currentRevision + 1;
+      const invocation = pending.invocation ?? running.invocation;
       const artifactInput = {
         outputProjectId: generating.outputProjectId,
         studioId: generating.id,
@@ -721,10 +768,17 @@ export class LectureStudioService {
         lectureNotesMarkdown: output.lectureNotesMarkdown,
         slidesMarkdown: output.slidesMarkdown,
         createdAt: completedAt,
+        invocation,
+        relatedDocuments: [],
+        relatedPapers: uniqueNonEmpty(
+          sourceManifest.literature
+            .map((source) => canonicalDoiUrl(source.doi))
+            .filter((value): value is string => value !== null),
+          128,
+        ),
       } as const;
       pendingArtifactInput = artifactInput;
       const artifacts = await this.saveArtifacts(artifactInput);
-      const invocation = pending.invocation ?? running.invocation;
       const revision = LectureStudioRevisionSchema.parse({
         schemaVersion: 1,
         id: randomUUID(),
@@ -1188,6 +1242,19 @@ export class LectureStudioService {
       occurredAt: studio.updatedAt,
     });
     for (const listener of this.listeners) listener(event);
+  }
+
+  private throwIfProjectsLifecycleLocked(projectIds: readonly string[]) {
+    if (projectIds.some((projectId) => this.lifecycleLockedProjects.has(projectId))) {
+      throw new LectureStudioServiceError('lecture_busy');
+    }
+  }
+
+  private studioTouchesProjects(studio: LectureStudio, projectIds: ReadonlySet<string>) {
+    return (
+      projectIds.has(studio.outputProjectId) ||
+      studio.sourceProjectIds.some((projectId) => projectIds.has(projectId))
+    );
   }
 
   private now() {

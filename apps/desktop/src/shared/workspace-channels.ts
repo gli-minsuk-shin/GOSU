@@ -7,6 +7,7 @@ export const WORKSPACE_IPC_CHANNELS = {
   setProjectArchived: 'gosu:workspace:set-project-archived',
   trashProject: 'gosu:workspace:trash-project',
   restoreProject: 'gosu:workspace:restore-project',
+  emptyProjectTrash: 'gosu:workspace:empty-project-trash',
   updateBoardSettings: 'gosu:workspace:update-board-settings',
   createTask: 'gosu:workspace:create-task',
   updateTask: 'gosu:workspace:update-task',

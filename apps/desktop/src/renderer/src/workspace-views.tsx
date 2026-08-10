@@ -15,6 +15,7 @@ export type WorkspaceTabId =
   | 'experiments'
   | 'literature'
   | 'lecture'
+  | 'search'
   | 'connections'
   | 'notes';
 
@@ -52,6 +53,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   { id: 'experiments', label: 'Experiments', icon: '⌁' },
   { id: 'literature', label: 'Literature', icon: '▤' },
   { id: 'lecture', label: 'Lecture notes & slides', icon: '▹' },
+  { id: 'search', label: 'Search', icon: '⌕' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
   { id: 'notes', label: 'Research Notes', icon: '◇' },
 ];
@@ -106,6 +108,8 @@ export function WorkspacePageHeading({
       'Build a living evidence table, enrich it with AI, and move records safely between JSON, CSV, and BibTeX.',
     lecture:
       'Combine papers and experiments across projects into editable lecture notes and timed talk slides.',
+    search:
+      'Search every non-trashed project locally and return to the original conversation, note, or workspace tab.',
     connections: 'Inspect real local capabilities. No connection state on this page is simulated.',
     notes:
       'Browse this project’s managed Obsidian research workspace. Note contents stay on this Mac.',
@@ -129,7 +133,12 @@ export function WorkspacePageHeading({
 }
 
 export function shouldShowActiveProjectPageHeading(activeTab: WorkspaceTabId) {
-  return activeTab !== 'chat' && activeTab !== 'notes' && activeTab !== 'lecture';
+  return (
+    activeTab !== 'chat' &&
+    activeTab !== 'notes' &&
+    activeTab !== 'lecture' &&
+    activeTab !== 'search'
+  );
 }
 
 export function WorkspaceUnavailable({ onRetry }: { onRetry: () => void }) {

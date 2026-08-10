@@ -118,6 +118,55 @@ describe('project-scoped Git workspace', () => {
     );
   });
 
+  it('searches archived repository filenames without loading status, branches, or history', async () => {
+    project = { ...project, archivedAt: new Date().toISOString() };
+    const realRunGit = createGitCommandRunner();
+    const runGit = vi.fn(
+      (cwd: string, arguments_: readonly string[], options?: Parameters<typeof realRunGit>[2]) =>
+        realRunGit(cwd, arguments_, options),
+    );
+    service = new GitWorkspaceService({
+      workspace: { snapshot: async () => workspaceSnapshot(project) },
+      rootDirectory: () => rootDirectory,
+      runGit,
+    });
+
+    await expect(
+      service.searchFiles({ projectId: PROJECT_ID, query: 'metric ts', limit: 20 }),
+    ).resolves.toMatchObject({
+      entries: [{ path: 'src/metric.ts', kind: 'file' }],
+      scannedEntries: 2,
+      truncated: false,
+      incomplete: false,
+    });
+    await expect(
+      service.searchFiles({ projectId: PROJECT_ID, query: 'm', limit: 1 }),
+    ).resolves.toMatchObject({
+      entries: expect.any(Array),
+      scannedEntries: 2,
+      truncated: true,
+      incomplete: false,
+    });
+    await expect(service.snapshot(PROJECT_ID)).rejects.toMatchObject({
+      code: 'project_archived',
+    });
+
+    const invokedCommands = runGit.mock.calls.map(([, arguments_]) => arguments_.join(' '));
+    expect(invokedCommands.some((command) => command.startsWith('ls-files '))).toBe(true);
+    expect(invokedCommands.some((command) => command.startsWith('status '))).toBe(false);
+    expect(invokedCommands.some((command) => command.startsWith('for-each-ref '))).toBe(false);
+    expect(invokedCommands.some((command) => command.startsWith('rev-list '))).toBe(false);
+    expect(invokedCommands.some((command) => command.startsWith('log '))).toBe(false);
+  });
+
+  it('never searches repository files for a trashed project', async () => {
+    project = { ...project, trashedAt: new Date().toISOString() };
+
+    await expect(
+      service.searchFiles({ projectId: PROJECT_ID, query: 'metric', limit: 20 }),
+    ).rejects.toMatchObject({ code: 'project_trashed' });
+  });
+
   it('never executes a configured signature verifier while reading history or commit detail', async () => {
     const parent = git(repositoryRoot, 'rev-parse', 'HEAD');
     const signedCommit = forgeSignedCommit(repositoryRoot, parent, 'Signed research fixture');
