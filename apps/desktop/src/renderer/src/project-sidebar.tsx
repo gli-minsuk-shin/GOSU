@@ -8,6 +8,7 @@ import {
   archivedProjects,
   type PortfolioProjectRecord,
 } from './project-portfolio-model';
+import { CollapseChevron } from './ui-primitives';
 
 export type ProjectWorkspaceTabId = Extract<
   WorkspaceTabId,
@@ -132,7 +133,7 @@ export function ProjectSidebar({
           aria-expanded={navigationState.activeGroupExpanded}
           onClick={() => updateGroup('activeGroupExpanded', !navigationState.activeGroupExpanded)}
         >
-          <span aria-hidden="true">{navigationState.activeGroupExpanded ? '▾' : '▸'}</span>
+          <CollapseChevron direction={navigationState.activeGroupExpanded ? 'down' : 'right'} />
           <strong>Projects</strong>
           <em>{working.length}</em>
         </button>
@@ -178,7 +179,7 @@ export function ProjectSidebar({
                       }}
                     >
                       <span className="project-folder-chevron" aria-hidden="true">
-                        {expanded ? '▾' : '▸'}
+                        <CollapseChevron direction={expanded ? 'down' : 'right'} />
                       </span>
                       <span className="project-folder-icon" aria-hidden="true">
                         {expanded ? '▰' : '▱'}
@@ -242,7 +243,9 @@ export function ProjectSidebar({
                           disabled={disabled}
                           onClick={() => onSelectProjectTab(project.id, tab.id)}
                         >
-                          <span aria-hidden="true">{tab.icon}</span>
+                          <span className="sidebar-nav-icon" aria-hidden="true">
+                            {tab.icon}
+                          </span>
                           {tab.label}
                         </button>
                       ))}
@@ -254,7 +257,9 @@ export function ProjectSidebar({
                           disabled
                           title={`${label} is not implemented yet`}
                         >
-                          <span aria-hidden="true">{icon}</span>
+                          <span className="sidebar-nav-icon" aria-hidden="true">
+                            {icon}
+                          </span>
                           {label}
                           <em>Later</em>
                         </button>
@@ -276,7 +281,7 @@ export function ProjectSidebar({
             aria-expanded={navigationState.hiddenGroupExpanded}
             onClick={() => updateGroup('hiddenGroupExpanded', !navigationState.hiddenGroupExpanded)}
           >
-            <span aria-hidden="true">{navigationState.hiddenGroupExpanded ? '▾' : '▸'}</span>
+            <CollapseChevron direction={navigationState.hiddenGroupExpanded ? 'down' : 'right'} />
             <strong>Hidden projects</strong>
             <em>{hidden.length}</em>
           </button>
@@ -308,7 +313,7 @@ export function ProjectSidebar({
               updateGroup('archivedGroupExpanded', !navigationState.archivedGroupExpanded)
             }
           >
-            <span aria-hidden="true">{navigationState.archivedGroupExpanded ? '▾' : '▸'}</span>
+            <CollapseChevron direction={navigationState.archivedGroupExpanded ? 'down' : 'right'} />
             <strong>Archived</strong>
             <em>{archived.length}</em>
           </button>
@@ -341,7 +346,9 @@ export function ProjectSidebar({
             aria-current={!settingsActive && activeTab === tab.id ? 'page' : undefined}
             onClick={() => onSelectGlobalTab(tab.id)}
           >
-            <span aria-hidden="true">{tab.icon}</span>
+            <span className="sidebar-nav-icon" aria-hidden="true">
+              {tab.icon}
+            </span>
             {tab.label}
           </button>
         ))}
@@ -351,7 +358,9 @@ export function ProjectSidebar({
           aria-current={settingsActive ? 'page' : undefined}
           onClick={onOpenSettings}
         >
-          <span aria-hidden="true">⚙</span>
+          <span className="sidebar-nav-icon" aria-hidden="true">
+            ⚙
+          </span>
           Settings
           <em>⌘,</em>
         </button>
