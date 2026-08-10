@@ -1178,6 +1178,9 @@ export function LiteratureView({
     () => records.filter((record) => record.aiAnnotations === null).slice(0, 50),
     [records],
   );
+  const activeSearchOptionCount = [topicTagText, keywordTagText, fromYear, toYear].filter(
+    (value) => value.trim().length > 0,
+  ).length;
 
   useEffect(() => {
     if (!searchTarget || loading) return;
@@ -1312,10 +1315,7 @@ export function LiteratureView({
     <div className="literature-workspace">
       <section className="literature-search-card" aria-labelledby="literature-search-title">
         <header className="literature-library-heading">
-          <strong id="literature-search-title">Deep search and continue this review</strong>
-          <span>
-            One search screens relevance, citation authority, recent momentum, and broad recall.
-          </span>
+          <strong id="literature-search-title">Search literature</strong>
         </header>
         <form
           className="literature-search-form"
@@ -1359,52 +1359,6 @@ export function LiteratureView({
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
-          <label className="literature-search-tag-field">
-            Topic tags
-            <input
-              value={topicTagText}
-              maxLength={1500}
-              placeholder="e.g. tabular foundation models, evaluation"
-              disabled={Boolean(busy)}
-              onChange={(event) => setTopicTagText(event.target.value)}
-            />
-          </label>
-          <label className="literature-search-tag-field">
-            Keyword tags
-            <input
-              value={keywordTagText}
-              maxLength={3000}
-              placeholder="e.g. TabPFN, few-shot, benchmark"
-              disabled={Boolean(busy)}
-              onChange={(event) => setKeywordTagText(event.target.value)}
-            />
-          </label>
-          <label className="literature-search-year">
-            From year
-            <input
-              type="number"
-              inputMode="numeric"
-              min="1000"
-              max="3000"
-              value={fromYear}
-              placeholder="Any"
-              disabled={Boolean(busy)}
-              onChange={(event) => setFromYear(event.target.value)}
-            />
-          </label>
-          <label className="literature-search-year">
-            To year
-            <input
-              type="number"
-              inputMode="numeric"
-              min="1000"
-              max="3000"
-              value={toYear}
-              placeholder="Any"
-              disabled={Boolean(busy)}
-              onChange={(event) => setToYear(event.target.value)}
-            />
-          </label>
           <button
             type="submit"
             className="primary-button"
@@ -1412,61 +1366,132 @@ export function LiteratureView({
           >
             {busy === 'search' ? 'Searching…' : records.length > 0 ? 'Search again' : 'Deep search'}
           </button>
+          <details className="literature-search-options">
+            <summary>
+              Tags &amp; year filters
+              {activeSearchOptionCount > 0 && ` · ${activeSearchOptionCount} active`}
+            </summary>
+            <div>
+              <label className="literature-search-tag-field">
+                Topic tags
+                <input
+                  value={topicTagText}
+                  maxLength={1500}
+                  placeholder="e.g. tabular foundation models, evaluation"
+                  disabled={Boolean(busy)}
+                  onChange={(event) => setTopicTagText(event.target.value)}
+                />
+              </label>
+              <label className="literature-search-tag-field">
+                Keyword tags
+                <input
+                  value={keywordTagText}
+                  maxLength={3000}
+                  placeholder="e.g. TabPFN, few-shot, benchmark"
+                  disabled={Boolean(busy)}
+                  onChange={(event) => setKeywordTagText(event.target.value)}
+                />
+              </label>
+              <label className="literature-search-year">
+                From year
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="1000"
+                  max="3000"
+                  value={fromYear}
+                  placeholder="Any"
+                  disabled={Boolean(busy)}
+                  onChange={(event) => setFromYear(event.target.value)}
+                />
+              </label>
+              <label className="literature-search-year">
+                To year
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="1000"
+                  max="3000"
+                  value={toYear}
+                  placeholder="Any"
+                  disabled={Boolean(busy)}
+                  onChange={(event) => setToYear(event.target.value)}
+                />
+              </label>
+            </div>
+          </details>
         </form>
-        <p className="literature-search-tag-help">
-          Topic and Keyword tags accumulate on matching papers across searches. Separate tags with
-          commas; leaving both fields blank uses the normalized search query as a Topic tag.
-        </p>
-        <p className="literature-search-help">
-          <strong>Fixed policy v{BALANCED_LITERATURE_POLICY_VERSION}:</strong> Core is a maximum,
-          never a quota. Search combines Semantic Scholar, Hugging Face Papers, and a resilient
-          Crossref fallback; Hugging Face index presence never promotes a paper by itself.
-          High-impact relevant papers must appear in the relevance lane with a within-search
-          normalized rank score of at least {Math.round(LITERATURE_CORE_MIN_RELEVANCE_SCORE * 100)}{' '}
-          and at least {LITERATURE_CORE_MIN_CITATIONS} citations or{' '}
-          {LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS} influential citations. A limited canonical
-          route uses the same impact floor, a citation lane, and age of at least{' '}
-          {LITERATURE_CANONICAL_MIN_AGE_YEARS} years. Rising needs relevance of at least{' '}
-          {Math.round(LITERATURE_RISING_MIN_RELEVANCE_SCORE * 100)}, publication within the latest{' '}
-          {LITERATURE_RISING_MAX_AGE_YEARS + 1} calendar years, and at least{' '}
-          {LITERATURE_RISING_MIN_CITATIONS_PER_YEAR} citations/year or{' '}
-          {LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS} influential citation. Others remain Broad
-          for screening. Venue metadata and author h-index never promote a paper by themselves.
-          Existing v1 labels remain historical until that search is run again. Each search is
-          additive; scores are only comparable within the same search.
-        </p>
-        {recentSearches.length > 0 && (
-          <div className="literature-recent-searches" aria-label="Recent literature searches">
-            <span>Recent</span>
-            {recentSearches.slice(0, 6).map((search) => (
-              <button
-                type="button"
-                key={search.id}
-                disabled={Boolean(busy)}
-                title={`Reuse “${search.query}”${search.fromYear ? ` from ${search.fromYear}` : ''}${search.toYear ? ` through ${search.toYear}` : ''}${search.conflicts.length > 0 ? `; skipped ${literatureConflictSummary(search.conflicts, search.conflictCount)}` : ''}${literatureCoverageSummary(search.coverage)}`}
-                onClick={() => {
-                  const tagDraft = literatureSearchTagDraft(search);
-                  setQuery(search.query);
-                  setTopicTagText(tagDraft.topicText);
-                  setKeywordTagText(tagDraft.keywordText);
-                  setFromYear(search.fromYear?.toString() ?? '');
-                  setToYear(search.toYear?.toString() ?? '');
-                }}
-              >
-                {search.query}
-                {search.conflictCount > 0 ? ` · ${search.conflictCount} skipped` : ''}
-              </button>
-            ))}
-          </div>
-        )}
-        {latestSearchCoverage && latestSearchCoverage.degradationReasons.length > 0 && (
-          <p className="literature-coverage-warning" role="status">
-            <strong>Latest search used reduced signal coverage:</strong>{' '}
-            {latestSearchCoverage.degradationReasons.map(formatLabel).join(', ')}. Available:{' '}
-            {latestSearchCoverage.availableSignals.map(formatLabel).join(', ')}. Saved papers and
-            manual review remain available.
-          </p>
-        )}
+        <div className="literature-search-secondary">
+          <details className="literature-search-guidance">
+            <summary>
+              Search guidance · ranking policy v{BALANCED_LITERATURE_POLICY_VERSION}
+            </summary>
+            <div>
+              <p className="literature-search-tag-help">
+                Topic and Keyword tags accumulate on matching papers across searches. Separate tags
+                with commas; leaving both fields blank uses the normalized search query as a Topic
+                tag.
+              </p>
+              <p className="literature-search-help">
+                <strong>Fixed policy v{BALANCED_LITERATURE_POLICY_VERSION}:</strong> Core is a
+                maximum, never a quota. Search combines Semantic Scholar, Hugging Face Papers, and a
+                resilient Crossref fallback; Hugging Face index presence never promotes a paper by
+                itself. High-impact relevant papers must appear in the relevance lane with a
+                within-search normalized rank score of at least{' '}
+                {Math.round(LITERATURE_CORE_MIN_RELEVANCE_SCORE * 100)} and at least{' '}
+                {LITERATURE_CORE_MIN_CITATIONS} citations or{' '}
+                {LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS} influential citations. A limited
+                canonical route uses the same impact floor, a citation lane, and age of at least{' '}
+                {LITERATURE_CANONICAL_MIN_AGE_YEARS} years. Rising needs relevance of at least{' '}
+                {Math.round(LITERATURE_RISING_MIN_RELEVANCE_SCORE * 100)}, publication within the
+                latest {LITERATURE_RISING_MAX_AGE_YEARS + 1} calendar years, and at least{' '}
+                {LITERATURE_RISING_MIN_CITATIONS_PER_YEAR} citations/year or{' '}
+                {LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS} influential citation. Others remain
+                Broad for screening. Venue metadata and author h-index never promote a paper by
+                themselves. Existing v1 labels remain historical until that search is run again.
+                Each search is additive; scores are only comparable within the same search.
+              </p>
+            </div>
+          </details>
+          {recentSearches.length > 0 && (
+            <details className="literature-recent-searches">
+              <summary>Recent searches</summary>
+              <div aria-label="Recent literature searches">
+                {recentSearches.slice(0, 6).map((search) => (
+                  <button
+                    type="button"
+                    key={search.id}
+                    disabled={Boolean(busy)}
+                    title={`Reuse “${search.query}”${search.fromYear ? ` from ${search.fromYear}` : ''}${search.toYear ? ` through ${search.toYear}` : ''}${search.conflicts.length > 0 ? `; skipped ${literatureConflictSummary(search.conflicts, search.conflictCount)}` : ''}${literatureCoverageSummary(search.coverage)}`}
+                    onClick={() => {
+                      const tagDraft = literatureSearchTagDraft(search);
+                      setQuery(search.query);
+                      setTopicTagText(tagDraft.topicText);
+                      setKeywordTagText(tagDraft.keywordText);
+                      setFromYear(search.fromYear?.toString() ?? '');
+                      setToYear(search.toYear?.toString() ?? '');
+                    }}
+                  >
+                    {search.query}
+                    {search.conflictCount > 0 ? ` · ${search.conflictCount} skipped` : ''}
+                  </button>
+                ))}
+              </div>
+            </details>
+          )}
+          {latestSearchCoverage && latestSearchCoverage.degradationReasons.length > 0 && (
+            <details className="literature-coverage-warning" role="status">
+              <summary>
+                <strong>Reduced search coverage:</strong>{' '}
+                {latestSearchCoverage.degradationReasons.map(formatLabel).join(', ')}
+              </summary>
+              <p>
+                Available: {latestSearchCoverage.availableSignals.map(formatLabel).join(', ')}.
+                Saved papers and manual review remain available.
+              </p>
+            </details>
+          )}
+        </div>
       </section>
 
       {error && (
@@ -1493,7 +1518,6 @@ export function LiteratureView({
             <span>
               {totalRecords.toLocaleString()} saved in this project
               {totalRecords > records.length ? ` · ${records.length} loaded` : ''}
-              {' · '}layers show each paper’s latest matching search
             </span>
           </div>
           <div className="literature-library-actions">
@@ -1557,17 +1581,17 @@ export function LiteratureView({
         </header>
         {(!adapter.organize || !aiAvailable) && (
           <p className="literature-ai-availability">
-            {adapter.organize
-              ? 'Connect and sign in to Codex to organize metadata into draft topics, summaries, and relevance.'
-              : 'AI organization is disabled in this build.'}{' '}
-            Search, manual review, import, and export stay fully usable without the model provider.
+            <strong>AI organization:</strong>{' '}
+            {adapter.organize ? 'Connect Codex to enable drafts.' : 'Unavailable in this build.'}
           </p>
         )}
         {adapter.organize && aiAvailable && (
-          <p className="literature-ai-availability">
-            Uses the linked selection: {requestedModelId ?? 'Auto · provider recommended'} ·
-            reasoning {reasoningOptionId ?? 'model default'}. AI drafts use metadata only and remain
-            separate from human review notes.
+          <p
+            className="literature-ai-availability"
+            title="AI drafts use metadata only and remain separate from human review notes."
+          >
+            <strong>AI organization:</strong> {requestedModelId ?? 'Auto · provider recommended'} ·{' '}
+            {reasoningOptionId ?? 'model default'}
           </p>
         )}
         <div className="literature-layer-grid" role="group" aria-label="Discovery layer view">
@@ -1579,6 +1603,7 @@ export function LiteratureView({
               aria-pressed={tierFilter === layer.id}
               aria-controls="literature-evidence-table-panel"
               aria-label={`${layer.title}, ${layerCounts[layer.id]} saved papers${layer.id === 'core' && corePolicyCounts.historicalOrOther > 0 ? `, ${corePolicyCounts.current} current v${BALANCED_LITERATURE_POLICY_VERSION} and ${corePolicyCounts.historicalOrOther} historical or other policy` : ''}`}
+              title={layer.description}
               onClick={() => {
                 setTierFilter(layer.id);
                 setPage(1);
@@ -1586,13 +1611,6 @@ export function LiteratureView({
             >
               <span>{layer.title}</span>
               <strong>{layerCounts[layer.id]}</strong>
-              <small>{layer.description}</small>
-              {layer.id === 'core' && corePolicyCounts.historicalOrOther > 0 && (
-                <small>
-                  {corePolicyCounts.current} current v{BALANCED_LITERATURE_POLICY_VERSION} ·{' '}
-                  {corePolicyCounts.historicalOrOther} historical / other policy
-                </small>
-              )}
             </button>
           ))}
         </div>

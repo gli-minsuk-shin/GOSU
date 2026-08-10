@@ -55,7 +55,7 @@ describe('workspace page heading', () => {
     expect(shouldShowActiveProjectPageHeading('board')).toBe(true);
   });
 
-  it('describes Literature as a living evidence table on the project surface', () => {
+  it('keeps the Literature description available while active projects use the compact workspace', () => {
     const html = renderToStaticMarkup(
       <WorkspacePageHeading activeTab="literature" activeProject={undefined} onNewProject={null} />,
     );
@@ -64,7 +64,7 @@ describe('workspace page heading', () => {
     expect(html).toContain('Literature');
     expect(html).toContain('living evidence table');
     expect(html).toContain('JSON, CSV, and BibTeX');
-    expect(shouldShowActiveProjectPageHeading('literature')).toBe(true);
+    expect(shouldShowActiveProjectPageHeading('literature')).toBe(false);
   });
 
   it('lets the workspace-level Lecture Studio own its compact heading', () => {
