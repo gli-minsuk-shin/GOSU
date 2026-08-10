@@ -289,6 +289,24 @@ describe('Research Notes project-agent access', () => {
     expect(html).not.toContain('/fixture/research-vault');
   });
 
+  it('shows the folder tree first and keeps secondary controls closed by default', () => {
+    const html = renderResearchNotes();
+    const treeIndex = html.indexOf('aria-label="Research Notes files"');
+    const toolsIndex = html.indexOf('class="research-notes-sidebar-tools"');
+    const managedSummaryIndex = html.indexOf('MANAGED PROJECT FOLDERS');
+    const accessIndex = html.indexOf('RESEARCH NOTES AGENT ACCESS');
+
+    expect(treeIndex).toBeGreaterThan(-1);
+    expect(toolsIndex).toBeGreaterThan(treeIndex);
+    expect(managedSummaryIndex).toBeGreaterThan(toolsIndex);
+    expect(accessIndex).toBeGreaterThan(toolsIndex);
+    expect(html).toContain('>Search &amp; settings</span>');
+    expect(html).toMatch(/<details class="research-notes-sidebar-tools">/u);
+    expect(html).not.toMatch(/<details class="research-notes-sidebar-tools" open/u);
+    expect(html).toContain('>Change Vault</button>');
+    expect(html).toContain('Open AI Agent Settings…');
+  });
+
   it('keeps one accessible folder-tree toggle and the reader visible when expanded', () => {
     const html = renderResearchNotes();
 
@@ -380,6 +398,9 @@ describe('Research Notes project-agent access', () => {
     expect(html).toContain('would overwrite an existing Obsidian folder');
     expect(html).toContain('>Retry</button>');
     expect(html).toContain('Research Notes grant inactive');
+    expect(html.indexOf('would overwrite an existing Obsidian folder')).toBeLessThan(
+      html.indexOf('aria-label="Research Notes files"'),
+    );
     expect(html).not.toContain('>Read + automatic Markdown saves authorized for Active study<');
   });
 

@@ -2661,20 +2661,86 @@ textarea:focus {
 }
 
 .research-notes-tree-details {
+  display: grid;
+  grid-template-rows: minmax(90px, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.research-notes-tree-scroll {
   min-width: 0;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .research-notes-tree-details[hidden] {
   display: none;
 }
 
-.research-notes-tree-details > .secondary-button {
+.research-notes-sidebar-tools {
+  min-width: 0;
+  max-height: min(46%, 420px);
+  margin-top: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+  overscroll-behavior: contain;
+}
+
+.research-notes-sidebar-tools > summary {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  gap: 7px;
+  padding: 7px 6px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 720;
+  cursor: pointer;
+  list-style: none;
+}
+
+.research-notes-sidebar-tools > summary::-webkit-details-marker {
+  display: none;
+}
+
+.research-notes-sidebar-tools > summary:hover {
+  color: var(--text);
+}
+
+.research-notes-sidebar-tools-chevron {
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid currentColor;
+  transform-origin: 45% 50%;
+  transition: transform 120ms ease;
+}
+
+.research-notes-sidebar-tools[open] .research-notes-sidebar-tools-chevron {
+  transform: rotate(90deg);
+}
+
+.research-notes-sidebar-tools-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 4px 8px;
+}
+
+.research-notes-sidebar-tools-body > .secondary-button {
   width: 100%;
-  margin-bottom: 12px;
+}
+
+.research-notes-sidebar-tools-body .research-notes-managed-summary,
+.research-notes-sidebar-tools-body .local-notes-project-access,
+.research-notes-sidebar-tools-body .note-agent-disclosure {
+  margin: 0;
 }
 
 .local-notes-project-access {
@@ -6607,6 +6673,7 @@ button.chat-toolbar-status {
   .desktop-nav,
   .notes-layout,
   .project-chat-workspace,
+  .research-notes-sidebar-tools-chevron,
   .resize-handle::after {
     transition: none;
   }
@@ -6910,7 +6977,7 @@ button.chat-toolbar-status {
   }
 
   .note-list {
-    max-height: 220px;
+    max-height: 300px;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }

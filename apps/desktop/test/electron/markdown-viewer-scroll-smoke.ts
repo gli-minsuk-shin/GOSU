@@ -32,11 +32,23 @@ type CompactNotesGeometry = ScrollMetrics &
     content: RectMetrics;
     layout: RectMetrics;
     tree: RectMetrics;
+    details: RectMetrics;
+    treeScroll: RectMetrics;
+    firstFolder: RectMetrics;
+    lastFolder: RectMetrics;
+    sidebarTools: RectMetrics;
+    sidebarToolsLastControl: RectMetrics;
     reader: RectMetrics;
     readerHeader: RectMetrics;
     readerBody: RectMetrics;
     toggle: RectMetrics;
     detailsDisplay: string;
+    contentScrollTop: number;
+    treeScrollTop: number;
+    sidebarToolsOpen: boolean;
+    sidebarToolsClientHeight: number;
+    sidebarToolsScrollHeight: number;
+    sidebarToolsScrollTop: number;
     toggleExpanded: string | null;
     toggleLabel: string | null;
     longTreeNameClientWidth: number;
@@ -59,6 +71,7 @@ type CompactNotesScenario = Readonly<{
 
 type CompactNotesScenarioMetrics = Readonly<{
   expanded: CompactNotesGeometry;
+  toolsExpanded: CompactNotesGeometry;
   collapsed: CompactNotesGeometry;
   expandedAgain: CompactNotesGeometry;
   collapseToggleFocused: boolean;
@@ -88,33 +101,22 @@ function longDocument() {
 
 function researchNotesTreeMarkup() {
   const folders = ['Literature', 'Papers', 'Experiments', 'Project Progress', 'Idea Development'];
-  const longFilename = `${'Long research note filename '.repeat(8)}with equations and evidence.md`;
+  const longFolderName = `Literature — ${'Long research folder name '.repeat(8)}with evidence`;
 
   return folders
     .map(
-      (folder, folderIndex) => `<div>
-        <button class="local-notes-tree-row directory" role="treeitem" aria-expanded="true">
-          <span class="local-notes-tree-disclosure expanded"></span>
+      (folder, folderIndex) => `<button
+          class="local-notes-tree-row directory"
+          role="treeitem"
+          aria-expanded="false"
+          data-top-level-folder
+        >
+          <span class="local-notes-tree-disclosure"></span>
           <span class="local-notes-tree-icon"></span>
-          <span class="local-notes-tree-label">${folder}</span>
-        </button>
-        ${Array.from(
-          { length: 5 },
-          (_, fileIndex) => `<button
-            class="local-notes-tree-row file${folderIndex === 0 && fileIndex === 0 ? ' selected' : ''}"
-            role="treeitem"
-            style="padding-inline-start: 26px"
-          >
-            <span class="local-notes-tree-disclosure"></span>
-            <span class="local-notes-tree-icon"></span>
-            <span class="local-notes-tree-label"${folderIndex === 0 && fileIndex === 0 ? ' data-long-tree-name' : ''}>${
-              folderIndex === 0 && fileIndex === 0
-                ? longFilename
-                : `${folder} research note ${fileIndex + 1}.md`
-            }</span>
-          </button>`,
-        ).join('')}
-      </div>`,
+          <span class="local-notes-tree-label"${folderIndex === 0 ? ' data-long-tree-name' : ''}>${
+            folderIndex === 0 ? longFolderName : folder
+          }</span>
+        </button>`,
     )
     .join('');
 }
@@ -154,19 +156,28 @@ function compactResearchNotesFixtureMarkup(styles: string) {
               >‹</button>
             </header>
             <div id="fixture-research-notes-tree-details" class="research-notes-tree-details">
-              <button type="button" class="secondary-button">Change Vault</button>
-              <section class="research-notes-managed-summary">
-                <span>MANAGED PROJECT FOLDERS</span>
-                <ul><li>Literature</li><li>Papers</li><li>Experiments</li></ul>
-              </section>
-              <section class="local-notes-project-access authorized">
-                <span>RESEARCH NOTES AGENT ACCESS</span>
-                <strong>Authorized for this project</strong>
-                <p>This project folder can be read through bounded chat tools.</p>
-              </section>
-              <div class="local-notes-tree" role="tree" aria-label="Research Notes files">
-                ${researchNotesTreeMarkup()}
+              <div class="research-notes-tree-scroll">
+                <div class="local-notes-tree" role="tree" aria-label="Research Notes files">
+                  ${researchNotesTreeMarkup()}
+                </div>
               </div>
+              <details class="research-notes-sidebar-tools">
+                <summary><span class="research-notes-sidebar-tools-chevron"></span><span>Search &amp; settings</span></summary>
+                <div class="research-notes-sidebar-tools-body">
+                  <button type="button" class="secondary-button">Change Vault</button>
+                  <section class="research-notes-managed-summary">
+                    <span>MANAGED PROJECT FOLDERS</span>
+                    <ul><li>Literature</li><li>Papers</li><li>Experiments</li></ul>
+                  </section>
+                  <section class="workspace-search workspace-search-compact"><strong>Search Research Notes</strong><input /></section>
+                  <section class="local-notes-project-access authorized">
+                    <span>RESEARCH NOTES AGENT ACCESS</span>
+                    <strong>Authorized for this project</strong>
+                    <p>This project folder can be read through bounded chat tools.</p>
+                  </section>
+                  <p class="note-agent-disclosure">Access is project-specific and stays off until explicitly authorized. Listing and bounded excerpts may be sent to the configured model while Research Notes bodies remain local.</p>
+                </div>
+              </details>
             </div>
           </aside>
           <article class="note-reader">
@@ -332,6 +343,51 @@ function verifyCompactNotesScenario(
     nearlyEqual(metrics.expanded.layout.top - metrics.expanded.content.top, expectedTopInset),
     `${prefix}_top_inset_is_not_compact`,
   );
+  invariant(metrics.expanded.contentScrollTop === 0, `${prefix}_page_scrolled_on_entry`);
+  invariant(metrics.expanded.treeScrollTop === 0, `${prefix}_folder_tree_scrolled_on_entry`);
+  invariant(!metrics.expanded.sidebarToolsOpen, `${prefix}_secondary_tools_open_on_entry`);
+  invariant(metrics.expanded.sidebarTools.height <= 44, `${prefix}_secondary_tools_too_tall`);
+  invariant(
+    metrics.expanded.firstFolder.top - metrics.expanded.tree.top <= 100,
+    `${prefix}_first_folder_not_near_sidebar_top`,
+  );
+  verifyContained(
+    metrics.expanded.firstFolder,
+    metrics.expanded.treeScroll,
+    prefix,
+    'first_folder',
+  );
+  verifyContained(metrics.expanded.lastFolder, metrics.expanded.treeScroll, prefix, 'last_folder');
+
+  invariant(metrics.toolsExpanded.sidebarToolsOpen, `${prefix}_secondary_tools_did_not_open`);
+  invariant(
+    metrics.toolsExpanded.sidebarTools.height <= 421,
+    `${prefix}_secondary_tools_exceeded_absolute_cap`,
+  );
+  invariant(
+    metrics.toolsExpanded.sidebarTools.height <= metrics.toolsExpanded.details.height * 0.46 + 2,
+    `${prefix}_secondary_tools_exceeded_relative_cap`,
+  );
+  invariant(
+    metrics.toolsExpanded.treeScroll.height >= 90,
+    `${prefix}_folder_tree_lost_all_open_state_space_${metrics.toolsExpanded.treeScroll.height}_${metrics.toolsExpanded.details.height}_${metrics.toolsExpanded.sidebarTools.height}`,
+  );
+  invariant(
+    metrics.toolsExpanded.sidebarToolsScrollHeight > metrics.toolsExpanded.sidebarToolsClientHeight,
+    `${prefix}_secondary_tools_did_not_own_scroll_range`,
+  );
+  invariant(
+    metrics.toolsExpanded.sidebarToolsScrollTop > 0,
+    `${prefix}_secondary_tools_could_not_scroll`,
+  );
+  invariant(
+    metrics.toolsExpanded.sidebarToolsLastControl.bottom <=
+      metrics.toolsExpanded.sidebarTools.bottom + 1 &&
+      metrics.toolsExpanded.sidebarToolsLastControl.bottom >=
+        metrics.toolsExpanded.sidebarTools.top,
+    `${prefix}_secondary_tools_last_control_unreachable`,
+  );
+  invariant(metrics.toolsExpanded.contentScrollTop === 0, `${prefix}_tools_scrolled_page`);
 
   sameRect(metrics.expanded.layout, metrics.collapsed.layout, `${prefix}_layout`);
   invariant(metrics.collapsed.detailsDisplay === 'none', `${prefix}_details_remain_visible`);
@@ -441,6 +497,12 @@ async function measureCompactNotesScenario(
       const layout = document.querySelector('.notes-layout');
       const tree = document.querySelector('.note-list');
       const details = document.querySelector('.research-notes-tree-details');
+      const treeScroll = document.querySelector('.research-notes-tree-scroll');
+      const sidebarTools = document.querySelector('.research-notes-sidebar-tools');
+      const sidebarToolsLastControl = document.querySelector('.note-agent-disclosure');
+      const folderRows = Array.from(document.querySelectorAll('[data-top-level-folder]'));
+      const firstFolder = folderRows.at(0);
+      const lastFolder = folderRows.at(-1);
       const toggle = document.querySelector('#fixture-research-notes-tree-toggle');
       const treeRoot = document.querySelector('[data-tree-root]');
       const reader = document.querySelector('.note-reader');
@@ -449,7 +511,7 @@ async function measureCompactNotesScenario(
       const readerPath = document.querySelector('[data-reader-path]');
       const longTreeName = document.querySelector('[data-long-tree-name]');
       const wide = document.querySelector('[data-wide-content]');
-      const elements = [content, layout, tree, details, toggle, treeRoot, reader, readerHeader, readerBody, readerPath, longTreeName, wide];
+      const elements = [content, layout, tree, details, treeScroll, sidebarTools, sidebarToolsLastControl, firstFolder, lastFolder, toggle, treeRoot, reader, readerHeader, readerBody, readerPath, longTreeName, wide];
       if (elements.some((element) => !(element instanceof HTMLElement))) {
         throw new Error('missing_research_notes_compact_geometry_element');
       }
@@ -482,9 +544,10 @@ async function measureCompactNotesScenario(
           height: value.height,
         };
       };
-      const read = () => {
+      const read = (scrollSidebarTools = false) => {
         readerBody.scrollTop = readerBody.scrollHeight;
         wide.scrollLeft = wide.scrollWidth;
+        if (scrollSidebarTools) sidebarTools.scrollTop = sidebarTools.scrollHeight;
         const regionStyle = getComputedStyle(readerBody);
         const wideStyle = getComputedStyle(wide);
         const treeNameStyle = getComputedStyle(longTreeName);
@@ -493,11 +556,23 @@ async function measureCompactNotesScenario(
           content: rect(content),
           layout: rect(layout),
           tree: rect(tree),
+          details: rect(details),
+          treeScroll: rect(treeScroll),
+          firstFolder: rect(firstFolder),
+          lastFolder: rect(lastFolder),
+          sidebarTools: rect(sidebarTools),
+          sidebarToolsLastControl: rect(sidebarToolsLastControl),
           reader: rect(reader),
           readerHeader: rect(readerHeader),
           readerBody: rect(readerBody),
           toggle: rect(toggle),
           detailsDisplay: getComputedStyle(details).display,
+          contentScrollTop: content.scrollTop,
+          treeScrollTop: treeScroll.scrollTop,
+          sidebarToolsOpen: sidebarTools.open,
+          sidebarToolsClientHeight: sidebarTools.clientHeight,
+          sidebarToolsScrollHeight: sidebarTools.scrollHeight,
+          sidebarToolsScrollTop: sidebarTools.scrollTop,
           toggleExpanded: toggle.getAttribute('aria-expanded'),
           toggleLabel: toggle.getAttribute('aria-label'),
           clientWidth: readerBody.clientWidth,
@@ -528,6 +603,12 @@ async function measureCompactNotesScenario(
       await nextFrame();
       const expanded = read();
 
+      sidebarTools.open = true;
+      await nextFrame();
+      const toolsExpanded = read(true);
+      sidebarTools.open = false;
+      await nextFrame();
+
       toggle.focus();
       toggle.click();
       await nextFrame();
@@ -541,6 +622,7 @@ async function measureCompactNotesScenario(
 
       return {
         expanded,
+        toolsExpanded,
         collapsed: collapsedMetrics,
         expandedAgain,
         collapseToggleFocused,
