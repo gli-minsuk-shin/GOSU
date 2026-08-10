@@ -1081,17 +1081,27 @@ ranking과 저장에 사용한다.
 topic·citation·URL은 null이나 빈 배열로 지우지 않는다. 반대로 이후 낮은 우선순위의 Hugging Face refresh가
 Semantic Scholar identity와 citation metadata를 되돌리지 않는다.
 
+활성 project의 Literature route는 중복된 공통 page heading을 렌더링하지 않고 compact content padding을
+사용한다. 검색 query와 실행 action만 기본 표면에 두고 Topic·Keyword·연도 filter, 최근 검색, tag 설명과
+ranking policy 전문은 닫힌 native `details`에 둔다. reduced provider coverage는 원인을 한 줄 summary로
+유지하고 signal 상세만 펼친다. `Total / Core / Rising / Broad`는 설명 카드가 아니라 count가 있는 한 줄
+filter tab이며 설명은 title과 accessible label에 남긴다. AI provider 상태도 한 줄로 제한해 검색·분류 chrome이
+Evidence table의 초기 viewport를 밀어내지 않게 한다.
+
 Evidence table은 page 전체를 밀어내는 unbounded grid item이 아니라 keyboard-focusable한 bounded scroll
 region이다. workspace와 library card는 명시적인 `minmax(0, 1fr)` grid column을 사용해 1,420px table의
 min-content 폭이 implicit auto track을 넓힌 뒤 parent `overflow: hidden`에 잘리는 일을 막는다. scroll
 wrapper는 부모 content track 안에서 `min-width: 0`·`width: 100%`와 `contain: inline-size`로 수축하고,
-25행 page는 `clamp(320px, 52vh, 620px)`의 실제 block size 안에서 가로·세로 scroll을 모두 소유한다.
+25행 page는 `clamp(520px, 68vh, 860px)`의 실제 block size 안에서 가로·세로 scroll을 모두 소유한다.
 sticky column header는 이 region에 고정된다. macOS overlay scrollbar 설정과 무관한 fallback으로 표 위에
 현재 geometry에서만 활성화되는 `Columns ←/→`, `Top/Bottom` control을 제공하며 ResizeObserver와 scroll
 event로 각 edge 상태를 갱신한다. native wheel·trackpad와 arrow/Page key는 가로채지 않는다. 가로
 overscroll만 table 안에 가두고 세로 overscroll은 바깥 page로 전달하므로 table 끝에서 아래의 paper
 detail로 계속 이동할 수 있다. 이 계약은 좁은 창, 접힌 sidebar와 Extra Large 글자 크기에서도 넓은 column이
 잘리거나 wheel 입력이 사라지지 않게 유지한다.
+실제 Electron geometry smoke는 1,180×820 content에서 compact search card가 220px 이하인지, table이
+Literature content 상단 58% 안에 시작하는지, 초기 viewport의 35% 이상과 짧은 fixture 6행 이상이 table에
+보이는지 확인한 뒤 두 축 scroll offset이 모두 전진하는지도 검증한다.
 
 Evidence table의 paper title과 DOI action은 provider가 준 임의 markup을 직접 쓰지 않고 shared
 `canonicalLiteratureUrl`로 같은 landing page를 계산한다. 우선순위는 검증된 DOI의 `https://doi.org/...`,

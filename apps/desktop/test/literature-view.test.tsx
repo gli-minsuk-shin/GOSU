@@ -226,13 +226,16 @@ describe('Literature workspace', () => {
   it('exposes continual search, dialog-based interchange, and a clearly unavailable AI action', () => {
     const html = renderToStaticMarkup(<LiteratureView project={project} adapter={adapter} />);
 
-    expect(html).toContain('Deep search and continue this review');
+    expect(html).toContain('Search literature');
     expect(html).toContain('Topic tags');
     expect(html).toContain('Keyword tags');
     expect(html).toContain('leaving both fields blank uses the normalized search query');
     expect(html).toContain('aria-label="Search tag filter"');
     expect(html).toContain('All search tags');
     expect(html).toContain('Fixed policy v3');
+    expect(html).toContain('Search guidance · ranking policy v3');
+    expect(html).toContain('<details class="literature-search-guidance">');
+    expect(html).not.toContain('One search screens relevance');
     expect(html).toContain('Core is a maximum, never a quota');
     expect(html).toContain('Venue metadata and author h-index never promote a paper by themselves');
     expect(html).toContain('aria-label="Discovery layer view"');
@@ -244,14 +247,13 @@ describe('Literature workspace', () => {
     expect(html).toContain('Core &amp; canonical');
     expect(html).toContain('Rising &amp; recent');
     expect(html).toContain('Broad discovery');
-    expect(html).toContain('latest matching search');
     expect(html).toContain('scores are only comparable within the same search');
     expect(html).toContain('Import');
     expect(html).toContain('Export JSON');
     expect(html).toContain('Export CSV');
     expect(html).toContain('Export BibTeX');
     expect(html).toContain('AI drafts complete');
-    expect(html).toContain('AI organization is disabled in this build');
+    expect(html).toContain('AI organization:</strong> Unavailable in this build');
     expect(html).not.toContain('type="file"');
   });
 
@@ -445,7 +447,7 @@ describe('Literature workspace', () => {
       /\.literature-library-card\s*\{(?=[^}]*\bgrid-template-columns:\s*minmax\(0, 1fr\);)(?=[^}]*\boverflow:\s*hidden;)[^}]*\}/su,
     );
     expect(styles).toMatch(
-      /\.literature-table-scroll\s*\{(?=[^}]*\bdisplay:\s*block;)(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*0;)(?=[^}]*\bmax-width:\s*100%;)(?=[^}]*\bheight:\s*clamp\(320px, 52vh, 620px\);)(?=[^}]*\bcontain:\s*inline-size;)(?=[^}]*\boverflow-x:\s*auto;)(?=[^}]*\boverflow-y:\s*auto;)[^}]*\}/su,
+      /\.literature-table-scroll\s*\{(?=[^}]*\bdisplay:\s*block;)(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*0;)(?=[^}]*\bmax-width:\s*100%;)(?=[^}]*\bheight:\s*clamp\(520px, 68vh, 860px\);)(?=[^}]*\bcontain:\s*inline-size;)(?=[^}]*\boverflow-x:\s*auto;)(?=[^}]*\boverflow-y:\s*auto;)[^}]*\}/su,
     );
     expect(styles).toMatch(
       /\.literature-table-scroll\s*\{(?=[^}]*\boverscroll-behavior-x:\s*contain;)(?=[^}]*\boverscroll-behavior-y:\s*auto;)(?=[^}]*\bscrollbar-gutter:\s*stable both-edges;)(?=[^}]*\btouch-action:\s*pan-x pan-y;)[^}]*\}/su,
@@ -589,7 +591,7 @@ describe('Literature workspace', () => {
     expect(source).toContain('expectedVersion: record.version');
     expect(source).toContain('requestedModelId,');
     expect(source).toContain('reasoningOptionId,');
-    expect(source).toContain('Uses the linked selection');
+    expect(source).toContain('<strong>AI organization:</strong>');
     expect(source).toContain('record.aiAnnotations === null');
     expect(source).toContain('aiCandidates.map');
     expect(source).not.toContain('record.abstract');

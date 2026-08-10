@@ -136,6 +136,7 @@ export function shouldShowActiveProjectPageHeading(activeTab: WorkspaceTabId) {
   return (
     activeTab !== 'chat' &&
     activeTab !== 'notes' &&
+    activeTab !== 'literature' &&
     activeTab !== 'lecture' &&
     activeTab !== 'search'
   );
