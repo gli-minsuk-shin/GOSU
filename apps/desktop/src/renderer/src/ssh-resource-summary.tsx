@@ -4,6 +4,7 @@ import type {
   SshConnectionTestResult,
   SshServerResourceSnapshot,
 } from '../../shared/ssh-contracts';
+import { CollapseChevron } from './ui-primitives';
 
 export type SshResourceUiErrorReason =
   | 'project_grant_required'
@@ -320,7 +321,7 @@ export function SshResourceSummary({
           aria-label={`${collapsed ? 'Show' : 'Minimize'} resource details for ${serverLabel}`}
           onClick={() => setCollapsed((current) => !current)}
         >
-          <span aria-hidden="true">{collapsed ? '⌄' : '⌃'}</span>
+          <CollapseChevron direction={collapsed ? 'down' : 'up'} />
           {collapsed ? 'Show details' : 'Minimize'}
         </button>
       </div>

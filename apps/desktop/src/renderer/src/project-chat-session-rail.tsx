@@ -10,6 +10,7 @@ import {
   PROJECT_CHAT_SESSION_RAIL_MIN_WIDTH,
 } from './project-chat-session-state';
 import { ResizeHandle } from './resize-handle';
+import { CollapseChevron } from './ui-primitives';
 
 export type ProjectChatSessionRenameValidation =
   | Readonly<{ status: 'invalid'; message: string }>
@@ -230,7 +231,7 @@ export function ProjectChatSessionRail({
             aria-label={collapsed ? 'Show project chat sessions' : 'Hide project chat sessions'}
             title={collapsed ? 'Show chat sessions' : 'Minimize chat sessions'}
           >
-            <span aria-hidden="true">{collapsed ? '›' : '‹'}</span>
+            <CollapseChevron direction={collapsed ? 'right' : 'left'} />
           </button>
           {collapsed && selectedSession && (
             <span className="sr-only">Selected session: {selectedSession.title}</span>

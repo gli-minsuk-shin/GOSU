@@ -516,6 +516,10 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   표시하며, unavailable·not-detected·stale을 0%로 가장하지 않는다. live/partial/unavailable 상태, capture
   시각과 bounded issue도 남긴다. Project Chat card는 좁은 대화 공간을 위해 기본으로 접고 Connections
   card는 기본으로 펼친다. 접기는 polling을 중단하거나 project authorization 경계를 바꾸지 않는다.
+  SSH resource detail, Project Chat session rail과 Research Notes tree의 접기 방향 표시는 font glyph가 아니라
+  shared `CollapseChevron` SVG를 사용한다. 19px viewport와 2.25px round stroke를 고정해 작은 caption font나
+  OS font fallback에서도 화살표가 축소되지 않게 하고, 각 button의 28–32px 이상 hit area와 기존
+  `aria-label`·`aria-expanded` 계약은 유지한다.
   Connections는 global registry를 볼 수 있지만 Project Chat resource list는 Main이
   active project를 다시 검증한 뒤 그 project에 grant된 connection만 반환한다. Project Chat의 server별
   `Refresh`도 project ID와 connection ID를 함께 받는 별도 IPC에서 active project와 현재 grant를 다시

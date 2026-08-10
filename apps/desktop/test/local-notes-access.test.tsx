@@ -297,6 +297,7 @@ describe('Research Notes project-agent access', () => {
     expect(html).toContain('class="ghost-button research-notes-folder-tree-toggle"');
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain('aria-label="Hide Research Notes folder tree"');
+    expect(html).toContain('class="collapse-chevron"');
     expect(html).toContain('class="research-notes-tree-details"');
     expect(html).toContain('class="note-reader"');
     expect(html.match(/research-notes-folder-tree-toggle/gu)).toHaveLength(1);
@@ -309,6 +310,7 @@ describe('Research Notes project-agent access', () => {
     expect(html).toContain('class="note-list collapsed"');
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('aria-label="Show Research Notes folder tree"');
+    expect(html).toContain('class="collapse-chevron"');
     expect(html).toMatch(
       /<strong[^>]*hidden=""[^>]*>Research Vault\/GOSU\/Active study<\/strong>/u,
     );
