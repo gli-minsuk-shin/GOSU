@@ -31,6 +31,9 @@ describe('Board settings UI', () => {
     expect(html).toContain('role="group" aria-label="Task layout"');
     expect(html).toContain('aria-pressed="true">Kanban</button>');
     expect(html).toContain('aria-pressed="false">To-do</button>');
+    expect(html).toContain(
+      'class="kanban-board" role="region" tabindex="0" aria-label="Board columns. Scroll horizontally when needed."',
+    );
     expect(html).toContain('aria-label="Rename Backlog column"');
     expect(html.match(/class="column-rename-button"/g)).toHaveLength(5);
   });

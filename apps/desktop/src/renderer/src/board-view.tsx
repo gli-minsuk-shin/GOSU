@@ -257,7 +257,12 @@ export function BoardView({
               }}
             />
           ) : (
-            <div className="kanban-board" aria-label={`${board.title} columns`}>
+            <div
+              className="kanban-board"
+              role="region"
+              tabIndex={0}
+              aria-label={`${board.title} columns. Scroll horizontally when needed.`}
+            >
               {columns.map((column, columnIndex) => {
                 const progress = kanbanColumnProgress(tasks, column.status, column.wipLimit);
                 const allColumnTasks = progress.activeTasks;

@@ -1357,6 +1357,15 @@ flowchart LR
   소유한다. `kanban-board-model.ts`는 column resolve, 검색·priority·label·due date filter와 안전한
   drop 판단만 수행하는 pure helper다. 프로젝트 전환 시 `BoardView`를 project ID로 remount해 draft,
   filter, Task trash mode와 drag ID가 다른 프로젝트로 넘어가지 않게 한다.
+- Board surface는 content pane의 가로 overflow를 풀지 않는다. 대신 `kanban-workspace`가 사용 가능한
+  inline width를 100% 소유하고 다섯 column을 일반 desktop 폭에서 같은 비율로 축소해 한 화면에 표시한다.
+  실제 Board 영역이 820px보다 좁아질 때만 각 column의 156px readable floor를 적용하며, focus 가능한
+  `kanban-board` 자체가 `overflow-x: auto`와 contained overscroll의 유일한 가로 scroll owner가 된다.
+  따라서 넓은 창에서는 불필요한 scrollbar가 없고, 최소 창·큰 글꼴·넓은 project sidebar 조합에서도
+  마지막 column이 잘리지 않고 trackpad·mouse·keyboard로 접근 가능하다. Board header, filter와 composer는
+  viewport가 아니라 workspace container width를 기준으로 2열과 1열로 재배치한다. macOS Electron geometry
+  smoke는 1440px 창의 기본·최대 sidebar에서 5열 무-scroll fit을, 1060px·Extra Large 조합에서는 실제
+  `scrollLeft` 이동과 마지막 `Done` column 노출을 검증한다.
 - Board 설정은 Project version, task 수정·이동·Delete·restore는 Task version으로 optimistic
   conflict를 검사한다. Main의 `WorkspaceService`만 persisted snapshot을 바꾸며 각각
   `project.board.update`, `task.update`, `task.archive`, `task.restore` outbox command를 같은 SQLCipher
