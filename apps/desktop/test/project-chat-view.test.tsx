@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   ProjectChatView,
+  projectChatTodoSkillSuggestions,
   reconcileProjectChatSessionUiState,
   resolveEditedMessageBranchPoint,
   resolveFailedTurnRecoveryMode,
@@ -63,6 +64,85 @@ const linkedServerSnapshot: SshServerResourceSnapshot = {
 };
 
 describe('advanced Project Chat controls', () => {
+  it('shows the /todo skill only while its slash command is being entered', () => {
+    expect(projectChatTodoSkillSuggestions('/')).toHaveLength(4);
+    expect(projectChatTodoSkillSuggestions('/to')).toHaveLength(4);
+    expect(projectChatTodoSkillSuggestions('/todo')).toHaveLength(4);
+    expect(projectChatTodoSkillSuggestions('/todo list')).toEqual([]);
+    expect(projectChatTodoSkillSuggestions('/unknown')).toEqual([]);
+    expect(projectChatTodoSkillSuggestions('add a task')).toEqual([]);
+  });
+
+  it('shows the full proposed task description inside a bounded review region', () => {
+    const messageId = '22222222-2222-4222-8222-222222222222';
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [
+            {
+              id: messageId,
+              projectId: project.id,
+              role: 'assistant',
+              content: 'Review this task before applying it.',
+              status: 'complete',
+              actions: [
+                {
+                  id: '33333333-3333-4333-8333-333333333333',
+                  projectId: project.id,
+                  messageId,
+                  command: {
+                    type: 'task.create',
+                    title: 'Run controlled ablation',
+                    status: 'planned',
+                    description:
+                      'Compare every controlled variant.\nRecord the metric and seed lineage.',
+                    priority: 'high',
+                    dueDate: '2026-08-14',
+                    labels: ['ablation'],
+                  },
+                  status: 'proposed',
+                  createdAt: '2026-08-04T00:00:01.000Z',
+                  updatedAt: '2026-08-04T00:00:01.000Z',
+                },
+              ],
+              createdAt: '2026-08-04T00:00:00.000Z',
+              completedAt: '2026-08-04T00:00:01.000Z',
+            },
+          ],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={false}
+        models={[]}
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('class="chat-action-description"');
+    expect(html).toContain('Proposed description');
+    expect(html).toContain(
+      'Compare every controlled variant.\nRecord the metric and seed lineage.',
+    );
+    expect(html).toContain('Priority high');
+  });
+
   it('describes bounded attachment failures without exposing local details', () => {
     expect(describeError(new Error('attachment_too_large'))).toContain('20 MB');
     expect(describeError(new Error('attachment_total_too_large'))).toContain('50 MB');
@@ -494,7 +574,7 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Answer verbosity');
     expect(html).toContain('Personality');
     expect(html).toContain('Board + Objective');
-    expect(html).toContain('Board + Objective read tools');
+    expect(html).toContain('Board / To-do + Objective read tools');
     expect(html).toContain('Research Notes not authorized');
     expect(html).toContain('Cached web');
     expect(html).toContain('Authorize…');

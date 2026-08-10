@@ -189,7 +189,7 @@ const WORKSPACE_TOOL = {
   type: 'function',
   name: 'read_workspace',
   description:
-    'Read the current GOSU project summary, Kanban Board, or latest Goal and Metrics objective. This tool is read-only and is always bound to the active project.',
+    'Read the current GOSU project summary, the canonical task set shared by Kanban and To-do views, or the latest Goal and Metrics objective. This tool is read-only and is always bound to the active project.',
   inputSchema: {
     type: 'object',
     properties: {

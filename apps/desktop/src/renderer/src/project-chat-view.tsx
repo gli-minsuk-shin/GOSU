@@ -54,6 +54,28 @@ const QUICK_PROMPTS = [
   '승인된 Research Notes를 검토하고 프로젝트에 활용할 근거를 정리해줘',
 ] as const;
 
+const PROJECT_CHAT_TODO_SKILL_SUGGESTIONS = Object.freeze([
+  { command: '/todo ', label: 'Add task', detail: 'Create a reviewed Board / To-do proposal' },
+  { command: '/todo list', label: 'List tasks', detail: 'Read the current project task list' },
+  {
+    command: '/todo done ',
+    label: 'Complete task',
+    detail: 'Find one task and propose moving it to Done',
+  },
+  {
+    command: '/todo move ',
+    label: 'Move task',
+    detail: 'Find one task and propose a Board column change',
+  },
+] as const);
+
+export function projectChatTodoSkillSuggestions(draft: string) {
+  const normalized = draft.normalize('NFKC').trimStart().toLocaleLowerCase('en-US');
+  if (!normalized.startsWith('/') || normalized.includes(' ')) return [];
+  if (!'/todo'.startsWith(normalized)) return [];
+  return PROJECT_CHAT_TODO_SKILL_SUGGESTIONS;
+}
+
 export type ProjectChatTurnControls = Readonly<{
   harnessMode: ProjectChatHarnessMode;
   responseDepth: ProjectChatResponseDepth;
@@ -911,6 +933,7 @@ export function ProjectChatView({
       }
     });
   };
+  const todoSkillSuggestions = projectChatTodoSkillSuggestions(draft);
 
   const enableTrustedWorkspace = async (server: ProjectChatSshServer) => {
     if (
@@ -1027,7 +1050,9 @@ export function ProjectChatView({
                   </span>
                   <div>
                     <strong>GOSU Project Copilot</strong>
-                    <span>현재 프로젝트 Board, Objective, 승인된 Research Notes를 활용합니다</span>
+                    <span>
+                      현재 프로젝트 Board / To-do, Objective, 승인된 Research Notes를 활용합니다
+                    </span>
                   </div>
                 </div>
                 <div className="chat-model-controls">
@@ -1338,7 +1363,7 @@ export function ProjectChatView({
             <div className="chat-agent-boundary">
               <strong>Project capability boundary</strong>
               <span>
-                Board + Objective read tools · {localNotesStatus} · {sshWorkspaceStatus} ·{' '}
+                Board / To-do + Objective read tools · {localNotesStatus} · {sshWorkspaceStatus} ·{' '}
                 {trustedWorkspaceCount > 0
                   ? `${trustedWorkspaceCount} trusted workspace${trustedWorkspaceCount === 1 ? '' : 's'}`
                   : 'SSH requires Allow once'}
@@ -1791,6 +1816,32 @@ export function ProjectChatView({
               </button>
             </div>
           )}
+          {todoSkillSuggestions.length > 0 && (
+            <section className="chat-skill-menu" aria-label="Project Chat skills">
+              <header>
+                <strong>/todo</strong>
+                <span>Board와 같은 Task를 읽고 변경 제안을 만듭니다</span>
+              </header>
+              <div>
+                {todoSkillSuggestions.map((suggestion) => (
+                  <button
+                    type="button"
+                    key={suggestion.command}
+                    onClick={() => {
+                      updateDraft(suggestion.command);
+                      setRetryOfAttemptId(null);
+                    }}
+                  >
+                    <code>{suggestion.command.trimEnd()}</code>
+                    <span>
+                      <b>{suggestion.label}</b>
+                      <small>{suggestion.detail}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
           <div className="chat-composer">
             <button
               type="button"
@@ -1824,7 +1875,7 @@ export function ProjectChatView({
                   submit();
                 }
               }}
-              placeholder="예: baseline 재현 작업을 Planned에 추가하고, 이번 주 우선순위를 정해줘"
+              placeholder="예: baseline 재현 작업을 Planned에 추가해줘 · /todo로 작업 관리"
               maxLength={12_000}
               disabled={loading}
               aria-label="Message GOSU project copilot"
@@ -1880,11 +1931,26 @@ function ChatActionCard({
     command.type === 'task.create'
       ? `Create in ${statusLabels[command.status]}`
       : `Update${command.status ? ` · move to ${statusLabels[command.status]}` : ''}`;
+  const metadata =
+    command.type === 'task.create'
+      ? [
+          command.priority ? `Priority ${command.priority}` : null,
+          command.dueDate ? `Due ${command.dueDate}` : null,
+          command.labels?.length ? command.labels.map((label) => `#${label}`).join(' ') : null,
+        ].filter((value): value is string => value !== null)
+      : [];
   return (
     <section className={`chat-action-card ${action.status}`}>
       <div>
         <span>{detail}</span>
         <strong>{title}</strong>
+        {command.type === 'task.create' && command.description && (
+          <div className="chat-action-description">
+            <small>Proposed description</small>
+            <p>{command.description}</p>
+          </div>
+        )}
+        {metadata.length > 0 && <small>{metadata.join(' · ')}</small>}
       </div>
       {action.status === 'proposed' ? (
         <button type="button" className="secondary-button" onClick={onApply} disabled={busy}>

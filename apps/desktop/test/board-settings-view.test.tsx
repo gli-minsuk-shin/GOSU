@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import { BoardView, TaskTrash } from '../src/renderer/src/board-view';
+import { BoardView, TaskTrash, TodoTaskList, TodoTaskRow } from '../src/renderer/src/board-view';
 import { SettingsView } from '../src/renderer/src/settings-view';
 import { DEFAULT_USER_PREFERENCES } from '../src/renderer/src/user-preferences';
 
@@ -27,8 +27,120 @@ describe('Board settings UI', () => {
     );
 
     expect(html).toContain('Rename columns &amp; settings');
+    expect(html).toContain('aria-label="Board task workspace"');
+    expect(html).toContain('role="group" aria-label="Task layout"');
+    expect(html).toContain('aria-pressed="true">Kanban</button>');
+    expect(html).toContain('aria-pressed="false">To-do</button>');
     expect(html).toContain('aria-label="Rename Backlog column"');
     expect(html.match(/class="column-rename-button"/g)).toHaveLength(5);
+  });
+
+  it('renders a compact To-do projection with workflow, metadata, completion, edit, and trash controls', () => {
+    const project = {
+      id: '11111111-1111-4111-8111-111111111111',
+      name: 'Research project',
+      slug: 'research-project',
+      version: 1,
+      createdAt: '2026-08-04T00:00:00.000Z',
+      updatedAt: '2026-08-04T00:00:00.000Z',
+    };
+    const activeTask = {
+      id: '22222222-2222-4222-8222-222222222222',
+      projectId: project.id,
+      title: 'Run tagged baseline',
+      description: 'Reproduce the strongest reported score',
+      status: 'in_progress' as const,
+      priority: 'urgent' as const,
+      dueDate: '2026-08-11',
+      labels: ['baseline', 'experiment'],
+      version: 3,
+      createdAt: '2026-08-04T00:00:00.000Z',
+      updatedAt: '2026-08-04T00:10:00.000Z',
+    };
+    const doneTask = {
+      ...activeTask,
+      id: '33333333-3333-4333-8333-333333333333',
+      title: 'Read canonical paper',
+      status: 'done' as const,
+      priority: 'low' as const,
+    };
+
+    const html = renderToStaticMarkup(
+      <TodoTaskList
+        project={project}
+        tasks={[activeTask, doneTask]}
+        busy={false}
+        editingTaskId={null}
+        onEdit={vi.fn()}
+        onCancelEdit={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('aria-label="To-do list"');
+    expect(html).toContain('changes also appear on Kanban');
+    expect(html).toContain('Run tagged baseline');
+    expect(html).toContain('In Progress');
+    expect(html).toContain('urgent');
+    expect(html).toContain('2026-08-11');
+    expect(html).toContain('baseline');
+    expect(html).toContain('aria-label="Mark Run tagged baseline done"');
+    expect(html).toContain('aria-label="Reopen Read canonical paper in Backlog"');
+    expect(html).toContain('aria-label="Edit Run tagged baseline"');
+    expect(html).toContain('aria-label="Delete Run tagged baseline"');
+  });
+
+  it('sends the current task identity and optimistic version when completing or reopening', () => {
+    const onUpdate = vi.fn().mockResolvedValue(true);
+    const activeTask = {
+      id: '22222222-2222-4222-8222-222222222222',
+      projectId: '11111111-1111-4111-8111-111111111111',
+      title: 'Run baseline',
+      status: 'in_progress' as const,
+      version: 3,
+      createdAt: '2026-08-04T00:00:00.000Z',
+      updatedAt: '2026-08-04T00:10:00.000Z',
+    };
+    const completedTask = {
+      ...activeTask,
+      id: '33333333-3333-4333-8333-333333333333',
+      title: 'Review results',
+      status: 'done' as const,
+      version: 7,
+    };
+    const sharedProps = {
+      statusLabel: 'In Progress',
+      reopenLabel: 'Planned',
+      reopenStatus: 'planned' as const,
+      busy: false,
+      searchSelected: false,
+      elementRef: vi.fn(),
+      onEdit: vi.fn(),
+      onDelete: vi.fn(),
+      onUpdate,
+    };
+    const triggerCheckbox = (row: ReturnType<typeof TodoTaskRow>) => {
+      const children = (row.props as { children: Array<{ props: { onChange: () => void } }> })
+        .children;
+      children[0]?.props.onChange();
+    };
+
+    triggerCheckbox(TodoTaskRow({ ...sharedProps, task: activeTask }));
+    expect(onUpdate).toHaveBeenLastCalledWith({
+      projectId: activeTask.projectId,
+      taskId: activeTask.id,
+      expectedVersion: 3,
+      status: 'done',
+    });
+
+    triggerCheckbox(TodoTaskRow({ ...sharedProps, task: completedTask }));
+    expect(onUpdate).toHaveBeenLastCalledWith({
+      projectId: completedTask.projectId,
+      taskId: completedTask.id,
+      expectedVersion: 7,
+      status: 'planned',
+    });
   });
 
   it('exposes recoverable task deletion as Delete and Task trash', () => {

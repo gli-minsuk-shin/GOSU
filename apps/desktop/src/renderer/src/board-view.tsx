@@ -25,10 +25,12 @@ import {
   activeKanbanFilterCount,
   canDropKanbanTask,
   filterKanbanTasks,
+  groupTodoTasksByStatus,
   kanbanColumnProgress,
   parseTaskLabels,
   projectTaskLabels,
   resolveKanbanColumns,
+  resolveTodoReopenStatus,
   taskDueState,
   type KanbanFilters,
 } from './kanban-board-model';
@@ -66,6 +68,7 @@ export function BoardView({
   const columns = useMemo(() => resolveKanbanColumns(project), [project]);
   const board = useMemo(() => resolveWorkspaceBoardSettings(project.board), [project.board]);
   const [filters, setFilters] = useState<KanbanFilters>(EMPTY_KANBAN_FILTERS);
+  const [viewMode, setViewMode] = useState<'kanban' | 'todo'>('kanban');
   const [showSettings, setShowSettings] = useState(false);
   const [settingsFocusStatus, setSettingsFocusStatus] = useState<WorkspaceTaskStatus | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
@@ -105,7 +108,7 @@ export function BoardView({
   }, [filteredTasks, onSearchTargetHandled, pendingSearchFocus]);
 
   return (
-    <section className="kanban-workspace" aria-label={`${board.title} Kanban workspace`}>
+    <section className="kanban-workspace" aria-label={`${board.title} task workspace`}>
       <header className="kanban-command-bar">
         <div className="kanban-title-block">
           <span>PROJECT BOARD</span>
@@ -115,6 +118,30 @@ export function BoardView({
           </p>
         </div>
         <div className="kanban-view-actions">
+          <div className="board-layout-switch" role="group" aria-label="Task layout">
+            <button
+              type="button"
+              className={viewMode === 'kanban' ? 'active' : ''}
+              aria-pressed={viewMode === 'kanban'}
+              onClick={() => {
+                setViewMode('kanban');
+                setFilters((current) => ({ ...current, mode: 'active' }));
+              }}
+            >
+              Kanban
+            </button>
+            <button
+              type="button"
+              className={viewMode === 'todo' ? 'active' : ''}
+              aria-pressed={viewMode === 'todo'}
+              onClick={() => {
+                setViewMode('todo');
+                setFilters((current) => ({ ...current, mode: 'active' }));
+              }}
+            >
+              To-do
+            </button>
+          </div>
           <button
             type="button"
             className={filters.mode === 'archived' ? 'secondary-button active' : 'ghost-button'}
@@ -125,7 +152,7 @@ export function BoardView({
               }))
             }
           >
-            {filters.mode === 'active' ? `Task trash (${trashedTaskCount})` : 'Back to board'}
+            {filters.mode === 'active' ? `Task trash (${trashedTaskCount})` : 'Back to tasks'}
           </button>
           <button
             type="button"
@@ -191,144 +218,181 @@ export function BoardView({
           <TaskComposer
             project={project}
             columns={columns}
+            viewMode={viewMode}
             busyAction={busyAction}
             onCreate={onCreateTask}
           />
-          <div className="kanban-board" aria-label={`${board.title} columns`}>
-            {columns.map((column, columnIndex) => {
-              const progress = kanbanColumnProgress(tasks, column.status, column.wipLimit);
-              const allColumnTasks = progress.activeTasks;
-              const visibleColumnTasks = filteredTasks.filter(
-                (task) => task.status === column.status,
-              );
-              const exceeded = progress.exceeded;
-              const canDrop =
-                canDropKanbanTask({
+          {viewMode === 'todo' ? (
+            <TodoTaskList
+              project={project}
+              tasks={filteredTasks}
+              busy={busy}
+              editingTaskId={editingTaskId}
+              selectedSearchTaskId={selectedSearchTaskId}
+              onTaskElement={(taskId, element) => {
+                if (element) taskElementsRef.current.set(taskId, element);
+                else taskElementsRef.current.delete(taskId);
+              }}
+              onEdit={setEditingTaskId}
+              onCancelEdit={() => setEditingTaskId(null)}
+              onDelete={(task) => {
+                if (
+                  !window.confirm(
+                    `Delete “${task.title}” from project tasks? It will move to Task trash and can be restored later.`,
+                  )
+                ) {
+                  return;
+                }
+                void onSetTaskArchived({
                   projectId: project.id,
-                  taskId: draggedTaskId,
-                  targetStatus: column.status,
-                  tasks,
-                }) !== null;
-              return (
-                <section
-                  className={`kanban-column${exceeded ? ' wip-exceeded' : ''}${dropStatus === column.status && canDrop ? ' drop-target' : ''}`}
-                  key={column.status}
-                  aria-labelledby={`column-${column.status}`}
-                  onDragOver={(event) => {
-                    if (!canDrop || busy) return;
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = 'move';
-                    setDropStatus(column.status);
-                  }}
-                  onDragLeave={(event) => {
-                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                      setDropStatus((current) => (current === column.status ? null : current));
-                    }
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const task = canDropKanbanTask({
-                      projectId: project.id,
-                      taskId: draggedTaskId,
-                      targetStatus: column.status,
-                      tasks,
-                    });
-                    setDropStatus(null);
-                    setDraggedTaskId(null);
-                    if (!task || busy) return;
-                    void onUpdateTask({
-                      projectId: project.id,
-                      taskId: task.id,
-                      expectedVersion: task.version,
-                      status: column.status,
-                    });
-                  }}
-                >
-                  <header>
-                    <div>
-                      <div className="column-title-row">
-                        <strong id={`column-${column.status}`}>{column.label}</strong>
-                        <button
-                          type="button"
-                          className="column-rename-button"
-                          onClick={() => {
-                            setSettingsFocusStatus(column.status);
-                            setShowSettings(true);
-                          }}
-                          disabled={busy}
-                          aria-label={`Rename ${column.label} column`}
-                          title={`Rename ${column.label}`}
-                        >
-                          Rename
-                        </button>
+                  taskId: task.id,
+                  expectedVersion: task.version,
+                  archived: true,
+                });
+              }}
+              onUpdate={async (input) => {
+                const saved = await onUpdateTask(input);
+                if (saved) setEditingTaskId(null);
+                return saved;
+              }}
+            />
+          ) : (
+            <div className="kanban-board" aria-label={`${board.title} columns`}>
+              {columns.map((column, columnIndex) => {
+                const progress = kanbanColumnProgress(tasks, column.status, column.wipLimit);
+                const allColumnTasks = progress.activeTasks;
+                const visibleColumnTasks = filteredTasks.filter(
+                  (task) => task.status === column.status,
+                );
+                const exceeded = progress.exceeded;
+                const canDrop =
+                  canDropKanbanTask({
+                    projectId: project.id,
+                    taskId: draggedTaskId,
+                    targetStatus: column.status,
+                    tasks,
+                  }) !== null;
+                return (
+                  <section
+                    className={`kanban-column${exceeded ? ' wip-exceeded' : ''}${dropStatus === column.status && canDrop ? ' drop-target' : ''}`}
+                    key={column.status}
+                    aria-labelledby={`column-${column.status}`}
+                    onDragOver={(event) => {
+                      if (!canDrop || busy) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = 'move';
+                      setDropStatus(column.status);
+                    }}
+                    onDragLeave={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                        setDropStatus((current) => (current === column.status ? null : current));
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const task = canDropKanbanTask({
+                        projectId: project.id,
+                        taskId: draggedTaskId,
+                        targetStatus: column.status,
+                        tasks,
+                      });
+                      setDropStatus(null);
+                      setDraggedTaskId(null);
+                      if (!task || busy) return;
+                      void onUpdateTask({
+                        projectId: project.id,
+                        taskId: task.id,
+                        expectedVersion: task.version,
+                        status: column.status,
+                      });
+                    }}
+                  >
+                    <header>
+                      <div>
+                        <div className="column-title-row">
+                          <strong id={`column-${column.status}`}>{column.label}</strong>
+                          <button
+                            type="button"
+                            className="column-rename-button"
+                            onClick={() => {
+                              setSettingsFocusStatus(column.status);
+                              setShowSettings(true);
+                            }}
+                            disabled={busy}
+                            aria-label={`Rename ${column.label} column`}
+                            title={`Rename ${column.label}`}
+                          >
+                            Rename
+                          </button>
+                        </div>
+                        {column.wipLimit !== null && (
+                          <small className={exceeded ? 'wip-warning' : ''}>
+                            WIP {allColumnTasks.length}/{column.wipLimit}
+                          </small>
+                        )}
                       </div>
-                      {column.wipLimit !== null && (
-                        <small className={exceeded ? 'wip-warning' : ''}>
-                          WIP {allColumnTasks.length}/{column.wipLimit}
-                        </small>
-                      )}
-                    </div>
-                    <span aria-label={`${allColumnTasks.length} tasks`}>
-                      {filterCount > 0
-                        ? `${visibleColumnTasks.length}/${allColumnTasks.length}`
-                        : allColumnTasks.length}
-                    </span>
-                  </header>
-                  {visibleColumnTasks.length === 0 && (
-                    <p className="column-empty">
-                      {allColumnTasks.length > 0 ? 'No matching tasks' : 'Drop or add a task'}
-                    </p>
-                  )}
-                  {visibleColumnTasks.map((task) => (
-                    <TaskCard
-                      key={`${task.id}:${task.version}`}
-                      task={task}
-                      columns={columns}
-                      columnIndex={columnIndex}
-                      editing={editingTaskId === task.id}
-                      busy={busy}
-                      searchSelected={selectedSearchTaskId === task.id}
-                      elementRef={(element) => {
-                        if (element) taskElementsRef.current.set(task.id, element);
-                        else taskElementsRef.current.delete(task.id);
-                      }}
-                      onEdit={() => setEditingTaskId(task.id)}
-                      onCancel={() => setEditingTaskId(null)}
-                      onDragStart={(event) => {
-                        setDraggedTaskId(task.id);
-                        event.dataTransfer.effectAllowed = 'move';
-                        event.dataTransfer.setData('application/x-gosu-task', 'active');
-                      }}
-                      onDragEnd={() => {
-                        setDraggedTaskId(null);
-                        setDropStatus(null);
-                      }}
-                      onDelete={() => {
-                        if (
-                          !window.confirm(
-                            `Delete “${task.title}” from the board? It will move to Task trash and can be restored later.`,
-                          )
-                        ) {
-                          return;
-                        }
-                        void onSetTaskArchived({
-                          projectId: project.id,
-                          taskId: task.id,
-                          expectedVersion: task.version,
-                          archived: true,
-                        });
-                      }}
-                      onUpdate={async (input) => {
-                        const saved = await onUpdateTask(input);
-                        if (saved) setEditingTaskId(null);
-                        return saved;
-                      }}
-                    />
-                  ))}
-                </section>
-              );
-            })}
-          </div>
+                      <span aria-label={`${allColumnTasks.length} tasks`}>
+                        {filterCount > 0
+                          ? `${visibleColumnTasks.length}/${allColumnTasks.length}`
+                          : allColumnTasks.length}
+                      </span>
+                    </header>
+                    {visibleColumnTasks.length === 0 && (
+                      <p className="column-empty">
+                        {allColumnTasks.length > 0 ? 'No matching tasks' : 'Drop or add a task'}
+                      </p>
+                    )}
+                    {visibleColumnTasks.map((task) => (
+                      <TaskCard
+                        key={`${task.id}:${task.version}`}
+                        task={task}
+                        columns={columns}
+                        columnIndex={columnIndex}
+                        editing={editingTaskId === task.id}
+                        busy={busy}
+                        searchSelected={selectedSearchTaskId === task.id}
+                        elementRef={(element) => {
+                          if (element) taskElementsRef.current.set(task.id, element);
+                          else taskElementsRef.current.delete(task.id);
+                        }}
+                        onEdit={() => setEditingTaskId(task.id)}
+                        onCancel={() => setEditingTaskId(null)}
+                        onDragStart={(event) => {
+                          setDraggedTaskId(task.id);
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.dataTransfer.setData('application/x-gosu-task', 'active');
+                        }}
+                        onDragEnd={() => {
+                          setDraggedTaskId(null);
+                          setDropStatus(null);
+                        }}
+                        onDelete={() => {
+                          if (
+                            !window.confirm(
+                              `Delete “${task.title}” from project tasks? It will move to Task trash and can be restored later.`,
+                            )
+                          ) {
+                            return;
+                          }
+                          void onSetTaskArchived({
+                            projectId: project.id,
+                            taskId: task.id,
+                            expectedVersion: task.version,
+                            archived: true,
+                          });
+                        }}
+                        onUpdate={async (input) => {
+                          const saved = await onUpdateTask(input);
+                          if (saved) setEditingTaskId(null);
+                          return saved;
+                        }}
+                      />
+                    ))}
+                  </section>
+                );
+              })}
+            </div>
+          )}
         </>
       )}
     </section>
@@ -347,7 +411,7 @@ function BoardFilters({
   onChange: (filters: KanbanFilters) => void;
 }) {
   return (
-    <section className="board-filter-bar" aria-label="Filter board tasks">
+    <section className="board-filter-bar" aria-label="Filter project tasks">
       <label className="board-search">
         Search
         <input
@@ -415,14 +479,194 @@ function BoardFilters({
   );
 }
 
+export function TodoTaskList({
+  project,
+  tasks,
+  busy,
+  editingTaskId,
+  selectedSearchTaskId,
+  onTaskElement,
+  onEdit,
+  onCancelEdit,
+  onUpdate,
+  onDelete,
+}: {
+  project: ProjectRecord;
+  tasks: readonly WorkspaceTask[];
+  busy: boolean;
+  editingTaskId: string | null;
+  selectedSearchTaskId?: string | null;
+  onTaskElement?: (taskId: string, element: HTMLElement | null) => void;
+  onEdit: (taskId: string) => void;
+  onCancelEdit: () => void;
+  onUpdate: (input: UpdateTaskInput) => Promise<boolean>;
+  onDelete: (task: WorkspaceTask) => void;
+}) {
+  const groups = groupTodoTasksByStatus(project, tasks);
+  const columns = resolveKanbanColumns(project);
+  const reopenStatus = resolveTodoReopenStatus(project);
+  const reopenLabel = columns.find((column) => column.status === reopenStatus)?.label ?? 'Backlog';
+
+  return (
+    <section className="todo-task-list" aria-label="To-do list">
+      <header className="todo-list-summary">
+        <div>
+          <span>TO-DO VIEW</span>
+          <h3>Tasks by workflow stage</h3>
+        </div>
+        <p>{tasks.length} matching tasks · changes also appear on Kanban</p>
+      </header>
+      <div className="todo-status-groups">
+        {groups.map((group) => (
+          <section className="todo-status-group" key={group.status}>
+            <header>
+              <strong>{group.label}</strong>
+              <span aria-label={`${group.tasks.length} tasks`}>{group.tasks.length}</span>
+            </header>
+            {group.tasks.length === 0 ? (
+              <p className="todo-group-empty">No matching tasks</p>
+            ) : (
+              <div className="todo-group-items">
+                {group.tasks.map((task) =>
+                  editingTaskId === task.id ? (
+                    <TaskEditForm
+                      key={`${task.id}:${task.version}:editing`}
+                      task={task}
+                      columns={columns}
+                      busy={busy}
+                      onCancel={onCancelEdit}
+                      onUpdate={onUpdate}
+                    />
+                  ) : (
+                    <TodoTaskRow
+                      key={`${task.id}:${task.version}`}
+                      task={task}
+                      statusLabel={group.label}
+                      reopenLabel={reopenLabel}
+                      reopenStatus={reopenStatus}
+                      busy={busy}
+                      searchSelected={selectedSearchTaskId === task.id}
+                      elementRef={(element) => onTaskElement?.(task.id, element)}
+                      onEdit={() => onEdit(task.id)}
+                      onDelete={() => onDelete(task)}
+                      onUpdate={onUpdate}
+                    />
+                  ),
+                )}
+              </div>
+            )}
+          </section>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function TodoTaskRow({
+  task,
+  statusLabel,
+  reopenLabel,
+  reopenStatus,
+  busy,
+  searchSelected,
+  elementRef,
+  onEdit,
+  onDelete,
+  onUpdate,
+}: {
+  task: WorkspaceTask;
+  statusLabel: string;
+  reopenLabel: string;
+  reopenStatus: WorkspaceTaskStatus;
+  busy: boolean;
+  searchSelected: boolean;
+  elementRef: (element: HTMLElement | null) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onUpdate: (input: UpdateTaskInput) => Promise<boolean>;
+}) {
+  const completed = task.status === 'done';
+  const dueState = taskDueState(task.dueDate);
+  const completionLabel = completed
+    ? `Reopen ${task.title} in ${reopenLabel}`
+    : `Mark ${task.title} done`;
+
+  return (
+    <article
+      ref={elementRef}
+      tabIndex={searchSelected ? -1 : undefined}
+      className={`todo-task-row priority-${task.priority ?? 'none'}${completed ? ' completed' : ''}${searchSelected ? ' search-target' : ''}`}
+    >
+      <input
+        className="todo-complete-checkbox"
+        type="checkbox"
+        checked={completed}
+        disabled={busy}
+        aria-label={completionLabel}
+        title={completionLabel}
+        onChange={() =>
+          void onUpdate({
+            projectId: task.projectId,
+            taskId: task.id,
+            expectedVersion: task.version,
+            status: completed ? reopenStatus : 'done',
+          })
+        }
+      />
+      <div className="todo-task-content">
+        <div className="todo-task-heading">
+          <h4>{task.title}</h4>
+          <span className="todo-status-badge">{statusLabel}</span>
+          {task.priority && (
+            <span className={`priority-badge ${task.priority}`}>{task.priority}</span>
+          )}
+        </div>
+        {task.description && <p className="todo-task-description">{task.description}</p>}
+        <div className="todo-task-metadata">
+          {task.dueDate && (
+            <time className={`task-due ${dueState}`} dateTime={task.dueDate}>
+              {dueState === 'overdue' ? 'Overdue · ' : dueState === 'today' ? 'Today · ' : 'Due · '}
+              {task.dueDate}
+            </time>
+          )}
+          {(task.labels?.length ?? 0) > 0 && (
+            <div className="task-labels">
+              {task.labels?.map((label) => (
+                <span key={label}>{label}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="todo-task-actions">
+        <button type="button" onClick={onEdit} disabled={busy} aria-label={`Edit ${task.title}`}>
+          Edit
+        </button>
+        <button
+          type="button"
+          className="task-delete-button"
+          onClick={onDelete}
+          disabled={busy}
+          aria-label={`Delete ${task.title}`}
+          title="Delete task; restorable from Task trash"
+        >
+          Delete
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function TaskComposer({
   project,
   columns,
+  viewMode,
   busyAction,
   onCreate,
 }: {
   project: ProjectRecord;
   columns: ReturnType<typeof resolveKanbanColumns>;
+  viewMode: 'kanban' | 'todo';
   busyAction: string | null;
   onCreate: (input: CreateTaskInput) => Promise<boolean>;
 }) {
@@ -520,7 +764,11 @@ function TaskComposer({
           </div>
         )}
       </form>
-      <p className="board-help">Drag cards between columns or use the move controls.</p>
+      <p className="board-help">
+        {viewMode === 'kanban'
+          ? 'Drag cards between columns or use the move controls.'
+          : 'Check a task to complete it; uncheck a completed task to reopen it.'}
+      </p>
     </section>
   );
 }
@@ -645,7 +893,7 @@ function TaskCard({
             onClick={onDelete}
             disabled={busy}
             aria-label={`Delete ${task.title}`}
-            title="Delete from board; restorable from Task trash"
+            title="Delete task; restorable from Task trash"
           >
             Delete
           </button>
