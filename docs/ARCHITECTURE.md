@@ -777,12 +777,14 @@ folder를 열거하기 위해 Main capability를 넓히지 않는다.
 
 ready workspace의 explorer는 Vault root header 다음에 실제 folder tree를 첫 콘텐츠로 렌더링한다. 중복된
 managed-folder 설명, project 검색, Vault 변경, Agent access와 privacy 설명은 기본적으로 닫힌
-`Search & settings` disclosure로 분리해 폴더를 보기 위해 sidebar를 먼저 scroll하지 않게 한다. folder tree와
-secondary controls는 서로 다른 bounded scroll region을 사용하고, 열린 controls는 explorer 높이의 46%·420px
-중 작은 값까지만 차지하며 tree에는 최소 90px을 남긴다. 안전한 rename reconciliation이 필요한 경우에만
-짧은 attention·Retry 행을 tree 위에 유지한다. 좁은 stacked layout의 explorer 상한은 300px로 두어 Extra
-Large 글자에서도 기본 project folder가 초기 viewport에 남고, 전체 explorer 최소화 상태는 기존 44px strip을
-그대로 사용한다.
+`Search & settings` toggle로 분리해 폴더를 보기 위해 sidebar를 먼저 scroll하지 않게 한다. folder tree와
+settings body는 서로 다른 bounded scroll region을 사용하고 toggle row는 settings scroll 밖에 고정한다. 열린
+controls는 explorer 높이의 46%·420px 중 작은 값까지만 차지하며 tree에는 최소 90px을 남긴다. 닫힌 body는
+명시적인 `hidden`·`display: none`으로 layout·focus navigation에서 제외한다. 열린 settings에서 Vault picker를
+사용한 경우에는 disclosure를 유지해 picker 복귀 focus가 숨겨진 control에 남지 않게 한다. 안전한 rename reconciliation이
+필요한 경우에만 짧은 attention·Retry 행을 tree 위에 유지한다. 좁은 stacked layout의 explorer 높이는
+`min(360px, 45vh)`로 두어 Extra Large 글자에서도 settings toggle과 기본 project folder가 초기 viewport에
+남고, 전체 explorer 최소화 상태는 기존 44px strip을 그대로 사용한다.
 
 file explorer 전체는 persistent toggle로 최소화할 수 있다. 넓은 창에서는 270px explorer가 44px 세로
 restore rail로 줄고, 860px 이하의 stacked layout에서는 44px 상단 strip으로 줄어 Markdown reader가 남은
@@ -2254,7 +2256,10 @@ Repository preview의 `scrollHeight > clientHeight`, 실제 `scrollTop` 이동, 
 local `scrollLeft` 이동을 함께 검사한다. 같은 smoke의 compact tree scenario는 wide/stacked window에서
 270px explorer가 44px rail/strip으로 줄어 reader가 공간을 회수하는지, restore 뒤 geometry가 돌아오는지,
 toggle focus와 ARIA state가 유지되는지, 긴 folder/file 이름과 selected path가 Extra Large 글자에서도
-ellipsis containment를 지키는지 검증한다. layout-state test는 missing·legacy·malformed·storage 예외를
+ellipsis containment를 지키는지 검증한다. 실제 macOS 최소 창 `1060×700`, 최대 440px project sidebar와
+860px responsive 경계에서는 닫힘·열림·복원 모두 settings panel과 toggle이 explorer·document layout·viewport
+안에 완전히 포함되고, outer hidden overflow 없이 settings body만 끝까지 scroll되는지도 검사한다.
+layout-state test는 missing·legacy·malformed·storage 예외를
 expanded default로 복구하고 explicit collapse만 저장하는 계약을 고정한다. route helper test는 active
 project의 Notes·Repository에만 bounded document layout class가 적용되는지도 고정한다.
 

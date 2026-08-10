@@ -37,7 +37,10 @@ type CompactNotesGeometry = ScrollMetrics &
     firstFolder: RectMetrics;
     lastFolder: RectMetrics;
     sidebarTools: RectMetrics;
+    sidebarToolsToggle: RectMetrics;
+    sidebarToolsBody: RectMetrics;
     sidebarToolsLastControl: RectMetrics;
+    viewport: RectMetrics;
     reader: RectMetrics;
     readerHeader: RectMetrics;
     readerBody: RectMetrics;
@@ -46,9 +49,14 @@ type CompactNotesGeometry = ScrollMetrics &
     contentScrollTop: number;
     treeScrollTop: number;
     sidebarToolsOpen: boolean;
-    sidebarToolsClientHeight: number;
-    sidebarToolsScrollHeight: number;
-    sidebarToolsScrollTop: number;
+    noteListClientHeight: number;
+    noteListScrollHeight: number;
+    detailsClientHeight: number;
+    detailsScrollHeight: number;
+    sidebarToolsBodyClientHeight: number;
+    sidebarToolsBodyScrollHeight: number;
+    sidebarToolsBodyScrollTop: number;
+    sidebarToolsBodyOverflowY: string;
     toggleExpanded: string | null;
     toggleLabel: string | null;
     longTreeNameClientWidth: number;
@@ -64,9 +72,11 @@ type CompactNotesGeometry = ScrollMetrics &
   }>;
 
 type CompactNotesScenario = Readonly<{
-  name: 'stacked' | 'wide';
+  name: 'stacked' | 'minimum' | 'minimum-wide-sidebar' | 'wide';
   width: number;
   height: number;
+  projectSidebarWidth: number;
+  textSize: 'default' | 'extra-large';
 }>;
 
 type CompactNotesScenarioMetrics = Readonly<{
@@ -121,11 +131,11 @@ function researchNotesTreeMarkup() {
     .join('');
 }
 
-function compactResearchNotesFixtureMarkup(styles: string) {
+function compactResearchNotesFixtureMarkup(styles: string, scenario: CompactNotesScenario) {
   const selectedPath = `Literature/${'Selected research note path '.repeat(8)}canonical review.md`;
 
   return `<!doctype html>
-<html data-text-size="extra-large">
+<html data-text-size="${scenario.textSize}">
   <head>
     <meta charset="utf-8" />
     <style>
@@ -137,7 +147,7 @@ function compactResearchNotesFixtureMarkup(styles: string) {
     </style>
   </head>
   <body>
-    <main class="desktop-shell" style="--project-sidebar-width: 280px">
+    <main class="desktop-shell" style="--project-sidebar-width: ${scenario.projectSidebarWidth}px">
       <header class="titlebar"><strong>GOSU</strong><span>Research Notes compact tree</span></header>
       <aside class="desktop-nav"></aside>
       <section class="desktop-content desktop-content-document desktop-content-notes">
@@ -161,9 +171,14 @@ function compactResearchNotesFixtureMarkup(styles: string) {
                   ${researchNotesTreeMarkup()}
                 </div>
               </div>
-              <details class="research-notes-sidebar-tools">
-                <summary><span class="research-notes-sidebar-tools-chevron"></span><span>Search &amp; settings</span></summary>
-                <div class="research-notes-sidebar-tools-body">
+              <section class="research-notes-sidebar-tools">
+                <button
+                  type="button"
+                  class="research-notes-sidebar-tools-toggle"
+                  aria-controls="fixture-research-notes-sidebar-tools-body"
+                  aria-expanded="false"
+                ><span class="research-notes-sidebar-tools-chevron"></span><span>Search &amp; settings</span></button>
+                <div id="fixture-research-notes-sidebar-tools-body" class="research-notes-sidebar-tools-body" hidden>
                   <button type="button" class="secondary-button">Change Vault</button>
                   <section class="research-notes-managed-summary">
                     <span>MANAGED PROJECT FOLDERS</span>
@@ -177,7 +192,7 @@ function compactResearchNotesFixtureMarkup(styles: string) {
                   </section>
                   <p class="note-agent-disclosure">Access is project-specific and stays off until explicitly authorized. Listing and bounded excerpts may be sent to the configured model while Research Notes bodies remain local.</p>
                 </div>
-              </details>
+              </section>
             </div>
           </aside>
           <article class="note-reader">
@@ -326,10 +341,35 @@ function verifyContained(
   invariant(child.bottom <= container.bottom + 1, `${scenario}_${label}_escaped_bottom`);
 }
 
-function verifyCompactNotesScroll(metrics: CompactNotesGeometry, scenario: string) {
-  verifyMetrics('notes', 'extra-large', metrics);
+function verifyCompactNotesScroll(
+  metrics: CompactNotesGeometry,
+  scenario: string,
+  textSize: CompactNotesScenario['textSize'],
+) {
+  verifyMetrics('notes', textSize, metrics);
   verifyContained(metrics.readerHeader, metrics.reader, scenario, 'reader_header');
   verifyContained(metrics.readerBody, metrics.reader, scenario, 'reader_body');
+}
+
+function verifySettingsChromeContained(
+  metrics: CompactNotesGeometry,
+  scenario: string,
+  state: 'closed' | 'open',
+) {
+  verifyContained(metrics.sidebarTools, metrics.details, scenario, `${state}_settings_details`);
+  verifyContained(metrics.sidebarTools, metrics.tree, scenario, `${state}_settings_note_list`);
+  verifyContained(metrics.sidebarTools, metrics.layout, scenario, `${state}_settings_layout`);
+  verifyContained(metrics.sidebarTools, metrics.viewport, scenario, `${state}_settings_viewport`);
+  verifyContained(
+    metrics.sidebarToolsToggle,
+    metrics.sidebarTools,
+    scenario,
+    `${state}_settings_summary`,
+  );
+  invariant(
+    metrics.sidebarToolsToggle.height >= 38,
+    `${scenario}_${state}_settings_summary_clipped`,
+  );
 }
 
 function verifyCompactNotesScenario(
@@ -337,7 +377,8 @@ function verifyCompactNotesScenario(
   metrics: CompactNotesScenarioMetrics,
 ) {
   const prefix = `notes_compact_${scenario.name}`;
-  const expectedTopInset = scenario.name === 'wide' ? 18 : 14;
+  const stacked = scenario.width <= 860;
+  const expectedTopInset = stacked ? 14 : 18;
 
   invariant(
     nearlyEqual(metrics.expanded.layout.top - metrics.expanded.content.top, expectedTopInset),
@@ -347,6 +388,15 @@ function verifyCompactNotesScenario(
   invariant(metrics.expanded.treeScrollTop === 0, `${prefix}_folder_tree_scrolled_on_entry`);
   invariant(!metrics.expanded.sidebarToolsOpen, `${prefix}_secondary_tools_open_on_entry`);
   invariant(metrics.expanded.sidebarTools.height <= 44, `${prefix}_secondary_tools_too_tall`);
+  verifySettingsChromeContained(metrics.expanded, prefix, 'closed');
+  invariant(
+    metrics.expanded.noteListScrollHeight <= metrics.expanded.noteListClientHeight + 1,
+    `${prefix}_closed_note_list_hidden_overflow`,
+  );
+  invariant(
+    metrics.expanded.detailsScrollHeight <= metrics.expanded.detailsClientHeight + 1,
+    `${prefix}_closed_details_hidden_overflow`,
+  );
   invariant(
     metrics.expanded.firstFolder.top - metrics.expanded.tree.top <= 100,
     `${prefix}_first_folder_not_near_sidebar_top`,
@@ -360,6 +410,7 @@ function verifyCompactNotesScenario(
   verifyContained(metrics.expanded.lastFolder, metrics.expanded.treeScroll, prefix, 'last_folder');
 
   invariant(metrics.toolsExpanded.sidebarToolsOpen, `${prefix}_secondary_tools_did_not_open`);
+  verifySettingsChromeContained(metrics.toolsExpanded, prefix, 'open');
   invariant(
     metrics.toolsExpanded.sidebarTools.height <= 421,
     `${prefix}_secondary_tools_exceeded_absolute_cap`,
@@ -373,18 +424,23 @@ function verifyCompactNotesScenario(
     `${prefix}_folder_tree_lost_all_open_state_space_${metrics.toolsExpanded.treeScroll.height}_${metrics.toolsExpanded.details.height}_${metrics.toolsExpanded.sidebarTools.height}`,
   );
   invariant(
-    metrics.toolsExpanded.sidebarToolsScrollHeight > metrics.toolsExpanded.sidebarToolsClientHeight,
-    `${prefix}_secondary_tools_did_not_own_scroll_range`,
+    metrics.toolsExpanded.sidebarToolsBodyScrollHeight >
+      metrics.toolsExpanded.sidebarToolsBodyClientHeight,
+    `${prefix}_secondary_tools_did_not_own_scroll_range_${metrics.toolsExpanded.sidebarToolsBodyClientHeight}_${metrics.toolsExpanded.sidebarToolsBodyScrollHeight}_${metrics.toolsExpanded.sidebarTools.height}_${metrics.toolsExpanded.details.height}`,
   );
   invariant(
-    metrics.toolsExpanded.sidebarToolsScrollTop > 0,
+    metrics.toolsExpanded.sidebarToolsBodyScrollTop > 0,
     `${prefix}_secondary_tools_could_not_scroll`,
   );
   invariant(
+    metrics.toolsExpanded.sidebarToolsBodyOverflowY === 'auto',
+    `${prefix}_secondary_tools_body_scroll_not_enabled`,
+  );
+  invariant(
     metrics.toolsExpanded.sidebarToolsLastControl.bottom <=
-      metrics.toolsExpanded.sidebarTools.bottom + 1 &&
+      metrics.toolsExpanded.sidebarToolsBody.bottom + 1 &&
       metrics.toolsExpanded.sidebarToolsLastControl.bottom >=
-        metrics.toolsExpanded.sidebarTools.top,
+        metrics.toolsExpanded.sidebarToolsBody.top,
     `${prefix}_secondary_tools_last_control_unreachable`,
   );
   invariant(metrics.toolsExpanded.contentScrollTop === 0, `${prefix}_tools_scrolled_page`);
@@ -405,7 +461,7 @@ function verifyCompactNotesScenario(
   sameRect(metrics.expanded.reader, metrics.expandedAgain.reader, `${prefix}_restored_reader`);
   invariant(metrics.expandedAgain.toggleExpanded === 'true', `${prefix}_toggle_not_restored`);
 
-  if (scenario.name === 'wide') {
+  if (!stacked) {
     invariant(metrics.collapsed.tree.width <= 46, `${prefix}_tree_is_not_compact`);
     invariant(
       metrics.collapsed.reader.width > metrics.expanded.reader.width + 150,
@@ -476,9 +532,10 @@ function verifyCompactNotesScenario(
     `${prefix}_long_reader_path_wrapped`,
   );
 
-  verifyCompactNotesScroll(metrics.expanded, `${prefix}_expanded`);
-  verifyCompactNotesScroll(metrics.collapsed, `${prefix}_collapsed`);
-  verifyCompactNotesScroll(metrics.expandedAgain, `${prefix}_restored`);
+  verifySettingsChromeContained(metrics.expandedAgain, prefix, 'closed');
+  verifyCompactNotesScroll(metrics.expanded, `${prefix}_expanded`, scenario.textSize);
+  verifyCompactNotesScroll(metrics.collapsed, `${prefix}_collapsed`, scenario.textSize);
+  verifyCompactNotesScroll(metrics.expandedAgain, `${prefix}_restored`, scenario.textSize);
 }
 
 async function measureCompactNotesScenario(
@@ -488,7 +545,7 @@ async function measureCompactNotesScenario(
 ) {
   await window.setSize(scenario.width, scenario.height);
   await window.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(compactResearchNotesFixtureMarkup(styles))}`,
+    `data:text/html;charset=utf-8,${encodeURIComponent(compactResearchNotesFixtureMarkup(styles, scenario))}`,
   );
 
   return (await window.webContents.executeJavaScript(`
@@ -499,6 +556,8 @@ async function measureCompactNotesScenario(
       const details = document.querySelector('.research-notes-tree-details');
       const treeScroll = document.querySelector('.research-notes-tree-scroll');
       const sidebarTools = document.querySelector('.research-notes-sidebar-tools');
+      const sidebarToolsToggle = document.querySelector('.research-notes-sidebar-tools-toggle');
+      const sidebarToolsBody = document.querySelector('.research-notes-sidebar-tools-body');
       const sidebarToolsLastControl = document.querySelector('.note-agent-disclosure');
       const folderRows = Array.from(document.querySelectorAll('[data-top-level-folder]'));
       const firstFolder = folderRows.at(0);
@@ -511,7 +570,7 @@ async function measureCompactNotesScenario(
       const readerPath = document.querySelector('[data-reader-path]');
       const longTreeName = document.querySelector('[data-long-tree-name]');
       const wide = document.querySelector('[data-wide-content]');
-      const elements = [content, layout, tree, details, treeScroll, sidebarTools, sidebarToolsLastControl, firstFolder, lastFolder, toggle, treeRoot, reader, readerHeader, readerBody, readerPath, longTreeName, wide];
+      const elements = [content, layout, tree, details, treeScroll, sidebarTools, sidebarToolsToggle, sidebarToolsBody, sidebarToolsLastControl, firstFolder, lastFolder, toggle, treeRoot, reader, readerHeader, readerBody, readerPath, longTreeName, wide];
       if (elements.some((element) => !(element instanceof HTMLElement))) {
         throw new Error('missing_research_notes_compact_geometry_element');
       }
@@ -531,6 +590,16 @@ async function measureCompactNotesScenario(
         collapsed = !collapsed;
         render();
       });
+      let toolsOpen = false;
+      const renderTools = () => {
+        sidebarTools.classList.toggle('open', toolsOpen);
+        sidebarToolsBody.hidden = !toolsOpen;
+        sidebarToolsToggle.setAttribute('aria-expanded', String(toolsOpen));
+      };
+      sidebarToolsToggle.addEventListener('click', () => {
+        toolsOpen = !toolsOpen;
+        renderTools();
+      });
 
       const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const rect = (element) => {
@@ -547,11 +616,12 @@ async function measureCompactNotesScenario(
       const read = (scrollSidebarTools = false) => {
         readerBody.scrollTop = readerBody.scrollHeight;
         wide.scrollLeft = wide.scrollWidth;
-        if (scrollSidebarTools) sidebarTools.scrollTop = sidebarTools.scrollHeight;
+        if (scrollSidebarTools) sidebarToolsBody.scrollTop = sidebarToolsBody.scrollHeight;
         const regionStyle = getComputedStyle(readerBody);
         const wideStyle = getComputedStyle(wide);
         const treeNameStyle = getComputedStyle(longTreeName);
         const readerPathStyle = getComputedStyle(readerPath);
+        const sidebarToolsBodyStyle = getComputedStyle(sidebarToolsBody);
         return {
           content: rect(content),
           layout: rect(layout),
@@ -561,7 +631,17 @@ async function measureCompactNotesScenario(
           firstFolder: rect(firstFolder),
           lastFolder: rect(lastFolder),
           sidebarTools: rect(sidebarTools),
+          sidebarToolsToggle: rect(sidebarToolsToggle),
+          sidebarToolsBody: rect(sidebarToolsBody),
           sidebarToolsLastControl: rect(sidebarToolsLastControl),
+          viewport: {
+            top: 0,
+            right: window.innerWidth,
+            bottom: window.innerHeight,
+            left: 0,
+            width: window.innerWidth,
+            height: window.innerHeight,
+          },
           reader: rect(reader),
           readerHeader: rect(readerHeader),
           readerBody: rect(readerBody),
@@ -569,10 +649,15 @@ async function measureCompactNotesScenario(
           detailsDisplay: getComputedStyle(details).display,
           contentScrollTop: content.scrollTop,
           treeScrollTop: treeScroll.scrollTop,
-          sidebarToolsOpen: sidebarTools.open,
-          sidebarToolsClientHeight: sidebarTools.clientHeight,
-          sidebarToolsScrollHeight: sidebarTools.scrollHeight,
-          sidebarToolsScrollTop: sidebarTools.scrollTop,
+          sidebarToolsOpen: toolsOpen,
+          noteListClientHeight: tree.clientHeight,
+          noteListScrollHeight: tree.scrollHeight,
+          detailsClientHeight: details.clientHeight,
+          detailsScrollHeight: details.scrollHeight,
+          sidebarToolsBodyClientHeight: sidebarToolsBody.clientHeight,
+          sidebarToolsBodyScrollHeight: sidebarToolsBody.scrollHeight,
+          sidebarToolsBodyScrollTop: sidebarToolsBody.scrollTop,
+          sidebarToolsBodyOverflowY: sidebarToolsBodyStyle.overflowY,
           toggleExpanded: toggle.getAttribute('aria-expanded'),
           toggleLabel: toggle.getAttribute('aria-label'),
           clientWidth: readerBody.clientWidth,
@@ -603,10 +688,10 @@ async function measureCompactNotesScenario(
       await nextFrame();
       const expanded = read();
 
-      sidebarTools.open = true;
+      sidebarToolsToggle.click();
       await nextFrame();
       const toolsExpanded = read(true);
-      sidebarTools.open = false;
+      sidebarToolsToggle.click();
       await nextFrame();
 
       toggle.focus();
@@ -655,8 +740,34 @@ async function run() {
       }
     }
     for (const scenario of [
-      { name: 'stacked', width: 820, height: 780 },
-      { name: 'wide', width: 1480, height: 930 },
+      {
+        name: 'stacked',
+        width: 860,
+        height: 700,
+        projectSidebarWidth: 280,
+        textSize: 'extra-large',
+      },
+      {
+        name: 'minimum',
+        width: 1060,
+        height: 700,
+        projectSidebarWidth: 280,
+        textSize: 'extra-large',
+      },
+      {
+        name: 'minimum-wide-sidebar',
+        width: 1060,
+        height: 700,
+        projectSidebarWidth: 440,
+        textSize: 'extra-large',
+      },
+      {
+        name: 'wide',
+        width: 1480,
+        height: 930,
+        projectSidebarWidth: 280,
+        textSize: 'default',
+      },
     ] as const) {
       verifyCompactNotesScenario(
         scenario,

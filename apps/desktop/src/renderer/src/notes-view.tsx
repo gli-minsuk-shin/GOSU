@@ -193,6 +193,7 @@ export function ResearchNotesView({
   searchAdapter?: SearchViewAdapter;
 }) {
   const folderTreeDetailsId = useId();
+  const sidebarToolsBodyId = useId();
   const managed = workspace !== undefined;
   const effectiveVault: VaultSelection | null = workspace
     ? {
@@ -204,6 +205,7 @@ export function ResearchNotesView({
     : (vault ?? null);
   vault = effectiveVault;
   const vaultId = vault?.id ?? null;
+  const [sidebarToolsOpen, setSidebarToolsOpen] = useState(false);
   const selectedNotePath =
     selectedNote && vault?.files.includes(selectedNote.path) ? selectedNote.path : null;
   const visibleSelectedNote = selectedNotePath ? selectedNote : null;
@@ -368,12 +370,22 @@ export function ResearchNotesView({
               />
             )}
           </div>
-          <details className="research-notes-sidebar-tools">
-            <summary>
+          <section className={`research-notes-sidebar-tools${sidebarToolsOpen ? ' open' : ''}`}>
+            <button
+              type="button"
+              className="research-notes-sidebar-tools-toggle"
+              aria-controls={sidebarToolsBodyId}
+              aria-expanded={sidebarToolsOpen}
+              onClick={() => setSidebarToolsOpen((open) => !open)}
+            >
               <span className="research-notes-sidebar-tools-chevron" aria-hidden="true" />
               <span>Search &amp; settings</span>
-            </summary>
-            <div className="research-notes-sidebar-tools-body">
+            </button>
+            <div
+              id={sidebarToolsBodyId}
+              className="research-notes-sidebar-tools-body"
+              hidden={!sidebarToolsOpen}
+            >
               <button type="button" className="secondary-button" onClick={onChoose} disabled={busy}>
                 {managed ? 'Change Vault' : 'Change folder'}
               </button>
@@ -418,7 +430,7 @@ export function ResearchNotesView({
                 Notes file bodies remain local.
               </p>
             </div>
-          </details>
+          </section>
         </div>
       </aside>
       <article className="note-reader">
