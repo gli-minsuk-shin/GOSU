@@ -114,6 +114,8 @@ describe('independent SSH connection UI', () => {
     expect(html).toContain('Parse and register');
     expect(html).toContain('Register server');
     expect(html).toContain('Test');
+    expect(html).toContain('Test checks host trust and non-interactive authentication only');
+    expect(html).toContain('Project linking and command Allow once approval are separate');
     expect(html).toContain('Edit');
     expect(html).toContain('Remove');
     expect(html).toContain('Allow once');

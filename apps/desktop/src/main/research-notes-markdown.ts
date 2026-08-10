@@ -2,13 +2,13 @@ import { createHash } from 'node:crypto';
 
 import type { LiteratureRecord } from '../shared/literature-contracts';
 import type { ProjectRecord } from '../shared/workspace-contracts';
+import {
+  serializeResearchNotesDocument,
+  uniqueResearchNotesValues,
+} from './research-notes-document';
 
 function sha256(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
-}
-
-function yaml(value: unknown) {
-  return JSON.stringify(value);
 }
 
 function line(value: string | null | undefined) {
@@ -33,9 +33,41 @@ function layer(record: LiteratureRecord) {
 
 const LAYER_ORDER = Object.freeze({ core: 0, rising: 1, broad: 2, unclassified: 3 });
 
+type ResearchNotesMarkdownTimestamps = Readonly<{
+  createdAt: string;
+  modifiedAt: string;
+}>;
+
+function relatedPaperLinks(record: LiteratureRecord) {
+  const links: string[] = [];
+  if (record.doi) {
+    try {
+      const normalizedDoi = record.doi.trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//iu, '');
+      const doi = new URL(`https://doi.org/${normalizedDoi}`);
+      if (doi.origin === 'https://doi.org' && doi.username === '' && doi.password === '') {
+        links.push(doi.toString());
+      }
+    } catch {
+      // Invalid provider metadata is omitted from the trusted document envelope.
+    }
+  }
+  if (record.sourceUrl) {
+    try {
+      const source = new URL(record.sourceUrl);
+      if (source.protocol === 'https:' && source.username === '' && source.password === '') {
+        links.push(source.toString());
+      }
+    } catch {
+      // Invalid provider metadata is omitted from the trusted document envelope.
+    }
+  }
+  return uniqueResearchNotesValues(links);
+}
+
 export function serializeLiteratureReviewMarkdown(
   project: ProjectRecord,
   inputRecords: readonly LiteratureRecord[],
+  timestamps?: ResearchNotesMarkdownTimestamps,
 ) {
   const records = [...inputRecords].sort((left, right) => {
     const layerDifference = LAYER_ORDER[layer(left)] - LAYER_ORDER[layer(right)];
@@ -72,23 +104,45 @@ export function serializeLiteratureReviewMarkdown(
       ...(record.searchTags?.topics ?? []).map((tag) => `topic:${tag}`),
       ...(record.searchTags?.keywords ?? []).map((tag) => `keyword:${tag}`),
     ];
-    const doi = record.doi
-      ? `[${markdownCell(record.doi)}](https://doi.org/${encodeURIComponent(record.doi)})`
-      : '—';
+    const doiUrl = relatedPaperLinks(record).find((value) => value.startsWith('https://doi.org/'));
+    const doi = record.doi && doiUrl ? `[${markdownCell(record.doi)}](${doiUrl})` : '—';
     return `| ${markdownCell(record.title)} | ${markdownCell(record.authors.join(', '))} | ${markdownCell(record.containerTitle)} | ${record.publishedYear ?? '—'} | ${record.citationCount ?? '—'} | ${markdownCell(layer(record))} | ${markdownCell(record.reviewStatus)} | ${markdownCell(tags.join(', '))} | ${doi} |`;
   });
 
-  return `---
-gosu_schema_version: 1
-gosu_document_kind: "literature-review"
-gosu_managed: true
-gosu_project_id: ${yaml(project.id)}
-gosu_source_sha256: ${yaml(sourceSha256)}
-record_count: ${records.length}
-metadata_only: true
-updated_at: ${yaml(latestUpdatedAt)}
----
-<!-- GOSU-MANAGED-FILE v1: this table is regenerated from the encrypted local Literature library. -->
+  const createdAt = timestamps?.createdAt ?? project.createdAt;
+  const modifiedAt = timestamps?.modifiedAt ?? latestUpdatedAt;
+  const relatedPapers = uniqueResearchNotesValues(records.flatMap(relatedPaperLinks)).slice(0, 128);
+  return serializeResearchNotesDocument({
+    envelope: {
+      schemaVersion: 2,
+      documentId: `literature-review:${project.id}`,
+      kind: 'literature-review',
+      managed: true,
+      createdAt,
+      modifiedAt,
+      tags: ['literature', 'metadata-only'],
+      projectId: project.id,
+      projectName: project.name,
+      origin: 'literature-library',
+      originSessionId: null,
+      originSessionName: null,
+      creatorId: 'gosu-system',
+      creatorName: 'GOSU',
+      relatedDocuments: [],
+      relatedPapers,
+      provenance: {
+        source: 'encrypted-local-literature-library',
+        source_sha256: sourceSha256,
+        record_count: records.length,
+        metadata_only: true,
+      },
+    },
+    properties: {
+      gosu_source_sha256: sourceSha256,
+      record_count: records.length,
+      metadata_only: true,
+    },
+    body: `<!-- GOSU-MANAGED-FILE v1: this table is regenerated from the encrypted local Literature library. -->
 
 # Literature Review — ${markdownText(project.name)}
 
@@ -108,31 +162,64 @@ updated_at: ${yaml(latestUpdatedAt)}
 | Title | Authors | Journal / venue | Year | Cited by | Layer | Review status | Search tags | DOI |
 |---|---|---|---:|---:|---|---|---|---|
 ${rows.length > 0 ? rows.join('\n') : '| _No saved papers yet_ | — | — | — | — | — | — | — | — |'}
-`;
+`,
+  });
 }
 
-export function serializePaperNoteMarkdown(project: ProjectRecord, record: LiteratureRecord) {
+export function serializePaperNoteMarkdown(
+  project: ProjectRecord,
+  record: LiteratureRecord,
+  timestamps?: ResearchNotesMarkdownTimestamps,
+) {
   const tags = [
     ...(record.searchTags?.topics ?? []).map((tag) => `topic:${tag}`),
     ...(record.searchTags?.keywords ?? []).map((tag) => `keyword:${tag}`),
   ];
-  return `---
-gosu_schema_version: 1
-gosu_document_kind: "literature-paper-note"
-gosu_project_id: ${yaml(project.id)}
-gosu_record_id: ${yaml(record.id)}
-citation_key: ${yaml(record.citationKey)}
-title: ${yaml(line(record.title))}
-authors: ${yaml(record.authors.map(line))}
-year: ${record.publishedYear ?? 'null'}
-doi: ${yaml(record.doi)}
-review_status: ${yaml(record.reviewStatus)}
-search_tags: ${yaml(tags)}
-metadata_only: true
-full_text_reviewed: false
-created_from_record_version: ${record.version}
----
-<!-- GOSU-CREATED-PAPER-NOTE v1: user-owned after creation; GOSU never overwrites it. -->
+  const createdAt = timestamps?.createdAt ?? record.createdAt;
+  const modifiedAt = timestamps?.modifiedAt ?? createdAt;
+  return serializeResearchNotesDocument({
+    envelope: {
+      schemaVersion: 2,
+      documentId: `literature-paper-note:${record.id}`,
+      kind: 'literature-paper-note',
+      managed: false,
+      createdAt,
+      modifiedAt,
+      tags: uniqueResearchNotesValues(['literature', 'paper', 'metadata-only', ...tags]).slice(
+        0,
+        64,
+      ),
+      projectId: project.id,
+      projectName: project.name,
+      origin: 'literature-library',
+      originSessionId: null,
+      originSessionName: null,
+      creatorId: 'gosu-system',
+      creatorName: 'GOSU',
+      relatedDocuments: ['Literature/Literature Review.md'],
+      relatedPapers: relatedPaperLinks(record),
+      provenance: {
+        source: 'encrypted-local-literature-library',
+        record_id: record.id,
+        record_version: record.version,
+        annotation_version: record.annotationVersion,
+        metadata_only: true,
+      },
+    },
+    properties: {
+      gosu_record_id: record.id,
+      citation_key: record.citationKey,
+      title: line(record.title),
+      authors: record.authors.map(line),
+      year: record.publishedYear,
+      doi: record.doi,
+      review_status: record.reviewStatus,
+      search_tags: tags,
+      metadata_only: true,
+      full_text_reviewed: false,
+      created_from_record_version: record.version,
+    },
+    body: `<!-- GOSU-CREATED-PAPER-NOTE v1: user-owned after creation; GOSU never overwrites it. -->
 
 # ${markdownText(record.title)}
 
@@ -171,7 +258,8 @@ ${record.manualAnnotations.relevance ? markdownText(record.manualAnnotations.rel
 ## GOSU metadata-only draft
 
 ${record.aiAnnotations?.summary ? markdownText(record.aiAnnotations.summary) : ''}
-`;
+`,
+  });
 }
 
 export function researchPaperNoteFileName(record: LiteratureRecord) {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -87,6 +88,7 @@ async function fixture(input?: {
   projects?: ProjectRecord[];
   records?: LiteratureRecord[];
   connectVault?: boolean;
+  now?: () => Date;
 }) {
   const root = await temporaryVault();
   const projects = input?.projects ?? [
@@ -118,7 +120,7 @@ async function fixture(input?: {
     literature,
     workspace,
     vault,
-    now: () => NOW,
+    now: input?.now ?? (() => NOW),
   });
   return { root, projects, records, storage, vault, literature, workspace, service };
 }
@@ -164,8 +166,55 @@ describe('ResearchNotesService project workspaces', () => {
       'utf8',
     );
     expect(projection).toContain('A fixture paper');
+    expect(projection).toContain('gosu_schema_version: 2');
     expect(projection).toContain('metadata_only: true');
+    const experimentLog = await readFile(
+      join(root, 'GOSU', 'Alpha Project', 'Experiments', 'Experiment Log.md'),
+      'utf8',
+    );
+    expect(experimentLog).toContain('gosu_document_kind: "experiment-log"');
+    expect(experimentLog).toContain(`created_at: ${JSON.stringify(NOW.toISOString())}`);
+    expect(experimentLog).toContain('gosu_origin: "project-workspace"');
+    expect(experimentLog).toContain('gosu_origin_session_id: null');
+    expect(experimentLog).toContain('gosu_creator_id: "gosu-system"');
+    expect(experimentLog).toContain('related_documents: []');
+    expect(experimentLog).toContain('related_papers: []');
     expect(storage.links.get(PROJECT_ID)?.lastLiteratureSyncAt).toBe(NOW.toISOString());
+  });
+
+  it('inspects an existing ready workspace without creating or synchronizing Markdown', async () => {
+    const { root, storage, literature, service } = await fixture();
+
+    await expect(service.inspectReadyWorkspace({ projectId: PROJECT_ID })).resolves.toBeNull();
+    expect(storage.links.size).toBe(0);
+    expect(literature.listLiteratureRecords).not.toHaveBeenCalled();
+    await expect(readFile(join(root, 'GOSU'))).rejects.toThrow();
+
+    await service.current({ projectId: PROJECT_ID });
+    const durableLink = structuredClone(storage.links.get(PROJECT_ID));
+    literature.listLiteratureRecords.mockClear();
+    const saveLink = vi.spyOn(storage, 'saveProjectLink');
+
+    const inspected = await service.inspectReadyWorkspace({ projectId: PROJECT_ID });
+
+    expect(inspected).toMatchObject({
+      projectId: PROJECT_ID,
+      projectName: 'Alpha Project',
+      status: 'ready',
+    });
+    expect(inspected?.files).toContain('Literature/Literature Review.md');
+    await expect(
+      service.readReadyMarkdown({
+        projectId: PROJECT_ID,
+        path: 'Literature/Literature Review.md',
+      }),
+    ).resolves.toMatchObject({
+      path: 'Literature/Literature Review.md',
+      content: expect.stringContaining('A fixture paper'),
+    });
+    expect(literature.listLiteratureRecords).not.toHaveBeenCalled();
+    expect(saveLink).not.toHaveBeenCalled();
+    expect(storage.links.get(PROJECT_ID)).toEqual(durableLink);
   });
 
   it('keeps listing and agent reads scoped to the granted project folder', async () => {
@@ -236,9 +285,12 @@ describe('ResearchNotesService project workspaces', () => {
       );
       expect(receipt.path).not.toContain(root);
       expect(receipt).not.toHaveProperty('absolutePath');
-      await expect(
-        readFile(join(root, 'GOSU', 'Alpha Project', receipt.path), 'utf8'),
-      ).resolves.toBe(content);
+      const saved = await readFile(join(root, 'GOSU', 'Alpha Project', receipt.path), 'utf8');
+      expect(saved).toContain('gosu_schema_version: 2');
+      expect(saved).toContain(`gosu_project_id: ${JSON.stringify(PROJECT_ID)}`);
+      expect(saved).toContain(`research_note_category: ${JSON.stringify(category)}`);
+      expect(saved).toContain(`\n${content}`);
+      expect(receipt.contentSha256).toBe(createHash('sha256').update(saved, 'utf8').digest('hex'));
     }
 
     const deceptive = await service.saveMarkdownForAgent(PROJECT_ID, workspace!.bindingId, {
@@ -249,6 +301,42 @@ describe('ResearchNotesService project workspaces', () => {
     });
     expect(deceptive.path).not.toMatch(/[\p{C}]/u);
     expect(deceptive.path).toMatch(/^Project Progress\/Status cod\.exe zero width--/u);
+  });
+
+  it('rejects model frontmatter and unsafe trusted-link metadata before writing', async () => {
+    const { root, service } = await fixture();
+    const workspace = await service.current({ projectId: PROJECT_ID });
+    const base = {
+      category: 'experiments' as const,
+      title: 'Untrusted metadata',
+      idempotencyKey: 'untrusted-frontmatter',
+    };
+
+    await expect(
+      service.saveMarkdownForAgent(PROJECT_ID, workspace!.bindingId, {
+        ...base,
+        content: '---\ngosu_project_id: "forged"\n---\n# Body\n',
+      }),
+    ).rejects.toThrow();
+    await expect(
+      service.saveMarkdownForAgent(PROJECT_ID, workspace!.bindingId, {
+        ...base,
+        content: '# Body\n',
+        origin: {
+          createdAt: NOW.toISOString(),
+          sessionId: null,
+          sessionName: null,
+          creatorId: 'gosu-system',
+          creatorName: 'GOSU Project Chat',
+          relatedDocuments: ['../outside.md'],
+          relatedPapers: [],
+          provenance: {},
+        },
+      }),
+    ).rejects.toThrow();
+    await expect(readdir(join(root, 'GOSU', 'Alpha Project', 'Experiments'))).resolves.toEqual([
+      'Experiment Log.md',
+    ]);
   });
 
   it('atomically reconciles a pending lecture bundle and seals the revision after commit', async () => {
@@ -263,6 +351,18 @@ describe('ResearchNotesService project workspaces', () => {
       lectureNotesMarkdown: '# First notes\n',
       slidesMarkdown: '# First slides\n',
       createdAt: NOW.toISOString(),
+      invocation: {
+        schemaVersion: 1 as const,
+        invocationId: 'lecture-invocation',
+        providerId: 'openai-codex',
+        requestedModelId: null,
+        resolvedModelId: 'gpt-fixture',
+        catalogVersion: 'fixture-catalog',
+        reasoningOptionId: 'medium',
+        startedAt: NOW.toISOString(),
+      },
+      relatedDocuments: ['Experiments/Experiment Log.md'],
+      relatedPapers: ['https://doi.org/10.1000/fixture'],
     };
 
     const first = await service.saveRevisionArtifacts({
@@ -285,9 +385,17 @@ describe('ResearchNotesService project workspaces', () => {
     expect(recoveredWithNewAttempt.map((artifact) => artifact.relativePath)).toEqual(
       first.map((artifact) => artifact.relativePath),
     );
-    await expect(
-      readFile(join(root, 'GOSU', 'Alpha Project', first[0].relativePath), 'utf8'),
-    ).resolves.toContain('# Recovered notes');
+    const recoveredNotes = await readFile(
+      join(root, 'GOSU', 'Alpha Project', first[0].relativePath),
+      'utf8',
+    );
+    expect(recoveredNotes).toContain('# Recovered notes');
+    expect(recoveredNotes).toContain('gosu_schema_version: 2');
+    expect(recoveredNotes).toContain('gosu_document_kind: "lecture-notes"');
+    expect(recoveredNotes).toContain('gosu_creator_id: "gpt-fixture"');
+    expect(recoveredNotes).toContain('gosu_origin_session_id: null');
+    expect(recoveredNotes).toContain('related_documents: ["Experiments/Experiment Log.md"]');
+    expect(recoveredNotes).toContain('related_papers: ["https://doi.org/10.1000/fixture"]');
     await expect(
       readFile(
         join(root, 'GOSU', 'Alpha Project', recoveredWithNewAttempt[0].relativePath),
@@ -450,9 +558,9 @@ describe('ResearchNotesService project workspaces', () => {
         title: 'A different title',
       }),
     ).rejects.toThrow('research_notes_folder_conflict');
-    await expect(readFile(join(root, 'GOSU', 'Alpha Project', first.path), 'utf8')).resolves.toBe(
-      input.content,
-    );
+    const saved = await readFile(join(root, 'GOSU', 'Alpha Project', first.path), 'utf8');
+    expect(saved).toContain('gosu_document_kind: "project-chat-artifact"');
+    expect(saved).toContain(`\n${input.content}`);
   });
 
   it('reports a commit-uncertain error when the Vault grant changes after an agent write', async () => {
@@ -476,9 +584,12 @@ describe('ResearchNotesService project workspaces', () => {
     const files = await readdir(join(root, 'GOSU', 'Alpha Project', 'Project Progress'));
     const created = files.find((path) => path.startsWith('Status before handoff--'));
     expect(created).toMatch(/\.md$/u);
-    await expect(
-      readFile(join(root, 'GOSU', 'Alpha Project', 'Project Progress', created!), 'utf8'),
-    ).resolves.toBe(content);
+    const saved = await readFile(
+      join(root, 'GOSU', 'Alpha Project', 'Project Progress', created!),
+      'utf8',
+    );
+    expect(saved).toContain('gosu_schema_version: 2');
+    expect(saved).toContain(`\n${content}`);
   });
 
   it('reports commit-uncertain when the project or binding changes after the file write', async () => {
@@ -728,6 +839,23 @@ describe('ResearchNotesService project workspaces', () => {
     ).resolves.toContain('A fixture paper');
   });
 
+  it('preserves managed Literature created_at while advancing modified_at', async () => {
+    let currentTime = NOW;
+    const { root, records, service } = await fixture({ now: () => currentTime });
+    await service.current({ projectId: PROJECT_ID });
+    const path = join(root, 'GOSU', 'Alpha Project', 'Literature', 'Literature Review.md');
+    const first = await readFile(path, 'utf8');
+
+    currentTime = new Date('2026-08-07T00:00:00.000Z');
+    records[0] = paper({ version: 2, updatedAt: currentTime.toISOString() });
+    await service.syncLiterature(PROJECT_ID);
+    const updated = await readFile(path, 'utf8');
+
+    expect(first).toContain(`created_at: ${JSON.stringify(NOW.toISOString())}`);
+    expect(updated).toContain(`created_at: ${JSON.stringify(NOW.toISOString())}`);
+    expect(updated).toContain(`modified_at: ${JSON.stringify(currentTime.toISOString())}`);
+  });
+
   it('preserves the old folder and records attention when a rename destination is occupied', async () => {
     const { root, projects, storage, service } = await fixture();
     await service.current({ projectId: PROJECT_ID });
@@ -758,6 +886,10 @@ describe('ResearchNotesService project workspaces', () => {
     expect(first).toMatchObject({ projectId: PROJECT_ID, recordId: RECORD_ID, created: true });
     const absolutePath = join(root, 'GOSU', 'Alpha Project', first.path);
     const generated = await readFile(absolutePath, 'utf8');
+    expect(generated).toContain('gosu_schema_version: 2');
+    expect(generated).toContain('gosu_creator_id: "gosu-system"');
+    expect(generated).toContain('related_documents: ["Literature/Literature Review.md"]');
+    expect(generated).toContain('related_papers: ["https://doi.org/10.1000/fixture"]');
     expect(generated).toContain('The paper full text was not read or verified.');
     await writeFile(absolutePath, `${generated}\n## Researcher conclusion\nKeep this note.\n`);
 

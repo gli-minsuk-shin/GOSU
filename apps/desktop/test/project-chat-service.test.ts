@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
-import type { ModelInvocation } from '@gosu/contracts';
+import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -26,6 +26,10 @@ import {
   ProjectChatService,
   type ProjectChatStorage,
 } from '../src/main/project-chat-service';
+import {
+  prepareResearchNotesAgentMarkdown,
+  type SaveResearchNoteForAgentInput,
+} from '../src/main/research-notes-service';
 import { WorkspaceService } from '../src/main/workspace-service';
 import type {
   ProjectChatAction,
@@ -38,6 +42,7 @@ import type {
   ProjectChatResearchNoteSaveStage,
   ProjectChatSession,
   ProjectChatSnapshot,
+  ProjectChatTurnReceipt,
   AbandonProjectChatResearchNoteSaveInput,
   ConfirmProjectChatResearchNoteSaveInput,
   MarkProjectChatResearchNoteSaveUncertainInput,
@@ -59,6 +64,14 @@ function dynamicToolDelivery(
   outcome: CodexDynamicToolDelivery['outcome'] = Promise.resolve('delivered'),
 ): CodexDynamicToolDelivery {
   return { outcome, abortSignal: new AbortController().signal };
+}
+
+function deferredPromise() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 describe('Literature command authorization', () => {
@@ -249,12 +262,19 @@ class MemoryChatStorage implements ProjectChatStorage {
   readonly sessionMessageIds = new Map<string, string[]>();
   readonly researchNoteReceipts = new Map<string, ProjectChatResearchNoteSaveReceipt>();
   readonly queuedTurns = new Map<string, ProjectChatQueuedTurn>();
+  readonly sessionTitleRevisions = new Map<string, number>();
   private nextQueueSequence = 1;
   failNextSave = false;
   failNextAssistantSave = false;
   failNextFinishAction = false;
   failNextMarkRunning = false;
   afterMarkRunning: (() => void) | null = null;
+  queuedSessionListCalls = 0;
+  failQueuedSessionListCount = 0;
+  readonly queuedClaimCallsBySession = new Map<string, number>();
+  readonly failQueuedClaimCountBySession = new Map<string, number>();
+  afterQueuedTurnClaimed: ((queued: ProjectChatQueuedTurn) => void) | null = null;
+  queuedTurnClaimGate: Promise<void> | null = null;
 
   beginChatAttempt(attempt: ProjectChatAttempt, userMessage: ProjectChatMessage) {
     if (this.failNextSave) {
@@ -514,6 +534,7 @@ class MemoryChatStorage implements ProjectChatStorage {
     };
     this.sessions.get(projectId)!.push(session);
     this.sessionMessageIds.set(session.id, []);
+    this.sessionTitleRevisions.set(session.id, 0);
     return structuredClone(session);
   }
 
@@ -546,15 +567,51 @@ class MemoryChatStorage implements ProjectChatStorage {
     };
     this.sessions.get(input.projectId)!.push(session);
     this.sessionMessageIds.set(session.id, sourceMessages.slice(0, branchIndex + 1));
+    this.sessionTitleRevisions.set(session.id, 0);
     return structuredClone(session);
   }
 
   renameProjectChatSession(projectId: string, sessionId: string, title: string) {
     const session = this.getSession(projectId, sessionId);
     if (!session) return null;
-    const renamed = { ...session, title, updatedAt: new Date().toISOString() };
+    const renamed = {
+      ...session,
+      title,
+      titleModel: undefined,
+      updatedAt: new Date().toISOString(),
+    };
     const projectSessions = this.sessions.get(projectId)!;
     projectSessions[projectSessions.indexOf(session)] = renamed;
+    this.sessionTitleRevisions.set(sessionId, (this.sessionTitleRevisions.get(sessionId) ?? 0) + 1);
+    return structuredClone(renamed);
+  }
+
+  renameProjectChatSessionIfUnchanged(input: {
+    projectId: string;
+    sessionId: string;
+    expectedTitle: string;
+    title: string;
+    titleModel: ProjectChatSession['titleModel'];
+    updatedAt: string;
+  }) {
+    const session = this.getSession(input.projectId, input.sessionId);
+    if (
+      !session ||
+      session.title !== input.expectedTitle ||
+      (this.sessionTitleRevisions.get(input.sessionId) ?? 0) !== 0 ||
+      session.titleModel
+    ) {
+      return null;
+    }
+    const renamed = {
+      ...session,
+      title: input.title,
+      ...(input.titleModel ? { titleModel: input.titleModel } : {}),
+      updatedAt: input.updatedAt,
+    };
+    const projectSessions = this.sessions.get(input.projectId)!;
+    projectSessions[projectSessions.indexOf(session)] = renamed;
+    this.sessionTitleRevisions.set(input.sessionId, 1);
     return structuredClone(renamed);
   }
 
@@ -572,6 +629,7 @@ class MemoryChatStorage implements ProjectChatStorage {
     };
     this.sessions.set(projectId, [session]);
     this.sessionMessageIds.set(session.id, []);
+    this.sessionTitleRevisions.set(session.id, 0);
     return session;
   }
 
@@ -662,19 +720,41 @@ class MemoryChatStorage implements ProjectChatStorage {
       .map((queued) => structuredClone(queued));
   }
 
-  listProjectChatQueuedProjectIds() {
-    return [
-      ...new Set(
-        [...this.queuedTurns.values()]
-          .filter((queued) => queued.status === 'queued')
-          .sort(
-            (left, right) =>
-              (left.enqueueSequence ?? 0) - (right.enqueueSequence ?? 0) ||
-              left.projectId.localeCompare(right.projectId),
-          )
-          .map((queued) => queued.projectId),
-      ),
-    ];
+  listProjectChatQueuedSessionKeys() {
+    this.queuedSessionListCalls += 1;
+    if (this.failQueuedSessionListCount > 0) {
+      this.failQueuedSessionListCount -= 1;
+      throw new Error('transient_queue_session_list_failure');
+    }
+    const keys = new Map<
+      string,
+      { projectId: string; sessionId: string; firstSequence: number; nextSequence: number | null }
+    >();
+    for (const queued of [...this.queuedTurns.values()].filter(
+      (candidate) => candidate.status === 'queued',
+    )) {
+      const key = `${queued.projectId}:${queued.sessionId}`;
+      const sequence = queued.enqueueSequence ?? 0;
+      const current = keys.get(key);
+      keys.set(key, {
+        projectId: queued.projectId,
+        sessionId: queued.sessionId,
+        firstSequence: Math.min(current?.firstSequence ?? sequence, sequence),
+        nextSequence:
+          queued.priority === 'next'
+            ? Math.min(current?.nextSequence ?? sequence, sequence)
+            : (current?.nextSequence ?? null),
+      });
+    }
+    return [...keys.values()]
+      .sort(
+        (left, right) =>
+          Number(right.nextSequence !== null) - Number(left.nextSequence !== null) ||
+          (left.nextSequence ?? left.firstSequence) - (right.nextSequence ?? right.firstSequence) ||
+          left.projectId.localeCompare(right.projectId) ||
+          left.sessionId.localeCompare(right.sessionId),
+      )
+      .map(({ projectId, sessionId }) => ({ projectId, sessionId }));
   }
 
   enqueueProjectChatTurn(queued: ProjectChatQueuedTurn) {
@@ -729,22 +809,42 @@ class MemoryChatStorage implements ProjectChatStorage {
       !queued ||
       queued.projectId !== projectId ||
       queued.sessionId !== sessionId ||
-      queued.status !== 'queued'
+      (queued.status !== 'queued' && queued.status !== 'starting')
     ) {
-      return false;
+      return null;
     }
+    if (queued.status === 'starting') return 'starting' as const;
     for (const [id, candidate] of this.queuedTurns) {
-      if (candidate.projectId === projectId && candidate.priority === 'next') {
+      if (
+        candidate.projectId === projectId &&
+        candidate.sessionId === sessionId &&
+        candidate.priority === 'next'
+      ) {
         this.queuedTurns.set(id, { ...candidate, priority: 'normal', updatedAt });
       }
     }
     this.queuedTurns.set(queueId, { ...queued, priority: 'next', updatedAt });
-    return true;
+    return 'queued' as const;
   }
 
-  claimNextProjectChatQueuedTurn(projectId: string) {
+  async claimNextProjectChatQueuedTurn(projectId: string, sessionId: string) {
+    const sessionKey = `${projectId}:${sessionId}`;
+    this.queuedClaimCallsBySession.set(
+      sessionKey,
+      (this.queuedClaimCallsBySession.get(sessionKey) ?? 0) + 1,
+    );
+    const failuresRemaining = this.failQueuedClaimCountBySession.get(sessionKey) ?? 0;
+    if (failuresRemaining > 0) {
+      this.failQueuedClaimCountBySession.set(sessionKey, failuresRemaining - 1);
+      throw new Error('transient_queue_claim_failure');
+    }
     const queued = [...this.queuedTurns.values()]
-      .filter((candidate) => candidate.projectId === projectId && candidate.status === 'queued')
+      .filter(
+        (candidate) =>
+          candidate.projectId === projectId &&
+          candidate.sessionId === sessionId &&
+          candidate.status === 'queued',
+      )
       .sort(
         (left, right) =>
           Number(right.priority === 'next') - Number(left.priority === 'next') ||
@@ -757,6 +857,8 @@ class MemoryChatStorage implements ProjectChatStorage {
       updatedAt: new Date().toISOString(),
     };
     this.queuedTurns.set(queued.id, claimed);
+    this.afterQueuedTurnClaimed?.(structuredClone(claimed));
+    await this.queuedTurnClaimGate;
     return structuredClone(claimed);
   }
 
@@ -828,6 +930,7 @@ class FakeCodex extends EventEmitter {
   readonly responseVerbosities: Array<'low' | 'medium' | 'high' | null> = [];
   readonly webSearchModes: Array<'disabled' | 'cached' | 'live' | undefined> = [];
   readonly turnSettings: Array<{
+    requestedModelId: string | null;
     collaborationModeId: string | null;
     expectedCollaborationModeCatalogVersion: string | null;
     personality: 'none' | 'friendly' | 'pragmatic' | null;
@@ -836,9 +939,13 @@ class FakeCodex extends EventEmitter {
   readonly dynamicTools: Array<readonly CodexDynamicToolSpec[]> = [];
   readonly dynamicToolHandlers: Array<CodexDynamicToolHandler | undefined> = [];
   readonly dynamicToolTimeouts: Array<readonly CodexDynamicToolTimeoutOverride[]> = [];
+  modelCatalogRequestCount = 0;
+  beforeListModelCatalogReturns: ((requestNumber: number) => void | Promise<void>) | null = null;
+  beforeStartThreadReturns: ((threadId: string) => void | Promise<void>) | null = null;
   beforeRunReturns: ((threadId: string, turnId: string) => void | Promise<void>) | null = null;
   failNextInterrupt = false;
   nextThreadId: string | null = null;
+  modelCatalog: ModelCatalog | null = null;
   collaborationModeCatalog = {
     catalogVersion: 'd'.repeat(64),
     modes: [
@@ -856,6 +963,13 @@ class FakeCodex extends EventEmitter {
       },
     ],
   };
+
+  async listModelCatalog() {
+    this.modelCatalogRequestCount += 1;
+    await this.beforeListModelCatalogReturns?.(this.modelCatalogRequestCount);
+    if (!this.modelCatalog) throw new Error('fixture_model_catalog_unavailable');
+    return structuredClone(this.modelCatalog);
+  }
 
   async listCollaborationModeCatalog() {
     return structuredClone(this.collaborationModeCatalog);
@@ -878,6 +992,7 @@ class FakeCodex extends EventEmitter {
     this.dynamicToolTimeouts.push(input.dynamicToolTimeouts ?? []);
     const threadId = this.nextThreadId ?? `thread-${this.threadCount}`;
     this.nextThreadId = null;
+    await this.beforeStartThreadReturns?.(threadId);
     return { threadId, modelId: 'fixture-model' };
   }
 
@@ -897,6 +1012,7 @@ class FakeCodex extends EventEmitter {
     this.prompts.push(input.prompt);
     this.localImagePathSets.push([...(input.localImagePaths ?? [])]);
     this.turnSettings.push({
+      requestedModelId: input.requestedModelId,
       collaborationModeId: input.collaborationModeId ?? null,
       expectedCollaborationModeCatalogVersion:
         input.expectedCollaborationModeCatalogVersion ?? null,
@@ -911,10 +1027,12 @@ class FakeCodex extends EventEmitter {
       : null;
     const effectiveReasoningOptionId =
       input.reasoningOptionId ?? collaborationMode?.recommendedReasoningOptionId ?? null;
+    const turnInvocation = invocation(input.requestedModelId);
     return {
       turnId,
       invocation: {
-        ...invocation(input.requestedModelId),
+        ...turnInvocation,
+        ...(this.modelCatalog ? { catalogVersion: this.modelCatalog.catalogVersion } : {}),
         reasoningOptionId: effectiveReasoningOptionId,
       },
       collaborationMode,
@@ -984,6 +1102,30 @@ function invocation(requestedModelId: string | null): ModelInvocation {
   };
 }
 
+function branchTitleModelCatalog(): ModelCatalog {
+  return {
+    schemaVersion: 1,
+    providerId: 'codex',
+    catalogVersion: 'branch-title-catalog-v1',
+    fetchedAt: '2026-08-06T00:00:00.000Z',
+    models: [
+      {
+        schemaVersion: 1,
+        providerId: 'codex',
+        modelId: 'opaque-provider-default-2026',
+        displayName: 'Provider default',
+        catalogVersion: 'branch-title-catalog-v1',
+        isDefault: true,
+        modalities: ['text'],
+        reasoningOptions: [
+          { id: 'native-first', label: 'native-first', isDefault: false },
+          { id: 'native-default', label: 'native-default', isDefault: true },
+        ],
+      },
+    ],
+  };
+}
+
 const FAILURE_COPY_FOR_EXPIRED_QUEUE_TEST =
   'This queued message was not run because one or more attached files expired or became unavailable after GOSU restarted. Attach the files again and resend the message.';
 
@@ -992,6 +1134,7 @@ function localNotesVaultFixture() {
   const noteId = 'b'.repeat(64);
   const contentSha256 = 'c'.repeat(64);
   const content = 'PRIVATE_NOTE_BODY';
+  const savedInputs: SaveResearchNoteForAgentInput[] = [];
   const vault: ProjectAgentVault = {
     descriptor: () => ({ id: vaultId, name: 'Research Notes' }),
     matchesGrant: (_projectId, candidate) => candidate === vaultId,
@@ -1014,6 +1157,7 @@ function localNotesVaultFixture() {
     }),
     saveMarkdownForAgent: async (projectId, candidate, input) => {
       if (candidate !== vaultId) throw new Error('vault_grant_stale');
+      savedInputs.push(structuredClone(input));
       const artifactId = createHash('sha256')
         .update(`${projectId}\0${candidate}\0${input.idempotencyKey}`, 'utf8')
         .digest('hex')
@@ -1026,21 +1170,35 @@ function localNotesVaultFixture() {
         'idea-development': 'Idea Development',
         lectures: 'Lecture Notes & Slides',
       } as const;
+      const storedContent = prepareResearchNotesAgentMarkdown(
+        {
+          id: projectId,
+          name: 'Project Alpha',
+          updatedAt: input.origin?.createdAt ?? '2026-01-01T00:00:00.000Z',
+        },
+        artifactId,
+        input,
+      );
       return {
         schemaVersion: 1,
         projectId,
         category: input.category,
         path: `${folders[input.category]}/Saved artifact--${artifactId}.md`,
         created: true,
-        contentSha256: createHash('sha256').update(input.content, 'utf8').digest('hex'),
+        contentSha256: createHash('sha256').update(storedContent, 'utf8').digest('hex'),
         artifactId,
       };
     },
   };
-  return { vault, vaultId, noteId, contentSha256, content };
+  return { vault, vaultId, noteId, contentSha256, content, savedInputs };
 }
 
-async function fixture(vault?: ProjectAgentVault, attachments?: ProjectChatAttachmentClaimer) {
+async function fixture(
+  vault?: ProjectAgentVault,
+  attachments?: ProjectChatAttachmentClaimer,
+  titleJobTimeoutMs?: number,
+  queueSchedulerRetryDelaysMs?: readonly number[],
+) {
   const workspaceStorage = new MemoryWorkspaceStorage();
   const workspace = new WorkspaceService(workspaceStorage);
   const projectA = await workspace.createProject({ name: 'Project Alpha' });
@@ -1119,6 +1277,8 @@ async function fixture(vault?: ProjectAgentVault, attachments?: ProjectChatAttac
     ssh,
     ...(attachments ? { attachments } : {}),
     ...(vault ? { vault } : {}),
+    ...(titleJobTimeoutMs === undefined ? {} : { titleJobTimeoutMs }),
+    ...(queueSchedulerRetryDelaysMs === undefined ? {} : { queueSchedulerRetryDelaysMs }),
     prepareProjectDirectory: async (projectId) => `/isolated/${projectId}`,
   });
   return { workspace, storage, codex, chat, literature, ssh, projectA, projectB, taskA };
@@ -2281,7 +2441,7 @@ describe('ProjectChatService', () => {
   });
 
   it('persists an authoritative Research Notes save location even when model prose omits it', async () => {
-    const { vault, vaultId } = localNotesVaultFixture();
+    const { vault, vaultId, savedInputs } = localNotesVaultFixture();
     const { chat, codex, storage, projectA } = await fixture(vault);
     const profile = await chat.updateProfile({
       projectId: projectA.id,
@@ -2323,6 +2483,24 @@ describe('ProjectChatService', () => {
       /Research Notes\/Experiments\/Saved artifact--[0-9a-f]{16}\.md/u,
     );
     expect(assistant.content).not.toContain(content);
+    expect(savedInputs).toHaveLength(1);
+    expect(savedInputs[0]?.origin).toMatchObject({
+      sessionId: receipt.sessionId,
+      sessionName: 'Project chat',
+      creatorId: 'fixture-default',
+      creatorName: 'fixture-default',
+      provenance: {
+        model_provider_id: 'codex',
+        model_invocation_id: expect.any(String),
+        model_requested_id: null,
+        model_resolved_id: 'fixture-default',
+        model_catalog_version: 'fixture-catalog',
+        model_reasoning_option_id: null,
+        model_started_at: expect.any(String),
+        codex_thread_id: expect.any(String),
+        codex_turn_id: receipt.turnId,
+      },
+    });
   });
 
   it('recovers an interrupted staged Research Notes receipt exactly once on startup', async () => {
@@ -3241,7 +3419,7 @@ describe('ProjectChatService', () => {
     });
   });
 
-  it('keeps root sessions isolated and durably queues the next project turn', async () => {
+  it('keeps root sessions isolated and runs different sessions in the same project concurrently', async () => {
     const { chat, codex, storage, projectA } = await fixture();
     const [defaultSession] = await chat.listSessions({ projectId: projectA.id });
     const secondSession = await chat.createSession({ projectId: projectA.id });
@@ -3253,52 +3431,39 @@ describe('ProjectChatService', () => {
       requestedModelId: null,
       reasoningOptionId: null,
     });
-    const queued = await chat.send({
+    const second = await chat.send({
       projectId: projectA.id,
       sessionId: secondSession.id,
-      message: 'Do not overlap this project turn',
+      message: 'Run this independent session concurrently',
       requestedModelId: null,
       reasoningOptionId: null,
     });
-    expect(queued).toMatchObject({ queued: true, sessionId: secondSession.id });
-    if (!('queueId' in queued)) throw new Error('expected queued receipt');
+    expect(second).toMatchObject({ sessionId: secondSession.id });
+    expect(second).not.toHaveProperty('queued');
 
     await expect(
       chat.snapshot({ projectId: projectA.id, sessionId: defaultSession!.id }),
     ).resolves.toMatchObject({ activeTurnId: first.turnId });
     await expect(
       chat.snapshot({ projectId: projectA.id, sessionId: secondSession.id }),
-    ).resolves.not.toHaveProperty('activeTurnId');
+    ).resolves.toMatchObject({ activeTurnId: second.turnId });
     expect(storage.snapshot(projectA.id, defaultSession!.id).messages).toHaveLength(1);
     expect(storage.snapshot(projectA.id, secondSession.id)).toMatchObject({
-      messages: [],
-      queuedTurns: [{ id: queued.queueId, message: 'Do not overlap this project turn' }],
+      messages: [{ content: 'Run this independent session concurrently' }],
+      queuedTurns: [],
     });
+    codex.complete(second.turnId, { reply: 'Independent answer', actions: [] });
     codex.complete(first.turnId, { reply: 'Default answer', actions: [] });
-    await vi.waitFor(() =>
-      expect(storage.snapshot(projectA.id, defaultSession!.id).messages).toHaveLength(2),
-    );
-
-    await vi.waitFor(() =>
-      expect(
-        [...storage.attempts.values()].find(
-          (attempt) => attempt.sessionId === secondSession.id && attempt.status === 'running',
-        ),
-      ).toBeDefined(),
-    );
-    const second = [...storage.attempts.values()].find(
-      (attempt) => attempt.sessionId === secondSession.id && attempt.status === 'running',
-    )!;
-    codex.complete(second.turnId!, { reply: 'Independent answer', actions: [] });
-    await vi.waitFor(() =>
-      expect(storage.snapshot(projectA.id, secondSession.id).messages).toHaveLength(2),
-    );
+    await vi.waitFor(() => {
+      expect(storage.snapshot(projectA.id, defaultSession!.id).messages).toHaveLength(2);
+      expect(storage.snapshot(projectA.id, secondSession.id).messages).toHaveLength(2);
+    });
     expect(
       storage.snapshot(projectA.id, defaultSession!.id).messages.map((message) => message.content),
     ).toEqual(['Default session question', 'Default answer']);
     expect(
       storage.snapshot(projectA.id, secondSession.id).messages.map((message) => message.content),
-    ).toEqual(['Do not overlap this project turn', 'Independent answer']);
+    ).toEqual(['Run this independent session concurrently', 'Independent answer']);
   });
 
   it('turns an expired queued attachment into a visible failure and continues later work', async () => {
@@ -3363,7 +3528,7 @@ describe('ProjectChatService', () => {
     expect(storage.messages.some((message) => message.content.includes('PRIVATE'))).toBe(false);
   });
 
-  it('reconciles every project queue globally and preserves same-timestamp enqueue order', async () => {
+  it('reconciles every queued session globally within bounded concurrent capacity', async () => {
     const { chat, codex, storage, projectA, projectB } = await fixture();
     const [firstSession] = await chat.listSessions({ projectId: projectA.id });
     const laterSession = await chat.createSession({ projectId: projectA.id });
@@ -3407,7 +3572,7 @@ describe('ProjectChatService', () => {
     });
     expect(first.enqueueSequence).toBeLessThan(later.enqueueSequence!);
 
-    await expect(chat.reconcileQueuedTurns()).resolves.toBe(2);
+    await expect(chat.reconcileQueuedTurns()).resolves.toBe(3);
 
     const firstAttempt = [...storage.attempts.values()].find(
       (attempt) =>
@@ -3424,23 +3589,240 @@ describe('ProjectChatService', () => {
             'Other project startup row',
       ),
     ).toBeDefined();
-    await chat.snapshot({ projectId: projectA.id, sessionId: laterSession.id });
-    expect(storage.snapshot(projectA.id, laterSession.id).messages).toEqual([]);
+    expect(
+      [...storage.attempts.values()].find(
+        (attempt) =>
+          attempt.status === 'running' &&
+          storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+            'Second global project row',
+      ),
+    ).toBeDefined();
+    expect(
+      [...storage.attempts.values()].filter((attempt) => attempt.status === 'running'),
+    ).toHaveLength(3);
+    codex.complete(firstAttempt!.turnId!, { reply: 'First global answer', actions: [] });
+  });
 
-    codex.complete(firstAttempt!.turnId!, {
-      reply: 'First global answer',
-      actions: [],
+  it('starts eligible queued sessions in parallel when one Codex startup is slow', async () => {
+    const { chat, codex, storage, projectA, projectB } = await fixture();
+    const [firstSession] = await chat.listSessions({ projectId: projectA.id });
+    const thirdSession = await chat.createSession({
+      projectId: projectA.id,
+      title: 'Third session',
     });
-    await vi.waitFor(() =>
+    const [secondSession] = await chat.listSessions({ projectId: projectB.id });
+    const now = new Date().toISOString();
+    const queuedSessions: Array<readonly [string, string]> = [
+      [projectA.id, firstSession!.id],
+      [projectB.id, secondSession!.id],
+      [projectA.id, thirdSession.id],
+    ];
+    for (const [index, [projectId, sessionId]] of queuedSessions.entries()) {
+      storage.enqueueProjectChatTurn({
+        id: randomUUID(),
+        projectId,
+        sessionId,
+        message: `Parallel queued startup ${index}`,
+        requestedModelId: null,
+        reasoningOptionId: null,
+        priority: 'normal',
+        status: 'queued',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    let releaseStarts!: () => void;
+    const startGate = new Promise<void>((resolve) => {
+      releaseStarts = resolve;
+    });
+    let observeAllStarts!: () => void;
+    const allStartsObserved = new Promise<void>((resolve) => {
+      observeAllStarts = resolve;
+    });
+    let starts = 0;
+    codex.beforeRunReturns = async () => {
+      starts += 1;
+      if (starts === 3) observeAllStarts();
+      await startGate;
+    };
+
+    const reconciliation = chat.reconcileQueuedTurns();
+    await allStartsObserved;
+    expect(starts).toBe(3);
+    expect(storage.attempts.size).toBe(3);
+    expect([...storage.attempts.values()].every((attempt) => attempt.status === 'starting')).toBe(
+      true,
+    );
+    releaseStarts();
+    await expect(reconciliation).resolves.toBe(3);
+
+    expect([...storage.attempts.values()].every((attempt) => attempt.status === 'running')).toBe(
+      true,
+    );
+  });
+
+  it('retries a transient startup queue-list failure after a bounded delay', async () => {
+    vi.useFakeTimers();
+    try {
+      const { chat, storage, projectA } = await fixture(undefined, undefined, undefined, [100]);
+      const [session] = await chat.listSessions({ projectId: projectA.id });
+      storage.enqueueProjectChatTurn({
+        id: randomUUID(),
+        projectId: projectA.id,
+        sessionId: session!.id,
+        message: 'Recover this startup queue row',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        priority: 'normal',
+        status: 'queued',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      storage.failQueuedSessionListCount = 1;
+
+      await expect(chat.reconcileQueuedTurns()).rejects.toThrow(
+        'transient_queue_session_list_failure',
+      );
+      expect(storage.queuedSessionListCalls).toBe(1);
+      expect(storage.attempts.size).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(storage.queuedSessionListCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+
       expect(
-        [...storage.attempts.values()].find(
+        [...storage.attempts.values()].some(
           (attempt) =>
             attempt.status === 'running' &&
             storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
-              'Second global project row',
+              'Recover this startup queue row',
         ),
-      ).toBeDefined(),
-    );
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps other sessions schedulable while one claim retries with backoff', async () => {
+    vi.useFakeTimers();
+    try {
+      const { chat, storage, projectA, projectB } = await fixture(
+        undefined,
+        undefined,
+        undefined,
+        [100],
+      );
+      const [firstSession] = await chat.listSessions({ projectId: projectA.id });
+      const [secondSession] = await chat.listSessions({ projectId: projectB.id });
+      const now = new Date().toISOString();
+      storage.enqueueProjectChatTurn({
+        id: randomUUID(),
+        projectId: projectA.id,
+        sessionId: firstSession!.id,
+        message: 'Temporarily failing session',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        priority: 'normal',
+        status: 'queued',
+        createdAt: now,
+        updatedAt: now,
+      });
+      storage.enqueueProjectChatTurn({
+        id: randomUUID(),
+        projectId: projectB.id,
+        sessionId: secondSession!.id,
+        message: 'Independent schedulable session',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        priority: 'normal',
+        status: 'queued',
+        createdAt: now,
+        updatedAt: now,
+      });
+      const firstSessionKey = `${projectA.id}:${firstSession!.id}`;
+      storage.failQueuedClaimCountBySession.set(firstSessionKey, 1);
+
+      await chat.snapshot({ projectId: projectA.id, sessionId: firstSession!.id });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(
+        [...storage.attempts.values()].some(
+          (attempt) =>
+            attempt.status === 'running' &&
+            storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+              'Independent schedulable session',
+        ),
+      ).toBe(true);
+      expect(
+        [...storage.attempts.values()].some(
+          (attempt) =>
+            storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+            'Temporarily failing session',
+        ),
+      ).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(storage.queuedClaimCallsBySession.get(firstSessionKey)).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(
+        [...storage.attempts.values()].some(
+          (attempt) =>
+            attempt.status === 'running' &&
+            storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+              'Temporarily failing session',
+        ),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops retrying a persistently failing queue scheduler after its retry budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const { chat, storage, projectA } = await fixture(
+        undefined,
+        undefined,
+        undefined,
+        [100, 200],
+      );
+      const [session] = await chat.listSessions({ projectId: projectA.id });
+      storage.enqueueProjectChatTurn({
+        id: randomUUID(),
+        projectId: projectA.id,
+        sessionId: session!.id,
+        message: 'Keep this durable while storage is unavailable',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        priority: 'normal',
+        status: 'queued',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      storage.failQueuedSessionListCount = 10;
+
+      await chat.snapshot({ projectId: projectA.id, sessionId: session!.id });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(storage.queuedSessionListCalls).toBe(1);
+      await chat.snapshot({ projectId: projectA.id, sessionId: session!.id });
+      await chat.snapshot({ projectId: projectA.id, sessionId: session!.id });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(storage.queuedSessionListCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(storage.queuedSessionListCalls).toBe(2);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(storage.queuedSessionListCalls).toBe(3);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await chat.snapshot({ projectId: projectA.id, sessionId: session!.id });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(storage.queuedSessionListCalls).toBe(3);
+      expect(storage.attempts.size).toBe(0);
+      expect(storage.snapshot(projectA.id, session!.id).queuedTurns).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('edits and removes only pending queue rows without changing visible provenance', async () => {
@@ -3549,6 +3931,276 @@ describe('ProjectChatService', () => {
     ]);
   });
 
+  it('runs a queued turn now without interrupting another active session', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const [firstSession] = await chat.listSessions({ projectId: projectA.id });
+    const secondSession = await chat.createSession({ projectId: projectA.id });
+    const firstActive = await chat.send({
+      projectId: projectA.id,
+      sessionId: firstSession!.id,
+      message: 'First session active work',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const secondActive = await chat.send({
+      projectId: projectA.id,
+      sessionId: secondSession.id,
+      message: 'Second session active work',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const urgent = await chat.send({
+      projectId: projectA.id,
+      sessionId: firstSession!.id,
+      message: 'Replace only first session work',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (!('queueId' in urgent)) throw new Error('expected queued receipt');
+
+    await chat.runQueuedTurnNow({
+      projectId: projectA.id,
+      sessionId: firstSession!.id,
+      queueId: urgent.queueId,
+    });
+    expect(codex.interrupted).toEqual([
+      { threadId: codex.turnThreads.get(firstActive.turnId), turnId: firstActive.turnId },
+    ]);
+    await expect(
+      chat.snapshot({ projectId: projectA.id, sessionId: secondSession.id }),
+    ).resolves.toMatchObject({ activeTurnId: secondActive.turnId });
+
+    codex.emit('notification', {
+      method: 'turn/completed',
+      params: {
+        threadId: codex.turnThreads.get(firstActive.turnId),
+        turn: { id: firstActive.turnId, status: 'interrupted' },
+      },
+    });
+    await vi.waitFor(() =>
+      expect(
+        [...storage.attempts.values()].find(
+          (attempt) =>
+            attempt.status === 'running' &&
+            storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+              'Replace only first session work',
+        ),
+      ).toBeDefined(),
+    );
+    await expect(
+      chat.snapshot({ projectId: projectA.id, sessionId: secondSession.id }),
+    ).resolves.toMatchObject({ activeTurnId: secondActive.turnId });
+  });
+
+  it('starts the selected run-now session before an older cross-session queue at full capacity', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const [firstSession] = await chat.listSessions({ projectId: projectA.id });
+    const otherSessions: ProjectChatSession[] = [];
+    for (const title of ['B', 'C', 'D', 'E']) {
+      otherSessions.push(
+        await chat.createSession({ projectId: projectA.id, title: `Session ${title}` }),
+      );
+    }
+    const liveReceipts: ProjectChatTurnReceipt[] = [];
+    for (const [index, session] of [firstSession!, ...otherSessions.slice(0, 3)].entries()) {
+      liveReceipts.push(
+        await chat.send({
+          projectId: projectA.id,
+          sessionId: session.id,
+          message: `Live capacity turn ${index}`,
+          requestedModelId: null,
+          reasoningOptionId: null,
+        }),
+      );
+    }
+    const olderCrossSession = await chat.send({
+      projectId: projectA.id,
+      sessionId: otherSessions[3]!.id,
+      message: 'Older cross-session queue row',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const selected = await chat.send({
+      projectId: projectA.id,
+      sessionId: firstSession!.id,
+      message: 'Selected run-now row',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (!('queueId' in olderCrossSession) || !('queueId' in selected)) {
+      throw new Error('expected full-capacity queued receipts');
+    }
+
+    await chat.runQueuedTurnNow({
+      projectId: projectA.id,
+      sessionId: firstSession!.id,
+      queueId: selected.queueId,
+    });
+    const firstActive = liveReceipts[0]!;
+    codex.emit('notification', {
+      method: 'turn/completed',
+      params: {
+        threadId: codex.turnThreads.get(firstActive.turnId),
+        turn: { id: firstActive.turnId, status: 'interrupted' },
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        [...storage.attempts.values()].find(
+          (attempt) =>
+            attempt.status === 'running' &&
+            storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+              'Selected run-now row',
+        ),
+      ).toBeDefined(),
+    );
+    expect(
+      [...storage.attempts.values()].some(
+        (attempt) =>
+          storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+          'Older cross-session queue row',
+      ),
+    ).toBe(false);
+    expect(
+      (storage.snapshot(projectA.id, otherSessions[3]!.id).queuedTurns ?? []).map(
+        (queued) => queued.id,
+      ),
+    ).toContain(olderCrossSession.queueId);
+  });
+
+  it('supersedes an older row claimed between queue drain and turn admission', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const [session] = await chat.listSessions({ projectId: projectA.id });
+    const active = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Finish before the claim race',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const older = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Older claimed row',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const selected = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Selected during claim race',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (!('queueId' in older) || !('queueId' in selected)) {
+      throw new Error('expected queued receipts');
+    }
+    let releaseClaim!: () => void;
+    const claimGate = new Promise<void>((resolve) => {
+      releaseClaim = resolve;
+    });
+    let observeOlderClaim!: () => void;
+    const olderClaimed = new Promise<void>((resolve) => {
+      observeOlderClaim = resolve;
+    });
+    storage.queuedTurnClaimGate = claimGate;
+    storage.afterQueuedTurnClaimed = (queued) => {
+      if (queued.id !== older.queueId) return;
+      storage.afterQueuedTurnClaimed = null;
+      observeOlderClaim();
+    };
+
+    codex.complete(active.turnId, { reply: 'Capacity released', actions: [] });
+    await olderClaimed;
+    await chat.runQueuedTurnNow({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      queueId: selected.queueId,
+    });
+    releaseClaim();
+
+    await vi.waitFor(() =>
+      expect(
+        [...storage.attempts.values()].find(
+          (attempt) =>
+            attempt.status === 'running' &&
+            storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+              'Selected during claim race',
+        ),
+      ).toBeDefined(),
+    );
+    expect(
+      [...storage.attempts.values()].some(
+        (attempt) =>
+          storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+          'Older claimed row',
+      ),
+    ).toBe(false);
+    expect(storage.snapshot(projectA.id, session!.id).queuedTurns).toMatchObject([
+      { id: older.queueId, message: 'Older claimed row', status: 'queued' },
+    ]);
+    expect(codex.interrupted).toEqual([]);
+  });
+
+  it('accepts run now for the exact row already claimed but not yet admitted', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const [session] = await chat.listSessions({ projectId: projectA.id });
+    const active = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Release capacity for the exact-claim race',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const selected = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Already claimed selected row',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (!('queueId' in selected)) throw new Error('expected queued receipt');
+    let releaseClaim!: () => void;
+    const claimGate = new Promise<void>((resolve) => {
+      releaseClaim = resolve;
+    });
+    let observeClaim!: () => void;
+    const claimed = new Promise<void>((resolve) => {
+      observeClaim = resolve;
+    });
+    storage.queuedTurnClaimGate = claimGate;
+    storage.afterQueuedTurnClaimed = (queued) => {
+      if (queued.id !== selected.queueId) return;
+      storage.afterQueuedTurnClaimed = null;
+      observeClaim();
+    };
+
+    codex.complete(active.turnId, { reply: 'Capacity released', actions: [] });
+    await claimed;
+    await expect(
+      chat.runQueuedTurnNow({
+        projectId: projectA.id,
+        sessionId: session!.id,
+        queueId: selected.queueId,
+      }),
+    ).resolves.toEqual({ accepted: true });
+    releaseClaim();
+
+    await vi.waitFor(() =>
+      expect(
+        [...storage.attempts.values()].filter(
+          (attempt) =>
+            attempt.status === 'running' &&
+            storage.messages.find((message) => message.id === attempt.userMessageId)?.content ===
+              'Already claimed selected row',
+        ),
+      ).toHaveLength(1),
+    );
+    expect(codex.interrupted).toEqual([]);
+    expect(storage.snapshot(projectA.id, session!.id).queuedTurns).toEqual([]);
+  });
+
   it('branches only through the selected completed message and stops inheriting later history', async () => {
     const { chat, codex, storage, projectA } = await fixture();
     const first = await chat.send({
@@ -3599,6 +4251,248 @@ describe('ProjectChatService', () => {
     expect(
       storage.snapshot(projectA.id, branch.id).messages.map((message) => message.content),
     ).toEqual(['First question', 'First answer', 'Branch-only question', 'Branch-only answer']);
+  });
+
+  it('renames a durable branch with the live provider default and first advertised reasoning option', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const sourceTurn = await chat.send({
+      projectId: projectA.id,
+      message: 'Compare two tabular foundation model calibration methods.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(sourceTurn.turnId, {
+      reply: 'The branch point compares post-hoc and end-to-end calibration.',
+      actions: [],
+    });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    const source = storage.snapshot(projectA.id);
+    const events: ProjectChatEvent[] = [];
+    chat.on('event', (event: ProjectChatEvent) => events.push(event));
+    codex.modelCatalog = branchTitleModelCatalog();
+    codex.beforeRunReturns = (_threadId, turnId) => {
+      codex.complete(
+        turnId,
+        JSON.stringify({ title: 'Calibration paths for tabular foundation models' }),
+      );
+    };
+
+    const branch = await chat.branchSession({
+      projectId: projectA.id,
+      sourceSessionId: source.session!.id,
+      branchFromMessageId: source.messages[1]!.id,
+    });
+    expect(branch.title).toBe('Branch · Project chat');
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id, branch.id).session?.title).toBe(
+        'Calibration paths for tabular foundation models',
+      ),
+    );
+
+    const renamed = storage.snapshot(projectA.id, branch.id).session!;
+    expect(renamed.titleModel).toMatchObject({
+      requestedModelId: 'opaque-provider-default-2026',
+      resolvedModelId: 'opaque-provider-default-2026',
+      catalogVersion: 'branch-title-catalog-v1',
+      reasoningOptionId: 'native-first',
+    });
+    expect(codex.turnSettings.at(-1)).toMatchObject({
+      requestedModelId: 'opaque-provider-default-2026',
+      reasoningOptionId: 'native-first',
+      collaborationModeId: null,
+    });
+    expect(codex.dynamicTools.at(-1)).toEqual([]);
+    expect(codex.webSearchModes.at(-1)).toBe('disabled');
+    expect(events).toContainEqual({
+      type: 'session.updated',
+      projectId: projectA.id,
+      sessionId: branch.id,
+      session: renamed,
+    });
+  });
+
+  it('keeps a manual branch rename when the automatic title completes later', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const sourceTurn = await chat.send({
+      projectId: projectA.id,
+      message: 'Create a branchable discussion.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(sourceTurn.turnId, { reply: 'Branch point.', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    await vi.waitFor(() => expect(codex.released).toContain('thread-1'));
+    const source = storage.snapshot(projectA.id);
+    codex.modelCatalog = branchTitleModelCatalog();
+    let finishTitleTurn: (() => void) | undefined;
+    codex.beforeRunReturns = (_threadId, turnId) =>
+      new Promise<void>((resolve) => {
+        finishTitleTurn = () => {
+          codex.complete(turnId, JSON.stringify({ title: 'Late automatic title' }));
+          resolve();
+        };
+      });
+
+    const branch = await chat.branchSession({
+      projectId: projectA.id,
+      sourceSessionId: source.session!.id,
+      branchFromMessageId: source.messages[1]!.id,
+    });
+    await vi.waitFor(() => expect(finishTitleTurn).toBeTypeOf('function'));
+    await chat.renameSession({
+      projectId: projectA.id,
+      sessionId: branch.id,
+      title: 'My deliberate title',
+    });
+    finishTitleTurn?.();
+    await vi.waitFor(() => expect(codex.released).toContain('thread-2'));
+
+    expect(storage.snapshot(projectA.id, branch.id).session).toMatchObject({
+      title: 'My deliberate title',
+    });
+    expect(storage.snapshot(projectA.id, branch.id).session?.titleModel).toBeUndefined();
+  });
+
+  it('preserves the deterministic branch title when its metadata job times out', async () => {
+    const { chat, codex, storage, projectA } = await fixture(undefined, undefined, 10);
+    const sourceTurn = await chat.send({
+      projectId: projectA.id,
+      message: 'Create a timeout branch point.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(sourceTurn.turnId, { reply: 'Branch point.', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    const source = storage.snapshot(projectA.id);
+    codex.modelCatalog = branchTitleModelCatalog();
+    const releasesBeforeBranch = codex.released.length;
+
+    const branch = await chat.branchSession({
+      projectId: projectA.id,
+      sourceSessionId: source.session!.id,
+      branchFromMessageId: source.messages[1]!.id,
+    });
+    await vi.waitFor(() => expect(codex.released.length).toBeGreaterThan(releasesBeforeBranch));
+
+    expect(storage.snapshot(projectA.id, branch.id).session).toMatchObject({
+      title: 'Branch · Project chat',
+    });
+    expect(storage.snapshot(projectA.id, branch.id).session?.titleModel).toBeUndefined();
+  });
+
+  it('bounds a hung model catalog lookup without blocking another branch title job', async () => {
+    const { chat, codex, storage, projectA } = await fixture(undefined, undefined, 10);
+    const sourceTurn = await chat.send({
+      projectId: projectA.id,
+      message: 'Create two independently titled branch discussions.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(sourceTurn.turnId, { reply: 'Shared branch point.', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    await vi.waitFor(() => expect(codex.released).toContain('thread-1'));
+    const source = storage.snapshot(projectA.id);
+    codex.modelCatalog = branchTitleModelCatalog();
+    codex.beforeListModelCatalogReturns = (requestNumber) =>
+      requestNumber === 1 ? new Promise<void>(() => undefined) : undefined;
+    codex.beforeRunReturns = (_threadId, turnId) => {
+      codex.complete(turnId, JSON.stringify({ title: 'Independent provider title' }));
+    };
+
+    const blockedBranch = await chat.branchSession({
+      projectId: projectA.id,
+      sourceSessionId: source.session!.id,
+      branchFromMessageId: source.messages[1]!.id,
+    });
+    const independentBranch = await chat.branchSession({
+      projectId: projectA.id,
+      sourceSessionId: source.session!.id,
+      branchFromMessageId: source.messages[1]!.id,
+    });
+
+    await vi.waitFor(() => expect(codex.modelCatalogRequestCount).toBe(2));
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id, independentBranch.id).session?.title).toBe(
+        'Independent provider title',
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(storage.snapshot(projectA.id, blockedBranch.id).session).toMatchObject({
+      title: 'Branch · Project chat',
+    });
+    expect(storage.snapshot(projectA.id, blockedBranch.id).session?.titleModel).toBeUndefined();
+  });
+
+  it('releases a title thread that starts only after the end-to-end deadline', async () => {
+    const { chat, codex, storage, projectA } = await fixture(undefined, undefined, 10);
+    const sourceTurn = await chat.send({
+      projectId: projectA.id,
+      message: 'Create a branch while thread startup is delayed.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(sourceTurn.turnId, { reply: 'Branch point.', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    await vi.waitFor(() => expect(codex.released).toContain('thread-1'));
+    const source = storage.snapshot(projectA.id);
+    codex.modelCatalog = branchTitleModelCatalog();
+    const threadStartGate = deferredPromise();
+    codex.beforeStartThreadReturns = () => threadStartGate.promise;
+    const releasesBeforeBranch = codex.released.length;
+
+    const branch = await chat.branchSession({
+      projectId: projectA.id,
+      sourceSessionId: source.session!.id,
+      branchFromMessageId: source.messages[1]!.id,
+    });
+    await vi.waitFor(() => expect(codex.developerInstructions).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(codex.released).toHaveLength(releasesBeforeBranch);
+
+    threadStartGate.resolve();
+    await vi.waitFor(() => expect(codex.released).toContain('thread-2'));
+    expect(storage.snapshot(projectA.id, branch.id).session).toMatchObject({
+      title: 'Branch · Project chat',
+    });
+    expect(codex.prompts).toHaveLength(1);
+  });
+
+  it('interrupts a title turn whose opaque turn ID arrives only after the timeout', async () => {
+    const { chat, codex, storage, projectA } = await fixture(undefined, undefined, 10);
+    const sourceTurn = await chat.send({
+      projectId: projectA.id,
+      message: 'Create a delayed title branch point.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.complete(sourceTurn.turnId, { reply: 'Branch point.', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    await vi.waitFor(() => expect(codex.released).toContain('thread-1'));
+    const source = storage.snapshot(projectA.id);
+    codex.modelCatalog = branchTitleModelCatalog();
+    let releaseTurnStart: (() => void) | undefined;
+    codex.beforeRunReturns = () =>
+      new Promise<void>((resolve) => {
+        releaseTurnStart = resolve;
+      });
+    const releasesBeforeBranch = codex.released.length;
+
+    const branch = await chat.branchSession({
+      projectId: projectA.id,
+      sourceSessionId: source.session!.id,
+      branchFromMessageId: source.messages[1]!.id,
+    });
+    await vi.waitFor(() => expect(releaseTurnStart).toBeTypeOf('function'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(codex.interrupted).toEqual([]);
+    expect(codex.released).toHaveLength(releasesBeforeBranch);
+
+    releaseTurnStart?.();
+    await vi.waitFor(() => {
+      expect(codex.interrupted.at(-1)).toMatchObject({ turnId: 'turn-2' });
+      expect(codex.released.length).toBeGreaterThan(releasesBeforeBranch);
+    });
+    expect(storage.snapshot(projectA.id, branch.id).session?.title).toBe('Branch · Project chat');
   });
 
   it('rejects cross-project and cross-session cancel, retry, and action access', async () => {

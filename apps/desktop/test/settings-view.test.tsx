@@ -66,6 +66,7 @@ function renderSettings(
       onSetProjectArchived={vi.fn()}
       onTrashProject={vi.fn()}
       onRestoreProject={vi.fn()}
+      onEmptyProjectTrash={vi.fn()}
       agentProject={snapshot.projects[0]}
       agentProfile={agentProfile}
       agentProfileLoading={false}
@@ -108,7 +109,7 @@ describe('separated application Settings', () => {
     expect(html).toContain('18 px base');
   });
 
-  it('shows active, archived, and recoverable Trash projects without permanent deletion', () => {
+  it('shows active, archived, and recoverable Trash projects with guarded Empty Trash', () => {
     const html = renderSettings('projects');
 
     expect(html).toContain('ACTIVE PROJECTS');
@@ -120,8 +121,13 @@ describe('separated application Settings', () => {
     expect(html).toContain('Recoverable study');
     expect(html).toContain('1 tasks');
     expect(html).toContain('Restore');
-    expect(html).toContain('does not permanently delete projects');
-    expect(html).not.toContain('Delete permanently');
+    expect(html).toContain('EMPTY TRASH');
+    expect(html).toContain('Empty Trash permanently');
+    expect(html).toContain('External research data is preserved');
+    expect(html).toContain('GitHub repositories');
+    expect(html).toContain(
+      'Chat and experiment history, SSH access-audit records, and lecture revisions',
+    );
   });
 
   it('separates native Codex mode, personality, context, and project instructions from model choice', () => {

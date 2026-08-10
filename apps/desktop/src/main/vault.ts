@@ -88,10 +88,10 @@ export class VaultAccess {
     this.assertCurrent(state);
   }
 
-  async listMarkdown() {
+  async listMarkdown(signal?: AbortSignal) {
     const state = this.state;
     if (!state) return [];
-    const files = await state.reader.listMarkdown();
+    const files = await state.reader.listMarkdown(signal);
     this.assertCurrent(state);
     return files;
   }
@@ -151,9 +151,9 @@ export class VaultAccess {
     };
   }
 
-  async readMarkdown(relativePath: string) {
+  async readMarkdown(relativePath: string, signal?: AbortSignal) {
     const state = this.requireState();
-    const note = await state.reader.readMarkdown(relativePath);
+    const note = await state.reader.readMarkdown(relativePath, signal);
     this.assertCurrent(state);
     return note;
   }

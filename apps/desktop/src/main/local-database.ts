@@ -94,10 +94,12 @@ import {
   type RemoteWorkspaceGrant,
   type SshTrustedWorkspaceAuditRecord,
 } from '../shared/ssh-workspace-contracts';
-import type {
-  WorkspaceOperation,
-  WorkspacePendingSummary,
-  WorkspaceSnapshot,
+import {
+  EmptyProjectTrashReceiptSchema,
+  type EmptyProjectTrashReceipt,
+  type WorkspaceOperation,
+  type WorkspacePendingSummary,
+  type WorkspaceSnapshot,
 } from '../shared/workspace-contracts';
 import { ExperimentWorkspaceStorageError } from './experiment-workspace-storage-error';
 import {
@@ -466,8 +468,8 @@ function insertProjectChatSession(database: Database.Database, session: ProjectC
     .prepare(
       `insert into project_chat_sessions(
          id,project_id,title,is_default,parent_session_id,branched_from_message_id,
-         created_at,updated_at
-       ) values(?,?,?,?,?,?,?,?)`,
+         title_model_json,title_revision,created_at,updated_at
+       ) values(?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       session.id,
@@ -476,6 +478,8 @@ function insertProjectChatSession(database: Database.Database, session: ProjectC
       session.isDefault ? 1 : 0,
       session.parentSessionId ?? null,
       session.branchedFromMessageId ?? null,
+      session.titleModel ? JSON.stringify(session.titleModel) : null,
+      0,
       session.createdAt,
       session.updatedAt,
     );
@@ -2000,6 +2004,26 @@ function migrateLiteratureCanonicalIdentity(database: Database.Database) {
     .immediate();
 }
 
+function boundedLocalSearch(projectIds: readonly string[], query: string, requestedLimit: number) {
+  const requestedIds = new Set(projectIds);
+  const ids = [...requestedIds].filter((projectId) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(projectId),
+  );
+  if (ids.length === 0 || ids.length !== requestedIds.size || ids.length > 128) return null;
+  const tokens = query
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .split(/\s+/u)
+    .filter(Boolean)
+    .slice(0, 16);
+  if (tokens.length === 0) return null;
+  return {
+    ids,
+    tokens,
+    limit: Math.max(1, Math.min(Math.trunc(requestedLimit), 500)),
+  } as const;
+}
+
 export class LocalDatabase {
   private database: Database.Database | undefined;
   private workspaceOutboxOrderingReady = false;
@@ -2070,6 +2094,22 @@ export class LocalDatabase {
           latest_workspace_revision is null or latest_workspace_revision > 0
         )
       );
+      create table if not exists workspace_trash_purge_receipts (
+        idempotency_key text primary key check (length(idempotency_key) = 36),
+        operation_id text not null unique check (length(operation_id) = 36),
+        receipt_json text not null check (length(receipt_json) between 2 and 262144),
+        completed_at text not null
+      );
+      create trigger if not exists workspace_trash_purge_receipts_update_guard
+        before update on workspace_trash_purge_receipts
+        begin
+          select raise(abort,'workspace_trash_purge_receipt_append_only');
+        end;
+      create trigger if not exists workspace_trash_purge_receipts_delete_guard
+        before delete on workspace_trash_purge_receipts
+        begin
+          select raise(abort,'workspace_trash_purge_receipt_append_only');
+        end;
       create table if not exists model_catalog_snapshots (
         id text primary key,
         provider text not null,
@@ -2518,6 +2558,10 @@ export class LocalDatabase {
         is_default integer not null check (is_default in (0,1)),
         parent_session_id text references project_chat_sessions(id),
         branched_from_message_id text references project_chat_messages(id),
+        title_model_json text check (
+          title_model_json is null or length(title_model_json) between 2 and 4096
+        ),
+        title_revision integer not null default 0 check (title_revision >= 0),
         created_at text not null,
         updated_at text not null,
         check (
@@ -2739,6 +2783,21 @@ export class LocalDatabase {
       migrateLiteratureHuggingFaceProvider(database);
       migrateLiteratureCanonicalIdentity(database);
       migrateProjectChatQueueOrdering(database);
+      const chatSessionColumns = database.pragma('table_info(project_chat_sessions)') as Array<{
+        name: string;
+      }>;
+      if (!chatSessionColumns.some((column) => column.name === 'title_model_json')) {
+        database.exec(
+          `alter table project_chat_sessions add column title_model_json text
+           check (title_model_json is null or length(title_model_json) between 2 and 4096)`,
+        );
+      }
+      if (!chatSessionColumns.some((column) => column.name === 'title_revision')) {
+        database.exec(
+          `alter table project_chat_sessions add column title_revision integer not null default 0
+           check (title_revision >= 0)`,
+        );
+      }
       const sshConnectionColumns = database.pragma('table_info(ssh_connections)') as Array<{
         name: string;
       }>;
@@ -2999,6 +3058,13 @@ export class LocalDatabase {
         this.workspaceOutboxOrderingReady = backfillLegacyWorkspaceRevisions(initializedDatabase);
         if (this.workspaceOutboxOrderingReady) reconcileWorkspaceOutboxStatus(initializedDatabase);
       })();
+      initializedDatabase.exec(`
+        create unique index if not exists project_chat_one_active_attempt_per_session
+          on project_chat_attempts(project_id,session_id)
+          where status in ('starting','running');
+        create index if not exists project_chat_queued_turns_by_session_order_v2
+          on project_chat_queued_turns(project_id,session_id,priority,enqueue_sequence);
+      `);
       this.database = initializedDatabase;
     } catch (error) {
       this.workspaceOutboxOrderingReady = false;
@@ -3044,7 +3110,11 @@ export class LocalDatabase {
     return row ? (JSON.parse(row.state_json) as WorkspaceSnapshot) : null;
   }
 
-  commitWorkspaceState(state: WorkspaceSnapshot, operation: WorkspaceOperation) {
+  commitWorkspaceState(
+    state: WorkspaceSnapshot,
+    operation: WorkspaceOperation,
+    trashPurgeReceipt?: EmptyProjectTrashReceipt,
+  ) {
     if (!this.workspaceOutboxOrderingReady) throw new WorkspaceDataRecoveryError();
     const stateJson = JSON.stringify(state);
     const operationJson = JSON.stringify(operation);
@@ -3056,6 +3126,15 @@ export class LocalDatabase {
     }
     if (operation.workspaceRevision !== state.revision) {
       throw new Error('workspace_operation_sequence_mismatch');
+    }
+    if (
+      trashPurgeReceipt &&
+      (trashPurgeReceipt.idempotencyKey !== operation.idempotencyKey ||
+        trashPurgeReceipt.operationId !== operation.id ||
+        trashPurgeReceipt.workspaceRevision !== state.revision ||
+        operation.commandType !== 'project.trash.empty')
+    ) {
+      throw new Error('workspace_trash_receipt_mismatch');
     }
 
     const database = this.require();
@@ -3087,6 +3166,31 @@ export class LocalDatabase {
           expectedRevision,
         );
       if (stateCommit.changes !== 1) throw new Error('workspace_revision_conflict');
+      if (trashPurgeReceipt) {
+        for (const project of trashPurgeReceipt.removedProjects) {
+          database.prepare('delete from literature_search_runs where project_id=?').run(project.id);
+          database.prepare('delete from literature_records where project_id=?').run(project.id);
+          database
+            .prepare("delete from cache_records where scope='research-notes-project' and key=?")
+            .run(project.id);
+          database.prepare('delete from ssh_workspace_grants where project_id=?').run(project.id);
+          database
+            .prepare('delete from project_chat_queued_turns where project_id=?')
+            .run(project.id);
+        }
+        database
+          .prepare(
+            `insert into workspace_trash_purge_receipts(
+               idempotency_key,operation_id,receipt_json,completed_at
+             ) values(?,?,?,?)`,
+          )
+          .run(
+            trashPurgeReceipt.idempotencyKey,
+            trashPurgeReceipt.operationId,
+            JSON.stringify(trashPurgeReceipt),
+            trashPurgeReceipt.completedAt,
+          );
+      }
       database
         .prepare(
           `insert into sync_outbox(
@@ -3112,6 +3216,29 @@ export class LocalDatabase {
         )
         .run(operation.workspaceRevision);
     })();
+  }
+
+  purgeWorkspaceTrash(
+    state: WorkspaceSnapshot,
+    operation: WorkspaceOperation,
+    receipt: EmptyProjectTrashReceipt,
+  ) {
+    this.commitWorkspaceState(state, operation, EmptyProjectTrashReceiptSchema.parse(receipt));
+  }
+
+  loadWorkspaceTrashPurgeReceipt(idempotencyKey: string): EmptyProjectTrashReceipt | null {
+    const row = this.require()
+      .prepare(
+        `select receipt_json from workspace_trash_purge_receipts
+         where idempotency_key=?`,
+      )
+      .get(idempotencyKey) as { receipt_json: string } | undefined;
+    if (!row) return null;
+    try {
+      return EmptyProjectTrashReceiptSchema.parse(JSON.parse(row.receipt_json));
+    } catch {
+      throw new WorkspaceDataRecoveryError();
+    }
   }
 
   pendingWorkspaceChanges(): readonly WorkspaceOperation[] {
@@ -3190,7 +3317,7 @@ export class LocalDatabase {
     const existing = database
       .prepare(
         `select id,project_id,title,is_default,parent_session_id,branched_from_message_id,
-                created_at,updated_at
+                title_model_json,created_at,updated_at
          from project_chat_sessions where project_id=? and is_default=1`,
       )
       .get(projectId) as ProjectChatSessionRow | undefined;
@@ -3214,7 +3341,7 @@ export class LocalDatabase {
       this.require()
         .prepare(
           `select id,project_id,title,is_default,parent_session_id,branched_from_message_id,
-                  created_at,updated_at
+                  title_model_json,created_at,updated_at
            from project_chat_sessions where project_id=?
            order by is_default desc,updated_at desc,id asc`,
         )
@@ -3226,7 +3353,7 @@ export class LocalDatabase {
     const row = this.require()
       .prepare(
         `select id,project_id,title,is_default,parent_session_id,branched_from_message_id,
-                created_at,updated_at
+                title_model_json,created_at,updated_at
          from project_chat_sessions where project_id=? and id=?`,
       )
       .get(projectId, sessionId) as ProjectChatSessionRow | undefined;
@@ -3390,11 +3517,38 @@ export class LocalDatabase {
     const updatedAt = new Date().toISOString();
     const changed = this.require()
       .prepare(
-        `update project_chat_sessions set title=?,updated_at=?
+        `update project_chat_sessions
+         set title=?,title_model_json=null,title_revision=title_revision+1,updated_at=?
          where project_id=? and id=?`,
       )
       .run(title, updatedAt, projectId, sessionId).changes;
     return changed === 1 ? this.getProjectChatSession(projectId, sessionId) : null;
+  }
+
+  renameProjectChatSessionIfUnchanged(input: {
+    projectId: string;
+    sessionId: string;
+    expectedTitle: string;
+    title: string;
+    titleModel: ProjectChatSession['titleModel'];
+    updatedAt: string;
+  }): ProjectChatSession | null {
+    const changed = this.require()
+      .prepare(
+        `update project_chat_sessions
+         set title=?,title_model_json=?,title_revision=title_revision+1,updated_at=?
+         where project_id=? and id=? and title=? and title_revision=0
+           and title_model_json is null`,
+      )
+      .run(
+        input.title,
+        input.titleModel ? JSON.stringify(input.titleModel) : null,
+        input.updatedAt,
+        input.projectId,
+        input.sessionId,
+        input.expectedTitle,
+      ).changes;
+    return changed === 1 ? this.getProjectChatSession(input.projectId, input.sessionId) : null;
   }
 
   listProjectChatQueuedTurns(projectId: string, sessionId: string): ProjectChatQueuedTurn[] {
@@ -3411,16 +3565,20 @@ export class LocalDatabase {
     ).map(toChatQueuedTurn);
   }
 
-  listProjectChatQueuedProjectIds() {
+  listProjectChatQueuedSessionKeys() {
     return (
       this.require()
         .prepare(
-          `select project_id,min(enqueue_sequence) as first_sequence
+          `select project_id,session_id,
+                  max(case when priority='next' then 1 else 0 end) as has_next,
+                  min(case when priority='next' then enqueue_sequence end) as next_sequence,
+                  min(enqueue_sequence) as first_sequence
            from project_chat_queued_turns where status='queued'
-           group by project_id order by first_sequence,project_id`,
+           group by project_id,session_id
+           order by has_next desc,coalesce(next_sequence,first_sequence),project_id,session_id`,
         )
-        .all() as Array<{ project_id: string }>
-    ).map((row) => row.project_id);
+        .all() as Array<{ project_id: string; session_id: string }>
+    ).map((row) => ({ projectId: row.project_id, sessionId: row.session_id }));
   }
 
   enqueueProjectChatTurn(input: ProjectChatQueuedTurn) {
@@ -3529,29 +3687,30 @@ export class LocalDatabase {
       .transaction(() => {
         const target = database
           .prepare(
-            `select 1 from project_chat_queued_turns
-             where id=? and project_id=? and session_id=? and status='queued'`,
+            `select status from project_chat_queued_turns
+             where id=? and project_id=? and session_id=? and status in ('queued','starting')`,
           )
-          .get(queueId, projectId, sessionId);
-        if (!target) return false;
+          .get(queueId, projectId, sessionId) as { status: 'queued' | 'starting' } | undefined;
+        if (!target) return null;
+        if (target.status === 'starting') return 'starting' as const;
         database
           .prepare(
             `update project_chat_queued_turns set priority='normal',updated_at=?
-             where project_id=? and priority='next'`,
+             where project_id=? and session_id=? and priority='next'`,
           )
-          .run(updatedAt, projectId);
+          .run(updatedAt, projectId, sessionId);
         database
           .prepare(
             `update project_chat_queued_turns set priority='next',updated_at=?
              where id=? and project_id=? and session_id=? and status='queued'`,
           )
           .run(updatedAt, queueId, projectId, sessionId);
-        return true;
+        return 'queued' as const;
       })
       .immediate();
   }
 
-  claimNextProjectChatQueuedTurn(projectId: string) {
+  claimNextProjectChatQueuedTurn(projectId: string, sessionId: string) {
     const database = this.require();
     return database
       .transaction(() => {
@@ -3560,10 +3719,10 @@ export class LocalDatabase {
             `select id,project_id,session_id,command_json,enqueue_sequence,priority,status,
                     created_at,updated_at
              from project_chat_queued_turns
-             where project_id=? and status='queued'
+             where project_id=? and session_id=? and status='queued'
              order by case priority when 'next' then 0 else 1 end,enqueue_sequence limit 1`,
           )
-          .get(projectId) as ProjectChatQueuedTurnRow | undefined;
+          .get(projectId, sessionId) as ProjectChatQueuedTurnRow | undefined;
         if (!row) return null;
         const updatedAt = new Date().toISOString();
         const changed = database
@@ -4360,6 +4519,144 @@ export class LocalDatabase {
         action.id,
       );
     if (result.changes !== 1) throw new Error('chat_action_state_conflict');
+  }
+
+  searchProjectChatMessages(projectIds: readonly string[], query: string, requestedLimit: number) {
+    const search = boundedLocalSearch(projectIds, query, requestedLimit);
+    if (!search) return [];
+    const { ids, tokens, limit } = search;
+    const projectPlaceholders = ids.map(() => '?').join(',');
+    const tokenPredicates = tokens
+      .map(() => `instr(lower(m.content || ' ' || s.title),?) > 0`)
+      .join(' and ');
+    return this.require()
+      .prepare(
+        `select m.project_id as projectId,m.id as messageId,s.id as sessionId,
+                s.title as sessionTitle,m.role,m.content,
+                coalesce(m.completed_at,m.created_at) as updatedAt
+         from project_chat_messages m
+         join project_chat_session_messages sm on sm.message_id=m.id
+         join project_chat_sessions s on s.id=sm.session_id and s.project_id=m.project_id
+         where m.project_id in (${projectPlaceholders})
+           and ${tokenPredicates}
+           and s.id=(
+             select s2.id
+             from project_chat_session_messages sm2
+             join project_chat_sessions s2 on s2.id=sm2.session_id
+             where sm2.message_id=m.id and s2.project_id=m.project_id
+             order by s2.updated_at desc,s2.id asc limit 1
+           )
+         order by coalesce(m.completed_at,m.created_at) desc,m.id asc limit ?`,
+      )
+      .all(...ids, ...tokens, limit) as Array<{
+      projectId: string;
+      messageId: string;
+      sessionId: string;
+      sessionTitle: string;
+      role: 'user' | 'assistant';
+      content: string;
+      updatedAt: string;
+    }>;
+  }
+
+  searchExperimentIdeas(projectIds: readonly string[], query: string, requestedLimit: number) {
+    const search = boundedLocalSearch(projectIds, query, requestedLimit);
+    if (!search) return [];
+    const { ids, tokens, limit } = search;
+    const projectPlaceholders = ids.map(() => '?').join(',');
+    const searchableText =
+      "lower(title || ' ' || hypothesis || ' ' || phase || ' ' || outcome || ' ' || result_summary)";
+    const tokenPredicates = tokens.map(() => `instr(${searchableText},?) > 0`).join(' and ');
+    const rows = this.require()
+      .prepare(
+        `select * from experiment_ideas
+         where project_id in (${projectPlaceholders}) and ${tokenPredicates}
+         order by updated_at desc,id asc limit ?`,
+      )
+      .all(...ids, ...tokens, limit) as ExperimentIdeaRow[];
+    return rows.map(toExperimentIdea);
+  }
+
+  searchExperimentMetricPoints(
+    projectIds: readonly string[],
+    query: string,
+    requestedLimit: number,
+  ) {
+    const search = boundedLocalSearch(projectIds, query, requestedLimit);
+    if (!search) return [];
+    const { ids, tokens, limit } = search;
+    const projectPlaceholders = ids.map(() => '?').join(',');
+    const searchableText = `lower(
+      'metric ' || points.metric_display_name || ' ' || points.metric_key || ' ' ||
+      'value ' || cast(points.value as text) || ' ' || coalesce(points.unit,'') || ' ' ||
+      'trial ' || coalesce(points.trial_id,'') || ' ' ||
+      'series ' || points.metric_key || ' ' || points.aggregation || ' ' ||
+      'objective version ' || cast(points.objective_version as text) || ' ' ||
+      'baseline ' || coalesce(cast(points.baseline as text),'') || ' ' ||
+      'target ' || coalesce(cast(points.target as text),'') || ' ' ||
+      'source ' || points.source || ' sequence ' || cast(points.sequence as text) || ' ' ||
+      ideas.title
+    )`;
+    const tokenPredicates = tokens.map(() => `instr(${searchableText},?) > 0`).join(' and ');
+    return this.require()
+      .prepare(
+        `select points.project_id as projectId,points.id as metricPointId,
+                points.idea_id as ideaId,ideas.title as ideaTitle,
+                points.metric_key as metricKey,points.metric_display_name as metricDisplayName,
+                points.value,points.unit,points.aggregation,points.baseline,points.target,
+                points.source,points.trial_id as trialId,points.sequence,
+                points.objective_version as objectiveVersion,points.recorded_at as updatedAt
+         from experiment_metric_points points
+         join experiment_ideas ideas
+           on ideas.project_id=points.project_id and ideas.id=points.idea_id
+         where points.project_id in (${projectPlaceholders}) and ${tokenPredicates}
+         order by points.recorded_at desc,points.sequence desc,points.id asc limit ?`,
+      )
+      .all(...ids, ...tokens, limit) as Array<{
+      projectId: string;
+      metricPointId: string;
+      ideaId: string;
+      ideaTitle: string;
+      metricKey: string;
+      metricDisplayName: string;
+      value: number;
+      unit: string | null;
+      aggregation: string;
+      baseline: number | null;
+      target: number | null;
+      source: string;
+      trialId: string | null;
+      sequence: number;
+      objectiveVersion: number;
+      updatedAt: string;
+    }>;
+  }
+
+  searchLiteratureRecords(projectIds: readonly string[], query: string, requestedLimit: number) {
+    const search = boundedLocalSearch(projectIds, query, requestedLimit);
+    if (!search) return [];
+    const { ids, tokens, limit } = search;
+    const projectPlaceholders = ids.map(() => '?').join(',');
+    const searchableText = `lower(
+      title || ' ' || authors_json || ' ' || coalesce(container_title,'') || ' ' ||
+      'doi ' || coalesce(doi,'') || ' citation key ' || coalesce(citation_key,'') || ' ' ||
+      'publication year ' || coalesce(cast(published_year as text),'') || ' ' ||
+      'citation count ' || coalesce(cast(citation_count as text),'') || ' ' ||
+      topics_json || ' ' || search_tags_json || ' ' || manual_topics_json || ' ' ||
+      coalesce(manual_summary,'') || ' ' || coalesce(manual_relevance,'') || ' ' ||
+      ai_topics_json || ' ' || coalesce(ai_summary,'') || ' ' ||
+      coalesce(ai_study_type,'') || ' ' || ai_limitations_json
+    )`;
+    const tokenPredicates = tokens.map(() => `instr(${searchableText},?) > 0`).join(' and ');
+    const rows = this.require()
+      .prepare(
+        `select * from literature_records
+         where project_id in (${projectPlaceholders}) and deleted_at is null
+           and ${tokenPredicates}
+         order by updated_at desc,id asc limit ?`,
+      )
+      .all(...ids, ...tokens, limit) as LiteratureRecordRow[];
+    return rows.map(toLocalLiteratureRecord);
   }
 
   listExperimentIdeas(projectId: string): ExperimentIdea[] {
@@ -5607,6 +5904,7 @@ type ProjectChatSessionRow = {
   is_default: number;
   parent_session_id: string | null;
   branched_from_message_id: string | null;
+  title_model_json: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -5754,6 +6052,7 @@ function toChatSession(row: ProjectChatSessionRow) {
     ...(row.branched_from_message_id
       ? { branchedFromMessageId: row.branched_from_message_id }
       : {}),
+    ...(row.title_model_json ? { titleModel: JSON.parse(row.title_model_json) as unknown } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });

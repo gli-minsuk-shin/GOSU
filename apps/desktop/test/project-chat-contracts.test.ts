@@ -9,6 +9,7 @@ import {
   BranchProjectChatSessionInputSchema,
   CreateProjectChatSessionInputSchema,
   ProjectChatAttemptSchema,
+  ProjectChatEventSchema,
   ProjectChatMessageSchema,
   ProjectChatPromptProvenanceSchema,
   ProjectChatProfileSchema,
@@ -277,6 +278,27 @@ describe('Project chat contracts', () => {
       updatedAt: now,
     });
     expect(root.title).toBe('Project chat');
+    const generated = ProjectChatSessionSchema.parse({
+      ...root,
+      id: randomUUID(),
+      isDefault: false,
+      title: 'Generated branch title',
+      titleModel: {
+        invocationId: randomUUID(),
+        requestedModelId: 'opaque-provider-default',
+        resolvedModelId: 'opaque-provider-default',
+        catalogVersion: 'provider-catalog-v2',
+        reasoningOptionId: 'native-first',
+      },
+    });
+    expect(
+      ProjectChatEventSchema.parse({
+        type: 'session.updated',
+        projectId,
+        sessionId: generated.id,
+        session: generated,
+      }),
+    ).toMatchObject({ type: 'session.updated', session: { titleModel: generated.titleModel } });
     expect(
       ProjectChatSnapshotSchema.parse({
         schemaVersion: 1,

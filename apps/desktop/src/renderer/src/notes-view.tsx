@@ -19,6 +19,7 @@ import {
   type LocalNotesTreeRow,
 } from './local-notes-tree-model';
 import { MarkdownDocument } from './markdown-document';
+import { SearchView, type SearchViewAdapter } from './search-view';
 
 export type { VaultSelection } from '../../shared/vault-contracts';
 export type SelectedNote = { path: string; content: string };
@@ -169,6 +170,7 @@ export function ResearchNotesView({
   readAttachment,
   folderTreeCollapsed = false,
   onFolderTreeCollapsedChange = () => undefined,
+  searchAdapter,
 }: {
   vault?: VaultSelection | null;
   workspace?: ResearchNotesWorkspace | null;
@@ -187,6 +189,7 @@ export function ResearchNotesView({
   readAttachment?: (input: ReadVaultAttachmentInput) => Promise<VaultAttachment>;
   folderTreeCollapsed?: boolean;
   onFolderTreeCollapsedChange?: (collapsed: boolean) => void;
+  searchAdapter?: SearchViewAdapter;
 }) {
   const folderTreeDetailsId = useId();
   const managed = workspace !== undefined;
@@ -368,6 +371,17 @@ export function ResearchNotesView({
                   : 'Literature table will sync after the first Literature search or update.'}
               </small>
             </section>
+          )}
+          {project && searchAdapter && (
+            <SearchView
+              adapter={searchAdapter}
+              scope={{ kind: 'project', projectId: project.id }}
+              scopeLabel={`${project.name} Research Notes`}
+              compact
+              onOpen={(hit) => {
+                if (hit.target.kind === 'research-note') openNote(hit.target.path);
+              }}
+            />
           )}
           {accessPanel}
           <p className="note-agent-disclosure">

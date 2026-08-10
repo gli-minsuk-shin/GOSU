@@ -1,21 +1,99 @@
 import { useState } from 'react';
 
-import type { SshServerResourceSnapshot } from '../../shared/ssh-contracts';
+import type {
+  SshConnectionTestResult,
+  SshServerResourceSnapshot,
+} from '../../shared/ssh-contracts';
+
+export type SshResourceUiErrorReason =
+  | 'project_grant_required'
+  | 'project_unavailable'
+  | 'unknown_host_key'
+  | 'authentication_failed'
+  | 'connection_failed'
+  | 'timed_out'
+  | 'approval_denied'
+  | 'approval_expired'
+  | 'approval_cancelled'
+  | 'unavailable';
 
 export type SshResourceUiState =
   | Readonly<{ phase: 'idle' }>
   | Readonly<{ phase: 'loading'; snapshot?: SshServerResourceSnapshot }>
   | Readonly<{ phase: 'ready'; snapshot: SshServerResourceSnapshot }>
-  | Readonly<{ phase: 'error'; snapshot?: SshServerResourceSnapshot }>;
+  | Readonly<{
+      phase: 'error';
+      snapshot?: SshServerResourceSnapshot;
+      reason?: SshResourceUiErrorReason;
+    }>;
 
 const ISSUE_LABELS: Record<SshServerResourceSnapshot['issues'][number], string> = {
+  ssh_client_unavailable: 'The local OpenSSH client is unavailable',
+  unknown_host_key: 'Host key not trusted — verify it and connect once in Terminal',
+  authentication_failed: 'Authentication failed — check ssh-agent or Keychain in Terminal',
+  connection_failed: 'Connection failed — check the host, port, and network',
+  timed_out: 'Connection timed out — check the server and network',
   cpu_unavailable: 'CPU unavailable',
   memory_unavailable: 'Memory unavailable',
-  gpu_not_detected: 'No NVIDIA GPU detected',
+  gpu_not_detected: 'nvidia-smi reports no NVIDIA GPU',
   gpu_unavailable: 'GPU unavailable',
+  nvidia_smi_unavailable:
+    'nvidia-smi is not available in the supported server installation locations',
   connection_unavailable: 'Server unavailable',
   probe_output_invalid: 'Usage response invalid',
 };
+
+const ERROR_REASON_LABELS: Record<SshResourceUiErrorReason, string> = {
+  project_grant_required:
+    'Project link required — grant this server to the active project in Connections.',
+  project_unavailable: 'Select an active, non-archived project before reading linked resources.',
+  unknown_host_key: 'Host key not trusted — verify its fingerprint and connect once in Terminal.',
+  authentication_failed: 'Authentication failed — check ssh-agent, Keychain, or the SSH alias.',
+  connection_failed: 'Connection failed — check the registered host, port, and network.',
+  timed_out: 'Connection timed out — check that the server is running and reachable.',
+  approval_denied: 'The separate remote command approval was denied; the command did not run.',
+  approval_expired: 'The separate Allow once request expired before the command ran.',
+  approval_cancelled: 'The separate Allow once request was cancelled; the command did not run.',
+  unavailable: 'Usage diagnostics are unavailable. Run Test for a more specific connection check.',
+};
+
+export function sshResourceErrorReason(error: unknown): SshResourceUiErrorReason {
+  const message = error instanceof Error ? error.message : '';
+  const mappings = [
+    ['ssh_workspace_grant_not_found', 'project_grant_required'],
+    ['ssh_workspace_project_unavailable', 'project_unavailable'],
+    ['ssh_unknown_host_key', 'unknown_host_key'],
+    ['ssh_authentication_failed', 'authentication_failed'],
+    ['ssh_connection_failed', 'connection_failed'],
+    ['ssh_timed_out', 'timed_out'],
+    ['ssh_approval_denied', 'approval_denied'],
+    ['ssh_approval_expired', 'approval_expired'],
+    ['ssh_approval_cancelled', 'approval_cancelled'],
+  ] as const satisfies readonly (readonly [string, SshResourceUiErrorReason])[];
+  return mappings.find(([code]) => message.includes(code))?.[1] ?? 'unavailable';
+}
+
+export function sshResourceErrorLabel(reason: SshResourceUiErrorReason) {
+  return ERROR_REASON_LABELS[reason];
+}
+
+export function sshConnectionTestStatus(result: SshConnectionTestResult) {
+  if (result.reachable) return 'Ready · non-interactive authentication verified';
+  switch (result.code) {
+    case 'unknown_host_key':
+      return 'Host key not trusted · verify its fingerprint and connect once in Terminal';
+    case 'authentication_failed':
+      return 'Authentication failed · check ssh-agent, Keychain, or the SSH alias';
+    case 'timed_out':
+      return 'Connection timed out · check the server and network';
+    case 'connection_failed':
+      return 'Connection failed · check the registered host, port, and network';
+    case 'ready':
+      return 'Ready · non-interactive authentication verified';
+    case undefined:
+      return 'Connection failed · run Test again after checking the server';
+  }
+}
 
 function clampPercent(value: number) {
   return Math.min(100, Math.max(0, value));
@@ -181,6 +259,8 @@ export function SshResourceSummary({
 }>) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const snapshot = state.phase === 'idle' ? undefined : state.snapshot;
+  const stateIssue =
+    state.phase === 'error' ? sshResourceErrorLabel(state.reason ?? 'unavailable') : null;
   if (!snapshot) {
     return (
       <section
@@ -200,12 +280,22 @@ export function SshResourceSummary({
             </span>
           </div>
         </div>
+        {stateIssue && <small className="ssh-resource-issues">{stateIssue}</small>}
+        {state.phase === 'error' && (
+          <small className="ssh-resource-probe-boundary">
+            Usage probes do not wait for Allow once. Remote files and commands are separate: they
+            need a project grant and may show an Allow once request.
+          </small>
+        )}
       </section>
     );
   }
 
   const availableGpuDevices = snapshot.gpu.state === 'available' ? snapshot.gpu.devices : [];
-  const issueLabels = snapshot.issues.map((issue) => ISSUE_LABELS[issue]);
+  const issueLabels = [
+    ...snapshot.issues.map((issue) => ISSUE_LABELS[issue]),
+    ...(stateIssue ? [stateIssue] : []),
+  ];
 
   return (
     <section
@@ -274,6 +364,12 @@ export function SshResourceSummary({
       )}
       {issueLabels.length > 0 && (
         <small className="ssh-resource-issues">{issueLabels.join(' · ')}</small>
+      )}
+      {(snapshot.status !== 'ready' || state.phase === 'error') && (
+        <small className="ssh-resource-probe-boundary">
+          Usage probes do not wait for Allow once. Remote files and commands are separate: they need
+          a project grant and may show an Allow once request.
+        </small>
       )}
     </section>
   );

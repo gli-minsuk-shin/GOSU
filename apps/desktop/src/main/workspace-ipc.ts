@@ -3,6 +3,7 @@ import { ZodError } from 'zod';
 import {
   CreateProjectInputSchema,
   CreateTaskInputSchema,
+  EmptyProjectTrashInputSchema,
   ObjectiveCommandSchema,
   ProjectVersionCommandSchema,
   RenameProjectInputSchema,
@@ -27,6 +28,12 @@ type ProjectChatIdleGuard = Pick<ProjectChatService, 'runWhenProjectChatIdle'>;
 type ProjectLifecycle = Readonly<{
   projectRenamed(project: Awaited<ReturnType<WorkspaceService['renameProject']>>): Promise<void>;
 }>;
+type ProjectTrashIdleGuard = Readonly<{
+  runWhenProjectTrashIdle<T>(
+    projectIds: readonly string[],
+    operation: () => Promise<T>,
+  ): Promise<T>;
+}>;
 
 export function registerWorkspaceIpc(
   register: RegisterHandler,
@@ -34,6 +41,7 @@ export function registerWorkspaceIpc(
   reportUnexpected: (error: unknown) => void = () => undefined,
   projectChatIdleGuard?: ProjectChatIdleGuard,
   projectLifecycle?: ProjectLifecycle,
+  projectTrashIdleGuard?: ProjectTrashIdleGuard,
 ) {
   register(WORKSPACE_IPC_CHANNELS.snapshot, () =>
     safely(() => workspace.snapshot(), reportUnexpected),
@@ -105,6 +113,24 @@ export function registerWorkspaceIpc(
       input,
       ProjectVersionCommandSchema,
       (command) => workspace.restoreProject(command),
+      reportUnexpected,
+    ),
+  );
+  register(WORKSPACE_IPC_CHANNELS.emptyProjectTrash, (input) =>
+    withValidatedInput(
+      input,
+      EmptyProjectTrashInputSchema,
+      async (command) => {
+        const snapshot = await workspace.snapshot();
+        const projectIds = snapshot.projects
+          .filter((project) => project.trashedAt !== undefined)
+          .map((project) => project.id);
+        return projectTrashIdleGuard
+          ? projectTrashIdleGuard.runWhenProjectTrashIdle(projectIds, () =>
+              workspace.emptyTrash(command),
+            )
+          : workspace.emptyTrash(command);
+      },
       reportUnexpected,
     ),
   );

@@ -185,10 +185,16 @@ const resourceBytesSchema = z.number().int().nonnegative().safe();
 
 export const SshServerResourceIssueSchema = z.enum([
   'connection_unavailable',
+  'ssh_client_unavailable',
+  'unknown_host_key',
+  'authentication_failed',
+  'connection_failed',
+  'timed_out',
   'cpu_unavailable',
   'memory_unavailable',
   'gpu_not_detected',
   'gpu_unavailable',
+  'nvidia_smi_unavailable',
   'probe_output_invalid',
 ]);
 
@@ -248,7 +254,7 @@ export const SshServerResourceSnapshotSchema = z
     cpu: SshCpuResourceSchema,
     memory: SshMemoryResourceSchema,
     gpu: SshGpuResourceSchema,
-    issues: z.array(SshServerResourceIssueSchema).max(6),
+    issues: z.array(SshServerResourceIssueSchema).max(10),
   })
   .strict()
   .refine((value) => new Set(value.issues).size === value.issues.length, 'Duplicate issues');

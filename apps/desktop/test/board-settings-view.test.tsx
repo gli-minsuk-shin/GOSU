@@ -136,6 +136,7 @@ describe('Board settings UI', () => {
         onSetProjectArchived={vi.fn()}
         onTrashProject={vi.fn()}
         onRestoreProject={vi.fn()}
+        onEmptyProjectTrash={vi.fn()}
         agentProject={undefined}
         agentProfile={undefined}
         agentProfileLoading={false}

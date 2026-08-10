@@ -8,6 +8,7 @@ import { WORKSPACE_IPC_CHANNELS } from '../src/shared/workspace-channels';
 import type { WorkspaceIpcResult } from '../src/shared/workspace-ipc-result';
 import {
   DEFAULT_WORKSPACE_BOARD_SETTINGS,
+  type EmptyProjectTrashReceipt,
   type WorkspaceOperation,
   type WorkspaceSnapshot,
 } from '../src/shared/workspace-contracts';
@@ -15,6 +16,7 @@ import {
 class MemoryStorage implements WorkspaceStorage {
   state: WorkspaceSnapshot | null = null;
   operations: WorkspaceOperation[] = [];
+  trashReceipts = new Map<string, EmptyProjectTrashReceipt>();
 
   load() {
     return this.state;
@@ -23,6 +25,19 @@ class MemoryStorage implements WorkspaceStorage {
   commit(state: WorkspaceSnapshot, operation: WorkspaceOperation) {
     this.state = structuredClone(state);
     this.operations.push(structuredClone(operation));
+  }
+
+  purgeTrash(
+    state: WorkspaceSnapshot,
+    operation: WorkspaceOperation,
+    receipt: EmptyProjectTrashReceipt,
+  ) {
+    this.commit(state, operation);
+    this.trashReceipts.set(receipt.idempotencyKey, structuredClone(receipt));
+  }
+
+  loadTrashPurgeReceipt(idempotencyKey: string) {
+    return structuredClone(this.trashReceipts.get(idempotencyKey) ?? null);
   }
 
   pendingChanges() {
@@ -46,6 +61,12 @@ function handlersFor(
   projectLifecycle?: Readonly<{
     projectRenamed(project: Awaited<ReturnType<WorkspaceService['renameProject']>>): Promise<void>;
   }>,
+  projectTrashIdleGuard?: Readonly<{
+    runWhenProjectTrashIdle<T>(
+      projectIds: readonly string[],
+      operation: () => Promise<T>,
+    ): Promise<T>;
+  }>,
 ) {
   const handlers = new Map<string, (...arguments_: unknown[]) => unknown>();
   registerWorkspaceIpc(
@@ -54,6 +75,7 @@ function handlersFor(
     reportUnexpected,
     projectChatIdleGuard,
     projectLifecycle,
+    projectTrashIdleGuard,
   );
   return handlers;
 }
@@ -89,6 +111,71 @@ function invalidBoardTemplates() {
 }
 
 describe('workspace IPC boundary', () => {
+  it('empties only Trash through the multi-project lifecycle guard', async () => {
+    const storage = new MemoryStorage();
+    const workspace = new WorkspaceService(storage);
+    const guardCalls: string[][] = [];
+    const guard = {
+      async runWhenProjectTrashIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
+        guardCalls.push([...projectIds]);
+        return operation();
+      },
+    };
+    const handlers = handlersFor(workspace, undefined, undefined, undefined, guard);
+    const active = await successful<{ id: string }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!,
+      { name: 'Active Project' },
+    );
+    const trashed = await successful<{ id: string; version: number }>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!,
+      { name: 'Trashed Project' },
+    );
+    await successful(handlers.get(WORKSPACE_IPC_CHANNELS.trashProject)!, {
+      projectId: trashed.id,
+      expectedVersion: trashed.version,
+    });
+    const revision = (await workspace.snapshot()).revision;
+
+    const receipt = await successful<EmptyProjectTrashReceipt>(
+      handlers.get(WORKSPACE_IPC_CHANNELS.emptyProjectTrash)!,
+      {
+        expectedWorkspaceRevision: revision,
+        idempotencyKey: '22222222-2222-4222-8222-222222222222',
+        confirmation: 'EMPTY TRASH',
+      },
+    );
+
+    expect(receipt.removedProjects).toEqual([{ id: trashed.id, name: 'Trashed Project' }]);
+    expect(guardCalls).toEqual([[trashed.id]]);
+    expect((await workspace.snapshot()).projects.map((project) => project.id)).toEqual([active.id]);
+  });
+
+  it('rejects Empty Trash without the fixed confirmation phrase before any lifecycle lock', async () => {
+    const guardCalls: string[][] = [];
+    const guard = {
+      async runWhenProjectTrashIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
+        guardCalls.push([...projectIds]);
+        return operation();
+      },
+    };
+    const handlers = handlersFor(
+      new WorkspaceService(new MemoryStorage()),
+      undefined,
+      undefined,
+      undefined,
+      guard,
+    );
+
+    await expect(
+      handlers.get(WORKSPACE_IPC_CHANNELS.emptyProjectTrash)!({
+        expectedWorkspaceRevision: 0,
+        idempotencyKey: '33333333-3333-4333-8333-333333333333',
+        confirmation: 'DELETE',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_workspace_input' } });
+    expect(guardCalls).toEqual([]);
+  });
+
   it('registers only the fixed workspace command surface', () => {
     const handlers = handlersFor(new WorkspaceService(new MemoryStorage()));
 

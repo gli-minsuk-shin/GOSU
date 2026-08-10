@@ -1848,10 +1848,16 @@ textarea:focus {
 
 .ssh-resource-summary-status span,
 .ssh-resource-summary-status time,
-.ssh-resource-issues {
+.ssh-resource-issues,
+.ssh-resource-probe-boundary {
   color: var(--subtle);
   font-size: var(--font-caption);
   overflow-wrap: anywhere;
+}
+
+.ssh-resource-probe-boundary {
+  color: var(--muted);
+  line-height: 1.45;
 }
 
 .ssh-resource-summary-toggle {
@@ -3211,6 +3217,21 @@ textarea:focus {
   font-weight: 700;
   line-height: 1.35;
   text-align: left;
+  text-decoration: none;
+}
+
+.literature-table-title.canonical-link:hover span,
+.literature-table-title.canonical-link:focus-visible span,
+.literature-doi-link:hover,
+.literature-doi-link:focus-visible {
+  color: var(--green-dark);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.literature-doi-link {
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .literature-table-title small,
@@ -5381,6 +5402,29 @@ button.chat-toolbar-status {
   font-weight: 700;
 }
 
+.project-empty-trash {
+  display: grid;
+  gap: 14px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.project-empty-trash label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 700;
+}
+
+.project-empty-trash > .danger-button {
+  justify-self: start;
+}
+
+.project-trash-receipt {
+  border-color: color-mix(in srgb, var(--green) 45%, var(--line));
+}
+
 .agent-choice-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -6450,5 +6494,163 @@ button.chat-toolbar-status {
 
   .ssh-approval-dialog-body {
     padding-block: 10px;
+  }
+}
+
+.search-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 18px;
+  padding: 28px 36px 48px;
+}
+
+.search-view.compact {
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.search-view-heading h1 {
+  margin: 5px 0 4px;
+  font-size: calc(32px + var(--font-adjustment));
+}
+
+.search-view-heading p,
+.search-empty,
+.search-source-warning {
+  margin: 0;
+  color: var(--muted);
+}
+
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.search-form label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.search-form input {
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.search-category-tabs {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 3px;
+}
+
+.search-category-tabs button {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.search-category-tabs button.active {
+  border-color: color-mix(in srgb, var(--green) 58%, var(--line));
+  background: color-mix(in srgb, var(--green) 11%, var(--surface));
+  color: var(--text);
+}
+
+.search-category-tabs span {
+  margin-inline-start: 4px;
+  color: var(--subtle);
+}
+
+.search-results {
+  display: grid;
+  min-height: 0;
+  gap: 18px;
+}
+
+.search-result-group {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.search-result-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 15px;
+  border-bottom: 1px solid var(--line);
+}
+
+.search-result-group h2 {
+  margin: 0;
+  font-size: var(--font-section);
+}
+
+.search-result-row {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  padding: 13px 15px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
+}
+
+.search-result-row:last-child {
+  border-bottom: 0;
+}
+
+.search-result-row:hover {
+  background: color-mix(in srgb, var(--green) 7%, transparent);
+}
+
+.search-result-row p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-row small,
+.search-result-project {
+  color: var(--subtle);
+  font-size: var(--font-meta);
+}
+
+.search-result-project {
+  color: var(--green);
+  font-weight: 800;
+}
+
+.search-source-warning {
+  padding: 10px 15px;
+  border-bottom: 1px solid var(--line);
+}
+
+@media (max-width: 720px) {
+  .search-view {
+    padding-inline: 18px;
+  }
+
+  .search-form {
+    grid-template-columns: 1fr;
   }
 }

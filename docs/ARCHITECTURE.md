@@ -128,20 +128,20 @@ flowchart LR
 제품 모듈은 아직 모두 독립 디렉터리로 분리되어 있지 않다. 새 기능은 아래 소유권을 기준으로
 배치하고, 한 모듈이 다른 모듈의 저장 테이블을 직접 읽지 않게 한다.
 
-| 논리 모듈                  | 현재 코드 소유자                                                                | 구현 수준                                                                                                                                                                                                                                                                |
-| -------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                    | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                                                                                               |
-| Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store  | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                                                           |
-| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                    | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                 |
-| Experiment Orchestration   | Desktop Experiment workspace, contracts, domain, Runner                         | 프로젝트별 idea lineage·검토 outcome·동결 Objective 기반 summary metric trajectory·evidence report를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨                                                                           |
-| Manuscript                 | Desktop Repository workspace와 향후 manuscript module                           | 앱 관리형 Git worktree·파일/Markdown preview·change/history/branch·commit 구현; LaTeX compile·PDF preview는 계획됨                                                                                                                                                       |
-| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                        | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                  |
-| Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                       | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨 |
-| Obsidian Knowledge         | Desktop Research Notes service, bounded Vault adapter, Markdown renderer        | Vault root 복원·프로젝트별 owned folder·기본 note 구조·Literature/Papers projection·structured final-response Markdown create·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                              |
-| Lecture                    | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port | 여러 project의 reviewed Literature metadata·Experiment lineage 선택, lecture/talk 생성, 독립 chat, append-only revision과 Research Notes Markdown 저장 구현; PPTX/PDF export와 manuscript/full-text ingest는 계획됨                                                      |
-| AI Gateway                 | Desktop Project Chat service와 Codex App Server                                 | 다중 chat session·project-global durable turn queue·동적 model/mode catalog·native harness·project/SSH/Literature tool·server-owned Research Notes final persistence·프로젝트별 web search mode·범용 one-turn 연구 파일 capability·thread/turn provenance 구현           |
-| Integration Hub            | Desktop Git Workspace·승인형 SSH broker, `packages/integrations` registry       | GitHub HTTPS clone·bounded Git·OpenSSH alias/direct import·프로젝트별 remote workspace grant·Allow-once 또는 bounded trusted execution·휘발성 CPU/RAM/GPU snapshot 구현; GitHub App 계정 연결은 계획됨                                                                   |
-| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                               | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                 |
+| 논리 모듈                  | 현재 코드 소유자                                                                | 구현 수준                                                                                                                                                                                                                                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                    | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                                                                                                                             |
+| Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store  | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                                                                                         |
+| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                    | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                                               |
+| Experiment Orchestration   | Desktop Experiment workspace, contracts, domain, Runner                         | 프로젝트별 idea lineage·검토 outcome·동결 Objective 기반 summary metric trajectory·evidence report를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨                                                                                                         |
+| Manuscript                 | Desktop Repository workspace와 향후 manuscript module                           | 앱 관리형 Git worktree·파일/Markdown preview·change/history/branch·commit 구현; LaTeX compile·PDF preview는 계획됨                                                                                                                                                                                     |
+| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                        | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                                                |
+| Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                       | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨                               |
+| Obsidian Knowledge         | Desktop Research Notes service, bounded Vault adapter, Markdown renderer        | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 문서 metadata envelope·Literature/Papers projection·structured final-response Markdown create·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                             |
+| Lecture                    | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port | 여러 project의 reviewed Literature metadata·Experiment lineage 선택, lecture/talk 생성, 독립 chat, append-only revision과 Research Notes Markdown 저장 구현; PPTX/PDF export와 manuscript/full-text ingest는 계획됨                                                                                    |
+| AI Gateway                 | Desktop Project Chat service와 Codex App Server                                 | 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·동적 branch title·model/mode catalog·native harness·project/SSH/Literature tool·server-owned Research Notes final persistence·프로젝트별 web search mode·범용 one-turn 연구 파일 capability·thread/turn provenance 구현 |
+| Integration Hub            | Desktop Git Workspace·승인형 SSH broker, `packages/integrations` registry       | GitHub HTTPS clone·bounded Git·OpenSSH alias/direct import·프로젝트별 remote workspace grant·Allow-once 또는 bounded trusted execution·휘발성 CPU/RAM/GPU snapshot 구현; GitHub App 계정 연결은 계획됨                                                                                                 |
+| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                               | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                                               |
 
 ## 5. 의존성 규칙
 
@@ -210,6 +210,7 @@ flowchart TD
 | SSH trusted auto-execution audit                 | 프로젝트별 Desktop SQLCipher append-only table                                           | 실행 전 exact project/grant/connection/policy/turn/tool-call/operation/command hash만 기록; raw command preview·stdout/stderr·secret·Hosted Sync 금지               |
 | Project Chat 첨부 연구 파일                      | 사용자가 dialog에서 선택한 local file                                                    | path·원본 bytes·추출 text·정규화 image를 SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; 해당 turn에서 bounded text 또는 image만 provider에 전송            |
 | Codex web search result·tool payload             | 해당 Codex turn의 ephemeral provider context                                             | GOSU DB·outbox에 저장하지 않음; 최종 답변의 URL·요약만 visible chat 정책 적용                                                                                       |
+| 로컬 통합 검색 query·result                      | 현재 Main-process query와 Renderer view state                                            | SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; 기존 source만 bounded read                                                                                  |
 | tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                                           | 금지                                                                                                                                                                |
 
 Hosted Sync에 저장하지 않는다는 것과 LLM에 전혀 전송하지 않는다는 것은 다르다. Research Notes는 기본적으로
@@ -485,14 +486,21 @@ Objective lock, budget, signed manifest, lease·fencing, live metric relay, dura
   `diagnostics|workspace` mode와 HIGH-RISK 확인을 생략할 수 없다.
 - server resource monitor는 Renderer나 모델이 command를 구성하는 범용 SSH API가 아니다. Main만
   `/bin/cat /proc/stat /proc/meminfo`, 짧은 local sampling interval 뒤의 `/proc/stat`, 고정된
-  `/usr/bin/nvidia-smi --query-gpu=... --format=csv,noheader,nounits`를 non-interactive OpenSSH argv로
-  실행한다. stdout/stderr는 Main에서 strict parser로 CPU utilization·logical processor 수, RAM
+  `/usr/bin/nvidia-smi`, `/usr/local/bin/nvidia-smi`, `/usr/local/nvidia/bin/nvidia-smi`의 bounded absolute
+  allowlist를 순서대로 확인하고 첫 실행 가능한 binary에 고정
+  `--query-gpu=... --format=csv,noheader,nounits` args를 붙여 non-interactive OpenSSH argv로 실행한다.
+  shell·PATH lookup·모델 입력은 사용하지 않으며 executable-not-found일 때만 다음 후보로 이동한다.
+  stdout/stderr는 Main에서 strict parser로 CPU utilization·logical processor 수, RAM
   used/total, GPU별 utilization·VRAM·temperature와 bounded issue로 바꾼 뒤 폐기한다. GPU가 없거나 일부
   probe가 실패해도 가능한 CPU/RAM sample은 `partial`로 유지하며 0%로 가장하지 않는다. Project Chat의
   `read_ssh_workspace_resources`도 모델이 준 opaque grant ID를 active project grant로 다시 해석한 뒤 같은
   monitor를 사용한다. 모델에는 connection label, capture 시각·상태, 정규화된 CPU/RAM/GPU 값과 bounded
   issue만 돌려주며 connection ID, host·user·port, workspace root, probe command와 raw output은 노출하지
-  않는다. 모델은 `force`를 지정할 수 없고 기존 12초 cache를 공유한다.
+  않는다. 모델은 `force`를 지정할 수 없고 기존 12초 cache를 공유한다. connection `Test`도 raw OpenSSH
+  stderr 대신 `ready | unknown_host_key | authentication_failed | timed_out | connection_failed`의 typed
+  code만 반환한다. resource issue는 local SSH client 부재, transport 실패, CPU/RAM parser 실패,
+  `nvidia-smi` 실행 파일 부재, NVIDIA device 없음과 malformed probe output을 구분해 사용자가 GPU 0%와
+  측정 불가를 혼동하지 않게 한다.
 - resource snapshot은 connection profile identity와 generation별 12초 in-memory cache 및 in-flight
   coalescing, 전역 최대 4개 capture로 제한한다. Renderer의 local-only preference는 자동 갱신을
   `Manual / 30 seconds / 1 minute / 5 minutes / 10 minutes` 중에서 고르며 기본값은 1분이다. 자동 모드도
@@ -615,6 +623,19 @@ Vault ID가 모두 일치할 때만 다음 기본 구조를 생성하거나 읽�
 - `Project Progress/Project Progress.md`
 - `Idea Development/Idea Development.md`
 - `Lecture Notes & Slides` 아래 Lecture Studio의 immutable revision pair
+
+GOSU가 새로 만드는 모든 Research Notes Markdown은 하나의 versioned v2 frontmatter envelope를 사용한다.
+예약 field는 `gosu_schema_version`, stable document ID·kind·managed flag, `created_at`, `modified_at`, 검증된
+tag, project ID·이름, origin, Project Chat session ID·이름, creator ID·표시명, project-relative 관련 문서
+link, credential 없는 HTTPS 관련 논문 link와 bounded provenance record다. Project Chat artifact는 Main이
+실제 session title과 resolved model ID를 주입하므로 모델이 작성자·session metadata를 가장하거나 frontmatter를
+본문에 삽입할 수 없다. 초기 template, Literature Review projection, paper note와 Lecture Studio revision도
+같은 serializer를 거치며 managed projection을 갱신할 때 `created_at`은 보존하고 `modified_at`만 바꾼다.
+현재 `creator_id`·`creator_name`은 인증된 사람 계정이 아니라 문서를 실제 생성한 technical producer identity다.
+Project Chat artifact에는 resolved model ID, app-owned template·projection에는 GOSU system identity를 기록한다.
+Google·Apple Identity가 구현되기 전까지 이 값을 human actor 감사 identity로 해석하지 않는다.
+배열은 중복을 거절하고 caller가 준 stable order로 쓰며 custom property는 reserved key를 덮을 수 없다. 기존 사용자
+Markdown과 legacy GOSU 문서는 연결만으로 rewrite하지 않아 사용자의 Git/Obsidian history를 오염시키지 않는다.
 
 기존 사용자 folder가 같은 이름을 쓰면 덮어쓰지 않고 project ID prefix가 붙은 독립 folder를 최초
 할당한다. symlink, root escape, marker 변경, file/directory 충돌과 과도하게 큰 managed file은 fail
@@ -1068,6 +1089,13 @@ overscroll만 table 안에 가두고 세로 overscroll은 바깥 page로 전달�
 detail로 계속 이동할 수 있다. 이 계약은 좁은 창, 접힌 sidebar와 Extra Large 글자 크기에서도 넓은 column이
 잘리거나 wheel 입력이 사라지지 않게 유지한다.
 
+Evidence table의 paper title과 DOI action은 provider가 준 임의 markup을 직접 쓰지 않고 shared
+`canonicalLiteratureUrl`로 같은 landing page를 계산한다. 우선순위는 검증된 DOI의 `https://doi.org/...`,
+version suffix를 제거한 canonical arXiv ID의 `https://arxiv.org/abs/...`, 마지막으로 credential 없는
+HTTPS `sourceUrl`이다. 세 후보가 모두 유효하지 않으면 clickable link를 렌더링하지 않는다. title과 DOI가
+같은 helper를 사용하므로 서로 다른 논문을 여는 UI drift가 없고 Electron의 normal external-link policy를
+통해 system browser에서 연다.
+
 검색 batch는 후보별 savepoint를 사용한다. DOI, canonical arXiv ID와 provider ID가 서로 다른 기존 row를 가리키는 진짜
 identity conflict는 그 후보만 rollback하고 `conflict_count`를 검색 이력과 receipt에 남기며, 나머지 안전한
 후보는 계속 저장한다. `literature_search_conflicts`에는 raw response 대신 ordinal, normalized title·author,
@@ -1250,7 +1278,23 @@ flowchart LR
   변경·action Apply를 Main service가 거절한다. Renderer의 disabled button에 의존하지 않고 Main의
   project-scoped gate가 starting·active turn과 chat mutation 중 `project.trash`를 원자적으로 거절하며,
   내부 호출이 이 gate를 우회한 terminal 경합에서도 assistant text만 보존하고 action proposal은
-  폐기한다. 영구 삭제 command는 제공하지 않는다.
+  폐기한다.
+- Settings의 `Empty Trash`는 Trash에 이미 들어간 project만 영구적으로 GOSU workspace에서 제거하는
+  별도 `project.trash.empty` command다. 고정 문구 `EMPTY TRASH` 입력과 최종 확인을 모두 요구하고,
+  expected workspace revision과 UUID idempotency key를 Main에서 검증한다. Active·Archived project는
+  제거 집합에 포함될 수 없다. Main은 대상 project 전체에 Project Chat, SSH execution/approval과 Lecture
+  generation lifecycle lock을 순서대로 잡고 하나라도 실행 중이면 `trash_busy`로 fail closed한다.
+- Empty Trash의 workspace snapshot, sync outbox operation, append-only purge receipt, mutable local-module
+  정리는 한 SQLCipher transaction에서 commit한다. Workspace task/objective와 Literature record/search run,
+  Research Notes binding cache, SSH workspace grant, 아직 실행되지 않은 chat queue만 정리한다. GitHub
+  repository, app local Git worktree, Obsidian/Research Notes file, remote server data는 삭제하지 않고 연결만
+  해제한다. Project Chat history, experiment lineage/metric point, trusted SSH audit, Lecture revision 같은
+  durable history와 provenance는 암호화 DB에 보존한다. 그중 experiment metric point, trusted SSH audit,
+  Lecture revision과 purge receipt처럼 append-only guard가 있는 row는 그 guard를 우회하지 않는다. Settings
+  결과 receipt가 이 경계를 다시 명시한다. 같은 idempotency key의 응답 유실 재시도는 저장된 receipt를
+  반환하고 두 번째 state/outbox mutation을 만들지 않는다. schema-v1 receipt의 legacy wire field 이름
+  `preservedImmutableProvenance`는 이미 저장된 idempotency receipt 호환성을 위해 유지하지만, 그 배열 전체가
+  append-only라는 뜻으로 해석하지 않는다.
 - project lifecycle은 서로 다른 세 상태로 분리한다. Active는 `archivedAt`과 `trashedAt`이 모두 없고,
   Archived는 `archivedAt`만 있으며, Trash는 `trashedAt`이 있는 모든 project다. `project.archive`와
   `project.unarchive`는 Project version CAS와 같은 SQLCipher transaction의 outbox provenance를 사용한다.
@@ -1308,6 +1352,51 @@ flowchart LR
   이동을 막지 않는다. 임의 column 추가·삭제, column 내부 수동 ranking, saved view와 bulk edit는
   후속 범위다.
 
+### 로컬 통합 검색 경계
+
+Workspace의 `Search`는 모든 non-Trash project를 대상으로 Project Chat, Research Notes, Experiments,
+Goal & Metrics, Board, Literature와 Repository 결과를 module별 group/tab으로 돌려주는 로컬 read model이다.
+Research Notes 안에는 같은 contract를 `research-notes` category와 현재 project scope로 고정한 compact
+검색을 둔다. query는 256자, 응답은 category당 기본 20건·최대 50건으로 제한하며 title·snippet·project,
+matched field와 typed navigation target만 Renderer에 보낸다. 결과를 누르면 active project와 해당 tab을
+열고 Chat message, note path, repository file, experiment idea, Board task, Literature record의 exact target을
+request ID로 선택·scroll한다. 프로젝트 또는 scope를 전환하면 generation과 scope key가 이전 비동기 응답을
+무효화하므로 A 프로젝트 결과가 B 프로젝트 화면에 나타나지 않는다. Archived 결과는 검색에는 포함하지만
+mutation 화면을 바로 열지 않고 Project Settings의 restore 동선으로 보낸다.
+
+`SearchService`는 먼저 versioned workspace snapshot으로 project scope와 Board·Objective 결과를 만든 뒤
+세 개의 독립 source를 병렬 호출한다. Goal & Metrics는 화면이 실제로 여는 project별 최신 Objective만
+색인하고 goal·metric·evaluator·dataset뿐 아니라 baseline·target·guardrail·budget·stop policy도 찾는다.
+클릭 전 current Objective ID/version을 다시 확인해 검색 뒤 새 version이 생겼다면 최신 내용을 잘못 열지 않고
+재검색을 안내한다. Application source는 SQLCipher의 Project Chat message/session title, Experiment idea와
+bounded metric point summary, Literature metadata를 project-isolated bounded SQL로 검색한다. metric은
+series/key/name·value/unit·trial ID·aggregation·baseline/target·source/sequence를 찾되 raw dataset·hash를
+result에 노출하지 않는다. Literature는 DOI·citation key·publication year·citation count도 포함한다.
+SQLite parameter 상한을 넘는 128개 초과 project scope는 chunking하고 뒤쪽 project 결과와 partial failure를
+보존한다. Research
+Notes source는 `inspectReadyWorkspace`와 `readReadyMarkdown`이라는 별도 read-only path만 사용한다. 이 경로는
+folder/template 생성, rename reconciliation, Literature projection 또는 binding 저장을 일으키지 않는다.
+global scan은 project별 file queue를 round-robin하여 첫 Vault가 전체 예산을 독점하지 못하게 하고, 총
+240개 Markdown·8,000,000자·file당 160,000자 안에서만 읽는다. hit ID에는 path 대신 SHA-256 digest를 쓰며
+Renderer target에도 project-relative 검증 path만 전달한다.
+
+Repository source는 일반 snapshot처럼 status·branch·history를 계산하지 않고, Git service의 read-only
+`searchFiles`로 tracked/untracked file index만 bounded 조회한다. archived project는 이 검색 전용 reader에서
+허용하지만 Trash는 Main에서 거절한다. file index는 20,000 entry·8 MiB output 한도와 `truncated/incomplete`
+상태를 갖고, absolute worktree path·Git diff·본문은 응답이나 검색 DB에 들어가지 않는다. Research Notes와
+Repository의 긴 정상 path도 fixed-length SHA-256 hit ID로 바꿔 response ID 한도를 넘지 않는다.
+
+각 source의 UI await budget은 5초이며 Main이 absolute deadline과 AbortSignal을 SQL chunk, Vault
+inspection/read와 Git subprocess까지 전달한다. timeout 시 50ms cooperative grace 동안 source가 지금까지
+모은 hit를 `incomplete` partial result로 반환할 수 있다. OS/file provider가 취소를 무시하면 이미 시작한
+read-only promise 하나만 background에 남기고 source-local pending guard가 그것이 settle되기 전 후속 검색의
+새 I/O를 fail closed해 반복 검색이 느린 mount 작업을 중첩하지 않게 한다. timeout, busy source, 일부 project
+실패, 전체 source 실패와 scan budget 소진은 category별 `incomplete`, `truncated`, bounded
+`unavailableReason`으로 표시한다. 내부 exception, Vault path, repository root와 query 본문을 오류 문자열로
+노출하지 않는다. 한 source 장애는 다른 category 결과를 없애지 않으며 0건과 검색 불완전을 UI에서 구분한다.
+검색 결과·index·본문은 SQLCipher, Hosted Sync, outbox와 telemetry에 새로 저장하지 않고 매 query마다 현재
+로컬 authoritative source에서 읽는다.
+
 ### Project Chat 흐름과 소유권
 
 ```mermaid
@@ -1362,6 +1451,19 @@ flowchart LR
   유입되지 않는다. source session에 속하지 않은 message, 다른 project, active/incomplete point, ordinal
   gap·cycle·손상된 lineage는 fail closed한다. 최대 session 100개, branch depth 32, inherited message
   5,000개와 trim된 title 120자 제한을 적용한다.
+- branch transaction은 먼저 `Branch · <source title>` 형태의 deterministic placeholder를 commit해 대화
+  생성을 모델 가용성과 분리한다. 그 뒤 별도의 best-effort title job이 paginated `model/list`의 opaque
+  catalog에서 provider가 표시한 default model과 그 model이 광고한 첫 reasoning option을 그대로 사용한다.
+  App Server catalog에는 속도·비용 순위가 없으므로 model 이름에서 `mini`, `fast`, `low`를 추측하거나
+  하드코딩하지 않는다. 각 title job은 서로 독립적으로 실행되어 하나의 느린 catalog/thread가 다음 branch의
+  제목을 head-of-line block하지 않는다. 단일 10초 end-to-end deadline은 catalog·session snapshot·project
+  directory·thread/start·turn/start/completion·CAS rename 전체를 감싼다. title turn은 web·dynamic tool 없이
+  low verbosity와 strict JSON schema, bounded recent branch context만 사용한다. timeout 뒤 늦게 생긴 thread는
+  turn을 시작하지 않고 release하며, 이미 시작된 turn의 opaque ID가 늦게 오면 interrupt 후 cleanup한다.
+  실제 resolved model·catalog hash·reasoning ID는 session title provenance에 남긴다. compare-and-set rename은
+  사용자가 그 사이 수동으로 바꾼 제목을 절대 덮지 않으며, 실패·timeout·재연결 불가도 이미 생성된 branch를
+  rollback하지 않는다. `session.updated` event는 transcript, draft, scroll과 unread state를 재hydrate하지 않고
+  catalog metadata만 단조롭게 갱신한다.
 - fixed IPC는 session list, selected-session snapshot, root create, completed-message branch와 rename만
   노출한다. rail은 모든 session을 동시에 표시하고 default·independent·branched·active 상태, branch parent와
   생성 시각을 보여 준다. 각 행의 rename action과 rail 상단의 선택-session action은 같은 inline editor를
@@ -1421,10 +1523,14 @@ flowchart LR
   즉시 이동한다. unread identity는 terminal turn ID와 assistant message의 turn ID를 대조해 만들고 duplicate·
   stale·out-of-order event에 idempotent하며, 실제 응답을 보거나 near-bottom에 도달했을 때만 acknowledge한다.
   다른 surface의 공통 spacing은 이 chat 전용 class의 영향을 받지 않는다.
-- 한 project에는 동시에 하나의 Codex turn만 허용한다. 사용자는 active turn 중에도 다른 session을 열어
-  history를 읽거나 새 root/완료 지점 branch를 만들 수 있지만, 다른 session의 composer·model·reasoning·
-  profile·rename은 잠긴다. active session에는 `●`와 Stop을 표시하고 다른 session에는 해당 active session으로
-  이동하라는 상태를 표시한다. 이 gate는 UI 편의가 아니라 Main의 project-level lifecycle lock으로도 강제한다.
+- 실행 소유권은 project가 아니라 `projectId + sessionId`다. 같은 project의 서로 다른 session은 동시에
+  Codex 응답을 생성할 수 있고 rail의 각 session에 독립 active indicator가 표시된다. 같은 session에는 항상
+  하나의 starting/running turn만 허용해 그 session 안의 visible history와 queue 순서를 보존한다. 앱 전체의
+  live session turn은 4개로 제한해 Codex child·attachment·SSH capability가 무제한 증식하지 않게 하며, 남은
+  session은 자기 queue에서 기다린다. Stop·Run now·event·snapshot·draft·scroll·unread와 transport revoke도
+  composite session key로 routing되어 다른 session의 실행을 취소하거나 잠금을 풀지 않는다. project
+  Archive·Trash·Empty Trash, project-shared profile mutation처럼 project 전체 의미가 바뀌는 command만 모든
+  session의 activity를 lifecycle gate로 확인한다.
 - project profile은 provider가 발견한 nullable opaque Codex collaboration mode ID,
   `auto`·`none`·`friendly`·`pragmatic` personality, `auto`·`low`·`medium`·`high` native verbosity,
   `disabled`·`cached`·`live` web search mode, `project`·`board`·`objective` context scope, nullable
@@ -1588,17 +1694,19 @@ flowchart LR
   model provenance를 포함해 `running`으로 CAS 전이하고, terminal attempt와 assistant receipt도 한
   transaction으로 저장한다. process 재시작 시 남아 있는 `starting`·`running` attempt는
   `application_interrupted`로 바꾸고 정확히 하나의 보이는 중단 receipt를 만든다.
-- 같은 project에 starting/running turn이 있으면 새 send는 message와 model/profile 선택, opaque attachment
-  ID만 `project_chat_queued_turns`에 저장하고 즉시 queued receipt를 반환한다. session당 최대 50개를
-  허용하지만 실행 순서는 session별이 아니라 project-global이며, DB counter가 enqueue transaction에서
-  배정한 unique monotonic `enqueue_sequence`를 사용해 같은 timestamp·UUID 정렬이나 재시작에도 FIFO가
-  바뀌지 않는다. claim은 project에서 `next` priority를 먼저, 같은 priority에서는 sequence 순서로 한 row를
-  `starting`으로 원자 전이한다. `Run now`는 한 row에 `next` priority를 주고 현재 turn을 취소한 뒤
-  시작하며, queued row는 실행 전 edit/remove할 수 있다. 완료된 과거 message edit는 원문을 바꾸지 않고
-  그 지점의 branch draft를 만든다. 앱 시작은 남은 `starting` queue row를 `queued`로 복구하고 모든 queued
-  project를 drain한다. attachment capability가 TTL/restart로 사라졌으면 해당 row를 hot-loop하지 않고
-  user message와 명확한 failed assistant receipt로 원자 정산하고 다음 row를 계속한다. queue DB에는 file
-  body·원본 path가 없다.
+- 같은 session에 starting/running turn이 있거나 앱 전체 병렬 capacity가 찼으면 새 send는 message와
+  model/profile 선택, opaque attachment ID만 `project_chat_queued_turns`에 저장하고 즉시 queued receipt를
+  반환한다. session당 최대 50개를 허용하고, DB counter가 enqueue transaction에서 배정한 unique monotonic
+  `enqueue_sequence`와 `next` priority로 **각 session 안의** FIFO를 결정한다. scheduler는 queued session을
+  순회하면서 최대 4개 capacity를 채우므로 한 session의 긴 응답이 같은 project의 다른 session을 막지 않는다.
+  claim은 해당 session에서 한 row만 `starting`으로 원자 전이하며 partial unique index가 session당 active
+  queue claim을 하나로 제한한다. `Run now`는 그 session의 선택 row에 `next` priority를 주고 같은 session의
+  현재 turn 또는 claim→turn-start 사이 작업만 취소한 뒤 실행하며 다른 session은 계속된다. transient drain
+  오류는 bounded backoff로 다시 scheduling하고 tight loop나 중복 실행을 만들지 않는다. queued row는 실행 전
+  edit/remove할 수 있고 완료된 과거 message edit는 원문을 바꾸지 않고 그 지점의 branch draft를 만든다.
+  앱 시작은 남은 `starting` queue row를 `queued`로 복구하고 queued session을 다시 drain한다. attachment
+  capability가 TTL/restart로 사라졌으면 해당 row를 hot-loop하지 않고 user message와 명확한 failed assistant
+  receipt로 원자 정산하고 그 session의 다음 row를 계속한다. queue DB에는 file body·원본 path가 없다.
 - 실패·중단 attempt는 UI에서 삭제하지 않는다. 사용자는 `Retry this turn`으로 원래 attempt를 명시해
   새 attempt를 만들 수 있고 `retryOfAttemptId`로 lineage를 남긴다. 실패한 partial history는 새 model
   prompt에 완료된 대화처럼 재주입하지 않는다. attempt ID가 없던 이전 버전의 실패 receipt도 바로 앞
@@ -2093,12 +2201,15 @@ project의 Notes·Repository에만 bounded document layout class가 적용되는
 
 Project Chat session test는 legacy single-chat DB가 default session으로 lossless migration되는지,
 root session isolation, completed-message branch prefix와 이후 source history 차단, cross-project·
-cross-session snapshot/cancel/retry/action 거절, duplicate·stale event guard와 project당 단일 active turn을
-검증한다. queue test는 같은 timestamp에서도 단조 `enqueue_sequence`가 project 전체 session의 FIFO를
-고정하는지, `next` priority·edit/remove·Run now, startup의 `starting → queued` 복구와 drain, attachment
-expiry를 durable failed user/assistant receipt로 원자 정산한 뒤 다음 row가 진행되는지, message body 외
-file path·bytes가 queue DB에 남지 않는지 검사한다. Renderer test는 session create/select/rename/branch, active session 표시, 다른 session에서
-composer 잠금과 selected-session Stop, 긴 최신 답변의 top anchor, 짧은 답변의 bottom clamp와
+cross-session snapshot/cancel/retry/action 거절, duplicate·stale event guard, 같은 session의 단일 turn과 서로
+다른 session의 최대 4개 병렬 turn을 검증한다. queue test는 같은 timestamp에서도 단조
+`enqueue_sequence`가 session 내부 FIFO를 고정하는지, 다른 session의 느린 Codex startup이 batch drain을
+직렬화하지 않는지, `next` priority·edit/remove·Run now의 exact starting claim·claim handoff·self-interrupt
+방지, startup의 `starting → queued` 복구와 bounded retry, 반복 snapshot의 backoff 우회 방지를 검사한다.
+attachment expiry를 durable failed user/assistant receipt로 원자 정산한 뒤 같은 session의 다음 row가
+진행되는지, message body 외 file path·bytes가 queue DB에 남지 않는지도 고정한다. Renderer test는 session
+create/select/rename/branch, 여러 active session 표시, session별 composer와 selected-session Stop, 긴 최신
+답변의 top anchor, 짧은 답변의 bottom clamp와
 terminal-event/snapshot 순서 경합을 검사한다. scroll helper test는 96px near-bottom 기준, history를 읽는
 중 assistant stream의 viewport 보존·알림, bottom auto-follow, user message와 무변경 snapshot의 no-op을
 고정하고 Renderer markup은 `Latest` button과 composer 직전의 접근 가능한 새-message 알림을 검사한다.
@@ -2243,18 +2354,34 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
   project isolation, default folder/template idempotency, deterministic Literature projection, one-time
   user-owned paper note, category-scoped agent artifact의 path 비노출·create-only·retry idempotency·저장 위치
   receipt·`staged|uncertain|committed-unreported|reported|abandoned` reconciliation·commit uncertainty,
-  rename success·collision `rename-pending`, stale project 전환 응답 폐기
+  rename success·collision `rename-pending`, stale project 전환 응답 폐기, v2 schema와 reserved field,
+  model frontmatter impersonation 차단, `created_at` 보존·`modified_at` 갱신, project/session ID·이름 pair,
+  technical producer identity, project-relative document link·credential 없는 HTTPS paper link,
+  producer별 동일 serializer 사용과 legacy/user-owned Markdown의 no-rewrite
 - Project lifecycle 변경: Active/Archived/Trash의 중복 없는 분류, archive/unarchive stale version,
   archived mutation·chat·agent tool 차단, active-turn lifecycle gate, Archived→Trash→restore 상태 보존,
-  두 단계 Trash UI, 같은 UUID와 task·objective·chat·outbox 보존
+  두 단계 Trash UI, 같은 UUID와 task·objective·chat·outbox 보존, `EMPTY TRASH` typed phrase와 native
+  confirmation, active/archived 제외, lifecycle lock의 fail-closed, expected revision·idempotency·reopen
+  receipt, Project Chat·SSH·Lecture lifecycle lock, snapshot/outbox/receipt/module cleanup의 단일 transaction,
+  mutable local projection만 정리하고 외부 Git/Obsidian/remote data와 durable history·guarded append-only
+  provenance는 보존
 - Project portfolio navigation 변경: 여러 folder 동시 펼침, 같은 folder 재선택 시 접힘, local hide·show·
   show-all, malformed/stale localStorage 복구, hidden·archived fallback과 project 간 active-tab 격리
+- 로컬 통합 검색 변경: trusted fixed IPC·project/Trash 격리, archived read-only 일관성, category grouping,
+  project/scope 전환의 stale response 폐기, 최신 Objective만 색인·click-time version 재검증, goal의
+  baseline/target/guardrail/budget/stop policy, experiment metric/trial/value, Literature DOI/citation key/year/count,
+  exact navigation target, bounded SQL·128개 초과 scope chunk, Research Notes round-robin·file/character budget,
+  Git filename-only reader, 긴 path hash ID, source deadline·AbortSignal·cooperative partial과 pending-operation
+  중첩 방지, partial/all failure·busy·truncation 표시, query/result 비지속성
 - Project Chat native harness 변경: dynamic mode catalog·hash·TOCTOU, mode/model/reasoning fallback 금지,
   personality 지원, profile CAS, instruction revision, prompt hash·bound·truncation, project 격리,
   legacy reviewer action suppression, dynamic model/mode/reasoning provenance, session migration·branch lineage·
+  provider-default·catalog 첫 reasoning을 쓰는 독립 end-to-end-bounded branch title job·late thread/turn cleanup·
+  manual rename CAS·title provenance,
   project/session event isolation, sanitized Markdown·KaTeX, web-search mode provenance·no silent fallback과
   shell/browser/MCP 비활성 유지, PDF path/bytes/raw-text non-retention·scope·TTL·single-use·budget·revoke,
-  project-global monotonic durable queue·restart drain·attachment expiry terminalization·edit/remove/Run-now
+  session-scoped monotonic durable queue·서로 다른 session 병렬 실행·global capacity·restart drain·scheduler
+  retry·attachment expiry terminalization·edit/remove/Run-now의 같은-session cancellation
 - SSH broker 변경: global alias/direct-target registry와 project-scoped workspace grant 분리, deterministic
   command import·inactive loopback `-L`, credential·raw paste·raw output 비보존, root 축소 diagnostics와
   mode별 concrete executable·inspect/test/build/foreground-experiment policy, project-scoped structured resource
@@ -2264,7 +2391,11 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
   eligible trusted binding의 exact version·capacity reservation·append-only audit-before-execute,
   profile/grant CAS revalidation과 in-flight mutation/approval 경합, cancellation-only navigation IPC,
   OpenSSH argument array·direct `-F none`·
-  background fork 차단·client diagnostic 격리, timeout·capacity·local transport cancel, remote kill·hard
+  background fork 차단·client diagnostic 격리, Test 결과의
+  `ready|unknown_host_key|authentication_failed|timed_out|connection_failed` typed 분류, resource 상태의
+  local client/transport/parser/`nvidia-smi` missing/no-GPU/malformed-output 분리, 세 absolute GPU binary
+  후보의 executable-not-found-only fallback, timeout·capacity·local
+  transport cancel, remote kill·hard
   confinement 비보증과 ephemeral approval metadata
 - Literature 변경: active project 격리, Semantic Scholar·Crossref·Hugging Face Papers fixed-origin과 bounded
   metadata normalization, additive HF가 Semantic Scholar 부족분의 Crossref fallback을 막지 않는 규칙,
@@ -2277,7 +2408,9 @@ Runner는 별도 Go module이다. 최소 검증은 다음과 같다.
   deterministic 3-layer ranking·Core canonical reserve와
   hit-level policy provenance, Project Chat의 shared policy·explicit command gate·injected project
   identity·typed search tag·receipt-only 결과·cancel/late-result 봉인, 검색 tag의 누적·정확 filter와
-  provider/manual/AI topic 분리, legacy JSON/CSV·BibTeX tag round-trip
+  provider/manual/AI topic 분리, legacy JSON/CSV·BibTeX tag round-trip, DOI → versionless canonical arXiv →
+  credential 없는 HTTPS source의 shared landing-page 우선순위와 title/DOI action 일치, invalid URL의
+  non-clickable fallback
 - Runner 변경: signature·policy rejection, fence race, Stop·Kill race, exact JSON wire, Podman argument
   array와 fail-closed 설정
 - connector 변경: deterministic fake response, capability 정확성, credential·원문 미저장

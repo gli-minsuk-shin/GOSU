@@ -22,6 +22,7 @@ import type {
   UpdateLiteratureAnnotationsInput,
 } from '../../shared/literature-contracts';
 import { LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW } from '../../shared/literature-contracts';
+import { canonicalLiteratureUrl } from '../../shared/literature-canonical-url';
 import {
   EMPTY_LITERATURE_SEARCH_TAGS,
   LITERATURE_MAX_SEARCH_KEYWORD_TAGS,
@@ -51,11 +52,13 @@ import type {
 import {
   buildLiteratureTablePage,
   buildLiteratureSearchTagOptions,
+  literaturePageForRecord,
   nextLiteratureSort,
   type LiteratureSortDirection,
   type LiteratureSortKey,
   type LiteratureTableRecord,
 } from './literature-table-model';
+import type { SearchTargetRequest } from './search-results-model';
 
 export interface LiteratureViewAdapter {
   list: (input: ListLiteratureInput) => Promise<LiteratureLibrary>;
@@ -370,6 +373,7 @@ export function literatureViewRecord(record: LiteratureRecord): LiteratureViewRe
   return {
     id: record.id,
     title: record.title,
+    canonicalUrl: canonicalLiteratureUrl(record),
     authors: record.authors,
     venue: record.containerTitle ?? '',
     year: record.publishedYear,
@@ -652,16 +656,37 @@ export function LiteratureTable({
           </thead>
           <tbody>
             {result.rows.map((record) => (
-              <tr key={record.id} className={selectedId === record.id ? 'selected' : ''}>
+              <tr
+                id={`literature-record-${record.id}`}
+                key={record.id}
+                tabIndex={selectedId === record.id ? -1 : undefined}
+                className={selectedId === record.id ? 'selected' : ''}
+              >
                 <td>
-                  <button
-                    type="button"
-                    className="literature-table-title"
-                    aria-pressed={selectedId === record.id}
-                    onClick={() => onSelect(record.id)}
-                  >
-                    <span>{record.title}</span>
-                  </button>
+                  {record.canonicalUrl ? (
+                    <a
+                      className="literature-table-title canonical-link"
+                      href={record.canonicalUrl}
+                      aria-label={`Open canonical source for ${record.title}`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        onSelect(record.id);
+                        void window.gosu.openExternal(record.canonicalUrl!);
+                      }}
+                    >
+                      <span>{record.title}</span>
+                      <small>Canonical source ↗</small>
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      className="literature-table-title"
+                      aria-pressed={selectedId === record.id}
+                      onClick={() => onSelect(record.id)}
+                    >
+                      <span>{record.title}</span>
+                    </button>
+                  )}
                 </td>
                 <td>
                   <div className="literature-discovery-cell">
@@ -707,7 +732,24 @@ export function LiteratureTable({
                     )}
                   </div>
                 </td>
-                <td>{record.doi || '—'}</td>
+                <td>
+                  {record.doi && record.canonicalUrl ? (
+                    <a
+                      className="literature-doi-link canonical-link"
+                      href={record.canonicalUrl}
+                      aria-label={`Open DOI ${record.doi}`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        onSelect(record.id);
+                        void window.gosu.openExternal(record.canonicalUrl!);
+                      }}
+                    >
+                      {record.doi}
+                    </a>
+                  ) : (
+                    record.doi || '—'
+                  )}
+                </td>
                 <td>{record.citedBy ?? '—'}</td>
                 <td>{formatLabel(record.type)}</td>
                 <td>
@@ -779,6 +821,8 @@ export function LiteratureDetail({
     setReviewStatus(record.reviewStatus);
   }, [record]);
 
+  const canonicalUrl = canonicalLiteratureUrl(record);
+
   return (
     <section className="literature-detail-card" aria-labelledby="literature-detail-title">
       <header className="literature-detail-heading">
@@ -795,15 +839,15 @@ export function LiteratureDetail({
               onCreatePaperNote={onCreatePaperNote}
             />
           )}
-          {record.sourceUrl && (
+          {canonicalUrl && (
             <button
               type="button"
               className="secondary-button"
               onClick={() => {
-                if (record.sourceUrl) void window.gosu.openExternal(record.sourceUrl);
+                void window.gosu.openExternal(canonicalUrl);
               }}
             >
-              Open source ↗
+              Open canonical source ↗
             </button>
           )}
         </div>
@@ -1084,12 +1128,16 @@ export function LiteratureView({
   aiAvailable = true,
   requestedModelId = null,
   reasoningOptionId = null,
+  searchTarget = null,
+  onSearchTargetHandled = () => undefined,
 }: {
   project: ProjectRecord;
   adapter: LiteratureViewAdapter;
   aiAvailable?: boolean;
   requestedModelId?: string | null;
   reasoningOptionId?: string | null;
+  searchTarget?: SearchTargetRequest | null;
+  onSearchTargetHandled?: (requestId: number) => void;
 }) {
   const [records, setRecords] = useState<readonly LiteratureRecord[]>([]);
   const [totalRecords, setTotalRecords] = useState(0);
@@ -1111,6 +1159,7 @@ export function LiteratureView({
   const [sortDirection, setSortDirection] = useState<LiteratureSortDirection>('descending');
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pendingSearchFocus, setPendingSearchFocus] = useState<SearchTargetRequest | null>(null);
   const selected = records.find((record) => record.id === selectedId) ?? null;
   const latestSearchCoverage = recentSearches[0]?.coverage;
   const tableRecords = useMemo(() => records.map(literatureViewRecord), [records]);
@@ -1129,6 +1178,47 @@ export function LiteratureView({
     () => records.filter((record) => record.aiAnnotations === null).slice(0, 50),
     [records],
   );
+
+  useEffect(() => {
+    if (!searchTarget || loading) return;
+    if (!records.some(({ id }) => id === searchTarget.targetId)) {
+      setError(
+        'The searched literature record is no longer available. Refresh Search and try again.',
+      );
+      onSearchTargetHandled(searchTarget.requestId);
+      return;
+    }
+    const targetPage = literaturePageForRecord(tableRecords, searchTarget.targetId, {
+      text: '',
+      reviewStatus: 'all',
+      discoveryTier: 'all',
+      searchTag: 'all',
+      sortKey,
+      sortDirection,
+    });
+    if (targetPage === null) {
+      setError('The searched paper is outside the current bounded evidence table view.');
+      onSearchTargetHandled(searchTarget.requestId);
+      return;
+    }
+    setTextFilter('');
+    setStatusFilter('all');
+    setTierFilter('all');
+    setSearchTagFilter('all');
+    setPage(targetPage);
+    setSelectedId(searchTarget.targetId);
+    setPendingSearchFocus(searchTarget);
+  }, [loading, onSearchTargetHandled, records, searchTarget, sortDirection, sortKey, tableRecords]);
+
+  useLayoutEffect(() => {
+    if (!pendingSearchFocus) return;
+    const element = document.getElementById(`literature-record-${pendingSearchFocus.targetId}`);
+    if (!element) return;
+    element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
+    element.focus({ preventScroll: true });
+    onSearchTargetHandled(pendingSearchFocus.requestId);
+    setPendingSearchFocus(null);
+  }, [onSearchTargetHandled, page, pendingSearchFocus, selectedId]);
 
   useEffect(() => {
     const valid =

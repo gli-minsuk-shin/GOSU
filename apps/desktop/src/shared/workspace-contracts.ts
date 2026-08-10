@@ -120,7 +120,7 @@ export type WorkspaceOperation = Readonly<{
   idempotencyKey: string;
   scope: string;
   projectId?: string | undefined;
-  entityType: 'project' | 'task' | 'objective';
+  entityType: 'workspace' | 'project' | 'task' | 'objective';
   entityId: string;
   commandType:
     | 'project.create'
@@ -130,6 +130,7 @@ export type WorkspaceOperation = Readonly<{
     | 'project.unarchive'
     | 'project.trash'
     | 'project.restore'
+    | 'project.trash.empty'
     | 'project.board.update'
     | 'task.create'
     | 'task.update'
@@ -141,6 +142,37 @@ export type WorkspaceOperation = Readonly<{
   baseVersion: number | null;
   createdAt: string;
   payload: Readonly<Record<string, unknown>>;
+}>;
+
+export const EMPTY_PROJECT_TRASH_CONFIRMATION = 'EMPTY TRASH' as const;
+
+export type EmptyProjectTrashInput = Readonly<{
+  expectedWorkspaceRevision: number;
+  idempotencyKey: string;
+  confirmation: typeof EMPTY_PROJECT_TRASH_CONFIRMATION;
+}>;
+
+export type EmptyProjectTrashReceipt = Readonly<{
+  schemaVersion: 1;
+  idempotencyKey: string;
+  operationId: string;
+  workspaceRevision: number;
+  removedProjects: readonly Readonly<{ id: string; name: string }>[];
+  detachedLocalLinks: readonly ['research-notes', 'ssh-workspace-grants'];
+  preservedExternalData: readonly [
+    'github-repositories',
+    'local-git-worktrees',
+    'obsidian-research-notes-files',
+    'remote-server-data',
+  ];
+  preservedImmutableProvenance: readonly [
+    'project-chat-history',
+    'experiment-lineage-and-metrics',
+    'ssh-trusted-access-audit',
+    'lecture-revisions',
+  ];
+  recoverableInGosu: false;
+  completedAt: string;
 }>;
 
 export type WorkspacePendingSummary = Readonly<{
@@ -343,7 +375,7 @@ export const WorkspaceOperationSchema: z.ZodType<WorkspaceOperation> = z
     idempotencyKey: uuidSchema,
     scope: z.string().trim().min(1).max(500),
     projectId: uuidSchema.optional(),
-    entityType: z.enum(['project', 'task', 'objective']),
+    entityType: z.enum(['workspace', 'project', 'task', 'objective']),
     entityId: uuidSchema,
     commandType: z.enum([
       'project.create',
@@ -353,6 +385,7 @@ export const WorkspaceOperationSchema: z.ZodType<WorkspaceOperation> = z
       'project.unarchive',
       'project.trash',
       'project.restore',
+      'project.trash.empty',
       'project.board.update',
       'task.create',
       'task.update',
@@ -365,6 +398,48 @@ export const WorkspaceOperationSchema: z.ZodType<WorkspaceOperation> = z
     baseVersion: z.number().int().nonnegative().nullable(),
     createdAt: timestampSchema,
     payload: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+
+export const EmptyProjectTrashInputSchema: z.ZodType<EmptyProjectTrashInput> = z
+  .object({
+    expectedWorkspaceRevision: z.number().int().nonnegative(),
+    idempotencyKey: uuidSchema,
+    confirmation: z.literal(EMPTY_PROJECT_TRASH_CONFIRMATION),
+  })
+  .strict();
+
+export const EmptyProjectTrashReceiptSchema: z.ZodType<EmptyProjectTrashReceipt> = z
+  .object({
+    schemaVersion: z.literal(1),
+    idempotencyKey: uuidSchema,
+    operationId: uuidSchema,
+    workspaceRevision: z.number().int().positive(),
+    removedProjects: z
+      .array(
+        z
+          .object({
+            id: uuidSchema,
+            name: z.string().trim().min(2).max(120),
+          })
+          .strict(),
+      )
+      .min(1),
+    detachedLocalLinks: z.tuple([z.literal('research-notes'), z.literal('ssh-workspace-grants')]),
+    preservedExternalData: z.tuple([
+      z.literal('github-repositories'),
+      z.literal('local-git-worktrees'),
+      z.literal('obsidian-research-notes-files'),
+      z.literal('remote-server-data'),
+    ]),
+    preservedImmutableProvenance: z.tuple([
+      z.literal('project-chat-history'),
+      z.literal('experiment-lineage-and-metrics'),
+      z.literal('ssh-trusted-access-audit'),
+      z.literal('lecture-revisions'),
+    ]),
+    recoverableInGosu: z.literal(false),
+    completedAt: timestampSchema,
   })
   .strict();
 

@@ -103,6 +103,37 @@ describe('Project Chat session rail', () => {
     );
   });
 
+  it('disables rename only for the session with an active turn', () => {
+    const activeSession = {
+      ...defaultSession,
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      title: 'Running ablation',
+      isDefault: false,
+    };
+    const html = renderToStaticMarkup(
+      <ProjectChatSessionRail
+        sessions={[defaultSession, activeSession]}
+        selectedSessionId={defaultSession.id}
+        activeSessionIds={new Set([activeSession.id])}
+        renameDisabledSessionIds={new Set([activeSession.id])}
+        creating={false}
+        onSelect={() => undefined}
+        onCreate={() => undefined}
+        onRename={() => true}
+      />,
+    );
+
+    const selectedRename = html.match(
+      /<button[^>]*aria-label="Rename selected project chat session"[^>]*>/u,
+    )?.[0];
+    const defaultRename = html.match(/<button[^>]*aria-label="Rename Project chat"[^>]*>/u)?.[0];
+    const activeRename = html.match(/<button[^>]*aria-label="Rename Running ablation"[^>]*>/u)?.[0];
+    expect(selectedRename).not.toContain('disabled=""');
+    expect(defaultRename).not.toContain('disabled=""');
+    expect(activeRename).toContain('disabled=""');
+    expect(activeRename).toContain('Wait for this session’s active turn to finish');
+  });
+
   it('validates trimmed session names without hard-coding a visible model flow', () => {
     expect(validateProjectChatSessionRename('  Better title  ', 'Project chat')).toEqual({
       status: 'valid',

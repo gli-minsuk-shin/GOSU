@@ -351,7 +351,12 @@ function fixture(
   }> = [];
   const storage = new MemoryStorage();
   const codex = new FakeCodex();
-  const saved: Array<{ outputProjectId: string; revision: number }> = [];
+  const saved: Array<{
+    outputProjectId: string;
+    revision: number;
+    resolvedModelId: string | null;
+    relatedPapers: readonly string[];
+  }> = [];
   const artifactEvents: string[] = [];
   const service = new LectureStudioService({
     storage,
@@ -388,7 +393,12 @@ function fixture(
       },
       saveRevisionArtifacts: (input) => {
         artifactEvents.push('stage');
-        saved.push({ outputProjectId: input.outputProjectId, revision: input.revision });
+        saved.push({
+          outputProjectId: input.outputProjectId,
+          revision: input.revision,
+          resolvedModelId: input.invocation?.resolvedModelId ?? null,
+          relatedPapers: input.relatedPapers ?? [],
+        });
         if (options.failAfterArtifactPublish) throw new Error('post_publish_validation_failed');
         return [
           {
@@ -507,7 +517,14 @@ describe('LectureStudioService', () => {
     expect(receipt.assistantMessage.content).toContain(
       'Lecture Notes & Slides/Studio/Lecture Notes--r1.md',
     );
-    expect(saved).toEqual([{ outputProjectId: projectA, revision: 1 }]);
+    expect(saved).toEqual([
+      {
+        outputProjectId: projectA,
+        revision: 1,
+        resolvedModelId: 'opaque-model-id',
+        relatedPapers: [],
+      },
+    ]);
     expect(codex.startInput).toMatchObject({
       dynamicTools: [],
       webSearchMode: 'disabled',

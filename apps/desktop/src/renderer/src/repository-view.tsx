@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type {
   GitChange,
@@ -9,6 +9,7 @@ import type {
 import type { ProjectRecord, UpdateProjectRepositoryInput } from '../../shared/workspace-contracts';
 import { MarkdownDocument } from './markdown-document';
 import { repositoryTreeRows } from './repository-tree-model';
+import type { SearchTargetRequest } from './search-results-model';
 
 type RepositoryTab = 'files' | 'changes' | 'history' | 'branches';
 
@@ -92,12 +93,21 @@ function changePathLabel(change: GitChange, staged: boolean) {
   return renamed && change.originalPath ? `${change.originalPath} → ${change.path}` : change.path;
 }
 
+export function repositoryParentDirectories(path: string) {
+  const segments = path.split('/');
+  return segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join('/'));
+}
+
 export function RepositoryView({
   project,
   onUpdateRepository,
+  searchTarget = null,
+  onSearchTargetHandled = () => undefined,
 }: {
   project: ProjectRecord;
   onUpdateRepository: (input: UpdateProjectRepositoryInput) => Promise<boolean>;
+  searchTarget?: SearchTargetRequest | null;
+  onSearchTargetHandled?: (requestId: number) => void;
 }) {
   const [snapshot, setSnapshot] = useState<GitWorkspaceSnapshot | null>(null);
   const [tab, setTab] = useState<RepositoryTab>('files');
@@ -122,6 +132,9 @@ export function RepositoryView({
   const [branchDraft, setBranchDraft] = useState('');
   const [reviewedIndexFingerprint, setReviewedIndexFingerprint] = useState('');
   const [reviewedStagedPaths, setReviewedStagedPaths] = useState<ReadonlySet<string>>(new Set());
+  const [pendingSearchFocus, setPendingSearchFocus] = useState<SearchTargetRequest | null>(null);
+  const fileElementsRef = useRef(new Map<string, HTMLButtonElement>());
+  const fileReadGenerationRef = useRef(0);
 
   const state = snapshot?.state;
   const rows = useMemo(
@@ -148,6 +161,7 @@ export function RepositoryView({
   useEffect(() => {
     let active = true;
     setSnapshot(null);
+    fileReadGenerationRef.current += 1;
     setError('');
     setNotice('');
     setSelectedFile('');
@@ -195,16 +209,52 @@ export function RepositoryView({
     }
   };
 
-  const selectFile = async (path: string) => {
-    setSelectedFile(path);
-    setFilePreview(null);
-    setError('');
-    try {
-      setFilePreview(await window.gosu.gitWorkspace.readFile({ projectId: project.id, path }));
-    } catch (reason) {
-      setError(gitErrorMessage(reason));
+  const selectFile = useCallback(
+    async (path: string) => {
+      const generation = ++fileReadGenerationRef.current;
+      setSelectedFile(path);
+      setFilePreview(null);
+      setError('');
+      try {
+        const preview = await window.gosu.gitWorkspace.readFile({ projectId: project.id, path });
+        if (fileReadGenerationRef.current === generation) setFilePreview(preview);
+      } catch (reason) {
+        if (fileReadGenerationRef.current === generation) setError(gitErrorMessage(reason));
+      }
+    },
+    [project.id],
+  );
+
+  useEffect(() => {
+    if (!searchTarget || !state) return;
+    const file = state.files.find(
+      ({ kind, path }) => kind === 'file' && path === searchTarget.targetId,
+    );
+    if (!file) {
+      setError(
+        'The searched repository file is no longer available. Refresh Search and try again.',
+      );
+      onSearchTargetHandled(searchTarget.requestId);
+      return;
     }
-  };
+    setTab('files');
+    setSearch('');
+    setExpandedDirectories(
+      (current) => new Set([...current, ...repositoryParentDirectories(file.path)]),
+    );
+    setPendingSearchFocus(searchTarget);
+    void selectFile(file.path);
+  }, [onSearchTargetHandled, searchTarget, selectFile, state]);
+
+  useLayoutEffect(() => {
+    if (!pendingSearchFocus) return;
+    const element = fileElementsRef.current.get(pendingSearchFocus.targetId);
+    if (!element) return;
+    element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
+    element.focus({ preventScroll: true });
+    onSearchTargetHandled(pendingSearchFocus.requestId);
+    setPendingSearchFocus(null);
+  }, [onSearchTargetHandled, pendingSearchFocus, rows, tab]);
 
   const selectChange = async (change: GitChange, staged: boolean) => {
     const path = change.path;
@@ -529,10 +579,14 @@ export function RepositoryView({
                 const expanded = expandedDirectories.has(row.path);
                 return (
                   <button
+                    ref={(element) => {
+                      if (element) fileElementsRef.current.set(row.path, element);
+                      else fileElementsRef.current.delete(row.path);
+                    }}
                     type="button"
                     role="treeitem"
                     key={`${row.kind}:${row.path}`}
-                    className={selectedFile === row.path ? 'selected' : ''}
+                    className={`${selectedFile === row.path ? 'selected' : ''}${pendingSearchFocus?.targetId === row.path ? ' search-target' : ''}`}
                     style={{ paddingInlineStart: `${14 + row.depth * 16}px` }}
                     onClick={() => {
                       if (directory) {

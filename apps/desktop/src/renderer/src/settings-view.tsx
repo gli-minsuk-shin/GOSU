@@ -6,6 +6,8 @@ import type {
   UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
 import type {
+  EmptyProjectTrashInput,
+  EmptyProjectTrashReceipt,
   ProjectRecord,
   ProjectVersionCommand,
   RenameProjectInput,
@@ -60,6 +62,7 @@ export function SettingsView({
   onSetProjectArchived,
   onTrashProject,
   onRestoreProject,
+  onEmptyProjectTrash,
   initialCategory = 'appearance',
   category,
   onCategoryChange,
@@ -80,6 +83,7 @@ export function SettingsView({
   onSetProjectArchived: (input: SetProjectArchivedInput) => Promise<boolean>;
   onTrashProject: (input: ProjectVersionCommand) => Promise<boolean>;
   onRestoreProject: (input: ProjectVersionCommand) => Promise<boolean>;
+  onEmptyProjectTrash: (input: EmptyProjectTrashInput) => Promise<EmptyProjectTrashReceipt | null>;
   initialCategory?: SettingsCategory;
   category?: SettingsCategory;
   onCategoryChange?: (category: SettingsCategory) => void;
@@ -256,6 +260,7 @@ export function SettingsView({
             onSetProjectArchived={onSetProjectArchived}
             onTrashProject={onTrashProject}
             onRestoreProject={onRestoreProject}
+            onEmptyProjectTrash={onEmptyProjectTrash}
           />
         ) : activeCategory === 'servers' ? (
           <article className="settings-card server-monitoring-settings-card">

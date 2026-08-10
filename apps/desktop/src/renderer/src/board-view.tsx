@@ -1,4 +1,11 @@
-import { useMemo, useState, type DragEventHandler } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEventHandler,
+} from 'react';
 
 import {
   resolveWorkspaceBoardSettings,
@@ -12,6 +19,7 @@ import {
   type WorkspaceTaskStatus,
 } from '../../shared/workspace-contracts';
 import { BoardSettingsForm } from './board-settings-form';
+import type { SearchTargetRequest } from './search-results-model';
 import {
   EMPTY_KANBAN_FILTERS,
   activeKanbanFilterCount,
@@ -40,6 +48,8 @@ type BoardViewProps = {
   onUpdateTask: (input: UpdateTaskInput) => Promise<boolean>;
   onUpdateBoardSettings: (input: UpdateBoardSettingsInput) => Promise<boolean>;
   onSetTaskArchived: (input: SetTaskArchivedInput) => Promise<boolean>;
+  searchTarget?: SearchTargetRequest | null;
+  onSearchTargetHandled?: (requestId: number) => void;
 };
 
 export function BoardView({
@@ -50,6 +60,8 @@ export function BoardView({
   onUpdateTask,
   onUpdateBoardSettings,
   onSetTaskArchived,
+  searchTarget = null,
+  onSearchTargetHandled = () => undefined,
 }: BoardViewProps) {
   const columns = useMemo(() => resolveKanbanColumns(project), [project]);
   const board = useMemo(() => resolveWorkspaceBoardSettings(project.board), [project.board]);
@@ -59,11 +71,38 @@ export function BoardView({
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dropStatus, setDropStatus] = useState<WorkspaceTaskStatus | null>(null);
+  const [selectedSearchTaskId, setSelectedSearchTaskId] = useState<string | null>(null);
+  const [pendingSearchFocus, setPendingSearchFocus] = useState<SearchTargetRequest | null>(null);
+  const taskElementsRef = useRef(new Map<string, HTMLElement>());
   const filteredTasks = useMemo(() => filterKanbanTasks(tasks, filters), [filters, tasks]);
   const availableLabels = useMemo(() => projectTaskLabels(tasks), [tasks]);
   const trashedTaskCount = tasks.filter((task) => task.archivedAt !== undefined).length;
   const filterCount = activeKanbanFilterCount(filters);
   const busy = busyAction !== null;
+
+  useEffect(() => {
+    if (!searchTarget) return;
+    const task = tasks.find(({ id }) => id === searchTarget.targetId);
+    if (!task) {
+      onSearchTargetHandled(searchTarget.requestId);
+      return;
+    }
+    setFilters({ ...EMPTY_KANBAN_FILTERS, mode: task.archivedAt ? 'archived' : 'active' });
+    setShowSettings(false);
+    setEditingTaskId(null);
+    setSelectedSearchTaskId(task.id);
+    setPendingSearchFocus(searchTarget);
+  }, [onSearchTargetHandled, searchTarget, tasks]);
+
+  useLayoutEffect(() => {
+    if (!pendingSearchFocus) return;
+    const element = taskElementsRef.current.get(pendingSearchFocus.targetId);
+    if (!element) return;
+    element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
+    element.focus({ preventScroll: true });
+    onSearchTargetHandled(pendingSearchFocus.requestId);
+    setPendingSearchFocus(null);
+  }, [filteredTasks, onSearchTargetHandled, pendingSearchFocus]);
 
   return (
     <section className="kanban-workspace" aria-label={`${board.title} Kanban workspace`}>
@@ -141,6 +180,11 @@ export function BoardView({
               archived: false,
             })
           }
+          selectedSearchTaskId={selectedSearchTaskId}
+          onTaskElement={(taskId, element) => {
+            if (element) taskElementsRef.current.set(taskId, element);
+            else taskElementsRef.current.delete(taskId);
+          }}
         />
       ) : (
         <>
@@ -243,6 +287,11 @@ export function BoardView({
                       columnIndex={columnIndex}
                       editing={editingTaskId === task.id}
                       busy={busy}
+                      searchSelected={selectedSearchTaskId === task.id}
+                      elementRef={(element) => {
+                        if (element) taskElementsRef.current.set(task.id, element);
+                        else taskElementsRef.current.delete(task.id);
+                      }}
                       onEdit={() => setEditingTaskId(task.id)}
                       onCancel={() => setEditingTaskId(null)}
                       onDragStart={(event) => {
@@ -488,6 +537,8 @@ function TaskCard({
   onDelete,
   onDragStart,
   onDragEnd,
+  searchSelected = false,
+  elementRef,
 }: {
   task: WorkspaceTask;
   columns: ReturnType<typeof resolveKanbanColumns>;
@@ -500,6 +551,8 @@ function TaskCard({
   onDelete: () => void;
   onDragStart: DragEventHandler<HTMLElement>;
   onDragEnd: DragEventHandler<HTMLElement>;
+  searchSelected?: boolean;
+  elementRef?: (element: HTMLElement | null) => void;
 }) {
   if (editing) {
     return (
@@ -517,7 +570,9 @@ function TaskCard({
   const dueState = taskDueState(task.dueDate);
   return (
     <article
-      className={`task-card priority-${task.priority ?? 'none'}`}
+      ref={elementRef}
+      tabIndex={searchSelected ? -1 : undefined}
+      className={`task-card priority-${task.priority ?? 'none'}${searchSelected ? ' search-target' : ''}`}
       draggable={!busy}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
@@ -816,10 +871,14 @@ export function TaskTrash({
   tasks,
   busy,
   onRestore,
+  selectedSearchTaskId = null,
+  onTaskElement = () => undefined,
 }: {
   tasks: readonly WorkspaceTask[];
   busy: boolean;
   onRestore: (task: WorkspaceTask) => Promise<boolean>;
+  selectedSearchTaskId?: string | null;
+  onTaskElement?: (taskId: string, element: HTMLElement | null) => void;
 }) {
   return (
     <section className="archived-task-view" aria-label="Task trash">
@@ -835,7 +894,12 @@ export function TaskTrash({
       ) : (
         <div className="archived-task-grid">
           {tasks.map((task) => (
-            <article className="task-card archived" key={`${task.id}:${task.version}`}>
+            <article
+              ref={(element) => onTaskElement(task.id, element)}
+              tabIndex={selectedSearchTaskId === task.id ? -1 : undefined}
+              className={`task-card archived${selectedSearchTaskId === task.id ? ' search-target' : ''}`}
+              key={`${task.id}:${task.version}`}
+            >
               <h3>{task.title}</h3>
               {task.description && <p className="task-description">{task.description}</p>}
               <footer>

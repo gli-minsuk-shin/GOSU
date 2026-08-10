@@ -53,6 +53,7 @@ export function ProjectChatSessionRail({
   creating,
   disabled = false,
   renameDisabled = false,
+  renameDisabledSessionIds = EMPTY_SESSION_IDS,
   onSelect,
   onCreate,
   onRename,
@@ -67,6 +68,7 @@ export function ProjectChatSessionRail({
   creating: boolean;
   disabled?: boolean;
   renameDisabled?: boolean;
+  renameDisabledSessionIds?: ReadonlySet<string>;
   onSelect: (sessionId: string) => void;
   onCreate: () => void;
   onRename?: (
@@ -89,6 +91,14 @@ export function ProjectChatSessionRail({
   const sessionListId = useId();
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const selectedSession = selectedSessionId ? byId.get(selectedSessionId) : undefined;
+  const renameBlocked = (sessionId: string) =>
+    renameDisabled || renameDisabledSessionIds.has(sessionId);
+  const renameBlockedMessage = (sessionId: string) =>
+    renameDisabled
+      ? 'Wait for the current project action to finish before renaming.'
+      : renameDisabledSessionIds.has(sessionId)
+        ? 'Wait for this session’s active turn to finish before renaming.'
+        : null;
 
   useEffect(() => {
     if (renamingSessionId === null) {
@@ -111,7 +121,7 @@ export function ProjectChatSessionRail({
   }, [renamingSessionId, sessions]);
 
   const beginRename = (session: ProjectChatSession) => {
-    if (!onRename || disabled || renameDisabled || creating) return;
+    if (!onRename || disabled || renameBlocked(session.id) || creating) return;
     setRenamingSessionId(session.id);
     setRenameDraft(session.title);
     setRenameError(null);
@@ -127,8 +137,11 @@ export function ProjectChatSessionRail({
 
   const saveRename = async (session: ProjectChatSession) => {
     if (!onRename || savingRename) return;
-    if (disabled || renameDisabled || creating) {
-      setRenameError('Wait for the current project action to finish before renaming.');
+    if (disabled || renameBlocked(session.id) || creating) {
+      setRenameError(
+        renameBlockedMessage(session.id) ??
+          'Wait for the current project action to finish before renaming.',
+      );
       return;
     }
     const validation = validateProjectChatSessionRename(renameDraft, session.title);
@@ -231,7 +244,7 @@ export function ProjectChatSessionRail({
               onClick={() => selectedSession && beginRename(selectedSession)}
               disabled={
                 disabled ||
-                renameDisabled ||
+                (selectedSession ? renameBlocked(selectedSession.id) : false) ||
                 creating ||
                 renamingSessionId !== null ||
                 !selectedSession ||
@@ -239,7 +252,9 @@ export function ProjectChatSessionRail({
               }
               aria-label="Rename selected project chat session"
               title={
-                renameDisabled ? 'Wait for the active turn to finish before renaming.' : undefined
+                selectedSession
+                  ? (renameBlockedMessage(selectedSession.id) ?? undefined)
+                  : undefined
               }
             >
               Rename
@@ -262,6 +277,8 @@ export function ProjectChatSessionRail({
             const selected = session.id === selectedSessionId;
             const parent = session.parentSessionId ? byId.get(session.parentSessionId) : undefined;
             const renaming = session.id === renamingSessionId;
+            const sessionRenameBlocked = renameBlocked(session.id);
+            const sessionRenameBlockedMessage = renameBlockedMessage(session.id);
             return (
               <div
                 key={session.id}
@@ -292,14 +309,14 @@ export function ProjectChatSessionRail({
                       aria-describedby={
                         renameError ? `project-chat-session-error-${session.id}` : undefined
                       }
-                      readOnly={savingRename || disabled || renameDisabled || creating}
-                      aria-disabled={savingRename || disabled || renameDisabled || creating}
+                      readOnly={savingRename || disabled || sessionRenameBlocked || creating}
+                      aria-disabled={savingRename || disabled || sessionRenameBlocked || creating}
                     />
                     <div className="project-chat-session-rename-actions">
                       <button
                         type="submit"
                         className="secondary-button"
-                        disabled={savingRename || disabled || renameDisabled || creating}
+                        disabled={savingRename || disabled || sessionRenameBlocked || creating}
                       >
                         {savingRename ? 'Saving…' : 'Save'}
                       </button>
@@ -317,8 +334,8 @@ export function ProjectChatSessionRail({
                         {renameError}
                       </small>
                     )}
-                    {!renameError && renameDisabled && (
-                      <small>Wait for the active turn to finish before renaming.</small>
+                    {!renameError && sessionRenameBlockedMessage && (
+                      <small>{sessionRenameBlockedMessage}</small>
                     )}
                   </form>
                 ) : (
@@ -353,14 +370,10 @@ export function ProjectChatSessionRail({
                         className="project-chat-session-rename-trigger"
                         onClick={() => beginRename(session)}
                         disabled={
-                          disabled || renameDisabled || creating || renamingSessionId !== null
+                          disabled || sessionRenameBlocked || creating || renamingSessionId !== null
                         }
                         aria-label={`Rename ${session.title}`}
-                        title={
-                          renameDisabled
-                            ? 'Wait for the active turn to finish before renaming.'
-                            : 'Rename session'
-                        }
+                        title={sessionRenameBlockedMessage ?? 'Rename session'}
                       >
                         ✎
                       </button>
@@ -384,6 +397,8 @@ export function ProjectChatSessionRail({
     </aside>
   );
 }
+
+const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
 
 function formatSessionUpdate(value: string) {
   return new Intl.DateTimeFormat(undefined, {

@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import {
   CreateProjectInputSchema,
   CreateTaskInputSchema,
+  EmptyProjectTrashInputSchema,
+  EmptyProjectTrashReceiptSchema,
   ObjectiveCommandSchema,
   ProjectVersionCommandSchema,
   RenameProjectInputSchema,
@@ -18,6 +20,8 @@ import {
   resolveWorkspaceBoardSettings,
   type CreateProjectInput,
   type CreateTaskInput,
+  type EmptyProjectTrashInput,
+  type EmptyProjectTrashReceipt,
   type ObjectiveCommand,
   type ProjectRecord,
   type ProjectVersionCommand,
@@ -47,6 +51,12 @@ type MaybePromise<T> = T | Promise<T>;
 export interface WorkspaceStorage {
   load(): MaybePromise<WorkspaceSnapshot | null>;
   commit(state: WorkspaceSnapshot, operation: WorkspaceOperation): MaybePromise<void>;
+  purgeTrash?(
+    state: WorkspaceSnapshot,
+    operation: WorkspaceOperation,
+    receipt: EmptyProjectTrashReceipt,
+  ): MaybePromise<void>;
+  loadTrashPurgeReceipt?(idempotencyKey: string): MaybePromise<EmptyProjectTrashReceipt | null>;
   pendingChanges(): MaybePromise<readonly WorkspaceOperation[]>;
   pendingSummary(): MaybePromise<WorkspacePendingSummary>;
 }
@@ -59,6 +69,8 @@ export class WorkspaceServiceError extends Error {
       | 'project_not_archived'
       | 'project_trashed'
       | 'project_not_trashed'
+      | 'trash_empty'
+      | 'trash_busy'
       | 'task_not_found'
       | 'cross_project_access_denied'
       | 'objective_not_found'
@@ -379,6 +391,84 @@ export class WorkspaceService {
         value: updated,
       };
     });
+  }
+
+  emptyTrash(input: EmptyProjectTrashInput): Promise<EmptyProjectTrashReceipt> {
+    const command = EmptyProjectTrashInputSchema.parse(input);
+    const result = this.mutationTail.then(async () => {
+      if (!this.storage.purgeTrash || !this.storage.loadTrashPurgeReceipt) {
+        throw new Error('workspace_trash_storage_unavailable');
+      }
+      const priorReceipt = await this.storage.loadTrashPurgeReceipt(command.idempotencyKey);
+      if (priorReceipt) return EmptyProjectTrashReceiptSchema.parse(copy(priorReceipt));
+
+      const current = await this.load();
+      if (current.revision !== command.expectedWorkspaceRevision) {
+        throw conflict('workspace', command.expectedWorkspaceRevision, current.revision);
+      }
+      const removedProjects = current.projects
+        .filter((project) => project.trashedAt !== undefined)
+        .map((project) => ({ id: project.id, name: project.name }));
+      if (removedProjects.length === 0) throw new WorkspaceServiceError('trash_empty');
+
+      const removedIds = new Set(removedProjects.map((project) => project.id));
+      const completedAt = new Date().toISOString();
+      const state = WorkspaceSnapshotSchema.parse({
+        ...current,
+        revision: current.revision + 1,
+        projects: current.projects.filter((project) => !removedIds.has(project.id)),
+        tasks: current.tasks.filter((task) => !removedIds.has(task.projectId)),
+        objectives: current.objectives.filter((objective) => !removedIds.has(objective.projectId)),
+      });
+      const operation = WorkspaceOperationSchema.parse({
+        schemaVersion: 1,
+        workspaceRevision: state.revision,
+        id: command.idempotencyKey,
+        idempotencyKey: command.idempotencyKey,
+        scope: 'workspace:project-trash:empty',
+        entityType: 'workspace',
+        entityId: command.idempotencyKey,
+        commandType: 'project.trash.empty',
+        baseVersion: current.revision,
+        createdAt: completedAt,
+        payload: {
+          removedProjectIds: removedProjects.map((project) => project.id),
+          removedProjectCount: removedProjects.length,
+          externalDataDeleted: false,
+          immutableProvenanceDeleted: false,
+        },
+      });
+      const receipt = EmptyProjectTrashReceiptSchema.parse({
+        schemaVersion: 1,
+        idempotencyKey: command.idempotencyKey,
+        operationId: operation.id,
+        workspaceRevision: state.revision,
+        removedProjects,
+        detachedLocalLinks: ['research-notes', 'ssh-workspace-grants'],
+        preservedExternalData: [
+          'github-repositories',
+          'local-git-worktrees',
+          'obsidian-research-notes-files',
+          'remote-server-data',
+        ],
+        preservedImmutableProvenance: [
+          'project-chat-history',
+          'experiment-lineage-and-metrics',
+          'ssh-trusted-access-audit',
+          'lecture-revisions',
+        ],
+        recoverableInGosu: false,
+        completedAt,
+      });
+      await this.storage.purgeTrash(copy(state), copy(operation), copy(receipt));
+      this.state = state;
+      return copy(receipt);
+    });
+    this.mutationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   createTask(input: CreateTaskInput): Promise<WorkspaceTask> {

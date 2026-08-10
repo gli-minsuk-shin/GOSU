@@ -86,6 +86,96 @@ function fixture(revision: number, operationId: string, createdAt: string) {
   return { state, operation };
 }
 
+async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: string) {
+  const originalUserData = app.getPath('userData');
+  const trashUserData = join(rootUserData, 'trash-purge-fixture');
+  mkdirSync(trashUserData, { recursive: true });
+  app.setPath('userData', trashUserData);
+  const database = new LocalDatabase();
+  try {
+    database.open();
+    const workspace = new WorkspaceService({
+      load: () => database.loadWorkspaceState(),
+      commit: (state, operation) => database.commitWorkspaceState(state, operation),
+      purgeTrash: (state, operation, receipt) =>
+        database.purgeWorkspaceTrash(state, operation, receipt),
+      loadTrashPurgeReceipt: (idempotencyKey) =>
+        database.loadWorkspaceTrashPurgeReceipt(idempotencyKey),
+      pendingChanges: () => database.pendingWorkspaceChanges(),
+      pendingSummary: () => database.pendingWorkspaceSummary(),
+    });
+    const activeProject = await workspace.createProject({ name: 'Active purge fixture' });
+    const purgedProject = await workspace.createProject({ name: 'Trashed purge fixture' });
+    database.cache('research-notes-project', purgedProject.id, { projectId: purgedProject.id });
+    const connectionId = randomUUID();
+    invariant(
+      database.createSshConnection({
+        schemaVersion: 1,
+        id: connectionId,
+        label: 'Purge fixture server',
+        hostAlias: 'purge-fixture',
+        version: 1,
+        createdAt: fixedTimestamp,
+        updatedAt: fixedTimestamp,
+      }),
+      'trash_purge_connection_fixture_failed',
+    );
+    invariant(
+      database.createSshWorkspaceGrant({
+        schemaVersion: 1,
+        id: randomUUID(),
+        projectId: purgedProject.id,
+        connectionId,
+        canonicalRoot: '/workspace/purge-fixture',
+        permissionMode: 'diagnostics',
+        version: 1,
+        createdAt: fixedTimestamp,
+        updatedAt: fixedTimestamp,
+      }),
+      'trash_purge_ssh_grant_fixture_failed',
+    );
+    await workspace.trashProject({
+      projectId: purgedProject.id,
+      expectedVersion: purgedProject.version,
+    });
+    const idempotencyKey = randomUUID();
+    const receipt = await workspace.emptyTrash({
+      expectedWorkspaceRevision: (await workspace.snapshot()).revision,
+      idempotencyKey,
+      confirmation: 'EMPTY TRASH',
+    });
+    invariant(
+      (await workspace.snapshot()).projects.every((project) => project.id === activeProject.id),
+      'trash_purge_removed_non_trash_project',
+    );
+    invariant(
+      database.get('research-notes-project', purgedProject.id) === null,
+      'trash_purge_research_notes_link_not_detached',
+    );
+    invariant(
+      database.listSshWorkspaceGrants(purgedProject.id).length === 0,
+      'trash_purge_ssh_grant_not_detached',
+    );
+    invariant(
+      database.loadWorkspaceTrashPurgeReceipt(idempotencyKey)?.operationId === receipt.operationId,
+      'trash_purge_receipt_not_durable',
+    );
+    invariant(
+      (
+        await workspace.emptyTrash({
+          expectedWorkspaceRevision: 0,
+          idempotencyKey,
+          confirmation: 'EMPTY TRASH',
+        })
+      ).operationId === receipt.operationId,
+      'trash_purge_retry_not_idempotent',
+    );
+  } finally {
+    database.close();
+    app.setPath('userData', originalUserData);
+  }
+}
+
 function verifyExperimentPersistence(fixedTimestamp: string) {
   const database = new LocalDatabase();
   database.open();
@@ -162,6 +252,19 @@ function verifyExperimentPersistence(fixedTimestamp: string) {
     database.updateExperimentIdea(updatedChild, 1) === null,
     'experiment_stale_idea_cas_was_accepted',
   );
+  const experimentSearchMatches = database.searchExperimentIdeas(
+    [projectId],
+    'learning scheduler',
+    10,
+  );
+  invariant(
+    experimentSearchMatches.length === 1 && experimentSearchMatches[0]?.id === childIdea.id,
+    'experiment_search_did_not_match_updated_idea',
+  );
+  invariant(
+    database.searchExperimentIdeas([projectId], 'other project baseline', 10).length === 0,
+    'experiment_search_crossed_project_boundary',
+  );
 
   const metricDraft: Omit<ExperimentMetricPoint, 'sequence'> = {
     schemaVersion: 1,
@@ -213,6 +316,22 @@ function verifyExperimentPersistence(fixedTimestamp: string) {
   invariant(
     otherProjectPoint.sequence === 1,
     'experiment_metric_sequence_crossed_project_boundary',
+  );
+  const metricSearchMatches = database.searchExperimentMetricPoints(
+    [projectId],
+    'trial-002 0.91',
+    10,
+  );
+  invariant(
+    metricSearchMatches.length === 1 &&
+      metricSearchMatches[0]?.ideaId === childIdea.id &&
+      metricSearchMatches[0]?.trialId === 'trial-002' &&
+      metricSearchMatches[0]?.value === 0.91,
+    'experiment_metric_search_did_not_match_bounded_summary',
+  );
+  invariant(
+    database.searchExperimentMetricPoints([otherProjectId], 'trial-002', 10).length === 0,
+    'experiment_metric_search_crossed_project_boundary',
   );
 
   const missingIdeaId = randomUUID();
@@ -975,6 +1094,27 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
       merged.reviewStatus === 'reviewed' &&
       merged.aiAnnotations?.summary === 'Metadata-only AI summary',
     'literature_import_trust_merge_failed',
+  );
+  const literatureSearchMatches = database.searchLiteratureRecords(
+    [projectId],
+    'imported human review',
+    10,
+  );
+  invariant(
+    literatureSearchMatches.length === 1 && literatureSearchMatches[0]?.id === merged.id,
+    'literature_search_did_not_match_manual_annotation',
+  );
+  invariant(
+    database.searchLiteratureRecords([projectId], merged.citationKey, 10)[0]?.id === merged.id &&
+      database.searchLiteratureRecords([projectId], String(merged.publishedYear), 10)[0]?.id ===
+        merged.id &&
+      database.searchLiteratureRecords([projectId], String(merged.citationCount), 10)[0]?.id ===
+        merged.id,
+    'literature_search_did_not_match_citation_identity_fields',
+  );
+  invariant(
+    database.searchLiteratureRecords([otherProjectId], 'imported human review', 10).length === 0,
+    'literature_search_crossed_project_boundary',
   );
 
   const providerIdentityTitle = 'Provider identity before metadata change';
@@ -3277,8 +3417,19 @@ void app.whenReady().then(async () => {
         independentChatSession.id,
         queuedTurnId,
         fixedTimestamp,
-      ) && database.claimNextProjectChatQueuedTurn(chatProjectId)?.id === queuedTurnId,
+      ) === 'queued' &&
+        database.claimNextProjectChatQueuedTurn(chatProjectId, independentChatSession.id)?.id ===
+          queuedTurnId,
       'project_chat_queue_claim_failed',
+    );
+    invariant(
+      database.prioritizeProjectChatQueuedTurn(
+        chatProjectId,
+        independentChatSession.id,
+        queuedTurnId,
+        fixedTimestamp,
+      ) === 'starting',
+      'project_chat_queue_starting_run_now_was_not_accepted',
     );
     const queueFailureProjectId = randomUUID();
     const queueFailureSession = database.ensureDefaultProjectChatSession(queueFailureProjectId);
@@ -3310,7 +3461,8 @@ void app.whenReady().then(async () => {
       updatedAt: fixedTimestamp,
     });
     invariant(
-      database.claimNextProjectChatQueuedTurn(queueFailureProjectId)?.id === failedQueueId,
+      database.claimNextProjectChatQueuedTurn(queueFailureProjectId, queueFailureSession.id)?.id ===
+        failedQueueId,
       'project_chat_failed_queue_claim_order_changed',
     );
     const queueFailureAttemptId = randomUUID();
@@ -3357,16 +3509,21 @@ void app.whenReady().then(async () => {
         queueFailureAssistantMessage,
       ) &&
         database.snapshot(queueFailureProjectId).messages.length === 2 &&
-        database.claimNextProjectChatQueuedTurn(queueFailureProjectId)?.id === laterHealthyQueueId,
+        database.claimNextProjectChatQueuedTurn(queueFailureProjectId, queueFailureSession.id)
+          ?.id === laterHealthyQueueId,
       'project_chat_failed_queue_did_not_release_later_work',
     );
 
+    const interruptedChatSession = database.createProjectChatSession(
+      chatProjectId,
+      'Interrupted restart fixture',
+    );
     const interruptedAttemptId = randomUUID();
     const interruptedUserMessageId = randomUUID();
     const interruptedAttempt: ProjectChatAttempt = {
       id: interruptedAttemptId,
       projectId: chatProjectId,
-      sessionId: defaultChatSession.id,
+      sessionId: interruptedChatSession.id,
       userMessageId: interruptedUserMessageId,
       requestedModelId: null,
       reasoningOptionId: null,
@@ -3398,13 +3555,44 @@ void app.whenReady().then(async () => {
       status: 'running',
     };
     database.markChatAttemptRunning(interruptedRunning);
+    const duplicateActiveAttemptId = randomUUID();
+    const duplicateActiveUserMessageId = randomUUID();
+    let duplicateActiveSessionAttemptRejected = false;
+    try {
+      database.beginChatAttempt(
+        {
+          ...interruptedAttempt,
+          id: duplicateActiveAttemptId,
+          userMessageId: duplicateActiveUserMessageId,
+        },
+        {
+          id: duplicateActiveUserMessageId,
+          projectId: chatProjectId,
+          role: 'user',
+          content: 'This same-session active turn must be rejected.',
+          status: 'complete',
+          actions: [],
+          createdAt: fixedTimestamp,
+          completedAt: fixedTimestamp,
+        },
+      );
+    } catch {
+      duplicateActiveSessionAttemptRejected = true;
+    }
+    invariant(
+      duplicateActiveSessionAttemptRejected &&
+        !database
+          .snapshot(chatProjectId, interruptedChatSession.id)
+          .messages.some((message) => message.id === duplicateActiveUserMessageId),
+      'project_chat_same_session_active_attempt_was_not_atomic',
+    );
     const interruptedResearchNoteArtifactId = '1'.repeat(16);
     const interruptedResearchNotePath = `Project Progress/Recovered progress--${interruptedResearchNoteArtifactId}.md`;
     const interruptedResearchNoteSha256 = '2'.repeat(64);
     database.stageResearchNoteSave({
       schemaVersion: 1,
       projectId: chatProjectId,
-      sessionId: defaultChatSession.id,
+      sessionId: interruptedChatSession.id,
       attemptId: interruptedAttemptId,
       bindingId: 'a'.repeat(64),
       category: 'project-progress',
@@ -3414,7 +3602,7 @@ void app.whenReady().then(async () => {
     });
     database.confirmResearchNoteSave({
       projectId: chatProjectId,
-      sessionId: defaultChatSession.id,
+      sessionId: interruptedChatSession.id,
       attemptId: interruptedAttemptId,
       artifactId: interruptedResearchNoteArtifactId,
       category: 'project-progress',
@@ -4091,7 +4279,7 @@ void app.whenReady().then(async () => {
       'ssh_workspace_grant_connection_cascade_failed',
     );
     invariant(
-      reopened.listProjectChatSessions(chatProjectId).length === 2 &&
+      reopened.listProjectChatSessions(chatProjectId).length === 3 &&
         reopened.snapshot(chatProjectId, independentChatSession.id).messages.length === 0,
       'root_chat_session_isolation_did_not_survive_restart',
     );
@@ -4163,19 +4351,24 @@ void app.whenReady().then(async () => {
           chatProfile.instructionRevision?.id,
       'chat_profile_restart_restore_failed',
     );
-    const reconciledAttempt = reopened.getChatAttempt(chatProjectId, interruptedAttemptId);
+    const reopenedInterruptedChat = reopened.snapshot(chatProjectId, interruptedChatSession.id);
+    const reconciledAttempt = reopened.getChatAttempt(
+      chatProjectId,
+      interruptedChatSession.id,
+      interruptedAttemptId,
+    );
     invariant(
       reconciledAttempt?.status === 'interrupted' &&
         reconciledAttempt.errorCode === 'application_interrupted',
       'running_chat_attempt_was_not_reconciled',
     );
     invariant(
-      reopenedChat.messages.filter(
+      reopenedInterruptedChat.messages.filter(
         (message) => message.attemptId === interruptedAttemptId && message.role === 'assistant',
       ).length === 1,
       'interrupted_chat_attempt_receipt_missing',
     );
-    const interruptedResearchNoteMessage = reopenedChat.messages.find(
+    const interruptedResearchNoteMessage = reopenedInterruptedChat.messages.find(
       (message) => message.attemptId === interruptedAttemptId && message.role === 'assistant',
     );
     invariant(
@@ -4196,7 +4389,10 @@ void app.whenReady().then(async () => {
         'attachment_model_modality_unsupported',
       'chat_attempt_modality_error_restore_failed',
     );
-    invariant(reopenedChat.attempts?.length === 3, 'chat_attempt_snapshot_restore_failed');
+    invariant(
+      reopenedChat.attempts?.length === 2 && reopenedInterruptedChat.attempts?.length === 1,
+      'chat_attempt_snapshot_restore_failed',
+    );
     invariant(
       reopened.claimAction(chatProjectId, chatActionId, fixedTimestamp),
       'chat_action_claim_failed',
@@ -4270,6 +4466,26 @@ void app.whenReady().then(async () => {
       reopened.snapshot(chatProjectId, branchedSession.id).messages.length === 2,
       'branched_chat_session_did_not_copy_membership_prefix',
     );
+    const titleInvocationId = randomUUID();
+    const generatedTitleSession = reopened.renameProjectChatSessionIfUnchanged({
+      projectId: chatProjectId,
+      sessionId: branchedSession.id,
+      expectedTitle: branchedSession.title,
+      title: 'Generated alternative hypothesis',
+      titleModel: {
+        invocationId: titleInvocationId,
+        requestedModelId: 'opaque-provider-default',
+        resolvedModelId: 'opaque-provider-default',
+        catalogVersion: 'provider-catalog-v2',
+        reasoningOptionId: 'native-first',
+      },
+      updatedAt: new Date(Date.parse(fixedTimestamp) + 1_000).toISOString(),
+    });
+    invariant(
+      generatedTitleSession?.title === 'Generated alternative hypothesis' &&
+        generatedTitleSession.titleModel?.invocationId === titleInvocationId,
+      'chat_session_generated_title_provenance_failed',
+    );
     const renamedSession = reopened.renameProjectChatSession(
       chatProjectId,
       branchedSession.id,
@@ -4279,6 +4495,55 @@ void app.whenReady().then(async () => {
       renamedSession?.title === 'Alternative hypothesis' &&
         renamedSession.id === branchedSession.id,
       'chat_session_rename_failed',
+    );
+    invariant(
+      renamedSession.titleModel === undefined &&
+        reopened.renameProjectChatSessionIfUnchanged({
+          projectId: chatProjectId,
+          sessionId: branchedSession.id,
+          expectedTitle: 'Alternative hypothesis',
+          title: 'Stale generated title',
+          titleModel: {
+            invocationId: randomUUID(),
+            requestedModelId: 'opaque-provider-default',
+            resolvedModelId: 'opaque-provider-default',
+            catalogVersion: 'provider-catalog-v2',
+            reasoningOptionId: 'native-first',
+          },
+          updatedAt: new Date(Date.parse(fixedTimestamp) + 2_000).toISOString(),
+        }) === null,
+      'chat_session_manual_rename_did_not_win_title_cas',
+    );
+    const canonicalMessageMatches = reopened.searchProjectChatMessages(
+      [chatProjectId],
+      'Session-only answer',
+      10,
+    );
+    invariant(
+      canonicalMessageMatches.length === 1 &&
+        canonicalMessageMatches[0]?.messageId === sessionAssistantMessageId &&
+        canonicalMessageMatches[0].sessionId === branchedSession.id &&
+        canonicalMessageMatches[0].sessionTitle === 'Alternative hypothesis',
+      'project_chat_search_duplicate_branch_membership_not_canonicalized',
+    );
+    const sessionTitleMatches = reopened.searchProjectChatMessages(
+      [chatProjectId],
+      'Alternative hypothesis',
+      10,
+    );
+    invariant(
+      sessionTitleMatches.length === 2 &&
+        sessionTitleMatches.every(
+          (match) =>
+            match.sessionId === branchedSession.id &&
+            match.sessionTitle === 'Alternative hypothesis',
+        ),
+      'project_chat_search_session_title_match_failed',
+    );
+    invariant(
+      reopened.searchProjectChatMessages([first.state.projects[0]!.id], 'Session-only answer', 10)
+        .length === 0,
+      'project_chat_search_cross_project_isolation_failed',
     );
     invariant(
       reopened
@@ -4346,7 +4611,7 @@ void app.whenReady().then(async () => {
     );
     invariant(
       afterRollback
-        .snapshot(chatProjectId)
+        .snapshot(chatProjectId, interruptedChatSession.id)
         .messages.filter(
           (message) => message.attemptId === interruptedAttemptId && message.role === 'assistant',
         ).length === 1,
@@ -4475,6 +4740,7 @@ void app.whenReady().then(async () => {
     verifyLiteratureBoundsAndIdentity(fixedTimestamp);
     verifyExperimentPersistence(fixedTimestamp);
     verifyLectureStudioListDetailBoundary(fixedTimestamp);
+    await verifyWorkspaceTrashPurge(temporaryUserData, fixedTimestamp);
 
     process.stdout.write('local SQLCipher workspace smoke test passed\n');
     app.exit(0);

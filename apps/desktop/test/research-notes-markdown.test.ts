@@ -101,8 +101,16 @@ describe('Research Notes Markdown projections', () => {
     const second = serializeLiteratureReviewMarkdown(PROJECT, [core, unclassified, rising]);
 
     expect(first).toBe(second);
+    expect(first).toContain('gosu_schema_version: 2');
     expect(first).toContain('gosu_document_kind: "literature-review"');
     expect(first).toContain('gosu_managed: true');
+    expect(first).toContain(`created_at: ${JSON.stringify(PROJECT.createdAt)}`);
+    expect(first).toContain('modified_at: "2026-08-04T00:00:00.000Z"');
+    expect(first).toContain(`gosu_project_name: ${JSON.stringify(PROJECT.name)}`);
+    expect(first).toContain('gosu_origin_session_id: null');
+    expect(first).toContain('gosu_creator_id: "gosu-system"');
+    expect(first).toContain('related_papers: ["https://doi.org/10.1000/');
+    expect(first).toContain('gosu_provenance: {');
     expect(first).toContain('record_count: 3');
     expect(first).toContain('metadata_only: true');
     expect(first).toContain('<!-- GOSU-MANAGED-FILE v1:');
@@ -140,7 +148,16 @@ describe('Research Notes Markdown projections', () => {
     const note = serializePaperNoteMarkdown(PROJECT, saved);
 
     expect(note).toContain('gosu_document_kind: "literature-paper-note"');
+    expect(note).toContain('gosu_schema_version: 2');
     expect(note).toContain(`gosu_record_id: "${saved.id}"`);
+    expect(note).toContain(`created_at: ${JSON.stringify(saved.createdAt)}`);
+    expect(note).toContain(`gosu_project_name: ${JSON.stringify(PROJECT.name)}`);
+    expect(note).toContain('gosu_origin_session_name: null');
+    expect(note).toContain('gosu_creator_name: "GOSU"');
+    expect(note).toContain('related_documents: ["Literature/Literature Review.md"]');
+    expect(note).toContain(
+      `authors: ${JSON.stringify(saved.authors.map((author) => author.trim()))}`,
+    );
     expect(note).toContain('metadata_only: true');
     expect(note).toContain('full_text_reviewed: false');
     expect(note).toContain('<!-- GOSU-CREATED-PAPER-NOTE v1: user-owned after creation;');

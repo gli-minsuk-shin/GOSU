@@ -88,16 +88,19 @@ export class VaultReader {
     await this.assertRootIdentity();
   }
 
-  async listMarkdown() {
+  async listMarkdown(signal?: AbortSignal) {
+    signal?.throwIfAborted();
     await this.assertRootIdentity();
     const results: string[] = [];
     const state: WalkState = { directories: 0, entries: 0, stopped: false };
-    await this.walk(this.root, results, state, 0);
+    await this.walk(this.root, results, state, 0, signal);
+    signal?.throwIfAborted();
     await this.assertRootIdentity();
     return results.sort();
   }
 
-  async readMarkdown(relativePath: string) {
+  async readMarkdown(relativePath: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     await this.assertRootIdentity();
     if (extname(relativePath).toLowerCase() !== '.md') throw new Error('markdown_only');
 
@@ -113,6 +116,7 @@ export class VaultReader {
       'markdown_file_required',
       'markdown_too_large',
       expectedMetadata,
+      signal,
     );
     return { path, content: bytes.toString('utf8') };
   }
@@ -154,7 +158,9 @@ export class VaultReader {
     fileError: string,
     sizeError: string,
     expectedMetadata?: Readonly<{ dev: number | bigint; ino: number | bigint }>,
+    signal?: AbortSignal,
   ) {
+    signal?.throwIfAborted();
     const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const metadata = await handle.stat();
@@ -171,11 +177,13 @@ export class VaultReader {
       const bytes = Buffer.allocUnsafe(limit + 1);
       let total = 0;
       while (total < bytes.length) {
+        signal?.throwIfAborted();
         const { bytesRead } = await handle.read(bytes, total, bytes.length - total, total);
         if (bytesRead === 0) break;
         total += bytesRead;
       }
       if (total > limit) throw new Error(sizeError);
+      signal?.throwIfAborted();
       await this.assertOpenedTarget(target, metadata);
       return bytes.subarray(0, total);
     } finally {
@@ -229,7 +237,9 @@ export class VaultReader {
     results: string[],
     state: WalkState,
     depth: number,
+    signal?: AbortSignal,
   ): Promise<void> {
+    signal?.throwIfAborted();
     if (
       state.stopped ||
       results.length >= this.limits.maxFiles ||
@@ -242,6 +252,7 @@ export class VaultReader {
 
     const entries = await opendir(directory);
     for await (const entry of entries) {
+      signal?.throwIfAborted();
       if (state.entries >= this.limits.maxEntries) {
         state.stopped = true;
         break;
@@ -251,7 +262,7 @@ export class VaultReader {
 
       const full = resolve(directory, entry.name);
       if (entry.isDirectory()) {
-        await this.walk(full, results, state, depth + 1);
+        await this.walk(full, results, state, depth + 1, signal);
       } else if (entry.isFile() && extname(entry.name).toLowerCase() === '.md') {
         const metadata = await stat(full);
         if (metadata.size <= this.limits.maxMarkdownBytes) {

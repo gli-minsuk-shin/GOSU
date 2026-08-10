@@ -26,6 +26,7 @@ export type LiteratureSortDirection = 'ascending' | 'descending';
 export interface LiteratureTableRecord {
   id: string;
   title: string;
+  canonicalUrl: string | null;
   authors: readonly string[];
   venue: string;
   year: number | null;
@@ -239,6 +240,23 @@ export function buildLiteratureTablePage<RecordType extends LiteratureTableRecor
     pageCount,
     pageSize,
   };
+}
+
+export function literaturePageForRecord<RecordType extends LiteratureTableRecord>(
+  records: readonly RecordType[],
+  recordId: string,
+  query: Omit<LiteratureTableQuery, 'page'>,
+) {
+  const first = buildLiteratureTablePage(records, { ...query, page: 1 });
+  if (first.rows.some(({ id }) => id === recordId)) return 1;
+  for (let page = 2; page <= first.pageCount; page += 1) {
+    if (
+      buildLiteratureTablePage(records, { ...query, page }).rows.some(({ id }) => id === recordId)
+    ) {
+      return page;
+    }
+  }
+  return null;
 }
 
 export function nextLiteratureSort(

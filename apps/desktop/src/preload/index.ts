@@ -109,6 +109,9 @@ import {
   type ResearchNotesIpcResult,
   unwrapResearchNotesIpcResult,
 } from '../shared/research-notes-ipc-result';
+import { SEARCH_IPC_CHANNELS } from '../shared/search-channels';
+import type { SearchInput, SearchResponse } from '../shared/search-contracts';
+import { type SearchIpcResult, unwrapSearchIpcResult } from '../shared/search-ipc-result';
 import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
 import {
   SshEventSchema,
@@ -143,6 +146,8 @@ import type { VaultAttachment } from '../shared/vault-contracts';
 import type {
   CreateProjectInput,
   CreateTaskInput,
+  EmptyProjectTrashInput,
+  EmptyProjectTrashReceipt,
   ObjectiveCommand,
   ProjectRecord,
   ProjectVersionCommand,
@@ -215,6 +220,14 @@ async function invokeResearchNotes<T>(channel: string, input: unknown): Promise<
     error: { code: 'research_notes_unavailable' },
   }))) as ResearchNotesIpcResult<T>;
   return unwrapResearchNotesIpcResult(result);
+}
+
+async function invokeSearch<T>(channel: string, input: unknown): Promise<T> {
+  const result = (await ipcRenderer.invoke(channel, input).catch(() => ({
+    ok: false,
+    error: { code: 'search_unavailable' },
+  }))) as SearchIpcResult<T>;
+  return unwrapSearchIpcResult(result);
 }
 
 async function invokeSsh<T>(channel: string, input?: unknown): Promise<T> {
@@ -533,6 +546,9 @@ const api = {
         input,
       ),
   },
+  search: {
+    query: (input: SearchInput) => invokeSearch<SearchResponse>(SEARCH_IPC_CHANNELS.search, input),
+  },
   workspace: {
     snapshot: () => invokeWorkspace<WorkspaceSnapshot>(WORKSPACE_IPC_CHANNELS.snapshot),
     pendingSummary: () =>
@@ -549,6 +565,8 @@ const api = {
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.trashProject, input),
     restoreProject: (input: ProjectVersionCommand) =>
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.restoreProject, input),
+    emptyProjectTrash: (input: EmptyProjectTrashInput) =>
+      invokeWorkspace<EmptyProjectTrashReceipt>(WORKSPACE_IPC_CHANNELS.emptyProjectTrash, input),
     updateBoardSettings: (input: UpdateBoardSettingsInput) =>
       invokeWorkspace<ProjectRecord>(WORKSPACE_IPC_CHANNELS.updateBoardSettings, input),
     createTask: (input: CreateTaskInput) =>
