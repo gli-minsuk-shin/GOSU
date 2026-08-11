@@ -2,10 +2,13 @@ import type { ZodType } from 'zod';
 
 import {
   ConnectOverleafGitInputSchema,
+  CompileManuscriptPdfInputSchema,
   CreateManuscriptInputSchema,
   FetchManuscriptCheckpointInputSchema,
+  ListManuscriptCheckpointFilesInputSchema,
   ManuscriptBindingCommandSchema,
   ManuscriptProjectInputSchema,
+  ReadManuscriptCheckpointFileInputSchema,
   UpdateManuscriptInputSchema,
 } from '../shared/manuscript-workspace-contracts';
 import { MANUSCRIPT_WORKSPACE_IPC_CHANNELS } from '../shared/manuscript-workspace-channels';
@@ -67,6 +70,30 @@ export function registerManuscriptWorkspaceIpc(
       input,
       FetchManuscriptCheckpointInputSchema,
       (command) => service.fetchCheckpoint(command),
+      reportUnexpected,
+    ),
+  );
+  register(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.listCheckpointFiles, (input) =>
+    withValidatedInput(
+      input,
+      ListManuscriptCheckpointFilesInputSchema,
+      (command) => service.listCheckpointFiles(command),
+      reportUnexpected,
+    ),
+  );
+  register(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.readCheckpointFile, (input) =>
+    withValidatedInput(
+      input,
+      ReadManuscriptCheckpointFileInputSchema,
+      (command) => service.readCheckpointFile(command),
+      reportUnexpected,
+    ),
+  );
+  register(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.compilePdf, (input) =>
+    withValidatedInput(
+      input,
+      CompileManuscriptPdfInputSchema,
+      (command) => service.compilePdf(command),
       reportUnexpected,
     ),
   );

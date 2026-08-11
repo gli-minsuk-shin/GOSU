@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -18,6 +18,7 @@
     "smoke:literature-scroll:mac": "electron-vite build --config test/electron/literature-scroll.electron.vite.config.ts && electron out/literature-scroll-smoke/main.cjs",
     "smoke:markdown-viewer-scroll:mac": "electron-vite build --config test/electron/markdown-viewer-scroll.electron.vite.config.ts && electron out/markdown-viewer-scroll-smoke/main.cjs",
     "smoke:manuscript-layout:mac": "electron-vite build --config test/electron/manuscript-layout.electron.vite.config.ts && electron out/manuscript-layout-smoke/main.cjs",
+    "smoke:manuscript-pdf-preview:mac": "electron-vite build --config test/electron/manuscript-pdf-preview.electron.vite.config.ts && electron out/manuscript-pdf-preview-smoke/main.cjs",
     "smoke:project-chat-compact:mac": "electron-vite build --config test/electron/project-chat-compact.electron.vite.config.ts && electron out/project-chat-compact-smoke/main.cjs",
     "smoke:ssh-approval-dialog:mac": "electron-vite build --config test/electron/ssh-approval-dialog.electron.vite.config.ts && electron out/ssh-approval-dialog-smoke/main.cjs",
     "lint": "eslint src electron.vite.config.ts",
@@ -72,7 +73,9 @@
       "node_modules/sharp/**"
     ],
     "files": [
-      "out/**/*",
+      "out/main/**/*",
+      "out/preload/**/*",
+      "out/renderer/**/*",
       "package.json"
     ],
     "mac": {

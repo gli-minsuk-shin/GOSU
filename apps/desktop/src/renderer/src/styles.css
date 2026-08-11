@@ -170,6 +170,23 @@
   font-size: 0.84rem;
 }
 
+.manuscript-local-engine-selector {
+  display: grid;
+  gap: 5px;
+  min-width: 190px;
+}
+
+.manuscript-local-engine-selector > span {
+  color: var(--muted);
+  font-size: var(--font-caption);
+  font-weight: 750;
+}
+
+.manuscript-local-engine-selector select {
+  min-height: 38px;
+  padding-block: 7px;
+}
+
 .manuscript-status-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 1fr));
@@ -252,6 +269,71 @@
 .manuscript-future-engines > div {
   display: grid;
   gap: 4px;
+}
+
+.manuscript-pdf-preview {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.manuscript-pdf-preview > header,
+.manuscript-pdf-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.manuscript-pdf-preview > header {
+  justify-content: space-between;
+}
+
+.manuscript-pdf-preview > header > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.manuscript-pdf-preview > header span,
+.manuscript-pdf-preview > header b {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.manuscript-pdf-preview > header b {
+  color: var(--orange);
+}
+
+.manuscript-pdf-controls .ghost-button {
+  min-height: 32px;
+  padding: 5px 9px;
+}
+
+.manuscript-pdf-canvas-wrap {
+  display: grid;
+  min-height: 320px;
+  max-height: min(72vh, 920px);
+  overflow: auto;
+  place-items: start center;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: light-dark(#dfe3de, #050706);
+}
+
+.manuscript-pdf-canvas-wrap > span {
+  place-self: center;
+  color: var(--muted);
+}
+
+.manuscript-pdf-canvas-wrap canvas {
+  max-width: none;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
 }
 
 @media (max-width: 1050px) {

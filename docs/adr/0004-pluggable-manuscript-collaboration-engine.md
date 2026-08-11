@@ -57,13 +57,17 @@ Git blob인지 검증한다. 받은 commit은 binding별 isolated bare mirror의
 Repository worktree에 merge·rebase·checkout하지 않는다. 같은 provider revision의 재시도는 checkpoint
 metadata를 중복 생성하지 않으며, 로컬 artifact가 사라졌다면 같은 revision을 다시 받아 복구한다.
 
-현재 checkpoint capture는 검증된 Git object와 provenance receipt를 보관하는 transport 단계다. source를
-GOSU draft branch로 import하거나, diff·본문·PDF preview를 만들거나, review candidate로 승격하지 않는다.
-따라서 UI도 `sync` 또는 `review proposal`이 아니라 `inbound checkpoint capture`로 표시한다.
+현재 checkpoint capture는 검증된 Git object와 provenance receipt를 보관하는 transport 단계다. capture한
+exact revision에 한해 Project Chat의 bounded file list·UTF-8 chunk read와 Manuscript의 local MacTeX
+preview compile을 요청할 수 있다. capture receipt 자체는 local mirror·source tree·compiler·sandbox
+preflight가 아니며 실제 tool operation이 checkpoint를 다시 검증하고 실패를 별도 반환한다. 이는 live Overleaf edit를 읽거나
+source를 GOSU draft branch로 import·diff하거나 review candidate로 승격하는 행위가 아니다. 따라서 UI도
+`sync` 또는 `review proposal`이 아니라 `inbound checkpoint capture`와 `local preview`로 표시한다.
 
 기존 immutable ZIP/Open-in-Overleaf helper는 별도 legacy bootstrap path로 유지한다. 현재 adapter는
 `bootstrap_export`를 선언하거나 구현하지 않는다. 기존 Overleaf project로 push, background polling,
-force operation, GitHub PR 생성, compile, comment·Track Changes round-trip과 undocumented realtime protocol은
+force operation, GitHub PR 생성, Overleaf server-side compile/PDF fetch, comment·Track Changes round-trip과
+undocumented realtime protocol은
 현재 범위가 아니다.
 
 ### 3. Link는 authority handoff가 아니다
@@ -104,6 +108,26 @@ compile input set과 source-content digest를 별도 계약으로 정의하고 �
 - remote URL과 workspace ID는 adapter-private SQLCipher row에만 저장한다.
 - bare mirror는 `userData/manuscript-workspaces/<binding UUID>` 아래에서만 만든다. binding UUID가 아닌 path는
   거부한다.
+- source list/read/materialize는 pin된 commit·tree·revision envelope·root를 다시 검증하고
+  symlink·gitlink·traversal·control character·`.git`·secret/key 의심 경로·Unicode/case collision을
+  거부한다. Project Chat은 상대 경로와 최대 24,000자 text chunk만 받고 URL, token, local
+  mirror path를 받지 않는다. 원고 본문은 자동 context가 아니라 explicit tool 결과다. exact materialization은
+  `git archive` 대신 isolated `git cat-file --batch`로 blob을 읽고 declared size·type·Git blob hash를
+  재검증해 `.gitattributes`의 `export-ignore`·`export-subst`가 source를 누락·변형하지 못하게 한다. 이전 버전
+  crash 뒤 남은 strict `.gosu-archive-<UUID>` real directory만 startup migration cleanup이 제거하며
+  symlink·file·lookalike·non-binding path는 보존한다.
+- prototype PDF compile은 검증된 checkpoint만 일회성 directory에 materialize하고 macOS
+  `sandbox-exec`에서 사용자가 고른 pdfLaTeX·XeLaTeX·LuaLaTeX 하나만 fixed `latexmk` argv로 실행하고
+  fallback하지 않는다. 이 선택은 Overleaf compiler 설정을 읽은 값이 아니며 실제 engine·version을 provenance에
+  기록한다. network deny, `-no-shell-escape`, captured source·MacTeX·system font/runtime만 허용하는 OS read
+  allowlist, TeX `openin_any=p`, output/home-only write boundary, 120초 timeout, 192 MiB generated
+  staging·50,000-entry·compiler-output·PDF-size budget을 적용한다. PDF magic·SHA-256 검증 후에만 bounded base64를
+  typed IPC로 Renderer에 전달해 decoded-image·canvas pixel/dimension budget을 적용한 PDF.js canvas로 표시하고,
+  한 번에 한 preview만 보유하며 absolute path·`file://`·temporary source를 노출하지 않는다.
+  timeout·resource/output overflow·앱 종료에는 detached process group 전체를 종료하며 정상
+  success/failure cleanup이 끝나지 못한 strict `.compile-XXXXXX` staging은 다음 startup에서 symlink와
+  lookalike를 건드리지 않고 정리한다. 현재 MacTeX는 prototype dependency이며 Overleaf의 compiler·TeX Live
+  설정과 일치함을 보장하지 않는다.
 - fetch는 shallow exact-revision request를 사용하고 binding별 보관 mirror가 256 MiB 또는 전체 manuscript
   mirror가 1 GiB를 넘으면 checkpoint를 pin하지 않는다. 이는 retained-size guardrail이며 fetch 중 순간 disk
   사용량에 대한 OS-level hard quota는 아니다. fetch 뒤 validation이나 quota gate가 실패하면 pin되지 않은
@@ -154,6 +178,10 @@ digest와 root document를 고정한 뒤 새 provider import를 compile·hash �
 - Overleaf Git private binding, GOSU-private `safeStorage` credential, status 확인과 manual inbound capture
 - exact remote revision·regular root document·전체 reachable object 검증, immutable local mirror와 duplicate
   receipt recovery
+- pin된 checkpoint의 exact blob materialization, bounded file list·text chunk를 Project Chat에 제공하는
+  read-only manuscript tool
+- local MacTeX를 사용한 read-allowlisted·network-denied·no-shell-escape·fixed-argv prototype compile,
+  bounded typed IPC와 resource-bounded PDF.js canvas preview
 - manuscript title·root TeX optimistic edit, project switch request-generation guard, bounded friendly errors와
   최소 창 geometry smoke
 - permanent project deletion의 durable provider-artifact cleanup queue와 reference-aware credential cleanup queue
@@ -164,7 +192,7 @@ digest와 root document를 고정한 뒤 새 provider import를 compile·hash �
 ## Deferred work
 
 - schema-driven provider onboarding/plugin installation
-- LaTeX editor, Tectonic compile, PDF preview와 review/citation UI
+- LaTeX editor, bundled Tectonic production compile, durable PDF artifact와 review/citation UI
 - explicit authority handoff, provider collaboration lock와 publish window
 - source-content digest, migration command와 rollback fixture
 - durable sync-attempt state machine, lease/fencing, crash reconciliation와 background scheduling
@@ -235,6 +263,10 @@ Adapter 장애나 rollout 실패 시 binding을 disable하고 GOSU/GitHub draft�
 - official credential-free HTTPS URL, immutable GOSU-private encrypted credential, exact-URL scoped authorization,
   workspace-bound credential 검증, 검증 실패 rollback과 startup pending reconciliation
 - stale revision, missing root/reachable object, duplicate/out-of-order fetch와 missing local artifact recovery
+- exact captured source list/read의 cross-project·stale checkpoint·binary·unsafe tree 거부, bounded chunk와 private locator
+  non-disclosure
+- exact checkpoint만 compile, fixed sandbox argv/network·shell-escape 금지, compiler unavailable·compile error·invalid/
+  oversized PDF 경계, PDF.js preview에 absolute path non-disclosure
 - no push/merge/rebase/force command, failed-fetch prune, binding별 256 MiB·전체 1 GiB retained mirror limit
 - project switch·최소 창 UI, typed IPC allowlist와 bounded error mapping
 - SQLCipher close/reopen, cross-table identity trigger, project purge cascade, durable filesystem/credential cleanup
@@ -243,7 +275,7 @@ Adapter 장애나 rollout 실패 시 binding을 disable하고 GOSU/GitHub draft�
 후속 gate:
 
 - durable attempt restart, lease expiry, cancel/complete race와 fencing
-- explicit authority handoff, dual-master prevention, compile/citation/secret review gate
+- explicit authority handoff, dual-master prevention, bundled compiler/citation/secret review gate와 durable artifact receipt
 - deterministic source-content hash와 provider migration rollback
 - strict fetch-time disk quota
 - outbound publish의 exact remote base, idempotency와 review metadata protection

@@ -43,6 +43,9 @@ describe('Manuscript Workspace preload bridge', () => {
       'connectOverleafGit',
       'inspect',
       'fetchCheckpoint',
+      'listCheckpointFiles',
+      'readCheckpointFile',
+      'compilePdf',
       'disconnect',
     ]);
     expect(api.manuscriptWorkspace).not.toHaveProperty('run');
@@ -55,6 +58,7 @@ describe('Manuscript Workspace preload bridge', () => {
     const projectId = '994495b1-38fb-4a01-917d-63583e6a0e23';
     const manuscriptId = '7f10c680-22d8-4907-a835-b83c6ed36621';
     const bindingId = 'a5201ac9-c425-4afe-a059-c8c7e893dd30';
+    const checkpointId = 'e93ba83b-8609-4bd5-843b-0d3d06716b56';
     const bindingCommand = {
       projectId,
       manuscriptId,
@@ -63,7 +67,7 @@ describe('Manuscript Workspace preload bridge', () => {
     };
     const providerRevision = 'a'.repeat(40);
     const token = 'renderer-to-main-one-shot-token';
-    for (let index = 0; index < 7; index += 1) {
+    for (let index = 0; index < 10; index += 1) {
       electron.ipcRenderer.invoke.mockResolvedValueOnce({ ok: true, value: { call: index + 1 } });
     }
 
@@ -93,6 +97,16 @@ describe('Manuscript Workspace preload bridge', () => {
       ...bindingCommand,
       expectedProviderRevision: providerRevision,
     });
+    const checkpointIdentity = { projectId, manuscriptId, checkpointId };
+    await api.manuscriptWorkspace.listCheckpointFiles(checkpointIdentity);
+    await api.manuscriptWorkspace.readCheckpointFile({
+      ...checkpointIdentity,
+      relativePath: 'paper/main.tex',
+      offset: 24_000,
+      maxCharacters: 12_000,
+    });
+    const compileCommand = { ...checkpointIdentity, engine: 'lualatex' as const };
+    await api.manuscriptWorkspace.compilePdf(compileCommand);
     await api.manuscriptWorkspace.disconnect(bindingCommand);
 
     expect(electron.ipcRenderer.invoke.mock.calls).toEqual([
@@ -127,6 +141,17 @@ describe('Manuscript Workspace preload bridge', () => {
         MANUSCRIPT_WORKSPACE_IPC_CHANNELS.fetchCheckpoint,
         { ...bindingCommand, expectedProviderRevision: providerRevision },
       ],
+      [MANUSCRIPT_WORKSPACE_IPC_CHANNELS.listCheckpointFiles, checkpointIdentity],
+      [
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.readCheckpointFile,
+        {
+          ...checkpointIdentity,
+          relativePath: 'paper/main.tex',
+          offset: 24_000,
+          maxCharacters: 12_000,
+        },
+      ],
+      [MANUSCRIPT_WORKSPACE_IPC_CHANNELS.compilePdf, compileCommand],
       [MANUSCRIPT_WORKSPACE_IPC_CHANNELS.disconnect, bindingCommand],
     ]);
   });
@@ -157,5 +182,32 @@ describe('Manuscript Workspace preload bridge', () => {
     await expect(
       api.manuscriptWorkspace.list('994495b1-38fb-4a01-917d-63583e6a0e23'),
     ).rejects.toThrow('overleaf_git_auth_required');
+  });
+
+  it('preserves allowlisted checkpoint and compiler errors', async () => {
+    const identity = {
+      projectId: '994495b1-38fb-4a01-917d-63583e6a0e23',
+      manuscriptId: '7f10c680-22d8-4907-a835-b83c6ed36621',
+      checkpointId: 'e93ba83b-8609-4bd5-843b-0d3d06716b56',
+    };
+    electron.ipcRenderer.invoke
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { code: 'manuscript_checkpoint_file_not_text' },
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { code: 'manuscript_pdf_compiler_unavailable' },
+      });
+
+    await expect(
+      api.manuscriptWorkspace.readCheckpointFile({
+        ...identity,
+        relativePath: 'paper/figure.pdf',
+      }),
+    ).rejects.toThrow('manuscript_checkpoint_file_not_text');
+    await expect(
+      api.manuscriptWorkspace.compilePdf({ ...identity, engine: 'pdflatex' }),
+    ).rejects.toThrow('manuscript_pdf_compiler_unavailable');
   });
 });

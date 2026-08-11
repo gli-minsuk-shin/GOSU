@@ -8,6 +8,7 @@ import {
   ManuscriptWorkspaceService,
   type ManuscriptWorkspaceStorage,
 } from '../src/main/manuscript-workspace-service';
+import { ManuscriptPdfCompilerError } from '../src/main/manuscript-pdf-compiler';
 import {
   OverleafGitTransportError,
   type OverleafGitCheckpointObservation,
@@ -18,7 +19,13 @@ import type {
   OverleafGitBindingConfiguration,
   StoredManuscriptWorkspaceConnection,
 } from '../src/shared/manuscript-workspace-contracts';
-import { ManuscriptWorkspaceConnectionSchema } from '../src/shared/manuscript-workspace-contracts';
+import {
+  MANUSCRIPT_CHECKPOINT_MAX_FILE_BYTES,
+  MANUSCRIPT_CHECKPOINT_MAX_FILE_METADATA_ENTRIES,
+  ManuscriptCheckpointFileListSchema,
+  ManuscriptWorkspaceConnectionSchema,
+  ReadManuscriptCheckpointFileInputSchema,
+} from '../src/shared/manuscript-workspace-contracts';
 import type { WorkspaceService } from '../src/main/workspace-service';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
@@ -295,6 +302,11 @@ function serviceFixture(
     };
   });
   const hasCheckpoint = vi.fn(async () => true);
+  const listCheckpointFiles = vi.fn(async () => [
+    { relativePath: 'paper/main.tex', sizeBytes: 128, textReadable: true },
+    { relativePath: 'paper/figure.pdf', sizeBytes: 2_048, textReadable: false },
+  ]);
+  const readCheckpointText = vi.fn(async () => '0123456789abcdefghijklmnopqrstuvwxyz');
   const restoreCheckpoint = vi.fn(async () => undefined);
   const removeBindingArtifacts = vi.fn(async () => undefined);
   const eraseCredential = vi.fn(async () => undefined);
@@ -303,8 +315,23 @@ function serviceFixture(
     fetchCheckpoint,
     restoreCheckpoint,
     hasCheckpoint,
+    listCheckpointFiles,
+    readCheckpointText,
     removeBindingArtifacts,
   };
+  const compilePdf = vi.fn(async () => ({
+    artifactId: '33333333-3333-4333-8333-333333333333',
+    compiler: {
+      kind: 'latexmk' as const,
+      displayName: 'Local MacTeX latexmk',
+      version: 'Latexmk, John Collins, 4.87',
+      engine: 'xelatex' as const,
+      engineDisplayName: 'XeLaTeX',
+    },
+    pdfSha256: `sha256:${'e'.repeat(64)}`,
+    sizeBytes: 9,
+    pdfBase64: Buffer.from('%PDF-1.4\n').toString('base64'),
+  }));
   const now = () => new Date('2026-08-11T01:02:03.000Z');
   const repositoryRevision = vi.fn(async () => GOSU_REVISION);
   const adapters = createManuscriptWorkspaceAdapterRegistry([
@@ -318,6 +345,7 @@ function serviceFixture(
     repository: { revision: repositoryRevision },
     adapters,
     overleafGit: transport,
+    pdfCompiler: { compile: compilePdf },
     credentials: { stage: stageCredential },
     now,
   });
@@ -330,6 +358,9 @@ function serviceFixture(
     inspect,
     fetchCheckpoint,
     hasCheckpoint,
+    listCheckpointFiles,
+    readCheckpointText,
+    compilePdf,
     restoreCheckpoint,
     removeBindingArtifacts,
     eraseCredential,
@@ -356,7 +387,77 @@ async function createAndConnect(fixture: ReturnType<typeof serviceFixture>) {
   return { manuscript, connection: connected.manuscripts[0]!.connection!, token };
 }
 
+async function createConnectAndCapture(fixture: ReturnType<typeof serviceFixture>) {
+  const connected = await createAndConnect(fixture);
+  const captured = await fixture.service.fetchCheckpoint({
+    projectId: PROJECT_ID,
+    manuscriptId: connected.manuscript.id,
+    bindingId: connected.connection.binding.bindingId,
+    expectedBindingVersion: connected.connection.binding.version,
+    expectedProviderRevision: PROVIDER_REVISION,
+  });
+  return {
+    ...connected,
+    checkpoint: captured.manuscripts[0]!.connection!.lastCheckpoint!,
+  };
+}
+
 describe('Manuscript workspace service', () => {
+  it('accepts transport-sized checkpoint metadata without widening bounded text chunks', () => {
+    const files = Array.from(
+      { length: MANUSCRIPT_CHECKPOINT_MAX_FILE_METADATA_ENTRIES },
+      (_, index) => ({
+        relativePath: `figures/result-${index}.bin`,
+        sizeBytes: MANUSCRIPT_CHECKPOINT_MAX_FILE_BYTES,
+        textReadable: false,
+      }),
+    );
+    const checkpoint = {
+      schemaVersion: 1 as const,
+      projectId: PROJECT_ID,
+      manuscriptId: '33333333-3333-4333-8333-333333333333',
+      checkpointId: '44444444-4444-4444-8444-444444444444',
+      providerRevision: PROVIDER_REVISION,
+      files,
+    };
+
+    expect(ManuscriptCheckpointFileListSchema.safeParse(checkpoint).success).toBe(true);
+    expect(
+      ManuscriptCheckpointFileListSchema.safeParse({
+        ...checkpoint,
+        files: [
+          ...files,
+          {
+            relativePath: 'figures/one-too-many.bin',
+            sizeBytes: 1,
+            textReadable: false,
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      ManuscriptCheckpointFileListSchema.safeParse({
+        ...checkpoint,
+        files: [
+          {
+            relativePath: 'figures/oversized.bin',
+            sizeBytes: MANUSCRIPT_CHECKPOINT_MAX_FILE_BYTES + 1,
+            textReadable: false,
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      ReadManuscriptCheckpointFileInputSchema.safeParse({
+        projectId: PROJECT_ID,
+        manuscriptId: checkpoint.manuscriptId,
+        checkpointId: checkpoint.checkpointId,
+        relativePath: 'paper/main.tex',
+        maxCharacters: 24_001,
+      }).success,
+    ).toBe(false);
+  });
+
   it('does not inspect the Git worktree until a manuscript has an active workspace binding', async () => {
     const fixture = serviceFixture();
 
@@ -642,6 +743,179 @@ describe('Manuscript workspace service', () => {
       newerProviderRevision,
     );
     expect(fixture.fetchCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists and reads only the exact latest captured checkpoint with bounded chunks', async () => {
+    const fixture = serviceFixture();
+    const { manuscript, connection, checkpoint } = await createConnectAndCapture(fixture);
+    const identity = {
+      projectId: PROJECT_ID,
+      manuscriptId: manuscript.id,
+      checkpointId: checkpoint.checkpointId,
+    };
+
+    await expect(fixture.service.listCheckpointFiles(identity)).resolves.toMatchObject({
+      schemaVersion: 1,
+      ...identity,
+      providerRevision: PROVIDER_REVISION,
+      files: [
+        { relativePath: 'paper/main.tex', sizeBytes: 128, textReadable: true },
+        { relativePath: 'paper/figure.pdf', sizeBytes: 2_048, textReadable: false },
+      ],
+    });
+    expect(fixture.listCheckpointFiles).toHaveBeenCalledExactlyOnceWith(
+      connection.binding.bindingId,
+      PROVIDER_REVISION,
+      'paper/main.tex',
+      `sha256:${'d'.repeat(64)}`,
+    );
+
+    await expect(
+      fixture.service.readCheckpointFile({
+        ...identity,
+        relativePath: 'paper/main.tex',
+        offset: 10,
+        maxCharacters: 5,
+      }),
+    ).resolves.toMatchObject({
+      schemaVersion: 1,
+      ...identity,
+      providerRevision: PROVIDER_REVISION,
+      relativePath: 'paper/main.tex',
+      offset: 10,
+      nextOffset: 15,
+      truncated: true,
+      content: 'abcde',
+    });
+    expect(fixture.readCheckpointText).toHaveBeenCalledExactlyOnceWith(
+      connection.binding.bindingId,
+      PROVIDER_REVISION,
+      'paper/main.tex',
+      `sha256:${'d'.repeat(64)}`,
+      'paper/main.tex',
+    );
+  });
+
+  it('rejects stale or cross-project checkpoint reads before touching provider artifacts', async () => {
+    const fixture = serviceFixture();
+    const { manuscript } = await createConnectAndCapture(fixture);
+
+    await expect(
+      fixture.service.listCheckpointFiles({
+        projectId: PROJECT_ID,
+        manuscriptId: manuscript.id,
+        checkpointId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: 'manuscript_checkpoint_not_found' });
+    await expect(
+      fixture.service.readCheckpointFile({
+        projectId: OTHER_PROJECT_ID,
+        manuscriptId: manuscript.id,
+        checkpointId: randomUUID(),
+        relativePath: 'paper/main.tex',
+      }),
+    ).rejects.toMatchObject({ code: 'manuscript_not_found' });
+    expect(fixture.listCheckpointFiles).not.toHaveBeenCalled();
+    expect(fixture.readCheckpointText).not.toHaveBeenCalled();
+  });
+
+  it('maps bounded checkpoint artifact errors without exposing provider diagnostics', async () => {
+    const fixture = serviceFixture();
+    const { manuscript, checkpoint } = await createConnectAndCapture(fixture);
+    fixture.listCheckpointFiles.mockRejectedValueOnce(
+      new OverleafGitTransportError('overleaf_git_checkpoint_tree_unsafe'),
+    );
+    fixture.readCheckpointText.mockRejectedValueOnce(
+      new OverleafGitTransportError('overleaf_git_checkpoint_file_not_text'),
+    );
+    fixture.readCheckpointText.mockRejectedValueOnce(
+      new OverleafGitTransportError('overleaf_git_checkpoint_file_not_found'),
+    );
+    const identity = {
+      projectId: PROJECT_ID,
+      manuscriptId: manuscript.id,
+      checkpointId: checkpoint.checkpointId,
+    };
+
+    await expect(fixture.service.listCheckpointFiles(identity)).rejects.toMatchObject({
+      code: 'manuscript_checkpoint_tree_unsafe',
+    });
+    await expect(
+      fixture.service.readCheckpointFile({
+        ...identity,
+        relativePath: 'paper/figure.pdf',
+      }),
+    ).rejects.toMatchObject({ code: 'manuscript_checkpoint_file_not_text' });
+    await expect(
+      fixture.service.readCheckpointFile({
+        ...identity,
+        relativePath: 'paper/missing.tex',
+      }),
+    ).rejects.toMatchObject({ code: 'manuscript_checkpoint_file_not_found' });
+  });
+
+  it('compiles the exact captured checkpoint and marks a newer observed provider revision', async () => {
+    const fixture = serviceFixture();
+    const { manuscript, connection, checkpoint } = await createConnectAndCapture(fixture);
+    const identity = {
+      projectId: PROJECT_ID,
+      manuscriptId: manuscript.id,
+      checkpointId: checkpoint.checkpointId,
+      engine: 'xelatex' as const,
+    };
+
+    await expect(fixture.service.compilePdf(identity)).resolves.toMatchObject({
+      schemaVersion: 1,
+      artifactId: '33333333-3333-4333-8333-333333333333',
+      projectId: identity.projectId,
+      manuscriptId: identity.manuscriptId,
+      checkpointId: identity.checkpointId,
+      providerRevision: PROVIDER_REVISION,
+      rootDocument: 'paper/main.tex',
+      providerAhead: false,
+      compiler: {
+        kind: 'latexmk',
+        displayName: 'Local MacTeX latexmk',
+        engine: 'xelatex',
+        engineDisplayName: 'XeLaTeX',
+      },
+      pdfSha256: `sha256:${'e'.repeat(64)}`,
+      sizeBytes: 9,
+      compiledAt: '2026-08-11T01:02:03.000Z',
+    });
+    expect(fixture.compilePdf).toHaveBeenCalledExactlyOnceWith(
+      connection.binding.bindingId,
+      checkpoint,
+      'xelatex',
+    );
+
+    const storedConnection = fixture.storage.connections.get(manuscript.id)!;
+    fixture.storage.connections.set(manuscript.id, {
+      ...storedConnection,
+      lastObservedProviderRevision: 'f'.repeat(40),
+    });
+    await expect(fixture.service.compilePdf(identity)).resolves.toMatchObject({
+      providerAhead: true,
+      checkpointId: checkpoint.checkpointId,
+      providerRevision: PROVIDER_REVISION,
+    });
+  });
+
+  it('maps local PDF compiler failures to a bounded service error', async () => {
+    const fixture = serviceFixture();
+    const { manuscript, checkpoint } = await createConnectAndCapture(fixture);
+    fixture.compilePdf.mockRejectedValueOnce(
+      new ManuscriptPdfCompilerError('manuscript_pdf_compile_failed'),
+    );
+
+    await expect(
+      fixture.service.compilePdf({
+        projectId: PROJECT_ID,
+        manuscriptId: manuscript.id,
+        checkpointId: checkpoint.checkpointId,
+        engine: 'lualatex',
+      }),
+    ).rejects.toMatchObject({ code: 'manuscript_pdf_compile_failed' });
   });
 
   it('fails closed on a stale provider revision and does not append a checkpoint', async () => {

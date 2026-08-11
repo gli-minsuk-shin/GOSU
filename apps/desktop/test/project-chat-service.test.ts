@@ -15,6 +15,7 @@ import type {
   ProjectAgentHermes,
   ProjectAgentHermesDelegationResult,
   ProjectAgentLiterature,
+  ProjectAgentManuscripts,
   ProjectAgentSsh,
   ProjectAgentVault,
 } from '../src/main/project-agent-tools';
@@ -63,6 +64,7 @@ import type {
   LiteratureSearchInput,
   LiteratureSearchReceipt,
 } from '../src/shared/literature-contracts';
+import type { ManuscriptWorkspaceSnapshot } from '../src/shared/manuscript-workspace-contracts';
 import { EXPERIMENT_LOGGING_SYSTEM_FIELDS } from '../src/shared/experiment-workspace-contracts';
 import type { SshServerResourceSnapshot } from '../src/shared/ssh-contracts';
 import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
@@ -1266,6 +1268,7 @@ async function fixture(
   queueSchedulerRetryDelaysMs?: readonly number[],
   experiments?: ProjectAgentExperiments,
   hermes?: ProjectAgentHermes,
+  manuscripts?: ProjectAgentManuscripts,
 ) {
   const workspaceStorage = new MemoryWorkspaceStorage();
   const workspace = new WorkspaceService(workspaceStorage);
@@ -1342,6 +1345,7 @@ async function fixture(
     workspace,
     codex,
     literature,
+    ...(manuscripts ? { manuscripts } : {}),
     ssh,
     ...(hermes ? { hermes } : {}),
     ...(experiments ? { experiments } : {}),
@@ -2657,6 +2661,216 @@ describe('ProjectChatService', () => {
     expect(result.contentItems[0]!.text).toContain('ACTIVE_PROJECT_IDEA');
     expect(result.contentItems[0]!.text).not.toContain(projectB.id);
     expect(experiments.list).toHaveBeenCalledWith({ projectId: projectA.id });
+  });
+
+  it('lists only sanitized manuscript connection and checkpoint status for the active project', async () => {
+    const linkedManuscriptId = '11111111-1111-4111-8111-111111111111';
+    const checkpointId = '55555555-5555-4555-8555-555555555555';
+    const manuscripts: ProjectAgentManuscripts = {
+      list: vi.fn(
+        async ({ projectId }) =>
+          ({
+            schemaVersion: 1,
+            projectId,
+            providers: [],
+            manuscripts: [
+              {
+                manuscript: {
+                  schemaVersion: 1,
+                  id: linkedManuscriptId,
+                  projectId,
+                  title: 'Linked paper',
+                  rootDocument: 'private/paper/main.tex',
+                  version: 1,
+                  createdAt: '2026-08-11T00:00:00.000Z',
+                  updatedAt: '2026-08-11T00:00:00.000Z',
+                },
+                connection: {
+                  binding: {
+                    bindingId: '22222222-2222-4222-8222-222222222222',
+                    enabled: true,
+                  },
+                  providerDisplayName: 'Overleaf Git',
+                  workspaceUrl: 'https://www.overleaf.com/project/private-workspace-id',
+                  lifecycle: 'ready',
+                  syncState: 'provider_ahead',
+                  lastObservedAt: '2026-08-11T01:00:00.000Z',
+                  lastObservedProviderRevision: 'private-new-provider-revision',
+                  lastCheckpoint: {
+                    bindingId: '22222222-2222-4222-8222-222222222222',
+                    checkpointId,
+                    providerRevision: 'private-old-provider-revision',
+                  },
+                },
+              },
+              {
+                manuscript: {
+                  schemaVersion: 1,
+                  id: '33333333-3333-4333-8333-333333333333',
+                  projectId,
+                  title: 'Local draft',
+                  rootDocument: 'draft/main.tex',
+                  version: 1,
+                  createdAt: '2026-08-11T00:00:00.000Z',
+                  updatedAt: '2026-08-11T00:00:00.000Z',
+                },
+                connection: null,
+              },
+            ],
+          }) as unknown as ManuscriptWorkspaceSnapshot,
+      ),
+      listCheckpointFiles: vi.fn(
+        async ({ projectId, manuscriptId, checkpointId: requestedId }) => ({
+          schemaVersion: 1 as const,
+          projectId,
+          manuscriptId,
+          checkpointId: requestedId,
+          providerRevision: 'private-old-provider-revision',
+          files: [
+            { relativePath: 'main.tex', sizeBytes: 96, textReadable: true },
+            { relativePath: 'figure.pdf', sizeBytes: 1_024, textReadable: false },
+          ],
+        }),
+      ),
+      readCheckpointFile: vi.fn(
+        async ({ projectId, manuscriptId, checkpointId: requestedId, relativePath, offset }) => ({
+          schemaVersion: 1 as const,
+          projectId,
+          manuscriptId,
+          checkpointId: requestedId,
+          providerRevision: 'private-old-provider-revision',
+          relativePath,
+          offset: offset ?? 0,
+          nextOffset: 31,
+          truncated: false,
+          content: '\\documentclass{article}\\begin{document}Visible\\end{document}',
+        }),
+      ),
+    };
+    const { chat, codex, projectA, projectB } = await fixture(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      manuscripts,
+    );
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Is this Overleaf manuscript connected?',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('list_manuscripts');
+
+    const result = await codex.dynamicToolHandlers[0]!(
+      {
+        threadId: 'thread-1',
+        turnId: receipt.turnId,
+        callId: 'manuscript-list-1',
+        namespace: 'gosu_project',
+        tool: 'list_manuscripts',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+    expect(result.success).toBe(true);
+    const body = JSON.parse(result.contentItems[0]!.text) as {
+      projectId?: string;
+      checkpointCaptured: boolean;
+      sourceInspectionCanBeRequested: boolean;
+      localPdfCompileCanBeRequested: boolean;
+      manuscripts: Array<Record<string, unknown>>;
+    };
+    expect(body).toMatchObject({
+      providerInspection: 'cached_status_only',
+      checkpointCaptured: true,
+      sourceInspectionCanBeRequested: true,
+      localPdfCompileCanBeRequested: true,
+      manuscripts: [
+        {
+          manuscriptId: linkedManuscriptId,
+          title: 'Linked paper',
+          linked: true,
+          provider: 'Overleaf Git',
+          checkpointCaptured: true,
+          checkpointId,
+          sourceInspectionCanBeRequested: true,
+          localPdfCompileCanBeRequested: true,
+          stale: true,
+        },
+        {
+          title: 'Local draft',
+          linked: false,
+          checkpointCaptured: false,
+          sourceInspectionCanBeRequested: false,
+          localPdfCompileCanBeRequested: false,
+          stale: null,
+        },
+      ],
+    });
+    expect(body.projectId).toBeUndefined();
+    expect(result.contentItems[0]!.text).not.toContain(projectA.id);
+    expect(result.contentItems[0]!.text).not.toContain(projectB.id);
+    expect(result.contentItems[0]!.text).not.toContain('private/paper/main.tex');
+    expect(result.contentItems[0]!.text).not.toContain('private-workspace-id');
+    expect(result.contentItems[0]!.text).not.toContain('private-new-provider-revision');
+    expect(result.contentItems[0]!.text).not.toContain('private-old-provider-revision');
+    expect(result.contentItems[0]!.text).not.toContain('sourceTextAvailable');
+    expect(result.contentItems[0]!.text).not.toContain('pdfPreviewAvailableInManuscriptTab');
+    expect(manuscripts.list).toHaveBeenCalledWith({ projectId: projectA.id });
+
+    const filesResult = await codex.dynamicToolHandlers[0]!(
+      {
+        threadId: 'thread-1',
+        turnId: receipt.turnId,
+        callId: 'manuscript-files-1',
+        namespace: 'gosu_project',
+        tool: 'list_manuscript_checkpoint_files',
+        arguments: { manuscriptId: linkedManuscriptId, checkpointId },
+      },
+      dynamicToolDelivery(),
+    );
+    expect(filesResult.success).toBe(true);
+    expect(filesResult.contentItems[0]!.text).toContain('main.tex');
+    expect(filesResult.contentItems[0]!.text).toContain('figure.pdf');
+    expect(filesResult.contentItems[0]!.text).not.toContain(projectA.id);
+    expect(filesResult.contentItems[0]!.text).not.toContain('private-old-provider-revision');
+    expect(manuscripts.listCheckpointFiles).toHaveBeenCalledWith({
+      projectId: projectA.id,
+      manuscriptId: linkedManuscriptId,
+      checkpointId,
+    });
+
+    const readResult = await codex.dynamicToolHandlers[0]!(
+      {
+        threadId: 'thread-1',
+        turnId: receipt.turnId,
+        callId: 'manuscript-read-1',
+        namespace: 'gosu_project',
+        tool: 'read_manuscript_checkpoint_file',
+        arguments: {
+          manuscriptId: linkedManuscriptId,
+          checkpointId,
+          relativePath: 'main.tex',
+          maxCharacters: 2_000,
+        },
+      },
+      dynamicToolDelivery(),
+    );
+    expect(readResult.success).toBe(true);
+    expect(readResult.contentItems[0]!.text).toContain('documentclass');
+    expect(readResult.contentItems[0]!.text).toContain('untrusted_manuscript_content');
+    expect(readResult.contentItems[0]!.text).not.toContain(projectA.id);
+    expect(readResult.contentItems[0]!.text).not.toContain('private-old-provider-revision');
+    expect(manuscripts.readCheckpointFile).toHaveBeenCalledWith({
+      projectId: projectA.id,
+      manuscriptId: linkedManuscriptId,
+      checkpointId,
+      relativePath: 'main.tex',
+      maxCharacters: 2_000,
+    });
   });
 
   it('binds authorized Local Notes tools to the project and persists bounded source provenance', async () => {

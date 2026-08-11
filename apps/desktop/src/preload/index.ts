@@ -70,10 +70,16 @@ import { LITERATURE_IPC_CHANNELS } from '../shared/literature-channels';
 import { MANUSCRIPT_WORKSPACE_IPC_CHANNELS } from '../shared/manuscript-workspace-channels';
 import type {
   ConnectOverleafGitInput,
+  CompileManuscriptPdfInput,
   CreateManuscriptInput,
   FetchManuscriptCheckpointInput,
+  ListManuscriptCheckpointFilesInput,
   ManuscriptBindingCommand,
+  ManuscriptCheckpointFileChunk,
+  ManuscriptCheckpointFileList,
+  ManuscriptPdfPreview,
   ManuscriptWorkspaceSnapshot,
+  ReadManuscriptCheckpointFileInput,
   UpdateManuscriptInput,
 } from '../shared/manuscript-workspace-contracts';
 import { unwrapManuscriptWorkspaceIpcResult } from '../shared/manuscript-workspace-ipc-result';
@@ -493,6 +499,21 @@ const api = {
     fetchCheckpoint: (input: FetchManuscriptCheckpointInput) =>
       invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
         MANUSCRIPT_WORKSPACE_IPC_CHANNELS.fetchCheckpoint,
+        input,
+      ),
+    listCheckpointFiles: (input: ListManuscriptCheckpointFilesInput) =>
+      invokeManuscriptWorkspace<ManuscriptCheckpointFileList>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.listCheckpointFiles,
+        input,
+      ),
+    readCheckpointFile: (input: ReadManuscriptCheckpointFileInput) =>
+      invokeManuscriptWorkspace<ManuscriptCheckpointFileChunk>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.readCheckpointFile,
+        input,
+      ),
+    compilePdf: (input: CompileManuscriptPdfInput) =>
+      invokeManuscriptWorkspace<ManuscriptPdfPreview>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.compilePdf,
         input,
       ),
     disconnect: (input: ManuscriptBindingCommand) =>

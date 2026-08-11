@@ -140,7 +140,7 @@ flowchart LR
 | Goal & Evaluation            | Desktop workspace service, contracts, domain, Sync endpoints                                        | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                                      |
 | Experiment Orchestration     | Desktop Experiment workspace, contracts, domain, Runner                                             | 프로젝트별 idea lineage·검토 outcome·선택적인 target, versioned logging template, 다중 run 상태·서버·step·metric·opaque log reference, Project Chat의 추적형 foreground 실행과 summary trajectory를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨 |
 | Experiment Evaluation Studio | Desktop Evaluation service, 전용 shared contract·IPC, SQLCipher repository, protected artifact port | step/epoch cadence·metric·policy·logging suggestion·숫자/table/plot을 독립 chat에서 proposal로 만들고 synthetic preview, human approval, immutable reusable recipe로 저장하는 local-first slice 구현; evaluator의 실제 주기 실행과 Runner result ingest는 계획됨                              |
-| Manuscript                   | Desktop Manuscript service·SQLCipher repository, shared contracts와 adapter registry                | project별 복수 manuscript identity, provider-neutral binding/checkpoint/anchor, Overleaf Git existing-project link·HEAD 확인·manual immutable fetch·local mirror 정리 구현; editor·compile·PDF·handoff·publish는 계획됨                                                                       |
+| Manuscript                   | Desktop Manuscript service·SQLCipher repository, shared contracts와 adapter registry                | project별 복수 manuscript identity, provider-neutral binding/checkpoint/anchor, Overleaf Git existing-project link·HEAD 확인·manual immutable fetch·exact checkpoint text read·MacTeX sandbox compile·PDF.js preview·local mirror 정리 구현; editor·diff/review·handoff·publish는 계획됨      |
 | Review & Approval            | PostgreSQL approval schema와 Web UI 표현                                                            | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                                       |
 | Reference & Literature       | Desktop Literature workspace와 Zotero read-only connector                                           | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨                      |
 | Obsidian Knowledge           | Desktop Research Notes service, bounded Vault adapter, Markdown renderer                            | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 문서 metadata envelope·Literature/Papers projection·structured final-response Markdown create·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                    |
@@ -201,7 +201,7 @@ flowchart TD
 | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 코드, GOSU draft LaTeX, 생성된 `.bib`, 재현 설정, slide          | GitHub와 앱 관리형 local worktree                                                        | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지                                                                                                                                                                                                                                                                                                                                              |
 | manuscript identity·binding·checkpoint provenance                | 프로젝트별 Desktop Manuscript SQLCipher tables; v1 authority는 `gosu`                    | 현재 Hosted Sync·workspace outbox 대상이 아님; provider URL·source·raw diff·token 금지                                                                                                                                                                                                                                                                                                                           |
-| fetched Overleaf source checkpoint와 Git object                  | `userData/manuscript-workspaces/<binding UUID>`의 adapter-private bare mirror            | Hosted Sync·telemetry·Project Chat 자동 context 금지; permanent project 삭제 때 durable purge queue로 exact binding artifact를 제거                                                                                                                                                                                                                                                                              |
+| fetched Overleaf source checkpoint와 Git object                  | `userData/manuscript-workspaces/<binding UUID>`의 adapter-private bare mirror            | Hosted Sync·telemetry·Project Chat 자동 context 금지; Project Chat은 사용자가 capture한 exact checkpoint에 한해 bounded file-list/text-read tool로만 접근; permanent project 삭제 때 durable purge queue로 exact binding artifact를 제거                                                                                                                                                                         |
 | Overleaf URL·workspace ID·personal Git token                     | URL/ID는 adapter-private SQLCipher row, token은 GOSU-private `safeStorage` ciphertext    | macOS Keychain-protected; shared Git credential·Hosted Sync·portable binding·event·log·Git config 금지                                                                                                                                                                                                                                                                                                           |
 | 프로젝트 Research Notes Markdown과 첨부                          | 사용자의 Obsidian Vault 아래 `GOSU/<project>`; Literature 원본은 별도 SQLCipher          | Vault·project 연결 상태만; 본문·절대 경로는 금지                                                                                                                                                                                                                                                                                                                                                                 |
 | 서지 metadata, collection, PDF                                   | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                                                                                                                                                                                                                                                                                             |
@@ -1531,6 +1531,9 @@ flowchart LR
   OverleafPrivate["Overleaf private connector\nURL·workspace ID·safeStorage ref"]
   OverleafGit["official Overleaf Git\nexternal linear checkpoint"]
   Mirror["isolated bare mirror\nimmutable GOSU refs"]
+  Source["validated checkpoint source\nbounded list·text read"]
+  Compiler["macOS sandbox-exec + MacTeX\nfixed argv·no shell escape·no network"]
+  Preview["PDF.js canvas preview\nephemeral typed IPC bytes"]
   Portable["portable binding·anchor·checkpoint\nno URL·token·source"]
   Future["future local/cloud LaTeX adapter"]
 
@@ -1539,6 +1542,8 @@ flowchart LR
   Service --> Registry
   Registry --> OverleafPrivate --> OverleafGit
   OverleafPrivate --> Mirror
+  Mirror --> Source
+  Source --> Compiler --> Preview
   Future -.-> Registry
 ```
 
@@ -1556,9 +1561,12 @@ flowchart LR
   `external_realtime_editor`만 선언한다. legacy ZIP bootstrap helper는 별도이며 이 adapter capability가
   아니다.
 - Overleaf 연결은 authority handoff가 아니다. binding은 `authority=gosu`로 시작하고 captured revision은
-  아직 source import, diff, preview 또는 review candidate가 아닌 immutable transport checkpoint로만
-  취급한다. 현재 GOSU는 provider에 push, auto-import, auto-merge/rebase, background poll, comment·Track
-  Changes round-trip 또는 provider authority 전환을 하지 않는다.
+  immutable transport checkpoint다. capture receipt가 생기면 Project Chat의 bounded source inspection과
+  Manuscript의 local PDF compile을 요청할 수 있다. 이 상태는 로컬 mirror·source tree·MacTeX·sandbox
+  preflight 성공을 뜻하지 않으며, 각 source read·compile operation이 exact checkpoint를 다시 검증하고
+  실패를 별도 receipt로 반환한다. 이 기능은 source import, diff 또는 review candidate 승격이 아니다. GOSU는
+  provider에 push, auto-import, auto-merge/rebase, background poll, comment·Track Changes round-trip 또는 provider
+  authority 전환을 하지 않는다.
 - `Check Overleaf changes`는 content를 받지 않는 read-only `ls-remote`로 exact `master` revision만 관찰한다.
   UI는 manuscript 전체의 과거 checkpoint가 아니라 현재 active binding에서 캡처한 checkpoint와만 revision을
   비교해 baseline 없음·변경 없음·새 Overleaf revision을 표시한다. Git HEAD만으로 편집자 identity, 저장 전
@@ -1575,6 +1583,27 @@ flowchart LR
   아니라 append-only SQLite row order로 manuscript 전체에서 선택한다.
 - fetch command 자체의 timeout·취소·실패를 포함해 checkpoint ref로 pin하지 않은 모든 attempted fetch는
   incoming ref, reflog와 unreachable object를 즉시 prune해 retained mirror quota를 잠식하지 않게 한다.
+- checkpoint source 접근은 pin된 commit/tree/envelope/root를 다시 검증하고 symlink·gitlink, traversal,
+  control character, `.git`, secret/key 의심 경로, Unicode/case collision, 개별·전체 크기 한도를
+  거부한다. Project Chat tool은 파일 목록과 최대 24,000자 UTF-8 chunk만 반환하고 URL, token,
+  mirror path를 반환하지 않는다. 원고 본문은 자동 context가 아니며 tool을 명시적으로 호출한 turn에서만
+  untrusted research content로 사용한다. materialization은 `git archive`를 사용하지 않고 isolated
+  `git cat-file --batch`에서 commit의 exact blob bytes를 읽어 declared size·object type·Git blob hash를
+  재검증한다. 따라서 repository `.gitattributes`의 `export-ignore`나 `export-subst`가 캡처 원문을 누락·변형하지
+  않는다. 이전 버전 crash 뒤 남은 strict `.gosu-archive-<UUID>` real directory만 startup migration cleanup이
+  제거하고 symlink·file·lookalike·non-binding path는 보존한다.
+- PDF preview는 검증된 checkpoint를 일회성 staging directory에 materialize한 뒤 macOS
+  `sandbox-exec`에서 사용자가 고른 pdfLaTeX·XeLaTeX·LuaLaTeX 하나를 silent fallback 없이 fixed
+  `latexmk` argv로 실행한다. 이 선택은 Overleaf 설정에서 읽은 값이 아니며 실제 engine과 version을 preview
+  provenance에 기록한다. `-no-shell-escape`, network deny, captured source·MacTeX·system font/runtime만 허용하는
+  OS read allowlist, output/home에만 열린 OS write boundary, TeX `openin_any=p`, timeout, 192 MiB generated
+  staging·50,000-entry·process-output·PDF size budget을 적용한다. PDF magic과 SHA-256를 검증한 후에만 bounded
+  base64를 typed IPC로 Renderer에 전달하고 PDF.js canvas로 표시한다. Renderer는 decoded image와 canvas
+  dimension/pixel budget을 검사하고 한 번에 한 preview만 보유한다. absolute path나 `file://`를 Renderer에
+  노출하지 않는다. timeout·resource/output overflow·앱 종료 때 detached process group 전체를
+  종료하고 staging은 성공·실패 모두 삭제한다. crash 뒤 남은 strict `.compile-XXXXXX` directory는
+  Renderer/IPC가 열리기 전 startup reconciliation이 symlink와 lookalike를 보존한 채 정리한다. 현재 prototype은 Mac에 설치된
+  MacTeX를 사용하므로 Overleaf의 TeX Live 버전·compiler 설정과 일치함을 보장하지 않는다.
 - SQLCipher identity trigger는 manuscript record, binding, checkpoint와 artifact-purge queue의
   project/manuscript/provider column이 JSON identity와 parent row에 일치하는지 insert/update 시 다시 검사하고,
   credential cleanup provider/ref가 enqueue 시점의 private binding row와 일치하는지도 검증한다. 서비스
@@ -1614,10 +1643,11 @@ flowchart LR
   lease, crash reconciliation과 unattended scheduler는 아직 구현되지 않았다.
 
 후속 local/cloud engine은 새 URL 분기를 consumer에 추가하는 방식이 아니라 같은 registry와 checkpoint
-boundary를 구현한다. 다만 현재 pluggable 범위는 checkpoint core까지다. provider-neutral source artifact
-materialize/read/export, canonical source digest, editor·compile·presence·comment·tracked-change·realtime recovery,
+boundary를 구현한다. 다만 현재 source read·compile은 Overleaf checkpoint를 위한 Desktop port이지
+완전한 provider-neutral engine contract가 아니다. canonical source digest, editor·durable compile artifact·
+presence·comment·tracked-change·realtime recovery,
 generic onboarding/presentation/configuration storage와 staged multi-binding migration port는 아직 없다. Local
-engine은 이 port들과 함께 CodeMirror·Tectonic sandbox·PDF preview와 offline persistence를, Cloud engine은
+engine은 이 port들과 함께 CodeMirror·bundled Tectonic sandbox·durable PDF artifact와 offline persistence를, Cloud engine은
 operation log 또는 CRDT/OT·presence·comments·ACL·durable reconnect를 provider-private하게 소유한다. 이
 port들이 생기기 전 새 provider는 adapter뿐 아니라 작은 provider-specific connector UI와 storage를 추가해야
 한다. Project Chat, Review, Reference가 Overleaf semantics를 직접 알게 해서는 안 되며, engine 전환은 URL
@@ -2420,9 +2450,10 @@ package 설정과 ICNS의 `ic10` rendition 일치를 검사해 네모 아이콘�
 회귀를 막는다.
 
 현재 한계도 중요하다. local outbox table은 존재하지만 Sync delivery·reconciliation worker는 아직
-없다. Codex Project Chat은 실제 thread·turn과 연결됐지만 논문 작성·patch approval 흐름은 아직
-연결되지 않았다. Manuscript workspace는 provider-neutral identity/checkpoint와 Overleaf manual inbound
-checkpoint capture까지 연결됐지만 source import·diff/review candidate, LaTeX editor·compile·PDF preview,
+없다. Codex Project Chat은 실제 thread·turn과 연결됐고 사용자가 capture한 exact manuscript source를
+명시적 tool로 읽을 수 있지만 논문 작성·patch approval 흐름은 아직 연결되지 않았다. Manuscript
+workspace는 provider-neutral identity/checkpoint, Overleaf manual inbound capture, bounded source read, prototype
+MacTeX compile·PDF.js preview까지 연결됐다. source import·diff/review candidate, editor, durable compile artifact,
 authority handoff, review branch와 outbound publish는 계획 상태다. 앱 관리형 Git Workspace는 동작하지만 GitHub App 설치·PR review·보호 branch gate와
 repository asset preview도 계획 상태다. macOS Keychain의 기존 Git
 credential을 사용할 수는 있지만 GOSU 자체 GitHub account lifecycle을 구현한 것은 아니다. 승인형 SSH
@@ -3034,7 +3065,8 @@ Codex 실패 시 silent fallback으로 선택해서는 안 된다.
 - trusted ingress의 TLS·runner mTLS·service credential과 proxy spoofing 방어
 - Desktop sync worker, offline command replay와 사람이 이해할 수 있는 conflict UI
 - GitHub App 설치·token lifecycle, PR review·보호 branch·AI patch·base-SHA gate
-- LaTeX editor·Tectonic compile·PDF preview·review anchor·citation provenance, deterministic source digest
+- LaTeX editor·bundled Tectonic production compile·durable PDF artifact·review anchor·citation provenance,
+  deterministic source digest와 Overleaf compiler/TeX Live 설정 provenance
 - durable manuscript sync attempt·lease/fencing, explicit authority handoff, strict fetch-time disk quota,
   Overleaf review branch·conditional publish
 - provider-neutral source artifact/editor/compile/realtime ports, generic provider onboarding/configuration
@@ -3056,8 +3088,10 @@ Codex 실패 시 silent fallback으로 선택해서는 안 된다.
   log validation을 별도로 확인해야 한다.
 - Project Chat이 연결됐다는 것과 Codex가 논문 파일을 쓰거나 자동실험을 실행한다는 것은 다르다.
 - Overleaf Git project가 Manuscript에 연결됐다는 것과 GOSU가 Overleaf를 실시간 동기화·push하거나
-  editing authority로 전환했다는 것은 다르다. 현재는 아직 import/review되지 않은 manual inbound transport
-  checkpoint capture뿐이다.
+  editing authority로 전환했다는 것은 다르다. Project Chat과 PDF preview가 읽는 것도 사용자가
+  capture한 manual inbound checkpoint이지 live/unsaved Overleaf edit나 Overleaf 서버가 만든 PDF가 아니다.
+  PDF는 로컬 MacTeX로 다시 compile한 prototype preview이므로 Overleaf compiler 설정과 다른 결과가 나올 수
+  있으며 source는 아직 import/review candidate로 승격된 것이 아니다.
 - OpenClaw·Hermes CLI 이름이 감지됐다는 것과 안전한 Project Chat provider로 연결됐다는 것은 다르다.
   Hermes만 사용자의 명시적 BYO 선택 뒤 pinned `0.19.1` sealed preflight와 공식 ACP v1 adapter로 연결되며
   현재 native tool inventory는 비어 있고 web·native delegation·shell·process·code·file·browser·memory·
