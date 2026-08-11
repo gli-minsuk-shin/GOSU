@@ -19,6 +19,7 @@ import { SshWorkspaceGrantsCard, type SshWorkspaceSetupRequest } from './ssh-wor
 import { Boundary, CardHead, RuntimeCard } from './ui-primitives';
 
 export type CodexModel = {
+  providerId?: string;
   modelId: string;
   displayName: string;
   isDefault: boolean;
@@ -55,7 +56,10 @@ export function ConnectionsView({
   onRefreshSshResource = async () => undefined,
   onOpenSshWorkspaceSetup = () => undefined,
   activeProject,
+  projects,
+  linkedProjectIdsByConnectionId,
   sshWorkspaces,
+  sshWorkspaceReady = true,
   onCreateSshWorkspace,
   onUpdateSshWorkspace,
   onRemoveSshWorkspace,
@@ -87,9 +91,12 @@ export function ConnectionsView({
   onTestSshConnection: (connectionId: string) => Promise<unknown>;
   sshResourceStates?: Readonly<Record<string, SshResourceUiState>>;
   onRefreshSshResource?: (connectionId: string) => Promise<unknown>;
-  onOpenSshWorkspaceSetup?: (connectionId: string) => void;
+  onOpenSshWorkspaceSetup?: (projectId: string, connectionId: string) => void;
   activeProject: ProjectRecord | null;
+  projects: readonly ProjectRecord[];
+  linkedProjectIdsByConnectionId: Readonly<Record<string, readonly string[]>>;
   sshWorkspaces: readonly GrantedRemoteWorkspace[];
+  sshWorkspaceReady?: boolean;
   onCreateSshWorkspace: (input: CreateRemoteWorkspaceGrantInput) => Promise<unknown>;
   onUpdateSshWorkspace: (input: UpdateRemoteWorkspaceGrantInput) => Promise<unknown>;
   onRemoveSshWorkspace: (input: RemoveRemoteWorkspaceGrantInput) => Promise<unknown>;
@@ -108,7 +115,9 @@ export function ConnectionsView({
         onRemove={onRemoveSshConnection}
         onTest={onTestSshConnection}
         activeProject={activeProject}
+        projects={projects}
         linkedConnectionIds={new Set(sshWorkspaces.map((workspace) => workspace.connection.id))}
+        linkedProjectIdsByConnectionId={linkedProjectIdsByConnectionId}
         resourceStates={sshResourceStates}
         onRefreshResource={onRefreshSshResource}
         onOpenWorkspaceSetup={onOpenSshWorkspaceSetup}
@@ -197,6 +206,7 @@ export function ConnectionsView({
         project={activeProject}
         connections={sshConnections}
         workspaces={sshWorkspaces}
+        workspaceReady={sshWorkspaceReady}
         busy={sshBusy}
         onCreate={onCreateSshWorkspace}
         onUpdate={onUpdateSshWorkspace}

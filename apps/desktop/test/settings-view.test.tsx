@@ -161,7 +161,7 @@ describe('separated application Settings', () => {
     expect(html).toContain('Raw shells, inline Python');
   });
 
-  it('offers detection-only OpenClaw and Hermes add-ons without claiming a connection', () => {
+  it('keeps OpenClaw detection-only and offers an explicit BYO Hermes connection', () => {
     const html = renderSettings('agent');
 
     expect(html).toContain('OPTIONAL AGENT ADD-ONS');
@@ -169,7 +169,10 @@ describe('separated application Settings', () => {
     expect(html).toContain('Hermes Agent');
     expect(html).toContain('Detect local installation');
     expect(html).toContain('without running it');
-    expect(html).toContain('No installer, credentials, process launch, chat routing');
+    expect(html).toContain('Connect existing Hermes (BYO)');
+    expect(html).toContain('GOSU neither copies nor synchronizes its credentials');
+    expect(html).toContain('Hermes is optional, local, and never an automatic fallback');
+    expect(html).toContain('OpenClaw remains detection-only');
     expect(html).not.toContain('Connected to OpenClaw');
     expect(html).not.toContain('Connected to Hermes');
   });

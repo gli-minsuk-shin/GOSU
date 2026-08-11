@@ -81,7 +81,7 @@ describe('local user preferences', () => {
       textSize: 'large',
       sshResourceRefreshInterval: '5m',
       defaultBoardTemplate: customBoardTemplate,
-      agentAddOns: { openclaw: 'detect-local', hermes: 'disabled' },
+      agentAddOns: { openclaw: 'detect-local', hermes: 'connect-local' },
     } as const;
     expect(saveUserPreferences(storage, preferences)).toBe(true);
     expect(loadUserPreferences(storage)).toEqual(preferences);
@@ -120,6 +120,15 @@ describe('local user preferences', () => {
         agentAddOns: { openclaw: 'connect-and-run', hermes: 'detect-local' },
       }).agentAddOns,
     ).toEqual({ openclaw: 'disabled', hermes: 'detect-local' });
+  });
+
+  it('rejects connection mode for an add-on that is detection-only', () => {
+    expect(
+      parseUserPreferences({
+        ...DEFAULT_USER_PREFERENCES,
+        agentAddOns: { openclaw: 'connect-local', hermes: 'connect-local' },
+      }).agentAddOns,
+    ).toEqual({ openclaw: 'disabled', hermes: 'connect-local' });
   });
 
   it('falls back to one-minute server monitoring for an unknown refresh interval', () => {

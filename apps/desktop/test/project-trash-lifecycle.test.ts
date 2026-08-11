@@ -2,9 +2,60 @@ import { describe, expect, it } from 'vitest';
 
 import { LectureStudioServiceError } from '../src/main/lecture-studio-service';
 import { ProjectTrashLifecycle } from '../src/main/project-trash-lifecycle';
+import { SshConnectionServiceError } from '../src/main/ssh-connection-service';
 import { WorkspaceServiceError } from '../src/main/workspace-service';
 
 describe('ProjectTrashLifecycle', () => {
+  it('holds Project Chat and the SSH mutation gate around one project inactivation', async () => {
+    const trace: string[] = [];
+    const gate = (name: string) => ({
+      async runWhenProjectsIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
+        trace.push(`${name}:enter:${projectIds.join(',')}`);
+        try {
+          return await operation();
+        } finally {
+          trace.push(`${name}:exit`);
+        }
+      },
+    });
+    const lifecycle = new ProjectTrashLifecycle(gate('chat'), gate('ssh'), gate('lecture'));
+
+    await expect(
+      lifecycle.runWhenProjectInactivationIdle('project-a', async () => {
+        trace.push('inactive');
+        return 'done';
+      }),
+    ).resolves.toBe('done');
+    expect(trace).toEqual([
+      'chat:enter:project-a',
+      'ssh:enter:project-a',
+      'inactive',
+      'ssh:exit',
+      'chat:exit',
+    ]);
+  });
+
+  it('fails closed when an SSH lifecycle operation already owns the project', async () => {
+    const pass = {
+      async runWhenProjectsIdle<T>(_projectIds: readonly string[], operation: () => Promise<T>) {
+        return operation();
+      },
+    };
+    const sshBusy = {
+      async runWhenProjectsIdle<T>(
+        _projectIds: readonly string[],
+        _operation: () => Promise<T>,
+      ): Promise<T> {
+        throw new SshConnectionServiceError('ssh_unavailable');
+      },
+    };
+    const lifecycle = new ProjectTrashLifecycle(pass, sshBusy, pass);
+
+    await expect(
+      lifecycle.runWhenProjectInactivationIdle('project-a', async () => 'unsafe'),
+    ).rejects.toMatchObject({ code: 'trash_busy' });
+  });
+
   it('holds Project Chat, SSH, and lecture gates around one operation', async () => {
     const trace: string[] = [];
     const gate = (name: string) => ({

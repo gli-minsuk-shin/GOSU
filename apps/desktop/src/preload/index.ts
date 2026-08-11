@@ -5,6 +5,8 @@ import type {
   AgentAddOnId,
   AgentAddOnStatus,
   AgentAddOnStatusRequest,
+  ConnectAgentAddOnRequest,
+  DisconnectAgentAddOnRequest,
 } from '../shared/agent-addon-contracts';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
@@ -300,6 +302,14 @@ const api = {
       ipcRenderer.invoke(AGENT_ADD_ON_CHANNELS.status, {
         ids,
       } satisfies AgentAddOnStatusRequest) as Promise<readonly AgentAddOnStatus[]>,
+    connect: (id: AgentAddOnId) =>
+      ipcRenderer.invoke(AGENT_ADD_ON_CHANNELS.connect, {
+        id,
+      } satisfies ConnectAgentAddOnRequest) as Promise<AgentAddOnStatus>,
+    disconnect: (id: AgentAddOnId) =>
+      ipcRenderer.invoke(AGENT_ADD_ON_CHANNELS.disconnect, {
+        id,
+      } satisfies DisconnectAgentAddOnRequest) as Promise<AgentAddOnStatus>,
   },
   codex: {
     status: () => ipcRenderer.invoke('gosu:codex:status'),

@@ -15,7 +15,10 @@ import type {
   WorkspaceSnapshot,
 } from '../../shared/workspace-contracts';
 import type { VaultSelection } from '../../shared/vault-contracts';
-import { AgentAddOnsSection } from './agent-addons-section';
+import {
+  AgentAddOnsSection,
+  type HermesProjectChatConnectionUiState,
+} from './agent-addons-section';
 import { AgentSettingsSection } from './agent-settings-section';
 import { BoardSettingsForm } from './board-settings-form';
 import type { VaultRuntimeState } from './notes-view';
@@ -73,6 +76,8 @@ export function SettingsView({
   vault,
   vaultState,
   onUpdateAgentProfile,
+  hermesConnection,
+  onRefreshHermesConnection,
 }: {
   preferences: UserPreferences;
   onChange: (preferences: UserPreferences) => void;
@@ -94,6 +99,8 @@ export function SettingsView({
   vault: VaultSelection | null;
   vaultState: VaultRuntimeState;
   onUpdateAgentProfile: (input: UpdateProjectChatProfileInput) => Promise<boolean>;
+  hermesConnection?: HermesProjectChatConnectionUiState;
+  onRefreshHermesConnection?: () => Promise<unknown>;
 }) {
   const [localCategory, setLocalCategory] = useState<SettingsCategory>(initialCategory);
   const activeCategory = category ?? localCategory;
@@ -306,6 +313,8 @@ export function SettingsView({
             <AgentAddOnsSection
               preferences={preferences.agentAddOns}
               onChange={(agentAddOns) => onChange({ ...preferences, agentAddOns })}
+              {...(hermesConnection ? { hermesConnection } : {})}
+              {...(onRefreshHermesConnection ? { onRefreshHermesConnection } : {})}
             />
             <AgentSettingsSection
               project={agentProject}

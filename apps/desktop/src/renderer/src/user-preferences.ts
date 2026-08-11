@@ -64,10 +64,12 @@ export function parseUserPreferences(value: unknown): UserPreferences {
   const template = WorkspaceBoardSettingsSchema.safeParse(value.defaultBoardTemplate);
   const storedAddOns = isRecord(value.agentAddOns) ? value.agentAddOns : {};
   const agentAddOns = Object.fromEntries(
-    AGENT_ADD_ON_IDS.map((id) => [
-      id,
-      isAgentAddOnPreference(storedAddOns[id]) ? storedAddOns[id] : 'disabled',
-    ]),
+    AGENT_ADD_ON_IDS.map((id) => {
+      const candidate = storedAddOns[id];
+      const supported =
+        isAgentAddOnPreference(candidate) && (id === 'hermes' || candidate !== 'connect-local');
+      return [id, supported ? candidate : 'disabled'];
+    }),
   ) as Record<AgentAddOnId, AgentAddOnPreference>;
   return {
     schemaVersion: 1,

@@ -74,7 +74,7 @@ class MemorySshStorage implements SshConnectionStorage {
     return [...this.workspaceGrants.values()].filter((grant) => grant.projectId === projectId);
   }
 
-  createSshWorkspaceGrant(grant: RemoteWorkspaceGrant) {
+  createSshWorkspaceGrant(grant: RemoteWorkspaceGrant): boolean | Promise<boolean> {
     if (
       this.workspaceGrants.has(grant.id) ||
       [...this.workspaceGrants.values()].some(
@@ -224,6 +224,63 @@ function deferredSignal() {
 afterEach(() => vi.useRealTimers());
 
 describe('SSH connection and Allow once service', () => {
+  it('serializes project inactivation after an in-flight grant commit and blocks later grant mutations', async () => {
+    const storage = new MemorySshStorage();
+    const { runner } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const grantWriteStarted = deferredSignal();
+    const releaseGrantWrite = deferredSignal();
+    const inactivationStarted = deferredSignal();
+    const releaseInactivation = deferredSignal();
+    const trace: string[] = [];
+    const originalCreate = storage.createSshWorkspaceGrant.bind(storage);
+    vi.spyOn(storage, 'createSshWorkspaceGrant').mockImplementationOnce(async (grant) => {
+      grantWriteStarted.resolve();
+      await releaseGrantWrite.promise;
+      const created = originalCreate(grant);
+      trace.push('grant:committed');
+      return created;
+    });
+
+    const grantPromise = service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace',
+      permissionMode: 'diagnostics',
+      confirmWorkspaceRisk: true,
+    });
+    await grantWriteStarted.promise;
+
+    const inactivation = service.runWhenProjectsIdle([PROJECT_ID], async () => {
+      trace.push('project:inactive');
+      inactivationStarted.resolve();
+      await releaseInactivation.promise;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(trace).toEqual([]);
+
+    releaseGrantWrite.resolve();
+    const grant = await grantPromise;
+    await inactivationStarted.promise;
+    expect(trace).toEqual(['grant:committed', 'project:inactive']);
+
+    expect(() =>
+      service.updateWorkspaceGrant({
+        grantId: grant.id,
+        projectId: PROJECT_ID,
+        expectedVersion: grant.version,
+        canonicalRoot: '/workspace/changed',
+        permissionMode: 'diagnostics',
+        confirmWorkspaceRisk: true,
+      }),
+    ).toThrow('ssh_unavailable');
+    expect(storage.workspaceGrants.get(grant.id)).toEqual(grant);
+
+    releaseInactivation.resolve();
+    await inactivation;
+  });
+
   it('owns versioned CRUD behind its storage port', async () => {
     const storage = new MemorySshStorage(null);
     const { runner } = runnerFixture();
@@ -294,6 +351,55 @@ describe('SSH connection and Allow once service', () => {
         expectedVersion: updated.version,
       }),
     ).resolves.toEqual({ removed: true });
+  });
+
+  it('links one registered server to multiple projects with independent workspace grants', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: { host: '203.0.113.10', user: 'researcher', port: 2222, localForwards: [] },
+      }),
+    );
+    const { runner } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+
+    const firstGrant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/project-a',
+      permissionMode: 'diagnostics',
+      confirmWorkspaceRisk: true,
+    });
+    const secondGrant = await service.createWorkspaceGrant({
+      projectId: OTHER_PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/project-b',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+
+    expect(firstGrant.connectionId).toBe(CONNECTION_ID);
+    expect(secondGrant.connectionId).toBe(CONNECTION_ID);
+    expect(secondGrant.id).not.toBe(firstGrant.id);
+    await expect(service.listWorkspaceGrants(PROJECT_ID)).resolves.toMatchObject([
+      {
+        grant: {
+          projectId: PROJECT_ID,
+          connectionId: CONNECTION_ID,
+          canonicalRoot: '/workspace/project-a',
+          permissionMode: 'diagnostics',
+        },
+      },
+    ]);
+    await expect(service.listWorkspaceGrants(OTHER_PROJECT_ID)).resolves.toMatchObject([
+      {
+        grant: {
+          projectId: OTHER_PROJECT_ID,
+          connectionId: CONNECTION_ID,
+          canonicalRoot: '/workspace/project-b',
+          permissionMode: 'workspace',
+        },
+      },
+    ]);
   });
 
   it('reports resources only for servers granted to the requested project', async () => {

@@ -62,6 +62,7 @@ function handlersFor(
     projectRenamed(project: Awaited<ReturnType<WorkspaceService['renameProject']>>): Promise<void>;
   }>,
   projectTrashIdleGuard?: Readonly<{
+    runWhenProjectInactivationIdle<T>(projectId: string, operation: () => Promise<T>): Promise<T>;
     runWhenProjectTrashIdle<T>(
       projectIds: readonly string[],
       operation: () => Promise<T>,
@@ -116,6 +117,9 @@ describe('workspace IPC boundary', () => {
     const workspace = new WorkspaceService(storage);
     const guardCalls: string[][] = [];
     const guard = {
+      async runWhenProjectInactivationIdle<T>(_projectId: string, operation: () => Promise<T>) {
+        return operation();
+      },
       async runWhenProjectTrashIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
         guardCalls.push([...projectIds]);
         return operation();
@@ -153,6 +157,9 @@ describe('workspace IPC boundary', () => {
   it('rejects Empty Trash without the fixed confirmation phrase before any lifecycle lock', async () => {
     const guardCalls: string[][] = [];
     const guard = {
+      async runWhenProjectInactivationIdle<T>(_projectId: string, operation: () => Promise<T>) {
+        return operation();
+      },
       async runWhenProjectTrashIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
         guardCalls.push([...projectIds]);
         return operation();
@@ -401,6 +408,62 @@ describe('workspace IPC boundary', () => {
     ).resolves.toEqual({ ok: false, error: { code: 'chat_busy' } });
     expect((await workspace.snapshot()).projects[0]).not.toHaveProperty('archivedAt');
   });
+
+  it.each([
+    { label: 'archive', channel: WORKSPACE_IPC_CHANNELS.setProjectArchived },
+    { label: 'Trash', channel: WORKSPACE_IPC_CHANNELS.trashProject },
+  ] as const)(
+    'holds the combined chat and SSH lifecycle gate around $label commits',
+    async ({ channel }) => {
+      const storage = new MemoryStorage();
+      const workspace = new WorkspaceService(storage);
+      const trace: string[] = [];
+      const fallbackChatGuard = {
+        async runWhenProjectChatIdle<T>(
+          _projectId: string,
+          _operation: () => Promise<T>,
+        ): Promise<T> {
+          throw new Error('separate_chat_gate_must_not_run');
+        },
+      };
+      const lifecycleGuard = {
+        async runWhenProjectInactivationIdle<T>(projectId: string, operation: () => Promise<T>) {
+          trace.push(`gate:enter:${projectId}`);
+          const value = await operation();
+          trace.push(`gate:exit:${projectId}`);
+          return value;
+        },
+        async runWhenProjectTrashIdle<T>(
+          _projectIds: readonly string[],
+          operation: () => Promise<T>,
+        ) {
+          return operation();
+        },
+      };
+      const handlers = handlersFor(
+        workspace,
+        undefined,
+        fallbackChatGuard,
+        undefined,
+        lifecycleGuard,
+      );
+      const project = await successful<{ id: string; version: number }>(
+        handlers.get(WORKSPACE_IPC_CHANNELS.createProject)!,
+        { name: 'SSH lifecycle boundary' },
+      );
+
+      await successful(handlers.get(channel)!, {
+        projectId: project.id,
+        expectedVersion: project.version,
+        ...(channel === WORKSPACE_IPC_CHANNELS.setProjectArchived ? { archived: true } : {}),
+      });
+
+      expect(trace).toEqual([`gate:enter:${project.id}`, `gate:exit:${project.id}`]);
+      expect(storage.operations.at(-1)?.commandType).toBe(
+        channel === WORKSPACE_IPC_CHANNELS.setProjectArchived ? 'project.archive' : 'project.trash',
+      );
+    },
+  );
 
   it('rejects invalid default Board templates on project creation without committing state', async () => {
     const storage = new MemoryStorage();

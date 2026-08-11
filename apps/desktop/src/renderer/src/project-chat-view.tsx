@@ -295,6 +295,7 @@ export function ProjectChatView({
   projectBusy = false,
   models,
   collaborationModes = [],
+  selectedProviderId = null,
   selectedModel,
   selectedReasoning,
   applyingActionId,
@@ -354,6 +355,7 @@ export function ProjectChatView({
   projectBusy?: boolean;
   models: readonly CodexModel[];
   collaborationModes: readonly CodexCollaborationModeDescriptor[];
+  selectedProviderId?: string | null;
   selectedModel: string | null;
   selectedReasoning: string | null;
   applyingActionId: string | null;
@@ -413,6 +415,7 @@ export function ProjectChatView({
   onRevokeTrustedWorkspace?: (input: RevokeTrustedRemoteWorkspaceInput) => Promise<boolean>;
 }) {
   const chatToolbarDetailsId = useId();
+  const hermesBoundaryDescriptionId = useId();
   const [sessionUi, setSessionUi] = useState<ProjectChatSessionUiState>({
     draft: initialDraft,
     retryOfAttemptId: null,
@@ -557,7 +560,7 @@ export function ProjectChatView({
       (option) => option.id === selectedCollaborationMode?.recommendedReasoningOptionId,
     );
   const modelSelectionWarning = selectedModelMissing
-    ? 'The selected model is no longer in the live Codex catalog. Choose a model before sending.'
+    ? 'The selected model is no longer in the live Project Chat catalog. Choose a model before sending.'
     : recommendedModelMissing
       ? 'This Codex mode recommends a model that is no longer available. Choose a model or another mode.'
       : selectedReasoningMissing
@@ -566,12 +569,34 @@ export function ProjectChatView({
           ? 'This Codex mode recommends reasoning that the effective model does not support. Choose a reasoning option, model, or mode.'
           : null;
   const collaborationModeWarning =
-    collaborationModeId !== null && !selectedCollaborationMode
+    selectedDescriptor?.providerId !== 'hermes' &&
+    collaborationModeId !== null &&
+    !selectedCollaborationMode
       ? 'The selected Codex collaboration mode is no longer available. Choose a current mode before sending.'
       : null;
+  const hermesSelected =
+    selectedDescriptor?.providerId === 'hermes' ||
+    (selectedModel !== null && selectedProviderId === 'hermes');
+  const activeAttempt = [...(snapshot?.attempts ?? [])]
+    .reverse()
+    .find((attempt) => attempt.status === 'starting' || attempt.status === 'running');
+  const activeAttemptProviderId =
+    activeAttempt?.model?.providerId ??
+    (activeAttempt?.requestedModelId
+      ? models.find((model) => model.modelId === activeAttempt.requestedModelId)?.providerId
+      : undefined);
+  const activeProviderLabel =
+    activeAttemptProviderId === 'hermes' ||
+    (activeAttemptProviderId === undefined && hermesSelected)
+      ? 'Hermes'
+      : 'Codex';
   const personalityWarning =
-    personality !== 'auto' && selectedDescriptor?.supportsPersonality === false
+    !hermesSelected && personality !== 'auto' && selectedDescriptor?.supportsPersonality === false
       ? 'The selected model does not support Codex personality controls. Choose Auto or another model.'
+      : null;
+  const hermesAttachmentWarning =
+    hermesSelected && attachments.length > 0
+      ? 'The initial BYO Hermes connection is text-only. Remove attachments or choose Codex for this turn.'
       : null;
   const imageAttachmentWarning =
     attachments.some((attachment) => attachment.visualAvailable) &&
@@ -598,13 +623,14 @@ export function ProjectChatView({
             ? `${localNotesGrant.name} grant inactive`
             : 'Research Notes not authorized';
   const localNotesWarning =
-    localNotesGrant && !localNotesAvailable
+    !hermesSelected && localNotesGrant && !localNotesAvailable
       ? 'GOSU cannot verify this project’s Research Notes binding. This turn is paused to prevent stale or cross-project note access.'
       : null;
   const selectionWarning =
     modelSelectionWarning ??
     collaborationModeWarning ??
     personalityWarning ??
+    hermesAttachmentWarning ??
     imageAttachmentWarning ??
     localNotesWarning;
   const snapshotReady = snapshot !== null;
@@ -894,24 +920,34 @@ export function ProjectChatView({
   const submit = () => {
     const message = draft.trim();
     if (!message || loading || selectionWarning) return;
-    const controls: ProjectChatTurnControls = {
-      harnessMode: legacyReviewerCompatibility
-        ? 'reviewer'
-        : collaborationModeId === 'plan'
-          ? 'planner'
-          : 'context',
-      responseDepth:
-        responseVerbosity === 'low'
-          ? 'concise'
-          : responseVerbosity === 'high'
-            ? 'deep'
-            : 'standard',
-      personality,
-      responseVerbosity,
-      contextScope,
-      profileVersion: snapshot?.profile?.version ?? 0,
-      ...(legacyReviewerCompatibility ? {} : { collaborationModeId }),
-    };
+    const controls: ProjectChatTurnControls = hermesSelected
+      ? {
+          harnessMode: 'context',
+          responseDepth: 'standard',
+          personality: 'auto',
+          responseVerbosity: 'auto',
+          contextScope,
+          profileVersion: snapshot?.profile?.version ?? 0,
+          collaborationModeId: null,
+        }
+      : {
+          harnessMode: legacyReviewerCompatibility
+            ? 'reviewer'
+            : collaborationModeId === 'plan'
+              ? 'planner'
+              : 'context',
+          responseDepth:
+            responseVerbosity === 'low'
+              ? 'concise'
+              : responseVerbosity === 'high'
+                ? 'deep'
+                : 'standard',
+          personality,
+          responseVerbosity,
+          contextScope,
+          profileVersion: snapshot?.profile?.version ?? 0,
+          ...(legacyReviewerCompatibility ? {} : { collaborationModeId }),
+        };
     void onSend(
       message,
       retryOfAttemptId ?? undefined,
@@ -1019,6 +1055,11 @@ export function ProjectChatView({
               <div className="chat-toolbar-summary-badges" aria-label="Current chat configuration">
                 <span title={`Model: ${compactModelLabel}`}>{compactModelLabel}</span>
                 <span title={`Reasoning: ${compactReasoningLabel}`}>{compactReasoningLabel}</span>
+                {hermesSelected && (
+                  <span title="Hermes sealed text-only provider; attachments, web, files, and tools are disabled">
+                    Hermes · text-only · no tools
+                  </span>
+                )}
                 {selectionWarning && <span className="warning">Selection needs attention</span>}
                 {sshWorkspaceSetupNeeded ? (
                   <button
@@ -1051,7 +1092,9 @@ export function ProjectChatView({
                   <div>
                     <strong>GOSU Project Copilot</strong>
                     <span>
-                      현재 프로젝트 Board / To-do, Objective, 승인된 Research Notes를 활용합니다
+                      {hermesSelected
+                        ? '현재 프로젝트 Board와 Objective snapshot만 text context로 전달합니다'
+                        : '현재 프로젝트 Board / To-do, Objective, 승인된 Research Notes를 활용합니다'}
                     </span>
                   </div>
                 </div>
@@ -1071,6 +1114,10 @@ export function ProjectChatView({
                       )}
                       {models.map((model) => (
                         <option value={model.modelId} key={model.modelId}>
+                          {model.providerId === 'hermes' &&
+                          !model.displayName.toLocaleLowerCase().startsWith('hermes')
+                            ? 'Hermes · '
+                            : ''}
                           {model.displayName}
                           {model.isDefault ? ' · default' : ''}
                         </option>
@@ -1118,6 +1165,15 @@ export function ProjectChatView({
                     Agent controls
                   </button>
                 </div>
+                {hermesSelected && (
+                  <div className="chat-provider-boundary" role="note">
+                    <strong>BYO Hermes · sealed text-only mode</strong>
+                    <span>
+                      Uses the Hermes model configured on this Mac. No attachments, web, files,
+                      Board/Research Notes mutations, or local/SSH tools cross this boundary.
+                    </span>
+                  </div>
+                )}
                 {sshWorkspaceSetupNeeded && (
                   <div className="chat-ssh-setup-notice" role="status">
                     <div>
@@ -1248,82 +1304,105 @@ export function ProjectChatView({
 
         {advancedOpen && !chatDetailsCollapsed && (
           <section className="chat-agent-controls" aria-label="Advanced agent controls">
-            <div className="chat-agent-control-group">
-              <span>Codex mode</span>
-              <select
-                value={collaborationModeId ?? ''}
-                onChange={(event) => {
-                  setLegacyReviewerCompatibility(false);
-                  setCollaborationModeId(event.target.value || null);
-                }}
-                disabled={projectBusy}
-                aria-label="Codex collaboration mode"
-              >
-                <option value="">
-                  {legacyReviewerCompatibility
-                    ? 'Legacy Reviewer · choose a native mode to leave'
-                    : 'Auto · Codex default'}
-                </option>
-                {collaborationModeId !== null && !selectedCollaborationMode && (
-                  <option value={collaborationModeId} disabled>
-                    Unavailable mode · choose again
-                  </option>
-                )}
-                {collaborationModes.map((mode) => (
-                  <option value={mode.id} key={mode.id}>
-                    {mode.displayName}
-                    {mode.recommendedReasoningOptionId
-                      ? ` · ${mode.recommendedReasoningOptionId}`
-                      : ''}
-                  </option>
-                ))}
-              </select>
-              <small>
-                Native modes are discovered from the local Codex App Server, not recreated by GOSU.
-              </small>
-            </div>
-            <div className="chat-agent-control-group">
-              <span>Personality</span>
-              <select
-                value={personality}
-                onChange={(event) => setPersonality(event.target.value as ProjectChatPersonality)}
-                disabled={projectBusy}
-                aria-label="Codex personality"
-              >
-                {(Object.keys(PERSONALITY_LABELS) as ProjectChatPersonality[]).map((value) => (
-                  <option
-                    value={value}
-                    key={value}
-                    disabled={value !== 'auto' && selectedDescriptor?.supportsPersonality === false}
+            {!hermesSelected && (
+              <>
+                <div className="chat-agent-control-group">
+                  <span>Codex mode</span>
+                  <select
+                    value={collaborationModeId ?? ''}
+                    onChange={(event) => {
+                      setLegacyReviewerCompatibility(false);
+                      setCollaborationModeId(event.target.value || null);
+                    }}
+                    disabled={projectBusy}
+                    aria-label="Codex collaboration mode"
                   >
-                    {PERSONALITY_LABELS[value]}
-                  </option>
-                ))}
-              </select>
-              <small>
-                {selectedDescriptor?.supportsPersonality === false
-                  ? 'The selected model does not advertise personality support.'
-                  : 'Applied through the native Codex personality setting.'}
-              </small>
-            </div>
-            <div className="chat-agent-control-group">
-              <span>Answer verbosity</span>
-              <select
-                value={responseVerbosity}
-                onChange={(event) =>
-                  setResponseVerbosity(event.target.value as ProjectChatResponseVerbosity)
-                }
-                disabled={projectBusy}
-                aria-label="Codex answer verbosity"
-              >
-                {(Object.keys(VERBOSITY_LABELS) as ProjectChatResponseVerbosity[]).map((value) => (
-                  <option value={value} key={value}>
-                    {VERBOSITY_LABELS[value]}
-                  </option>
-                ))}
-              </select>
-              <small>Native model verbosity; reasoning effort remains a separate control.</small>
-            </div>
+                    <option value="">
+                      {legacyReviewerCompatibility
+                        ? 'Legacy Reviewer · choose a native mode to leave'
+                        : 'Auto · Codex default'}
+                    </option>
+                    {collaborationModeId !== null && !selectedCollaborationMode && (
+                      <option value={collaborationModeId} disabled>
+                        Unavailable mode · choose again
+                      </option>
+                    )}
+                    {collaborationModes.map((mode) => (
+                      <option value={mode.id} key={mode.id}>
+                        {mode.displayName}
+                        {mode.recommendedReasoningOptionId
+                          ? ` · ${mode.recommendedReasoningOptionId}`
+                          : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <small>
+                    Native modes are discovered from the local Codex App Server, not recreated by
+                    GOSU.
+                  </small>
+                </div>
+                <div className="chat-agent-control-group">
+                  <span>Personality</span>
+                  <select
+                    value={personality}
+                    onChange={(event) =>
+                      setPersonality(event.target.value as ProjectChatPersonality)
+                    }
+                    disabled={projectBusy}
+                    aria-label="Codex personality"
+                  >
+                    {(Object.keys(PERSONALITY_LABELS) as ProjectChatPersonality[]).map((value) => (
+                      <option
+                        value={value}
+                        key={value}
+                        disabled={
+                          value !== 'auto' && selectedDescriptor?.supportsPersonality === false
+                        }
+                      >
+                        {PERSONALITY_LABELS[value]}
+                      </option>
+                    ))}
+                  </select>
+                  <small>
+                    {selectedDescriptor?.supportsPersonality === false
+                      ? 'The selected model does not advertise personality support.'
+                      : 'Applied through the native Codex personality setting.'}
+                  </small>
+                </div>
+                <div className="chat-agent-control-group">
+                  <span>Answer verbosity</span>
+                  <select
+                    value={responseVerbosity}
+                    onChange={(event) =>
+                      setResponseVerbosity(event.target.value as ProjectChatResponseVerbosity)
+                    }
+                    disabled={projectBusy}
+                    aria-label="Codex answer verbosity"
+                  >
+                    {(Object.keys(VERBOSITY_LABELS) as ProjectChatResponseVerbosity[]).map(
+                      (value) => (
+                        <option value={value} key={value}>
+                          {VERBOSITY_LABELS[value]}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                  <small>
+                    Native model verbosity; reasoning effort remains a separate control.
+                  </small>
+                </div>
+              </>
+            )}
+            {hermesSelected && (
+              <div className="chat-agent-control-group">
+                <span>Provider harness</span>
+                <strong>Hermes sealed text-only</strong>
+                <small>
+                  Reasoning comes from the selected Hermes model. Codex collaboration, personality,
+                  verbosity, web, and tool controls are not passed to Hermes.
+                </small>
+              </div>
+            )}
             <div className="chat-agent-control-group">
               <span>Context</span>
               <select
@@ -1339,9 +1418,9 @@ export function ProjectChatView({
                 ))}
               </select>
               <small>
-                Scope controls preloaded context. Authorized project Research Notes remain available
-                through bounded read tools. Create-only automatic Markdown saves require a separate
-                explicit grant in AI Agent Settings.
+                {hermesSelected
+                  ? 'Scope controls only the project snapshot included as text. Hermes cannot call Research Notes, Board, Literature, local, or SSH tools.'
+                  : 'Scope controls preloaded context. Authorized project Research Notes remain available through bounded read tools. Create-only automatic Markdown saves require a separate explicit grant in AI Agent Settings.'}
               </small>
             </div>
             <div className="chat-agent-profile-summary">
@@ -1363,26 +1442,18 @@ export function ProjectChatView({
             <div className="chat-agent-boundary">
               <strong>Project capability boundary</strong>
               <span>
-                Board / To-do + Objective read tools · {localNotesStatus} · {sshWorkspaceStatus} ·{' '}
-                {trustedWorkspaceCount > 0
-                  ? `${trustedWorkspaceCount} trusted workspace${trustedWorkspaceCount === 1 ? '' : 's'}`
-                  : 'SSH requires Allow once'}
+                {hermesSelected
+                  ? 'Hermes text response only · no GOSU, web, file, local, or SSH tools'
+                  : `Board / To-do + Objective read tools · ${localNotesStatus} · ${sshWorkspaceStatus} · ${
+                      trustedWorkspaceCount > 0
+                        ? `${trustedWorkspaceCount} trusted workspace${trustedWorkspaceCount === 1 ? '' : 's'}`
+                        : 'SSH requires Allow once'
+                    }`}
               </span>
               <small>
-                Board changes require Apply. Research Notes reads stay available to legacy grants,
-                but automatic Markdown saves run only after an explicit create-only grant and never
-                overwrite a different existing file. Only project-granted remote workspaces are
-                visible. Trusted workspace is an explicit, per-grant option that auto-approves and
-                audits only the same bounded operations; it expires when the project, server, grant,
-                path, or safety policy changes and can be revoked above. Without it, Git inspection,
-                direct-argv tests/builds, and foreground Python experiment entrypoints show their
-                exact target, root, arguments, and risk for a fresh one-time approval. Experiments
-                are limited to 120 seconds. The direct GOSU tool surface does not offer raw shells,
-                inline Python, TTY, transfer, unattended execution, secret retrieval, Settings,
-                Trash, sudo/privileged requests, host mounts, or destructive host commands. Code
-                launched through an approved Python, test, or build operation is not contained by
-                those input checks and can reach anything the SSH account permits, including
-                secrets, out-of-grant paths, the network, and subprocesses.
+                {hermesSelected
+                  ? 'GOSU starts the configured local Hermes inference runtime in an isolated empty folder, verifies that its tool list is empty, disables rules, memory, skills, plugins, MCP, persistence, and fallback, and accepts only its bounded text answer. Select Codex when the turn needs attachments, web search, project mutations, Research Notes, or server work.'
+                  : 'Board changes require Apply. Research Notes reads stay available to legacy grants, but automatic Markdown saves run only after an explicit create-only grant and never overwrite a different existing file. Only project-granted remote workspaces are visible. Trusted workspace is an explicit, per-grant option that auto-approves and audits only the same bounded operations; it expires when the project, server, grant, path, or safety policy changes and can be revoked above. Without it, Git inspection, direct-argv tests/builds, and foreground Python experiment entrypoints show their exact target, root, arguments, and risk for a fresh one-time approval. Experiments are limited to 120 seconds. The direct GOSU tool surface does not offer raw shells, inline Python, TTY, transfer, unattended execution, secret retrieval, Settings, Trash, sudo/privileged requests, host mounts, or destructive host commands. Code launched through an approved Python, test, or build operation is not contained by those input checks and can reach anything the SSH account permits, including secrets, out-of-grant paths, the network, and subprocesses.'}
               </small>
             </div>
           </section>
@@ -1487,14 +1558,18 @@ export function ProjectChatView({
                     </div>
                     {(message.model || attempt?.harnessMode || nativeAttempt) && (
                       <footer className="message-provenance">
-                        {message.model?.resolvedModelId ?? 'Codex'}
+                        {message.model
+                          ? `${message.model.providerId === 'hermes' ? 'Hermes' : 'Codex'} · ${message.model.resolvedModelId}`
+                          : 'Codex'}
                         {message.model?.reasoningOptionId
                           ? ` · reasoning ${message.model.reasoningOptionId}`
                           : ''}
                         {nativeAttempt
-                          ? attempt?.collaborationModeId
-                            ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
-                            : ' · Codex default mode'
+                          ? message.model?.providerId === 'hermes'
+                            ? ' · Hermes sealed mode'
+                            : attempt?.collaborationModeId
+                              ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
+                              : ' · Codex default mode'
                           : attempt?.harnessMode
                             ? ` · legacy ${HARNESS_LABELS[attempt.harnessMode]}`
                             : ''}
@@ -1586,13 +1661,17 @@ export function ProjectChatView({
               <article className="chat-message assistant thinking" role="status">
                 <header>
                   <strong>GOSU</strong>
-                  <span>Codex turn active</span>
+                  <span>{activeProviderLabel} turn active</span>
                 </header>
                 <div className="thinking-line">
                   <i />
                   <i />
                   <i />
-                  <span>프로젝트 컨텍스트를 검토하고 있습니다</span>
+                  <span>
+                    {activeProviderLabel === 'Hermes'
+                      ? 'sealed text context를 검토하고 있습니다'
+                      : '프로젝트 컨텍스트를 검토하고 있습니다'}
+                  </span>
                 </div>
               </article>
             )}
@@ -1617,13 +1696,19 @@ export function ProjectChatView({
             {CONTEXT_LABELS[contextScope]} ·{' '}
             {legacyReviewerCompatibility
               ? 'Legacy Reviewer'
-              : collaborationModeId === null
-                ? 'Codex default mode'
-                : (selectedCollaborationMode?.displayName ?? collaborationModeId)}{' '}
-            · {VERBOSITY_LABELS[responseVerbosity]} · {localNotesStatus}
+              : hermesSelected
+                ? 'Hermes sealed mode'
+                : collaborationModeId === null
+                  ? 'Codex default mode'
+                  : (selectedCollaborationMode?.displayName ?? collaborationModeId)}{' '}
+            ·{' '}
+            {hermesSelected ? 'Provider-managed answer style' : VERBOSITY_LABELS[responseVerbosity]}{' '}
+            · {hermesSelected ? 'Research Notes tools disabled' : localNotesStatus}
             {' · '}
-            {WEB_SEARCH_LABELS[snapshot?.profile?.webSearchMode ?? 'cached']}
-            {vaultState === 'ready' && !automaticMarkdownSaveAuthorized && (
+            {hermesSelected
+              ? 'Web disabled'
+              : WEB_SEARCH_LABELS[snapshot?.profile?.webSearchMode ?? 'cached']}
+            {!hermesSelected && vaultState === 'ready' && !automaticMarkdownSaveAuthorized && (
               <button
                 type="button"
                 className="retry-context"
@@ -1766,6 +1851,12 @@ export function ProjectChatView({
               {selectionWarning}
             </div>
           )}
+          {hermesSelected && (
+            <span id={hermesBoundaryDescriptionId} className="sr-only">
+              BYO Hermes is sealed and text-only. Attachments, web, files, project mutations, and
+              local or SSH tools are unavailable. Choose Codex to use those capabilities.
+            </span>
+          )}
           {projectBusy && !sessionBusy && (
             <div className="chat-selection-warning" role="status">
               A project-wide chat update is finishing. Messages sent here will be queued safely.
@@ -1848,10 +1939,20 @@ export function ProjectChatView({
               className="chat-attach-button"
               onClick={() => void chooseAttachments()}
               disabled={
-                loading || choosingAttachments || attachments.length >= PROJECT_CHAT_MAX_ATTACHMENTS
+                loading ||
+                hermesSelected ||
+                choosingAttachments ||
+                attachments.length >= PROJECT_CHAT_MAX_ATTACHMENTS
               }
-              aria-label="Attach research files"
-              title="Attach up to 5 documents, presentations, text files, or images for this turn"
+              aria-label={
+                hermesSelected ? 'Attachments unavailable with BYO Hermes' : 'Attach research files'
+              }
+              aria-describedby={hermesSelected ? hermesBoundaryDescriptionId : undefined}
+              title={
+                hermesSelected
+                  ? 'The initial BYO Hermes connection is text-only; choose Codex to attach files'
+                  : 'Attach up to 5 documents, presentations, text files, or images for this turn'
+              }
             >
               {choosingAttachments ? '…' : '＋'}
               <span>Files</span>

@@ -16,6 +16,7 @@ import type {
   SshConnectionProfile,
   SshServerResourceSnapshot,
 } from '../src/shared/ssh-contracts';
+import type { ProjectRecord } from '../src/shared/workspace-contracts';
 
 const connection: SshConnectionProfile = {
   schemaVersion: 1,
@@ -25,6 +26,29 @@ const connection: SshConnectionProfile = {
   version: 2,
   createdAt: '2026-08-04T00:00:00.000Z',
   updatedAt: '2026-08-04T00:00:00.000Z',
+};
+
+const activeProject: ProjectRecord = {
+  id: '33333333-3333-4333-8333-333333333333',
+  name: 'Active research',
+  slug: 'active-research',
+  version: 1,
+  createdAt: '2026-08-06T00:00:00.000Z',
+  updatedAt: '2026-08-06T00:00:00.000Z',
+};
+
+const secondProject: ProjectRecord = {
+  ...activeProject,
+  id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  name: 'Second study',
+  slug: 'second-study',
+};
+
+const thirdProject: ProjectRecord = {
+  ...activeProject,
+  id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  name: 'Third study',
+  slug: 'third-study',
 };
 
 const resourceSnapshot: SshServerResourceSnapshot = {
@@ -166,6 +190,8 @@ describe('independent SSH connection UI', () => {
         onRemoveSshConnection={operation}
         onTestSshConnection={operation}
         activeProject={null}
+        projects={[]}
+        linkedProjectIdsByConnectionId={{}}
         sshWorkspaces={[]}
         onCreateSshWorkspace={operation}
         onUpdateSshWorkspace={operation}
@@ -210,14 +236,7 @@ describe('independent SSH connection UI', () => {
         onUpdate={vi.fn()}
         onRemove={vi.fn()}
         onTest={vi.fn()}
-        activeProject={{
-          id: '33333333-3333-4333-8333-333333333333',
-          name: 'Active research',
-          slug: 'active-research',
-          version: 1,
-          createdAt: '2026-08-06T00:00:00.000Z',
-          updatedAt: '2026-08-06T00:00:00.000Z',
-        }}
+        activeProject={activeProject}
         resourceStates={{ [connection.id]: { phase: 'ready', snapshot: resourceSnapshot } }}
         onRefreshResource={vi.fn()}
         onOpenWorkspaceSetup={vi.fn()}
@@ -241,14 +260,7 @@ describe('independent SSH connection UI', () => {
         onUpdate={vi.fn()}
         onRemove={vi.fn()}
         onTest={vi.fn()}
-        activeProject={{
-          id: '33333333-3333-4333-8333-333333333333',
-          name: 'Active research',
-          slug: 'active-research',
-          version: 1,
-          createdAt: '2026-08-06T00:00:00.000Z',
-          updatedAt: '2026-08-06T00:00:00.000Z',
-        }}
+        activeProject={activeProject}
         linkedConnectionIds={new Set([connection.id])}
       />,
     );
@@ -266,29 +278,91 @@ describe('independent SSH connection UI', () => {
 
     expect(linkedHtml).toContain('Linked to Active research');
     expect(linkedHtml).not.toContain('Link to Active research…');
-    expect(noProjectHtml).toMatch(/<button[^>]*disabled=""[^>]*>Select project to link<\/button>/u);
+    expect(noProjectHtml).toMatch(
+      /<button[^>]*disabled=""[^>]*>No active project to link<\/button>/u,
+    );
   });
 
   it('routes the exact registered server into the existing project grant setup', () => {
     const onOpenWorkspaceSetup = vi.fn();
     const control = SshProjectLinkControl({
       connectionId: connection.id,
-      activeProject: {
-        id: '33333333-3333-4333-8333-333333333333',
-        name: 'Active research',
-        slug: 'active-research',
-        version: 1,
-        createdAt: '2026-08-06T00:00:00.000Z',
-        updatedAt: '2026-08-06T00:00:00.000Z',
-      },
-      linked: false,
+      activeProject,
+      projects: [activeProject],
+      linkedProjectIds: new Set(),
       busy: false,
       onOpenWorkspaceSetup,
     });
 
     findButton(control, 'Link to Active research').props.onClick?.();
     expect(onOpenWorkspaceSetup).toHaveBeenCalledTimes(1);
-    expect(onOpenWorkspaceSetup).toHaveBeenCalledWith(connection.id);
+    expect(onOpenWorkspaceSetup).toHaveBeenCalledWith(activeProject.id, connection.id);
+  });
+
+  it('opens grant management from each linked project badge', () => {
+    const onOpenWorkspaceSetup = vi.fn();
+    const control = SshProjectLinkControl({
+      connectionId: connection.id,
+      activeProject,
+      projects: [activeProject, secondProject],
+      linkedProjectIds: new Set([activeProject.id, secondProject.id]),
+      busy: false,
+      onOpenWorkspaceSetup,
+    });
+
+    findButton(control, 'Linked to Second study').props.onClick?.();
+    expect(onOpenWorkspaceSetup).toHaveBeenCalledTimes(1);
+    expect(onOpenWorkspaceSetup).toHaveBeenCalledWith(secondProject.id, connection.id);
+  });
+
+  it('shows every linked project and keeps the same server available to another project', () => {
+    const html = renderToStaticMarkup(
+      <SshConnectionsCard
+        connections={[connection]}
+        busy={false}
+        onCreate={vi.fn()}
+        onImport={vi.fn()}
+        onUpdate={vi.fn()}
+        onRemove={vi.fn()}
+        onTest={vi.fn()}
+        activeProject={activeProject}
+        projects={[activeProject, secondProject, thirdProject]}
+        linkedProjectIdsByConnectionId={{
+          [connection.id]: [activeProject.id, secondProject.id],
+        }}
+        onOpenWorkspaceSetup={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Linked to Active research');
+    expect(html).toContain('Linked to Second study');
+    expect(html).toContain('Link to Third study…');
+    expect(html).not.toContain('Linked to Third study');
+  });
+
+  it('offers a project selector when the registered server can be linked to multiple projects', () => {
+    const html = renderToStaticMarkup(
+      <SshConnectionsCard
+        connections={[connection]}
+        busy={false}
+        onCreate={vi.fn()}
+        onImport={vi.fn()}
+        onUpdate={vi.fn()}
+        onRemove={vi.fn()}
+        onTest={vi.fn()}
+        activeProject={activeProject}
+        projects={[activeProject, secondProject, thirdProject]}
+        linkedProjectIdsByConnectionId={{}}
+        onOpenWorkspaceSetup={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Link another project');
+    expect(html).toContain('value="33333333-3333-4333-8333-333333333333" selected=""');
+    expect(html).toContain('Active research');
+    expect(html).toContain('Second study');
+    expect(html).toContain('Third study');
+    expect(html).toContain('Link project…');
   });
 
   it('accepts only a concrete SSH config Host alias', () => {

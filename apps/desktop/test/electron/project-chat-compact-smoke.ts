@@ -17,9 +17,11 @@ type ChatGeometry = Readonly<{
   rail: RectMetrics;
   shell: RectMetrics;
   toolbar: RectMetrics;
+  toolbarDetails: RectMetrics;
   toolbarSummary: RectMetrics;
   compactIdentity: RectMetrics;
   badges: RectMetrics;
+  providerBoundary: RectMetrics;
   detailsToggle: RectMetrics;
   transcript: RectMetrics;
   composer: RectMetrics;
@@ -134,7 +136,7 @@ function fixtureMarkup(styles: string) {
               <header class="chat-toolbar">
                 <div class="chat-toolbar-summary" hidden>
                   <div class="chat-toolbar-summary-identity"><span class="chat-orbit">G</span><div><strong>Project Copilot</strong><span data-project-name>${projectName}</span></div></div>
-                  <div class="chat-toolbar-summary-badges"><span>Codex dynamic model catalog selection with long provider metadata</span><span>Extra high native reasoning</span><span>3 linked servers</span><span>Research Notes authorized</span></div>
+                  <div class="chat-toolbar-summary-badges"><span>Hermes configured model with long provider metadata</span><span>Model default reasoning</span><span>Hermes · text-only · no tools</span><span>3 linked servers</span></div>
                 </div>
                 <div class="chat-toolbar-details" id="fixture-chat-toolbar-details">
                   <div class="chat-identity">
@@ -146,6 +148,10 @@ function fixtureMarkup(styles: string) {
                     <label>Reasoning<select><option>High</option></select></label>
                     <button class="ghost-button chat-refresh">Refresh</button>
                     <button class="secondary-button chat-agent-toggle">Agent controls</button>
+                  </div>
+                  <div class="chat-provider-boundary" role="note">
+                    <strong>BYO Hermes · sealed text-only mode</strong>
+                    <span>Uses the Hermes model configured on this Mac. No attachments, web, files, Board or Research Notes mutations, or local and SSH tools cross this boundary, including at the minimum supported window width and extra-large text size.</span>
                   </div>
                   <div class="chat-ssh-setup-notice">
                     <div><strong>SSH server registered — project access is not granted yet</strong><span>Choose one specific remote project folder before Project Chat can use this server.</span></div>
@@ -225,6 +231,26 @@ function verifyViewportContainment(metrics: ChatGeometry, scenario: string) {
 
 function verifyScenario(scenario: Scenario, metrics: ScenarioMetrics) {
   const prefix = scenario.name;
+
+  for (const [state, geometry] of [
+    ['expanded', metrics.expanded],
+    ['expandedAgain', metrics.headerExpandedAgain],
+  ] as const) {
+    verifyContained(
+      geometry.providerBoundary,
+      geometry.toolbarDetails,
+      `${prefix}_${state}`,
+      'provider_boundary',
+    );
+    invariant(
+      nearlyEqual(geometry.providerBoundary.left, geometry.toolbarDetails.left),
+      `${prefix}_${state}_provider_boundary_not_full_width_left`,
+    );
+    invariant(
+      nearlyEqual(geometry.providerBoundary.right, geometry.toolbarDetails.right),
+      `${prefix}_${state}_provider_boundary_not_full_width_right`,
+    );
+  }
 
   sameRect(
     metrics.expanded.workspace,
@@ -384,13 +410,14 @@ async function measureScenario(window: BrowserWindow, scenario: Scenario) {
       const toolbar = document.querySelector('.chat-toolbar');
       const summary = document.querySelector('.chat-toolbar-summary');
       const details = document.querySelector('.chat-toolbar-details');
+      const providerBoundary = document.querySelector('.chat-provider-boundary');
       const compactIdentity = document.querySelector('.chat-toolbar-summary-identity');
       const badges = document.querySelector('.chat-toolbar-summary-badges');
       const projectName = document.querySelector('[data-project-name]');
       const detailsToggle = document.querySelector('#fixture-chat-details-toggle');
       const transcript = document.querySelector('.chat-transcript');
       const composer = document.querySelector('.chat-compose-area');
-      const elements = [workspace, rail, shell, toolbar, summary, details, compactIdentity, badges, projectName, detailsToggle, transcript, composer];
+      const elements = [workspace, rail, shell, toolbar, summary, details, compactIdentity, badges, providerBoundary, projectName, detailsToggle, transcript, composer];
       if (elements.some((element) => !(element instanceof HTMLElement))) {
         throw new Error('missing_project_chat_geometry_element');
       }
@@ -430,9 +457,11 @@ async function measureScenario(window: BrowserWindow, scenario: Scenario) {
           rail: rect(rail),
           shell: rect(shell),
           toolbar: rect(toolbar),
+          toolbarDetails: rect(details),
           toolbarSummary: rect(summary),
           compactIdentity: rect(compactIdentity),
           badges: rect(badges),
+          providerBoundary: rect(providerBoundary),
           detailsToggle: rect(detailsToggle),
           transcript: rect(transcript),
           composer: rect(composer),

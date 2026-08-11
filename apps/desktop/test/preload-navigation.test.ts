@@ -35,6 +35,8 @@ type NavigationApi = {
   };
   agentAddOns: {
     status: (ids: readonly AgentAddOnId[]) => Promise<unknown>;
+    connect: (id: AgentAddOnId) => Promise<unknown>;
+    disconnect: (id: AgentAddOnId) => Promise<unknown>;
   };
 };
 
@@ -115,7 +117,7 @@ describe('preload app navigation bridge', () => {
     expect('vault' in api).toBe(false);
   });
 
-  it('exposes add-on detection through a fixed read-only status channel', async () => {
+  it('exposes fixed add-on status and explicit local lifecycle channels', async () => {
     const statuses = [{ id: 'openclaw', state: 'not_detected', evidence: null, connected: false }];
     electron.ipcRenderer.invoke.mockResolvedValueOnce(statuses);
 
@@ -123,6 +125,18 @@ describe('preload app navigation bridge', () => {
     expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(AGENT_ADD_ON_CHANNELS.status, {
       ids: ['openclaw'],
     });
-    expect(Object.keys(api.agentAddOns)).toEqual(['status']);
+    const connected = { id: 'hermes', connected: true };
+    electron.ipcRenderer.invoke.mockResolvedValueOnce(connected);
+    await expect(api.agentAddOns.connect('hermes')).resolves.toEqual(connected);
+    expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(AGENT_ADD_ON_CHANNELS.connect, {
+      id: 'hermes',
+    });
+    const disconnected = { id: 'hermes', connected: false };
+    electron.ipcRenderer.invoke.mockResolvedValueOnce(disconnected);
+    await expect(api.agentAddOns.disconnect('hermes')).resolves.toEqual(disconnected);
+    expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(AGENT_ADD_ON_CHANNELS.disconnect, {
+      id: 'hermes',
+    });
+    expect(Object.keys(api.agentAddOns)).toEqual(['status', 'connect', 'disconnect']);
   });
 });

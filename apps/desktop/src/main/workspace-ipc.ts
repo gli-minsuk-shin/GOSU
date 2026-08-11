@@ -29,6 +29,7 @@ type ProjectLifecycle = Readonly<{
   projectRenamed(project: Awaited<ReturnType<WorkspaceService['renameProject']>>): Promise<void>;
 }>;
 type ProjectTrashIdleGuard = Readonly<{
+  runWhenProjectInactivationIdle<T>(projectId: string, operation: () => Promise<T>): Promise<T>;
   runWhenProjectTrashIdle<T>(
     projectIds: readonly string[],
     operation: () => Promise<T>,
@@ -43,6 +44,15 @@ export function registerWorkspaceIpc(
   projectLifecycle?: ProjectLifecycle,
   projectTrashIdleGuard?: ProjectTrashIdleGuard,
 ) {
+  const runWhenProjectInactivationIdle = <T>(projectId: string, operation: () => Promise<T>) => {
+    if (projectTrashIdleGuard) {
+      return projectTrashIdleGuard.runWhenProjectInactivationIdle(projectId, operation);
+    }
+    return projectChatIdleGuard
+      ? projectChatIdleGuard.runWhenProjectChatIdle(projectId, operation)
+      : operation();
+  };
+
   register(WORKSPACE_IPC_CHANNELS.snapshot, () =>
     safely(() => workspace.snapshot(), reportUnexpected),
   );
@@ -87,11 +97,15 @@ export function registerWorkspaceIpc(
       input,
       SetProjectArchivedInputSchema,
       (command) =>
-        projectChatIdleGuard
-          ? projectChatIdleGuard.runWhenProjectChatIdle(command.projectId, () =>
+        command.archived
+          ? runWhenProjectInactivationIdle(command.projectId, () =>
               workspace.setProjectArchived(command),
             )
-          : workspace.setProjectArchived(command),
+          : projectChatIdleGuard
+            ? projectChatIdleGuard.runWhenProjectChatIdle(command.projectId, () =>
+                workspace.setProjectArchived(command),
+              )
+            : workspace.setProjectArchived(command),
       reportUnexpected,
     ),
   );
@@ -100,11 +114,7 @@ export function registerWorkspaceIpc(
       input,
       ProjectVersionCommandSchema,
       (command) =>
-        projectChatIdleGuard
-          ? projectChatIdleGuard.runWhenProjectChatIdle(command.projectId, () =>
-              workspace.trashProject(command),
-            )
-          : workspace.trashProject(command),
+        runWhenProjectInactivationIdle(command.projectId, () => workspace.trashProject(command)),
       reportUnexpected,
     ),
   );

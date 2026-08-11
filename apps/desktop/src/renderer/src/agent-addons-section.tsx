@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   AGENT_ADD_ON_DESCRIPTORS,
@@ -9,66 +9,99 @@ import {
 
 type AgentAddOnPreferences = Readonly<Record<AgentAddOnId, AgentAddOnPreference>>;
 
+export type HermesProjectChatConnectionUiState = Readonly<{
+  phase: 'disabled' | 'checking' | 'ready' | 'unavailable';
+  status: AgentAddOnStatus | null;
+}>;
+
 export function enabledAgentAddOnIds(preferences: AgentAddOnPreferences): readonly AgentAddOnId[] {
   return AGENT_ADD_ON_DESCRIPTORS.filter(
-    (descriptor) => preferences[descriptor.id] === 'detect-local',
+    (descriptor) => preferences[descriptor.id] !== 'disabled',
   ).map((descriptor) => descriptor.id);
 }
 
 export function AgentAddOnsSection({
   preferences,
   onChange,
+  hermesConnection = { phase: 'disabled', status: null },
+  onRefreshHermesConnection = async () => undefined,
 }: {
   preferences: AgentAddOnPreferences;
   onChange: (preferences: AgentAddOnPreferences) => void;
+  hermesConnection?: HermesProjectChatConnectionUiState;
+  onRefreshHermesConnection?: () => Promise<unknown>;
 }) {
   const [statuses, setStatuses] = useState<readonly AgentAddOnStatus[]>([]);
   const [checking, setChecking] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
+  const detectionGenerationRef = useRef(0);
   const enabledIds = useMemo(() => enabledAgentAddOnIds(preferences), [preferences]);
+  const detectedIds = useMemo(
+    () => enabledIds.filter((id) => preferences[id] === 'detect-local'),
+    [enabledIds, preferences],
+  );
 
   const detect = useCallback(async () => {
-    if (enabledIds.length === 0) {
+    const generation = ++detectionGenerationRef.current;
+    if (detectedIds.length === 0) {
       setStatuses([]);
+      setChecking(false);
       setUnavailable(false);
       return;
     }
     setChecking(true);
     setUnavailable(false);
     try {
-      setStatuses(await window.gosu.agentAddOns.status(enabledIds));
+      const detected = await window.gosu.agentAddOns.status(detectedIds);
+      if (generation !== detectionGenerationRef.current) return;
+      setStatuses(detected);
     } catch {
+      if (generation !== detectionGenerationRef.current) return;
       setStatuses([]);
       setUnavailable(true);
     } finally {
-      setChecking(false);
+      if (generation === detectionGenerationRef.current) setChecking(false);
     }
-  }, [enabledIds]);
+  }, [detectedIds]);
 
   useEffect(() => {
-    if (enabledIds.length === 0) {
-      setStatuses([]);
-      setUnavailable(false);
-      return;
-    }
     void detect();
-  }, [detect, enabledIds]);
+    return () => {
+      detectionGenerationRef.current += 1;
+    };
+  }, [detect]);
+
+  const refreshing = checking || hermesConnection.phase === 'checking';
+  const checkAgain = () => {
+    const requests: Promise<unknown>[] = [detect()];
+    if (preferences.hermes === 'connect-local') {
+      requests.push(onRefreshHermesConnection());
+    }
+    void Promise.allSettled(requests);
+  };
 
   return (
     <article className="settings-card">
       <div className="settings-card-heading">
         <span>OPTIONAL AGENT ADD-ONS</span>
-        <h2>Detect OpenClaw or Hermes without changing Project Chat</h2>
+        <h2>Connect an existing local agent</h2>
         <p>
-          Codex stays GOSU&apos;s default provider. Detection only checks whether a local CLI name
-          is present; it does not start, authenticate, connect, or grant project access to an
-          add-on.
+          Codex stays GOSU&apos;s default provider. BYO Hermes uses the Hermes installation and
+          account already configured on this Mac; GOSU neither copies nor synchronizes its
+          credentials.
         </p>
       </div>
       <div className="agent-setting-columns">
         {AGENT_ADD_ON_DESCRIPTORS.map((descriptor) => {
           const preference = preferences[descriptor.id];
-          const status = statuses.find((candidate) => candidate.id === descriptor.id);
+          const connectedHermes = descriptor.id === 'hermes' && preference === 'connect-local';
+          const status = connectedHermes
+            ? hermesConnection.status
+            : statuses.find((candidate) => candidate.id === descriptor.id);
+          const itemChecking = connectedHermes ? hermesConnection.phase === 'checking' : checking;
+          const itemUnavailable = connectedHermes
+            ? hermesConnection.phase === 'unavailable'
+            : unavailable;
           return (
             <fieldset key={descriptor.id}>
               <legend>{descriptor.displayName}</legend>
@@ -96,24 +129,46 @@ export function AgentAddOnsSection({
                   <small>Look for the {descriptor.executableName} CLI without running it</small>
                 </span>
               </label>
+              {descriptor.capabilities.projectChatProvider === 'available' && (
+                <label>
+                  <input
+                    type="radio"
+                    name={`${descriptor.id}-preference`}
+                    checked={preference === 'connect-local'}
+                    onChange={() => onChange({ ...preferences, [descriptor.id]: 'connect-local' })}
+                  />
+                  <span>
+                    <strong>Connect existing Hermes (BYO)</strong>
+                    <small>
+                      Use its configured model in Project Chat with GOSU&apos;s no-tool boundary
+                    </small>
+                  </span>
+                </label>
+              )}
               <div className="agent-notes-disclosure" aria-live="polite">
                 <strong>
                   {preference === 'disabled'
                     ? 'Disabled'
-                    : checking
+                    : itemChecking
                       ? 'Checking this Mac…'
-                      : unavailable
-                        ? 'Detection unavailable'
-                        : status?.state === 'detected_local_cli'
-                          ? 'Local CLI detected — not connected'
-                          : status?.state === 'not_detected'
-                            ? 'Local CLI not detected'
-                            : 'Detection not run'}
+                      : itemUnavailable
+                        ? connectedHermes
+                          ? 'BYO Hermes connection unavailable'
+                          : 'Detection unavailable'
+                        : status?.connected
+                          ? 'BYO Hermes ready for Project Chat'
+                          : status?.state === 'detected_local_cli'
+                            ? 'Local CLI detected — not connected'
+                            : status?.state === 'not_detected'
+                              ? 'Local CLI not detected'
+                              : 'Detection not run'}
                 </strong>
                 <span>
-                  {status?.state === 'detected_local_cli'
-                    ? 'The executable name was found, but its publisher, version, configuration, and identity have not been verified.'
-                    : `GOSU has not connected ${descriptor.displayName} to Project Chat.`}
+                  {status?.connected
+                    ? `${status.version ?? 'Compatible local version'} · credentials stay with Hermes and are validated by Hermes when the first turn runs.`
+                    : status?.state === 'detected_local_cli'
+                      ? 'The executable name was found, but its publisher, version, configuration, and identity have not been verified.'
+                      : `GOSU has not connected ${descriptor.displayName} to Project Chat.`}
                 </span>
               </div>
               <p>
@@ -128,18 +183,24 @@ export function AgentAddOnsSection({
       </div>
       {enabledIds.length > 0 && (
         <div className="form-actions">
-          <button type="button" className="secondary-button" disabled={checking} onClick={detect}>
-            {checking ? 'Checking…' : 'Check again'}
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={refreshing}
+            onClick={checkAgain}
+          >
+            {refreshing ? 'Checking…' : 'Check again'}
           </button>
         </div>
       )}
       <div className="agent-safety-boundary">
-        <strong>Scaffold only</strong>
-        <span>No installer, credentials, process launch, chat routing, or provider fallback</span>
+        <strong>BYO boundary</strong>
+        <span>Hermes is optional, local, and never an automatic fallback</span>
         <small>
-          A detected CLI is not a trusted or connected provider. Future integration must add a
-          signed installer and a separately reviewed adapter before either add-on can receive a
-          project prompt or capability.
+          GOSU launches Hermes only after an explicit Project Chat selection. The initial adapter
+          disables Hermes tools, rules, memory, skills, and MCP access. It can analyze the supplied
+          project snapshot and reply, but cannot mutate Board or Research Notes, use attachments,
+          browse, or run local/SSH commands. OpenClaw remains detection-only.
         </small>
       </div>
     </article>

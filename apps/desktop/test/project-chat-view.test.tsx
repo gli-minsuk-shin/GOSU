@@ -64,6 +64,152 @@ const linkedServerSnapshot: SshServerResourceSnapshot = {
 };
 
 describe('advanced Project Chat controls', () => {
+  it('shows the explicit BYO Hermes boundary and disables attachments for its text-only model', () => {
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={true}
+        models={[
+          {
+            providerId: 'hermes',
+            modelId: 'hermes-configured-model',
+            displayName: 'Hermes configured model',
+            isDefault: false,
+            modalities: ['text'],
+            reasoningOptions: [{ id: 'high', label: 'high', isDefault: true }],
+            supportsPersonality: false,
+          },
+        ]}
+        collaborationModes={[]}
+        selectedModel="hermes-configured-model"
+        selectedReasoning="high"
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Hermes configured model');
+    expect(html).not.toContain('Hermes · Hermes ·');
+    expect(html).toContain('BYO Hermes · sealed text-only mode');
+    expect(html).toContain('No attachments, web, files');
+    expect(html).toContain('Hermes turn active');
+    expect(html).toContain('현재 프로젝트 Board와 Objective snapshot만 text context로 전달합니다');
+    expect(html).toMatch(
+      /disabled=""[^>]*aria-label="Attachments unavailable with BYO Hermes"[^>]*aria-describedby=/u,
+    );
+    expect(html).toContain(
+      'The initial BYO Hermes connection is text-only; choose Codex to attach files',
+    );
+    expect(html).not.toContain('>Authorize…<');
+    expect(html).not.toContain('>Enable automatic saves…<');
+  });
+
+  it('keeps the Hermes safety boundary visible and accessible when chat details are collapsed', () => {
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={false}
+        models={[
+          {
+            providerId: 'hermes',
+            modelId: 'hermes-configured-model',
+            displayName: 'Hermes configured model',
+            isDefault: false,
+            modalities: ['text'],
+            reasoningOptions: [],
+            supportsPersonality: false,
+          },
+        ]}
+        collaborationModes={[]}
+        selectedModel="hermes-configured-model"
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        chatDetailsCollapsed
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Hermes · text-only · no tools');
+    expect(html).toContain(
+      'BYO Hermes is sealed and text-only. Attachments, web, files, project mutations, and local or SSH tools are unavailable.',
+    );
+    expect(html).toMatch(
+      /aria-label="Attachments unavailable with BYO Hermes"[^>]*aria-describedby=/u,
+    );
+  });
+
+  it('uses provider-neutral copy when an explicit model disappears from the live catalog', () => {
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={false}
+        models={[]}
+        collaborationModes={[]}
+        selectedProviderId="hermes"
+        selectedModel="temporarily-missing-provider-model"
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('no longer in the live Project Chat catalog');
+    expect(html).not.toContain('no longer in the live Codex catalog');
+    expect(html).toContain('BYO Hermes · sealed text-only mode');
+    expect(html).toContain('Attachments unavailable with BYO Hermes');
+  });
+
   it('shows the /todo skill only while its slash command is being entered', () => {
     expect(projectChatTodoSkillSuggestions('/')).toHaveLength(4);
     expect(projectChatTodoSkillSuggestions('/to')).toHaveLength(4);

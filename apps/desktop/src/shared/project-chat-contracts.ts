@@ -389,6 +389,9 @@ export type ProjectChatAction = z.infer<typeof ProjectChatActionSchema>;
 export const ProjectChatModelProvenanceSchema = z
   .object({
     invocationId: uuidSchema,
+    // Optional at the wire boundary so model records written before multiple Project Chat
+    // providers remain readable. New turns always record the actual provider.
+    providerId: z.string().trim().min(1).max(128).optional(),
     requestedModelId: z.string().trim().min(1).max(256).nullable(),
     resolvedModelId: z.string().trim().min(1).max(256),
     catalogVersion: z.string().trim().min(1).max(128),
