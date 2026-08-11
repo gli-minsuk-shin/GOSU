@@ -12,7 +12,14 @@ import { CollapseChevron } from './ui-primitives';
 
 export type ProjectWorkspaceTabId = Extract<
   WorkspaceTabId,
-  'chat' | 'repository' | 'board' | 'objective' | 'experiments' | 'literature' | 'notes'
+  | 'chat'
+  | 'repository'
+  | 'manuscript'
+  | 'board'
+  | 'objective'
+  | 'experiments'
+  | 'literature'
+  | 'notes'
 >;
 export type GlobalWorkspaceTabId = Extract<WorkspaceTabId, 'connections' | 'lecture' | 'search'>;
 
@@ -23,6 +30,7 @@ const PROJECT_TABS: ReadonlyArray<{
 }> = [
   { id: 'chat', label: 'Project chat', icon: '◈' },
   { id: 'repository', label: 'Repository', icon: '⌘' },
+  { id: 'manuscript', label: 'Manuscript', icon: '¶' },
   { id: 'board', label: 'Board', icon: '▦' },
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
   { id: 'experiments', label: 'Experiments', icon: '⌁' },

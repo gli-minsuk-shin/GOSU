@@ -15,7 +15,8 @@ GOSU brings the research loop into one workspace:
 - manage labs, projects, milestones, and Kanban work;
 - define a measurable objective and run bounded experiments on a Linux runner;
 - stream metrics without uploading raw datasets, logs, or artifacts to the sync service;
-- write LaTeX, track evidence, review revisions, and export a pinned snapshot to Overleaf;
+- keep manuscript identity and checkpoint history independent of the editing engine, link an
+  existing Overleaf Git project, and later swap in GOSU Local or Cloud LaTeX engines;
 - connect GitHub and Zotero, and keep a project-scoped Research Notes workspace inside a selected
   Obsidian Vault;
 - use Codex through a local provider adapter whose model catalog is discovered at runtime; and
@@ -40,9 +41,11 @@ one another's persistence directly.
 | `packages/ui`           | Shared presentational components and design tokens             |
 | `packages/integrations` | Provider and connector ports plus implementations              |
 
-The hosted service stores collaboration state, not research payloads. GitHub remains the source
-of truth for code and manuscripts; Obsidian and Zotero remain the source of truth for their own
-content; datasets, raw logs, checkpoints, and artifacts remain on the runner.
+The hosted service stores collaboration state, not research payloads. In the current manuscript
+slice, GitHub and the GOSU-managed worktree remain draft authority; an Overleaf revision is fetched
+as an immutable local transport checkpoint, never as a silent overwrite. It is not imported into a
+draft or reviewable in GOSU yet. Obsidian and Zotero remain the source of
+truth for their own content; datasets, raw logs, checkpoints, and artifacts remain on the runner.
 
 ## Current bootstrap status
 
@@ -85,7 +88,23 @@ but it is not yet a deployed end-to-end product:
   oversized revision stops before model execution with an actionable error; and
 - each project also has an app-managed Repository workspace for GitHub HTTPS clone,
   file tree and Markdown preview, staged/unstaged diff, commit history, local branches, commit,
-  Fetch, fast-forward-only Pull, and reviewed-SHA-only non-force Push; and
+  Fetch, fast-forward-only Pull, and reviewed-SHA-only non-force Push;
+- each project can own several provider-neutral manuscript records. The current Overleaf Git
+  adapter links an existing official project URL, keeps its token in a GOSU-private Electron
+  `safeStorage` ciphertext protected by the macOS Keychain, checks the remote revision, and manually
+  captures an immutable checkpoint in an isolated local mirror. It never reads or deletes another
+  Git client's shared Keychain entry. Each link gets an immutable credential reference; a failed
+  link removes only its own staged value, while an interrupted link is reconciled on the next app
+  start. Final
+  disconnect or permanent deletion removes it only after the last active GOSU reference is gone.
+  Retained mirrors are bounded per binding and across the app, and failed unpinned fetches are
+  pruned. Checkpoints are accepted only after the complete reachable Git object graph and the
+  configured root TeX document pass validation. Users can correct a manuscript title or root TeX
+  path with optimistic version protection.
+  It does not push, merge, rebase, poll in the background, synchronize Overleaf review metadata,
+  or transfer editing authority. GOSU Local/Cloud LaTeX adapters, compile/PDF editing, durable
+  cross-process sync attempts, provider-neutral source/artifact and editor/realtime ports, staged
+  provider migration, and an explicit authority handoff remain follow-up work; and
 - the running Sync API uses an in-memory development store with lab/project authorization,
   optimistic versions, idempotency, SSE, and a non-persistent WebSocket relay;
 - a PostgreSQL schema and tested persistence adapter implement tenant context, transactional

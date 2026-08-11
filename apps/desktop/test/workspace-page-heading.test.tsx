@@ -40,6 +40,17 @@ describe('workspace page heading', () => {
     expect(shouldShowActiveProjectPageHeading('notes')).toBe(false);
   });
 
+  it('keeps the Manuscript explanation for empty projects while its active view owns the compact heading', () => {
+    const html = renderToStaticMarkup(
+      <WorkspacePageHeading activeTab="manuscript" activeProject={undefined} onNewProject={null} />,
+    );
+
+    expect(html).toContain('page-heading-manuscript');
+    expect(html).toContain('Manuscript');
+    expect(html).toContain('replaceable writing engines');
+    expect(shouldShowActiveProjectPageHeading('manuscript')).toBe(false);
+  });
+
   it('keeps other workspace headings on their own surface class', () => {
     const html = renderToStaticMarkup(
       <WorkspacePageHeading

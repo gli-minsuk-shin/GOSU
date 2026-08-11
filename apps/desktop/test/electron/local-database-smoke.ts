@@ -5,6 +5,11 @@ import { basename, join } from 'node:path';
 
 import Database from 'better-sqlite3-multiple-ciphers';
 import { app, safeStorage } from 'electron';
+import {
+  ManuscriptCheckpointV1Schema,
+  ManuscriptSyncAnchorV1Schema,
+  ManuscriptWorkspaceBindingV1Schema,
+} from '@gosu/contracts';
 
 import { LocalDatabase } from '../../src/main/local-database';
 import { ExperimentWorkspaceStorageError } from '../../src/main/experiment-workspace-storage-error';
@@ -48,6 +53,10 @@ import type {
   WorkspaceOperation,
   WorkspaceSnapshot,
 } from '../../src/shared/workspace-contracts';
+import {
+  ManuscriptRecordSchema,
+  type StoredManuscriptWorkspaceConnection,
+} from '../../src/shared/manuscript-workspace-contracts';
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -106,6 +115,83 @@ async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: s
     });
     const activeProject = await workspace.createProject({ name: 'Active purge fixture' });
     const purgedProject = await workspace.createProject({ name: 'Trashed purge fixture' });
+    const purgedManuscriptId = randomUUID();
+    const purgedBindingId = randomUUID();
+    const purgedProviderRevision = 'd'.repeat(40);
+    const purgedManuscript = ManuscriptRecordSchema.parse({
+      schemaVersion: 1,
+      id: purgedManuscriptId,
+      projectId: purgedProject.id,
+      title: 'Trashed manuscript',
+      rootDocument: 'paper/main.tex',
+      version: 1,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    });
+    invariant(database.createManuscript(purgedManuscript), 'trash_purge_manuscript_fixture_failed');
+    const purgedBinding = ManuscriptWorkspaceBindingV1Schema.parse({
+      schemaVersion: 1,
+      bindingId: purgedBindingId,
+      projectId: purgedProject.id,
+      manuscriptId: purgedManuscriptId,
+      providerId: 'overleaf_git',
+      capabilitiesSnapshot: overleafCheckpointCapabilities(),
+      authority: 'provider',
+      enabled: true,
+      version: 1,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    });
+    invariant(
+      database.connectOverleafGitWorkspace(
+        {
+          binding: purgedBinding,
+          anchor: ManuscriptSyncAnchorV1Schema.parse({
+            schemaVersion: 1,
+            bindingId: purgedBindingId,
+            generation: 0,
+            lastCommonRevision: null,
+            providerRevision: null,
+            gosuRevision: null,
+            updatedAt: fixedTimestamp,
+          }),
+          lifecycle: 'ready',
+          lastObservedProviderRevision: purgedProviderRevision,
+          lastObservedAt: fixedTimestamp,
+          lastFailureCode: null,
+        },
+        {
+          bindingId: purgedBindingId,
+          remoteUrl: 'https://git@git.overleaf.com/0123456789abcdef01234567',
+          workspaceId: '0123456789abcdef01234567',
+          webUrl: 'https://www.overleaf.com/project/0123456789abcdef01234567',
+          credentialRef: 'overleaf-git:0123456789abcdef01234567',
+        },
+        1,
+      ),
+      'trash_purge_manuscript_binding_fixture_failed',
+    );
+    database.appendManuscriptCheckpoint(
+      ManuscriptCheckpointV1Schema.parse({
+        schemaVersion: 1,
+        checkpointId: randomUUID(),
+        bindingId: purgedBindingId,
+        projectId: purgedProject.id,
+        manuscriptId: purgedManuscriptId,
+        providerId: 'overleaf_git',
+        direction: 'fetch',
+        sourceAuthority: 'provider',
+        sourceRevision: purgedProviderRevision,
+        gosuRevision: null,
+        providerRevision: purgedProviderRevision,
+        cursor: purgedProviderRevision,
+        revisionEnvelopeDigest: `sha256:${'e'.repeat(64)}`,
+        rootDocument: purgedManuscript.rootDocument,
+        baseCheckpointId: null,
+        actorId: randomUUID(),
+        observedAt: fixedTimestamp,
+      }),
+    );
     database.cache('research-notes-project', purgedProject.id, { projectId: purgedProject.id });
     const connectionId = randomUUID();
     invariant(
@@ -157,6 +243,59 @@ async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: s
       'trash_purge_ssh_grant_not_detached',
     );
     invariant(
+      database.listManuscripts(purgedProject.id).length === 0 &&
+        database.getOverleafGitBindingConfiguration(purgedBindingId) === null &&
+        database.latestManuscriptCheckpoint(purgedBindingId) === null,
+      'trash_purge_manuscript_workspace_not_detached',
+    );
+    const queuedArtifactPurges = database.listManuscriptArtifactPurgeQueue([purgedProject.id]);
+    invariant(
+      queuedArtifactPurges.length === 1 &&
+        queuedArtifactPurges[0]?.bindingId === purgedBindingId &&
+        queuedArtifactPurges[0].projectId === purgedProject.id &&
+        queuedArtifactPurges[0].providerId === 'overleaf_git' &&
+        queuedArtifactPurges[0].queuedAt === receipt.completedAt &&
+        database.listManuscriptArtifactPurgeQueue([activeProject.id]).length === 0,
+      'trash_purge_artifact_cleanup_was_not_queued',
+    );
+    invariant(
+      database.listManuscriptArtifactPurgeQueue(undefined, {
+        queuedAt: queuedArtifactPurges[0]!.queuedAt,
+        bindingId: queuedArtifactPurges[0]!.bindingId,
+      }).length === 0,
+      'manuscript_artifact_purge_cursor_did_not_advance',
+    );
+    const queuedCredentialCleanup = database.listManuscriptCredentialCleanupQueue();
+    invariant(
+      queuedCredentialCleanup.length === 1 &&
+        queuedCredentialCleanup[0]?.providerId === 'overleaf_git' &&
+        queuedCredentialCleanup[0].credentialRef === 'overleaf-git:0123456789abcdef01234567' &&
+        queuedCredentialCleanup[0].queuedAt === receipt.completedAt &&
+        !database.hasEnabledManuscriptCredentialReference(
+          'overleaf_git',
+          queuedCredentialCleanup[0].credentialRef,
+        ),
+      'trash_purge_credential_cleanup_was_not_queued',
+    );
+    invariant(
+      database.listManuscriptCredentialCleanupQueue({
+        queuedAt: queuedCredentialCleanup[0]!.queuedAt,
+        providerId: queuedCredentialCleanup[0]!.providerId,
+        credentialRef: queuedCredentialCleanup[0]!.credentialRef,
+      }).length === 0,
+      'manuscript_credential_cleanup_cursor_did_not_advance',
+    );
+    let invalidArtifactPurgeFilterRejected = false;
+    try {
+      database.listManuscriptArtifactPurgeQueue(['not-a-project-id']);
+    } catch {
+      invalidArtifactPurgeFilterRejected = true;
+    }
+    invariant(
+      invalidArtifactPurgeFilterRejected,
+      'manuscript_artifact_purge_filter_was_not_validated',
+    );
+    invariant(
       database.loadWorkspaceTrashPurgeReceipt(idempotencyKey)?.operationId === receipt.operationId,
       'trash_purge_receipt_not_durable',
     );
@@ -170,6 +309,364 @@ async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: s
       ).operationId === receipt.operationId,
       'trash_purge_retry_not_idempotent',
     );
+    database.close();
+    const reopened = new LocalDatabase();
+    try {
+      reopened.open();
+      invariant(
+        reopened.listManuscriptArtifactPurgeQueue()[0]?.bindingId === purgedBindingId,
+        'manuscript_artifact_purge_queue_was_not_durable',
+      );
+      invariant(
+        reopened.completeManuscriptArtifactPurge(randomUUID()) === false &&
+          reopened.completeManuscriptArtifactPurge(purgedBindingId) &&
+          reopened.completeManuscriptArtifactPurge(purgedBindingId) === false &&
+          reopened.listManuscriptArtifactPurgeQueue().length === 0,
+        'manuscript_artifact_purge_completion_was_not_exact_or_idempotent',
+      );
+      invariant(
+        reopened.listManuscriptCredentialCleanupQueue()[0]?.credentialRef ===
+          'overleaf-git:0123456789abcdef01234567',
+        'manuscript_credential_cleanup_queue_was_not_durable',
+      );
+      invariant(
+        reopened.completeManuscriptCredentialCleanup(
+          'overleaf_git',
+          'overleaf-git:111111111111111111111111',
+        ) === false &&
+          reopened.completeManuscriptCredentialCleanup(
+            'overleaf_git',
+            'overleaf-git:0123456789abcdef01234567',
+          ) &&
+          reopened.completeManuscriptCredentialCleanup(
+            'overleaf_git',
+            'overleaf-git:0123456789abcdef01234567',
+          ) === false &&
+          reopened.listManuscriptCredentialCleanupQueue().length === 0,
+        'manuscript_credential_cleanup_completion_was_not_exact_or_idempotent',
+      );
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    database.close();
+    app.setPath('userData', originalUserData);
+  }
+}
+
+function overleafCheckpointCapabilities() {
+  return {
+    schemaVersion: 1 as const,
+    interactionModes: ['checkpoint_pull' as const, 'external_realtime_editor' as const],
+    revisionTopology: 'linear' as const,
+    conditionalPublish: false,
+    providerHistory: true,
+    presence: false,
+    comments: false,
+    trackChanges: false,
+    serverCompile: false,
+    reviewMetadataRoundTrip: 'unsupported' as const,
+  };
+}
+
+function verifyManuscriptWorkspacePersistence(rootUserData: string, fixedTimestamp: string) {
+  const originalUserData = app.getPath('userData');
+  const manuscriptUserData = join(rootUserData, 'manuscript-workspace-fixture');
+  mkdirSync(manuscriptUserData, { recursive: true });
+  app.setPath('userData', manuscriptUserData);
+  const projectId = randomUUID();
+  const manuscriptId = randomUUID();
+  const bindingId = randomUUID();
+  const providerRevision = 'a'.repeat(40);
+  const checkpointId = randomUUID();
+  const manuscript = ManuscriptRecordSchema.parse({
+    schemaVersion: 1,
+    id: manuscriptId,
+    projectId,
+    title: 'Persistence manuscript',
+    rootDocument: 'paper/main.tex',
+    version: 1,
+    createdAt: fixedTimestamp,
+    updatedAt: fixedTimestamp,
+  });
+  const binding = ManuscriptWorkspaceBindingV1Schema.parse({
+    schemaVersion: 1,
+    bindingId,
+    projectId,
+    manuscriptId,
+    providerId: 'overleaf_git',
+    capabilitiesSnapshot: overleafCheckpointCapabilities(),
+    authority: 'provider',
+    enabled: true,
+    version: 1,
+    createdAt: fixedTimestamp,
+    updatedAt: fixedTimestamp,
+  });
+  const connection: StoredManuscriptWorkspaceConnection = {
+    binding,
+    anchor: ManuscriptSyncAnchorV1Schema.parse({
+      schemaVersion: 1,
+      bindingId,
+      generation: 0,
+      lastCommonRevision: null,
+      providerRevision: null,
+      gosuRevision: 'b'.repeat(40),
+      updatedAt: fixedTimestamp,
+    }),
+    lifecycle: 'ready',
+    lastObservedProviderRevision: providerRevision,
+    lastObservedAt: fixedTimestamp,
+    lastFailureCode: null,
+  };
+  const checkpoint = ManuscriptCheckpointV1Schema.parse({
+    schemaVersion: 1,
+    checkpointId,
+    bindingId,
+    projectId,
+    manuscriptId,
+    providerId: 'overleaf_git',
+    direction: 'fetch',
+    sourceAuthority: 'provider',
+    sourceRevision: providerRevision,
+    gosuRevision: 'b'.repeat(40),
+    providerRevision,
+    cursor: providerRevision,
+    revisionEnvelopeDigest: `sha256:${'c'.repeat(64)}`,
+    rootDocument: manuscript.rootDocument,
+    baseCheckpointId: null,
+    actorId: randomUUID(),
+    observedAt: fixedTimestamp,
+  });
+  const database = new LocalDatabase();
+  try {
+    database.open();
+    invariant(database.createManuscript(manuscript), 'manuscript_record_insert_failed');
+    for (const invalidConfiguration of [
+      {
+        bindingId,
+        remoteUrl: 'https://git@git.overleaf.com/0123456789abcdef01234567',
+        workspaceId: '0123456789abcdef01234567',
+        webUrl: 'https://www.overleaf.com/project/0123456789abcdef01234567',
+        credentialRef: 'overleaf-git:111111111111111111111111',
+      },
+      {
+        bindingId,
+        remoteUrl: 'https://git@git.overleaf.com/111111111111111111111111',
+        workspaceId: '0123456789abcdef01234567',
+        webUrl: 'https://www.overleaf.com/project/0123456789abcdef01234567',
+        credentialRef: 'overleaf-git:0123456789abcdef01234567',
+      },
+    ]) {
+      let mismatchRejected = false;
+      try {
+        database.connectOverleafGitWorkspace(connection, invalidConfiguration, 1);
+      } catch {
+        mismatchRejected = true;
+      }
+      invariant(mismatchRejected, 'overleaf_workspace_credential_tuple_mismatch_was_not_rejected');
+    }
+    invariant(
+      database.connectOverleafGitWorkspace(
+        connection,
+        {
+          bindingId,
+          remoteUrl: 'https://git@git.overleaf.com/0123456789abcdef01234567',
+          workspaceId: '0123456789abcdef01234567',
+          webUrl: 'https://www.overleaf.com/project/0123456789abcdef01234567',
+          credentialRef: 'overleaf-git:0123456789abcdef01234567',
+        },
+        1,
+      ),
+      'manuscript_binding_insert_failed',
+    );
+    invariant(
+      database.appendManuscriptCheckpoint(checkpoint).checkpointId === checkpointId,
+      'manuscript_checkpoint_insert_failed',
+    );
+    invariant(
+      database.appendManuscriptCheckpoint({ ...checkpoint, checkpointId: randomUUID() })
+        .checkpointId === checkpointId,
+      'manuscript_checkpoint_retry_was_not_idempotent',
+    );
+    const updatedManuscript = ManuscriptRecordSchema.parse({
+      ...manuscript,
+      title: 'Corrected persistence manuscript',
+      rootDocument: 'manuscript/main.tex',
+      version: 2,
+    });
+    invariant(
+      database.updateManuscript(updatedManuscript, 1),
+      'manuscript_optimistic_update_failed',
+    );
+    invariant(
+      !database.updateManuscript({ ...updatedManuscript, title: 'Stale overwrite' }, 1),
+      'manuscript_stale_update_was_not_rejected',
+    );
+    database.close();
+
+    const keyHex = safeStorage
+      .decryptString(readFileSync(join(manuscriptUserData, 'local-key.bin')))
+      .trim();
+    const legacy = new Database(join(manuscriptUserData, 'gosu.db'));
+    try {
+      legacy.pragma(`key="x'${keyHex}'"`);
+      legacy.exec(`
+        drop trigger manuscript_workspace_connections_identity_insert_guard;
+        drop trigger manuscript_workspace_connections_identity_update_guard;
+        drop trigger manuscript_checkpoints_identity_insert_guard;
+        drop trigger manuscript_artifact_purge_queue_identity_insert_guard;
+        drop trigger manuscript_credential_cleanup_identity_insert_guard;
+      `);
+      legacy.exec('alter table manuscript_workspace_connections drop column provider_id');
+      legacy.exec('alter table overleaf_git_bindings drop column credential_ref');
+    } finally {
+      legacy.close();
+    }
+
+    const reopened = new LocalDatabase();
+    reopened.open();
+    const restoredManuscript = reopened.listManuscripts(projectId)[0];
+    invariant(restoredManuscript?.id === manuscriptId, 'manuscript_record_was_not_restored');
+    invariant(
+      restoredManuscript.title === 'Corrected persistence manuscript' &&
+        restoredManuscript.rootDocument === 'manuscript/main.tex' &&
+        restoredManuscript.version === 2,
+      'manuscript_update_was_not_restored',
+    );
+    invariant(
+      reopened.getManuscriptWorkspaceConnection(projectId, manuscriptId)?.binding.bindingId ===
+        bindingId,
+      'manuscript_binding_was_not_restored',
+    );
+    invariant(
+      reopened.getOverleafGitBindingConfiguration(bindingId)?.workspaceId ===
+        '0123456789abcdef01234567' &&
+        reopened.getOverleafGitBindingConfiguration(bindingId)?.credentialRef ===
+          'overleaf-git:0123456789abcdef01234567',
+      'overleaf_private_binding_was_not_restored',
+    );
+    invariant(
+      reopened.listManuscriptCredentialReferences('overleaf_git').join(',') ===
+        'overleaf-git:0123456789abcdef01234567',
+      'overleaf_credential_reconciliation_reference_was_not_restored',
+    );
+    invariant(
+      reopened.latestManuscriptCheckpoint(bindingId)?.checkpointId === checkpointId,
+      'manuscript_checkpoint_was_not_restored',
+    );
+    reopened.close();
+
+    const inspected = new Database(join(manuscriptUserData, 'gosu.db'));
+    try {
+      inspected.pragma(`key="x'${keyHex}'"`);
+      const migrated = inspected
+        .prepare('select provider_id from manuscript_workspace_connections where binding_id=?')
+        .get(bindingId) as { provider_id: string } | undefined;
+      invariant(
+        migrated?.provider_id === 'overleaf_git',
+        'legacy_manuscript_provider_id_was_not_backfilled',
+      );
+      const crossProjectId = randomUUID();
+      const mismatchedBindingId = randomUUID();
+      const mismatchedBinding = {
+        ...binding,
+        bindingId: mismatchedBindingId,
+        projectId: crossProjectId,
+      };
+      let connectionIdentityRejected = false;
+      try {
+        inspected
+          .prepare(
+            `insert into manuscript_workspace_connections(
+               binding_id,project_id,manuscript_id,provider_id,connection_json,
+               binding_version,enabled,created_at,updated_at
+             ) values(?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            mismatchedBindingId,
+            crossProjectId,
+            manuscriptId,
+            'overleaf_git',
+            JSON.stringify({
+              ...connection,
+              binding: mismatchedBinding,
+              anchor: { ...connection.anchor, bindingId: mismatchedBindingId },
+            }),
+            1,
+            1,
+            fixedTimestamp,
+            fixedTimestamp,
+          );
+      } catch {
+        connectionIdentityRejected = true;
+      }
+      invariant(
+        connectionIdentityRejected,
+        'manuscript_cross_project_connection_identity_was_not_rejected',
+      );
+      let checkpointIdentityRejected = false;
+      try {
+        const mismatchedCheckpoint = {
+          ...checkpoint,
+          checkpointId: randomUUID(),
+          projectId: crossProjectId,
+          providerRevision: 'f'.repeat(40),
+        };
+        inspected
+          .prepare(
+            `insert into manuscript_checkpoints(
+               checkpoint_id,binding_id,project_id,manuscript_id,provider_revision,
+               checkpoint_json,observed_at
+             ) values(?,?,?,?,?,?,?)`,
+          )
+          .run(
+            mismatchedCheckpoint.checkpointId,
+            bindingId,
+            crossProjectId,
+            manuscriptId,
+            mismatchedCheckpoint.providerRevision,
+            JSON.stringify(mismatchedCheckpoint),
+            fixedTimestamp,
+          );
+      } catch {
+        checkpointIdentityRejected = true;
+      }
+      invariant(
+        checkpointIdentityRejected,
+        'manuscript_cross_project_checkpoint_identity_was_not_rejected',
+      );
+      let purgeIdentityRejected = false;
+      try {
+        inspected
+          .prepare(
+            `insert into manuscript_artifact_purge_queue(
+               binding_id,project_id,provider_id,queued_at
+             ) values(?,?,?,?)`,
+          )
+          .run(bindingId, crossProjectId, 'overleaf_git', fixedTimestamp);
+      } catch {
+        purgeIdentityRejected = true;
+      }
+      invariant(purgeIdentityRejected, 'manuscript_cross_project_purge_identity_was_not_rejected');
+      let credentialCleanupIdentityRejected = false;
+      try {
+        inspected
+          .prepare(
+            `insert into manuscript_credential_cleanup_queue(
+               provider_id,credential_ref,queued_at
+             ) values(?,?,?)`,
+          )
+          .run('overleaf_git', 'overleaf-git:111111111111111111111111', fixedTimestamp);
+      } catch {
+        credentialCleanupIdentityRejected = true;
+      }
+      invariant(
+        credentialCleanupIdentityRejected,
+        'manuscript_credential_cleanup_identity_was_not_rejected',
+      );
+    } finally {
+      inspected.close();
+    }
   } finally {
     database.close();
     app.setPath('userData', originalUserData);
@@ -4740,6 +5237,7 @@ void app.whenReady().then(async () => {
     verifyLiteratureBoundsAndIdentity(fixedTimestamp);
     verifyExperimentPersistence(fixedTimestamp);
     verifyLectureStudioListDetailBoundary(fixedTimestamp);
+    verifyManuscriptWorkspacePersistence(temporaryUserData, fixedTimestamp);
     await verifyWorkspaceTrashPurge(temporaryUserData, fixedTimestamp);
 
     process.stdout.write('local SQLCipher workspace smoke test passed\n');

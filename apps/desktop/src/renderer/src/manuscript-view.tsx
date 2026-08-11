@@ -1,0 +1,477 @@
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { ManuscriptRootDocumentSchema } from '@gosu/contracts';
+
+import type {
+  ManuscriptRecord,
+  ManuscriptWorkspaceItem,
+  ManuscriptWorkspaceSnapshot,
+} from '../../shared/manuscript-workspace-contracts';
+import type { ProjectRecord } from '../../shared/workspace-contracts';
+import { describeError } from './ui-primitives';
+
+function shortRevision(revision: string | null) {
+  return revision ? revision.slice(0, 12) : 'Not checked';
+}
+
+function syncLabel(state: NonNullable<ManuscriptWorkspaceItem['connection']>['syncState']) {
+  return {
+    unlinked: 'Not linked',
+    checking: 'Checking provider',
+    in_sync: 'Verified common checkpoint unchanged · not imported',
+    provider_ahead: 'New provider revision observed',
+    gosu_ahead: 'GOSU revision differs',
+    diverged: 'Heads are unrelated or both changed',
+    blocked: 'Blocked',
+    failed: 'Connection failed',
+  }[state];
+}
+
+function providerEditingLabel(connection: NonNullable<ManuscriptWorkspaceItem['connection']>) {
+  const modes = connection.binding.capabilitiesSnapshot.interactionModes;
+  if (modes.includes('embedded_realtime_editor')) {
+    return 'Provider declares embedded realtime support; GOSU editor operations are pending.';
+  }
+  if (modes.includes('external_realtime_editor')) {
+    return `Realtime editing: available only in the ${connection.providerDisplayName} workspace.`;
+  }
+  return 'Realtime editing: not available through GOSU.';
+}
+
+export function validManuscriptRootDocument(path: string) {
+  return ManuscriptRootDocumentSchema.safeParse(path).success;
+}
+
+function OverleafConnectForm({
+  busy,
+  connecting,
+  onConnect,
+}: {
+  busy: boolean;
+  connecting: boolean;
+  onConnect(remoteUrl: string, accessToken: string): Promise<void>;
+}) {
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [accessToken, setAccessToken] = useState('');
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    void onConnect(remoteUrl, accessToken).then(() => {
+      setAccessToken('');
+    });
+  };
+
+  return (
+    <form className="manuscript-connect-form" onSubmit={submit}>
+      <div className="manuscript-form-grid">
+        <label>
+          Overleaf Git URL
+          <input
+            value={remoteUrl}
+            onChange={(event) => setRemoteUrl(event.target.value)}
+            placeholder="https://git.overleaf.com/PROJECT_ID"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            required
+            disabled={busy}
+          />
+        </label>
+        <label>
+          Personal Git token
+          <input
+            type="password"
+            value={accessToken}
+            onChange={(event) => setAccessToken(event.target.value)}
+            placeholder="Saved to macOS Keychain"
+            autoComplete="off"
+            required
+            disabled={busy}
+          />
+        </label>
+      </div>
+      <div className="manuscript-actions">
+        <button
+          type="submit"
+          className="primary-button"
+          disabled={busy || remoteUrl.trim() === '' || accessToken === ''}
+        >
+          {connecting ? 'Connecting…' : 'Connect Overleaf Git'}
+        </button>
+        <span>
+          Captures inbound Git checkpoints only. Realtime editing stays in the provider workspace
+          when the adapter advertises it.
+        </span>
+      </div>
+    </form>
+  );
+}
+
+function ManuscriptEditForm({
+  manuscript,
+  busy,
+  updating,
+  onUpdate,
+}: {
+  manuscript: ManuscriptRecord;
+  busy: boolean;
+  updating: boolean;
+  onUpdate(title: string, rootDocument: string): Promise<void>;
+}) {
+  const [title, setTitle] = useState(manuscript.title);
+  const [rootDocument, setRootDocument] = useState(manuscript.rootDocument);
+
+  return (
+    <details className="manuscript-edit-panel">
+      <summary>Edit manuscript name or root document</summary>
+      <form
+        className="manuscript-edit-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onUpdate(title, rootDocument);
+        }}
+      >
+        <div className="manuscript-form-grid">
+          <label>
+            Manuscript name
+            <input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              disabled={busy}
+            />
+          </label>
+          <label>
+            Root TeX document
+            <input
+              value={rootDocument}
+              onChange={(event) => setRootDocument(event.target.value)}
+              placeholder="paper/main.tex"
+              disabled={busy}
+            />
+          </label>
+        </div>
+        <div className="manuscript-actions">
+          <button
+            type="submit"
+            className="secondary-button"
+            disabled={busy || title.trim() === '' || !validManuscriptRootDocument(rootDocument)}
+          >
+            {updating ? 'Saving…' : 'Save manuscript details'}
+          </button>
+          <span>
+            The corrected root applies to future captures. Existing checkpoint receipts stay
+            immutable.
+          </span>
+        </div>
+      </form>
+    </details>
+  );
+}
+
+export function ManuscriptView({ project }: { project: ProjectRecord }) {
+  const [snapshot, setSnapshot] = useState<ManuscriptWorkspaceSnapshot | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [title, setTitle] = useState('Main manuscript');
+  const [rootDocument, setRootDocument] = useState('paper/main.tex');
+  const requestGeneration = useRef(0);
+
+  const load = async () => {
+    const generation = ++requestGeneration.current;
+    setError(null);
+    try {
+      const next = await window.gosu.manuscriptWorkspace.list(project.id);
+      if (generation === requestGeneration.current) setSnapshot(next);
+    } catch (loadError) {
+      if (generation === requestGeneration.current) setError(describeError(loadError));
+    }
+  };
+
+  useEffect(() => {
+    requestGeneration.current += 1;
+    setSnapshot(null);
+    setBusy(null);
+    void load();
+    return () => {
+      requestGeneration.current += 1;
+    };
+  }, [project.id]);
+
+  const run = async (key: string, operation: () => Promise<ManuscriptWorkspaceSnapshot>) => {
+    if (busy) return;
+    const generation = ++requestGeneration.current;
+    setBusy(key);
+    setError(null);
+    try {
+      const next = await operation();
+      if (generation === requestGeneration.current) setSnapshot(next);
+    } catch (operationError) {
+      if (generation === requestGeneration.current) setError(describeError(operationError));
+    } finally {
+      if (generation === requestGeneration.current) setBusy(null);
+    }
+  };
+
+  return (
+    <section className="manuscript-workspace">
+      <header className="manuscript-compact-heading">
+        <div>
+          <span className="eyebrow">{project.name} / Manuscript</span>
+          <h1>Manuscript workspaces</h1>
+          <p>
+            Overleaf is the first adapter; manuscript identity and checkpoint lineage stay
+            engine-independent.
+          </p>
+        </div>
+        <span className="manuscript-engine-pill">Inbound checkpoint capture · manual</span>
+      </header>
+
+      {error && (
+        <div className="error-banner" role="alert">
+          <span>{error}</span>
+          <button type="button" className="ghost-button" onClick={() => void load()}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      <article className="card manuscript-boundary-card">
+        <strong>Safe collaboration boundary</strong>
+        <span>
+          A capture stores an immutable provider revision and verified local artifact only. It is
+          not imported into the GOSU draft, reviewable in GOSU, merged, or synchronized yet.
+          Realtime collaboration remains in provider UI only when the adapter advertises it.
+        </span>
+      </article>
+
+      <form
+        className="card manuscript-create-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void run('create', () =>
+            window.gosu.manuscriptWorkspace.create({
+              projectId: project.id,
+              title,
+              rootDocument,
+            }),
+          );
+        }}
+      >
+        <label>
+          Manuscript name
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            disabled={Boolean(busy)}
+          />
+        </label>
+        <label>
+          Root TeX document
+          <input
+            value={rootDocument}
+            onChange={(event) => setRootDocument(event.target.value)}
+            placeholder="paper/main.tex"
+            disabled={Boolean(busy)}
+          />
+        </label>
+        <button
+          className="secondary-button"
+          type="submit"
+          disabled={
+            Boolean(busy) || title.trim() === '' || !validManuscriptRootDocument(rootDocument)
+          }
+        >
+          {busy === 'create' ? 'Adding…' : '＋ Add manuscript'}
+        </button>
+      </form>
+
+      <div className="manuscript-list">
+        {!snapshot && !error ? (
+          <article className="card manuscript-load-state" role="status">
+            Loading manuscript workspaces…
+          </article>
+        ) : !snapshot ? (
+          <article className="card manuscript-load-state">
+            Manuscripts were not replaced. Use Retry above when the local workspace is available.
+          </article>
+        ) : snapshot.manuscripts.length === 0 ? (
+          <article className="card empty-state">
+            Add the first manuscript, then connect its Overleaf Git URL.
+          </article>
+        ) : (
+          snapshot.manuscripts.map((item) => {
+            const { manuscript, connection } = item;
+            return (
+              <article className="card manuscript-item" key={manuscript.id}>
+                <div className="manuscript-item-head">
+                  <div>
+                    <span className="eyebrow">{manuscript.rootDocument}</span>
+                    <h2>{manuscript.title}</h2>
+                  </div>
+                  <span
+                    className={`manuscript-sync-state state-${connection?.syncState ?? 'unlinked'}`}
+                  >
+                    {connection ? syncLabel(connection.syncState) : 'Not connected'}
+                  </span>
+                </div>
+
+                <ManuscriptEditForm
+                  manuscript={manuscript}
+                  busy={Boolean(busy)}
+                  updating={busy === `update:${manuscript.id}`}
+                  onUpdate={(nextTitle, nextRootDocument) =>
+                    run(`update:${manuscript.id}`, () =>
+                      window.gosu.manuscriptWorkspace.update({
+                        projectId: project.id,
+                        manuscriptId: manuscript.id,
+                        expectedVersion: manuscript.version,
+                        title: nextTitle,
+                        rootDocument: nextRootDocument,
+                      }),
+                    )
+                  }
+                />
+
+                {!connection ? (
+                  <OverleafConnectForm
+                    busy={Boolean(busy)}
+                    connecting={busy === `connect:${manuscript.id}`}
+                    onConnect={(remoteUrl, accessToken) =>
+                      run(`connect:${manuscript.id}`, () =>
+                        window.gosu.manuscriptWorkspace.connectOverleafGit({
+                          projectId: project.id,
+                          manuscriptId: manuscript.id,
+                          expectedManuscriptVersion: manuscript.version,
+                          providerId: 'overleaf_git',
+                          remoteUrl,
+                          accessToken,
+                        }),
+                      )
+                    }
+                  />
+                ) : (
+                  <>
+                    <div className="manuscript-status-grid">
+                      <div>
+                        <small>Engine</small>
+                        <strong>{connection.providerDisplayName}</strong>
+                      </div>
+                      <div>
+                        <small>Provider revision observed</small>
+                        <strong>{shortRevision(connection.lastObservedProviderRevision)}</strong>
+                      </div>
+                      <div>
+                        <small>Captured inbound checkpoint</small>
+                        <strong>
+                          {shortRevision(connection.lastCheckpoint?.providerRevision ?? null)}
+                        </strong>
+                      </div>
+                      <div>
+                        <small>Authority</small>
+                        <strong>
+                          {connection.binding.authority === 'provider'
+                            ? 'Provider authority'
+                            : 'GOSU draft authority'}
+                        </strong>
+                      </div>
+                    </div>
+                    <p className="manuscript-capability-note">
+                      {providerEditingLabel(connection)} Captured checkpoints are not imported or
+                      reviewable in GOSU yet.
+                    </p>
+                    {connection.lastFailureCode && (
+                      <p className="manuscript-connection-warning">
+                        {describeError(new Error(connection.lastFailureCode))}
+                      </p>
+                    )}
+                    <div className="manuscript-actions">
+                      {connection.workspaceUrl && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => void window.gosu.openExternal(connection.workspaceUrl!)}
+                        >
+                          Open workspace
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={Boolean(busy)}
+                        onClick={() =>
+                          void run(`inspect:${manuscript.id}`, () =>
+                            window.gosu.manuscriptWorkspace.inspect({
+                              projectId: project.id,
+                              manuscriptId: manuscript.id,
+                              bindingId: connection.binding.bindingId,
+                              expectedBindingVersion: connection.binding.version,
+                            }),
+                          )
+                        }
+                      >
+                        {busy === `inspect:${manuscript.id}` ? 'Checking…' : 'Check remote'}
+                      </button>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={Boolean(busy) || !connection.lastObservedProviderRevision}
+                        title={
+                          connection.lastObservedProviderRevision
+                            ? undefined
+                            : 'Check the provider revision before capturing an inbound checkpoint.'
+                        }
+                        onClick={() =>
+                          void run(`fetch:${manuscript.id}`, () =>
+                            window.gosu.manuscriptWorkspace.fetchCheckpoint({
+                              projectId: project.id,
+                              manuscriptId: manuscript.id,
+                              bindingId: connection.binding.bindingId,
+                              expectedBindingVersion: connection.binding.version,
+                              expectedProviderRevision: connection.lastObservedProviderRevision,
+                            }),
+                          )
+                        }
+                      >
+                        {busy === `fetch:${manuscript.id}`
+                          ? 'Capturing…'
+                          : 'Capture inbound checkpoint'}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={Boolean(busy)}
+                        onClick={() =>
+                          void run(`disconnect:${manuscript.id}`, () =>
+                            window.gosu.manuscriptWorkspace.disconnect({
+                              projectId: project.id,
+                              manuscriptId: manuscript.id,
+                              bindingId: connection.binding.bindingId,
+                              expectedBindingVersion: connection.binding.version,
+                            }),
+                          )
+                        }
+                      >
+                        {busy === `disconnect:${manuscript.id}` ? 'Disconnecting…' : 'Disconnect'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </article>
+            );
+          })
+        )}
+      </div>
+
+      <article className="card manuscript-future-engines">
+        <div>
+          <strong>Future engines</strong>
+          <span>
+            The checkpoint core is portable for GOSU Local LaTeX and GOSU Cloud Collaboration.
+            Native editor onboarding, artifact import, realtime, and migration ports are still
+            pending.
+          </span>
+        </div>
+        <span className="manuscript-engine-pill muted">Checkpoint core ready</span>
+      </article>
+    </section>
+  );
+}

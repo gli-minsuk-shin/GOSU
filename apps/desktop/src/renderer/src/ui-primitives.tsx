@@ -229,6 +229,42 @@ export function describeError(error: unknown) {
       'Freeze the latest Goal & Metrics revision before recording experiment evidence.',
     experiment_unavailable:
       'The local experiment workspace is unavailable. Existing experiment evidence was not replaced.',
+    manuscript_not_found:
+      'This manuscript no longer exists in the selected project. Refresh and try again.',
+    manuscript_conflict:
+      'This manuscript changed since it was opened. GOSU kept the newer version.',
+    manuscript_limit_reached: 'This project has reached its local manuscript limit.',
+    manuscript_binding_not_found:
+      'This manuscript workspace connection no longer exists. Refresh and reconnect if needed.',
+    manuscript_binding_conflict:
+      'This manuscript connection changed since it was opened. No remote content was changed.',
+    manuscript_binding_exists:
+      'This manuscript already has an active workspace. Disconnect it before choosing another engine.',
+    manuscript_provider_unavailable:
+      'The manuscript engine is unavailable. Repository, Board, and Research Notes remain usable.',
+    manuscript_provider_revision_required:
+      'Check the provider revision before capturing an inbound checkpoint.',
+    overleaf_git_url_invalid:
+      'Paste the official HTTPS Overleaf Git URL for this project. Credential-bearing or non-Overleaf URLs are blocked.',
+    overleaf_git_auth_required:
+      'Overleaf Git authentication failed. Check your personal Git token and Premium Git access.',
+    overleaf_git_project_not_found:
+      'This Overleaf Git project could not be found with the current account.',
+    overleaf_git_default_branch_missing:
+      'This Overleaf project does not expose the expected Git checkpoint branch.',
+    overleaf_git_remote_rewritten:
+      'Overleaf changed after the revision was observed. Check the provider again before capturing.',
+    overleaf_git_root_document_missing:
+      'The configured root TeX file is missing or is not a regular file in this Overleaf revision.',
+    overleaf_git_checkpoint_too_large:
+      'This Overleaf checkpoint exceeds the local 256 MB manuscript mirror limit and was not saved.',
+    overleaf_keychain_unavailable:
+      'GOSU could not save the Overleaf token to macOS Keychain. The connection was not stored.',
+    overleaf_token_invalid: 'Use a non-empty personal Overleaf Git token without whitespace.',
+    invalid_manuscript_workspace_input:
+      'Check the manuscript name, root TeX path, and Overleaf connection fields.',
+    manuscript_workspace_unavailable:
+      'The local manuscript workspace is unavailable. Existing manuscripts were not replaced.',
     invalid_ssh_input: 'Check the SSH server name or alias and try again.',
     ssh_import_invalid_command:
       'Use ssh with only -p, -l, one user@host destination, and optional loopback-only -L forwarding.',

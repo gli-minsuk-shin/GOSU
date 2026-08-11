@@ -5,7 +5,14 @@ import Database from 'better-sqlite3-multiple-ciphers';
 import { app, safeStorage } from 'electron';
 import { z } from 'zod';
 
-import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
+import {
+  ManuscriptCheckpointV1Schema,
+  ManuscriptSyncAnchorV1Schema,
+  ManuscriptWorkspaceBindingV1Schema,
+  type ManuscriptCheckpointV1,
+  type ModelCatalog,
+  type ModelInvocation,
+} from '@gosu/contracts';
 import {
   EXPERIMENT_MAX_IDEAS_PER_PROJECT,
   EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
@@ -51,6 +58,13 @@ import {
   type LectureStudioRevision,
   type LectureStudioSummary,
 } from '../shared/lecture-studio-contracts';
+import {
+  ManuscriptRecordSchema,
+  ManuscriptWorkspaceLifecycleSchema,
+  type ManuscriptRecord,
+  type OverleafGitBindingConfiguration,
+  type StoredManuscriptWorkspaceConnection,
+} from '../shared/manuscript-workspace-contracts';
 import {
   AbandonProjectChatResearchNoteSaveInputSchema,
   ConfirmProjectChatResearchNoteSaveInputSchema,
@@ -109,6 +123,8 @@ import {
 } from './literature-crossref';
 import { LiteratureStorageError } from './literature-storage-error';
 import { LectureStudioStorageError } from './lecture-studio-storage-error';
+import { overleafCredentialWorkspaceId } from './overleaf-git-credential-store';
+import { parseOverleafGitRemote } from './overleaf-git-transport';
 import { WorkspaceDataRecoveryError } from './workspace-storage-error';
 
 const MAX_WORKSPACE_STATE_BYTES = 8 * 1024 * 1024;
@@ -125,7 +141,70 @@ const LITERATURE_HUGGING_FACE_PROVIDER_MIGRATION = 'literature-hugging-face-prov
 const LITERATURE_CANONICAL_IDENTITY_MIGRATION = 'literature-canonical-identity-v1';
 const DEFAULT_PROJECT_CHAT_SESSION_TITLE = 'Project chat';
 const LECTURE_STUDIO_STORAGE_QUERY_LIMIT = 100;
+const MANUSCRIPT_ARTIFACT_PURGE_BATCH_LIMIT = 512;
+const MANUSCRIPT_ARTIFACT_PURGE_PROJECT_FILTER_LIMIT = 128;
+const MANUSCRIPT_CREDENTIAL_CLEANUP_BATCH_LIMIT = 256;
 const ExperimentMetricPointDraftSchema = ExperimentMetricPointSchema.omit({ sequence: true });
+
+function validateOverleafGitBindingConfiguration(
+  configuration: OverleafGitBindingConfiguration,
+): OverleafGitBindingConfiguration {
+  const remote = parseOverleafGitRemote(configuration.remoteUrl);
+  const credentialWorkspaceId = overleafCredentialWorkspaceId(configuration.credentialRef);
+  if (
+    configuration.workspaceId !== remote.workspaceId ||
+    configuration.webUrl !== remote.webUrl ||
+    credentialWorkspaceId !== remote.workspaceId
+  ) {
+    throw new Error('manuscript_binding_invalid');
+  }
+  return configuration;
+}
+
+const ManuscriptArtifactPurgeQueueEntrySchema = z
+  .object({
+    bindingId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    providerId: ManuscriptWorkspaceBindingV1Schema.shape.providerId,
+    queuedAt: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+
+const ManuscriptArtifactPurgeProjectIdsSchema = z
+  .array(z.string().uuid())
+  .max(MANUSCRIPT_ARTIFACT_PURGE_PROJECT_FILTER_LIMIT)
+  .refine((projectIds) => new Set(projectIds).size === projectIds.length, {
+    message: 'Duplicate project IDs are not allowed',
+  });
+
+const ManuscriptArtifactPurgeCursorSchema = z
+  .object({
+    queuedAt: z.iso.datetime({ offset: true }),
+    bindingId: z.string().uuid(),
+  })
+  .strict();
+
+export type ManuscriptArtifactPurgeQueueEntry = Readonly<
+  z.infer<typeof ManuscriptArtifactPurgeQueueEntrySchema>
+>;
+
+const ManuscriptCredentialCleanupQueueEntrySchema = z
+  .object({
+    providerId: ManuscriptWorkspaceBindingV1Schema.shape.providerId,
+    credentialRef: z.string().trim().min(1).max(512),
+    queuedAt: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+
+export type ManuscriptCredentialCleanupQueueEntry = Readonly<
+  z.infer<typeof ManuscriptCredentialCleanupQueueEntrySchema>
+>;
+
+const ManuscriptCredentialCleanupCursorSchema = ManuscriptCredentialCleanupQueueEntrySchema.pick({
+  providerId: true,
+  credentialRef: true,
+  queuedAt: true,
+});
 
 type ProjectChatResearchNoteSaveReceiptRow = Readonly<{
   project_id: string;
@@ -2004,6 +2083,99 @@ function migrateLiteratureCanonicalIdentity(database: Database.Database) {
     .immediate();
 }
 
+function installManuscriptIdentityGuards(database: Database.Database) {
+  database.exec(`
+    create trigger if not exists manuscript_records_identity_insert_guard
+      before insert on manuscript_records
+      when json_extract(new.record_json,'$.id') is not new.id
+        or json_extract(new.record_json,'$.projectId') is not new.project_id
+        or json_extract(new.record_json,'$.version') is not new.version
+      begin
+        select raise(abort,'manuscript_record_identity_mismatch');
+      end;
+    create trigger if not exists manuscript_records_identity_update_guard
+      before update on manuscript_records
+      when json_extract(new.record_json,'$.id') is not new.id
+        or json_extract(new.record_json,'$.projectId') is not new.project_id
+        or json_extract(new.record_json,'$.version') is not new.version
+      begin
+        select raise(abort,'manuscript_record_identity_mismatch');
+      end;
+    create trigger if not exists manuscript_workspace_connections_identity_insert_guard
+      before insert on manuscript_workspace_connections
+      when not exists (
+        select 1 from manuscript_records
+        where id=new.manuscript_id and project_id=new.project_id
+      )
+        or json_extract(new.connection_json,'$.binding.bindingId') is not new.binding_id
+        or json_extract(new.connection_json,'$.binding.projectId') is not new.project_id
+        or json_extract(new.connection_json,'$.binding.manuscriptId') is not new.manuscript_id
+        or json_extract(new.connection_json,'$.binding.providerId') is not new.provider_id
+        or json_extract(new.connection_json,'$.binding.version') is not new.binding_version
+        or json_extract(new.connection_json,'$.binding.enabled') is not new.enabled
+        or json_extract(new.connection_json,'$.anchor.bindingId') is not new.binding_id
+      begin
+        select raise(abort,'manuscript_connection_identity_mismatch');
+      end;
+    create trigger if not exists manuscript_workspace_connections_identity_update_guard
+      before update on manuscript_workspace_connections
+      when not exists (
+        select 1 from manuscript_records
+        where id=new.manuscript_id and project_id=new.project_id
+      )
+        or json_extract(new.connection_json,'$.binding.bindingId') is not new.binding_id
+        or json_extract(new.connection_json,'$.binding.projectId') is not new.project_id
+        or json_extract(new.connection_json,'$.binding.manuscriptId') is not new.manuscript_id
+        or json_extract(new.connection_json,'$.binding.providerId') is not new.provider_id
+        or json_extract(new.connection_json,'$.binding.version') is not new.binding_version
+        or json_extract(new.connection_json,'$.binding.enabled') is not new.enabled
+        or json_extract(new.connection_json,'$.anchor.bindingId') is not new.binding_id
+      begin
+        select raise(abort,'manuscript_connection_identity_mismatch');
+      end;
+    create trigger if not exists manuscript_checkpoints_identity_insert_guard
+      before insert on manuscript_checkpoints
+      when not exists (
+        select 1 from manuscript_workspace_connections
+        where binding_id=new.binding_id
+          and project_id=new.project_id
+          and manuscript_id=new.manuscript_id
+          and provider_id=json_extract(new.checkpoint_json,'$.providerId')
+      )
+        or json_extract(new.checkpoint_json,'$.checkpointId') is not new.checkpoint_id
+        or json_extract(new.checkpoint_json,'$.bindingId') is not new.binding_id
+        or json_extract(new.checkpoint_json,'$.projectId') is not new.project_id
+        or json_extract(new.checkpoint_json,'$.manuscriptId') is not new.manuscript_id
+        or json_extract(new.checkpoint_json,'$.providerRevision') is not new.provider_revision
+      begin
+        select raise(abort,'manuscript_checkpoint_identity_mismatch');
+      end;
+    create trigger if not exists manuscript_artifact_purge_queue_identity_insert_guard
+      before insert on manuscript_artifact_purge_queue
+      when not exists (
+        select 1 from manuscript_workspace_connections
+        where binding_id=new.binding_id
+          and project_id=new.project_id
+          and provider_id=new.provider_id
+      )
+      begin
+        select raise(abort,'manuscript_artifact_purge_identity_mismatch');
+      end;
+    create trigger if not exists manuscript_credential_cleanup_identity_insert_guard
+      before insert on manuscript_credential_cleanup_queue
+      when new.provider_id='overleaf_git' and not exists (
+        select 1
+        from manuscript_workspace_connections connection
+        join overleaf_git_bindings overleaf on overleaf.binding_id=connection.binding_id
+        where connection.provider_id=new.provider_id
+          and overleaf.credential_ref=new.credential_ref
+      )
+      begin
+        select raise(abort,'manuscript_credential_cleanup_identity_mismatch');
+      end;
+  `);
+}
+
 function boundedLocalSearch(projectIds: readonly string[], query: string, requestedLimit: number) {
   const requestedIds = new Set(projectIds);
   const ids = [...requestedIds].filter((projectId) =>
@@ -2127,6 +2299,79 @@ export class LocalDatabase {
         started_at text not null,
         updated_at text not null
       );
+      create table if not exists manuscript_records (
+        id text primary key check (length(id) = 36),
+        project_id text not null check (length(project_id) = 36),
+        record_json text not null check (length(record_json) between 2 and 65536),
+        version integer not null check (version > 0),
+        created_at text not null,
+        updated_at text not null,
+        unique(project_id,id)
+      );
+      create index if not exists manuscript_records_by_project
+        on manuscript_records(project_id,created_at,id);
+      create table if not exists manuscript_workspace_connections (
+        binding_id text primary key check (length(binding_id) = 36),
+        project_id text not null check (length(project_id) = 36),
+        manuscript_id text not null check (length(manuscript_id) = 36),
+        provider_id text not null default 'overleaf_git'
+          check (length(provider_id) between 1 and 128),
+        connection_json text not null check (length(connection_json) between 2 and 262144),
+        binding_version integer not null check (binding_version > 0),
+        enabled integer not null check (enabled in (0,1)),
+        created_at text not null,
+        updated_at text not null,
+        foreign key(manuscript_id) references manuscript_records(id) on delete cascade
+      );
+      create unique index if not exists manuscript_one_active_workspace
+        on manuscript_workspace_connections(manuscript_id) where enabled=1;
+      create index if not exists manuscript_workspace_connections_by_project
+        on manuscript_workspace_connections(project_id,manuscript_id,binding_id);
+      create table if not exists manuscript_artifact_purge_queue (
+        binding_id text primary key check (length(binding_id) = 36),
+        project_id text not null check (length(project_id) = 36),
+        provider_id text not null check (length(provider_id) between 1 and 128),
+        queued_at text not null
+      );
+      create index if not exists manuscript_artifact_purge_queue_by_project
+        on manuscript_artifact_purge_queue(project_id,queued_at,binding_id);
+      create table if not exists manuscript_credential_cleanup_queue (
+        provider_id text not null check (length(provider_id) between 1 and 128),
+        credential_ref text not null check (length(credential_ref) between 1 and 512),
+        queued_at text not null,
+        primary key(provider_id,credential_ref)
+      );
+      create index if not exists manuscript_credential_cleanup_queue_by_time
+        on manuscript_credential_cleanup_queue(queued_at,provider_id,credential_ref);
+      create table if not exists overleaf_git_bindings (
+        binding_id text primary key check (length(binding_id) = 36),
+        remote_url text not null check (length(remote_url) between 1 and 2048),
+        workspace_id text not null check (length(workspace_id) between 1 and 256),
+        web_url text not null check (length(web_url) between 1 and 2048),
+        credential_ref text not null check (length(credential_ref) between 1 and 512),
+        updated_at text not null,
+        foreign key(binding_id) references manuscript_workspace_connections(binding_id)
+          on delete cascade
+      );
+      create table if not exists manuscript_checkpoints (
+        checkpoint_id text primary key check (length(checkpoint_id) = 36),
+        binding_id text not null check (length(binding_id) = 36),
+        project_id text not null check (length(project_id) = 36),
+        manuscript_id text not null check (length(manuscript_id) = 36),
+        provider_revision text not null check (length(provider_revision) between 1 and 512),
+        checkpoint_json text not null check (length(checkpoint_json) between 2 and 262144),
+        observed_at text not null,
+        unique(binding_id,provider_revision),
+        foreign key(binding_id) references manuscript_workspace_connections(binding_id)
+          on delete cascade
+      );
+      create index if not exists manuscript_checkpoints_by_binding
+        on manuscript_checkpoints(binding_id,observed_at desc,checkpoint_id desc);
+      create trigger if not exists manuscript_checkpoints_update_guard
+        before update on manuscript_checkpoints
+        begin
+          select raise(abort,'manuscript_checkpoint_append_only');
+        end;
       create table if not exists ssh_connections (
         id text primary key check (length(id) = 36),
         schema_version integer not null check (schema_version = 1),
@@ -2766,6 +3011,35 @@ export class LocalDatabase {
         on project_chat_actions(message_id,created_at,id);
     `);
       migrateProjectChatResearchNoteAbandoned(database);
+      const manuscriptWorkspaceConnectionColumns = database.pragma(
+        'table_info(manuscript_workspace_connections)',
+      ) as Array<{ name: string }>;
+      if (!manuscriptWorkspaceConnectionColumns.some((column) => column.name === 'provider_id')) {
+        database.exec(
+          `alter table manuscript_workspace_connections add column provider_id text not null
+           default 'overleaf_git' check (length(provider_id) between 1 and 128)`,
+        );
+      }
+      const overleafGitBindingColumns = database.pragma(
+        'table_info(overleaf_git_bindings)',
+      ) as Array<{ name: string }>;
+      if (!overleafGitBindingColumns.some((column) => column.name === 'credential_ref')) {
+        database.exec(
+          `alter table overleaf_git_bindings add column credential_ref text not null
+           default 'overleaf-git:legacy-unowned'`,
+        );
+      }
+      database.exec(`
+        update overleaf_git_bindings
+        set credential_ref='overleaf-git:' || lower(workspace_id)
+        where credential_ref in ('overleaf-git:legacy','overleaf-git:legacy-unowned')
+          and length(workspace_id)=24
+          and lower(workspace_id) not glob '*[^0-9a-f]*';
+        update overleaf_git_bindings
+        set credential_ref='overleaf-git:legacy-unowned'
+        where credential_ref='overleaf-git:legacy';
+      `);
+      installManuscriptIdentityGuards(database);
       migrateLiteratureManualRelevance(database);
       migrateLiteratureWeakFingerprint(database);
       const literatureSearchColumns = database.pragma(
@@ -3168,6 +3442,28 @@ export class LocalDatabase {
       if (stateCommit.changes !== 1) throw new Error('workspace_revision_conflict');
       if (trashPurgeReceipt) {
         for (const project of trashPurgeReceipt.removedProjects) {
+          database
+            .prepare(
+              `insert or ignore into manuscript_credential_cleanup_queue(
+                 provider_id,credential_ref,queued_at
+               )
+               select connection.provider_id,overleaf.credential_ref,?
+               from manuscript_workspace_connections connection
+               join overleaf_git_bindings overleaf
+                 on overleaf.binding_id=connection.binding_id
+               where connection.project_id=?`,
+            )
+            .run(trashPurgeReceipt.completedAt, project.id);
+          database
+            .prepare(
+              `insert or ignore into manuscript_artifact_purge_queue(
+                 binding_id,project_id,provider_id,queued_at
+               )
+               select binding_id,project_id,provider_id,?
+               from manuscript_workspace_connections where project_id=?`,
+            )
+            .run(trashPurgeReceipt.completedAt, project.id);
+          database.prepare('delete from manuscript_records where project_id=?').run(project.id);
           database.prepare('delete from literature_search_runs where project_id=?').run(project.id);
           database.prepare('delete from literature_records where project_id=?').run(project.id);
           database
@@ -5658,6 +5954,492 @@ export class LocalDatabase {
     );
   }
 
+  listManuscripts(projectId: string): ManuscriptRecord[] {
+    const rows = this.require()
+      .prepare(
+        `select record_json from manuscript_records
+         where project_id=? order by created_at asc,id asc`,
+      )
+      .all(projectId) as Array<{ record_json: string }>;
+    return rows.map((row) => ManuscriptRecordSchema.parse(JSON.parse(row.record_json)));
+  }
+
+  getManuscript(projectId: string, manuscriptId: string): ManuscriptRecord | null {
+    const row = this.require()
+      .prepare('select record_json from manuscript_records where project_id=? and id=?')
+      .get(projectId, manuscriptId) as { record_json: string } | undefined;
+    return row ? ManuscriptRecordSchema.parse(JSON.parse(row.record_json)) : null;
+  }
+
+  createManuscript(input: ManuscriptRecord) {
+    const manuscript = ManuscriptRecordSchema.parse(input);
+    return (
+      this.require()
+        .prepare(
+          `insert or ignore into manuscript_records(
+             id,project_id,record_json,version,created_at,updated_at
+           ) values(?,?,?,?,?,?)`,
+        )
+        .run(
+          manuscript.id,
+          manuscript.projectId,
+          JSON.stringify(manuscript),
+          manuscript.version,
+          manuscript.createdAt,
+          manuscript.updatedAt,
+        ).changes === 1
+    );
+  }
+
+  updateManuscript(input: ManuscriptRecord, expectedVersion: number) {
+    const manuscript = ManuscriptRecordSchema.parse(input);
+    if (manuscript.version !== expectedVersion + 1) {
+      throw new Error('manuscript_version_sequence_invalid');
+    }
+    return (
+      this.require()
+        .prepare(
+          `update manuscript_records set record_json=?,version=?,updated_at=?
+           where project_id=? and id=? and version=?`,
+        )
+        .run(
+          JSON.stringify(manuscript),
+          manuscript.version,
+          manuscript.updatedAt,
+          manuscript.projectId,
+          manuscript.id,
+          expectedVersion,
+        ).changes === 1
+    );
+  }
+
+  getManuscriptWorkspaceConnection(
+    projectId: string,
+    manuscriptId: string,
+  ): StoredManuscriptWorkspaceConnection | null {
+    const row = this.require()
+      .prepare(
+        `select connection_json from manuscript_workspace_connections
+         where project_id=? and manuscript_id=? and enabled=1`,
+      )
+      .get(projectId, manuscriptId) as { connection_json: string } | undefined;
+    return row ? parseStoredManuscriptConnection(row.connection_json) : null;
+  }
+
+  getOverleafGitBindingConfiguration(bindingId: string): OverleafGitBindingConfiguration | null {
+    const row = this.require()
+      .prepare(
+        `select binding_id,remote_url,workspace_id,web_url,credential_ref
+         from overleaf_git_bindings where binding_id=?`,
+      )
+      .get(bindingId) as OverleafGitBindingRow | undefined;
+    return row
+      ? validateOverleafGitBindingConfiguration({
+          bindingId: row.binding_id,
+          remoteUrl: row.remote_url,
+          workspaceId: row.workspace_id,
+          webUrl: row.web_url,
+          credentialRef: row.credential_ref,
+        })
+      : null;
+  }
+
+  listManuscriptCredentialReferences(providerId: string) {
+    const parsedProviderId =
+      ManuscriptCredentialCleanupQueueEntrySchema.shape.providerId.parse(providerId);
+    if (parsedProviderId !== 'overleaf_git') return [];
+    const rows = this.require()
+      .prepare(
+        `select distinct overleaf.credential_ref
+         from manuscript_workspace_connections connection
+         join overleaf_git_bindings overleaf on overleaf.binding_id=connection.binding_id
+         where connection.provider_id=?
+         order by overleaf.credential_ref asc`,
+      )
+      .all(parsedProviderId) as Array<{ credential_ref: string }>;
+    return rows.map((row) => row.credential_ref);
+  }
+
+  getManuscriptWorkspacePresentation(bindingId: string) {
+    const row = this.require()
+      .prepare('select web_url from overleaf_git_bindings where binding_id=?')
+      .get(bindingId) as Pick<OverleafGitBindingRow, 'web_url'> | undefined;
+    return { workspaceUrl: row?.web_url ?? null };
+  }
+
+  connectOverleafGitWorkspace(
+    input: StoredManuscriptWorkspaceConnection,
+    configuration: OverleafGitBindingConfiguration,
+    expectedManuscriptVersion: number,
+  ) {
+    const connection = validateStoredManuscriptConnection(input);
+    const validatedConfiguration = validateOverleafGitBindingConfiguration(configuration);
+    if (
+      connection.binding.providerId !== 'overleaf_git' ||
+      validatedConfiguration.bindingId !== connection.binding.bindingId ||
+      expectedManuscriptVersion <= 0
+    ) {
+      throw new Error('manuscript_binding_invalid');
+    }
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const manuscript = database
+          .prepare('select version from manuscript_records where project_id=? and id=?')
+          .get(connection.binding.projectId, connection.binding.manuscriptId) as
+          { version: number } | undefined;
+        if (!manuscript || manuscript.version !== expectedManuscriptVersion) return false;
+        const existing = database
+          .prepare(
+            `select 1 from manuscript_workspace_connections
+             where manuscript_id=? and enabled=1`,
+          )
+          .get(connection.binding.manuscriptId);
+        if (existing) return false;
+        const inserted = database
+          .prepare(
+            `insert or ignore into manuscript_workspace_connections(
+               binding_id,project_id,manuscript_id,provider_id,connection_json,
+               binding_version,enabled,created_at,updated_at
+             ) values(?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            connection.binding.bindingId,
+            connection.binding.projectId,
+            connection.binding.manuscriptId,
+            connection.binding.providerId,
+            JSON.stringify(connection),
+            connection.binding.version,
+            connection.binding.enabled ? 1 : 0,
+            connection.binding.createdAt,
+            connection.binding.updatedAt,
+          );
+        if (inserted.changes !== 1) return false;
+        database
+          .prepare(
+            `insert into overleaf_git_bindings(
+               binding_id,remote_url,workspace_id,web_url,credential_ref,updated_at
+             ) values(?,?,?,?,?,?)`,
+          )
+          .run(
+            validatedConfiguration.bindingId,
+            validatedConfiguration.remoteUrl,
+            validatedConfiguration.workspaceId,
+            validatedConfiguration.webUrl,
+            validatedConfiguration.credentialRef,
+            connection.binding.updatedAt,
+          );
+        return true;
+      })
+      .immediate();
+  }
+
+  listManuscriptArtifactPurgeQueue(
+    projectIds?: readonly string[],
+    after?: Readonly<{ queuedAt: string; bindingId: string }>,
+  ): ManuscriptArtifactPurgeQueueEntry[] {
+    const columns = 'binding_id,project_id,provider_id,queued_at';
+    const cursor = after ? ManuscriptArtifactPurgeCursorSchema.parse(after) : null;
+    let rows: ManuscriptArtifactPurgeQueueRow[];
+    if (projectIds === undefined) {
+      rows = this.require()
+        .prepare(
+          `select ${columns} from manuscript_artifact_purge_queue
+           ${cursor ? 'where (queued_at>? or (queued_at=? and binding_id>?))' : ''}
+           order by queued_at asc,binding_id asc limit ?`,
+        )
+        .all(
+          ...(cursor ? [cursor.queuedAt, cursor.queuedAt, cursor.bindingId] : []),
+          MANUSCRIPT_ARTIFACT_PURGE_BATCH_LIMIT,
+        ) as ManuscriptArtifactPurgeQueueRow[];
+    } else {
+      const parsedProjectIds = ManuscriptArtifactPurgeProjectIdsSchema.parse([...projectIds]);
+      if (parsedProjectIds.length === 0) return [];
+      const placeholders = parsedProjectIds.map(() => '?').join(',');
+      rows = this.require()
+        .prepare(
+          `select ${columns} from manuscript_artifact_purge_queue
+           where project_id in (${placeholders})
+             ${cursor ? 'and (queued_at>? or (queued_at=? and binding_id>?))' : ''}
+           order by queued_at asc,binding_id asc limit ?`,
+        )
+        .all(
+          ...parsedProjectIds,
+          ...(cursor ? [cursor.queuedAt, cursor.queuedAt, cursor.bindingId] : []),
+          MANUSCRIPT_ARTIFACT_PURGE_BATCH_LIMIT,
+        ) as ManuscriptArtifactPurgeQueueRow[];
+    }
+    return rows.map((row) =>
+      ManuscriptArtifactPurgeQueueEntrySchema.parse({
+        bindingId: row.binding_id,
+        projectId: row.project_id,
+        providerId: row.provider_id,
+        queuedAt: row.queued_at,
+      }),
+    );
+  }
+
+  completeManuscriptArtifactPurge(bindingId: string) {
+    const parsedBindingId = z.string().uuid().parse(bindingId);
+    return (
+      this.require()
+        .prepare('delete from manuscript_artifact_purge_queue where binding_id=?')
+        .run(parsedBindingId).changes === 1
+    );
+  }
+
+  listManuscriptCredentialCleanupQueue(
+    after?: Readonly<{ queuedAt: string; providerId: string; credentialRef: string }>,
+  ): ManuscriptCredentialCleanupQueueEntry[] {
+    const cursor = after ? ManuscriptCredentialCleanupCursorSchema.parse(after) : null;
+    const rows = this.require()
+      .prepare(
+        `select provider_id,credential_ref,queued_at
+         from manuscript_credential_cleanup_queue
+         ${
+           cursor
+             ? `where queued_at>?
+                  or (queued_at=? and provider_id>?)
+                  or (queued_at=? and provider_id=? and credential_ref>?)`
+             : ''
+         }
+         order by queued_at asc,provider_id asc,credential_ref asc limit ?`,
+      )
+      .all(
+        ...(cursor
+          ? [
+              cursor.queuedAt,
+              cursor.queuedAt,
+              cursor.providerId,
+              cursor.queuedAt,
+              cursor.providerId,
+              cursor.credentialRef,
+            ]
+          : []),
+        MANUSCRIPT_CREDENTIAL_CLEANUP_BATCH_LIMIT,
+      ) as ManuscriptCredentialCleanupQueueRow[];
+    return rows.map((row) =>
+      ManuscriptCredentialCleanupQueueEntrySchema.parse({
+        providerId: row.provider_id,
+        credentialRef: row.credential_ref,
+        queuedAt: row.queued_at,
+      }),
+    );
+  }
+
+  hasEnabledManuscriptCredentialReference(providerId: string, credentialRef: string) {
+    const parsed = ManuscriptCredentialCleanupQueueEntrySchema.pick({
+      providerId: true,
+      credentialRef: true,
+    }).parse({ providerId, credentialRef });
+    return Boolean(
+      this.require()
+        .prepare(
+          `select 1
+           from manuscript_workspace_connections connection
+           join overleaf_git_bindings overleaf on overleaf.binding_id=connection.binding_id
+           where connection.provider_id=? and overleaf.credential_ref=?
+             and connection.enabled=1
+           limit 1`,
+        )
+        .get(parsed.providerId, parsed.credentialRef),
+    );
+  }
+
+  completeManuscriptCredentialCleanup(providerId: string, credentialRef: string) {
+    const parsed = ManuscriptCredentialCleanupQueueEntrySchema.pick({
+      providerId: true,
+      credentialRef: true,
+    }).parse({ providerId, credentialRef });
+    return (
+      this.require()
+        .prepare(
+          `delete from manuscript_credential_cleanup_queue
+           where provider_id=? and credential_ref=?`,
+        )
+        .run(parsed.providerId, parsed.credentialRef).changes === 1
+    );
+  }
+
+  updateManuscriptWorkspaceConnection(
+    input: StoredManuscriptWorkspaceConnection,
+    expectedBindingVersion: number,
+  ) {
+    const connection = validateStoredManuscriptConnection(input);
+    if (connection.binding.version !== expectedBindingVersion) {
+      throw new Error('manuscript_binding_version_sequence_invalid');
+    }
+    return (
+      this.require()
+        .prepare(
+          `update manuscript_workspace_connections set
+             connection_json=?,enabled=?,updated_at=?
+           where binding_id=? and project_id=? and manuscript_id=?
+             and binding_version=? and enabled=1`,
+        )
+        .run(
+          JSON.stringify(connection),
+          connection.binding.enabled ? 1 : 0,
+          connection.binding.updatedAt,
+          connection.binding.bindingId,
+          connection.binding.projectId,
+          connection.binding.manuscriptId,
+          expectedBindingVersion,
+        ).changes === 1
+    );
+  }
+
+  latestManuscriptCheckpoint(bindingId: string): ManuscriptCheckpointV1 | null {
+    const row = this.require()
+      .prepare(
+        `select checkpoint_json from manuscript_checkpoints
+         where binding_id=? order by rowid desc limit 1`,
+      )
+      .get(bindingId) as { checkpoint_json: string } | undefined;
+    return row ? ManuscriptCheckpointV1Schema.parse(JSON.parse(row.checkpoint_json)) : null;
+  }
+
+  latestManuscriptCheckpointForManuscript(
+    projectId: string,
+    manuscriptId: string,
+  ): ManuscriptCheckpointV1 | null {
+    const row = this.require()
+      .prepare(
+        `select checkpoint_json from manuscript_checkpoints
+         where project_id=? and manuscript_id=? order by rowid desc limit 1`,
+      )
+      .get(projectId, manuscriptId) as { checkpoint_json: string } | undefined;
+    return row ? ManuscriptCheckpointV1Schema.parse(JSON.parse(row.checkpoint_json)) : null;
+  }
+
+  getManuscriptCheckpointByProviderRevision(
+    bindingId: string,
+    providerRevision: string,
+  ): ManuscriptCheckpointV1 | null {
+    const row = this.require()
+      .prepare(
+        `select checkpoint_json from manuscript_checkpoints
+         where binding_id=? and provider_revision=?`,
+      )
+      .get(bindingId, providerRevision) as { checkpoint_json: string } | undefined;
+    return row ? ManuscriptCheckpointV1Schema.parse(JSON.parse(row.checkpoint_json)) : null;
+  }
+
+  appendManuscriptCheckpoint(input: ManuscriptCheckpointV1): ManuscriptCheckpointV1 {
+    const checkpoint = ManuscriptCheckpointV1Schema.parse(input);
+    if (!checkpoint.providerRevision) throw new Error('manuscript_provider_revision_required');
+    const database = this.require();
+    return database
+      .transaction(() => {
+        database
+          .prepare(
+            `insert or ignore into manuscript_checkpoints(
+               checkpoint_id,binding_id,project_id,manuscript_id,provider_revision,
+               checkpoint_json,observed_at
+             ) values(?,?,?,?,?,?,?)`,
+          )
+          .run(
+            checkpoint.checkpointId,
+            checkpoint.bindingId,
+            checkpoint.projectId,
+            checkpoint.manuscriptId,
+            checkpoint.providerRevision,
+            JSON.stringify(checkpoint),
+            checkpoint.observedAt,
+          );
+        const stored = database
+          .prepare(
+            `select checkpoint_json from manuscript_checkpoints
+             where binding_id=? and provider_revision=?`,
+          )
+          .get(checkpoint.bindingId, checkpoint.providerRevision) as
+          { checkpoint_json: string } | undefined;
+        if (!stored) throw new Error('manuscript_checkpoint_unavailable');
+        const parsed = ManuscriptCheckpointV1Schema.parse(JSON.parse(stored.checkpoint_json));
+        if (
+          parsed.revisionEnvelopeDigest !== checkpoint.revisionEnvelopeDigest ||
+          parsed.sourceRevision !== checkpoint.sourceRevision
+        ) {
+          throw new Error('manuscript_checkpoint_identity_conflict');
+        }
+        return parsed;
+      })
+      .immediate();
+  }
+
+  disableManuscriptWorkspaceConnection(
+    projectId: string,
+    manuscriptId: string,
+    bindingId: string,
+    expectedBindingVersion: number,
+    updatedAt: string,
+  ) {
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const row = database
+          .prepare(
+            `select connection.connection_json,connection.provider_id,
+                    overleaf.credential_ref
+             from manuscript_workspace_connections connection
+             left join overleaf_git_bindings overleaf
+               on overleaf.binding_id=connection.binding_id
+             where connection.project_id=? and connection.manuscript_id=?
+               and connection.binding_id=? and connection.binding_version=?
+               and connection.enabled=1`,
+          )
+          .get(projectId, manuscriptId, bindingId, expectedBindingVersion) as
+          | { connection_json: string; provider_id: string; credential_ref: string | null }
+          | undefined;
+        if (!row) return false;
+        const current = parseStoredManuscriptConnection(row.connection_json);
+        const disabled = validateStoredManuscriptConnection({
+          ...current,
+          binding: ManuscriptWorkspaceBindingV1Schema.parse({
+            ...current.binding,
+            enabled: false,
+            version: current.binding.version + 1,
+            updatedAt,
+          }),
+        });
+        if (row.credential_ref) {
+          database
+            .prepare(
+              `insert or ignore into manuscript_credential_cleanup_queue(
+                 provider_id,credential_ref,queued_at
+               ) values(?,?,?)`,
+            )
+            .run(row.provider_id, row.credential_ref, updatedAt);
+        }
+        return (
+          database
+            .prepare(
+              `update manuscript_workspace_connections set
+                 connection_json=?,binding_version=?,enabled=0,updated_at=?
+               where binding_id=? and binding_version=? and enabled=1`,
+            )
+            .run(
+              JSON.stringify(disabled),
+              disabled.binding.version,
+              updatedAt,
+              bindingId,
+              expectedBindingVersion,
+            ).changes === 1
+        );
+      })
+      .immediate();
+  }
+
+  localManuscriptActorId() {
+    const existing = this.get('identity', 'local-manuscript-actor')?.value;
+    if (typeof existing === 'string' && z.string().uuid().safeParse(existing).success) {
+      return existing;
+    }
+    const actorId = randomUUID();
+    this.cache('identity', 'local-manuscript-actor', actorId, 1);
+    return actorId;
+  }
+
   listSshConnections(): SshConnectionProfile[] {
     const rows = this.require()
       .prepare(
@@ -5853,6 +6635,60 @@ type SshConnectionRow = {
   created_at: string;
   updated_at: string;
 };
+
+type OverleafGitBindingRow = {
+  binding_id: string;
+  remote_url: string;
+  workspace_id: string;
+  web_url: string;
+  credential_ref: string;
+};
+
+type ManuscriptArtifactPurgeQueueRow = Readonly<{
+  binding_id: string;
+  project_id: string;
+  provider_id: string;
+  queued_at: string;
+}>;
+
+type ManuscriptCredentialCleanupQueueRow = Readonly<{
+  provider_id: string;
+  credential_ref: string;
+  queued_at: string;
+}>;
+
+function validateStoredManuscriptConnection(
+  input: StoredManuscriptWorkspaceConnection,
+): StoredManuscriptWorkspaceConnection {
+  const binding = ManuscriptWorkspaceBindingV1Schema.parse(input.binding);
+  const anchor = ManuscriptSyncAnchorV1Schema.parse(input.anchor);
+  if (anchor.bindingId !== binding.bindingId) {
+    throw new Error('manuscript_anchor_binding_mismatch');
+  }
+  return {
+    binding,
+    anchor,
+    lifecycle: ManuscriptWorkspaceLifecycleSchema.parse(input.lifecycle),
+    lastObservedProviderRevision:
+      input.lastObservedProviderRevision === null
+        ? null
+        : z.string().trim().min(1).max(512).parse(input.lastObservedProviderRevision),
+    lastObservedAt:
+      input.lastObservedAt === null
+        ? null
+        : z.iso.datetime({ offset: true }).parse(input.lastObservedAt),
+    lastFailureCode:
+      input.lastFailureCode === null
+        ? null
+        : z.string().trim().min(1).max(128).parse(input.lastFailureCode),
+  };
+}
+
+function parseStoredManuscriptConnection(value: string) {
+  return validateStoredManuscriptConnection(
+    JSON.parse(value) as StoredManuscriptWorkspaceConnection,
+  );
+}
 
 type SshWorkspaceGrantRow = {
   id: string;

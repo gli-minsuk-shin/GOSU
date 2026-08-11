@@ -12,12 +12,28 @@ import {
 } from './experiment.js';
 import { LabRoleSchema } from './identity.js';
 import { ConnectorCapabilitiesSchema } from './integration.js';
+import {
+  ManuscriptCheckpointV1Schema,
+  ManuscriptSyncAnchorV1Schema,
+  ManuscriptSyncAttemptV1Schema,
+  ManuscriptSyncStateSchema,
+  ManuscriptWorkspaceBindingV1Schema,
+  ManuscriptWorkspaceCapabilitiesV1Schema,
+  ManuscriptWorkspaceDescriptorV1Schema,
+} from './manuscript.js';
 import { BudgetUsageSchema, ExperimentBudgetSchema, ObjectiveVersionSchema } from './objective.js';
 import { SyncEventV1Schema } from './sync.js';
 
 export const CONTRACT_SCHEMA_REGISTRY = {
   ModelDescriptor: ModelDescriptorSchema,
   ConnectorCapabilities: ConnectorCapabilitiesSchema,
+  ManuscriptWorkspaceCapabilitiesV1: ManuscriptWorkspaceCapabilitiesV1Schema,
+  ManuscriptWorkspaceDescriptorV1: ManuscriptWorkspaceDescriptorV1Schema,
+  ManuscriptWorkspaceBindingV1: ManuscriptWorkspaceBindingV1Schema,
+  ManuscriptCheckpointV1: ManuscriptCheckpointV1Schema,
+  ManuscriptSyncAnchorV1: ManuscriptSyncAnchorV1Schema,
+  ManuscriptSyncAttemptV1: ManuscriptSyncAttemptV1Schema,
+  ManuscriptSyncState: ManuscriptSyncStateSchema,
   LabRole: LabRoleSchema,
   CampaignState: CampaignStateSchema,
   TrialState: TrialStateSchema,

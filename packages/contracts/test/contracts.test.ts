@@ -4,6 +4,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   JobManifestV1Schema,
+  ManuscriptCheckpointV1Schema,
+  ManuscriptWorkspaceBindingV1Schema,
+  ManuscriptWorkspaceDescriptorV1Schema,
   ModelDescriptorSchema,
   RunnerEventMessageV1Schema,
   contractJsonSchema,
@@ -82,6 +85,90 @@ describe('contract schemas', () => {
     expect(message.event).toMatchObject({ sequence: 7, isSummary: true });
     expect(() =>
       RunnerEventMessageV1Schema.parse({ ...message, runnerId: 'different-runner' }),
+    ).toThrow();
+  });
+
+  it('keeps manuscript workspace identity provider-neutral and payload-free', () => {
+    const capabilities = {
+      schemaVersion: 1,
+      interactionModes: ['checkpoint_pull', 'external_realtime_editor'],
+      revisionTopology: 'linear',
+      conditionalPublish: false,
+      providerHistory: true,
+      presence: false,
+      comments: false,
+      trackChanges: false,
+      serverCompile: false,
+      reviewMetadataRoundTrip: 'unsupported',
+    } as const;
+    const descriptor = ManuscriptWorkspaceDescriptorV1Schema.parse({
+      schemaVersion: 1,
+      providerId: 'provider-discovered-at-runtime',
+      displayName: 'Provider discovered at runtime',
+      workspaceKind: 'remote_git_checkpoint',
+      collaborationModel: 'checkpoint',
+      capabilities,
+      unsupportedMetadata: ['comments', 'track_changes'],
+      limitations: ['manual_checkpoint_only'],
+    });
+    const binding = ManuscriptWorkspaceBindingV1Schema.parse({
+      schemaVersion: 1,
+      bindingId: 'binding-1',
+      projectId: 'project-1',
+      manuscriptId: 'manuscript-1',
+      providerId: descriptor.providerId,
+      capabilitiesSnapshot: descriptor.capabilities,
+      authority: 'provider',
+      enabled: true,
+      version: 1,
+      createdAt: '2026-08-11T00:00:00.000Z',
+      updatedAt: '2026-08-11T00:00:00.000Z',
+    });
+
+    expect(binding.providerId).toBe('provider-discovered-at-runtime');
+    expect(Object.keys(binding)).not.toEqual(
+      expect.arrayContaining([
+        'url',
+        'token',
+        'credential',
+        'branch',
+        'filesystemPath',
+        'providerWorkspaceRef',
+        'connectionRef',
+      ]),
+    );
+    expect(() =>
+      ManuscriptWorkspaceBindingV1Schema.parse({ ...binding, token: 'must-not-cross-contract' }),
+    ).toThrow();
+  });
+
+  it('records immutable manuscript checkpoint provenance without source payloads', () => {
+    const checkpoint = ManuscriptCheckpointV1Schema.parse({
+      schemaVersion: 1,
+      checkpointId: 'checkpoint-1',
+      bindingId: 'binding-1',
+      projectId: 'project-1',
+      manuscriptId: 'manuscript-1',
+      providerId: 'native-provider',
+      direction: 'fetch',
+      sourceAuthority: 'provider',
+      sourceRevision: 'provider-revision-1',
+      gosuRevision: 'gosu-revision-1',
+      providerRevision: 'provider-revision-1',
+      cursor: 'opaque-cursor-1',
+      revisionEnvelopeDigest: `sha256:${'a'.repeat(64)}`,
+      rootDocument: 'paper/main.tex',
+      baseCheckpointId: null,
+      actorId: 'actor-1',
+      observedAt: '2026-08-11T00:00:00.000Z',
+    });
+
+    expect(checkpoint.rootDocument).toBe('paper/main.tex');
+    expect(() =>
+      ManuscriptCheckpointV1Schema.parse({ ...checkpoint, source: '\\documentclass{article}' }),
+    ).toThrow();
+    expect(() =>
+      ManuscriptCheckpointV1Schema.parse({ ...checkpoint, rootDocument: '../outside.tex' }),
     ).toThrow();
   });
 

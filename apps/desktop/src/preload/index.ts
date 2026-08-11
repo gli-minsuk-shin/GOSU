@@ -37,6 +37,16 @@ import type {
 } from '../shared/git-workspace-contracts';
 import { unwrapGitWorkspaceIpcResult } from '../shared/git-workspace-ipc-result';
 import { LITERATURE_IPC_CHANNELS } from '../shared/literature-channels';
+import { MANUSCRIPT_WORKSPACE_IPC_CHANNELS } from '../shared/manuscript-workspace-channels';
+import type {
+  ConnectOverleafGitInput,
+  CreateManuscriptInput,
+  FetchManuscriptCheckpointInput,
+  ManuscriptBindingCommand,
+  ManuscriptWorkspaceSnapshot,
+  UpdateManuscriptInput,
+} from '../shared/manuscript-workspace-contracts';
+import { unwrapManuscriptWorkspaceIpcResult } from '../shared/manuscript-workspace-ipc-result';
 import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
 import {
   LectureStudioEventSchema,
@@ -198,6 +208,14 @@ async function invokeLiterature<T>(channel: string, input: unknown): Promise<T> 
     error: { code: 'literature_unavailable' },
   }));
   return unwrapLiteratureIpcResult<T>(result);
+}
+
+async function invokeManuscriptWorkspace<T>(channel: string, input: unknown): Promise<T> {
+  const result = await ipcRenderer.invoke(channel, input).catch(() => ({
+    ok: false,
+    error: { code: 'manuscript_workspace_unavailable' },
+  }));
+  return unwrapManuscriptWorkspaceIpcResult<T>(result);
 }
 
 async function invokeLectureStudio<T>(channel: string, input: unknown): Promise<T> {
@@ -407,6 +425,43 @@ const api = {
       invokeGitWorkspace<GitWorkspaceSnapshot>(GIT_WORKSPACE_IPC_CHANNELS.push, input),
     reveal: (projectId: string) =>
       invokeGitWorkspace<{ revealed: true }>(GIT_WORKSPACE_IPC_CHANNELS.reveal, { projectId }),
+  },
+  manuscriptWorkspace: {
+    list: (projectId: string) =>
+      invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.list,
+        { projectId },
+      ),
+    create: (input: CreateManuscriptInput) =>
+      invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.create,
+        input,
+      ),
+    update: (input: UpdateManuscriptInput) =>
+      invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.update,
+        input,
+      ),
+    connectOverleafGit: (input: ConnectOverleafGitInput) =>
+      invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.connectOverleafGit,
+        input,
+      ),
+    inspect: (input: ManuscriptBindingCommand) =>
+      invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.inspect,
+        input,
+      ),
+    fetchCheckpoint: (input: FetchManuscriptCheckpointInput) =>
+      invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.fetchCheckpoint,
+        input,
+      ),
+    disconnect: (input: ManuscriptBindingCommand) =>
+      invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.disconnect,
+        input,
+      ),
   },
   literature: {
     list: (input: ListLiteratureInput) =>

@@ -1,0 +1,84 @@
+{
+  "$id": "urn:gosu:contract:v1:ManuscriptWorkspaceDescriptorV1",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "number", "const": 1 },
+    "providerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "workspaceKind": {
+      "type": "string",
+      "enum": ["remote_git_checkpoint", "local_native", "cloud_native"]
+    },
+    "collaborationModel": { "type": "string", "enum": ["checkpoint", "realtime"] },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "interactionModes": {
+          "minItems": 1,
+          "maxItems": 5,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "bootstrap_export",
+              "checkpoint_pull",
+              "checkpoint_publish",
+              "external_realtime_editor",
+              "embedded_realtime_editor"
+            ]
+          }
+        },
+        "revisionTopology": {
+          "type": "string",
+          "enum": ["linear", "multi_version", "multi_branch"]
+        },
+        "conditionalPublish": { "type": "boolean" },
+        "providerHistory": { "type": "boolean" },
+        "presence": { "type": "boolean" },
+        "comments": { "type": "boolean" },
+        "trackChanges": { "type": "boolean" },
+        "serverCompile": { "type": "boolean" },
+        "reviewMetadataRoundTrip": {
+          "type": "string",
+          "enum": ["native", "lossless", "unsupported", "unknown"]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "interactionModes",
+        "revisionTopology",
+        "conditionalPublish",
+        "providerHistory",
+        "presence",
+        "comments",
+        "trackChanges",
+        "serverCompile",
+        "reviewMetadataRoundTrip"
+      ],
+      "additionalProperties": false
+    },
+    "unsupportedMetadata": {
+      "maxItems": 32,
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    },
+    "limitations": {
+      "maxItems": 32,
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "providerId",
+    "displayName",
+    "workspaceKind",
+    "collaborationModel",
+    "capabilities",
+    "unsupportedMetadata",
+    "limitations"
+  ],
+  "additionalProperties": false
+}

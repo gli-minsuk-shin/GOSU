@@ -10,6 +10,7 @@ import { CardHead, describeError } from './ui-primitives';
 export type WorkspaceTabId =
   | 'chat'
   | 'repository'
+  | 'manuscript'
   | 'board'
   | 'objective'
   | 'experiments'
@@ -48,6 +49,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
 }> = [
   { id: 'chat', label: 'Project chat', icon: '◈' },
   { id: 'repository', label: 'Repository', icon: '⌘' },
+  { id: 'manuscript', label: 'Manuscript', icon: '¶' },
   { id: 'board', label: 'Board', icon: '▦' },
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
   { id: 'experiments', label: 'Experiments', icon: '⌁' },
@@ -58,10 +60,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   { id: 'notes', label: 'Research Notes', icon: '◇' },
 ];
 
-export const FUTURE_MODULES = [
-  ['Manuscript', '¶'],
-  ['Review', '✓'],
-] as const;
+export const FUTURE_MODULES = [['Review', '✓']] as const;
 
 const EMPTY_OBJECTIVE: ObjectiveDraft = {
   goal: '',
@@ -99,6 +98,8 @@ export function WorkspacePageHeading({
     chat: 'Talk with the linked Codex model and turn the conversation into reviewed project work.',
     repository:
       'Browse project files, review changes and history, and use bounded Git operations without a terminal.',
+    manuscript:
+      'Connect replaceable writing engines and capture immutable inbound checkpoints for future import and review.',
     board: 'Create work, move it through the research workflow, and keep every change locally.',
     objective:
       'Define a versioned goal, evaluation metric, reproducibility hashes, and hard experiment budget.',
@@ -135,6 +136,7 @@ export function WorkspacePageHeading({
 export function shouldShowActiveProjectPageHeading(activeTab: WorkspaceTabId) {
   return (
     activeTab !== 'chat' &&
+    activeTab !== 'manuscript' &&
     activeTab !== 'notes' &&
     activeTab !== 'literature' &&
     activeTab !== 'lecture' &&

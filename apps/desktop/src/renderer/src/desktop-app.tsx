@@ -50,6 +50,7 @@ import { desktopContentClassName } from './desktop-content-layout';
 import { ExperimentsView, type ExperimentsViewAdapter } from './experiments-view';
 import { buildLocalNotesGrantUpdate } from './local-notes-access-model';
 import { LiteratureView, type LiteratureViewAdapter } from './literature-view';
+import { ManuscriptView } from './manuscript-view';
 import { VolatileLectureStudioDrafts } from './lecture-studio-session-state';
 import { LectureStudioView, type LectureStudioViewAdapter } from './lecture-studio-view';
 import {
@@ -309,6 +310,7 @@ function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabI
   return (
     tab === 'chat' ||
     tab === 'repository' ||
+    tab === 'manuscript' ||
     tab === 'board' ||
     tab === 'objective' ||
     tab === 'experiments' ||
@@ -2791,6 +2793,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   )
                 }
               />
+            )}
+            {activeTab === 'manuscript' && activeProject && (
+              <ManuscriptView key={activeProject.id} project={activeProject} />
             )}
             {activeTab === 'objective' && activeProject && (
               <ObjectiveEditor

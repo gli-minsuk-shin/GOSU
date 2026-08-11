@@ -5,11 +5,13 @@ import {
   BrowserWindow,
   ipcMain,
   Menu,
+  safeStorage,
   session,
   shell,
   type IpcMainInvokeEvent,
 } from 'electron';
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
+import { createManuscriptWorkspaceAdapterRegistry } from '@gosu/integrations';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
 import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
@@ -26,6 +28,11 @@ import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
 import { registerGitWorkspaceIpc } from './git-workspace-ipc';
 import { GitWorkspaceService } from './git-workspace-service';
+import { registerManuscriptWorkspaceIpc } from './manuscript-workspace-ipc';
+import { ManuscriptWorkspaceService } from './manuscript-workspace-service';
+import { OverleafGitCredentialStore } from './overleaf-git-credential-store';
+import { OverleafGitManuscriptWorkspaceAdapter } from './overleaf-git-manuscript-adapter';
+import { OverleafGitTransport } from './overleaf-git-transport';
 import { LiteratureAiService } from './literature-ai-service';
 import { CrossrefLiteratureProvider } from './literature-crossref';
 import { BalancedLiteratureProvider } from './literature-discovery';
@@ -121,6 +128,32 @@ const gitWorkspace = new GitWorkspaceService({
   workspace,
   rootDirectory: () => join(app.getPath('userData'), 'git-workspaces'),
 });
+const overleafGitCredentials = new OverleafGitCredentialStore({
+  rootDirectory: () => join(app.getPath('userData'), 'credentials', 'overleaf-git'),
+  encryption: safeStorage,
+});
+const overleafGitTransport = new OverleafGitTransport({
+  rootDirectory: () => join(app.getPath('userData'), 'manuscript-workspaces'),
+  credentials: overleafGitCredentials,
+});
+const manuscriptWorkspaceAdapters = createManuscriptWorkspaceAdapterRegistry([
+  new OverleafGitManuscriptWorkspaceAdapter(
+    database,
+    overleafGitTransport,
+    () => new Date(),
+    overleafGitCredentials,
+  ),
+]);
+const manuscriptWorkspace = new ManuscriptWorkspaceService({
+  storage: database,
+  workspace,
+  repository: {
+    revision: (projectId) => gitWorkspace.revision(projectId),
+  },
+  adapters: manuscriptWorkspaceAdapters,
+  overleafGit: overleafGitTransport,
+  credentials: overleafGitCredentials,
+});
 const researchNotes = new ResearchNotesService({
   storage: {
     loadProjectLink(projectId) {
@@ -202,7 +235,12 @@ const lectureStudio = new LectureStudioService({
     return directory;
   },
 });
-const projectTrashLifecycle = new ProjectTrashLifecycle(projectChat, ssh, lectureStudio);
+const projectTrashLifecycle = new ProjectTrashLifecycle(
+  projectChat,
+  ssh,
+  lectureStudio,
+  manuscriptWorkspace,
+);
 let mainWindowRendererLoaded = false;
 let pendingSettingsOpen = false;
 let pendingSidebarToggle = false;
@@ -376,6 +414,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     { reveal: (path) => shell.showItemInFolder(path) },
     reportUnexpectedWorkspaceError,
   );
+  registerManuscriptWorkspaceIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    manuscriptWorkspace,
+    reportUnexpectedWorkspaceError,
+  );
   registerSshIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     ssh,
@@ -506,6 +549,10 @@ if (!primaryInstance) {
     let localData = localDataReadiness();
     try {
       database.open();
+      await overleafGitCredentials
+        .reconcilePending(database.listManuscriptCredentialReferences('overleaf_git'))
+        .catch(() => undefined);
+      await manuscriptWorkspace.reconcileArtifactPurgeQueue().catch(() => undefined);
       await vault.restore().catch(() => null);
       await lectureStudio.reconcilePendingArtifacts().catch(() => undefined);
       await projectChat.reconcileResearchNoteSaveReceipts().catch(() => undefined);

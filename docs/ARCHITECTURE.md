@@ -35,7 +35,7 @@ GOSU는 현재 운영형 MVP의 기반 단계다. 비공개 연구 데이터, �
 
 - 연구 파일 전체를 GOSU Hosted Sync에 복제하는 것
 - Windows·Linux 데스크톱, Slurm·Kubernetes 또는 wet-lab 장비 제어
-- Overleaf·Obsidian·Zotero와의 양방향 동기화
+- Overleaf·Obsidian·Zotero와의 자동 양방향·dual-write 동기화
 - 실시간 공동 LaTeX 편집
 - 보호 브랜치 병합, 근거 최종 채택 또는 외부 export를 사람 승인 없이 수행하는 것
 - 현재 단계에서의 공개 인터넷 배포, 비용이 큰 무인 workload 또는 프로덕션 보안 보증
@@ -53,14 +53,17 @@ flowchart LR
     AttachmentFiles["사용자가 선택한 local 연구 파일"]
     AttachmentCapability["ephemeral one-turn attachment capability\nMain memory·private temp·opaque IDs"]
     Git["앱 관리형 로컬 Git worktree\nfile·change·history·branch"]
+    ManuscriptAdapter["Manuscript adapter registry\nprovider-neutral checkpoint port"]
+    ManuscriptMirror["binding별 local bare mirror\nimmutable fetched checkpoint"]
     OpenSSH["system OpenSSH\nalias/direct target·ssh-agent"]
   end
 
-  subgraph External["제한된 외부 연구 discovery"]
+  subgraph External["외부 research service"]
     WebSearch["Codex first-party web search\ncached 또는 live"]
     SemanticScholar["고정 Semantic Scholar Graph API\n관련성·고인용·최신 metadata"]
     HuggingFace["고정 Hugging Face Papers API\nadditive arXiv metadata"]
     Crossref["고정 Crossref works endpoint"]
+    Overleaf["Overleaf website·official Git bridge\nexternal realtime UI·linear checkpoint"]
   end
 
   subgraph Hosted["Hosted collaboration boundary"]
@@ -84,6 +87,8 @@ flowchart LR
   Main -->|"project-scoped read\nowned projection write"| Vault
   AttachmentFiles -->|"Main 고정 dialog·path/bytes 비노출"| Main --> AttachmentCapability --> Codex
   Main -->|"project-scoped typed Git IPC"| Git
+  Main --> ManuscriptAdapter -->|"manual exact-revision fetch"| Overleaf
+  ManuscriptAdapter --> ManuscriptMirror
   Codex -->|"project profile web_search"| WebSearch
   Main -->|"bounded three-lane metadata search"| SemanticScholar
   Main -->|"bounded additive metadata search"| HuggingFace
@@ -128,20 +133,20 @@ flowchart LR
 제품 모듈은 아직 모두 독립 디렉터리로 분리되어 있지 않다. 새 기능은 아래 소유권을 기준으로
 배치하고, 한 모듈이 다른 모듈의 저장 테이블을 직접 읽지 않게 한다.
 
-| 논리 모듈                  | 현재 코드 소유자                                                                   | 구현 수준                                                                                                                                                                                                                                                                  |
-| -------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                       | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                                                                                                 |
-| Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store     | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, 동일 Task의 Kanban·To-do projection, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                        |
-| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                       | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                   |
-| Experiment Orchestration   | Desktop Experiment workspace, contracts, domain, Runner                            | 프로젝트별 idea lineage·검토 outcome·동결 Objective 기반 summary metric trajectory·evidence report를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨                                                                             |
-| Manuscript                 | Desktop Repository workspace와 향후 manuscript module                              | 앱 관리형 Git worktree·파일/Markdown preview·change/history/branch·commit 구현; LaTeX compile·PDF preview는 계획됨                                                                                                                                                         |
-| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                           | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                    |
-| Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                          | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨   |
-| Obsidian Knowledge         | Desktop Research Notes service, bounded Vault adapter, Markdown renderer           | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 문서 metadata envelope·Literature/Papers projection·structured final-response Markdown create·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현 |
-| Lecture                    | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port    | 여러 project의 reviewed Literature metadata·Experiment lineage 선택, lecture/talk 생성, 독립 chat, append-only revision과 Research Notes Markdown 저장 구현; PPTX/PDF export와 manuscript/full-text ingest는 계획됨                                                        |
-| AI Gateway                 | Desktop Project Chat provider router, Codex App Server와 선택형 BYO-Hermes adapter | 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·provider별 동적 model provenance·Codex native harness/tool 경계·Hermes sealed text-only 경계·동적 branch title·Research Notes final persistence 구현                                        |
-| Integration Hub            | Desktop Git Workspace·승인형 SSH broker, `packages/integrations` registry          | GitHub HTTPS clone·bounded Git·OpenSSH alias/direct import·하나의 global server profile에 여러 프로젝트별 remote workspace grant·Allow-once 또는 bounded trusted execution·휘발성 CPU/RAM/GPU snapshot 구현; GitHub App 계정 연결은 계획됨                                 |
-| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                                  | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                   |
+| 논리 모듈                  | 현재 코드 소유자                                                                        | 구현 수준                                                                                                                                                                                                                                                                  |
+| -------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                            | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                                                                                                 |
+| Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store          | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, 동일 Task의 Kanban·To-do projection, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                        |
+| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                            | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                   |
+| Experiment Orchestration   | Desktop Experiment workspace, contracts, domain, Runner                                 | 프로젝트별 idea lineage·검토 outcome·동결 Objective 기반 summary metric trajectory·evidence report를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨                                                                             |
+| Manuscript                 | Desktop Manuscript service·SQLCipher repository, shared contracts와 adapter registry    | project별 복수 manuscript identity, provider-neutral binding/checkpoint/anchor, Overleaf Git existing-project link·HEAD 확인·manual immutable fetch·local mirror 정리 구현; editor·compile·PDF·handoff·publish는 계획됨                                                    |
+| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                                | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                    |
+| Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                               | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨   |
+| Obsidian Knowledge         | Desktop Research Notes service, bounded Vault adapter, Markdown renderer                | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 문서 metadata envelope·Literature/Papers projection·structured final-response Markdown create·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현 |
+| Lecture                    | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port         | 여러 project의 reviewed Literature metadata·Experiment lineage 선택, lecture/talk 생성, 독립 chat, append-only revision과 Research Notes Markdown 저장 구현; PPTX/PDF export와 manuscript/full-text ingest는 계획됨                                                        |
+| AI Gateway                 | Desktop Project Chat provider router, Codex App Server와 선택형 BYO-Hermes adapter      | 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·provider별 동적 model provenance·Codex native harness/tool 경계·Hermes sealed text-only 경계·동적 branch title·Research Notes final persistence 구현                                        |
+| Integration Hub            | Desktop Git Workspace·승인형 SSH·Manuscript connector, `packages/integrations` registry | GitHub HTTPS clone·bounded Git·OpenSSH grant·provider-neutral manuscript operation registry·Overleaf Git private connector 구현; schema-driven provider onboarding, GitHub App와 native LaTeX provider는 계획됨                                                            |
+| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                                       | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                   |
 
 ## 5. 의존성 규칙
 
@@ -191,28 +196,31 @@ flowchart TD
 
 ## 6. 데이터 원본과 개인정보 경계
 
-| 데이터                                           | authoritative source                                                                     | Hosted Sync 보관 정책                                                                                                                                                                    |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 코드, LaTeX, 생성된 `.bib`, 재현 설정, slide     | GitHub와 앱 관리형 local worktree                                                        | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지                                                                                                                      |
-| 프로젝트 Research Notes Markdown과 첨부          | 사용자의 Obsidian Vault 아래 `GOSU/<project>`; Literature 원본은 별도 SQLCipher          | Vault·project 연결 상태만; 본문·절대 경로는 금지                                                                                                                                         |
-| 서지 metadata, collection, PDF                   | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                                                                     |
-| 검색 문헌 metadata, review annotation, 검색 이력 | 프로젝트별 Desktop Literature SQLCipher tables, Project Chat search와 선택한 import file | 현재 Hosted Sync·outbox 대상이 아님; raw provider response·원문·abstract·로컬 file path·API key 금지                                                                                     |
-| 실험 idea lineage·검토 outcome·summary metric    | 프로젝트별 Desktop Experiment SQLCipher tables                                           | 현재 Hosted Sync·workspace outbox 대상이 아님; raw Runner metric·log·artifact는 저장하지 않음                                                                                            |
-| dataset, raw metric·log, checkpoint, artifact    | Linux Runner                                                                             | 원본 금지; 상태와 명시적 summary metric만                                                                                                                                                |
-| 프로젝트, Kanban, 보이는 대화, 승인, 감사        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                           | 협업 metadata 저장 대상                                                                                                                                                                  |
-| Codex 인증, API key, SSH material, runner secret | Keychain·Codex credential store·runner secret store                                      | 금지                                                                                                                                                                                     |
-| Hermes 설정과 provider 인증                      | 사용자가 별도로 설치·설정한 local Hermes runtime                                         | Hosted Sync·GOSU DB·outbox·telemetry에 복사하지 않음; GOSU는 BYO runtime의 현재 model/provider 식별자만 turn provenance에 기록                                                           |
-| SSH connection profile                           | 모든 local project가 공유하는 Desktop SQLCipher registry                                 | Hosted Sync 금지; alias 또는 정규화된 direct host·user·port·inactive `-L`; secret·원본 command 금지; 여러 project grant가 같은 profile을 참조할 수 있음                                  |
-| SSH remote workspace grant                       | 프로젝트별 Desktop SQLCipher table                                                       | Hosted Sync 금지; connection ID·canonical root·permission mode·선택적인 exact-version trusted policy binding만 저장                                                                      |
-| SSH command output                               | 해당 Project Chat turn의 Main-process memory와 ephemeral tool result                     | raw output 저장·동기화 금지; 모델이 답변에 포함한 문장만 대화 정책 적용                                                                                                                  |
-| SSH workspace text file body                     | 승인된 remote project root의 원본과 해당 turn의 bounded helper/result memory             | SQLCipher·Hosted Sync·outbox·telemetry·Git 자동 저장 금지; exact create/replace 내용은 기본 5분 decision window의 centered blocking approval dialog에만 휘발성 표시                      |
-| SSH server resource snapshot                     | Desktop Main-process 12초 cache와 Renderer의 마지막 구조화 sample                        | SQLCipher·Hosted Sync·outbox·telemetry·chat prompt 저장 금지; CPU/RAM/GPU 숫자와 bounded issue만 IPC에 노출하고 raw probe output 금지                                                    |
-| SSH Allow-once approval request·outcome metadata | 현재 app process의 in-memory broker event                                                | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지                                                                                                                  |
-| SSH trusted auto-execution audit                 | 프로젝트별 Desktop SQLCipher append-only table                                           | 실행 전 exact project/grant/connection/policy/turn/tool-call/operation/command hash만 기록; raw command preview·stdout/stderr·secret·Hosted Sync 금지                                    |
-| Project Chat 첨부 연구 파일                      | 사용자가 dialog에서 선택한 local file                                                    | Codex turn에서만 bounded text 또는 image를 전달; Hermes text-only session은 첨부를 거절; path·원본 bytes·추출 text·정규화 image를 SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음 |
-| Codex web search result·tool payload             | 해당 Codex turn의 ephemeral provider context                                             | GOSU DB·outbox에 저장하지 않음; 최종 답변의 URL·요약만 visible chat 정책 적용; Hermes text-only session에는 web search를 제공하지 않음                                                   |
-| 로컬 통합 검색 query·result                      | 현재 Main-process query와 Renderer view state                                            | SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; 기존 source만 bounded read                                                                                                       |
-| tool payload, 파일 본문, shell 출력, raw diff    | 로컬 실행 문맥                                                                           | 금지                                                                                                                                                                                     |
+| 데이터                                                  | authoritative source                                                                     | Hosted Sync 보관 정책                                                                                                                                                                    |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 코드, GOSU draft LaTeX, 생성된 `.bib`, 재현 설정, slide | GitHub와 앱 관리형 local worktree                                                        | repository label과 향후 branch·commit·PR metadata만; 파일·diff 금지                                                                                                                      |
+| manuscript identity·binding·checkpoint provenance       | 프로젝트별 Desktop Manuscript SQLCipher tables; v1 authority는 `gosu`                    | 현재 Hosted Sync·workspace outbox 대상이 아님; provider URL·source·raw diff·token 금지                                                                                                   |
+| fetched Overleaf source checkpoint와 Git object         | `userData/manuscript-workspaces/<binding UUID>`의 adapter-private bare mirror            | Hosted Sync·telemetry·Project Chat 자동 context 금지; permanent project 삭제 때 durable purge queue로 exact binding artifact를 제거                                                      |
+| Overleaf URL·workspace ID·personal Git token            | URL/ID는 adapter-private SQLCipher row, token은 GOSU-private `safeStorage` ciphertext    | macOS Keychain-protected; shared Git credential·Hosted Sync·portable binding·event·log·Git config 금지                                                                                   |
+| 프로젝트 Research Notes Markdown과 첨부                 | 사용자의 Obsidian Vault 아래 `GOSU/<project>`; Literature 원본은 별도 SQLCipher          | Vault·project 연결 상태만; 본문·절대 경로는 금지                                                                                                                                         |
+| 서지 metadata, collection, PDF                          | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                                                                     |
+| 검색 문헌 metadata, review annotation, 검색 이력        | 프로젝트별 Desktop Literature SQLCipher tables, Project Chat search와 선택한 import file | 현재 Hosted Sync·outbox 대상이 아님; raw provider response·원문·abstract·로컬 file path·API key 금지                                                                                     |
+| 실험 idea lineage·검토 outcome·summary metric           | 프로젝트별 Desktop Experiment SQLCipher tables                                           | 현재 Hosted Sync·workspace outbox 대상이 아님; raw Runner metric·log·artifact는 저장하지 않음                                                                                            |
+| dataset, raw metric·log, checkpoint, artifact           | Linux Runner                                                                             | 원본 금지; 상태와 명시적 summary metric만                                                                                                                                                |
+| 프로젝트, Kanban, 보이는 대화, 승인, 감사               | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                           | 협업 metadata 저장 대상                                                                                                                                                                  |
+| Codex 인증, API key, SSH material, runner secret        | Keychain·Codex credential store·runner secret store                                      | 금지                                                                                                                                                                                     |
+| Hermes 설정과 provider 인증                             | 사용자가 별도로 설치·설정한 local Hermes runtime                                         | Hosted Sync·GOSU DB·outbox·telemetry에 복사하지 않음; GOSU는 BYO runtime의 현재 model/provider 식별자만 turn provenance에 기록                                                           |
+| SSH connection profile                                  | 모든 local project가 공유하는 Desktop SQLCipher registry                                 | Hosted Sync 금지; alias 또는 정규화된 direct host·user·port·inactive `-L`; secret·원본 command 금지; 여러 project grant가 같은 profile을 참조할 수 있음                                  |
+| SSH remote workspace grant                              | 프로젝트별 Desktop SQLCipher table                                                       | Hosted Sync 금지; connection ID·canonical root·permission mode·선택적인 exact-version trusted policy binding만 저장                                                                      |
+| SSH command output                                      | 해당 Project Chat turn의 Main-process memory와 ephemeral tool result                     | raw output 저장·동기화 금지; 모델이 답변에 포함한 문장만 대화 정책 적용                                                                                                                  |
+| SSH workspace text file body                            | 승인된 remote project root의 원본과 해당 turn의 bounded helper/result memory             | SQLCipher·Hosted Sync·outbox·telemetry·Git 자동 저장 금지; exact create/replace 내용은 기본 5분 decision window의 centered blocking approval dialog에만 휘발성 표시                      |
+| SSH server resource snapshot                            | Desktop Main-process 12초 cache와 Renderer의 마지막 구조화 sample                        | SQLCipher·Hosted Sync·outbox·telemetry·chat prompt 저장 금지; CPU/RAM/GPU 숫자와 bounded issue만 IPC에 노출하고 raw probe output 금지                                                    |
+| SSH Allow-once approval request·outcome metadata        | 현재 app process의 in-memory broker event                                                | durable audit가 아니며 SQLCipher·Hosted Sync·outbox·telemetry 저장 금지                                                                                                                  |
+| SSH trusted auto-execution audit                        | 프로젝트별 Desktop SQLCipher append-only table                                           | 실행 전 exact project/grant/connection/policy/turn/tool-call/operation/command hash만 기록; raw command preview·stdout/stderr·secret·Hosted Sync 금지                                    |
+| Project Chat 첨부 연구 파일                             | 사용자가 dialog에서 선택한 local file                                                    | Codex turn에서만 bounded text 또는 image를 전달; Hermes text-only session은 첨부를 거절; path·원본 bytes·추출 text·정규화 image를 SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음 |
+| Codex web search result·tool payload                    | 해당 Codex turn의 ephemeral provider context                                             | GOSU DB·outbox에 저장하지 않음; 최종 답변의 URL·요약만 visible chat 정책 적용; Hermes text-only session에는 web search를 제공하지 않음                                                   |
+| 로컬 통합 검색 query·result                             | 현재 Main-process query와 Renderer view state                                            | SQLCipher·Hosted Sync·outbox·telemetry에 저장하지 않음; 기존 source만 bounded read                                                                                                       |
+| tool payload, 파일 본문, shell 출력, raw diff           | 로컬 실행 문맥                                                                           | 금지                                                                                                                                                                                     |
 
 Hosted Sync에 저장하지 않는다는 것과 LLM에 전혀 전송하지 않는다는 것은 다르다. Research Notes는 기본적으로
 Mac 안에만 남지만, 사용자가 특정 Vault를 특정 project agent에 승인한 경우 그 turn에서 agent가 실제로
@@ -1284,6 +1292,111 @@ Git file tree와 raw file/diff/history는 로컬 조회 결과다. Hosted DB, wo
 Project Chat context에 자동 포함하지 않는다. GitHub remote 장애나 Git 설치 실패는 Repository 화면의
 bounded error로 격리하며 Kanban, Objective, Research Notes와 기존 Project Chat을 중단시키지 않는다.
 
+### Manuscript workspace와 교체 가능한 LaTeX engine 경계
+
+상세 결정과 구현·후속 범위는
+[`ADR 0004`](adr/0004-pluggable-manuscript-collaboration-engine.md)에 고정한다. 핵심은 manuscript의
+identity·checkpoint lineage와 편집 engine을 분리하고, 후속 review provenance가 이 경계를 재사용하게 하는
+것이다.
+
+```mermaid
+flowchart LR
+  UI["Manuscript UI"]
+  IPC["typed IPC\nproject·manuscript·binding version"]
+  Service["ManuscriptWorkspaceService\nidentity·lineage·exclusive queue"]
+  Registry["Adapter registry\ncapability honesty"]
+  OverleafPrivate["Overleaf private connector\nURL·workspace ID·safeStorage ref"]
+  OverleafGit["official Overleaf Git\nexternal linear checkpoint"]
+  Mirror["isolated bare mirror\nimmutable GOSU refs"]
+  Portable["portable binding·anchor·checkpoint\nno URL·token·source"]
+  Future["future local/cloud LaTeX adapter"]
+
+  UI --> IPC --> Service
+  Service --> Portable
+  Service --> Registry
+  Registry --> OverleafPrivate --> OverleafGit
+  OverleafPrivate --> Mirror
+  Future -.-> Registry
+```
+
+현재 동작 경계는 다음과 같다.
+
+- 한 project는 최대 32개 manuscript identity를 가질 수 있고 각 manuscript에는 active binding 하나만
+  둔다. disconnect된 binding과 checkpoint는 provenance를 위해 남기며 새 binding의 checkpoint도 같은
+  manuscript lineage의 이전 checkpoint를 base로 잇는다. title과 root TeX path는 optimistic manuscript
+  version을 사용해 연결 후에도 수정할 수 있고 stale form은 덮어쓰지 않는다.
+- portable `ManuscriptWorkspaceBindingV1`, `ManuscriptCheckpointV1`, `ManuscriptSyncAnchorV1`에는
+  provider-private URL, workspace locator, token, local path, LaTeX 본문과 raw diff가 없다. Desktop의
+  Overleaf connector만 private SQLCipher table과 GOSU-private encrypted credential을 읽는다.
+- `ManuscriptWorkspaceAdapterRegistry`는 descriptor의 declared interaction mode와 실제 method가 맞는지
+  construction 때 확인한다. `overleaf_git`는 `checkpoint_pull`과 provider website의
+  `external_realtime_editor`만 선언한다. legacy ZIP bootstrap helper는 별도이며 이 adapter capability가
+  아니다.
+- Overleaf 연결은 authority handoff가 아니다. binding은 `authority=gosu`로 시작하고 captured revision은
+  아직 source import, diff, preview 또는 review candidate가 아닌 immutable transport checkpoint로만
+  취급한다. 현재 GOSU는 provider에 push, auto-import, auto-merge/rebase, background poll, comment·Track
+  Changes round-trip 또는 provider authority 전환을 하지 않는다.
+- status는 content를 받지 않는 `ls-remote`로 exact `master` revision만 관찰한다. Fetch는 그 revision이
+  바뀌지 않았는지 다시 확인하고 shallow exact-revision ref를 binding별 bare mirror로 받아 commit/tree와
+  regular root `.tex` blob을 검증한다. `git fsck --connectivity-only`로 bibliography, include와 image를 포함한
+  reachable object 연결성까지 통과한 뒤에만 GOSU checkpoint ref를 pin한다.
+- `revisionEnvelopeDigest`는 provider ID·commit OID·tree OID의 identity envelope이지 canonical source-byte
+  digest가 아니다. native migration과 publish 전에는 deterministic source artifact digest 계약을 추가해야
+  한다.
+- 같은 binding/provider revision은 SQLCipher unique receipt로 한 번만 기록한다. metadata가 있지만 mirror
+  artifact가 없으면 adapter가 같은 revision을 다시 받아 복구한다. 최신 checkpoint는 binding 생성 시각이
+  아니라 append-only SQLite row order로 manuscript 전체에서 선택한다.
+- fetch command 자체의 timeout·취소·실패를 포함해 checkpoint ref로 pin하지 않은 모든 attempted fetch는
+  incoming ref, reflog와 unreachable object를 즉시 prune해 retained mirror quota를 잠식하지 않게 한다.
+- SQLCipher identity trigger는 manuscript record, binding, checkpoint와 artifact-purge queue의
+  project/manuscript/provider column이 JSON identity와 parent row에 일치하는지 insert/update 시 다시 검사하고,
+  credential cleanup provider/ref가 enqueue 시점의 private binding row와 일치하는지도 검증한다. 서비스
+  validation을 우회한 복구 데이터도 다른 project lineage나 cleanup queue에 섞일 수 없다.
+- Repository provenance는 active binding이 있을 때만 lightweight validated HEAD read를 수행한다. 전체
+  file/status/branch/history snapshot을 Manuscript 화면 갱신마다 다시 계산하지 않는다.
+
+보안·수명주기 경계도 engine port의 일부다.
+
+- Git child는 Renderer가 아니라 Main에서 shell 없이 고정 argv로 실행하고 hook, prompt, submodule,
+  non-HTTPS protocol과 user config를 끈다. remote URL은 credential/userinfo/query가 없는 official Overleaf
+  HTTPS project endpoint만 허용한다.
+- personal Git token은 GOSU user-data 아래에서 overwrite되지 않는 immutable credential reference마다 Electron
+  `safeStorage` ciphertext로 저장한다. macOS에서는 encryption key가 Keychain으로 보호되지만 공유
+  `git-osxkeychain` entry는 읽거나 덮어쓰거나 지우지 않는다. 네트워크 Git child에는 redirect를 끄고 검증된
+  exact Overleaf project URL에만 scope한 HTTP authorization config와 child 전용 environment로 전달해 process
+  argument에도 token을 남기지 않는다. Renderer는 connect IPC 한 번 외에는 token을 다시 받지 않고 SQLCipher,
+  contract, logs와 Hosted Sync에는 값을 남기지 않는다. 같은 Overleaf workspace의 connect, inspect, fetch와
+  credential cleanup은 GOSU project가 달라도 provider/workspace key로 직렬화한다. 저장·조회·실제 사용 때
+  normalized remote URL, private workspace ID와 credential reference에 encoded된 workspace ID가 모두 같은지
+  검증해 다른 official Overleaf project로 token이 전달되지 않게 한다. 새 token은 `.pending` marker와 함께
+  staged되며 실패하면 새 reference만 지운다. DB commit 뒤 marker 정리 전에 앱이 종료되어도 시작 시
+  SQLCipher reference와 대조해 참조된 ciphertext는 확정하고 orphan pending ciphertext는 제거한다.
+- fetch는 binding별 retained mirror 256 MiB, 전체 manuscript mirror 1 GiB guardrail과 shallow request를
+  사용한다. fetch 도중 순간 disk 사용을 hard-limit하는 OS quota는 아직 없으므로 production 전 추가한다.
+- Empty Trash transaction은 manuscript row를 cascade하기 전에 `bindingId`, `projectId`, `providerId`를
+  durable artifact-purge queue에 기록한다. adapter가 검증된 exact binding directory를 삭제한 뒤에만 queue를
+  ACK한다. 실패·미설치 provider row는 남겨 앱 시작과 다음 Trash purge에서 cursor로 다시 시도하며 뒤의
+  정상 provider cleanup을 굶기지 않는다.
+- disconnect와 Empty Trash는 private `credentialRef`도 durable cleanup queue에 먼저 기록한다. 동일
+  provider/ref를 쓰는 enabled binding이 남아 있으면 보존하고 마지막 reference가 사라진 뒤 GOSU-owned
+  ciphertext 삭제가 성공한 경우에만 ACK한다. canonical legacy workspace ID는 canonical ref로 migration하고,
+  소유권을 증명할 수 없는 invalid legacy marker는 shared Git credential을 건드리지 않는 no-op recovery로
+  완료한다.
+- 현재 동시성은 project별 Main-process queue와 optimistic version, immutable receipt 범위다. 공통
+  `ManuscriptSyncAttemptV1` shape와 fencing field는 정의되어 있으나 durable attempt table, cross-process
+  lease, crash reconciliation과 unattended scheduler는 아직 구현되지 않았다.
+
+후속 local/cloud engine은 새 URL 분기를 consumer에 추가하는 방식이 아니라 같은 registry와 checkpoint
+boundary를 구현한다. 다만 현재 pluggable 범위는 checkpoint core까지다. provider-neutral source artifact
+materialize/read/export, canonical source digest, editor·compile·presence·comment·tracked-change·realtime recovery,
+generic onboarding/presentation/configuration storage와 staged multi-binding migration port는 아직 없다. Local
+engine은 이 port들과 함께 CodeMirror·Tectonic sandbox·PDF preview와 offline persistence를, Cloud engine은
+operation log 또는 CRDT/OT·presence·comments·ACL·durable reconnect를 provider-private하게 소유한다. 이
+port들이 생기기 전 새 provider는 adapter뿐 아니라 작은 provider-specific connector UI와 storage를 추가해야
+한다. Project Chat, Review, Reference가 Overleaf semantics를 직접 알게 해서는 안 되며, engine 전환은 URL
+replacement가 아니라 기존 immutable checkpoint와 deterministic content hash를 검증하는 explicit migration
+command로만 수행한다.
+
 ### 현재 로컬 workspace 흐름
 
 ```mermaid
@@ -2059,8 +2172,10 @@ package 설정과 ICNS의 `ic10` rendition 일치를 검사해 네모 아이콘�
 
 현재 한계도 중요하다. local outbox table은 존재하지만 Sync delivery·reconciliation worker는 아직
 없다. Codex Project Chat은 실제 thread·turn과 연결됐지만 논문 작성·patch approval 흐름은 아직
-연결되지 않았다. 앱 관리형 Git Workspace는 동작하지만 GitHub App 설치·PR review·보호 branch gate,
-repository asset preview와 LaTeX compile·PDF preview는 아직 계획 상태다. macOS Keychain의 기존 Git
+연결되지 않았다. Manuscript workspace는 provider-neutral identity/checkpoint와 Overleaf manual inbound
+checkpoint capture까지 연결됐지만 source import·diff/review candidate, LaTeX editor·compile·PDF preview,
+authority handoff, review branch와 outbound publish는 계획 상태다. 앱 관리형 Git Workspace는 동작하지만 GitHub App 설치·PR review·보호 branch gate와
+repository asset preview도 계획 상태다. macOS Keychain의 기존 Git
 credential을 사용할 수는 있지만 GOSU 자체 GitHub account lifecycle을 구현한 것은 아니다. 승인형 SSH
 command importer와 project-scoped remote workspace broker는 구현됐지만 interactive terminal, PTY,
 general binary file transfer, active port forwarding, unattended command, delete·rename·large-file patch와
@@ -2217,8 +2332,15 @@ summary 재구성, 해석 불가능한 operation payload의 byte-for-byte 보존
 snapshot을 연 뒤 Board 설정, task metadata와 archive command를 기록하고 다시 열어 복원되는지도
 검증한다. 새 project의 default Board template copy가 snapshot과 create outbox에 함께 보존되는지도
 확인한다. project rename의 stable slug, Trash/restore 시 task·objective·chat 보존, chat profile revision과
-prompt provenance의 재시작 복원도 확인한다. 이 검사는 native ABI와 Keychain 구현이 다른 Linux CI의
-일반 Vitest 경로와 분리한다.
+prompt provenance의 재시작 복원도 확인한다. Manuscript private binding·credential reference·checkpoint
+lineage의 close/reopen, legacy provider/credential column migration, permanent Trash cascade와 filesystem
+artifact purge 및 reference-aware credential cleanup queue의 durable cursor·exact ACK도 같은 smoke가
+담당한다. 이 검사는 native ABI와 `safeStorage`/Keychain
+구현이 다른 Linux CI의 일반 Vitest 경로와 분리한다.
+
+`pnpm --filter @gosu/desktop smoke:manuscript-layout:mac`은 실제 Manuscript React view를 최소 창
+`1060×700`, 440px project sidebar와 Extra Large text에서 실행한다. 연결 전·연결 후·오류/Retry 상태의
+container query, control containment, hit target, vertical scroll과 horizontal overflow 부재를 검증한다.
 
 Project Agent tool test는 active project 밖의 Board·Objective가 섞이지 않는지, forged project
 argument·credential 포함 repository와 raw path가 차단되는지, grant가 없거나 선택 Vault가 바뀌면 note
@@ -2601,6 +2723,23 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
 4. 장애가 다른 connector와 core project command에 전파되지 않게 timeout과 error mapping을 둔다.
 5. fixture에는 실제 연구 원문, repository private URL 또는 token을 넣지 않는다.
 
+### Manuscript engine 추가 또는 교체
+
+1. portable descriptor·binding·checkpoint·anchor를 재사용하고 provider URL·token·path를 공통 계약에
+   추가하지 않는다.
+2. descriptor capability와 adapter operation이 정확히 일치하는 registry test를 먼저 추가한다.
+3. onboarding configuration과 credential은 provider-private Main/store가 소유하고 Renderer에는 fixed typed
+   command만 연다.
+4. immutable checkpoint fetch, artifact validation·cleanup, 장애 격리와 manuscript 전체 lineage를 구현한다.
+5. checkpoint source를 engine 밖의 Review·Git bridge가 읽을 수 있도록 provider-neutral artifact
+   materialize/read/export port와 canonical content digest를 별도 version으로 추가한다.
+6. realtime provider는 checkpoint 외에 editor operation, compile, presence/comment/tracked-change와 session
+   recovery contract를 별도 version으로 추가한다.
+7. authority 변경은 동시에 staged된 old/new binding을 검증하는 migration 또는 handoff command·human
+   approval로만 수행하고 두 provider를 동시에
+   write authority로 만들지 않는다.
+8. native migration 전 deterministic source-content digest, compile result와 rollback fixture를 검증한다.
+
 ## 15. 알려진 공백과 우선순위
 
 ### 프로덕션 전 필수
@@ -2610,7 +2749,11 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
 - trusted ingress의 TLS·runner mTLS·service credential과 proxy spoofing 방어
 - Desktop sync worker, offline command replay와 사람이 이해할 수 있는 conflict UI
 - GitHub App 설치·token lifecycle, PR review·보호 branch·AI patch·base-SHA gate
-- LaTeX editor·Tectonic compile·PDF preview·review anchor·citation provenance
+- LaTeX editor·Tectonic compile·PDF preview·review anchor·citation provenance, deterministic source digest
+- durable manuscript sync attempt·lease/fencing, explicit authority handoff, strict fetch-time disk quota,
+  Overleaf review branch·conditional publish
+- provider-neutral source artifact/editor/compile/realtime ports, generic provider onboarding/configuration
+  storage와 staged multi-binding migration
 - Runner enrollment, repository materialization, dataset·scratch resolver, artifact reference·upload,
   restart reconciliation
 - bounded/full Autopilot approval와 manuscript evidence gate
@@ -2626,6 +2769,9 @@ signed artifact와 update channel, credential ownership, process sandbox, projec
 - Desktop Experiment의 manual summary와 local-live 갱신이 있다는 것과 원격 Runner가 실행됐거나 raw
   learning curve가 연결됐다는 것은 다르다. Runner 연결 여부와 각 point source를 별도로 확인해야 한다.
 - Project Chat이 연결됐다는 것과 Codex가 논문 파일을 쓰거나 자동실험을 실행한다는 것은 다르다.
+- Overleaf Git project가 Manuscript에 연결됐다는 것과 GOSU가 Overleaf를 실시간 동기화·push하거나
+  editing authority로 전환했다는 것은 다르다. 현재는 아직 import/review되지 않은 manual inbound transport
+  checkpoint capture뿐이다.
 - OpenClaw·Hermes CLI 이름이 감지됐다는 것과 안전한 Project Chat provider로 연결됐다는 것은 다르다.
   Hermes만 사용자의 명시적 BYO 선택 뒤 pinned `0.19.1` sealed text-only adapter로 연결되며 OpenClaw는
   detector와 official setup guidance만 제공한다.
