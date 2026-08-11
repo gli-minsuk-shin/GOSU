@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ManuscriptRootDocumentSchema } from '@gosu/contracts';
 
-import type {
-  ManuscriptRecord,
-  ManuscriptWorkspaceItem,
-  ManuscriptWorkspaceSnapshot,
+import {
+  MANUSCRIPT_LATEX_ENGINE_DISPLAY_NAMES,
+  type ManuscriptLatexEngine,
+  type ManuscriptPdfPreview as ManuscriptPdfPreviewValue,
+  type ManuscriptRecord,
+  type ManuscriptWorkspaceItem,
+  type ManuscriptWorkspaceSnapshot,
 } from '../../shared/manuscript-workspace-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import {
@@ -12,6 +15,22 @@ import {
   deriveManuscriptProviderChange,
 } from './manuscript-provider-change';
 import { describeError } from './ui-primitives';
+import { ManuscriptPdfPreview } from './manuscript-pdf-preview';
+
+const MANUSCRIPT_LATEX_ENGINE_OPTIONS = [
+  { id: 'pdflatex', displayName: MANUSCRIPT_LATEX_ENGINE_DISPLAY_NAMES.pdflatex },
+  { id: 'xelatex', displayName: MANUSCRIPT_LATEX_ENGINE_DISPLAY_NAMES.xelatex },
+  { id: 'lualatex', displayName: MANUSCRIPT_LATEX_ENGINE_DISPLAY_NAMES.lualatex },
+] as const satisfies readonly Readonly<{
+  id: ManuscriptLatexEngine;
+  displayName: string;
+}>[];
+
+function latexEngineDisplayName(engine: ManuscriptLatexEngine) {
+  return (
+    MANUSCRIPT_LATEX_ENGINE_OPTIONS.find((option) => option.id === engine)?.displayName ?? engine
+  );
+}
 
 function shortRevision(revision: string | null) {
   return revision ? revision.slice(0, 12) : 'Not checked';
@@ -39,6 +58,34 @@ function providerEditingLabel(connection: NonNullable<ManuscriptWorkspaceItem['c
     return `Realtime editing: available only in the ${connection.providerDisplayName} workspace.`;
   }
   return 'Realtime editing: not available through GOSU.';
+}
+
+export function describeManuscriptOperationError(
+  error: unknown,
+  latexEngine?: ManuscriptLatexEngine,
+) {
+  const selectedEngine = latexEngine
+    ? latexEngineDisplayName(latexEngine)
+    : 'the selected local LaTeX engine';
+  if (error instanceof Error) {
+    const code = error.message.split(':', 1)[0];
+    if (code === 'manuscript_pdf_compiler_unavailable') {
+      return `PDF preview needs a local MacTeX installation with ${selectedEngine}. Install MacTeX or repair the existing installation, then retry; the captured source remains available and unchanged.`;
+    }
+    if (code === 'manuscript_pdf_compile_failed') {
+      return `${selectedEngine} compilation failed. Confirm this local selection matches the Overleaf compiler setting, then check the root TeX document and captured dependencies before retrying.`;
+    }
+    if (code === 'manuscript_pdf_too_large') {
+      return 'The compiled PDF exceeds the 32 MB local preview limit. Open or export the PDF in Overleaf instead.';
+    }
+    if (code === 'manuscript_pdf_invalid') {
+      return `${selectedEngine} did not produce a valid PDF. Check the root document and captured LaTeX source, then retry.`;
+    }
+    if (code === 'manuscript_checkpoint_not_found') {
+      return 'This captured checkpoint is no longer available. Check Overleaf changes and capture a new inbound checkpoint.';
+    }
+  }
+  return describeError(error);
 }
 
 export function validManuscriptRootDocument(path: string) {
@@ -148,7 +195,7 @@ function ManuscriptEditForm({
             <input
               value={rootDocument}
               onChange={(event) => setRootDocument(event.target.value)}
-              placeholder="paper/main.tex"
+              placeholder="main.tex"
               disabled={busy}
             />
           </label>
@@ -176,8 +223,10 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState('Main manuscript');
-  const [rootDocument, setRootDocument] = useState('paper/main.tex');
+  const [rootDocument, setRootDocument] = useState('main.tex');
   const [failedChecks, setFailedChecks] = useState<Record<string, true>>({});
+  const [pdfPreviews, setPdfPreviews] = useState<Record<string, ManuscriptPdfPreviewValue>>({});
+  const [latexEngines, setLatexEngines] = useState<Record<string, ManuscriptLatexEngine>>({});
   const requestGeneration = useRef(0);
 
   const load = async () => {
@@ -196,6 +245,8 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
     setSnapshot(null);
     setBusy(null);
     setFailedChecks({});
+    setPdfPreviews({});
+    setLatexEngines({});
     void load();
     return () => {
       requestGeneration.current += 1;
@@ -209,9 +260,42 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
     setError(null);
     try {
       const next = await operation();
-      if (generation === requestGeneration.current) setSnapshot(next);
+      if (generation === requestGeneration.current) {
+        setSnapshot(next);
+        setPdfPreviews({});
+      }
     } catch (operationError) {
       if (generation === requestGeneration.current) setError(describeError(operationError));
+    } finally {
+      if (generation === requestGeneration.current) setBusy(null);
+    }
+  };
+
+  const compilePdf = async (
+    manuscriptId: string,
+    checkpointId: string,
+    engine: ManuscriptLatexEngine,
+  ) => {
+    if (busy) return;
+    const generation = ++requestGeneration.current;
+    setBusy(`compile:${manuscriptId}`);
+    setError(null);
+    try {
+      const preview = await window.gosu.manuscriptWorkspace.compilePdf({
+        projectId: project.id,
+        manuscriptId,
+        checkpointId,
+        engine,
+      });
+      if (generation === requestGeneration.current) {
+        // Keep one bounded PDF document resident at a time. A project can own
+        // many manuscripts, and each preview may carry up to 32 MiB of bytes.
+        setPdfPreviews({ [manuscriptId]: preview });
+      }
+    } catch (compileError) {
+      if (generation === requestGeneration.current) {
+        setError(describeManuscriptOperationError(compileError, engine));
+      }
     } finally {
       if (generation === requestGeneration.current) setBusy(null);
     }
@@ -231,6 +315,12 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
       const next = await operation();
       if (generation === requestGeneration.current) {
         setSnapshot(next);
+        setPdfPreviews((current) => {
+          if (!current[manuscriptId]) return current;
+          const nextPreviews = { ...current };
+          delete nextPreviews[manuscriptId];
+          return nextPreviews;
+        });
         setFailedChecks((current) => {
           if (!current[bindingId]) return current;
           const nextChecks = { ...current };
@@ -256,12 +346,9 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
         <div>
           <span className="eyebrow">{project.name} / Manuscript</span>
           <h1>Manuscript workspaces</h1>
-          <p>
-            Overleaf is the first adapter; manuscript identity and checkpoint lineage stay
-            engine-independent.
-          </p>
+          <p>Link Overleaf, capture an exact source checkpoint, then read or compile it locally.</p>
         </div>
-        <span className="manuscript-engine-pill">Inbound checkpoint capture · manual</span>
+        <span className="manuscript-engine-pill">Checkpoint source · local PDF preview</span>
       </header>
 
       {error && (
@@ -276,9 +363,9 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
       <article className="card manuscript-boundary-card">
         <strong>Safe collaboration boundary</strong>
         <span>
-          A capture stores an immutable provider revision and verified local artifact only. It is
-          not imported into the GOSU draft, reviewable in GOSU, merged, or synchronized yet.
-          Realtime collaboration remains in provider UI only when the adapter advertises it.
+          A capture stores one immutable provider revision. Project Chat can read only that captured
+          source, and the PDF preview compiles only that revision on this Mac. Neither action edits
+          Overleaf, merges changes, or reads unsaved live edits.
         </span>
       </article>
 
@@ -308,7 +395,7 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
           <input
             value={rootDocument}
             onChange={(event) => setRootDocument(event.target.value)}
-            placeholder="paper/main.tex"
+            placeholder="main.tex"
             disabled={Boolean(busy)}
           />
         </label>
@@ -348,6 +435,8 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                   Boolean(failedChecks[connection.binding.bindingId]),
                 )
               : null;
+            const pdfPreview = pdfPreviews[manuscript.id];
+            const latexEngine = latexEngines[manuscript.id] ?? 'pdflatex';
             return (
               <article className="card manuscript-item" key={manuscript.id}>
                 <div className="manuscript-item-head">
@@ -421,8 +510,9 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                       </div>
                     </div>
                     <p className="manuscript-capability-note">
-                      {providerEditingLabel(connection)} Captured checkpoints are not imported or
-                      reviewable in GOSU yet.
+                      {providerEditingLabel(connection)} Once captured, Project Chat can request the
+                      exact checkpoint read-only, and this tab can request a local PDF compile. Each
+                      operation checks the local mirror and required MacTeX sandbox when used.
                     </p>
                     {providerChange && (
                       <div
@@ -505,6 +595,49 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                           ? 'Capturing…'
                           : 'Capture inbound checkpoint'}
                       </button>
+                      <label className="manuscript-local-engine-selector">
+                        <span>Local PDF engine · not read from Overleaf</span>
+                        <select
+                          aria-label={`Local PDF engine for ${manuscript.title}`}
+                          value={latexEngine}
+                          disabled={Boolean(busy)}
+                          onChange={(event) =>
+                            setLatexEngines((current) => ({
+                              ...current,
+                              [manuscript.id]: event.target.value as ManuscriptLatexEngine,
+                            }))
+                          }
+                        >
+                          {MANUSCRIPT_LATEX_ENGINE_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.displayName}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={Boolean(busy) || !activeCheckpoint}
+                        title={
+                          activeCheckpoint
+                            ? `Compile the exact captured checkpoint locally with ${latexEngineDisplayName(latexEngine)}. This choice is not read from Overleaf.`
+                            : 'Capture an inbound checkpoint before compiling a PDF.'
+                        }
+                        onClick={() =>
+                          activeCheckpoint
+                            ? void compilePdf(
+                                manuscript.id,
+                                activeCheckpoint.checkpointId,
+                                latexEngine,
+                              )
+                            : undefined
+                        }
+                      >
+                        {busy === `compile:${manuscript.id}`
+                          ? 'Compiling PDF…'
+                          : 'Compile & preview PDF'}
+                      </button>
                       <button
                         type="button"
                         className="ghost-button"
@@ -523,6 +656,7 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                         {busy === `disconnect:${manuscript.id}` ? 'Disconnecting…' : 'Disconnect'}
                       </button>
                     </div>
+                    {pdfPreview && <ManuscriptPdfPreview preview={pdfPreview} />}
                   </>
                 )}
               </article>

@@ -74,6 +74,7 @@ import {
   type ProjectAgentExperiments,
   type ProjectAgentHermes,
   type ProjectAgentLiterature,
+  type ProjectAgentManuscripts,
   type ProjectAgentSsh,
   type ProjectAgentVault,
 } from './project-agent-tools';
@@ -635,6 +636,7 @@ export class ProjectChatService extends EventEmitter {
       codex: ProjectChatCodex;
       vault?: ProjectAgentVault;
       literature?: ProjectAgentLiterature;
+      manuscripts?: ProjectAgentManuscripts;
       hermes?: ProjectAgentHermes;
       ssh?: ProjectAgentSsh;
       experiments?: ProjectAgentExperiments;
@@ -1079,6 +1081,7 @@ export class ProjectChatService extends EventEmitter {
         explicitlyAuthorizesLiteratureSearch(command.message)
           ? { literature: this.dependencies.literature }
           : {}),
+        ...(this.dependencies.manuscripts ? { manuscripts: this.dependencies.manuscripts } : {}),
         ...(hermesDelegationRequested && this.dependencies.hermes
           ? { hermes: this.dependencies.hermes, resolveProjectCwd }
           : {}),

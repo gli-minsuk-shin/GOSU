@@ -37,6 +37,7 @@ import { registerGitWorkspaceIpc } from './git-workspace-ipc';
 import { GitWorkspaceService } from './git-workspace-service';
 import { registerManuscriptWorkspaceIpc } from './manuscript-workspace-ipc';
 import { ManuscriptWorkspaceService } from './manuscript-workspace-service';
+import { ManuscriptPdfCompiler } from './manuscript-pdf-compiler';
 import { OverleafGitCredentialStore } from './overleaf-git-credential-store';
 import { OverleafGitManuscriptWorkspaceAdapter } from './overleaf-git-manuscript-adapter';
 import { OverleafGitTransport } from './overleaf-git-transport';
@@ -173,6 +174,10 @@ const overleafGitTransport = new OverleafGitTransport({
   rootDirectory: () => join(app.getPath('userData'), 'manuscript-workspaces'),
   credentials: overleafGitCredentials,
 });
+const manuscriptPdfCompiler = new ManuscriptPdfCompiler({
+  materializer: overleafGitTransport,
+  rootDirectory: () => join(app.getPath('userData'), 'manuscript-pdf-previews'),
+});
 const manuscriptWorkspaceAdapters = createManuscriptWorkspaceAdapterRegistry([
   new OverleafGitManuscriptWorkspaceAdapter(
     database,
@@ -189,6 +194,7 @@ const manuscriptWorkspace = new ManuscriptWorkspaceService({
   },
   adapters: manuscriptWorkspaceAdapters,
   overleafGit: overleafGitTransport,
+  pdfCompiler: manuscriptPdfCompiler,
   credentials: overleafGitCredentials,
 });
 const researchNotes = new ResearchNotesService({
@@ -247,6 +253,7 @@ const projectChat = new ProjectChatService({
   },
   vault: researchNotes,
   literature,
+  manuscripts: manuscriptWorkspace,
   ssh,
   experiments: experimentWorkspace,
   attachments: projectChatAttachments,
@@ -597,6 +604,8 @@ if (!primaryInstance) {
     }
     setDevelopmentDockIcon();
     await cleanupStaleGosuRuntimeDirectories().catch(() => undefined);
+    await overleafGitTransport.reconcileStaleArchives().catch(() => undefined);
+    await manuscriptPdfCompiler.reconcileStaleStaging().catch(() => undefined);
     const trustedRenderer = createTrustedRenderer({
       developmentUrl: process.env.ELECTRON_RENDERER_URL,
       isPackaged: app.isPackaged,
@@ -728,6 +737,7 @@ if (!primaryInstance) {
     if (process.platform !== 'darwin') app.quit();
   });
   app.on('before-quit', () => {
+    manuscriptPdfCompiler.dispose();
     projectChatAttachments.disposeImmediately();
     literature.shutdown();
     ssh.shutdown();

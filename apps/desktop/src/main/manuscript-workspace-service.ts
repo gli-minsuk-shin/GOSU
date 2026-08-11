@@ -16,8 +16,14 @@ import {
   ConnectOverleafGitInputSchema,
   CreateManuscriptInputSchema,
   FetchManuscriptCheckpointInputSchema,
+  CompileManuscriptPdfInputSchema,
+  ListManuscriptCheckpointFilesInputSchema,
   ManuscriptBindingCommandSchema,
+  ManuscriptCheckpointFileChunkSchema,
+  ManuscriptCheckpointFileListSchema,
+  ManuscriptPdfPreviewSchema,
   ManuscriptProjectInputSchema,
+  ReadManuscriptCheckpointFileInputSchema,
   ManuscriptRecordSchema,
   ManuscriptWorkspaceConnectionSchema,
   ManuscriptWorkspaceSnapshotSchema,
@@ -25,16 +31,23 @@ import {
   type ConnectOverleafGitInput,
   type CreateManuscriptInput,
   type FetchManuscriptCheckpointInput,
+  type CompileManuscriptPdfInput,
+  type ListManuscriptCheckpointFilesInput,
   type ManuscriptBindingCommand,
   type ManuscriptRecord,
   type ManuscriptWorkspaceConnection,
   type ManuscriptWorkspaceSnapshot,
+  type ManuscriptCheckpointFileChunk,
+  type ManuscriptCheckpointFileList,
+  type ManuscriptPdfPreview,
   type OverleafGitBindingConfiguration,
   type StoredManuscriptWorkspaceConnection,
+  type ReadManuscriptCheckpointFileInput,
   type UpdateManuscriptInput,
 } from '../shared/manuscript-workspace-contracts';
 import type { ManuscriptWorkspaceIpcErrorCode } from '../shared/manuscript-workspace-ipc-result';
 import type { OverleafGitCredentialStore } from './overleaf-git-credential-store';
+import { ManuscriptPdfCompilerError, type ManuscriptPdfCompiler } from './manuscript-pdf-compiler';
 import { OverleafGitTransportError, parseOverleafGitRemote } from './overleaf-git-transport';
 import type { OverleafGitTransport } from './overleaf-git-transport';
 import type { WorkspaceService } from './workspace-service';
@@ -120,7 +133,7 @@ type RepositoryRevisionPort = Readonly<{
 type CredentialStore = Pick<OverleafGitCredentialStore, 'stage'>;
 type CheckpointTransport = Pick<
   OverleafGitTransport,
-  'inspect' | 'fetchCheckpoint' | 'hasCheckpoint'
+  'inspect' | 'fetchCheckpoint' | 'hasCheckpoint' | 'listCheckpointFiles' | 'readCheckpointText'
 >;
 
 export class ManuscriptWorkspaceServiceError extends Error {
@@ -141,6 +154,7 @@ type ManuscriptWorkspaceServiceOptions = Readonly<{
   repository: RepositoryRevisionPort;
   adapters: ManuscriptWorkspaceAdapterRegistry;
   overleafGit: CheckpointTransport;
+  pdfCompiler?: Pick<ManuscriptPdfCompiler, 'compile'>;
   credentials: CredentialStore;
   now?: () => Date;
 }>;
@@ -152,6 +166,12 @@ function mapProviderError(error: unknown): ManuscriptWorkspaceServiceError {
   if (error instanceof ManuscriptWorkspaceServiceError) return error;
   if (error instanceof OverleafGitTransportError) {
     switch (error.code) {
+      case 'overleaf_git_checkpoint_file_not_found':
+        return new ManuscriptWorkspaceServiceError('manuscript_checkpoint_file_not_found');
+      case 'overleaf_git_checkpoint_file_not_text':
+        return new ManuscriptWorkspaceServiceError('manuscript_checkpoint_file_not_text');
+      case 'overleaf_git_checkpoint_tree_unsafe':
+        return new ManuscriptWorkspaceServiceError('manuscript_checkpoint_tree_unsafe');
       case 'overleaf_git_url_invalid':
       case 'overleaf_git_auth_required':
       case 'overleaf_git_project_not_found':
@@ -163,6 +183,9 @@ function mapProviderError(error: unknown): ManuscriptWorkspaceServiceError {
       default:
         return new ManuscriptWorkspaceServiceError('manuscript_provider_unavailable');
     }
+  }
+  if (error instanceof ManuscriptPdfCompilerError) {
+    return new ManuscriptWorkspaceServiceError(error.code);
   }
   if (error instanceof Error) {
     if (error.message === 'overleaf_keychain_unavailable') {
@@ -181,6 +204,7 @@ export class ManuscriptWorkspaceService {
   private readonly repository: RepositoryRevisionPort;
   private readonly adapters: ManuscriptWorkspaceAdapterRegistry;
   private readonly overleafGit: CheckpointTransport;
+  private readonly pdfCompiler: Pick<ManuscriptPdfCompiler, 'compile'>;
   private readonly credentials: CredentialStore;
   private readonly now: () => Date;
   private readonly tails = new Map<string, Promise<void>>();
@@ -191,6 +215,13 @@ export class ManuscriptWorkspaceService {
     this.repository = options.repository;
     this.adapters = options.adapters;
     this.overleafGit = options.overleafGit;
+    this.pdfCompiler =
+      options.pdfCompiler ??
+      ({
+        compile: async () => {
+          throw new ManuscriptPdfCompilerError('manuscript_pdf_compiler_unavailable');
+        },
+      } satisfies Pick<ManuscriptPdfCompiler, 'compile'>);
     this.credentials = options.credentials;
     this.now = options.now ?? (() => new Date());
   }
@@ -484,6 +515,99 @@ export class ManuscriptWorkspaceService {
     });
   }
 
+  async listCheckpointFiles(
+    input: ListManuscriptCheckpointFilesInput,
+  ): Promise<ManuscriptCheckpointFileList> {
+    const command = ListManuscriptCheckpointFilesInputSchema.parse(input);
+    return this.exclusive(command.projectId, async () => {
+      const { connection, checkpoint } = await this.requireLatestCheckpoint(command);
+      try {
+        const files = await this.overleafGit.listCheckpointFiles(
+          connection.binding.bindingId,
+          checkpoint.providerRevision ?? checkpoint.sourceRevision,
+          checkpoint.rootDocument,
+          checkpoint.revisionEnvelopeDigest,
+        );
+        return ManuscriptCheckpointFileListSchema.parse({
+          schemaVersion: 1,
+          projectId: command.projectId,
+          manuscriptId: command.manuscriptId,
+          checkpointId: checkpoint.checkpointId,
+          providerRevision: checkpoint.providerRevision ?? checkpoint.sourceRevision,
+          files,
+        });
+      } catch (error) {
+        throw mapProviderError(error);
+      }
+    });
+  }
+
+  async readCheckpointFile(
+    input: ReadManuscriptCheckpointFileInput,
+  ): Promise<ManuscriptCheckpointFileChunk> {
+    const command = ReadManuscriptCheckpointFileInputSchema.parse(input);
+    return this.exclusive(command.projectId, async () => {
+      const { connection, checkpoint } = await this.requireLatestCheckpoint(command);
+      try {
+        const content = await this.overleafGit.readCheckpointText(
+          connection.binding.bindingId,
+          checkpoint.providerRevision ?? checkpoint.sourceRevision,
+          checkpoint.rootDocument,
+          checkpoint.revisionEnvelopeDigest,
+          command.relativePath,
+        );
+        const offset = Math.min(command.offset ?? 0, content.length);
+        const maxCharacters = command.maxCharacters ?? 24_000;
+        const chunk = content.slice(offset, offset + maxCharacters);
+        const nextOffset = offset + chunk.length;
+        return ManuscriptCheckpointFileChunkSchema.parse({
+          schemaVersion: 1,
+          projectId: command.projectId,
+          manuscriptId: command.manuscriptId,
+          checkpointId: checkpoint.checkpointId,
+          providerRevision: checkpoint.providerRevision ?? checkpoint.sourceRevision,
+          relativePath: command.relativePath,
+          offset,
+          nextOffset,
+          truncated: nextOffset < content.length,
+          content: chunk,
+        });
+      } catch (error) {
+        throw mapProviderError(error);
+      }
+    });
+  }
+
+  async compilePdf(input: CompileManuscriptPdfInput): Promise<ManuscriptPdfPreview> {
+    const command = CompileManuscriptPdfInputSchema.parse(input);
+    return this.exclusive(command.projectId, async () => {
+      const { connection, checkpoint } = await this.requireLatestCheckpoint(command);
+      try {
+        const compiled = await this.pdfCompiler.compile(
+          connection.binding.bindingId,
+          checkpoint,
+          command.engine,
+        );
+        return ManuscriptPdfPreviewSchema.parse({
+          schemaVersion: 1,
+          ...compiled,
+          projectId: command.projectId,
+          manuscriptId: command.manuscriptId,
+          checkpointId: checkpoint.checkpointId,
+          providerRevision: checkpoint.providerRevision ?? checkpoint.sourceRevision,
+          rootDocument: checkpoint.rootDocument,
+          providerAhead:
+            connection.lastObservedProviderRevision !== null &&
+            connection.lastObservedProviderRevision !==
+              (checkpoint.providerRevision ?? checkpoint.sourceRevision),
+          compiledAt: this.now().toISOString(),
+        });
+      } catch (error) {
+        throw mapProviderError(error);
+      }
+    });
+  }
+
   async disconnect(input: ManuscriptBindingCommand): Promise<ManuscriptWorkspaceSnapshot> {
     const command = ManuscriptBindingCommandSchema.parse(input);
     return this.exclusive(command.projectId, async () => {
@@ -500,6 +624,37 @@ export class ManuscriptWorkspaceService {
       await this.reconcileCredentialCleanupQueue().catch(() => undefined);
       return this.list({ projectId: command.projectId });
     });
+  }
+
+  private async requireLatestCheckpoint(command: {
+    projectId: string;
+    manuscriptId: string;
+    checkpointId: string;
+  }) {
+    await this.requireActiveProject(command.projectId);
+    await this.requireManuscript(command.projectId, command.manuscriptId);
+    const connection = await this.storage.getManuscriptWorkspaceConnection(
+      command.projectId,
+      command.manuscriptId,
+    );
+    if (!connection?.binding.enabled) {
+      throw new ManuscriptWorkspaceServiceError('manuscript_binding_not_found');
+    }
+    if (connection.binding.providerId !== 'overleaf_git') {
+      throw new ManuscriptWorkspaceServiceError('manuscript_provider_unavailable');
+    }
+    const checkpoint = await this.storage.latestManuscriptCheckpointForManuscript(
+      command.projectId,
+      command.manuscriptId,
+    );
+    if (
+      !checkpoint ||
+      checkpoint.checkpointId !== command.checkpointId ||
+      checkpoint.bindingId !== connection.binding.bindingId
+    ) {
+      throw new ManuscriptWorkspaceServiceError('manuscript_checkpoint_not_found');
+    }
+    return { connection, checkpoint };
   }
 
   runWhenProjectsIdle<T>(projectIds: readonly string[], operation: () => Promise<T>): Promise<T> {

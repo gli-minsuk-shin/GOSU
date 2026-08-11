@@ -92,7 +92,7 @@ describe('Project chat prompt assembly', () => {
     expect(first.provenance).toMatchObject({
       assemblyVersion: 3,
       profileVersion: 3,
-      baseInstructionVersion: 32,
+      baseInstructionVersion: 35,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -124,6 +124,28 @@ describe('Project chat prompt assembly', () => {
       'GOSU-parsed routing metadata for the /todo skill',
     );
     expect(first.developerInstructions).toContain('read Research Notes by opaque ID');
+    expect(first.developerInstructions).toContain(
+      'first call list_manuscripts and answer from that receipt instead of chat history',
+    );
+    expect(first.developerInstructions).toContain('call list_manuscript_checkpoint_files');
+    expect(first.developerInstructions).toContain('call read_manuscript_checkpoint_file');
+    expect(first.developerInstructions).toContain('exact immutable checkpoint already captured');
+    expect(first.developerInstructions).toContain(
+      'checkpointCaptured means that GOSU has a database receipt',
+    );
+    expect(first.developerInstructions).toContain(
+      'sourceInspectionCanBeRequested and localPdfCompileCanBeRequested mean only',
+    );
+    expect(first.developerInstructions).toContain('list_manuscripts never preflights compilation');
+    expect(first.developerInstructions).toContain(
+      "cannot inspect live or unsaved Overleaf edits, fetch the PDF produced by Overleaf's server",
+    );
+    expect(first.developerInstructions).toContain(
+      'Manuscript tab can request a local compile and preview of the exact captured checkpoint',
+    );
+    expect(first.developerInstructions).toContain(
+      'Never claim that a local preview is the provider-generated PDF',
+    );
     expect(first.developerInstructions).toContain(
       'required structured response field researchNote controls the one reusable Markdown deliverable',
     );
@@ -250,7 +272,7 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(32);
+    expect(first.provenance.baseInstructionVersion).toBe(35);
     expect(first.developerInstructions).toContain('first call read_experiment_setup');
     expect(first.developerInstructions).toContain('create_experiment_run');
     expect(first.developerInstructions).toContain('execute_experiment_run');

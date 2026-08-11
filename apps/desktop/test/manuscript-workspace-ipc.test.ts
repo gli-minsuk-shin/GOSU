@@ -104,6 +104,68 @@ describe('Manuscript workspace IPC', () => {
     expect(update).toHaveBeenCalledExactlyOnceWith(command);
   });
 
+  it('validates and forwards checkpoint source and PDF operations without path escape hatches', async () => {
+    const listCheckpointFiles = vi.fn(async () => ({ schemaVersion: 1 }));
+    const readCheckpointFile = vi.fn(async () => ({ schemaVersion: 1 }));
+    const compilePdf = vi.fn(async () => ({ schemaVersion: 1 }));
+    const { handlers } = fixture({ listCheckpointFiles, readCheckpointFile, compilePdf });
+    const identity = {
+      projectId: randomUUID(),
+      manuscriptId: randomUUID(),
+      checkpointId: randomUUID(),
+    };
+
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.readCheckpointFile)?.({
+        ...identity,
+        relativePath: '../private.tex',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'invalid_manuscript_workspace_input' },
+    });
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.compilePdf)?.({
+        ...identity,
+        engine: 'pdflatex',
+        localOutputPath: '/tmp/paper.pdf',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'invalid_manuscript_workspace_input' },
+    });
+
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.listCheckpointFiles)?.(identity),
+    ).resolves.toEqual({ ok: true, value: { schemaVersion: 1 } });
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.compilePdf)?.({
+        ...identity,
+        engine: 'tectonic',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'invalid_manuscript_workspace_input' },
+    });
+    const readCommand = {
+      ...identity,
+      relativePath: 'paper/main.tex',
+      offset: 1_024,
+      maxCharacters: 8_000,
+    };
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.readCheckpointFile)?.(readCommand),
+    ).resolves.toEqual({ ok: true, value: { schemaVersion: 1 } });
+    const compileCommand = { ...identity, engine: 'xelatex' } as const;
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.compilePdf)?.(compileCommand),
+    ).resolves.toEqual({ ok: true, value: { schemaVersion: 1 } });
+
+    expect(listCheckpointFiles).toHaveBeenCalledExactlyOnceWith(identity);
+    expect(readCheckpointFile).toHaveBeenCalledExactlyOnceWith(readCommand);
+    expect(compilePdf).toHaveBeenCalledExactlyOnceWith(compileCommand);
+  });
+
   it('never reflects tokens or private diagnostics in a service failure', async () => {
     const secret = 'private-overleaf-token';
     const connectOverleafGit = vi.fn(async () => {
@@ -140,6 +202,38 @@ describe('Manuscript workspace IPC', () => {
     });
 
     expect(result).toEqual({ ok: false, error: { code: 'overleaf_git_auth_required' } });
+    expect(reportUnexpected).not.toHaveBeenCalled();
+  });
+
+  it('preserves bounded checkpoint and compiler errors', async () => {
+    const listCheckpointFiles = vi.fn(async () => {
+      throw new ManuscriptWorkspaceServiceError('manuscript_checkpoint_tree_unsafe');
+    });
+    const compilePdf = vi.fn(async () => {
+      throw new ManuscriptWorkspaceServiceError('manuscript_pdf_compile_failed');
+    });
+    const { handlers, reportUnexpected } = fixture({ listCheckpointFiles, compilePdf });
+    const identity = {
+      projectId: randomUUID(),
+      manuscriptId: randomUUID(),
+      checkpointId: randomUUID(),
+    };
+
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.listCheckpointFiles)?.(identity),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'manuscript_checkpoint_tree_unsafe' },
+    });
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.compilePdf)?.({
+        ...identity,
+        engine: 'lualatex',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'manuscript_pdf_compile_failed' },
+    });
     expect(reportUnexpected).not.toHaveBeenCalled();
   });
 });

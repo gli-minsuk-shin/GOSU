@@ -105,5 +105,8 @@ jobs:
       - name: Build workspace dependencies
         run: pnpm build
 
+      - name: Verify production PDF preview
+        run: pnpm --filter @gosu/desktop smoke:manuscript-pdf-preview:mac
+
       - name: Package and cold-start the macOS app
         run: pnpm --filter @gosu/desktop package:mac:dir:dev
