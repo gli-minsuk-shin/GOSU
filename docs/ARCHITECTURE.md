@@ -2221,6 +2221,14 @@ ACL을 약화하거나 key를 평문으로 옮기지 않으며, 안정적인 무
 `pnpm app:package:release`는 Hardened Runtime을 유지하고 signing identity가 없으면
 `forceCodeSigning`으로 즉시 실패하는 release 전용 경로다. Developer ID와 notarization credential은
 공개 저장소가 아닌 release 환경에서만 주입한다.
+`@gosu/integrations`처럼 `type: module`인 내부 runtime package의 상대 import·re-export는
+Node ESM 규칙에 따라 `.js` 확장자를 명시하고 `NodeNext` typecheck로 강제한다. Desktop Main은 내부
+`@gosu/*` package를 external dependency로 남기지 않고 bundle하며, build 후 Main output에 내부 package
+`require()`가 없는지 검사한다. package command는 workspace dependency를 먼저 재빌드하고 생성된
+`.app`을 `--gosu-packaged-startup-smoke` 격리 모드로 실제 cold-start한다. 이 모드는 DB·Keychain·network·
+Renderer window를 열기 전에 고정 READY marker를 출력하고 종료하지만 Main의 top-level module graph와
+packaged Electron runtime은 그대로 로드하므로 ASAR 누락, extensionless ESM, native startup 오류를
+release 실패로 만든다. macOS CI도 unsigned directory package에 같은 검사를 수행한다.
 패키지 안의 Codex JavaScript launcher와 native binary는 `app.asar.unpacked`에 두며 Main이 실제
 unpacked 경로를 계산해 실행한다. child process에 virtual `app.asar` 경로를 넘기면 native binary
 spawn이 실패하므로 경로 변환을 unit test와 설치본 smoke test로 검증한다.

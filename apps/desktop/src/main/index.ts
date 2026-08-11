@@ -534,14 +534,23 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   );
 }
 
-const primaryInstance = app.requestSingleInstanceLock();
+const packagedStartupSmoke =
+  app.isPackaged &&
+  process.env.GOSU_PACKAGED_STARTUP_SMOKE === '1' &&
+  process.argv.includes('--gosu-packaged-startup-smoke');
+const primaryInstance = packagedStartupSmoke || app.requestSingleInstanceLock();
 
 if (!primaryInstance) {
   app.quit();
 } else {
-  installLocalSupervisorGuard();
+  if (!packagedStartupSmoke) installLocalSupervisorGuard();
   void app.whenReady().then(async () => {
     app.setName('GOSU');
+    if (packagedStartupSmoke) {
+      process.stdout.write('GOSU_PACKAGED_STARTUP_READY\n');
+      app.quit();
+      return;
+    }
     setDevelopmentDockIcon();
     await cleanupStaleGosuRuntimeDirectories().catch(() => undefined);
     const trustedRenderer = createTrustedRenderer({
