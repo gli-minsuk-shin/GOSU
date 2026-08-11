@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   acknowledgeSshWorkspaceSetupRequest,
   resolveSshWorkspaceSetupConnectionId,
+  resolveSshWorkspaceSetupTarget,
   shouldHandleSshWorkspaceSetupRequest,
   SshWorkspaceGrantsCard,
 } from '../src/renderer/src/ssh-workspace-grants-card';
@@ -53,6 +54,17 @@ describe('project-scoped remote workspace settings', () => {
     expect(resolveSshWorkspaceSetupConnectionId(null, ['server-a'])).toBe('server-a');
     expect(resolveSshWorkspaceSetupConnectionId(null, ['server-a', 'server-b'])).toBe('');
     expect(resolveSshWorkspaceSetupConnectionId('already-granted', ['server-a'])).toBe('');
+  });
+
+  it('opens an already-linked server as an edit without bypassing the grant boundary', () => {
+    expect(resolveSshWorkspaceSetupTarget(workspace.connection.id, [], [workspace])).toEqual({
+      kind: 'edit',
+      workspace,
+    });
+    expect(resolveSshWorkspaceSetupTarget('server-a', ['server-a'], [workspace])).toEqual({
+      kind: 'create',
+      connectionId: 'server-a',
+    });
   });
 
   it('applies a setup request only to its active project and only once', () => {

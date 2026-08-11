@@ -13,6 +13,7 @@ import {
   type UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
+import type { AgentAddOnStatus } from '../../shared/agent-addon-contracts';
 import type {
   CreateSshConnectionInput,
   ImportSshCommandInput,
@@ -42,6 +43,7 @@ import type {
 import type { ResearchNotesWorkspace } from '../../shared/research-notes-contracts';
 import type { SearchHit } from '../../shared/search-contracts';
 import { BoardView } from './board-view';
+import type { HermesProjectChatConnectionUiState } from './agent-addons-section';
 import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import { desktopContentClassName } from './desktop-content-layout';
@@ -70,12 +72,23 @@ import {
   type ProjectChatSshServer,
 } from './project-chat-view';
 import {
+  ProjectChatProviderOperationQueue,
+  reconcileRemovedProjectChatProvider,
+  selectProjectChatModel,
+  selectProjectChatReasoning,
+  type ProjectChatModelSelection,
+} from './project-chat-provider-selection';
+import {
   enqueueVisibleSshApproval,
   mergeHydratedSshApprovals,
   rememberResolvedSshApproval,
   removeSshApproval,
   shouldPresentSshApproval,
 } from './ssh-approval-state';
+import {
+  buildSshConnectionRemovalConfirmation,
+  commitSshMutationThenRefresh,
+} from './ssh-mutation-flow';
 import {
   activeSessionIdsForProject,
   loadProjectChatLayoutState,
@@ -314,6 +327,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [sshRefreshWarning, setSshRefreshWarning] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [projectNavigation, setProjectNavigation] = useState<ProjectNavigationState>(() =>
@@ -333,6 +347,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   );
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [selectedReasoning, setSelectedReasoning] = useState<string | null>(null);
+  const [hermesProjectChatModel, setHermesProjectChatModel] = useState<CodexModel | null>(null);
+  const [hermesProjectChatConnection, setHermesProjectChatConnection] =
+    useState<HermesProjectChatConnectionUiState>({ phase: 'disabled', status: null });
+  const [projectChatModelSelection, setProjectChatModelSelection] =
+    useState<ProjectChatModelSelection>({
+      providerId: null,
+      modelId: null,
+      reasoningOptionId: null,
+    });
   const [codexStatus, setCodexStatus] = useState('Catalog not loaded');
   const [codexBusy, setCodexBusy] = useState(false);
   const [codexConnectionState, setCodexConnectionState] =
@@ -348,6 +371,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [apiKey, setApiKey] = useState('');
   const [sshConnections, setSshConnections] = useState<readonly SshConnectionProfile[]>([]);
   const [sshWorkspaces, setSshWorkspaces] = useState<readonly GrantedRemoteWorkspace[]>([]);
+  const [sshLinkedProjectIdsByConnectionId, setSshLinkedProjectIdsByConnectionId] = useState<
+    Readonly<Record<string, readonly string[]>>
+  >({});
   const [sshConnectionBusy, setSshConnectionBusy] = useState<string | null>(null);
   const [sshConnectionState, setSshConnectionState] = useState<
     'checking' | 'ready' | 'unavailable'
@@ -391,12 +417,17 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [preferences, setPreferences] = useState(initialPreferences);
   const chatLoadGuard = useRef(new ProjectChatLoadGuard());
   const codexBootstrapStarted = useRef(false);
+  const hermesProjectChatConnectionGenerationRef = useRef(0);
+  const hermesProjectChatOperationQueueRef = useRef(new ProjectChatProviderOperationQueue());
+  const hermesProjectChatPreferenceRef = useRef(preferences.agentAddOns.hermes);
+  const previousHermesProjectChatPreferenceRef = useRef(preferences.agentAddOns.hermes);
   const researchNotesGeneration = useRef(0);
   const researchNoteReadGeneration = useRef(0);
   const [pendingSearchNavigation, setPendingSearchNavigation] =
     useState<PendingSearchNavigation | null>(null);
   const searchNavigationRequestIdRef = useRef(0);
   const sshWorkspaceLoadGuard = useRef(new SshWorkspaceLoadGuard());
+  const sshProjectLinksLoadGenerationRef = useRef(0);
   const sshWorkspaceSetupRequestIdRef = useRef(0);
   const sshResourceRequestsRef = useRef(new Map<string, Promise<void>>());
   const sshResourceRequestGuardRef = useRef(new SshResourceRequestGuard());
@@ -410,6 +441,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const visibleChatSshScopeRef = useRef<{ projectId: string; sessionId: string } | null>(null);
   const sshResolvedApprovalIdsRef = useRef<ReadonlySet<string>>(new Set());
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
+  hermesProjectChatPreferenceRef.current = preferences.agentAddOns.hermes;
 
   const activeProjects = useMemo(() => visibleProjects(snapshot?.projects ?? []), [snapshot]);
   const archivedProjects = useMemo(
@@ -419,6 +451,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const activeProject = useMemo(
     () => activeProjects.find((project) => project.id === activeProjectId),
     [activeProjectId, activeProjects],
+  );
+  const projectChatModels = useMemo(
+    () => (hermesProjectChatModel ? [...models, hermesProjectChatModel] : models),
+    [hermesProjectChatModel, models],
   );
   const activeResearchNotesSelection = useMemo<VaultSelection | null>(() => {
     if (
@@ -460,6 +496,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   );
   const registeredSshConnectionIdsKey = sshConnections
     .map((connection) => connection.id)
+    .sort()
+    .join(',');
+  const activeProjectIdsKey = activeProjects
+    .map((project) => project.id)
     .sort()
     .join(',');
   const registeredSshResourceProfilesKey = sshResourceProfilesKey(sshConnections);
@@ -703,6 +743,33 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     }
   };
 
+  const loadSshProjectLinks = async (projects: readonly ProjectRecord[]) => {
+    const generation = ++sshProjectLinksLoadGenerationRef.current;
+    if (projects.length === 0) {
+      setSshLinkedProjectIdsByConnectionId({});
+      return {};
+    }
+
+    const projectWorkspaces = await Promise.all(
+      projects.map(async (project) => ({
+        projectId: project.id,
+        workspaces: await window.gosu.ssh.listWorkspaceGrants({ projectId: project.id }),
+      })),
+    );
+    const next: Record<string, string[]> = {};
+    for (const { projectId, workspaces } of projectWorkspaces) {
+      for (const workspace of workspaces) {
+        const linkedProjects = next[workspace.connection.id] ?? [];
+        linkedProjects.push(projectId);
+        next[workspace.connection.id] = linkedProjects;
+      }
+    }
+    if (generation === sshProjectLinksLoadGenerationRef.current) {
+      setSshLinkedProjectIdsByConnectionId(next);
+    }
+    return next;
+  };
+
   const refreshSshResource = useCallback((connectionId: string, force = true) => {
     const token = sshResourceRequestGuardRef.current.token(connectionId);
     if (!token) return Promise.resolve();
@@ -942,6 +1009,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   }, [activeProject?.id]);
 
   useEffect(() => {
+    if (activeSurface !== 'workspace' || activeTab !== 'connections') return;
+    void loadSshProjectLinks(activeProjects).catch((error: unknown) =>
+      setWorkspaceError(describeError(error)),
+    );
+  }, [activeProjectIdsKey, activeSurface, activeTab]);
+
+  useEffect(() => {
     if (activeSurface !== 'workspace' || (activeTab !== 'connections' && activeTab !== 'chat')) {
       return;
     }
@@ -1177,6 +1251,99 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     }
   };
 
+  const applyHermesProjectChatStatus = useCallback((status: AgentAddOnStatus) => {
+    if (!status.connected || !status.projectChatModel) {
+      throw new Error('hermes_project_chat_connection_unavailable');
+    }
+    const model: CodexModel = {
+      ...status.projectChatModel,
+      reasoningOptions: [...status.projectChatModel.reasoningOptions],
+    };
+    setHermesProjectChatModel(model);
+    setHermesProjectChatConnection({ phase: 'ready', status });
+  }, []);
+
+  const removeHermesProjectChatDescriptor = useCallback(() => {
+    setHermesProjectChatModel(null);
+  }, []);
+
+  const refreshHermesProjectChatConnection = useCallback(async () => {
+    const generation = ++hermesProjectChatConnectionGenerationRef.current;
+    if (hermesProjectChatPreferenceRef.current !== 'connect-local') return false;
+    setHermesProjectChatConnection((current) => ({ ...current, phase: 'checking' }));
+    try {
+      const status = await hermesProjectChatOperationQueueRef.current.enqueue(() =>
+        window.gosu.agentAddOns.connect('hermes'),
+      );
+      if (
+        generation !== hermesProjectChatConnectionGenerationRef.current ||
+        hermesProjectChatPreferenceRef.current !== 'connect-local'
+      ) {
+        return false;
+      }
+      applyHermesProjectChatStatus(status);
+      return true;
+    } catch {
+      if (
+        generation !== hermesProjectChatConnectionGenerationRef.current ||
+        hermesProjectChatPreferenceRef.current !== 'connect-local'
+      ) {
+        return false;
+      }
+      // Keep an explicitly selected Hermes model ID. Removing only its live descriptor makes the
+      // existing unavailable-selection guard block the next turn instead of falling back to Codex.
+      removeHermesProjectChatDescriptor();
+      setHermesProjectChatConnection({ phase: 'unavailable', status: null });
+      return false;
+    }
+  }, [applyHermesProjectChatStatus, removeHermesProjectChatDescriptor]);
+
+  useEffect(() => {
+    const preference = preferences.agentAddOns.hermes;
+    const previousPreference = previousHermesProjectChatPreferenceRef.current;
+    previousHermesProjectChatPreferenceRef.current = preference;
+    if (preference === 'connect-local') {
+      void refreshHermesProjectChatConnection();
+      return;
+    }
+
+    const generation = ++hermesProjectChatConnectionGenerationRef.current;
+    removeHermesProjectChatDescriptor();
+    setHermesProjectChatConnection({ phase: 'disabled', status: null });
+    if (previousPreference !== 'connect-local') return;
+
+    setHermesProjectChatConnection((current) => ({ ...current, phase: 'checking' }));
+    void hermesProjectChatOperationQueueRef.current
+      .enqueue(() => window.gosu.agentAddOns.disconnect('hermes'))
+      .then(() => {
+        if (
+          generation !== hermesProjectChatConnectionGenerationRef.current ||
+          hermesProjectChatPreferenceRef.current === 'connect-local'
+        ) {
+          return;
+        }
+        setHermesProjectChatConnection({ phase: 'disabled', status: null });
+        setProjectChatModelSelection((current) =>
+          reconcileRemovedProjectChatProvider(current, {
+            removedProviderId: 'hermes',
+            reason: 'explicit-disconnect',
+          }),
+        );
+        setAnnouncement('Disconnected BYO Hermes. Any explicit Hermes selection was cleared.');
+      })
+      .catch((error: unknown) => {
+        if (generation !== hermesProjectChatConnectionGenerationRef.current) return;
+        setHermesProjectChatConnection({ phase: 'unavailable', status: null });
+        setWorkspaceError(
+          `Hermes could not be disconnected safely: ${describeError(error)}. Its prior selection remains blocked.`,
+        );
+      });
+  }, [
+    preferences.agentAddOns.hermes,
+    refreshHermesProjectChatConnection,
+    removeHermesProjectChatDescriptor,
+  ]);
+
   useEffect(() => {
     if (codexBootstrapStarted.current) return;
     codexBootstrapStarted.current = true;
@@ -1261,21 +1428,31 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     if (sshConnectionBusy !== null) return false;
     setSshConnectionBusy(key);
     setWorkspaceError(null);
-    try {
-      await action();
-      await Promise.all([
+    setSshRefreshWarning(null);
+    const outcome = await commitSshMutationThenRefresh(action, () =>
+      Promise.all([
         loadSshConnections(),
         ...(activeProject ? [loadSshWorkspaces(activeProject.id)] : []),
-      ]);
-      setAnnouncement(successMessage);
-      return true;
-    } catch (error) {
-      if (hasErrorCode(error, 'ssh_unavailable')) setSshConnectionState('unavailable');
-      setWorkspaceError(describeError(error));
+        loadSshProjectLinks(activeProjects),
+      ]),
+    );
+    setSshConnectionBusy(null);
+
+    if (!outcome.committed) {
+      if (hasErrorCode(outcome.mutationError, 'ssh_unavailable')) {
+        setSshConnectionState('unavailable');
+      }
+      setWorkspaceError(describeError(outcome.mutationError));
       return false;
-    } finally {
-      setSshConnectionBusy(null);
     }
+
+    setAnnouncement(successMessage);
+    if (outcome.refreshError) {
+      setSshRefreshWarning(
+        `The SSH change was saved, but GOSU could not refresh every SSH view. Do not repeat the change; reopen Connections or refresh the affected view. ${describeError(outcome.refreshError)}`,
+      );
+    }
+    return true;
   };
 
   const runSshWorkspaceAction = async (
@@ -1287,17 +1464,24 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     if (sshConnectionBusy !== null) return false;
     setSshConnectionBusy(key);
     setWorkspaceError(null);
-    try {
-      await action();
-      await loadSshWorkspaces(projectId);
-      setAnnouncement(successMessage);
-      return true;
-    } catch (error) {
-      setWorkspaceError(describeError(error));
+    setSshRefreshWarning(null);
+    const outcome = await commitSshMutationThenRefresh(action, () =>
+      Promise.all([loadSshWorkspaces(projectId), loadSshProjectLinks(activeProjects)]),
+    );
+    setSshConnectionBusy(null);
+
+    if (!outcome.committed) {
+      setWorkspaceError(describeError(outcome.mutationError));
       return false;
-    } finally {
-      setSshConnectionBusy(null);
     }
+
+    setAnnouncement(successMessage);
+    if (outcome.refreshError) {
+      setSshRefreshWarning(
+        `The project SSH grant change was saved, but GOSU could not refresh every SSH view. Do not repeat the change; reopen Connections or refresh the affected view. ${describeError(outcome.refreshError)}`,
+      );
+    }
+    return true;
   };
 
   const testSshConnection = async (connectionId: string) => {
@@ -1555,14 +1739,18 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setShowProjectForm(false);
   };
 
-  const openSshWorkspaceSetup = (connectionId: string | null = null) => {
-    if (activeProject) {
+  const openSshWorkspaceSetup = (
+    connectionId: string | null = null,
+    projectId: string | null = activeProject?.id ?? null,
+  ) => {
+    if (projectId) {
       sshWorkspaceSetupRequestIdRef.current += 1;
       setSshWorkspaceSetupRequest({
         requestId: sshWorkspaceSetupRequestIdRef.current,
-        projectId: activeProject.id,
+        projectId,
         connectionId,
       });
+      setActiveProjectId(projectId);
     }
     setActiveSurface('workspace');
     setActiveTab('connections');
@@ -1934,6 +2122,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         <p className="sr-only" aria-live="polite">
           {announcement}
         </p>
+        {sshRefreshWarning && (
+          <div className="notice" role="status">
+            <span>{sshRefreshWarning}</span>
+            <div className="notice-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setSshRefreshWarning(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
         {workspaceError && (
           <div className="notice error" role="alert">
             <span>{workspaceError}</span>
@@ -1981,6 +2183,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             <SettingsView
               preferences={preferences}
               onChange={updatePreferences}
+              hermesConnection={hermesProjectChatConnection}
+              onRefreshHermesConnection={refreshHermesProjectChatConnection}
               workspaceSnapshot={snapshot}
               busyAction={busyAction}
               chatBusyProjectIds={chatBusyProjectIds}
@@ -2132,10 +2336,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   chatSessionMutation?.projectId === activeProject.id &&
                   chatSessionMutation.kind !== 'rename',
                 )}
-                models={models}
+                models={projectChatModels}
                 collaborationModes={collaborationModes}
-                selectedModel={selectedModel}
-                selectedReasoning={selectedReasoning}
+                selectedProviderId={projectChatModelSelection.providerId}
+                selectedModel={projectChatModelSelection.modelId}
+                selectedReasoning={projectChatModelSelection.reasoningOptionId}
                 applyingActionId={applyingChatActionId}
                 vault={activeResearchNotesSelection}
                 vaultState={researchNotesState}
@@ -2243,13 +2448,30 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onCreateSession={() => void createChatSession(activeProject.id)}
                 onRenameSession={renameChatSession}
                 onBranchSession={(messageId) => branchChatSession(activeProject.id, messageId)}
-                onSelectedModel={(modelId) => {
-                  const selection = selectCodexModel(modelId, selectedReasoning);
-                  setSelectedModel(selection.modelId);
-                  setSelectedReasoning(selection.reasoningOptionId);
+                onSelectedModel={(modelId) =>
+                  setProjectChatModelSelection((current) => {
+                    const nextProviderId =
+                      modelId === null
+                        ? null
+                        : (projectChatModels.find((model) => model.modelId === modelId)
+                            ?.providerId ?? null);
+                    return selectProjectChatModel(current, {
+                      providerId: nextProviderId,
+                      modelId,
+                    });
+                  })
+                }
+                onSelectedReasoning={(reasoningOptionId) =>
+                  setProjectChatModelSelection((current) =>
+                    selectProjectChatReasoning(current, reasoningOptionId),
+                  )
+                }
+                onRefreshModels={() => {
+                  void refreshModels();
+                  if (preferences.agentAddOns.hermes === 'connect-local') {
+                    void refreshHermesProjectChatConnection();
+                  }
                 }}
-                onSelectedReasoning={setSelectedReasoning}
-                onRefreshModels={() => void refreshModels()}
                 onOpenAgentSettings={openAgentSettings}
                 onChooseAttachments={() => {
                   if (!activeProjectChatSessionId) return Promise.resolve([]);
@@ -2272,28 +2494,17 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   if (!activeProjectChatSessionId || !activeProjectChatSessionKey) {
                     return false;
                   }
-                  const savedLocalNotesGrant = activeProjectChatSnapshot?.profile?.localNotesVault;
-                  if (
-                    savedLocalNotesGrant &&
-                    (researchNotesState !== 'ready' ||
-                      activeResearchNotesSelection?.id !== savedLocalNotesGrant.id)
-                  ) {
-                    setWorkspaceError(
-                      'Research Notes access cannot be verified for this project. GOSU paused this turn so a stale or hidden grant cannot be used. Open Research Notes and review the project folder.',
-                    );
-                    return false;
-                  }
                   const selectedDescriptor = resolveEffectiveCodexModel(
-                    models,
+                    projectChatModels,
                     collaborationModes,
-                    selectedModel,
+                    projectChatModelSelection.modelId,
                     controls.collaborationModeId ?? null,
                   );
                   const selectedCollaborationMode = controls.collaborationModeId
                     ? collaborationModes.find((mode) => mode.id === controls.collaborationModeId)
                     : undefined;
                   const effectiveReasoningOptionId =
-                    selectedReasoning ??
+                    projectChatModelSelection.reasoningOptionId ??
                     selectedCollaborationMode?.recommendedReasoningOptionId ??
                     null;
                   if (controls.collaborationModeId && !selectedCollaborationMode) {
@@ -2304,9 +2515,27 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   }
                   if (!selectedDescriptor) {
                     setWorkspaceError(
-                      selectedModel !== null
-                        ? 'The selected Codex model is no longer available. Choose a current model and try again.'
-                        : 'The effective Codex default or mode-recommended model is unavailable. Choose a current model or mode and try again.',
+                      projectChatModelSelection.modelId !== null
+                        ? 'The selected Project Chat model is no longer available. Choose a current model and try again.'
+                        : 'The effective default or mode-recommended Project Chat model is unavailable. Choose a current model or mode and try again.',
+                    );
+                    return false;
+                  }
+                  const savedLocalNotesGrant = activeProjectChatSnapshot?.profile?.localNotesVault;
+                  if (
+                    selectedDescriptor.providerId !== 'hermes' &&
+                    savedLocalNotesGrant &&
+                    (researchNotesState !== 'ready' ||
+                      activeResearchNotesSelection?.id !== savedLocalNotesGrant.id)
+                  ) {
+                    setWorkspaceError(
+                      'Research Notes access cannot be verified for this project. GOSU paused this turn so a stale or hidden grant cannot be used. Open Research Notes and review the project folder.',
+                    );
+                    return false;
+                  }
+                  if (selectedDescriptor.providerId === 'hermes' && attachmentIds.length > 0) {
+                    setWorkspaceError(
+                      'The initial BYO Hermes connection is text-only. Remove attachments or choose Codex for this turn.',
                     );
                     return false;
                   }
@@ -2341,8 +2570,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       projectId: activeProject.id,
                       sessionId: activeProjectChatSessionId,
                       message,
-                      requestedModelId: selectedModel,
-                      reasoningOptionId: selectedReasoning,
+                      requestedModelId: projectChatModelSelection.modelId,
+                      reasoningOptionId: projectChatModelSelection.reasoningOptionId,
                       ...(attachmentIds.length > 0 ? { attachmentIds: [...attachmentIds] } : {}),
                       ...controls,
                       ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
@@ -2351,12 +2580,17 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     if ('queued' in receipt) {
                       setAnnouncement('Queued this message for the selected Project Chat session.');
                     }
-                    setCodexConnectionState('ready');
-                    setCodexErrorVisible(false);
+                    if (selectedDescriptor.providerId !== 'hermes') {
+                      setCodexConnectionState('ready');
+                      setCodexErrorVisible(false);
+                    }
                     return true;
                   } catch (error) {
                     setWorkspaceError(describeError(error));
-                    if (isCodexUnavailableError(error)) {
+                    if (
+                      selectedDescriptor.providerId !== 'hermes' &&
+                      isCodexUnavailableError(error)
+                    ) {
                       setCodexConnectionState('unavailable');
                       setCodexErrorVisible(true);
                     }
@@ -2738,14 +2972,30 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     `Updated the ${input.label} SSH profile.`,
                   )
                 }
-                onRemoveSshConnection={(input: RemoveSshConnectionInput) => {
+                onRemoveSshConnection={async (input: RemoveSshConnectionInput) => {
                   const connection = sshConnections.find(
                     (candidate) => candidate.id === input.connectionId,
                   );
+                  if (!connection) return false;
+                  let currentProjectLinks: Readonly<Record<string, readonly string[]>>;
+                  try {
+                    currentProjectLinks = await loadSshProjectLinks(activeProjects);
+                  } catch (error) {
+                    setWorkspaceError(
+                      `GOSU could not verify which active projects use this server, so it was not removed. ${describeError(error)}`,
+                    );
+                    return false;
+                  }
+                  const linkedProjectIds = new Set(currentProjectLinks[input.connectionId] ?? []);
+                  const linkedActiveProjectNames = activeProjects
+                    .filter((project) => linkedProjectIds.has(project.id))
+                    .map((project) => project.name);
                   if (
-                    !connection ||
                     !window.confirm(
-                      `Remove “${connection.label}” from GOSU? This does not change your OpenSSH config.`,
+                      buildSshConnectionRemovalConfirmation(
+                        connection.label,
+                        linkedActiveProjectNames,
+                      ),
                     )
                   ) {
                     return Promise.resolve(false);
@@ -2759,9 +3009,14 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onTestSshConnection={testSshConnection}
                 sshResourceStates={sshResourceStates}
                 onRefreshSshResource={(connectionId) => refreshSshResource(connectionId, true)}
-                onOpenSshWorkspaceSetup={(connectionId) => openSshWorkspaceSetup(connectionId)}
+                onOpenSshWorkspaceSetup={(projectId, connectionId) =>
+                  openSshWorkspaceSetup(connectionId, projectId)
+                }
                 activeProject={activeProject ?? null}
+                projects={activeProjects}
+                linkedProjectIdsByConnectionId={sshLinkedProjectIdsByConnectionId}
                 sshWorkspaces={activeProjectSshWorkspaces}
+                sshWorkspaceReady={activeProjectSshWorkspaceState === 'ready'}
                 sshWorkspaceSetupRequest={sshWorkspaceSetupRequest}
                 onSshWorkspaceSetupHandled={(requestId) =>
                   setSshWorkspaceSetupRequest((current) =>

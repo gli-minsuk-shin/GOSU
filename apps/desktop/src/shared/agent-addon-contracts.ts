@@ -1,14 +1,28 @@
 export const AGENT_ADD_ON_IDS = ['openclaw', 'hermes'] as const;
 
 export type AgentAddOnId = (typeof AGENT_ADD_ON_IDS)[number];
-export type AgentAddOnPreference = 'disabled' | 'detect-local';
+export type AgentAddOnPreference = 'disabled' | 'detect-local' | 'connect-local';
 export type AgentAddOnDetectionState = 'detected_local_cli' | 'not_detected';
 export type AgentAddOnDetectionEvidence = 'path' | 'known_install_location' | null;
+
+export type AgentAddOnProjectChatModel = Readonly<{
+  providerId: string;
+  modelId: string;
+  displayName: string;
+  isDefault: boolean;
+  modalities: readonly string[];
+  reasoningOptions: readonly Readonly<{
+    id: string;
+    label: string;
+    isDefault: boolean;
+  }>[];
+  supportsPersonality: boolean;
+}>;
 
 export type AgentAddOnIntegrationCapabilities = Readonly<{
   localInstallationDetection: 'available';
   setupGuidance: 'available';
-  projectChatProvider: 'not_implemented';
+  projectChatProvider: 'available' | 'not_implemented';
   automaticInstaller: 'not_implemented';
   credentialManagement: 'not_implemented';
 }>;
@@ -27,11 +41,22 @@ export type AgentAddOnStatus = Readonly<{
   id: AgentAddOnId;
   state: AgentAddOnDetectionState;
   evidence: AgentAddOnDetectionEvidence;
-  connected: false;
+  connected: boolean;
+  connectionMode: 'byo-local-safe-chat' | null;
+  version: string | null;
+  projectChatModel: AgentAddOnProjectChatModel | null;
 }>;
 
 export type AgentAddOnStatusRequest = Readonly<{
   ids: readonly AgentAddOnId[];
+}>;
+
+export type ConnectAgentAddOnRequest = Readonly<{
+  id: AgentAddOnId;
+}>;
+
+export type DisconnectAgentAddOnRequest = Readonly<{
+  id: AgentAddOnId;
 }>;
 
 const DETECTION_ONLY_CAPABILITIES: AgentAddOnIntegrationCapabilities = {
@@ -40,6 +65,11 @@ const DETECTION_ONLY_CAPABILITIES: AgentAddOnIntegrationCapabilities = {
   projectChatProvider: 'not_implemented',
   automaticInstaller: 'not_implemented',
   credentialManagement: 'not_implemented',
+};
+
+const HERMES_BYO_CAPABILITIES: AgentAddOnIntegrationCapabilities = {
+  ...DETECTION_ONLY_CAPABILITIES,
+  projectChatProvider: 'available',
 };
 
 export const AGENT_ADD_ON_DESCRIPTORS: readonly AgentAddOnDescriptor[] = [
@@ -59,12 +89,12 @@ export const AGENT_ADD_ON_DESCRIPTORS: readonly AgentAddOnDescriptor[] = [
     executableName: 'hermes',
     officialRepositoryUrl: 'https://github.com/NousResearch/hermes-agent',
     officialSetupUrl: 'https://hermes-agent.nousresearch.com/docs/',
-    capabilities: DETECTION_ONLY_CAPABILITIES,
+    capabilities: HERMES_BYO_CAPABILITIES,
   },
 ] as const;
 
 export function isAgentAddOnPreference(value: unknown): value is AgentAddOnPreference {
-  return value === 'disabled' || value === 'detect-local';
+  return value === 'disabled' || value === 'detect-local' || value === 'connect-local';
 }
 
 export function isAgentAddOnId(value: unknown): value is AgentAddOnId {
@@ -87,4 +117,32 @@ export function parseAgentAddOnStatusRequest(value: unknown): AgentAddOnStatusRe
   }
 
   return { ids: [...value.ids] as AgentAddOnId[] };
+}
+
+export function parseConnectAgentAddOnRequest(value: unknown): ConnectAgentAddOnRequest {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    !('id' in value) ||
+    !isAgentAddOnId(value.id)
+  ) {
+    throw new Error('invalid_agent_add_on_connect_request');
+  }
+  return { id: value.id };
+}
+
+export function parseDisconnectAgentAddOnRequest(value: unknown): DisconnectAgentAddOnRequest {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    !('id' in value) ||
+    !isAgentAddOnId(value.id)
+  ) {
+    throw new Error('invalid_agent_add_on_disconnect_request');
+  }
+  return { id: value.id };
 }

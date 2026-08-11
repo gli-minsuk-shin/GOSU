@@ -9,6 +9,7 @@ import {
   type AgentAddOnId,
   type AgentAddOnStatus,
 } from '../shared/agent-addon-contracts';
+import type { HermesProjectChatConnection } from './project-chat-provider-router';
 
 type DetectionCandidate = Readonly<{
   path: string;
@@ -18,6 +19,8 @@ type DetectionCandidate = Readonly<{
 export interface AgentAddOnAdapter {
   readonly descriptor: AgentAddOnDescriptor;
   detectLocalInstallation(): Promise<AgentAddOnStatus>;
+  connectLocal?(): Promise<AgentAddOnStatus>;
+  disconnectLocal?(): Promise<AgentAddOnStatus>;
 }
 
 export type AgentAddOnDetectionPlatform = Readonly<{
@@ -79,6 +82,9 @@ export class LocalCliAgentAddOnAdapter implements AgentAddOnAdapter {
           state: 'detected_local_cli',
           evidence: candidate.evidence,
           connected: false,
+          connectionMode: null,
+          version: null,
+          projectChatModel: null,
         };
       }
     }
@@ -87,7 +93,58 @@ export class LocalCliAgentAddOnAdapter implements AgentAddOnAdapter {
       state: 'not_detected',
       evidence: null,
       connected: false,
+      connectionMode: null,
+      version: null,
+      projectChatModel: null,
     };
+  }
+}
+
+export class HermesAgentAddOnAdapter implements AgentAddOnAdapter {
+  private connectedStatus: AgentAddOnStatus | null = null;
+
+  constructor(
+    readonly descriptor: AgentAddOnDescriptor,
+    private readonly detector: LocalCliAgentAddOnAdapter,
+    private readonly projectChat: HermesProjectChatConnection,
+  ) {}
+
+  async detectLocalInstallation(): Promise<AgentAddOnStatus> {
+    if (this.connectedStatus && this.projectChat.isHermesConnected()) {
+      return this.connectedStatus;
+    }
+    this.connectedStatus = null;
+    return this.detector.detectLocalInstallation();
+  }
+
+  async connectLocal(): Promise<AgentAddOnStatus> {
+    const detected = await this.detector.detectLocalInstallation();
+    if (detected.state !== 'detected_local_cli') throw new Error('hermes_not_detected');
+    const { catalog } = await this.projectChat.connectHermes();
+    const model = catalog.models.find((candidate) => candidate.providerId === 'hermes');
+    if (!model) throw new Error('hermes_project_chat_model_missing');
+    this.connectedStatus = {
+      ...detected,
+      connected: true,
+      connectionMode: 'byo-local-safe-chat',
+      version: null,
+      projectChatModel: {
+        providerId: model.providerId,
+        modelId: model.modelId,
+        displayName: model.displayName,
+        isDefault: false,
+        modalities: model.modalities,
+        reasoningOptions: model.reasoningOptions,
+        supportsPersonality: model.metadata?.supportsPersonality === true,
+      },
+    };
+    return this.connectedStatus;
+  }
+
+  async disconnectLocal(): Promise<AgentAddOnStatus> {
+    await this.projectChat.disconnectHermes();
+    this.connectedStatus = null;
+    return this.detector.detectLocalInstallation();
   }
 }
 
@@ -110,10 +167,25 @@ export class AgentAddOnRegistry {
     });
     return Promise.all(requestedAdapters.map((adapter) => adapter.detectLocalInstallation()));
   }
+
+  async connect(id: AgentAddOnId): Promise<AgentAddOnStatus> {
+    const adapter = this.adapters.get(id);
+    if (!adapter) throw new Error('unknown_agent_add_on_adapter');
+    if (!adapter.connectLocal) throw new Error('agent_add_on_connection_not_supported');
+    return adapter.connectLocal();
+  }
+
+  async disconnect(id: AgentAddOnId): Promise<AgentAddOnStatus> {
+    const adapter = this.adapters.get(id);
+    if (!adapter) throw new Error('unknown_agent_add_on_adapter');
+    if (!adapter.disconnectLocal) throw new Error('agent_add_on_disconnection_not_supported');
+    return adapter.disconnectLocal();
+  }
 }
 
 export function createAgentAddOnRegistry(
   input: Partial<AgentAddOnDetectionPlatform> = {},
+  integrations: Readonly<{ hermesProjectChat?: HermesProjectChatConnection }> = {},
 ): AgentAddOnRegistry {
   const platform: AgentAddOnDetectionPlatform = {
     pathEnvironment: input.pathEnvironment ?? process.env.PATH,
@@ -130,8 +202,11 @@ export function createAgentAddOnRegistry(
       }),
   };
   return new AgentAddOnRegistry(
-    AGENT_ADD_ON_DESCRIPTORS.map(
-      (descriptor) => new LocalCliAgentAddOnAdapter(descriptor, platform),
-    ),
+    AGENT_ADD_ON_DESCRIPTORS.map((descriptor) => {
+      const detector = new LocalCliAgentAddOnAdapter(descriptor, platform);
+      return descriptor.id === 'hermes' && integrations.hermesProjectChat
+        ? new HermesAgentAddOnAdapter(descriptor, detector, integrations.hermesProjectChat)
+        : detector;
+    }),
   );
 }

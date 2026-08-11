@@ -921,6 +921,7 @@ class FakeCodex extends EventEmitter {
   private threadCount = 0;
   private turnCount = 0;
   readonly turnThreads = new Map<string, string>();
+  readonly threadProviders = new Map<string, string>();
   readonly interrupted: Array<{ threadId: string; turnId: string }> = [];
   readonly released: string[] = [];
   readonly revoked: string[] = [];
@@ -976,6 +977,7 @@ class FakeCodex extends EventEmitter {
   }
 
   async startThread(input: {
+    modelId?: string | null;
     developerInstructions?: string;
     responseVerbosity?: 'low' | 'medium' | 'high' | null;
     webSearchMode?: 'disabled' | 'cached' | 'live';
@@ -992,8 +994,10 @@ class FakeCodex extends EventEmitter {
     this.dynamicToolTimeouts.push(input.dynamicToolTimeouts ?? []);
     const threadId = this.nextThreadId ?? `thread-${this.threadCount}`;
     this.nextThreadId = null;
+    const providerId = input.modelId === 'hermes-test-model' ? 'hermes' : 'codex';
+    this.threadProviders.set(threadId, providerId);
     await this.beforeStartThreadReturns?.(threadId);
-    return { threadId, modelId: 'fixture-model' };
+    return { threadId, modelId: 'fixture-model', providerId };
   }
 
   async runTurn(input: {
@@ -1027,7 +1031,10 @@ class FakeCodex extends EventEmitter {
       : null;
     const effectiveReasoningOptionId =
       input.reasoningOptionId ?? collaborationMode?.recommendedReasoningOptionId ?? null;
-    const turnInvocation = invocation(input.requestedModelId);
+    const turnInvocation = invocation(
+      input.requestedModelId,
+      this.threadProviders.get(input.threadId) ?? 'codex',
+    );
     return {
       turnId,
       invocation: {
@@ -1089,11 +1096,11 @@ class FakeCodex extends EventEmitter {
   }
 }
 
-function invocation(requestedModelId: string | null): ModelInvocation {
+function invocation(requestedModelId: string | null, providerId = 'codex'): ModelInvocation {
   return {
     schemaVersion: 1,
     invocationId: randomUUID(),
-    providerId: 'codex',
+    providerId,
     requestedModelId,
     resolvedModelId: requestedModelId ?? 'fixture-default',
     catalogVersion: 'fixture-catalog',
@@ -1928,6 +1935,93 @@ describe('ProjectChatService', () => {
     expect(codex.prompts[1]).toContain('First turn');
     expect(codex.prompts[1]).toContain('First reply');
     expect(codex.prompts[1]).not.toContain('Beta secret task');
+  });
+
+  it('finalizes only turns owned by the provider that disconnected', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const codexTurn = await chat.send({
+      projectId: projectA.id,
+      message: 'Keep this Codex turn active.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const hermesSession = await chat.createSession({
+      projectId: projectA.id,
+      title: 'Hermes session',
+    });
+    const hermesTurn = await chat.send({
+      projectId: projectA.id,
+      sessionId: hermesSession.id,
+      message: 'Keep this Hermes turn active.',
+      requestedModelId: 'hermes-test-model',
+      reasoningOptionId: null,
+    });
+    const codexCompleted = waitForTurnCompleted(chat, codexTurn.turnId);
+
+    codex.emit('disconnected', { providerId: 'codex' });
+    await codexCompleted;
+
+    expect(
+      (await chat.snapshot({ projectId: projectA.id, sessionId: codexTurn.sessionId }))
+        .activeTurnId,
+    ).toBeUndefined();
+    expect(
+      (await chat.snapshot({ projectId: projectA.id, sessionId: hermesSession.id })).activeTurnId,
+    ).toBe(hermesTurn.turnId);
+    expect(storage.snapshot(projectA.id, codexTurn.sessionId).attempts?.[0]).toMatchObject({
+      status: 'failed',
+      model: { providerId: 'codex' },
+    });
+
+    const hermesCompleted = waitForTurnCompleted(chat, hermesTurn.turnId);
+    codex.complete(hermesTurn.turnId, { reply: 'Hermes remained active.', actions: [] });
+    await hermesCompleted;
+    expect(storage.snapshot(projectA.id, hermesSession.id).attempts?.[0]).toMatchObject({
+      status: 'complete',
+      model: { providerId: 'hermes' },
+    });
+  });
+
+  it('keeps a same-project Codex session running when Hermes disconnects', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const codexTurn = await chat.send({
+      projectId: projectA.id,
+      message: 'Keep this Codex session active.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const hermesSession = await chat.createSession({
+      projectId: projectA.id,
+      title: 'Hermes session',
+    });
+    const hermesTurn = await chat.send({
+      projectId: projectA.id,
+      sessionId: hermesSession.id,
+      message: 'This Hermes session will disconnect.',
+      requestedModelId: 'hermes-test-model',
+      reasoningOptionId: null,
+    });
+    const hermesCompleted = waitForTurnCompleted(chat, hermesTurn.turnId);
+
+    codex.emit('disconnected', { providerId: 'hermes' });
+    await hermesCompleted;
+
+    expect(
+      (await chat.snapshot({ projectId: projectA.id, sessionId: codexTurn.sessionId }))
+        .activeTurnId,
+    ).toBe(codexTurn.turnId);
+    expect(storage.snapshot(projectA.id, hermesSession.id).attempts?.[0]).toMatchObject({
+      status: 'failed',
+      model: { providerId: 'hermes' },
+    });
+
+    const codexCompleted = waitForTurnCompleted(chat, codexTurn.turnId);
+    codex.complete(codexTurn.turnId, { reply: 'Codex remained active.', actions: [] });
+    await codexCompleted;
+    expect(storage.snapshot(projectA.id, codexTurn.sessionId).attempts?.[0]).toMatchObject({
+      status: 'complete',
+      model: { providerId: 'codex' },
+    });
   });
 
   it('returns active turn state in snapshots so a reloaded renderer can stop it', async () => {

@@ -27,6 +27,28 @@ export function resolveSshWorkspaceSetupConnectionId(
   return availableConnectionIds.length === 1 ? (availableConnectionIds[0] ?? '') : '';
 }
 
+export type SshWorkspaceSetupTarget =
+  | Readonly<{ kind: 'edit'; workspace: GrantedRemoteWorkspace }>
+  | Readonly<{ kind: 'create'; connectionId: string }>;
+
+export function resolveSshWorkspaceSetupTarget(
+  requestedConnectionId: string | null,
+  availableConnectionIds: readonly string[],
+  workspaces: readonly GrantedRemoteWorkspace[],
+): SshWorkspaceSetupTarget {
+  const existingWorkspace = requestedConnectionId
+    ? workspaces.find(({ connection }) => connection.id === requestedConnectionId)
+    : undefined;
+  if (existingWorkspace) return { kind: 'edit', workspace: existingWorkspace };
+  return {
+    kind: 'create',
+    connectionId: resolveSshWorkspaceSetupConnectionId(
+      requestedConnectionId,
+      availableConnectionIds,
+    ),
+  };
+}
+
 export function shouldHandleSshWorkspaceSetupRequest(
   request: SshWorkspaceSetupRequest | null,
   activeProjectId: string | null,
@@ -51,6 +73,7 @@ export type SshWorkspaceGrantsCardProps = Readonly<{
   project: ProjectRecord | null;
   connections: readonly SshConnectionProfile[];
   workspaces: readonly GrantedRemoteWorkspace[];
+  workspaceReady?: boolean;
   busy: boolean;
   onCreate: (input: CreateRemoteWorkspaceGrantInput) => MaybePromise<unknown>;
   onUpdate: (input: UpdateRemoteWorkspaceGrantInput) => MaybePromise<unknown>;
@@ -65,6 +88,7 @@ export function SshWorkspaceGrantsCard({
   project,
   connections,
   workspaces,
+  workspaceReady = true,
   busy,
   onCreate,
   onUpdate,
@@ -105,6 +129,7 @@ export function SshWorkspaceGrantsCard({
     if (
       !project ||
       !setupRequest ||
+      !workspaceReady ||
       !shouldHandleSshWorkspaceSetupRequest(
         setupRequest,
         project.id,
@@ -114,23 +139,38 @@ export function SshWorkspaceGrantsCard({
     ) {
       return;
     }
+    const target = resolveSshWorkspaceSetupTarget(
+      setupRequest.connectionId,
+      availableConnections.map((connection) => connection.id),
+      workspaces,
+    );
     handledSetupRequestIdRef.current = setupRequest.requestId;
     onSetupRequestHandled(setupRequest.requestId);
-    setEditingGrantId(null);
-    setConnectionId(
-      resolveSshWorkspaceSetupConnectionId(
-        setupRequest.connectionId,
-        availableConnections.map((connection) => connection.id),
-      ),
-    );
-    setCanonicalRoot('');
-    setPermissionMode('diagnostics');
+    if (target.kind === 'edit') {
+      setEditingGrantId(target.workspace.grant.id);
+      setConnectionId(target.workspace.connection.id);
+      setCanonicalRoot(target.workspace.grant.canonicalRoot);
+      setPermissionMode(target.workspace.grant.permissionMode);
+    } else {
+      setEditingGrantId(null);
+      setConnectionId(target.connectionId);
+      setCanonicalRoot('');
+      setPermissionMode('diagnostics');
+    }
     setConfirmed(false);
     window.requestAnimationFrame(() => {
       cardRef.current?.scrollIntoView({ behavior: 'auto', block: 'start' });
       connectionSelectRef.current?.focus({ preventScroll: true });
     });
-  }, [availableConnections, connections.length, onSetupRequestHandled, project, setupRequest]);
+  }, [
+    availableConnections,
+    connections.length,
+    onSetupRequestHandled,
+    project,
+    setupRequest,
+    workspaceReady,
+    workspaces,
+  ]);
 
   const reset = () => {
     setEditingGrantId(null);

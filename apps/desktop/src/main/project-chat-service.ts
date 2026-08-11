@@ -187,7 +187,8 @@ export interface ProjectChatStorage {
 export interface ProjectChatCodex {
   on: EventEmitter['on'];
   listModelCatalog(): Promise<ModelCatalog>;
-  listCollaborationModeCatalog(): Promise<CodexCollaborationModeCatalog>;
+  listBranchTitleModelCatalog?(): Promise<ModelCatalog>;
+  listCollaborationModeCatalog(modelId?: string | null): Promise<CodexCollaborationModeCatalog>;
   startThread(input: {
     cwd: string;
     modelId: string | null;
@@ -197,7 +198,7 @@ export interface ProjectChatCodex {
     dynamicToolHandler?: CodexDynamicToolHandler;
     dynamicToolTimeouts?: readonly CodexDynamicToolTimeoutOverride[];
     webSearchMode?: CodexWebSearchMode;
-  }): Promise<{ threadId: string }>;
+  }): Promise<{ threadId: string; providerId?: string }>;
   runTurn(input: {
     threadId: string;
     prompt: string;
@@ -283,6 +284,7 @@ type ProjectChatTitleJobResult = Readonly<{
 }>;
 
 type ActiveTurn = {
+  runtimeProviderId: string;
   projectId: string;
   sessionId: string;
   sessionName: string;
@@ -306,11 +308,13 @@ const UNAVAILABLE_AGENT_VAULT: ProjectAgentVault = {
 };
 
 const FAILURE_COPY = {
-  unavailable: 'Codex could not complete this turn. Check the local connection and try again.',
+  unavailable:
+    'The selected Project Chat provider could not complete this turn. Check its local connection and try again.',
   attachmentModelModalityUnsupported:
     'The selected model cannot accept image attachments. Choose an image-capable model, attach the image again, and resend this message.',
-  invalid: 'Codex returned an invalid project response. Please try the request again.',
-  interrupted: 'This Codex turn was stopped.',
+  invalid:
+    'The selected Project Chat provider returned an invalid project response. Please try again.',
+  interrupted: 'This Project Chat turn was stopped.',
   persistence:
     'GOSU recovered this turn after its first completion receipt could not be saved. Retry when ready.',
   interruptUnconfirmed:
@@ -426,6 +430,7 @@ export function explicitlyAuthorizesLiteratureSearch(message: string) {
 function modelProvenance(invocation: ModelInvocation) {
   return {
     invocationId: invocation.invocationId,
+    providerId: invocation.providerId,
     requestedModelId: invocation.requestedModelId,
     resolvedModelId: invocation.resolvedModelId,
     catalogVersion: invocation.catalogVersion,
@@ -566,7 +571,10 @@ function parseProjectChatBranchTitle(value: string | null, fallback: string) {
 export class ProjectChatService extends EventEmitter {
   private readonly activeByTransport = new Map<string, ActiveTurn>();
   private readonly activeTransportBySession = new Map<string, string>();
-  private readonly threadSessions = new Map<string, { projectId: string; sessionId: string }>();
+  private readonly threadSessions = new Map<
+    string,
+    { projectId: string; sessionId: string; providerId: string }
+  >();
   private readonly startingSessions = new Set<string>();
   private readonly liveAgentToolsBySession = new Map<string, ProjectAgentToolSession>();
   private readonly sshScopeEpochBySession = new Map<string, number>();
@@ -585,7 +593,7 @@ export class ProjectChatService extends EventEmitter {
   private queueSchedulerRetryAttempt = 0;
   private queueSchedulerRetryTimer: ReturnType<typeof setTimeout> | undefined;
   private actionTail: Promise<void> = Promise.resolve();
-  private codexConnectionEpoch = 0;
+  private readonly providerConnectionEpochs = new Map<string, number>();
 
   constructor(
     private readonly dependencies: {
@@ -620,16 +628,31 @@ export class ProjectChatService extends EventEmitter {
         if (active) active.invocation = event.invocation;
       },
     );
-    dependencies.codex.on('disconnected', () => {
-      this.codexConnectionEpoch += 1;
-      this.threadSessions.clear();
-      this.earlyNotifications.clear();
-      for (const titleJob of this.titleJobsByThread.values()) {
-        titleJob.terminalStatus = 'failed';
-        this.settleTitleJob(titleJob);
+    dependencies.codex.on('disconnected', (event?: { providerId?: unknown }) => {
+      const providerId = event && typeof event.providerId === 'string' ? event.providerId : 'codex';
+      this.providerConnectionEpochs.set(providerId, this.providerConnectionEpoch(providerId) + 1);
+      for (const [threadId, session] of this.threadSessions) {
+        if (session.providerId !== providerId) continue;
+        this.threadSessions.delete(threadId);
+        for (const transport of this.earlyNotifications.keys()) {
+          if (transport.startsWith(`${threadId}\u0000`)) this.earlyNotifications.delete(transport);
+        }
       }
-      for (const active of this.activeByTransport.values()) this.beginFinalize(active, 'failed');
+      // Branch titles intentionally remain Codex-only, so a Hermes disconnect cannot cancel them.
+      if (providerId === 'codex') {
+        for (const titleJob of this.titleJobsByThread.values()) {
+          titleJob.terminalStatus = 'failed';
+          this.settleTitleJob(titleJob);
+        }
+      }
+      for (const active of this.activeByTransport.values()) {
+        if (active.runtimeProviderId === providerId) this.beginFinalize(active, 'failed');
+      }
     });
+  }
+
+  private providerConnectionEpoch(providerId: string) {
+    return this.providerConnectionEpochs.get(providerId) ?? 0;
   }
 
   async reconcileResearchNoteSaveReceipts() {
@@ -958,7 +981,9 @@ export class ProjectChatService extends EventEmitter {
       const contextScope = command.contextScope ?? profile.contextScope;
       let collaborationModeCatalog: CodexCollaborationModeCatalog;
       try {
-        collaborationModeCatalog = await this.dependencies.codex.listCollaborationModeCatalog();
+        collaborationModeCatalog = await this.dependencies.codex.listCollaborationModeCatalog(
+          command.requestedModelId,
+        );
       } catch {
         throw new ProjectChatServiceError('codex_unavailable');
       }
@@ -1098,9 +1123,10 @@ export class ProjectChatService extends EventEmitter {
       let currentAttempt = startingAttempt;
       let activeRegistered = false;
       let connectionEpoch: number | undefined;
+      let connectionProviderId: string | undefined;
       try {
         const cwd = await this.dependencies.prepareProjectDirectory(command.projectId);
-        const threadId = await this.startEphemeralThread(
+        const startedThread = await this.startEphemeralThread(
           command.projectId,
           session.id,
           cwd,
@@ -1110,8 +1136,10 @@ export class ProjectChatService extends EventEmitter {
           responseVerbosity === 'auto' ? null : responseVerbosity,
           profile.webSearchMode,
         );
+        const { threadId, providerId } = startedThread;
         ephemeralThreadId = threadId;
-        connectionEpoch = this.codexConnectionEpoch;
+        connectionProviderId = providerId;
+        connectionEpoch = this.providerConnectionEpoch(providerId);
         const nativeImages = attachments?.nativeImages() ?? [];
         const result = await this.dependencies.codex.runTurn({
           threadId,
@@ -1130,7 +1158,7 @@ export class ProjectChatService extends EventEmitter {
         });
         agentTools.markNativeImagesDelivered();
         ephemeralTurnId = result.turnId;
-        if (connectionEpoch !== this.codexConnectionEpoch) {
+        if (connectionEpoch !== this.providerConnectionEpoch(providerId)) {
           throw new Error('codex_connection_changed_during_turn_start');
         }
         const runningAttempt: ProjectChatAttempt = {
@@ -1143,10 +1171,11 @@ export class ProjectChatService extends EventEmitter {
         };
         currentAttempt = runningAttempt;
         await this.dependencies.storage.markChatAttemptRunning(runningAttempt);
-        if (connectionEpoch !== this.codexConnectionEpoch) {
+        if (connectionEpoch !== this.providerConnectionEpoch(providerId)) {
           throw new Error('codex_connection_changed_during_turn_registration');
         }
         const active: ActiveTurn = {
+          runtimeProviderId: providerId,
           projectId: command.projectId,
           sessionId: session.id,
           sessionName: session.title,
@@ -1194,7 +1223,8 @@ export class ProjectChatService extends EventEmitter {
           !activeRegistered &&
           ephemeralThreadId &&
           ephemeralTurnId &&
-          connectionEpoch === this.codexConnectionEpoch
+          connectionProviderId !== undefined &&
+          connectionEpoch === this.providerConnectionEpoch(connectionProviderId)
         ) {
           try {
             await this.dependencies.codex.interruptTurn(ephemeralThreadId, ephemeralTurnId);
@@ -1830,11 +1860,12 @@ export class ProjectChatService extends EventEmitter {
     if (this.threadSessions.has(started.threadId)) {
       throw new Error('codex_thread_id_collision');
     }
+    const providerId = started.providerId ?? 'codex';
     agentTools.bindTransportRevoker(() =>
       this.dependencies.codex.revokeDynamicTools(started.threadId),
     );
-    this.threadSessions.set(started.threadId, { projectId, sessionId });
-    return started.threadId;
+    this.threadSessions.set(started.threadId, { projectId, sessionId, providerId });
+    return { threadId: started.threadId, providerId };
   }
 
   private scheduleBranchTitle(session: ProjectChatSession) {
@@ -1871,7 +1902,8 @@ export class ProjectChatService extends EventEmitter {
     try {
       const [catalog, snapshot] = await beforeDeadline(
         Promise.all([
-          this.dependencies.codex.listModelCatalog(),
+          this.dependencies.codex.listBranchTitleModelCatalog?.() ??
+            this.dependencies.codex.listModelCatalog(),
           this.dependencies.storage.snapshot(session.projectId, session.id),
         ]),
       );

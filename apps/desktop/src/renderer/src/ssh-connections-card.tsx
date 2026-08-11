@@ -102,38 +102,109 @@ export type SshConnectionsCardProps = Readonly<{
   onRemove: (input: RemoveSshConnectionInput) => MaybePromise<unknown>;
   onTest: (connectionId: string) => MaybePromise<unknown>;
   activeProject?: ProjectRecord | null;
+  projects?: readonly ProjectRecord[];
   linkedConnectionIds?: ReadonlySet<string>;
+  linkedProjectIdsByConnectionId?: Readonly<Record<string, readonly string[]>>;
   resourceStates?: Readonly<Record<string, SshResourceUiState>>;
   onRefreshResource?: (connectionId: string) => MaybePromise<unknown>;
-  onOpenWorkspaceSetup?: (connectionId: string) => void;
+  onOpenWorkspaceSetup?: (projectId: string, connectionId: string) => void;
 }>;
 
 export function SshProjectLinkControl({
   connectionId,
   activeProject,
-  linked,
+  projects,
+  linkedProjectIds,
   busy,
   onOpenWorkspaceSetup,
 }: Readonly<{
   connectionId: string;
   activeProject: ProjectRecord | null;
-  linked: boolean;
+  projects: readonly ProjectRecord[];
+  linkedProjectIds: ReadonlySet<string>;
   busy: boolean;
-  onOpenWorkspaceSetup: (connectionId: string) => void;
+  onOpenWorkspaceSetup: (projectId: string, connectionId: string) => void;
 }>) {
-  if (linked && activeProject) {
-    return <span className="ssh-project-link-badge">Linked to {activeProject.name}</span>;
+  const linkedProjects = projects.filter((project) => linkedProjectIds.has(project.id));
+  const availableProjects = projects.filter((project) => !linkedProjectIds.has(project.id));
+  const preferredProject =
+    availableProjects.find((project) => project.id === activeProject?.id) ?? availableProjects[0];
+
+  if (projects.length === 0) {
+    return (
+      <button
+        type="button"
+        className="secondary-button"
+        disabled
+        title="Open an active project to link"
+      >
+        No active project to link
+      </button>
+    );
   }
+
   return (
-    <button
-      type="button"
-      className="secondary-button"
-      onClick={() => onOpenWorkspaceSetup(connectionId)}
-      disabled={busy || !activeProject}
-      title={activeProject ? undefined : 'Select an active project to link'}
-    >
-      {activeProject ? `Link to ${activeProject.name}…` : 'Select project to link'}
-    </button>
+    <div className="ssh-project-link-control">
+      {linkedProjects.length > 0 && (
+        <div
+          className="ssh-project-link-badges"
+          aria-label={`Projects linked to this server: ${linkedProjects
+            .map((project) => project.name)
+            .join(', ')}`}
+        >
+          {linkedProjects.map((project) => (
+            <button
+              type="button"
+              className="ssh-project-link-badge"
+              key={project.id}
+              onClick={() => onOpenWorkspaceSetup(project.id, connectionId)}
+              disabled={busy}
+              title={`Manage ${project.name} remote workspace grant`}
+            >
+              Linked to {project.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {availableProjects.length === 0 ? (
+        <small className="ssh-project-link-complete">Linked to all active projects</small>
+      ) : availableProjects.length === 1 && preferredProject ? (
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() => onOpenWorkspaceSetup(preferredProject.id, connectionId)}
+          disabled={busy}
+        >
+          Link to {preferredProject.name}…
+        </button>
+      ) : (
+        <form
+          className="ssh-project-link-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (busy) return;
+            const projectId = new FormData(event.currentTarget).get('projectId');
+            if (typeof projectId === 'string' && projectId) {
+              onOpenWorkspaceSetup(projectId, connectionId);
+            }
+          }}
+        >
+          <label>
+            <span>Link another project</span>
+            <select name="projectId" defaultValue={preferredProject?.id} disabled={busy}>
+              {availableProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="submit" className="secondary-button" disabled={busy || !preferredProject}>
+            Link project…
+          </button>
+        </form>
+      )}
+    </div>
   );
 }
 
@@ -147,7 +218,9 @@ export function SshConnectionsCard({
   onRemove,
   onTest,
   activeProject = null,
+  projects,
   linkedConnectionIds = EMPTY_LINKED_CONNECTION_IDS,
+  linkedProjectIdsByConnectionId = {},
   resourceStates = EMPTY_RESOURCE_STATES,
   onRefreshResource = () => undefined,
   onOpenWorkspaceSetup = () => undefined,
@@ -188,7 +261,11 @@ export function SshConnectionsCard({
         ) : (
           connections.map((connection) => {
             const editing = editingId === connection.id;
-            const linkedToActiveProject = linkedConnectionIds.has(connection.id);
+            const availableProjects = projects ?? (activeProject ? [activeProject] : []);
+            const linkedProjectIds = new Set(
+              linkedProjectIdsByConnectionId[connection.id] ??
+                (activeProject && linkedConnectionIds.has(connection.id) ? [activeProject.id] : []),
+            );
             const resourceState = resourceStates[connection.id] ?? { phase: 'idle' };
             return (
               <section className="connection-item" key={connection.id}>
@@ -327,7 +404,8 @@ export function SshConnectionsCard({
                       <SshProjectLinkControl
                         connectionId={connection.id}
                         activeProject={activeProject}
-                        linked={linkedToActiveProject}
+                        projects={availableProjects}
+                        linkedProjectIds={linkedProjectIds}
                         busy={busy}
                         onOpenWorkspaceSetup={onOpenWorkspaceSetup}
                       />

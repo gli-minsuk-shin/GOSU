@@ -21,6 +21,7 @@ import { buildMacApplicationMenuTemplate } from './application-menu';
 import { registerAgentAddOnIpc } from './agent-addon-ipc';
 import { createAgentAddOnRegistry } from './agent-addon-service';
 import { cleanupStaleGosuRuntimeDirectories, CodexAppServer } from './codex-app-server';
+import { HermesProjectChatAdapter } from './hermes-project-chat-adapter';
 import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
 import { registerGitWorkspaceIpc } from './git-workspace-ipc';
@@ -41,6 +42,7 @@ import { createProjectChatAttachmentPicker } from './project-chat-attachment-pla
 import { ProjectChatAttachmentService } from './project-chat-attachment-service';
 import { registerProjectChatIpc } from './project-chat-ipc';
 import { ProjectChatService } from './project-chat-service';
+import { ProjectChatProviderRouter } from './project-chat-provider-router';
 import { ApplicationSearchSource } from './application-search-source';
 import { RepositorySearchSource } from './repository-search-source';
 import { ProjectTrashLifecycle } from './project-trash-lifecycle';
@@ -79,7 +81,9 @@ const codex = new CodexAppServer({
   sharedAuthFile: () => (sharedCodexHome ? join(sharedCodexHome, 'auth.json') : undefined),
   clientVersion: () => app.getVersion(),
 });
-const agentAddOns = createAgentAddOnRegistry();
+const hermesProjectChat = new HermesProjectChatAdapter();
+const projectChatProvider = new ProjectChatProviderRouter(codex, hermesProjectChat);
+const agentAddOns = createAgentAddOnRegistry({}, { hermesProjectChat: projectChatProvider });
 const database = new LocalDatabase();
 const vault = new VaultAccess({
   loadRoot() {
@@ -166,7 +170,7 @@ const literature = new LiteratureService({
 const projectChat = new ProjectChatService({
   storage: database,
   workspace,
-  codex,
+  codex: projectChatProvider,
   vault: researchNotes,
   literature,
   ssh,
@@ -514,7 +518,7 @@ if (!primaryInstance) {
       database.recordModelCatalog(catalog);
       database.cache('codex', 'model-catalog', catalog, Date.now());
     });
-    codex.on(
+    projectChatProvider.on(
       'invocation',
       (event: { threadId: string; turnId: string; invocation: ModelInvocation }) =>
         database.isReady() &&
@@ -579,6 +583,7 @@ if (!primaryInstance) {
     projectChatAttachments.disposeImmediately();
     literature.shutdown();
     ssh.shutdown();
+    hermesProjectChat.shutdown();
     codex.stop();
     database.close();
   });

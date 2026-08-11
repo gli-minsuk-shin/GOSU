@@ -1966,6 +1966,8 @@ textarea:focus {
 }
 
 .ssh-connections-card {
+  container-name: ssh-connections;
+  container-type: inline-size;
   grid-column: 1 / -1;
   display: grid;
   gap: 16px;
@@ -2088,6 +2090,10 @@ textarea:focus {
   grid-column: 1 / -1;
 }
 
+.ssh-connections-card .connection-item {
+  grid-template-columns: minmax(150px, 0.7fr) minmax(260px, 1.2fr) minmax(220px, 1fr);
+}
+
 .ssh-connection-row > div:first-child,
 .ssh-connections-card .connection-item > div:first-child {
   display: grid;
@@ -2117,6 +2123,7 @@ textarea:focus {
   display: flex;
   flex: 0 0 auto;
   flex-wrap: wrap;
+  min-width: 0;
   justify-content: flex-end;
   gap: 6px;
 }
@@ -2130,8 +2137,76 @@ textarea:focus {
   border-radius: 8px;
   background: color-mix(in srgb, var(--green) 8%, var(--surface));
   color: var(--green);
+  cursor: pointer;
+  font-family: inherit;
   font-size: var(--font-caption);
   font-weight: 750;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.ssh-project-link-badge:hover:not(:disabled),
+.ssh-project-link-badge:focus-visible {
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 15%, var(--surface));
+}
+
+.ssh-project-link-badge:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.ssh-project-link-control,
+.ssh-project-link-badges,
+.ssh-project-link-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ssh-project-link-control {
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.ssh-project-link-badges {
+  max-width: 100%;
+  justify-content: flex-end;
+}
+
+.ssh-project-link-form label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+
+.ssh-project-link-form select {
+  min-width: 150px;
+  width: auto;
+}
+
+.ssh-project-link-complete {
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+
+@container ssh-connections (max-width: 840px) {
+  .ssh-connections-card .connection-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ssh-connections-card .connection-item .form-actions,
+  .ssh-project-link-control,
+  .ssh-project-link-badges {
+    justify-content: flex-start;
+  }
+
+  .ssh-project-link-form {
+    width: 100%;
+  }
 }
 
 .ssh-resource-summary {
@@ -4844,6 +4919,31 @@ button.chat-toolbar-status {
   text-transform: none;
 }
 
+.chat-provider-boundary {
+  display: flex;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--blue) 5%, var(--surface));
+  color: var(--muted);
+  font-size: var(--font-caption);
+  line-height: 1.35;
+}
+
+.chat-provider-boundary strong {
+  color: var(--text);
+}
+
+.chat-provider-boundary span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .chat-refresh {
   min-height: 31px;
   padding: 5px 8px;
@@ -6932,6 +7032,11 @@ button.chat-toolbar-status {
     justify-content: flex-start;
   }
 
+  .ssh-project-link-control,
+  .ssh-project-link-badges {
+    justify-content: flex-start;
+  }
+
   .chat-model-controls,
   .quick-prompts,
   .chat-agent-controls {
@@ -7101,6 +7206,13 @@ button.chat-toolbar-status {
   .ssh-connections-card .connection-item .form-actions button,
   .ssh-approval-actions button {
     flex: 1;
+  }
+
+  .ssh-project-link-control,
+  .ssh-project-link-form,
+  .ssh-project-link-form label,
+  .ssh-project-link-form select {
+    width: 100%;
   }
 }
 

@@ -10,6 +10,24 @@ export class ProjectTrashLifecycle {
     private readonly lecture: Pick<LectureStudioService, 'runWhenProjectsIdle'>,
   ) {}
 
+  async runWhenProjectInactivationIdle<T>(
+    projectId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.projectChat.runWhenProjectsIdle([projectId], () =>
+        this.ssh.runWhenProjectsIdle([projectId], operation),
+      );
+    } catch (error) {
+      // Preserve the existing bounded archive/Trash response for an active chat turn.
+      if (error instanceof ProjectChatServiceError && error.code === 'chat_busy') throw error;
+      if (error instanceof SshConnectionServiceError && error.code === 'ssh_unavailable') {
+        throw new WorkspaceServiceError('trash_busy');
+      }
+      throw error;
+    }
+  }
+
   async runWhenProjectTrashIdle<T>(
     projectIds: readonly string[],
     operation: () => Promise<T>,
