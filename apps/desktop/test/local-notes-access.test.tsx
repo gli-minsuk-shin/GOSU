@@ -110,6 +110,7 @@ function renderResearchNotes(
       onRetry={vi.fn()}
       folderTreeCollapsed={folderTreeCollapsed}
       onFolderTreeCollapsedChange={vi.fn()}
+      searchAdapter={{ search: async () => Promise.reject(new Error('not called')) }}
     />,
   );
 }
@@ -293,12 +294,16 @@ describe('Research Notes project-agent access', () => {
     const html = renderResearchNotes();
     const treeIndex = html.indexOf('aria-label="Research Notes files"');
     const toolsIndex = html.indexOf('class="research-notes-sidebar-tools"');
+    const searchIndex = html.indexOf('Search Research Notes');
+    const changeVaultIndex = html.indexOf('>Change Vault</button>');
     const managedSummaryIndex = html.indexOf('MANAGED PROJECT FOLDERS');
     const accessIndex = html.indexOf('RESEARCH NOTES AGENT ACCESS');
 
     expect(treeIndex).toBeGreaterThan(-1);
     expect(toolsIndex).toBeGreaterThan(treeIndex);
-    expect(managedSummaryIndex).toBeGreaterThan(toolsIndex);
+    expect(searchIndex).toBeGreaterThan(toolsIndex);
+    expect(changeVaultIndex).toBeGreaterThan(searchIndex);
+    expect(managedSummaryIndex).toBeGreaterThan(changeVaultIndex);
     expect(accessIndex).toBeGreaterThan(toolsIndex);
     expect(html).toContain('>Search &amp; settings</span>');
     expect(html).toMatch(/<section class="research-notes-sidebar-tools">/u);
@@ -320,6 +325,18 @@ describe('Research Notes project-agent access', () => {
 
     expect(vaultChangeEffect?.[0]).toBeDefined();
     expect(vaultChangeEffect?.[0]).not.toContain('setSidebarToolsOpen(false)');
+  });
+
+  it('restores the project search to the top before reopening secondary settings', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/notes-view.tsx', import.meta.url),
+      'utf8',
+    );
+    const reopenEffect = source.match(
+      /useEffect\(\(\) => \{\s*if \(sidebarToolsOpen && sidebarToolsBodyRef\.current\) \{[\s\S]*?\}\s*\}, \[sidebarToolsOpen\]\);/u,
+    );
+
+    expect(reopenEffect?.[0]).toContain('sidebarToolsBodyRef.current.scrollTop = 0');
   });
 
   it('keeps one accessible folder-tree toggle and the reader visible when expanded', () => {
