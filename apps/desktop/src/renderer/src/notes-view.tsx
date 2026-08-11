@@ -194,6 +194,7 @@ export function ResearchNotesView({
 }) {
   const folderTreeDetailsId = useId();
   const sidebarToolsBodyId = useId();
+  const sidebarToolsBodyRef = useRef<HTMLDivElement>(null);
   const managed = workspace !== undefined;
   const effectiveVault: VaultSelection | null = workspace
     ? {
@@ -235,6 +236,11 @@ export function ResearchNotesView({
       ),
     }));
   }, [selectedNotePath, vaultId]);
+  useEffect(() => {
+    if (sidebarToolsOpen && sidebarToolsBodyRef.current) {
+      sidebarToolsBodyRef.current.scrollTop = 0;
+    }
+  }, [sidebarToolsOpen]);
   const accessPanel = (
     <ResearchNotesProjectAccess
       vault={workspace?.status === 'rename-pending' ? null : vault}
@@ -312,6 +318,9 @@ export function ResearchNotesView({
     updateExpandedDirectories((current) => revealLocalNote(current, path));
     onRead(path);
   };
+  const toggleSidebarTools = () => {
+    setSidebarToolsOpen((open) => !open);
+  };
 
   return (
     <section className={`notes-layout${folderTreeCollapsed ? ' folder-tree-collapsed' : ''}`}>
@@ -376,16 +385,28 @@ export function ResearchNotesView({
               className="research-notes-sidebar-tools-toggle"
               aria-controls={sidebarToolsBodyId}
               aria-expanded={sidebarToolsOpen}
-              onClick={() => setSidebarToolsOpen((open) => !open)}
+              onClick={toggleSidebarTools}
             >
               <span className="research-notes-sidebar-tools-chevron" aria-hidden="true" />
               <span>Search &amp; settings</span>
             </button>
             <div
               id={sidebarToolsBodyId}
+              ref={sidebarToolsBodyRef}
               className="research-notes-sidebar-tools-body"
               hidden={!sidebarToolsOpen}
             >
+              {project && searchAdapter && (
+                <SearchView
+                  adapter={searchAdapter}
+                  scope={{ kind: 'project', projectId: project.id }}
+                  scopeLabel={`${project.name} Research Notes`}
+                  compact
+                  onOpen={(hit) => {
+                    if (hit.target.kind === 'research-note') openNote(hit.target.path);
+                  }}
+                />
+              )}
               <button type="button" className="secondary-button" onClick={onChoose} disabled={busy}>
                 {managed ? 'Change Vault' : 'Change folder'}
               </button>
@@ -406,17 +427,6 @@ export function ResearchNotesView({
                       : 'Literature table will sync after the first Literature search or update.'}
                   </small>
                 </section>
-              )}
-              {project && searchAdapter && (
-                <SearchView
-                  adapter={searchAdapter}
-                  scope={{ kind: 'project', projectId: project.id }}
-                  scopeLabel={`${project.name} Research Notes`}
-                  compact
-                  onOpen={(hit) => {
-                    if (hit.target.kind === 'research-note') openNote(hit.target.path);
-                  }}
-                />
               )}
               {accessPanel}
               <p className="note-agent-disclosure">

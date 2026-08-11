@@ -35,6 +35,10 @@ describe('SearchView', () => {
       />,
     );
     expect(html).toContain('Search Research Notes');
+    expect(html).toContain('class="search-form-controls"');
+    const inputId = html.match(/<label for="([^"]+)">Search Research Notes<\/label>/u)?.[1];
+    expect(inputId).toBeDefined();
+    expect(html).toContain(`id="${inputId}"`);
     expect(html).not.toContain('<h1>Search</h1>');
   });
 

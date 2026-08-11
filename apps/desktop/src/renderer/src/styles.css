@@ -2734,6 +2734,8 @@ textarea:focus {
 
 .research-notes-sidebar-tools-body {
   display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
   min-height: 0;
   gap: 10px;
   padding: 0 4px 8px;
@@ -7007,6 +7009,10 @@ button.chat-toolbar-status {
     justify-content: flex-start;
   }
 
+  .research-notes-sidebar-tools {
+    max-height: max(39px, min(calc(100% - 96px), 190px));
+  }
+
   .ssh-connection-form {
     grid-template-columns: 1fr;
   }
@@ -7127,10 +7133,71 @@ button.chat-toolbar-status {
 }
 
 .search-view.compact {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   gap: 10px;
-  padding: 12px;
+  padding: 8px 4px 10px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-soft);
+}
+
+.search-view.compact .search-form {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  min-width: 0;
+}
+
+.search-view.compact .search-form label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.search-view.compact .search-form-controls {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+.search-view.compact .search-form input {
+  height: 40px;
+  padding-inline: 10px;
+}
+
+.search-view.compact .search-form-controls > .primary-button {
+  width: auto;
+  min-width: 0;
+  min-height: 36px;
+}
+
+.search-view.compact .search-category-tabs {
+  min-width: 0;
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+
+.search-view.compact .search-results,
+.search-view.compact .search-result-group,
+.search-view.compact .search-result-row,
+.search-view.compact .search-result-row > * {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.search-view.compact .search-result-row {
+  padding: 10px 9px;
+}
+
+.search-view.compact .search-result-row strong {
+  overflow-wrap: anywhere;
+}
+
+.search-view.compact .search-result-project,
+.search-view.compact .search-result-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .search-view-heading h1 {
@@ -7147,17 +7214,23 @@ button.chat-toolbar-status {
 
 .search-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
 }
 
 .search-form label {
-  display: grid;
-  gap: 7px;
+  display: block;
   min-width: 0;
   color: var(--muted);
   font-weight: 700;
+}
+
+.search-form-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  min-width: 0;
 }
 
 .search-form input {
@@ -7272,6 +7345,10 @@ button.chat-toolbar-status {
   }
 
   .search-form {
+    grid-template-columns: 1fr;
+  }
+
+  .search-form-controls {
     grid-template-columns: 1fr;
   }
 }

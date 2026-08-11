@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 
 import type {
   SearchCategory,
@@ -43,6 +43,7 @@ export function SearchView({
   compact?: boolean;
   onOpen: (hit: SearchHit) => void;
 }) {
+  const searchInputId = useId();
   const [query, setQuery] = useState(initialQuery);
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [activeCategory, setActiveCategory] = useState<SearchCategory | 'all'>('all');
@@ -125,9 +126,12 @@ export function SearchView({
         </header>
       )}
       <form className="search-form" role="search" onSubmit={(event) => void runSearch(event)}>
-        <label>
-          <span>{compact ? 'Search Research Notes' : `Search ${scopeLabel}`}</span>
+        <label htmlFor={searchInputId}>
+          {compact ? 'Search Research Notes' : `Search ${scopeLabel}`}
+        </label>
+        <div className="search-form-controls">
           <input
+            id={searchInputId}
             type="search"
             value={query}
             autoComplete="off"
@@ -136,10 +140,10 @@ export function SearchView({
             }
             onChange={(event) => setQuery(event.target.value)}
           />
-        </label>
-        <button type="submit" className="primary-button" disabled={busy || !query.trim()}>
-          {busy ? 'Searching…' : 'Search'}
-        </button>
+          <button type="submit" className="primary-button" disabled={busy || !query.trim()}>
+            {busy ? 'Searching…' : 'Search'}
+          </button>
+        </div>
       </form>
       {error && <div className="notice error">{error}</div>}
       {response && (

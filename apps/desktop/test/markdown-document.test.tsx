@@ -253,13 +253,34 @@ $$`);
       /\.research-notes-sidebar-tools\.open\s*\{[^}]*display:\s*grid;[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\);/su,
     );
     expect(styles).toMatch(
-      /\.research-notes-sidebar-tools-body\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*stable;/su,
+      /\.research-notes-sidebar-tools-body\s*\{[^}]*grid-auto-rows:\s*max-content;[^}]*align-content:\s*start;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*stable;/su,
     );
     expect(styles).toMatch(
       /\.research-notes-sidebar-tools-body\[hidden\]\s*\{[^}]*display:\s*none;/su,
     );
     expect(styles).toMatch(
+      /\.search-view\.compact\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/su,
+    );
+    expect(styles).toMatch(
+      /\.search-view\.compact \.search-form\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*min-width:\s*0;/su,
+    );
+    expect(styles).toMatch(
+      /\.search-view\.compact \.search-form-controls\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;[^}]*min-width:\s*0;/su,
+    );
+    expect(styles).toMatch(
+      /\.search-view\.compact \.search-form-controls > \.primary-button\s*\{[^}]*width:\s*auto;[^}]*min-width:\s*0;/su,
+    );
+    expect(styles).toMatch(
+      /\.search-view\.compact \.search-result-row strong\s*\{[^}]*overflow-wrap:\s*anywhere;/su,
+    );
+    expect(styles).toMatch(
+      /\.search-view\.compact \.search-result-project,[\s\S]*?text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/u,
+    );
+    expect(styles).toMatch(
       /@media \(max-width: 860px\)[\s\S]*?\.notes-layout\.folder-tree-collapsed\s*\{[^}]*grid-template:\s*44px minmax\(0, 1fr\) \/ minmax\(0, 1fr\);/u,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 860px\)[\s\S]*?\.research-notes-sidebar-tools\s*\{[^}]*max-height:\s*max\(39px, min\(calc\(100% - 96px\), 190px\)\);/u,
     );
     expect(styles).toMatch(
       /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.notes-layout,[\s\S]*?transition:\s*none;/u,

@@ -39,6 +39,12 @@ type CompactNotesGeometry = ScrollMetrics &
     sidebarTools: RectMetrics;
     sidebarToolsToggle: RectMetrics;
     sidebarToolsBody: RectMetrics;
+    compactSearch: RectMetrics;
+    compactSearchForm: RectMetrics;
+    compactSearchLabel: RectMetrics;
+    compactSearchControls: RectMetrics;
+    compactSearchInput: RectMetrics;
+    compactSearchButton: RectMetrics;
     sidebarToolsLastControl: RectMetrics;
     viewport: RectMetrics;
     reader: RectMetrics;
@@ -57,6 +63,12 @@ type CompactNotesGeometry = ScrollMetrics &
     sidebarToolsBodyScrollHeight: number;
     sidebarToolsBodyScrollTop: number;
     sidebarToolsBodyOverflowY: string;
+    sidebarToolsBodyClientWidth: number;
+    sidebarToolsBodyScrollWidth: number;
+    compactSearchClientWidth: number;
+    compactSearchScrollWidth: number;
+    compactSearchFormColumns: string;
+    compactSearchControlColumns: string;
     toggleExpanded: string | null;
     toggleLabel: string | null;
     longTreeNameClientWidth: number;
@@ -81,7 +93,9 @@ type CompactNotesScenario = Readonly<{
 
 type CompactNotesScenarioMetrics = Readonly<{
   expanded: CompactNotesGeometry;
+  searchVisible: CompactNotesGeometry;
   toolsExpanded: CompactNotesGeometry;
+  toolsReopened: CompactNotesGeometry;
   collapsed: CompactNotesGeometry;
   expandedAgain: CompactNotesGeometry;
   collapseToggleFocused: boolean;
@@ -179,12 +193,20 @@ function compactResearchNotesFixtureMarkup(styles: string, scenario: CompactNote
                   aria-expanded="false"
                 ><span class="research-notes-sidebar-tools-chevron"></span><span>Search &amp; settings</span></button>
                 <div id="fixture-research-notes-sidebar-tools-body" class="research-notes-sidebar-tools-body" hidden>
+                  <section class="search-view compact" aria-label="Workspace search">
+                    <form class="search-form" role="search">
+                      <label for="fixture-research-notes-search">Search Research Notes</label>
+                      <div class="search-form-controls">
+                        <input id="fixture-research-notes-search" type="search" value="" placeholder="Title, path, content, or tag" />
+                        <button type="submit" class="primary-button">Searching…</button>
+                      </div>
+                    </form>
+                  </section>
                   <button type="button" class="secondary-button">Change Vault</button>
                   <section class="research-notes-managed-summary">
                     <span>MANAGED PROJECT FOLDERS</span>
                     <ul><li>Literature</li><li>Papers</li><li>Experiments</li></ul>
                   </section>
-                  <section class="workspace-search workspace-search-compact"><strong>Search Research Notes</strong><input /></section>
                   <section class="local-notes-project-access authorized">
                     <span>RESEARCH NOTES AGENT ACCESS</span>
                     <strong>Authorized for this project</strong>
@@ -341,6 +363,90 @@ function verifyContained(
   invariant(child.bottom <= container.bottom + 1, `${scenario}_${label}_escaped_bottom`);
 }
 
+function verifyHorizontallyContained(
+  child: RectMetrics,
+  container: RectMetrics,
+  scenario: string,
+  label: string,
+) {
+  invariant(child.left >= container.left - 1, `${scenario}_${label}_escaped_left`);
+  invariant(child.right <= container.right + 1, `${scenario}_${label}_escaped_right`);
+}
+
+function verifyCompactSearch(metrics: CompactNotesGeometry, scenario: string) {
+  invariant(
+    metrics.compactSearch.top >= metrics.sidebarToolsBody.top - 1 &&
+      metrics.compactSearch.bottom <= metrics.sidebarToolsBody.bottom + 1,
+    `${scenario}_compact_search_not_fully_visible_search_${metrics.compactSearch.top}_${metrics.compactSearch.bottom}_${metrics.compactSearch.height}_body_${metrics.sidebarToolsBody.top}_${metrics.sidebarToolsBody.bottom}_${metrics.sidebarToolsBody.height}`,
+  );
+  verifyHorizontallyContained(
+    metrics.compactSearch,
+    metrics.sidebarToolsBody,
+    scenario,
+    'compact_search',
+  );
+  verifyContained(
+    metrics.compactSearchForm,
+    metrics.compactSearch,
+    scenario,
+    'compact_search_form',
+  );
+  verifyContained(
+    metrics.compactSearchLabel,
+    metrics.compactSearchForm,
+    scenario,
+    'compact_search_label',
+  );
+  verifyContained(
+    metrics.compactSearchControls,
+    metrics.compactSearchForm,
+    scenario,
+    'compact_search_controls',
+  );
+  verifyContained(
+    metrics.compactSearchInput,
+    metrics.compactSearchControls,
+    scenario,
+    'compact_search_input',
+  );
+  verifyContained(
+    metrics.compactSearchButton,
+    metrics.compactSearchControls,
+    scenario,
+    'compact_search_button',
+  );
+  verifyHorizontallyContained(
+    metrics.compactSearchButton,
+    metrics.sidebarToolsBody,
+    scenario,
+    'compact_search_button_body',
+  );
+  invariant(
+    metrics.compactSearchLabel.bottom <= metrics.compactSearchControls.top - 4,
+    `${scenario}_compact_search_label_did_not_clear_controls`,
+  );
+  invariant(
+    nearlyEqual(metrics.compactSearchButton.bottom, metrics.compactSearchInput.bottom, 1),
+    `${scenario}_compact_search_controls_are_not_bottom_aligned`,
+  );
+  invariant(
+    metrics.sidebarToolsBodyScrollWidth <= metrics.sidebarToolsBodyClientWidth + 1,
+    `${scenario}_settings_body_has_hidden_inline_overflow`,
+  );
+  invariant(
+    metrics.compactSearchScrollWidth <= metrics.compactSearchClientWidth + 1,
+    `${scenario}_compact_search_has_hidden_inline_overflow`,
+  );
+  invariant(
+    metrics.compactSearchFormColumns.split(' ').length === 1,
+    `${scenario}_compact_search_form_is_not_single_column_${metrics.compactSearchFormColumns}`,
+  );
+  invariant(
+    metrics.compactSearchControlColumns.split(' ').length === 2,
+    `${scenario}_compact_search_controls_are_not_two_columns_${metrics.compactSearchControlColumns}`,
+  );
+}
+
 function verifyCompactNotesScroll(
   metrics: CompactNotesGeometry,
   scenario: string,
@@ -410,15 +516,30 @@ function verifyCompactNotesScenario(
   verifyContained(metrics.expanded.lastFolder, metrics.expanded.treeScroll, prefix, 'last_folder');
 
   invariant(metrics.toolsExpanded.sidebarToolsOpen, `${prefix}_secondary_tools_did_not_open`);
+  verifyCompactSearch(metrics.searchVisible, prefix);
+  invariant(metrics.toolsReopened.sidebarToolsOpen, `${prefix}_secondary_tools_did_not_reopen`);
+  invariant(
+    metrics.toolsReopened.sidebarToolsBodyScrollTop === 0,
+    `${prefix}_secondary_tools_did_not_restore_search_on_reopen`,
+  );
+  verifyCompactSearch(metrics.toolsReopened, `${prefix}_reopened`);
   verifySettingsChromeContained(metrics.toolsExpanded, prefix, 'open');
   invariant(
     metrics.toolsExpanded.sidebarTools.height <= 421,
     `${prefix}_secondary_tools_exceeded_absolute_cap`,
   );
-  invariant(
-    metrics.toolsExpanded.sidebarTools.height <= metrics.toolsExpanded.details.height * 0.46 + 2,
-    `${prefix}_secondary_tools_exceeded_relative_cap`,
-  );
+  if (stacked) {
+    invariant(
+      metrics.toolsExpanded.sidebarTools.height <= 191 &&
+        metrics.toolsExpanded.sidebarTools.height <= metrics.toolsExpanded.details.height - 94,
+      `${prefix}_secondary_tools_exceeded_stacked_tree_reserve`,
+    );
+  } else {
+    invariant(
+      metrics.toolsExpanded.sidebarTools.height <= metrics.toolsExpanded.details.height * 0.46 + 2,
+      `${prefix}_secondary_tools_exceeded_relative_cap`,
+    );
+  }
   invariant(
     metrics.toolsExpanded.treeScroll.height >= 90,
     `${prefix}_folder_tree_lost_all_open_state_space_${metrics.toolsExpanded.treeScroll.height}_${metrics.toolsExpanded.details.height}_${metrics.toolsExpanded.sidebarTools.height}`,
@@ -558,6 +679,12 @@ async function measureCompactNotesScenario(
       const sidebarTools = document.querySelector('.research-notes-sidebar-tools');
       const sidebarToolsToggle = document.querySelector('.research-notes-sidebar-tools-toggle');
       const sidebarToolsBody = document.querySelector('.research-notes-sidebar-tools-body');
+      const compactSearch = document.querySelector('.search-view.compact');
+      const compactSearchForm = compactSearch?.querySelector('.search-form');
+      const compactSearchLabel = compactSearchForm?.querySelector('label');
+      const compactSearchControls = compactSearchForm?.querySelector('.search-form-controls');
+      const compactSearchInput = compactSearchForm?.querySelector('input');
+      const compactSearchButton = compactSearchForm?.querySelector('button');
       const sidebarToolsLastControl = document.querySelector('.note-agent-disclosure');
       const folderRows = Array.from(document.querySelectorAll('[data-top-level-folder]'));
       const firstFolder = folderRows.at(0);
@@ -570,7 +697,7 @@ async function measureCompactNotesScenario(
       const readerPath = document.querySelector('[data-reader-path]');
       const longTreeName = document.querySelector('[data-long-tree-name]');
       const wide = document.querySelector('[data-wide-content]');
-      const elements = [content, layout, tree, details, treeScroll, sidebarTools, sidebarToolsToggle, sidebarToolsBody, sidebarToolsLastControl, firstFolder, lastFolder, toggle, treeRoot, reader, readerHeader, readerBody, readerPath, longTreeName, wide];
+      const elements = [content, layout, tree, details, treeScroll, sidebarTools, sidebarToolsToggle, sidebarToolsBody, compactSearch, compactSearchForm, compactSearchLabel, compactSearchControls, compactSearchInput, compactSearchButton, sidebarToolsLastControl, firstFolder, lastFolder, toggle, treeRoot, reader, readerHeader, readerBody, readerPath, longTreeName, wide];
       if (elements.some((element) => !(element instanceof HTMLElement))) {
         throw new Error('missing_research_notes_compact_geometry_element');
       }
@@ -599,6 +726,7 @@ async function measureCompactNotesScenario(
       sidebarToolsToggle.addEventListener('click', () => {
         toolsOpen = !toolsOpen;
         renderTools();
+        if (toolsOpen) sidebarToolsBody.scrollTop = 0;
       });
 
       const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -622,6 +750,8 @@ async function measureCompactNotesScenario(
         const treeNameStyle = getComputedStyle(longTreeName);
         const readerPathStyle = getComputedStyle(readerPath);
         const sidebarToolsBodyStyle = getComputedStyle(sidebarToolsBody);
+        const compactSearchFormStyle = getComputedStyle(compactSearchForm);
+        const compactSearchControlsStyle = getComputedStyle(compactSearchControls);
         return {
           content: rect(content),
           layout: rect(layout),
@@ -633,6 +763,12 @@ async function measureCompactNotesScenario(
           sidebarTools: rect(sidebarTools),
           sidebarToolsToggle: rect(sidebarToolsToggle),
           sidebarToolsBody: rect(sidebarToolsBody),
+          compactSearch: rect(compactSearch),
+          compactSearchForm: rect(compactSearchForm),
+          compactSearchLabel: rect(compactSearchLabel),
+          compactSearchControls: rect(compactSearchControls),
+          compactSearchInput: rect(compactSearchInput),
+          compactSearchButton: rect(compactSearchButton),
           sidebarToolsLastControl: rect(sidebarToolsLastControl),
           viewport: {
             top: 0,
@@ -658,6 +794,12 @@ async function measureCompactNotesScenario(
           sidebarToolsBodyScrollHeight: sidebarToolsBody.scrollHeight,
           sidebarToolsBodyScrollTop: sidebarToolsBody.scrollTop,
           sidebarToolsBodyOverflowY: sidebarToolsBodyStyle.overflowY,
+          sidebarToolsBodyClientWidth: sidebarToolsBody.clientWidth,
+          sidebarToolsBodyScrollWidth: sidebarToolsBody.scrollWidth,
+          compactSearchClientWidth: compactSearch.clientWidth,
+          compactSearchScrollWidth: compactSearch.scrollWidth,
+          compactSearchFormColumns: compactSearchFormStyle.gridTemplateColumns,
+          compactSearchControlColumns: compactSearchControlsStyle.gridTemplateColumns,
           toggleExpanded: toggle.getAttribute('aria-expanded'),
           toggleLabel: toggle.getAttribute('aria-label'),
           clientWidth: readerBody.clientWidth,
@@ -690,7 +832,13 @@ async function measureCompactNotesScenario(
 
       sidebarToolsToggle.click();
       await nextFrame();
+      const searchVisible = read();
       const toolsExpanded = read(true);
+      sidebarToolsToggle.click();
+      await nextFrame();
+      sidebarToolsToggle.click();
+      await nextFrame();
+      const toolsReopened = read();
       sidebarToolsToggle.click();
       await nextFrame();
 
@@ -707,7 +855,9 @@ async function measureCompactNotesScenario(
 
       return {
         expanded,
+        searchVisible,
         toolsExpanded,
+        toolsReopened,
         collapsed: collapsedMetrics,
         expandedAgain,
         collapseToggleFocused,
