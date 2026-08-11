@@ -53,6 +53,7 @@ import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import { desktopContentClassName } from './desktop-content-layout';
 import { ExperimentsView, type ExperimentsViewAdapter } from './experiments-view';
+import type { ExperimentEvaluationStudioAdapter } from './experiment-evaluation-studio-view';
 import { HermesAcpApprovalCenter } from './hermes-acp-approval-center';
 import { buildLocalNotesGrantUpdate } from './local-notes-access-model';
 import { LiteratureView, type LiteratureViewAdapter } from './literature-view';
@@ -206,6 +207,16 @@ const experimentsAdapter: ExperimentsViewAdapter = {
   reviseLoggingTemplate: (input) => window.gosu.experiments.reviseLoggingTemplate(input),
   readRunLog: (input) => window.gosu.experiments.readRunLog(input),
   onEvent: (listener) => window.gosu.experiments.onEvent(listener),
+};
+
+const experimentEvaluationAdapter: ExperimentEvaluationStudioAdapter = {
+  list: (input) => window.gosu.experimentEvaluation.list(input),
+  detail: (input) => window.gosu.experimentEvaluation.detail(input),
+  createSession: (input) => window.gosu.experimentEvaluation.createSession(input),
+  send: (input) => window.gosu.experimentEvaluation.send(input),
+  approve: (input) => window.gosu.experimentEvaluation.approve(input),
+  reuseProfile: (input) => window.gosu.experimentEvaluation.reuseProfile(input),
+  onEvent: (listener) => window.gosu.experimentEvaluation.onEvent(listener),
 };
 
 const lectureStudioAdapter: LectureStudioViewAdapter = {
@@ -3120,6 +3131,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 project={activeProject}
                 objective={activeObjective}
                 adapter={experimentsAdapter}
+                evaluationAdapter={experimentEvaluationAdapter}
+                requestedModelId={selectedModel}
+                reasoningOptionId={selectedReasoning}
                 searchTarget={
                   pendingSearchNavigation?.hit.projectId === activeProject.id &&
                   pendingSearchNavigation.hit.target.kind === 'experiment'

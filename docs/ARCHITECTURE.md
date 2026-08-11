@@ -116,37 +116,38 @@ flowchart LR
 
 ## 4. 저장소 구조와 코드 소유권
 
-| 경로                    | 소유 책임                                                                              | 현재 상태                                                                                       |
-| ----------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Hermes·Vault·Git·SSH 경계 | 실행 가능한 Project Chat·Kanban·Objective·Repository·Literature·Lecture Studio·승인형 SSH slice |
-| `apps/web`              | Owner·Lab 관리 경험                                                                    | demo fixture 기반의 인터랙티브 UI                                                               |
-| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계              | memory runtime 구현, PostgreSQL 기반 구현                                                       |
-| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill                     | 제한된 로컬 실행 경로 구현                                                                      |
-| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                                           | 구현됨                                                                                          |
-| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙                           | 구현됨                                                                                          |
-| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                                  | 기반 구현                                                                                       |
-| `packages/ui`           | 공통 visual token과 작은 presentational primitive                                      | 기반 구현                                                                                       |
-| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단                           | 구현됨                                                                                          |
+| 경로                    | 소유 책임                                                                              | 현재 상태                                                                                                                    |
+| ----------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `apps/desktop`          | macOS 로컬 UI, privileged adapter, 암호화 local state, Codex·Hermes·Vault·Git·SSH 경계 | 실행 가능한 Project Chat·Kanban·Objective·Repository·Literature·Experiment Evaluation Studio·Lecture Studio·승인형 SSH slice |
+| `apps/web`              | Owner·Lab 관리 경험                                                                    | demo fixture 기반의 인터랙티브 UI                                                                                            |
+| `apps/sync-api`         | 인증·인가, 협업 command/query, SSE, Runner relay, Hosted persistence 경계              | memory runtime 구현, PostgreSQL 기반 구현                                                                                    |
+| `apps/runner`           | manifest 검증, lease/fence, container 실행, event spool, Stop·Kill                     | 제한된 로컬 실행 경로 구현                                                                                                   |
+| `packages/contracts`    | 프로세스와 언어를 넘는 versioned wire schema                                           | 구현됨                                                                                                                       |
+| `packages/domain`       | I/O 없는 상태 전이, 정책, 예산·불변성, version conflict 규칙                           | 구현됨                                                                                                                       |
+| `packages/integrations` | GitHub·Zotero·Obsidian·Overleaf port와 제한된 adapter                                  | 기반 구현                                                                                                                    |
+| `packages/ui`           | 공통 visual token과 작은 presentational primitive                                      | 기반 구현                                                                                                                    |
+| `scripts`               | local Sync 준비 확인, Desktop process supervision, 환경 진단                           | 구현됨                                                                                                                       |
 
 ### 논리 모듈 소유권
 
 제품 모듈은 아직 모두 독립 디렉터리로 분리되어 있지 않다. 새 기능은 아래 소유권을 기준으로
 배치하고, 한 모듈이 다른 모듈의 저장 테이블을 직접 읽지 않게 한다.
 
-| 논리 모듈                  | 현재 코드 소유자                                                                        | 구현 수준                                                                                                                                                                                                                                                                                     |
-| -------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Identity & Lab             | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                            | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                                                                                                                    |
-| Project Portfolio & Kanban | Desktop workspace service, renderer portfolio navigator, Sync controller/store          | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, 동일 Task의 Kanban·To-do projection, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                                           |
-| Goal & Evaluation          | Desktop workspace service, contracts, domain, Sync endpoints                            | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                                      |
-| Experiment Orchestration   | Desktop Experiment workspace, contracts, domain, Runner                                 | 프로젝트별 idea lineage·검토 outcome·선택적인 target, versioned logging template, 다중 run 상태·서버·step·metric·opaque log reference, Project Chat의 추적형 foreground 실행과 summary trajectory를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨 |
-| Manuscript                 | Desktop Manuscript service·SQLCipher repository, shared contracts와 adapter registry    | project별 복수 manuscript identity, provider-neutral binding/checkpoint/anchor, Overleaf Git existing-project link·HEAD 확인·manual immutable fetch·local mirror 정리 구현; editor·compile·PDF·handoff·publish는 계획됨                                                                       |
-| Review & Approval          | PostgreSQL approval schema와 Web UI 표현                                                | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                                       |
-| Reference & Literature     | Desktop Literature workspace와 Zotero read-only connector                               | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨                      |
-| Obsidian Knowledge         | Desktop Research Notes service, bounded Vault adapter, Markdown renderer                | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 문서 metadata envelope·Literature/Papers projection·structured final-response Markdown create·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                    |
-| Lecture                    | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port         | 여러 project의 reviewed Literature metadata·Experiment lineage 선택, lecture/talk 생성, 독립 chat, append-only revision과 Research Notes Markdown 저장 구현; PPTX/PDF export와 manuscript/full-text ingest는 계획됨                                                                           |
-| AI Gateway                 | Desktop Project Chat provider router, Codex App Server와 선택형 BYO-Hermes ACP adapter  | 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·provider별 동적 model provenance·Codex native harness/tool 경계·Hermes ACP text/reasoning-only 경계·Codex→Hermes 명시적 고수준 위임·동적 branch title·Research Notes final persistence 구현                    |
-| Integration Hub            | Desktop Git Workspace·승인형 SSH·Manuscript connector, `packages/integrations` registry | GitHub HTTPS clone·bounded Git·OpenSSH grant·provider-neutral manuscript operation registry·Overleaf Git private connector 구현; schema-driven provider onboarding, GitHub App와 native LaTeX provider는 계획됨                                                                               |
-| Sync, Audit & Notification | Sync memory store, PostgreSQL audit·outbox schema                                       | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                                      |
+| 논리 모듈                    | 현재 코드 소유자                                                                                    | 구현 수준                                                                                                                                                                                                                                                                                     |
+| ---------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Identity & Lab               | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                                        | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                                                                                                                    |
+| Project Portfolio & Kanban   | Desktop workspace service, renderer portfolio navigator, Sync controller/store                      | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, 동일 Task의 Kanban·To-do projection, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                                           |
+| Goal & Evaluation            | Desktop workspace service, contracts, domain, Sync endpoints                                        | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                                      |
+| Experiment Orchestration     | Desktop Experiment workspace, contracts, domain, Runner                                             | 프로젝트별 idea lineage·검토 outcome·선택적인 target, versioned logging template, 다중 run 상태·서버·step·metric·opaque log reference, Project Chat의 추적형 foreground 실행과 summary trajectory를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨 |
+| Experiment Evaluation Studio | Desktop Evaluation service, 전용 shared contract·IPC, SQLCipher repository, protected artifact port | step/epoch cadence·metric·policy·logging suggestion·숫자/table/plot을 독립 chat에서 proposal로 만들고 synthetic preview, human approval, immutable reusable recipe로 저장하는 local-first slice 구현; evaluator의 실제 주기 실행과 Runner result ingest는 계획됨                              |
+| Manuscript                   | Desktop Manuscript service·SQLCipher repository, shared contracts와 adapter registry                | project별 복수 manuscript identity, provider-neutral binding/checkpoint/anchor, Overleaf Git existing-project link·HEAD 확인·manual immutable fetch·local mirror 정리 구현; editor·compile·PDF·handoff·publish는 계획됨                                                                       |
+| Review & Approval            | PostgreSQL approval schema와 Web UI 표현                                                            | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                                       |
+| Reference & Literature       | Desktop Literature workspace와 Zotero read-only connector                                           | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨                      |
+| Obsidian Knowledge           | Desktop Research Notes service, bounded Vault adapter, Markdown renderer                            | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 문서 metadata envelope·Literature/Papers projection·structured final-response Markdown create·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                    |
+| Lecture                      | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port                     | 여러 project의 reviewed Literature metadata·Experiment lineage 선택, lecture/talk 생성, 독립 chat, append-only revision과 Research Notes Markdown 저장 구현; PPTX/PDF export와 manuscript/full-text ingest는 계획됨                                                                           |
+| AI Gateway                   | Desktop Project Chat provider router, Codex App Server와 선택형 BYO-Hermes ACP adapter              | 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·provider별 동적 model provenance·Codex native harness/tool 경계·Hermes ACP text/reasoning-only 경계·Codex→Hermes 명시적 고수준 위임·동적 branch title·Research Notes final persistence 구현                    |
+| Integration Hub              | Desktop Git Workspace·승인형 SSH·Manuscript connector, `packages/integrations` registry             | GitHub HTTPS clone·bounded Git·OpenSSH grant·provider-neutral manuscript operation registry·Overleaf Git private connector 구현; schema-driven provider onboarding, GitHub App와 native LaTeX provider는 계획됨                                                                               |
+| Sync, Audit & Notification   | Sync memory store, PostgreSQL audit·outbox schema                                                   | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                                      |
 
 ## 5. 의존성 규칙
 
@@ -206,6 +207,8 @@ flowchart TD
 | 서지 metadata, collection, PDF                                   | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                                                                                                                                                                                                                                                                                             |
 | 검색 문헌 metadata, review annotation, 검색 이력                 | 프로젝트별 Desktop Literature SQLCipher tables, Project Chat search와 선택한 import file | 현재 Hosted Sync·outbox 대상이 아님; raw provider response·원문·abstract·로컬 file path·API key 금지                                                                                                                                                                                                                                                                                                             |
 | 실험 idea·logging template·run 상태·summary metric·log reference | 프로젝트별 Desktop Experiment SQLCipher tables                                           | 현재 Hosted Sync·workspace outbox 대상이 아님; exact remote root/path는 Main-only execution-origin mapping에만 암호화 저장하고 Renderer에는 숨김; raw metric·log·artifact는 저장하지 않고 검증된 opaque hash·크기·상태만 저장                                                                                                                                                                                    |
+| evaluation session·message·draft revision·승인 recipe provenance | 프로젝트별 Desktop Evaluation SQLCipher tables                                           | 현재 Hosted Sync·workspace outbox 대상이 아님; proposal과 synthetic preview는 실제 run evidence가 아니며 raw Codex payload·tool output을 저장하지 않음                                                                                                                                                                                                                                                           |
+| 승인된 evaluator code·prompt artifact                            | `userData/evaluation-profiles/<project UUID>/<profile UUID>`                             | 앱 전용 local artifact; Hosted Sync·Git·Research Notes에 자동 복사하지 않고 Renderer에는 app-relative receipt만 노출함                                                                                                                                                                                                                                                                                           |
 | dataset, raw metric·log, checkpoint, artifact                    | Linux Runner                                                                             | 원본 금지; 상태와 명시적 summary metric만                                                                                                                                                                                                                                                                                                                                                                        |
 | 프로젝트, Kanban, 보이는 대화, 승인, 감사                        | 최종 목표는 Hosted Sync; 현재 Desktop slice는 암호화 로컬 원본                           | 협업 metadata 저장 대상                                                                                                                                                                                                                                                                                                                                                                                          |
 | Codex 인증, API key, SSH material, runner secret                 | Keychain·Codex credential store·runner secret store                                      | 금지                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -420,6 +423,106 @@ Project Chat의 workspace-mode foreground experiment는 이 Runner bridge를 대
 continuation과 remote process-tree Stop/Kill을 보장하지 않는다. 이런 장기·자동 실험은 signed manifest,
 lease·fencing과 reconciliation을 가진 향후 `submit_experiment_trial` 계열 Runner control path를 통해서만
 실행해야 한다.
+
+### Desktop Experiment Evaluation Studio 흐름
+
+`Evaluation studio`는 기존 `ExperimentWorkspaceSnapshot`에 AI chat 상태를 섞지 않는 독립 모듈이다.
+Renderer는 preload의 `experimentEvaluation` facade만 사용하고 Main은 `list / detail / create-session /
+send / approve / reuse-profile` 고정 IPC와 project-scoped change event만 등록한다. 입력과 출력은
+`experiment-evaluation-contracts.ts`의 strict schema로 검증하며 Renderer가 임의 channel, filesystem path,
+Codex tool payload를 선택할 수 없다. Main의 `ExperimentEvaluationService`만 상태를 바꾸고, 현재 Objective,
+immutable logging template와 bounded recent run은 `WorkspaceService`와 `ExperimentWorkspaceService` port를
+통해 읽는다. 다른 Experiment table을 UI나 Evaluation repository가 직접 조회하거나 수정하지 않는다.
+
+```mermaid
+sequenceDiagram
+  participant User as "Researcher"
+  participant UI as "Evaluation Studio UI"
+  participant Main as "Evaluation service"
+  participant AI as "Pinned Codex harness"
+  participant DB as "Evaluation SQLCipher repository"
+  participant Files as "Protected profile artifacts"
+
+  User->>UI: "cadence·metric·policy·output을 대화로 설명"
+  UI->>Main: "send with project/session/version"
+  Main->>AI: "bounded context + strict output schema"
+  AI-->>Main: "proposal + synthetic preview"
+  Main->>DB: "append immutable draft revision and message"
+  DB-->>UI: "reviewable draft; no experiment evidence"
+  User->>UI: "Approve & save recipe"
+  UI->>Main: "approve exact revision with expected version"
+  Main->>Files: "atomically create evaluator.py + prompt"
+  Main->>DB: "CAS session and insert immutable recipe"
+  DB-->>UI: "profile receipt and reusable history"
+```
+
+Evaluation chat은 pinned Codex App Server를 별도 configuration-author harness로 사용한다. 이 harness에는
+`dynamicTools: []`를 주고 web, file, SSH, shell과 GOSU mutation을 제공하지 않으며 strict structured output만
+받는다. AI는 step 또는 epoch cadence, 관찰/primary metric, evaluation policy, experiment rule, logging field
+suggestion, number/table/plot output, bounded Python reference code와 reusable prompt를 **proposal**로만 만든다.
+target threshold와 frozen Objective는 exploratory evaluation에서 선택 사항이다. comparable evidence를
+설계하려면 기존 frozen Objective identity를 참조해야 하지만, chat은 Objective를 만들거나 바꾸지 않는다.
+prompt context는 storage의 newest-first run 중 최근 12개, 완료된 chat 중 최근 8개를 message당 4,000자로
+제한한다. draft JSON 자체도 100,000자 aggregate budget을 넘으면 저장하지 않아 최대 크기의 유효 recipe도 다음
+turn에서 다시 수정할 수 있다. JSON escaping까지 포함한 전체 prompt가 180,000자를 넘으면 오래된 message, run,
+logging field 순으로 context를 줄이고 그래도 필요할 때만 request를 잘라내며, 생략 수와 truncation 여부를 payload에
+명시한다.
+
+모든 preview는 contract에서 `dataKind=synthetic-preview`, `evidence=false`로 고정하고 UI에도
+`Illustrative preview · not experiment evidence`를 표시한다. preview code는 Electron에서 실행하지 않는다.
+선언한 number output은 해당 metric label의 preview number를, table output은 모든 column을 포함한 preview
+table을, plot output은 같은 kind와 metric series를 가진 preview plot을 반드시 포함해야 한다. 단일 preview shape와
+모순되지 않도록 draft는 table과 plot output을 각각 최대 하나만 선언하며 table은 12 column, plot은 6 series까지다.
+line preview는 모든 series가 8개 미만의 ordered point만 가질 때 trend line을 숨기고 exact KPI와 table을
+대신 보여 준다. 화면에는 series별 최근 12개 point만 그리며 truncation을 명시한다. line·marker style과
+text legend를 함께 사용해 색만으로 series를 구분하지 않는다. 이 sparse-preview 규칙은 실제 Experiment
+trajectory의 frozen Objective/evaluator/dataset lineage gate를 완화하지 않는다.
+
+SQLCipher 저장소는 다음 네 schema를 독립적으로 소유한다.
+
+- `experiment_evaluation_sessions`: project-scoped mutable workflow head이며 version CAS로 동시 수정을 막는다.
+- `experiment_evaluation_messages`: session의 bounded user/assistant history와 resolved model invocation을 저장한다.
+- `experiment_evaluation_revisions`: strict draft JSON, content hash와 model provenance를 append-only로 보존한다.
+- `experiment_evaluation_profiles`: 승인한 exact revision, hash, invocation과 artifact receipt를 immutable recipe로
+  보존한다. `use_count`와 `last_used_at`만 갱신할 수 있으며 reuse는 recipe를 수정하지 않고 새 session을 만든다.
+
+AI 응답을 받는 것만으로 Goal & Metrics나 Logging을 바꾸지 않는다. `Review Goal & Metrics`는 해당 화면으로
+이동할 뿐이고, logging suggestion은 기존 field와 `add / unchanged / conflict` diff로 먼저 보여 준다. 같은
+key의 definition 충돌은 사용자가 replacement checkbox를 별도로 승인한 경우에만 반영되며, 그 뒤에도 별도
+`Apply`를 눌러야 새 immutable logging template revision이 된다. `Approve & save recipe`도 Objective/logging을
+암묵적으로 적용하거나 evaluator를 실행하지 않는다.
+승인은 선택한 최신 revision과 expected session version을 다시 확인한 다음에만 성공한다.
+
+승인 시 evaluator와 prompt는
+`userData/evaluation-profiles/<project UUID>/<profile UUID>/<evaluator file>` 및
+`evaluation-prompt.txt`에 저장한다. UUID와 Python file name을 allowlist로 검증하고 root containment를 확인하며,
+directory는 mode `0700`, file은 `0600`으로 exclusive-create한다. root/project/profile directory의
+최종 component가 symlink인지 검사하고 canonical parent 경계를 다시 확인하며, evaluator·prompt·pending marker는
+`O_NOFOLLOW` handle로 쓰고 `fsync`한 뒤 directory entry까지 동기화한다. 임시 directory를 완성한 뒤 rename하고 DB
+profile insert/CAS가 실패하면 exact profile directory를 rollback한다. rename된 directory에는 DB commit 전까지
+pending marker를 남긴다. startup reconciliation은 marker가 있는 UUID directory를 persisted profile identity와
+대조해 commit된 profile이면 marker를 끝내고, DB에 없는 crash orphan이면 exact directory만 제거한다. 한 손상된
+entry나 DB lookup 실패가 다른 profile reconciliation을 막지 않으며 실패 수가 남으면 Local Data readiness에
+복구 미완료 상태를 표시한다.
+SQLCipher의 immutable draft가 canonical source이고 이 파일들은 derived local artifact다. recipe reuse는 DB draft로
+예상한 exact relative receipt, private mode와 code/prompt bytes를 다시 검증하며 외부 수정·삭제가 있으면 clone을
+중단한다. 이 artifact는 아직 Git canonical source, Obsidian Research Notes 또는 Runner artifact가 아니며 앱이
+반환하는 relative receipt만 Renderer에 보인다.
+
+reference Python은 문자열 정규식만으로 신뢰하지 않는다. Main은 Python parse tree를 끝까지 검사해 syntax
+error, 허용하지 않은 import, dunder access와 file/network/process/dynamic-code/deserialization identifier를
+거부하고, 승인 직전과 saved recipe 재사용 때 현재 policy로 다시 검증한다. 승인 profile에는 exact
+`code_policy_hash`를 기록한다. 이 검사는 위험한 proposal을 일찍 차단하는 authoring gate이지 실행 sandbox나
+실행 권한이 아니다. 후속 Runner는 같은 policy hash와 source digest를 다시 확인한 뒤 non-root, read-only
+rootfs, capability drop, resource quota와 network default-deny 안에서만 evaluator를 실행해야 한다.
+
+현재 slice가 보장하는 것은 evaluation **설계·검토·재사용**까지다. 승인 recipe의 step/epoch cadence가 실제
+training process를 감시하거나 evaluator를 주기 실행하지 않으며 synthetic preview를 run result로 ingest하지
+않는다. 후속 Runner binding은 recipe content hash, evaluator/prompt artifact digest, frozen Objective와
+immutable logging template, dataset/holdout identity, signed `JobManifestV1`, lease/fencing token과 budget을 한
+execution intent에 고정해야 한다. Runner가 내보낸 evaluation result만 append-only result/event path로 받아
+number/table/plot을 실제 evidence로 승격하고, duplicate/out-of-order cadence event와 reconnect를 reconcile해야
+한다. 이 bridge 전에는 UI나 AI가 recipe 저장을 자동 evaluation 실행 또는 live result라고 표현하면 안 된다.
 
 ## 8. Desktop 보안 모델
 

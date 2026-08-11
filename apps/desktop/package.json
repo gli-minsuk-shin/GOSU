@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -27,6 +27,7 @@
   "dependencies": {
     "@gosu/contracts": "workspace:*",
     "@gosu/integrations": "workspace:*",
+    "@lezer/python": "1.1.19",
     "@openai/codex": "0.146.0",
     "better-sqlite3-multiple-ciphers": "12.11.1",
     "fflate": "0.8.3",

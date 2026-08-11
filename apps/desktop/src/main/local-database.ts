@@ -14,6 +14,23 @@ import {
   type ModelInvocation,
 } from '@gosu/contracts';
 import {
+  EXPERIMENT_EVALUATION_MAX_MESSAGES_PER_SESSION,
+  EXPERIMENT_EVALUATION_MAX_PROFILES_PER_PROJECT,
+  EXPERIMENT_EVALUATION_MAX_REVISIONS_PER_SESSION,
+  EXPERIMENT_EVALUATION_MAX_SESSIONS_PER_PROJECT,
+  ExperimentEvaluationMessageSchema,
+  ExperimentEvaluationProfileSchema,
+  ExperimentEvaluationRevisionSchema,
+  ExperimentEvaluationSessionDetailSchema,
+  ExperimentEvaluationSessionSchema,
+  type ExperimentEvaluationMessage,
+  type ExperimentEvaluationProfile,
+  type ExperimentEvaluationRevision,
+  type ExperimentEvaluationSession,
+  type ExperimentEvaluationSessionDetail,
+} from '../shared/experiment-evaluation-contracts';
+import { EXPERIMENT_EVALUATION_CODE_POLICY_HASH } from './experiment-evaluation-code-policy';
+import {
   EXPERIMENT_MAX_IDEAS_PER_PROJECT,
   EXPERIMENT_MAX_LOGGING_TEMPLATE_REVISIONS_PER_PROJECT,
   EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
@@ -849,6 +866,65 @@ type ExperimentRunExecutionIntentRow = Readonly<{
   created_at: string;
 }>;
 
+type ExperimentEvaluationSessionRow = Readonly<{
+  id: string;
+  schema_version: number;
+  project_id: string;
+  title: string;
+  status: ExperimentEvaluationSession['status'];
+  active_attempt_id: string | null;
+  current_revision: number;
+  accepted_profile_id: string | null;
+  version: number;
+  last_error_code: string | null;
+  created_at: string;
+  updated_at: string;
+}>;
+
+type ExperimentEvaluationMessageRow = Readonly<{
+  id: string;
+  schema_version: number;
+  session_id: string;
+  role: ExperimentEvaluationMessage['role'];
+  status: ExperimentEvaluationMessage['status'];
+  content: string;
+  attempt_id: string | null;
+  revision: number | null;
+  invocation_json: string | null;
+  created_at: string;
+  completed_at: string;
+}>;
+
+type ExperimentEvaluationRevisionRow = Readonly<{
+  id: string;
+  schema_version: number;
+  session_id: string;
+  revision: number;
+  attempt_id: string;
+  draft_json: string;
+  content_hash: string;
+  invocation_json: string;
+  created_at: string;
+}>;
+
+type ExperimentEvaluationProfileRow = Readonly<{
+  id: string;
+  schema_version: number;
+  project_id: string;
+  name: string;
+  source_session_id: string;
+  source_revision_id: string;
+  draft_json: string;
+  content_hash: string;
+  code_policy_hash: string;
+  invocation_json: string;
+  code_path: string;
+  prompt_path: string;
+  use_count: number;
+  created_at: string;
+  last_used_at: string;
+}>;
+
 type ExperimentMetricTailRow = ExperimentMetricPointRow &
   Readonly<{
     metric_point_total: number;
@@ -1042,6 +1118,196 @@ function toExperimentRunExecutionIntent(
     relativePath: row.relative_path,
     createdAt: row.created_at,
   });
+}
+
+function toExperimentEvaluationSession(
+  row: ExperimentEvaluationSessionRow,
+): ExperimentEvaluationSession {
+  return ExperimentEvaluationSessionSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    projectId: row.project_id,
+    title: row.title,
+    status: row.status,
+    activeAttemptId: row.active_attempt_id,
+    currentRevision: row.current_revision,
+    acceptedProfileId: row.accepted_profile_id,
+    version: row.version,
+    lastErrorCode: row.last_error_code,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function toExperimentEvaluationMessage(
+  row: ExperimentEvaluationMessageRow,
+): ExperimentEvaluationMessage {
+  return ExperimentEvaluationMessageSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    sessionId: row.session_id,
+    role: row.role,
+    status: row.status,
+    content: row.content,
+    attemptId: row.attempt_id,
+    revision: row.revision,
+    invocation: row.invocation_json === null ? null : JSON.parse(row.invocation_json),
+    createdAt: row.created_at,
+    completedAt: row.completed_at,
+  });
+}
+
+function toExperimentEvaluationRevision(
+  row: ExperimentEvaluationRevisionRow,
+): ExperimentEvaluationRevision {
+  return ExperimentEvaluationRevisionSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    sessionId: row.session_id,
+    revision: row.revision,
+    attemptId: row.attempt_id,
+    draft: JSON.parse(row.draft_json) as unknown,
+    contentHash: row.content_hash,
+    invocation: JSON.parse(row.invocation_json) as unknown,
+    createdAt: row.created_at,
+  });
+}
+
+function toExperimentEvaluationProfile(
+  row: ExperimentEvaluationProfileRow,
+): ExperimentEvaluationProfile {
+  return ExperimentEvaluationProfileSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    projectId: row.project_id,
+    name: row.name,
+    sourceSessionId: row.source_session_id,
+    sourceRevisionId: row.source_revision_id,
+    draft: JSON.parse(row.draft_json) as unknown,
+    contentHash: row.content_hash,
+    codePolicyHash: row.code_policy_hash,
+    invocation: JSON.parse(row.invocation_json) as unknown,
+    codePath: row.code_path,
+    promptPath: row.prompt_path,
+    useCount: row.use_count,
+    createdAt: row.created_at,
+    lastUsedAt: row.last_used_at,
+  });
+}
+
+function insertExperimentEvaluationMessage(
+  database: Database.Database,
+  input: ExperimentEvaluationMessage,
+) {
+  const message = ExperimentEvaluationMessageSchema.parse(structuredClone(input));
+  database
+    .prepare(
+      `insert into experiment_evaluation_messages(
+         id,schema_version,session_id,role,status,content,attempt_id,revision,
+         invocation_json,created_at,completed_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      message.id,
+      message.schemaVersion,
+      message.sessionId,
+      message.role,
+      message.status,
+      message.content,
+      message.attemptId,
+      message.revision,
+      message.invocation === null ? null : JSON.stringify(message.invocation),
+      message.createdAt,
+      message.completedAt,
+    );
+}
+
+function insertExperimentEvaluationRevision(
+  database: Database.Database,
+  input: ExperimentEvaluationRevision,
+) {
+  const revision = ExperimentEvaluationRevisionSchema.parse(structuredClone(input));
+  database
+    .prepare(
+      `insert into experiment_evaluation_revisions(
+         id,schema_version,session_id,revision,attempt_id,draft_json,content_hash,
+         invocation_json,created_at
+       ) values(?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      revision.id,
+      revision.schemaVersion,
+      revision.sessionId,
+      revision.revision,
+      revision.attemptId,
+      JSON.stringify(revision.draft),
+      revision.contentHash,
+      JSON.stringify(revision.invocation),
+      revision.createdAt,
+    );
+}
+
+function insertExperimentEvaluationProfile(
+  database: Database.Database,
+  input: ExperimentEvaluationProfile,
+) {
+  const profile = ExperimentEvaluationProfileSchema.parse(structuredClone(input));
+  database
+    .prepare(
+      `insert into experiment_evaluation_profiles(
+         id,schema_version,project_id,name,source_session_id,source_revision_id,draft_json,
+         content_hash,code_policy_hash,invocation_json,code_path,prompt_path,use_count,created_at,
+         last_used_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      profile.id,
+      profile.schemaVersion,
+      profile.projectId,
+      profile.name,
+      profile.sourceSessionId,
+      profile.sourceRevisionId,
+      JSON.stringify(profile.draft),
+      profile.contentHash,
+      profile.codePolicyHash,
+      JSON.stringify(profile.invocation),
+      profile.codePath,
+      profile.promptPath,
+      profile.useCount,
+      profile.createdAt,
+      profile.lastUsedAt,
+    );
+}
+
+function experimentEvaluationDraftHash(draft: ExperimentEvaluationRevision['draft']) {
+  return createHash('sha256').update(JSON.stringify(draft), 'utf8').digest('hex');
+}
+
+function sameModelInvocation(left: ModelInvocation | null, right: ModelInvocation) {
+  return left !== null && JSON.stringify(left) === JSON.stringify(right);
+}
+
+function migrateExperimentEvaluationProfileCodePolicy(database: Database.Database) {
+  const columns = database.pragma('table_info(experiment_evaluation_profiles)') as Array<{
+    name: string;
+  }>;
+  if (!columns.some((column) => column.name === 'code_policy_hash')) {
+    database.exec(
+      `alter table experiment_evaluation_profiles
+       add column code_policy_hash text not null default '${'0'.repeat(64)}'
+       check (length(code_policy_hash) = 64)`,
+    );
+  }
+  database.exec(`
+    drop trigger if exists experiment_evaluation_profiles_content_guard;
+    create trigger experiment_evaluation_profiles_content_guard
+      before update of schema_version,project_id,name,source_session_id,source_revision_id,
+        draft_json,content_hash,code_policy_hash,invocation_json,code_path,prompt_path,created_at
+      on experiment_evaluation_profiles
+      begin
+        select raise(abort,'experiment_evaluation_profile_content_immutable');
+      end;
+  `);
 }
 
 function toLectureStudio(row: LectureStudioRow): LectureStudio {
@@ -3562,6 +3828,147 @@ export class LocalDatabase {
         begin
           select raise(abort,'experiment_run_execution_intent_tombstone_append_only');
         end;
+      create table if not exists experiment_evaluation_sessions (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null check (length(project_id) = 36),
+        title text not null check (length(title) between 1 and 160),
+        status text not null check (
+          status in ('draft','generating','ready','failed','archived')
+        ),
+        active_attempt_id text check (
+          active_attempt_id is null or length(active_attempt_id) = 36
+        ),
+        current_revision integer not null check (current_revision >= 0),
+        accepted_profile_id text check (
+          accepted_profile_id is null or length(accepted_profile_id) = 36
+        ),
+        version integer not null check (version > 0),
+        last_error_code text check (
+          last_error_code is null or length(last_error_code) between 1 and 128
+        ),
+        created_at text not null,
+        updated_at text not null,
+        unique(project_id,id),
+        check ((status='generating')=(active_attempt_id is not null)),
+        check (status='failed' or last_error_code is null)
+      );
+      create index if not exists experiment_evaluation_sessions_by_project
+        on experiment_evaluation_sessions(project_id,updated_at desc,id);
+      create trigger if not exists experiment_evaluation_sessions_project_limit
+        before insert on experiment_evaluation_sessions
+        when (
+          select count(*) from experiment_evaluation_sessions where project_id=new.project_id
+        ) >= ${EXPERIMENT_EVALUATION_MAX_SESSIONS_PER_PROJECT}
+        begin
+          select raise(abort,'experiment_evaluation_session_limit_reached');
+        end;
+      create table if not exists experiment_evaluation_messages (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        session_id text not null check (length(session_id) = 36),
+        role text not null check (role in ('user','assistant')),
+        status text not null check (status in ('complete','failed','interrupted')),
+        content text not null check (length(content) between 1 and 32000),
+        attempt_id text check (attempt_id is null or length(attempt_id) = 36),
+        revision integer check (revision is null or revision > 0),
+        invocation_json text check (
+          invocation_json is null or length(invocation_json) between 2 and 8192
+        ),
+        created_at text not null,
+        completed_at text not null,
+        foreign key(session_id) references experiment_evaluation_sessions(id) on delete cascade,
+        check (role='assistant' or (revision is null and invocation_json is null))
+      );
+      create index if not exists experiment_evaluation_messages_by_session
+        on experiment_evaluation_messages(session_id,created_at,id);
+      create unique index if not exists experiment_evaluation_one_assistant_per_attempt
+        on experiment_evaluation_messages(session_id,attempt_id)
+        where role='assistant' and attempt_id is not null;
+      create trigger if not exists experiment_evaluation_messages_session_limit
+        before insert on experiment_evaluation_messages
+        when (
+          select count(*) from experiment_evaluation_messages where session_id=new.session_id
+        ) >= ${EXPERIMENT_EVALUATION_MAX_MESSAGES_PER_SESSION}
+        begin
+          select raise(abort,'experiment_evaluation_message_limit_reached');
+        end;
+      create table if not exists experiment_evaluation_revisions (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        session_id text not null check (length(session_id) = 36),
+        revision integer not null check (revision > 0),
+        attempt_id text not null check (length(attempt_id) = 36),
+        draft_json text not null check (length(draft_json) between 2 and 524288),
+        content_hash text not null check (length(content_hash) = 64),
+        invocation_json text not null check (length(invocation_json) between 2 and 8192),
+        created_at text not null,
+        unique(session_id,revision),
+        unique(session_id,attempt_id),
+        foreign key(session_id) references experiment_evaluation_sessions(id) on delete cascade
+      );
+      create index if not exists experiment_evaluation_revisions_by_session
+        on experiment_evaluation_revisions(session_id,revision);
+      create trigger if not exists experiment_evaluation_revisions_session_limit
+        before insert on experiment_evaluation_revisions
+        when (
+          select count(*) from experiment_evaluation_revisions where session_id=new.session_id
+        ) >= ${EXPERIMENT_EVALUATION_MAX_REVISIONS_PER_SESSION}
+        begin
+          select raise(abort,'experiment_evaluation_revision_limit_reached');
+        end;
+      create trigger if not exists experiment_evaluation_revisions_update_guard
+        before update on experiment_evaluation_revisions
+        begin
+          select raise(abort,'experiment_evaluation_revision_append_only');
+        end;
+      create trigger if not exists experiment_evaluation_revisions_delete_guard
+        before delete on experiment_evaluation_revisions
+        begin
+          select raise(abort,'experiment_evaluation_revision_append_only');
+        end;
+      create table if not exists experiment_evaluation_profiles (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null check (length(project_id) = 36),
+        name text not null check (length(name) between 1 and 160),
+        source_session_id text not null check (length(source_session_id) = 36),
+        source_revision_id text not null check (length(source_revision_id) = 36),
+        draft_json text not null check (length(draft_json) between 2 and 524288),
+        content_hash text not null check (length(content_hash) = 64),
+        code_policy_hash text not null check (length(code_policy_hash) = 64),
+        invocation_json text not null check (length(invocation_json) between 2 and 8192),
+        code_path text not null check (length(code_path) between 1 and 1024),
+        prompt_path text not null check (length(prompt_path) between 1 and 1024),
+        use_count integer not null check (use_count >= 0),
+        created_at text not null,
+        last_used_at text not null,
+        unique(project_id,id),
+        unique(project_id,source_revision_id),
+        foreign key(source_session_id) references experiment_evaluation_sessions(id)
+      );
+      create index if not exists experiment_evaluation_profiles_by_project
+        on experiment_evaluation_profiles(project_id,last_used_at desc,id);
+      create trigger if not exists experiment_evaluation_profiles_project_limit
+        before insert on experiment_evaluation_profiles
+        when (
+          select count(*) from experiment_evaluation_profiles where project_id=new.project_id
+        ) >= ${EXPERIMENT_EVALUATION_MAX_PROFILES_PER_PROJECT}
+        begin
+          select raise(abort,'experiment_evaluation_profile_limit_reached');
+        end;
+      create trigger if not exists experiment_evaluation_profiles_content_guard
+        before update of schema_version,project_id,name,source_session_id,source_revision_id,
+          draft_json,content_hash,invocation_json,code_path,prompt_path,created_at
+        on experiment_evaluation_profiles
+        begin
+          select raise(abort,'experiment_evaluation_profile_content_immutable');
+        end;
+      create trigger if not exists experiment_evaluation_profiles_delete_guard
+        before delete on experiment_evaluation_profiles
+        begin
+          select raise(abort,'experiment_evaluation_profile_append_only');
+        end;
       create table if not exists lecture_studios (
         id text primary key check (length(id) = 36),
         schema_version integer not null check (schema_version = 1),
@@ -3937,6 +4344,7 @@ export class LocalDatabase {
       create index if not exists project_chat_actions_by_message
         on project_chat_actions(message_id,created_at,id);
     `);
+      migrateExperimentEvaluationProfileCodePolicy(database);
       migrateExperimentRunsHardening(database);
       migrateProjectChatResearchNoteAbandoned(database);
       const manuscriptWorkspaceConnectionColumns = database.pragma(
@@ -4262,6 +4670,26 @@ export class LocalDatabase {
         initializedDatabase
           .prepare(
             `update lecture_studios
+             set status='failed',active_attempt_id=null,last_error_code='application_interrupted',
+                 version=version+1,updated_at=?
+             where status='generating'`,
+          )
+          .run(reconciledAt);
+        initializedDatabase
+          .prepare(
+            `update experiment_evaluation_messages
+             set status='interrupted',completed_at=?
+             where role='user' and status='complete' and exists (
+               select 1 from experiment_evaluation_sessions session
+               where session.id=experiment_evaluation_messages.session_id
+                 and session.status='generating'
+                 and session.active_attempt_id=experiment_evaluation_messages.attempt_id
+             )`,
+          )
+          .run(reconciledAt);
+        initializedDatabase
+          .prepare(
+            `update experiment_evaluation_sessions
              set status='failed',active_attempt_id=null,last_error_code='application_interrupted',
                  version=version+1,updated_at=?
              where status='generating'`,
@@ -6789,6 +7217,481 @@ export class LocalDatabase {
       )
       .get(projectId, runId) as ExperimentRunExecutionIntentRow | undefined;
     return row ? toExperimentRunExecutionIntent(row) : null;
+  }
+
+  listExperimentEvaluationSessions(projectId: string): ExperimentEvaluationSession[] {
+    const rows = this.require()
+      .prepare(
+        `select * from experiment_evaluation_sessions
+         where project_id=? order by updated_at desc,id asc`,
+      )
+      .all(projectId) as ExperimentEvaluationSessionRow[];
+    return rows.map(toExperimentEvaluationSession);
+  }
+
+  listExperimentEvaluationProfiles(projectId: string): ExperimentEvaluationProfile[] {
+    const rows = this.require()
+      .prepare(
+        `select * from experiment_evaluation_profiles
+         where project_id=? order by use_count desc,last_used_at desc,id asc`,
+      )
+      .all(projectId) as ExperimentEvaluationProfileRow[];
+    return rows.map(toExperimentEvaluationProfile);
+  }
+
+  getExperimentEvaluationSession(
+    projectId: string,
+    sessionId: string,
+  ): ExperimentEvaluationSession | null {
+    const row = this.require()
+      .prepare(
+        `select * from experiment_evaluation_sessions
+         where project_id=? and id=?`,
+      )
+      .get(projectId, sessionId) as ExperimentEvaluationSessionRow | undefined;
+    return row ? toExperimentEvaluationSession(row) : null;
+  }
+
+  getExperimentEvaluationSessionDetail(
+    projectId: string,
+    sessionId: string,
+  ): ExperimentEvaluationSessionDetail | null {
+    const database = this.require();
+    return database.transaction(() => {
+      const sessionRow = database
+        .prepare(
+          `select * from experiment_evaluation_sessions
+           where project_id=? and id=?`,
+        )
+        .get(projectId, sessionId) as ExperimentEvaluationSessionRow | undefined;
+      if (!sessionRow) return null;
+      const messageRows = database
+        .prepare(
+          `select * from (
+             select * from experiment_evaluation_messages
+             where session_id=? order by created_at desc,id desc limit 100
+           ) order by created_at asc,id asc`,
+        )
+        .all(sessionId) as ExperimentEvaluationMessageRow[];
+      const revisionRow = database
+        .prepare(
+          `select revision.* from experiment_evaluation_revisions revision
+           join experiment_evaluation_sessions session
+             on session.id=revision.session_id and session.current_revision=revision.revision
+           where revision.session_id=?`,
+        )
+        .get(sessionId) as ExperimentEvaluationRevisionRow | undefined;
+      return ExperimentEvaluationSessionDetailSchema.parse({
+        schemaVersion: 1,
+        session: toExperimentEvaluationSession(sessionRow),
+        messages: messageRows.map(toExperimentEvaluationMessage),
+        currentRevision: revisionRow ? toExperimentEvaluationRevision(revisionRow) : null,
+      });
+    })();
+  }
+
+  getExperimentEvaluationRevision(
+    projectId: string,
+    sessionId: string,
+    revision: number,
+  ): ExperimentEvaluationRevision | null {
+    if (!Number.isSafeInteger(revision) || revision < 1) return null;
+    const row = this.require()
+      .prepare(
+        `select revision.* from experiment_evaluation_revisions revision
+         join experiment_evaluation_sessions session on session.id=revision.session_id
+         where session.project_id=? and revision.session_id=? and revision.revision=?`,
+      )
+      .get(projectId, sessionId, revision) as ExperimentEvaluationRevisionRow | undefined;
+    return row ? toExperimentEvaluationRevision(row) : null;
+  }
+
+  getExperimentEvaluationProfile(
+    projectId: string,
+    profileId: string,
+  ): ExperimentEvaluationProfile | null {
+    const row = this.require()
+      .prepare(
+        `select * from experiment_evaluation_profiles
+         where project_id=? and id=?`,
+      )
+      .get(projectId, profileId) as ExperimentEvaluationProfileRow | undefined;
+    return row ? toExperimentEvaluationProfile(row) : null;
+  }
+
+  createExperimentEvaluationSession(input: ExperimentEvaluationSession) {
+    const session = ExperimentEvaluationSessionSchema.parse(structuredClone(input));
+    if (
+      session.status !== 'draft' ||
+      session.activeAttemptId !== null ||
+      session.currentRevision !== 0 ||
+      session.acceptedProfileId !== null ||
+      session.version !== 1 ||
+      session.lastErrorCode !== null
+    ) {
+      throw new Error('invalid_experiment_evaluation_session_initial_state');
+    }
+    return (
+      this.require()
+        .prepare(
+          `insert or ignore into experiment_evaluation_sessions(
+             id,schema_version,project_id,title,status,active_attempt_id,current_revision,
+             accepted_profile_id,version,last_error_code,created_at,updated_at
+           ) values(?,?,?,?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          session.id,
+          session.schemaVersion,
+          session.projectId,
+          session.title,
+          session.status,
+          session.activeAttemptId,
+          session.currentRevision,
+          session.acceptedProfileId,
+          session.version,
+          session.lastErrorCode,
+          session.createdAt,
+          session.updatedAt,
+        ).changes === 1
+    );
+  }
+
+  beginExperimentEvaluationTurn(
+    input: Readonly<{
+      projectId: string;
+      sessionId: string;
+      expectedVersion: number;
+      attemptId: string;
+      userMessage: ExperimentEvaluationMessage;
+      updatedAt: string;
+    }>,
+  ): ExperimentEvaluationSession | null {
+    const message = ExperimentEvaluationMessageSchema.parse(structuredClone(input.userMessage));
+    if (
+      message.sessionId !== input.sessionId ||
+      message.role !== 'user' ||
+      message.attemptId !== input.attemptId ||
+      message.status !== 'complete'
+    ) {
+      throw new Error('invalid_experiment_evaluation_user_message');
+    }
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const eligible = database
+          .prepare(
+            `select 1 from experiment_evaluation_sessions
+             where project_id=? and id=? and version=?
+               and status in ('draft','ready','failed') and active_attempt_id is null`,
+          )
+          .get(input.projectId, input.sessionId, input.expectedVersion);
+        if (!eligible) return null;
+        const messageCapacity = database
+          .prepare(
+            `select count(*) as count from experiment_evaluation_messages
+             where session_id=?`,
+          )
+          .get(input.sessionId) as { count: number };
+        if (messageCapacity.count + 2 > EXPERIMENT_EVALUATION_MAX_MESSAGES_PER_SESSION) {
+          throw new Error('experiment_evaluation_message_limit_reached');
+        }
+        const revisionCapacity = database
+          .prepare(
+            `select count(*) as count from experiment_evaluation_revisions
+             where session_id=?`,
+          )
+          .get(input.sessionId) as { count: number };
+        if (revisionCapacity.count + 1 > EXPERIMENT_EVALUATION_MAX_REVISIONS_PER_SESSION) {
+          throw new Error('experiment_evaluation_revision_limit_reached');
+        }
+        const changed = database
+          .prepare(
+            `update experiment_evaluation_sessions
+             set status='generating',active_attempt_id=?,last_error_code=null,
+                 version=version+1,updated_at=?
+             where project_id=? and id=? and version=?
+               and status in ('draft','ready','failed') and active_attempt_id is null`,
+          )
+          .run(
+            input.attemptId,
+            input.updatedAt,
+            input.projectId,
+            input.sessionId,
+            input.expectedVersion,
+          );
+        if (changed.changes !== 1) return null;
+        insertExperimentEvaluationMessage(database, message);
+        const row = database
+          .prepare('select * from experiment_evaluation_sessions where id=?')
+          .get(input.sessionId) as ExperimentEvaluationSessionRow;
+        return toExperimentEvaluationSession(row);
+      })
+      .immediate();
+  }
+
+  completeExperimentEvaluationTurn(
+    input: Readonly<{
+      session: ExperimentEvaluationSession;
+      revision: ExperimentEvaluationRevision;
+      assistantMessage: ExperimentEvaluationMessage;
+    }>,
+  ): ExperimentEvaluationSession | null {
+    const session = ExperimentEvaluationSessionSchema.parse(structuredClone(input.session));
+    const revision = ExperimentEvaluationRevisionSchema.parse(structuredClone(input.revision));
+    const message = ExperimentEvaluationMessageSchema.parse(
+      structuredClone(input.assistantMessage),
+    );
+    if (
+      session.status !== 'ready' ||
+      session.activeAttemptId !== null ||
+      session.acceptedProfileId !== null ||
+      session.lastErrorCode !== null ||
+      revision.sessionId !== session.id ||
+      revision.revision !== session.currentRevision ||
+      revision.contentHash !== experimentEvaluationDraftHash(revision.draft) ||
+      message.sessionId !== session.id ||
+      message.role !== 'assistant' ||
+      message.status !== 'complete' ||
+      message.attemptId !== revision.attemptId ||
+      message.revision !== revision.revision ||
+      !sameModelInvocation(message.invocation, revision.invocation)
+    ) {
+      throw new Error('invalid_experiment_evaluation_completion');
+    }
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const currentRow = database
+          .prepare('select * from experiment_evaluation_sessions where id=?')
+          .get(session.id) as ExperimentEvaluationSessionRow | undefined;
+        if (!currentRow) return null;
+        const current = toExperimentEvaluationSession(currentRow);
+        if (
+          current.status !== 'generating' ||
+          current.activeAttemptId !== revision.attemptId ||
+          current.projectId !== session.projectId ||
+          session.version !== current.version + 1 ||
+          session.currentRevision !== current.currentRevision + 1
+        ) {
+          return null;
+        }
+        const changed = database
+          .prepare(
+            `update experiment_evaluation_sessions
+             set title=?,status='ready',active_attempt_id=null,current_revision=?,
+                 accepted_profile_id=null,version=?,last_error_code=null,updated_at=?
+             where id=? and version=? and status='generating' and active_attempt_id=?`,
+          )
+          .run(
+            session.title,
+            session.currentRevision,
+            session.version,
+            session.updatedAt,
+            session.id,
+            current.version,
+            revision.attemptId,
+          );
+        if (changed.changes !== 1) return null;
+        insertExperimentEvaluationRevision(database, revision);
+        insertExperimentEvaluationMessage(database, message);
+        const row = database
+          .prepare('select * from experiment_evaluation_sessions where id=?')
+          .get(session.id) as ExperimentEvaluationSessionRow;
+        return toExperimentEvaluationSession(row);
+      })
+      .immediate();
+  }
+
+  failExperimentEvaluationTurn(
+    input: Readonly<{
+      projectId: string;
+      sessionId: string;
+      attemptId: string;
+      errorCode: string;
+      updatedAt: string;
+    }>,
+  ): ExperimentEvaluationSession | null {
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const changed = database
+          .prepare(
+            `update experiment_evaluation_sessions
+             set status='failed',active_attempt_id=null,last_error_code=?,
+                 version=version+1,updated_at=?
+             where project_id=? and id=? and status='generating' and active_attempt_id=?`,
+          )
+          .run(
+            input.errorCode.slice(0, 128),
+            input.updatedAt,
+            input.projectId,
+            input.sessionId,
+            input.attemptId,
+          );
+        if (changed.changes !== 1) return null;
+        database
+          .prepare(
+            `update experiment_evaluation_messages
+             set status='failed',completed_at=?
+             where session_id=? and attempt_id=? and role='user' and status='complete'`,
+          )
+          .run(input.updatedAt, input.sessionId, input.attemptId);
+        const row = database
+          .prepare('select * from experiment_evaluation_sessions where id=?')
+          .get(input.sessionId) as ExperimentEvaluationSessionRow;
+        return toExperimentEvaluationSession(row);
+      })
+      .immediate();
+  }
+
+  approveExperimentEvaluation(
+    input: Readonly<{
+      projectId: string;
+      sessionId: string;
+      expectedVersion: number;
+      revision: number;
+      profile: ExperimentEvaluationProfile;
+      updatedAt: string;
+    }>,
+  ): ExperimentEvaluationSession | null {
+    const profile = ExperimentEvaluationProfileSchema.parse(structuredClone(input.profile));
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const sessionRow = database
+          .prepare(
+            `select * from experiment_evaluation_sessions
+             where project_id=? and id=?`,
+          )
+          .get(input.projectId, input.sessionId) as ExperimentEvaluationSessionRow | undefined;
+        if (!sessionRow) return null;
+        const session = toExperimentEvaluationSession(sessionRow);
+        const revisionRow = database
+          .prepare(
+            `select * from experiment_evaluation_revisions
+             where session_id=? and revision=?`,
+          )
+          .get(input.sessionId, input.revision) as ExperimentEvaluationRevisionRow | undefined;
+        if (!revisionRow) return null;
+        const revision = toExperimentEvaluationRevision(revisionRow);
+        if (
+          session.status !== 'ready' ||
+          session.version !== input.expectedVersion ||
+          session.currentRevision !== input.revision ||
+          profile.projectId !== input.projectId ||
+          profile.sourceSessionId !== input.sessionId ||
+          profile.sourceRevisionId !== revision.id ||
+          profile.codePolicyHash !== EXPERIMENT_EVALUATION_CODE_POLICY_HASH ||
+          profile.contentHash !== experimentEvaluationDraftHash(profile.draft) ||
+          revision.contentHash !== experimentEvaluationDraftHash(revision.draft) ||
+          profile.contentHash !== revision.contentHash ||
+          JSON.stringify(profile.draft) !== JSON.stringify(revision.draft) ||
+          !sameModelInvocation(profile.invocation, revision.invocation)
+        ) {
+          return null;
+        }
+        insertExperimentEvaluationProfile(database, profile);
+        const changed = database
+          .prepare(
+            `update experiment_evaluation_sessions
+             set accepted_profile_id=?,version=version+1,updated_at=?
+             where project_id=? and id=? and version=? and status='ready'
+               and current_revision=?`,
+          )
+          .run(
+            profile.id,
+            input.updatedAt,
+            input.projectId,
+            input.sessionId,
+            input.expectedVersion,
+            input.revision,
+          );
+        if (changed.changes !== 1) return null;
+        const row = database
+          .prepare('select * from experiment_evaluation_sessions where id=?')
+          .get(input.sessionId) as ExperimentEvaluationSessionRow;
+        return toExperimentEvaluationSession(row);
+      })
+      .immediate();
+  }
+
+  createExperimentEvaluationSessionFromProfile(
+    input: Readonly<{
+      session: ExperimentEvaluationSession;
+      revision: ExperimentEvaluationRevision;
+      profileId: string;
+      usedAt: string;
+    }>,
+  ): ExperimentEvaluationSession | null {
+    const session = ExperimentEvaluationSessionSchema.parse(structuredClone(input.session));
+    const revision = ExperimentEvaluationRevisionSchema.parse(structuredClone(input.revision));
+    if (
+      session.status !== 'ready' ||
+      session.currentRevision !== 1 ||
+      session.version !== 1 ||
+      session.acceptedProfileId !== input.profileId ||
+      revision.sessionId !== session.id ||
+      revision.revision !== 1
+    ) {
+      throw new Error('invalid_experiment_evaluation_profile_clone');
+    }
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const profileRow = database
+          .prepare(
+            `select * from experiment_evaluation_profiles
+             where project_id=? and id=?`,
+          )
+          .get(session.projectId, input.profileId) as ExperimentEvaluationProfileRow | undefined;
+        if (!profileRow) return null;
+        const profile = toExperimentEvaluationProfile(profileRow);
+        if (
+          profile.codePolicyHash !== EXPERIMENT_EVALUATION_CODE_POLICY_HASH ||
+          profile.contentHash !== experimentEvaluationDraftHash(profile.draft) ||
+          revision.contentHash !== experimentEvaluationDraftHash(revision.draft) ||
+          profile.contentHash !== revision.contentHash ||
+          JSON.stringify(profile.draft) !== JSON.stringify(revision.draft) ||
+          !sameModelInvocation(profile.invocation, revision.invocation)
+        ) {
+          return null;
+        }
+        const inserted = database
+          .prepare(
+            `insert or ignore into experiment_evaluation_sessions(
+               id,schema_version,project_id,title,status,active_attempt_id,current_revision,
+               accepted_profile_id,version,last_error_code,created_at,updated_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            session.id,
+            session.schemaVersion,
+            session.projectId,
+            session.title,
+            session.status,
+            session.activeAttemptId,
+            session.currentRevision,
+            session.acceptedProfileId,
+            session.version,
+            session.lastErrorCode,
+            session.createdAt,
+            session.updatedAt,
+          );
+        if (inserted.changes !== 1) return null;
+        insertExperimentEvaluationRevision(database, revision);
+        database
+          .prepare(
+            `update experiment_evaluation_profiles
+             set use_count=use_count+1,last_used_at=?
+             where project_id=? and id=?`,
+          )
+          .run(input.usedAt, session.projectId, input.profileId);
+        const row = database
+          .prepare('select * from experiment_evaluation_sessions where id=?')
+          .get(session.id) as ExperimentEvaluationSessionRow;
+        return toExperimentEvaluationSession(row);
+      })
+      .immediate();
   }
 
   listLectureStudios(): LectureStudioSummary[] {

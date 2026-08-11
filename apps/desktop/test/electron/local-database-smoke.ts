@@ -9,8 +9,10 @@ import {
   ManuscriptCheckpointV1Schema,
   ManuscriptSyncAnchorV1Schema,
   ManuscriptWorkspaceBindingV1Schema,
+  type ModelInvocation,
 } from '@gosu/contracts';
 
+import { EXPERIMENT_EVALUATION_CODE_POLICY_HASH } from '../../src/main/experiment-evaluation-code-policy';
 import { LocalDatabase } from '../../src/main/local-database';
 import { ExperimentWorkspaceStorageError } from '../../src/main/experiment-workspace-storage-error';
 import { LectureStudioStorageError } from '../../src/main/lecture-studio-storage-error';
@@ -36,6 +38,13 @@ import {
   type ExperimentMetricPoint,
   type ExperimentRun,
 } from '../../src/shared/experiment-workspace-contracts';
+import type {
+  ExperimentEvaluationDraft,
+  ExperimentEvaluationMessage,
+  ExperimentEvaluationProfile,
+  ExperimentEvaluationRevision,
+  ExperimentEvaluationSession,
+} from '../../src/shared/experiment-evaluation-contracts';
 import {
   PROJECT_CHAT_MAX_BRANCH_DEPTH,
   PROJECT_CHAT_MAX_BRANCH_MESSAGES,
@@ -818,6 +827,433 @@ function verifyManuscriptWorkspacePersistence(rootUserData: string, fixedTimesta
   } finally {
     database.close();
     app.setPath('userData', originalUserData);
+  }
+}
+
+function verifyExperimentEvaluationPersistence(fixedTimestamp: string) {
+  const database = new LocalDatabase();
+  database.open();
+  try {
+    const at = (offsetMilliseconds: number) =>
+      new Date(Date.parse(fixedTimestamp) + offsetMilliseconds).toISOString();
+    const projectId = randomUUID();
+    const invocation: ModelInvocation = {
+      schemaVersion: 1,
+      invocationId: randomUUID(),
+      providerId: 'codex',
+      requestedModelId: null,
+      resolvedModelId: 'fixture-evaluation-model',
+      catalogVersion: 'fixture-evaluation-catalog',
+      reasoningOptionId: 'high',
+      startedAt: fixedTimestamp,
+    };
+    const draft: ExperimentEvaluationDraft = {
+      title: 'Held-out evaluation fixture',
+      purpose: 'Verify durable evaluation recipes without treating preview data as evidence.',
+      cadence: { unit: 'step', interval: 100, startAt: 0, stopAfter: 1_000 },
+      metrics: [
+        {
+          key: 'validation_loss',
+          displayName: 'Validation loss',
+          direction: 'minimize',
+          unit: null,
+          aggregation: 'minimum',
+          primary: true,
+        },
+      ],
+      evaluationPolicy: 'Evaluate only against the pinned held-out fixture.',
+      experimentRules: ['Never update model weights during evaluation.'],
+      loggingFields: [
+        {
+          key: 'validation_loss',
+          label: 'Validation loss',
+          type: 'number',
+          category: 'metric',
+          requiredAt: ['progress', 'summary'],
+          unit: null,
+        },
+      ],
+      outputs: [
+        {
+          kind: 'number',
+          title: 'Best validation loss',
+          metricKey: 'validation_loss',
+          description: 'Minimum validation loss observed in the evaluation window.',
+        },
+        {
+          kind: 'plot',
+          title: 'Validation trajectory',
+          plotKind: 'line',
+          xField: 'step',
+          yMetricKeys: ['validation_loss'],
+          description: 'Validation loss by training step.',
+        },
+      ],
+      referenceCode: {
+        language: 'python',
+        fileName: 'evaluate_validation.py',
+        content:
+          'import math\n\ndef evaluate(values):\n    finite = [value for value in values if math.isfinite(value)]\n    return {"validation_loss": min(finite)}',
+      },
+      promptTemplate: 'Evaluate the pinned validation records and emit structured JSON.',
+      preview: {
+        dataKind: 'synthetic-preview',
+        evidence: false,
+        notice: 'Illustrative values only; no experiment was executed.',
+        numbers: [{ label: 'Validation loss', value: 0.5, unit: null }],
+        table: {
+          title: 'Illustrative checkpoints',
+          columns: ['step', 'validation_loss'],
+          rows: [
+            [100, 0.8],
+            [200, 0.5],
+          ],
+        },
+        plot: {
+          title: 'Illustrative validation trajectory',
+          subtitle: 'Synthetic preview every 100 steps',
+          kind: 'line',
+          xLabel: 'Step',
+          yLabel: 'Validation loss',
+          series: [
+            {
+              name: 'Validation loss',
+              points: [
+                { x: 100, y: 0.8, label: 'step 100' },
+                { x: 200, y: 0.5, label: 'step 200' },
+              ],
+            },
+          ],
+        },
+        reportMarkdown: '# Synthetic preview\n\nNo experiment was executed.',
+      },
+    };
+    const contentHash = createHash('sha256').update(JSON.stringify(draft), 'utf8').digest('hex');
+    const initialSession = (id: string, title: string): ExperimentEvaluationSession => ({
+      schemaVersion: 1,
+      id,
+      projectId,
+      title,
+      status: 'draft',
+      activeAttemptId: null,
+      currentRevision: 0,
+      acceptedProfileId: null,
+      version: 1,
+      lastErrorCode: null,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    });
+    const userMessage = (
+      sessionId: string,
+      attemptId: string,
+      createdAt: string,
+    ): ExperimentEvaluationMessage => ({
+      schemaVersion: 1,
+      id: randomUUID(),
+      sessionId,
+      role: 'user',
+      status: 'complete',
+      content: 'Evaluate every 100 steps and keep the held-out split pinned.',
+      attemptId,
+      revision: null,
+      invocation: null,
+      createdAt,
+      completedAt: createdAt,
+    });
+    const assistantMessage = (
+      sessionId: string,
+      attemptId: string,
+      revision: number,
+      modelInvocation: ModelInvocation,
+      createdAt: string,
+    ): ExperimentEvaluationMessage => ({
+      schemaVersion: 1,
+      id: randomUUID(),
+      sessionId,
+      role: 'assistant',
+      status: 'complete',
+      content: 'Prepared a held-out evaluation recipe for review.',
+      attemptId,
+      revision,
+      invocation: modelInvocation,
+      createdAt,
+      completedAt: createdAt,
+    });
+
+    const sessionId = randomUUID();
+    invariant(
+      database.createExperimentEvaluationSession(
+        initialSession(sessionId, 'Evaluation persistence fixture'),
+      ),
+      'experiment_evaluation_session_create_failed',
+    );
+    const attemptId = randomUUID();
+    const generating = database.beginExperimentEvaluationTurn({
+      projectId,
+      sessionId,
+      expectedVersion: 1,
+      attemptId,
+      userMessage: userMessage(sessionId, attemptId, at(1_000)),
+      updatedAt: at(1_000),
+    });
+    invariant(
+      generating?.status === 'generating' &&
+        generating.version === 2 &&
+        generating.activeAttemptId === attemptId,
+      'experiment_evaluation_turn_begin_failed',
+    );
+    const revisionId = randomUUID();
+    const revision: ExperimentEvaluationRevision = {
+      schemaVersion: 1,
+      id: revisionId,
+      sessionId,
+      revision: 1,
+      attemptId,
+      draft,
+      contentHash,
+      invocation,
+      createdAt: at(2_000),
+    };
+    const readySession: ExperimentEvaluationSession = {
+      ...generating,
+      title: draft.title,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 1,
+      acceptedProfileId: null,
+      version: 3,
+      lastErrorCode: null,
+      updatedAt: at(2_000),
+    };
+    const ready = database.completeExperimentEvaluationTurn({
+      session: readySession,
+      revision,
+      assistantMessage: assistantMessage(sessionId, attemptId, 1, invocation, at(2_000)),
+    });
+    const readyDetail = database.getExperimentEvaluationSessionDetail(projectId, sessionId);
+    invariant(
+      ready?.status === 'ready' &&
+        ready.currentRevision === 1 &&
+        readyDetail?.currentRevision?.contentHash === contentHash &&
+        readyDetail.messages.length === 2 &&
+        readyDetail.messages[1]?.invocation?.invocationId === invocation.invocationId,
+      'experiment_evaluation_turn_completion_was_not_durable',
+    );
+
+    const profileId = randomUUID();
+    const profile: ExperimentEvaluationProfile = {
+      schemaVersion: 1,
+      id: profileId,
+      projectId,
+      name: 'Held-out evaluation recipe',
+      sourceSessionId: sessionId,
+      sourceRevisionId: revisionId,
+      draft,
+      contentHash,
+      codePolicyHash: EXPERIMENT_EVALUATION_CODE_POLICY_HASH,
+      invocation,
+      codePath: '/fixture/evaluation-profiles/evaluate_validation.py',
+      promptPath: '/fixture/evaluation-profiles/evaluation-prompt.txt',
+      useCount: 0,
+      createdAt: at(3_000),
+      lastUsedAt: at(3_000),
+    };
+    invariant(
+      database.approveExperimentEvaluation({
+        projectId,
+        sessionId,
+        expectedVersion: ready.version,
+        revision: 1,
+        profile: {
+          ...profile,
+          id: randomUUID(),
+          codePolicyHash: '0'.repeat(64),
+        },
+        updatedAt: at(3_000),
+      }) === null && database.listExperimentEvaluationProfiles(projectId).length === 0,
+      'experiment_evaluation_tampered_code_policy_was_accepted',
+    );
+    const approved = database.approveExperimentEvaluation({
+      projectId,
+      sessionId,
+      expectedVersion: ready.version,
+      revision: 1,
+      profile,
+      updatedAt: at(3_000),
+    });
+    invariant(
+      approved?.acceptedProfileId === profileId &&
+        approved.version === 4 &&
+        database.getExperimentEvaluationProfile(projectId, profileId)?.useCount === 0 &&
+        database.getExperimentEvaluationProfile(projectId, profileId)?.codePolicyHash ===
+          EXPERIMENT_EVALUATION_CODE_POLICY_HASH,
+      'experiment_evaluation_profile_approval_failed',
+    );
+
+    const failedAttemptId = randomUUID();
+    const generatingAfterApproval = database.beginExperimentEvaluationTurn({
+      projectId,
+      sessionId,
+      expectedVersion: approved.version,
+      attemptId: failedAttemptId,
+      userMessage: userMessage(sessionId, failedAttemptId, at(4_000)),
+      updatedAt: at(4_000),
+    });
+    invariant(
+      generatingAfterApproval?.acceptedProfileId === profileId,
+      'experiment_evaluation_begin_cleared_accepted_profile',
+    );
+    const failed = database.failExperimentEvaluationTurn({
+      projectId,
+      sessionId,
+      attemptId: failedAttemptId,
+      errorCode: 'fixture_generation_failed',
+      updatedAt: at(5_000),
+    });
+    invariant(
+      failed?.status === 'failed' &&
+        failed.acceptedProfileId === profileId &&
+        database.getExperimentEvaluationSession(projectId, sessionId)?.acceptedProfileId ===
+          profileId,
+      'experiment_evaluation_failed_turn_dropped_accepted_profile',
+    );
+
+    const reusedSessionId = randomUUID();
+    const reusedAttemptId = randomUUID();
+    const reusedSession: ExperimentEvaluationSession = {
+      schemaVersion: 1,
+      id: reusedSessionId,
+      projectId,
+      title: 'Held-out evaluation recipe copy',
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 1,
+      acceptedProfileId: profileId,
+      version: 1,
+      lastErrorCode: null,
+      createdAt: at(6_000),
+      updatedAt: at(6_000),
+    };
+    const reusedRevision: ExperimentEvaluationRevision = {
+      ...revision,
+      id: randomUUID(),
+      sessionId: reusedSessionId,
+      attemptId: reusedAttemptId,
+      createdAt: at(6_000),
+    };
+    const reused = database.createExperimentEvaluationSessionFromProfile({
+      session: reusedSession,
+      revision: reusedRevision,
+      profileId,
+      usedAt: at(6_000),
+    });
+    invariant(
+      reused?.acceptedProfileId === profileId &&
+        database.getExperimentEvaluationProfile(projectId, profileId)?.useCount === 1 &&
+        database.getExperimentEvaluationSessionDetail(projectId, reusedSessionId)?.currentRevision
+          ?.id === reusedRevision.id,
+      'experiment_evaluation_profile_reuse_failed',
+    );
+
+    const tamperSessionId = randomUUID();
+    invariant(
+      database.createExperimentEvaluationSession(
+        initialSession(tamperSessionId, 'Evaluation tamper fixture'),
+      ),
+      'experiment_evaluation_tamper_session_create_failed',
+    );
+    const tamperAttemptId = randomUUID();
+    const tamperGenerating = database.beginExperimentEvaluationTurn({
+      projectId,
+      sessionId: tamperSessionId,
+      expectedVersion: 1,
+      attemptId: tamperAttemptId,
+      userMessage: userMessage(tamperSessionId, tamperAttemptId, at(7_000)),
+      updatedAt: at(7_000),
+    });
+    invariant(tamperGenerating !== null, 'experiment_evaluation_tamper_turn_begin_failed');
+    const tamperReady: ExperimentEvaluationSession = {
+      ...tamperGenerating,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 1,
+      version: 3,
+      updatedAt: at(8_000),
+    };
+    const tamperRevision: ExperimentEvaluationRevision = {
+      ...revision,
+      id: randomUUID(),
+      sessionId: tamperSessionId,
+      attemptId: tamperAttemptId,
+      createdAt: at(8_000),
+    };
+    let tamperedHashRejected = false;
+    try {
+      database.completeExperimentEvaluationTurn({
+        session: tamperReady,
+        revision: { ...tamperRevision, contentHash: '0'.repeat(64) },
+        assistantMessage: assistantMessage(
+          tamperSessionId,
+          tamperAttemptId,
+          1,
+          invocation,
+          at(8_000),
+        ),
+      });
+    } catch (error) {
+      tamperedHashRejected =
+        error instanceof Error && error.message === 'invalid_experiment_evaluation_completion';
+    }
+    invariant(
+      tamperedHashRejected &&
+        database.getExperimentEvaluationSession(projectId, tamperSessionId)?.status ===
+          'generating',
+      'experiment_evaluation_tampered_content_hash_was_accepted',
+    );
+    const mismatchedInvocation: ModelInvocation = {
+      ...invocation,
+      invocationId: randomUUID(),
+      resolvedModelId: 'different-fixture-model',
+    };
+    let tamperedInvocationRejected = false;
+    try {
+      database.completeExperimentEvaluationTurn({
+        session: tamperReady,
+        revision: tamperRevision,
+        assistantMessage: assistantMessage(
+          tamperSessionId,
+          tamperAttemptId,
+          1,
+          mismatchedInvocation,
+          at(8_000),
+        ),
+      });
+    } catch (error) {
+      tamperedInvocationRejected =
+        error instanceof Error && error.message === 'invalid_experiment_evaluation_completion';
+    }
+    invariant(
+      tamperedInvocationRejected &&
+        database.getExperimentEvaluationSession(projectId, tamperSessionId)?.status ===
+          'generating',
+      'experiment_evaluation_tampered_invocation_was_accepted',
+    );
+    invariant(
+      database.completeExperimentEvaluationTurn({
+        session: tamperReady,
+        revision: tamperRevision,
+        assistantMessage: assistantMessage(
+          tamperSessionId,
+          tamperAttemptId,
+          1,
+          invocation,
+          at(8_000),
+        ),
+      })?.status === 'ready',
+      'experiment_evaluation_valid_completion_failed_after_tamper_rejection',
+    );
+  } finally {
+    database.close();
   }
 }
 
@@ -6166,6 +6602,7 @@ void app.whenReady().then(async () => {
     verifySparseSemanticScholarMerge(fixedTimestamp);
     verifyLiteratureDiscoveryPersistence(fixedTimestamp);
     verifyLiteratureBoundsAndIdentity(fixedTimestamp);
+    verifyExperimentEvaluationPersistence(fixedTimestamp);
     verifyExperimentPersistence(fixedTimestamp);
     verifyLectureStudioListDetailBoundary(fixedTimestamp);
     verifyManuscriptWorkspacePersistence(temporaryUserData, fixedTimestamp);

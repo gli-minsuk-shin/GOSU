@@ -48,6 +48,10 @@ import {
   type ExperimentMetricSeries,
 } from './experiment-trajectory-model';
 import type { SearchTargetRequest } from './search-results-model';
+import {
+  ExperimentEvaluationStudioView,
+  type ExperimentEvaluationStudioAdapter,
+} from './experiment-evaluation-studio-view';
 import './experiments-view.css';
 
 export interface ExperimentsViewAdapter {
@@ -66,16 +70,20 @@ export interface ExperimentsViewProps {
   project: ProjectRecord;
   objective: WorkspaceObjective | undefined;
   adapter: ExperimentsViewAdapter;
+  evaluationAdapter: ExperimentEvaluationStudioAdapter;
+  requestedModelId: string | null;
+  reasoningOptionId: string | null;
   onOpenObjective: () => void;
   searchTarget?: SearchTargetRequest | null;
   onSearchTargetHandled?: (requestId: number) => void;
 }
 
-type ExperimentTab = 'overview' | 'runs' | 'logging' | 'ideas' | 'report';
+type ExperimentTab = 'overview' | 'runs' | 'evaluation' | 'logging' | 'ideas' | 'report';
 
 const EXPERIMENT_TABS: ReadonlyArray<{ id: ExperimentTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
   { id: 'runs', label: 'Runs' },
+  { id: 'evaluation', label: 'Evaluation studio' },
   { id: 'logging', label: 'Logging' },
   { id: 'ideas', label: 'Idea map' },
   { id: 'report', label: 'Report' },
@@ -270,6 +278,9 @@ export function ExperimentsView({
   project,
   objective,
   adapter,
+  evaluationAdapter,
+  requestedModelId,
+  reasoningOptionId,
   onOpenObjective,
   searchTarget = null,
   onSearchTargetHandled = () => undefined,
@@ -639,6 +650,18 @@ export function ExperimentsView({
               ideas={ideas}
               runs={runs}
               readRunLog={adapter.readRunLog}
+            />
+          )}
+          {activeTab === 'evaluation' && snapshot && (
+            <ExperimentEvaluationStudioView
+              key={project.id}
+              projectId={project.id}
+              loggingTemplate={snapshot.loggingTemplate}
+              adapter={evaluationAdapter}
+              requestedModelId={requestedModelId}
+              reasoningOptionId={reasoningOptionId}
+              onApplyLoggingFields={reviseLoggingTemplate}
+              onOpenObjective={onOpenObjective}
             />
           )}
           {activeTab === 'logging' && snapshot && (

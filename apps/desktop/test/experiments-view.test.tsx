@@ -13,6 +13,7 @@ import {
   type ExperimentsViewAdapter,
   validateExperimentLoggingFields,
 } from '../src/renderer/src/experiments-view';
+import type { ExperimentEvaluationStudioAdapter } from '../src/renderer/src/experiment-evaluation-studio-view';
 import {
   EXPERIMENT_LOGGING_SYSTEM_FIELDS,
   EXPERIMENT_MAX_LOGGING_FIELDS,
@@ -37,6 +38,16 @@ const adapter: ExperimentsViewAdapter = {
   updateIdea: vi.fn(),
   recordMetric: vi.fn(),
   reviseLoggingTemplate: vi.fn(),
+  onEvent: vi.fn(() => () => undefined),
+};
+
+const evaluationAdapter: ExperimentEvaluationStudioAdapter = {
+  list: vi.fn(),
+  detail: vi.fn(),
+  createSession: vi.fn(),
+  send: vi.fn(),
+  approve: vi.fn(),
+  reuseProfile: vi.fn(),
   onEvent: vi.fn(() => () => undefined),
 };
 
@@ -133,6 +144,9 @@ describe('ExperimentsView', () => {
         project={project}
         objective={undefined}
         adapter={adapter}
+        evaluationAdapter={evaluationAdapter}
+        requestedModelId={null}
+        reasoningOptionId={null}
         onOpenObjective={vi.fn()}
       />,
     );
@@ -144,6 +158,7 @@ describe('ExperimentsView', () => {
     expect(html).toContain('role="tablist"');
     expect(html).toContain('Overview');
     expect(html).toContain('Runs');
+    expect(html).toContain('Evaluation studio');
     expect(html).toContain('Logging');
     expect(html).toContain('Idea map');
     expect(html).toContain('Report');

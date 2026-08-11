@@ -14,6 +14,8 @@ import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import { createManuscriptWorkspaceAdapterRegistry } from '@gosu/integrations';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
+import { EXPERIMENT_EVALUATION_IPC_CHANNELS } from '../shared/experiment-evaluation-channels';
+import { ExperimentEvaluationEventSchema } from '../shared/experiment-evaluation-contracts';
 import { HERMES_ACP_APPROVAL_CHANNELS } from '../shared/hermes-acp-approval-channels';
 import { HermesAcpApprovalEventSchema } from '../shared/hermes-acp-approval-contracts';
 import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
@@ -49,6 +51,9 @@ import { LectureStudioService } from './lecture-studio-service';
 import { createLiteratureTransferPlatform } from './literature-transfer-platform';
 import { registerExperimentRunLogIpc } from './experiment-run-log-ipc';
 import { ExperimentRunLogService } from './experiment-run-log-service';
+import { LocalExperimentEvaluationArtifacts } from './experiment-evaluation-artifacts';
+import { registerExperimentEvaluationIpc } from './experiment-evaluation-ipc';
+import { ExperimentEvaluationService } from './experiment-evaluation-service';
 import { registerExperimentWorkspaceIpc } from './experiment-workspace-ipc';
 import { ExperimentWorkspaceService } from './experiment-workspace-service';
 import { registerProjectChatAttachmentIpc } from './project-chat-attachment-ipc';
@@ -140,6 +145,21 @@ const experimentWorkspace = new ExperimentWorkspaceService({
 const experimentRunLogs = new ExperimentRunLogService({
   experiments: experimentWorkspace,
   ssh,
+});
+const experimentEvaluationArtifacts = new LocalExperimentEvaluationArtifacts(() =>
+  join(app.getPath('userData'), 'evaluation-profiles'),
+);
+const experimentEvaluation = new ExperimentEvaluationService({
+  storage: database,
+  workspace,
+  experiments: experimentWorkspace,
+  codex,
+  artifacts: experimentEvaluationArtifacts,
+  async prepareDirectory(projectId) {
+    const directory = join(app.getPath('userData'), 'experiment-evaluation-workspaces', projectId);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    return directory;
+  },
 });
 const gitWorkspace = new GitWorkspaceService({
   workspace,
@@ -482,6 +502,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     experimentWorkspace,
     reportUnexpectedWorkspaceError,
   );
+  registerExperimentEvaluationIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    experimentEvaluation,
+    reportUnexpectedWorkspaceError,
+  );
   registerExperimentRunLogIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     experimentRunLogs,
@@ -589,6 +614,18 @@ if (!primaryInstance) {
     let localData = localDataReadiness();
     try {
       database.open();
+      const evaluationArtifactReconciliation = await experimentEvaluationArtifacts
+        .reconcilePendingProfiles(
+          (projectId, profileId) =>
+            database.getExperimentEvaluationProfile(projectId, profileId) !== null,
+        )
+        .catch(() => ({ finalized: 0, removed: 0, failures: 1 }));
+      if (evaluationArtifactReconciliation.failures > 0) {
+        localData = {
+          ready: true,
+          detail: 'encrypted_local_data_ready_artifact_reconciliation_incomplete',
+        };
+      }
       await overleafGitCredentials
         .reconcilePending(database.listManuscriptCredentialReferences('overleaf_git'))
         .catch(() => undefined);
@@ -647,6 +684,18 @@ if (!primaryInstance) {
           mainWindow.webContents.send(EXPERIMENT_WORKSPACE_IPC_CHANNELS.event, event);
         } catch {
           console.error('[GOSU] Experiment workspace renderer event delivery failed.');
+        }
+      }
+    });
+    experimentEvaluation.onEvent((event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send(
+            EXPERIMENT_EVALUATION_IPC_CHANNELS.event,
+            ExperimentEvaluationEventSchema.parse(event),
+          );
+        } catch {
+          console.error('[GOSU] Experiment Evaluation renderer event delivery failed.');
         }
       }
     });
