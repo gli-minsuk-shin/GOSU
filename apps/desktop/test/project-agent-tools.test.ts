@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   ProjectAgentToolSession,
+  type ProjectAgentExperiments,
   type ProjectAgentLiterature,
   type ProjectAgentResearchNoteReceiptStorage,
   type ProjectAgentSsh,
@@ -21,6 +22,13 @@ import type {
   CodexJsonValue,
 } from '../src/main/codex-app-server';
 import type { LocalNotesVaultGrant } from '../src/shared/project-chat-contracts';
+import {
+  EXPERIMENT_LOGGING_SYSTEM_FIELDS,
+  type CreateExperimentRunInput,
+  type ExperimentRun,
+  type ExperimentWorkspaceSnapshot,
+  type UpdateExperimentRunInput,
+} from '../src/shared/experiment-workspace-contracts';
 import type {
   LiteratureSearchInput,
   LiteratureSearchReceipt,
@@ -204,6 +212,8 @@ class FakeProjectVault implements ProjectAgentVault {
 }
 
 class FakeProjectSsh implements ProjectAgentSsh {
+  grantVersion = 1;
+  canonicalRoot = '/workspace';
   readonly connections: SshConnectionProfile[] = [
     {
       schemaVersion: 1,
@@ -266,9 +276,9 @@ class FakeProjectSsh implements ProjectAgentSsh {
           id: SSH_GRANT_ID,
           projectId,
           connectionId: SSH_CONNECTION_ID,
-          canonicalRoot: '/workspace',
+          canonicalRoot: this.canonicalRoot,
           permissionMode: 'workspace',
-          version: 1,
+          version: this.grantVersion,
           createdAt: '2026-08-05T00:00:00.000Z',
           updatedAt: '2026-08-05T00:00:00.000Z',
         },
@@ -406,6 +416,272 @@ class FakeProjectLiterature implements ProjectAgentLiterature {
   );
 }
 
+class FakeProjectExperiments implements ProjectAgentExperiments {
+  private readonly bindings = new Map<string, string>();
+  private readonly executionIntents = new Map<
+    string,
+    {
+      projectId: string;
+      runId: string;
+      workspaceGrantId: string;
+      grantVersion: number;
+      connectionId: string;
+      connectionVersion: number;
+      canonicalRoot: string;
+      canonicalRootHash: string;
+      policyVersion: number;
+      executionPolicyHash: string;
+      intentHash: string;
+      workspaceSubdirectory: string | null;
+      relativePath: string;
+      createdAt: string;
+    }
+  >();
+  private readonly logSources = new Map<string, unknown>();
+  bindFailuresRemaining = 0;
+  verifyingFailuresRemaining = 0;
+  linkFailuresRemaining = 0;
+  summaryFailuresRemaining = 0;
+  comparableObjective: { id: string; version: number } | null = null;
+  readonly linkRunLogSource = vi.fn(async (input) => {
+    if (this.linkFailuresRemaining > 0) {
+      this.linkFailuresRemaining -= 1;
+      throw new Error('experiment_run_log_unavailable');
+    }
+    this.logSources.set(input.referenceId, structuredClone(input));
+    return input;
+  });
+  readonly recordRunSummaryMetric = vi.fn(async (input) => {
+    if (this.summaryFailuresRemaining > 0) {
+      this.summaryFailuresRemaining -= 1;
+      throw new Error('experiment_run_log_unavailable');
+    }
+    return input;
+  });
+  readonly snapshot: ExperimentWorkspaceSnapshot;
+
+  constructor(readonly projectId: string) {
+    this.snapshot = {
+      schemaVersion: 1,
+      projectId,
+      loggingTemplate: {
+        schemaVersion: 1,
+        id: '11111111-aaaa-4111-8111-111111111111',
+        projectId,
+        version: 1,
+        previousRevisionId: null,
+        systemFields: EXPERIMENT_LOGGING_SYSTEM_FIELDS,
+        customFields: [
+          {
+            key: 'step',
+            label: 'Step',
+            type: 'string',
+            category: 'progress',
+            requiredAt: ['progress'],
+            unit: null,
+          },
+          {
+            key: 'elapsed_seconds',
+            label: 'Elapsed time',
+            type: 'number',
+            category: 'progress',
+            requiredAt: ['progress', 'run-end'],
+            unit: 's',
+          },
+        ],
+        templateHash: '1'.repeat(64),
+        createdAt: '2026-08-05T00:00:00.000Z',
+      },
+      ideas: [],
+      metricPoints: [],
+      runs: [],
+    };
+  }
+
+  readonly list = vi.fn(async (input: { projectId: string }) => {
+    if (input.projectId !== this.projectId) throw new Error('experiment_project_not_found');
+    return structuredClone(this.snapshot);
+  });
+
+  readonly createRun = vi.fn(async (input: CreateExperimentRunInput): Promise<ExperimentRun> => {
+    if (input.projectId !== this.projectId) throw new Error('experiment_project_not_found');
+    const timestamp = '2026-08-05T00:00:01.000Z';
+    const run: ExperimentRun = {
+      schemaVersion: 1,
+      id: randomUUID(),
+      projectId: this.projectId,
+      ideaId: input.ideaId,
+      title: input.title,
+      status: 'queued',
+      mode: input.mode,
+      serverLabel: input.serverLabel,
+      trialId: input.trialId,
+      objectiveId: input.mode === 'comparable' ? (this.comparableObjective?.id ?? null) : null,
+      objectiveVersion:
+        input.mode === 'comparable' ? (this.comparableObjective?.version ?? null) : null,
+      loggingTemplate: {
+        revisionId: this.snapshot.loggingTemplate.id,
+        version: this.snapshot.loggingTemplate.version,
+        systemFields: this.snapshot.loggingTemplate.systemFields,
+        customFields: structuredClone(this.snapshot.loggingTemplate.customFields),
+        templateHash: this.snapshot.loggingTemplate.templateHash,
+      },
+      progressCurrent: null,
+      progressTotal: null,
+      currentStep: null,
+      latestMetric: null,
+      logReference: null,
+      processExitCode: null,
+      processDurationMs: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      startedAt: null,
+      completedAt: null,
+      version: 1,
+    };
+    (this.snapshot.runs as ExperimentRun[]).push(run);
+    return structuredClone(run);
+  });
+
+  readonly updateRun = vi.fn(async (input: UpdateExperimentRunInput): Promise<ExperimentRun> => {
+    if (input.projectId !== this.projectId) throw new Error('experiment_project_not_found');
+    if (input.status === 'verifying' && this.verifyingFailuresRemaining > 0) {
+      this.verifyingFailuresRemaining -= 1;
+      throw new Error('experiment_run_conflict');
+    }
+    const index = this.snapshot.runs.findIndex((run) => run.id === input.runId);
+    if (index < 0) throw new Error('experiment_run_not_found');
+    const current = this.snapshot.runs[index]!;
+    if (current.version !== input.expectedVersion) throw new Error('experiment_run_conflict');
+    const timestamp = `2026-08-05T00:00:0${Math.min(9, current.version + 1)}.000Z`;
+    const status = input.status ?? current.status;
+    const terminal = ['succeeded', 'failed', 'cancelled', 'lost'].includes(status);
+    const next: ExperimentRun = {
+      ...current,
+      status,
+      progressCurrent:
+        input.progressCurrent === undefined ? current.progressCurrent : input.progressCurrent,
+      progressTotal:
+        input.progressTotal === undefined ? current.progressTotal : input.progressTotal,
+      currentStep: input.currentStep === undefined ? current.currentStep : input.currentStep,
+      latestMetric:
+        input.latestMetric === undefined
+          ? current.latestMetric
+          : input.latestMetric === null
+            ? null
+            : { ...input.latestMetric, recordedAt: timestamp },
+      logReference: input.logReference === undefined ? current.logReference : input.logReference,
+      processExitCode:
+        input.processExitCode === undefined ? current.processExitCode : input.processExitCode,
+      processDurationMs:
+        input.processDurationMs === undefined ? current.processDurationMs : input.processDurationMs,
+      startedAt:
+        status === 'running' || status === 'verifying' || terminal
+          ? (current.startedAt ?? timestamp)
+          : current.startedAt,
+      completedAt: terminal ? (current.completedAt ?? timestamp) : null,
+      updatedAt: timestamp,
+      version: current.version + 1,
+    };
+    (this.snapshot.runs as ExperimentRun[])[index] = next;
+    return structuredClone(next);
+  });
+
+  readonly bindRunExecution = vi.fn(
+    async (input: { projectId: string; runId: string; workspaceGrantId: string }) => {
+      if (input.projectId !== this.projectId) throw new Error('experiment_project_not_found');
+      if (!this.snapshot.runs.some((run) => run.id === input.runId)) {
+        throw new Error('experiment_run_not_found');
+      }
+      if (this.bindFailuresRemaining > 0) {
+        this.bindFailuresRemaining -= 1;
+        throw new Error('experiment_run_conflict');
+      }
+      const existing = this.bindings.get(input.runId);
+      if (existing && existing !== input.workspaceGrantId) {
+        throw new Error('experiment_run_conflict');
+      }
+      this.bindings.set(input.runId, input.workspaceGrantId);
+      return input;
+    },
+  );
+
+  readonly getRunExecutionBinding = vi.fn(async (input: { projectId: string; runId: string }) => {
+    if (input.projectId !== this.projectId) throw new Error('experiment_project_not_found');
+    const workspaceGrantId = this.bindings.get(input.runId);
+    return workspaceGrantId ? { ...input, workspaceGrantId } : null;
+  });
+
+  readonly stageRunExecutionIntent = vi.fn(
+    async (input: {
+      projectId: string;
+      runId: string;
+      workspaceGrantId: string;
+      grantVersion: number;
+      connectionId: string;
+      connectionVersion: number;
+      canonicalRoot: string;
+      canonicalRootHash: string;
+      policyVersion: number;
+      executionPolicyHash: string;
+      intentHash: string;
+      workspaceSubdirectory: string | null;
+      relativePath: string;
+    }) => {
+      if (input.projectId !== this.projectId) throw new Error('experiment_project_not_found');
+      const existing = this.executionIntents.get(input.runId);
+      if (existing) {
+        const exact =
+          existing.projectId === input.projectId &&
+          existing.workspaceGrantId === input.workspaceGrantId &&
+          existing.grantVersion === input.grantVersion &&
+          existing.connectionId === input.connectionId &&
+          existing.connectionVersion === input.connectionVersion &&
+          existing.canonicalRoot === input.canonicalRoot &&
+          existing.canonicalRootHash === input.canonicalRootHash &&
+          existing.policyVersion === input.policyVersion &&
+          existing.executionPolicyHash === input.executionPolicyHash &&
+          existing.intentHash === input.intentHash &&
+          existing.workspaceSubdirectory === input.workspaceSubdirectory &&
+          existing.relativePath === input.relativePath;
+        if (!exact) throw new Error('experiment_run_conflict');
+        return structuredClone(existing);
+      }
+      const intent = {
+        ...input,
+        createdAt: '2026-08-05T00:00:01.500Z',
+      };
+      this.executionIntents.set(input.runId, intent);
+      return structuredClone(intent);
+    },
+  );
+
+  readonly getRunExecutionIntent = vi.fn(async (input: { projectId: string; runId: string }) => {
+    if (input.projectId !== this.projectId) throw new Error('experiment_project_not_found');
+    const intent = this.executionIntents.get(input.runId);
+    return intent ? structuredClone(intent) : null;
+  });
+
+  readonly getRunLogSource = vi.fn(
+    async (input: { projectId: string; runId: string; referenceId: string }) => {
+      if (input.projectId !== this.projectId) throw new Error('experiment_project_not_found');
+      return this.logSources.get(input.referenceId) ?? null;
+    },
+  );
+
+  cancelExternally(runId: string) {
+    const index = this.snapshot.runs.findIndex((run) => run.id === runId);
+    const current = this.snapshot.runs[index]!;
+    (this.snapshot.runs as ExperimentRun[])[index] = {
+      ...current,
+      status: 'cancelled',
+      completedAt: '2026-08-05T00:00:09.000Z',
+      updatedAt: '2026-08-05T00:00:09.000Z',
+      version: current.version + 1,
+    };
+  }
+}
+
 async function workspaceFixture() {
   const workspace = new WorkspaceService(new MemoryWorkspaceStorage());
   const projectAlpha = await workspace.createProject({ name: 'Project Alpha' });
@@ -495,12 +771,128 @@ function invokeTool(session: ProjectAgentToolSession, call: CodexDynamicToolCall
   return session.handler(call, delivered());
 }
 
+function validExploratoryExperimentJsonl(run: ExperimentRun, step = 'fit') {
+  const base = {
+    schema_version: 1,
+    template_version: run.loggingTemplate.version,
+    objective_version: null,
+    run_id: run.id,
+    trial_id: run.trialId,
+    server_label: run.serverLabel,
+  };
+  return [
+    {
+      ...base,
+      occurred_at: '2026-08-05T00:00:02.000Z',
+      event_type: 'run-start',
+      sequence: 1,
+      status: 'running',
+    },
+    {
+      ...base,
+      occurred_at: '2026-08-05T00:00:03.000Z',
+      event_type: 'progress',
+      sequence: 2,
+      status: 'running',
+      step,
+      elapsed_seconds: 1,
+    },
+    {
+      ...base,
+      occurred_at: '2026-08-05T00:00:04.000Z',
+      event_type: 'run-end',
+      sequence: 3,
+      status: 'succeeded',
+      elapsed_seconds: 2,
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join('\n');
+}
+
+function validComparableExperimentJsonl(run: ExperimentRun, metricValue: number) {
+  const base = {
+    schema_version: 1,
+    template_version: run.loggingTemplate.version,
+    objective_version: run.objectiveVersion,
+    run_id: run.id,
+    trial_id: run.trialId,
+    server_label: run.serverLabel,
+  };
+  return [
+    {
+      ...base,
+      occurred_at: '2026-08-05T00:00:02.000Z',
+      event_type: 'run-start',
+      sequence: 1,
+      status: 'running',
+    },
+    {
+      ...base,
+      occurred_at: '2026-08-05T00:00:03.000Z',
+      event_type: 'progress',
+      sequence: 2,
+      status: 'running',
+      step: 'fit',
+      elapsed_seconds: 1,
+    },
+    {
+      ...base,
+      occurred_at: '2026-08-05T00:00:04.000Z',
+      event_type: 'run-end',
+      sequence: 3,
+      status: 'succeeded',
+      elapsed_seconds: 2,
+    },
+    {
+      ...base,
+      occurred_at: '2026-08-05T00:00:05.000Z',
+      event_type: 'summary',
+      sequence: 4,
+      status: 'succeeded',
+      accuracy: metricValue,
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join('\n');
+}
+
+function experimentLogReadResult(relativePath: string, content: string): SshCommandResult {
+  return {
+    schemaVersion: 1,
+    trust: 'untrusted_remote_output',
+    connectionLabel: 'Training GPU',
+    commandSha256: '9'.repeat(64),
+    exitCode: 0,
+    stdout: JSON.stringify({
+      schemaVersion: 1,
+      action: 'read',
+      relativePath,
+      content,
+      contentSha256: createHash('sha256').update(content, 'utf8').digest('hex'),
+      offset: 0,
+      nextOffset: null,
+      totalCharacters: [...content].length,
+      truncated: false,
+    }),
+    stderr: '',
+    truncated: false,
+    durationMs: 3,
+  };
+}
+
+const experimentCoveragePlan = [
+  { lifecycle: 'progress' as const, fields: ['step', 'elapsed_seconds'] },
+  { lifecycle: 'run-end' as const, fields: ['elapsed_seconds'] },
+];
+
 function authorizedSession(
   workspace: WorkspaceService,
   projectId: string,
   vault = new FakeProjectVault(),
   ssh = new FakeProjectSsh(),
   literature = new FakeProjectLiterature(),
+  experiments?: ProjectAgentExperiments,
 ) {
   return {
     session: new ProjectAgentToolSession({
@@ -516,6 +908,7 @@ function authorizedSession(
       },
       literature,
       ssh,
+      ...(experiments ? { experiments } : {}),
     }),
     vault,
     literature,
@@ -648,10 +1041,9 @@ describe('ProjectAgentToolSession', () => {
     expect(declaredCatalog).toContain('searchTags');
     expect(declaredCatalog).toContain('workflow provenance labels');
     expect(declaredCatalog).toContain('provider-supplied subjects');
-    expect(declaredCatalog).toContain('foreground Python experiment');
-    expect(declaredCatalog).toContain('/usr/bin/python3');
-    expect(declaredCatalog).toContain('at most 120 seconds');
-    expect(declaredCatalog).toContain('not a hard remote sandbox or an unattended job runner');
+    expect(declaredCatalog).toContain('read-only Git inspection');
+    expect(declaredCatalog).toContain('create_experiment_run');
+    expect(declaredCatalog).toContain('not a hard remote sandbox or unattended Runner');
     expect(declaredCatalog).toContain('expectedSha256');
     expect(declaredCatalog).toContain('hash-check');
     expect(declaredCatalog).toContain('delete, rename, chmod, binary/large-file access');
@@ -2034,5 +2426,1255 @@ describe('ProjectAgentToolSession', () => {
     expect(appendix).toContain(NOTE_SHA256);
     expect(appendix).toContain(secondHash);
     expect(appendix.match(/Versioned evidence/gu)).toHaveLength(2);
+  });
+
+  it.each([
+    ['/usr/bin/python3', ['experiments/train.py']],
+    ['/usr/bin/python', ['-u', 'experiments/train.py']],
+  ])(
+    'rejects the generic SSH experiment bypass for %s before requesting approval',
+    async (command, args) => {
+      const { workspace, projectAlpha } = await workspaceFixture();
+      const { session, ssh } = authorizedSession(workspace, projectAlpha.id);
+
+      const result = await invokeTool(
+        session,
+        toolCall('run_ssh_workspace_command', {
+          grantId: SSH_GRANT_ID,
+          command,
+          args,
+          timeoutSeconds: 120,
+        }),
+      );
+
+      expect(result.success).toBe(false);
+      expect(resultPayload(result)).toEqual({ error: 'experiment_tracking_required' });
+      expect(ssh.runAgentWorkspaceCommand).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a created run queued when binding is transient and binds it on execution retry', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    experiments.bindFailuresRemaining = 1;
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+
+    const created = await invokeTool(
+      session,
+      toolCall('create_experiment_run', {
+        grantId: SSH_GRANT_ID,
+        title: 'Retryable binding',
+        mode: 'exploratory',
+      }),
+    );
+    const createdPayload = resultPayload(created);
+    const run = createdPayload.run as ExperimentRun;
+    expect(createdPayload).toMatchObject({
+      persisted: true,
+      workspaceBound: false,
+      bindingPending: true,
+      run: { status: 'queued' },
+    });
+
+    const stdout = validExploratoryExperimentJsonl(run);
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout,
+      stderr: '',
+      truncated: false,
+      durationMs: 17,
+    });
+    ssh.runAgentWorkspaceFileOperation.mockResolvedValueOnce(
+      experimentLogReadResult('logs/binding-retry.jsonl', stdout),
+    );
+
+    const executed = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        runId: run.id,
+        grantId: SSH_GRANT_ID,
+        command: '/usr/bin/python3',
+        args: ['experiments/train.py'],
+        timeoutSeconds: 120,
+        logPath: 'logs/binding-retry.jsonl',
+        coveragePlan: experimentCoveragePlan,
+      }),
+    );
+
+    expect(resultPayload(executed)).toMatchObject({
+      process: { outcome: 'succeeded', exitCode: 0, durationMs: 17 },
+      run: { status: 'succeeded' },
+    });
+    expect(experiments.bindRunExecution).toHaveBeenCalledTimes(2);
+    expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries only exact log verification after a successful process', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const run = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Verification replay',
+          mode: 'exploratory',
+        }),
+      ),
+    ).run as ExperimentRun;
+    const stdout = validExploratoryExperimentJsonl(run, 'verify-once');
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout,
+      stderr: '',
+      truncated: false,
+      durationMs: 23,
+    });
+    ssh.runAgentWorkspaceFileOperation
+      .mockRejectedValueOnce(new Error('ssh_approval_expired'))
+      .mockResolvedValueOnce(experimentLogReadResult('logs/verify-retry.jsonl', stdout));
+    const executeArguments = {
+      runId: run.id,
+      grantId: SSH_GRANT_ID,
+      command: '/usr/bin/python3',
+      args: ['experiments/train.py'],
+      timeoutSeconds: 120,
+      logPath: 'logs/verify-retry.jsonl',
+      coveragePlan: experimentCoveragePlan,
+    } as const;
+
+    const pending = await invokeTool(session, toolCall('execute_experiment_run', executeArguments));
+    expect(resultPayload(pending)).toMatchObject({
+      replayed: false,
+      verificationPending: true,
+      retryableError: 'ssh_approval_expired',
+      process: { outcome: 'verifying', exitCode: 0, durationMs: 23 },
+      logValidation: { state: 'pending', missingFields: [] },
+      run: {
+        status: 'verifying',
+        processExitCode: 0,
+        processDurationMs: 23,
+      },
+    });
+
+    const verified = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', executeArguments),
+    );
+    expect(resultPayload(verified)).toMatchObject({
+      replayed: true,
+      verificationPending: false,
+      process: { outcome: 'succeeded', exitCode: 0, durationMs: 23 },
+      logValidation: { state: 'valid', missingFields: [] },
+      run: { status: 'succeeded' },
+    });
+    expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledTimes(1);
+    expect(ssh.runAgentWorkspaceFileOperation).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not read a log or rerun after a crash before the process receipt reaches verifying', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    experiments.verifyingFailuresRemaining = 3;
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const run = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Receipt staging crash',
+          mode: 'exploratory',
+        }),
+      ),
+    ).run as ExperimentRun;
+    const stdout = validExploratoryExperimentJsonl(run);
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout,
+      stderr: '',
+      truncated: false,
+      durationMs: 19,
+    });
+    const executeArguments = {
+      runId: run.id,
+      grantId: SSH_GRANT_ID,
+      command: '/usr/bin/python3',
+      args: ['experiments/train.py'],
+      timeoutSeconds: 120,
+      logPath: 'logs/staging-crash.jsonl',
+      coveragePlan: experimentCoveragePlan,
+    } as const;
+
+    const failedStage = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', executeArguments),
+    );
+    expect(resultPayload(failedStage)).toEqual({ error: 'experiment_run_conflict' });
+    expect(experiments.snapshot.runs.find((candidate) => candidate.id === run.id)?.status).toBe(
+      'running',
+    );
+    expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledTimes(1);
+    expect(ssh.runAgentWorkspaceFileOperation).not.toHaveBeenCalled();
+
+    const replay = await invokeTool(session, toolCall('execute_experiment_run', executeArguments));
+    expect(resultPayload(replay)).toMatchObject({
+      replayed: true,
+      executionPending: true,
+      run: { status: 'running' },
+    });
+    expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledTimes(1);
+    expect(ssh.runAgentWorkspaceFileOperation).not.toHaveBeenCalled();
+  });
+
+  it('binds replay to the exact current grant, connection, root, and execution policy authority', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const run = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Authority-bound verification',
+          mode: 'exploratory',
+        }),
+      ),
+    ).run as ExperimentRun;
+    const stdout = validExploratoryExperimentJsonl(run);
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout,
+      stderr: '',
+      truncated: false,
+      durationMs: 29,
+    });
+    ssh.runAgentWorkspaceFileOperation.mockRejectedValueOnce(new Error('ssh_approval_expired'));
+    const executeArguments = {
+      runId: run.id,
+      grantId: SSH_GRANT_ID,
+      command: '/usr/bin/python3',
+      args: ['experiments/train.py'],
+      timeoutSeconds: 120,
+      logPath: 'logs/authority.jsonl',
+      coveragePlan: experimentCoveragePlan,
+    } as const;
+
+    const pending = await invokeTool(session, toolCall('execute_experiment_run', executeArguments));
+    expect(resultPayload(pending)).toMatchObject({
+      verificationPending: true,
+      run: { status: 'verifying' },
+    });
+    expect(experiments.stageRunExecutionIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceGrantId: SSH_GRANT_ID,
+        grantVersion: 1,
+        connectionId: SSH_CONNECTION_ID,
+        connectionVersion: 1,
+        canonicalRoot: '/workspace',
+        canonicalRootHash: createHash('sha256').update('/workspace', 'utf8').digest('hex'),
+        policyVersion: 1,
+        executionPolicyHash: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      }),
+    );
+    expect(pending.contentItems[0]!.text).not.toContain('/workspace');
+
+    ssh.grantVersion = 2;
+    const authorityDrift = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', executeArguments),
+    );
+    expect(resultPayload(authorityDrift)).toEqual({
+      error: 'experiment_run_intent_mismatch',
+    });
+    expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledTimes(1);
+    expect(ssh.runAgentWorkspaceFileOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it('durably enters verifying before validating a nonzero-exit process log', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const run = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Failed process log',
+          mode: 'exploratory',
+        }),
+      ),
+    ).run as ExperimentRun;
+    const stdout = validExploratoryExperimentJsonl(run).replaceAll(
+      '"status":"succeeded"',
+      '"status":"failed"',
+    );
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 7,
+      stdout,
+      stderr: 'bounded failure detail',
+      truncated: false,
+      durationMs: 37,
+    });
+    ssh.runAgentWorkspaceFileOperation.mockImplementationOnce(async () => {
+      expect(experiments.snapshot.runs.find((candidate) => candidate.id === run.id)).toMatchObject({
+        status: 'verifying',
+        processExitCode: 7,
+        processDurationMs: 37,
+      });
+      return experimentLogReadResult('logs/process-failed.jsonl', stdout);
+    });
+
+    const result = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        runId: run.id,
+        grantId: SSH_GRANT_ID,
+        command: '/usr/bin/python3',
+        args: ['experiments/train.py'],
+        timeoutSeconds: 120,
+        logPath: 'logs/process-failed.jsonl',
+        coveragePlan: experimentCoveragePlan,
+      }),
+    );
+
+    expect(resultPayload(result)).toMatchObject({
+      process: { outcome: 'failed', exitCode: 7, durationMs: 37 },
+      logValidation: { state: 'valid' },
+      logSourceLinked: true,
+      run: { status: 'failed' },
+    });
+    expect(experiments.updateRun.mock.calls.map(([input]) => input.status).filter(Boolean)).toEqual(
+      ['running', 'verifying', 'failed'],
+    );
+  });
+
+  it('rejects changed verification and terminal replays against the staged intent', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const run = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Immutable execution intent',
+          mode: 'exploratory',
+        }),
+      ),
+    ).run as ExperimentRun;
+    const stdout = validExploratoryExperimentJsonl(run);
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout,
+      stderr: '',
+      truncated: false,
+      durationMs: 31,
+    });
+    ssh.runAgentWorkspaceFileOperation
+      .mockRejectedValueOnce(new Error('ssh_connection_failed'))
+      .mockResolvedValueOnce(experimentLogReadResult('logs/intent.jsonl', stdout));
+    const exactArguments = {
+      runId: run.id,
+      grantId: SSH_GRANT_ID,
+      command: '/usr/bin/python3',
+      args: ['experiments/train.py'],
+      timeoutSeconds: 120,
+      logPath: 'logs/intent.jsonl',
+      coveragePlan: experimentCoveragePlan,
+    } as const;
+
+    await invokeTool(session, toolCall('execute_experiment_run', exactArguments));
+    const changedVerification = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        ...exactArguments,
+        args: ['experiments/train.py', '--seed', '2'],
+      }),
+    );
+    expect(resultPayload(changedVerification)).toEqual({
+      error: 'experiment_run_intent_mismatch',
+    });
+    expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledTimes(1);
+    expect(ssh.runAgentWorkspaceFileOperation).toHaveBeenCalledTimes(1);
+
+    const verified = await invokeTool(session, toolCall('execute_experiment_run', exactArguments));
+    expect(resultPayload(verified)).toMatchObject({ run: { status: 'succeeded' } });
+    const terminalReplay = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', exactArguments),
+    );
+    expect(resultPayload(terminalReplay)).toMatchObject({
+      replayed: true,
+      verificationPending: false,
+      run: { status: 'succeeded' },
+    });
+    const changedTerminal = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        ...exactArguments,
+        logPath: 'logs/changed-after-success.jsonl',
+      }),
+    );
+    expect(resultPayload(changedTerminal)).toEqual({ error: 'experiment_run_intent_mismatch' });
+    expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledTimes(1);
+    expect(ssh.runAgentWorkspaceFileOperation).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers missing terminal log-source and summary projections without rerunning the process', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const workspaceSnapshot = await workspace.snapshot();
+    const draftObjective = workspaceSnapshot.objectives.find(
+      (candidate) => candidate.projectId === projectAlpha.id,
+    )!;
+    const lockedObjective = await workspace.lockObjective({
+      projectId: projectAlpha.id,
+      expectedEntityVersion: draftObjective.entityVersion,
+    });
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    experiments.comparableObjective = {
+      id: lockedObjective.id,
+      version: lockedObjective.objectiveVersion,
+    };
+    const ideaId = '12121212-1212-4121-8121-121212121212';
+    experiments.snapshot.ideas.push({
+      schemaVersion: 1,
+      id: ideaId,
+      projectId: projectAlpha.id,
+      parentIdeaId: null,
+      title: 'Comparable recovery idea',
+      hypothesis: 'The tracked change improves accuracy.',
+      phase: 'validation',
+      outcome: 'planned',
+      resultSummary: '',
+      version: 1,
+      createdAt: '2026-08-05T00:00:00.000Z',
+      updatedAt: '2026-08-05T00:00:00.000Z',
+      completedAt: null,
+    });
+    experiments.linkFailuresRemaining = 1;
+    experiments.summaryFailuresRemaining = 1;
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const run = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Terminal projection recovery',
+          mode: 'comparable',
+          ideaId,
+        }),
+      ),
+    ).run as ExperimentRun;
+    const stdout = validComparableExperimentJsonl(run, 0.91);
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout,
+      stderr: '',
+      truncated: false,
+      durationMs: 43,
+    });
+    ssh.runAgentWorkspaceFileOperation.mockResolvedValue(
+      experimentLogReadResult('logs/projection-recovery.jsonl', stdout),
+    );
+    const executeArguments = {
+      runId: run.id,
+      grantId: SSH_GRANT_ID,
+      command: '/usr/bin/python3',
+      args: ['experiments/train.py'],
+      timeoutSeconds: 120,
+      logPath: 'logs/projection-recovery.jsonl',
+      coveragePlan: experimentCoveragePlan,
+    } as const;
+
+    const sourceCrash = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', executeArguments),
+    );
+    expect(resultPayload(sourceCrash)).toEqual({ error: 'experiment_run_log_unavailable' });
+    expect(experiments.snapshot.runs.find((candidate) => candidate.id === run.id)).toMatchObject({
+      status: 'succeeded',
+      processExitCode: 0,
+      processDurationMs: 43,
+    });
+    expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledTimes(1);
+    expect(experiments.recordRunSummaryMetric).not.toHaveBeenCalled();
+
+    const metricCrash = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', executeArguments),
+    );
+    expect(resultPayload(metricCrash)).toEqual({ error: 'experiment_run_log_unavailable' });
+    expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledTimes(1);
+    expect(experiments.linkRunLogSource).toHaveBeenCalledTimes(2);
+    expect(experiments.recordRunSummaryMetric).toHaveBeenCalledTimes(1);
+
+    const recovered = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', executeArguments),
+    );
+    expect(resultPayload(recovered)).toMatchObject({
+      replayed: true,
+      reconciliationPending: false,
+      logSourceLinked: true,
+      summaryMetricRecorded: true,
+      process: { outcome: 'succeeded', exitCode: 0, durationMs: 43 },
+      run: { status: 'succeeded' },
+    });
+    expect(ssh.runAgentWorkspaceCommand).toHaveBeenCalledTimes(1);
+    expect(ssh.runAgentWorkspaceFileOperation).toHaveBeenCalledTimes(2);
+    expect(experiments.recordRunSummaryMetric).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails safely without verification when SSH returns no process exit code', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const run = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Unknown process outcome',
+          mode: 'exploratory',
+        }),
+      ),
+    ).run as ExperimentRun;
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: null,
+      stdout: validExploratoryExperimentJsonl(run),
+      stderr: '',
+      truncated: false,
+      durationMs: 41,
+    });
+
+    const result = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        runId: run.id,
+        grantId: SSH_GRANT_ID,
+        command: '/usr/bin/python3',
+        args: ['experiments/train.py'],
+        timeoutSeconds: 120,
+        logPath: 'logs/unknown-exit.jsonl',
+        coveragePlan: experimentCoveragePlan,
+      }),
+    );
+
+    expect(resultPayload(result)).toMatchObject({
+      process: { outcome: 'failed', exitCode: null, durationMs: null },
+      run: { status: 'failed', processExitCode: null, processDurationMs: null },
+    });
+    expect(ssh.runAgentWorkspaceFileOperation).not.toHaveBeenCalled();
+  });
+
+  it('tracks an exploratory run against an immutable template and returns no raw remote data', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+
+    const setup = await invokeTool(session, toolCall('read_experiment_setup', {}));
+    expect(resultPayload(setup)).toMatchObject({
+      exploratoryRunRequirements: { targetThresholdRequired: false },
+      comparableRunRequirements: { targetThresholdRequired: false },
+      loggingTemplate: { version: 1 },
+    });
+    const created = await invokeTool(
+      session,
+      toolCall('create_experiment_run', {
+        grantId: SSH_GRANT_ID,
+        title: 'Tracked exploratory baseline',
+        mode: 'exploratory',
+      }),
+    );
+    const createdRun = resultPayload(created).run as ExperimentRun;
+    expect(createdRun.loggingTemplate.version).toBe(1);
+
+    experiments.snapshot.loggingTemplate.version = 2;
+    experiments.snapshot.loggingTemplate.customFields.push({
+      key: 'newer_field',
+      label: 'Newer field',
+      type: 'boolean',
+      category: 'note',
+      requiredAt: ['summary'],
+      unit: null,
+    });
+    const base = {
+      schema_version: 1,
+      template_version: 1,
+      objective_version: null,
+      run_id: createdRun.id,
+      trial_id: createdRun.trialId,
+      server_label: 'Training GPU',
+    };
+    const rawSentinel = 'RAW_REMOTE_VALUE_MUST_NOT_LEAK';
+    const stdout = [
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:02.000Z',
+        event_type: 'run-start',
+        sequence: 1,
+        status: 'running',
+      },
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:03.000Z',
+        event_type: 'progress',
+        sequence: 2,
+        status: 'running',
+        step: rawSentinel,
+        elapsed_seconds: 2.5,
+      },
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:04.000Z',
+        event_type: 'run-end',
+        sequence: 3,
+        status: 'succeeded',
+        elapsed_seconds: 4,
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n');
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout,
+      stderr: 'PRIVATE_STDERR',
+      truncated: false,
+      durationMs: 42,
+    });
+    ssh.runAgentWorkspaceFileOperation.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: '9'.repeat(64),
+      exitCode: 0,
+      stdout: JSON.stringify({
+        schemaVersion: 1,
+        action: 'read',
+        relativePath: 'private/results/trial.jsonl',
+        content: stdout,
+        contentSha256: createHash('sha256').update(stdout, 'utf8').digest('hex'),
+        offset: 0,
+        nextOffset: null,
+        totalCharacters: [...stdout].length,
+        truncated: false,
+      }),
+      stderr: '',
+      truncated: false,
+      durationMs: 5,
+    });
+    const executed = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        runId: createdRun.id,
+        grantId: SSH_GRANT_ID,
+        command: '/usr/bin/python3',
+        args: ['experiments/train.py'],
+        timeoutSeconds: 120,
+        logPath: 'private/results/trial.jsonl',
+        coveragePlan: [
+          { lifecycle: 'progress', fields: ['step', 'elapsed_seconds'] },
+          { lifecycle: 'run-end', fields: ['elapsed_seconds'] },
+        ],
+      }),
+    );
+    const serialized = executed.contentItems[0]!.text;
+
+    expect(executed.success).toBe(true);
+    expect(resultPayload(executed)).toMatchObject({
+      process: { outcome: 'succeeded', exitCode: 0, durationMs: 42 },
+      logValidation: { state: 'valid', missingFields: [] },
+      run: {
+        status: 'succeeded',
+        progressCurrent: null,
+        loggingTemplate: { version: 1 },
+      },
+    });
+    expect(serialized).not.toContain(rawSentinel);
+    expect(serialized).not.toContain('PRIVATE_STDERR');
+    expect(serialized).not.toContain('private/results/trial.jsonl');
+    expect(serialized).not.toContain('/workspace');
+    expect(serialized).not.toContain('sensitive-gpu.example.test');
+    expect(experiments.linkRunLogSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: projectAlpha.id,
+        runId: createdRun.id,
+        workspaceGrantId: SSH_GRANT_ID,
+        relativePath: 'private/results/trial.jsonl',
+      }),
+    );
+    expect(ssh.runAgentWorkspaceFileOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'read',
+        projectId: projectAlpha.id,
+        grantId: SSH_GRANT_ID,
+        relativePath: 'private/results/trial.jsonl',
+        offset: 0,
+        maxCharacters: 16_000,
+      }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('rejects a JSONL path whose typed remote read does not match stdout', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const run = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Mismatched remote log',
+          mode: 'exploratory',
+        }),
+      ),
+    ).run as ExperimentRun;
+    const base = {
+      schema_version: 1,
+      template_version: 1,
+      objective_version: null,
+      run_id: run.id,
+      trial_id: run.trialId,
+      server_label: 'Training GPU',
+    };
+    const stdout = [
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:02.000Z',
+        event_type: 'run-start',
+        sequence: 1,
+        status: 'running',
+      },
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:03.000Z',
+        event_type: 'progress',
+        sequence: 2,
+        status: 'running',
+        step: 'fit',
+        elapsed_seconds: 1,
+      },
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:04.000Z',
+        event_type: 'run-end',
+        sequence: 3,
+        status: 'succeeded',
+        elapsed_seconds: 2,
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n');
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout,
+      stderr: '',
+      truncated: false,
+      durationMs: 12,
+    });
+    const mismatched = `${stdout}\n{\"tampered\":true}`;
+    ssh.runAgentWorkspaceFileOperation.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: '9'.repeat(64),
+      exitCode: 0,
+      stdout: JSON.stringify({
+        schemaVersion: 1,
+        action: 'read',
+        relativePath: 'logs/mismatch.jsonl',
+        content: mismatched,
+        contentSha256: createHash('sha256').update(mismatched, 'utf8').digest('hex'),
+        offset: 0,
+        nextOffset: null,
+        totalCharacters: [...mismatched].length,
+        truncated: false,
+      }),
+      stderr: '',
+      truncated: false,
+      durationMs: 3,
+    });
+
+    const result = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        runId: run.id,
+        grantId: SSH_GRANT_ID,
+        command: '/usr/bin/python3',
+        args: ['experiments/train.py'],
+        timeoutSeconds: 120,
+        logPath: 'logs/mismatch.jsonl',
+        coveragePlan: [
+          { lifecycle: 'progress', fields: ['step', 'elapsed_seconds'] },
+          { lifecycle: 'run-end', fields: ['elapsed_seconds'] },
+        ],
+      }),
+    );
+
+    expect(resultPayload(result)).toMatchObject({
+      process: { outcome: 'failed', exitCode: 0 },
+      logValidation: { state: 'invalid', missingFields: [] },
+      run: { status: 'failed' },
+    });
+    expect(experiments.linkRunLogSource).not.toHaveBeenCalled();
+    expect(experiments.recordRunSummaryMetric).not.toHaveBeenCalled();
+    expect(result.contentItems[0]!.text).not.toContain('tampered');
+    expect(result.contentItems[0]!.text).not.toContain('logs/mismatch.jsonl');
+  });
+
+  it('fails a zero-exit run whose required logging fields are incomplete', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const created = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Incomplete log run',
+          mode: 'exploratory',
+        }),
+      ),
+    ).run as ExperimentRun;
+    const base = {
+      schema_version: 1,
+      template_version: 1,
+      objective_version: null,
+      run_id: created.id,
+      trial_id: created.trialId,
+      server_label: 'Training GPU',
+    };
+    const incompleteJsonl = [
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:02.000Z',
+        event_type: 'run-start',
+        sequence: 1,
+        status: 'running',
+      },
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:03.000Z',
+        event_type: 'progress',
+        sequence: 2,
+        status: 'running',
+        step: 'fit',
+      },
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:04.000Z',
+        event_type: 'run-end',
+        sequence: 3,
+        status: 'succeeded',
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n');
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout: incompleteJsonl,
+      stderr: '',
+      truncated: false,
+      durationMs: 12,
+    });
+    ssh.runAgentWorkspaceFileOperation.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: '9'.repeat(64),
+      exitCode: 0,
+      stdout: JSON.stringify({
+        schemaVersion: 1,
+        action: 'read',
+        relativePath: 'logs/incomplete.jsonl',
+        content: incompleteJsonl,
+        contentSha256: createHash('sha256').update(incompleteJsonl, 'utf8').digest('hex'),
+        offset: 0,
+        nextOffset: null,
+        totalCharacters: [...incompleteJsonl].length,
+        truncated: false,
+      }),
+      stderr: '',
+      truncated: false,
+      durationMs: 12,
+    });
+
+    const result = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        runId: created.id,
+        grantId: SSH_GRANT_ID,
+        command: '/usr/bin/python3',
+        args: ['experiments/train.py'],
+        timeoutSeconds: 120,
+        logPath: 'logs/incomplete.jsonl',
+        coveragePlan: [
+          { lifecycle: 'progress', fields: ['step', 'elapsed_seconds'] },
+          { lifecycle: 'run-end', fields: ['elapsed_seconds'] },
+        ],
+      }),
+    );
+
+    expect(resultPayload(result)).toMatchObject({
+      process: { outcome: 'failed', exitCode: 0 },
+      logValidation: { state: 'incomplete', missingFields: ['elapsed_seconds'] },
+      run: { status: 'failed' },
+    });
+    expect(experiments.linkRunLogSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: projectAlpha.id,
+        runId: created.id,
+        workspaceGrantId: SSH_GRANT_ID,
+        relativePath: 'logs/incomplete.jsonl',
+      }),
+    );
+    expect(experiments.recordRunSummaryMetric).not.toHaveBeenCalled();
+  });
+
+  it('requires a lifecycle field on every progress record', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const run = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Every progress record is complete',
+          mode: 'exploratory',
+        }),
+      ),
+    ).run as ExperimentRun;
+    const base = {
+      schema_version: 1,
+      template_version: run.loggingTemplate.version,
+      objective_version: null,
+      run_id: run.id,
+      trial_id: run.trialId,
+      server_label: run.serverLabel,
+    };
+    const stdout = [
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:02.000Z',
+        event_type: 'run-start',
+        sequence: 1,
+        status: 'running',
+      },
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:03.000Z',
+        event_type: 'progress',
+        sequence: 2,
+        status: 'running',
+        step: 'prepare',
+        elapsed_seconds: 1,
+      },
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:04.000Z',
+        event_type: 'progress',
+        sequence: 3,
+        status: 'running',
+        step: 'fit',
+      },
+      {
+        ...base,
+        occurred_at: '2026-08-05T00:00:05.000Z',
+        event_type: 'run-end',
+        sequence: 4,
+        status: 'succeeded',
+        elapsed_seconds: 3,
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n');
+    ssh.runAgentWorkspaceCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout,
+      stderr: '',
+      truncated: false,
+      durationMs: 13,
+    });
+    ssh.runAgentWorkspaceFileOperation.mockResolvedValueOnce(
+      experimentLogReadResult('logs/multi-progress-incomplete.jsonl', stdout),
+    );
+
+    const result = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        runId: run.id,
+        grantId: SSH_GRANT_ID,
+        command: '/usr/bin/python3',
+        args: ['experiments/train.py'],
+        timeoutSeconds: 120,
+        logPath: 'logs/multi-progress-incomplete.jsonl',
+        coveragePlan: experimentCoveragePlan,
+      }),
+    );
+
+    expect(resultPayload(result)).toMatchObject({
+      process: { outcome: 'failed', exitCode: 0 },
+      logValidation: { state: 'incomplete', missingFields: ['elapsed_seconds'] },
+      run: { status: 'failed', progressCurrent: null },
+    });
+    expect(experiments.recordRunSummaryMetric).not.toHaveBeenCalled();
+  });
+
+  it('preserves an external cancellation that races a completed SSH process', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      ssh,
+      new FakeProjectLiterature(),
+      experiments,
+    );
+    const created = resultPayload(
+      await invokeTool(
+        session,
+        toolCall('create_experiment_run', {
+          grantId: SSH_GRANT_ID,
+          title: 'Cancellation race',
+          mode: 'exploratory',
+        }),
+      ),
+    ).run as ExperimentRun;
+    let release!: (result: SshCommandResult) => void;
+    ssh.runAgentWorkspaceCommand.mockImplementationOnce(
+      () =>
+        new Promise<SshCommandResult>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const executing = invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        runId: created.id,
+        grantId: SSH_GRANT_ID,
+        command: '/usr/bin/python3',
+        args: ['experiments/train.py'],
+        timeoutSeconds: 120,
+        logPath: 'logs/race.jsonl',
+        coveragePlan: [
+          { lifecycle: 'progress', fields: ['step', 'elapsed_seconds'] },
+          { lifecycle: 'run-end', fields: ['elapsed_seconds'] },
+        ],
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(experiments.updateRun).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: created.id, status: 'running' }),
+      ),
+    );
+    experiments.cancelExternally(created.id);
+    release({
+      schemaVersion: 1,
+      trust: 'untrusted_remote_output',
+      connectionLabel: 'Training GPU',
+      commandSha256: 'e'.repeat(64),
+      exitCode: 0,
+      stdout: '{}',
+      stderr: '',
+      truncated: false,
+      durationMs: 9,
+    });
+
+    const result = await executing;
+    expect(resultPayload(result)).toMatchObject({
+      process: { outcome: 'cancelled' },
+      run: { status: 'cancelled' },
+    });
+    expect(experiments.linkRunLogSource).not.toHaveBeenCalled();
+  });
+
+  it('filters a foreign-project run from the project-bound experiment catalog', async () => {
+    const { workspace, projectAlpha, projectBeta } = await workspaceFixture();
+    const experiments = new FakeProjectExperiments(projectAlpha.id);
+    const foreign: ExperimentRun = {
+      ...(await experiments.createRun({
+        projectId: projectAlpha.id,
+        ideaId: null,
+        title: 'Injected foreign run',
+        mode: 'exploratory',
+        serverLabel: 'Training GPU',
+        trialId: 'foreign-trial',
+      })),
+      projectId: projectBeta.id,
+    };
+    (experiments.snapshot.runs as ExperimentRun[])[0] = foreign;
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      new FakeProjectVault(),
+      new FakeProjectSsh(),
+      new FakeProjectLiterature(),
+      experiments,
+    );
+
+    const listed = await invokeTool(session, toolCall('list_experiment_runs', {}));
+    expect(resultPayload(listed)).toEqual({ schemaVersion: 1, runs: [], totalMatching: 0 });
+    const executed = await invokeTool(
+      session,
+      toolCall('execute_experiment_run', {
+        runId: foreign.id,
+        grantId: SSH_GRANT_ID,
+        command: '/usr/bin/python3',
+        args: ['experiments/train.py'],
+        timeoutSeconds: 120,
+        logPath: 'logs/foreign.jsonl',
+        coveragePlan: [],
+      }),
+    );
+    expect(resultPayload(executed)).toEqual({ error: 'experiment_run_not_found' });
   });
 });

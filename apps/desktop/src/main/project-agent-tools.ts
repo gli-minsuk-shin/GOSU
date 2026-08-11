@@ -1,7 +1,20 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { z } from 'zod';
 
+import {
+  EXPERIMENT_IPC_ERROR_CODES,
+  EXPERIMENT_LOGGING_SYSTEM_FIELDS,
+  EXPERIMENT_MAX_LOGGING_FIELDS,
+  ExperimentLoggingRequiredAtSchema,
+  type CreateExperimentRunInput,
+  type ExperimentLoggingCustomField,
+  type ExperimentLoggingRequiredAt,
+  type ExperimentRun,
+  type ExperimentRunLogReference,
+  type ExperimentWorkspaceSnapshot,
+  type UpdateExperimentRunInput,
+} from '../shared/experiment-workspace-contracts';
 import {
   LITERATURE_IPC_ERROR_CODES,
   LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW,
@@ -50,6 +63,7 @@ import {
   SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS,
   RemoteWorkspaceFilePathSchema,
   RemoteWorkspaceSubdirectorySchema,
+  SSH_TRUSTED_WORKSPACE_POLICY_VERSION,
   SshWorkspaceAgentCommandSchema,
   type GrantedRemoteWorkspace,
   type SshWorkspaceAgentCommand,
@@ -77,6 +91,7 @@ import {
   type SaveResearchNoteForAgentInput,
 } from './research-notes-service';
 import { parseSshWorkspaceFileOutput } from './ssh-workspace-files';
+import { classifyWorkspaceCommand } from './ssh-workspace-policy';
 import type { WorkspaceService } from './workspace-service';
 
 const MAX_BOARD_TASKS = 200;
@@ -88,6 +103,23 @@ const SOURCE_FINALIZATION_WAIT_MS = 100;
 const LITERATURE_DYNAMIC_TOOL_TIMEOUT_MS = 125_000;
 const SSH_RESOURCE_DYNAMIC_TOOL_TIMEOUT_MS = 40_000;
 const RESEARCH_NOTE_SAVE_TIMEOUT_MS = 10_000;
+const EXPERIMENT_RUN_LIST_LIMIT = 100;
+const EXPERIMENT_LOG_MAX_RECORDS = 256;
+const EXPERIMENT_EXECUTION_POLICY_HASH = createHash('sha256')
+  .update(
+    JSON.stringify({
+      schemaVersion: 1,
+      operation: 'tracked-python-experiment',
+      executables: ['/usr/bin/python', '/usr/bin/python3'],
+      optionalInterpreterArguments: ['-u'],
+      entrypoint: 'relative-workspace-python-file',
+      maximumTimeoutSeconds: 120,
+      logFormat: 'bounded-jsonl-stdout-and-exact-file',
+      fileVerification: 'typed-read-exact-path-sha256',
+    }),
+    'utf8',
+  )
+  .digest('hex');
 
 const ReadWorkspaceArgumentsSchema = z
   .object({ section: z.enum(['summary', 'board', 'objective']).default('summary') })
@@ -182,6 +214,59 @@ const RunSshWorkspaceCommandArgumentsSchema = SshWorkspaceAgentCommandSchema.pic
   workspaceSubdirectory: true,
   timeoutSeconds: true,
 });
+const ReadExperimentSetupArgumentsSchema = z.object({}).strict();
+const ListExperimentRunsArgumentsSchema = z
+  .object({
+    limit: z.number().int().min(1).max(EXPERIMENT_RUN_LIST_LIMIT).optional(),
+    status: z
+      .enum(['queued', 'running', 'verifying', 'succeeded', 'failed', 'cancelled', 'lost'])
+      .optional(),
+  })
+  .strict();
+const CreateExperimentRunArgumentsSchema = z
+  .object({
+    grantId: z.string().uuid(),
+    title: z.string().trim().min(1).max(160),
+    mode: z.enum(['comparable', 'exploratory']),
+    ideaId: z.string().uuid().nullable().optional(),
+  })
+  .strict()
+  .refine((input) => input.mode === 'exploratory' || Boolean(input.ideaId), {
+    message: 'Comparable runs need an idea',
+    path: ['ideaId'],
+  });
+const ExperimentLoggingCoverageEntrySchema = z
+  .object({
+    lifecycle: ExperimentLoggingRequiredAtSchema,
+    fields: z
+      .array(z.string().regex(/^[a-z][a-z0-9_.-]{0,63}$/u))
+      .max(EXPERIMENT_MAX_LOGGING_FIELDS)
+      .refine((fields) => new Set(fields).size === fields.length, {
+        message: 'Coverage fields must be unique',
+      }),
+  })
+  .strict();
+const ExecuteExperimentRunArgumentsSchema = z
+  .object({
+    runId: z.string().uuid(),
+    grantId: z.string().uuid(),
+    command: z.enum(['/usr/bin/python', '/usr/bin/python3']),
+    args: z.array(z.string().max(1_024)).max(SSH_WORKSPACE_MAX_ARGUMENTS),
+    workspaceSubdirectory: RemoteWorkspaceSubdirectorySchema.optional(),
+    timeoutSeconds: z.number().int().min(5).max(120),
+    logPath: RemoteWorkspaceFilePathSchema.refine(
+      (value) => value.toLowerCase().endsWith('.jsonl'),
+      'Experiment logs must use a .jsonl path',
+    ),
+    coveragePlan: z
+      .array(ExperimentLoggingCoverageEntrySchema)
+      .max(ExperimentLoggingRequiredAtSchema.options.length)
+      .refine(
+        (entries) => new Set(entries.map(({ lifecycle }) => lifecycle)).size === entries.length,
+        { message: 'Coverage lifecycle entries must be unique' },
+      ),
+  })
+  .strict();
 
 const PROJECT_TOOL_NAMESPACE = 'gosu_project';
 
@@ -405,11 +490,105 @@ const WRITE_SSH_WORKSPACE_FILE_TOOL = {
   },
 } as const;
 
+const READ_EXPERIMENT_SETUP_TOOL = {
+  type: 'function',
+  name: 'read_experiment_setup',
+  description:
+    'Read the active project experiment logging template, bounded idea catalog, frozen objective summary, and run counts before designing an experiment. A primary metric is required only for comparable runs; an exploratory run may proceed without a target threshold. This is project-bound and never exposes remote paths or credentials.',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+} as const;
+
+const LIST_EXPERIMENT_RUNS_TOOL = {
+  type: 'function',
+  name: 'list_experiment_runs',
+  description:
+    'List recent tracked experiment runs for the active project. Returns sanitized status, progress, metric, immutable logging-template snapshot, and opaque log-reference metadata only; it never returns remote paths, raw logs, stdout, stderr, host names, or credentials.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'integer', minimum: 1, maximum: EXPERIMENT_RUN_LIST_LIMIT },
+      status: {
+        type: 'string',
+        enum: ['queued', 'running', 'verifying', 'succeeded', 'failed', 'cancelled', 'lost'],
+      },
+    },
+    additionalProperties: false,
+  },
+} as const;
+
+const CREATE_EXPERIMENT_RUN_TOOL = {
+  type: 'function',
+  name: 'create_experiment_run',
+  description:
+    'Create one durable queued experiment run for the active project and bind it to an exact currently granted workspace. A transient bind failure leaves the run queued and returns bindingPending so execute_experiment_run can retry that exact binding without creating another run. The current logging template is snapshotted immutably. Comparable mode requires an existing idea and frozen Objective; exploratory mode may run without a target threshold and cannot claim comparable evidence. Call read_experiment_setup first.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      grantId: { type: 'string', format: 'uuid' },
+      title: { type: 'string', minLength: 1, maxLength: 160 },
+      mode: { type: 'string', enum: ['comparable', 'exploratory'] },
+      ideaId: { anyOf: [{ type: 'string', format: 'uuid' }, { type: 'null' }] },
+    },
+    required: ['grantId', 'title', 'mode'],
+    additionalProperties: false,
+  },
+} as const;
+
+const EXECUTE_EXPERIMENT_RUN_TOOL = {
+  type: 'function',
+  name: 'execute_experiment_run',
+  description:
+    'Execute one queued tracked run with a bounded foreground Python direct-argv command in its exact bound workspace. GOSU first stages an immutable command-and-log-path intent. Declare where every required custom logging field will appear across run-start, progress, run-end, and summary records. The program must emit a JSONL mirror of at most 16,000 characters to stdout and write byte-for-byte identical JSONL to the supplied relative .jsonl path. After execution, GOSU performs a separately approved typed read of that exact file, verifies its path, content, and SHA-256 against stdout, validates identity, lifecycle coverage, field types, sequencing, the immutable template snapshot, and process outcome, then stores only sanitized run state plus an opaque log reference. If file verification is temporarily unavailable after process success, repeat the exact same request to retry only verification without executing the process again; changed arguments or paths are rejected. This still requires workspace approval or trusted access and is not an unattended Runner or durable streaming job.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      runId: { type: 'string', format: 'uuid' },
+      grantId: { type: 'string', format: 'uuid' },
+      command: { type: 'string', enum: ['/usr/bin/python', '/usr/bin/python3'] },
+      args: {
+        type: 'array',
+        maxItems: SSH_WORKSPACE_MAX_ARGUMENTS,
+        items: { type: 'string', maxLength: 1_024 },
+      },
+      workspaceSubdirectory: { type: 'string', maxLength: 512 },
+      timeoutSeconds: { type: 'integer', minimum: 5, maximum: 120 },
+      logPath: {
+        type: 'string',
+        minLength: 1,
+        maxLength: SSH_WORKSPACE_FILE_PATH_MAX_LENGTH,
+        pattern: '\\.jsonl$',
+      },
+      coveragePlan: {
+        type: 'array',
+        maxItems: 4,
+        items: {
+          type: 'object',
+          properties: {
+            lifecycle: {
+              type: 'string',
+              enum: ['run-start', 'progress', 'run-end', 'summary'],
+            },
+            fields: {
+              type: 'array',
+              maxItems: EXPERIMENT_MAX_LOGGING_FIELDS,
+              items: { type: 'string', pattern: '^[a-z][a-z0-9_.-]{0,63}$' },
+            },
+          },
+          required: ['lifecycle', 'fields'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['runId', 'grantId', 'command', 'args', 'timeoutSeconds', 'logPath', 'coveragePlan'],
+    additionalProperties: false,
+  },
+} as const;
+
 const RUN_SSH_WORKSPACE_COMMAND_TOOL = {
   type: 'function',
   name: 'run_ssh_workspace_command',
   description:
-    'Request one bounded direct-argv command in a remote workspace explicitly granted to this project. Use an absolute executable and an optional relative workspace subdirectory. Diagnostics mode permits bounded inspection. Workspace mode also permits a small test/build allowlist and a foreground Python experiment using /usr/bin/python or /usr/bin/python3, optional -u, a relative .py entrypoint inside the granted workspace, bounded arguments, and at most 120 seconds. These operations can execute untrusted project code. GOSU requires Allow once unless the user explicitly enabled trusted access for this exact bound workspace; trusted requests are audited and still use the identical command allowlist. This is an advisory policy boundary, not a hard remote sandbox or an unattended job runner. Raw shell strings, inline eval, privilege escalation, file transfer, forwarding, TTY, background execution, and host-wide destructive commands are unavailable.',
+    'Request one bounded read-only Git inspection command in a remote workspace explicitly granted to this project. Any test, build, benchmark, training, evaluation, or other compute-capable repository execution must use create_experiment_run followed by execute_experiment_run so status and the required JSONL template cannot be bypassed through another launcher. GOSU requires Allow once unless the user explicitly enabled trusted access for this exact bound workspace; trusted requests are audited. This is an advisory account boundary, not a hard remote sandbox or unattended Runner. Raw shells, inline eval, privilege escalation, file transfer, forwarding, TTY, background execution, and host-wide destructive commands are unavailable.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -535,6 +714,85 @@ export interface ProjectAgentLiterature {
   search(input: LiteratureSearchInput, signal?: AbortSignal): Promise<LiteratureSearchReceipt>;
 }
 
+export interface ProjectAgentExperiments {
+  list(input: { projectId: string }): Promise<ExperimentWorkspaceSnapshot>;
+  createRun(input: CreateExperimentRunInput): Promise<ExperimentRun>;
+  updateRun(input: UpdateExperimentRunInput): Promise<ExperimentRun>;
+  bindRunExecution(input: {
+    projectId: string;
+    runId: string;
+    workspaceGrantId: string;
+  }): Promise<{ projectId: string; runId: string; workspaceGrantId: string }>;
+  getRunExecutionBinding(input: {
+    projectId: string;
+    runId: string;
+  }): Promise<{ projectId: string; runId: string; workspaceGrantId: string } | null>;
+  stageRunExecutionIntent?(input: {
+    projectId: string;
+    runId: string;
+    workspaceGrantId: string;
+    grantVersion: number;
+    connectionId: string;
+    connectionVersion: number;
+    canonicalRoot: string;
+    canonicalRootHash: string;
+    policyVersion: number;
+    executionPolicyHash: string;
+    intentHash: string;
+    workspaceSubdirectory: string | null;
+    relativePath: string;
+  }): Promise<{
+    projectId: string;
+    runId: string;
+    workspaceGrantId: string;
+    grantVersion: number;
+    connectionId: string;
+    connectionVersion: number;
+    canonicalRoot: string;
+    canonicalRootHash: string;
+    policyVersion: number;
+    executionPolicyHash: string;
+    intentHash: string;
+    workspaceSubdirectory: string | null;
+    relativePath: string;
+    createdAt: string;
+  }>;
+  getRunExecutionIntent?(input: { projectId: string; runId: string }): Promise<{
+    projectId: string;
+    runId: string;
+    workspaceGrantId: string;
+    grantVersion: number;
+    connectionId: string;
+    connectionVersion: number;
+    canonicalRoot: string;
+    canonicalRootHash: string;
+    policyVersion: number;
+    executionPolicyHash: string;
+    intentHash: string;
+    workspaceSubdirectory: string | null;
+    relativePath: string;
+    createdAt: string;
+  } | null>;
+  getRunLogSource(input: {
+    projectId: string;
+    runId: string;
+    referenceId: string;
+  }): Promise<unknown | null>;
+  linkRunLogSource(input: {
+    referenceId: string;
+    projectId: string;
+    runId: string;
+    workspaceGrantId: string;
+    workspaceSubdirectory: string | null;
+    relativePath: string;
+  }): Promise<unknown>;
+  recordRunSummaryMetric(input: {
+    projectId: string;
+    runId: string;
+    value: number;
+  }): Promise<unknown>;
+}
+
 export interface ProjectAgentSsh {
   listConnections(): Promise<readonly SshConnectionProfile[]>;
   readProjectResourceSnapshot(
@@ -555,6 +813,31 @@ export interface ProjectAgentSsh {
 }
 
 const knownSshErrors = new Set<string>(SSH_IPC_ERROR_CODES);
+const knownExperimentErrors = new Set<string>(EXPERIMENT_IPC_ERROR_CODES);
+const knownExperimentToolErrors = new Set([
+  'experiment_tracking_required',
+  'experiment_logging_coverage_invalid',
+  'experiment_log_invalid',
+  'experiment_run_grant_mismatch',
+  'experiment_run_intent_mismatch',
+]);
+const retryableExperimentVerificationErrors = new Set([
+  'ssh_approval_not_found',
+  'ssh_approval_denied',
+  'ssh_approval_expired',
+  'ssh_approval_cancelled',
+  'ssh_trusted_workspace_expired',
+  'ssh_trusted_workspace_audit_failed',
+  'ssh_unknown_host_key',
+  'ssh_authentication_failed',
+  'ssh_connection_failed',
+  'ssh_timed_out',
+  'ssh_output_too_large',
+  'ssh_capacity_exceeded',
+  'ssh_unavailable',
+  'ssh_workspace_file_not_found',
+  'ssh_workspace_file_helper_unavailable',
+]);
 const knownSshWorkspaceFileErrors = new Set<string>([
   'ssh_workspace_file_not_found',
   'ssh_workspace_file_conflict',
@@ -584,6 +867,415 @@ const knownResearchNoteSaveErrors = new Set([
 
 function sha256(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function sanitizedLoggingTemplate(run: ExperimentRun) {
+  return {
+    revisionId: run.loggingTemplate.revisionId,
+    version: run.loggingTemplate.version,
+    templateHash: run.loggingTemplate.templateHash,
+    systemFields: run.loggingTemplate.systemFields,
+    customFields: run.loggingTemplate.customFields,
+  };
+}
+
+function sanitizedExperimentRun(run: ExperimentRun) {
+  return {
+    schemaVersion: 1,
+    id: run.id,
+    ideaId: run.ideaId,
+    title: run.title,
+    status: run.status,
+    mode: run.mode,
+    serverLabel: run.serverLabel,
+    trialId: run.trialId,
+    objectiveVersion: run.objectiveVersion,
+    loggingTemplate: sanitizedLoggingTemplate(run),
+    progressCurrent: run.progressCurrent,
+    progressTotal: run.progressTotal,
+    currentStep: run.currentStep,
+    latestMetric: run.latestMetric,
+    logReference: run.logReference,
+    processExitCode: run.processExitCode,
+    processDurationMs: run.processDurationMs,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    version: run.version,
+  };
+}
+
+type ExperimentExecutionIntent = Awaited<
+  ReturnType<NonNullable<ProjectAgentExperiments['stageRunExecutionIntent']>>
+>;
+
+type ExperimentLogFileRead = Readonly<{
+  content: string;
+  contentHash: string;
+  sizeBytes: number;
+}>;
+
+type ExperimentLogValidation = Readonly<{
+  reference: ExperimentRunLogReference;
+  latestMetric: UpdateExperimentRunInput['latestMetric'];
+  progressCurrent: number | null;
+  currentStep: string | null;
+  comparableMetricValue: number | null;
+  reportedTerminalStatus: 'succeeded' | 'failed' | null;
+}>;
+
+function fieldValueMatches(field: ExperimentLoggingCustomField, value: unknown) {
+  if (field.type === 'number') return typeof value === 'number' && Number.isFinite(value);
+  if (field.type === 'integer') return Number.isSafeInteger(value);
+  if (field.type === 'boolean') return typeof value === 'boolean';
+  return typeof value === 'string' && value.length <= 4_000;
+}
+
+function validateCoveragePlan(
+  fields: readonly ExperimentLoggingCustomField[],
+  plan: z.infer<typeof ExecuteExperimentRunArgumentsSchema>['coveragePlan'],
+) {
+  const known = new Set(fields.map(({ key }) => key));
+  const coverage = new Map(plan.map(({ lifecycle, fields: keys }) => [lifecycle, new Set(keys)]));
+  for (const keys of coverage.values()) {
+    if ([...keys].some((key) => !known.has(key))) return false;
+  }
+  return fields.every((field) =>
+    field.requiredAt.every((lifecycle) => coverage.get(lifecycle)?.has(field.key) === true),
+  );
+}
+
+const experimentLifecycleOrder = new Map(
+  ExperimentLoggingRequiredAtSchema.options.map((lifecycle, index) => [lifecycle, index]),
+);
+
+function canonicalExperimentCoveragePlan(
+  plan: z.infer<typeof ExecuteExperimentRunArgumentsSchema>['coveragePlan'],
+) {
+  return plan
+    .map(({ lifecycle, fields }) => ({ lifecycle, fields: [...fields].sort() }))
+    .sort(
+      (left, right) =>
+        experimentLifecycleOrder.get(left.lifecycle)! -
+        experimentLifecycleOrder.get(right.lifecycle)!,
+    );
+}
+
+function experimentExecutionIntentHash(
+  projectId: string,
+  run: ExperimentRun,
+  input: z.infer<typeof ExecuteExperimentRunArgumentsSchema>,
+  selected: GrantedRemoteWorkspace,
+) {
+  const canonicalRootHash = sha256(selected.grant.canonicalRoot);
+  return sha256(
+    JSON.stringify({
+      schemaVersion: 1,
+      projectId,
+      runId: run.id,
+      authority: {
+        workspaceGrantId: input.grantId,
+        grantVersion: selected.grant.version,
+        permissionMode: selected.grant.permissionMode,
+        connectionId: selected.connection.id,
+        connectionVersion: selected.connection.version,
+        canonicalRoot: selected.grant.canonicalRoot,
+        canonicalRootHash,
+        policyVersion: SSH_TRUSTED_WORKSPACE_POLICY_VERSION,
+        executionPolicyHash: EXPERIMENT_EXECUTION_POLICY_HASH,
+      },
+      command: input.command,
+      args: input.args,
+      workspaceSubdirectory: input.workspaceSubdirectory ?? null,
+      timeoutSeconds: input.timeoutSeconds,
+      relativePath: input.logPath,
+      coveragePlan: canonicalExperimentCoveragePlan(input.coveragePlan),
+      runSnapshot: {
+        trialId: run.trialId,
+        objectiveVersion: run.objectiveVersion,
+        loggingTemplateRevisionId: run.loggingTemplate.revisionId,
+        loggingTemplateVersion: run.loggingTemplate.version,
+        loggingTemplateHash: run.loggingTemplate.templateHash,
+      },
+    }),
+  );
+}
+
+function experimentExecutionIntentMatches(
+  intent: ExperimentExecutionIntent,
+  expected: Omit<ExperimentExecutionIntent, 'createdAt'>,
+) {
+  return (
+    intent.projectId === expected.projectId &&
+    intent.runId === expected.runId &&
+    intent.workspaceGrantId === expected.workspaceGrantId &&
+    intent.grantVersion === expected.grantVersion &&
+    intent.connectionId === expected.connectionId &&
+    intent.connectionVersion === expected.connectionVersion &&
+    intent.canonicalRoot === expected.canonicalRoot &&
+    intent.canonicalRootHash === expected.canonicalRootHash &&
+    intent.policyVersion === expected.policyVersion &&
+    intent.executionPolicyHash === expected.executionPolicyHash &&
+    intent.intentHash === expected.intentHash &&
+    intent.workspaceSubdirectory === expected.workspaceSubdirectory &&
+    intent.relativePath === expected.relativePath
+  );
+}
+
+function pendingExperimentLogReference(
+  reference: ExperimentRunLogReference,
+): ExperimentRunLogReference {
+  return {
+    ...reference,
+    validationState: 'pending',
+    missingFields: [],
+  };
+}
+
+function resolveExperimentLogReference(
+  pending: ExperimentRunLogReference,
+  validation: ExperimentRunLogReference,
+): ExperimentRunLogReference {
+  return {
+    ...pending,
+    validationState: validation.validationState,
+    missingFields: validation.missingFields,
+  };
+}
+
+function invalidResolvedExperimentLogReference(
+  reference: ExperimentRunLogReference,
+): ExperimentRunLogReference {
+  return {
+    ...reference,
+    validationState: 'invalid',
+    missingFields: [],
+  };
+}
+
+function experimentLatestMetricMatches(
+  stored: ExperimentRun['latestMetric'],
+  candidate: UpdateExperimentRunInput['latestMetric'],
+) {
+  if (stored === null || candidate === null || candidate === undefined) {
+    return stored === null && candidate === null;
+  }
+  return (
+    stored.key === candidate.key &&
+    stored.displayName === candidate.displayName &&
+    Object.is(stored.value, candidate.value) &&
+    stored.unit === candidate.unit
+  );
+}
+
+function invalidExperimentLogReference(
+  run: ExperimentRun,
+  stdout: string,
+): ExperimentRunLogReference {
+  return {
+    referenceId: randomUUID(),
+    displayName: `${run.title.slice(0, 145)} JSONL log`,
+    contentHash: sha256(stdout),
+    sizeBytes: Buffer.byteLength(stdout, 'utf8'),
+    validationState: 'invalid',
+    missingFields: [],
+  };
+}
+
+function validateExperimentJsonl(
+  run: ExperimentRun,
+  stdout: string,
+  truncated: boolean,
+  comparableMetric: Readonly<{ key: string; displayName: string; unit: string | null }> | null,
+): ExperimentLogValidation {
+  const invalid = (): ExperimentLogValidation => ({
+    reference: invalidExperimentLogReference(run, stdout),
+    latestMetric: null,
+    progressCurrent: null,
+    currentStep: null,
+    comparableMetricValue: null,
+    reportedTerminalStatus: null,
+  });
+  if (truncated) return invalid();
+  const lines = stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0 || lines.length > EXPERIMENT_LOG_MAX_RECORDS) return invalid();
+
+  const customByKey = new Map(run.loggingTemplate.customFields.map((field) => [field.key, field]));
+  const allowed = new Set<string>([...EXPERIMENT_LOGGING_SYSTEM_FIELDS, ...customByKey.keys()]);
+  if (comparableMetric) allowed.add(comparableMetric.key);
+  const records: Record<string, unknown>[] = [];
+  let previousSequence = 0;
+  let previousOccurredAt = Number.NEGATIVE_INFINITY;
+  for (const line of lines) {
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      return invalid();
+    }
+    if (!isRecord(value) || Object.keys(value).some((key) => !allowed.has(key))) return invalid();
+    if (
+      value.schema_version !== 1 ||
+      value.template_version !== run.loggingTemplate.version ||
+      value.objective_version !== run.objectiveVersion ||
+      typeof value.occurred_at !== 'string' ||
+      !ExperimentLoggingRequiredAtSchema.safeParse(value.event_type).success ||
+      !Number.isSafeInteger(value.sequence) ||
+      (value.sequence as number) !== previousSequence + 1 ||
+      value.run_id !== run.id ||
+      value.trial_id !== run.trialId ||
+      !['queued', 'running', 'succeeded', 'failed', 'cancelled', 'lost'].includes(
+        String(value.status),
+      ) ||
+      value.server_label !== run.serverLabel
+    ) {
+      return invalid();
+    }
+    const occurredAt = Date.parse(value.occurred_at);
+    if (Number.isNaN(occurredAt) || occurredAt < previousOccurredAt) return invalid();
+    const lifecycle = value.event_type as ExperimentLoggingRequiredAt;
+    const reportedStatus = String(value.status);
+    if (
+      ((lifecycle === 'run-start' || lifecycle === 'progress') && reportedStatus !== 'running') ||
+      ((lifecycle === 'run-end' || lifecycle === 'summary') &&
+        reportedStatus !== 'succeeded' &&
+        reportedStatus !== 'failed')
+    ) {
+      return invalid();
+    }
+    previousSequence = value.sequence as number;
+    previousOccurredAt = occurredAt;
+    for (const [key, field] of customByKey) {
+      if (key in value && !fieldValueMatches(field, value[key])) return invalid();
+    }
+    if (
+      comparableMetric &&
+      comparableMetric.key in value &&
+      (typeof value[comparableMetric.key] !== 'number' ||
+        !Number.isFinite(value[comparableMetric.key]))
+    ) {
+      return invalid();
+    }
+    records.push(value);
+  }
+
+  const runEndIndex = records.findIndex((record) => record.event_type === 'run-end');
+  if (
+    records[0]?.event_type !== 'run-start' ||
+    records.slice(1).some((record) => record.event_type === 'run-start') ||
+    runEndIndex < 1 ||
+    records.filter((record) => record.event_type === 'run-end').length !== 1 ||
+    records.slice(1, runEndIndex).some((record) => record.event_type !== 'progress') ||
+    records.slice(runEndIndex + 1).some((record) => record.event_type !== 'summary')
+  ) {
+    return invalid();
+  }
+  const reportedTerminalStatus = records[runEndIndex]!.status as 'succeeded' | 'failed';
+  if (records.slice(runEndIndex + 1).some((record) => record.status !== reportedTerminalStatus)) {
+    return invalid();
+  }
+
+  const recordsByLifecycle = new Map(
+    ExperimentLoggingRequiredAtSchema.options.map((lifecycle) => [
+      lifecycle,
+      records.filter((record) => record.event_type === lifecycle),
+    ]),
+  );
+  if (
+    recordsByLifecycle.get('run-start')?.length === 0 ||
+    recordsByLifecycle.get('run-end')?.length === 0
+  ) {
+    return invalid();
+  }
+  const missingFields = run.loggingTemplate.customFields
+    .filter((field) =>
+      field.requiredAt.some((lifecycle) => {
+        const lifecycleRecords = recordsByLifecycle.get(lifecycle) ?? [];
+        return (
+          lifecycleRecords.length === 0 || lifecycleRecords.some((record) => !(field.key in record))
+        );
+      }),
+    )
+    .map(({ key }) => key);
+
+  const lastValue = (field: ExperimentLoggingCustomField) => {
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const value = records[index]![field.key];
+      if (value !== undefined) return value;
+    }
+    return undefined;
+  };
+  const progressFields = run.loggingTemplate.customFields.filter(
+    ({ category }) => category === 'progress',
+  );
+  const progressCurrentField = customByKey.get('progress_current');
+  const progressCurrentValue =
+    progressCurrentField?.category === 'progress' && progressCurrentField.type === 'integer'
+      ? lastValue(progressCurrentField)
+      : undefined;
+  const progressText = progressFields
+    .map((field) => lastValue(field))
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+  let latestMetric: UpdateExperimentRunInput['latestMetric'] = null;
+  let comparableMetricValue: number | null = null;
+  if (comparableMetric) {
+    const summaryRecords = recordsByLifecycle.get('summary') ?? [];
+    const candidate = [...summaryRecords]
+      .reverse()
+      .map((record) => record[comparableMetric.key])
+      .find((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    if (candidate === undefined) return invalid();
+    comparableMetricValue = candidate;
+    latestMetric = {
+      key: comparableMetric.key,
+      displayName: comparableMetric.displayName,
+      value: candidate,
+      unit: comparableMetric.unit,
+    };
+  } else {
+    const metric = run.loggingTemplate.customFields
+      .filter(({ category }) => category === 'metric')
+      .map((field) => ({ field, value: lastValue(field) }))
+      .reverse()
+      .find(({ value }) => typeof value === 'number' && Number.isFinite(value));
+    if (metric) {
+      latestMetric = {
+        key: metric.field.key,
+        displayName: metric.field.label,
+        value: metric.value as number,
+        unit: metric.field.unit,
+      };
+    }
+  }
+
+  const validationState = missingFields.length > 0 ? 'incomplete' : 'valid';
+  return {
+    reference: {
+      referenceId: randomUUID(),
+      displayName: `${run.title.slice(0, 145)} JSONL log`,
+      contentHash: sha256(stdout),
+      sizeBytes: Buffer.byteLength(stdout, 'utf8'),
+      validationState,
+      missingFields,
+    },
+    latestMetric,
+    progressCurrent:
+      Number.isSafeInteger(progressCurrentValue) && (progressCurrentValue as number) >= 0
+        ? (progressCurrentValue as number)
+        : null,
+    currentStep: progressText?.trim().slice(0, 160) ?? null,
+    comparableMetricValue,
+    reportedTerminalStatus,
+  };
 }
 
 function textResult(text: string): CodexDynamicToolResult {
@@ -763,6 +1455,7 @@ export class ProjectAgentToolSession {
       attachments?: ProjectChatAttachmentsForAgent;
       literature?: ProjectAgentLiterature;
       ssh?: ProjectAgentSsh;
+      experiments?: ProjectAgentExperiments;
       researchNoteReceipts?: ProjectAgentResearchNoteReceiptStorage;
       researchNoteSaveTimeoutMs?: number;
     },
@@ -779,6 +1472,14 @@ export class ProjectAgentToolSession {
       ...(this.localNotesAvailable ? [LIST_NOTES_TOOL, READ_NOTE_TOOL] : []),
       ...(this.attachmentsAvailable ? [LIST_ATTACHMENTS_TOOL, READ_ATTACHMENT_TOOL] : []),
       ...(dependencies.literature ? [SEARCH_LITERATURE_TOOL] : []),
+      ...(dependencies.experiments
+        ? [
+            READ_EXPERIMENT_SETUP_TOOL,
+            LIST_EXPERIMENT_RUNS_TOOL,
+            CREATE_EXPERIMENT_RUN_TOOL,
+            EXECUTE_EXPERIMENT_RUN_TOOL,
+          ]
+        : []),
       LIST_SSH_WORKSPACES_TOOL,
       READ_SSH_WORKSPACE_RESOURCES_TOOL,
       LIST_SSH_WORKSPACE_FILES_TOOL,
@@ -824,6 +1525,15 @@ export class ProjectAgentToolSession {
         tool: RUN_SSH_WORKSPACE_COMMAND_TOOL.name,
         timeoutMs: SSH_DYNAMIC_TOOL_TIMEOUT_MS,
       },
+      ...(dependencies.experiments
+        ? [
+            {
+              namespace: PROJECT_TOOL_NAMESPACE,
+              tool: EXECUTE_EXPERIMENT_RUN_TOOL.name,
+              timeoutMs: SSH_DYNAMIC_TOOL_TIMEOUT_MS,
+            },
+          ]
+        : []),
     ];
     this.catalogSha256 = sha256(JSON.stringify(this.dynamicTools));
     this.handler = (call, delivery) => this.handle(call, delivery);
@@ -1109,7 +1819,9 @@ export class ProjectAgentToolSession {
         call.tool === LIST_SSH_WORKSPACE_FILES_TOOL.name ||
         call.tool === READ_SSH_WORKSPACE_FILE_TOOL.name ||
         call.tool === WRITE_SSH_WORKSPACE_FILE_TOOL.name ||
-        call.tool === RUN_SSH_WORKSPACE_COMMAND_TOOL.name)
+        call.tool === RUN_SSH_WORKSPACE_COMMAND_TOOL.name ||
+        call.tool === CREATE_EXPERIMENT_RUN_TOOL.name ||
+        call.tool === EXECUTE_EXPERIMENT_RUN_TOOL.name)
     ) {
       return failure('ssh_cancelled');
     }
@@ -1132,6 +1844,18 @@ export class ProjectAgentToolSession {
       if (call.tool === WORKSPACE_TOOL.name) return await this.readWorkspace(call.arguments);
       if (call.tool === SEARCH_LITERATURE_TOOL.name) {
         return await this.searchLiterature(call.arguments, delivery.abortSignal);
+      }
+      if (call.tool === READ_EXPERIMENT_SETUP_TOOL.name) {
+        return await this.readExperimentSetup(call.arguments);
+      }
+      if (call.tool === LIST_EXPERIMENT_RUNS_TOOL.name) {
+        return await this.listExperimentRuns(call.arguments);
+      }
+      if (call.tool === CREATE_EXPERIMENT_RUN_TOOL.name) {
+        return await this.createExperimentRun(call);
+      }
+      if (call.tool === EXECUTE_EXPERIMENT_RUN_TOOL.name) {
+        return await this.executeExperimentRun(call, delivery.abortSignal);
       }
       if (call.tool === LIST_SSH_WORKSPACES_TOOL.name) {
         return await this.listSshWorkspaces(call.arguments);
@@ -1177,6 +1901,8 @@ export class ProjectAgentToolSession {
       const code = error instanceof Error ? error.message : 'tool_failed';
       return failure(
         knownSshErrors.has(code) ||
+          knownExperimentErrors.has(code) ||
+          knownExperimentToolErrors.has(code) ||
           knownLiteratureErrors.has(code) ||
           [
             'project_not_found',
@@ -1658,6 +2384,879 @@ export class ProjectAgentToolSession {
     );
   }
 
+  private async readExperimentSetup(arguments_: unknown) {
+    const parsed = ReadExperimentSetupArgumentsSchema.safeParse(arguments_);
+    if (!parsed.success) return failure('invalid_tool_arguments');
+    if (!this.dependencies.experiments) return failure('experiment_unavailable');
+    const [{ snapshot: workspaceSnapshot }, experimentSnapshot] = await Promise.all([
+      this.requireActiveProject(),
+      this.dependencies.experiments.list({ projectId: this.dependencies.projectId }),
+    ]);
+    if (
+      experimentSnapshot.projectId !== this.dependencies.projectId ||
+      experimentSnapshot.loggingTemplate.projectId !== this.dependencies.projectId
+    ) {
+      throw new Error('experiment_project_not_found');
+    }
+    const objective = latestObjective(workspaceSnapshot, this.dependencies.projectId);
+    const runCounts = Object.fromEntries(
+      ['queued', 'running', 'verifying', 'succeeded', 'failed', 'cancelled', 'lost'].map(
+        (status) => [
+          status,
+          experimentSnapshot.runs.filter(
+            (run) => run.projectId === this.dependencies.projectId && run.status === status,
+          ).length,
+        ],
+      ),
+    );
+    return jsonResult({
+      schemaVersion: 1,
+      loggingTemplate: {
+        revisionId: experimentSnapshot.loggingTemplate.id,
+        version: experimentSnapshot.loggingTemplate.version,
+        templateHash: experimentSnapshot.loggingTemplate.templateHash,
+        systemFields: experimentSnapshot.loggingTemplate.systemFields,
+        customFields: experimentSnapshot.loggingTemplate.customFields,
+      },
+      objective: objective
+        ? {
+            id: objective.id,
+            version: objective.objectiveVersion,
+            locked: objective.locked,
+            primaryMetric: {
+              key: objective.primaryMetric.key,
+              displayName: objective.primaryMetric.displayName,
+              direction: objective.primaryMetric.direction,
+              unit: objective.primaryMetric.unit,
+              aggregation: objective.primaryMetric.aggregation,
+              baseline: objective.primaryMetric.baseline,
+              target: objective.primaryMetric.target,
+              targetConfigured: objective.primaryMetric.target !== null,
+            },
+          }
+        : null,
+      comparableRunRequirements: {
+        ideaRequired: true,
+        frozenObjectiveRequired: true,
+        targetThresholdRequired: false,
+        summaryMustIncludePrimaryMetric: true,
+      },
+      exploratoryRunRequirements: {
+        ideaRequired: false,
+        objectiveRequired: false,
+        targetThresholdRequired: false,
+      },
+      ideas: experimentSnapshot.ideas
+        .filter((idea) => idea.projectId === this.dependencies.projectId)
+        .slice(0, 100)
+        .map((idea) => ({
+          id: idea.id,
+          parentIdeaId: idea.parentIdeaId,
+          title: idea.title,
+          phase: idea.phase,
+          outcome: idea.outcome,
+        })),
+      runCounts,
+    });
+  }
+
+  private async listExperimentRuns(arguments_: unknown) {
+    const parsed = ListExperimentRunsArgumentsSchema.safeParse(arguments_);
+    if (!parsed.success) return failure('invalid_tool_arguments');
+    if (!this.dependencies.experiments) return failure('experiment_unavailable');
+    const snapshot = await this.dependencies.experiments.list({
+      projectId: this.dependencies.projectId,
+    });
+    const matchingRuns = snapshot.runs
+      .filter((run) => run.projectId === this.dependencies.projectId)
+      .filter((run) => !parsed.data.status || run.status === parsed.data.status);
+    const runs = matchingRuns
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, parsed.data.limit ?? 25)
+      .map(sanitizedExperimentRun);
+    return jsonResult({ schemaVersion: 1, runs, totalMatching: matchingRuns.length });
+  }
+
+  private async createExperimentRun(call: CodexDynamicToolCall) {
+    const parsed = CreateExperimentRunArgumentsSchema.safeParse(call.arguments);
+    if (!parsed.success) return failure('invalid_tool_arguments');
+    if (!this.dependencies.experiments) return failure('experiment_unavailable');
+    if (!this.dependencies.ssh || !this.dependencies.sessionId || !this.dependencies.attemptId) {
+      return failure('ssh_unavailable');
+    }
+    const workspaces = await this.dependencies.ssh.listWorkspaceGrants(this.dependencies.projectId);
+    const selected = workspaces.find(({ grant }) => grant.id === parsed.data.grantId);
+    if (!selected) return failure('ssh_workspace_grant_not_found');
+    if (selected.grant.permissionMode !== 'workspace') {
+      return failure('ssh_workspace_command_not_allowed');
+    }
+
+    const run = await this.dependencies.experiments.createRun({
+      projectId: this.dependencies.projectId,
+      ideaId: parsed.data.ideaId ?? null,
+      title: parsed.data.title,
+      mode: parsed.data.mode,
+      serverLabel: selected.connection.label,
+      trialId: `trial-${sha256(
+        `${this.dependencies.projectId}\u0000${this.dependencies.attemptId}\u0000${call.callId}`,
+      ).slice(0, 40)}`,
+    });
+    if (run.projectId !== this.dependencies.projectId) {
+      throw new Error('experiment_project_not_found');
+    }
+    let workspaceBound: boolean;
+    let bindingPending = false;
+    try {
+      await this.dependencies.experiments.bindRunExecution({
+        projectId: this.dependencies.projectId,
+        runId: run.id,
+        workspaceGrantId: selected.grant.id,
+      });
+      workspaceBound = true;
+    } catch {
+      const existing = await this.dependencies.experiments
+        .getRunExecutionBinding({
+          projectId: this.dependencies.projectId,
+          runId: run.id,
+        })
+        .catch(() => null);
+      if (existing && existing.workspaceGrantId !== selected.grant.id) {
+        throw new Error('experiment_run_grant_mismatch');
+      }
+      workspaceBound = existing?.workspaceGrantId === selected.grant.id;
+      bindingPending = !workspaceBound;
+    }
+    return jsonResult({
+      schemaVersion: 1,
+      persisted: true,
+      workspaceBound,
+      bindingPending,
+      run: sanitizedExperimentRun(run),
+    });
+  }
+
+  private async settleExperimentRun(
+    runId: string,
+    status: 'succeeded' | 'failed' | 'cancelled',
+    patch: Omit<
+      UpdateExperimentRunInput,
+      'projectId' | 'runId' | 'expectedVersion' | 'status'
+    > = {},
+  ) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const snapshot = await this.dependencies.experiments!.list({
+        projectId: this.dependencies.projectId,
+      });
+      const current = snapshot.runs.find(
+        (run) => run.id === runId && run.projectId === this.dependencies.projectId,
+      );
+      if (!current) throw new Error('experiment_run_not_found');
+      if (['succeeded', 'failed', 'cancelled', 'lost'].includes(current.status)) return current;
+      try {
+        return await this.dependencies.experiments!.updateRun({
+          projectId: this.dependencies.projectId,
+          runId,
+          expectedVersion: current.version,
+          status,
+          ...patch,
+        });
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== 'experiment_run_conflict') throw error;
+      }
+    }
+    throw new Error('experiment_run_conflict');
+  }
+
+  private async readExperimentLogFile(
+    call: CodexDynamicToolCall,
+    intent: ExperimentExecutionIntent,
+    selected: GrantedRemoteWorkspace,
+    signal: AbortSignal,
+  ): Promise<ExperimentLogFileRead | null> {
+    const operation: SshWorkspaceFileOperation = {
+      action: 'read',
+      projectId: this.dependencies.projectId,
+      sessionId: this.dependencies.sessionId!,
+      attemptId: this.dependencies.attemptId!,
+      turnId: call.turnId,
+      toolCallId: `experiment-log:${sha256(
+        `${call.turnId}\u0000${call.callId}\u0000${intent.intentHash}`,
+      ).slice(0, 32)}`,
+      connectionId: selected.connection.id,
+      grantId: selected.grant.id,
+      ...(intent.workspaceSubdirectory
+        ? { workspaceSubdirectory: intent.workspaceSubdirectory }
+        : {}),
+      relativePath: intent.relativePath,
+      offset: 0,
+      maxCharacters: SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS,
+    };
+    const result = await this.dependencies.ssh!.runAgentWorkspaceFileOperation(operation, signal);
+    if (signal.aborted || this.sshCapabilityRevoked) throw new Error('ssh_cancelled');
+    if (result.exitCode === 127 && result.stdout.trim() === '') {
+      throw new Error('ssh_workspace_file_helper_unavailable');
+    }
+    if (result.stderr !== '' || result.truncated) return null;
+    let candidate: ReturnType<typeof parseSshWorkspaceFileOutput>;
+    try {
+      candidate = parseSshWorkspaceFileOutput(result.stdout);
+    } catch {
+      return null;
+    }
+    if ('error' in candidate) {
+      if (candidate.action === 'read' && knownSshWorkspaceFileErrors.has(candidate.error)) {
+        throw new Error(candidate.error);
+      }
+      return null;
+    }
+    if (result.exitCode !== 0 || candidate.action !== 'read') return null;
+    const characters = [...candidate.content].length;
+    if (candidate.relativePath !== intent.relativePath) return null;
+    if (
+      candidate.offset !== 0 ||
+      candidate.nextOffset !== null ||
+      candidate.totalCharacters !== characters ||
+      candidate.truncated ||
+      characters === 0 ||
+      characters > SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS ||
+      candidate.contentSha256 !== sha256(candidate.content)
+    ) {
+      return null;
+    }
+    return {
+      content: candidate.content,
+      contentHash: candidate.contentSha256,
+      sizeBytes: Buffer.byteLength(candidate.content, 'utf8'),
+    };
+  }
+
+  private async comparableMetricForExperimentRun(run: ExperimentRun) {
+    if (run.mode !== 'comparable') return null;
+    const { snapshot } = await this.requireActiveProject();
+    const objective = snapshot.objectives.find(
+      (candidate) =>
+        candidate.projectId === this.dependencies.projectId &&
+        candidate.id === run.objectiveId &&
+        candidate.objectiveVersion === run.objectiveVersion &&
+        candidate.locked,
+    );
+    if (!objective) throw new Error('experiment_objective_required');
+    return {
+      key: objective.primaryMetric.key,
+      displayName: objective.primaryMetric.displayName,
+      unit: objective.primaryMetric.unit,
+    };
+  }
+
+  private async currentExperimentRun(runId: string) {
+    const snapshot = await this.dependencies.experiments!.list({
+      projectId: this.dependencies.projectId,
+    });
+    const run = snapshot.runs.find(
+      (candidate) => candidate.id === runId && candidate.projectId === this.dependencies.projectId,
+    );
+    if (!run) throw new Error('experiment_run_not_found');
+    return run;
+  }
+
+  private terminalExperimentReplayReceipt(
+    run: ExperimentRun,
+    extras: Readonly<Record<string, unknown>> = {},
+  ) {
+    return jsonResult({
+      schemaVersion: 1,
+      persisted: true,
+      replayed: true,
+      verificationPending: false,
+      reconciliationPending: false,
+      process: {
+        outcome: run.status,
+        exitCode: run.processExitCode,
+        durationMs: run.processDurationMs,
+      },
+      logValidation: run.logReference
+        ? {
+            state: run.logReference.validationState,
+            missingFields: run.logReference.missingFields,
+            referenceId: run.logReference.referenceId,
+          }
+        : null,
+      ...extras,
+      run: sanitizedExperimentRun(run),
+    });
+  }
+
+  private async reconcileTerminalExperimentRun(
+    call: CodexDynamicToolCall,
+    run: ExperimentRun,
+    intent: ExperimentExecutionIntent,
+    selected: GrantedRemoteWorkspace,
+    comparableMetric: Readonly<{ key: string; displayName: string; unit: string | null }> | null,
+    signal: AbortSignal,
+  ) {
+    let logSourceLinked = false;
+    const reference = run.logReference;
+    if (reference) {
+      const existingSource = await this.dependencies.experiments!.getRunLogSource({
+        projectId: this.dependencies.projectId,
+        runId: run.id,
+        referenceId: reference.referenceId,
+      });
+      logSourceLinked = existingSource !== null;
+      if (!logSourceLinked && reference.validationState !== 'invalid') {
+        let candidate: ExperimentLogFileRead | null;
+        try {
+          candidate = await this.readExperimentLogFile(call, intent, selected, signal);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : 'tool_failed';
+          if (
+            !signal.aborted &&
+            !this.sshCapabilityRevoked &&
+            retryableExperimentVerificationErrors.has(code)
+          ) {
+            return this.terminalExperimentReplayReceipt(run, {
+              reconciliationPending: true,
+              retryableError: code,
+              logSourceLinked: false,
+              summaryMetricRecorded: false,
+            });
+          }
+          throw error;
+        }
+        if (signal.aborted || this.sshCapabilityRevoked) throw new Error('ssh_cancelled');
+        const expectedHash = reference.contentHash.startsWith('sha256:')
+          ? reference.contentHash.slice('sha256:'.length)
+          : reference.contentHash;
+        const exactFile =
+          candidate !== null &&
+          candidate.contentHash === expectedHash &&
+          candidate.sizeBytes === reference.sizeBytes;
+        const validation =
+          exactFile && candidate
+            ? validateExperimentJsonl(run, candidate.content, false, comparableMetric)
+            : null;
+        const storedValidationMatches =
+          validation !== null &&
+          validation.reference.validationState === reference.validationState &&
+          JSON.stringify(validation.reference.missingFields) ===
+            JSON.stringify(reference.missingFields) &&
+          experimentLatestMetricMatches(run.latestMetric, validation.latestMetric) &&
+          !(
+            run.processExitCode !== null &&
+            run.processExitCode !== 0 &&
+            validation.reportedTerminalStatus === 'succeeded'
+          ) &&
+          (run.status !== 'succeeded' ||
+            (run.processExitCode === 0 &&
+              validation.reportedTerminalStatus === 'succeeded' &&
+              validation.reference.validationState === 'valid'));
+        if (!storedValidationMatches) return failure('experiment_log_invalid');
+        await this.dependencies.experiments!.linkRunLogSource({
+          referenceId: reference.referenceId,
+          projectId: this.dependencies.projectId,
+          runId: run.id,
+          workspaceGrantId: intent.workspaceGrantId,
+          workspaceSubdirectory: intent.workspaceSubdirectory,
+          relativePath: intent.relativePath,
+        });
+        logSourceLinked = true;
+      }
+    }
+    let summaryMetricRecorded = false;
+    if (
+      logSourceLinked &&
+      run.status === 'succeeded' &&
+      run.mode === 'comparable' &&
+      run.logReference?.validationState === 'valid' &&
+      run.latestMetric !== null
+    ) {
+      await this.dependencies.experiments!.recordRunSummaryMetric({
+        projectId: this.dependencies.projectId,
+        runId: run.id,
+        value: run.latestMetric.value,
+      });
+      summaryMetricRecorded = true;
+    }
+    return this.terminalExperimentReplayReceipt(run, {
+      logSourceLinked,
+      summaryMetricRecorded,
+    });
+  }
+
+  private verificationPendingReceipt(
+    run: ExperimentRun,
+    replayed: boolean,
+    retryableError: string,
+  ) {
+    return jsonResult({
+      schemaVersion: 1,
+      persisted: true,
+      replayed,
+      verificationPending: true,
+      retryableError,
+      process: {
+        outcome: 'verifying',
+        exitCode: run.processExitCode,
+        durationMs: run.processDurationMs,
+      },
+      logValidation: run.logReference
+        ? {
+            state: run.logReference.validationState,
+            missingFields: run.logReference.missingFields,
+            referenceId: run.logReference.referenceId,
+          }
+        : null,
+      run: sanitizedExperimentRun(run),
+    });
+  }
+
+  private async markExperimentRunVerifying(
+    run: ExperimentRun,
+    reference: ExperimentRunLogReference,
+    exitCode: number,
+    durationMs: number,
+  ) {
+    let current = run;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.dependencies.experiments!.updateRun({
+          projectId: this.dependencies.projectId,
+          runId: run.id,
+          expectedVersion: current.version,
+          status: 'verifying',
+          currentStep: 'Awaiting log verification',
+          latestMetric: null,
+          logReference: pendingExperimentLogReference(reference),
+          processExitCode: exitCode,
+          processDurationMs: durationMs,
+        });
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== 'experiment_run_conflict') throw error;
+        current = await this.currentExperimentRun(run.id);
+        if (
+          current.status === 'verifying' ||
+          ['succeeded', 'failed', 'cancelled', 'lost'].includes(current.status)
+        ) {
+          return current;
+        }
+        if (current.status !== 'running') throw error;
+      }
+    }
+    throw new Error('experiment_run_conflict');
+  }
+
+  private async linkVerifiedExperimentLog(run: ExperimentRun, intent: ExperimentExecutionIntent) {
+    if (!run.logReference || run.logReference.validationState === 'invalid') return false;
+    await this.dependencies.experiments!.linkRunLogSource({
+      referenceId: run.logReference.referenceId,
+      projectId: this.dependencies.projectId,
+      runId: run.id,
+      workspaceGrantId: intent.workspaceGrantId,
+      workspaceSubdirectory: intent.workspaceSubdirectory,
+      relativePath: intent.relativePath,
+    });
+    return true;
+  }
+
+  private async recordExperimentSummary(run: ExperimentRun, comparableMetricValue: number | null) {
+    if (run.status !== 'succeeded' || run.mode !== 'comparable' || comparableMetricValue === null) {
+      return false;
+    }
+    await this.dependencies.experiments!.recordRunSummaryMetric({
+      projectId: this.dependencies.projectId,
+      runId: run.id,
+      value: comparableMetricValue,
+    });
+    return true;
+  }
+
+  private async finalizeVerifyingExperimentRun(
+    call: CodexDynamicToolCall,
+    run: ExperimentRun,
+    intent: ExperimentExecutionIntent,
+    selected: GrantedRemoteWorkspace,
+    comparableMetric: Readonly<{ key: string; displayName: string; unit: string | null }> | null,
+    signal: AbortSignal,
+    replayed = true,
+  ) {
+    const pending = run.logReference;
+    if (!pending || pending.validationState !== 'pending') {
+      throw new Error('experiment_run_transition_invalid');
+    }
+    let candidate: ExperimentLogFileRead | null;
+    try {
+      candidate = await this.readExperimentLogFile(call, intent, selected, signal);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : 'tool_failed';
+      if (
+        !signal.aborted &&
+        !this.sshCapabilityRevoked &&
+        retryableExperimentVerificationErrors.has(code)
+      ) {
+        return this.verificationPendingReceipt(run, replayed, code);
+      }
+      throw error;
+    }
+    if (signal.aborted || this.sshCapabilityRevoked) throw new Error('ssh_cancelled');
+    const expectedHash = pending.contentHash.startsWith('sha256:')
+      ? pending.contentHash.slice('sha256:'.length)
+      : pending.contentHash;
+    const exactFile =
+      candidate !== null &&
+      candidate.contentHash === expectedHash &&
+      candidate.sizeBytes === pending.sizeBytes;
+    let validation =
+      exactFile && candidate
+        ? validateExperimentJsonl(run, candidate.content, false, comparableMetric)
+        : null;
+    if (
+      run.processExitCode !== null &&
+      run.processExitCode !== 0 &&
+      validation?.reportedTerminalStatus === 'succeeded'
+    ) {
+      validation = null;
+    }
+    const reference =
+      validation && validation.reference.contentHash === expectedHash
+        ? resolveExperimentLogReference(pending, validation.reference)
+        : invalidResolvedExperimentLogReference(pending);
+    const succeeded =
+      run.processExitCode === 0 &&
+      validation?.reportedTerminalStatus === 'succeeded' &&
+      reference.validationState === 'valid';
+    const terminal = await this.settleExperimentRun(run.id, succeeded ? 'succeeded' : 'failed', {
+      progressCurrent: validation?.progressCurrent ?? null,
+      progressTotal: null,
+      currentStep: succeeded ? 'Completed' : 'Stopped before a valid logged completion',
+      latestMetric: validation?.latestMetric ?? null,
+      logReference: reference,
+      processExitCode: run.processExitCode,
+      processDurationMs: run.processDurationMs,
+    });
+    const logSourceLinked = exactFile
+      ? await this.linkVerifiedExperimentLog(terminal, intent)
+      : false;
+    const summaryMetricRecorded = await this.recordExperimentSummary(
+      terminal,
+      validation?.comparableMetricValue ?? null,
+    );
+    return jsonResult({
+      schemaVersion: 1,
+      persisted: true,
+      replayed,
+      verificationPending: false,
+      process: {
+        outcome: terminal.status,
+        exitCode: terminal.processExitCode,
+        durationMs: terminal.processDurationMs,
+      },
+      logValidation: terminal.logReference
+        ? {
+            state: terminal.logReference.validationState,
+            missingFields: terminal.logReference.missingFields,
+            referenceId: terminal.logReference.referenceId,
+          }
+        : null,
+      logSourceLinked,
+      summaryMetricRecorded,
+      run: sanitizedExperimentRun(terminal),
+    });
+  }
+
+  private async executeExperimentRun(call: CodexDynamicToolCall, toolAbortSignal: AbortSignal) {
+    const parsed = ExecuteExperimentRunArgumentsSchema.safeParse(call.arguments);
+    if (!parsed.success) return failure('invalid_tool_arguments');
+    if (!this.dependencies.experiments) return failure('experiment_unavailable');
+    if (!this.dependencies.ssh || !this.dependencies.sessionId || !this.dependencies.attemptId) {
+      return failure('ssh_unavailable');
+    }
+    const getRunExecutionIntent = this.dependencies.experiments.getRunExecutionIntent?.bind(
+      this.dependencies.experiments,
+    );
+    const stageRunExecutionIntent = this.dependencies.experiments.stageRunExecutionIntent?.bind(
+      this.dependencies.experiments,
+    );
+    if (!getRunExecutionIntent || !stageRunExecutionIntent) {
+      return failure('experiment_unavailable');
+    }
+
+    const experimentSnapshot = await this.dependencies.experiments.list({
+      projectId: this.dependencies.projectId,
+    });
+    const initialRun = experimentSnapshot.runs.find(
+      (run) => run.id === parsed.data.runId && run.projectId === this.dependencies.projectId,
+    );
+    if (!initialRun) return failure('experiment_run_not_found');
+    if (!validateCoveragePlan(initialRun.loggingTemplate.customFields, parsed.data.coveragePlan)) {
+      return failure('experiment_logging_coverage_invalid');
+    }
+
+    let binding = await this.dependencies.experiments.getRunExecutionBinding({
+      projectId: this.dependencies.projectId,
+      runId: initialRun.id,
+    });
+    if (!binding && initialRun.status === 'queued') {
+      try {
+        await this.dependencies.experiments.bindRunExecution({
+          projectId: this.dependencies.projectId,
+          runId: initialRun.id,
+          workspaceGrantId: parsed.data.grantId,
+        });
+      } catch (error) {
+        binding = await this.dependencies.experiments.getRunExecutionBinding({
+          projectId: this.dependencies.projectId,
+          runId: initialRun.id,
+        });
+        if (!binding) throw error;
+      }
+      binding ??= await this.dependencies.experiments.getRunExecutionBinding({
+        projectId: this.dependencies.projectId,
+        runId: initialRun.id,
+      });
+    }
+    if (!binding || binding.workspaceGrantId !== parsed.data.grantId) {
+      return failure('experiment_run_grant_mismatch');
+    }
+    const workspaces = await this.dependencies.ssh.listWorkspaceGrants(this.dependencies.projectId);
+    const selected = workspaces.find(({ grant }) => grant.id === binding.workspaceGrantId);
+    if (!selected) return failure('ssh_workspace_grant_not_found');
+    if (selected.grant.permissionMode !== 'workspace') {
+      return failure('ssh_workspace_command_not_allowed');
+    }
+    const command: SshWorkspaceAgentCommand = {
+      projectId: this.dependencies.projectId,
+      sessionId: this.dependencies.sessionId,
+      attemptId: this.dependencies.attemptId,
+      turnId: call.turnId,
+      toolCallId: call.callId,
+      connectionId: selected.connection.id,
+      grantId: selected.grant.id,
+      command: parsed.data.command,
+      args: parsed.data.args,
+      ...(parsed.data.workspaceSubdirectory
+        ? { workspaceSubdirectory: parsed.data.workspaceSubdirectory }
+        : {}),
+      timeoutSeconds: parsed.data.timeoutSeconds,
+    };
+    if (classifyWorkspaceCommand(command, selected.grant) !== 'experiment') {
+      return failure('ssh_workspace_command_not_allowed');
+    }
+    const signal = AbortSignal.any([this.sshScopeController.signal, toolAbortSignal]);
+    const expectedIntent = {
+      projectId: this.dependencies.projectId,
+      runId: initialRun.id,
+      workspaceGrantId: binding.workspaceGrantId,
+      grantVersion: selected.grant.version,
+      connectionId: selected.connection.id,
+      connectionVersion: selected.connection.version,
+      canonicalRoot: selected.grant.canonicalRoot,
+      canonicalRootHash: sha256(selected.grant.canonicalRoot),
+      policyVersion: SSH_TRUSTED_WORKSPACE_POLICY_VERSION,
+      executionPolicyHash: EXPERIMENT_EXECUTION_POLICY_HASH,
+      intentHash: experimentExecutionIntentHash(
+        this.dependencies.projectId,
+        initialRun,
+        parsed.data,
+        selected,
+      ),
+      workspaceSubdirectory: parsed.data.workspaceSubdirectory ?? null,
+      relativePath: parsed.data.logPath,
+    };
+    let intent = await getRunExecutionIntent({
+      projectId: this.dependencies.projectId,
+      runId: initialRun.id,
+    });
+    if (!intent) {
+      if (initialRun.status !== 'queued') return failure('experiment_run_intent_mismatch');
+      try {
+        intent = await stageRunExecutionIntent(expectedIntent);
+      } catch (error) {
+        intent = await getRunExecutionIntent({
+          projectId: this.dependencies.projectId,
+          runId: initialRun.id,
+        });
+        if (!intent) throw error;
+      }
+    }
+    if (!experimentExecutionIntentMatches(intent, expectedIntent)) {
+      return failure('experiment_run_intent_mismatch');
+    }
+    const comparableMetric = await this.comparableMetricForExperimentRun(initialRun);
+    if (['succeeded', 'failed', 'cancelled', 'lost'].includes(initialRun.status)) {
+      return this.reconcileTerminalExperimentRun(
+        call,
+        initialRun,
+        intent,
+        selected,
+        comparableMetric,
+        signal,
+      );
+    }
+    if (initialRun.status === 'running') {
+      return jsonResult({
+        schemaVersion: 1,
+        persisted: true,
+        replayed: true,
+        executionPending: true,
+        verificationPending: false,
+        process: { outcome: 'running', exitCode: null, durationMs: null },
+        run: sanitizedExperimentRun(initialRun),
+      });
+    }
+    if (initialRun.status === 'verifying') {
+      return this.finalizeVerifyingExperimentRun(
+        call,
+        initialRun,
+        intent,
+        selected,
+        comparableMetric,
+        signal,
+      );
+    }
+    if (initialRun.status !== 'queued') return failure('experiment_run_transition_invalid');
+
+    let running: ExperimentRun;
+    try {
+      running = await this.dependencies.experiments.updateRun({
+        projectId: this.dependencies.projectId,
+        runId: initialRun.id,
+        expectedVersion: initialRun.version,
+        status: 'running',
+        currentStep: 'Remote experiment running',
+      });
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'experiment_run_conflict') throw error;
+      const current = await this.currentExperimentRun(initialRun.id);
+      if (['succeeded', 'failed', 'cancelled', 'lost'].includes(current.status)) {
+        return this.reconcileTerminalExperimentRun(
+          call,
+          current,
+          intent,
+          selected,
+          comparableMetric,
+          signal,
+        );
+      }
+      if (current.status === 'verifying') {
+        return this.finalizeVerifyingExperimentRun(
+          call,
+          current,
+          intent,
+          selected,
+          comparableMetric,
+          signal,
+        );
+      }
+      if (current.status === 'running') {
+        return jsonResult({
+          schemaVersion: 1,
+          persisted: true,
+          replayed: true,
+          executionPending: true,
+          verificationPending: false,
+          process: { outcome: 'running', exitCode: null, durationMs: null },
+          run: sanitizedExperimentRun(current),
+        });
+      }
+      throw error;
+    }
+    let processReceiptObserved = false;
+    try {
+      const result = await this.dependencies.ssh.runAgentWorkspaceCommand(command, signal);
+      processReceiptObserved = true;
+      if (result.exitCode === null) {
+        const terminal = await this.settleExperimentRun(running.id, 'failed', {
+          progressCurrent: null,
+          progressTotal: null,
+          currentStep: 'Remote process outcome unavailable',
+          latestMetric: null,
+          logReference: invalidExperimentLogReference(running, result.stdout),
+          processExitCode: null,
+          processDurationMs: null,
+        });
+        return jsonResult({
+          schemaVersion: 1,
+          persisted: true,
+          replayed: false,
+          verificationPending: false,
+          process: { outcome: terminal.status, exitCode: null, durationMs: null },
+          logValidation: terminal.logReference
+            ? {
+                state: terminal.logReference.validationState,
+                missingFields: terminal.logReference.missingFields,
+                referenceId: terminal.logReference.referenceId,
+              }
+            : null,
+          summaryMetricRecorded: false,
+          run: sanitizedExperimentRun(terminal),
+        });
+      }
+      const observedReference = invalidExperimentLogReference(running, result.stdout);
+      if (result.truncated) {
+        observedReference.contentHash = sha256(
+          `gosu-truncated-process-output\u0000${observedReference.contentHash}`,
+        );
+      }
+      const verifying = await this.markExperimentRunVerifying(
+        running,
+        observedReference,
+        result.exitCode,
+        result.durationMs,
+      );
+      if (['succeeded', 'failed', 'cancelled', 'lost'].includes(verifying.status)) {
+        return this.reconcileTerminalExperimentRun(
+          call,
+          verifying,
+          intent,
+          selected,
+          comparableMetric,
+          signal,
+        );
+      }
+      if (verifying.status !== 'verifying') {
+        throw new Error('experiment_run_transition_invalid');
+      }
+      if (signal.aborted || this.sshCapabilityRevoked) {
+        await this.settleExperimentRun(verifying.id, 'cancelled', {
+          progressCurrent: null,
+          progressTotal: null,
+          currentStep: 'Cancelled before log verification',
+          latestMetric: null,
+          logReference: invalidResolvedExperimentLogReference(verifying.logReference!),
+          processExitCode: verifying.processExitCode,
+          processDurationMs: verifying.processDurationMs,
+        });
+        return failure('ssh_cancelled');
+      }
+      return this.finalizeVerifyingExperimentRun(
+        call,
+        verifying,
+        intent,
+        selected,
+        comparableMetric,
+        signal,
+        false,
+      );
+    } catch (error) {
+      if (processReceiptObserved) throw error;
+      const code = error instanceof Error ? error.message : 'tool_failed';
+      const cancelled =
+        signal.aborted ||
+        this.sshCapabilityRevoked ||
+        [
+          'ssh_cancelled',
+          'ssh_approval_cancelled',
+          'ssh_approval_denied',
+          'ssh_approval_expired',
+        ].includes(code);
+      await this.settleExperimentRun(running.id, cancelled ? 'cancelled' : 'failed', {
+        processExitCode: null,
+        processDurationMs: null,
+      }).catch(() => undefined);
+      throw error;
+    }
+  }
+
   private async searchLiterature(arguments_: unknown, toolAbortSignal: AbortSignal) {
     const parsed = SearchLiteratureArgumentsSchema.safeParse(arguments_);
     if (!parsed.success) return failure('invalid_tool_arguments');
@@ -1721,16 +3320,21 @@ export class ProjectAgentToolSession {
     const workspaces = await this.dependencies.ssh.listWorkspaceGrants(this.dependencies.projectId);
     const selected = workspaces.find(({ grant }) => grant.id === parsed.data.grantId);
     if (!selected) return failure('ssh_workspace_grant_not_found');
+    const command: SshWorkspaceAgentCommand = {
+      projectId: this.dependencies.projectId,
+      sessionId: this.dependencies.sessionId,
+      attemptId: this.dependencies.attemptId,
+      turnId: call.turnId,
+      toolCallId: call.callId,
+      connectionId: selected.connection.id,
+      ...parsed.data,
+    };
+    const operation = classifyWorkspaceCommand(command, selected.grant);
+    if (operation !== 'inspect') {
+      return failure('experiment_tracking_required');
+    }
     const result = await this.dependencies.ssh.runAgentWorkspaceCommand(
-      {
-        projectId: this.dependencies.projectId,
-        sessionId: this.dependencies.sessionId,
-        attemptId: this.dependencies.attemptId,
-        turnId: call.turnId,
-        toolCallId: call.callId,
-        connectionId: selected.connection.id,
-        ...parsed.data,
-      },
+      command,
       AbortSignal.any([this.sshScopeController.signal, toolAbortSignal]),
     );
     if (this.sshCapabilityRevoked) return failure('ssh_cancelled');

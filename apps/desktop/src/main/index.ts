@@ -42,6 +42,8 @@ import { LiteratureService } from './literature-service';
 import { registerLectureStudioIpc } from './lecture-studio-ipc';
 import { LectureStudioService } from './lecture-studio-service';
 import { createLiteratureTransferPlatform } from './literature-transfer-platform';
+import { registerExperimentRunLogIpc } from './experiment-run-log-ipc';
+import { ExperimentRunLogService } from './experiment-run-log-service';
 import { registerExperimentWorkspaceIpc } from './experiment-workspace-ipc';
 import { ExperimentWorkspaceService } from './experiment-workspace-service';
 import { registerProjectChatAttachmentIpc } from './project-chat-attachment-ipc';
@@ -123,6 +125,10 @@ const workspace = new WorkspaceService({
 const experimentWorkspace = new ExperimentWorkspaceService({
   storage: database,
   workspace,
+});
+const experimentRunLogs = new ExperimentRunLogService({
+  experiments: experimentWorkspace,
+  ssh,
 });
 const gitWorkspace = new GitWorkspaceService({
   workspace,
@@ -207,6 +213,7 @@ const projectChat = new ProjectChatService({
   vault: researchNotes,
   literature,
   ssh,
+  experiments: experimentWorkspace,
   attachments: projectChatAttachments,
   async prepareProjectDirectory(projectId) {
     const directory = join(app.getPath('userData'), 'project-chat-workspaces', projectId);
@@ -454,6 +461,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   registerExperimentWorkspaceIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     experimentWorkspace,
+    reportUnexpectedWorkspaceError,
+  );
+  registerExperimentRunLogIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    experimentRunLogs,
     reportUnexpectedWorkspaceError,
   );
   registerLectureStudioIpc(

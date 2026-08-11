@@ -14,11 +14,15 @@ import {
   ExperimentWorkspaceEventSchema,
   type CreateExperimentIdeaInput,
   type ExperimentIdea,
+  type ExperimentLoggingTemplate,
   type ExperimentMetricPoint,
+  type ExperimentRunLogChunk,
   type ExperimentWorkspaceEvent,
   type ExperimentWorkspaceSnapshot,
   type ListExperimentWorkspaceInput,
+  type ReadExperimentRunLogInput,
   type RecordExperimentMetricInput,
+  type ReviseExperimentLoggingTemplateInput,
   type UpdateExperimentIdeaInput,
 } from '../shared/experiment-workspace-contracts';
 import { unwrapExperimentIpcResult } from '../shared/experiment-workspace-ipc-result';
@@ -518,6 +522,13 @@ const api = {
         EXPERIMENT_WORKSPACE_IPC_CHANNELS.recordMetric,
         input,
       ),
+    reviseLoggingTemplate: (input: ReviseExperimentLoggingTemplateInput) =>
+      invokeExperiment<ExperimentLoggingTemplate>(
+        EXPERIMENT_WORKSPACE_IPC_CHANNELS.reviseLoggingTemplate,
+        input,
+      ),
+    readRunLog: (input: ReadExperimentRunLogInput) =>
+      invokeExperiment<ExperimentRunLogChunk>(EXPERIMENT_WORKSPACE_IPC_CHANNELS.readRunLog, input),
     onEvent: (listener: (event: ExperimentWorkspaceEvent) => void) => {
       if (typeof listener !== 'function') throw new Error('invalid_experiment_event_listener');
       const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {

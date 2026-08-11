@@ -92,7 +92,7 @@ describe('Project chat prompt assembly', () => {
     expect(first.provenance).toMatchObject({
       assemblyVersion: 3,
       profileVersion: 3,
-      baseInstructionVersion: 27,
+      baseInstructionVersion: 31,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -207,7 +207,7 @@ describe('Project chat prompt assembly', () => {
       'After any failed or commit-uncertain write, read the same path',
     );
     expect(first.developerInstructions).toContain(
-      'run the relative .py entrypoint, native test, or build as a separate approved command',
+      'Any test, build, benchmark, training, evaluation, or other repository execution is a tracked exploratory or comparable run',
     );
     expect(first.developerInstructions).toContain(
       'Never claim that a file changed, code ran, a test passed, or an experiment completed',
@@ -216,11 +216,13 @@ describe('Project chat prompt assembly', () => {
       'block raw shell, delete, rename, chmod, large or binary files',
     );
     expect(first.developerInstructions).toContain('Command approval binds argv and cwd');
-    expect(first.developerInstructions).toContain('foreground Python experiment');
+    expect(first.developerInstructions).toContain(
+      'Compute-capable execution is available only through',
+    );
     expect(first.developerInstructions).toContain('/usr/bin/python3');
     expect(first.developerInstructions).toContain('at most 120 seconds');
     expect(first.developerInstructions).toContain(
-      'The foreground experiment path does not provide unattended execution',
+      'The tracked foreground path provides local run lineage',
     );
     expect(first.developerInstructions).toContain('the Runner control path is still required');
     expect(first.developerInstructions).toContain(
@@ -245,7 +247,23 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(27);
+    expect(first.provenance.baseInstructionVersion).toBe(31);
+    expect(first.developerInstructions).toContain('first call read_experiment_setup');
+    expect(first.developerInstructions).toContain('create_experiment_run');
+    expect(first.developerInstructions).toContain('execute_experiment_run');
+    expect(first.developerInstructions).toContain(
+      'an exploratory run may proceed without a target threshold',
+    );
+    expect(first.developerInstructions).toContain(
+      'Do not call run_ssh_workspace_command for tests, builds, benchmarks, training, evaluation',
+    );
+    expect(first.developerInstructions).toContain('returns only a sanitized run receipt');
+    expect(first.developerInstructions).toContain('byte-for-byte identical JSONL');
+    expect(first.developerInstructions).toContain('separately approved typed read');
+    expect(first.developerInstructions).toContain('can require a second Allow once');
+    expect(first.developerInstructions).toContain('the run is verifying');
+    expect(first.developerInstructions).toContain('retries only verification');
+    expect(first.developerInstructions).toContain('rejects any intent or path mismatch');
     expect(first.developerInstructions).toContain(
       'Core & canonical is an eligibility-gated maximum, never a quota',
     );

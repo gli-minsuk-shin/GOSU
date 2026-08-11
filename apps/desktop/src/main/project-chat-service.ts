@@ -70,6 +70,7 @@ import {
 } from './project-chat-attachment-service';
 import {
   ProjectAgentToolSession,
+  type ProjectAgentExperiments,
   type ProjectAgentLiterature,
   type ProjectAgentSsh,
   type ProjectAgentVault,
@@ -603,6 +604,7 @@ export class ProjectChatService extends EventEmitter {
       vault?: ProjectAgentVault;
       literature?: ProjectAgentLiterature;
       ssh?: ProjectAgentSsh;
+      experiments?: ProjectAgentExperiments;
       attachments?: ProjectChatAttachmentClaimer;
       titleJobTimeoutMs?: number;
       queueSchedulerRetryDelaysMs?: readonly number[];
@@ -1036,6 +1038,7 @@ export class ProjectChatService extends EventEmitter {
           ? { literature: this.dependencies.literature }
           : {}),
         ...(this.dependencies.ssh ? { ssh: this.dependencies.ssh } : {}),
+        ...(this.dependencies.experiments ? { experiments: this.dependencies.experiments } : {}),
       });
       createdAgentTools = agentTools;
       const assembled = assembleProjectChatPrompt({

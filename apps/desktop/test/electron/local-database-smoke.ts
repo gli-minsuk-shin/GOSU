@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -32,7 +32,9 @@ import {
   EXPERIMENT_MAX_IDEAS_PER_PROJECT,
   EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
   type ExperimentIdea,
+  type ExperimentLoggingTemplate,
   type ExperimentMetricPoint,
+  type ExperimentRun,
 } from '../../src/shared/experiment-workspace-contracts';
 import {
   PROJECT_CHAT_MAX_BRANCH_DEPTH,
@@ -206,10 +208,11 @@ async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: s
       }),
       'trash_purge_connection_fixture_failed',
     );
+    const purgedGrantId = randomUUID();
     invariant(
       database.createSshWorkspaceGrant({
         schemaVersion: 1,
-        id: randomUUID(),
+        id: purgedGrantId,
         projectId: purgedProject.id,
         connectionId,
         canonicalRoot: '/workspace/purge-fixture',
@@ -219,6 +222,133 @@ async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: s
         updatedAt: fixedTimestamp,
       }),
       'trash_purge_ssh_grant_fixture_failed',
+    );
+    const preservedIdea: ExperimentIdea = {
+      schemaVersion: 1,
+      id: randomUUID(),
+      projectId: purgedProject.id,
+      parentIdeaId: null,
+      title: 'Preserved failed experiment idea',
+      hypothesis: 'Trash cleanup must not erase research provenance.',
+      phase: 'Recovery',
+      outcome: 'failed',
+      resultSummary: 'Fixture result retained for audit.',
+      version: 1,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+      completedAt: fixedTimestamp,
+    };
+    invariant(
+      database.createExperimentIdea(preservedIdea),
+      'trash_purge_experiment_idea_fixture_failed',
+    );
+    const preservedObjectiveId = randomUUID();
+    database.appendExperimentMetricPoint({
+      schemaVersion: 1,
+      id: randomUUID(),
+      projectId: purgedProject.id,
+      ideaId: preservedIdea.id,
+      objectiveId: preservedObjectiveId,
+      objectiveVersion: 1,
+      metricKey: 'audit-score',
+      metricDisplayName: 'Audit score',
+      direction: 'maximize',
+      unit: null,
+      aggregation: 'last',
+      evaluatorHash: 'evaluator-audit-fixture',
+      datasetHash: 'dataset-audit-fixture',
+      holdoutHash: null,
+      baseline: null,
+      target: null,
+      value: 0,
+      source: 'manual',
+      trialId: 'trash-preservation-trial',
+      recordedAt: fixedTimestamp,
+    });
+    const preservedTemplate: ExperimentLoggingTemplate = {
+      schemaVersion: 1,
+      id: randomUUID(),
+      projectId: purgedProject.id,
+      version: 1,
+      previousRevisionId: null,
+      systemFields: [
+        'schema_version',
+        'template_version',
+        'objective_version',
+        'occurred_at',
+        'event_type',
+        'sequence',
+        'run_id',
+        'trial_id',
+        'status',
+        'server_label',
+      ],
+      customFields: [],
+      templateHash: 'f'.repeat(64),
+      createdAt: fixedTimestamp,
+    };
+    invariant(
+      database.appendExperimentLoggingTemplate(preservedTemplate, 0)?.id === preservedTemplate.id,
+      'trash_purge_experiment_template_fixture_failed',
+    );
+    const preservedRun: ExperimentRun = {
+      schemaVersion: 1,
+      id: randomUUID(),
+      projectId: purgedProject.id,
+      ideaId: preservedIdea.id,
+      title: 'Preserved failed run',
+      status: 'failed',
+      mode: 'comparable',
+      serverLabel: 'Purge fixture server',
+      trialId: 'trash-preservation-trial',
+      objectiveId: preservedObjectiveId,
+      objectiveVersion: 1,
+      loggingTemplate: {
+        revisionId: preservedTemplate.id,
+        version: preservedTemplate.version,
+        systemFields: preservedTemplate.systemFields,
+        customFields: preservedTemplate.customFields,
+        templateHash: preservedTemplate.templateHash,
+      },
+      progressCurrent: null,
+      progressTotal: null,
+      currentStep: 'Failed before completion',
+      latestMetric: null,
+      logReference: null,
+      processExitCode: null,
+      processDurationMs: null,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+      startedAt: fixedTimestamp,
+      completedAt: fixedTimestamp,
+      version: 1,
+    };
+    invariant(
+      database.createExperimentRun(preservedRun) &&
+        database.bindExperimentRunExecution({
+          projectId: purgedProject.id,
+          runId: preservedRun.id,
+          workspaceGrantId: purgedGrantId,
+        }) &&
+        database.stageExperimentRunExecutionIntent({
+          projectId: purgedProject.id,
+          runId: preservedRun.id,
+          workspaceGrantId: purgedGrantId,
+          grantVersion: 1,
+          connectionId,
+          connectionVersion: 1,
+          canonicalRoot: '/workspace/purge-fixture',
+          canonicalRootHash: createHash('sha256')
+            .update('/workspace/purge-fixture', 'utf8')
+            .digest('hex'),
+          policyVersion: 1,
+          executionPolicyHash: '2'.repeat(64),
+          intentHash: '1'.repeat(64),
+          workspaceSubdirectory: null,
+          relativePath: 'logs/preserved.jsonl',
+          createdAt: fixedTimestamp,
+        }),
+      'trash_purge_experiment_run_fixture_failed',
     );
     await workspace.trashProject({
       projectId: purgedProject.id,
@@ -241,6 +371,18 @@ async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: s
     invariant(
       database.listSshWorkspaceGrants(purgedProject.id).length === 0,
       'trash_purge_ssh_grant_not_detached',
+    );
+    invariant(
+      database.listExperimentIdeas(purgedProject.id).some(({ id }) => id === preservedIdea.id) &&
+        database
+          .listExperimentMetricPoints(purgedProject.id)
+          .some(({ trialId }) => trialId === preservedRun.trialId) &&
+        database.getExperimentRun(purgedProject.id, preservedRun.id)?.status === 'failed' &&
+        database.getExperimentRunExecutionIntent(purgedProject.id, preservedRun.id)?.intentHash ===
+          '1'.repeat(64) &&
+        database.getExperimentRunExecutionIntent(purgedProject.id, preservedRun.id)
+          ?.canonicalRoot === '/workspace/purge-fixture',
+      'trash_purge_erased_experiment_provenance',
     );
     invariant(
       database.listManuscripts(purgedProject.id).length === 0 &&
@@ -316,6 +458,12 @@ async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: s
       invariant(
         reopened.listManuscriptArtifactPurgeQueue()[0]?.bindingId === purgedBindingId,
         'manuscript_artifact_purge_queue_was_not_durable',
+      );
+      invariant(
+        reopened.getExperimentRun(purgedProject.id, preservedRun.id)?.status === 'failed' &&
+          reopened.getExperimentRunExecutionIntent(purgedProject.id, preservedRun.id)
+            ?.intentHash === '1'.repeat(64),
+        'trash_purge_experiment_provenance_was_not_durable',
       );
       invariant(
         reopened.completeManuscriptArtifactPurge(randomUUID()) === false &&
@@ -877,6 +1025,303 @@ function verifyExperimentPersistence(fixedTimestamp: string) {
     database.listExperimentMetricPoints(projectId).length === 2,
     'experiment_failed_metric_insert_was_not_atomic',
   );
+  const loggingTemplate: ExperimentLoggingTemplate = {
+    schemaVersion: 1,
+    id: randomUUID(),
+    projectId,
+    version: 1,
+    previousRevisionId: null,
+    systemFields: [
+      'schema_version',
+      'template_version',
+      'objective_version',
+      'occurred_at',
+      'event_type',
+      'sequence',
+      'run_id',
+      'trial_id',
+      'status',
+      'server_label',
+    ],
+    customFields: [
+      {
+        key: 'step',
+        label: 'Step',
+        type: 'integer',
+        category: 'progress',
+        requiredAt: ['progress'],
+        unit: null,
+      },
+    ],
+    templateHash: 'a'.repeat(64),
+    createdAt: fixedTimestamp,
+  };
+  invariant(
+    database.appendExperimentLoggingTemplate(loggingTemplate, 0)?.id === loggingTemplate.id,
+    'experiment_logging_template_insert_failed',
+  );
+  const queuedRun: ExperimentRun = {
+    schemaVersion: 1,
+    id: randomUUID(),
+    projectId,
+    ideaId: null,
+    title: 'Exploratory observability smoke run',
+    status: 'queued',
+    mode: 'exploratory',
+    serverLabel: 'GPU fixture',
+    trialId: 'exploratory-smoke-1',
+    objectiveId: null,
+    objectiveVersion: null,
+    loggingTemplate: {
+      revisionId: loggingTemplate.id,
+      version: loggingTemplate.version,
+      systemFields: loggingTemplate.systemFields,
+      customFields: loggingTemplate.customFields,
+      templateHash: loggingTemplate.templateHash,
+    },
+    progressCurrent: null,
+    progressTotal: null,
+    currentStep: null,
+    latestMetric: null,
+    logReference: null,
+    processExitCode: null,
+    processDurationMs: null,
+    createdAt: fixedTimestamp,
+    updatedAt: fixedTimestamp,
+    startedAt: null,
+    completedAt: null,
+    version: 1,
+  };
+  invariant(database.createExperimentRun(queuedRun), 'experiment_run_insert_failed');
+  const experimentConnectionId = randomUUID();
+  const experimentGrantId = randomUUID();
+  invariant(
+    database.createSshConnection({
+      schemaVersion: 1,
+      id: experimentConnectionId,
+      label: 'Experiment intent fixture server',
+      hostAlias: 'experiment-intent-fixture',
+      version: 1,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    }),
+    'experiment_intent_connection_fixture_failed',
+  );
+  invariant(
+    database.createSshWorkspaceGrant({
+      schemaVersion: 1,
+      id: experimentGrantId,
+      projectId,
+      connectionId: experimentConnectionId,
+      canonicalRoot: '/workspace/experiment-intent-fixture',
+      permissionMode: 'workspace',
+      version: 1,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    }),
+    'experiment_intent_grant_fixture_failed',
+  );
+  invariant(
+    database.bindExperimentRunExecution({
+      projectId,
+      runId: queuedRun.id,
+      workspaceGrantId: experimentGrantId,
+    }),
+    'experiment_execution_binding_insert_failed',
+  );
+  const executionIntent = {
+    projectId,
+    runId: queuedRun.id,
+    workspaceGrantId: experimentGrantId,
+    grantVersion: 1,
+    connectionId: experimentConnectionId,
+    connectionVersion: 1,
+    canonicalRoot: '/workspace/experiment-intent-fixture',
+    canonicalRootHash: createHash('sha256')
+      .update('/workspace/experiment-intent-fixture', 'utf8')
+      .digest('hex'),
+    policyVersion: 1,
+    executionPolicyHash: 'd'.repeat(64),
+    intentHash: 'b'.repeat(64),
+    workspaceSubdirectory: 'experiments/smoke',
+    relativePath: 'logs/smoke.jsonl',
+    createdAt: fixedTimestamp,
+  } as const;
+  invariant(
+    database.stageExperimentRunExecutionIntent(executionIntent) &&
+      database.stageExperimentRunExecutionIntent(executionIntent) &&
+      database.getExperimentRunExecutionIntent(projectId, queuedRun.id)?.intentHash ===
+        executionIntent.intentHash,
+    'experiment_execution_intent_was_not_durable_or_idempotent',
+  );
+  const legacyIntentQueuedRun: ExperimentRun = {
+    ...queuedRun,
+    id: randomUUID(),
+    trialId: 'trial-legacy-intent-origin-preserved',
+    title: 'Legacy intent with recoverable origin',
+  };
+  invariant(
+    database.createExperimentRun(legacyIntentQueuedRun) &&
+      database.bindExperimentRunExecution({
+        projectId,
+        runId: legacyIntentQueuedRun.id,
+        workspaceGrantId: experimentGrantId,
+      }) &&
+      database.stageExperimentRunExecutionIntent({
+        ...executionIntent,
+        runId: legacyIntentQueuedRun.id,
+        intentHash: 'c'.repeat(64),
+      }),
+    'recoverable_legacy_experiment_intent_fixture_failed',
+  );
+  const orphanedIntentRun: ExperimentRun = {
+    ...queuedRun,
+    id: randomUUID(),
+    trialId: 'trial-legacy-intent-origin-missing',
+    title: 'Legacy intent with missing origin',
+  };
+  const orphanedConnectionId = randomUUID();
+  const orphanedGrantId = randomUUID();
+  const orphanedCanonicalRoot = '/workspace/orphaned-experiment-intent';
+  invariant(
+    database.createExperimentRun(orphanedIntentRun) &&
+      database.createSshConnection({
+        schemaVersion: 1,
+        id: orphanedConnectionId,
+        label: 'Orphaned experiment intent server',
+        hostAlias: 'orphaned-experiment-intent',
+        version: 1,
+        createdAt: fixedTimestamp,
+        updatedAt: fixedTimestamp,
+      }) &&
+      database.createSshWorkspaceGrant({
+        schemaVersion: 1,
+        id: orphanedGrantId,
+        projectId,
+        connectionId: orphanedConnectionId,
+        canonicalRoot: orphanedCanonicalRoot,
+        permissionMode: 'workspace',
+        version: 1,
+        createdAt: fixedTimestamp,
+        updatedAt: fixedTimestamp,
+      }) &&
+      database.bindExperimentRunExecution({
+        projectId,
+        runId: orphanedIntentRun.id,
+        workspaceGrantId: orphanedGrantId,
+      }) &&
+      database.stageExperimentRunExecutionIntent({
+        ...executionIntent,
+        runId: orphanedIntentRun.id,
+        workspaceGrantId: orphanedGrantId,
+        connectionId: orphanedConnectionId,
+        canonicalRoot: orphanedCanonicalRoot,
+        canonicalRootHash: createHash('sha256').update(orphanedCanonicalRoot, 'utf8').digest('hex'),
+        intentHash: 'f'.repeat(64),
+      }),
+    'unrecoverable_legacy_experiment_intent_fixture_failed',
+  );
+  const lostAt = new Date(Date.parse(fixedTimestamp) + 2_000).toISOString();
+  const lostRun: ExperimentRun = {
+    ...queuedRun,
+    status: 'lost',
+    currentStep: 'runner lease expired',
+    updatedAt: lostAt,
+    startedAt: lostAt,
+    completedAt: lostAt,
+    version: 2,
+  };
+  invariant(
+    database.updateExperimentRun(lostRun, 1)?.status === 'lost',
+    'experiment_run_cas_update_failed',
+  );
+  invariant(
+    database.updateExperimentRun(lostRun, 1) === null,
+    'experiment_run_stale_cas_was_accepted',
+  );
+  const interruptedRunningRun: ExperimentRun = {
+    ...queuedRun,
+    id: randomUUID(),
+    trialId: 'trial-interrupted-running',
+    title: 'Interrupted running trial',
+    status: 'running',
+    currentStep: 'training epoch 3',
+    startedAt: fixedTimestamp,
+  };
+  invariant(
+    database.createExperimentRun(interruptedRunningRun),
+    'running_experiment_run_insert_failed',
+  );
+  const pendingVerificationRun: ExperimentRun = {
+    ...queuedRun,
+    id: randomUUID(),
+    trialId: 'trial-pending-verification',
+    title: 'Pending verification trial',
+    status: 'verifying',
+    currentStep: 'Awaiting exact log verification',
+    logReference: {
+      referenceId: randomUUID(),
+      displayName: 'Pending verification JSONL log',
+      contentHash: 'c'.repeat(64),
+      sizeBytes: 256,
+      validationState: 'pending',
+      missingFields: [],
+    },
+    processExitCode: 0,
+    processDurationMs: 4_321,
+    startedAt: fixedTimestamp,
+    version: 2,
+  };
+  invariant(
+    database.createExperimentRun(pendingVerificationRun),
+    'verifying_experiment_run_insert_failed',
+  );
+  const legacySuccessRun: ExperimentRun = {
+    ...queuedRun,
+    id: randomUUID(),
+    ideaId: childIdea.id,
+    trialId: 'trial-legacy-success-with-receipt',
+    title: 'Legacy successful trial',
+    status: 'succeeded',
+    mode: 'comparable',
+    objectiveId: metricDraft.objectiveId,
+    objectiveVersion: metricDraft.objectiveVersion,
+    currentStep: 'Completed',
+    latestMetric: {
+      key: metricDraft.metricKey,
+      displayName: metricDraft.metricDisplayName,
+      value: metricDraft.value,
+      unit: metricDraft.unit,
+      recordedAt: fixedTimestamp,
+    },
+    logReference: {
+      referenceId: randomUUID(),
+      displayName: 'Legacy successful JSONL log',
+      contentHash: 'e'.repeat(64),
+      sizeBytes: 128,
+      validationState: 'valid',
+      missingFields: [],
+    },
+    processExitCode: 0,
+    processDurationMs: 1_234,
+    startedAt: fixedTimestamp,
+    completedAt: fixedTimestamp,
+    version: 2,
+  };
+  invariant(
+    database.createExperimentRun(legacySuccessRun) &&
+      database.bindExperimentRunExecution({
+        projectId,
+        runId: legacySuccessRun.id,
+        workspaceGrantId: experimentGrantId,
+      }) &&
+      database.stageExperimentRunExecutionIntent({
+        ...executionIntent,
+        runId: legacySuccessRun.id,
+        intentHash: '1'.repeat(64),
+      }),
+    'legacy_success_experiment_run_insert_failed',
+  );
   database.close();
 
   const keyHex = safeStorage
@@ -999,7 +1444,12 @@ function verifyExperimentPersistence(fixedTimestamp: string) {
                 seed.project_id,seed.idea_id,numbers.sequence,seed.objective_id,
                 seed.objective_version,seed.metric_key,seed.metric_display_name,seed.direction,
                 seed.unit,seed.aggregation,seed.evaluator_hash,seed.dataset_hash,seed.holdout_hash,
-                seed.baseline,seed.target,seed.value,seed.source,seed.trial_id,seed.recorded_at
+                seed.baseline,seed.target,seed.value,
+                case when numbers.sequence=${EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT}
+                  then 'runner-summary' else seed.source end,
+                case when numbers.sequence=${EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT}
+                  then 'trial-legacy-success-with-receipt' else seed.trial_id end,
+                seed.recorded_at
          from experiment_metric_points seed cross join numbers
          where seed.id=? and numbers.sequence<=${EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT}`,
       )
@@ -1021,7 +1471,9 @@ function verifyExperimentPersistence(fixedTimestamp: string) {
         durablePoints[0]?.id === firstPoint.id &&
         durablePoints[0]?.evaluatorHash === metricDraft.evaluatorHash &&
         durablePoints[1]?.sequence === 2 &&
-        durablePoints.at(-1)?.sequence === EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
+        durablePoints.at(-1)?.sequence === EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT &&
+        durablePoints.at(-1)?.source === 'runner-summary' &&
+        durablePoints.at(-1)?.trialId === legacySuccessRun.trialId,
       'experiment_metric_points_did_not_persist_in_sequence',
     );
     const durableTail = reopened.listExperimentMetricTails({
@@ -1037,6 +1489,36 @@ function verifyExperimentPersistence(fixedTimestamp: string) {
     invariant(
       reopened.getExperimentIdea(projectId, childIdea.id)?.title === updatedChild.title,
       'experiment_idea_update_did_not_persist',
+    );
+    invariant(
+      reopened.getLatestExperimentLoggingTemplate(projectId)?.id === loggingTemplate.id,
+      'experiment_logging_template_did_not_persist',
+    );
+    invariant(
+      reopened.getExperimentRun(projectId, queuedRun.id)?.status === 'lost' &&
+        reopened.getExperimentRun(projectId, queuedRun.id)?.completedAt === lostAt,
+      'experiment_run_did_not_persist',
+    );
+    invariant(
+      reopened.getExperimentRunExecutionIntent(projectId, queuedRun.id)?.intentHash ===
+        executionIntent.intentHash,
+      'experiment_execution_intent_did_not_persist',
+    );
+    const reconciledExperimentRun = reopened.getExperimentRun(projectId, interruptedRunningRun.id);
+    invariant(
+      reconciledExperimentRun?.status === 'lost' &&
+        reconciledExperimentRun.currentStep === 'Application interrupted; remote outcome unknown' &&
+        reconciledExperimentRun.completedAt !== null &&
+        reconciledExperimentRun.version === interruptedRunningRun.version + 1,
+      'running_experiment_run_was_not_reconciled',
+    );
+    const durableVerificationRun = reopened.getExperimentRun(projectId, pendingVerificationRun.id);
+    invariant(
+      durableVerificationRun?.status === 'verifying' &&
+        durableVerificationRun.logReference?.validationState === 'pending' &&
+        durableVerificationRun.processExitCode === 0 &&
+        durableVerificationRun.completedAt === null,
+      'completed_process_log_verification_was_not_resumable_after_restart',
     );
 
     let ideaLimitRejected = false;
@@ -1071,6 +1553,314 @@ function verifyExperimentPersistence(fixedTimestamp: string) {
   } finally {
     reopened.close();
   }
+
+  const currentSchema = new Database(join(app.getPath('userData'), 'gosu.db'));
+  currentSchema.pragma(`key="x'${keyHex}'"`);
+  currentSchema.pragma('foreign_keys=ON');
+  try {
+    currentSchema
+      .transaction(() => {
+        invariant(
+          Boolean(
+            currentSchema
+              .prepare(
+                `select 1 from local_schema_migrations
+                 where id='experiment-runs-hardening-v1'`,
+              )
+              .get(),
+          ),
+          'current_experiment_run_hardening_marker_missing',
+        );
+        currentSchema.exec('drop trigger if exists experiment_runs_update_guard');
+        currentSchema
+          .prepare(
+            `update experiment_runs
+             set process_exit_code=null,process_duration_ms=null
+             where project_id=? and id=? and status='succeeded'`,
+          )
+          .run(projectId, legacySuccessRun.id);
+      })
+      .immediate();
+  } finally {
+    currentSchema.close();
+  }
+
+  const currentSchemaReopened = new LocalDatabase();
+  currentSchemaReopened.open();
+  invariant(
+    currentSchemaReopened.getExperimentRun(projectId, legacySuccessRun.id)?.status === 'lost',
+    'current_schema_unverified_success_was_not_quarantined',
+  );
+  const verifiedMetricPoints = currentSchemaReopened.listExperimentMetricPoints(projectId);
+  invariant(
+    verifiedMetricPoints.length === EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT - 1 &&
+      !verifiedMetricPoints.some(
+        (point) => point.source === 'runner-summary' && point.trialId === legacySuccessRun.trialId,
+      ),
+    'unverified_runner_summary_was_exposed_by_metric_list',
+  );
+  invariant(
+    currentSchemaReopened.searchExperimentMetricPoints([projectId], legacySuccessRun.trialId, 10)
+      .length === 0,
+    'unverified_runner_summary_was_exposed_by_global_search',
+  );
+  const verifiedMetricTail = currentSchemaReopened.listExperimentMetricTails({
+    projectId,
+    ideaIds: [childIdea.id],
+    perIdeaLimit: 3,
+  });
+  invariant(
+    verifiedMetricTail[0]?.metricPointTotal === EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT - 1 &&
+      verifiedMetricTail[0]?.metricPoints.map((point) => point.sequence).join(',') ===
+        '4997,4998,4999',
+    'unverified_runner_summary_was_exposed_by_metric_tail',
+  );
+  currentSchemaReopened.close();
+
+  const legacyIntentSchema = new Database(join(app.getPath('userData'), 'gosu.db'));
+  legacyIntentSchema.pragma(`key="x'${keyHex}'"`);
+  legacyIntentSchema.pragma('foreign_keys=OFF');
+  try {
+    legacyIntentSchema
+      .transaction(() => {
+        legacyIntentSchema.exec(`
+          drop trigger if exists experiment_runs_update_guard;
+          drop trigger if exists experiment_run_execution_intents_delete_guard;
+          drop trigger if exists experiment_run_execution_intents_update_guard;
+        `);
+        legacyIntentSchema
+          .prepare(
+            `update experiment_runs
+             set status='succeeded',process_exit_code=0,process_duration_ms=1234,
+                 current_step='Completed',updated_at=?,version=version+1
+             where project_id=? and id=?`,
+          )
+          .run(fixedTimestamp, projectId, legacySuccessRun.id);
+        legacyIntentSchema.exec(`
+          create table experiment_run_execution_intents_legacy_fixture (
+            project_id text not null check (length(project_id) = 36),
+            run_id text not null check (length(run_id) = 36),
+            workspace_grant_id text not null check (length(workspace_grant_id) = 36),
+            intent_hash text not null check (length(intent_hash) = 64),
+            workspace_subdirectory text check (
+              workspace_subdirectory is null or length(workspace_subdirectory) <= 512
+            ),
+            relative_path text not null check (length(relative_path) between 1 and 512),
+            created_at text not null,
+            primary key(project_id,run_id),
+            foreign key(project_id,run_id) references experiment_runs(project_id,id)
+          );
+          insert into experiment_run_execution_intents_legacy_fixture(
+            project_id,run_id,workspace_grant_id,intent_hash,workspace_subdirectory,
+            relative_path,created_at
+          )
+          select project_id,run_id,workspace_grant_id,intent_hash,workspace_subdirectory,
+                 relative_path,created_at
+          from experiment_run_execution_intents;
+          drop table experiment_run_execution_intents;
+          alter table experiment_run_execution_intents_legacy_fixture
+            rename to experiment_run_execution_intents;
+          delete from local_schema_migrations where id='experiment-run-intent-authority-v2';
+        `);
+        legacyIntentSchema
+          .prepare('delete from ssh_workspace_grants where id=?')
+          .run(orphanedGrantId);
+      })
+      .immediate();
+  } finally {
+    legacyIntentSchema.close();
+  }
+
+  const authorityMigrated = new LocalDatabase();
+  authorityMigrated.open();
+  invariant(
+    authorityMigrated.getExperimentRun(projectId, queuedRun.id)?.processExitCode === null &&
+      authorityMigrated.getExperimentRunExecutionIntent(projectId, queuedRun.id)?.intentHash ===
+        executionIntent.intentHash,
+    'legacy_experiment_intent_preserved_unrelated_run_receipt',
+  );
+  invariant(
+    authorityMigrated.getExperimentRun(projectId, legacySuccessRun.id)?.status === 'lost' &&
+      authorityMigrated.getExperimentRun(projectId, legacySuccessRun.id)?.currentStep ===
+        'Legacy execution intent requires provenance review' &&
+      authorityMigrated.getExperimentRunExecutionIntent(projectId, legacySuccessRun.id)
+        ?.executionPolicyHash !== executionIntent.executionPolicyHash,
+    'legacy_authority_success_was_not_quarantined',
+  );
+  invariant(
+    authorityMigrated.searchExperimentMetricPoints([projectId], legacySuccessRun.trialId, 10)
+      .length === 0,
+    'legacy_authority_summary_was_exposed_by_global_search',
+  );
+  const migratedRecoverableIntent = authorityMigrated.getExperimentRunExecutionIntent(
+    projectId,
+    legacyIntentQueuedRun.id,
+  );
+  invariant(
+    authorityMigrated.getExperimentRun(projectId, legacyIntentQueuedRun.id)?.status === 'lost' &&
+      migratedRecoverableIntent?.workspaceGrantId === experimentGrantId &&
+      migratedRecoverableIntent.grantVersion === 1 &&
+      migratedRecoverableIntent.connectionId === experimentConnectionId &&
+      migratedRecoverableIntent.connectionVersion === 1 &&
+      migratedRecoverableIntent.canonicalRoot === '/workspace/experiment-intent-fixture' &&
+      migratedRecoverableIntent.canonicalRootHash ===
+        createHash('sha256').update('/workspace/experiment-intent-fixture', 'utf8').digest('hex') &&
+      migratedRecoverableIntent.executionPolicyHash !== executionIntent.executionPolicyHash,
+    'legacy_experiment_intent_origin_was_not_backfilled_fail_closed',
+  );
+  invariant(
+    authorityMigrated.getExperimentRun(projectId, orphanedIntentRun.id)?.status === 'lost' &&
+      authorityMigrated.getExperimentRunExecutionIntent(projectId, orphanedIntentRun.id) === null,
+    'legacy_experiment_intent_without_origin_was_not_quarantined',
+  );
+  authorityMigrated.close();
+
+  const tombstoneInspection = new Database(join(app.getPath('userData'), 'gosu.db'));
+  tombstoneInspection.pragma(`key="x'${keyHex}'"`);
+  try {
+    const tombstone = tombstoneInspection
+      .prepare(
+        `select workspace_grant_id,intent_hash,recovery_reason
+         from experiment_run_execution_intent_legacy_tombstones
+         where project_id=? and run_id=?`,
+      )
+      .get(projectId, orphanedIntentRun.id) as
+      { workspace_grant_id: string; intent_hash: string; recovery_reason: string } | undefined;
+    invariant(
+      tombstone?.workspace_grant_id === orphanedGrantId &&
+        tombstone.intent_hash === 'f'.repeat(64) &&
+        tombstone.recovery_reason === 'legacy_origin_unrecoverable',
+      'unrecoverable_legacy_experiment_intent_tombstone_missing',
+    );
+  } finally {
+    tombstoneInspection.close();
+  }
+
+  const legacyRunSuccess: ExperimentRun = {
+    ...legacySuccessRun,
+    id: randomUUID(),
+    trialId: 'trial-old-run-schema-success',
+    title: 'Old run schema successful trial',
+  };
+  const legacyRunFixtureDatabase = new LocalDatabase();
+  legacyRunFixtureDatabase.open();
+  invariant(
+    legacyRunFixtureDatabase.createExperimentRun(legacyRunSuccess),
+    'legacy_run_schema_success_fixture_failed',
+  );
+  legacyRunFixtureDatabase.close();
+
+  const legacyRunSchema = new Database(join(app.getPath('userData'), 'gosu.db'));
+  legacyRunSchema.pragma(`key="x'${keyHex}'"`);
+  legacyRunSchema.pragma('foreign_keys=OFF');
+  try {
+    legacyRunSchema
+      .transaction(() => {
+        legacyRunSchema
+          .prepare(
+            `update experiment_runs
+             set status='failed',
+                 log_reference_json=json_set(log_reference_json,'$.validationState','invalid'),
+                 current_step='Legacy migration fixture',completed_at=?,updated_at=?,version=version+1
+             where status='verifying'`,
+          )
+          .run(fixedTimestamp, fixedTimestamp);
+        legacyRunSchema.exec(`
+          drop trigger if exists experiment_runs_project_limit;
+          drop trigger if exists experiment_runs_insert_guard;
+          drop trigger if exists experiment_runs_update_guard;
+          drop trigger if exists experiment_runs_delete_guard;
+          drop index if exists experiment_runs_by_project;
+          create table experiment_runs_legacy_fixture (
+            id text primary key check (length(id) = 36),
+            schema_version integer not null check (schema_version = 1),
+            project_id text not null check (length(project_id) = 36),
+            idea_id text check (idea_id is null or length(idea_id) = 36),
+            title text not null check (length(title) between 1 and 160),
+            status text not null check (
+              status in ('queued','running','succeeded','failed','cancelled','lost')
+            ),
+            mode text not null check (mode in ('comparable','exploratory')),
+            server_label text not null check (length(server_label) between 1 and 120),
+            trial_id text not null check (length(trial_id) between 1 and 128),
+            objective_id text check (objective_id is null or length(objective_id) = 36),
+            objective_version integer check (objective_version is null or objective_version > 0),
+            logging_template_revision_id text not null check (
+              length(logging_template_revision_id) = 36
+            ),
+            logging_template_json text not null check (
+              length(logging_template_json) between 2 and 65536
+            ),
+            progress_current integer check (progress_current is null or progress_current >= 0),
+            progress_total integer check (progress_total is null or progress_total > 0),
+            current_step text check (current_step is null or length(current_step) between 1 and 160),
+            latest_metric_json text check (
+              latest_metric_json is null or length(latest_metric_json) between 2 and 8192
+            ),
+            log_reference_json text check (
+              log_reference_json is null or length(log_reference_json) between 2 and 16384
+            ),
+            created_at text not null,
+            updated_at text not null,
+            started_at text,
+            completed_at text,
+            version integer not null check (version > 0),
+            unique(project_id,id),
+            unique(project_id,trial_id),
+            check ((objective_id is null) = (objective_version is null)),
+            check (mode='exploratory' or (idea_id is not null and objective_id is not null)),
+            check (mode='comparable' or objective_id is null),
+            check (
+              progress_current is null or progress_total is null or progress_current <= progress_total
+            ),
+            foreign key(project_id,idea_id) references experiment_ideas(project_id,id),
+            foreign key(project_id,logging_template_revision_id)
+              references experiment_logging_template_revisions(project_id,id)
+          );
+          insert into experiment_runs_legacy_fixture(
+            id,schema_version,project_id,idea_id,title,status,mode,server_label,trial_id,
+            objective_id,objective_version,logging_template_revision_id,logging_template_json,
+            progress_current,progress_total,current_step,latest_metric_json,log_reference_json,
+            created_at,updated_at,started_at,completed_at,version
+          )
+          select id,schema_version,project_id,idea_id,title,status,mode,server_label,trial_id,
+                 objective_id,objective_version,logging_template_revision_id,logging_template_json,
+                 progress_current,progress_total,current_step,latest_metric_json,log_reference_json,
+                 created_at,updated_at,started_at,completed_at,version
+          from experiment_runs;
+          drop table experiment_runs;
+          alter table experiment_runs_legacy_fixture rename to experiment_runs;
+          delete from local_schema_migrations where id='experiment-runs-hardening-v1';
+        `);
+      })
+      .immediate();
+  } finally {
+    legacyRunSchema.close();
+  }
+
+  const migratedRuns = new LocalDatabase();
+  migratedRuns.open();
+  invariant(
+    migratedRuns.getExperimentRun(projectId, legacyRunSuccess.id)?.status === 'lost' &&
+      migratedRuns.getExperimentRun(projectId, legacyRunSuccess.id)?.currentStep ===
+        'Legacy result requires provenance review',
+    'legacy_experiment_runs_hardening_migration_failed',
+  );
+  migratedRuns.close();
+
+  const migratedAgain = new LocalDatabase();
+  migratedAgain.open();
+  invariant(
+    migratedAgain.getExperimentRun(projectId, queuedRun.id)?.status === 'lost' &&
+      migratedAgain.getExperimentRun(projectId, legacyIntentQueuedRun.id)?.status === 'lost' &&
+      migratedAgain.getExperimentRun(projectId, legacySuccessRun.id)?.status === 'lost' &&
+      migratedAgain.getExperimentRun(projectId, legacyRunSuccess.id)?.status === 'lost' &&
+      migratedAgain.getExperimentRunExecutionIntent(projectId, legacyIntentQueuedRun.id)
+        ?.canonicalRoot === '/workspace/experiment-intent-fixture' &&
+      migratedAgain.getExperimentRunExecutionIntent(projectId, orphanedIntentRun.id) === null,
+    'experiment_run_upgrade_migrations_were_not_idempotent',
+  );
+  migratedAgain.close();
 }
 
 function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {

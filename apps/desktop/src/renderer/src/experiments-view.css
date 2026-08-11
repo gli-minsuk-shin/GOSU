@@ -20,7 +20,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 16px 18px;
+  padding: 10px 14px;
 }
 
 .experiments-runtime-copy {
@@ -892,6 +892,485 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.experiment-run-stack {
+  display: grid;
+  gap: 11px;
+}
+
+.experiment-run-stack > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.experiment-run-stack h3,
+.experiment-logging-preview h2,
+.experiment-log-policy-card h3,
+.experiment-system-fields h3,
+.experiment-custom-fields h3 {
+  margin: 3px 0 0;
+}
+
+.experiment-run-stack ol,
+.experiment-system-fields ul,
+.experiment-logging-field-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.experiment-run-stack ol {
+  display: grid;
+  gap: 7px;
+}
+
+.experiment-run-stack li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+
+.experiment-run-stack li > div,
+.experiment-runs-table-scroll td > span,
+.experiment-runs-table-scroll td > small,
+.experiment-runs-table-scroll td > strong {
+  display: block;
+}
+
+.experiment-run-stack small,
+.experiment-runs-table-scroll small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.experiment-run-status {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  min-height: 25px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: var(--font-meta);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.experiment-run-status.active {
+  border-color: color-mix(in srgb, var(--blue) 40%, var(--line));
+  color: var(--blue);
+}
+
+.experiment-run-status.good {
+  border-color: color-mix(in srgb, var(--green) 40%, var(--line));
+  color: var(--green);
+}
+
+.experiment-run-status.bad {
+  border-color: color-mix(in srgb, var(--red) 40%, var(--line));
+  color: var(--red);
+}
+
+.experiment-runs-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.experiment-run-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.experiment-run-summary > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+
+.experiment-run-summary span {
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 700;
+}
+
+.experiment-run-summary strong {
+  color: var(--green);
+  font-size: var(--font-section);
+}
+
+.experiment-run-summary .attention {
+  border-color: color-mix(in srgb, var(--red) 38%, var(--line));
+}
+
+.experiment-run-summary .attention strong {
+  color: var(--red);
+}
+
+.experiment-runs-card {
+  min-width: 0;
+}
+
+.experiment-run-empty {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  gap: 6px;
+  padding: 28px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.experiment-run-empty strong {
+  color: var(--text);
+  font-size: var(--font-section);
+}
+
+.experiment-run-empty span {
+  max-width: 620px;
+}
+
+.experiment-runs-table-scroll {
+  width: 100%;
+  max-height: min(66vh, 720px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  scrollbar-gutter: stable both-edges;
+  overscroll-behavior: contain;
+}
+
+.experiment-runs-table-scroll table {
+  width: 100%;
+  min-width: 1500px;
+  border-collapse: collapse;
+  font-size: var(--font-control);
+}
+
+.experiment-runs-table-scroll th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: var(--surface-raised);
+  color: var(--muted);
+  text-align: left;
+}
+
+.experiment-runs-table-scroll th,
+.experiment-runs-table-scroll td {
+  max-width: 260px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.experiment-runs-table-scroll td {
+  overflow-wrap: anywhere;
+}
+
+.experiment-runs-table-scroll tr:hover td {
+  background: color-mix(in srgb, var(--green) 3%, transparent);
+}
+
+.experiment-runs-table-scroll tr.selected td {
+  background: color-mix(in srgb, var(--green) 7%, transparent);
+}
+
+.experiment-log-boundary {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.experiment-log-viewer {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.experiment-log-viewer > header,
+.experiment-log-viewer > footer,
+.experiment-log-viewer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.experiment-log-viewer > header > div:first-child {
+  min-width: 0;
+}
+
+.experiment-log-viewer h3,
+.experiment-log-viewer p {
+  margin: 0;
+}
+
+.experiment-log-viewer h3 {
+  overflow-wrap: anywhere;
+}
+
+.experiment-log-viewer p,
+.experiment-log-viewer > footer {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.experiment-log-viewer pre {
+  width: 100%;
+  min-height: 160px;
+  max-height: min(45vh, 520px);
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font: 500 var(--font-control) / 1.55 var(--font-mono);
+  white-space: pre;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+}
+
+.experiment-log-viewer code {
+  font: inherit;
+}
+
+@media (max-width: 760px) {
+  .experiment-log-viewer > header,
+  .experiment-log-viewer > footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .experiment-log-viewer-actions {
+    justify-content: flex-start;
+  }
+}
+
+.experiment-logging-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.55fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.experiment-logging-editor,
+.experiment-logging-preview,
+.experiment-custom-fields,
+.experiment-system-fields {
+  min-width: 0;
+}
+
+.experiment-system-fields,
+.experiment-custom-fields {
+  display: grid;
+  gap: 10px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+
+.experiment-system-fields > div,
+.experiment-custom-fields-heading > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.experiment-system-fields > div span,
+.experiment-custom-fields-heading span {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.experiment-system-fields ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.experiment-system-fields li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-meta);
+}
+
+.experiment-logging-field-list {
+  display: grid;
+  gap: 9px;
+}
+
+.experiment-logging-field-row {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+
+.experiment-logging-field-basics {
+  display: grid;
+  grid-template-columns:
+    minmax(120px, 0.9fr) minmax(150px, 1.2fr) minmax(100px, 0.7fr) minmax(120px, 0.8fr)
+    minmax(90px, 0.55fr);
+  gap: 8px;
+}
+
+.experiment-logging-field-row fieldset {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.experiment-logging-field-row legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: var(--font-meta);
+  font-weight: 700;
+}
+
+.experiment-logging-field-row fieldset label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--font-meta);
+  font-weight: 650;
+}
+
+.experiment-logging-field-row input[type='checkbox'] {
+  width: auto;
+}
+
+.experiment-delete-logging-field {
+  justify-self: end;
+  color: var(--red);
+}
+
+.experiment-logging-errors {
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--red) 40%, var(--line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--red) 6%, transparent);
+  color: var(--red);
+  font-size: var(--font-control);
+}
+
+.experiment-logging-errors ul {
+  margin: 5px 0 0;
+  padding-left: 20px;
+}
+
+.experiment-logging-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.experiment-logging-actions span {
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.experiment-logging-preview {
+  display: grid;
+  gap: 14px;
+}
+
+.experiment-logging-preview .experiment-card > p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.experiment-example-warning {
+  margin: 9px 0;
+  color: var(--orange) !important;
+  font-size: var(--font-control);
+  font-weight: 750;
+}
+
+.experiment-logging-preview pre {
+  max-width: 100%;
+  max-height: 310px;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+  white-space: pre;
+  scrollbar-gutter: stable;
+}
+
+.experiment-logging-preview code {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-meta);
+}
+
+.experiment-logging-preview dl {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+}
+
+.experiment-logging-preview dl > div {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.5fr) minmax(0, 1fr);
+  gap: 9px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.experiment-logging-preview dt {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.experiment-logging-preview dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--font-control);
+  font-weight: 650;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .experiment-chart-marker circle,
   .experiment-lineage-edge,
@@ -902,13 +1381,18 @@
 
 @media (max-width: 1180px) {
   .experiment-trajectory-layout,
-  .experiment-idea-layout {
+  .experiment-idea-layout,
+  .experiment-logging-layout {
     grid-template-columns: 1fr;
   }
 
   .experiment-trajectory-side,
   .experiment-idea-layout > aside {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .experiment-logging-field-basics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -941,6 +1425,14 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .experiment-run-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .experiment-logging-field-basics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .experiment-report-outcomes {
     grid-template-columns: repeat(3, minmax(90px, 1fr));
   }
@@ -954,7 +1446,8 @@
   .experiments-runtime-status,
   .experiment-graph-actions,
   .experiment-form-actions,
-  .experiment-report-actions {
+  .experiment-report-actions,
+  .experiment-logging-actions {
     align-items: stretch;
     flex-direction: column;
   }
@@ -965,7 +1458,9 @@
 
   .experiment-idea-form-grid,
   .experiment-report-stats,
-  .experiment-report-outcomes {
+  .experiment-report-outcomes,
+  .experiment-run-summary,
+  .experiment-logging-field-basics {
     grid-template-columns: 1fr;
   }
 

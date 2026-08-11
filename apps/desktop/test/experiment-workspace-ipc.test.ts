@@ -31,10 +31,13 @@ describe('Experiment workspace IPC boundary', () => {
         EXPERIMENT_WORKSPACE_IPC_CHANNELS.createIdea,
         EXPERIMENT_WORKSPACE_IPC_CHANNELS.updateIdea,
         EXPERIMENT_WORKSPACE_IPC_CHANNELS.recordMetric,
+        EXPERIMENT_WORKSPACE_IPC_CHANNELS.reviseLoggingTemplate,
       ].sort(),
     );
     expect([...handlers.keys()]).not.toContain(EXPERIMENT_WORKSPACE_IPC_CHANNELS.event);
     expect([...handlers.keys()]).not.toContain('gosu:experiment-workspace:runner-event');
+    expect([...handlers.keys()]).not.toContain('gosu:experiment-workspace:create-run');
+    expect([...handlers.keys()]).not.toContain('gosu:experiment-workspace:update-run');
   });
 
   it('rejects malformed IDs, unbounded text, and renderer-selected metric provenance', async () => {

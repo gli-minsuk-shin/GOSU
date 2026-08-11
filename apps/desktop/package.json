@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.29.0",
+  "version": "0.30.0",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -21,7 +21,7 @@
     "smoke:ssh-approval-dialog:mac": "electron-vite build --config test/electron/ssh-approval-dialog.electron.vite.config.ts && electron out/ssh-approval-dialog-smoke/main.cjs",
     "lint": "eslint src electron.vite.config.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --maxWorkers=1 --passWithNoTests"
   },
   "dependencies": {
     "@gosu/contracts": "workspace:*",

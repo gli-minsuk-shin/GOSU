@@ -93,7 +93,16 @@ export const ObjectiveVersionSchema = z
     createdBy: EntityIdSchema,
     createdAt: IsoDateTimeSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((objective, context) => {
+    if (objective.primaryMetric.target === null && objective.stopPolicy.stopWhenTargetReached) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'stopWhenTargetReached requires a primary metric target',
+        path: ['stopPolicy', 'stopWhenTargetReached'],
+      });
+    }
+  });
 export type ObjectiveVersion = z.infer<typeof ObjectiveVersionSchema>;
 
 export const ObjectiveSnapshotSchema = z

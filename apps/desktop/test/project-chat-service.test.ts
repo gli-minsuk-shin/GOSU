@@ -11,6 +11,7 @@ import type {
   CodexDynamicToolTimeoutOverride,
 } from '../src/main/codex-app-server';
 import type {
+  ProjectAgentExperiments,
   ProjectAgentLiterature,
   ProjectAgentSsh,
   ProjectAgentVault,
@@ -57,6 +58,7 @@ import type {
   LiteratureSearchInput,
   LiteratureSearchReceipt,
 } from '../src/shared/literature-contracts';
+import { EXPERIMENT_LOGGING_SYSTEM_FIELDS } from '../src/shared/experiment-workspace-contracts';
 import type { SshServerResourceSnapshot } from '../src/shared/ssh-contracts';
 import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 
@@ -1205,6 +1207,7 @@ async function fixture(
   attachments?: ProjectChatAttachmentClaimer,
   titleJobTimeoutMs?: number,
   queueSchedulerRetryDelaysMs?: readonly number[],
+  experiments?: ProjectAgentExperiments,
 ) {
   const workspaceStorage = new MemoryWorkspaceStorage();
   const workspace = new WorkspaceService(workspaceStorage);
@@ -1282,6 +1285,7 @@ async function fixture(
     codex,
     literature,
     ssh,
+    ...(experiments ? { experiments } : {}),
     ...(attachments ? { attachments } : {}),
     ...(vault ? { vault } : {}),
     ...(titleJobTimeoutMs === undefined ? {} : { titleJobTimeoutMs }),
@@ -2505,6 +2509,95 @@ describe('ProjectChatService', () => {
     });
 
     expect(revoked.localNotesVault).toBeNull();
+  });
+
+  it('injects project-bound experiment tools and reads only the active project setup', async () => {
+    const experiments: ProjectAgentExperiments = {
+      list: vi.fn(async ({ projectId }: { projectId: string }) => ({
+        schemaVersion: 1 as const,
+        projectId,
+        loggingTemplate: {
+          schemaVersion: 1 as const,
+          id: '11111111-aaaa-4111-8111-111111111111',
+          projectId,
+          version: 1,
+          previousRevisionId: null,
+          systemFields: EXPERIMENT_LOGGING_SYSTEM_FIELDS,
+          customFields: [],
+          templateHash: '1'.repeat(64),
+          createdAt: '2026-08-05T00:00:00.000Z',
+        },
+        ideas: [
+          {
+            schemaVersion: 1 as const,
+            id: '22222222-aaaa-4222-8222-222222222222',
+            projectId,
+            parentIdeaId: null,
+            title: 'ACTIVE_PROJECT_IDEA',
+            hypothesis: '',
+            phase: '',
+            outcome: 'planned' as const,
+            resultSummary: '',
+            version: 1,
+            createdAt: '2026-08-05T00:00:00.000Z',
+            updatedAt: '2026-08-05T00:00:00.000Z',
+            completedAt: null,
+          },
+        ],
+        metricPoints: [],
+        runs: [],
+      })),
+      createRun: vi.fn(async () => {
+        throw new Error('not_used');
+      }),
+      updateRun: vi.fn(async () => {
+        throw new Error('not_used');
+      }),
+      bindRunExecution: vi.fn(async () => {
+        throw new Error('not_used');
+      }),
+      getRunExecutionBinding: vi.fn(async () => null),
+      getRunLogSource: vi.fn(async () => null),
+      linkRunLogSource: vi.fn(async () => {
+        throw new Error('not_used');
+      }),
+      recordRunSummaryMetric: vi.fn(async () => {
+        throw new Error('not_used');
+      }),
+    };
+    const { chat, codex, projectA, projectB } = await fixture(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      experiments,
+    );
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Inspect the experiment setup.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const catalog = JSON.stringify(codex.dynamicTools[0]);
+    expect(catalog).toContain('read_experiment_setup');
+    expect(catalog).toContain('list_experiment_runs');
+    expect(catalog).toContain('create_experiment_run');
+    expect(catalog).toContain('execute_experiment_run');
+    const result = await codex.dynamicToolHandlers[0]!(
+      {
+        threadId: 'thread-1',
+        turnId: receipt.turnId,
+        callId: 'experiment-setup-1',
+        namespace: 'gosu_project',
+        tool: 'read_experiment_setup',
+        arguments: {},
+      },
+      dynamicToolDelivery(),
+    );
+    expect(result.success).toBe(true);
+    expect(result.contentItems[0]!.text).toContain('ACTIVE_PROJECT_IDEA');
+    expect(result.contentItems[0]!.text).not.toContain(projectB.id);
+    expect(experiments.list).toHaveBeenCalledWith({ projectId: projectA.id });
   });
 
   it('binds authorized Local Notes tools to the project and persists bounded source provenance', async () => {

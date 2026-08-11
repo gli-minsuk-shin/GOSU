@@ -191,6 +191,8 @@ const experimentsAdapter: ExperimentsViewAdapter = {
   createIdea: (input) => window.gosu.experiments.createIdea(input),
   updateIdea: (input) => window.gosu.experiments.updateIdea(input),
   recordMetric: (input) => window.gosu.experiments.recordMetric(input),
+  reviseLoggingTemplate: (input) => window.gosu.experiments.reviseLoggingTemplate(input),
+  readRunLog: (input) => window.gosu.experiments.readRunLog(input),
   onEvent: (listener) => window.gosu.experiments.onEvent(listener),
 };
 
