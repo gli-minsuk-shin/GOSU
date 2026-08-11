@@ -10,6 +10,23 @@ import type {
 } from '../shared/agent-addon-contracts';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
+import { EXPERIMENT_EVALUATION_IPC_CHANNELS } from '../shared/experiment-evaluation-channels';
+import {
+  ExperimentEvaluationEventSchema,
+  type ApproveExperimentEvaluationInput,
+  type CreateExperimentEvaluationSessionInput,
+  type ExperimentEvaluationApprovalReceipt,
+  type ExperimentEvaluationDetailInput,
+  type ExperimentEvaluationEvent,
+  type ExperimentEvaluationListSnapshot,
+  type ExperimentEvaluationSession,
+  type ExperimentEvaluationSessionDetail,
+  type ExperimentEvaluationTurnReceipt,
+  type ListExperimentEvaluationsInput,
+  type ReuseExperimentEvaluationProfileInput,
+  type SendExperimentEvaluationMessageInput,
+} from '../shared/experiment-evaluation-contracts';
+import { unwrapExperimentEvaluationIpcResult } from '../shared/experiment-evaluation-ipc-result';
 import {
   ExperimentWorkspaceEventSchema,
   type CreateExperimentIdeaInput,
@@ -245,6 +262,14 @@ async function invokeExperiment<T>(channel: string, input: unknown): Promise<T> 
     error: { code: 'experiment_unavailable' },
   }));
   return unwrapExperimentIpcResult<T>(result);
+}
+
+async function invokeExperimentEvaluation<T>(channel: string, input: unknown): Promise<T> {
+  const result = await ipcRenderer.invoke(channel, input).catch(() => ({
+    ok: false,
+    error: { code: 'experiment_evaluation_unavailable' },
+  }));
+  return unwrapExperimentEvaluationIpcResult<T>(result);
 }
 
 async function invokeResearchNotes<T>(channel: string, input: unknown): Promise<T> {
@@ -547,6 +572,51 @@ const api = {
       ipcRenderer.on(EXPERIMENT_WORKSPACE_IPC_CHANNELS.event, handler);
       return () => {
         ipcRenderer.removeListener(EXPERIMENT_WORKSPACE_IPC_CHANNELS.event, handler);
+      };
+    },
+  },
+  experimentEvaluation: {
+    list: (input: ListExperimentEvaluationsInput) =>
+      invokeExperimentEvaluation<ExperimentEvaluationListSnapshot>(
+        EXPERIMENT_EVALUATION_IPC_CHANNELS.list,
+        input,
+      ),
+    detail: (input: ExperimentEvaluationDetailInput) =>
+      invokeExperimentEvaluation<ExperimentEvaluationSessionDetail>(
+        EXPERIMENT_EVALUATION_IPC_CHANNELS.detail,
+        input,
+      ),
+    createSession: (input: CreateExperimentEvaluationSessionInput) =>
+      invokeExperimentEvaluation<ExperimentEvaluationSession>(
+        EXPERIMENT_EVALUATION_IPC_CHANNELS.createSession,
+        input,
+      ),
+    send: (input: SendExperimentEvaluationMessageInput) =>
+      invokeExperimentEvaluation<ExperimentEvaluationTurnReceipt>(
+        EXPERIMENT_EVALUATION_IPC_CHANNELS.send,
+        input,
+      ),
+    approve: (input: ApproveExperimentEvaluationInput) =>
+      invokeExperimentEvaluation<ExperimentEvaluationApprovalReceipt>(
+        EXPERIMENT_EVALUATION_IPC_CHANNELS.approve,
+        input,
+      ),
+    reuseProfile: (input: ReuseExperimentEvaluationProfileInput) =>
+      invokeExperimentEvaluation<ExperimentEvaluationSessionDetail>(
+        EXPERIMENT_EVALUATION_IPC_CHANNELS.reuseProfile,
+        input,
+      ),
+    onEvent: (listener: (event: ExperimentEvaluationEvent) => void) => {
+      if (typeof listener !== 'function') {
+        throw new Error('invalid_experiment_evaluation_event_listener');
+      }
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const parsed = ExperimentEvaluationEventSchema.safeParse(value);
+        if (parsed.success) listener(parsed.data);
+      };
+      ipcRenderer.on(EXPERIMENT_EVALUATION_IPC_CHANNELS.event, handler);
+      return () => {
+        ipcRenderer.removeListener(EXPERIMENT_EVALUATION_IPC_CHANNELS.event, handler);
       };
     },
   },
