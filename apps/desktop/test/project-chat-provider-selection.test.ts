@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  isSelectedHermesProviderFailure,
   ProjectChatProviderOperationQueue,
   reconcileRemovedProjectChatProvider,
   selectProjectChatModel,
@@ -8,6 +9,20 @@ import {
 } from '../src/renderer/src/project-chat-provider-selection';
 
 describe('Project Chat provider selection', () => {
+  it('invalidates only a selected Hermes descriptor for bounded provider failures', () => {
+    for (const code of [
+      'hermes_runtime_check_failed',
+      'hermes_not_connected',
+      'codex_unavailable',
+      'chat_unavailable',
+    ]) {
+      expect(isSelectedHermesProviderFailure('hermes', new Error(code))).toBe(true);
+    }
+    expect(isSelectedHermesProviderFailure('hermes', new Error('chat_busy'))).toBe(false);
+    expect(isSelectedHermesProviderFailure('codex', new Error('codex_unavailable'))).toBe(false);
+    expect(isSelectedHermesProviderFailure(null, new Error('chat_unavailable'))).toBe(false);
+  });
+
   it('serializes provider lifecycle operations and continues after a failed operation', async () => {
     const queue = new ProjectChatProviderOperationQueue();
     const events: string[] = [];

@@ -217,7 +217,7 @@ describe('optional agent add-on detection boundary', () => {
     await expect(adapter.connectLocal()).resolves.toMatchObject({
       id: 'hermes',
       connected: true,
-      connectionMode: 'byo-local-safe-chat',
+      connectionMode: 'byo-local-acp-agent',
       projectChatModel: {
         providerId: 'hermes',
         modelId: 'hermes-configured-model',

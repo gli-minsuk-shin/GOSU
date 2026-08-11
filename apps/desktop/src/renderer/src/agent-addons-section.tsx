@@ -140,7 +140,8 @@ export function AgentAddOnsSection({
                   <span>
                     <strong>Connect existing Hermes (BYO)</strong>
                     <small>
-                      Use its configured model in Project Chat with GOSU&apos;s no-tool boundary
+                      Use its verified ACP agent as a provider, or delegate to it explicitly from
+                      Codex
                     </small>
                   </span>
                 </label>
@@ -165,7 +166,7 @@ export function AgentAddOnsSection({
                 </strong>
                 <span>
                   {status?.connected
-                    ? `${status.version ?? 'Compatible local version'} · credentials stay with Hermes and are validated by Hermes when the first turn runs.`
+                    ? `${status.version ?? 'Compatible local version'} · GOSU completed a sealed ACP session check before showing Connected; credentials remain local.`
                     : status?.state === 'detected_local_cli'
                       ? 'The executable name was found, but its publisher, version, configuration, and identity have not been verified.'
                       : `GOSU has not connected ${descriptor.displayName} to Project Chat.`}
@@ -197,10 +198,12 @@ export function AgentAddOnsSection({
         <strong>BYO boundary</strong>
         <span>Hermes is optional, local, and never an automatic fallback</span>
         <small>
-          GOSU launches Hermes only after an explicit Project Chat selection. The initial adapter
-          disables Hermes tools, rules, memory, skills, and MCP access. It can analyze the supplied
-          project snapshot and reply, but cannot mutate Board or Research Notes, use attachments,
-          browse, or run local/SSH commands. OpenClaw remains detection-only.
+          GOSU launches the verified local Hermes ACP agent only after an explicit selection. Its
+          native tool surface is disabled. Codex can explicitly delegate a bounded task to a fresh
+          Hermes primary ACP agent. Terminal, processes, code execution, files, web, browser
+          automation, native delegation, memory, skills, MCP, GOSU tools, and attachments are
+          disabled. Because there are no native tools, Hermes turns do not show tool approval
+          prompts. OpenClaw remains detection-only.
         </small>
       </div>
     </article>

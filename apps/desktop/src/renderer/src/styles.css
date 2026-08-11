@@ -5579,26 +5579,47 @@ button.chat-toolbar-status {
   overflow-y: hidden;
 }
 
+.chat-message-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px 10px;
+  margin-top: 5px;
+}
+
 .chat-message-branch {
   display: flex;
-  justify-content: flex-end;
-  margin-top: 9px;
-  padding-top: 7px;
-  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
 }
 
 .chat-message-branch button {
-  min-height: 27px;
-  padding: 3px 7px;
+  min-height: 24px;
+  padding: 1px 5px;
   color: var(--subtle);
   font-size: var(--font-caption);
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .message-provenance {
-  margin-top: 10px;
+  flex: 1 1 220px;
+  min-width: 0;
+  margin: 0;
   color: var(--subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--font-caption);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+@media (pointer: coarse) {
+  .chat-message-branch button {
+    min-height: 44px;
+  }
 }
 
 .failed-turn-recovery {

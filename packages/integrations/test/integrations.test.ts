@@ -7,7 +7,7 @@ import {
   inspectObsidianMarkdown,
   overleafGitManuscriptWorkspaceDescriptor,
   type ManuscriptWorkspaceAdapter,
-} from '../src/index';
+} from '../src/index.js';
 
 describe('integration capability boundaries', () => {
   it('keeps Overleaf export-only and Zotero read-only', () => {

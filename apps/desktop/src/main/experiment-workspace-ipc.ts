@@ -5,6 +5,7 @@ import {
   CreateExperimentIdeaInputSchema,
   ListExperimentWorkspaceInputSchema,
   RecordExperimentMetricInputSchema,
+  ReviseExperimentLoggingTemplateInputSchema,
   UpdateExperimentIdeaInputSchema,
   type ExperimentIpcResult,
 } from '../shared/experiment-workspace-contracts';
@@ -49,6 +50,14 @@ export function registerExperimentWorkspaceIpc(
       input,
       RecordExperimentMetricInputSchema,
       (command) => service.recordMetric(command),
+      reportUnexpected,
+    ),
+  );
+  register(EXPERIMENT_WORKSPACE_IPC_CHANNELS.reviseLoggingTemplate, (input) =>
+    withInput(
+      input,
+      ReviseExperimentLoggingTemplateInputSchema,
+      (command) => service.reviseLoggingTemplate(command),
       reportUnexpected,
     ),
   );

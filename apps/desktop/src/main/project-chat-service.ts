@@ -35,6 +35,7 @@ import {
   type ProjectChatActionCommand,
   type ProjectChatAttempt,
   type ProjectChatEvent,
+  type ProjectChatHermesDelegationReceipt,
   type ProjectChatMessage,
   type ProjectChatNativeExecutionKind,
   type ProjectChatProfile,
@@ -70,6 +71,8 @@ import {
 } from './project-chat-attachment-service';
 import {
   ProjectAgentToolSession,
+  type ProjectAgentExperiments,
+  type ProjectAgentHermes,
   type ProjectAgentLiterature,
   type ProjectAgentSsh,
   type ProjectAgentVault,
@@ -102,6 +105,7 @@ export interface ProjectChatStorage {
   ): MaybePromise<void>;
   abandonResearchNoteSave(input: AbandonProjectChatResearchNoteSaveInput): MaybePromise<boolean>;
   confirmResearchNoteSave(input: ConfirmProjectChatResearchNoteSaveInput): MaybePromise<void>;
+  recordHermesDelegationReceipt(receipt: ProjectChatHermesDelegationReceipt): MaybePromise<void>;
   listUnreportedResearchNoteSaves(): MaybePromise<ProjectChatResearchNoteSaveReceipt[]>;
   reconcileCommittedResearchNoteSaves(reconciledAt: string): MaybePromise<number>;
   getChatAttempt(
@@ -191,6 +195,8 @@ export interface ProjectChatCodex {
   listCollaborationModeCatalog(modelId?: string | null): Promise<CodexCollaborationModeCatalog>;
   startThread(input: {
     cwd: string;
+    projectId?: string;
+    sessionId?: string;
     modelId: string | null;
     developerInstructions?: string;
     responseVerbosity?: CodexResponseVerbosity | null;
@@ -258,6 +264,7 @@ export class ProjectChatServiceError extends Error {
       | 'attachment_model_modality_unsupported'
       | 'action_not_found'
       | 'action_not_proposed'
+      | 'hermes_runtime_check_failed'
       | 'codex_unavailable',
   ) {
     super(code);
@@ -365,6 +372,13 @@ const LITERATURE_LOCAL_WORKSPACE_SCOPE_PATTERN =
   /(?:\b(?:search|find|look\s+up)\b.{0,160}\b(?:in|from|inside|within|of)\s+(?:the\s+)?(?:local\s+notes|repository(?=$|[,.!?]|\s+(?:for|about|on|under|inside|within|and)\b)|manuscript(?=$|[,.!?]|\s+(?:for|about|on|under|inside|within|and)\b)|literature(?:\s+(?:table|section|library))?|source\s+code(?=$|[,.!?])|(?:this|current|the)\s+(?:code|source|function))\b|\b(?:search|find|look\s+up)\b.{0,96}\breferences?\s+to\s+(?:this|the|current)\s+function\b|(?:로컬\s*노트|저장소|리포지토리|원고|코드|소스|함수)(?:에서|안에서|내에서|의|에).{0,128}(?:\b(?:search|find|look\s+up)\b|(?:검색|찾)(?:해서|하고|하여|해줘|해주세요|해라|하라|하십시오|할래|해줄래|해|아서|아줘|아라|으세요|아)))/iu;
 const LITERATURE_EXISTING_COLLECTION_SCOPE_PATTERN =
   /(?:\b(?:search|find|look\s+up)\b.{0,180}\b(?:(?:my|our|the|these|those)\s+)?(?:(?:already\s+)?(?:saved|stored|collected|imported)|existing)\s+(?:papers?|publications?|references?|literature|bibliograph(?:y|ies))\b|\b(?:search|find|look\s+up)\b.{0,180}\b(?:papers?|publications?|references?)\s+(?:already\s+)?(?:saved|stored|collected|imported)(?:\s+by\s+GOSU)?\b|\b(?:search|find|look\s+up)\b.{0,180}\b(?:papers?|publications?|references?|literature|bibliograph(?:y|ies))\s+(?:already\s+)?(?:in|from|inside|within)\s+(?:(?:my|our|the|this|current\s+project|project)\s+)?(?:library|collection|literature\s+(?:table|section)|GOSU)\b|\b(?:search|find|look\s+up)\b.{0,180}\b(?:this|the|current)\s+project(?:'s)?\s+(?:papers?|references?|library|literature)\b|(?:(?:내|우리|이\s*프로젝트(?:의)?|현재\s*프로젝트(?:의)?|기존|저장된|이미\s*저장(?:한|된))\s*)?(?:논문|문헌|참고문헌|레퍼런스|라이브러리|컬렉션)(?:에서|안에서|내에서|중에서|의).{0,128}(?:\b(?:search|find|look\s+up)\b|(?:검색|찾)(?:해서|하고|하여|해줘|해주세요|해라|하라|하십시오|할래|해줄래|해|아서|아줘|아라|으세요|아)))/iu;
+const HERMES_DELEGATION_SUBJECT_PATTERN = /(?:\bhermes(?:\s+agent)?\b|헤르메스(?:\s*에이전트)?)/iu;
+const HERMES_DELEGATION_TARGET_PATTERN =
+  /(?:\bdelegate\b.{0,96}\b(?:to\s+)?hermes(?:\s+agent)?\b|\bhand\s+(?:this|it|the\s+task)\s+(?:off|over)\b.{0,64}\b(?:to\s+)?hermes(?:\s+agent)?\b|\b(?:ask|have|let)\s+hermes(?:\s+agent)?\b|\buse\s+hermes(?:\s+agent)?\s+(?:to|for)\b|(?:hermes(?:\s*agent)?|헤르메스(?:\s*에이전트)?)(?:에게|한테|로|으로|를|을|써서|사용해서|통해).{0,64}(?:맡겨|맡기|위임|처리해|처리하|분석해|분석하|실행해|실행하|시켜|시킬)|(?:hermes(?:\s*agent)?|헤르메스(?:\s*에이전트)?)(?:를|을)?\s*(?:써줘|써라|사용해줘|사용해주세요|사용해라)|(?:hermes(?:\s*agent)?|헤르메스(?:\s*에이전트)?)(?:로|으로)\s*(?:해줘|해주세요|해라|하세요)|(?:hermes(?:\s*agent)?|헤르메스(?:\s*에이전트)?)\s*(?:맡겨|맡기|위임해|위임하|처리해|분석해|실행해|시켜)|(?:맡겨|맡기|위임|처리해|처리하|분석해|분석하|실행해|실행하|시켜|시킬).{0,64}(?:hermes(?:\s*agent)?|헤르메스(?:\s*에이전트)?)(?:에게|한테|로|으로))/iu;
+const HERMES_DELEGATION_DENIAL_PATTERN =
+  /(?:\b(?:do\s+not|don't|never)\b.{0,80}\b(?:delegate|use|ask|hermes)\b|(?:헤르메스|Hermes).{0,48}(?:말고|쓰지\s*마|사용하지\s*마|맡기지\s*마|위임하지\s*마))/iu;
+const HERMES_DELEGATION_EXPLANATION_PATTERN =
+  /(?:\bhow\s+(?:(?:do|can|should|would)\b|to\b)|어떻게|사용법|쓰는\s*법|연결\s*방법)/iu;
 
 type LiteratureCommandAction = Readonly<{
   start: number;
@@ -425,6 +439,25 @@ export function explicitlyAuthorizesLiteratureSearch(message: string) {
       actionDirectlyTargetsLiterature(normalized, action),
     )
   );
+}
+
+export function explicitlyAuthorizesHermesDelegation(message: string) {
+  const normalized = message.normalize('NFKC').trim();
+  return (
+    normalized.length > 0 &&
+    HERMES_DELEGATION_SUBJECT_PATTERN.test(normalized) &&
+    HERMES_DELEGATION_TARGET_PATTERN.test(normalized) &&
+    !HERMES_DELEGATION_DENIAL_PATTERN.test(normalized) &&
+    !HERMES_DELEGATION_EXPLANATION_PATTERN.test(normalized)
+  );
+}
+
+function projectAgentHermesConnected(hermes: ProjectAgentHermes | undefined) {
+  try {
+    return hermes?.isConnected() === true;
+  } catch {
+    return false;
+  }
 }
 
 function modelProvenance(invocation: ModelInvocation) {
@@ -602,7 +635,9 @@ export class ProjectChatService extends EventEmitter {
       codex: ProjectChatCodex;
       vault?: ProjectAgentVault;
       literature?: ProjectAgentLiterature;
+      hermes?: ProjectAgentHermes;
       ssh?: ProjectAgentSsh;
+      experiments?: ProjectAgentExperiments;
       attachments?: ProjectChatAttachmentClaimer;
       titleJobTimeoutMs?: number;
       queueSchedulerRetryDelaysMs?: readonly number[];
@@ -1002,6 +1037,12 @@ export class ProjectChatService extends EventEmitter {
         resolvedCollaborationModeId,
         legacyReviewerCompatibility,
       );
+      const hermesDelegationRequested =
+        executionKind !== 'legacy-reviewer' &&
+        explicitlyAuthorizesHermesDelegation(command.message);
+      if (hermesDelegationRequested && !projectAgentHermesConnected(this.dependencies.hermes)) {
+        throw new ProjectChatServiceError('hermes_runtime_check_failed');
+      }
       const attemptId = randomUUID();
       let attachments;
       if (command.attachmentIds && command.attachmentIds.length > 0) {
@@ -1021,6 +1062,9 @@ export class ProjectChatService extends EventEmitter {
           throw error;
         }
       }
+      let projectCwdPromise: Promise<string> | undefined;
+      const resolveProjectCwd = () =>
+        (projectCwdPromise ??= this.dependencies.prepareProjectDirectory(command.projectId));
       const agentTools = new ProjectAgentToolSession({
         projectId: command.projectId,
         sessionId: session.id,
@@ -1035,8 +1079,15 @@ export class ProjectChatService extends EventEmitter {
         explicitlyAuthorizesLiteratureSearch(command.message)
           ? { literature: this.dependencies.literature }
           : {}),
+        ...(hermesDelegationRequested && this.dependencies.hermes
+          ? { hermes: this.dependencies.hermes, resolveProjectCwd }
+          : {}),
         ...(this.dependencies.ssh ? { ssh: this.dependencies.ssh } : {}),
+        ...(this.dependencies.experiments ? { experiments: this.dependencies.experiments } : {}),
       });
+      if (hermesDelegationRequested && !agentTools.hermesDelegationAvailable) {
+        throw new ProjectChatServiceError('hermes_runtime_check_failed');
+      }
       createdAgentTools = agentTools;
       const assembled = assembleProjectChatPrompt({
         snapshot,
@@ -1060,6 +1111,9 @@ export class ProjectChatService extends EventEmitter {
         nativePersonality: personality,
         nativeResponseVerbosity: responseVerbosity,
         effectiveReasoningOptionId,
+        hermesAgentStatus: projectAgentHermesConnected(this.dependencies.hermes)
+          ? 'connected'
+          : 'not_connected',
       });
 
       const createdAt = isoNow();
@@ -1125,7 +1179,7 @@ export class ProjectChatService extends EventEmitter {
       let connectionEpoch: number | undefined;
       let connectionProviderId: string | undefined;
       try {
-        const cwd = await this.dependencies.prepareProjectDirectory(command.projectId);
+        const cwd = await resolveProjectCwd();
         const startedThread = await this.startEphemeralThread(
           command.projectId,
           session.id,
@@ -1205,6 +1259,7 @@ export class ProjectChatService extends EventEmitter {
         if (this.stopForQueuedTurnSessions.delete(startingSessionKey)) {
           active.agentTools.revokeSshCapability();
           active.agentTools.revokeLiteratureCapability();
+          active.agentTools.revokeHermesCapability();
           active.agentTools.revokeAttachmentCapability();
           void this.dependencies.codex
             .interruptTurn(active.threadId, active.turnId)
@@ -1242,6 +1297,7 @@ export class ProjectChatService extends EventEmitter {
         if (!activeRegistered) {
           agentTools.revokeSshCapability();
           agentTools.revokeLiteratureCapability();
+          agentTools.revokeHermesCapability();
           agentTools.revokeAttachmentCapability();
           if (this.liveAgentToolsBySession.get(startingSessionKey) === agentTools) {
             this.liveAgentToolsBySession.delete(startingSessionKey);
@@ -1377,6 +1433,7 @@ export class ProjectChatService extends EventEmitter {
     if (active) {
       active.agentTools.revokeSshCapability();
       active.agentTools.revokeLiteratureCapability();
+      active.agentTools.revokeHermesCapability();
       active.agentTools.revokeAttachmentCapability();
       this.dependencies.ssh?.cancelSession(active.projectId, active.sessionId);
       await this.dependencies.codex.interruptTurn(active.threadId, active.turnId);
@@ -1640,6 +1697,7 @@ export class ProjectChatService extends EventEmitter {
     if (!active) throw new ProjectChatServiceError('chat_not_active');
     active.agentTools.revokeSshCapability();
     active.agentTools.revokeLiteratureCapability();
+    active.agentTools.revokeHermesCapability();
     active.agentTools.revokeAttachmentCapability();
     this.dependencies.ssh?.cancelSession(command.projectId, sessionId);
     await this.dependencies.codex.interruptTurn(active.threadId, active.turnId);
@@ -1849,6 +1907,8 @@ export class ProjectChatService extends EventEmitter {
   ) {
     const started = await this.dependencies.codex.startThread({
       cwd,
+      projectId,
+      sessionId,
       modelId,
       developerInstructions,
       responseVerbosity,

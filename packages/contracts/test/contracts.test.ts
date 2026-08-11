@@ -8,6 +8,9 @@ import {
   ManuscriptWorkspaceBindingV1Schema,
   ManuscriptWorkspaceDescriptorV1Schema,
   ModelDescriptorSchema,
+  ObjectiveSnapshotSchema,
+  ObjectiveVersionSchema,
+  PrimaryMetricSchema,
   RunnerEventMessageV1Schema,
   contractJsonSchema,
 } from '../src/index.js';
@@ -43,6 +46,69 @@ function jsonPointerExists(document: unknown, reference: string): boolean {
 }
 
 describe('contract schemas', () => {
+  it('requires a target before target-based stopping without breaking target-optional snapshots', () => {
+    const primaryMetric = {
+      key: 'validation_loss',
+      displayName: 'Validation loss',
+      direction: 'minimize',
+      unit: null,
+      aggregation: 'minimum',
+      evaluatorHash: 'sha256:evaluator',
+      datasetHash: 'sha256:dataset',
+      holdoutHash: null,
+      baseline: null,
+      target: null,
+    } as const;
+    const budget = {
+      maxTrials: 10,
+      maxConcurrentTrials: 1,
+      maxWallTimeSeconds: 3_600,
+      maxGpuHours: 0,
+      maxFailures: 3,
+    } as const;
+    const objective = {
+      schemaVersion: 1,
+      objectiveVersionId: 'objective-optional-target',
+      projectId: 'project-optional-target',
+      version: 1,
+      goal: 'Measure reproducible progress without a target threshold.',
+      primaryMetric,
+      guardrails: [],
+      budget,
+      stopPolicy: {
+        stopWhenTargetReached: false,
+        guardrailAction: 'pause',
+        maxConsecutiveNoImprovement: null,
+      },
+      createdBy: 'researcher-1',
+      createdAt: '2026-08-11T00:00:00.000Z',
+    } as const;
+
+    expect(PrimaryMetricSchema.safeParse(primaryMetric).success).toBe(true);
+    expect(
+      ObjectiveSnapshotSchema.safeParse({
+        objectiveVersionId: objective.objectiveVersionId,
+        version: objective.version,
+        primaryMetric,
+        budget,
+      }).success,
+    ).toBe(true);
+    expect(ObjectiveVersionSchema.safeParse(objective).success).toBe(true);
+    expect(
+      ObjectiveVersionSchema.safeParse({
+        ...objective,
+        stopPolicy: { ...objective.stopPolicy, stopWhenTargetReached: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      ObjectiveVersionSchema.safeParse({
+        ...objective,
+        primaryMetric: { ...primaryMetric, target: 0 },
+        stopPolicy: { ...objective.stopPolicy, stopWhenTargetReached: true },
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts provider-discovered opaque model identifiers', () => {
     const discoveredModelId = `provider-discovered-${Date.now()}`;
     const descriptor = ModelDescriptorSchema.parse({

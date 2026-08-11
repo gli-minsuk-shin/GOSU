@@ -15,11 +15,17 @@ import {
 } from '@gosu/contracts';
 import {
   EXPERIMENT_MAX_IDEAS_PER_PROJECT,
+  EXPERIMENT_MAX_LOGGING_TEMPLATE_REVISIONS_PER_PROJECT,
   EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
+  EXPERIMENT_MAX_RUNS_PER_PROJECT,
   ExperimentIdeaSchema,
+  ExperimentLoggingTemplateSchema,
   ExperimentMetricPointSchema,
+  ExperimentRunSchema,
   type ExperimentIdea,
+  type ExperimentLoggingTemplate,
   type ExperimentMetricPoint,
+  type ExperimentRun,
 } from '../shared/experiment-workspace-contracts';
 import {
   LITERATURE_MAX_ACTIVE_RECORDS_PER_PROJECT,
@@ -74,6 +80,7 @@ import {
   PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH,
   ProjectChatActionSchema,
   ProjectChatAttemptSchema,
+  ProjectChatHermesDelegationReceiptSchema,
   ProjectChatMessageSchema,
   PROJECT_CHAT_MAX_BRANCH_DEPTH,
   PROJECT_CHAT_MAX_BRANCH_MESSAGES,
@@ -89,6 +96,7 @@ import {
   defaultProjectChatProfile,
   type ProjectChatAction,
   type ProjectChatAttempt,
+  type ProjectChatHermesDelegationReceipt,
   type ProjectChatMessage,
   type ProjectChatProfile,
   type ProjectChatQueuedTurn,
@@ -117,6 +125,14 @@ import {
 } from '../shared/workspace-contracts';
 import { ExperimentWorkspaceStorageError } from './experiment-workspace-storage-error';
 import {
+  ExperimentRunExecutionBindingSchema,
+  ExperimentRunExecutionIntentSchema,
+  ExperimentRunLogSourceSchema,
+  type ExperimentRunExecutionBinding,
+  type ExperimentRunExecutionIntent,
+  type ExperimentRunLogSource,
+} from './experiment-workspace-service';
+import {
   literatureFingerprint,
   normalizeArxivCanonicalId,
   type LiteratureProviderCandidate,
@@ -139,6 +155,11 @@ const LITERATURE_DISCOVERY_COVERAGE_MIGRATION = 'literature-discovery-coverage-v
 const LITERATURE_SEARCH_TAGS_MIGRATION = 'literature-search-tags-v1';
 const LITERATURE_HUGGING_FACE_PROVIDER_MIGRATION = 'literature-hugging-face-provider-v1';
 const LITERATURE_CANONICAL_IDENTITY_MIGRATION = 'literature-canonical-identity-v1';
+const EXPERIMENT_RUNS_HARDENING_MIGRATION = 'experiment-runs-hardening-v1';
+const EXPERIMENT_RUN_INTENT_AUTHORITY_MIGRATION = 'experiment-run-intent-authority-v2';
+const LEGACY_EXPERIMENT_EXECUTION_POLICY_HASH = createHash('sha256')
+  .update('gosu:legacy-experiment-execution-policy-unrecoverable:v1', 'utf8')
+  .digest('hex');
 const DEFAULT_PROJECT_CHAT_SESSION_TITLE = 'Project chat';
 const LECTURE_STUDIO_STORAGE_QUERY_LIMIT = 100;
 const MANUSCRIPT_ARTIFACT_PURGE_BATCH_LIMIT = 512;
@@ -756,6 +777,78 @@ type ExperimentMetricPointRow = Readonly<{
   recorded_at: string;
 }>;
 
+type ExperimentLoggingTemplateRow = Readonly<{
+  id: string;
+  schema_version: number;
+  project_id: string;
+  version: number;
+  previous_revision_id: string | null;
+  system_fields_json: string;
+  custom_fields_json: string;
+  template_hash: string;
+  created_at: string;
+}>;
+
+type ExperimentRunRow = Readonly<{
+  id: string;
+  schema_version: number;
+  project_id: string;
+  idea_id: string | null;
+  title: string;
+  status: ExperimentRun['status'];
+  mode: ExperimentRun['mode'];
+  server_label: string;
+  trial_id: string;
+  objective_id: string | null;
+  objective_version: number | null;
+  logging_template_revision_id: string;
+  logging_template_json: string;
+  progress_current: number | null;
+  progress_total: number | null;
+  current_step: string | null;
+  latest_metric_json: string | null;
+  log_reference_json: string | null;
+  process_exit_code: number | null;
+  process_duration_ms: number | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  version: number;
+}>;
+
+type ExperimentRunLogSourceRow = Readonly<{
+  reference_id: string;
+  project_id: string;
+  run_id: string;
+  workspace_grant_id: string;
+  workspace_subdirectory: string | null;
+  relative_path: string;
+}>;
+
+type ExperimentRunExecutionBindingRow = Readonly<{
+  project_id: string;
+  run_id: string;
+  workspace_grant_id: string;
+}>;
+
+type ExperimentRunExecutionIntentRow = Readonly<{
+  project_id: string;
+  run_id: string;
+  workspace_grant_id: string;
+  grant_version: number;
+  connection_id: string;
+  connection_version: number;
+  canonical_root: string;
+  canonical_root_hash: string;
+  policy_version: number;
+  execution_policy_hash: string;
+  intent_hash: string;
+  workspace_subdirectory: string | null;
+  relative_path: string;
+  created_at: string;
+}>;
+
 type ExperimentMetricTailRow = ExperimentMetricPointRow &
   Readonly<{
     metric_point_total: number;
@@ -863,6 +956,91 @@ function toExperimentMetricPoint(row: ExperimentMetricPointRow): ExperimentMetri
     source: row.source,
     trialId: row.trial_id,
     recordedAt: row.recorded_at,
+  });
+}
+
+function toExperimentLoggingTemplate(row: ExperimentLoggingTemplateRow): ExperimentLoggingTemplate {
+  return ExperimentLoggingTemplateSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    projectId: row.project_id,
+    version: row.version,
+    previousRevisionId: row.previous_revision_id,
+    systemFields: JSON.parse(row.system_fields_json) as unknown,
+    customFields: JSON.parse(row.custom_fields_json) as unknown,
+    templateHash: row.template_hash,
+    createdAt: row.created_at,
+  });
+}
+
+function toExperimentRun(row: ExperimentRunRow): ExperimentRun {
+  return ExperimentRunSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    projectId: row.project_id,
+    ideaId: row.idea_id,
+    title: row.title,
+    status: row.status,
+    mode: row.mode,
+    serverLabel: row.server_label,
+    trialId: row.trial_id,
+    objectiveId: row.objective_id,
+    objectiveVersion: row.objective_version,
+    loggingTemplate: JSON.parse(row.logging_template_json) as unknown,
+    progressCurrent: row.progress_current,
+    progressTotal: row.progress_total,
+    currentStep: row.current_step,
+    latestMetric: row.latest_metric_json ? (JSON.parse(row.latest_metric_json) as unknown) : null,
+    logReference: row.log_reference_json ? (JSON.parse(row.log_reference_json) as unknown) : null,
+    processExitCode: row.process_exit_code,
+    processDurationMs: row.process_duration_ms,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    version: row.version,
+  });
+}
+
+function toExperimentRunLogSource(row: ExperimentRunLogSourceRow): ExperimentRunLogSource {
+  return ExperimentRunLogSourceSchema.parse({
+    referenceId: row.reference_id,
+    projectId: row.project_id,
+    runId: row.run_id,
+    workspaceGrantId: row.workspace_grant_id,
+    workspaceSubdirectory: row.workspace_subdirectory,
+    relativePath: row.relative_path,
+  });
+}
+
+function toExperimentRunExecutionBinding(
+  row: ExperimentRunExecutionBindingRow,
+): ExperimentRunExecutionBinding {
+  return ExperimentRunExecutionBindingSchema.parse({
+    projectId: row.project_id,
+    runId: row.run_id,
+    workspaceGrantId: row.workspace_grant_id,
+  });
+}
+
+function toExperimentRunExecutionIntent(
+  row: ExperimentRunExecutionIntentRow,
+): ExperimentRunExecutionIntent {
+  return ExperimentRunExecutionIntentSchema.parse({
+    projectId: row.project_id,
+    runId: row.run_id,
+    workspaceGrantId: row.workspace_grant_id,
+    grantVersion: row.grant_version,
+    connectionId: row.connection_id,
+    connectionVersion: row.connection_version,
+    canonicalRoot: row.canonical_root,
+    canonicalRootHash: row.canonical_root_hash,
+    policyVersion: row.policy_version,
+    executionPolicyHash: row.execution_policy_hash,
+    intentHash: row.intent_hash,
+    workspaceSubdirectory: row.workspace_subdirectory,
+    relativePath: row.relative_path,
+    createdAt: row.created_at,
   });
 }
 
@@ -2176,6 +2354,535 @@ function installManuscriptIdentityGuards(database: Database.Database) {
   `);
 }
 
+function installExperimentRunGuards(database: Database.Database) {
+  database.exec(`
+    drop trigger if exists experiment_runs_project_limit;
+    drop trigger if exists experiment_runs_insert_guard;
+    drop trigger if exists experiment_runs_update_guard;
+    drop trigger if exists experiment_runs_delete_guard;
+    create index if not exists experiment_runs_by_project
+      on experiment_runs(project_id,updated_at desc,id);
+    create trigger if not exists experiment_runs_project_limit
+      before insert on experiment_runs
+      when (
+        select count(*) from experiment_runs where project_id=new.project_id
+      ) >= ${EXPERIMENT_MAX_RUNS_PER_PROJECT}
+      begin
+        select raise(abort,'experiment_run_limit_reached');
+      end;
+    create trigger if not exists experiment_runs_insert_guard
+      before insert on experiment_runs
+      when json_extract(new.logging_template_json,'$.revisionId') is not
+             new.logging_template_revision_id
+        or (new.process_exit_code is null) <> (new.process_duration_ms is null)
+        or (
+          json_extract(new.log_reference_json,'$.validationState')='pending'
+          and new.status<>'verifying'
+        )
+        or (
+          new.status='verifying'
+          and (
+            json_extract(new.log_reference_json,'$.validationState') is not 'pending'
+            or new.process_exit_code is null
+          )
+        )
+        or (
+          new.status='succeeded'
+          and (
+            json_extract(new.log_reference_json,'$.validationState') is not 'valid'
+            or new.process_exit_code is not 0
+            or new.process_duration_ms is null
+          )
+        )
+      begin
+        select raise(abort,'experiment_run_provenance_invalid');
+      end;
+    create trigger if not exists experiment_runs_update_guard
+      before update on experiment_runs
+      when new.id is not old.id
+        or new.schema_version is not old.schema_version
+        or new.project_id is not old.project_id
+        or new.idea_id is not old.idea_id
+        or new.title is not old.title
+        or new.mode is not old.mode
+        or new.server_label is not old.server_label
+        or new.trial_id is not old.trial_id
+        or new.objective_id is not old.objective_id
+        or new.objective_version is not old.objective_version
+        or new.logging_template_revision_id is not old.logging_template_revision_id
+        or new.logging_template_json is not old.logging_template_json
+        or new.created_at is not old.created_at
+        or (new.process_exit_code is null) <> (new.process_duration_ms is null)
+        or (
+          json_extract(new.log_reference_json,'$.validationState')='pending'
+          and new.status<>'verifying'
+        )
+        or (
+          new.status='verifying'
+          and (
+            json_extract(new.log_reference_json,'$.validationState') is not 'pending'
+            or new.process_exit_code is null
+          )
+        )
+        or (
+          new.status='succeeded'
+          and (
+            json_extract(new.log_reference_json,'$.validationState') is not 'valid'
+            or new.process_exit_code is not 0
+            or new.process_duration_ms is null
+          )
+        )
+      begin
+        select raise(abort,'experiment_run_provenance_invalid');
+      end;
+    create trigger if not exists experiment_runs_delete_guard
+      before delete on experiment_runs
+      begin
+        select raise(abort,'experiment_run_provenance_append_only');
+      end;
+  `);
+}
+
+function quarantineUnverifiedExperimentSuccesses(database: Database.Database) {
+  database.exec('drop trigger if exists experiment_runs_update_guard');
+  const quarantinedAt = new Date().toISOString();
+  database
+    .prepare(
+      `update experiment_runs
+       set status='lost',current_step='Legacy result requires provenance review',
+           log_reference_json=case
+             when json_extract(log_reference_json,'$.validationState')='pending'
+               then json_set(log_reference_json,'$.validationState','invalid')
+             else log_reference_json
+           end,
+           updated_at=?,completed_at=coalesce(completed_at,?),version=version+1
+       where status='succeeded'
+         and (
+           json_extract(log_reference_json,'$.validationState') is not 'valid'
+           or process_exit_code is not 0
+           or process_duration_ms is null
+         )`,
+    )
+    .run(quarantinedAt, quarantinedAt);
+}
+
+function migrateExperimentRunsHardening(database: Database.Database) {
+  const columns = database.pragma('table_info(experiment_runs)') as Array<{ name: string }>;
+  const schema = database
+    .prepare("select sql from sqlite_master where type='table' and name='experiment_runs'")
+    .get() as { sql: string | null } | undefined;
+  const hasExitCode = columns.some(({ name }) => name === 'process_exit_code');
+  const hasDuration = columns.some(({ name }) => name === 'process_duration_ms');
+  const supportsVerifying = schema?.sql?.includes("'verifying'") === true;
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(EXPERIMENT_RUNS_HARDENING_MIGRATION);
+  const current = hasExitCode && hasDuration && supportsVerifying;
+  if (migrationApplied) {
+    if (!current) throw new Error('experiment_runs_hardening_schema_invalid');
+    database
+      .transaction(() => {
+        quarantineUnverifiedExperimentSuccesses(database);
+        installExperimentRunGuards(database);
+      })
+      .immediate();
+    return;
+  }
+
+  if (current) {
+    database
+      .transaction(() => {
+        quarantineUnverifiedExperimentSuccesses(database);
+        installExperimentRunGuards(database);
+        database
+          .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+          .run(EXPERIMENT_RUNS_HARDENING_MIGRATION, new Date().toISOString());
+      })
+      .immediate();
+    return;
+  }
+
+  if (database.prepare("select 1 from experiment_runs where status='verifying' limit 1").get()) {
+    throw new Error('experiment_runs_hardening_recovery_required');
+  }
+
+  const foreignKeysEnabled = Number(database.pragma('foreign_keys', { simple: true })) === 1;
+  database.pragma('foreign_keys=OFF');
+  try {
+    database
+      .transaction(() => {
+        database.exec(`
+          drop trigger if exists experiment_runs_project_limit;
+          drop trigger if exists experiment_runs_insert_guard;
+          drop trigger if exists experiment_runs_update_guard;
+          drop trigger if exists experiment_runs_delete_guard;
+          drop index if exists experiment_runs_by_project;
+          drop table if exists experiment_runs_hardened;
+          create table experiment_runs_hardened (
+            id text primary key check (length(id) = 36),
+            schema_version integer not null check (schema_version = 1),
+            project_id text not null check (length(project_id) = 36),
+            idea_id text check (idea_id is null or length(idea_id) = 36),
+            title text not null check (length(title) between 1 and 160),
+            status text not null check (
+              status in ('queued','running','verifying','succeeded','failed','cancelled','lost')
+            ),
+            mode text not null check (mode in ('comparable','exploratory')),
+            server_label text not null check (length(server_label) between 1 and 120),
+            trial_id text not null check (length(trial_id) between 1 and 128),
+            objective_id text check (objective_id is null or length(objective_id) = 36),
+            objective_version integer check (objective_version is null or objective_version > 0),
+            logging_template_revision_id text not null check (
+              length(logging_template_revision_id) = 36
+            ),
+            logging_template_json text not null check (
+              length(logging_template_json) between 2 and 65536
+            ),
+            progress_current integer check (progress_current is null or progress_current >= 0),
+            progress_total integer check (progress_total is null or progress_total > 0),
+            current_step text check (current_step is null or length(current_step) between 1 and 160),
+            latest_metric_json text check (
+              latest_metric_json is null or length(latest_metric_json) between 2 and 8192
+            ),
+            log_reference_json text check (
+              log_reference_json is null or length(log_reference_json) between 2 and 16384
+            ),
+            process_exit_code integer check (
+              process_exit_code is null or process_exit_code between 0 and 255
+            ),
+            process_duration_ms integer check (
+              process_duration_ms is null or process_duration_ms >= 0
+            ),
+            created_at text not null,
+            updated_at text not null,
+            started_at text,
+            completed_at text,
+            version integer not null check (version > 0),
+            unique(project_id,id),
+            unique(project_id,trial_id),
+            check ((objective_id is null) = (objective_version is null)),
+            check (mode='exploratory' or (idea_id is not null and objective_id is not null)),
+            check (mode='comparable' or objective_id is null),
+            check (
+              progress_current is null or progress_total is null or progress_current <= progress_total
+            ),
+            foreign key(project_id,idea_id) references experiment_ideas(project_id,id),
+            foreign key(project_id,logging_template_revision_id)
+              references experiment_logging_template_revisions(project_id,id)
+          );
+        `);
+        const exitCodeExpression = hasExitCode ? 'process_exit_code' : 'null';
+        const durationExpression = hasDuration ? 'process_duration_ms' : 'null';
+        const migrationTimestamp = new Date().toISOString();
+        const statusExpression =
+          hasExitCode && hasDuration
+            ? "case when status='running' then 'lost' else status end"
+            : "case when status in ('running','succeeded') then 'lost' else status end";
+        const currentStepExpression =
+          hasExitCode && hasDuration
+            ? "case when status='running' then 'Interrupted before durable outcome reconciliation' else current_step end"
+            : "case when status='succeeded' then 'Legacy result requires provenance review' when status='running' then 'Interrupted before durable outcome reconciliation' else current_step end";
+        const convertedExpression =
+          hasExitCode && hasDuration ? "status='running'" : "status in ('running','succeeded')";
+        database
+          .prepare(
+            `
+          insert into experiment_runs_hardened(
+            id,schema_version,project_id,idea_id,title,status,mode,server_label,trial_id,
+            objective_id,objective_version,logging_template_revision_id,logging_template_json,
+            progress_current,progress_total,current_step,latest_metric_json,log_reference_json,
+            process_exit_code,process_duration_ms,created_at,updated_at,started_at,completed_at,version
+          )
+          select id,schema_version,project_id,idea_id,title,${statusExpression},mode,server_label,trial_id,
+                 objective_id,objective_version,logging_template_revision_id,logging_template_json,
+                 progress_current,progress_total,${currentStepExpression},latest_metric_json,
+                 log_reference_json,${exitCodeExpression},${durationExpression},created_at,
+                 case when ${convertedExpression} then ? else updated_at end,started_at,
+                 case when ${convertedExpression} then coalesce(completed_at,?) else completed_at end,
+                 version + case when ${convertedExpression} then 1 else 0 end
+          from experiment_runs;
+        `,
+          )
+          .run(migrationTimestamp, migrationTimestamp);
+        const invalid = database
+          .prepare(
+            `select 1 from experiment_runs_hardened
+             where json_extract(logging_template_json,'$.revisionId') is not
+                     logging_template_revision_id
+                or (process_exit_code is null) <> (process_duration_ms is null)
+                or (
+                  json_extract(log_reference_json,'$.validationState')='pending'
+                  and status<>'verifying'
+                )
+                or (
+                  status='succeeded'
+                  and (
+                    json_extract(log_reference_json,'$.validationState') is not 'valid'
+                    or process_exit_code is not 0
+                    or process_duration_ms is null
+                  )
+                )
+             limit 1`,
+          )
+          .get();
+        if (invalid) throw new Error('experiment_runs_hardening_recovery_required');
+        database.exec(`
+          drop table experiment_runs;
+          alter table experiment_runs_hardened rename to experiment_runs;
+        `);
+        installExperimentRunGuards(database);
+        const violations = database.pragma('foreign_key_check') as unknown[];
+        if (violations.length > 0) throw new Error('experiment_runs_hardening_foreign_key_invalid');
+        database
+          .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+          .run(EXPERIMENT_RUNS_HARDENING_MIGRATION, new Date().toISOString());
+      })
+      .immediate();
+  } finally {
+    if (foreignKeysEnabled) database.pragma('foreign_keys=ON');
+  }
+}
+
+function installExperimentRunExecutionIntentGuards(database: Database.Database) {
+  database.exec(`
+    drop trigger if exists experiment_run_execution_intents_delete_guard;
+    drop trigger if exists experiment_run_execution_intents_update_guard;
+    drop trigger if exists experiment_run_execution_intent_legacy_tombstones_delete_guard;
+    drop trigger if exists experiment_run_execution_intent_legacy_tombstones_update_guard;
+    create trigger experiment_run_execution_intents_delete_guard
+      before delete on experiment_run_execution_intents
+      begin
+        select raise(abort,'experiment_run_execution_intent_append_only');
+      end;
+    create trigger experiment_run_execution_intents_update_guard
+      before update on experiment_run_execution_intents
+      begin
+        select raise(abort,'experiment_run_execution_intent_append_only');
+      end;
+    create trigger experiment_run_execution_intent_legacy_tombstones_delete_guard
+      before delete on experiment_run_execution_intent_legacy_tombstones
+      begin
+        select raise(abort,'experiment_run_execution_intent_tombstone_append_only');
+      end;
+    create trigger experiment_run_execution_intent_legacy_tombstones_update_guard
+      before update on experiment_run_execution_intent_legacy_tombstones
+      begin
+        select raise(abort,'experiment_run_execution_intent_tombstone_append_only');
+      end;
+  `);
+}
+
+function migrateExperimentRunExecutionIntentAuthority(database: Database.Database) {
+  const columns = database.pragma('table_info(experiment_run_execution_intents)') as Array<{
+    name: string;
+  }>;
+  const columnNames = new Set(columns.map(({ name }) => name));
+  const legacyColumns = [
+    'project_id',
+    'run_id',
+    'workspace_grant_id',
+    'intent_hash',
+    'workspace_subdirectory',
+    'relative_path',
+    'created_at',
+  ] as const;
+  const authorityColumns = [
+    'grant_version',
+    'connection_id',
+    'connection_version',
+    'canonical_root',
+    'canonical_root_hash',
+    'policy_version',
+    'execution_policy_hash',
+  ] as const;
+  const hasLegacyColumns = legacyColumns.every((name) => columnNames.has(name));
+  const current = hasLegacyColumns && authorityColumns.every((name) => columnNames.has(name));
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(EXPERIMENT_RUN_INTENT_AUTHORITY_MIGRATION);
+
+  if (migrationApplied) {
+    if (!current) throw new Error('experiment_run_execution_intent_authority_schema_invalid');
+    installExperimentRunExecutionIntentGuards(database);
+    return;
+  }
+  if (!hasLegacyColumns) {
+    throw new Error('experiment_run_execution_intent_authority_schema_invalid');
+  }
+  if (current) {
+    database
+      .transaction(() => {
+        installExperimentRunExecutionIntentGuards(database);
+        database
+          .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+          .run(EXPERIMENT_RUN_INTENT_AUTHORITY_MIGRATION, new Date().toISOString());
+      })
+      .immediate();
+    return;
+  }
+
+  const foreignKeysEnabled = Number(database.pragma('foreign_keys', { simple: true })) === 1;
+  database.pragma('foreign_keys=OFF');
+  try {
+    database
+      .transaction(() => {
+        database.exec(`
+          drop trigger if exists experiment_run_execution_intents_delete_guard;
+          drop trigger if exists experiment_run_execution_intents_update_guard;
+          drop trigger if exists experiment_runs_update_guard;
+          drop table if exists experiment_run_execution_intents_hardened;
+          create table experiment_run_execution_intents_hardened (
+            project_id text not null check (length(project_id) = 36),
+            run_id text not null check (length(run_id) = 36),
+            workspace_grant_id text not null check (length(workspace_grant_id) = 36),
+            grant_version integer not null check (grant_version > 0),
+            connection_id text not null check (length(connection_id) = 36),
+            connection_version integer not null check (connection_version > 0),
+            canonical_root text not null check (length(canonical_root) between 1 and 1024),
+            canonical_root_hash text not null check (length(canonical_root_hash) = 64),
+            policy_version integer not null check (policy_version > 0),
+            execution_policy_hash text not null check (length(execution_policy_hash) = 64),
+            intent_hash text not null check (length(intent_hash) = 64),
+            workspace_subdirectory text check (
+              workspace_subdirectory is null or length(workspace_subdirectory) <= 512
+            ),
+            relative_path text not null check (length(relative_path) between 1 and 512),
+            created_at text not null,
+            primary key(project_id,run_id),
+            foreign key(project_id,run_id) references experiment_runs(project_id,id)
+          );
+        `);
+        const legacyIntents = database
+          .prepare(
+            `select project_id,run_id,workspace_grant_id,intent_hash,
+                    workspace_subdirectory,relative_path,created_at
+             from experiment_run_execution_intents order by project_id,run_id`,
+          )
+          .all() as Array<{
+          project_id: string;
+          run_id: string;
+          workspace_grant_id: string;
+          intent_hash: string;
+          workspace_subdirectory: string | null;
+          relative_path: string;
+          created_at: string;
+        }>;
+        const selectOrigin = database.prepare(
+          `select grant.version as grant_version,grant.connection_id,grant.canonical_root,
+                  connection.version as connection_version
+           from ssh_workspace_grants grant
+           join ssh_connections connection on connection.id=grant.connection_id
+           where grant.project_id=? and grant.id=?`,
+        );
+        const insertHardened = database.prepare(
+          `insert into experiment_run_execution_intents_hardened(
+             project_id,run_id,workspace_grant_id,grant_version,connection_id,
+             connection_version,canonical_root,canonical_root_hash,policy_version,
+             execution_policy_hash,intent_hash,workspace_subdirectory,relative_path,created_at
+           ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        );
+        const insertTombstone = database.prepare(
+          `insert or ignore into experiment_run_execution_intent_legacy_tombstones(
+             project_id,run_id,workspace_grant_id,intent_hash,workspace_subdirectory,
+             relative_path,created_at,migrated_at,recovery_reason
+           ) values(?,?,?,?,?,?,?,?,?)`,
+        );
+        const quarantineRun = database.prepare(
+          `update experiment_runs
+           set status='lost',
+               current_step='Legacy execution intent requires provenance review',
+               log_reference_json=case
+                 when json_extract(log_reference_json,'$.validationState')='pending'
+                   then json_set(log_reference_json,'$.validationState','invalid')
+                 else log_reference_json
+               end,
+               completed_at=coalesce(completed_at,?),updated_at=?,version=version+1
+           where project_id=? and id=? and status in ('queued','running','verifying','succeeded')`,
+        );
+        const migratedAt = new Date().toISOString();
+        for (const intent of legacyIntents) {
+          const origin = selectOrigin.get(intent.project_id, intent.workspace_grant_id) as
+            | {
+                grant_version: number;
+                connection_id: string;
+                canonical_root: string;
+                connection_version: number;
+              }
+            | undefined;
+          if (origin) {
+            insertHardened.run(
+              intent.project_id,
+              intent.run_id,
+              intent.workspace_grant_id,
+              origin.grant_version,
+              origin.connection_id,
+              origin.connection_version,
+              origin.canonical_root,
+              createHash('sha256').update(origin.canonical_root, 'utf8').digest('hex'),
+              1,
+              LEGACY_EXPERIMENT_EXECUTION_POLICY_HASH,
+              intent.intent_hash,
+              intent.workspace_subdirectory,
+              intent.relative_path,
+              intent.created_at,
+            );
+          } else {
+            insertTombstone.run(
+              intent.project_id,
+              intent.run_id,
+              intent.workspace_grant_id,
+              intent.intent_hash,
+              intent.workspace_subdirectory,
+              intent.relative_path,
+              intent.created_at,
+              migratedAt,
+              'legacy_origin_unrecoverable',
+            );
+          }
+          quarantineRun.run(migratedAt, migratedAt, intent.project_id, intent.run_id);
+        }
+        database.exec(`
+          drop table experiment_run_execution_intents;
+          alter table experiment_run_execution_intents_hardened
+            rename to experiment_run_execution_intents;
+        `);
+        installExperimentRunExecutionIntentGuards(database);
+        installExperimentRunGuards(database);
+        const violations = database.pragma('foreign_key_check') as unknown[];
+        if (violations.length > 0) {
+          throw new Error('experiment_run_execution_intent_authority_foreign_key_invalid');
+        }
+        database
+          .prepare('insert into local_schema_migrations(id,applied_at) values(?,?)')
+          .run(EXPERIMENT_RUN_INTENT_AUTHORITY_MIGRATION, migratedAt);
+      })
+      .immediate();
+  } finally {
+    if (foreignKeysEnabled) database.pragma('foreign_keys=ON');
+  }
+}
+
+function visibleExperimentMetricPredicate(pointAlias: 'point' | 'points') {
+  return `(
+    ${pointAlias}.source<>'runner-summary'
+    or exists (
+      select 1 from experiment_runs run
+      where run.project_id=${pointAlias}.project_id
+        and run.trial_id=${pointAlias}.trial_id
+        and run.idea_id=${pointAlias}.idea_id
+        and run.objective_id=${pointAlias}.objective_id
+        and run.objective_version=${pointAlias}.objective_version
+        and run.status='succeeded'
+        and run.process_exit_code=0
+        and run.process_duration_ms is not null
+        and json_extract(run.log_reference_json,'$.validationState')='valid'
+        and json_extract(run.latest_metric_json,'$.key')=${pointAlias}.metric_key
+        and json_type(run.latest_metric_json,'$.value') in ('integer','real')
+        and cast(json_extract(run.latest_metric_json,'$.value') as real)=${pointAlias}.value
+    )
+  )`;
+}
+
 function boundedLocalSearch(projectIds: readonly string[], query: string, requestedLimit: number) {
   const requestedIds = new Set(projectIds);
   const ids = [...requestedIds].filter((projectId) =>
@@ -2663,10 +3370,197 @@ export class LocalDatabase {
         begin
           select raise(abort,'experiment_metric_point_append_only');
         end;
-      create trigger if not exists experiment_metric_points_delete_guard
+      drop trigger if exists experiment_metric_points_delete_guard;
+      create trigger experiment_metric_points_delete_guard
         before delete on experiment_metric_points
         begin
           select raise(abort,'experiment_metric_point_append_only');
+        end;
+      create unique index if not exists experiment_metric_points_runner_trial_unique
+        on experiment_metric_points(project_id,trial_id)
+        where source='runner-summary' and trial_id is not null;
+      create table if not exists experiment_logging_template_revisions (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null check (length(project_id) = 36),
+        version integer not null check (version > 0),
+        previous_revision_id text check (
+          previous_revision_id is null or length(previous_revision_id) = 36
+        ),
+        system_fields_json text not null check (
+          length(system_fields_json) between 2 and 4096
+        ),
+        custom_fields_json text not null check (
+          length(custom_fields_json) between 2 and 65536
+        ),
+        template_hash text not null check (length(template_hash) = 64),
+        created_at text not null,
+        unique(project_id,version),
+        unique(project_id,id),
+        foreign key(project_id,previous_revision_id)
+          references experiment_logging_template_revisions(project_id,id)
+      );
+      create index if not exists experiment_logging_templates_by_project
+        on experiment_logging_template_revisions(project_id,version desc);
+      create trigger if not exists experiment_logging_templates_project_limit
+        before insert on experiment_logging_template_revisions
+        when (
+          select count(*) from experiment_logging_template_revisions
+          where project_id=new.project_id
+        ) >= ${EXPERIMENT_MAX_LOGGING_TEMPLATE_REVISIONS_PER_PROJECT}
+        begin
+          select raise(abort,'experiment_logging_template_limit_reached');
+        end;
+      create trigger if not exists experiment_logging_templates_update_guard
+        before update on experiment_logging_template_revisions
+        begin
+          select raise(abort,'experiment_logging_template_append_only');
+        end;
+      drop trigger if exists experiment_logging_templates_delete_guard;
+      create trigger experiment_logging_templates_delete_guard
+        before delete on experiment_logging_template_revisions
+        begin
+          select raise(abort,'experiment_logging_template_append_only');
+        end;
+      create table if not exists experiment_runs (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null check (length(project_id) = 36),
+        idea_id text check (idea_id is null or length(idea_id) = 36),
+        title text not null check (length(title) between 1 and 160),
+        status text not null check (
+          status in ('queued','running','verifying','succeeded','failed','cancelled','lost')
+        ),
+        mode text not null check (mode in ('comparable','exploratory')),
+        server_label text not null check (length(server_label) between 1 and 120),
+        trial_id text not null check (length(trial_id) between 1 and 128),
+        objective_id text check (objective_id is null or length(objective_id) = 36),
+        objective_version integer check (objective_version is null or objective_version > 0),
+        logging_template_revision_id text not null check (
+          length(logging_template_revision_id) = 36
+        ),
+        logging_template_json text not null check (
+          length(logging_template_json) between 2 and 65536
+        ),
+        progress_current integer check (progress_current is null or progress_current >= 0),
+        progress_total integer check (progress_total is null or progress_total > 0),
+        current_step text check (current_step is null or length(current_step) between 1 and 160),
+        latest_metric_json text check (
+          latest_metric_json is null or length(latest_metric_json) between 2 and 8192
+        ),
+        log_reference_json text check (
+          log_reference_json is null or length(log_reference_json) between 2 and 16384
+        ),
+        process_exit_code integer check (
+          process_exit_code is null or process_exit_code between 0 and 255
+        ),
+        process_duration_ms integer check (
+          process_duration_ms is null or process_duration_ms >= 0
+        ),
+        created_at text not null,
+        updated_at text not null,
+        started_at text,
+        completed_at text,
+        version integer not null check (version > 0),
+        unique(project_id,id),
+        unique(project_id,trial_id),
+        check ((objective_id is null) = (objective_version is null)),
+        check (mode='exploratory' or (idea_id is not null and objective_id is not null)),
+        check (mode='comparable' or objective_id is null),
+        check (progress_current is null or progress_total is null or progress_current <= progress_total),
+        foreign key(project_id,idea_id) references experiment_ideas(project_id,id),
+        foreign key(project_id,logging_template_revision_id)
+          references experiment_logging_template_revisions(project_id,id)
+      );
+      create table if not exists experiment_run_log_sources (
+        reference_id text primary key check (length(reference_id) = 36),
+        project_id text not null check (length(project_id) = 36),
+        run_id text not null check (length(run_id) = 36),
+        workspace_grant_id text not null check (length(workspace_grant_id) = 36),
+        workspace_subdirectory text check (
+          workspace_subdirectory is null or length(workspace_subdirectory) <= 512
+        ),
+        relative_path text not null check (length(relative_path) between 1 and 512),
+        unique(project_id,run_id,reference_id),
+        foreign key(project_id,run_id) references experiment_runs(project_id,id)
+      );
+      create table if not exists experiment_run_execution_bindings (
+        project_id text not null check (length(project_id) = 36),
+        run_id text not null check (length(run_id) = 36),
+        workspace_grant_id text not null check (length(workspace_grant_id) = 36),
+        primary key(project_id,run_id),
+        foreign key(project_id,run_id) references experiment_runs(project_id,id)
+      );
+      create table if not exists experiment_run_execution_intents (
+        project_id text not null check (length(project_id) = 36),
+        run_id text not null check (length(run_id) = 36),
+        workspace_grant_id text not null check (length(workspace_grant_id) = 36),
+        grant_version integer not null check (grant_version > 0),
+        connection_id text not null check (length(connection_id) = 36),
+        connection_version integer not null check (connection_version > 0),
+        canonical_root text not null check (length(canonical_root) between 1 and 1024),
+        canonical_root_hash text not null check (length(canonical_root_hash) = 64),
+        policy_version integer not null check (policy_version > 0),
+        execution_policy_hash text not null check (length(execution_policy_hash) = 64),
+        intent_hash text not null check (length(intent_hash) = 64),
+        workspace_subdirectory text check (
+          workspace_subdirectory is null or length(workspace_subdirectory) <= 512
+        ),
+        relative_path text not null check (length(relative_path) between 1 and 512),
+        created_at text not null,
+        primary key(project_id,run_id),
+        foreign key(project_id,run_id) references experiment_runs(project_id,id)
+      );
+      create table if not exists experiment_run_execution_intent_legacy_tombstones (
+        project_id text not null check (length(project_id) = 36),
+        run_id text not null check (length(run_id) = 36),
+        workspace_grant_id text not null check (length(workspace_grant_id) = 36),
+        intent_hash text not null check (length(intent_hash) = 64),
+        workspace_subdirectory text check (
+          workspace_subdirectory is null or length(workspace_subdirectory) <= 512
+        ),
+        relative_path text not null check (length(relative_path) between 1 and 512),
+        created_at text not null,
+        migrated_at text not null,
+        recovery_reason text not null check (
+          recovery_reason in ('legacy_origin_unrecoverable')
+        ),
+        primary key(project_id,run_id)
+      );
+      create trigger if not exists experiment_ideas_delete_guard
+        before delete on experiment_ideas
+        begin
+          select raise(abort,'experiment_idea_provenance_append_only');
+        end;
+      create trigger if not exists experiment_run_log_sources_delete_guard
+        before delete on experiment_run_log_sources
+        begin
+          select raise(abort,'experiment_run_log_source_append_only');
+        end;
+      create trigger if not exists experiment_run_execution_bindings_delete_guard
+        before delete on experiment_run_execution_bindings
+        begin
+          select raise(abort,'experiment_run_execution_binding_append_only');
+        end;
+      create trigger if not exists experiment_run_execution_intents_delete_guard
+        before delete on experiment_run_execution_intents
+        begin
+          select raise(abort,'experiment_run_execution_intent_append_only');
+        end;
+      create trigger if not exists experiment_run_execution_intents_update_guard
+        before update on experiment_run_execution_intents
+        begin
+          select raise(abort,'experiment_run_execution_intent_append_only');
+        end;
+      create trigger if not exists experiment_run_execution_intent_legacy_tombstones_delete_guard
+        before delete on experiment_run_execution_intent_legacy_tombstones
+        begin
+          select raise(abort,'experiment_run_execution_intent_tombstone_append_only');
+        end;
+      create trigger if not exists experiment_run_execution_intent_legacy_tombstones_update_guard
+        before update on experiment_run_execution_intent_legacy_tombstones
+        begin
+          select raise(abort,'experiment_run_execution_intent_tombstone_append_only');
         end;
       create table if not exists lecture_studios (
         id text primary key check (length(id) = 36),
@@ -2993,6 +3887,39 @@ export class LocalDatabase {
       );
       create index if not exists project_chat_research_note_receipts_by_status
         on project_chat_research_note_save_receipts(status,updated_at,attempt_id);
+      create table if not exists project_chat_hermes_delegation_receipts (
+        invocation_id text primary key check (length(invocation_id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null,
+        session_id text not null check (length(session_id) = 36),
+        attempt_id text not null check (length(attempt_id) = 36),
+        provider_id text not null check (provider_id = 'hermes'),
+        transport text not null check (transport = 'acp-v1'),
+        resolved_model_id text not null check (length(resolved_model_id) between 1 and 256),
+        configured_provider_id text not null check (
+          length(configured_provider_id) between 1 and 128
+        ),
+        catalog_version text not null check (length(catalog_version) = 64),
+        agent_name text check (agent_name is null or length(agent_name) between 1 and 256),
+        agent_version text check (
+          agent_version is null or length(agent_version) between 1 and 128
+        ),
+        stop_reason text not null check (length(stop_reason) between 1 and 128),
+        started_at text not null,
+        recorded_at text not null
+      );
+      create index if not exists project_chat_hermes_delegations_by_attempt
+        on project_chat_hermes_delegation_receipts(project_id,session_id,attempt_id,recorded_at);
+      create trigger if not exists project_chat_hermes_delegation_update_guard
+        before update on project_chat_hermes_delegation_receipts
+        begin
+          select raise(abort,'hermes_delegation_receipt_append_only');
+        end;
+      create trigger if not exists project_chat_hermes_delegation_delete_guard
+        before delete on project_chat_hermes_delegation_receipts
+        begin
+          select raise(abort,'hermes_delegation_receipt_append_only');
+        end;
       create table if not exists project_chat_actions (
         id text primary key,
         message_id text not null references project_chat_messages(id) on delete cascade,
@@ -3010,6 +3937,7 @@ export class LocalDatabase {
       create index if not exists project_chat_actions_by_message
         on project_chat_actions(message_id,created_at,id);
     `);
+      migrateExperimentRunsHardening(database);
       migrateProjectChatResearchNoteAbandoned(database);
       const manuscriptWorkspaceConnectionColumns = database.pragma(
         'table_info(manuscript_workspace_connections)',
@@ -3090,6 +4018,7 @@ export class LocalDatabase {
            check (trusted_access_json is null or length(trusted_access_json) between 2 and 16384)`,
         );
       }
+      migrateExperimentRunExecutionIntentAuthority(database);
       database
         .prepare(
           `update project_chat_actions
@@ -3309,6 +4238,15 @@ export class LocalDatabase {
         const reconciledAt = new Date().toISOString();
         reconcileInterruptedChatAttempts(initializedDatabase, reconciledAt);
         reconcileCommittedResearchNoteReceipts(initializedDatabase, reconciledAt);
+        initializedDatabase
+          .prepare(
+            `update experiment_runs
+             set status='lost',
+                 current_step='Application interrupted; remote outcome unknown',
+                 completed_at=?,updated_at=?,version=version+1
+             where status='running'`,
+          )
+          .run(reconciledAt, reconciledAt);
         initializedDatabase
           .prepare(
             `update lecture_studio_messages
@@ -4341,6 +5279,151 @@ export class LocalDatabase {
     if (result.changes !== 1) throw new Error('chat_attempt_state_conflict');
   }
 
+  recordHermesDelegationReceipt(input: ProjectChatHermesDelegationReceipt) {
+    const receipt = ProjectChatHermesDelegationReceiptSchema.parse(structuredClone(input));
+    const database = this.require();
+    database.transaction(() => {
+      const attempt = database
+        .prepare(
+          `select project_id,session_id,status from project_chat_attempts
+           where id=?`,
+        )
+        .get(receipt.attemptId) as
+        { project_id: string; session_id: string | null; status: string } | undefined;
+      if (
+        !attempt ||
+        attempt.project_id !== receipt.projectId ||
+        attempt.session_id !== receipt.sessionId ||
+        !['starting', 'running'].includes(attempt.status)
+      ) {
+        throw new Error('hermes_delegation_receipt_attempt_conflict');
+      }
+      database
+        .prepare(
+          `insert into project_chat_hermes_delegation_receipts(
+             invocation_id,schema_version,project_id,session_id,attempt_id,provider_id,
+             transport,resolved_model_id,configured_provider_id,catalog_version,
+             agent_name,agent_version,stop_reason,started_at,recorded_at
+           ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           on conflict(invocation_id) do nothing`,
+        )
+        .run(
+          receipt.invocationId,
+          receipt.schemaVersion,
+          receipt.projectId,
+          receipt.sessionId,
+          receipt.attemptId,
+          receipt.providerId,
+          receipt.transport,
+          receipt.resolvedModelId,
+          receipt.configuredProviderId,
+          receipt.catalogVersion,
+          receipt.agentName,
+          receipt.agentVersion,
+          receipt.stopReason,
+          receipt.startedAt,
+          receipt.recordedAt,
+        );
+      const stored = database
+        .prepare(
+          `select invocation_id,schema_version,project_id,session_id,attempt_id,provider_id,
+                  transport,resolved_model_id,configured_provider_id,catalog_version,
+                  agent_name,agent_version,stop_reason,started_at,recorded_at
+           from project_chat_hermes_delegation_receipts where invocation_id=?`,
+        )
+        .get(receipt.invocationId) as
+        | {
+            invocation_id: string;
+            schema_version: number;
+            project_id: string;
+            session_id: string;
+            attempt_id: string;
+            provider_id: string;
+            transport: string;
+            resolved_model_id: string;
+            configured_provider_id: string;
+            catalog_version: string;
+            agent_name: string | null;
+            agent_version: string | null;
+            stop_reason: string;
+            started_at: string;
+            recorded_at: string;
+          }
+        | undefined;
+      if (
+        !stored ||
+        stored.schema_version !== receipt.schemaVersion ||
+        stored.project_id !== receipt.projectId ||
+        stored.session_id !== receipt.sessionId ||
+        stored.attempt_id !== receipt.attemptId ||
+        stored.provider_id !== receipt.providerId ||
+        stored.transport !== receipt.transport ||
+        stored.resolved_model_id !== receipt.resolvedModelId ||
+        stored.configured_provider_id !== receipt.configuredProviderId ||
+        stored.catalog_version !== receipt.catalogVersion ||
+        stored.agent_name !== receipt.agentName ||
+        stored.agent_version !== receipt.agentVersion ||
+        stored.stop_reason !== receipt.stopReason ||
+        stored.started_at !== receipt.startedAt ||
+        stored.recorded_at !== receipt.recordedAt
+      ) {
+        throw new Error('hermes_delegation_receipt_conflict');
+      }
+    })();
+  }
+
+  listHermesDelegationReceipts(
+    projectId: string,
+    sessionId: string,
+    attemptId: string,
+  ): ProjectChatHermesDelegationReceipt[] {
+    const rows = this.require()
+      .prepare(
+        `select invocation_id,schema_version,project_id,session_id,attempt_id,provider_id,
+                transport,resolved_model_id,configured_provider_id,catalog_version,
+                agent_name,agent_version,stop_reason,started_at,recorded_at
+         from project_chat_hermes_delegation_receipts
+         where project_id=? and session_id=? and attempt_id=?
+         order by recorded_at asc,invocation_id asc`,
+      )
+      .all(projectId, sessionId, attemptId) as Array<{
+      invocation_id: string;
+      schema_version: number;
+      project_id: string;
+      session_id: string;
+      attempt_id: string;
+      provider_id: string;
+      transport: string;
+      resolved_model_id: string;
+      configured_provider_id: string;
+      catalog_version: string;
+      agent_name: string | null;
+      agent_version: string | null;
+      stop_reason: string;
+      started_at: string;
+      recorded_at: string;
+    }>;
+    return rows.map((row) =>
+      ProjectChatHermesDelegationReceiptSchema.parse({
+        schemaVersion: row.schema_version,
+        projectId: row.project_id,
+        sessionId: row.session_id,
+        attemptId: row.attempt_id,
+        invocationId: row.invocation_id,
+        providerId: row.provider_id,
+        transport: row.transport,
+        resolvedModelId: row.resolved_model_id,
+        configuredProviderId: row.configured_provider_id,
+        catalogVersion: row.catalog_version,
+        agentName: row.agent_name,
+        agentVersion: row.agent_version,
+        stopReason: row.stop_reason,
+        startedAt: row.started_at,
+        recordedAt: row.recorded_at,
+      }),
+    );
+  }
+
   stageResearchNoteSave(input: ProjectChatResearchNoteSaveStage) {
     const receipt = ProjectChatResearchNoteSaveStageSchema.parse(structuredClone(input));
     const database = this.require();
@@ -4905,7 +5988,9 @@ export class LocalDatabase {
          from experiment_metric_points points
          join experiment_ideas ideas
            on ideas.project_id=points.project_id and ideas.id=points.idea_id
-         where points.project_id in (${projectPlaceholders}) and ${tokenPredicates}
+         where points.project_id in (${projectPlaceholders})
+           and ${visibleExperimentMetricPredicate('points')}
+           and ${tokenPredicates}
          order by points.recorded_at desc,points.sequence desc,points.id asc limit ?`,
       )
       .all(...ids, ...tokens, limit) as Array<{
@@ -4968,8 +6053,10 @@ export class LocalDatabase {
   listExperimentMetricPoints(projectId: string): ExperimentMetricPoint[] {
     const rows = this.require()
       .prepare(
-        `select * from experiment_metric_points
-         where project_id=? order by sequence asc`,
+        `select point.* from experiment_metric_points point
+         where point.project_id=?
+           and ${visibleExperimentMetricPredicate('point')}
+         order by point.sequence asc`,
       )
       .all(projectId) as ExperimentMetricPointRow[];
     return rows.map(toExperimentMetricPoint);
@@ -4996,6 +6083,7 @@ export class LocalDatabase {
                   ) as tail_rank
            from experiment_metric_points points
            where points.project_id=? and points.idea_id in (${placeholders})
+             and ${visibleExperimentMetricPredicate('points')}
          )
          select * from ranked where tail_rank<=?
          order by idea_id asc,sequence asc`,
@@ -5172,6 +6260,535 @@ export class LocalDatabase {
         return toExperimentMetricPoint(row);
       })
       .immediate();
+  }
+
+  findExperimentMetricPointByTrial(
+    projectId: string,
+    trialId: string,
+  ): ExperimentMetricPoint | null {
+    const row = this.require()
+      .prepare(
+        `select * from experiment_metric_points
+         where project_id=? and trial_id=? and source='runner-summary'
+         order by sequence asc limit 1`,
+      )
+      .get(projectId, trialId) as ExperimentMetricPointRow | undefined;
+    return row ? toExperimentMetricPoint(row) : null;
+  }
+
+  getLatestExperimentLoggingTemplate(projectId: string): ExperimentLoggingTemplate | null {
+    const row = this.require()
+      .prepare(
+        `select * from experiment_logging_template_revisions
+         where project_id=? order by version desc limit 1`,
+      )
+      .get(projectId) as ExperimentLoggingTemplateRow | undefined;
+    return row ? toExperimentLoggingTemplate(row) : null;
+  }
+
+  appendExperimentLoggingTemplate(input: ExperimentLoggingTemplate, expectedVersion: number) {
+    const template = ExperimentLoggingTemplateSchema.parse(structuredClone(input));
+    if (template.version !== expectedVersion + 1) {
+      throw new Error('experiment_logging_template_version_sequence_invalid');
+    }
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const current = database
+          .prepare(
+            `select * from experiment_logging_template_revisions
+             where project_id=? order by version desc limit 1`,
+          )
+          .get(template.projectId) as ExperimentLoggingTemplateRow | undefined;
+        if ((current?.version ?? 0) !== expectedVersion) return null;
+        if (
+          expectedVersion === 0
+            ? template.previousRevisionId !== null
+            : template.previousRevisionId !== current?.id
+        ) {
+          throw new ExperimentWorkspaceStorageError('logging_template_conflict');
+        }
+        const count = database
+          .prepare(
+            'select count(*) as count from experiment_logging_template_revisions where project_id=?',
+          )
+          .get(template.projectId) as { count: number };
+        if (count.count >= EXPERIMENT_MAX_LOGGING_TEMPLATE_REVISIONS_PER_PROJECT) {
+          throw new ExperimentWorkspaceStorageError('logging_template_limit_reached');
+        }
+        const duplicate = database
+          .prepare('select 1 from experiment_logging_template_revisions where id=?')
+          .get(template.id);
+        if (duplicate) return null;
+        database
+          .prepare(
+            `insert into experiment_logging_template_revisions(
+               id,schema_version,project_id,version,previous_revision_id,system_fields_json,
+               custom_fields_json,template_hash,created_at
+             ) values(?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            template.id,
+            template.schemaVersion,
+            template.projectId,
+            template.version,
+            template.previousRevisionId,
+            JSON.stringify(template.systemFields),
+            JSON.stringify(template.customFields),
+            template.templateHash,
+            template.createdAt,
+          );
+        const row = database
+          .prepare('select * from experiment_logging_template_revisions where id=?')
+          .get(template.id) as ExperimentLoggingTemplateRow;
+        return toExperimentLoggingTemplate(row);
+      })
+      .immediate();
+  }
+
+  listExperimentRuns(projectId: string): ExperimentRun[] {
+    const rows = this.require()
+      .prepare(
+        `select * from experiment_runs
+         where project_id=? order by updated_at desc,id asc`,
+      )
+      .all(projectId) as ExperimentRunRow[];
+    return rows.map(toExperimentRun);
+  }
+
+  getExperimentRun(projectId: string, runId: string): ExperimentRun | null {
+    const row = this.require()
+      .prepare('select * from experiment_runs where project_id=? and id=?')
+      .get(projectId, runId) as ExperimentRunRow | undefined;
+    return row ? toExperimentRun(row) : null;
+  }
+
+  getExperimentRunByTrial(projectId: string, trialId: string): ExperimentRun | null {
+    const row = this.require()
+      .prepare('select * from experiment_runs where project_id=? and trial_id=?')
+      .get(projectId, trialId) as ExperimentRunRow | undefined;
+    return row ? toExperimentRun(row) : null;
+  }
+
+  createExperimentRun(input: ExperimentRun) {
+    const run = ExperimentRunSchema.parse(structuredClone(input));
+    const database = this.require();
+    return database
+      .transaction(() => {
+        if (
+          database
+            .prepare('select 1 from experiment_runs where id=? or (project_id=? and trial_id=?)')
+            .get(run.id, run.projectId, run.trialId)
+        ) {
+          return false;
+        }
+        if (
+          run.ideaId &&
+          !database
+            .prepare('select 1 from experiment_ideas where project_id=? and id=?')
+            .get(run.projectId, run.ideaId)
+        ) {
+          throw new ExperimentWorkspaceStorageError('idea_not_found');
+        }
+        const templateRow = database
+          .prepare(
+            `select * from experiment_logging_template_revisions
+             where project_id=? and id=?`,
+          )
+          .get(run.projectId, run.loggingTemplate.revisionId) as
+          ExperimentLoggingTemplateRow | undefined;
+        if (!templateRow) {
+          throw new ExperimentWorkspaceStorageError('logging_template_conflict');
+        }
+        const template = toExperimentLoggingTemplate(templateRow);
+        if (
+          template.version !== run.loggingTemplate.version ||
+          template.templateHash !== run.loggingTemplate.templateHash ||
+          JSON.stringify(template.systemFields) !==
+            JSON.stringify(run.loggingTemplate.systemFields) ||
+          JSON.stringify(template.customFields) !== JSON.stringify(run.loggingTemplate.customFields)
+        ) {
+          throw new ExperimentWorkspaceStorageError('logging_template_conflict');
+        }
+        const count = database
+          .prepare('select count(*) as count from experiment_runs where project_id=?')
+          .get(run.projectId) as { count: number };
+        if (count.count >= EXPERIMENT_MAX_RUNS_PER_PROJECT) {
+          throw new ExperimentWorkspaceStorageError('run_limit_reached');
+        }
+        const inserted = database
+          .prepare(
+            `insert into experiment_runs(
+               id,schema_version,project_id,idea_id,title,status,mode,server_label,trial_id,
+               objective_id,objective_version,logging_template_revision_id,
+               logging_template_json,progress_current,progress_total,current_step,
+               latest_metric_json,log_reference_json,process_exit_code,process_duration_ms,
+               created_at,updated_at,started_at,completed_at,version
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            run.id,
+            run.schemaVersion,
+            run.projectId,
+            run.ideaId,
+            run.title,
+            run.status,
+            run.mode,
+            run.serverLabel,
+            run.trialId,
+            run.objectiveId,
+            run.objectiveVersion,
+            run.loggingTemplate.revisionId,
+            JSON.stringify(run.loggingTemplate),
+            run.progressCurrent,
+            run.progressTotal,
+            run.currentStep,
+            run.latestMetric ? JSON.stringify(run.latestMetric) : null,
+            run.logReference ? JSON.stringify(run.logReference) : null,
+            run.processExitCode,
+            run.processDurationMs,
+            run.createdAt,
+            run.updatedAt,
+            run.startedAt,
+            run.completedAt,
+            run.version,
+          );
+        return inserted.changes === 1;
+      })
+      .immediate();
+  }
+
+  updateExperimentRun(input: ExperimentRun, expectedVersion: number) {
+    const run = ExperimentRunSchema.parse(structuredClone(input));
+    if (run.version !== expectedVersion + 1) {
+      throw new Error('experiment_run_version_sequence_invalid');
+    }
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const currentRow = database
+          .prepare('select * from experiment_runs where project_id=? and id=?')
+          .get(run.projectId, run.id) as ExperimentRunRow | undefined;
+        if (!currentRow) throw new ExperimentWorkspaceStorageError('run_not_found');
+        if (currentRow.version !== expectedVersion) return null;
+        const current = toExperimentRun(currentRow);
+        if (
+          current.projectId !== run.projectId ||
+          current.ideaId !== run.ideaId ||
+          current.title !== run.title ||
+          current.mode !== run.mode ||
+          current.serverLabel !== run.serverLabel ||
+          current.trialId !== run.trialId ||
+          current.objectiveId !== run.objectiveId ||
+          current.objectiveVersion !== run.objectiveVersion ||
+          current.createdAt !== run.createdAt ||
+          JSON.stringify(current.loggingTemplate) !== JSON.stringify(run.loggingTemplate)
+        ) {
+          throw new ExperimentWorkspaceStorageError('run_conflict');
+        }
+        const terminalStatuses = new Set<ExperimentRun['status']>([
+          'succeeded',
+          'failed',
+          'cancelled',
+          'lost',
+        ]);
+        const allowedTransitions: Readonly<
+          Record<ExperimentRun['status'], readonly ExperimentRun['status'][]>
+        > = {
+          queued: ['queued', 'running', 'cancelled', 'lost'],
+          running: ['running', 'verifying', 'failed', 'cancelled', 'lost'],
+          verifying: ['verifying', 'succeeded', 'failed', 'cancelled', 'lost'],
+          succeeded: [],
+          failed: [],
+          cancelled: [],
+          lost: [],
+        };
+        const resolvesPendingLog =
+          current.status === 'verifying' &&
+          current.logReference?.validationState === 'pending' &&
+          run.logReference !== null &&
+          run.logReference.referenceId === current.logReference.referenceId &&
+          run.logReference.displayName === current.logReference.displayName &&
+          run.logReference.contentHash === current.logReference.contentHash &&
+          run.logReference.sizeBytes === current.logReference.sizeBytes &&
+          run.logReference.validationState !== 'pending';
+        if (
+          terminalStatuses.has(current.status) ||
+          !allowedTransitions[current.status].includes(run.status) ||
+          (current.progressCurrent !== null &&
+            run.progressCurrent !== null &&
+            run.progressCurrent < current.progressCurrent) ||
+          (current.logReference !== null &&
+            JSON.stringify(current.logReference) !== JSON.stringify(run.logReference) &&
+            !resolvesPendingLog) ||
+          (current.processExitCode !== null && current.processExitCode !== run.processExitCode) ||
+          (current.processDurationMs !== null &&
+            current.processDurationMs !== run.processDurationMs)
+        ) {
+          throw new ExperimentWorkspaceStorageError('run_conflict');
+        }
+        const changed = database
+          .prepare(
+            `update experiment_runs set
+               status=?,progress_current=?,progress_total=?,current_step=?,latest_metric_json=?,
+               log_reference_json=?,process_exit_code=?,process_duration_ms=?,updated_at=?,
+               started_at=?,completed_at=?,version=?
+             where project_id=? and id=? and version=?`,
+          )
+          .run(
+            run.status,
+            run.progressCurrent,
+            run.progressTotal,
+            run.currentStep,
+            run.latestMetric ? JSON.stringify(run.latestMetric) : null,
+            run.logReference ? JSON.stringify(run.logReference) : null,
+            run.processExitCode,
+            run.processDurationMs,
+            run.updatedAt,
+            run.startedAt,
+            run.completedAt,
+            run.version,
+            run.projectId,
+            run.id,
+            expectedVersion,
+          );
+        if (changed.changes !== 1) return null;
+        const stored = database
+          .prepare('select * from experiment_runs where project_id=? and id=?')
+          .get(run.projectId, run.id) as ExperimentRunRow;
+        return toExperimentRun(stored);
+      })
+      .immediate();
+  }
+
+  linkExperimentRunLogSource(input: ExperimentRunLogSource) {
+    const source = ExperimentRunLogSourceSchema.parse(structuredClone(input));
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const existing = database
+          .prepare('select * from experiment_run_log_sources where reference_id=?')
+          .get(source.referenceId) as ExperimentRunLogSourceRow | undefined;
+        if (existing) {
+          const parsed = toExperimentRunLogSource(existing);
+          if (JSON.stringify(parsed) === JSON.stringify(source)) return true;
+          throw new ExperimentWorkspaceStorageError('run_log_source_conflict');
+        }
+        const runRow = database
+          .prepare('select * from experiment_runs where project_id=? and id=?')
+          .get(source.projectId, source.runId) as ExperimentRunRow | undefined;
+        if (!runRow) throw new ExperimentWorkspaceStorageError('run_not_found');
+        const run = toExperimentRun(runRow);
+        if (run.logReference?.referenceId !== source.referenceId) {
+          throw new ExperimentWorkspaceStorageError('run_log_source_conflict');
+        }
+        const executionBinding = database
+          .prepare(
+            `select workspace_grant_id from experiment_run_execution_bindings
+             where project_id=? and run_id=?`,
+          )
+          .get(source.projectId, source.runId) as { workspace_grant_id: string } | undefined;
+        if (executionBinding?.workspace_grant_id !== source.workspaceGrantId) {
+          throw new ExperimentWorkspaceStorageError('run_log_source_conflict');
+        }
+        if (
+          !database
+            .prepare('select 1 from ssh_workspace_grants where project_id=? and id=?')
+            .get(source.projectId, source.workspaceGrantId)
+        ) {
+          throw new ExperimentWorkspaceStorageError('run_log_source_conflict');
+        }
+        database
+          .prepare(
+            `insert into experiment_run_log_sources(
+               reference_id,project_id,run_id,workspace_grant_id,workspace_subdirectory,
+               relative_path
+             ) values(?,?,?,?,?,?)`,
+          )
+          .run(
+            source.referenceId,
+            source.projectId,
+            source.runId,
+            source.workspaceGrantId,
+            source.workspaceSubdirectory,
+            source.relativePath,
+          );
+        return true;
+      })
+      .immediate();
+  }
+
+  getExperimentRunLogSource(
+    projectId: string,
+    runId: string,
+    referenceId: string,
+  ): ExperimentRunLogSource | null {
+    const row = this.require()
+      .prepare(
+        `select * from experiment_run_log_sources
+         where project_id=? and run_id=? and reference_id=?`,
+      )
+      .get(projectId, runId, referenceId) as ExperimentRunLogSourceRow | undefined;
+    return row ? toExperimentRunLogSource(row) : null;
+  }
+
+  bindExperimentRunExecution(input: ExperimentRunExecutionBinding) {
+    const binding = ExperimentRunExecutionBindingSchema.parse(structuredClone(input));
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const existing = database
+          .prepare(
+            `select * from experiment_run_execution_bindings
+             where project_id=? and run_id=?`,
+          )
+          .get(binding.projectId, binding.runId) as ExperimentRunExecutionBindingRow | undefined;
+        if (existing) {
+          const parsed = toExperimentRunExecutionBinding(existing);
+          if (parsed.workspaceGrantId === binding.workspaceGrantId) return true;
+          throw new ExperimentWorkspaceStorageError('run_execution_binding_conflict');
+        }
+        if (
+          !database
+            .prepare('select 1 from experiment_runs where project_id=? and id=?')
+            .get(binding.projectId, binding.runId) ||
+          !database
+            .prepare('select 1 from ssh_workspace_grants where project_id=? and id=?')
+            .get(binding.projectId, binding.workspaceGrantId)
+        ) {
+          throw new ExperimentWorkspaceStorageError('run_execution_binding_conflict');
+        }
+        database
+          .prepare(
+            `insert into experiment_run_execution_bindings(
+               project_id,run_id,workspace_grant_id
+             ) values(?,?,?)`,
+          )
+          .run(binding.projectId, binding.runId, binding.workspaceGrantId);
+        return true;
+      })
+      .immediate();
+  }
+
+  getExperimentRunExecutionBinding(
+    projectId: string,
+    runId: string,
+  ): ExperimentRunExecutionBinding | null {
+    const row = this.require()
+      .prepare(
+        `select * from experiment_run_execution_bindings
+         where project_id=? and run_id=?`,
+      )
+      .get(projectId, runId) as ExperimentRunExecutionBindingRow | undefined;
+    return row ? toExperimentRunExecutionBinding(row) : null;
+  }
+
+  stageExperimentRunExecutionIntent(input: ExperimentRunExecutionIntent) {
+    const intent = ExperimentRunExecutionIntentSchema.parse(structuredClone(input));
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const existing = database
+          .prepare(
+            `select * from experiment_run_execution_intents
+             where project_id=? and run_id=?`,
+          )
+          .get(intent.projectId, intent.runId) as ExperimentRunExecutionIntentRow | undefined;
+        if (existing) {
+          const parsed = toExperimentRunExecutionIntent(existing);
+          if (
+            parsed.workspaceGrantId === intent.workspaceGrantId &&
+            parsed.grantVersion === intent.grantVersion &&
+            parsed.connectionId === intent.connectionId &&
+            parsed.connectionVersion === intent.connectionVersion &&
+            parsed.canonicalRoot === intent.canonicalRoot &&
+            parsed.canonicalRootHash === intent.canonicalRootHash &&
+            parsed.policyVersion === intent.policyVersion &&
+            parsed.executionPolicyHash === intent.executionPolicyHash &&
+            parsed.intentHash === intent.intentHash &&
+            parsed.workspaceSubdirectory === intent.workspaceSubdirectory &&
+            parsed.relativePath === intent.relativePath
+          ) {
+            return true;
+          }
+          throw new ExperimentWorkspaceStorageError('run_execution_intent_conflict');
+        }
+        const binding = database
+          .prepare(
+            `select workspace_grant_id from experiment_run_execution_bindings
+             where project_id=? and run_id=?`,
+          )
+          .get(intent.projectId, intent.runId) as { workspace_grant_id: string } | undefined;
+        if (binding?.workspace_grant_id !== intent.workspaceGrantId) {
+          throw new ExperimentWorkspaceStorageError('run_execution_intent_conflict');
+        }
+        const origin = database
+          .prepare(
+            `select grant.version as grant_version,grant.connection_id,grant.canonical_root,
+                    connection.version as connection_version
+             from ssh_workspace_grants grant
+             join ssh_connections connection on connection.id=grant.connection_id
+             where grant.project_id=? and grant.id=?`,
+          )
+          .get(intent.projectId, intent.workspaceGrantId) as
+          | {
+              grant_version: number;
+              connection_id: string;
+              canonical_root: string;
+              connection_version: number;
+            }
+          | undefined;
+        if (
+          !origin ||
+          origin.grant_version !== intent.grantVersion ||
+          origin.connection_id !== intent.connectionId ||
+          origin.connection_version !== intent.connectionVersion ||
+          origin.canonical_root !== intent.canonicalRoot ||
+          createHash('sha256').update(intent.canonicalRoot, 'utf8').digest('hex') !==
+            intent.canonicalRootHash
+        ) {
+          throw new ExperimentWorkspaceStorageError('run_execution_intent_conflict');
+        }
+        database
+          .prepare(
+            `insert into experiment_run_execution_intents(
+               project_id,run_id,workspace_grant_id,grant_version,connection_id,
+               connection_version,canonical_root,canonical_root_hash,policy_version,
+               execution_policy_hash,intent_hash,workspace_subdirectory,relative_path,created_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            intent.projectId,
+            intent.runId,
+            intent.workspaceGrantId,
+            intent.grantVersion,
+            intent.connectionId,
+            intent.connectionVersion,
+            intent.canonicalRoot,
+            intent.canonicalRootHash,
+            intent.policyVersion,
+            intent.executionPolicyHash,
+            intent.intentHash,
+            intent.workspaceSubdirectory,
+            intent.relativePath,
+            intent.createdAt,
+          );
+        return true;
+      })
+      .immediate();
+  }
+
+  getExperimentRunExecutionIntent(
+    projectId: string,
+    runId: string,
+  ): ExperimentRunExecutionIntent | null {
+    const row = this.require()
+      .prepare(
+        `select * from experiment_run_execution_intents
+         where project_id=? and run_id=?`,
+      )
+      .get(projectId, runId) as ExperimentRunExecutionIntentRow | undefined;
+    return row ? toExperimentRunExecutionIntent(row) : null;
   }
 
   listLectureStudios(): LectureStudioSummary[] {

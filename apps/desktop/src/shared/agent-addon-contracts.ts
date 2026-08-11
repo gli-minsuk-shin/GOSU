@@ -42,7 +42,7 @@ export type AgentAddOnStatus = Readonly<{
   state: AgentAddOnDetectionState;
   evidence: AgentAddOnDetectionEvidence;
   connected: boolean;
-  connectionMode: 'byo-local-safe-chat' | null;
+  connectionMode: 'byo-local-acp-agent' | null;
   version: string | null;
   projectChatModel: AgentAddOnProjectChatModel | null;
 }>;

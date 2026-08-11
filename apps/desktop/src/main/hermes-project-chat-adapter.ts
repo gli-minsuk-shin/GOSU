@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { constants } from 'node:fs';
 import { access, mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
@@ -14,6 +14,7 @@ import {
   type CodexCollaborationModeCatalog,
   type CodexCollaborationModeDescriptor,
 } from '../shared/project-chat-contracts';
+import { HERMES_PROVIDER_ENVIRONMENT_NAME_LIST } from './hermes-acp-profile';
 import type { ProjectChatCodex } from './project-chat-service';
 
 export const HERMES_PROVIDER_ID = 'hermes';
@@ -34,7 +35,7 @@ const HERMES_MAX_PROMPT_BYTES = 96 * 1_024;
 const HERMES_MAX_LAUNCHER_BYTES = 8 * 1_024;
 const HERMES_KILL_GRACE_MS = 1_500;
 const HERMES_KILL_CONFIRM_MS = 2_000;
-const HERMES_SHIM_CHECK_PROTOCOL = 1;
+const HERMES_SHIM_CHECK_PROTOCOL = 2;
 
 const HERMES_COLLABORATION_MODES: readonly CodexCollaborationModeDescriptor[] = [
   {
@@ -64,15 +65,19 @@ const HERMES_COLLABORATION_CATALOG_VERSION = createHash('sha256')
 export const HERMES_SEALED_SHIM_SOURCE = String.raw`
 import contextlib
 import copy
+import hashlib
+import hmac
 import inspect
 import json
 import os
 import sys
 import tomllib
+from urllib.parse import urlsplit, urlunsplit
 
 MAX_STDIN_BYTES = ${HERMES_MAX_PROMPT_BYTES}
 CHECK_PROTOCOL = ${HERMES_SHIM_CHECK_PROTOCOL}
 SUPPORTED_HERMES_VERSION = "0.19.1"
+GOSU_PROVIDER_ENVIRONMENT_NAMES = ${JSON.stringify(HERMES_PROVIDER_ENVIRONMENT_NAME_LIST)}
 ALLOWED_RUNTIME_API_MODES = {
     "chat_completions",
     "codex_responses",
@@ -120,6 +125,36 @@ def _assert_no_user_provider_plugins():
     if any(name.startswith("_hermes_user_provider_") for name in sys.modules):
         raise RuntimeError("user_provider_plugin_loaded")
 
+def _seal_credential_pool_runtime():
+    import agent.credential_pool as credential_pool_module
+    CredentialPool = getattr(credential_pool_module, "CredentialPool", None)
+    PooledCredential = getattr(credential_pool_module, "PooledCredential", None)
+    if not isinstance(CredentialPool, type) or not isinstance(PooledCredential, type):
+        raise RuntimeError("unsupported_hermes_credential_pool")
+    original_peek = getattr(CredentialPool, "peek", None)
+    if not callable(original_peek):
+        raise RuntimeError("unsupported_hermes_credential_pool")
+
+    def deny_pool_mutation(*_args, **_kwargs):
+        raise RuntimeError("credential_pool_mutation_not_allowed")
+
+    def select_read_only(pool):
+        if type(pool) is not CredentialPool:
+            raise RuntimeError("credential_pool_runtime_not_supported")
+        entry = original_peek(pool)
+        if entry is not None:
+            if type(entry) is not PooledCredential:
+                raise RuntimeError("pooled_credential_runtime_invalid")
+            # Preserve only the in-memory cursor needed to bind the resolved route to this
+            # exact entry. Never rotate priority, increment use, refresh, or write auth.json.
+            pool._current_id = entry.id
+        return entry
+
+    CredentialPool.select = select_read_only
+    CredentialPool.try_refresh_current = deny_pool_mutation
+    CredentialPool._persist = deny_pool_mutation
+    credential_pool_module.write_credential_pool = deny_pool_mutation
+
 def _validate_runtime(runtime):
     if not isinstance(runtime, dict):
         raise RuntimeError("configured_runtime_invalid")
@@ -133,6 +168,162 @@ def _validate_runtime(runtime):
         raise RuntimeError("configured_api_mode_not_allowed")
     if any(runtime.get(field) for field in ("command", "args", "acp_command", "acp_args")):
         raise RuntimeError("external_process_runtime_not_allowed")
+    api_key = runtime.get("api_key")
+    if callable(api_key) or (api_key is not None and not isinstance(api_key, str)):
+        raise RuntimeError("opaque_credential_runtime_not_supported")
+    if provider.lower() == "bedrock" or api_key == "aws-sdk":
+        raise RuntimeError("implicit_credential_runtime_not_supported")
+    if runtime.get("credential_pool") is not None:
+        _pooled_credential_snapshot(runtime)
+
+def _bounded_route_value(value, maximum, code):
+    text = str(value or "").strip()
+    if len(text.encode("utf-8")) > maximum:
+        raise RuntimeError(code)
+    return text
+
+def _pooled_credential_snapshot(runtime):
+    pool = runtime.get("credential_pool")
+    if pool is None:
+        return None
+    try:
+        from agent.credential_pool import CredentialPool, PooledCredential
+        if type(pool) is not CredentialPool:
+            raise RuntimeError("credential_pool_runtime_not_supported")
+        api_key = runtime.get("api_key")
+        if not isinstance(api_key, str) or not api_key:
+            raise RuntimeError("pooled_credential_runtime_invalid")
+        current = pool.current()
+        if type(current) is not PooledCredential:
+            raise RuntimeError("pooled_credential_runtime_invalid")
+        runtime_api_key = current.runtime_api_key
+        if not isinstance(runtime_api_key, str) or not runtime_api_key or runtime_api_key != api_key:
+            raise RuntimeError("pooled_credential_runtime_invalid")
+        entry_id = pool.entry_id_for_api_key(api_key)
+        if not isinstance(entry_id, str) or not entry_id.strip() or current.id != entry_id:
+            raise RuntimeError("pooled_credential_runtime_invalid")
+        pool_provider = _bounded_route_value(
+            pool.provider, 128, "configured_credential_identity_invalid"
+        ).lower()
+        entry_provider = _bounded_route_value(
+            current.provider, 128, "configured_credential_identity_invalid"
+        ).lower()
+        runtime_provider = _bounded_route_value(
+            runtime.get("provider"), 128, "configured_credential_identity_invalid"
+        ).lower()
+        if not runtime_provider or pool_provider != runtime_provider or entry_provider != runtime_provider:
+            raise RuntimeError("pooled_credential_runtime_invalid")
+        return {
+            "kind": "bundled-string-pool",
+            "pool_provider": pool_provider,
+            "entry_provider": entry_provider,
+            "entry_id": _bounded_route_value(
+                entry_id, 256, "configured_credential_identity_invalid"
+            ),
+            "entry_source": _bounded_route_value(
+                current.source, 256, "configured_credential_identity_invalid"
+            ),
+        }
+    except RuntimeError:
+        raise
+    except Exception:
+        raise RuntimeError("pooled_credential_runtime_invalid")
+
+def _credential_identity(runtime):
+    api_key = runtime.get("api_key")
+    if isinstance(api_key, str):
+        secret_kind = "string" if api_key else "none"
+    elif callable(api_key):
+        secret_kind = "callable:" + _bounded_route_value(
+            getattr(api_key, "__module__", "") + "." + getattr(api_key, "__qualname__", type(api_key).__qualname__),
+            256,
+            "configured_credential_identity_invalid",
+        )
+    elif api_key is None:
+        secret_kind = "none"
+    else:
+        secret_kind = "opaque:" + type(api_key).__module__ + "." + type(api_key).__qualname__
+
+    pool_snapshot = _pooled_credential_snapshot(runtime)
+    return {
+        "kind": _bounded_route_value(secret_kind, 320, "configured_credential_identity_invalid"),
+        "pool": pool_snapshot,
+        "source": _bounded_route_value(runtime.get("source"), 256, "configured_credential_identity_invalid"),
+        "auth_mode": _bounded_route_value(runtime.get("auth_mode"), 128, "configured_credential_identity_invalid"),
+    }
+
+def _normalized_full_base_url(runtime):
+    from hermes_cli.route_identity import normalize_route_base_url
+    return _bounded_route_value(
+        normalize_route_base_url(runtime.get("base_url")), 4096, "configured_route_identity_invalid"
+    )
+
+def _nonsecret_base_url(runtime):
+    normalized = _normalized_full_base_url(runtime)
+    if not normalized:
+        return ""
+    try:
+        parsed = urlsplit(normalized)
+        hostname = parsed.hostname
+        if not parsed.scheme or not hostname:
+            raise ValueError("invalid route")
+        host = hostname.lower()
+        if ":" in host:
+            host = "[" + host + "]"
+        port = parsed.port
+        if port is not None and (parsed.scheme.lower(), port) not in {("http", 80), ("https", 443)}:
+            host = host + ":" + str(port)
+        return urlunsplit((parsed.scheme.lower(), host, parsed.path, "", ""))
+    except (TypeError, ValueError):
+        raise RuntimeError("configured_route_identity_invalid")
+
+def _route_fingerprint(model, runtime):
+    route = {
+        "version": 1,
+        "model": _bounded_route_value(model, 256, "configured_route_identity_invalid"),
+        "provider": _bounded_route_value(runtime.get("provider"), 128, "configured_route_identity_invalid").lower(),
+        "requested_provider": _bounded_route_value(runtime.get("requested_provider"), 128, "configured_route_identity_invalid").lower(),
+        "api_mode": _bounded_route_value(runtime.get("api_mode"), 64, "configured_route_identity_invalid").lower(),
+        "base_url": _nonsecret_base_url(runtime),
+        "region": _bounded_route_value(runtime.get("region"), 128, "configured_route_identity_invalid"),
+        "credential": _credential_identity(runtime),
+    }
+    canonical = json.dumps(route, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+def _credential_proof(model, runtime):
+    binding_key = os.environ.get("GOSU_HERMES_CREDENTIAL_BINDING_KEY", "")
+    if len(binding_key) != 64:
+        raise RuntimeError("credential_binding_key_invalid")
+    try:
+        key = bytes.fromhex(binding_key)
+    except ValueError:
+        raise RuntimeError("credential_binding_key_invalid")
+    api_key = runtime.get("api_key")
+    if isinstance(api_key, str):
+        material = {"kind": "string", "value": api_key}
+    elif callable(api_key):
+        material = {
+            "kind": "callable",
+            "identity": _bounded_route_value(
+                getattr(api_key, "__module__", "") + "." + getattr(api_key, "__qualname__", type(api_key).__qualname__),
+                256,
+                "configured_credential_identity_invalid",
+            ),
+        }
+    elif api_key is None:
+        material = {"kind": "none", "value": ""}
+    else:
+        material = {"kind": "opaque", "identity": type(api_key).__module__ + "." + type(api_key).__qualname__}
+    proof_input = {
+        "version": 1,
+        "route_fingerprint": _route_fingerprint(model, runtime),
+        "full_base_url": _normalized_full_base_url(runtime),
+        "credential": material,
+        "selection": _credential_identity(runtime),
+    }
+    canonical = json.dumps(proof_input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hmac.new(key, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
 def _model_config(cfg):
     value = cfg.get("model") or {}
@@ -181,8 +372,15 @@ def _resolve_runtime(config_module, cfg):
         raise RuntimeError("external_process_runtime_not_allowed")
 
     auth_module.resolve_external_process_provider_credentials = reject_external_process_provider
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-    runtime = resolve_runtime_provider(requested=provider or None, target_model=model)
+    import hermes_cli.runtime_provider as runtime_provider_module
+    runtime_provider_module.resolve_nous_runtime_credentials = (
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("credential_pool_refresh_not_allowed")
+        )
+    )
+    runtime = runtime_provider_module.resolve_runtime_provider(
+        requested=provider or None, target_model=model
+    )
     _assert_no_user_provider_plugins()
     _validate_runtime(runtime)
     return model, runtime
@@ -200,6 +398,17 @@ def _assert_compatible(agent_class):
     if not required.issubset(parameters):
         raise RuntimeError("unsupported_hermes_runtime")
 
+def _scrub_provider_environment_before_agent_import():
+    if "run_agent" in sys.modules or any(
+        name == "tools" or name.startswith("tools.") for name in sys.modules
+    ):
+        raise RuntimeError("tool_runtime_imported_before_credential_scrub")
+    os.environ.pop("GOSU_HERMES_CREDENTIAL_BINDING_KEY", None)
+    for environment_name in GOSU_PROVIDER_ENVIRONMENT_NAMES:
+        os.environ.pop(environment_name, None)
+    import hermes_cli.env_loader as env_loader
+    env_loader.load_hermes_dotenv = lambda *args, **kwargs: []
+
 def _main():
     if len(sys.argv) < 3:
         raise RuntimeError("invalid_shim_arguments")
@@ -210,6 +419,7 @@ def _main():
     sys.path.insert(0, root)
     _assert_supported_hermes_version(root)
     _seal_model_provider_plugins()
+    _seal_credential_pool_runtime()
 
     if mode == "check":
         with contextlib.redirect_stdout(sys.stderr):
@@ -217,15 +427,21 @@ def _main():
             loader = getattr(config_module, "load_config_readonly", config_module.load_config)
             original_config = loader()
             model, runtime = _resolve_runtime(config_module, original_config)
+            provider = str(runtime.get("provider") or "").strip()
+            route_fingerprint = _route_fingerprint(model, runtime)
+            credential_proof = _credential_proof(model, runtime)
+            runtime["credential_pool"] = None
+            _scrub_provider_environment_before_agent_import()
             from run_agent import AIAgent
             _assert_compatible(AIAgent)
-        provider = str(runtime.get("provider") or "").strip()
         if not provider:
             raise RuntimeError("configured_provider_missing")
         sys.__stdout__.write(json.dumps({
             "protocol": CHECK_PROTOCOL,
             "model": model,
             "provider": provider,
+            "routeFingerprint": route_fingerprint,
+            "credentialProof": credential_proof,
         }, ensure_ascii=False, separators=(",", ":")) + "\n")
         sys.__stdout__.flush()
         return
@@ -235,6 +451,8 @@ def _main():
     reasoning = sys.argv[3] if len(sys.argv) > 3 else ""
     expected_model = sys.argv[4] if len(sys.argv) > 4 else ""
     expected_provider = sys.argv[5] if len(sys.argv) > 5 else ""
+    expected_route_fingerprint = sys.argv[6] if len(sys.argv) > 6 else ""
+    expected_credential_proof = os.environ.pop("GOSU_HERMES_EXPECTED_CREDENTIAL_PROOF", "")
     prompt_bytes = sys.stdin.buffer.read(MAX_STDIN_BYTES + 1)
     if len(prompt_bytes) > MAX_STDIN_BYTES:
         raise RuntimeError("prompt_limit_exceeded")
@@ -250,8 +468,15 @@ def _main():
         original_config = loader()
         model, runtime = _resolve_runtime(config_module, original_config)
         runtime_provider = str(runtime.get("provider") or "").strip()
-        if model != expected_model or runtime_provider != expected_provider:
+        if (
+            model != expected_model
+            or runtime_provider != expected_provider
+            or _route_fingerprint(model, runtime) != expected_route_fingerprint
+            or _credential_proof(model, runtime) != expected_credential_proof
+        ):
             raise RuntimeError("configured_runtime_changed")
+        runtime["credential_pool"] = None
+        _scrub_provider_environment_before_agent_import()
         sanitized = _safe_config(original_config, model, runtime_provider)
         config_module.load_config = lambda: copy.deepcopy(sanitized)
         config_module.load_config_readonly = lambda: copy.deepcopy(sanitized)
@@ -282,7 +507,7 @@ def _main():
                 skip_memory=True,
                 session_db=None,
                 fallback_model=None,
-                credential_pool=runtime.get("credential_pool"),
+                credential_pool=None,
                 reasoning_config=reasoning_config,
                 checkpoints_enabled=False,
             )
@@ -334,6 +559,7 @@ export type HermesInstallation = Readonly<{
 export type HermesProcessRequest = Readonly<{
   executable: string;
   args: readonly string[];
+  environment?: NodeJS.ProcessEnv;
   cwd: string;
   stdin: string;
   timeoutMs: number;
@@ -368,6 +594,12 @@ export interface RefreshableHermesProjectChat extends ProjectChatCodex {
       collaborationModes: CodexCollaborationModeCatalog;
     }>
   >;
+  /**
+   * Revoke the current explicit BYO connection without making the adapter unusable for a later
+   * reconnect. Implementations must synchronously terminate every live provider process, including
+   * ephemeral delegated turns, and clear any connection-time catalog authority.
+   */
+  resetConnection(): number;
 }
 
 type HermesThread = {
@@ -388,8 +620,36 @@ type HermesReadyRuntime = Readonly<{
   installation: HermesInstallation;
   configuredModelId: string;
   configuredProviderId: string;
+  routeFingerprint: string;
+  credentialBindingKey: string;
+  credentialProof: string;
   catalogVersion: string;
 }>;
+
+export type HermesValidatedAcpRuntime = Readonly<{
+  /** The pinned interpreter and source root used by GOSU's sealed ACP launcher. */
+  pythonPath: string;
+  rootPath: string;
+  environment: NodeJS.ProcessEnv;
+  configuredModelId: string;
+  configuredProviderId: string;
+  /** SHA-256 over the normalized non-secret inference route and credential selection. */
+  routeFingerprint: string;
+  /** Per-connection random HMAC key; main-process memory only, never catalogued or persisted. */
+  credentialBindingKey: string;
+  /** Per-connection HMAC proof over credential material; main-process memory only. */
+  credentialProof: string;
+  sourceCatalogVersion: string;
+}>;
+
+export interface HermesAcpRuntimeDiscovery {
+  resolveValidatedAcpRuntime(
+    forceRefresh?: boolean,
+    credentialBindingKey?: string,
+  ): Promise<HermesValidatedAcpRuntime>;
+  listCollaborationModeCatalog(modelId?: string | null): Promise<CodexCollaborationModeCatalog>;
+  shutdown?(): number;
+}
 
 type HermesNotification = Readonly<{ method: string; params: Readonly<Record<string, unknown>> }>;
 
@@ -443,50 +703,7 @@ function byteLength(value: string | Buffer) {
   return typeof value === 'string' ? Buffer.byteLength(value) : value.byteLength;
 }
 
-const HERMES_PROVIDER_ENVIRONMENT_NAMES = new Set([
-  'AI_GATEWAY_API_KEY',
-  'AI_GATEWAY_BASE_URL',
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_TOKEN',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_DEFAULT_REGION',
-  'AWS_PROFILE',
-  'AWS_REGION',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'AZURE_ANTHROPIC_KEY',
-  'AZURE_FOUNDRY_API_KEY',
-  'AZURE_FOUNDRY_BASE_URL',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CUSTOM_API_KEY',
-  'CUSTOM_BASE_URL',
-  'DEEPINFRA_API_KEY',
-  'DEEPINFRA_BASE_URL',
-  'GOOGLE_APPLICATION_CREDENTIALS',
-  'HERMES_CODEX_BASE_URL',
-  'HERMES_HOME',
-  'HERMES_INFERENCE_MODEL',
-  'HERMES_INFERENCE_PROVIDER',
-  'HERMES_NOUS_MIN_KEY_TTL_SECONDS',
-  'HERMES_NOUS_TIMEOUT_SECONDS',
-  'HERMES_PORTAL_BASE_URL',
-  'HERMES_PROFILE',
-  'HERMES_QWEN_BASE_URL',
-  'HERMES_XAI_BASE_URL',
-  'MINIMAX_PORTAL_BASE_URL',
-  'NOUS_INFERENCE_BASE_URL',
-  'NOUS_PORTAL_BASE_URL',
-  'NOVITA_API_KEY',
-  'NOVITA_BASE_URL',
-  'OLLAMA_API_KEY',
-  'OLLAMA_BASE_URL',
-  'OPENAI_API_KEY',
-  'OPENAI_BASE_URL',
-  'OPENROUTER_API_KEY',
-  'OPENROUTER_BASE_URL',
-  'VERTEX_CREDENTIALS_PATH',
-  'XAI_BASE_URL',
-]);
+const HERMES_PROVIDER_ENVIRONMENT_NAMES = new Set<string>(HERMES_PROVIDER_ENVIRONMENT_NAME_LIST);
 
 export function hermesSubprocessEnvironment(source: NodeJS.ProcessEnv = process.env) {
   const explicitNames = new Set([
@@ -504,6 +721,10 @@ export function hermesSubprocessEnvironment(source: NodeJS.ProcessEnv = process.
     'SSL_CERT_DIR',
     'SSL_CERT_FILE',
     'TMPDIR',
+    'HERMES_HOME',
+    'HERMES_INFERENCE_MODEL',
+    'HERMES_INFERENCE_PROVIDER',
+    'HERMES_PROFILE',
   ]);
   const environment: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(source)) {
@@ -515,6 +736,23 @@ export function hermesSubprocessEnvironment(source: NodeJS.ProcessEnv = process.
       environment[name] = value;
     }
   }
+  const sourcePathEntries = (source.PATH ?? '').split(delimiter).filter((entry) => entry !== '');
+  const homeDirectory = source.HOME || homedir();
+  const finderCompatiblePathEntries = [
+    join(homeDirectory, '.local', 'bin'),
+    join(homeDirectory, '.cargo', 'bin'),
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    '/usr/local/bin',
+    '/usr/local/sbin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
+  ];
+  environment.PATH = [...new Set([...sourcePathEntries, ...finderCompatiblePathEntries])].join(
+    delimiter,
+  );
   environment.HERMES_SAFE_MODE = '1';
   environment.HERMES_SESSION_SOURCE = 'gosu';
   return environment;
@@ -698,7 +936,7 @@ export function createNodeHermesProjectChatPlatform(input?: {
       const child = spawn(request.executable, [...request.args], {
         cwd: request.cwd,
         detached: process.platform !== 'win32',
-        env: hermesSubprocessEnvironment(),
+        env: { ...hermesSubprocessEnvironment(), ...request.environment },
         shell: false,
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -749,7 +987,11 @@ function collaborationModeCatalog(): CodexCollaborationModeCatalog {
   });
 }
 
-function parseReadyRuntime(installation: HermesInstallation, output: string): HermesReadyRuntime {
+function parseReadyRuntime(
+  installation: HermesInstallation,
+  output: string,
+  credentialBindingKey: string,
+): HermesReadyRuntime {
   let value: unknown;
   try {
     value = JSON.parse(output.trim()) as unknown;
@@ -762,6 +1004,10 @@ function parseReadyRuntime(installation: HermesInstallation, output: string): He
   const record = value as Record<string, unknown>;
   const configuredModelId = typeof record.model === 'string' ? record.model.trim() : '';
   const configuredProviderId = typeof record.provider === 'string' ? record.provider.trim() : '';
+  const routeFingerprint =
+    typeof record.routeFingerprint === 'string' ? record.routeFingerprint.trim().toLowerCase() : '';
+  const credentialProof =
+    typeof record.credentialProof === 'string' ? record.credentialProof.trim().toLowerCase() : '';
   const containsControlCharacter = (candidate: string) =>
     [...candidate].some((character) => {
       const codePoint = character.codePointAt(0) ?? 0;
@@ -769,13 +1015,16 @@ function parseReadyRuntime(installation: HermesInstallation, output: string): He
     });
   if (
     record.protocol !== HERMES_SHIM_CHECK_PROTOCOL ||
-    Object.keys(record).sort().join(',') !== 'model,protocol,provider' ||
+    Object.keys(record).sort().join(',') !==
+      'credentialProof,model,protocol,provider,routeFingerprint' ||
     !configuredModelId ||
     configuredModelId.length > 256 ||
     containsControlCharacter(configuredModelId) ||
     !configuredProviderId ||
     configuredProviderId.length > 128 ||
-    containsControlCharacter(configuredProviderId)
+    containsControlCharacter(configuredProviderId) ||
+    !/^[a-f0-9]{64}$/u.test(routeFingerprint) ||
+    !/^[a-f0-9]{64}$/u.test(credentialProof)
   ) {
     throw new Error('hermes_runtime_check_invalid');
   }
@@ -785,14 +1034,23 @@ function parseReadyRuntime(installation: HermesInstallation, output: string): He
   const catalogVersion = createHash('sha256')
     .update(
       JSON.stringify({
-        adapter: 'gosu-byo-hermes-sealed-shim-v2',
+        adapter: 'gosu-byo-hermes-sealed-shim-v3',
         configuredModelId,
         configuredProviderId,
+        routeFingerprint,
         reasoning: HERMES_NATIVE_REASONING_OPTION_IDS,
       }),
     )
     .digest('hex');
-  return { installation, configuredModelId, configuredProviderId, catalogVersion };
+  return {
+    installation,
+    configuredModelId,
+    configuredProviderId,
+    routeFingerprint,
+    credentialBindingKey,
+    credentialProof,
+    catalogVersion,
+  };
 }
 
 function normalizedProjectResponse(output: string) {
@@ -829,7 +1087,10 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
   private readonly turns = new Map<string, HermesTurn>();
   private readonly activeProcesses = new Set<HermesRunningProcess>();
   private readyRuntime: HermesReadyRuntime | null = null;
-  private readiness: Promise<HermesReadyRuntime> | null = null;
+  private readiness: Readonly<{
+    credentialBindingKey: string;
+    promise: Promise<HermesReadyRuntime>;
+  }> | null = null;
   private shuttingDown = false;
 
   constructor(
@@ -852,6 +1113,24 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
     return {
       catalog: modelCatalog(runtime),
       collaborationModes: collaborationModeCatalog(),
+    };
+  }
+
+  async resolveValidatedAcpRuntime(
+    forceRefresh = false,
+    credentialBindingKey?: string,
+  ): Promise<HermesValidatedAcpRuntime> {
+    const runtime = await this.ensureReady(forceRefresh, credentialBindingKey);
+    return {
+      pythonPath: runtime.installation.pythonPath,
+      rootPath: runtime.installation.rootPath,
+      environment: hermesSubprocessEnvironment(),
+      configuredModelId: runtime.configuredModelId,
+      configuredProviderId: runtime.configuredProviderId,
+      routeFingerprint: runtime.routeFingerprint,
+      credentialBindingKey: runtime.credentialBindingKey,
+      credentialProof: runtime.credentialProof,
+      sourceCatalogVersion: runtime.catalogVersion,
     };
   }
 
@@ -905,7 +1184,12 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
           input.reasoningOptionId ?? '',
           runtime.configuredModelId,
           runtime.configuredProviderId,
+          runtime.routeFingerprint,
         ],
+        environment: {
+          GOSU_HERMES_CREDENTIAL_BINDING_KEY: runtime.credentialBindingKey,
+          GOSU_HERMES_EXPECTED_CREDENTIAL_PROOF: runtime.credentialProof,
+        },
         cwd: isolatedCwd,
         stdin: prompt,
         timeoutMs: HERMES_TURN_TIMEOUT_MS,
@@ -974,9 +1258,7 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
     this.threads.delete(threadId);
   }
 
-  shutdown() {
-    if (this.shuttingDown) return 0;
-    this.shuttingDown = true;
+  resetConnection() {
     this.readyRuntime = null;
     this.readiness = null;
     for (const turn of this.turns.values()) turn.cancelled = true;
@@ -988,33 +1270,60 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
     return processes.length;
   }
 
-  private async ensureReady(forceRefresh = false) {
+  shutdown() {
+    if (this.shuttingDown) return 0;
+    this.shuttingDown = true;
+    return this.resetConnection();
+  }
+
+  private async ensureReady(
+    forceRefresh = false,
+    requestedBindingKey?: string,
+  ): Promise<HermesReadyRuntime> {
     this.assertRunning();
-    if (!forceRefresh && this.readyRuntime) return this.readyRuntime;
-    if (this.readiness) return this.readiness;
-    this.readiness = this.checkReady();
+    const credentialBindingKey =
+      requestedBindingKey ??
+      this.readyRuntime?.credentialBindingKey ??
+      randomBytes(32).toString('hex');
+    if (!/^[a-f0-9]{64}$/u.test(credentialBindingKey)) {
+      throw new Error('hermes_credential_binding_key_invalid');
+    }
+    if (!forceRefresh && this.readyRuntime?.credentialBindingKey === credentialBindingKey) {
+      return this.readyRuntime;
+    }
+    if (this.readiness) {
+      if (this.readiness.credentialBindingKey === credentialBindingKey) {
+        return this.readiness.promise;
+      }
+      await this.readiness.promise.catch(() => undefined);
+      return this.ensureReady(true, credentialBindingKey);
+    }
+    const promise = this.checkReady(credentialBindingKey);
+    this.readiness = { credentialBindingKey, promise };
     try {
-      this.readyRuntime = await this.readiness;
+      this.readyRuntime = await promise;
       return this.readyRuntime;
     } finally {
-      this.readiness = null;
+      if (this.readiness?.promise === promise) this.readiness = null;
     }
   }
 
-  private async checkReady() {
+  private async checkReady(credentialBindingKey: string) {
     const installation = await this.platform.findHermesInstallation();
     if (!installation) throw new Error('hermes_installation_not_supported');
     const configuration = await this.checkedProcess({
       executable: installation.pythonPath,
       args: ['-I', '-c', HERMES_SEALED_SHIM_SOURCE, 'check', installation.rootPath],
+      environment: { GOSU_HERMES_CREDENTIAL_BINDING_KEY: credentialBindingKey },
       stdin: '',
     });
-    return parseReadyRuntime(installation, configuration);
+    return parseReadyRuntime(installation, configuration, credentialBindingKey);
   }
 
   private async checkedProcess(input: {
     executable: string;
     args: readonly string[];
+    environment?: NodeJS.ProcessEnv;
     stdin: string;
   }) {
     const isolatedCwd = await this.platform.createIsolatedWorkingDirectory();
