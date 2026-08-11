@@ -12,6 +12,8 @@ import type {
 } from '../src/main/codex-app-server';
 import type {
   ProjectAgentExperiments,
+  ProjectAgentHermes,
+  ProjectAgentHermesDelegationResult,
   ProjectAgentLiterature,
   ProjectAgentSsh,
   ProjectAgentVault,
@@ -23,6 +25,7 @@ import {
 } from '../src/main/project-chat-attachment-service';
 import {
   buildProjectChatPrompt,
+  explicitlyAuthorizesHermesDelegation,
   explicitlyAuthorizesLiteratureSearch,
   ProjectChatService,
   type ProjectChatStorage,
@@ -36,6 +39,7 @@ import type {
   ProjectChatAction,
   ProjectChatAttempt,
   ProjectChatEvent,
+  ProjectChatHermesDelegationReceipt,
   ProjectChatMessage,
   ProjectChatProfile,
   ProjectChatQueuedTurn,
@@ -51,6 +55,7 @@ import type {
 } from '../src/shared/project-chat-contracts';
 import {
   defaultProjectChatProfile,
+  ProjectChatHermesDelegationReceiptSchema,
   PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION,
   PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION,
 } from '../src/shared/project-chat-contracts';
@@ -230,6 +235,36 @@ describe('Literature command authorization', () => {
   });
 });
 
+describe('Hermes delegation authorization', () => {
+  it('requires an explicit Hermes subject and delegation action', () => {
+    expect(explicitlyAuthorizesHermesDelegation('Hermes agent에게 맡겨.')).toBe(true);
+    expect(explicitlyAuthorizesHermesDelegation('이 분석은 Hermes로 처리해줘.')).toBe(true);
+    expect(explicitlyAuthorizesHermesDelegation('Hermes agent 써줘.')).toBe(true);
+    expect(explicitlyAuthorizesHermesDelegation('이건 Hermes로 해줘.')).toBe(true);
+    expect(explicitlyAuthorizesHermesDelegation('헤르메스를 사용해주세요.')).toBe(true);
+    expect(explicitlyAuthorizesHermesDelegation('Delegate this review to Hermes.')).toBe(true);
+    expect(explicitlyAuthorizesHermesDelegation('Ask Hermes to independently review it.')).toBe(
+      true,
+    );
+    expect(explicitlyAuthorizesHermesDelegation('Hermes가 무엇인지 설명해줘.')).toBe(false);
+    expect(explicitlyAuthorizesHermesDelegation('Hermes 연결 상태를 확인해줘.')).toBe(false);
+    expect(
+      explicitlyAuthorizesHermesDelegation('Hermes agent 상태를 설명하고 이 프로젝트를 분석해줘.'),
+    ).toBe(false);
+    expect(
+      explicitlyAuthorizesHermesDelegation('Hermes agent가 안 되는 원인을 Codex로 분석해줘.'),
+    ).toBe(false);
+    expect(explicitlyAuthorizesHermesDelegation('How do I use Hermes?')).toBe(false);
+    expect(explicitlyAuthorizesHermesDelegation('Hermes는 어떻게 사용하는지 설명해줘.')).toBe(
+      false,
+    );
+    expect(explicitlyAuthorizesHermesDelegation('Hermes agent 쓸 수 있냐?')).toBe(false);
+    expect(explicitlyAuthorizesHermesDelegation('Hermes를 사용할 수 있어?')).toBe(false);
+    expect(explicitlyAuthorizesHermesDelegation("Don't use Hermes; do it here.")).toBe(false);
+    expect(explicitlyAuthorizesHermesDelegation('Hermes에게 맡기지 말고 직접 해줘.')).toBe(false);
+  });
+});
+
 class MemoryWorkspaceStorage {
   state: WorkspaceSnapshot | null = null;
   operations: WorkspaceOperation[] = [];
@@ -263,6 +298,7 @@ class MemoryChatStorage implements ProjectChatStorage {
   readonly sessions = new Map<string, ProjectChatSession[]>();
   readonly sessionMessageIds = new Map<string, string[]>();
   readonly researchNoteReceipts = new Map<string, ProjectChatResearchNoteSaveReceipt>();
+  readonly hermesDelegationReceipts = new Map<string, ProjectChatHermesDelegationReceipt>();
   readonly queuedTurns = new Map<string, ProjectChatQueuedTurn>();
   readonly sessionTitleRevisions = new Map<string, number>();
   private nextQueueSequence = 1;
@@ -329,6 +365,27 @@ class MemoryChatStorage implements ProjectChatStorage {
     }
     this.attempts.set(attempt.id, structuredClone(attempt));
     this.afterMarkRunning?.();
+  }
+
+  recordHermesDelegationReceipt(input: ProjectChatHermesDelegationReceipt) {
+    const receipt = ProjectChatHermesDelegationReceiptSchema.parse(structuredClone(input));
+    const attempt = this.attempts.get(receipt.attemptId);
+    if (
+      !attempt ||
+      attempt.projectId !== receipt.projectId ||
+      attempt.sessionId !== receipt.sessionId ||
+      !['starting', 'running'].includes(attempt.status)
+    ) {
+      throw new Error('hermes_delegation_receipt_attempt_conflict');
+    }
+    const current = this.hermesDelegationReceipts.get(receipt.invocationId);
+    if (current) {
+      if (JSON.stringify(current) !== JSON.stringify(receipt)) {
+        throw new Error('hermes_delegation_receipt_conflict');
+      }
+      return;
+    }
+    this.hermesDelegationReceipts.set(receipt.invocationId, receipt);
   }
 
   stageResearchNoteSave(receipt: ProjectChatResearchNoteSaveStage) {
@@ -1208,6 +1265,7 @@ async function fixture(
   titleJobTimeoutMs?: number,
   queueSchedulerRetryDelaysMs?: readonly number[],
   experiments?: ProjectAgentExperiments,
+  hermes?: ProjectAgentHermes,
 ) {
   const workspaceStorage = new MemoryWorkspaceStorage();
   const workspace = new WorkspaceService(workspaceStorage);
@@ -1285,6 +1343,7 @@ async function fixture(
     codex,
     literature,
     ssh,
+    ...(hermes ? { hermes } : {}),
     ...(experiments ? { experiments } : {}),
     ...(attachments ? { attachments } : {}),
     ...(vault ? { vault } : {}),
@@ -1292,7 +1351,7 @@ async function fixture(
     ...(queueSchedulerRetryDelaysMs === undefined ? {} : { queueSchedulerRetryDelaysMs }),
     prepareProjectDirectory: async (projectId) => `/isolated/${projectId}`,
   });
-  return { workspace, storage, codex, chat, literature, ssh, projectA, projectB, taskA };
+  return { workspace, storage, codex, chat, literature, hermes, ssh, projectA, projectB, taskA };
 }
 
 async function activeLocalNotesTurn(
@@ -5211,6 +5270,130 @@ describe('ProjectChatService', () => {
     ).rejects.toThrow('project_not_found');
 
     expect(storage.sessions.has(missingProjectId)).toBe(false);
+  });
+
+  it('injects connected Hermes only for an explicit delegation and binds the exact project cwd', async () => {
+    const hermes: ProjectAgentHermes = {
+      isConnected: vi.fn(() => true),
+      delegate: vi.fn(async (): Promise<ProjectAgentHermesDelegationResult> => ({
+        reply: 'RAW_HERMES_REPLY_FOR_CODEX_ONLY',
+        provenance: {
+          invocationId: '55555555-5555-4555-8555-555555555555',
+          providerId: 'hermes',
+          transport: 'acp-v1',
+          resolvedModelId: 'configured-hermes-model',
+          configuredProviderId: 'nous',
+          catalogVersion: 'c'.repeat(64),
+          agentName: 'Hermes Agent',
+          agentVersion: '0.19.1',
+          startedAt: '2026-08-05T00:00:00.000Z',
+        },
+        stopReason: 'completed',
+      })),
+    };
+    const { chat, codex, storage, projectA } = await fixture(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      hermes,
+    );
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Hermes agent에게 이 평가 설계를 맡겨.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('delegate_to_hermes_agent');
+    const result = await codex.dynamicToolHandlers[0]!(
+      {
+        threadId: codex.turnThreads.get(receipt.turnId)!,
+        turnId: receipt.turnId,
+        callId: 'delegate-hermes-1',
+        namespace: 'gosu_project',
+        tool: 'delegate_to_hermes_agent',
+        arguments: { task: 'Review the evaluation design.', context: 'Active project only.' },
+      },
+      dynamicToolDelivery(),
+    );
+    expect(result.success).toBe(true);
+    expect(hermes.delegate).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(hermes.delegate).mock.calls[0]![0]).toMatchObject({
+      projectId: projectA.id,
+      sessionId: receipt.sessionId,
+      attemptId: receipt.attemptId,
+      cwd: `/isolated/${projectA.id}`,
+      task: 'Review the evaluation design.',
+      context: 'Active project only.',
+    });
+
+    const completed = waitForTurnCompleted(chat, receipt.turnId);
+    codex.complete(receipt.turnId, { reply: 'Codex synthesis', actions: [] });
+    await completed;
+    const snapshot = await storage.snapshot(projectA.id, receipt.sessionId);
+    const assistant = snapshot.messages.at(-1)!;
+    expect(assistant.content).toContain(
+      'Hermes delegation · provider hermes · model configured-hermes-model · stop completed',
+    );
+    expect(assistant.content).not.toContain('RAW_HERMES_REPLY_FOR_CODEX_ONLY');
+    expect(
+      storage.hermesDelegationReceipts.get('55555555-5555-4555-8555-555555555555'),
+    ).toMatchObject({
+      providerId: 'hermes',
+      transport: 'acp-v1',
+      resolvedModelId: 'configured-hermes-model',
+      configuredProviderId: 'nous',
+      catalogVersion: 'c'.repeat(64),
+      agentName: 'Hermes Agent',
+      agentVersion: '0.19.1',
+      stopReason: 'completed',
+    });
+    const durableDelegation = JSON.stringify([...storage.hermesDelegationReceipts.values()]);
+    expect(durableDelegation).not.toContain('Review the evaluation design');
+    expect(durableDelegation).not.toContain('Active project only');
+    expect(durableDelegation).not.toContain('RAW_HERMES_REPLY_FOR_CODEX_ONLY');
+    expect(durableDelegation).not.toContain('credentialProof');
+
+    const ordinary = await fixture(undefined, undefined, undefined, undefined, undefined, hermes);
+    await ordinary.chat.send({
+      projectId: ordinary.projectA.id,
+      message: 'Summarize the current board.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(JSON.stringify(ordinary.codex.dynamicTools[0])).not.toContain(
+      'delegate_to_hermes_agent',
+    );
+  });
+
+  it('fails an explicit Hermes delegation before Codex when Hermes is disconnected', async () => {
+    const hermes: ProjectAgentHermes = {
+      isConnected: vi.fn(() => false),
+      delegate: vi.fn(async () => {
+        throw new Error('must_not_run');
+      }),
+    };
+    const { chat, codex, projectA } = await fixture(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      hermes,
+    );
+
+    await expect(
+      chat.send({
+        projectId: projectA.id,
+        message: 'Delegate this task to Hermes.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'hermes_runtime_check_failed' });
+    expect(codex.dynamicTools).toHaveLength(0);
+    expect(hermes.delegate).not.toHaveBeenCalled();
   });
 
   it('renames one session without changing its identity or sibling history', async () => {

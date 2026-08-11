@@ -14,6 +14,8 @@ import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import { createManuscriptWorkspaceAdapterRegistry } from '@gosu/integrations';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
+import { HERMES_ACP_APPROVAL_CHANNELS } from '../shared/hermes-acp-approval-channels';
+import { HermesAcpApprovalEventSchema } from '../shared/hermes-acp-approval-contracts';
 import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
 import { LectureStudioEventSchema } from '../shared/lecture-studio-contracts';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
@@ -23,6 +25,9 @@ import { buildMacApplicationMenuTemplate } from './application-menu';
 import { registerAgentAddOnIpc } from './agent-addon-ipc';
 import { createAgentAddOnRegistry } from './agent-addon-service';
 import { cleanupStaleGosuRuntimeDirectories, CodexAppServer } from './codex-app-server';
+import { registerHermesAcpApprovalIpc } from './hermes-acp-approval-ipc';
+import { HermesAcpApprovalService } from './hermes-acp-approval-service';
+import { HermesAcpProjectChatAdapter } from './hermes-acp-project-chat-adapter';
 import { HermesProjectChatAdapter } from './hermes-project-chat-adapter';
 import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
@@ -90,7 +95,13 @@ const codex = new CodexAppServer({
   sharedAuthFile: () => (sharedCodexHome ? join(sharedCodexHome, 'auth.json') : undefined),
   clientVersion: () => app.getVersion(),
 });
-const hermesProjectChat = new HermesProjectChatAdapter();
+const hermesAcpApprovals = new HermesAcpApprovalService();
+const hermesRuntimeDiscovery = new HermesProjectChatAdapter();
+const hermesProjectChat = new HermesAcpProjectChatAdapter({
+  runtimeDiscovery: hermesRuntimeDiscovery,
+  approvals: hermesAcpApprovals,
+  clientVersion: () => app.getVersion(),
+});
 const projectChatProvider = new ProjectChatProviderRouter(codex, hermesProjectChat);
 const agentAddOns = createAgentAddOnRegistry({}, { hermesProjectChat: projectChatProvider });
 const database = new LocalDatabase();
@@ -210,6 +221,10 @@ const projectChat = new ProjectChatService({
   storage: database,
   workspace,
   codex: projectChatProvider,
+  hermes: {
+    isConnected: () => projectChatProvider.isHermesConnected(),
+    delegate: (input) => hermesProjectChat.delegate(input),
+  },
   vault: researchNotes,
   literature,
   ssh,
@@ -432,6 +447,10 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     reportUnexpectedWorkspaceError,
     workspace,
   );
+  registerHermesAcpApprovalIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    hermesAcpApprovals,
+  );
   registerLiteratureIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     literature,
@@ -607,6 +626,18 @@ if (!primaryInstance) {
           mainWindow.webContents.send(SSH_IPC_CHANNELS.event, SshEventSchema.parse(event));
         } catch {
           console.error('[GOSU] SSH approval renderer event delivery failed.');
+        }
+      }
+    });
+    hermesAcpApprovals.on('event', (event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send(
+            HERMES_ACP_APPROVAL_CHANNELS.event,
+            HermesAcpApprovalEventSchema.parse(event),
+          );
+        } catch {
+          console.error('[GOSU] Hermes ACP approval renderer event delivery failed.');
         }
       }
     });

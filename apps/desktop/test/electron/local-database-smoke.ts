@@ -4842,6 +4842,88 @@ void app.whenReady().then(async () => {
       status: 'running',
     };
     database.markChatAttemptRunning(interruptedRunning);
+    const hermesAuditSession = database.createProjectChatSession(
+      chatProjectId,
+      'Hermes audit purge fixture',
+    );
+    const hermesAuditAttemptId = randomUUID();
+    const hermesAuditUserMessageId = randomUUID();
+    const hermesAuditInvocationId = randomUUID();
+    const hermesAuditAttempt: ProjectChatAttempt = {
+      id: hermesAuditAttemptId,
+      projectId: chatProjectId,
+      sessionId: hermesAuditSession.id,
+      userMessageId: hermesAuditUserMessageId,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      status: 'starting',
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    };
+    database.beginChatAttempt(hermesAuditAttempt, {
+      id: hermesAuditUserMessageId,
+      projectId: chatProjectId,
+      role: 'user',
+      content: 'RAW_HERMES_TASK_MUST_NOT_ENTER_AUDIT_RECEIPT',
+      status: 'complete',
+      actions: [],
+      createdAt: fixedTimestamp,
+      completedAt: fixedTimestamp,
+    });
+    database.markChatAttemptRunning({
+      ...hermesAuditAttempt,
+      threadId: 'thread-hermes-audit-fixture',
+      turnId: 'turn-hermes-audit-fixture',
+      model: {
+        invocationId: randomUUID(),
+        providerId: 'codex',
+        requestedModelId: null,
+        resolvedModelId: 'fixture-model',
+        catalogVersion: 'fixture-catalog',
+        reasoningOptionId: null,
+      },
+      status: 'running',
+    });
+    const hermesAuditReceipt = {
+      schemaVersion: 1 as const,
+      projectId: chatProjectId,
+      sessionId: hermesAuditSession.id,
+      attemptId: hermesAuditAttemptId,
+      invocationId: hermesAuditInvocationId,
+      providerId: 'hermes' as const,
+      transport: 'acp-v1' as const,
+      resolvedModelId: 'hermes-configured-model',
+      configuredProviderId: 'nous',
+      catalogVersion: 'c'.repeat(64),
+      agentName: 'Hermes Agent',
+      agentVersion: '0.19.1',
+      stopReason: 'end_turn',
+      startedAt: fixedTimestamp,
+      recordedAt: fixedTimestamp,
+    };
+    database.recordHermesDelegationReceipt(hermesAuditReceipt);
+    database.recordHermesDelegationReceipt(hermesAuditReceipt);
+    invariant(
+      database.listHermesDelegationReceipts(
+        chatProjectId,
+        hermesAuditSession.id,
+        hermesAuditAttemptId,
+      ).length === 1,
+      'hermes_delegation_receipt_exact_retry_was_not_idempotent',
+    );
+    let hermesAuditConflictRejected = false;
+    try {
+      database.recordHermesDelegationReceipt({
+        ...hermesAuditReceipt,
+        stopReason: 'conflicting_retry',
+      });
+    } catch {
+      hermesAuditConflictRejected = true;
+    }
+    invariant(
+      hermesAuditConflictRejected,
+      'hermes_delegation_receipt_conflicting_retry_was_accepted',
+    );
     const duplicateActiveAttemptId = randomUUID();
     const duplicateActiveUserMessageId = randomUUID();
     let duplicateActiveSessionAttemptRejected = false;
@@ -5566,7 +5648,7 @@ void app.whenReady().then(async () => {
       'ssh_workspace_grant_connection_cascade_failed',
     );
     invariant(
-      reopened.listProjectChatSessions(chatProjectId).length === 3 &&
+      reopened.listProjectChatSessions(chatProjectId).length === 4 &&
         reopened.snapshot(chatProjectId, independentChatSession.id).messages.length === 0,
       'root_chat_session_isolation_did_not_survive_restart',
     );
@@ -5881,6 +5963,65 @@ void app.whenReady().then(async () => {
       )
       .get() as { count: number };
     invariant(reportedReceiptCount.count === 2, 'research_note_receipts_were_not_reported_once');
+    const hermesReceiptColumns = receiptMetadata.pragma(
+      'table_info(project_chat_hermes_delegation_receipts)',
+    ) as Array<{ name: string }>;
+    invariant(
+      hermesReceiptColumns.length > 0 &&
+        hermesReceiptColumns.every(
+          (column) =>
+            !['task', 'context', 'reply', 'credential', 'credential_proof'].includes(column.name),
+        ),
+      'hermes_delegation_receipt_schema_persisted_raw_payload_fields',
+    );
+    const hermesAuditStored = receiptMetadata
+      .prepare('select * from project_chat_hermes_delegation_receipts where invocation_id=?')
+      .get(hermesAuditInvocationId) as Record<string, unknown> | undefined;
+    const hermesAuditSerialized = JSON.stringify(hermesAuditStored);
+    invariant(
+      hermesAuditStored !== undefined &&
+        !hermesAuditSerialized.includes('RAW_HERMES_TASK_MUST_NOT_ENTER_AUDIT_RECEIPT') &&
+        !hermesAuditSerialized.includes('RAW_HERMES_CONTEXT') &&
+        !hermesAuditSerialized.includes('RAW_HERMES_REPLY') &&
+        !hermesAuditSerialized.includes('credentialProof'),
+      'hermes_delegation_receipt_persisted_raw_payload',
+    );
+    let hermesAuditUpdateRejected = false;
+    try {
+      receiptMetadata
+        .prepare(
+          `update project_chat_hermes_delegation_receipts
+           set stop_reason='mutated' where invocation_id=?`,
+        )
+        .run(hermesAuditInvocationId);
+    } catch {
+      hermesAuditUpdateRejected = true;
+    }
+    let hermesAuditDeleteRejected = false;
+    try {
+      receiptMetadata
+        .prepare('delete from project_chat_hermes_delegation_receipts where invocation_id=?')
+        .run(hermesAuditInvocationId);
+    } catch {
+      hermesAuditDeleteRejected = true;
+    }
+    invariant(
+      hermesAuditUpdateRejected && hermesAuditDeleteRejected,
+      'hermes_delegation_receipt_append_only_guard_failed',
+    );
+    invariant(
+      receiptMetadata
+        .prepare('delete from project_chat_attempts where id=?')
+        .run(hermesAuditAttemptId).changes === 1 &&
+        (
+          receiptMetadata
+            .prepare(
+              'select count(*) as count from project_chat_hermes_delegation_receipts where invocation_id=?',
+            )
+            .get(hermesAuditInvocationId) as { count: number }
+        ).count === 1,
+      'hermes_delegation_receipt_blocked_attempt_purge_or_was_cascaded',
+    );
     receiptMetadata.close();
 
     const afterRollback = new LocalDatabase();

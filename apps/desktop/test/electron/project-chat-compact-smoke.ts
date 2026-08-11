@@ -147,7 +147,7 @@ function fixtureMarkup(styles: string) {
               <header class="chat-toolbar">
                 <div class="chat-toolbar-summary" hidden>
                   <div class="chat-toolbar-summary-identity"><span class="chat-orbit">G</span><div><strong>Project Copilot</strong><span data-project-name>${projectName}</span></div></div>
-                  <div class="chat-toolbar-summary-badges"><span>Hermes configured model with long provider metadata</span><span>Model default reasoning</span><span>Hermes · text-only · no tools</span><span>3 linked servers</span></div>
+                  <div class="chat-toolbar-summary-badges"><span>Hermes configured model with long provider metadata</span><span>Model default reasoning</span><span>Hermes ACP · no native tools</span><span>3 linked servers</span></div>
                 </div>
                 <div class="chat-toolbar-details" id="fixture-chat-toolbar-details">
                   <div class="chat-identity">
@@ -161,8 +161,8 @@ function fixtureMarkup(styles: string) {
                     <button class="secondary-button chat-agent-toggle">Agent controls</button>
                   </div>
                   <div class="chat-provider-boundary" role="note">
-                    <strong>BYO Hermes · sealed text-only mode</strong>
-                    <span>Uses the Hermes model configured on this Mac. No attachments, web, files, Board or Research Notes mutations, or local and SSH tools cross this boundary, including at the minimum supported window width and extra-large text size.</span>
+                    <strong>BYO Hermes · ACP agent mode</strong>
+                    <span>Uses verified Hermes ACP with no native tools. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Terminal, files, web, native delegation, MCP, GOSU tools, and attachments remain disabled at the minimum supported window width and extra-large text size.</span>
                   </div>
                   <div class="chat-ssh-setup-notice">
                     <div><strong>SSH server registered — project access is not granted yet</strong><span>Choose one specific remote project folder before Project Chat can use this server.</span></div>

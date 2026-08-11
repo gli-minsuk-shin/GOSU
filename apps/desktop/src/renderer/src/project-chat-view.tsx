@@ -610,7 +610,7 @@ export function ProjectChatView({
       : null;
   const hermesAttachmentWarning =
     hermesSelected && attachments.length > 0
-      ? 'The initial BYO Hermes connection is text-only. Remove attachments or choose Codex for this turn.'
+      ? 'Turn attachments are not bridged to Hermes ACP yet. Remove attachments or choose Codex for this turn.'
       : null;
   const imageAttachmentWarning =
     attachments.some((attachment) => attachment.visualAvailable) &&
@@ -1070,8 +1070,8 @@ export function ProjectChatView({
                 <span title={`Model: ${compactModelLabel}`}>{compactModelLabel}</span>
                 <span title={`Reasoning: ${compactReasoningLabel}`}>{compactReasoningLabel}</span>
                 {hermesSelected && (
-                  <span title="Hermes sealed text-only provider; attachments, web, files, and tools are disabled">
-                    Hermes · text-only · no tools
+                  <span title="Verified Hermes ACP agent with no native tools">
+                    Hermes ACP · no native tools
                   </span>
                 )}
                 {selectionWarning && <span className="warning">Selection needs attention</span>}
@@ -1107,7 +1107,7 @@ export function ProjectChatView({
                     <strong>GOSU Project Copilot</strong>
                     <span>
                       {hermesSelected
-                        ? '현재 프로젝트 Board와 Objective snapshot만 text context로 전달합니다'
+                        ? '현재 Board와 Objective context를 선택된 Hermes ACP agent가 활용합니다'
                         : '현재 프로젝트 Board / To-do, Objective, 승인된 Research Notes를 활용합니다'}
                     </span>
                   </div>
@@ -1181,10 +1181,13 @@ export function ProjectChatView({
                 </div>
                 {hermesSelected && (
                   <div className="chat-provider-boundary" role="note">
-                    <strong>BYO Hermes · sealed text-only mode</strong>
+                    <strong>BYO Hermes · ACP agent mode</strong>
                     <span>
-                      Uses the Hermes model configured on this Mac. No attachments, web, files,
-                      Board/Research Notes mutations, or local/SSH tools cross this boundary.
+                      Uses the verified Hermes agent configured on this Mac with no native tools.
+                      Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP
+                      agent. Terminal, code execution, files, web, browser automation, native
+                      delegation, memory, skills, MCP, GOSU tools, and attachments are disabled. No
+                      tool approval prompts are shown while this surface is active.
                     </span>
                   </div>
                 )}
@@ -1410,10 +1413,10 @@ export function ProjectChatView({
             {hermesSelected && (
               <div className="chat-agent-control-group">
                 <span>Provider harness</span>
-                <strong>Hermes sealed text-only</strong>
+                <strong>Hermes ACP agent</strong>
                 <small>
-                  Reasoning comes from the selected Hermes model. Codex collaboration, personality,
-                  verbosity, web, and tool controls are not passed to Hermes.
+                  Hermes owns its native reasoning. GOSU exposes no native Hermes tools and never
+                  falls back to Codex silently.
                 </small>
               </div>
             )}
@@ -1457,7 +1460,7 @@ export function ProjectChatView({
               <strong>Project capability boundary</strong>
               <span>
                 {hermesSelected
-                  ? 'Hermes text response only · no GOSU, web, file, local, or SSH tools'
+                  ? 'Hermes ACP · no native tools'
                   : `Board / To-do + Objective read tools · ${localNotesStatus} · ${sshWorkspaceStatus} · ${
                       trustedWorkspaceCount > 0
                         ? `${trustedWorkspaceCount} trusted workspace${trustedWorkspaceCount === 1 ? '' : 's'}`
@@ -1466,7 +1469,7 @@ export function ProjectChatView({
               </span>
               <small>
                 {hermesSelected
-                  ? 'GOSU starts the configured local Hermes inference runtime in an isolated empty folder, verifies that its tool list is empty, disables rules, memory, skills, plugins, MCP, persistence, and fallback, and accepts only its bounded text answer. Select Codex when the turn needs attachments, web search, project mutations, Research Notes, or server work.'
+                  ? 'GOSU runs the pinned BYO Hermes ACP adapter through a project/session-isolated local profile with an empty native tool surface. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Terminal, processes, code execution, all file tools, web, browser automation, native delegation, memory, skills, configured MCP, GOSU tools, attachments, YOLO, duplicate persistence, and fallback are disabled. This surface has no tool approvals. Select Codex when the turn needs Board, Research Notes, Literature, SSH, or attachments.'
                   : 'Board changes require Apply. Research Notes reads stay available to legacy grants, but automatic Markdown saves run only after an explicit create-only grant and never overwrite a different existing file. Only project-granted remote workspaces are visible. Trusted workspace is an explicit, per-grant option that auto-approves and audits only the same bounded operations; it expires when the project, server, grant, path, or safety policy changes and can be revoked above. Without it, Git inspection, direct-argv tests/builds, and foreground Python experiment entrypoints show their exact target, root, arguments, and risk for a fresh one-time approval. Experiments are limited to 120 seconds. The direct GOSU tool surface does not offer raw shells, inline Python, TTY, transfer, unattended execution, secret retrieval, Settings, Trash, sudo/privileged requests, host mounts, or destructive host commands. Code launched through an approved Python, test, or build operation is not contained by those input checks and can reach anything the SSH account permits, including secrets, out-of-grant paths, the network, and subprocesses.'}
               </small>
             </div>
@@ -1588,7 +1591,7 @@ export function ProjectChatView({
                               : ''}
                             {nativeAttempt
                               ? message.model?.providerId === 'hermes'
-                                ? ' · Hermes sealed mode'
+                                ? ' · Hermes ACP agent'
                                 : attempt?.collaborationModeId
                                   ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
                                   : ' · Codex default mode'
@@ -1704,7 +1707,7 @@ export function ProjectChatView({
                   <i />
                   <span>
                     {activeProviderLabel === 'Hermes'
-                      ? 'sealed text context를 검토하고 있습니다'
+                      ? 'Hermes ACP agent가 프로젝트를 분석하고 있습니다'
                       : '프로젝트 컨텍스트를 검토하고 있습니다'}
                   </span>
                 </div>
@@ -1732,16 +1735,16 @@ export function ProjectChatView({
             {legacyReviewerCompatibility
               ? 'Legacy Reviewer'
               : hermesSelected
-                ? 'Hermes sealed mode'
+                ? 'Hermes ACP agent'
                 : collaborationModeId === null
                   ? 'Codex default mode'
                   : (selectedCollaborationMode?.displayName ?? collaborationModeId)}{' '}
             ·{' '}
             {hermesSelected ? 'Provider-managed answer style' : VERBOSITY_LABELS[responseVerbosity]}{' '}
-            · {hermesSelected ? 'Research Notes tools disabled' : localNotesStatus}
+            · {hermesSelected ? 'GOSU Research Notes bridge unavailable' : localNotesStatus}
             {' · '}
             {hermesSelected
-              ? 'Web disabled'
+              ? 'Hermes provider · no native tools'
               : WEB_SEARCH_LABELS[snapshot?.profile?.webSearchMode ?? 'cached']}
             {!hermesSelected && vaultState === 'ready' && !automaticMarkdownSaveAuthorized && (
               <button
@@ -1888,8 +1891,11 @@ export function ProjectChatView({
           )}
           {hermesSelected && (
             <span id={hermesBoundaryDescriptionId} className="sr-only">
-              BYO Hermes is sealed and text-only. Attachments, web, files, project mutations, and
-              local or SSH tools are unavailable. Choose Codex to use those capabilities.
+              BYO Hermes runs through a verified ACP agent with no native tools. Codex can
+              explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Terminal,
+              processes, code execution, files, web, browser automation, native delegation, memory,
+              skills, MCP, GOSU tools, and attachments are disabled. This surface does not show tool
+              approval prompts. Choose Codex for GOSU capabilities.
             </span>
           )}
           {projectBusy && !sessionBusy && (
@@ -1980,12 +1986,14 @@ export function ProjectChatView({
                 attachments.length >= PROJECT_CHAT_MAX_ATTACHMENTS
               }
               aria-label={
-                hermesSelected ? 'Attachments unavailable with BYO Hermes' : 'Attach research files'
+                hermesSelected
+                  ? 'Turn attachments are not yet bridged to BYO Hermes'
+                  : 'Attach research files'
               }
               aria-describedby={hermesSelected ? hermesBoundaryDescriptionId : undefined}
               title={
                 hermesSelected
-                  ? 'The initial BYO Hermes connection is text-only; choose Codex to attach files'
+                  ? 'Turn attachments are not bridged to Hermes ACP yet; choose Codex to attach files'
                   : 'Attach up to 5 documents, presentations, text files, or images for this turn'
               }
             >

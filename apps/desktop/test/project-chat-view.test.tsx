@@ -65,7 +65,7 @@ const linkedServerSnapshot: SshServerResourceSnapshot = {
 };
 
 describe('advanced Project Chat controls', () => {
-  it('shows the explicit BYO Hermes boundary and disables attachments for its text-only model', () => {
+  it('shows the explicit BYO Hermes ACP boundary and disables unbridged attachments', () => {
     const html = renderToStaticMarkup(
       <ProjectChatView
         project={project}
@@ -108,15 +108,19 @@ describe('advanced Project Chat controls', () => {
 
     expect(html).toContain('Hermes configured model');
     expect(html).not.toContain('Hermes · Hermes ·');
-    expect(html).toContain('BYO Hermes · sealed text-only mode');
-    expect(html).toContain('No attachments, web, files');
+    expect(html).toContain('BYO Hermes · ACP agent mode');
+    expect(html).not.toContain('web_search');
+    expect(html).not.toContain('web_extract');
+    expect(html).not.toContain('delegate_task');
+    expect(html).toContain('No tool approval prompts are shown');
+    expect(html).toContain('Terminal, code execution, files, web, browser automation');
     expect(html).toContain('Hermes turn active');
-    expect(html).toContain('현재 프로젝트 Board와 Objective snapshot만 text context로 전달합니다');
+    expect(html).toContain('선택된 Hermes ACP agent가 활용합니다');
     expect(html).toMatch(
-      /disabled=""[^>]*aria-label="Attachments unavailable with BYO Hermes"[^>]*aria-describedby=/u,
+      /disabled=""[^>]*aria-label="Turn attachments are not yet bridged to BYO Hermes"[^>]*aria-describedby=/u,
     );
     expect(html).toContain(
-      'The initial BYO Hermes connection is text-only; choose Codex to attach files',
+      'Turn attachments are not bridged to Hermes ACP yet; choose Codex to attach files',
     );
     expect(html).not.toContain('>Authorize…<');
     expect(html).not.toContain('>Enable automatic saves…<');
@@ -164,12 +168,10 @@ describe('advanced Project Chat controls', () => {
       />,
     );
 
-    expect(html).toContain('Hermes · text-only · no tools');
-    expect(html).toContain(
-      'BYO Hermes is sealed and text-only. Attachments, web, files, project mutations, and local or SSH tools are unavailable.',
-    );
+    expect(html).toContain('Hermes ACP · no native tools');
+    expect(html).toContain('BYO Hermes runs through a verified ACP agent with no native tools.');
     expect(html).toMatch(
-      /aria-label="Attachments unavailable with BYO Hermes"[^>]*aria-describedby=/u,
+      /aria-label="Turn attachments are not yet bridged to BYO Hermes"[^>]*aria-describedby=/u,
     );
   });
 
@@ -207,8 +209,8 @@ describe('advanced Project Chat controls', () => {
 
     expect(html).toContain('no longer in the live Project Chat catalog');
     expect(html).not.toContain('no longer in the live Codex catalog');
-    expect(html).toContain('BYO Hermes · sealed text-only mode');
-    expect(html).toContain('Attachments unavailable with BYO Hermes');
+    expect(html).toContain('BYO Hermes · ACP agent mode');
+    expect(html).toContain('Turn attachments are not yet bridged to BYO Hermes');
   });
 
   it('shows the /todo skill only while its slash command is being entered', () => {

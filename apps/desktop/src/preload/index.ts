@@ -27,6 +27,15 @@ import {
 } from '../shared/experiment-workspace-contracts';
 import { unwrapExperimentIpcResult } from '../shared/experiment-workspace-ipc-result';
 import { GIT_WORKSPACE_IPC_CHANNELS } from '../shared/git-workspace-channels';
+import { HERMES_ACP_APPROVAL_CHANNELS } from '../shared/hermes-acp-approval-channels';
+import {
+  HermesAcpApprovalEventSchema,
+  HermesAcpApprovalListSchema,
+  type HermesAcpApprovalEvent,
+  type HermesAcpApprovalRequest,
+  type ListPendingHermesAcpApprovalsInput,
+  type ResolveHermesAcpApprovalInput,
+} from '../shared/hermes-acp-approval-contracts';
 import type {
   GitCommitInput,
   GitCreateBranchInput,
@@ -590,6 +599,29 @@ const api = {
       ipcRenderer.on(SSH_IPC_CHANNELS.event, handler);
       return () => {
         ipcRenderer.removeListener(SSH_IPC_CHANNELS.event, handler);
+      };
+    },
+  },
+  hermesAcp: {
+    listPendingApprovals: async (input: ListPendingHermesAcpApprovalsInput) =>
+      HermesAcpApprovalListSchema.parse(
+        await ipcRenderer.invoke(HERMES_ACP_APPROVAL_CHANNELS.listPendingApprovals, input),
+      ) as readonly HermesAcpApprovalRequest[],
+    resolveApproval: (input: ResolveHermesAcpApprovalInput) =>
+      ipcRenderer.invoke(HERMES_ACP_APPROVAL_CHANNELS.resolveApproval, input) as Promise<{
+        outcome: 'allowed' | 'denied';
+      }>,
+    onEvent: (listener: (event: HermesAcpApprovalEvent) => void) => {
+      if (typeof listener !== 'function') {
+        throw new Error('invalid_hermes_acp_approval_event_listener');
+      }
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const parsed = HermesAcpApprovalEventSchema.safeParse(value);
+        if (parsed.success) listener(parsed.data);
+      };
+      ipcRenderer.on(HERMES_ACP_APPROVAL_CHANNELS.event, handler);
+      return () => {
+        ipcRenderer.removeListener(HERMES_ACP_APPROVAL_CHANNELS.event, handler);
       };
     },
   },

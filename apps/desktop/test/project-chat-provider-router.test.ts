@@ -103,9 +103,14 @@ class FakeHermesProvider extends FakeProvider implements RefreshableHermesProjec
     catalog: await this.listModelCatalog(),
     collaborationModes: await this.listCollaborationModeCatalog(),
   }));
+  readonly resets = vi.fn(() => 0);
 
   refreshConnectionCatalogs() {
     return this.refreshes();
+  }
+
+  resetConnection() {
+    return this.resets();
   }
 }
 
@@ -180,6 +185,20 @@ describe('ProjectChatProviderRouter', () => {
     await router.connectHermes();
 
     expect(hermes.refreshes).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects a model ID collision before Hermes becomes routable', async () => {
+    const { codex, hermes, router } = fixture();
+    vi.spyOn(codex, 'listModelCatalog').mockResolvedValue(
+      catalog('codex', HERMES_CONFIGURED_MODEL_ID, true),
+    );
+
+    await expect(router.connectHermes()).rejects.toThrow('project_chat_model_id_collision');
+    expect(hermes.resets).toHaveBeenCalledOnce();
+    expect(router.isHermesConnected()).toBe(false);
+    await expect(
+      router.startThread({ ...threadInput, modelId: HERMES_CONFIGURED_MODEL_ID }),
+    ).rejects.toThrow('hermes_not_connected');
   });
 
   it('routes model, native collaboration catalog, turn, cancel, and release without fallback', async () => {
@@ -312,7 +331,8 @@ describe('ProjectChatProviderRouter', () => {
     await router.disconnectHermes();
 
     expect(router.isHermesConnected()).toBe(false);
-    expect(hermes.releases).toHaveBeenCalledWith(hermesThread.threadId);
+    expect(hermes.resets).toHaveBeenCalledOnce();
+    expect(hermes.releases).not.toHaveBeenCalled();
     expect(codex.releases).not.toHaveBeenCalled();
     expect(disconnects).toEqual([{ providerId: HERMES_PROVIDER_ID }]);
     expect((await router.listModelCatalog()).models.map((model) => model.providerId)).toEqual([

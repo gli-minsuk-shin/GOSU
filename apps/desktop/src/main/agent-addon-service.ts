@@ -126,7 +126,7 @@ export class HermesAgentAddOnAdapter implements AgentAddOnAdapter {
     this.connectedStatus = {
       ...detected,
       connected: true,
-      connectionMode: 'byo-local-safe-chat',
+      connectionMode: 'byo-local-acp-agent',
       version: null,
       projectChatModel: {
         providerId: model.providerId,

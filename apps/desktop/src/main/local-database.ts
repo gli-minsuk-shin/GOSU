@@ -80,6 +80,7 @@ import {
   PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH,
   ProjectChatActionSchema,
   ProjectChatAttemptSchema,
+  ProjectChatHermesDelegationReceiptSchema,
   ProjectChatMessageSchema,
   PROJECT_CHAT_MAX_BRANCH_DEPTH,
   PROJECT_CHAT_MAX_BRANCH_MESSAGES,
@@ -95,6 +96,7 @@ import {
   defaultProjectChatProfile,
   type ProjectChatAction,
   type ProjectChatAttempt,
+  type ProjectChatHermesDelegationReceipt,
   type ProjectChatMessage,
   type ProjectChatProfile,
   type ProjectChatQueuedTurn,
@@ -3885,6 +3887,39 @@ export class LocalDatabase {
       );
       create index if not exists project_chat_research_note_receipts_by_status
         on project_chat_research_note_save_receipts(status,updated_at,attempt_id);
+      create table if not exists project_chat_hermes_delegation_receipts (
+        invocation_id text primary key check (length(invocation_id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null,
+        session_id text not null check (length(session_id) = 36),
+        attempt_id text not null check (length(attempt_id) = 36),
+        provider_id text not null check (provider_id = 'hermes'),
+        transport text not null check (transport = 'acp-v1'),
+        resolved_model_id text not null check (length(resolved_model_id) between 1 and 256),
+        configured_provider_id text not null check (
+          length(configured_provider_id) between 1 and 128
+        ),
+        catalog_version text not null check (length(catalog_version) = 64),
+        agent_name text check (agent_name is null or length(agent_name) between 1 and 256),
+        agent_version text check (
+          agent_version is null or length(agent_version) between 1 and 128
+        ),
+        stop_reason text not null check (length(stop_reason) between 1 and 128),
+        started_at text not null,
+        recorded_at text not null
+      );
+      create index if not exists project_chat_hermes_delegations_by_attempt
+        on project_chat_hermes_delegation_receipts(project_id,session_id,attempt_id,recorded_at);
+      create trigger if not exists project_chat_hermes_delegation_update_guard
+        before update on project_chat_hermes_delegation_receipts
+        begin
+          select raise(abort,'hermes_delegation_receipt_append_only');
+        end;
+      create trigger if not exists project_chat_hermes_delegation_delete_guard
+        before delete on project_chat_hermes_delegation_receipts
+        begin
+          select raise(abort,'hermes_delegation_receipt_append_only');
+        end;
       create table if not exists project_chat_actions (
         id text primary key,
         message_id text not null references project_chat_messages(id) on delete cascade,
@@ -5242,6 +5277,151 @@ export class LocalDatabase {
         attempt.userMessageId,
       );
     if (result.changes !== 1) throw new Error('chat_attempt_state_conflict');
+  }
+
+  recordHermesDelegationReceipt(input: ProjectChatHermesDelegationReceipt) {
+    const receipt = ProjectChatHermesDelegationReceiptSchema.parse(structuredClone(input));
+    const database = this.require();
+    database.transaction(() => {
+      const attempt = database
+        .prepare(
+          `select project_id,session_id,status from project_chat_attempts
+           where id=?`,
+        )
+        .get(receipt.attemptId) as
+        { project_id: string; session_id: string | null; status: string } | undefined;
+      if (
+        !attempt ||
+        attempt.project_id !== receipt.projectId ||
+        attempt.session_id !== receipt.sessionId ||
+        !['starting', 'running'].includes(attempt.status)
+      ) {
+        throw new Error('hermes_delegation_receipt_attempt_conflict');
+      }
+      database
+        .prepare(
+          `insert into project_chat_hermes_delegation_receipts(
+             invocation_id,schema_version,project_id,session_id,attempt_id,provider_id,
+             transport,resolved_model_id,configured_provider_id,catalog_version,
+             agent_name,agent_version,stop_reason,started_at,recorded_at
+           ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           on conflict(invocation_id) do nothing`,
+        )
+        .run(
+          receipt.invocationId,
+          receipt.schemaVersion,
+          receipt.projectId,
+          receipt.sessionId,
+          receipt.attemptId,
+          receipt.providerId,
+          receipt.transport,
+          receipt.resolvedModelId,
+          receipt.configuredProviderId,
+          receipt.catalogVersion,
+          receipt.agentName,
+          receipt.agentVersion,
+          receipt.stopReason,
+          receipt.startedAt,
+          receipt.recordedAt,
+        );
+      const stored = database
+        .prepare(
+          `select invocation_id,schema_version,project_id,session_id,attempt_id,provider_id,
+                  transport,resolved_model_id,configured_provider_id,catalog_version,
+                  agent_name,agent_version,stop_reason,started_at,recorded_at
+           from project_chat_hermes_delegation_receipts where invocation_id=?`,
+        )
+        .get(receipt.invocationId) as
+        | {
+            invocation_id: string;
+            schema_version: number;
+            project_id: string;
+            session_id: string;
+            attempt_id: string;
+            provider_id: string;
+            transport: string;
+            resolved_model_id: string;
+            configured_provider_id: string;
+            catalog_version: string;
+            agent_name: string | null;
+            agent_version: string | null;
+            stop_reason: string;
+            started_at: string;
+            recorded_at: string;
+          }
+        | undefined;
+      if (
+        !stored ||
+        stored.schema_version !== receipt.schemaVersion ||
+        stored.project_id !== receipt.projectId ||
+        stored.session_id !== receipt.sessionId ||
+        stored.attempt_id !== receipt.attemptId ||
+        stored.provider_id !== receipt.providerId ||
+        stored.transport !== receipt.transport ||
+        stored.resolved_model_id !== receipt.resolvedModelId ||
+        stored.configured_provider_id !== receipt.configuredProviderId ||
+        stored.catalog_version !== receipt.catalogVersion ||
+        stored.agent_name !== receipt.agentName ||
+        stored.agent_version !== receipt.agentVersion ||
+        stored.stop_reason !== receipt.stopReason ||
+        stored.started_at !== receipt.startedAt ||
+        stored.recorded_at !== receipt.recordedAt
+      ) {
+        throw new Error('hermes_delegation_receipt_conflict');
+      }
+    })();
+  }
+
+  listHermesDelegationReceipts(
+    projectId: string,
+    sessionId: string,
+    attemptId: string,
+  ): ProjectChatHermesDelegationReceipt[] {
+    const rows = this.require()
+      .prepare(
+        `select invocation_id,schema_version,project_id,session_id,attempt_id,provider_id,
+                transport,resolved_model_id,configured_provider_id,catalog_version,
+                agent_name,agent_version,stop_reason,started_at,recorded_at
+         from project_chat_hermes_delegation_receipts
+         where project_id=? and session_id=? and attempt_id=?
+         order by recorded_at asc,invocation_id asc`,
+      )
+      .all(projectId, sessionId, attemptId) as Array<{
+      invocation_id: string;
+      schema_version: number;
+      project_id: string;
+      session_id: string;
+      attempt_id: string;
+      provider_id: string;
+      transport: string;
+      resolved_model_id: string;
+      configured_provider_id: string;
+      catalog_version: string;
+      agent_name: string | null;
+      agent_version: string | null;
+      stop_reason: string;
+      started_at: string;
+      recorded_at: string;
+    }>;
+    return rows.map((row) =>
+      ProjectChatHermesDelegationReceiptSchema.parse({
+        schemaVersion: row.schema_version,
+        projectId: row.project_id,
+        sessionId: row.session_id,
+        attemptId: row.attempt_id,
+        invocationId: row.invocation_id,
+        providerId: row.provider_id,
+        transport: row.transport,
+        resolvedModelId: row.resolved_model_id,
+        configuredProviderId: row.configured_provider_id,
+        catalogVersion: row.catalog_version,
+        agentName: row.agent_name,
+        agentVersion: row.agent_version,
+        stopReason: row.stop_reason,
+        startedAt: row.started_at,
+        recordedAt: row.recorded_at,
+      }),
+    );
   }
 
   stageResearchNoteSave(input: ProjectChatResearchNoteSaveStage) {

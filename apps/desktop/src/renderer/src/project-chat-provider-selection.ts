@@ -17,6 +17,18 @@ export class ProjectChatProviderOperationQueue {
   }
 }
 
+const HERMES_PROVIDER_FAILURE_CODES = [
+  'hermes_runtime_check_failed',
+  'hermes_not_connected',
+  'codex_unavailable',
+  'chat_unavailable',
+] as const;
+
+export function isSelectedHermesProviderFailure(providerId: string | null, error: unknown) {
+  if (providerId !== 'hermes' || !(error instanceof Error)) return false;
+  return HERMES_PROVIDER_FAILURE_CODES.some((code) => error.message.includes(code));
+}
+
 export function selectProjectChatModel(
   current: ProjectChatModelSelection,
   next: Readonly<{ providerId: string | null; modelId: string | null }>,

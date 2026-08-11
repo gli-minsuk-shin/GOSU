@@ -489,6 +489,30 @@ export const ProjectChatAttemptSchema = z
 
 export type ProjectChatAttempt = z.infer<typeof ProjectChatAttemptSchema>;
 
+export const ProjectChatHermesDelegationReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    projectId: uuidSchema,
+    sessionId: uuidSchema,
+    attemptId: uuidSchema,
+    invocationId: uuidSchema,
+    providerId: z.literal('hermes'),
+    transport: z.literal('acp-v1'),
+    resolvedModelId: z.string().trim().min(1).max(256),
+    configuredProviderId: z.string().trim().min(1).max(128),
+    catalogVersion: sha256Schema,
+    agentName: z.string().trim().min(1).max(256).nullable(),
+    agentVersion: z.string().trim().min(1).max(128).nullable(),
+    stopReason: z.string().trim().min(1).max(128),
+    startedAt: timestampSchema,
+    recordedAt: timestampSchema,
+  })
+  .strict();
+
+export type ProjectChatHermesDelegationReceipt = z.infer<
+  typeof ProjectChatHermesDelegationReceiptSchema
+>;
+
 export const ProjectChatMessageSchema = z
   .object({
     id: uuidSchema,

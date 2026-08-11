@@ -5,6 +5,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ProjectAgentToolSession,
   type ProjectAgentExperiments,
+  type ProjectAgentHermes,
+  type ProjectAgentHermesDelegationInput,
+  type ProjectAgentHermesDelegationResult,
   type ProjectAgentLiterature,
   type ProjectAgentResearchNoteReceiptStorage,
   type ProjectAgentSsh,
@@ -21,7 +24,10 @@ import type {
   CodexDynamicToolResult,
   CodexJsonValue,
 } from '../src/main/codex-app-server';
-import type { LocalNotesVaultGrant } from '../src/shared/project-chat-contracts';
+import type {
+  LocalNotesVaultGrant,
+  ProjectChatHermesDelegationReceipt,
+} from '../src/shared/project-chat-contracts';
 import {
   EXPERIMENT_LOGGING_SYSTEM_FIELDS,
   type CreateExperimentRunInput,
@@ -412,6 +418,42 @@ class FakeProjectLiterature implements ProjectAgentLiterature {
         unchangedCount: 0,
         conflictCount: 1,
       };
+    },
+  );
+}
+
+class FakeProjectHermes implements ProjectAgentHermes {
+  connected = true;
+  readonly isConnected = vi.fn(() => this.connected);
+  readonly delegate = vi.fn(
+    async (
+      _input: ProjectAgentHermesDelegationInput,
+    ): Promise<ProjectAgentHermesDelegationResult> => ({
+      reply: 'Hermes delegated response',
+      provenance: {
+        invocationId: '55555555-5555-4555-8555-555555555555',
+        providerId: 'hermes',
+        transport: 'acp-v1',
+        resolvedModelId: 'fixture-hermes-model',
+        configuredProviderId: 'fixture-provider',
+        catalogVersion: 'c'.repeat(64),
+        agentName: 'Hermes Agent',
+        agentVersion: '0.19.1',
+        startedAt: '2026-08-05T00:00:00.000Z',
+      },
+      stopReason: 'end_turn',
+    }),
+  );
+}
+
+class FakeProjectAgentReceiptStorage implements ProjectAgentResearchNoteReceiptStorage {
+  readonly hermesDelegations: ProjectChatHermesDelegationReceipt[] = [];
+  readonly stageResearchNoteSave = vi.fn();
+  readonly markResearchNoteSaveUncertain = vi.fn();
+  readonly confirmResearchNoteSave = vi.fn();
+  readonly recordHermesDelegationReceipt = vi.fn(
+    async (receipt: ProjectChatHermesDelegationReceipt) => {
+      this.hermesDelegations.push(structuredClone(receipt));
     },
   );
 }
@@ -893,7 +935,9 @@ function authorizedSession(
   ssh = new FakeProjectSsh(),
   literature = new FakeProjectLiterature(),
   experiments?: ProjectAgentExperiments,
+  hermes?: ProjectAgentHermes,
 ) {
+  const receiptStorage = new FakeProjectAgentReceiptStorage();
   return {
     session: new ProjectAgentToolSession({
       projectId,
@@ -908,11 +952,20 @@ function authorizedSession(
       },
       literature,
       ssh,
+      researchNoteReceipts: receiptStorage,
       ...(experiments ? { experiments } : {}),
+      ...(hermes
+        ? {
+            hermes,
+            resolveProjectCwd: async () => `/isolated/${projectId}`,
+          }
+        : {}),
     }),
     vault,
     literature,
     ssh,
+    hermes,
+    receiptStorage,
   };
 }
 
@@ -970,6 +1023,188 @@ describe('ProjectAgentToolSession', () => {
     );
     expect(wrongNamespace.success).toBe(false);
     expect(resultPayload(wrongNamespace)).toEqual({ error: 'tool_not_allowed' });
+  });
+
+  it('offers connected Hermes delegation and binds a bounded result to this project turn', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const hermes = new FakeProjectHermes();
+    hermes.delegate.mockResolvedValueOnce({
+      reply: `Hermes\u0000 response\n${'x'.repeat(24_000)}`,
+      provenance: {
+        invocationId: '55555555-5555-4555-8555-555555555555',
+        providerId: 'hermes',
+        transport: 'acp-v1',
+        resolvedModelId: 'fixture\u0000model',
+        configuredProviderId: 'fixture-provider',
+        catalogVersion: 'c'.repeat(64),
+        agentName: 'Hermes\u0000Agent',
+        agentVersion: '0.19.1',
+        startedAt: '2026-08-05T00:00:00.000Z',
+      },
+      stopReason: 'end\u0000turn',
+    });
+    const { session, receiptStorage } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      hermes,
+    );
+
+    const declaredCatalog = JSON.stringify(session.dynamicTools);
+    expect(session.hermesDelegationAvailable).toBe(true);
+    expect(declaredCatalog).toContain('delegate_to_hermes_agent');
+    expect(declaredCatalog).toContain('explicitly asks Hermes');
+    expect(declaredCatalog).toContain('never use it as an automatic fallback');
+    expect(session.dynamicToolTimeouts).toContainEqual({
+      namespace: PROJECT_TOOL_NAMESPACE,
+      tool: 'delegate_to_hermes_agent',
+      timeoutMs: 600_000,
+    });
+
+    const result = await invokeTool(
+      session,
+      toolCall('delegate_to_hermes_agent', {
+        task: 'Independently inspect the proposed evaluation design.',
+        context: 'Use only this bounded active-project summary.',
+      }),
+    );
+    expect(result.success).toBe(true);
+    const input = hermes.delegate.mock.calls[0]![0];
+    expect(input).toMatchObject({
+      projectId: projectAlpha.id,
+      sessionId: CHAT_SESSION_ID,
+      attemptId: CHAT_ATTEMPT_ID,
+      cwd: `/isolated/${projectAlpha.id}`,
+      task: 'Independently inspect the proposed evaluation design.',
+      context: 'Use only this bounded active-project summary.',
+    });
+    expect(input.signal).toBeInstanceOf(AbortSignal);
+    const payload = resultPayload(result);
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      delegated: true,
+      provider: 'hermes',
+      trust: 'untrusted_agent_output',
+      responseTruncated: true,
+      stopReason: 'end�turn',
+      providerId: 'hermes',
+      modelId: 'fixture�model',
+    });
+    expect(String(payload.response)).not.toContain('\u0000');
+    expect([...String(payload.response)]).toHaveLength(20_000);
+    const appendix = await session.finalizeSourceAppendix();
+    expect(appendix).toContain('Agent delegation receipts');
+    expect(appendix).toContain(
+      'Hermes delegation · provider hermes · model fixture�model · stop end�turn',
+    );
+    expect(appendix).not.toContain('Independently inspect');
+    expect(appendix).not.toContain('Hermes� response');
+    expect(receiptStorage.recordHermesDelegationReceipt).toHaveBeenCalledOnce();
+    expect(receiptStorage.hermesDelegations[0]).toMatchObject({
+      schemaVersion: 1,
+      projectId: projectAlpha.id,
+      sessionId: CHAT_SESSION_ID,
+      attemptId: CHAT_ATTEMPT_ID,
+      invocationId: '55555555-5555-4555-8555-555555555555',
+      providerId: 'hermes',
+      transport: 'acp-v1',
+      resolvedModelId: 'fixture�model',
+      configuredProviderId: 'fixture-provider',
+      catalogVersion: 'c'.repeat(64),
+      agentName: 'Hermes�Agent',
+      agentVersion: '0.19.1',
+      stopReason: 'end�turn',
+      startedAt: '2026-08-05T00:00:00.000Z',
+    });
+    const durableReceipt = JSON.stringify(receiptStorage.hermesDelegations[0]);
+    expect(durableReceipt).not.toContain('Independently inspect');
+    expect(durableReceipt).not.toContain('bounded active-project summary');
+    expect(durableReceipt).not.toContain('Hermes delegated response');
+    expect(durableReceipt).not.toContain('credentialProof');
+  });
+
+  it('hides disconnected Hermes and never falls back when a live catalog loses connection', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const disconnectedHermes = new FakeProjectHermes();
+    disconnectedHermes.connected = false;
+    const disconnected = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      disconnectedHermes,
+    ).session;
+    expect(disconnected.hermesDelegationAvailable).toBe(false);
+    expect(JSON.stringify(disconnected.dynamicTools)).not.toContain('delegate_to_hermes_agent');
+
+    const hermes = new FakeProjectHermes();
+    const connected = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      hermes,
+    ).session;
+    hermes.connected = false;
+    const result = await invokeTool(
+      connected,
+      toolCall('delegate_to_hermes_agent', { task: 'Do this only in Hermes.' }),
+    );
+    expect(result.success).toBe(false);
+    expect(resultPayload(result)).toEqual({ error: 'hermes_unavailable' });
+    expect(hermes.delegate).not.toHaveBeenCalled();
+  });
+
+  it('aborts an active Hermes delegation when the project turn is revoked', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const hermes = new FakeProjectHermes();
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    hermes.delegate.mockImplementationOnce(
+      (input) =>
+        new Promise((resolve, reject) => {
+          markStarted();
+          input.signal.addEventListener(
+            'abort',
+            () => {
+              const error = new Error('cancelled');
+              error.name = 'AbortError';
+              reject(error);
+            },
+            { once: true },
+          );
+          void resolve;
+        }),
+    );
+    const { session } = authorizedSession(
+      workspace,
+      projectAlpha.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      hermes,
+    );
+    const pending = invokeTool(
+      session,
+      toolCall('delegate_to_hermes_agent', { task: 'Run a bounded independent review.' }),
+    );
+    await started;
+    session.revokeHermesCapability();
+
+    const result = await pending;
+    expect(result.success).toBe(false);
+    expect(resultPayload(result)).toEqual({ error: 'hermes_delegation_cancelled' });
+    expect(hermes.delegate.mock.calls[0]![0].signal.aborted).toBe(true);
   });
 
   it('revokes every project-bound read after the project is archived', async () => {
@@ -1168,6 +1403,7 @@ describe('ProjectAgentToolSession', () => {
       confirmResearchNoteSave: vi.fn(async () => {
         events.push('confirmed');
       }),
+      recordHermesDelegationReceipt: vi.fn(),
     };
     const session = new ProjectAgentToolSession({
       projectId: projectAlpha.id,
@@ -3294,7 +3530,7 @@ describe('ProjectAgentToolSession', () => {
       truncated: false,
       durationMs: 12,
     });
-    const mismatched = `${stdout}\n{\"tampered\":true}`;
+    const mismatched = `${stdout}\n{"tampered":true}`;
     ssh.runAgentWorkspaceFileOperation.mockResolvedValueOnce({
       schemaVersion: 1,
       trust: 'untrusted_remote_output',
