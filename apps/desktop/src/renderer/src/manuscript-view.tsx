@@ -7,6 +7,10 @@ import type {
   ManuscriptWorkspaceSnapshot,
 } from '../../shared/manuscript-workspace-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
+import {
+  activeManuscriptBindingCheckpoint,
+  deriveManuscriptProviderChange,
+} from './manuscript-provider-change';
 import { describeError } from './ui-primitives';
 
 function shortRevision(revision: string | null) {
@@ -173,6 +177,7 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState('Main manuscript');
   const [rootDocument, setRootDocument] = useState('paper/main.tex');
+  const [failedChecks, setFailedChecks] = useState<Record<string, true>>({});
   const requestGeneration = useRef(0);
 
   const load = async () => {
@@ -190,6 +195,7 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
     requestGeneration.current += 1;
     setSnapshot(null);
     setBusy(null);
+    setFailedChecks({});
     void load();
     return () => {
       requestGeneration.current += 1;
@@ -206,6 +212,39 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
       if (generation === requestGeneration.current) setSnapshot(next);
     } catch (operationError) {
       if (generation === requestGeneration.current) setError(describeError(operationError));
+    } finally {
+      if (generation === requestGeneration.current) setBusy(null);
+    }
+  };
+
+  const checkOverleafChanges = async (
+    manuscriptId: string,
+    bindingId: string,
+    operation: () => Promise<ManuscriptWorkspaceSnapshot>,
+  ) => {
+    if (busy) return;
+    const key = `inspect:${manuscriptId}`;
+    const generation = ++requestGeneration.current;
+    setBusy(key);
+    setError(null);
+    try {
+      const next = await operation();
+      if (generation === requestGeneration.current) {
+        setSnapshot(next);
+        setFailedChecks((current) => {
+          if (!current[bindingId]) return current;
+          const nextChecks = { ...current };
+          delete nextChecks[bindingId];
+          return nextChecks;
+        });
+      }
+    } catch (operationError) {
+      if (generation === requestGeneration.current) {
+        setFailedChecks((current) => ({ ...current, [bindingId]: true }));
+        setError(
+          `Couldn't check Overleaf. Previous result may be stale. No remote files were changed. ${describeError(operationError)}`,
+        );
+      }
     } finally {
       if (generation === requestGeneration.current) setBusy(null);
     }
@@ -300,6 +339,15 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
         ) : (
           snapshot.manuscripts.map((item) => {
             const { manuscript, connection } = item;
+            const activeCheckpoint = connection
+              ? activeManuscriptBindingCheckpoint(connection)
+              : null;
+            const providerChange = connection
+              ? deriveManuscriptProviderChange(
+                  connection,
+                  Boolean(failedChecks[connection.binding.bindingId]),
+                )
+              : null;
             return (
               <article className="card manuscript-item" key={manuscript.id}>
                 <div className="manuscript-item-head">
@@ -360,10 +408,8 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                         <strong>{shortRevision(connection.lastObservedProviderRevision)}</strong>
                       </div>
                       <div>
-                        <small>Captured inbound checkpoint</small>
-                        <strong>
-                          {shortRevision(connection.lastCheckpoint?.providerRevision ?? null)}
-                        </strong>
+                        <small>Current binding checkpoint</small>
+                        <strong>{shortRevision(activeCheckpoint?.providerRevision ?? null)}</strong>
                       </div>
                       <div>
                         <small>Authority</small>
@@ -378,6 +424,24 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                       {providerEditingLabel(connection)} Captured checkpoints are not imported or
                       reviewable in GOSU yet.
                     </p>
+                    {providerChange && (
+                      <div
+                        className={`manuscript-provider-change state-${providerChange.state}`}
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <div>
+                          <small>Overleaf change check</small>
+                          <strong>{providerChange.title}</strong>
+                        </div>
+                        <span>{providerChange.detail}</span>
+                        <small>
+                          {connection.lastObservedAt
+                            ? `Last provider check: ${new Date(connection.lastObservedAt).toLocaleString()}`
+                            : 'Last provider check: Never'}
+                        </small>
+                      </div>
+                    )}
                     {connection.lastFailureCode && (
                       <p className="manuscript-connection-warning">
                         {describeError(new Error(connection.lastFailureCode))}
@@ -397,18 +461,24 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                         type="button"
                         className="secondary-button"
                         disabled={Boolean(busy)}
+                        aria-busy={busy === `inspect:${manuscript.id}`}
                         onClick={() =>
-                          void run(`inspect:${manuscript.id}`, () =>
-                            window.gosu.manuscriptWorkspace.inspect({
-                              projectId: project.id,
-                              manuscriptId: manuscript.id,
-                              bindingId: connection.binding.bindingId,
-                              expectedBindingVersion: connection.binding.version,
-                            }),
+                          void checkOverleafChanges(
+                            manuscript.id,
+                            connection.binding.bindingId,
+                            () =>
+                              window.gosu.manuscriptWorkspace.inspect({
+                                projectId: project.id,
+                                manuscriptId: manuscript.id,
+                                bindingId: connection.binding.bindingId,
+                                expectedBindingVersion: connection.binding.version,
+                              }),
                           )
                         }
                       >
-                        {busy === `inspect:${manuscript.id}` ? 'Checking…' : 'Check remote'}
+                        {busy === `inspect:${manuscript.id}`
+                          ? 'Checking Overleaf…'
+                          : 'Check Overleaf changes'}
                       </button>
                       <button
                         type="button"

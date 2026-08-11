@@ -1336,10 +1336,14 @@ flowchart LR
   아직 source import, diff, preview 또는 review candidate가 아닌 immutable transport checkpoint로만
   취급한다. 현재 GOSU는 provider에 push, auto-import, auto-merge/rebase, background poll, comment·Track
   Changes round-trip 또는 provider authority 전환을 하지 않는다.
-- status는 content를 받지 않는 `ls-remote`로 exact `master` revision만 관찰한다. Fetch는 그 revision이
-  바뀌지 않았는지 다시 확인하고 shallow exact-revision ref를 binding별 bare mirror로 받아 commit/tree와
-  regular root `.tex` blob을 검증한다. `git fsck --connectivity-only`로 bibliography, include와 image를 포함한
-  reachable object 연결성까지 통과한 뒤에만 GOSU checkpoint ref를 pin한다.
+- `Check Overleaf changes`는 content를 받지 않는 read-only `ls-remote`로 exact `master` revision만 관찰한다.
+  UI는 manuscript 전체의 과거 checkpoint가 아니라 현재 active binding에서 캡처한 checkpoint와만 revision을
+  비교해 baseline 없음·변경 없음·새 Overleaf revision을 표시한다. Git HEAD만으로 편집자 identity, 저장 전
+  realtime edit 또는 source-level merge conflict를 알 수 없으므로 `syncState=diverged`를 충돌 판정에 재사용하지
+  않고, 변경을 발견해도 3-way source 비교 전에는 conflict나 conflict-free를 단정하지 않는다. Fetch는 관찰한
+  revision이 바뀌지 않았는지 다시 확인하고 shallow exact-revision ref를 binding별 bare mirror로 받아
+  commit/tree와 regular root `.tex` blob을 검증한다. `git fsck --connectivity-only`로 bibliography, include와
+  image를 포함한 reachable object 연결성까지 통과한 뒤에만 GOSU checkpoint ref를 pin한다.
 - `revisionEnvelopeDigest`는 provider ID·commit OID·tree OID의 identity envelope이지 canonical source-byte
   digest가 아니다. native migration과 publish 전에는 deterministic source artifact digest 계약을 추가해야
   한다.
@@ -2341,6 +2345,8 @@ artifact purge 및 reference-aware credential cleanup queue의 durable cursor·e
 `pnpm --filter @gosu/desktop smoke:manuscript-layout:mac`은 실제 Manuscript React view를 최소 창
 `1060×700`, 440px project sidebar와 Extra Large text에서 실행한다. 연결 전·연결 후·오류/Retry 상태의
 container query, control containment, hit target, vertical scroll과 horizontal overflow 부재를 검증한다.
+Renderer unit test는 현재 binding checkpoint만 비교 기준으로 인정하고 baseline 없음·동일 revision·새
+revision·실패 후 stale 표시를 구분하며, 편집자 identity나 merge 안전성을 단정하는 문구가 없는지도 검증한다.
 
 Project Agent tool test는 active project 밖의 Board·Objective가 섞이지 않는지, forged project
 argument·credential 포함 repository와 raw path가 차단되는지, grant가 없거나 선택 Vault가 바뀌면 note

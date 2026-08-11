@@ -207,6 +207,44 @@
   font-size: 0.88rem;
 }
 
+.manuscript-provider-change {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.7fr) minmax(260px, 1.3fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--subtle);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.manuscript-provider-change > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.manuscript-provider-change small,
+.manuscript-provider-change span {
+  color: var(--muted);
+}
+
+.manuscript-provider-change > small {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.manuscript-provider-change.state-unchanged {
+  border-left-color: var(--green);
+}
+
+.manuscript-provider-change.state-provider_changed,
+.manuscript-provider-change.state-check_failed {
+  border-left-color: var(--orange);
+}
+
 .manuscript-future-engines {
   padding: 16px 18px;
 }
@@ -226,6 +264,15 @@
   .manuscript-create-form .secondary-button {
     grid-column: 1 / -1;
   }
+
+  .manuscript-provider-change {
+    grid-template-columns: minmax(180px, 0.75fr) minmax(240px, 1.25fr);
+  }
+
+  .manuscript-provider-change > small {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
 }
 
 @container (max-width: 720px) {
@@ -241,6 +288,16 @@
 
   .manuscript-boundary-card {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .manuscript-provider-change {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .manuscript-provider-change > small {
+    grid-column: auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 

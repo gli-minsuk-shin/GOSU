@@ -100,7 +100,10 @@ but it is not yet a deployed end-to-end product:
   Retained mirrors are bounded per binding and across the app, and failed unpinned fetches are
   pruned. Checkpoints are accepted only after the complete reachable Git object graph and the
   configured root TeX document pass validation. Users can correct a manuscript title or root TeX
-  path with optimistic version protection.
+  path with optimistic version protection. A read-only `Check Overleaf changes` action compares the
+  latest observed revision only with the checkpoint captured for that active binding. It can flag a
+  new Overleaf revision, but it cannot identify an editor or claim a file-level merge conflict until
+  provider-neutral source import and three-way comparison exist.
   It does not push, merge, rebase, poll in the background, synchronize Overleaf review metadata,
   or transfer editing authority. GOSU Local/Cloud LaTeX adapters, compile/PDF editing, durable
   cross-process sync attempts, provider-neutral source/artifact and editor/realtime ports, staged
