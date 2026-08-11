@@ -172,6 +172,9 @@ describe('separated application Settings', () => {
     expect(html).toContain('Connect existing Hermes (BYO)');
     expect(html).toContain('GOSU neither copies nor synchronizes its credentials');
     expect(html).toContain('Hermes is optional, local, and never an automatic fallback');
+    expect(html).toContain('native tool surface is disabled');
+    expect(html).toContain('Hermes turns do not show tool approval prompts');
+    expect(html).toContain('Terminal, processes, code execution, files, web, browser automation');
     expect(html).toContain('OpenClaw remains detection-only');
     expect(html).not.toContain('Connected to OpenClaw');
     expect(html).not.toContain('Connected to Hermes');

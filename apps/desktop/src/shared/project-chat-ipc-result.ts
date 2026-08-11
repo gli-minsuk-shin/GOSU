@@ -32,6 +32,7 @@ export const PROJECT_CHAT_IPC_ERROR_CODES = [
   'action_not_found',
   'action_not_proposed',
   'invalid_chat_input',
+  'hermes_runtime_check_failed',
   'codex_unavailable',
   'chat_unavailable',
 ] as const;

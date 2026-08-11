@@ -7,6 +7,7 @@ import {
   ProjectChatView,
   projectChatTodoSkillSuggestions,
   reconcileProjectChatSessionUiState,
+  resolveProjectChatBranchActionState,
   resolveEditedMessageBranchPoint,
   resolveFailedTurnRecoveryMode,
   resolveEffectiveCodexModel,
@@ -64,7 +65,7 @@ const linkedServerSnapshot: SshServerResourceSnapshot = {
 };
 
 describe('advanced Project Chat controls', () => {
-  it('shows the explicit BYO Hermes boundary and disables attachments for its text-only model', () => {
+  it('shows the explicit BYO Hermes ACP boundary and disables unbridged attachments', () => {
     const html = renderToStaticMarkup(
       <ProjectChatView
         project={project}
@@ -107,15 +108,19 @@ describe('advanced Project Chat controls', () => {
 
     expect(html).toContain('Hermes configured model');
     expect(html).not.toContain('Hermes · Hermes ·');
-    expect(html).toContain('BYO Hermes · sealed text-only mode');
-    expect(html).toContain('No attachments, web, files');
+    expect(html).toContain('BYO Hermes · ACP agent mode');
+    expect(html).not.toContain('web_search');
+    expect(html).not.toContain('web_extract');
+    expect(html).not.toContain('delegate_task');
+    expect(html).toContain('No tool approval prompts are shown');
+    expect(html).toContain('Terminal, code execution, files, web, browser automation');
     expect(html).toContain('Hermes turn active');
-    expect(html).toContain('현재 프로젝트 Board와 Objective snapshot만 text context로 전달합니다');
+    expect(html).toContain('선택된 Hermes ACP agent가 활용합니다');
     expect(html).toMatch(
-      /disabled=""[^>]*aria-label="Attachments unavailable with BYO Hermes"[^>]*aria-describedby=/u,
+      /disabled=""[^>]*aria-label="Turn attachments are not yet bridged to BYO Hermes"[^>]*aria-describedby=/u,
     );
     expect(html).toContain(
-      'The initial BYO Hermes connection is text-only; choose Codex to attach files',
+      'Turn attachments are not bridged to Hermes ACP yet; choose Codex to attach files',
     );
     expect(html).not.toContain('>Authorize…<');
     expect(html).not.toContain('>Enable automatic saves…<');
@@ -163,12 +168,10 @@ describe('advanced Project Chat controls', () => {
       />,
     );
 
-    expect(html).toContain('Hermes · text-only · no tools');
-    expect(html).toContain(
-      'BYO Hermes is sealed and text-only. Attachments, web, files, project mutations, and local or SSH tools are unavailable.',
-    );
+    expect(html).toContain('Hermes ACP · no native tools');
+    expect(html).toContain('BYO Hermes runs through a verified ACP agent with no native tools.');
     expect(html).toMatch(
-      /aria-label="Attachments unavailable with BYO Hermes"[^>]*aria-describedby=/u,
+      /aria-label="Turn attachments are not yet bridged to BYO Hermes"[^>]*aria-describedby=/u,
     );
   });
 
@@ -206,8 +209,8 @@ describe('advanced Project Chat controls', () => {
 
     expect(html).toContain('no longer in the live Project Chat catalog');
     expect(html).not.toContain('no longer in the live Codex catalog');
-    expect(html).toContain('BYO Hermes · sealed text-only mode');
-    expect(html).toContain('Attachments unavailable with BYO Hermes');
+    expect(html).toContain('BYO Hermes · ACP agent mode');
+    expect(html).toContain('Turn attachments are not yet bridged to BYO Hermes');
   });
 
   it('shows the /todo skill only while its slash command is being entered', () => {
@@ -217,6 +220,111 @@ describe('advanced Project Chat controls', () => {
     expect(projectChatTodoSkillSuggestions('/todo list')).toEqual([]);
     expect(projectChatTodoSkillSuggestions('/unknown')).toEqual([]);
     expect(projectChatTodoSkillSuggestions('add a task')).toEqual([]);
+  });
+
+  it('keeps provenance and history actions in one compact accessible message footer', () => {
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [
+            {
+              id: '22222222-2222-4222-8222-222222222220',
+              projectId: project.id,
+              role: 'user',
+              content: 'Revise this idea.',
+              status: 'complete',
+              model: {
+                invocationId: '22222222-2222-4222-8222-222222222221',
+                providerId: 'codex',
+                requestedModelId: 'fixture-model',
+                resolvedModelId: 'fixture-model',
+                catalogVersion: 'fixture-catalog',
+                reasoningOptionId: 'high',
+              },
+              actions: [],
+              createdAt: '2026-08-04T00:00:00.000Z',
+              completedAt: '2026-08-04T00:00:01.000Z',
+            },
+            {
+              id: '22222222-2222-4222-8222-222222222222',
+              projectId: project.id,
+              role: 'assistant',
+              content: 'Here is the revision.',
+              status: 'complete',
+              actions: [],
+              createdAt: '2026-08-04T00:00:02.000Z',
+              completedAt: '2026-08-04T00:00:03.000Z',
+            },
+          ],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={false}
+        models={[]}
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html.match(/class="chat-message-meta"/gu)).toHaveLength(2);
+    expect(html.match(/aria-label="Message history actions"/gu)).toHaveLength(2);
+    expect(html).toContain('class="message-provenance"');
+    expect(html).toMatch(
+      /<footer class="chat-message-meta"><div class="message-provenance">.*?<\/div><div class="chat-message-branch"/u,
+    );
+    expect(html).toMatch(
+      /Here is the revision\.<\/p><\/div><footer class="chat-message-meta"><div class="chat-message-branch"/u,
+    );
+    expect(html).toContain('aria-label="Edit this message in a new chat branch"');
+    expect(html).toContain('aria-label="Create a new chat branch from this message"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('aria-busy="false"');
+    expect(html.match(/✎ Edit &amp; branch/gu)).toHaveLength(1);
+    expect(html.match(/⑂ Branch/gu)).toHaveLength(2);
+    expect(resolveProjectChatBranchActionState(false)).toEqual({
+      label: '⑂ Branch',
+      accessibleLabel: 'Create a new chat branch from this message',
+      busy: false,
+    });
+    expect(resolveProjectChatBranchActionState(true)).toEqual({
+      label: 'Creating…',
+      accessibleLabel: 'Creating chat branch…',
+      busy: true,
+    });
+  });
+
+  it('keeps message history controls dense while preserving touch targets', () => {
+    const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
+    const metaRule = styles.match(/\.chat-message-meta\s*\{(?<body>[^}]*)\}/u)?.groups?.body;
+    const branchButtonRule = styles.match(/\.chat-message-branch button\s*\{(?<body>[^}]*)\}/u)
+      ?.groups?.body;
+
+    expect(metaRule).toBeDefined();
+    expect(metaRule).toContain('display: flex');
+    expect(metaRule).toContain('flex-wrap: wrap');
+    expect(metaRule).not.toContain('padding-top');
+    expect(metaRule).not.toContain('border-top');
+    expect(branchButtonRule).toContain('min-height: 24px');
+    expect(branchButtonRule).toContain('white-space: nowrap');
+    expect(styles).toMatch(
+      /@media \(pointer: coarse\)\s*\{\s*\.chat-message-branch button\s*\{[^}]*min-height:\s*44px;/su,
+    );
   });
 
   it('shows the full proposed task description inside a bounded review region', () => {

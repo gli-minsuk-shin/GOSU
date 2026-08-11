@@ -33,6 +33,10 @@ type ChatGeometry = Readonly<{
   transcriptClientHeight: number;
   transcriptScrollHeight: number;
   transcriptScrollTop: number;
+  messageMetaCount: number;
+  messageMetaMaxHeight: number;
+  messageMetaOverflowCount: number;
+  messageActionGroupMaxHeight: number;
   viewportWidth: number;
   viewportHeight: number;
 }>;
@@ -61,7 +65,14 @@ function transcriptMarkup() {
     { length: 32 },
     (_, index) => `<article class="chat-message ${index % 2 === 0 ? 'user' : 'assistant'}">
       <header><strong>${index % 2 === 0 ? 'YOU' : 'GOSU'}</strong><span>Turn ${index + 1}</span></header>
-      <p>Long project discussion ${index + 1}. This rendered turn keeps the transcript locally scrollable while the surrounding Project Chat workspace remains geometrically stable.</p>
+      <div class="message-copy"><p>Long project discussion ${index + 1}. This rendered turn keeps the transcript locally scrollable while the surrounding Project Chat workspace remains geometrically stable.</p></div>
+      <footer class="chat-message-meta">
+        <div class="message-provenance">Codex · fixture-model · reasoning high</div>
+        <div class="chat-message-branch" role="group" aria-label="Message history actions">
+          ${index % 2 === 0 ? '<button class="ghost-button" aria-label="Edit this message in a new chat branch">✎ Edit &amp; branch</button>' : ''}
+          <button class="ghost-button" aria-label="Create a new chat branch from this message">⑂ Branch</button>
+        </div>
+      </footer>
     </article>`,
   ).join('');
 }
@@ -136,7 +147,7 @@ function fixtureMarkup(styles: string) {
               <header class="chat-toolbar">
                 <div class="chat-toolbar-summary" hidden>
                   <div class="chat-toolbar-summary-identity"><span class="chat-orbit">G</span><div><strong>Project Copilot</strong><span data-project-name>${projectName}</span></div></div>
-                  <div class="chat-toolbar-summary-badges"><span>Hermes configured model with long provider metadata</span><span>Model default reasoning</span><span>Hermes · text-only · no tools</span><span>3 linked servers</span></div>
+                  <div class="chat-toolbar-summary-badges"><span>Hermes configured model with long provider metadata</span><span>Model default reasoning</span><span>Hermes ACP · no native tools</span><span>3 linked servers</span></div>
                 </div>
                 <div class="chat-toolbar-details" id="fixture-chat-toolbar-details">
                   <div class="chat-identity">
@@ -150,8 +161,8 @@ function fixtureMarkup(styles: string) {
                     <button class="secondary-button chat-agent-toggle">Agent controls</button>
                   </div>
                   <div class="chat-provider-boundary" role="note">
-                    <strong>BYO Hermes · sealed text-only mode</strong>
-                    <span>Uses the Hermes model configured on this Mac. No attachments, web, files, Board or Research Notes mutations, or local and SSH tools cross this boundary, including at the minimum supported window width and extra-large text size.</span>
+                    <strong>BYO Hermes · ACP agent mode</strong>
+                    <span>Uses verified Hermes ACP with no native tools. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Terminal, files, web, native delegation, MCP, GOSU tools, and attachments remain disabled at the minimum supported window width and extra-large text size.</span>
                   </div>
                   <div class="chat-ssh-setup-notice">
                     <div><strong>SSH server registered — project access is not granted yet</strong><span>Choose one specific remote project folder before Project Chat can use this server.</span></div>
@@ -231,6 +242,27 @@ function verifyViewportContainment(metrics: ChatGeometry, scenario: string) {
 
 function verifyScenario(scenario: Scenario, metrics: ScenarioMetrics) {
   const prefix = scenario.name;
+
+  for (const [state, geometry] of [
+    ['expanded', metrics.expanded],
+    ['headerCollapsed', metrics.headerCollapsed],
+    ['headerExpandedAgain', metrics.headerExpandedAgain],
+    ['railCollapsed', metrics.railCollapsed],
+  ] as const) {
+    invariant(geometry.messageMetaCount === 32, `${prefix}_${state}_message_meta_missing`);
+    invariant(
+      geometry.messageMetaOverflowCount === 0,
+      `${prefix}_${state}_message_meta_overflowed`,
+    );
+    invariant(
+      geometry.messageActionGroupMaxHeight <= 26,
+      `${prefix}_${state}_message_actions_too_tall_${geometry.messageActionGroupMaxHeight}`,
+    );
+    invariant(
+      geometry.messageMetaMaxHeight <= (scenario.name === 'wide' ? 30 : 60),
+      `${prefix}_${state}_message_meta_too_tall_${geometry.messageMetaMaxHeight}`,
+    );
+  }
 
   for (const [state, geometry] of [
     ['expanded', metrics.expanded],
@@ -452,6 +484,8 @@ async function measureScenario(window: BrowserWindow, scenario: Scenario) {
       const read = () => {
         transcript.scrollTop = transcript.scrollHeight;
         const projectNameStyle = getComputedStyle(projectName);
+        const messageMetaRows = [...document.querySelectorAll('.chat-message-meta')];
+        const messageActionGroups = [...document.querySelectorAll('.chat-message-branch')];
         return {
           workspace: rect(workspace),
           rail: rect(rail),
@@ -473,6 +507,10 @@ async function measureScenario(window: BrowserWindow, scenario: Scenario) {
           transcriptClientHeight: transcript.clientHeight,
           transcriptScrollHeight: transcript.scrollHeight,
           transcriptScrollTop: transcript.scrollTop,
+          messageMetaCount: messageMetaRows.length,
+          messageMetaMaxHeight: Math.max(...messageMetaRows.map((element) => element.getBoundingClientRect().height)),
+          messageMetaOverflowCount: messageMetaRows.filter((element) => element.scrollWidth > element.clientWidth + 1).length,
+          messageActionGroupMaxHeight: Math.max(...messageActionGroups.map((element) => element.getBoundingClientRect().height)),
           viewportWidth: window.innerWidth,
           viewportHeight: window.innerHeight,
         };

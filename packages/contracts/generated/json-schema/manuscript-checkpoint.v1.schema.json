@@ -1,0 +1,61 @@
+{
+  "$id": "urn:gosu:contract:v1:ManuscriptCheckpointV1",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "number", "const": 1 },
+    "checkpointId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "bindingId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "manuscriptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "providerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "direction": { "type": "string", "enum": ["bootstrap", "fetch", "publish", "migration"] },
+    "sourceAuthority": { "type": "string", "enum": ["gosu", "provider"] },
+    "sourceRevision": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "gosuRevision": {
+      "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+    },
+    "providerRevision": {
+      "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+    },
+    "cursor": {
+      "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+    },
+    "revisionEnvelopeDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "rootDocument": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 1024,
+      "pattern": "^(?!\\/)(?!.*\\/\\/)(?!.*(?:^|\\/)\\.{1,2}(?:\\/|$))(?!.*\\\\).+\\.tex$"
+    },
+    "baseCheckpointId": {
+      "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 128 }, { "type": "null" }]
+    },
+    "actorId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "checkpointId",
+    "bindingId",
+    "projectId",
+    "manuscriptId",
+    "providerId",
+    "direction",
+    "sourceAuthority",
+    "sourceRevision",
+    "gosuRevision",
+    "providerRevision",
+    "cursor",
+    "revisionEnvelopeDigest",
+    "rootDocument",
+    "baseCheckpointId",
+    "actorId",
+    "observedAt"
+  ],
+  "additionalProperties": false
+}

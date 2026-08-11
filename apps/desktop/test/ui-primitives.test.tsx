@@ -35,4 +35,31 @@ describe('describeError', () => {
       'cannot use MoA or a provider that starts another agent',
     );
   });
+
+  it('explains manuscript connector failures without echoing private provider detail', () => {
+    expect(describeError(new Error('overleaf_git_auth_required:token=private'))).toBe(
+      'Overleaf Git authentication failed. Check your personal Git token and Premium Git access.',
+    );
+    expect(describeError(new Error('overleaf_git_url_invalid:https://private.example'))).toContain(
+      'official HTTPS Overleaf Git URL',
+    );
+    expect(describeError(new Error('overleaf_git_remote_rewritten:private-sha'))).toContain(
+      'changed after the revision was observed',
+    );
+    expect(describeError(new Error('manuscript_provider_revision_required'))).toContain(
+      'capturing an inbound checkpoint',
+    );
+    expect(describeError(new Error('overleaf_git_checkpoint_too_large:private-pack'))).toContain(
+      '256 MB',
+    );
+    expect(describeError(new Error('manuscript_binding_conflict:raw-git-output'))).toContain(
+      'No remote content was changed',
+    );
+    expect(describeError(new Error('overleaf_keychain_unavailable:/Users/private'))).not.toContain(
+      '/Users/private',
+    );
+    expect(describeError(new Error('manuscript_workspace_unavailable:secret'))).not.toContain(
+      'secret',
+    );
+  });
 });

@@ -4,7 +4,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   JobManifestV1Schema,
+  ManuscriptCheckpointV1Schema,
+  ManuscriptWorkspaceBindingV1Schema,
+  ManuscriptWorkspaceDescriptorV1Schema,
   ModelDescriptorSchema,
+  ObjectiveSnapshotSchema,
+  ObjectiveVersionSchema,
+  PrimaryMetricSchema,
   RunnerEventMessageV1Schema,
   contractJsonSchema,
 } from '../src/index.js';
@@ -40,6 +46,69 @@ function jsonPointerExists(document: unknown, reference: string): boolean {
 }
 
 describe('contract schemas', () => {
+  it('requires a target before target-based stopping without breaking target-optional snapshots', () => {
+    const primaryMetric = {
+      key: 'validation_loss',
+      displayName: 'Validation loss',
+      direction: 'minimize',
+      unit: null,
+      aggregation: 'minimum',
+      evaluatorHash: 'sha256:evaluator',
+      datasetHash: 'sha256:dataset',
+      holdoutHash: null,
+      baseline: null,
+      target: null,
+    } as const;
+    const budget = {
+      maxTrials: 10,
+      maxConcurrentTrials: 1,
+      maxWallTimeSeconds: 3_600,
+      maxGpuHours: 0,
+      maxFailures: 3,
+    } as const;
+    const objective = {
+      schemaVersion: 1,
+      objectiveVersionId: 'objective-optional-target',
+      projectId: 'project-optional-target',
+      version: 1,
+      goal: 'Measure reproducible progress without a target threshold.',
+      primaryMetric,
+      guardrails: [],
+      budget,
+      stopPolicy: {
+        stopWhenTargetReached: false,
+        guardrailAction: 'pause',
+        maxConsecutiveNoImprovement: null,
+      },
+      createdBy: 'researcher-1',
+      createdAt: '2026-08-11T00:00:00.000Z',
+    } as const;
+
+    expect(PrimaryMetricSchema.safeParse(primaryMetric).success).toBe(true);
+    expect(
+      ObjectiveSnapshotSchema.safeParse({
+        objectiveVersionId: objective.objectiveVersionId,
+        version: objective.version,
+        primaryMetric,
+        budget,
+      }).success,
+    ).toBe(true);
+    expect(ObjectiveVersionSchema.safeParse(objective).success).toBe(true);
+    expect(
+      ObjectiveVersionSchema.safeParse({
+        ...objective,
+        stopPolicy: { ...objective.stopPolicy, stopWhenTargetReached: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      ObjectiveVersionSchema.safeParse({
+        ...objective,
+        primaryMetric: { ...primaryMetric, target: 0 },
+        stopPolicy: { ...objective.stopPolicy, stopWhenTargetReached: true },
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts provider-discovered opaque model identifiers', () => {
     const discoveredModelId = `provider-discovered-${Date.now()}`;
     const descriptor = ModelDescriptorSchema.parse({
@@ -82,6 +151,90 @@ describe('contract schemas', () => {
     expect(message.event).toMatchObject({ sequence: 7, isSummary: true });
     expect(() =>
       RunnerEventMessageV1Schema.parse({ ...message, runnerId: 'different-runner' }),
+    ).toThrow();
+  });
+
+  it('keeps manuscript workspace identity provider-neutral and payload-free', () => {
+    const capabilities = {
+      schemaVersion: 1,
+      interactionModes: ['checkpoint_pull', 'external_realtime_editor'],
+      revisionTopology: 'linear',
+      conditionalPublish: false,
+      providerHistory: true,
+      presence: false,
+      comments: false,
+      trackChanges: false,
+      serverCompile: false,
+      reviewMetadataRoundTrip: 'unsupported',
+    } as const;
+    const descriptor = ManuscriptWorkspaceDescriptorV1Schema.parse({
+      schemaVersion: 1,
+      providerId: 'provider-discovered-at-runtime',
+      displayName: 'Provider discovered at runtime',
+      workspaceKind: 'remote_git_checkpoint',
+      collaborationModel: 'checkpoint',
+      capabilities,
+      unsupportedMetadata: ['comments', 'track_changes'],
+      limitations: ['manual_checkpoint_only'],
+    });
+    const binding = ManuscriptWorkspaceBindingV1Schema.parse({
+      schemaVersion: 1,
+      bindingId: 'binding-1',
+      projectId: 'project-1',
+      manuscriptId: 'manuscript-1',
+      providerId: descriptor.providerId,
+      capabilitiesSnapshot: descriptor.capabilities,
+      authority: 'provider',
+      enabled: true,
+      version: 1,
+      createdAt: '2026-08-11T00:00:00.000Z',
+      updatedAt: '2026-08-11T00:00:00.000Z',
+    });
+
+    expect(binding.providerId).toBe('provider-discovered-at-runtime');
+    expect(Object.keys(binding)).not.toEqual(
+      expect.arrayContaining([
+        'url',
+        'token',
+        'credential',
+        'branch',
+        'filesystemPath',
+        'providerWorkspaceRef',
+        'connectionRef',
+      ]),
+    );
+    expect(() =>
+      ManuscriptWorkspaceBindingV1Schema.parse({ ...binding, token: 'must-not-cross-contract' }),
+    ).toThrow();
+  });
+
+  it('records immutable manuscript checkpoint provenance without source payloads', () => {
+    const checkpoint = ManuscriptCheckpointV1Schema.parse({
+      schemaVersion: 1,
+      checkpointId: 'checkpoint-1',
+      bindingId: 'binding-1',
+      projectId: 'project-1',
+      manuscriptId: 'manuscript-1',
+      providerId: 'native-provider',
+      direction: 'fetch',
+      sourceAuthority: 'provider',
+      sourceRevision: 'provider-revision-1',
+      gosuRevision: 'gosu-revision-1',
+      providerRevision: 'provider-revision-1',
+      cursor: 'opaque-cursor-1',
+      revisionEnvelopeDigest: `sha256:${'a'.repeat(64)}`,
+      rootDocument: 'paper/main.tex',
+      baseCheckpointId: null,
+      actorId: 'actor-1',
+      observedAt: '2026-08-11T00:00:00.000Z',
+    });
+
+    expect(checkpoint.rootDocument).toBe('paper/main.tex');
+    expect(() =>
+      ManuscriptCheckpointV1Schema.parse({ ...checkpoint, source: '\\documentclass{article}' }),
+    ).toThrow();
+    expect(() =>
+      ManuscriptCheckpointV1Schema.parse({ ...checkpoint, rootDocument: '../outside.tex' }),
     ).toThrow();
   });
 

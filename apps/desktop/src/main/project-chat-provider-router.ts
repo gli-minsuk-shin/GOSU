@@ -29,6 +29,10 @@ function notificationThreadId(value: unknown) {
 
 function mergedCatalog(codex: ModelCatalog, hermes: ModelCatalog | null): ModelCatalog {
   if (!hermes) return codex;
+  const codexModelIds = new Set(codex.models.map((model) => model.modelId));
+  if (hermes.models.some((model) => codexModelIds.has(model.modelId))) {
+    throw new Error('project_chat_model_id_collision');
+  }
   const catalogVersion = createHash('sha256')
     .update(`${codex.catalogVersion}\n${hermes.catalogVersion}`)
     .digest('hex');
@@ -56,6 +60,7 @@ export class ProjectChatProviderRouter extends EventEmitter implements ProjectCh
   private readonly threads = new Map<string, RoutedThread>();
   private hermesCatalog: ModelCatalog | null = null;
   private hermesConnected = false;
+  private hermesConnectionEpoch = 0;
   private hermesLifecycleTail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -80,10 +85,20 @@ export class ProjectChatProviderRouter extends EventEmitter implements ProjectCh
         (model) => model.modelId === HERMES_CONFIGURED_MODEL_ID,
       );
       if (!configuredModel || configuredModel.providerId !== HERMES_PROVIDER_ID) {
+        this.hermes.resetConnection();
         throw new Error('hermes_configured_model_missing');
+      }
+      try {
+        // Renderer commands carry the opaque model ID. Refuse a provider/model collision before
+        // publishing Hermes so that one ID can never be routed to two providers ambiguously.
+        mergedCatalog(await this.codex.listModelCatalog(), catalog);
+      } catch (error) {
+        this.hermes.resetConnection();
+        throw error;
       }
       this.hermesCatalog = catalog;
       this.hermesConnected = true;
+      this.hermesConnectionEpoch += 1;
       return { catalog, collaborationModes };
     });
   }
@@ -95,14 +110,10 @@ export class ProjectChatProviderRouter extends EventEmitter implements ProjectCh
         .map(([threadId]) => threadId);
       this.hermesConnected = false;
       this.hermesCatalog = null;
+      this.hermesConnectionEpoch += 1;
       for (const threadId of threadIds) this.threads.delete(threadId);
+      this.hermes.resetConnection();
       this.emit('disconnected', { providerId: HERMES_PROVIDER_ID });
-      const releases = await Promise.allSettled(
-        threadIds.map((threadId) => this.hermes.releaseThread(threadId)),
-      );
-      if (releases.some((release) => release.status === 'rejected')) {
-        throw new Error('hermes_disconnect_incomplete');
-      }
     });
   }
 
@@ -127,7 +138,15 @@ export class ProjectChatProviderRouter extends EventEmitter implements ProjectCh
   async startThread(input: Parameters<ProjectChatCodex['startThread']>[0]) {
     const providerId = this.providerForModel(input.modelId);
     const provider = this.provider(providerId);
+    const connectionEpoch = this.hermesConnectionEpoch;
     const started = await provider.startThread(input);
+    if (
+      providerId === HERMES_PROVIDER_ID &&
+      (!this.hermesConnected || connectionEpoch !== this.hermesConnectionEpoch)
+    ) {
+      await provider.releaseThread(started.threadId).catch(() => undefined);
+      throw new Error('hermes_not_connected');
+    }
     this.assertThreadPrefix(providerId, started.threadId);
     if (this.threads.has(started.threadId)) throw new Error('project_chat_thread_id_collision');
     this.threads.set(started.threadId, { providerId });

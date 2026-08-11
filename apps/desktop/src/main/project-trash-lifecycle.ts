@@ -1,4 +1,5 @@
 import { LectureStudioServiceError, type LectureStudioService } from './lecture-studio-service';
+import type { ManuscriptWorkspaceService } from './manuscript-workspace-service';
 import { ProjectChatServiceError, type ProjectChatService } from './project-chat-service';
 import { SshConnectionServiceError, type SshConnectionService } from './ssh-connection-service';
 import { WorkspaceServiceError } from './workspace-service';
@@ -8,6 +9,10 @@ export class ProjectTrashLifecycle {
     private readonly projectChat: Pick<ProjectChatService, 'runWhenProjectsIdle'>,
     private readonly ssh: Pick<SshConnectionService, 'runWhenProjectsIdle'>,
     private readonly lecture: Pick<LectureStudioService, 'runWhenProjectsIdle'>,
+    private readonly manuscripts: Pick<
+      ManuscriptWorkspaceService,
+      'runWhenProjectsIdle' | 'reconcileArtifactPurgeQueue'
+    >,
   ) {}
 
   async runWhenProjectInactivationIdle<T>(
@@ -16,7 +21,9 @@ export class ProjectTrashLifecycle {
   ): Promise<T> {
     try {
       return await this.projectChat.runWhenProjectsIdle([projectId], () =>
-        this.ssh.runWhenProjectsIdle([projectId], operation),
+        this.ssh.runWhenProjectsIdle([projectId], () =>
+          this.manuscripts.runWhenProjectsIdle([projectId], operation),
+        ),
       );
     } catch (error) {
       // Preserve the existing bounded archive/Trash response for an active chat turn.
@@ -33,11 +40,15 @@ export class ProjectTrashLifecycle {
     operation: () => Promise<T>,
   ): Promise<T> {
     try {
-      return await this.projectChat.runWhenProjectsIdle(projectIds, () =>
+      const result = await this.projectChat.runWhenProjectsIdle(projectIds, () =>
         this.ssh.runWhenProjectsIdle(projectIds, () =>
-          this.lecture.runWhenProjectsIdle(projectIds, operation),
+          this.lecture.runWhenProjectsIdle(projectIds, () =>
+            this.manuscripts.runWhenProjectsIdle(projectIds, operation),
+          ),
         ),
       );
+      await this.manuscripts.reconcileArtifactPurgeQueue().catch(() => undefined);
+      return result;
     } catch (error) {
       if (
         (error instanceof ProjectChatServiceError && error.code === 'chat_busy') ||

@@ -77,6 +77,297 @@
       "required": ["read", "write", "attachments", "realtime", "export"],
       "additionalProperties": false
     },
+    "ManuscriptWorkspaceCapabilitiesV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "interactionModes": {
+          "minItems": 1,
+          "maxItems": 5,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "bootstrap_export",
+              "checkpoint_pull",
+              "checkpoint_publish",
+              "external_realtime_editor",
+              "embedded_realtime_editor"
+            ]
+          }
+        },
+        "revisionTopology": {
+          "type": "string",
+          "enum": ["linear", "multi_version", "multi_branch"]
+        },
+        "conditionalPublish": { "type": "boolean" },
+        "providerHistory": { "type": "boolean" },
+        "presence": { "type": "boolean" },
+        "comments": { "type": "boolean" },
+        "trackChanges": { "type": "boolean" },
+        "serverCompile": { "type": "boolean" },
+        "reviewMetadataRoundTrip": {
+          "type": "string",
+          "enum": ["native", "lossless", "unsupported", "unknown"]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "interactionModes",
+        "revisionTopology",
+        "conditionalPublish",
+        "providerHistory",
+        "presence",
+        "comments",
+        "trackChanges",
+        "serverCompile",
+        "reviewMetadataRoundTrip"
+      ],
+      "additionalProperties": false
+    },
+    "ManuscriptWorkspaceDescriptorV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "providerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "workspaceKind": {
+          "type": "string",
+          "enum": ["remote_git_checkpoint", "local_native", "cloud_native"]
+        },
+        "collaborationModel": { "type": "string", "enum": ["checkpoint", "realtime"] },
+        "capabilities": { "$ref": "#/definitions/ManuscriptWorkspaceCapabilitiesV1" },
+        "unsupportedMetadata": {
+          "maxItems": 32,
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "limitations": {
+          "maxItems": 32,
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "providerId",
+        "displayName",
+        "workspaceKind",
+        "collaborationModel",
+        "capabilities",
+        "unsupportedMetadata",
+        "limitations"
+      ],
+      "additionalProperties": false
+    },
+    "ManuscriptWorkspaceBindingV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "bindingId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "manuscriptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "providerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "capabilitiesSnapshot": { "$ref": "#/definitions/ManuscriptWorkspaceCapabilitiesV1" },
+        "authority": { "type": "string", "enum": ["gosu", "provider"] },
+        "enabled": { "type": "boolean" },
+        "version": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "bindingId",
+        "projectId",
+        "manuscriptId",
+        "providerId",
+        "capabilitiesSnapshot",
+        "authority",
+        "enabled",
+        "version",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false
+    },
+    "ManuscriptCheckpointV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "checkpointId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "bindingId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "manuscriptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "providerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "direction": { "type": "string", "enum": ["bootstrap", "fetch", "publish", "migration"] },
+        "sourceAuthority": { "type": "string", "enum": ["gosu", "provider"] },
+        "sourceRevision": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "gosuRevision": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+        },
+        "providerRevision": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+        },
+        "cursor": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+        },
+        "revisionEnvelopeDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "rootDocument": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 1024,
+          "pattern": "^(?!\\/)(?!.*\\/\\/)(?!.*(?:^|\\/)\\.{1,2}(?:\\/|$))(?!.*\\\\).+\\.tex$"
+        },
+        "baseCheckpointId": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 128 }, { "type": "null" }]
+        },
+        "actorId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "checkpointId",
+        "bindingId",
+        "projectId",
+        "manuscriptId",
+        "providerId",
+        "direction",
+        "sourceAuthority",
+        "sourceRevision",
+        "gosuRevision",
+        "providerRevision",
+        "cursor",
+        "revisionEnvelopeDigest",
+        "rootDocument",
+        "baseCheckpointId",
+        "actorId",
+        "observedAt"
+      ],
+      "additionalProperties": false
+    },
+    "ManuscriptSyncAnchorV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "bindingId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "generation": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "lastCommonRevision": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+        },
+        "providerRevision": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+        },
+        "gosuRevision": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "bindingId",
+        "generation",
+        "lastCommonRevision",
+        "providerRevision",
+        "gosuRevision",
+        "updatedAt"
+      ],
+      "additionalProperties": false
+    },
+    "ManuscriptSyncAttemptV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "bindingId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "manuscriptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "providerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "operation": { "type": "string", "enum": ["bootstrap", "fetch", "publish", "migration"] },
+        "state": {
+          "type": "string",
+          "enum": ["requested", "running", "succeeded", "blocked", "failed", "cancelled", "unknown"]
+        },
+        "sourceRevision": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "targetRevision": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+        },
+        "expectedProviderRevision": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+        },
+        "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "fencingToken": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "requestedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "completedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            { "type": "null" }
+          ]
+        },
+        "resultCheckpointId": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 128 }, { "type": "null" }]
+        },
+        "failureCode": {
+          "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 128 }, { "type": "null" }]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "attemptId",
+        "bindingId",
+        "projectId",
+        "manuscriptId",
+        "providerId",
+        "operation",
+        "state",
+        "sourceRevision",
+        "targetRevision",
+        "expectedProviderRevision",
+        "idempotencyKey",
+        "fencingToken",
+        "requestedAt",
+        "completedAt",
+        "resultCheckpointId",
+        "failureCode"
+      ],
+      "additionalProperties": false
+    },
+    "ManuscriptSyncState": {
+      "type": "string",
+      "enum": [
+        "unlinked",
+        "checking",
+        "in_sync",
+        "provider_ahead",
+        "gosu_ahead",
+        "diverged",
+        "blocked",
+        "failed"
+      ]
+    },
     "LabRole": {
       "type": "string",
       "enum": ["owner", "project_lead", "researcher", "reviewer", "viewer"]

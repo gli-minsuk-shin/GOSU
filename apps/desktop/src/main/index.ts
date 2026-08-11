@@ -5,13 +5,17 @@ import {
   BrowserWindow,
   ipcMain,
   Menu,
+  safeStorage,
   session,
   shell,
   type IpcMainInvokeEvent,
 } from 'electron';
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
+import { createManuscriptWorkspaceAdapterRegistry } from '@gosu/integrations';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
+import { HERMES_ACP_APPROVAL_CHANNELS } from '../shared/hermes-acp-approval-channels';
+import { HermesAcpApprovalEventSchema } from '../shared/hermes-acp-approval-contracts';
 import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
 import { LectureStudioEventSchema } from '../shared/lecture-studio-contracts';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
@@ -21,11 +25,19 @@ import { buildMacApplicationMenuTemplate } from './application-menu';
 import { registerAgentAddOnIpc } from './agent-addon-ipc';
 import { createAgentAddOnRegistry } from './agent-addon-service';
 import { cleanupStaleGosuRuntimeDirectories, CodexAppServer } from './codex-app-server';
+import { registerHermesAcpApprovalIpc } from './hermes-acp-approval-ipc';
+import { HermesAcpApprovalService } from './hermes-acp-approval-service';
+import { HermesAcpProjectChatAdapter } from './hermes-acp-project-chat-adapter';
 import { HermesProjectChatAdapter } from './hermes-project-chat-adapter';
 import { LocalDatabase } from './local-database';
 import { installProcessOutputGuards } from './process-output-guard';
 import { registerGitWorkspaceIpc } from './git-workspace-ipc';
 import { GitWorkspaceService } from './git-workspace-service';
+import { registerManuscriptWorkspaceIpc } from './manuscript-workspace-ipc';
+import { ManuscriptWorkspaceService } from './manuscript-workspace-service';
+import { OverleafGitCredentialStore } from './overleaf-git-credential-store';
+import { OverleafGitManuscriptWorkspaceAdapter } from './overleaf-git-manuscript-adapter';
+import { OverleafGitTransport } from './overleaf-git-transport';
 import { LiteratureAiService } from './literature-ai-service';
 import { CrossrefLiteratureProvider } from './literature-crossref';
 import { BalancedLiteratureProvider } from './literature-discovery';
@@ -35,6 +47,8 @@ import { LiteratureService } from './literature-service';
 import { registerLectureStudioIpc } from './lecture-studio-ipc';
 import { LectureStudioService } from './lecture-studio-service';
 import { createLiteratureTransferPlatform } from './literature-transfer-platform';
+import { registerExperimentRunLogIpc } from './experiment-run-log-ipc';
+import { ExperimentRunLogService } from './experiment-run-log-service';
 import { registerExperimentWorkspaceIpc } from './experiment-workspace-ipc';
 import { ExperimentWorkspaceService } from './experiment-workspace-service';
 import { registerProjectChatAttachmentIpc } from './project-chat-attachment-ipc';
@@ -81,7 +95,13 @@ const codex = new CodexAppServer({
   sharedAuthFile: () => (sharedCodexHome ? join(sharedCodexHome, 'auth.json') : undefined),
   clientVersion: () => app.getVersion(),
 });
-const hermesProjectChat = new HermesProjectChatAdapter();
+const hermesAcpApprovals = new HermesAcpApprovalService();
+const hermesRuntimeDiscovery = new HermesProjectChatAdapter();
+const hermesProjectChat = new HermesAcpProjectChatAdapter({
+  runtimeDiscovery: hermesRuntimeDiscovery,
+  approvals: hermesAcpApprovals,
+  clientVersion: () => app.getVersion(),
+});
 const projectChatProvider = new ProjectChatProviderRouter(codex, hermesProjectChat);
 const agentAddOns = createAgentAddOnRegistry({}, { hermesProjectChat: projectChatProvider });
 const database = new LocalDatabase();
@@ -117,9 +137,39 @@ const experimentWorkspace = new ExperimentWorkspaceService({
   storage: database,
   workspace,
 });
+const experimentRunLogs = new ExperimentRunLogService({
+  experiments: experimentWorkspace,
+  ssh,
+});
 const gitWorkspace = new GitWorkspaceService({
   workspace,
   rootDirectory: () => join(app.getPath('userData'), 'git-workspaces'),
+});
+const overleafGitCredentials = new OverleafGitCredentialStore({
+  rootDirectory: () => join(app.getPath('userData'), 'credentials', 'overleaf-git'),
+  encryption: safeStorage,
+});
+const overleafGitTransport = new OverleafGitTransport({
+  rootDirectory: () => join(app.getPath('userData'), 'manuscript-workspaces'),
+  credentials: overleafGitCredentials,
+});
+const manuscriptWorkspaceAdapters = createManuscriptWorkspaceAdapterRegistry([
+  new OverleafGitManuscriptWorkspaceAdapter(
+    database,
+    overleafGitTransport,
+    () => new Date(),
+    overleafGitCredentials,
+  ),
+]);
+const manuscriptWorkspace = new ManuscriptWorkspaceService({
+  storage: database,
+  workspace,
+  repository: {
+    revision: (projectId) => gitWorkspace.revision(projectId),
+  },
+  adapters: manuscriptWorkspaceAdapters,
+  overleafGit: overleafGitTransport,
+  credentials: overleafGitCredentials,
 });
 const researchNotes = new ResearchNotesService({
   storage: {
@@ -171,9 +221,14 @@ const projectChat = new ProjectChatService({
   storage: database,
   workspace,
   codex: projectChatProvider,
+  hermes: {
+    isConnected: () => projectChatProvider.isHermesConnected(),
+    delegate: (input) => hermesProjectChat.delegate(input),
+  },
   vault: researchNotes,
   literature,
   ssh,
+  experiments: experimentWorkspace,
   attachments: projectChatAttachments,
   async prepareProjectDirectory(projectId) {
     const directory = join(app.getPath('userData'), 'project-chat-workspaces', projectId);
@@ -202,7 +257,12 @@ const lectureStudio = new LectureStudioService({
     return directory;
   },
 });
-const projectTrashLifecycle = new ProjectTrashLifecycle(projectChat, ssh, lectureStudio);
+const projectTrashLifecycle = new ProjectTrashLifecycle(
+  projectChat,
+  ssh,
+  lectureStudio,
+  manuscriptWorkspace,
+);
 let mainWindowRendererLoaded = false;
 let pendingSettingsOpen = false;
 let pendingSidebarToggle = false;
@@ -376,11 +436,20 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     { reveal: (path) => shell.showItemInFolder(path) },
     reportUnexpectedWorkspaceError,
   );
+  registerManuscriptWorkspaceIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    manuscriptWorkspace,
+    reportUnexpectedWorkspaceError,
+  );
   registerSshIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     ssh,
     reportUnexpectedWorkspaceError,
     workspace,
+  );
+  registerHermesAcpApprovalIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    hermesAcpApprovals,
   );
   registerLiteratureIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
@@ -411,6 +480,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   registerExperimentWorkspaceIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     experimentWorkspace,
+    reportUnexpectedWorkspaceError,
+  );
+  registerExperimentRunLogIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    experimentRunLogs,
     reportUnexpectedWorkspaceError,
   );
   registerLectureStudioIpc(
@@ -479,14 +553,23 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   );
 }
 
-const primaryInstance = app.requestSingleInstanceLock();
+const packagedStartupSmoke =
+  app.isPackaged &&
+  process.env.GOSU_PACKAGED_STARTUP_SMOKE === '1' &&
+  process.argv.includes('--gosu-packaged-startup-smoke');
+const primaryInstance = packagedStartupSmoke || app.requestSingleInstanceLock();
 
 if (!primaryInstance) {
   app.quit();
 } else {
-  installLocalSupervisorGuard();
+  if (!packagedStartupSmoke) installLocalSupervisorGuard();
   void app.whenReady().then(async () => {
     app.setName('GOSU');
+    if (packagedStartupSmoke) {
+      process.stdout.write('GOSU_PACKAGED_STARTUP_READY\n');
+      app.quit();
+      return;
+    }
     setDevelopmentDockIcon();
     await cleanupStaleGosuRuntimeDirectories().catch(() => undefined);
     const trustedRenderer = createTrustedRenderer({
@@ -506,6 +589,10 @@ if (!primaryInstance) {
     let localData = localDataReadiness();
     try {
       database.open();
+      await overleafGitCredentials
+        .reconcilePending(database.listManuscriptCredentialReferences('overleaf_git'))
+        .catch(() => undefined);
+      await manuscriptWorkspace.reconcileArtifactPurgeQueue().catch(() => undefined);
       await vault.restore().catch(() => null);
       await lectureStudio.reconcilePendingArtifacts().catch(() => undefined);
       await projectChat.reconcileResearchNoteSaveReceipts().catch(() => undefined);
@@ -539,6 +626,18 @@ if (!primaryInstance) {
           mainWindow.webContents.send(SSH_IPC_CHANNELS.event, SshEventSchema.parse(event));
         } catch {
           console.error('[GOSU] SSH approval renderer event delivery failed.');
+        }
+      }
+    });
+    hermesAcpApprovals.on('event', (event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send(
+            HERMES_ACP_APPROVAL_CHANNELS.event,
+            HermesAcpApprovalEventSchema.parse(event),
+          );
+        } catch {
+          console.error('[GOSU] Hermes ACP approval renderer event delivery failed.');
         }
       }
     });

@@ -12,6 +12,11 @@ import {
   type ProjectChatSnapshot,
   type UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
+import type {
+  HermesAcpApprovalDecision,
+  HermesAcpApprovalEvent,
+  HermesAcpApprovalRequest,
+} from '../../shared/hermes-acp-approval-contracts';
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
 import type { AgentAddOnStatus } from '../../shared/agent-addon-contracts';
 import type {
@@ -48,8 +53,10 @@ import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import { desktopContentClassName } from './desktop-content-layout';
 import { ExperimentsView, type ExperimentsViewAdapter } from './experiments-view';
+import { HermesAcpApprovalCenter } from './hermes-acp-approval-center';
 import { buildLocalNotesGrantUpdate } from './local-notes-access-model';
 import { LiteratureView, type LiteratureViewAdapter } from './literature-view';
+import { ManuscriptView } from './manuscript-view';
 import { VolatileLectureStudioDrafts } from './lecture-studio-session-state';
 import { LectureStudioView, type LectureStudioViewAdapter } from './lecture-studio-view';
 import {
@@ -72,12 +79,18 @@ import {
   type ProjectChatSshServer,
 } from './project-chat-view';
 import {
+  isSelectedHermesProviderFailure,
   ProjectChatProviderOperationQueue,
   reconcileRemovedProjectChatProvider,
   selectProjectChatModel,
   selectProjectChatReasoning,
   type ProjectChatModelSelection,
 } from './project-chat-provider-selection';
+import {
+  AUTO_PROJECT_CHAT_MODEL_SELECTION,
+  loadProjectChatModelSelection,
+  saveProjectChatModelSelection,
+} from './project-chat-model-selection-store';
 import {
   enqueueVisibleSshApproval,
   mergeHydratedSshApprovals,
@@ -190,6 +203,8 @@ const experimentsAdapter: ExperimentsViewAdapter = {
   createIdea: (input) => window.gosu.experiments.createIdea(input),
   updateIdea: (input) => window.gosu.experiments.updateIdea(input),
   recordMetric: (input) => window.gosu.experiments.recordMetric(input),
+  reviseLoggingTemplate: (input) => window.gosu.experiments.reviseLoggingTemplate(input),
+  readRunLog: (input) => window.gosu.experiments.readRunLog(input),
   onEvent: (listener) => window.gosu.experiments.onEvent(listener),
 };
 
@@ -224,6 +239,81 @@ function isCodexUnavailableError(error: unknown) {
 
 function hasErrorCode(error: unknown, code: string) {
   return error instanceof Error && error.message.includes(code);
+}
+
+type HermesAcpApprovalScope = Readonly<{ projectId: string; sessionId: string }>;
+
+function hermesAcpApprovalMatchesScope(
+  request: HermesAcpApprovalRequest,
+  scope: HermesAcpApprovalScope | null,
+) {
+  return (
+    scope !== null && request.projectId === scope.projectId && request.sessionId === scope.sessionId
+  );
+}
+
+function orderHermesAcpApprovals(requests: readonly HermesAcpApprovalRequest[]) {
+  return [...requests].sort(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+  );
+}
+
+function upsertHermesAcpApproval(
+  current: readonly HermesAcpApprovalRequest[],
+  request: HermesAcpApprovalRequest,
+) {
+  return orderHermesAcpApprovals([
+    ...current.filter((candidate) => candidate.id !== request.id),
+    request,
+  ]);
+}
+
+function removeHermesAcpApproval(current: readonly HermesAcpApprovalRequest[], approvalId: string) {
+  return current.filter((request) => request.id !== approvalId);
+}
+
+function rememberResolvedHermesAcpApproval(
+  current: ReadonlySet<string>,
+  approvalId: string,
+  maximum = 256,
+) {
+  const next = new Set(current);
+  next.delete(approvalId);
+  next.add(approvalId);
+  while (next.size > maximum) {
+    const oldest = next.values().next().value as string | undefined;
+    if (!oldest) break;
+    next.delete(oldest);
+  }
+  return next;
+}
+
+function mergeHydratedHermesAcpApprovals(
+  current: readonly HermesAcpApprovalRequest[],
+  hydrated: readonly HermesAcpApprovalRequest[],
+  scope: HermesAcpApprovalScope,
+  resolvedApprovalIds: ReadonlySet<string>,
+  now = Date.now(),
+) {
+  const byId = new Map(
+    current
+      .filter(
+        (request) => !resolvedApprovalIds.has(request.id) && Date.parse(request.expiresAt) > now,
+      )
+      .map((request) => [request.id, request]),
+  );
+  for (const request of hydrated) {
+    if (
+      !hermesAcpApprovalMatchesScope(request, scope) ||
+      resolvedApprovalIds.has(request.id) ||
+      Date.parse(request.expiresAt) <= now
+    ) {
+      continue;
+    }
+    byId.set(request.id, request);
+  }
+  return orderHermesAcpApprovals([...byId.values()]);
 }
 
 function sshResourceSnapshotFromState(state: SshResourceUiState | undefined) {
@@ -309,6 +399,7 @@ function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabI
   return (
     tab === 'chat' ||
     tab === 'repository' ||
+    tab === 'manuscript' ||
     tab === 'board' ||
     tab === 'objective' ||
     tab === 'experiments' ||
@@ -392,6 +483,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [sshApprovalBusyIds, setSshApprovalBusyIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [hermesAcpApprovals, setHermesAcpApprovals] = useState<readonly HermesAcpApprovalRequest[]>(
+    [],
+  );
+  const [hermesAcpApprovalBusyIds, setHermesAcpApprovalBusyIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [chatSnapshots, setChatSnapshots] = useState<Record<string, ProjectChatSnapshot>>({});
   const [projectChatSessions, setProjectChatSessions] = useState<
     Record<string, readonly ProjectChatSession[]>
@@ -440,8 +537,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const chatUnreadAssistantMessagesRef = useRef(new VolatileProjectChatUnreadAssistantMessages());
   const visibleChatSshScopeRef = useRef<{ projectId: string; sessionId: string } | null>(null);
   const sshResolvedApprovalIdsRef = useRef<ReadonlySet<string>>(new Set());
+  const visibleChatHermesAcpScopeRef = useRef<HermesAcpApprovalScope | null>(null);
+  const hermesAcpApprovalsRef = useRef<readonly HermesAcpApprovalRequest[]>([]);
+  const hermesAcpResolvedApprovalIdsRef = useRef<ReadonlySet<string>>(new Set());
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
   hermesProjectChatPreferenceRef.current = preferences.agentAddOns.hermes;
+  hermesAcpApprovalsRef.current = hermesAcpApprovals;
 
   const activeProjects = useMemo(() => visibleProjects(snapshot?.projects ?? []), [snapshot]);
   const archivedProjects = useMemo(
@@ -1193,6 +1294,49 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     [],
   );
 
+  useEffect(
+    () =>
+      window.gosu.hermesAcp.onEvent((event: HermesAcpApprovalEvent) => {
+        if (event.type === 'approval.requested') {
+          if (hermesAcpResolvedApprovalIdsRef.current.has(event.request.id)) return;
+          if (Date.parse(event.request.expiresAt) <= Date.now()) {
+            hermesAcpResolvedApprovalIdsRef.current = rememberResolvedHermesAcpApproval(
+              hermesAcpResolvedApprovalIdsRef.current,
+              event.request.id,
+            );
+            void window.gosu.hermesAcp
+              .resolveApproval({ approvalId: event.request.id, decision: 'deny' })
+              .catch(() => undefined);
+            return;
+          }
+          setHermesAcpApprovals((current) => upsertHermesAcpApproval(current, event.request));
+          return;
+        }
+        hermesAcpResolvedApprovalIdsRef.current = rememberResolvedHermesAcpApproval(
+          hermesAcpResolvedApprovalIdsRef.current,
+          event.approvalId,
+        );
+        setHermesAcpApprovals((current) => removeHermesAcpApproval(current, event.approvalId));
+        setHermesAcpApprovalBusyIds((current) => {
+          if (!current.has(event.approvalId)) return current;
+          const next = new Set(current);
+          next.delete(event.approvalId);
+          return next;
+        });
+        const visibleScope = visibleChatHermesAcpScopeRef.current;
+        if (
+          event.resolution === 'expired' &&
+          visibleScope?.projectId === event.projectId &&
+          visibleScope.sessionId === event.sessionId
+        ) {
+          setWorkspaceError(
+            'The Hermes approval expired before a choice was made. Ask Hermes to retry the operation and review the centered approval dialog.',
+          );
+        }
+      }),
+    [],
+  );
+
   useEffect(() => {
     if (!shouldHydrateProjectChat(activeTab, activeProjectId)) return;
     void loadProjectChat(activeProjectId).catch((error: unknown) =>
@@ -1543,8 +1687,65 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     }
   };
 
+  const resolveHermesAcpApproval = async (
+    approvalId: string,
+    decision: HermesAcpApprovalDecision,
+  ) => {
+    if (hermesAcpApprovalBusyIds.has(approvalId)) return;
+    const request = hermesAcpApprovalsRef.current.find((candidate) => candidate.id === approvalId);
+    const requestCanReceiveDecision =
+      request !== undefined &&
+      Date.parse(request.expiresAt) > Date.now() &&
+      request.options.includes(decision);
+    const effectiveDecision: HermesAcpApprovalDecision = requestCanReceiveDecision
+      ? decision
+      : 'deny';
+
+    setHermesAcpApprovalBusyIds((current) => new Set(current).add(approvalId));
+    setWorkspaceError(null);
+    try {
+      await window.gosu.hermesAcp.resolveApproval({
+        approvalId,
+        decision: effectiveDecision,
+      });
+      hermesAcpResolvedApprovalIdsRef.current = rememberResolvedHermesAcpApproval(
+        hermesAcpResolvedApprovalIdsRef.current,
+        approvalId,
+      );
+      setHermesAcpApprovals((current) => removeHermesAcpApproval(current, approvalId));
+      if (!requestCanReceiveDecision && decision !== 'deny') {
+        setWorkspaceError(
+          'GOSU denied this Hermes request because its project, chat session, option, or deadline no longer matched the visible approval.',
+        );
+      }
+    } catch (error) {
+      if (
+        hasErrorCode(error, 'hermes_acp_approval_not_found') ||
+        hasErrorCode(error, 'hermes_acp_approval_decision_not_offered')
+      ) {
+        hermesAcpResolvedApprovalIdsRef.current = rememberResolvedHermesAcpApproval(
+          hermesAcpResolvedApprovalIdsRef.current,
+          approvalId,
+        );
+        setHermesAcpApprovals((current) => removeHermesAcpApproval(current, approvalId));
+      }
+      setWorkspaceError(describeError(error));
+    } finally {
+      setHermesAcpApprovalBusyIds((current) => {
+        const next = new Set(current);
+        next.delete(approvalId);
+        return next;
+      });
+    }
+  };
+
   useEffect(() => {
-    const selectedSessionId = activeProjectId ? activeChatSessionIds[activeProjectId] : undefined;
+    const selectedSessionId = activeProjectId
+      ? resolveProjectChatSessionId(
+          projectChatSessions[activeProjectId] ?? [],
+          activeChatSessionIds[activeProjectId],
+        )
+      : null;
     const currentScope =
       activeSurface === 'workspace' && activeTab === 'chat' && activeProjectId && selectedSessionId
         ? { projectId: activeProjectId, sessionId: selectedSessionId }
@@ -1570,7 +1771,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         .catch(() => setWorkspaceError('Could not revoke the previous SSH capability safely.'));
     }
     visibleChatSshScopeRef.current = currentScope;
-  }, [activeChatSessionIds, activeProjectId, activeSurface, activeTab]);
+
+    // Hermes turns may continue concurrently in background project/chat sessions. Navigation does
+    // not revoke their scoped requests; the global approval dialog labels the owning project and
+    // session. Actual cancel, thread release, disconnect, and expiry still fail closed in Main.
+    visibleChatHermesAcpScopeRef.current = currentScope;
+  }, [activeChatSessionIds, activeProjectId, activeSurface, activeTab, projectChatSessions]);
 
   const pendingCount = pendingSummary?.count ?? 0;
 
@@ -1908,6 +2114,34 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       : null;
 
   useEffect(() => {
+    if (!activeProject || !activeProjectChatSessionId) {
+      setProjectChatModelSelection(AUTO_PROJECT_CHAT_MODEL_SELECTION);
+      return;
+    }
+    const saved = loadProjectChatModelSelection(
+      window.localStorage,
+      activeProject.id,
+      activeProjectChatSessionId,
+    );
+    const selection =
+      preferences.agentAddOns.hermes === 'connect-local'
+        ? saved
+        : reconcileRemovedProjectChatProvider(saved, {
+            removedProviderId: 'hermes',
+            reason: 'explicit-disconnect',
+          });
+    if (selection !== saved) {
+      saveProjectChatModelSelection(
+        window.localStorage,
+        activeProject.id,
+        activeProjectChatSessionId,
+        selection,
+      );
+    }
+    setProjectChatModelSelection(selection);
+  }, [activeProject, activeProjectChatSessionId, preferences.agentAddOns.hermes]);
+
+  useEffect(() => {
     if (
       activeSurface !== 'workspace' ||
       activeTab !== 'chat' ||
@@ -1931,6 +2165,35 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         );
       })
       .catch(() => undefined);
+    void window.gosu.hermesAcp
+      .listPendingApprovals(scope)
+      .then((requests) => {
+        if (cancelled) return;
+        const now = Date.now();
+        const rejected = requests.filter(
+          (request) =>
+            !hermesAcpApprovalMatchesScope(request, scope) || Date.parse(request.expiresAt) <= now,
+        );
+        for (const request of rejected) {
+          hermesAcpResolvedApprovalIdsRef.current = rememberResolvedHermesAcpApproval(
+            hermesAcpResolvedApprovalIdsRef.current,
+            request.id,
+          );
+          void window.gosu.hermesAcp
+            .resolveApproval({ approvalId: request.id, decision: 'deny' })
+            .catch(() => undefined);
+        }
+        setHermesAcpApprovals((current) =>
+          mergeHydratedHermesAcpApprovals(
+            current,
+            requests,
+            scope,
+            hermesAcpResolvedApprovalIdsRef.current,
+            now,
+          ),
+        );
+      })
+      .catch(() => undefined);
 
     return () => {
       cancelled = true;
@@ -1946,6 +2209,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       .map(([key]) => key),
     ...chatStartingSessionKeys,
   ]);
+  const firstSshApproval = sshApprovals.at(0);
+  const firstHermesAcpApproval = hermesAcpApprovals.at(0);
+  const presentHermesAcpApproval =
+    firstHermesAcpApproval !== undefined &&
+    (firstSshApproval === undefined ||
+      firstHermesAcpApproval.createdAt <= firstSshApproval.requestedAt);
 
   return (
     <main
@@ -2455,16 +2724,34 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                         ? null
                         : (projectChatModels.find((model) => model.modelId === modelId)
                             ?.providerId ?? null);
-                    return selectProjectChatModel(current, {
+                    const selection = selectProjectChatModel(current, {
                       providerId: nextProviderId,
                       modelId,
                     });
+                    if (activeProjectChatSessionId) {
+                      saveProjectChatModelSelection(
+                        window.localStorage,
+                        activeProject.id,
+                        activeProjectChatSessionId,
+                        selection,
+                      );
+                    }
+                    return selection;
                   })
                 }
                 onSelectedReasoning={(reasoningOptionId) =>
-                  setProjectChatModelSelection((current) =>
-                    selectProjectChatReasoning(current, reasoningOptionId),
-                  )
+                  setProjectChatModelSelection((current) => {
+                    const selection = selectProjectChatReasoning(current, reasoningOptionId);
+                    if (activeProjectChatSessionId) {
+                      saveProjectChatModelSelection(
+                        window.localStorage,
+                        activeProject.id,
+                        activeProjectChatSessionId,
+                        selection,
+                      );
+                    }
+                    return selection;
+                  })
                 }
                 onRefreshModels={() => {
                   void refreshModels();
@@ -2535,7 +2822,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   }
                   if (selectedDescriptor.providerId === 'hermes' && attachmentIds.length > 0) {
                     setWorkspaceError(
-                      'The initial BYO Hermes connection is text-only. Remove attachments or choose Codex for this turn.',
+                      'Turn attachments are not bridged to Hermes ACP yet. Remove attachments or choose Codex for this turn.',
                     );
                     return false;
                   }
@@ -2588,9 +2875,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   } catch (error) {
                     setWorkspaceError(describeError(error));
                     if (
-                      selectedDescriptor.providerId !== 'hermes' &&
-                      isCodexUnavailableError(error)
+                      isSelectedHermesProviderFailure(selectedDescriptor.providerId ?? null, error)
                     ) {
+                      ++hermesProjectChatConnectionGenerationRef.current;
+                      removeHermesProjectChatDescriptor();
+                      setHermesProjectChatConnection({ phase: 'unavailable', status: null });
+                    } else if (isCodexUnavailableError(error)) {
                       setCodexConnectionState('unavailable');
                       setCodexErrorVisible(true);
                     }
@@ -2791,6 +3081,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   )
                 }
               />
+            )}
+            {activeTab === 'manuscript' && activeProject && (
+              <ManuscriptView key={activeProject.id} project={activeProject} />
             )}
             {activeTab === 'objective' && activeProject && (
               <ObjectiveEditor
@@ -3143,7 +3436,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         )}
       </section>
       <SshApprovalCenter
-        requests={sshApprovals}
+        requests={presentHermesAcpApproval ? [] : sshApprovals}
         busyApprovalIds={sshApprovalBusyIds}
         describeScope={(request) => {
           const projectName =
@@ -3155,6 +3448,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           return `${projectName} · ${sessionTitle ?? 'Project chat'}`;
         }}
         onResolve={(input) => resolveSshApproval(input.approvalId, input.decision)}
+      />
+      <HermesAcpApprovalCenter
+        requests={presentHermesAcpApproval ? hermesAcpApprovals : []}
+        busyApprovalIds={hermesAcpApprovalBusyIds}
+        describeScope={(request) => {
+          const projectName =
+            snapshot?.projects.find((project) => project.id === request.projectId)?.name ??
+            'Unknown project';
+          const sessionTitle = projectChatSessions[request.projectId]?.find(
+            (session) => session.id === request.sessionId,
+          )?.title;
+          return `${projectName} · ${sessionTitle ?? 'Project chat'}`;
+        }}
+        onResolve={(input) => resolveHermesAcpApproval(input.approvalId, input.decision)}
       />
     </main>
   );

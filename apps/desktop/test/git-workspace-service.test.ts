@@ -118,6 +118,30 @@ describe('project-scoped Git workspace', () => {
     );
   });
 
+  it('reads only the validated HEAD revision for manuscript provenance', async () => {
+    const realRunGit = createGitCommandRunner();
+    const runGit = vi.fn(
+      (cwd: string, arguments_: readonly string[], options?: Parameters<typeof realRunGit>[2]) =>
+        realRunGit(cwd, arguments_, options),
+    );
+    service = new GitWorkspaceService({
+      workspace: { snapshot: async () => workspaceSnapshot(project) },
+      rootDirectory: () => rootDirectory,
+      runGit,
+    });
+
+    await expect(service.revision(PROJECT_ID)).resolves.toBe(
+      git(repositoryRoot, 'rev-parse', 'HEAD'),
+    );
+
+    const invokedCommands = runGit.mock.calls.map(([, arguments_]) => arguments_.join(' '));
+    expect(invokedCommands.some((command) => command.startsWith('status '))).toBe(false);
+    expect(invokedCommands.some((command) => command.startsWith('ls-files '))).toBe(false);
+    expect(invokedCommands.some((command) => command.startsWith('for-each-ref '))).toBe(false);
+    expect(invokedCommands.some((command) => command.startsWith('rev-list '))).toBe(false);
+    expect(invokedCommands.some((command) => command.startsWith('log '))).toBe(false);
+  });
+
   it('searches archived repository filenames without loading status, branches, or history', async () => {
     project = { ...project, archivedAt: new Date().toISOString() };
     const realRunGit = createGitCommandRunner();

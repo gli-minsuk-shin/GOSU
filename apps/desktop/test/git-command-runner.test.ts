@@ -33,6 +33,7 @@ process.stdout.write(JSON.stringify({
     literalPathspecs: process.env.GIT_LITERAL_PATHSPECS,
     noReplaceObjects: process.env.GIT_NO_REPLACE_OBJECTS,
     attrNoSystem: process.env.GIT_ATTR_NOSYSTEM,
+    scopedAuthorizationPresent: typeof process.env.GOSU_GIT_AUTHORIZATION === 'string',
   },
 }));
 `,
@@ -70,11 +71,13 @@ process.stdout.write(JSON.stringify({
           'diff.external=',
           'protocol.allow=never',
           'protocol.https.allow=always',
+          'http.followRedirects=false',
           'credential.helper=',
           'fetch',
           'origin',
         ]),
       );
+      expect(result.args).not.toContain('credential.helper=osxkeychain');
       expect(result.environment).toMatchObject({
         allowProtocol: 'https',
         configGlobal: '/dev/null',
@@ -92,6 +95,45 @@ process.stdout.write(JSON.stringify({
       if (previousSshAskPass === undefined) delete process.env.SSH_ASKPASS;
       else process.env.SSH_ASKPASS = previousSshAskPass;
     }
+  });
+
+  it('injects an explicit credential only into one network process without placing it in arguments', async () => {
+    const token = 'scoped-private-token';
+    const output = await createGitCommandRunner(executable)(directory, ['fetch', 'origin'], {
+      network: true,
+      credential: {
+        username: 'git',
+        password: token,
+        scopeUrl: 'https://git@git.overleaf.com/0123456789abcdef01234567',
+      },
+    });
+    const result = JSON.parse(output) as {
+      args: string[];
+      environment: Record<string, string | boolean | undefined>;
+    };
+
+    expect(result.args).toContain(
+      '--config-env=http.https://git@git.overleaf.com/0123456789abcdef01234567.extraHeader=GOSU_GIT_AUTHORIZATION',
+    );
+    expect(JSON.stringify(result.args)).not.toContain(token);
+    expect(result.args).not.toContain('credential.helper=osxkeychain');
+    expect(result.environment).toMatchObject({
+      scopedAuthorizationPresent: true,
+    });
+  });
+
+  it('rejects a credential without an exact HTTPS user and path scope', async () => {
+    const runner = createGitCommandRunner(executable);
+    await expect(
+      runner(directory, ['fetch', 'origin'], {
+        network: true,
+        credential: {
+          username: 'git',
+          password: 'fixture-token',
+          scopeUrl: 'https://git.overleaf.com/0123456789abcdef01234567?redirect=1',
+        },
+      }),
+    ).rejects.toMatchObject({ kind: 'auth' });
   });
 
   it('isolates user configuration by default and opens it only for an explicit config read', async () => {

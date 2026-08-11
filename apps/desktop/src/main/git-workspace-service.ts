@@ -291,6 +291,17 @@ export class GitWorkspaceService {
     return this.exclusive(projectId, () => this.snapshotUnlocked(projectId));
   }
 
+  /** Lightweight manuscript provenance read: validates the owned worktree and resolves HEAD only. */
+  revision(projectId: string): Promise<string | null> {
+    return this.exclusive(projectId, async () => {
+      const { repository } = await this.requireActiveProject(projectId);
+      const root = this.repositoryRoot(projectId);
+      if (!repository || !(await pathExists(root))) return null;
+      await this.validateRepositoryAt(root, repository);
+      return (await this.currentHeadState(root)).headSha;
+    });
+  }
+
   /** Read-only filename search. Archived projects remain searchable; Trash never does. */
   searchFiles(input: GitFileSearchInput, signal?: AbortSignal): Promise<GitFileSearchResult> {
     signal?.throwIfAborted();

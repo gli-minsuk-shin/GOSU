@@ -10,6 +10,7 @@ import { CardHead, describeError } from './ui-primitives';
 export type WorkspaceTabId =
   | 'chat'
   | 'repository'
+  | 'manuscript'
   | 'board'
   | 'objective'
   | 'experiments'
@@ -19,7 +20,7 @@ export type WorkspaceTabId =
   | 'connections'
   | 'notes';
 
-type ObjectiveDraft = {
+export type ObjectiveDraft = {
   goal: string;
   metricKey: string;
   metricDisplayName: string;
@@ -48,6 +49,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
 }> = [
   { id: 'chat', label: 'Project chat', icon: '◈' },
   { id: 'repository', label: 'Repository', icon: '⌘' },
+  { id: 'manuscript', label: 'Manuscript', icon: '¶' },
   { id: 'board', label: 'Board', icon: '▦' },
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
   { id: 'experiments', label: 'Experiments', icon: '⌁' },
@@ -58,10 +60,7 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   { id: 'notes', label: 'Research Notes', icon: '◇' },
 ];
 
-export const FUTURE_MODULES = [
-  ['Manuscript', '¶'],
-  ['Review', '✓'],
-] as const;
+export const FUTURE_MODULES = [['Review', '✓']] as const;
 
 const EMPTY_OBJECTIVE: ObjectiveDraft = {
   goal: '',
@@ -80,7 +79,7 @@ const EMPTY_OBJECTIVE: ObjectiveDraft = {
   maxWallTimeSeconds: '3600',
   maxGpuHours: '0',
   maxFailures: '3',
-  stopWhenTargetReached: true,
+  stopWhenTargetReached: false,
   guardrailAction: 'pause',
   maxConsecutiveNoImprovement: '',
 };
@@ -99,6 +98,8 @@ export function WorkspacePageHeading({
     chat: 'Talk with the linked Codex model and turn the conversation into reviewed project work.',
     repository:
       'Browse project files, review changes and history, and use bounded Git operations without a terminal.',
+    manuscript:
+      'Connect replaceable writing engines and capture immutable inbound checkpoints for future import and review.',
     board: 'Create work, move it through the research workflow, and keep every change locally.',
     objective:
       'Define a versioned goal, evaluation metric, reproducibility hashes, and hard experiment budget.',
@@ -135,6 +136,7 @@ export function WorkspacePageHeading({
 export function shouldShowActiveProjectPageHeading(activeTab: WorkspaceTabId) {
   return (
     activeTab !== 'chat' &&
+    activeTab !== 'manuscript' &&
     activeTab !== 'notes' &&
     activeTab !== 'literature' &&
     activeTab !== 'lecture' &&
@@ -282,6 +284,7 @@ export function ObjectiveEditor({
   onStartVersion: (input: { projectId: string; expectedEntityVersion: number }) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState<ObjectiveDraft>(() => objectiveToDraft(objective));
+  const hasTarget = draft.target.trim() !== '';
 
   const setField = <Key extends keyof ObjectiveDraft>(key: Key, value: ObjectiveDraft[Key]) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -303,7 +306,7 @@ export function ObjectiveEditor({
             event.preventDefault();
             if (busy || objective?.locked) return;
             try {
-              void onSave(objectiveInput(project.id, objective, draft));
+              void onSave(buildObjectiveInput(project.id, objective, draft));
             } catch (error) {
               const target = event.currentTarget;
               target.setAttribute('data-error', describeError(error));
@@ -406,7 +409,15 @@ export function ObjectiveEditor({
                   type="number"
                   step="any"
                   value={draft.target}
-                  onChange={(event) => setField('target', event.target.value)}
+                  onChange={(event) => {
+                    const target = event.target.value;
+                    setDraft((current) => ({
+                      ...current,
+                      target,
+                      stopWhenTargetReached:
+                        target.trim() === '' ? false : current.stopWhenTargetReached,
+                    }));
+                  }}
                   placeholder="Optional"
                   disabled={busy || objective?.locked}
                 />
@@ -459,7 +470,11 @@ export function ObjectiveEditor({
 
           <fieldset className="objective-section">
             <legend className="sr-only">Experiment budget</legend>
-            <h3>Hard experiment budget</h3>
+            <h3>Campaign budget</h3>
+            <p>
+              Saved with the objective. The Runner will enforce these campaign-wide limits; the
+              current Project Chat foreground path only enforces its per-run timeout.
+            </p>
             <div className="field-grid">
               <NumberField
                 label="Max trials"
@@ -509,13 +524,20 @@ export function ObjectiveEditor({
             <h3>Stop policy</h3>
             <label className="checkbox-label">
               <input
+                id="objective-stop-when-target-reached"
                 type="checkbox"
-                checked={draft.stopWhenTargetReached}
+                checked={hasTarget && draft.stopWhenTargetReached}
                 onChange={(event) => setField('stopWhenTargetReached', event.target.checked)}
-                disabled={busy || objective?.locked}
+                disabled={busy || objective?.locked || !hasTarget}
+                aria-describedby="objective-stop-when-target-reached-help"
               />
               Stop when the target is reached
             </label>
+            <p id="objective-stop-when-target-reached-help">
+              {hasTarget
+                ? 'Optional. The Runner applies this policy when it schedules campaign trials.'
+                : 'No target is set, so exploratory and comparable runs can still proceed. Campaign budgets, guardrails, no-improvement limits, and Stop or Kill are enforced after the Runner is connected; the current Project Chat path only enforces its per-run timeout.'}
+            </p>
             <label>
               Guardrail action
               <select
@@ -675,17 +697,19 @@ function objectiveToDraft(objective: WorkspaceObjective | undefined): ObjectiveD
     maxWallTimeSeconds: objective.budget.maxWallTimeSeconds.toString(),
     maxGpuHours: objective.budget.maxGpuHours.toString(),
     maxFailures: objective.budget.maxFailures.toString(),
-    stopWhenTargetReached: objective.stopPolicy.stopWhenTargetReached,
+    stopWhenTargetReached:
+      objective.primaryMetric.target !== null && objective.stopPolicy.stopWhenTargetReached,
     guardrailAction: objective.stopPolicy.guardrailAction,
     maxConsecutiveNoImprovement: objective.stopPolicy.maxConsecutiveNoImprovement?.toString() ?? '',
   };
 }
 
-function objectiveInput(
+export function buildObjectiveInput(
   projectId: string,
   objective: WorkspaceObjective | undefined,
   draft: ObjectiveDraft,
 ): SaveObjectiveInput {
+  const target = optionalNumber(draft.target, 'Target');
   return {
     projectId,
     expectedEntityVersion: objective?.entityVersion ?? 0,
@@ -700,7 +724,7 @@ function objectiveInput(
       datasetHash: draft.datasetHash.trim(),
       holdoutHash: draft.holdoutHash.trim() || null,
       baseline: optionalNumber(draft.baseline, 'Baseline'),
-      target: optionalNumber(draft.target, 'Target'),
+      target,
     },
     guardrails: [...(objective?.guardrails ?? [])],
     budget: {
@@ -711,7 +735,7 @@ function objectiveInput(
       maxFailures: requiredNumber(draft.maxFailures, 'Max failures'),
     },
     stopPolicy: {
-      stopWhenTargetReached: draft.stopWhenTargetReached,
+      stopWhenTargetReached: target !== null && draft.stopWhenTargetReached,
       guardrailAction: draft.guardrailAction,
       maxConsecutiveNoImprovement: optionalNumber(
         draft.maxConsecutiveNoImprovement,

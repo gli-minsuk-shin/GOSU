@@ -568,7 +568,16 @@ export const SaveObjectiveInputSchema = objectiveFieldsSchema
     projectId: uuidSchema,
     expectedEntityVersion: z.number().int().nonnegative(),
   })
-  .strict();
+  .strict()
+  .superRefine((objective, context) => {
+    if (objective.primaryMetric.target === null && objective.stopPolicy.stopWhenTargetReached) {
+      context.addIssue({
+        code: 'custom',
+        message: 'stopWhenTargetReached requires a primary metric target',
+        path: ['stopPolicy', 'stopWhenTargetReached'],
+      });
+    }
+  });
 
 export const ObjectiveCommandSchema = z
   .object({

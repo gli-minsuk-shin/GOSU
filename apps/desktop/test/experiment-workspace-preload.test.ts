@@ -55,6 +55,11 @@ describe('Experiment workspace preload bridge', () => {
       resultSummary: '',
     });
     await api.experiments.recordMetric({ projectId, ideaId, value: 52.29 });
+    await api.experiments.reviseLoggingTemplate({
+      projectId,
+      expectedVersion: 1,
+      customFields: [],
+    });
 
     expect(electron.ipcRenderer.invoke.mock.calls).toEqual([
       [EXPERIMENT_WORKSPACE_IPC_CHANNELS.list, { projectId }],
@@ -73,7 +78,13 @@ describe('Experiment workspace preload bridge', () => {
         },
       ],
       [EXPERIMENT_WORKSPACE_IPC_CHANNELS.recordMetric, { projectId, ideaId, value: 52.29 }],
+      [
+        EXPERIMENT_WORKSPACE_IPC_CHANNELS.reviseLoggingTemplate,
+        { projectId, expectedVersion: 1, customFields: [] },
+      ],
     ]);
+    expect(api.experiments).not.toHaveProperty('createRun');
+    expect(api.experiments).not.toHaveProperty('updateRun');
   });
 
   it('validates renderer events and removes the exact listener', () => {

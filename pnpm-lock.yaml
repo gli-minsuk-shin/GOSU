@@ -49,6 +49,9 @@ importers:
       '@gosu/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@gosu/integrations':
+        specifier: workspace:*
+        version: link:../../packages/integrations
       '@openai/codex':
         specifier: 0.146.0
         version: 0.146.0

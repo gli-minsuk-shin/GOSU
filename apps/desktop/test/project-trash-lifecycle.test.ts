@@ -6,7 +6,7 @@ import { SshConnectionServiceError } from '../src/main/ssh-connection-service';
 import { WorkspaceServiceError } from '../src/main/workspace-service';
 
 describe('ProjectTrashLifecycle', () => {
-  it('holds Project Chat and the SSH mutation gate around one project inactivation', async () => {
+  it('holds Project Chat, SSH, and manuscript gates around one project inactivation', async () => {
     const trace: string[] = [];
     const gate = (name: string) => ({
       async runWhenProjectsIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
@@ -17,8 +17,17 @@ describe('ProjectTrashLifecycle', () => {
           trace.push(`${name}:exit`);
         }
       },
+      async reconcileArtifactPurgeQueue(projectIds?: readonly string[]) {
+        trace.push(`${name}:reconcile:${projectIds?.join(',') ?? 'all'}`);
+        return 0;
+      },
     });
-    const lifecycle = new ProjectTrashLifecycle(gate('chat'), gate('ssh'), gate('lecture'));
+    const lifecycle = new ProjectTrashLifecycle(
+      gate('chat'),
+      gate('ssh'),
+      gate('lecture'),
+      gate('manuscript'),
+    );
 
     await expect(
       lifecycle.runWhenProjectInactivationIdle('project-a', async () => {
@@ -29,7 +38,9 @@ describe('ProjectTrashLifecycle', () => {
     expect(trace).toEqual([
       'chat:enter:project-a',
       'ssh:enter:project-a',
+      'manuscript:enter:project-a',
       'inactive',
+      'manuscript:exit',
       'ssh:exit',
       'chat:exit',
     ]);
@@ -40,6 +51,9 @@ describe('ProjectTrashLifecycle', () => {
       async runWhenProjectsIdle<T>(_projectIds: readonly string[], operation: () => Promise<T>) {
         return operation();
       },
+      async reconcileArtifactPurgeQueue() {
+        return 0;
+      },
     };
     const sshBusy = {
       async runWhenProjectsIdle<T>(
@@ -49,7 +63,7 @@ describe('ProjectTrashLifecycle', () => {
         throw new SshConnectionServiceError('ssh_unavailable');
       },
     };
-    const lifecycle = new ProjectTrashLifecycle(pass, sshBusy, pass);
+    const lifecycle = new ProjectTrashLifecycle(pass, sshBusy, pass, pass);
 
     await expect(
       lifecycle.runWhenProjectInactivationIdle('project-a', async () => 'unsafe'),
@@ -67,8 +81,17 @@ describe('ProjectTrashLifecycle', () => {
           trace.push(`${name}:exit`);
         }
       },
+      async reconcileArtifactPurgeQueue(projectIds?: readonly string[]) {
+        trace.push(`${name}:reconcile:${projectIds?.join(',') ?? 'all'}`);
+        return 0;
+      },
     });
-    const lifecycle = new ProjectTrashLifecycle(gate('chat'), gate('ssh'), gate('lecture'));
+    const lifecycle = new ProjectTrashLifecycle(
+      gate('chat'),
+      gate('ssh'),
+      gate('lecture'),
+      gate('manuscript'),
+    );
 
     await expect(
       lifecycle.runWhenProjectTrashIdle(['project-b', 'project-a'], async () => {
@@ -80,10 +103,13 @@ describe('ProjectTrashLifecycle', () => {
       'chat:enter:project-b,project-a',
       'ssh:enter:project-b,project-a',
       'lecture:enter:project-b,project-a',
+      'manuscript:enter:project-b,project-a',
       'purge',
+      'manuscript:exit',
       'lecture:exit',
       'ssh:exit',
       'chat:exit',
+      'manuscript:reconcile:all',
     ]);
   });
 
@@ -91,6 +117,9 @@ describe('ProjectTrashLifecycle', () => {
     const pass = {
       async runWhenProjectsIdle<T>(_projectIds: readonly string[], operation: () => Promise<T>) {
         return operation();
+      },
+      async reconcileArtifactPurgeQueue() {
+        return 0;
       },
     };
     const lecture = {
@@ -101,7 +130,7 @@ describe('ProjectTrashLifecycle', () => {
         throw new LectureStudioServiceError('lecture_busy');
       },
     };
-    const lifecycle = new ProjectTrashLifecycle(pass, pass, lecture);
+    const lifecycle = new ProjectTrashLifecycle(pass, pass, lecture, pass);
 
     const result = await lifecycle
       .runWhenProjectTrashIdle(['project-a'], async () => 'unsafe')

@@ -1,0 +1,87 @@
+{
+  "$id": "urn:gosu:contract:v1:ManuscriptWorkspaceBindingV1",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "number", "const": 1 },
+    "bindingId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "manuscriptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "providerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "capabilitiesSnapshot": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "number", "const": 1 },
+        "interactionModes": {
+          "minItems": 1,
+          "maxItems": 5,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "bootstrap_export",
+              "checkpoint_pull",
+              "checkpoint_publish",
+              "external_realtime_editor",
+              "embedded_realtime_editor"
+            ]
+          }
+        },
+        "revisionTopology": {
+          "type": "string",
+          "enum": ["linear", "multi_version", "multi_branch"]
+        },
+        "conditionalPublish": { "type": "boolean" },
+        "providerHistory": { "type": "boolean" },
+        "presence": { "type": "boolean" },
+        "comments": { "type": "boolean" },
+        "trackChanges": { "type": "boolean" },
+        "serverCompile": { "type": "boolean" },
+        "reviewMetadataRoundTrip": {
+          "type": "string",
+          "enum": ["native", "lossless", "unsupported", "unknown"]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "interactionModes",
+        "revisionTopology",
+        "conditionalPublish",
+        "providerHistory",
+        "presence",
+        "comments",
+        "trackChanges",
+        "serverCompile",
+        "reviewMetadataRoundTrip"
+      ],
+      "additionalProperties": false
+    },
+    "authority": { "type": "string", "enum": ["gosu", "provider"] },
+    "enabled": { "type": "boolean" },
+    "version": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "bindingId",
+    "projectId",
+    "manuscriptId",
+    "providerId",
+    "capabilitiesSnapshot",
+    "authority",
+    "enabled",
+    "version",
+    "createdAt",
+    "updatedAt"
+  ],
+  "additionalProperties": false
+}

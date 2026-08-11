@@ -4,11 +4,16 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   ExperimentWorkspaceService,
+  type ExperimentRunExecutionBinding,
+  type ExperimentRunExecutionIntent,
+  type ExperimentRunLogSource,
   type ExperimentWorkspaceStorage,
 } from '../src/main/experiment-workspace-service';
 import type {
   ExperimentIdea,
+  ExperimentLoggingTemplate,
   ExperimentMetricPoint,
+  ExperimentRun,
 } from '../src/shared/experiment-workspace-contracts';
 import type { WorkspaceObjective, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 import type { WorkspaceService } from '../src/main/workspace-service';
@@ -83,6 +88,11 @@ function workspace(snapshot: WorkspaceSnapshot = workspaceSnapshot()) {
 class MemoryExperimentStorage implements ExperimentWorkspaceStorage {
   readonly ideas: ExperimentIdea[] = [];
   readonly metricPoints: ExperimentMetricPoint[] = [];
+  readonly loggingTemplates: ExperimentLoggingTemplate[] = [];
+  readonly runs: ExperimentRun[] = [];
+  readonly logSources: ExperimentRunLogSource[] = [];
+  readonly executionBindings: ExperimentRunExecutionBinding[] = [];
+  readonly executionIntents: ExperimentRunExecutionIntent[] = [];
 
   listExperimentIdeas(projectId: string) {
     return this.ideas.filter((idea) => idea.projectId === projectId);
@@ -117,6 +127,118 @@ class MemoryExperimentStorage implements ExperimentWorkspaceStorage {
     const stored = { ...point, sequence: this.metricPoints.length + 1 };
     this.metricPoints.push(stored);
     return stored;
+  }
+
+  findExperimentMetricPointByTrial(projectId: string, trialId: string) {
+    return (
+      this.metricPoints.find(
+        (point) =>
+          point.projectId === projectId &&
+          point.trialId === trialId &&
+          point.source === 'runner-summary',
+      ) ?? null
+    );
+  }
+
+  getLatestExperimentLoggingTemplate(projectId: string) {
+    return (
+      this.loggingTemplates
+        .filter((template) => template.projectId === projectId)
+        .sort((left, right) => right.version - left.version)[0] ?? null
+    );
+  }
+
+  appendExperimentLoggingTemplate(template: ExperimentLoggingTemplate, expectedVersion: number) {
+    const current = this.getLatestExperimentLoggingTemplate(template.projectId);
+    if ((current?.version ?? 0) !== expectedVersion) return null;
+    this.loggingTemplates.push(template);
+    return template;
+  }
+
+  listExperimentRuns(projectId: string) {
+    return this.runs
+      .filter((run) => run.projectId === projectId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  getExperimentRun(projectId: string, runId: string) {
+    return this.runs.find((run) => run.projectId === projectId && run.id === runId) ?? null;
+  }
+
+  getExperimentRunByTrial(projectId: string, trialId: string) {
+    return this.runs.find((run) => run.projectId === projectId && run.trialId === trialId) ?? null;
+  }
+
+  createExperimentRun(run: ExperimentRun) {
+    if (this.runs.some((candidate) => candidate.id === run.id)) return false;
+    this.runs.push(run);
+    return true;
+  }
+
+  updateExperimentRun(run: ExperimentRun, expectedVersion: number) {
+    const index = this.runs.findIndex(
+      (candidate) =>
+        candidate.projectId === run.projectId &&
+        candidate.id === run.id &&
+        candidate.version === expectedVersion,
+    );
+    if (index < 0) return null;
+    this.runs[index] = run;
+    return run;
+  }
+
+  linkExperimentRunLogSource(source: ExperimentRunLogSource) {
+    const existing = this.logSources.find(({ referenceId }) => referenceId === source.referenceId);
+    if (existing) return JSON.stringify(existing) === JSON.stringify(source);
+    this.logSources.push(source);
+    return true;
+  }
+
+  getExperimentRunLogSource(projectId: string, runId: string, referenceId: string) {
+    return (
+      this.logSources.find(
+        (source) =>
+          source.projectId === projectId &&
+          source.runId === runId &&
+          source.referenceId === referenceId,
+      ) ?? null
+    );
+  }
+
+  bindExperimentRunExecution(binding: ExperimentRunExecutionBinding) {
+    const existing = this.executionBindings.find(
+      (candidate) => candidate.projectId === binding.projectId && candidate.runId === binding.runId,
+    );
+    if (existing) return existing.workspaceGrantId === binding.workspaceGrantId;
+    this.executionBindings.push(binding);
+    return true;
+  }
+
+  getExperimentRunExecutionBinding(projectId: string, runId: string) {
+    return (
+      this.executionBindings.find(
+        (binding) => binding.projectId === projectId && binding.runId === runId,
+      ) ?? null
+    );
+  }
+
+  stageExperimentRunExecutionIntent(intent: ExperimentRunExecutionIntent) {
+    const existing = this.executionIntents.find(
+      (candidate) => candidate.projectId === intent.projectId && candidate.runId === intent.runId,
+    );
+    if (existing) {
+      return JSON.stringify(existing) === JSON.stringify(intent);
+    }
+    this.executionIntents.push(intent);
+    return true;
+  }
+
+  getExperimentRunExecutionIntent(projectId: string, runId: string) {
+    return (
+      this.executionIntents.find(
+        (intent) => intent.projectId === projectId && intent.runId === runId,
+      ) ?? null
+    );
   }
 }
 
@@ -276,6 +398,376 @@ describe('Experiment workspace service', () => {
       service.recordMetric({ projectId: PROJECT_ID, ideaId: idea.id, value: 1 }),
     ).rejects.toMatchObject({ code: 'experiment_objective_required' });
     expect(storage.metricPoints).toHaveLength(0);
+  });
+
+  it('creates a deterministic default logging template and revises it with CAS', async () => {
+    const storage = new MemoryExperimentStorage();
+    const service = new ExperimentWorkspaceService({
+      storage,
+      workspace: workspace(),
+      now: () => NOW,
+    });
+
+    const first = await service.list({ projectId: PROJECT_ID });
+    const second = await service.list({ projectId: PROJECT_ID });
+    expect(first.loggingTemplate).toEqual(second.loggingTemplate);
+    expect(first.loggingTemplate.systemFields).toContain('objective_version');
+    expect(first.loggingTemplate.customFields.map(({ key }) => key)).toEqual([
+      'step',
+      'elapsed_seconds',
+    ]);
+
+    const revised = await service.reviseLoggingTemplate({
+      projectId: PROJECT_ID,
+      expectedVersion: 1,
+      customFields: [
+        {
+          key: 'validation_loss',
+          label: 'Validation loss',
+          type: 'number',
+          category: 'metric',
+          requiredAt: ['progress', 'summary'],
+          unit: null,
+        },
+      ],
+    });
+    expect(revised.version).toBe(2);
+    expect(revised.previousRevisionId).toBe(first.loggingTemplate.id);
+    await expect(
+      service.reviseLoggingTemplate({
+        projectId: PROJECT_ID,
+        expectedVersion: 1,
+        customFields: [],
+      }),
+    ).rejects.toMatchObject({ code: 'experiment_logging_template_conflict' });
+  });
+
+  it('rejects duplicate, reserved, and secret-like custom logging fields', async () => {
+    const storage = new MemoryExperimentStorage();
+    const service = new ExperimentWorkspaceService({ storage, workspace: workspace() });
+    await service.list({ projectId: PROJECT_ID });
+    const field = {
+      key: 'loss',
+      label: 'Loss',
+      type: 'number' as const,
+      category: 'metric' as const,
+      requiredAt: ['summary' as const],
+      unit: null,
+    };
+
+    await expect(
+      service.reviseLoggingTemplate({
+        projectId: PROJECT_ID,
+        expectedVersion: 1,
+        customFields: [field, field],
+      }),
+    ).rejects.toBeTruthy();
+    for (const key of ['run_id', 'api_key']) {
+      await expect(
+        service.reviseLoggingTemplate({
+          projectId: PROJECT_ID,
+          expectedVersion: 1,
+          customFields: [{ ...field, key }],
+        }),
+      ).rejects.toBeTruthy();
+    }
+  });
+
+  it('supports objective-free exploratory runs and comparable runs with a null target', async () => {
+    const storage = new MemoryExperimentStorage();
+    const service = new ExperimentWorkspaceService({
+      storage,
+      workspace: workspace(
+        workspaceSnapshot({
+          objectives: [
+            objective({ primaryMetric: { ...objective().primaryMetric, target: null } }),
+          ],
+        }),
+      ),
+      now: () => NOW,
+    });
+    const exploratory = await service.createRun({
+      projectId: PROJECT_ID,
+      ideaId: null,
+      title: 'Explore representation statistics',
+      mode: 'exploratory',
+      serverLabel: 'GPU lab',
+      trialId: 'explore-1',
+    });
+    expect(exploratory).toMatchObject({ objectiveId: null, objectiveVersion: null });
+
+    const idea = await service.createIdea({ projectId: PROJECT_ID, title: 'Idea A' });
+    const comparable = await service.createRun({
+      projectId: PROJECT_ID,
+      ideaId: idea.id,
+      title: 'Comparable baseline',
+      mode: 'comparable',
+      serverLabel: 'GPU lab',
+      trialId: 'trial-no-target',
+    });
+    expect(comparable).toMatchObject({
+      objectiveId: objective().id,
+      objectiveVersion: 2,
+      status: 'queued',
+    });
+  });
+
+  it('creates a trial idempotently and rejects a conflicting reuse of the same trial id', async () => {
+    const storage = new MemoryExperimentStorage();
+    const service = new ExperimentWorkspaceService({
+      storage,
+      workspace: workspace(),
+      now: () => NOW,
+    });
+    const input = {
+      projectId: PROJECT_ID,
+      ideaId: null,
+      title: 'Retry-safe exploratory run',
+      mode: 'exploratory' as const,
+      serverLabel: 'GPU lab',
+      trialId: 'retry-safe-trial',
+    };
+
+    const created = await service.createRun(input);
+    const repeated = await service.createRun(input);
+
+    expect(repeated.id).toBe(created.id);
+    expect(storage.runs).toHaveLength(1);
+    await expect(service.createRun({ ...input, title: 'Conflicting retry' })).rejects.toMatchObject(
+      {
+        code: 'experiment_run_conflict',
+      },
+    );
+  });
+
+  it('enforces terminal run transitions and idempotently ingests validated summaries', async () => {
+    const storage = new MemoryExperimentStorage();
+    const service = new ExperimentWorkspaceService({
+      storage,
+      workspace: workspace(),
+      now: () => NOW,
+    });
+    const idea = await service.createIdea({ projectId: PROJECT_ID, title: 'Idea A' });
+    const created = await service.createRun({
+      projectId: PROJECT_ID,
+      ideaId: idea.id,
+      title: 'Tracked run',
+      mode: 'comparable',
+      serverLabel: '8x RTX 3080',
+      trialId: 'tracked-17',
+    });
+    const running = await service.updateRun({
+      projectId: PROJECT_ID,
+      runId: created.id,
+      expectedVersion: created.version,
+      status: 'running',
+      progressCurrent: 1,
+      progressTotal: 10,
+      currentStep: 'training',
+    });
+    const logReference = {
+      referenceId: randomUUID(),
+      displayName: 'trial-17.jsonl',
+      contentHash: `sha256:${'a'.repeat(64)}`,
+      sizeBytes: 4096,
+      validationState: 'pending' as const,
+      missingFields: [],
+    };
+    const verifying = await service.updateRun({
+      projectId: PROJECT_ID,
+      runId: running.id,
+      expectedVersion: running.version,
+      status: 'verifying',
+      progressCurrent: 10,
+      processExitCode: 0,
+      processDurationMs: 12_345,
+      logReference,
+    });
+    const succeeded = await service.updateRun({
+      projectId: PROJECT_ID,
+      runId: verifying.id,
+      expectedVersion: verifying.version,
+      status: 'succeeded',
+      latestMetric: {
+        key: 'held-out-score',
+        displayName: 'Held-out score',
+        value: 52.29,
+        unit: '%',
+      },
+      logReference: {
+        ...logReference,
+        validationState: 'valid',
+      },
+    });
+    expect(succeeded.completedAt).toBe(NOW.toISOString());
+    const workspaceGrantId = randomUUID();
+    await service.bindRunExecution({
+      projectId: PROJECT_ID,
+      runId: succeeded.id,
+      workspaceGrantId,
+    });
+    await expect(
+      service.linkRunLogSource({
+        referenceId: succeeded.logReference!.referenceId,
+        projectId: PROJECT_ID,
+        runId: succeeded.id,
+        workspaceGrantId: randomUUID(),
+        workspaceSubdirectory: null,
+        relativePath: 'runs/trial-17.jsonl',
+      }),
+    ).rejects.toMatchObject({ code: 'experiment_run_log_source_invalid' });
+    await service.linkRunLogSource({
+      referenceId: succeeded.logReference!.referenceId,
+      projectId: PROJECT_ID,
+      runId: succeeded.id,
+      workspaceGrantId,
+      workspaceSubdirectory: null,
+      relativePath: 'runs/trial-17.jsonl',
+    });
+    await expect(
+      service.updateRun({
+        projectId: PROJECT_ID,
+        runId: succeeded.id,
+        expectedVersion: succeeded.version,
+        status: 'running',
+      }),
+    ).rejects.toMatchObject({ code: 'experiment_run_transition_invalid' });
+    await expect(
+      service.updateRun({
+        projectId: PROJECT_ID,
+        runId: succeeded.id,
+        expectedVersion: succeeded.version,
+        latestMetric: {
+          key: 'held-out-score',
+          displayName: 'Held-out score',
+          value: 99,
+          unit: '%',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'experiment_run_transition_invalid' });
+
+    const point = await service.recordRunSummaryMetric({
+      projectId: PROJECT_ID,
+      runId: succeeded.id,
+      value: 52.29,
+    });
+    const repeated = await service.recordRunSummaryMetric({
+      projectId: PROJECT_ID,
+      runId: succeeded.id,
+      value: 52.29,
+    });
+    expect(point).toMatchObject({ source: 'runner-summary', trialId: 'tracked-17' });
+    expect(repeated.id).toBe(point.id);
+    expect(storage.metricPoints).toHaveLength(1);
+  });
+
+  it('persists an immutable execution intent and resumes pending log verification', async () => {
+    const storage = new MemoryExperimentStorage();
+    const service = new ExperimentWorkspaceService({
+      storage,
+      workspace: workspace(),
+      now: () => NOW,
+    });
+    const created = await service.createRun({
+      projectId: PROJECT_ID,
+      ideaId: null,
+      title: 'Recoverable exploratory run',
+      mode: 'exploratory',
+      serverLabel: 'GPU lab',
+      trialId: 'recoverable-exploratory-1',
+    });
+    const workspaceGrantId = randomUUID();
+    const executionOrigin = {
+      grantVersion: 3,
+      connectionId: randomUUID(),
+      connectionVersion: 4,
+      canonicalRoot: '/workspace/recoverable',
+      canonicalRootHash: 'd'.repeat(64),
+      policyVersion: 1,
+      executionPolicyHash: 'e'.repeat(64),
+    } as const;
+    await service.bindRunExecution({
+      projectId: PROJECT_ID,
+      runId: created.id,
+      workspaceGrantId,
+    });
+    const staged = await service.stageRunExecutionIntent({
+      projectId: PROJECT_ID,
+      runId: created.id,
+      workspaceGrantId,
+      ...executionOrigin,
+      intentHash: 'b'.repeat(64),
+      workspaceSubdirectory: 'experiments/recoverable',
+      relativePath: 'logs/run.jsonl',
+    });
+    const repeated = await service.stageRunExecutionIntent({
+      projectId: PROJECT_ID,
+      runId: created.id,
+      workspaceGrantId,
+      ...executionOrigin,
+      intentHash: 'b'.repeat(64),
+      workspaceSubdirectory: 'experiments/recoverable',
+      relativePath: 'logs/run.jsonl',
+    });
+    expect(repeated).toEqual(staged);
+    await expect(
+      service.stageRunExecutionIntent({
+        projectId: PROJECT_ID,
+        runId: created.id,
+        workspaceGrantId,
+        ...executionOrigin,
+        intentHash: 'c'.repeat(64),
+        workspaceSubdirectory: 'experiments/recoverable',
+        relativePath: 'logs/changed.jsonl',
+      }),
+    ).rejects.toMatchObject({ code: 'experiment_run_conflict' });
+
+    const running = await service.updateRun({
+      projectId: PROJECT_ID,
+      runId: created.id,
+      expectedVersion: created.version,
+      status: 'running',
+    });
+    const referenceId = randomUUID();
+    const verifying = await service.updateRun({
+      projectId: PROJECT_ID,
+      runId: running.id,
+      expectedVersion: running.version,
+      status: 'verifying',
+      processExitCode: 0,
+      processDurationMs: 1_234,
+      logReference: {
+        referenceId,
+        displayName: 'Recoverable exploratory run JSONL log',
+        contentHash: 'd'.repeat(64),
+        sizeBytes: 512,
+        validationState: 'pending',
+        missingFields: [],
+      },
+    });
+    await expect(
+      service.updateRun({
+        projectId: PROJECT_ID,
+        runId: verifying.id,
+        expectedVersion: verifying.version,
+        processExitCode: 1,
+      }),
+    ).rejects.toMatchObject({ code: 'experiment_run_transition_invalid' });
+    const succeeded = await service.updateRun({
+      projectId: PROJECT_ID,
+      runId: verifying.id,
+      expectedVersion: verifying.version,
+      status: 'succeeded',
+      logReference: {
+        ...verifying.logReference!,
+        validationState: 'valid',
+      },
+    });
+    expect(succeeded).toMatchObject({
+      status: 'succeeded',
+      processExitCode: 0,
+      processDurationMs: 1_234,
+    });
   });
 
   it('rejects archived projects before reading or mutating experiment data', async () => {

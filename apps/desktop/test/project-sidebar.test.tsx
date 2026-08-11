@@ -228,6 +228,8 @@ describe('folder-style project sidebar', () => {
     expect(html).toContain('Active Alpha');
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain('Project chat');
+    expect(html).toContain('Manuscript');
+    expect(html.match(/Manuscript/gu)).toHaveLength(1);
     expect(html).toContain('Board');
     expect(html).toContain('Goal &amp; Metrics');
     expect(html).toContain('Literature');

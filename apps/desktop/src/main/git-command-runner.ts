@@ -36,10 +36,11 @@ const SAFE_GIT_CONFIG = [
   '-c',
   'http.sslVerify=true',
   '-c',
-  'http.followRedirects=initial',
+  'http.followRedirects=false',
   '-c',
   'credential.helper=',
-  ...(process.platform === 'darwin' ? ['-c', 'credential.helper=osxkeychain'] : []),
+  '-c',
+  'credential.useHttpPath=true',
 ] as const;
 
 export type GitCommandFailureKind =
@@ -61,10 +62,25 @@ export type GitCommandRunner = (
     network?: boolean;
     allowUserConfig?: boolean;
     signal?: AbortSignal;
+    credential?: Readonly<{ username: string; password: string; scopeUrl: string }>;
   }>,
 ) => Promise<string>;
 
-function safeEnvironment(allowUserConfig = false) {
+function safeCredential(value: string, maximumLength: number) {
+  return (
+    value.length >= 1 &&
+    value.length <= maximumLength &&
+    ![...value].some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code <= 32 || (code >= 127 && code <= 159);
+    })
+  );
+}
+
+function safeEnvironment(
+  allowUserConfig = false,
+  credential?: Readonly<{ username: string; password: string; scopeUrl: string }>,
+) {
   const environment: NodeJS.ProcessEnv = {
     PATH: process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin',
     HOME: process.env.HOME,
@@ -85,6 +101,14 @@ function safeEnvironment(allowUserConfig = false) {
     GIT_LITERAL_PATHSPECS: '1',
     GIT_NO_REPLACE_OBJECTS: '1',
     GIT_ATTR_NOSYSTEM: '1',
+    ...(credential
+      ? {
+          GOSU_GIT_AUTHORIZATION: `Authorization: Basic ${Buffer.from(
+            `${credential.username}:${credential.password}`,
+            'utf8',
+          ).toString('base64')}`,
+        }
+      : {}),
     ...(!allowUserConfig ? { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } : {}),
   };
   return Object.fromEntries(
@@ -127,14 +151,42 @@ function classifyFailure(
 export function createGitCommandRunner(
   executable = process.platform === 'darwin' ? '/usr/bin/git' : 'git',
 ): GitCommandRunner {
-  return (cwd, arguments_, options = {}) =>
-    new Promise((resolve, reject) => {
+  return (cwd, arguments_, options = {}) => {
+    let credentialScope: URL | null = null;
+    if (options.credential) {
+      try {
+        credentialScope = new URL(options.credential.scopeUrl);
+      } catch {
+        credentialScope = null;
+      }
+    }
+    if (
+      options.credential &&
+      (!options.network ||
+        !safeCredential(options.credential.username, 256) ||
+        !safeCredential(options.credential.password, 4_096) ||
+        !credentialScope ||
+        credentialScope.protocol !== 'https:' ||
+        credentialScope.username === '' ||
+        credentialScope.password !== '' ||
+        credentialScope.port !== '' ||
+        credentialScope.search !== '' ||
+        credentialScope.hash !== '')
+    ) {
+      return Promise.reject(new GitCommandError('auth'));
+    }
+    const credentialConfiguration = options.credential
+      ? ([
+          `--config-env=http.${options.credential.scopeUrl}.extraHeader=GOSU_GIT_AUTHORIZATION`,
+        ] as const)
+      : [];
+    return new Promise((resolve, reject) => {
       execFile(
         executable,
-        [...SAFE_GIT_CONFIG, ...arguments_],
+        [...SAFE_GIT_CONFIG, ...credentialConfiguration, ...arguments_],
         {
           cwd,
-          env: safeEnvironment(Boolean(options.allowUserConfig)),
+          env: safeEnvironment(Boolean(options.allowUserConfig), options.credential),
           encoding: 'utf8',
           timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           maxBuffer: options.maxBytes ?? DEFAULT_MAX_BYTES,
@@ -150,4 +202,5 @@ export function createGitCommandRunner(
         },
       );
     });
+  };
 }

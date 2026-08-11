@@ -1,0 +1,15 @@
+{
+  "$id": "urn:gosu:contract:v1:ManuscriptSyncState",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "string",
+  "enum": [
+    "unlinked",
+    "checking",
+    "in_sync",
+    "provider_ahead",
+    "gosu_ahead",
+    "diverged",
+    "blocked",
+    "failed"
+  ]
+}

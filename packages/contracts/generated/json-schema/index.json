@@ -12,6 +12,41 @@
       "file": "connector-capabilities.v1.schema.json",
       "id": "urn:gosu:contract:v1:ConnectorCapabilities"
     },
+    {
+      "name": "ManuscriptWorkspaceCapabilitiesV1",
+      "file": "manuscript-workspace-capabilities.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ManuscriptWorkspaceCapabilitiesV1"
+    },
+    {
+      "name": "ManuscriptWorkspaceDescriptorV1",
+      "file": "manuscript-workspace-descriptor.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ManuscriptWorkspaceDescriptorV1"
+    },
+    {
+      "name": "ManuscriptWorkspaceBindingV1",
+      "file": "manuscript-workspace-binding.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ManuscriptWorkspaceBindingV1"
+    },
+    {
+      "name": "ManuscriptCheckpointV1",
+      "file": "manuscript-checkpoint.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ManuscriptCheckpointV1"
+    },
+    {
+      "name": "ManuscriptSyncAnchorV1",
+      "file": "manuscript-sync-anchor.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ManuscriptSyncAnchorV1"
+    },
+    {
+      "name": "ManuscriptSyncAttemptV1",
+      "file": "manuscript-sync-attempt.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ManuscriptSyncAttemptV1"
+    },
+    {
+      "name": "ManuscriptSyncState",
+      "file": "manuscript-sync-state.v1.schema.json",
+      "id": "urn:gosu:contract:v1:ManuscriptSyncState"
+    },
     { "name": "LabRole", "file": "lab-role.v1.schema.json", "id": "urn:gosu:contract:v1:LabRole" },
     {
       "name": "CampaignState",

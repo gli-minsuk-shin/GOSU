@@ -3,6 +3,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
   type KeyboardEvent,
@@ -12,14 +13,29 @@ import type {
   CreateExperimentIdeaInput,
   ExperimentIdea,
   ExperimentIdeaOutcome,
+  ExperimentLoggingCustomField,
+  ExperimentLoggingFieldCategory,
+  ExperimentLoggingFieldType,
+  ExperimentLoggingRequiredAt,
+  ExperimentLoggingTemplate,
   ExperimentMetricPoint,
+  ExperimentRun,
+  ExperimentRunLogChunk,
+  ExperimentRunStatus,
   ExperimentWorkspaceEvent,
   ExperimentWorkspaceSnapshot,
   ListExperimentWorkspaceInput,
+  ReadExperimentRunLogInput,
   RecordExperimentMetricInput,
+  ReviseExperimentLoggingTemplateInput,
   UpdateExperimentIdeaInput,
 } from '../../shared/experiment-workspace-contracts';
-import { EXPERIMENT_IDEA_OUTCOMES } from '../../shared/experiment-workspace-contracts';
+import {
+  EXPERIMENT_IDEA_OUTCOMES,
+  EXPERIMENT_LOGGING_SYSTEM_FIELDS,
+  EXPERIMENT_MAX_LOGGING_FIELDS,
+  ExperimentLoggingCustomFieldsSchema,
+} from '../../shared/experiment-workspace-contracts';
 import type { ProjectRecord, WorkspaceObjective } from '../../shared/workspace-contracts';
 import {
   buildExperimentReportSummary,
@@ -39,6 +55,10 @@ export interface ExperimentsViewAdapter {
   createIdea: (input: CreateExperimentIdeaInput) => Promise<ExperimentIdea>;
   updateIdea: (input: UpdateExperimentIdeaInput) => Promise<ExperimentIdea>;
   recordMetric: (input: RecordExperimentMetricInput) => Promise<ExperimentMetricPoint>;
+  reviseLoggingTemplate: (
+    input: ReviseExperimentLoggingTemplateInput,
+  ) => Promise<ExperimentLoggingTemplate>;
+  readRunLog?: (input: ReadExperimentRunLogInput) => Promise<ExperimentRunLogChunk>;
   onEvent: (listener: (event: ExperimentWorkspaceEvent) => void) => () => void;
 }
 
@@ -51,12 +71,35 @@ export interface ExperimentsViewProps {
   onSearchTargetHandled?: (requestId: number) => void;
 }
 
-type ExperimentTab = 'trajectory' | 'ideas' | 'report';
+type ExperimentTab = 'overview' | 'runs' | 'logging' | 'ideas' | 'report';
 
 const EXPERIMENT_TABS: ReadonlyArray<{ id: ExperimentTab; label: string }> = [
-  { id: 'trajectory', label: 'Trajectory' },
+  { id: 'overview', label: 'Overview' },
+  { id: 'runs', label: 'Runs' },
+  { id: 'logging', label: 'Logging' },
   { id: 'ideas', label: 'Idea map' },
   { id: 'report', label: 'Report' },
+];
+
+const LOGGING_FIELD_TYPES: readonly ExperimentLoggingFieldType[] = [
+  'number',
+  'integer',
+  'string',
+  'boolean',
+];
+const LOGGING_FIELD_CATEGORIES: readonly ExperimentLoggingFieldCategory[] = [
+  'metric',
+  'parameter',
+  'progress',
+  'resource',
+  'artifact',
+  'note',
+];
+const LOGGING_REQUIRED_AT: readonly ExperimentLoggingRequiredAt[] = [
+  'run-start',
+  'progress',
+  'run-end',
+  'summary',
 ];
 
 const OUTCOME_PRESENTATION: Readonly<
@@ -90,6 +133,23 @@ function experimentErrorMessage(error: unknown) {
     experiment_metric_limit_reached: 'This project has reached its local metric-record limit.',
     experiment_objective_required:
       'Freeze a Goal & Metrics objective before recording comparable results.',
+    experiment_logging_template_conflict:
+      'The logging template changed while you were editing. GOSU did not overwrite the newer version.',
+    experiment_logging_template_limit_reached:
+      'This project has reached its local logging-template revision limit.',
+    experiment_run_not_found: 'This run no longer exists. Refresh the experiment workspace.',
+    experiment_run_conflict:
+      'This run changed since it was opened. GOSU did not overwrite the newer state.',
+    experiment_run_limit_reached: 'This project has reached its local run limit.',
+    experiment_run_transition_invalid: 'That run state change is not valid from its current state.',
+    experiment_run_log_source_invalid:
+      'The log reference could not be validated. Raw log content was not imported.',
+    experiment_run_log_access_required:
+      'Enable Trusted workspace for this project server before opening logs in Experiments. The read remains project-scoped and audited.',
+    experiment_run_log_changed:
+      'The server log changed after validation. GOSU did not display it as the recorded experiment evidence.',
+    experiment_run_log_unavailable:
+      'The referenced server log is unavailable. The saved run summary remains unchanged.',
   };
   return messages[code] ?? 'The experiment operation could not be completed.';
 }
@@ -124,6 +184,88 @@ function markerKeyDown(event: KeyboardEvent<SVGGElement>, select: () => void) {
   select();
 }
 
+const RUN_PRESENTATION: Readonly<
+  Record<ExperimentRunStatus, { label: string; tone: 'neutral' | 'active' | 'good' | 'bad' }>
+> = {
+  queued: { label: 'Queued', tone: 'neutral' },
+  running: { label: 'Running', tone: 'active' },
+  verifying: { label: 'Verifying', tone: 'active' },
+  succeeded: { label: 'Succeeded', tone: 'good' },
+  failed: { label: 'Failed', tone: 'bad' },
+  cancelled: { label: 'Cancelled', tone: 'neutral' },
+  lost: { label: 'Lost', tone: 'bad' },
+};
+
+export function formatExperimentRunProgress(run: ExperimentRun) {
+  if (run.progressCurrent === null) return 'Not reported';
+  if (run.progressTotal === null) return `${run.progressCurrent} · total not reported`;
+  const percentage = Math.round((run.progressCurrent / run.progressTotal) * 100);
+  return `${run.progressCurrent} / ${run.progressTotal} (${percentage}%)`;
+}
+
+export function summarizeExperimentRuns(runs: readonly ExperimentRun[]) {
+  return {
+    active: runs.filter(({ status }) => status === 'running' || status === 'verifying').length,
+    queued: runs.filter(({ status }) => status === 'queued').length,
+    completed: runs.filter(({ status }) => status === 'succeeded' || status === 'cancelled').length,
+    needsAttention: runs.filter(({ status }) => status === 'failed' || status === 'lost').length,
+  };
+}
+
+function loggingExampleValue(field: ExperimentLoggingCustomField): string | number | boolean {
+  if (field.type === 'number') return 0.875;
+  if (field.type === 'integer') return 12;
+  if (field.type === 'boolean') return true;
+  if (field.category === 'artifact') return 'artifact-reference';
+  return `example-${field.key}`;
+}
+
+export function buildExperimentLoggingExample(template: ExperimentLoggingTemplate) {
+  const lifecycles = ['run-start', 'progress', 'run-end', 'summary'] as const;
+  return lifecycles
+    .map((eventType, index) => {
+      const example: Record<string, string | number | boolean | null> = {
+        schema_version: 1,
+        template_version: template.version,
+        objective_version: null,
+        occurred_at: `2026-01-01T00:00:0${index}.000Z`,
+        event_type: eventType,
+        sequence: index + 1,
+        run_id: 'run-example',
+        trial_id: 'trial-example',
+        status: eventType === 'run-start' || eventType === 'progress' ? 'running' : 'succeeded',
+        server_label: 'linked-server',
+      };
+      for (const field of template.customFields) {
+        if (field.requiredAt.includes(eventType)) example[field.key] = loggingExampleValue(field);
+      }
+      return JSON.stringify(example);
+    })
+    .join('\n');
+}
+
+export function validateExperimentLoggingFields(fields: readonly ExperimentLoggingCustomField[]) {
+  const issues: string[] = [];
+  if (fields.length > EXPERIMENT_MAX_LOGGING_FIELDS) {
+    issues.push(`A template can contain at most ${EXPERIMENT_MAX_LOGGING_FIELDS} custom fields.`);
+  }
+  const counts = new Map<string, number>();
+  for (const field of fields) counts.set(field.key, (counts.get(field.key) ?? 0) + 1);
+  const duplicates = [...counts.entries()].filter(([, count]) => count > 1).map(([key]) => key);
+  if (duplicates.length > 0) {
+    issues.push(`Field keys must be unique: ${duplicates.join(', ')}.`);
+  }
+  const parsed = ExperimentLoggingCustomFieldsSchema.safeParse(fields);
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) {
+      const location = typeof issue.path[0] === 'number' ? `Field ${issue.path[0] + 1}: ` : '';
+      const message = `${location}${issue.message}.`;
+      if (!issues.includes(message)) issues.push(message);
+    }
+  }
+  return issues;
+}
+
 export function ExperimentsView({
   project,
   objective,
@@ -133,7 +275,7 @@ export function ExperimentsView({
   onSearchTargetHandled = () => undefined,
 }: ExperimentsViewProps) {
   const [snapshot, setSnapshot] = useState<ExperimentWorkspaceSnapshot | null>(null);
-  const [activeTab, setActiveTab] = useState<ExperimentTab>('trajectory');
+  const [activeTab, setActiveTab] = useState<ExperimentTab>('overview');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -145,6 +287,7 @@ export function ExperimentsView({
     { kind: 'root'; parent: null } | { kind: 'child'; parent: ExperimentIdea } | null
   >(null);
   const [pendingSearchFocus, setPendingSearchFocus] = useState<SearchTargetRequest | null>(null);
+  const tabListRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(
     async (showLoading = false) => {
@@ -185,6 +328,7 @@ export function ExperimentsView({
   );
 
   const ideas = snapshot?.ideas ?? [];
+  const runs = snapshot?.runs ?? [];
   const metricSeries = useMemo(
     () => groupExperimentMetricSeries(snapshot?.metricPoints ?? []),
     [snapshot?.metricPoints],
@@ -317,16 +461,57 @@ export function ExperimentsView({
     }
   };
 
+  const reviseLoggingTemplate = async (customFields: readonly ExperimentLoggingCustomField[]) => {
+    if (busy || !snapshot) return false;
+    setBusy(true);
+    setError(null);
+    try {
+      const revised = await adapter.reviseLoggingTemplate({
+        projectId: project.id,
+        expectedVersion: snapshot.loggingTemplate.version,
+        customFields: [...customFields],
+      });
+      await load();
+      setNotice(`Saved logging template version ${revised.version}.`);
+      return true;
+    } catch (revisionError) {
+      setError(experimentErrorMessage(revisionError));
+      await load();
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectTabFromKeyboard = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    current: ExperimentTab,
+  ) => {
+    const currentIndex = EXPERIMENT_TABS.findIndex(({ id }) => id === current);
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % EXPERIMENT_TABS.length;
+    if (event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + EXPERIMENT_TABS.length) % EXPERIMENT_TABS.length;
+    }
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = EXPERIMENT_TABS.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const next = EXPERIMENT_TABS[nextIndex]!;
+    setActiveTab(next.id);
+    requestAnimationFrame(() => {
+      tabListRef.current?.querySelector<HTMLButtonElement>(`#experiment-tab-${next.id}`)?.focus();
+    });
+  };
+
+  const runSummary = summarizeExperimentRuns(runs);
+
   return (
     <section className="experiments-shell" aria-label={`${project.name} experiments`}>
       <header className="experiments-runtime-card">
         <div className="experiments-runtime-copy">
           <span className="eyebrow">LOCAL EXPERIMENT WORKSPACE</span>
-          <h2>Idea development and measurable progress</h2>
-          <p>
-            Saved local changes appear immediately. Metric lines never connect different objective,
-            evaluator, dataset, or holdout versions.
-          </p>
+          <h2>Experiment workspace</h2>
         </div>
         <div className="experiments-runtime-status" aria-label="Experiment connection status">
           <span className="experiment-status-pill local">
@@ -337,6 +522,24 @@ export function ExperimentsView({
             <i />
             Runner not connected
           </span>
+          <span className="experiment-status-pill">
+            {runSummary.active} active · {runSummary.queued} queued
+          </span>
+          {objective?.locked && (
+            <span
+              className="experiment-status-pill"
+              title={
+                objective.primaryMetric.target === null
+                  ? 'A target threshold is optional. Saved campaign budgets and stop policies are enforced after the Runner is connected.'
+                  : undefined
+              }
+            >
+              {objective.primaryMetric.displayName} ·{' '}
+              {objective.primaryMetric.target === null
+                ? 'No target'
+                : `Target ${formatExperimentMetric(objective.primaryMetric.target, objective.primaryMetric.unit)}`}
+            </span>
+          )}
           <button
             type="button"
             className="secondary-button"
@@ -352,11 +555,14 @@ export function ExperimentsView({
         <div className="experiments-objective-notice" role="status">
           <div>
             <strong>
-              {objective ? 'Freeze the current objective' : 'Define Goal & Metrics first'}
+              {objective
+                ? 'Objective not frozen — comparable runs unavailable'
+                : 'No objective — exploratory runs remain available'}
             </strong>
             <span>
-              Comparable metric records require a frozen metric, evaluator, dataset, and holdout
-              snapshot. Ideas can still be developed locally.
+              A numeric target value is optional, and exploratory runs do not need a frozen
+              objective. Comparable results still require a frozen primary metric, evaluator,
+              dataset, and holdout snapshot.
             </span>
           </div>
           <button type="button" className="secondary-button" onClick={onOpenObjective}>
@@ -377,7 +583,12 @@ export function ExperimentsView({
         {notice}
       </p>
 
-      <div className="experiment-tabs" role="tablist" aria-label="Experiment views">
+      <div
+        ref={tabListRef}
+        className="experiment-tabs"
+        role="tablist"
+        aria-label="Experiment views"
+      >
         {EXPERIMENT_TABS.map((tab) => (
           <button
             key={tab.id}
@@ -389,6 +600,7 @@ export function ExperimentsView({
             tabIndex={activeTab === tab.id ? 0 : -1}
             className={activeTab === tab.id ? 'active' : ''}
             onClick={() => setActiveTab(tab.id)}
+            onKeyDown={(event) => selectTabFromKeyboard(event, tab.id)}
           >
             {tab.label}
           </button>
@@ -401,7 +613,7 @@ export function ExperimentsView({
         </div>
       ) : (
         <>
-          {activeTab === 'trajectory' && (
+          {activeTab === 'overview' && (
             <TrajectoryPanel
               project={project}
               objective={objective}
@@ -412,11 +624,29 @@ export function ExperimentsView({
               selectedIdeaId={selectedIdeaId}
               selectedMetricPointId={selectedMetricPointId}
               busy={busy}
+              runs={runs}
               onSelectSeries={setSelectedSeriesKey}
               onSelectIdea={setSelectedIdeaId}
               onSelectMetricPoint={setSelectedMetricPointId}
               onRecordMetric={recordMetric}
               onOpenObjective={onOpenObjective}
+              onOpenRuns={() => setActiveTab('runs')}
+            />
+          )}
+          {activeTab === 'runs' && (
+            <ExperimentRunsPanel
+              projectId={project.id}
+              ideas={ideas}
+              runs={runs}
+              readRunLog={adapter.readRunLog}
+            />
+          )}
+          {activeTab === 'logging' && snapshot && (
+            <ExperimentLoggingPanel
+              key={`${snapshot.loggingTemplate.id}:${snapshot.loggingTemplate.version}`}
+              template={snapshot.loggingTemplate}
+              busy={busy}
+              onSave={reviseLoggingTemplate}
             />
           )}
           {activeTab === 'ideas' && (
@@ -482,11 +712,13 @@ function TrajectoryPanel({
   selectedIdeaId,
   selectedMetricPointId,
   busy,
+  runs,
   onSelectSeries,
   onSelectIdea,
   onSelectMetricPoint,
   onRecordMetric,
   onOpenObjective,
+  onOpenRuns,
 }: {
   project: ProjectRecord;
   objective: WorkspaceObjective | undefined;
@@ -497,11 +729,13 @@ function TrajectoryPanel({
   selectedIdeaId: string | null;
   selectedMetricPointId: string | null;
   busy: boolean;
+  runs: readonly ExperimentRun[];
   onSelectSeries: (key: string) => void;
   onSelectIdea: (ideaId: string) => void;
   onSelectMetricPoint: (pointId: string) => void;
   onRecordMetric: (value: number, trialId: string) => Promise<boolean>;
   onOpenObjective: () => void;
+  onOpenRuns: () => void;
 }) {
   const chart = useMemo(() => buildExperimentTrajectory(selectedSeries), [selectedSeries]);
   const ideaById = useMemo(() => new Map(ideas.map((idea) => [idea.id, idea])), [ideas]);
@@ -510,9 +744,9 @@ function TrajectoryPanel({
 
   return (
     <div
-      id="experiment-panel-trajectory"
+      id="experiment-panel-overview"
       role="tabpanel"
-      aria-labelledby="experiment-tab-trajectory"
+      aria-labelledby="experiment-tab-overview"
       className="experiment-panel experiment-trajectory-layout"
     >
       <article className="experiment-card experiment-chart-card">
@@ -574,7 +808,9 @@ function TrajectoryPanel({
                       <td>{ideaTitle(ideas, point.ideaId)}</td>
                       <td>{formatExperimentMetric(point.value, point.unit)}</td>
                       <td>
-                        {point.source === 'manual' ? 'Manual local entry' : 'Saved Runner summary'}
+                        {point.source === 'manual'
+                          ? 'Manual local entry'
+                          : 'Verified tracked-run summary'}
                       </td>
                       <td>{point.trialId ?? '—'}</td>
                     </tr>
@@ -587,6 +823,7 @@ function TrajectoryPanel({
       </article>
 
       <aside className="experiment-trajectory-side">
+        <ExperimentRunStack runs={runs} ideas={ideas} onOpenRuns={onOpenRuns} />
         <MetricRecorder
           project={project}
           objective={objective}
@@ -612,7 +849,7 @@ function TrajectoryPanel({
                 <dd>
                   {selectedPoint.source === 'manual'
                     ? 'Manual local entry'
-                    : 'Saved Runner summary'}
+                    : 'Verified tracked-run summary'}
                 </dd>
               </div>
               <div>
@@ -626,6 +863,730 @@ function TrajectoryPanel({
             </dl>
           </article>
         )}
+      </aside>
+    </div>
+  );
+}
+
+function runIdeaTitle(ideas: readonly ExperimentIdea[], ideaId: string | null) {
+  if (ideaId === null) return 'Exploratory · no linked idea';
+  return ideaTitle(ideas, ideaId);
+}
+
+function ExperimentRunStack({
+  runs,
+  ideas,
+  onOpenRuns,
+}: {
+  runs: readonly ExperimentRun[];
+  ideas: readonly ExperimentIdea[];
+  onOpenRuns: () => void;
+}) {
+  const recentRuns = [...runs]
+    .sort((left, right) => {
+      const leftActive =
+        left.status === 'running' || left.status === 'verifying' || left.status === 'queued'
+          ? 1
+          : 0;
+      const rightActive =
+        right.status === 'running' || right.status === 'verifying' || right.status === 'queued'
+          ? 1
+          : 0;
+      return rightActive - leftActive || right.updatedAt.localeCompare(left.updatedAt);
+    })
+    .slice(0, 5);
+
+  return (
+    <article className="experiment-card experiment-run-stack">
+      <header>
+        <div>
+          <span className="eyebrow">ACTIVE &amp; RECENT</span>
+          <h3>Tracked runs</h3>
+        </div>
+        <button type="button" className="ghost-button" onClick={onOpenRuns}>
+          View all
+        </button>
+      </header>
+      {recentRuns.length === 0 ? (
+        <p className="experiment-inline-empty">
+          No tracked runs yet. Runs created by Project Chat or a connected Runner will appear here.
+        </p>
+      ) : (
+        <ol>
+          {recentRuns.map((run) => (
+            <li key={run.id}>
+              <span className={`experiment-run-status ${RUN_PRESENTATION[run.status].tone}`}>
+                {RUN_PRESENTATION[run.status].label}
+              </span>
+              <div>
+                <strong>{run.title}</strong>
+                <small>
+                  {runIdeaTitle(ideas, run.ideaId)} · {formatExperimentRunProgress(run)}
+                </small>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </article>
+  );
+}
+
+function runLogValidation(run: ExperimentRun) {
+  if (!run.logReference) return 'Not linked';
+  if (run.logReference.validationState === 'valid') return 'Valid';
+  if (run.logReference.validationState === 'pending') return 'Pending validation';
+  if (run.logReference.validationState === 'invalid') return 'Invalid';
+  return `Incomplete · missing ${run.logReference.missingFields.join(', ')}`;
+}
+
+function formatLogSize(sizeBytes: number) {
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatProcessReceipt(run: ExperimentRun) {
+  if (run.processExitCode === null && run.processDurationMs === null) return null;
+  const parts: string[] = [];
+  if (run.processExitCode !== null) parts.push(`Exit ${run.processExitCode}`);
+  if (run.processDurationMs !== null) {
+    const seconds = run.processDurationMs / 1000;
+    const duration =
+      seconds < 60
+        ? `${seconds < 10 ? seconds.toFixed(1) : seconds.toFixed(0)} sec`
+        : formatExperimentElapsed(run.processDurationMs);
+    parts.push(`${duration} process`);
+  }
+  return parts.join(' · ');
+}
+
+export function ExperimentRunsPanel({
+  projectId,
+  ideas,
+  runs,
+  readRunLog,
+}: {
+  projectId: string;
+  ideas: readonly ExperimentIdea[];
+  runs: readonly ExperimentRun[];
+  readRunLog?: ExperimentsViewAdapter['readRunLog'];
+}) {
+  const summary = summarizeExperimentRuns(runs);
+  const orderedRuns = [...runs].sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt),
+  );
+  const logHelpId = `experiment-log-opening-${projectId}`;
+  const logReadGeneration = useRef(0);
+  const [logViewer, setLogViewer] = useState<Readonly<{
+    runId: string;
+    referenceId: string;
+    displayName: string;
+    contentHash: string;
+    content: string;
+    nextOffset: number | null;
+    totalCharacters: number;
+    validationState: ExperimentRunLogChunk['validationState'];
+    missingFields: readonly string[];
+    loadedAt: string | null;
+    loading: boolean;
+    error: string | null;
+  }> | null>(null);
+
+  useEffect(() => {
+    logReadGeneration.current += 1;
+    setLogViewer(null);
+  }, [projectId]);
+
+  const loadRunLog = async (run: ExperimentRun, append: boolean) => {
+    if (!readRunLog || !run.logReference) return;
+    const previous = logViewer;
+    const canAppend =
+      append &&
+      previous?.runId === run.id &&
+      previous.referenceId === run.logReference.referenceId &&
+      previous.nextOffset !== null;
+    const offset = canAppend ? previous.nextOffset! : 0;
+    const generation = ++logReadGeneration.current;
+    setLogViewer(
+      canAppend
+        ? { ...previous, loading: true, error: null }
+        : {
+            runId: run.id,
+            referenceId: run.logReference.referenceId,
+            displayName: run.logReference.displayName,
+            contentHash: run.logReference.contentHash,
+            content: '',
+            nextOffset: null,
+            totalCharacters: 0,
+            validationState: run.logReference.validationState,
+            missingFields: run.logReference.missingFields,
+            loadedAt: null,
+            loading: true,
+            error: null,
+          },
+    );
+    try {
+      const chunk = await readRunLog({
+        projectId,
+        runId: run.id,
+        referenceId: run.logReference.referenceId,
+        offset,
+      });
+      if (generation !== logReadGeneration.current) return;
+      setLogViewer((current) => {
+        if (!current || current.referenceId !== chunk.referenceId) return current;
+        return {
+          runId: chunk.runId,
+          referenceId: chunk.referenceId,
+          displayName: chunk.displayName,
+          contentHash: chunk.contentHash,
+          content: offset === 0 ? chunk.content : `${current.content}${chunk.content}`,
+          nextOffset: chunk.nextOffset,
+          totalCharacters: chunk.totalCharacters,
+          validationState: chunk.validationState,
+          missingFields: chunk.missingFields,
+          loadedAt: chunk.loadedAt,
+          loading: false,
+          error: null,
+        };
+      });
+    } catch (error) {
+      if (generation !== logReadGeneration.current) return;
+      setLogViewer((current) =>
+        current && current.runId === run.id
+          ? { ...current, loading: false, error: experimentErrorMessage(error) }
+          : current,
+      );
+    }
+  };
+
+  return (
+    <div
+      id="experiment-panel-runs"
+      role="tabpanel"
+      aria-labelledby="experiment-tab-runs"
+      className="experiment-panel experiment-runs-panel"
+    >
+      <section className="experiment-run-summary" aria-label="Run status summary">
+        <div>
+          <span>Active</span>
+          <strong>{summary.active}</strong>
+        </div>
+        <div>
+          <span>Queued</span>
+          <strong>{summary.queued}</strong>
+        </div>
+        <div>
+          <span>Completed</span>
+          <strong>{summary.completed}</strong>
+        </div>
+        <div className={summary.needsAttention > 0 ? 'attention' : ''}>
+          <span>Needs attention</span>
+          <strong>{summary.needsAttention}</strong>
+        </div>
+      </section>
+
+      <article className="experiment-card experiment-runs-card">
+        <header className="experiment-card-head">
+          <div>
+            <span className="eyebrow">MLOPS RUN TRACKING</span>
+            <h2>Runs and logging health</h2>
+            <p>
+              Project Chat and the Runner create these records. The current Project Chat foreground
+              path records start and verified final-log state; live per-step streaming begins when a
+              Runner is connected. This table never invents missing progress or a total.
+            </p>
+          </div>
+        </header>
+
+        {orderedRuns.length === 0 ? (
+          <div className="experiment-run-empty">
+            <strong>No tracked runs</strong>
+            <span>
+              Design an exploratory or comparable experiment in Project Chat. Its server, step,
+              metric summary, and validated log reference will appear here.
+            </span>
+          </div>
+        ) : (
+          <div className="experiment-runs-table-scroll" tabIndex={0}>
+            <table>
+              <caption className="sr-only">
+                Runs for this project with status, progress, metric, and logging validation
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Status</th>
+                  <th scope="col">Run / trial</th>
+                  <th scope="col">Idea</th>
+                  <th scope="col">Server</th>
+                  <th scope="col">Progress</th>
+                  <th scope="col">Current step</th>
+                  <th scope="col">Latest metric</th>
+                  <th scope="col">Started / updated</th>
+                  <th scope="col">Logging validation</th>
+                  <th scope="col">Log</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orderedRuns.map((run) => {
+                  const canOpenLog = Boolean(
+                    run.logReference &&
+                    run.logReference.validationState !== 'pending' &&
+                    readRunLog,
+                  );
+                  const processReceipt = formatProcessReceipt(run);
+                  return (
+                    <tr
+                      key={run.id}
+                      className={logViewer?.runId === run.id ? 'selected' : undefined}
+                    >
+                      <td>
+                        <span
+                          className={`experiment-run-status ${RUN_PRESENTATION[run.status].tone}`}
+                        >
+                          {RUN_PRESENTATION[run.status].label}
+                        </span>
+                      </td>
+                      <td>
+                        <strong>{run.title}</strong>
+                        <small>{run.trialId}</small>
+                      </td>
+                      <td>{runIdeaTitle(ideas, run.ideaId)}</td>
+                      <td>{run.serverLabel}</td>
+                      <td>{formatExperimentRunProgress(run)}</td>
+                      <td>{run.currentStep ?? 'Not reported'}</td>
+                      <td>
+                        {run.latestMetric ? (
+                          <>
+                            <strong>{run.latestMetric.displayName}</strong>
+                            <span>
+                              {formatExperimentMetric(
+                                run.latestMetric.value,
+                                run.latestMetric.unit,
+                              )}
+                            </span>
+                          </>
+                        ) : (
+                          'Not reported'
+                        )}
+                      </td>
+                      <td>
+                        <span>{run.startedAt ? formatDateTime(run.startedAt) : 'Not started'}</span>
+                        {processReceipt && <small>{processReceipt}</small>}
+                        <small>Updated {formatDateTime(run.updatedAt)}</small>
+                      </td>
+                      <td>
+                        <span>{runLogValidation(run)}</span>
+                        <small>
+                          {run.logReference
+                            ? `${run.logReference.displayName} · ${formatLogSize(run.logReference.sizeBytes)} · ${shortHash(run.logReference.contentHash)} · template v${run.loggingTemplate.version}`
+                            : `Template v${run.loggingTemplate.version}`}
+                        </small>
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="secondary-button compact"
+                          disabled={!canOpenLog}
+                          aria-describedby={logHelpId}
+                          title={
+                            !run.logReference
+                              ? 'No validated log reference is linked to this run.'
+                              : run.logReference.validationState === 'pending'
+                                ? 'The process receipt is saved, but log verification has not finished.'
+                                : !readRunLog
+                                  ? 'Opening raw logs is not connected in this build.'
+                                  : undefined
+                          }
+                          onClick={() => {
+                            void loadRunLog(run, false);
+                          }}
+                        >
+                          {logViewer?.runId === run.id ? 'Refresh log' : 'Open log'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p id={logHelpId} className="experiment-log-boundary">
+          Raw JSONL stays on the linked server. GOSU reads it into this view only on demand and
+          refuses content whose full-file hash differs from the validated run reference.
+          {!readRunLog && ' Raw log opening is not connected in this build.'}
+        </p>
+
+        {logViewer && (
+          <section className="experiment-log-viewer" aria-labelledby="experiment-log-viewer-title">
+            <header>
+              <div>
+                <span className="eyebrow">SERVER JSONL · ON-DEMAND</span>
+                <h3 id="experiment-log-viewer-title">{logViewer.displayName}</h3>
+                <p>
+                  {logViewer.validationState === 'valid'
+                    ? 'Validated against the run template'
+                    : logViewer.validationState === 'incomplete'
+                      ? `Incomplete · missing ${logViewer.missingFields.join(', ')}`
+                      : logViewer.validationState === 'invalid'
+                        ? 'Invalid experiment log'
+                        : 'Validation pending'}
+                  {' · '}hash {shortHash(logViewer.contentHash)}
+                </p>
+              </div>
+              <div className="experiment-log-viewer-actions">
+                <button
+                  type="button"
+                  className="secondary-button compact"
+                  disabled={logViewer.loading}
+                  onClick={() => {
+                    const run = runs.find(({ id }) => id === logViewer.runId);
+                    if (run) void loadRunLog(run, false);
+                  }}
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    logReadGeneration.current += 1;
+                    setLogViewer(null);
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </header>
+            {logViewer.error && (
+              <div className="notice error" role="alert">
+                {logViewer.error}
+              </div>
+            )}
+            {logViewer.loading && logViewer.content === '' ? (
+              <p className="experiment-inline-empty" role="status">
+                Reading the verified server log…
+              </p>
+            ) : (
+              <pre tabIndex={0} role="log" aria-live="off">
+                <code>{logViewer.content}</code>
+              </pre>
+            )}
+            <footer>
+              <span>
+                {logViewer.loadedAt
+                  ? `Loaded ${formatDateTime(logViewer.loadedAt)} · ${[
+                      ...logViewer.content,
+                    ].length.toLocaleString()} / ${logViewer.totalCharacters.toLocaleString()} characters`
+                  : 'No raw content was retained locally.'}
+              </span>
+              {logViewer.nextOffset !== null && (
+                <button
+                  type="button"
+                  className="secondary-button compact"
+                  disabled={logViewer.loading}
+                  onClick={() => {
+                    const run = runs.find(({ id }) => id === logViewer.runId);
+                    if (run) void loadRunLog(run, true);
+                  }}
+                >
+                  {logViewer.loading ? 'Loading…' : 'Load more'}
+                </button>
+              )}
+            </footer>
+          </section>
+        )}
+      </article>
+    </div>
+  );
+}
+
+function copyLoggingFields(fields: readonly ExperimentLoggingCustomField[]) {
+  return fields.map((field) => ({ ...field, requiredAt: [...field.requiredAt] }));
+}
+
+function nextLoggingFieldKey(fields: readonly ExperimentLoggingCustomField[]) {
+  const keys = new Set(fields.map(({ key }) => key));
+  let index = 1;
+  while (keys.has(`field_${index}`)) index += 1;
+  return `field_${index}`;
+}
+
+export function ExperimentLoggingPanel({
+  template,
+  busy,
+  onSave,
+}: {
+  template: ExperimentLoggingTemplate;
+  busy: boolean;
+  onSave: (fields: readonly ExperimentLoggingCustomField[]) => Promise<boolean>;
+}) {
+  const [fields, setFields] = useState<ExperimentLoggingCustomField[]>(() =>
+    copyLoggingFields(template.customFields),
+  );
+
+  const issues = validateExperimentLoggingFields(fields);
+  const dirty = JSON.stringify(fields) !== JSON.stringify(template.customFields);
+  const atLimit = fields.length >= EXPERIMENT_MAX_LOGGING_FIELDS;
+
+  const replaceField = (index: number, next: ExperimentLoggingCustomField) => {
+    setFields((current) => current.map((field, itemIndex) => (itemIndex === index ? next : field)));
+  };
+
+  const addField = () => {
+    if (atLimit) return;
+    const key = nextLoggingFieldKey(fields);
+    setFields((current) => [
+      ...current,
+      {
+        key,
+        label: 'New field',
+        type: 'string',
+        category: 'note',
+        requiredAt: ['summary'],
+        unit: null,
+      },
+    ]);
+  };
+
+  const save = async () => {
+    const normalized = fields.map((field) => ({
+      ...field,
+      key: field.key.trim(),
+      label: field.label.trim(),
+      unit: field.unit?.trim() ? field.unit.trim() : null,
+      requiredAt: LOGGING_REQUIRED_AT.filter((stage) => field.requiredAt.includes(stage)),
+    }));
+    if (validateExperimentLoggingFields(normalized).length > 0) return;
+    await onSave(normalized);
+  };
+
+  return (
+    <div
+      id="experiment-panel-logging"
+      role="tabpanel"
+      aria-labelledby="experiment-tab-logging"
+      className="experiment-panel experiment-logging-layout"
+    >
+      <article className="experiment-card experiment-logging-editor">
+        <header className="experiment-card-head">
+          <div>
+            <span className="eyebrow">REQUIRED LOGGING TEMPLATE</span>
+            <h2>Template version {template.version}</h2>
+            <p>
+              Project Chat must include these fields when it designs and launches experiments. Save
+              changes as a new immutable version; existing runs keep their original snapshot.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={atLimit}
+            title={atLimit ? `Maximum ${EXPERIMENT_MAX_LOGGING_FIELDS} custom fields` : undefined}
+            onClick={addField}
+          >
+            ＋ Add field
+          </button>
+        </header>
+
+        <section className="experiment-system-fields" aria-labelledby="system-logging-fields">
+          <div>
+            <h3 id="system-logging-fields">System fields</h3>
+            <span>Always present and locked</span>
+          </div>
+          <ul>
+            {EXPERIMENT_LOGGING_SYSTEM_FIELDS.map((field) => (
+              <li key={field}>
+                <span aria-hidden="true">🔒</span> {field}
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section className="experiment-custom-fields" aria-labelledby="custom-logging-fields">
+          <div className="experiment-custom-fields-heading">
+            <div>
+              <h3 id="custom-logging-fields">Custom required fields</h3>
+              <span>
+                {fields.length} / {EXPERIMENT_MAX_LOGGING_FIELDS}
+              </span>
+            </div>
+          </div>
+
+          {fields.length === 0 ? (
+            <p className="experiment-inline-empty">
+              No custom fields. System provenance is still required for every run event.
+            </p>
+          ) : (
+            <ol className="experiment-logging-field-list">
+              {fields.map((field, index) => (
+                <li key={`${template.id}:${index}`} className="experiment-logging-field-row">
+                  <div className="experiment-logging-field-basics">
+                    <label>
+                      Key
+                      <input
+                        value={field.key}
+                        spellCheck={false}
+                        maxLength={64}
+                        onChange={(event) =>
+                          replaceField(index, { ...field, key: event.target.value })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Label
+                      <input
+                        value={field.label}
+                        maxLength={80}
+                        onChange={(event) =>
+                          replaceField(index, { ...field, label: event.target.value })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Type
+                      <select
+                        value={field.type}
+                        onChange={(event) =>
+                          replaceField(index, {
+                            ...field,
+                            type: event.target.value as ExperimentLoggingFieldType,
+                          })
+                        }
+                      >
+                        {LOGGING_FIELD_TYPES.map((type) => (
+                          <option key={type} value={type}>
+                            {type}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Category
+                      <select
+                        value={field.category}
+                        onChange={(event) =>
+                          replaceField(index, {
+                            ...field,
+                            category: event.target.value as ExperimentLoggingFieldCategory,
+                          })
+                        }
+                      >
+                        {LOGGING_FIELD_CATEGORIES.map((category) => (
+                          <option key={category} value={category}>
+                            {category}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Unit <small>optional</small>
+                      <input
+                        value={field.unit ?? ''}
+                        maxLength={32}
+                        placeholder="e.g. %, sec"
+                        onChange={(event) =>
+                          replaceField(index, {
+                            ...field,
+                            unit: event.target.value === '' ? null : event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                  <fieldset>
+                    <legend>Required at</legend>
+                    {LOGGING_REQUIRED_AT.map((stage) => (
+                      <label key={stage}>
+                        <input
+                          type="checkbox"
+                          checked={field.requiredAt.includes(stage)}
+                          onChange={(event) => {
+                            const requiredAt = event.target.checked
+                              ? [...field.requiredAt, stage]
+                              : field.requiredAt.filter((value) => value !== stage);
+                            replaceField(index, { ...field, requiredAt });
+                          }}
+                        />
+                        {stage}
+                      </label>
+                    ))}
+                  </fieldset>
+                  <button
+                    type="button"
+                    className="ghost-button experiment-delete-logging-field"
+                    aria-label={`Delete ${field.label || field.key || `field ${index + 1}`}`}
+                    onClick={() =>
+                      setFields((current) => current.filter((_, itemIndex) => itemIndex !== index))
+                    }
+                  >
+                    Delete
+                  </button>
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
+
+        {issues.length > 0 && (
+          <div className="experiment-logging-errors" role="alert">
+            <strong>Fix the template before saving</strong>
+            <ul>
+              {issues.map((issue) => (
+                <li key={issue}>{issue}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <footer className="experiment-logging-actions">
+          <span>
+            {dirty ? 'Unsaved template changes' : `Version ${template.version} is current`}
+          </span>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={busy || !dirty || issues.length > 0}
+            onClick={() => void save()}
+          >
+            {busy ? 'Saving…' : `Save as version ${template.version + 1}`}
+          </button>
+        </footer>
+      </article>
+
+      <aside className="experiment-logging-preview">
+        <article className="experiment-card">
+          <span className="eyebrow">CURRENT TEMPLATE · VERSION {template.version}</span>
+          <h2>JSONL example</h2>
+          <p className="experiment-example-warning">Example only — not an actual run</p>
+          <pre
+            tabIndex={0}
+            aria-label={`Logging template version ${template.version} JSONL example`}
+          >
+            <code>{buildExperimentLoggingExample(template)}</code>
+          </pre>
+          <dl>
+            <div>
+              <dt>Template hash</dt>
+              <dd title={template.templateHash}>{shortHash(template.templateHash)}</dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd>{formatDateTime(template.createdAt)}</dd>
+            </div>
+          </dl>
+        </article>
+        <article className="experiment-card experiment-log-policy-card">
+          <span className="eyebrow">LOG STORAGE BOUNDARY</span>
+          <h3>References, not raw logs</h3>
+          <p>
+            Run records keep validation state, missing required fields, size, and content hash. Raw
+            logs remain at their approved server or Runner source. The Runs tab reads a verified
+            copy into memory only when you choose Open log.
+          </p>
+        </article>
       </aside>
     </div>
   );
