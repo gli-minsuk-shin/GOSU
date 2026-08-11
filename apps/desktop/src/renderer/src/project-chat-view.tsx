@@ -218,6 +218,20 @@ export function resolveFailedTurnRecoveryMode(errorCode?: string) {
   return errorCode === 'attachment_model_modality_unsupported' ? 'reattach' : 'retry';
 }
 
+export function resolveProjectChatBranchActionState(isCreating: boolean) {
+  return isCreating
+    ? {
+        label: 'Creating…',
+        accessibleLabel: 'Creating chat branch…',
+        busy: true,
+      }
+    : {
+        label: '⑂ Branch',
+        accessibleLabel: 'Create a new chat branch from this message',
+        busy: false,
+      };
+}
+
 export function resolveEditedMessageBranchPoint(
   messages: readonly Pick<ProjectChatSnapshot['messages'][number], 'id' | 'role' | 'status'>[],
   userMessageId: string,
@@ -1535,6 +1549,9 @@ export function ProjectChatView({
                 const isUnreadAssistantMessage =
                   message.role === 'assistant' && message.id === resolvedUnreadAssistantMessageId;
                 const isSearchTarget = searchTarget?.targetId === message.id;
+                const branchAction = resolveProjectChatBranchActionState(
+                  branchingMessageId === message.id,
+                );
                 return (
                   <article
                     ref={(element) => {
@@ -1556,32 +1573,75 @@ export function ProjectChatView({
                     <div className="message-copy">
                       <ProjectChatMarkdown source={message.content} />
                     </div>
-                    {(message.model || attempt?.harnessMode || nativeAttempt) && (
-                      <footer className="message-provenance">
-                        {message.model
-                          ? `${message.model.providerId === 'hermes' ? 'Hermes' : 'Codex'} · ${message.model.resolvedModelId}`
-                          : 'Codex'}
-                        {message.model?.reasoningOptionId
-                          ? ` · reasoning ${message.model.reasoningOptionId}`
-                          : ''}
-                        {nativeAttempt
-                          ? message.model?.providerId === 'hermes'
-                            ? ' · Hermes sealed mode'
-                            : attempt?.collaborationModeId
-                              ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
-                              : ' · Codex default mode'
-                          : attempt?.harnessMode
-                            ? ` · legacy ${HARNESS_LABELS[attempt.harnessMode]}`
-                            : ''}
-                        {attempt?.personality && attempt.personality !== 'auto'
-                          ? ` · ${PERSONALITY_LABELS[attempt.personality]}`
-                          : ''}
-                        {attempt?.responseVerbosity
-                          ? ` · ${VERBOSITY_LABELS[attempt.responseVerbosity]}`
-                          : attempt?.responseDepth
-                            ? ` · legacy ${DEPTH_LABELS[attempt.responseDepth]}`
-                            : ''}
-                        {attempt?.contextScope ? ` · ${CONTEXT_LABELS[attempt.contextScope]}` : ''}
+                    {(message.model ||
+                      attempt?.harnessMode ||
+                      nativeAttempt ||
+                      message.status === 'complete') && (
+                      <footer className="chat-message-meta">
+                        {(message.model || attempt?.harnessMode || nativeAttempt) && (
+                          <div className="message-provenance">
+                            {message.model
+                              ? `${message.model.providerId === 'hermes' ? 'Hermes' : 'Codex'} · ${message.model.resolvedModelId}`
+                              : 'Codex'}
+                            {message.model?.reasoningOptionId
+                              ? ` · reasoning ${message.model.reasoningOptionId}`
+                              : ''}
+                            {nativeAttempt
+                              ? message.model?.providerId === 'hermes'
+                                ? ' · Hermes sealed mode'
+                                : attempt?.collaborationModeId
+                                  ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
+                                  : ' · Codex default mode'
+                              : attempt?.harnessMode
+                                ? ` · legacy ${HARNESS_LABELS[attempt.harnessMode]}`
+                                : ''}
+                            {attempt?.personality && attempt.personality !== 'auto'
+                              ? ` · ${PERSONALITY_LABELS[attempt.personality]}`
+                              : ''}
+                            {attempt?.responseVerbosity
+                              ? ` · ${VERBOSITY_LABELS[attempt.responseVerbosity]}`
+                              : attempt?.responseDepth
+                                ? ` · legacy ${DEPTH_LABELS[attempt.responseDepth]}`
+                                : ''}
+                            {attempt?.contextScope
+                              ? ` · ${CONTEXT_LABELS[attempt.contextScope]}`
+                              : ''}
+                          </div>
+                        )}
+                        {message.status === 'complete' && (
+                          <div
+                            className="chat-message-branch"
+                            role="group"
+                            aria-label="Message history actions"
+                            aria-live="polite"
+                          >
+                            {message.role === 'user' && (
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                disabled={sessionBusy || projectBusy || branchingMessageId !== null}
+                                onClick={() =>
+                                  void onEditHistoryMessage(message.id, message.content)
+                                }
+                                aria-label="Edit this message in a new chat branch"
+                                title="Edit this message in a new chat branch"
+                              >
+                                ✎ Edit &amp; branch
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              disabled={sessionBusy || projectBusy || branchingMessageId !== null}
+                              onClick={() => void onBranchSession(message.id)}
+                              aria-label={branchAction.accessibleLabel}
+                              aria-busy={branchAction.busy}
+                              title="Create a new chat branch from this point"
+                            >
+                              {branchAction.label}
+                            </button>
+                          </div>
+                        )}
                       </footer>
                     )}
                     {retrySource && (
@@ -1611,31 +1671,6 @@ export function ProjectChatView({
                           }}
                         >
                           Use message again
-                        </button>
-                      </footer>
-                    )}
-                    {message.status === 'complete' && (
-                      <footer className="chat-message-branch">
-                        {message.role === 'user' && (
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            disabled={sessionBusy || projectBusy || branchingMessageId !== null}
-                            onClick={() => void onEditHistoryMessage(message.id, message.content)}
-                            title="Create a new chat branch from this edited message"
-                          >
-                            Edit in new branch
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          disabled={sessionBusy || projectBusy || branchingMessageId !== null}
-                          onClick={() => void onBranchSession(message.id)}
-                        >
-                          {branchingMessageId === message.id
-                            ? 'Creating branch…'
-                            : '⑂ Branch from here'}
                         </button>
                       </footer>
                     )}

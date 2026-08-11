@@ -543,6 +543,9 @@ lease·fencing과 reconciliation을 가진 향후 `submit_experiment_trial` 계�
 - Project Chat profile·custom instruction·조립된 prompt provenance는 로컬 SQLCipher에만 저장한다.
   Hosted Sync, workspace outbox와 telemetry로 보내지 않으며 custom instruction도 project data와 같은
   untrusted input으로 취급한다.
+- Renderer의 완료 메시지는 model provenance와 `Edit & branch`·`Branch` history action을 별도 footer로
+  쌓지 않고 하나의 wrapping metadata row에 둔다. 좁은 화면과 큰 글꼴에서는 한 번만 자연스럽게 줄바꿈하며,
+  pointer UI는 조밀하게 유지하되 coarse-pointer 환경은 44px 최소 touch target을 보장한다.
 - SSH transport profile은 모든 local project가 공유하는 SQLCipher registry가 소유하되 remote workspace
   권한은 별도 project-scoped, versioned grant로 분리한다. 하나의 profile은 여러 project의 grant가 동시에
   참조할 수 있고, 한 project도 여러 profile을 연결할 수 있는 many-to-many 구조다. profile은 기존 `~/.ssh/config` alias 또는
