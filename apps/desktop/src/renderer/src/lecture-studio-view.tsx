@@ -10,6 +10,17 @@ import {
 
 import type { ExperimentMetricPoint } from '../../shared/experiment-workspace-contracts';
 import type { LiteratureRecord } from '../../shared/literature-contracts';
+import type {
+  DiscardLectureExternalSourceSetInput,
+  RemoveStagedLectureExternalSourceInput,
+  StageLectureExternalSourcesInput,
+  StagedLectureExternalSourceCard,
+  StagedLectureExternalSourceSetView,
+} from '../../shared/lecture-external-source-contracts';
+import type {
+  ImportLectureOverleafSourceInput,
+  LectureOverleafSourceReceipt,
+} from '../../shared/lecture-overleaf-source-contracts';
 import {
   LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES,
   LECTURE_STUDIO_MAX_LITERATURE_SOURCES,
@@ -62,6 +73,12 @@ import {
 } from './lecture-studio-model-selection-store';
 import type { LectureStudioDraftStore } from './lecture-studio-session-state';
 import { MarkdownDocument } from './markdown-document';
+import {
+  LectureExternalSourcePicker,
+  type LectureExternalSourceCard,
+  type LectureOverleafSourceCard,
+  type LectureOverleafSourceDraft,
+} from './lecture-external-source-picker';
 import { PdfPreview } from './pdf-preview';
 import { CollapseChevron } from './ui-primitives';
 import './lecture-studio-view.css';
@@ -71,6 +88,18 @@ export interface LectureStudioViewAdapter {
   list: (input: ListLectureStudiosInput) => Promise<LectureStudioListSnapshot>;
   detail: (input: LectureStudioDetailInput) => Promise<LectureStudioDetail>;
   candidates: (input: ListLectureCandidatesInput) => Promise<LectureSourceCandidates>;
+  stageExternalSources: (
+    input: StageLectureExternalSourcesInput,
+  ) => Promise<StagedLectureExternalSourceSetView>;
+  removeStagedExternalSource: (
+    input: RemoveStagedLectureExternalSourceInput,
+  ) => Promise<StagedLectureExternalSourceSetView>;
+  discardExternalSourceSet: (
+    input: DiscardLectureExternalSourceSetInput,
+  ) => Promise<{ discarded: true }>;
+  importOverleaf: (
+    input: ImportLectureOverleafSourceInput,
+  ) => Promise<LectureOverleafSourceReceipt>;
   create: (input: CreateLectureStudioInput) => Promise<LectureStudio>;
   generate: (input: GenerateLectureStudioInput) => Promise<LectureStudioTurnReceipt>;
   send: (input: SendLectureStudioMessageInput) => Promise<LectureStudioTurnReceipt>;
@@ -184,7 +213,37 @@ const EMPTY_SOURCE_SELECTION: LectureSourceSelection = {
   literature: [],
   experiments: [],
   manuscripts: [],
+  externalSources: null,
 };
+
+export function lectureExternalSourceCard(
+  source: StagedLectureExternalSourceCard,
+): LectureExternalSourceCard {
+  return {
+    id: source.id,
+    displayName: source.displayName,
+    kind: source.kind,
+    byteSize: source.byteSize,
+    textAvailable: source.extraction.textAvailable,
+    truncated: source.extraction.truncated,
+    unitLabel: source.extraction.unitLabel,
+    unitCount: source.extraction.unitCount,
+    extractedCharacters: source.extraction.extractedCharacters,
+    reconstructionNotice: source.extraction.reconstructionNotice,
+  };
+}
+
+export function lectureOverleafSourceCard(
+  receipt: LectureOverleafSourceReceipt,
+): LectureOverleafSourceCard {
+  return {
+    manuscriptId: receipt.manuscriptId,
+    title: receipt.candidate.manuscript.title,
+    rootDocument: receipt.candidate.manuscript.rootDocument,
+    providerRevision: receipt.candidate.providerRevision,
+    observedAt: receipt.candidate.observedAt,
+  };
+}
 
 function sourceKey(projectId: string, sourceId: string) {
   return `${projectId}:${sourceId}`;
@@ -245,6 +304,31 @@ function lectureErrorCodeMessage(code: string) {
       'Codex started this generation but could not complete it. The previous revision remains unchanged.',
     lecture_version_conflict: 'This lecture changed in another action. Refresh and try again.',
     lecture_source_not_found: 'A selected manuscript, paper, or experiment is no longer available.',
+    lecture_external_source_invalid:
+      'One of the selected files could not be read safely or was already added.',
+    lecture_external_source_unsupported: 'Choose a LaTeX, Markdown, or PDF file.',
+    lecture_external_source_too_large: 'Each source file must be 20 MB or smaller.',
+    lecture_external_source_total_too_large:
+      'These added files exceed the 50 MB local source limit. Remove a source and try again.',
+    lecture_external_source_too_many: 'Add no more than 12 local source files.',
+    lecture_external_source_encrypted: 'Password-protected PDF sources cannot be read yet.',
+    lecture_external_source_extraction_failed:
+      'GOSU could not extract readable evidence from that PDF.',
+    lecture_external_source_not_found:
+      'That temporary file source expired or was removed. Add it again.',
+    lecture_external_source_expired:
+      'That temporary file source expired before the lecture was created. Add it again.',
+    lecture_external_source_corrupt:
+      'A staged source changed unexpectedly, so GOSU stopped before using it. Add it again.',
+    lecture_overleaf_source_conflict:
+      'GOSU could not create a unique Overleaf manuscript connection for this source.',
+    lecture_overleaf_source_not_ready:
+      'Overleaf connected, but the requested root TeX checkpoint is not ready. Review it in Manuscript.',
+    overleaf_git_auth_required: 'Enter an Overleaf personal Git token to capture this source.',
+    overleaf_git_url_invalid: 'Enter the Git URL shown in your Overleaf project settings.',
+    overleaf_git_root_document_missing:
+      'The root TeX file was not found in the captured Overleaf checkpoint.',
+    overleaf_token_invalid: 'Overleaf rejected this personal Git token.',
     lecture_invalid_response:
       'The generated draft failed source or LaTeX safety checks, so no files were changed.',
     lecture_persistence_failed:
@@ -921,6 +1005,10 @@ function LectureComposer({
   const [selectedLiterature, setSelectedLiterature] = useState<Set<string>>(new Set());
   const [selectedExperiments, setSelectedExperiments] = useState<Set<string>>(new Set());
   const [selectedManuscripts, setSelectedManuscripts] = useState<Set<string>>(new Set());
+  const [externalSourceSet, setExternalSourceSet] =
+    useState<StagedLectureExternalSourceSetView | null>(null);
+  const externalSourceSetRef = useRef<StagedLectureExternalSourceSetView | null>(null);
+  const [overleafSources, setOverleafSources] = useState<LectureOverleafSourceReceipt[]>([]);
   const [candidates, setCandidates] = useState<LoadedLectureCandidates | null>(null);
   const [loadingSources, setLoadingSources] = useState(false);
   const [loadingMoreProjects, setLoadingMoreProjects] = useState<Set<string>>(new Set());
@@ -929,6 +1017,33 @@ function LectureComposer({
     AUTO_LECTURE_STUDIO_MODEL_SELECTION,
   );
   const [selectionError, setSelectionError] = useState<string | null>(null);
+  const previousOutputProjectId = useRef(outputProjectId);
+  const createCommittedRef = useRef(false);
+
+  useEffect(
+    () => () => {
+      const staged = externalSourceSetRef.current;
+      if (staged && !createCommittedRef.current) {
+        void adapter
+          .discardExternalSourceSet({ projectId: staged.projectId, sourceSetId: staged.id })
+          .catch(() => undefined);
+      }
+    },
+    [adapter],
+  );
+
+  useEffect(() => {
+    if (previousOutputProjectId.current === outputProjectId) return;
+    previousOutputProjectId.current = outputProjectId;
+    const staged = externalSourceSet;
+    externalSourceSetRef.current = null;
+    setExternalSourceSet(null);
+    if (staged) {
+      void adapter
+        .discardExternalSourceSet({ projectId: staged.projectId, sourceSetId: staged.id })
+        .catch(() => undefined);
+    }
+  }, [adapter, externalSourceSet, outputProjectId]);
 
   const candidateKey = projectIds.slice().sort().join(':');
   useEffect(() => {
@@ -976,6 +1091,7 @@ function LectureComposer({
       setSelectedManuscripts(
         (selected) => new Set([...selected].filter((key) => !key.startsWith(`${projectId}:`))),
       );
+      setOverleafSources((current) => current.filter((source) => source.projectId !== projectId));
     }
   };
 
@@ -987,7 +1103,11 @@ function LectureComposer({
           ? selectedExperiments
           : selectedManuscripts;
     const otherCount =
-      selectedLiterature.size + selectedExperiments.size + selectedManuscripts.size - current.size;
+      selectedLiterature.size +
+      selectedExperiments.size +
+      selectedManuscripts.size +
+      (externalSourceSet?.sources.length ?? 0) -
+      current.size;
     const toggled = toggleLectureSourceSelection(current, key, otherCount);
     setSelectionError(toggled.error);
     if (kind === 'literature') setSelectedLiterature(toggled.sourceIds);
@@ -1037,13 +1157,20 @@ function LectureComposer({
       const [projectId = '', manuscriptId = ''] = key.split(':');
       return { projectId, manuscriptId };
     });
-    return { literature, experiments, manuscripts };
-  }, [selectedExperiments, selectedLiterature, selectedManuscripts]);
+    const externalSources = externalSourceSet
+      ? {
+          sourceSetId: externalSourceSet.id,
+          sourceIds: externalSourceSet.sources.map(({ id }) => id),
+        }
+      : null;
+    return { literature, experiments, manuscripts, externalSources };
+  }, [externalSourceSet, selectedExperiments, selectedLiterature, selectedManuscripts]);
 
   const sourceCount =
     sourceSelection.literature.length +
     sourceSelection.experiments.length +
-    sourceSelection.manuscripts.length;
+    sourceSelection.manuscripts.length +
+    (sourceSelection.externalSources?.sourceIds.length ?? 0);
   const canCreate =
     !busy &&
     !creating &&
@@ -1060,8 +1187,10 @@ function LectureComposer({
     event.preventDefault();
     if (!canCreate) return;
     setCreating(true);
+    createCommittedRef.current = false;
+    let studio: LectureStudio | null = null;
     try {
-      const studio = await adapter.create({
+      studio = await adapter.create({
         title: title.trim(),
         kind,
         durationMinutes: kind === 'talk' ? durationMinutes : null,
@@ -1075,8 +1204,15 @@ function LectureComposer({
           customInstructions,
         },
       });
+      createCommittedRef.current = true;
+      externalSourceSetRef.current = null;
+      setExternalSourceSet(null);
       await onCreated(studio, initialModelSelection);
     } catch (createError) {
+      // Creation and first generation are intentionally separate durable operations. Once the
+      // Studio row commits, a generation failure must keep it selected/retryable and must not make
+      // the composer treat its already-claimed source set as an abandoned draft.
+      if (!studio) createCommittedRef.current = false;
       onError(createError);
     } finally {
       setCreating(false);
@@ -1089,8 +1225,9 @@ function LectureComposer({
         <span className="eyebrow">New synthesis</span>
         <h2>Build across projects</h2>
         <p>
-          Select captured manuscript sources, reviewed paper metadata, and experiment evidence the
-          lecture may use. GOSU freezes this source set for each generated revision.
+          Select captured manuscripts, reviewed paper metadata, experiment evidence, or add local
+          TeX, Markdown, PDF, and Overleaf Git sources. GOSU freezes the exact source set for each
+          generated revision.
         </p>
       </header>
 
@@ -1327,6 +1464,116 @@ function LectureComposer({
           Every revision is saved as new immutable LaTeX files in this project’s Research Notes.
         </small>
       </label>
+
+      <LectureExternalSourcePicker
+        key={outputProjectId}
+        fileSources={(externalSourceSet?.sources ?? []).map(lectureExternalSourceCard)}
+        overleafSources={overleafSources.map(lectureOverleafSourceCard)}
+        busy={busy || creating || outputProjectId === ''}
+        outputProjectName={
+          projects.find(({ id }) => id === outputProjectId)?.name ?? 'the output project'
+        }
+        onChooseFiles={async () => {
+          if (!outputProjectId) return;
+          try {
+            const next = await adapter.stageExternalSources({
+              projectId: outputProjectId,
+              sourceSetId: externalSourceSet?.id ?? null,
+            });
+            if (next.sources.length === 0) {
+              externalSourceSetRef.current = null;
+              setExternalSourceSet(null);
+              await adapter
+                .discardExternalSourceSet({ projectId: next.projectId, sourceSetId: next.id })
+                .catch(() => undefined);
+            } else {
+              externalSourceSetRef.current = next;
+              setExternalSourceSet(next);
+            }
+            setSelectionError(null);
+          } catch (sourceError) {
+            onError(sourceError);
+          }
+        }}
+        onRemoveFile={async (sourceId) => {
+          if (!externalSourceSet) return;
+          try {
+            const next = await adapter.removeStagedExternalSource({
+              projectId: externalSourceSet.projectId,
+              sourceSetId: externalSourceSet.id,
+              sourceId,
+            });
+            externalSourceSetRef.current = next.sources.length > 0 ? next : null;
+            setExternalSourceSet(next.sources.length > 0 ? next : null);
+            if (next.sources.length === 0) {
+              await adapter
+                .discardExternalSourceSet({
+                  projectId: externalSourceSet.projectId,
+                  sourceSetId: externalSourceSet.id,
+                })
+                .catch(() => undefined);
+            }
+          } catch (sourceError) {
+            onError(sourceError);
+          }
+        }}
+        onImportOverleaf={async (draft: LectureOverleafSourceDraft) => {
+          if (!outputProjectId) return false;
+          if (sourceCount >= LECTURE_STUDIO_UI_MAX_SOURCES) {
+            setSelectionError(
+              `A lecture can use at most ${LECTURE_STUDIO_UI_MAX_SOURCES} sources in total.`,
+            );
+            return false;
+          }
+          try {
+            const receipt = await adapter.importOverleaf({
+              projectId: outputProjectId,
+              ...draft,
+            });
+            const key = sourceKey(receipt.projectId, receipt.manuscriptId);
+            setSelectedManuscripts((current) => new Set(current).add(key));
+            setOverleafSources((current) => [
+              ...current.filter(({ manuscriptId }) => manuscriptId !== receipt.manuscriptId),
+              receipt,
+            ]);
+            setCandidates((current) => {
+              if (!current) return current;
+              return {
+                projects: current.projects.map((project) =>
+                  project.projectId === receipt.projectId
+                    ? {
+                        ...project,
+                        manuscripts: [
+                          ...project.manuscripts.filter(
+                            ({ manuscript }) => manuscript.id !== receipt.manuscriptId,
+                          ),
+                          receipt.candidate,
+                        ],
+                      }
+                    : project,
+                ),
+              };
+            });
+            setSelectionError(null);
+            return true;
+          } catch (sourceError) {
+            onError(sourceError);
+            return false;
+          }
+        }}
+        onRemoveOverleaf={(manuscriptId) => {
+          const receipt = overleafSources.find((source) => source.manuscriptId === manuscriptId);
+          if (!receipt) return;
+          setSelectedManuscripts((current) => {
+            const next = new Set(current);
+            next.delete(sourceKey(receipt.projectId, receipt.manuscriptId));
+            return next;
+          });
+          setOverleafSources((current) =>
+            current.filter((source) => source.manuscriptId !== manuscriptId),
+          );
+        }}
+      />
 
       <section className="lecture-source-picker">
         <header>

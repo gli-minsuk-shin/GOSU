@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import '../../src/renderer/src/styles.css';
 import '../../src/renderer/src/lecture-studio-view.css';
+import '../../src/renderer/src/lecture-external-source-picker.css';
 import '../../src/renderer/src/pdf-preview.css';
 import './lecture-studio-layout-smoke.css';
 import type {
@@ -173,6 +174,16 @@ const adapter: LectureStudioViewAdapter = {
   list: async () => ({ schemaVersion: 1, studios: [studio] }),
   detail: async () => detail,
   candidates: async () => ({ schemaVersion: 1, projects: [] }),
+  stageExternalSources: async () => {
+    throw new Error('not used in ready Studio fixture');
+  },
+  removeStagedExternalSource: async () => {
+    throw new Error('not used in ready Studio fixture');
+  },
+  discardExternalSourceSet: async () => ({ discarded: true }),
+  importOverleaf: async () => {
+    throw new Error('not used in ready Studio fixture');
+  },
   create: async () => studio,
   generate: async () => ({ studio, revision, assistantMessage: messages[1] }),
   send: async () => ({ studio, revision, assistantMessage: messages[1] }),

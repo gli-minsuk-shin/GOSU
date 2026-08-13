@@ -2,6 +2,12 @@ import type { ZodType } from 'zod';
 
 import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
 import {
+  DiscardLectureExternalSourceSetInputSchema,
+  RemoveStagedLectureExternalSourceInputSchema,
+  StageLectureExternalSourcesInputSchema,
+} from '../shared/lecture-external-source-contracts';
+import { ImportLectureOverleafSourceInputSchema } from '../shared/lecture-overleaf-source-contracts';
+import {
   CancelLectureStudioInputSchema,
   CompileLectureStudioPdfInputSchema,
   CreateLectureStudioInputSchema,
@@ -15,15 +21,27 @@ import {
   OpenLectureStudioArtifactInputSchema,
   RevealLectureStudioArtifactInputSchema,
   SendLectureStudioMessageInputSchema,
+  type LectureStudioIpcErrorCode,
   type LectureStudioIpcResult,
 } from '../shared/lecture-studio-contracts';
 import { LectureStudioServiceError, type LectureStudioService } from './lecture-studio-service';
+import {
+  LectureExternalSourceError,
+  type LectureExternalSourceService,
+} from './lecture-external-source-service';
+import {
+  LectureOverleafSourceError,
+  type LectureOverleafSourceService,
+} from './lecture-overleaf-source-service';
+import { ManuscriptWorkspaceServiceError } from './manuscript-workspace-service';
 
 type RegisterHandler = (channel: string, listener: (...arguments_: unknown[]) => unknown) => void;
 
 export function registerLectureStudioIpc(
   register: RegisterHandler,
   service: LectureStudioService,
+  externalSources: LectureExternalSourceService,
+  overleafSources: LectureOverleafSourceService,
   reportUnexpected: (error: unknown) => void = () => undefined,
 ) {
   register(LECTURE_STUDIO_IPC_CHANNELS.list, (input) =>
@@ -47,6 +65,38 @@ export function registerLectureStudioIpc(
       input,
       ListLectureCandidatesInputSchema,
       (command) => service.candidates(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.stageExternalSources, (input) =>
+    withInput(
+      input,
+      StageLectureExternalSourcesInputSchema,
+      (command) => externalSources.chooseAndStage(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.removeStagedExternalSource, (input) =>
+    withInput(
+      input,
+      RemoveStagedLectureExternalSourceInputSchema,
+      (command) => externalSources.removeStaged(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.discardExternalSourceSet, (input) =>
+    withInput(
+      input,
+      DiscardLectureExternalSourceSetInputSchema,
+      (command) => externalSources.discard(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.importOverleaf, (input) =>
+    withInput(
+      input,
+      ImportLectureOverleafSourceInputSchema,
+      (command) => overleafSources.importOverleaf(command),
       reportUnexpected,
     ),
   );
@@ -165,6 +215,33 @@ async function safely<T>(
   } catch (error) {
     if (error instanceof LectureStudioServiceError) {
       return { ok: false, error: { code: error.code } };
+    }
+    if (
+      error instanceof LectureExternalSourceError ||
+      error instanceof LectureOverleafSourceError
+    ) {
+      return { ok: false, error: { code: error.code } };
+    }
+    if (error instanceof ManuscriptWorkspaceServiceError) {
+      const passthrough = new Set([
+        'overleaf_git_auth_required',
+        'overleaf_git_url_invalid',
+        'overleaf_git_project_not_found',
+        'overleaf_git_default_branch_missing',
+        'overleaf_git_remote_rewritten',
+        'overleaf_git_root_document_missing',
+        'overleaf_git_checkpoint_too_large',
+        'overleaf_keychain_unavailable',
+        'overleaf_token_invalid',
+      ]);
+      return {
+        ok: false,
+        error: {
+          code: passthrough.has(error.code)
+            ? (error.code as LectureStudioIpcErrorCode)
+            : 'lecture_overleaf_source_not_ready',
+        },
+      };
     }
     try {
       reportUnexpected(error);

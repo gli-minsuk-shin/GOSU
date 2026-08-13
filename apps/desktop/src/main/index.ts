@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   safeStorage,
@@ -51,6 +52,11 @@ import { registerLectureStudioIpc } from './lecture-studio-ipc';
 import { createLectureArtifactPlatform } from './lecture-artifact-platform';
 import { LectureStudioService } from './lecture-studio-service';
 import { LectureDocumentCompiler } from './lecture-document-compiler';
+import {
+  LectureExternalSourceManifestAuthenticator,
+  LectureExternalSourceService,
+} from './lecture-external-source-service';
+import { LectureOverleafSourceService } from './lecture-overleaf-source-service';
 import { createLiteratureTransferPlatform } from './literature-transfer-platform';
 import { registerExperimentRunLogIpc } from './experiment-run-log-ipc';
 import { ExperimentRunLogService } from './experiment-run-log-service';
@@ -277,10 +283,35 @@ const literatureAi = new LiteratureAiService({
     return directory;
   },
 });
+const lectureExternalSourceRoot = () => join(app.getPath('userData'), 'lecture-external-sources');
+const lectureExternalSources = new LectureExternalSourceService({
+  rootDirectory: lectureExternalSourceRoot,
+  async chooseFiles() {
+    const options: Electron.OpenDialogOptions = {
+      title: 'Add sources to Lecture Studio',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Lecture sources', extensions: ['tex', 'md', 'markdown', 'pdf'] }],
+    };
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    return result.canceled ? [] : result.filePaths;
+  },
+  async validateProject(projectId) {
+    const project = (await workspace.snapshot()).projects.find(({ id }) => id === projectId);
+    if (!project || project.archivedAt || project.trashedAt) throw new Error('project_not_found');
+  },
+  manifestAuthenticator: new LectureExternalSourceManifestAuthenticator({
+    rootDirectory: lectureExternalSourceRoot,
+    encryption: safeStorage,
+  }),
+});
+const lectureOverleafSources = new LectureOverleafSourceService(manuscriptWorkspace);
 const lectureStudio = new LectureStudioService({
   storage: database,
   sources: database,
   manuscripts: manuscriptWorkspace,
+  externalSources: lectureExternalSources,
   workspace,
   artifacts: researchNotes,
   codex,
@@ -533,6 +564,8 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   registerLectureStudioIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     lectureStudio,
+    lectureExternalSources,
+    lectureOverleafSources,
     reportUnexpectedWorkspaceError,
   );
   registerAgentAddOnIpc(
@@ -651,6 +684,15 @@ if (!primaryInstance) {
         .catch(() => undefined);
       await manuscriptWorkspace.reconcileArtifactPurgeQueue().catch(() => undefined);
       await lectureDocumentCompiler.reconcileStaleStaging().catch(() => undefined);
+      await lectureExternalSources
+        .cleanupOrphanedStudios(
+          database.listLectureStudios(true).map(({ id, outputProjectId }) => ({
+            projectId: outputProjectId,
+            studioId: id,
+          })),
+        )
+        .catch(() => undefined);
+      await lectureExternalSources.cleanupExpired().catch(() => undefined);
       await vault.restore().catch(() => null);
       await lectureStudio.reconcilePendingArtifacts().catch(() => undefined);
       await projectChat.reconcileResearchNoteSaveReceipts().catch(() => undefined);

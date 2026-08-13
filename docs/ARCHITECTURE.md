@@ -133,21 +133,21 @@ flowchart LR
 제품 모듈은 아직 모두 독립 디렉터리로 분리되어 있지 않다. 새 기능은 아래 소유권을 기준으로
 배치하고, 한 모듈이 다른 모듈의 저장 테이블을 직접 읽지 않게 한다.
 
-| 논리 모듈                    | 현재 코드 소유자                                                                                        | 구현 수준                                                                                                                                                                                                                                                                                     |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Identity & Lab               | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                                            | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                                                                                                                    |
-| Project Portfolio & Kanban   | Desktop workspace service, renderer portfolio navigator, Sync controller/store                          | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, 동일 Task의 Kanban·To-do projection, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                                           |
-| Goal & Evaluation            | Desktop workspace service, contracts, domain, Sync endpoints                                            | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                                      |
-| Experiment Orchestration     | Desktop Experiment workspace, contracts, domain, Runner                                                 | 프로젝트별 idea lineage·검토 outcome·선택적인 target, versioned logging template, 다중 run 상태·서버·step·metric·opaque log reference, Project Chat의 추적형 foreground 실행과 summary trajectory를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨 |
-| Experiment Evaluation Studio | Desktop Evaluation service, 전용 shared contract·IPC, SQLCipher repository, protected artifact port     | step/epoch cadence·metric·policy·logging suggestion·숫자/table/plot을 독립 chat에서 proposal로 만들고 synthetic preview, human approval, immutable reusable recipe로 저장하는 local-first slice 구현; evaluator의 실제 주기 실행과 Runner result ingest는 계획됨                              |
-| Manuscript                   | Desktop Manuscript service·SQLCipher repository, shared contracts와 adapter registry                    | project별 복수 manuscript identity, provider-neutral binding/checkpoint/anchor, Overleaf Git existing-project link·HEAD 확인·manual immutable fetch·exact checkpoint text read·MacTeX sandbox compile·PDF.js preview·local mirror 정리 구현; editor·diff/review·handoff·publish는 계획됨      |
-| Review & Approval            | PostgreSQL approval schema와 Web UI 표현                                                                | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                                       |
-| Reference & Literature       | Desktop Literature workspace와 Zotero read-only connector                                               | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨                      |
-| Obsidian Knowledge           | Desktop Research Notes service, bounded Vault adapter, Markdown/LaTeX reader                            | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 Markdown metadata envelope·Literature/Papers projection·Lecture canonical LaTeX artifact·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                         |
-| Lecture                      | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port, Manuscript source port | 여러 project의 captured Manuscript checkpoint·reviewed Literature metadata·Experiment lineage 선택, canonical article/Beamer LaTeX 생성, sandbox PDF compile, 독립 chat, append-only revision, recoverable Trash와 `.tex`/PDF export 구현; PPTX와 published-paper full-text ingest는 계획됨   |
-| AI Gateway                   | Desktop Project Chat provider router, Codex App Server와 선택형 BYO-Hermes ACP adapter                  | 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·provider별 동적 model provenance·Codex native harness/tool 경계·Hermes ACP text/reasoning-only 경계·Codex→Hermes 명시적 고수준 위임·동적 branch title·Research Notes final persistence 구현                    |
-| Integration Hub              | Desktop Git Workspace·승인형 SSH·Manuscript connector, `packages/integrations` registry                 | GitHub HTTPS clone·bounded Git·OpenSSH grant·provider-neutral manuscript operation registry·Overleaf Git private connector 구현; schema-driven provider onboarding, GitHub App와 native LaTeX provider는 계획됨                                                                               |
-| Sync, Audit & Notification   | Sync memory store, PostgreSQL audit·outbox schema                                                       | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                                      |
+| 논리 모듈                    | 현재 코드 소유자                                                                                                 | 구현 수준                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Identity & Lab               | `apps/sync-api/src/auth.ts`, memory store, PostgreSQL schema                                                     | JWT 검증과 개발 auth 구현; Google·Apple PKCE·초대는 계획됨                                                                                                                                                                                                                                                                        |
+| Project Portfolio & Kanban   | Desktop workspace service, renderer portfolio navigator, Sync controller/store                                   | 다중 project folder 탐색·로컬 hide, project Archive·복원 가능한 Trash, 동일 Task의 Kanban·To-do projection, Board 설정·task metadata·filter·drag·archive 구현; Hosted 전달은 계획됨                                                                                                                                               |
+| Goal & Evaluation            | Desktop workspace service, contracts, domain, Sync endpoints                                                     | 로컬 draft 저장·freeze·명시적 새 version 구현; 승인·Hosted 전달은 계획됨                                                                                                                                                                                                                                                          |
+| Experiment Orchestration     | Desktop Experiment workspace, contracts, domain, Runner                                                          | 프로젝트별 idea lineage·검토 outcome·선택적인 target, versioned logging template, 다중 run 상태·서버·step·metric·opaque log reference, Project Chat의 추적형 foreground 실행과 summary trajectory를 SQLCipher에 구현; Runner live bridge, campaign scheduler와 완전한 optimizer 연동은 계획됨                                     |
+| Experiment Evaluation Studio | Desktop Evaluation service, 전용 shared contract·IPC, SQLCipher repository, protected artifact port              | step/epoch cadence·metric·policy·logging suggestion·숫자/table/plot을 독립 chat에서 proposal로 만들고 synthetic preview, human approval, immutable reusable recipe로 저장하는 local-first slice 구현; evaluator의 실제 주기 실행과 Runner result ingest는 계획됨                                                                  |
+| Manuscript                   | Desktop Manuscript service·SQLCipher repository, shared contracts와 adapter registry                             | project별 복수 manuscript identity, provider-neutral binding/checkpoint/anchor, Overleaf Git existing-project link·HEAD 확인·manual immutable fetch·exact checkpoint text read·MacTeX sandbox compile·PDF.js preview·local mirror 정리 구현; editor·diff/review·handoff·publish는 계획됨                                          |
+| Review & Approval            | PostgreSQL approval schema와 Web UI 표현                                                                         | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                                                                           |
+| Reference & Literature       | Desktop Literature workspace와 Zotero read-only connector                                                        | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨                                                          |
+| Obsidian Knowledge           | Desktop Research Notes service, bounded Vault adapter, Markdown/LaTeX reader                                     | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 Markdown metadata envelope·Literature/Papers projection·Lecture canonical LaTeX artifact·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                                                             |
+| Lecture                      | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port, Manuscript·external-source port | 여러 project의 captured Manuscript/Overleaf checkpoint·reviewed Literature metadata·Experiment lineage·사용자 `.tex/.md/.pdf` snapshot 선택, canonical article/Beamer LaTeX 생성, sandbox PDF compile, 독립 chat, append-only revision, recoverable Trash와 `.tex`/PDF export 구현; PPTX와 OCR·figure-aware paper ingest는 계획됨 |
+| AI Gateway                   | Desktop Project Chat provider router, Codex App Server와 선택형 BYO-Hermes ACP adapter                           | 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·provider별 동적 model provenance·Codex native harness/tool 경계·Hermes ACP text/reasoning-only 경계·Codex→Hermes 명시적 고수준 위임·동적 branch title·Research Notes final persistence 구현                                                        |
+| Integration Hub              | Desktop Git Workspace·승인형 SSH·Manuscript connector, `packages/integrations` registry                          | GitHub HTTPS clone·bounded Git·OpenSSH grant·provider-neutral manuscript operation registry·Overleaf Git private connector 구현; schema-driven provider onboarding, GitHub App와 native LaTeX provider는 계획됨                                                                                                                   |
+| Sync, Audit & Notification   | Sync memory store, PostgreSQL audit·outbox schema                                                                | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                                                                          |
 
 ## 5. 의존성 규칙
 
@@ -959,7 +959,8 @@ content SHA-256만 반환하고 Main이 terminal answer에
 ### Workspace-level Lecture Studio 경계
 
 Lecture Studio는 project child tab이 아니라 여러 active project를 source로 선택하는 Workspace 전역 module이다.
-한 studio는 source project·Literature record·Experiment idea·captured Manuscript, `lecture|talk`, 선택적인
+한 studio는 source project·Literature record·Experiment idea·captured Manuscript/Overleaf checkpoint·사용자가
+선택한 local `.tex/.md/.pdf` snapshot, `lecture|talk`, 선택적인
 `10|20|30|50`분 duration, notes·slides page target, `concise|standard|detailed|exhaustive` detail level,
 최대 6,000자의 추가 생성 지시와 한 `outputProjectId`를 소유한다. output project는 source project 중
 하나여야 한다. SQLCipher의 Lecture-owned schema가 이 generation brief를 포함한 studio configuration,
@@ -996,7 +997,38 @@ envelope digest를 고정한다. 따라서 24,000자를 넘는 일반 논문도 
 제공된 경우 model과 UI는 원문 전체를 읽었다고 주장하지 않는다. serialized extract는 전체 100,000자 JSON
 budget과 source manifest 120,000자 budget을 함께 지킨다. checkpoint가 없으면 Manuscript 탭에서 capture하라는
 안내를 표시한다.
-Live·저장 전 Overleaf edit, provider PDF, image/binary와 이후 provider revision은 Lecture source가 아니다.
+
+사용자가 `Add files`에서 고른 `.tex`, `.md`/`.markdown`, `.pdf`는 Renderer가 경로나 bytes를 받지 않는다.
+Main의 native multi-select dialog가 file별 20 MiB, 전체 50 MiB, 최대 12개를 검사하고 app-owned `0700`
+directory의 `0600` copy로 즉시 고정한다. TeX·Markdown은 strict UTF-8 exact text를 file별 최대 40,000자,
+전체 최대 80,000자까지 보존한다. PDF는 기존 bounded PDF.js extractor로 최대 500 page의 selectable text만
+page label과 함께 고정하며 scan, figure, equation-as-image와 page layout을 복원하지 않는다. 공개 card에는
+absolute/managed path와 raw extract를 넣지 않는다. 생성 시 Main이 copy를 다시 열어 byte length·SHA-256을
+재검증하고, strict schema·policy와 extraction content hash를 통과한 frozen extraction manifest를 v3
+manifest에 full source hash, completeness와 `[F#]` label과 함께 고정한다. managed manifest는 per-install
+safeStorage key의 versioned HMAC envelope로 인증하므로 path copy나 manifest 변조를 막으면서도, 향후 PDF.js
+또는 안내 문구가 바뀌었다는 이유만으로 과거의 정상 snapshot을 다시 추출해 손상으로 오판하지 않는다.
+
+file picker 단계에는 Main-generated `sourceSetId`를 쓰는 1시간짜리 staging set만 존재한다. 같은 set의
+append·remove·discard·claim은 Main의 keyed FIFO mutation queue에서 직렬화하고 claim lease를 고정해 동시
+추가의 last-write-wins, aggregate budget 우회와 두 Studio의 중복 claim을 막는다. Studio create는
+Main-generated Studio ID 아래 선택 source를 먼저 claim하고 frozen manifest를 preflight한 뒤 SQLCipher row를
+commit한다. 성공 뒤 staging set을 폐기하고, preflight·DB 실패 시 claimed copy를 제거해 같은 staging set으로
+재시도할 수 있다. rollback file cleanup까지 일시 실패하면 orphan copy를 startup reconciliation에 남기되
+process-local claim lease는 즉시 해제해 같은 staging set의 현재-session 재시도를 막지 않는다. 취소·output
+project 변경·composer unmount는 staging set을 폐기하며 crash 잔여분은 bounded
+startup cleanup으로 만료 후 정리한다. recoverable Lecture Trash 동안 claimed copy는 유지해 다음 revision을
+재현하고, 영구 Lecture Trash purge 뒤에만 identity-derived Studio copy를 지운다. SQL purge 뒤 filesystem
+정리가 일시 실패해도 다음 startup이 active·trashed Studio identity 전체와 managed manifest를 대조해 orphan
+Studio copy와 중단된 claim directory를 bounded scan으로 재정리한다.
+
+Lecture composer의 Overleaf Git URL은 별도 live reader가 아니다. 기존 Manuscript module의 fixed
+`create → Keychain credential → connect → fetch checkpoint` port를 호출해 exact captured checkpoint를 만든
+뒤 일반 Manuscript `[M#]` source로 선택한다. access token은 isolated IPC를 한 번 통과해 macOS Keychain에만
+저장되고 Lecture receipt, source manifest와 Renderer persistence에 URL/token을 반환하지 않는다. binding 이후
+capture가 실패하면 연결 provenance를 보존해 Manuscript에서 복구하게 하며 임의 삭제하지 않는다.
+Live·저장 전 Overleaf edit, provider PDF, image/binary와 이후 provider revision은 다음 checkpoint를 명시적으로
+capture하기 전까지 Lecture source가 아니다.
 모든 revision은 자기 manifest SHA-256을 보존하므로
 이후 source 변경이 과거 deck을 소급 변경하지 않는다.
 
@@ -1014,7 +1046,7 @@ deadline을 갱신하고, 진행 중이어도 최대 30분 hard deadline에서�
 단절만 `lecture_codex_unavailable`로 구분해 연결된 Codex를 오프라인으로 오표시하지 않는다.
 
 structured output은 고정 JSON field의 notes/article LaTeX body와 Beamer frame body, 알려진
-`[P#]|[E#]|[M#]` label, substantive frame별 evidence label, notes의 `Sources used` section, duration 또는
+`[P#]|[E#]|[M#]|[F#]` label, substantive frame별 evidence label, notes의 `Sources used` section, duration 또는
 사용자가 명시한 compiled slide page target을 검증한다. GOSU가 별도 title frame을 추가하므로 slide target은
 그 title을 포함한 정확한 PDF page 수 gate다. notes page target은 typography에 따른 근사 지시다. raw HTML,
 Markdown structure, document wrapper, raw comment, 외부 file/network command, 허용되지 않은 TeX command·환경과
@@ -1062,8 +1094,9 @@ Trash와 경합할 수 없고 optimistic Studio version fence가 stale action을
 `Lecture Trash`는 같은 identity로 restore하거나, 고정 문구 `EMPTY LECTURE TRASH` 입력과 native final
 confirmation을 모두 거친 Studio만 영구 purge한다. permanent purge receipt에는 Studio/output-project
 identity, Trash 시각과 제거된 message/revision count를 append-only로 기록한다. purge는 Lecture-owned SQL
-row만 cascade하며 Research Notes, exported TeX/PDF, manuscript checkpoint, Literature, Experiment와 외부
-research data는 자동 삭제하지 않는다.
+row만 cascade하며 Research Notes, exported TeX/PDF, manuscript/Overleaf checkpoint, Literature와 Experiment는
+자동 삭제하지 않는다. 다만 해당 Studio만을 위해 Main이 관리한 local external-source copy는 SQL purge receipt가
+확정된 뒤 함께 제거한다. 원래 사용자가 선택한 source file은 수정하거나 삭제하지 않는다.
 
 활성 Studio 한도 100개와 별도로 recoverable Trash는 최대 1,000개까지 저장한다. 새 Studio insert trigger와
 active→Trash transition trigger가 각각 두 경계를 검사하므로 휴지통이 활성 작업 공간을 막지 않으면서도
@@ -3216,11 +3249,13 @@ Codex 실패 시 silent fallback으로 선택해서는 안 된다.
 - Project Chat web search가 있다는 것과 browser·임의 URL fetch 권한이 있다는 것은 다르다. 연구 파일
   첨부도 one-turn bounded reconstruction·normalized-image capability이지 durable reference attachment·
   OCR·Office layout 복원·원문 검증이 아니다.
-- Lecture Studio가 여러 project의 source를 합친다는 것과 published paper full text·PDF figure·live
+- Lecture Studio가 여러 project의 source를 합친다는 것과 arbitrary published-paper full text·PDF figure·live
   Overleaf workspace를 읽었다는 것은 다르다. Literature source는 metadata-only이고 Experiment source도
   저장된 summary/metric이다. Manuscript source는 사용자가 capture한 exact checkpoint에서 full hash를 검증한
-  bounded `.tex`·`.bib` extract뿐이며 provider의 이후 revision, provider-compiled PDF와 binary figure는
-  포함하지 않는다. 10/20/30/50분 선택은 slide-count budget이며 실제 발표 시간이나 rehearsal을 보증하지
+  bounded `.tex`·`.bib` extract뿐이다. 사용자가 직접 추가한 `.tex/.md`는 bounded strict UTF-8 snapshot이고,
+  `.pdf`는 selectable-text snapshot만 제공하므로 scan·figure·equation image와 layout은 포함하지 않는다.
+  Overleaf URL도 Keychain-backed exact Git checkpoint로 capture한 시점만 source이며 provider의 이후 revision,
+  provider-compiled PDF와 binary figure는 포함하지 않는다. 10/20/30/50분 선택은 slide-count budget이며 실제 발표 시간이나 rehearsal을 보증하지
   않는다. local PDF는 exact canonical Lecture LaTeX의 ephemeral MacTeX preview이며 PPTX가 아니다. 사용자가
   명시적으로 export한 `.tex`와 PDF copy만 외부 durable copy이고 immutable revision authority는 SQLCipher와
   Research Notes revision bundle에 남는다.

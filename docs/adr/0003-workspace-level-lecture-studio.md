@@ -2,7 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-08-06
-- Owners: Lecture, Manuscript, Reference & Literature, Experiment Orchestration, Obsidian Knowledge, AI Gateway
+- Last updated: 2026-08-14
+- Owners: Lecture, Manuscript, Reference & Literature, Experiment Orchestration, Obsidian Knowledge, AI Gateway, Integration Hub
 
 ## Context
 
@@ -11,21 +12,24 @@
 `Lecture slides` placeholder는 다음 요구를 충족하지 못한다.
 
 - 여러 active project의 captured Manuscript, Literature와 Experiment evidence를 동시에 선택
+- 사용자가 선택한 `.tex/.md/.pdf` snapshot과 Overleaf Git checkpoint를 같은 evidence flow에 추가
 - 일반 lecture와 10/20/30/50분 research talk 구분
 - Project Chat의 목표·권한·history를 오염시키지 않는 전용 수정 대화
 - 생성 결과를 사용자가 선택한 한 project의 Obsidian Research Notes에 계속 보존
 - 어느 source version과 실제 Codex model로 각 revision을 만들었는지 재현 가능한 provenance
 
 Literature는 현재 metadata 중심이고 Experiment는 수동·local-live summary가 포함될 수 있다. Manuscript는
-사용자가 capture한 exact LaTeX checkpoint만 읽을 수 있으므로 Lecture Studio가 published paper full text,
-PDF figure, live·저장 전 Overleaf edit나 원격 trial의 존재를 암시해서도 안 된다.
+사용자가 capture한 exact LaTeX checkpoint만 읽을 수 있다. 추가 local PDF도 selectable text만 추출한다.
+따라서 Lecture Studio가 검증하지 않은 published paper full text, PDF figure/scan/layout, live·저장 전
+Overleaf edit나 원격 trial의 존재를 암시해서는 안 된다.
 
 ## Decision
 
 ### 1. Project 밖의 workspace module
 
 Lecture Studio는 project navigation의 child tab이 아니라 Workspace 전역 section이다. 한 studio는 최대
-12개의 active source project, 선택한 Literature record·Experiment idea·captured Manuscript, presentation kind, 선택적인
+12개의 active source project, 선택한 Literature record·Experiment idea·captured Manuscript/Overleaf checkpoint,
+최대 12개의 local `.tex/.md/.pdf` snapshot, presentation kind, 선택적인
 talk duration, notes/slides page target, detail level, 추가 생성 지시, 그리고 정확히 하나의 `outputProjectId`를 소유한다. 출력 project는 source project 중 하나여야
 하며 해당 project의 Research Notes binding이 ready여야 한다.
 
@@ -56,6 +60,28 @@ authoritative Literature·Experiment repository와 Manuscript service에서 다�
   checkpoint/provider revision, revision-envelope digest를 고정한다. extract만 포함되면 전체 원문을 읽었다고
   주장하지 않는다.
   이후 provider revision, compiled PDF와 binary figure는 포함하지 않는다.
+- local `.tex/.md/.markdown/.pdf`는 Main native dialog에서만 선택한다. Renderer에는 local/managed path나
+  bytes를 반환하지 않는다. file별 20 MiB, 전체 50 MiB, 최대 12개를 app-owned `0700/0600` copy로 고정한다.
+  TeX·Markdown은 strict UTF-8 exact text를 file별 40,000자/전체 80,000자 한도에서 추출하고, PDF는 최대
+  500 page의 selectable text만 page label과 함께 추출한다. scan, figure, equation-as-image와 layout은
+  unavailable로 명시한다. 생성 시 copy의 byte length·SHA-256, frozen extraction content hash와 strict
+  policy를 검증해 v3 manifest에 `[F#]` label, completeness와 함께 고정한다. per-install safeStorage key의
+  versioned HMAC envelope가 managed manifest를 인증하므로 미래 PDF.js/문구 변경으로 과거 snapshot을 다시
+  해석하지 않으면서 변조는 fail-closed로 거부한다.
+- file source는 Main-generated `sourceSetId`의 1시간 staging set으로 시작한다. 같은 set의 mutation은 keyed
+  FIFO queue로 직렬화하고 claim lease를 사용해 동시 append 유실·budget 우회·중복 claim을 차단한다. create가 Main-generated Studio
+  ID로 선택 copy를 claim하고 manifest preflight와 SQLCipher create까지 성공한 뒤 staging을 폐기한다. 실패
+  시 claimed copy를 rollback한다. rollback file cleanup도 실패하면 orphan은 startup reconciliation에 남기지만
+  process-local claim lease는 즉시 해제해 같은 staging set을 현재 session에서 재시도할 수 있다. 취소·project
+  변경·unmount와 bounded startup expiry cleanup이 orphan staging을
+  정리한다. recoverable Trash 동안 Studio copy를 보존하고 permanent Lecture purge 뒤에만 그 managed copy를
+  제거한다. SQL purge 뒤 filesystem 정리가 실패하면 다음 startup이 active·trashed Studio identity와 exact
+  managed manifest를 대조해 orphan Studio/claim directory를 bounded reconciliation한다. 사용자의 원본 file은
+  건드리지 않는다.
+- Overleaf Git URL/token은 새로운 live-source path를 만들지 않고 Manuscript의 create/connect/fetch-checkpoint
+  boundary를 재사용한다. token은 fixed IPC 뒤 macOS Keychain에만 저장하며 URL/token을 receipt·Lecture manifest·
+  Renderer persistence에 복사하지 않는다. imported checkpoint는 일반 `[M#]` source이고 이후 live edit는
+  다시 capture하기 전까지 반영하지 않는다.
 - candidate picker는 현재 page의 idea ID만 SQL window query로 조회해 idea별 최신 metric 1개와 total count를
   받는다. generation은 선택한 idea ID만 다시 조회해 최신 64개를 오름차순으로 고정하므로 project 전체
   metric history를 IPC나 prompt로 가져오지 않는다.
@@ -127,7 +153,7 @@ prompt history에서 제외한다. Main은 structured response를 저장하기 �
 
 - notes body는 `Sources used` section, slides body는 allowlisted Beamer frame을 가지며 GOSU가 title/frame
   document wrapper를 소유한다.
-- substantive frame마다 해당 frame 안의 `[P#]`, `[E#]` 또는 `[M#]` evidence label을 요구한다.
+- substantive frame마다 해당 frame 안의 `[P#]`, `[E#]`, `[M#]` 또는 `[F#]` evidence label을 요구한다.
 - notes의 Sources used mapping과 모든 인용 label이 frozen manifest에 존재한다.
 - 임의 citation syntax, raw HTML/Markdown structure, document wrapper, raw TeX comment, 외부 file/network
   command와 allowlist 밖 command/environment를 거부한다.
@@ -160,7 +186,8 @@ detail/generation surface에서 제외하지만 message, revision, frozen manife
 Settings에서 같은 Studio ID로 restore할 수 있다. 영구 제거는 `EMPTY LECTURE TRASH` typed phrase와 OS
 confirmation을 모두 거친 별도 command만 허용하며, append-only purge receipt를 구성한 한 immediate
 SQLCipher transaction에서 trashed Studio row와 owned message/revision만 cascade한다. Research Notes와
-exported TeX/PDF, selected source module의 record는 외부 연구 data이므로 purge하지 않는다.
+exported TeX/PDF, Manuscript/Overleaf checkpoint와 selected source module의 record는 외부 연구 data이므로
+purge하지 않는다. 해당 Studio용으로 Main이 만든 local external-source copy만 SQL purge 확정 뒤 제거한다.
 active Studio는 100개, recoverable Trash는 1,000개로 별도 제한하고 insert trigger가 두 경계를 모두
 검사한다. purge command의 UUID idempotency key가 재전송되면 저장된 append-only receipt를 반환한다.
 
@@ -206,7 +233,8 @@ sandboxed local PDF preview와 명시적 PDF export를 파생한다. PPTX engine
 
 장점:
 
-- 여러 project의 captured manuscript·paper metadata·experiment evidence를 하나의 lecture나 talk로 합성할 수 있다.
+- 여러 project의 captured manuscript·paper metadata·experiment evidence와 사용자가 지정한
+  `.tex/.md/.pdf`·Overleaf checkpoint를 하나의 lecture나 talk로 합성할 수 있다.
 - Project Chat과 Lecture 수정 history, 권한과 failure domain이 섞이지 않는다.
 - 각 revision의 source, model, artifact path와 hash를 추적하고 이전 결과를 보존한다.
 - Vault나 Codex 장애가 Kanban, Literature, Experiment와 기존 note 읽기를 막지 않는다.
@@ -214,7 +242,8 @@ sandboxed local PDF preview와 명시적 PDF export를 파생한다. PPTX engine
 비용과 한계:
 
 - output project의 Research Notes 연결이 없으면 generation을 시작하지 않는다.
-- Literature published full text와 PDF figure, live/uncaptured Manuscript section은 source가 아니다.
+- Literature published full text와 PDF figure/layout, live/uncaptured Manuscript·Overleaf section은 source가
+  아니다. 사용자가 추가한 PDF도 selectable text만 사용한다.
 - duration은 slide budget이지 실제 rehearsal time 보증이 아니다.
 - PPTX, theme template, presenter notes export와 공동 편집은 후속 범위다. local PDF preview는 ephemeral이고
   사용자가 명시적으로 export한 PDF만 derived durable copy가 된다.
@@ -225,6 +254,9 @@ sandboxed local PDF preview와 명시적 PDF export를 파생한다. PPTX engine
 - global navigation과 project child navigation의 분리
 - 여러 project source 선택, output-project membership과 active/trash isolation
 - included/reviewed Literature 기본값, captured Manuscript 선택·`[M#]` provenance, review status·manual topic 보존, metadata-only 표시
+- local `.tex/.md/.pdf` native picker, strict size/count/UTF-8/PDF-text 경계, `[F#]` provenance와 path 비노출
+- Overleaf Git → Keychain → exact Manuscript checkpoint 연결과 URL/token 비노출
+- external-source staging claim/create/discard, create 실패 rollback, expiry cleanup과 permanent-trash purge
 - bounded in-memory candidate offset paging과 최신 metric tail/truncation
 - summary list와 selected-studio detail payload 분리
 - 10/20/30/50분 duration과 slide budget

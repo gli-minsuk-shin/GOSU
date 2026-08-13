@@ -6,6 +6,7 @@ import {
   ExperimentMetricPointSchema,
 } from './experiment-workspace-contracts';
 import { LiteratureRecordSchema } from './literature-contracts';
+import { LectureExternalSourceSnapshotSchema } from './lecture-external-source-contracts';
 import { ManuscriptRecordSchema } from './manuscript-workspace-contracts';
 import { PdfPreviewDocumentSchema } from './pdf-preview-contracts';
 
@@ -18,6 +19,7 @@ export const LECTURE_STUDIO_MAX_SOURCE_PROJECTS = 12;
 export const LECTURE_STUDIO_MAX_LITERATURE_SOURCES = 100;
 export const LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES = 100;
 export const LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES = 32;
+export const LECTURE_STUDIO_MAX_EXTERNAL_SOURCES = 12;
 export const LECTURE_STUDIO_MAX_MANUSCRIPT_FILES = 128;
 export const LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS = 6_000;
 export const LECTURE_STUDIO_MAX_MESSAGES = 2_500;
@@ -97,6 +99,18 @@ export const LectureManuscriptSelectionSchema = z
   .strict();
 export type LectureManuscriptSelection = z.infer<typeof LectureManuscriptSelectionSchema>;
 
+export const LectureExternalSourceSelectionSchema = z
+  .object({
+    sourceSetId: uuidSchema,
+    sourceIds: z.array(uuidSchema).min(1).max(LECTURE_STUDIO_MAX_EXTERNAL_SOURCES),
+  })
+  .strict()
+  .refine((value) => new Set(value.sourceIds).size === value.sourceIds.length, {
+    path: ['sourceIds'],
+    message: 'External source IDs must be unique',
+  });
+export type LectureExternalSourceSelection = z.infer<typeof LectureExternalSourceSelectionSchema>;
+
 export const LectureSourceSelectionSchema = z
   .object({
     literature: z
@@ -109,11 +123,15 @@ export const LectureSourceSelectionSchema = z
       .array(LectureManuscriptSelectionSchema)
       .max(LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES)
       .default([]),
+    externalSources: LectureExternalSourceSelectionSchema.nullable().default(null),
   })
   .strict()
   .superRefine((selection, context) => {
     if (
-      selection.literature.length + selection.experiments.length + selection.manuscripts.length ===
+      selection.literature.length +
+        selection.experiments.length +
+        selection.manuscripts.length +
+        (selection.externalSources?.sourceIds.length ?? 0) ===
       0
     ) {
       context.addIssue({ code: 'custom', message: 'At least one source must be selected' });
@@ -488,9 +506,76 @@ export const LectureSourceManifestV2Schema = z
     }
   });
 
+export const LectureSourceManifestV3Schema = z
+  .object({
+    schemaVersion: z.literal(3),
+    selectedProjectIds: z.array(uuidSchema).min(1).max(LECTURE_STUDIO_MAX_SOURCE_PROJECTS),
+    literature: z
+      .array(LectureLiteratureSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_LITERATURE_SOURCES),
+    experiments: z
+      .array(LectureExperimentSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES),
+    manuscripts: z
+      .array(LectureManuscriptSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES),
+    externalSources: z
+      .array(LectureExternalSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_EXTERNAL_SOURCES),
+  })
+  .strict()
+  .superRefine((manifest, context) => {
+    if (new Set(manifest.selectedProjectIds).size !== manifest.selectedProjectIds.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['selectedProjectIds'],
+        message: 'Selected projects must be unique',
+      });
+    }
+    if (
+      manifest.literature.length +
+        manifest.experiments.length +
+        manifest.manuscripts.length +
+        manifest.externalSources.length ===
+      0
+    ) {
+      context.addIssue({ code: 'custom', message: 'A source manifest cannot be empty' });
+    }
+    const projects = new Set(manifest.selectedProjectIds);
+    const groups = [
+      manifest.literature,
+      manifest.experiments,
+      manifest.manuscripts,
+      manifest.externalSources,
+    ] as const;
+    const labels = groups.flatMap((values) => values.map((value) => value.sourceLabel));
+    if (new Set(labels).size !== labels.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['externalSources'],
+        message: 'Source labels must be unique across the manifest',
+      });
+    }
+    groups.forEach((values, groupIndex) => {
+      const groupName = (['literature', 'experiments', 'manuscripts', 'externalSources'] as const)[
+        groupIndex
+      ];
+      values.forEach((value, index) => {
+        if (!projects.has(value.projectId)) {
+          context.addIssue({
+            code: 'custom',
+            path: [groupName ?? 'externalSources', index, 'projectId'],
+            message: 'Manifest sources must belong to a selected project',
+          });
+        }
+      });
+    });
+  });
+
 export const LectureSourceManifestSchema = z.discriminatedUnion('schemaVersion', [
   LectureSourceManifestV1Schema,
   LectureSourceManifestV2Schema,
+  LectureSourceManifestV3Schema,
 ]);
 export type LectureSourceManifest = z.infer<typeof LectureSourceManifestSchema>;
 
@@ -862,8 +947,9 @@ export type CreateLectureStudioInput = Omit<
   z.infer<typeof CreateLectureStudioInputSchema>,
   'sourceSelection' | 'generationBrief'
 > & {
-  sourceSelection: Omit<LectureSourceSelection, 'manuscripts'> & {
+  sourceSelection: Omit<LectureSourceSelection, 'manuscripts' | 'externalSources'> & {
     manuscripts?: LectureSourceSelection['manuscripts'];
+    externalSources?: LectureSourceSelection['externalSources'];
   };
   generationBrief?: LectureStudioGenerationBrief;
 };
@@ -1051,6 +1137,28 @@ export const LECTURE_STUDIO_IPC_ERROR_CODES = [
   'lecture_version_conflict',
   'lecture_source_not_found',
   'lecture_source_conflict',
+  'lecture_external_source_invalid',
+  'lecture_external_source_unsupported',
+  'lecture_external_source_too_large',
+  'lecture_external_source_total_too_large',
+  'lecture_external_source_too_many',
+  'lecture_external_source_encrypted',
+  'lecture_external_source_extraction_failed',
+  'lecture_external_source_scope_mismatch',
+  'lecture_external_source_not_found',
+  'lecture_external_source_expired',
+  'lecture_external_source_corrupt',
+  'lecture_overleaf_source_conflict',
+  'lecture_overleaf_source_not_ready',
+  'overleaf_git_auth_required',
+  'overleaf_git_url_invalid',
+  'overleaf_git_project_not_found',
+  'overleaf_git_default_branch_missing',
+  'overleaf_git_remote_rewritten',
+  'overleaf_git_root_document_missing',
+  'overleaf_git_checkpoint_too_large',
+  'overleaf_keychain_unavailable',
+  'overleaf_token_invalid',
   'lecture_context_too_large',
   'lecture_research_notes_required',
   'lecture_busy',
@@ -1074,6 +1182,26 @@ export const LECTURE_STUDIO_IPC_ERROR_CODES = [
   'lecture_studio_trashed',
   'lecture_studio_not_trashed',
   'lecture_trash_empty',
+  'project_not_found',
+  'project_archived',
+  'project_trashed',
+  'manuscript_not_found',
+  'manuscript_conflict',
+  'manuscript_limit_reached',
+  'manuscript_delete_not_allowed',
+  'manuscript_binding_not_found',
+  'manuscript_binding_conflict',
+  'manuscript_binding_exists',
+  'manuscript_provider_unavailable',
+  'manuscript_provider_revision_required',
+  'manuscript_checkpoint_not_found',
+  'manuscript_checkpoint_file_not_found',
+  'manuscript_checkpoint_file_not_text',
+  'manuscript_checkpoint_tree_unsafe',
+  'manuscript_pdf_compiler_unavailable',
+  'manuscript_pdf_compile_failed',
+  'manuscript_pdf_too_large',
+  'manuscript_pdf_invalid',
 ] as const;
 export type LectureStudioIpcErrorCode = (typeof LECTURE_STUDIO_IPC_ERROR_CODES)[number];
 

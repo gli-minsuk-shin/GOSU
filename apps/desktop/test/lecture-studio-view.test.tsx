@@ -10,6 +10,7 @@ import type {
   LectureStudioMessage,
   LectureStudioRevision,
 } from '../src/shared/lecture-studio-contracts';
+import type { StagedLectureExternalSourceCard } from '../src/shared/lecture-external-source-contracts';
 import {
   activeLectureSourceProjects,
   currentLectureStudioRevision,
@@ -18,6 +19,8 @@ import {
   lectureArtifactActionLabels,
   LectureStudioView,
   lectureOutputProjectName,
+  lectureExternalSourceCard,
+  lectureOverleafSourceCard,
   lectureStudioMessages,
   lectureStudioStatusLabel,
   mergeLectureCandidatePages,
@@ -48,6 +51,10 @@ const adapter: LectureStudioViewAdapter = {
   list: vi.fn(),
   detail: vi.fn(),
   candidates: vi.fn(),
+  stageExternalSources: vi.fn(),
+  removeStagedExternalSource: vi.fn(),
+  discardExternalSourceSet: vi.fn(),
+  importOverleaf: vi.fn(),
   create: vi.fn(),
   generate: vi.fn(),
   send: vi.fn(),
@@ -271,6 +278,64 @@ describe('LectureStudioView', () => {
     expect(source).toContain('Additional instructions');
     expect(source).toContain('generationBrief: {');
     expect(source).toContain('detailLevel,');
+  });
+
+  it('maps external files and Overleaf checkpoints to safe renderer cards', () => {
+    const staged = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      displayName: 'analysis.tex',
+      kind: 'latex',
+      byteSize: 2_048,
+      extraction: {
+        textAvailable: true,
+        truncated: false,
+        unitLabel: 'part',
+        unitCount: 1,
+        extractedCharacters: 1_200,
+        reconstructionNotice: 'Exact UTF-8 source text.',
+      },
+    } as StagedLectureExternalSourceCard;
+    expect(lectureExternalSourceCard(staged)).toEqual({
+      id: staged.id,
+      displayName: 'analysis.tex',
+      kind: 'latex',
+      byteSize: 2_048,
+      textAvailable: true,
+      truncated: false,
+      unitLabel: 'part',
+      unitCount: 1,
+      extractedCharacters: 1_200,
+      reconstructionNotice: 'Exact UTF-8 source text.',
+    });
+
+    const receipt = {
+      manuscriptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      candidate: {
+        manuscript: { title: 'Shared proof', rootDocument: 'paper/main.tex' },
+        providerRevision: 'private-provider-revision',
+        observedAt: '2026-08-14T00:00:00.000Z',
+      },
+    } as Parameters<typeof lectureOverleafSourceCard>[0];
+    expect(lectureOverleafSourceCard(receipt)).toEqual({
+      manuscriptId: receipt.manuscriptId,
+      title: 'Shared proof',
+      rootDocument: 'paper/main.tex',
+      providerRevision: 'private-provider-revision',
+      observedAt: '2026-08-14T00:00:00.000Z',
+    });
+  });
+
+  it('offers local file and Overleaf evidence in the creation workflow', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('<LectureExternalSourcePicker');
+    expect(source).toContain('adapter.stageExternalSources');
+    expect(source).toContain('adapter.removeStagedExternalSource');
+    expect(source).toContain('.discardExternalSourceSet');
+    expect(source).toContain('adapter.importOverleaf');
+    expect(source).toContain('externalSources: null');
   });
 
   it('uses compact accessible icons for revision artifact actions', () => {

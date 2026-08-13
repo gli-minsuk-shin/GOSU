@@ -233,6 +233,11 @@ const lectureStudioAdapter: LectureStudioViewAdapter = {
   list: (input) => window.gosu.lectureStudio.list(input),
   detail: (input) => window.gosu.lectureStudio.detail(input),
   candidates: (input) => window.gosu.lectureStudio.candidates(input),
+  stageExternalSources: (input) => window.gosu.lectureStudio.stageExternalSources(input),
+  removeStagedExternalSource: (input) =>
+    window.gosu.lectureStudio.removeStagedExternalSource(input),
+  discardExternalSourceSet: (input) => window.gosu.lectureStudio.discardExternalSourceSet(input),
+  importOverleaf: (input) => window.gosu.lectureStudio.importOverleaf(input),
   create: (input) => window.gosu.lectureStudio.create(input),
   generate: (input) => window.gosu.lectureStudio.generate(input),
   send: (input) => window.gosu.lectureStudio.send(input),

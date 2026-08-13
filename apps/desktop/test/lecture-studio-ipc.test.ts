@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import type { LectureExternalSourceService } from '../src/main/lecture-external-source-service';
+import type { LectureOverleafSourceService } from '../src/main/lecture-overleaf-source-service';
 import { registerLectureStudioIpc } from '../src/main/lecture-studio-ipc';
 import {
   LectureStudioServiceError,
@@ -11,14 +13,31 @@ import { LECTURE_STUDIO_IPC_CHANNELS } from '../src/shared/lecture-studio-channe
 
 type Handler = (...arguments_: unknown[]) => unknown;
 
-function fixture(service: Partial<LectureStudioService>, reportUnexpected = vi.fn()) {
+function fixture(
+  service: Partial<LectureStudioService>,
+  reportUnexpected = vi.fn(),
+  externalSourceOverrides: Partial<LectureExternalSourceService> = {},
+  overleafSourceOverrides: Partial<LectureOverleafSourceService> = {},
+) {
   const handlers = new Map<string, Handler>();
+  const externalSources = {
+    chooseAndStage: vi.fn(async () => undefined as never),
+    removeStaged: vi.fn(async () => undefined as never),
+    discard: vi.fn(async () => undefined as never),
+    ...externalSourceOverrides,
+  } as LectureExternalSourceService;
+  const overleafSources = {
+    importOverleaf: vi.fn(async () => undefined as never),
+    ...overleafSourceOverrides,
+  } as LectureOverleafSourceService;
   registerLectureStudioIpc(
     (channel, handler) => handlers.set(channel, handler),
     service as LectureStudioService,
+    externalSources,
+    overleafSources,
     reportUnexpected,
   );
-  return { handlers, reportUnexpected };
+  return { handlers, reportUnexpected, externalSources, overleafSources };
 }
 
 describe('Lecture Studio IPC boundary', () => {
@@ -30,6 +49,10 @@ describe('Lecture Studio IPC boundary', () => {
         LECTURE_STUDIO_IPC_CHANNELS.list,
         LECTURE_STUDIO_IPC_CHANNELS.detail,
         LECTURE_STUDIO_IPC_CHANNELS.candidates,
+        LECTURE_STUDIO_IPC_CHANNELS.stageExternalSources,
+        LECTURE_STUDIO_IPC_CHANNELS.removeStagedExternalSource,
+        LECTURE_STUDIO_IPC_CHANNELS.discardExternalSourceSet,
+        LECTURE_STUDIO_IPC_CHANNELS.importOverleaf,
         LECTURE_STUDIO_IPC_CHANNELS.create,
         LECTURE_STUDIO_IPC_CHANNELS.generate,
         LECTURE_STUDIO_IPC_CHANNELS.send,
@@ -44,6 +67,73 @@ describe('Lecture Studio IPC boundary', () => {
       ].sort(),
     );
     expect([...handlers.keys()]).not.toContain(LECTURE_STUDIO_IPC_CHANNELS.event);
+  });
+
+  it('routes only exact staged-file and Overleaf source commands', async () => {
+    const projectId = randomUUID();
+    const sourceSetId = randomUUID();
+    const sourceId = randomUUID();
+    const chooseAndStage = vi.fn(async () => undefined as never);
+    const removeStaged = vi.fn(async () => undefined as never);
+    const discard = vi.fn(async () => undefined as never);
+    const importOverleaf = vi.fn(async () => undefined as never);
+    const { handlers } = fixture(
+      {},
+      vi.fn(),
+      { chooseAndStage, removeStaged, discard },
+      { importOverleaf },
+    );
+    const stageCommand = { projectId, sourceSetId: null };
+    const removeCommand = { projectId, sourceSetId, sourceId };
+    const discardCommand = { projectId, sourceSetId };
+    const overleafCommand = {
+      projectId,
+      title: 'Imported Overleaf source',
+      rootDocument: 'main.tex',
+      remoteUrl: 'https://git.overleaf.com/fixture-project',
+      accessToken: 'write-only-fixture-token',
+    };
+
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.stageExternalSources)?.(stageCommand);
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.removeStagedExternalSource)?.(removeCommand);
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.discardExternalSourceSet)?.(discardCommand);
+    const overleafResult = await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.importOverleaf)?.(
+      overleafCommand,
+    );
+
+    expect(chooseAndStage).toHaveBeenCalledWith(stageCommand);
+    expect(removeStaged).toHaveBeenCalledWith(removeCommand);
+    expect(discard).toHaveBeenCalledWith(discardCommand);
+    expect(importOverleaf).toHaveBeenCalledWith(overleafCommand);
+    expect(JSON.stringify(overleafResult)).not.toContain(overleafCommand.accessToken);
+
+    for (const [channel, malicious] of [
+      [
+        LECTURE_STUDIO_IPC_CHANNELS.stageExternalSources,
+        { ...stageCommand, path: '/Users/researcher/private.tex' },
+      ],
+      [
+        LECTURE_STUDIO_IPC_CHANNELS.removeStagedExternalSource,
+        { ...removeCommand, managedPath: '/tmp/source.pdf' },
+      ],
+      [
+        LECTURE_STUDIO_IPC_CHANNELS.discardExternalSourceSet,
+        { ...discardCommand, deletePath: '/tmp/staged' },
+      ],
+      [
+        LECTURE_STUDIO_IPC_CHANNELS.importOverleaf,
+        { ...overleafCommand, localClonePath: '/tmp/overleaf' },
+      ],
+    ] as const) {
+      await expect(handlers.get(channel)?.(malicious)).resolves.toEqual({
+        ok: false,
+        error: { code: 'invalid_lecture_input' },
+      });
+    }
+    expect(chooseAndStage).toHaveBeenCalledTimes(1);
+    expect(removeStaged).toHaveBeenCalledTimes(1);
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(importOverleaf).toHaveBeenCalledTimes(1);
   });
 
   it('validates recoverable Trash commands and never accepts renderer deletion targets', async () => {

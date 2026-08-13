@@ -66,6 +66,45 @@ describe('Lecture Studio preload bridge', () => {
     );
   });
 
+  it('maps external file staging and Overleaf capture to fixed typed channels', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111';
+    const sourceSetId = '22222222-2222-4222-8222-222222222222';
+    const sourceId = '33333333-3333-4333-8333-333333333333';
+    electron.ipcRenderer.invoke.mockResolvedValue({ ok: true, value: {} });
+
+    await api.lectureStudio.stageExternalSources({ projectId, sourceSetId: null });
+    await api.lectureStudio.removeStagedExternalSource({ projectId, sourceSetId, sourceId });
+    await api.lectureStudio.discardExternalSourceSet({ projectId, sourceSetId });
+    await api.lectureStudio.importOverleaf({
+      projectId,
+      title: 'Captured paper',
+      rootDocument: 'main.tex',
+      remoteUrl: 'https://git.overleaf.com/project-id',
+      accessToken: 'write-only-token',
+    });
+
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      1,
+      LECTURE_STUDIO_IPC_CHANNELS.stageExternalSources,
+      { projectId, sourceSetId: null },
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      2,
+      LECTURE_STUDIO_IPC_CHANNELS.removeStagedExternalSource,
+      { projectId, sourceSetId, sourceId },
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      3,
+      LECTURE_STUDIO_IPC_CHANNELS.discardExternalSourceSet,
+      { projectId, sourceSetId },
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      4,
+      LECTURE_STUDIO_IPC_CHANNELS.importOverleaf,
+      expect.objectContaining({ projectId, rootDocument: 'main.tex' }),
+    );
+  });
+
   it('maps revision-bound export, open, and reveal actions to fixed channels', async () => {
     const binding = {
       studioId: '11111111-1111-4111-8111-111111111111',

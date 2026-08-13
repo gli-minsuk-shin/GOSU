@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
@@ -159,6 +159,7 @@ describe('Lecture Studio candidate pagination contracts', () => {
       literature: [],
       experiments: [],
       manuscripts: [{ projectId, manuscriptId }],
+      externalSources: null,
     });
     expect(manuscriptOnly.generationBrief).toEqual({
       notesTargetPages: null,
@@ -216,7 +217,7 @@ describe('Lecture Studio candidate pagination contracts', () => {
     ).toThrow();
   });
 
-  it('preserves v1 revision manifests and validates captured LaTeX v2 provenance', () => {
+  it('preserves v1/v2 manifests and validates frozen external-source v3 provenance', () => {
     const projectId = randomUUID();
     const manuscriptId = randomUUID();
     const checkpointId = randomUUID();
@@ -301,6 +302,68 @@ describe('Lecture Studio candidate pagination contracts', () => {
         },
       ],
     });
+
+    const externalSourceId = randomUUID();
+    const studioId = randomUUID();
+    const externalContent = '# Exact imported source\n\nEvidence for [F1].';
+    const externalBytes = Buffer.from(externalContent, 'utf8');
+    const v3 = LectureSourceManifestSchema.parse({
+      schemaVersion: 3,
+      selectedProjectIds: [projectId],
+      literature: [],
+      experiments: [],
+      manuscripts: [],
+      externalSources: [
+        {
+          schemaVersion: 1,
+          id: externalSourceId,
+          projectId,
+          studioId,
+          displayName: 'supporting-notes.md',
+          kind: 'markdown',
+          mediaType: 'text/markdown',
+          byteSize: externalBytes.byteLength,
+          sourceSha256: createHash('sha256').update(externalBytes).digest('hex'),
+          extraction: {
+            policyVersion: 1,
+            characterBudget: 40_000,
+            unitLabel: 'part',
+            unitCount: 1,
+            content: externalContent,
+            contentSha256: createHash('sha256').update(externalContent, 'utf8').digest('hex'),
+            extractedCharacters: externalContent.length,
+            truncated: false,
+            textAvailable: true,
+            reconstructionNotice: 'Exact UTF-8 Markdown text imported by GOSU.',
+          },
+          importedAt: timestamp,
+          sourceLabel: 'F1',
+        },
+      ],
+    });
+    expect(v3).toMatchObject({
+      schemaVersion: 3,
+      externalSources: [
+        {
+          id: externalSourceId,
+          studioId,
+          sourceLabel: 'F1',
+          extraction: { policyVersion: 1, content: externalContent },
+        },
+      ],
+    });
+    if (v3.schemaVersion !== 3) throw new Error('expected_v3_manifest');
+    expect(() =>
+      LectureSourceManifestSchema.parse({
+        ...v3,
+        externalSources: [
+          {
+            ...v3.externalSources[0],
+            sourceLabel: 'F13',
+          },
+        ],
+      }),
+    ).toThrow();
   });
 
   it('keeps unavailable manuscripts visible without claiming a checkpoint', () => {

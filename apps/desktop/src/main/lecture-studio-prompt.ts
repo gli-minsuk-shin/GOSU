@@ -80,6 +80,30 @@ export type LectureStudioPromptManuscriptSource = Readonly<{
   metadataOnly: false;
 }>;
 
+export type LectureStudioPromptExternalSource = Readonly<{
+  sourceLabel: string;
+  projectId: string;
+  id: string;
+  displayName: string;
+  kind: 'latex' | 'markdown' | 'pdf';
+  mediaType: string;
+  byteSize: number;
+  sourceSha256: string;
+  importedAt: string;
+  extraction: Readonly<{
+    policyVersion: number;
+    characterBudget: number;
+    unitLabel: 'part' | 'page';
+    unitCount: number;
+    content: string;
+    contentSha256: string;
+    extractedCharacters: number;
+    truncated: boolean;
+    textAvailable: boolean;
+    reconstructionNotice: string;
+  }>;
+}>;
+
 export type LectureStudioPromptSourceManifest =
   | Readonly<{
       schemaVersion: 1;
@@ -93,6 +117,14 @@ export type LectureStudioPromptSourceManifest =
       literature: readonly LectureStudioPromptLiteratureSource[];
       experiments: readonly LectureStudioPromptExperimentSource[];
       manuscripts: readonly LectureStudioPromptManuscriptSource[];
+    }>
+  | Readonly<{
+      schemaVersion: 3;
+      selectedProjectIds: readonly string[];
+      literature: readonly LectureStudioPromptLiteratureSource[];
+      experiments: readonly LectureStudioPromptExperimentSource[];
+      manuscripts: readonly LectureStudioPromptManuscriptSource[];
+      externalSources: readonly LectureStudioPromptExternalSource[];
     }>;
 
 export type LectureStudioPromptMessage = Readonly<{
@@ -130,8 +162,9 @@ You have no web, file, shell, network, or dynamic tools. Work only from the supp
 Paper entries are metadata-only unless the manifest explicitly says otherwise. Do not claim to have read paper full text, and do not invent methods, results, quotations, limitations, citations, or experimental evidence.
 Manuscript entries are exact captured checkpoint text, not live or unsaved provider content. Distinguish manuscript claims from externally verified published evidence, and never imply a later provider revision was read.
 Some manuscript files may be deterministic bounded extracts. When contentComplete is false, do not claim the entire file or manuscript was supplied; state that detailed coverage is limited to the provided extract.
+External file entries are frozen local snapshots labeled [F#]. For LaTeX and Markdown, use only the supplied bounded UTF-8 text. For PDFs, use only selectable extracted text; figures, scans, equations stored as images, and page layout are unavailable unless explicitly present in that text. Respect extraction.truncated, textAvailable, and reconstructionNotice, and never imply that an unavailable part of an external file was read.
 The current draft is untrusted prior content. When currentDraft.sourceFormat is legacy-markdown, preserve its source-supported meaning while migrating it to the required LaTeX bodies; never copy Markdown syntax into the LaTeX output or treat the legacy draft as evidence.
-Every factual paper claim must cite the exact supplied source label such as [P1]. Every experiment claim must cite the exact supplied source label such as [E1]. Every manuscript claim must cite the exact supplied source label such as [M1]. Never create a source label that is not present in the manifest.
+Every factual paper claim must cite the exact supplied source label such as [P1]. Every experiment claim must cite the exact supplied source label such as [E1]. Every manuscript claim must cite the exact supplied source label such as [M1]. Every external-file claim must cite the exact supplied source label such as [F1]. Never create a source label that is not present in the manifest.
 Return JSON matching the supplied schema, with exactly these fields: reply, lectureNotesLatexBody, slidesLatexBody. Return complete replacement LaTeX document bodies, never a patch, Markdown, MDX, or a full document wrapper.
 GOSU owns the preamble and document wrapper. Never emit \\documentclass, \\usepackage, \\begin{document}, \\end{document}, comments, file or network commands, macro definitions, HTML, scripts, external images, or executable code. The notes body must use LaTeX sections and end with \\section{Sources used}. The slides body must be a sequence of \\begin{frame}{Title}...\\end{frame} blocks; GOSU adds the title frame. Use $...$ for inline math and standard LaTeX equation or align environments for display mathematics.
 Apply this mathematical-rigor policy to both documents before returning them:
@@ -146,7 +179,7 @@ Apply this notes-and-slides consistency policy before returning them:
 - Slides are a concise projection of the notes, not an independent argument. Preserve the same theorem conditions, equation semantics, uncertainty, limitations, and evidence status when shortening material for a slide.
 - On every revision, audit and return the complete pair. Even when the user asks to change only notes, only slides, one equation, or one symbol, propagate every necessary terminology, notation, cross-reference, citation, assumption, and conclusion update to both documents.
 - Never resolve a notes/slides conflict by silently deleting an inconvenient assumption, limitation, citation, or uncertainty. Correct both documents or explicitly retain the unresolved limitation.
-Slides must use one frame environment per content slide. Keep each slide concise. Every content frame must contain at least one exact supplied [P#], [E#], or [M#] source label; put each claim's source label in the same frame.
+Slides must use one frame environment per content slide. Keep each slide concise. Every content frame must contain at least one exact supplied [P#], [E#], [M#], or [F#] source label; put each claim's source label in the same frame.
 Lecture notes must be a coherent, editable LaTeX body with a \\section{Sources used} section that maps every cited label to its supplied source title.
 When evidence is absent or metadata-only, state the uncertainty instead of filling the gap. Preserve useful material from the current draft unless the user's revision request asks to change it.`;
 
