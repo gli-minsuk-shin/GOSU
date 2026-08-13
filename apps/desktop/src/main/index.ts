@@ -48,6 +48,7 @@ import { registerLiteratureIpc } from './literature-ipc';
 import { SemanticScholarLiteratureProvider } from './literature-semantic-scholar';
 import { LiteratureService } from './literature-service';
 import { registerLectureStudioIpc } from './lecture-studio-ipc';
+import { createLectureArtifactPlatform } from './lecture-artifact-platform';
 import { LectureStudioService } from './lecture-studio-service';
 import { LectureDocumentCompiler } from './lecture-document-compiler';
 import { createLiteratureTransferPlatform } from './literature-transfer-platform';
@@ -284,6 +285,10 @@ const lectureStudio = new LectureStudioService({
   artifacts: researchNotes,
   codex,
   pdfCompiler: lectureDocumentCompiler,
+  artifactPlatform: createLectureArtifactPlatform(
+    () => mainWindow,
+    () => join(app.getPath('userData'), 'lecture-artifact-open-cache'),
+  ),
   async prepareDirectory(outputProjectId) {
     const directory = join(app.getPath('userData'), 'lecture-studio-workspaces', outputProjectId);
     await mkdir(directory, { recursive: true, mode: 0o700 });

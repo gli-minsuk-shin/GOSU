@@ -7,6 +7,7 @@ import {
   CancelLectureStudioInputSchema,
   CompileLectureStudioPdfInputSchema,
   CreateLectureStudioInputSchema,
+  ExportLectureStudioArtifactInputSchema,
   GenerateLectureStudioInputSchema,
   LECTURE_STUDIO_MAX_MANUSCRIPT_FILES,
   LECTURE_STUDIO_MAX_MESSAGE_LENGTH,
@@ -15,6 +16,7 @@ import {
   LectureSourceManifestSchema,
   LectureStudioDetailInputSchema,
   LectureStudioDetailSchema,
+  LectureStudioArtifactActionReceiptSchema,
   LectureStudioEventSchema,
   LectureStudioGenerationOutputSchema,
   LectureStudioListSnapshotSchema,
@@ -24,16 +26,20 @@ import {
   LectureStudioTurnReceiptSchema,
   ListLectureCandidatesInputSchema,
   ListLectureStudiosInputSchema,
+  OpenLectureStudioArtifactInputSchema,
+  RevealLectureStudioArtifactInputSchema,
   SendLectureStudioMessageInputSchema,
   type CancelLectureStudioInput,
   type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
+  type ExportLectureStudioArtifactInput,
   type GenerateLectureStudioInput,
   type LectureSourceCandidates,
   type LectureSourceManifest,
   type LectureSourceSelection,
   type LectureStudio,
   type LectureStudioArtifact,
+  type LectureStudioArtifactActionReceipt,
   type LectureStudioDetail,
   type LectureStudioDetailInput,
   type LectureStudioEvent,
@@ -45,7 +51,9 @@ import {
   type LectureStudioTurnReceipt,
   type ListLectureCandidatesInput,
   type ListLectureStudiosInput,
+  type OpenLectureStudioArtifactInput,
   type PendingLectureRevisionArtifacts,
+  type RevealLectureStudioArtifactInput,
   type SendLectureStudioMessageInput,
 } from '../shared/lecture-studio-contracts';
 import type {
@@ -70,6 +78,8 @@ import {
   LectureDocumentCompilerError,
   type LectureDocumentCompiler,
 } from './lecture-document-compiler';
+import { lecturePdfExportBytes, type LectureArtifactPlatform } from './lecture-artifact-platform';
+import type { ResolvedLectureRevisionArtifact } from './research-notes-service';
 
 type MaybePromise<T> = T | Promise<T>;
 type CodexNotification = Readonly<{ method?: string; params?: unknown }>;
@@ -197,6 +207,10 @@ export interface LectureStudioArtifactWriter {
   ): MaybePromise<readonly PendingLectureRevisionArtifacts[]>;
   confirmPendingRevisionArtifacts(pending: PendingLectureRevisionArtifacts): MaybePromise<void>;
   rollbackPendingRevisionArtifacts(pending: PendingLectureRevisionArtifacts): MaybePromise<void>;
+  resolveLectureRevisionArtifact(
+    outputProjectId: string,
+    artifact: LectureStudioArtifact,
+  ): MaybePromise<ResolvedLectureRevisionArtifact>;
 }
 
 export interface LectureStudioCodex {
@@ -241,7 +255,12 @@ export class LectureStudioServiceError extends Error {
       | 'lecture_pdf_compiler_unavailable'
       | 'lecture_pdf_compile_failed'
       | 'lecture_pdf_too_large'
-      | 'lecture_pdf_invalid',
+      | 'lecture_pdf_invalid'
+      | 'lecture_artifact_not_found'
+      | 'lecture_artifact_changed'
+      | 'lecture_artifact_unavailable'
+      | 'lecture_export_failed'
+      | 'lecture_open_failed',
   ) {
     super(code);
     this.name = 'LectureStudioServiceError';
@@ -437,6 +456,7 @@ export class LectureStudioService {
       artifacts: LectureStudioArtifactWriter;
       codex: LectureStudioCodex;
       pdfCompiler?: Pick<LectureDocumentCompiler, 'compile'>;
+      artifactPlatform?: LectureArtifactPlatform;
       prepareDirectory: (outputProjectId: string) => Promise<string>;
       now?: () => Date;
       timeoutMs?: number;
@@ -687,6 +707,183 @@ export class LectureStudioService {
         contentSha256: command.contentSha256,
       });
     } catch (error) {
+      if (error instanceof LectureStudioServiceError) throw error;
+      if (error instanceof LectureDocumentCompilerError) {
+        throw new LectureStudioServiceError(error.code);
+      }
+      throw new LectureStudioServiceError('lecture_pdf_compile_failed');
+    }
+  }
+
+  async exportArtifact(
+    input: ExportLectureStudioArtifactInput,
+  ): Promise<LectureStudioArtifactActionReceipt> {
+    const command = ExportLectureStudioArtifactInputSchema.parse(input);
+    const platform = this.requireArtifactPlatform();
+    const resolved = await this.resolveArtifactAction(command);
+    let bytes: Buffer;
+    let suggestedFileName: string;
+    if (command.format === 'markdown') {
+      bytes = Buffer.from(resolved.file.content, 'utf8');
+      suggestedFileName = resolved.file.fileName;
+    } else {
+      const pdf = await this.compileResolvedArtifactPdf(resolved);
+      bytes = lecturePdfExportBytes(pdf);
+      suggestedFileName = command.kind === 'lecture-notes' ? 'Lecture Notes.pdf' : 'Slides.pdf';
+    }
+    try {
+      const receipt = await platform.exportFile({
+        format: command.format,
+        suggestedFileName,
+        bytes,
+      });
+      return LectureStudioArtifactActionReceiptSchema.parse({
+        schemaVersion: 1,
+        status: receipt.status,
+        format: command.format,
+        fileName: receipt.fileName,
+        relativePath: resolved.file.relativePath,
+      });
+    } catch (error) {
+      if (error instanceof LectureStudioServiceError) throw error;
+      throw new LectureStudioServiceError('lecture_export_failed');
+    }
+  }
+
+  async openArtifact(
+    input: OpenLectureStudioArtifactInput,
+  ): Promise<LectureStudioArtifactActionReceipt> {
+    const command = OpenLectureStudioArtifactInputSchema.parse(input);
+    const platform = this.requireArtifactPlatform();
+    const resolved = await this.resolveArtifactAction(command);
+    try {
+      let fileName = resolved.file.fileName;
+      if (command.format === 'markdown') {
+        await platform.openExisting(resolved.file.absolutePath);
+      } else {
+        const pdf = await this.compileResolvedArtifactPdf(resolved);
+        fileName = await platform.openPdf({ kind: command.kind, document: pdf });
+      }
+      return LectureStudioArtifactActionReceiptSchema.parse({
+        schemaVersion: 1,
+        status: 'opened',
+        format: command.format,
+        fileName,
+        relativePath: resolved.file.relativePath,
+      });
+    } catch (error) {
+      if (error instanceof LectureStudioServiceError) throw error;
+      throw new LectureStudioServiceError('lecture_open_failed');
+    }
+  }
+
+  async revealArtifact(
+    input: RevealLectureStudioArtifactInput,
+  ): Promise<LectureStudioArtifactActionReceipt> {
+    const command = RevealLectureStudioArtifactInputSchema.parse(input);
+    const platform = this.requireArtifactPlatform();
+    const resolved = await this.resolveArtifactAction(command);
+    try {
+      await platform.revealExisting(resolved.file.absolutePath);
+      return LectureStudioArtifactActionReceiptSchema.parse({
+        schemaVersion: 1,
+        status: 'revealed',
+        format: null,
+        fileName: resolved.file.fileName,
+        relativePath: resolved.file.relativePath,
+      });
+    } catch (error) {
+      if (error instanceof LectureStudioServiceError) throw error;
+      throw new LectureStudioServiceError('lecture_open_failed');
+    }
+  }
+
+  private requireArtifactPlatform() {
+    const platform = this.dependencies.artifactPlatform;
+    if (!platform) throw new LectureStudioServiceError('lecture_artifact_unavailable');
+    return platform;
+  }
+
+  private async resolveArtifactAction(command: {
+    studioId: string;
+    revisionId: string;
+    revision: number;
+    kind: LectureStudioArtifact['kind'];
+    artifactContentSha256: string;
+  }) {
+    const studio = await this.requireStudio(command.studioId);
+    const revision = await this.dependencies.storage.getLectureStudioRevision(
+      studio.id,
+      command.revision,
+    );
+    if (
+      !revision ||
+      revision.id !== command.revisionId ||
+      revision.revision > studio.currentRevision
+    ) {
+      throw new LectureStudioServiceError('lecture_artifact_not_found');
+    }
+    const artifact = revision.artifacts.find((candidate) => candidate.kind === command.kind);
+    if (!artifact) throw new LectureStudioServiceError('lecture_artifact_not_found');
+    if (artifact.contentSha256 !== command.artifactContentSha256) {
+      throw new LectureStudioServiceError('lecture_artifact_changed');
+    }
+    try {
+      const file = await this.dependencies.artifacts.resolveLectureRevisionArtifact(
+        studio.outputProjectId,
+        artifact,
+      );
+      if (file.contentSha256 !== artifact.contentSha256) {
+        throw new LectureStudioServiceError('lecture_artifact_changed');
+      }
+      return { studio, revision, artifact, file };
+    } catch (error) {
+      if (error instanceof LectureStudioServiceError) throw error;
+      if (
+        isRecord(error) &&
+        (error.code === 'research_notes_folder_conflict' ||
+          error.message === 'research_notes_folder_conflict')
+      ) {
+        throw new LectureStudioServiceError('lecture_artifact_changed');
+      }
+      if (
+        isRecord(error) &&
+        (error.code === 'research_notes_note_not_found' ||
+          error.message === 'research_notes_note_not_found')
+      ) {
+        throw new LectureStudioServiceError('lecture_artifact_not_found');
+      }
+      throw new LectureStudioServiceError('lecture_artifact_unavailable');
+    }
+  }
+
+  private async compileResolvedArtifactPdf(
+    resolved: Awaited<ReturnType<LectureStudioService['resolveArtifactAction']>>,
+  ) {
+    const compiler = this.dependencies.pdfCompiler;
+    if (!compiler) throw new LectureStudioServiceError('lecture_pdf_compiler_unavailable');
+    const markdown =
+      resolved.artifact.kind === 'lecture-notes'
+        ? resolved.revision.lectureNotesMarkdown
+        : resolved.revision.slidesMarkdown;
+    const contentSha256 = sha256(markdown);
+    try {
+      const compiled = await compiler.compile({
+        studioId: resolved.studio.id,
+        revision: resolved.revision.revision,
+        title: resolved.studio.title,
+        kind: resolved.artifact.kind,
+        markdown,
+        contentSha256,
+      });
+      try {
+        lecturePdfExportBytes(compiled);
+      } catch {
+        throw new LectureStudioServiceError('lecture_pdf_invalid');
+      }
+      return compiled;
+    } catch (error) {
+      if (error instanceof LectureStudioServiceError) throw error;
       if (error instanceof LectureDocumentCompilerError) {
         throw new LectureStudioServiceError(error.code);
       }

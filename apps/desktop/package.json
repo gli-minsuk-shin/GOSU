@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.35.0",
+  "version": "0.36.0",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -17,6 +17,7 @@
     "smoke:kanban-board-layout:mac": "electron-vite build --config test/electron/kanban-board-layout.electron.vite.config.ts && electron out/kanban-board-layout-smoke/main.cjs",
     "smoke:literature-scroll:mac": "electron-vite build --config test/electron/literature-scroll.electron.vite.config.ts && electron out/literature-scroll-smoke/main.cjs",
     "smoke:lecture-pdf-preview:mac": "electron-vite build --config test/electron/lecture-pdf-preview.electron.vite.config.ts && electron out/lecture-pdf-preview-smoke/main.cjs",
+    "smoke:lecture-studio-layout:mac": "electron-vite build --config test/electron/lecture-studio-layout.electron.vite.config.ts && electron out/lecture-studio-layout-smoke/main.cjs",
     "smoke:markdown-viewer-scroll:mac": "electron-vite build --config test/electron/markdown-viewer-scroll.electron.vite.config.ts && electron out/markdown-viewer-scroll-smoke/main.cjs",
     "smoke:manuscript-layout:mac": "electron-vite build --config test/electron/manuscript-layout.electron.vite.config.ts && electron out/manuscript-layout-smoke/main.cjs",
     "smoke:manuscript-pdf-preview:mac": "electron-vite build --config test/electron/manuscript-pdf-preview.electron.vite.config.ts && electron out/manuscript-pdf-preview-smoke/main.cjs",

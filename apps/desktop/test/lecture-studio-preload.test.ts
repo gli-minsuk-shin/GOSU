@@ -66,6 +66,37 @@ describe('Lecture Studio preload bridge', () => {
     );
   });
 
+  it('maps revision-bound export, open, and reveal actions to fixed channels', async () => {
+    const binding = {
+      studioId: '11111111-1111-4111-8111-111111111111',
+      revisionId: '22222222-2222-4222-8222-222222222222',
+      revision: 3,
+      kind: 'lecture-notes' as const,
+      artifactContentSha256: 'a'.repeat(64),
+    };
+    electron.ipcRenderer.invoke.mockResolvedValue({ ok: true, value: {} });
+
+    await api.lectureStudio.exportArtifact({ ...binding, format: 'markdown' });
+    await api.lectureStudio.openArtifact({ ...binding, format: 'pdf' });
+    await api.lectureStudio.revealArtifact(binding);
+
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      1,
+      LECTURE_STUDIO_IPC_CHANNELS.exportArtifact,
+      { ...binding, format: 'markdown' },
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      2,
+      LECTURE_STUDIO_IPC_CHANNELS.openArtifact,
+      { ...binding, format: 'pdf' },
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      3,
+      LECTURE_STUDIO_IPC_CHANNELS.revealArtifact,
+      binding,
+    );
+  });
+
   it('maps rejected or undeclared detail results to bounded unavailability', async () => {
     electron.ipcRenderer.invoke
       .mockRejectedValueOnce(new Error('/Users/researcher/private-lecture.md'))

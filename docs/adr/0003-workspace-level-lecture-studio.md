@@ -77,11 +77,28 @@ replacement pair이며 수식은 `$...$`과 `$$...$$`, slide boundary는 단독 
 queue, profile, tool grant와 message history는 읽거나 수정하지 않는다. 수정 요청 하나가 성공할 때마다 새
 immutable revision을 만들고 과거 revision을 덮어쓰지 않는다.
 
+일반 desktop layout은 접을 수 있는 Studio session rail, 항상 중앙에 남는 document preview, 접을 수 있는
+오른쪽 Lecture assistant rail의 3열이다. 사용자는 notes·slides·PDF를 보면서 오른쪽 chat으로 수정하며 rail
+visibility만 localStorage preference로 보존한다. resizable Projects rail 때문에 실제 Lecture content 폭이
+좁아지면 container query가 assistant와 session list를 edge control이 남는 overlay drawer로 바꿔 preview와
+복원 control을 보존한다. 생성 form과 assistant rail은 live provider catalog의 opaque
+model ID 및 그 model의 native reasoning option을 선택한다. model 변경 시 reasoning preference를 초기화하고,
+사라진 selection은 임의 fallback하지 않는다. local preference와 별개로 실제 invocation은 revision/message에
+계속 저장한다.
+
 현재 revision의 center preview는 Markdown과 ephemeral local PDF를 전환한다. PDF compile은 revision content
 hash를 검증하고 Markdown을 deterministic bounded LaTeX로 변환한 뒤 macOS sandbox에서 XeLaTeX를
 no-shell-escape·network deny·resource budget으로 실행한다. 검증된 PDF bytes만 typed IPC와 PDF.js continuous
 page viewer로 전달하며 canonical Research Notes artifact는 계속 Markdown이다. 사용자는 같은 화면의 Lecture
 전용 chat으로 수정 지시를 보내고 새 revision의 Markdown/PDF를 다시 확인한다.
+
+현재 revision은 Markdown/PDF export, default application open, Finder reveal을 제공한다. Renderer는 절대
+path나 bytes를 제출하지 않고 exact studio/revision/kind/artifact hash fence만 보낸다. Main은 Markdown action
+전에 Vault binding·ownership·file identity·artifact SHA를 재검증하고, PDF action은 DB revision을 다시
+sandbox compile해 PDF magic·size·SHA를 검증한다. export는 save dialog와 atomic write를 사용하고 PDF default
+open은 app-owned bounded cache의 derived copy만 사용한다. absolute path는 IPC receipt에 포함하지 않으며 PDF
+copy는 canonical Lecture artifact가 아니다. derived PDF cache는 7일 TTL, 최대 12개와 총 128 MiB quota를
+함께 적용한다.
 
 아직 전송하지 않은 studio별 draft는 DesktopApp이 소유한 renderer-session volatile map에만 둔다. Lecture
 view가 tab 전환으로 unmount/remount되어도 같은 앱 session에서는 복원하지만, 앱 종료 시 폐기하며 SQLCipher,
@@ -172,8 +189,8 @@ Obsidian에서 바로 편집 가능한 Markdown notes/slides를 canonical output
 - output project의 Research Notes 연결이 없으면 generation을 시작하지 않는다.
 - Literature published full text와 PDF figure, live/uncaptured Manuscript section은 source가 아니다.
 - duration은 slide budget이지 실제 rehearsal time 보증이 아니다.
-- PPTX, durable PDF export, theme template, presenter notes export와 공동 편집은 후속 범위다. local PDF는
-  ephemeral preview만 제공한다.
+- PPTX, theme template, presenter notes export와 공동 편집은 후속 범위다. local PDF preview는 ephemeral이고
+  사용자가 명시적으로 export한 PDF만 derived durable copy가 된다.
 - source 변경은 기존 revision을 재작성하지 않고 다음 revision의 새 manifest로만 반영된다.
 
 ## Verification
@@ -187,6 +204,10 @@ Obsidian에서 바로 편집 가능한 Markdown notes/slides를 canonical output
 - notes/slides page target, detail level, 추가 prompt의 legacy-default·SQLCipher round-trip
 - Project Chat과 분리된 message/revision persistence
 - 전용 chat 옆 Markdown/PDF 전환, exact revision hash compile과 다중-page scroll
+- session/assistant rail 독립 collapse와 center preview 보존, Studio별 dynamic model/reasoning selection
+- 최소 window·최대 Projects rail에서 overlay drawer 전환, 복원 control 접근성과 horizontal overflow 방지
+- exact artifact fence 기반 Markdown/PDF export·default-app open·Finder reveal과 absolute-path 비노출
+- derived PDF open cache의 TTL·count·total-byte quota
 - Codex tool/web denial, dynamic model invocation provenance와 cancel fencing
 - raw HTML/image, unknown citation, uncited substantive slide와 Sources used mismatch 거부
 - Vault preflight, staged bundle의 second-file/SQL failure, crash journal reconciliation과 exact path receipt

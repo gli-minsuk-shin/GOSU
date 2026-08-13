@@ -35,9 +35,78 @@ describe('Lecture Studio IPC boundary', () => {
         LECTURE_STUDIO_IPC_CHANNELS.send,
         LECTURE_STUDIO_IPC_CHANNELS.cancel,
         LECTURE_STUDIO_IPC_CHANNELS.compilePdf,
+        LECTURE_STUDIO_IPC_CHANNELS.exportArtifact,
+        LECTURE_STUDIO_IPC_CHANNELS.openArtifact,
+        LECTURE_STUDIO_IPC_CHANNELS.revealArtifact,
       ].sort(),
     );
     expect([...handlers.keys()]).not.toContain(LECTURE_STUDIO_IPC_CHANNELS.event);
+  });
+
+  it('accepts only revision-bound artifact actions without renderer paths or bytes', async () => {
+    const exportArtifact = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      status: 'exported' as const,
+      format: 'markdown' as const,
+      fileName: 'Lecture Notes.md',
+      relativePath: 'Lecture Notes & Slides/Studio/Lecture Notes.md',
+    }));
+    const openArtifact = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      status: 'opened' as const,
+      format: 'pdf' as const,
+      fileName: 'Lecture Notes.pdf',
+      relativePath: 'Lecture Notes & Slides/Studio/Lecture Notes.md',
+    }));
+    const revealArtifact = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      status: 'revealed' as const,
+      format: null,
+      fileName: 'Lecture Notes.md',
+      relativePath: 'Lecture Notes & Slides/Studio/Lecture Notes.md',
+    }));
+    const { handlers } = fixture({ exportArtifact, openArtifact, revealArtifact });
+    const binding = {
+      studioId: randomUUID(),
+      revisionId: randomUUID(),
+      revision: 3,
+      kind: 'lecture-notes' as const,
+      artifactContentSha256: 'a'.repeat(64),
+    };
+
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.exportArtifact)?.({
+      ...binding,
+      format: 'markdown',
+    });
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.openArtifact)?.({
+      ...binding,
+      format: 'pdf',
+    });
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.revealArtifact)?.(binding);
+
+    expect(exportArtifact).toHaveBeenCalledWith({ ...binding, format: 'markdown' });
+    expect(openArtifact).toHaveBeenCalledWith({ ...binding, format: 'pdf' });
+    expect(revealArtifact).toHaveBeenCalledWith(binding);
+
+    for (const [channel, malicious] of [
+      [
+        LECTURE_STUDIO_IPC_CHANNELS.exportArtifact,
+        { ...binding, format: 'markdown', path: '/tmp/x' },
+      ],
+      [
+        LECTURE_STUDIO_IPC_CHANNELS.openArtifact,
+        { ...binding, format: 'pdf', pdfBase64: 'unsafe' },
+      ],
+      [LECTURE_STUDIO_IPC_CHANNELS.revealArtifact, { ...binding, absolutePath: '/tmp/x' }],
+    ] as const) {
+      await expect(handlers.get(channel)?.(malicious)).resolves.toEqual({
+        ok: false,
+        error: { code: 'invalid_lecture_input' },
+      });
+    }
+    expect(exportArtifact).toHaveBeenCalledTimes(1);
+    expect(openArtifact).toHaveBeenCalledTimes(1);
+    expect(revealArtifact).toHaveBeenCalledTimes(1);
   });
 
   it('accepts only an exact lecture revision PDF binding', async () => {

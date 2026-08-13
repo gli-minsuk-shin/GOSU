@@ -9,11 +9,14 @@ import {
   LectureSourceManifestSchema,
   LectureSourceSelectionSchema,
   CreateLectureStudioInputSchema,
+  ExportLectureStudioArtifactInputSchema,
   LectureStudioDetailSchema,
   LectureStudioListSnapshotSchema,
   LectureStudioSchema,
   LectureStudioSummarySchema,
   ListLectureCandidatesInputSchema,
+  OpenLectureStudioArtifactInputSchema,
+  RevealLectureStudioArtifactInputSchema,
 } from '../src/shared/lecture-studio-contracts';
 
 const timestamp = '2026-08-06T00:00:00.000Z';
@@ -325,6 +328,50 @@ describe('Lecture Studio candidate pagination contracts', () => {
         ],
       }).projects[0]?.manuscripts[0]?.availability,
     ).toBe('capture_required');
+  });
+});
+
+describe('Lecture Studio artifact action contracts', () => {
+  it('requires an exact revision and artifact hash without accepting local paths or payloads', () => {
+    const binding = {
+      studioId: randomUUID(),
+      revisionId: randomUUID(),
+      revision: 2,
+      kind: 'lecture-notes' as const,
+      artifactContentSha256: 'a'.repeat(64),
+    };
+
+    expect(
+      ExportLectureStudioArtifactInputSchema.parse({ ...binding, format: 'markdown' }),
+    ).toEqual({
+      ...binding,
+      format: 'markdown',
+    });
+    expect(OpenLectureStudioArtifactInputSchema.parse({ ...binding, format: 'pdf' })).toEqual({
+      ...binding,
+      format: 'pdf',
+    });
+    expect(RevealLectureStudioArtifactInputSchema.parse(binding)).toEqual(binding);
+    expect(() =>
+      ExportLectureStudioArtifactInputSchema.parse({
+        ...binding,
+        format: 'markdown',
+        path: '/Users/researcher/private.md',
+      }),
+    ).toThrow();
+    expect(() =>
+      OpenLectureStudioArtifactInputSchema.parse({
+        ...binding,
+        format: 'pdf',
+        pdfBase64: 'renderer-controlled',
+      }),
+    ).toThrow();
+    expect(() =>
+      RevealLectureStudioArtifactInputSchema.parse({
+        ...binding,
+        artifactContentSha256: 'short',
+      }),
+    ).toThrow();
   });
 });
 

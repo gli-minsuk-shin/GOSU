@@ -969,6 +969,14 @@ revision을 보존하며 Project Chat session·queue·profile·message table을 
 포함한 workspace snapshot에서 output project 이름을 resolve해 과거 저장 위치를 ID로 퇴행시키지 않는다.
 전송하지 않은 studio별 chat draft는 DesktopApp이 소유한 renderer-session volatile map에만 두어 tab
 unmount/remount 뒤에도 복원하되 앱 종료 시 폐기하고 SQLCipher, localStorage, Hosted Sync에 기록하지 않는다.
+Lecture workspace의 session rail과 전용 assistant rail은 서로 독립적으로 접을 수 있고 그 상태만 renderer
+localStorage에 저장한다. 일반 desktop 폭에서는 `session rail / document preview / assistant rail`의 3열을
+유지해 notes·slides·PDF를 보면서 오른쪽 chat에 수정 지시를 입력한다. 두 rail을 접어도 center preview는
+unmount하지 않으므로 현재 Markdown/PDF tab과 PDF page 위치를 보존한다. 바깥 Projects rail은 별도로
+resize되므로 Lecture surface는 viewport media query가 아니라 자기 실제 inline width를 container query로
+판단한다. 980px 이하에서는 assistant, 700px 이하에서는 session list도 edge rail을 남긴 overlay drawer로
+전환해 최소 window와 최대 Projects rail에서도 preview나 복원 버튼이 잘리지 않게 한다. 920px 이하의 실제
+mobile viewport에서만 single-column layout으로 전환한다.
 
 list IPC는 Markdown 본문 없이 bounded studio summary만 반환하고, 선택한 studio의 message와 revision은
 detail IPC로 따로 hydrate한다. source candidate IPC는 project별 offset/limit page를 반환하지만, 현재 source
@@ -1006,6 +1014,13 @@ page target은 Markdown slide count gate다. raw HTML, Markdown image, external 
 거부한다. 이는 metadata-only input의 구조적 evidence gate이며 paper full-text 사실 검증이라고 주장하지
 않는다.
 
+Lecture 생성과 수정은 provider `model/list`에서 발견한 opaque model ID와 해당 model의 native reasoning
+option을 Studio별 UI preference로 선택한다. `Auto`는 provider recommended selection을 turn 직전에 다시
+resolve하며 모델 이름이나 reasoning enum을 GOSU에 하드코딩하지 않는다. 이 preference는 localStorage의
+편의 설정일 뿐 authoritative provenance가 아니며, Main은 매 turn마다 live catalog로 ID를 검증하고 사라진
+model/reasoning을 임의 fallback하지 않는다. 실제 requested/resolved model ID, catalog version과 reasoning은
+각 immutable revision과 assistant message의 `ModelInvocation`에 기록한다.
+
 notes와 slides는 `GOSU/<output project>/Lecture Notes & Slides` 아래 이전 revision을 덮어쓰지 않는 새
 bundle로 저장한다. Main은 두 Markdown과 durable journal을 hidden staging directory에 모두 쓰고 fsync한 뒤
 directory rename으로 한 번에 공개한다. 일반 revision directory와 분리된 project-local hidden pending index를
@@ -1025,6 +1040,18 @@ content SHA-256을 다시 검증한 뒤 Main이 Markdown을 bounded deterministi
 만든 ephemeral preview다. 검증된 PDF magic·SHA-256·32 MiB budget을 통과한 bytes만 typed IPC로 전달하고,
 Renderer는 공용 PDF.js continuous-page viewer의 canvas/pixel/page budget을 재사용한다. PDF는 Research Notes의
 canonical Markdown을 대체하거나 자동 저장하지 않으며 앱 재시작 뒤 다시 compile한다.
+
+현재 revision의 document action은 path나 bytes를 Renderer에서 받지 않고
+`studioId/revisionId/revision/kind/artifactContentSha256` fence만 Main으로 보낸다. Markdown export/open/Finder는
+current Vault grant, project binding, ownership marker, root/file identity와 exact artifact SHA-256을 다시 검증한
+Research Notes file만 사용한다. PDF export/open은 Renderer preview bytes를 신뢰하지 않고 DB의 exact revision
+Markdown을 다시 sandbox compile해 PDF magic·size·SHA를 검증한다. export는 system save dialog와 atomic file
+replace를 사용하고, default-app open은 app-owned mode-0700 cache에 mode-0600 derived PDF를 materialize한다.
+derived PDF cache는 7일 TTL뿐 아니라 최대 12개·총 128 MiB LRU quota를 적용해 반복 open이 디스크를
+무한히 소비하지 않게 한다.
+receipt에는 status, basename과 project-relative path만 반환하며 absolute path는 Renderer·telemetry·Hosted Sync에
+노출하지 않는다. exported PDF는 사용자가 요청한 durable copy이지만 canonical revision이나 sync artifact가
+되지는 않는다.
 
 Studio 100개, studio별 message 2,500개와 revision 1,000개의 local capacity는 SQL trigger와 동일한 Main
 preflight로 방어한다. message/revision 잔여 용량은 turn 시작 transaction에서 user/assistant pair와 다음
