@@ -10,6 +10,7 @@ import {
   type LectureStudioStorage,
 } from '../src/main/lecture-studio-service';
 import { LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS } from '../src/main/lecture-studio-prompt';
+import { CodexRequestError } from '../src/main/codex-app-server';
 import {
   LectureDocumentCompilerError,
   type LectureDocumentCompiler,
@@ -442,6 +443,7 @@ class FakeCodex extends EventEmitter {
   prompt = '';
   deferCompletion = false;
   terminalStatus = 'completed';
+  terminalError: unknown = null;
   startError: Error | null = null;
   lastThreadId: string | null = null;
   lastTurnId: string | null = null;
@@ -475,7 +477,7 @@ class FakeCodex extends EventEmitter {
           method: 'turn/completed',
           params: {
             threadId: input.threadId,
-            turn: { id: turnId, status: this.terminalStatus },
+            turn: { id: turnId, status: this.terminalStatus, error: this.terminalError },
           },
         });
       });
@@ -527,7 +529,7 @@ class FakeCodex extends EventEmitter {
       method: 'turn/completed',
       params: {
         threadId: this.lastThreadId,
-        turn: { id: this.lastTurnId, status },
+        turn: { id: this.lastTurnId, status, error: this.terminalError },
       },
     });
   }
@@ -1174,6 +1176,170 @@ describe('LectureStudioService', () => {
     disconnected.codex.disconnect();
     await expect(disconnectedTurn).rejects.toMatchObject({ code: 'lecture_codex_unavailable' });
   });
+
+  it.each([
+    ['contextWindowExceeded', 'lecture_context_too_large'],
+    ['sessionBudgetExceeded', 'lecture_context_too_large'],
+    ['usageLimitExceeded', 'lecture_usage_limit_exceeded'],
+    ['serverOverloaded', 'lecture_generation_interrupted'],
+    ['internalServerError', 'lecture_generation_interrupted'],
+    ['unauthorized', 'lecture_auth_required'],
+    ['cyberPolicy', 'lecture_generation_failed'],
+    ['badRequest', 'lecture_generation_failed'],
+    ['threadRollbackFailed', 'lecture_generation_failed'],
+    ['sandboxError', 'lecture_generation_failed'],
+    ['activeTurnNotSteerable', 'lecture_generation_failed'],
+    ['other', 'lecture_generation_failed'],
+  ] as const)('maps safe Codex terminal reason %s to %s', async (reason, expectedCode) => {
+    const { service, codex, projectA, paperA } = fixture();
+    codex.terminalStatus = 'failed';
+    codex.terminalError = {
+      message: 'must not leave the main process',
+      codexErrorInfo: reason,
+      additionalDetails: 'must not be persisted',
+    };
+    const studio = await service.create({
+      title: `Terminal reason ${reason}`,
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    await expect(
+      service.generate({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: expectedCode, message: expectedCode });
+    const detail = await service.detail({ studioId: studio.id });
+    expect(detail.studio.lastErrorCode).toBe(expectedCode);
+    expect(JSON.stringify(detail)).not.toContain('must not');
+  });
+
+  it.each([
+    ['httpConnectionFailed', { httpStatusCode: 503 }, 'lecture_generation_interrupted'],
+    ['responseStreamConnectionFailed', { httpStatusCode: 502 }, 'lecture_generation_interrupted'],
+    ['responseStreamDisconnected', { httpStatusCode: null }, 'lecture_generation_interrupted'],
+    ['responseTooManyFailedAttempts', { httpStatusCode: 429 }, 'lecture_generation_interrupted'],
+    [
+      'activeTurnNotSteerable',
+      { expectedTurnId: 'expected', actualTurnId: 'actual' },
+      'lecture_generation_failed',
+    ],
+  ] as const)(
+    'maps structured Codex terminal reason %s without exposing details',
+    async (reason, details, expectedCode) => {
+      const { service, codex, projectA, paperA } = fixture();
+      codex.terminalStatus = 'failed';
+      codex.terminalError = {
+        message: 'private request context',
+        codexErrorInfo: { [reason]: details },
+        additionalDetails: 'private provider details',
+      };
+      const studio = await service.create({
+        title: `Structured terminal reason ${reason}`,
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection: {
+          literature: [{ projectId: projectA, recordId: paperA.id }],
+          experiments: [],
+        },
+      });
+
+      await expect(
+        service.generate({
+          studioId: studio.id,
+          expectedVersion: studio.version,
+          requestedModelId: null,
+          reasoningOptionId: null,
+        }),
+      ).rejects.toMatchObject({ code: expectedCode });
+      expect(JSON.stringify(await service.detail({ studioId: studio.id }))).not.toContain(
+        'private',
+      );
+    },
+  );
+
+  it.each([null, undefined, 'unknownFutureReason', { futureReason: {} }])(
+    'falls back safely for an unknown Codex terminal reason %#',
+    async (codexErrorInfo) => {
+      const { service, codex, projectA, paperA } = fixture();
+      codex.terminalStatus = 'failed';
+      codex.terminalError =
+        codexErrorInfo === undefined
+          ? null
+          : { message: 'private', codexErrorInfo, additionalDetails: 'private' };
+      const studio = await service.create({
+        title: 'Unknown terminal reason',
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection: {
+          literature: [{ projectId: projectA, recordId: paperA.id }],
+          experiments: [],
+        },
+      });
+
+      await expect(
+        service.generate({
+          studioId: studio.id,
+          expectedVersion: studio.version,
+          requestedModelId: null,
+          reasoningOptionId: null,
+        }),
+      ).rejects.toMatchObject({ code: 'lecture_generation_failed' });
+      expect(JSON.stringify(await service.detail({ studioId: studio.id }))).not.toContain(
+        'private',
+      );
+    },
+  );
+
+  it.each([
+    ['codex_auth_required', 'lecture_auth_required'],
+    ['codex_usage_limit_exceeded', 'lecture_usage_limit_exceeded'],
+    ['codex_context_too_large', 'lecture_context_too_large'],
+    ['codex_request_interrupted', 'lecture_generation_interrupted'],
+    ['codex_request_failed', 'lecture_generation_failed'],
+  ] as const)(
+    'maps a synchronous Codex request failure %s before the turn starts to %s',
+    async (requestCode, expectedCode) => {
+      const { service, codex, projectA, paperA } = fixture();
+      codex.startError = new CodexRequestError(requestCode);
+      const studio = await service.create({
+        title: `Synchronous ${requestCode}`,
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection: {
+          literature: [{ projectId: projectA, recordId: paperA.id }],
+          experiments: [],
+        },
+      });
+
+      await expect(
+        service.generate({
+          studioId: studio.id,
+          expectedVersion: studio.version,
+          requestedModelId: null,
+          reasoningOptionId: null,
+        }),
+      ).rejects.toMatchObject({ code: expectedCode });
+      expect((await service.detail({ studioId: studio.id })).studio.lastErrorCode).toBe(
+        expectedCode,
+      );
+    },
+  );
 
   it('exports, opens, and reveals only the exact committed Research Notes artifact revision', async () => {
     const exported: Array<{ format: string; suggestedFileName: string; bytes: Buffer }> = [];

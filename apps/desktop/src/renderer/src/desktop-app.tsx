@@ -18,6 +18,7 @@ import type {
   HermesAcpApprovalRequest,
 } from '../../shared/hermes-acp-approval-contracts';
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
+import type { CodexAuthenticationEvent } from '../../shared/codex-auth-channels';
 import type { AgentAddOnStatus } from '../../shared/agent-addon-contracts';
 import type {
   CreateSshConnectionInput,
@@ -272,6 +273,24 @@ export function isCodexUnavailableError(error: unknown) {
   return codes.includes('codex_unavailable') || codes.includes('lecture_codex_unavailable');
 }
 
+export function codexAuthenticationUiUpdate(event: CodexAuthenticationEvent): {
+  connectionState: CodexConnectionState;
+  status: string;
+  refreshModels: boolean;
+} {
+  return event.success
+    ? {
+        connectionState: 'checking',
+        status: 'Codex sign-in completed. Refreshing models…',
+        refreshModels: true,
+      }
+    : {
+        connectionState: 'auth-required',
+        status: 'Codex sign-in did not complete. Try signing in again.',
+        refreshModels: false,
+      };
+}
+
 function hasErrorCode(error: unknown, code: string) {
   return error instanceof Error && error.message.includes(code);
 }
@@ -491,6 +510,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [codexBusy, setCodexBusy] = useState(false);
   const [codexConnectionState, setCodexConnectionState] =
     useState<CodexConnectionState>('checking');
+  const codexRefreshInProgress = useRef(false);
+  const refreshModelsRef = useRef<(showRecoveryError?: boolean) => Promise<void>>(async () => {});
   const [codexErrorVisible, setCodexErrorVisible] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeReadiness | null>(null);
   const [researchNotesState, setResearchNotesState] = useState<VaultRuntimeState>('checking');
@@ -1225,6 +1246,17 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
 
   useEffect(
     () =>
+      window.gosu.codex.onAuthenticationEvent((event) => {
+        const update = codexAuthenticationUiUpdate(event);
+        setCodexConnectionState(update.connectionState);
+        setCodexStatus(update.status);
+        if (update.refreshModels) void refreshModelsRef.current(true);
+      }),
+    [],
+  );
+
+  useEffect(
+    () =>
       window.gosu.projectChat.onEvent((event: ProjectChatEvent) => {
         const sessionKey = projectChatSessionKey(event.projectId, event.sessionId);
         if (event.type === 'session.updated') {
@@ -1403,7 +1435,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   }, [activeProjectId, activeSurface, settingsCategory]);
 
   const refreshModels = async (showRecoveryError = false) => {
-    if (codexBusy) return;
+    if (codexRefreshInProgress.current) return;
+    codexRefreshInProgress.current = true;
     setCodexBusy(true);
     setCodexConnectionState('checking');
     setCodexStatus('Checking the local Codex connection and model catalog…');
@@ -1435,8 +1468,29 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         setCodexErrorVisible(true);
       }
     } finally {
+      codexRefreshInProgress.current = false;
       setCodexBusy(false);
     }
+  };
+  refreshModelsRef.current = refreshModels;
+
+  const startCodexChatGptLogin = () => {
+    if (codexBusy) return;
+    setActiveSurface('workspace');
+    setActiveTab('connections');
+    setShowProjectForm(false);
+    setCodexBusy(true);
+    setCodexConnectionState('auth-required');
+    setCodexStatus('Opening secure Codex sign-in in the system browser…');
+    void window.gosu.codex
+      .loginChatGpt()
+      .then(() =>
+        setCodexStatus(
+          'Complete sign-in in the system browser. GOSU will reconnect automatically.',
+        ),
+      )
+      .catch((error: unknown) => setCodexStatus(describeError(error)))
+      .finally(() => setCodexBusy(false));
   };
 
   const applyHermesProjectChatStatus = useCallback((status: AgentAddOnStatus) => {
@@ -3254,7 +3308,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 draftStore={lectureStudioDraftsRef.current}
                 models={models}
                 modelsLoading={codexBusy}
+                codexAuthenticationRequired={codexConnectionState === 'auth-required'}
                 onRefreshModels={() => void refreshModels(true)}
+                onOpenCodexSignIn={startCodexChatGptLogin}
                 layout={lectureStudioLayout}
                 onLayoutChange={setLectureStudioLayout}
               />
@@ -3277,15 +3333,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onReconnect={() => void refreshModels(true)}
                 onToggleApiKey={() => setApiKeyMode((visible) => !visible)}
                 onApiKey={setApiKey}
-                onLoginChatGpt={() => {
-                  if (codexBusy) return;
-                  setCodexBusy(true);
-                  void window.gosu.codex
-                    .loginChatGpt()
-                    .then(() => setCodexStatus('Continue sign-in in the system browser.'))
-                    .catch((error: unknown) => setCodexStatus(describeError(error)))
-                    .finally(() => setCodexBusy(false));
-                }}
+                onLoginChatGpt={startCodexChatGptLogin}
                 onLoginApiKey={() => {
                   if (codexBusy || apiKey.trim() === '') return;
                   setCodexBusy(true);
