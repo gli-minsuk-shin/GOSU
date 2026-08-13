@@ -1047,6 +1047,9 @@ current Vault grant, project binding, ownership marker, root/file identity와 ex
 Research Notes file만 사용한다. PDF export/open은 Renderer preview bytes를 신뢰하지 않고 DB의 exact revision
 Markdown을 다시 sandbox compile해 PDF magic·size·SHA를 검증한다. export는 system save dialog와 atomic file
 replace를 사용하고, default-app open은 app-owned mode-0700 cache에 mode-0600 derived PDF를 materialize한다.
+Renderer의 export·default-app open·Finder reveal은 36px icon-only control로 표시하되 동적 format을 포함한
+accessible name과 동일한 hover tooltip을 유지한다. 세 control은 좁은 Lecture preview에서도 한 줄을 유지하고
+visible text를 action receipt에만 사용하므로 문서 폭을 불필요하게 잠식하지 않는다.
 derived PDF cache는 7일 TTL뿐 아니라 최대 12개·총 128 MiB LRU quota를 적용해 반복 open이 디스크를
 무한히 소비하지 않게 한다.
 receipt에는 status, basename과 project-relative path만 반환하며 absolute path는 Renderer·telemetry·Hosted Sync에
