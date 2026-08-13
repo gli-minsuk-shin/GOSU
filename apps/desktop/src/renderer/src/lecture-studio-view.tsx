@@ -13,6 +13,7 @@ import type { LiteratureRecord } from '../../shared/literature-contracts';
 import {
   LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES,
   LECTURE_STUDIO_MAX_LITERATURE_SOURCES,
+  LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES,
   LECTURE_STUDIO_MAX_SOURCE_PROJECTS,
   LECTURE_STUDIO_DURATIONS,
   type CancelLectureStudioInput,
@@ -61,9 +62,10 @@ export interface LectureStudioViewProps {
 
 type PreviewTab = 'notes' | 'slides';
 
-const LECTURE_STUDIO_UI_MAX_SOURCES = Math.min(
+const LECTURE_STUDIO_UI_MAX_SOURCES = Math.max(
   LECTURE_STUDIO_MAX_LITERATURE_SOURCES,
   LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES,
+  LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES,
 );
 const LECTURE_STUDIO_RECENT_MESSAGE_WINDOW = 50;
 
@@ -90,6 +92,7 @@ export interface LoadedLectureCandidates {
 const EMPTY_SOURCE_SELECTION: LectureSourceSelection = {
   literature: [],
   experiments: [],
+  manuscripts: [],
 };
 
 function sourceKey(projectId: string, sourceId: string) {
@@ -117,6 +120,17 @@ function metricSummary(points: readonly ExperimentMetricPoint[], ideaId: string)
   return `${latest.metricDisplayName}: ${latest.value}${latest.unit ? ` ${latest.unit}` : ''}`;
 }
 
+export function lectureManuscriptAvailabilityLabel(
+  availability: LectureSourceCandidates['projects'][number]['manuscripts'][number]['availability'],
+) {
+  const labels = {
+    ready: 'Captured checkpoint ready',
+    capture_required: 'Capture a checkpoint in Manuscript first',
+    unconnected: 'Connect this manuscript before using it',
+  } as const;
+  return labels[availability];
+}
+
 function lectureErrorCodeMessage(code: string) {
   const messages: Record<string, string> = {
     invalid_lecture_input: 'Review the selected projects, sources, and presentation settings.',
@@ -135,7 +149,7 @@ function lectureErrorCodeMessage(code: string) {
       'Lecture notes and slides are temporarily unavailable. Existing files were not replaced.',
     lecture_codex_unavailable: 'Codex is unavailable. Existing lecture files remain available.',
     lecture_version_conflict: 'This lecture changed in another action. Refresh and try again.',
-    lecture_source_not_found: 'A selected paper or experiment is no longer available.',
+    lecture_source_not_found: 'A selected manuscript, paper, or experiment is no longer available.',
     lecture_invalid_response:
       'The generated draft failed source or Markdown safety checks, so no files were changed.',
     lecture_persistence_failed:
@@ -192,10 +206,16 @@ export function mergeLectureCandidatePages(
       next.experiments,
       (experiment) => experiment.idea.id,
     );
+    const manuscripts = mergeUnique(
+      project.manuscripts,
+      next.manuscripts,
+      (candidate) => candidate.manuscript.id,
+    );
     return {
       ...next,
       literatureRecords,
       experiments,
+      manuscripts,
       literaturePage: {
         nextOffset: Math.max(
           project.literaturePage.nextOffset,
@@ -420,7 +440,10 @@ export function LectureStudioView({
         <div>
           <span className="eyebrow">Workspace / Lecture studio</span>
           <h1>Lecture notes &amp; slides</h1>
-          <p>Combine reviewed paper metadata and experiment evidence across multiple projects.</p>
+          <p>
+            Combine captured manuscripts, reviewed paper metadata, and experiment evidence across
+            multiple projects.
+          </p>
         </div>
         <button
           type="button"
@@ -638,6 +661,7 @@ function LectureComposer({
   const [outputProjectId, setOutputProjectId] = useState(projects[0]?.id ?? '');
   const [selectedLiterature, setSelectedLiterature] = useState<Set<string>>(new Set());
   const [selectedExperiments, setSelectedExperiments] = useState<Set<string>>(new Set());
+  const [selectedManuscripts, setSelectedManuscripts] = useState<Set<string>>(new Set());
   const [candidates, setCandidates] = useState<LoadedLectureCandidates | null>(null);
   const [loadingSources, setLoadingSources] = useState(false);
   const [loadingMoreProjects, setLoadingMoreProjects] = useState<Set<string>>(new Set());
@@ -687,16 +711,26 @@ function LectureComposer({
       setSelectedExperiments(
         (selected) => new Set([...selected].filter((key) => !key.startsWith(`${projectId}:`))),
       );
+      setSelectedManuscripts(
+        (selected) => new Set([...selected].filter((key) => !key.startsWith(`${projectId}:`))),
+      );
     }
   };
 
-  const toggleSource = (kind: 'literature' | 'experiment', key: string) => {
-    const current = kind === 'literature' ? selectedLiterature : selectedExperiments;
-    const otherCount = kind === 'literature' ? selectedExperiments.size : selectedLiterature.size;
+  const toggleSource = (kind: 'literature' | 'experiment' | 'manuscript', key: string) => {
+    const current =
+      kind === 'literature'
+        ? selectedLiterature
+        : kind === 'experiment'
+          ? selectedExperiments
+          : selectedManuscripts;
+    const otherCount =
+      selectedLiterature.size + selectedExperiments.size + selectedManuscripts.size - current.size;
     const toggled = toggleLectureSourceSelection(current, key, otherCount);
     setSelectionError(toggled.error);
     if (kind === 'literature') setSelectedLiterature(toggled.sourceIds);
-    else setSelectedExperiments(toggled.sourceIds);
+    else if (kind === 'experiment') setSelectedExperiments(toggled.sourceIds);
+    else setSelectedManuscripts(toggled.sourceIds);
   };
 
   const loadMoreSources = async (projectId: string) => {
@@ -737,10 +771,17 @@ function LectureComposer({
       const [projectId = '', ideaId = ''] = key.split(':');
       return { projectId, ideaId };
     });
-    return { literature, experiments };
-  }, [selectedExperiments, selectedLiterature]);
+    const manuscripts = [...selectedManuscripts].map((key) => {
+      const [projectId = '', manuscriptId = ''] = key.split(':');
+      return { projectId, manuscriptId };
+    });
+    return { literature, experiments, manuscripts };
+  }, [selectedExperiments, selectedLiterature, selectedManuscripts]);
 
-  const sourceCount = sourceSelection.literature.length + sourceSelection.experiments.length;
+  const sourceCount =
+    sourceSelection.literature.length +
+    sourceSelection.experiments.length +
+    sourceSelection.manuscripts.length;
   const canCreate =
     !busy &&
     !creating &&
@@ -778,8 +819,8 @@ function LectureComposer({
         <span className="eyebrow">New synthesis</span>
         <h2>Build across projects</h2>
         <p>
-          Select reviewed paper metadata and experiment evidence the lecture may use. GOSU freezes
-          this source set for each generated revision.
+          Select captured manuscript sources, reviewed paper metadata, and experiment evidence the
+          lecture may use. GOSU freezes this source set for each generated revision.
         </p>
       </header>
 
@@ -916,6 +957,8 @@ function LectureComposer({
                 <header>
                   <strong>{project.projectName}</strong>
                   <span>
+                    {project.manuscripts.length} manuscript
+                    {project.manuscripts.length === 1 ? '' : 's'} ·{' '}
                     {project.literatureRecords.length} of {project.literaturePage.total} reviewed
                     paper metadata records · {project.experiments.length} of{' '}
                     {project.experimentPage.total} experiments
@@ -986,6 +1029,43 @@ function LectureComposer({
                           );
                         },
                       )
+                    )}
+                  </div>
+                  <div>
+                    <h4>Captured manuscripts</h4>
+                    {project.manuscripts.length === 0 ? (
+                      <p>No manuscripts in this project</p>
+                    ) : (
+                      project.manuscripts.map((candidate) => {
+                        const key = sourceKey(project.projectId, candidate.manuscript.id);
+                        const ready = candidate.availability === 'ready';
+                        return (
+                          <label
+                            key={candidate.manuscript.id}
+                            className={!ready ? 'unavailable' : ''}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedManuscripts.has(key)}
+                              disabled={!ready}
+                              onChange={() => toggleSource('manuscript', key)}
+                            />
+                            <span>
+                              <strong>{candidate.manuscript.title}</strong>
+                              <small>Root document: {candidate.manuscript.rootDocument}</small>
+                              {candidate.observedAt && (
+                                <small>Captured {formatUpdatedAt(candidate.observedAt)}</small>
+                              )}
+                              {!ready && (
+                                <small>
+                                  {lectureManuscriptAvailabilityLabel(candidate.availability)}
+                                </small>
+                              )}
+                            </span>
+                            <em>{ready ? 'Captured' : 'Unavailable'}</em>
+                          </label>
+                        );
+                      })
                     )}
                   </div>
                 </div>

@@ -430,7 +430,7 @@
 
 .lecture-source-columns {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   margin-top: 12px;
 }
@@ -472,6 +472,16 @@
 
 .lecture-source-columns label:has(input:checked) {
   border-color: color-mix(in srgb, var(--green) 58%, var(--line));
+}
+
+.lecture-source-columns label.unavailable {
+  background: color-mix(in srgb, var(--surface-soft) 80%, var(--surface));
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.lecture-source-columns label.unavailable input {
+  cursor: not-allowed;
 }
 
 .lecture-source-columns label > span {

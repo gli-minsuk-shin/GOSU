@@ -35,6 +35,38 @@ const manifest: LectureStudioPromptSourceManifest = {
   experiments: [],
 };
 
+const manuscriptManifest: LectureStudioPromptSourceManifest = {
+  schemaVersion: 2,
+  selectedProjectIds: ['project-a'],
+  literature: [],
+  experiments: [],
+  manuscripts: [
+    {
+      sourceLabel: 'M1',
+      projectId: 'project-a',
+      projectName: 'Project A',
+      manuscriptId: 'manuscript-a',
+      manuscriptVersion: 3,
+      title: 'Captured manuscript',
+      rootDocument: 'main.tex',
+      checkpointId: 'checkpoint-a',
+      providerId: 'overleaf_git',
+      providerRevision: 'provider-revision-1',
+      revisionEnvelopeDigest: `sha256:${'a'.repeat(64)}`,
+      observedAt: '2026-08-11T00:00:00.000Z',
+      files: [
+        {
+          relativePath: 'main.tex',
+          contentSha256: 'b'.repeat(64),
+          content: String.raw`\section{Result} Captured checkpoint evidence.`,
+        },
+      ],
+      contentKind: 'captured_latex',
+      metadataOnly: false,
+    },
+  ],
+};
+
 describe('Lecture Studio prompt', () => {
   it('gives each allowed talk duration a bounded slide budget', () => {
     expect(talkSlideBudget(10)).toEqual({ minimum: 6, maximum: 8 });
@@ -62,6 +94,32 @@ describe('Lecture Studio prompt', () => {
     expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain('no web, file, shell, network');
     expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain('metadata-only');
     expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain('never MDX');
+  });
+
+  it('preserves exact captured manuscript content and requires M labels', () => {
+    const prompt = buildLectureStudioPrompt({
+      mode: 'initial',
+      title: 'Manuscript lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      sourceManifest: manuscriptManifest,
+      currentDraft: null,
+      recentMessages: [],
+      request: null,
+    });
+    const payload = JSON.parse(prompt.slice(prompt.indexOf('\n\n') + 2)) as {
+      sourceManifest: LectureStudioPromptSourceManifest;
+    };
+
+    expect(payload.sourceManifest).toEqual(manuscriptManifest);
+    expect(prompt).toContain('Captured checkpoint evidence.');
+    expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain('exact captured checkpoint text');
+    expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
+      'Every manuscript claim must cite the exact supplied source label such as [M1]',
+    );
+    expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
+      'Every slide after the title slide must contain at least one exact supplied [P#], [E#], or [M#]',
+    );
   });
 
   it('bounds persisted chat history sent back to the model', () => {

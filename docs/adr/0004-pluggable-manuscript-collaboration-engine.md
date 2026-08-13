@@ -122,8 +122,10 @@ compile input set과 source-content digest를 별도 계약으로 정의하고 �
   기록한다. network deny, `-no-shell-escape`, captured source·MacTeX·system font/runtime만 허용하는 OS read
   allowlist, TeX `openin_any=p`, output/home-only write boundary, 120초 timeout, 192 MiB generated
   staging·50,000-entry·compiler-output·PDF-size budget을 적용한다. PDF magic·SHA-256 검증 후에만 bounded base64를
-  typed IPC로 Renderer에 전달해 decoded-image·canvas pixel/dimension budget을 적용한 PDF.js canvas로 표시하고,
-  한 번에 한 preview만 보유하며 absolute path·`file://`·temporary source를 노출하지 않는다.
+  typed IPC로 Renderer에 전달해 decoded-image·canvas pixel/dimension budget을 적용한 PDF.js canvas로 표시한다.
+  다중 페이지는 고정 높이의 연속 page stack으로 스크롤하고 현재 page 앞뒤만 독립 canvas로 렌더링하며,
+  Previous/Next는 exact page 위치로 이동한다. 한 번에 한 preview만 보유하며 absolute path·`file://`·temporary
+  source를 노출하지 않는다.
   timeout·resource/output overflow·앱 종료에는 detached process group 전체를 종료하며 정상
   success/failure cleanup이 끝나지 못한 strict `.compile-XXXXXX` staging은 다음 startup에서 symlink와
   lookalike를 건드리지 않고 정리한다. 현재 MacTeX는 prototype dependency이며 Overleaf의 compiler·TeX Live

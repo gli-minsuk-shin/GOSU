@@ -6,12 +6,15 @@ import {
   ExperimentMetricPointSchema,
 } from './experiment-workspace-contracts';
 import { LiteratureRecordSchema } from './literature-contracts';
+import { ManuscriptRecordSchema } from './manuscript-workspace-contracts';
 
 export const LECTURE_STUDIO_DURATIONS = [10, 20, 30, 50] as const;
 export const LECTURE_STUDIO_MAX_STUDIOS = 100;
 export const LECTURE_STUDIO_MAX_SOURCE_PROJECTS = 12;
 export const LECTURE_STUDIO_MAX_LITERATURE_SOURCES = 100;
 export const LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES = 100;
+export const LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES = 32;
+export const LECTURE_STUDIO_MAX_MANUSCRIPT_FILES = 128;
 export const LECTURE_STUDIO_MAX_MESSAGES = 2_500;
 export const LECTURE_STUDIO_MAX_REVISIONS = 1_000;
 export const LECTURE_STUDIO_MAX_MESSAGE_LENGTH = 32_000;
@@ -22,6 +25,7 @@ export const LECTURE_STUDIO_CANDIDATE_METRIC_LIMIT_DEFAULT = 20;
 const uuidSchema = z.string().uuid();
 const timestampSchema = z.string().datetime({ offset: true });
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+const prefixedSha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
 const boundedText = (maximum: number) => z.string().trim().min(1).max(maximum);
 const talkDurationSchema = z.union([z.literal(10), z.literal(20), z.literal(30), z.literal(50)]);
 
@@ -44,6 +48,11 @@ export const LectureExperimentSelectionSchema = z
   .strict();
 export type LectureExperimentSelection = z.infer<typeof LectureExperimentSelectionSchema>;
 
+export const LectureManuscriptSelectionSchema = z
+  .object({ projectId: uuidSchema, manuscriptId: uuidSchema })
+  .strict();
+export type LectureManuscriptSelection = z.infer<typeof LectureManuscriptSelectionSchema>;
+
 export const LectureSourceSelectionSchema = z
   .object({
     literature: z
@@ -52,15 +61,26 @@ export const LectureSourceSelectionSchema = z
     experiments: z
       .array(LectureExperimentSelectionSchema)
       .max(LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES),
+    manuscripts: z
+      .array(LectureManuscriptSelectionSchema)
+      .max(LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES)
+      .default([]),
   })
   .strict()
   .superRefine((selection, context) => {
-    if (selection.literature.length + selection.experiments.length === 0) {
+    if (
+      selection.literature.length + selection.experiments.length + selection.manuscripts.length ===
+      0
+    ) {
       context.addIssue({ code: 'custom', message: 'At least one source must be selected' });
     }
     for (const [key, values] of [
       ['literature', selection.literature.map((item) => `${item.projectId}:${item.recordId}`)],
       ['experiments', selection.experiments.map((item) => `${item.projectId}:${item.ideaId}`)],
+      [
+        'manuscripts',
+        selection.manuscripts.map((item) => `${item.projectId}:${item.manuscriptId}`),
+      ],
     ] as const) {
       if (new Set(values).size !== values.length) {
         context.addIssue({
@@ -71,7 +91,7 @@ export const LectureSourceSelectionSchema = z
       }
     }
   });
-export type LectureSourceSelection = z.infer<typeof LectureSourceSelectionSchema>;
+export type LectureSourceSelection = z.output<typeof LectureSourceSelectionSchema>;
 
 function validateStudioSourceBoundary(
   studio: {
@@ -108,6 +128,7 @@ function validateStudioSourceBoundary(
   for (const [group, references] of [
     ['literature', studio.sourceSelection.literature],
     ['experiments', studio.sourceSelection.experiments],
+    ['manuscripts', studio.sourceSelection.manuscripts],
   ] as const) {
     for (const [index, reference] of references.entries()) {
       if (!selectedProjects.has(reference.projectId)) {
@@ -259,7 +280,51 @@ export const LectureExperimentSourceSnapshotSchema = z
   })
   .strict();
 
-export const LectureSourceManifestSchema = z
+export const LectureManuscriptSourceFileSchema = z
+  .object({
+    relativePath: z
+      .string()
+      .trim()
+      .min(1)
+      .max(1_024)
+      .refine(
+        (value) =>
+          !value.startsWith('/') &&
+          !value.includes('\\') &&
+          value
+            .split('/')
+            .every((segment) => segment.length > 0 && segment !== '.' && segment !== '..'),
+        { message: 'Manuscript source paths must be safe checkpoint-relative paths' },
+      ),
+    contentSha256: sha256Schema,
+    content: z.string().max(24_000),
+  })
+  .strict();
+
+export const LectureManuscriptSourceSnapshotSchema = z
+  .object({
+    sourceLabel: boundedText(32),
+    projectId: uuidSchema,
+    projectName: boundedText(160),
+    manuscriptId: uuidSchema,
+    manuscriptVersion: z.number().int().positive(),
+    title: boundedText(160),
+    rootDocument: ManuscriptRecordSchema.shape.rootDocument,
+    checkpointId: uuidSchema,
+    providerId: boundedText(128),
+    providerRevision: boundedText(512),
+    revisionEnvelopeDigest: prefixedSha256Schema,
+    observedAt: timestampSchema,
+    files: z
+      .array(LectureManuscriptSourceFileSchema)
+      .min(1)
+      .max(LECTURE_STUDIO_MAX_MANUSCRIPT_FILES),
+    contentKind: z.literal('captured_latex'),
+    metadataOnly: z.literal(false),
+  })
+  .strict();
+
+export const LectureSourceManifestV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     selectedProjectIds: z.array(uuidSchema).min(1).max(LECTURE_STUDIO_MAX_SOURCE_PROJECTS),
@@ -306,6 +371,71 @@ export const LectureSourceManifestSchema = z
       });
     }
   });
+export type LectureSourceManifestV1 = z.infer<typeof LectureSourceManifestV1Schema>;
+
+export const LectureSourceManifestV2Schema = z
+  .object({
+    schemaVersion: z.literal(2),
+    selectedProjectIds: z.array(uuidSchema).min(1).max(LECTURE_STUDIO_MAX_SOURCE_PROJECTS),
+    literature: z
+      .array(LectureLiteratureSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_LITERATURE_SOURCES),
+    experiments: z
+      .array(LectureExperimentSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES),
+    manuscripts: z
+      .array(LectureManuscriptSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES),
+  })
+  .strict()
+  .superRefine((manifest, context) => {
+    if (new Set(manifest.selectedProjectIds).size !== manifest.selectedProjectIds.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['selectedProjectIds'],
+        message: 'Selected projects must be unique',
+      });
+    }
+    if (
+      manifest.literature.length + manifest.experiments.length + manifest.manuscripts.length ===
+      0
+    ) {
+      context.addIssue({ code: 'custom', message: 'A source manifest cannot be empty' });
+    }
+    const projects = new Set(manifest.selectedProjectIds);
+    const allLabels = [
+      ...manifest.literature.map((value) => value.sourceLabel),
+      ...manifest.experiments.map((value) => value.sourceLabel),
+      ...manifest.manuscripts.map((value) => value.sourceLabel),
+    ];
+    if (new Set(allLabels).size !== allLabels.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['manuscripts'],
+        message: 'Source labels must be unique across the manifest',
+      });
+    }
+    for (const [group, values] of [
+      ['literature', manifest.literature],
+      ['experiments', manifest.experiments],
+      ['manuscripts', manifest.manuscripts],
+    ] as const) {
+      values.forEach((value, index) => {
+        if (!projects.has(value.projectId)) {
+          context.addIssue({
+            code: 'custom',
+            path: [group, index, 'projectId'],
+            message: 'Manifest sources must belong to a selected project',
+          });
+        }
+      });
+    }
+  });
+
+export const LectureSourceManifestSchema = z.discriminatedUnion('schemaVersion', [
+  LectureSourceManifestV1Schema,
+  LectureSourceManifestV2Schema,
+]);
 export type LectureSourceManifest = z.infer<typeof LectureSourceManifestSchema>;
 
 export const LectureStudioRevisionSchema = z
@@ -478,6 +608,26 @@ export const LectureCandidateExperimentSchema = z
     });
   });
 
+export const LectureCandidateManuscriptSchema = z
+  .object({
+    manuscript: ManuscriptRecordSchema,
+    availability: z.enum(['ready', 'capture_required', 'unconnected']),
+    checkpointId: uuidSchema.nullable(),
+    providerRevision: z.string().trim().min(1).max(512).nullable(),
+    observedAt: timestampSchema.nullable(),
+  })
+  .strict()
+  .superRefine((candidate, context) => {
+    const captured = candidate.checkpointId !== null && candidate.observedAt !== null;
+    if ((candidate.availability === 'ready') !== captured) {
+      context.addIssue({
+        code: 'custom',
+        path: ['availability'],
+        message: 'Only a ready manuscript candidate can expose a captured checkpoint',
+      });
+    }
+  });
+
 export const LectureCandidatePageSchema = z
   .object({
     offset: z.number().int().nonnegative(),
@@ -504,6 +654,9 @@ export const LectureCandidateProjectSchema = z
     literaturePage: LectureCandidatePageSchema,
     experiments: z.array(LectureCandidateExperimentSchema).max(LECTURE_STUDIO_CANDIDATE_PAGE_MAX),
     experimentPage: LectureCandidatePageSchema,
+    manuscripts: z
+      .array(LectureCandidateManuscriptSchema)
+      .max(LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES),
   })
   .strict()
   .superRefine((project, context) => {
@@ -522,6 +675,15 @@ export const LectureCandidateProjectSchema = z
           code: 'custom',
           path: ['experiments', index, 'idea', 'projectId'],
           message: 'Experiment candidates must belong to the candidate project',
+        });
+      }
+    });
+    project.manuscripts.forEach((candidate, index) => {
+      if (candidate.manuscript.projectId !== project.projectId) {
+        context.addIssue({
+          code: 'custom',
+          path: ['manuscripts', index, 'manuscript', 'projectId'],
+          message: 'Manuscript candidates must belong to the candidate project',
         });
       }
     });
@@ -617,7 +779,14 @@ export const CreateLectureStudioInputSchema = z
   .object(lectureStudioConfigurationShape)
   .strict()
   .superRefine(validateStudioSourceBoundary);
-export type CreateLectureStudioInput = z.infer<typeof CreateLectureStudioInputSchema>;
+export type CreateLectureStudioInput = Omit<
+  z.infer<typeof CreateLectureStudioInputSchema>,
+  'sourceSelection'
+> & {
+  sourceSelection: Omit<LectureSourceSelection, 'manuscripts'> & {
+    manuscripts?: LectureSourceSelection['manuscripts'];
+  };
+};
 
 const lectureTurnShape = {
   studioId: uuidSchema,

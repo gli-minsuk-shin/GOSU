@@ -275,6 +275,7 @@ const literatureAi = new LiteratureAiService({
 const lectureStudio = new LectureStudioService({
   storage: database,
   sources: database,
+  manuscripts: manuscriptWorkspace,
   workspace,
   artifacts: researchNotes,
   codex,

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-06
-- Owners: Lecture, Reference & Literature, Experiment Orchestration, Obsidian Knowledge, AI Gateway
+- Owners: Lecture, Manuscript, Reference & Literature, Experiment Orchestration, Obsidian Knowledge, AI Gateway
 
 ## Context
 
@@ -10,21 +10,22 @@
 함께 비교하고, 동일 개념의 근거와 반례를 한 흐름으로 구성해야 한다. 따라서 project folder 안의
 `Lecture slides` placeholder는 다음 요구를 충족하지 못한다.
 
-- 여러 active project의 Literature와 Experiment evidence를 동시에 선택
+- 여러 active project의 captured Manuscript, Literature와 Experiment evidence를 동시에 선택
 - 일반 lecture와 10/20/30/50분 research talk 구분
 - Project Chat의 목표·권한·history를 오염시키지 않는 전용 수정 대화
 - 생성 결과를 사용자가 선택한 한 project의 Obsidian Research Notes에 계속 보존
 - 어느 source version과 실제 Codex model로 각 revision을 만들었는지 재현 가능한 provenance
 
-Literature는 현재 metadata 중심이고 Experiment는 수동·local-live summary가 포함될 수 있으므로, Lecture
-Studio가 paper full text나 원격 trial의 존재를 암시해서도 안 된다.
+Literature는 현재 metadata 중심이고 Experiment는 수동·local-live summary가 포함될 수 있다. Manuscript는
+사용자가 capture한 exact LaTeX checkpoint만 읽을 수 있으므로 Lecture Studio가 published paper full text,
+PDF figure, live·저장 전 Overleaf edit나 원격 trial의 존재를 암시해서도 안 된다.
 
 ## Decision
 
 ### 1. Project 밖의 workspace module
 
 Lecture Studio는 project navigation의 child tab이 아니라 Workspace 전역 section이다. 한 studio는 최대
-12개의 active source project, 선택한 Literature record와 Experiment idea, presentation kind, 선택적인
+12개의 active source project, 선택한 Literature record·Experiment idea·captured Manuscript, presentation kind, 선택적인
 talk duration, 그리고 정확히 하나의 `outputProjectId`를 소유한다. 출력 project는 source project 중 하나여야
 하며 해당 project의 Research Notes binding이 ready여야 한다.
 
@@ -40,7 +41,7 @@ port를 cursor query로 확장해야 한다.
 ### 2. Source selection과 frozen provenance
 
 Lecture Studio는 다른 module의 table을 Renderer에서 직접 읽지 않는다. Main의 source port가 selected ID를
-authoritative Literature·Experiment repository에서 다시 조회한다. 후보 첫 화면과 생성 시점 모두 다음
+authoritative Literature·Experiment repository와 Manuscript service에서 다시 조회한다. 후보 첫 화면과 생성 시점 모두 다음
 경계를 적용한다.
 
 - Literature 기본 후보는 사람이 `included` 또는 `reviewed`로 분류한 record다.
@@ -48,14 +49,18 @@ authoritative Literature·Experiment repository에서 다시 조회한다. 후�
   manual/AI topic tag와 `metadataOnly: true`를 기록한다.
 - Experiment source에는 idea version, parent lineage, outcome, result summary와 Objective/evaluator/dataset/
   holdout hash가 포함된 bounded metric snapshot을 기록한다.
+- Manuscript는 current binding의 exact captured checkpoint가 있을 때만 선택 가능하다. 생성 시 checkpoint를
+  다시 검증하고 safe UTF-8 `.tex`·`.bib` file을 deterministic path 순서로 읽는다. v2 manifest에는
+  manuscript/file version과 SHA-256, checkpoint/provider revision, revision-envelope digest를 고정한다.
+  이후 provider revision, compiled PDF와 binary figure는 포함하지 않는다.
 - candidate picker는 현재 page의 idea ID만 SQL window query로 조회해 idea별 최신 metric 1개와 total count를
   받는다. generation은 선택한 idea ID만 다시 조회해 최신 64개를 오름차순으로 고정하므로 project 전체
   metric history를 IPC나 prompt로 가져오지 않는다.
 - 매 revision은 자기 source manifest와 SHA-256을 append-only로 보존한다. 다음 revision에서 source가
   바뀌더라도 이전 manifest는 수정하지 않는다.
 
-이 manifest는 교육용 synthesis의 provenance이지 full-text evidence verification이나 systematic review를
-대체하지 않는다.
+이 manifest는 교육용 synthesis의 provenance이다. Captured manuscript source를 읽었다는 사실은 표시할 수
+있지만 published-paper evidence verification이나 systematic review를 대체하지 않는다.
 
 ### 3. Lecture와 timed talk
 
@@ -86,7 +91,7 @@ fail closed한다. 최근 12개 성공 chat message만 별도 bounded history로
 prompt history에서 제외한다. Main은 structured response를 저장하기 전에 다음을 검증한다.
 
 - notes와 slides 모두 level-one title과 허용된 source label을 가진다.
-- substantive slide마다 해당 slide 안의 `[P#]` 또는 `[E#]` evidence label을 요구한다.
+- substantive slide마다 해당 slide 안의 `[P#]`, `[E#]` 또는 `[M#]` evidence label을 요구한다.
 - notes의 Sources used mapping과 모든 인용 label이 frozen manifest에 존재한다.
 - 임의 citation syntax, raw HTML, Markdown image와 external image destination을 거부한다.
 - timed talk의 slide count가 선택한 duration budget 안에 있다.
@@ -144,7 +149,7 @@ output project만 artifact를 소유하고 다른 project는 frozen source refer
 
 장점:
 
-- 여러 project의 paper·experiment evidence를 하나의 lecture나 talk로 합성할 수 있다.
+- 여러 project의 captured manuscript·paper metadata·experiment evidence를 하나의 lecture나 talk로 합성할 수 있다.
 - Project Chat과 Lecture 수정 history, 권한과 failure domain이 섞이지 않는다.
 - 각 revision의 source, model, artifact path와 hash를 추적하고 이전 결과를 보존한다.
 - Vault나 Codex 장애가 Kanban, Literature, Experiment와 기존 note 읽기를 막지 않는다.
@@ -152,7 +157,7 @@ output project만 artifact를 소유하고 다른 project는 frozen source refer
 비용과 한계:
 
 - output project의 Research Notes 연결이 없으면 generation을 시작하지 않는다.
-- Literature full text, PDF figure와 manuscript section은 자동 source가 아니다.
+- Literature published full text와 PDF figure, live/uncaptured Manuscript section은 source가 아니다.
 - duration은 slide budget이지 실제 rehearsal time 보증이 아니다.
 - PPTX/PDF, theme template, presenter notes export와 공동 편집은 후속 범위다.
 - source 변경은 기존 revision을 재작성하지 않고 다음 revision의 새 manifest로만 반영된다.
@@ -161,7 +166,7 @@ output project만 artifact를 소유하고 다른 project는 frozen source refer
 
 - global navigation과 project child navigation의 분리
 - 여러 project source 선택, output-project membership과 active/trash isolation
-- included/reviewed Literature 기본값, review status·manual topic 보존, metadata-only 표시
+- included/reviewed Literature 기본값, captured Manuscript 선택·`[M#]` provenance, review status·manual topic 보존, metadata-only 표시
 - bounded in-memory candidate offset paging과 최신 metric tail/truncation
 - summary list와 selected-studio detail payload 분리
 - 10/20/30/50분 duration과 slide budget
