@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -17,6 +18,11 @@ import { EXPERIMENT_EVALUATION_CODE_POLICY_HASH } from '../../src/main/experimen
 import { LocalDatabase } from '../../src/main/local-database';
 import { ExperimentWorkspaceStorageError } from '../../src/main/experiment-workspace-storage-error';
 import { buildLectureLatexDocument } from '../../src/main/lecture-latex-source';
+import {
+  LectureExternalSourceManifestAuthenticator,
+  LectureExternalSourceService,
+} from '../../src/main/lecture-external-source-service';
+import { LectureStudioService } from '../../src/main/lecture-studio-service';
 import { LectureStudioStorageError } from '../../src/main/lecture-studio-storage-error';
 import { literatureFingerprint } from '../../src/main/literature-crossref';
 import { LiteratureStorageError } from '../../src/main/literature-storage-error';
@@ -2350,6 +2356,7 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
       literature: [{ projectId, recordId }],
       experiments: [],
       manuscripts: [],
+      externalSources: null,
     },
     generationBrief: {
       notesTargetPages: 12,
@@ -2492,6 +2499,56 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
       ],
       invocation: revisionFixture(revision, attemptId).invocation,
       createdAt: fixedTimestamp,
+    };
+  };
+  const externalLatexRevisionFixture = (
+    revision: number,
+    attemptId: string,
+  ): LectureStudioRevisionV2 => {
+    const base = latexRevisionFixture(revision, attemptId);
+    const externalSourceId = randomUUID();
+    const externalContent = '# Frozen external evidence\n\nSQLCipher must preserve [F1].';
+    const externalBytes = Buffer.from(externalContent, 'utf8');
+    const sourceManifest = {
+      schemaVersion: 3 as const,
+      selectedProjectIds: [projectId],
+      literature: [],
+      experiments: [],
+      manuscripts: [],
+      externalSources: [
+        {
+          schemaVersion: 1 as const,
+          id: externalSourceId,
+          projectId,
+          studioId: studio.id,
+          displayName: 'frozen-evidence.md',
+          kind: 'markdown' as const,
+          mediaType: 'text/markdown' as const,
+          byteSize: externalBytes.byteLength,
+          sourceSha256: createHash('sha256').update(externalBytes).digest('hex'),
+          extraction: {
+            policyVersion: 1 as const,
+            characterBudget: 40_000,
+            unitLabel: 'part' as const,
+            unitCount: 1,
+            content: externalContent,
+            contentSha256: createHash('sha256').update(externalContent, 'utf8').digest('hex'),
+            extractedCharacters: externalContent.length,
+            truncated: false,
+            textAvailable: true,
+            reconstructionNotice: 'Exact UTF-8 Markdown text imported by GOSU.',
+          },
+          importedAt: fixedTimestamp,
+          sourceLabel: 'F1',
+        },
+      ],
+    };
+    return {
+      ...base,
+      sourceManifest,
+      sourceManifestSha256: createHash('sha256')
+        .update(JSON.stringify(sourceManifest), 'utf8')
+        .digest('hex'),
     };
   };
   const assistantMessage = (
@@ -2841,16 +2898,48 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
       error instanceof Error && error.message === 'invalid_lecture_query_limit';
   }
   invariant(invalidLimitRejected, 'lecture_invalid_history_limit_was_not_rejected');
+
+  const externalAttemptId = randomUUID();
+  const studioAfterAtomicFailure = latexReopened.getLectureStudio(studio.id);
+  invariant(studioAfterAtomicFailure !== null, 'lecture_external_v3_studio_missing');
+  const externalGenerating = latexReopened.beginLectureStudioTurn({
+    studioId: studio.id,
+    expectedVersion: studioAfterAtomicFailure.version,
+    attemptId: externalAttemptId,
+    userMessage: userMessage(externalAttemptId, 'Persist frozen external evidence.'),
+    updatedAt: fixedTimestamp,
+  });
+  invariant(externalGenerating !== null, 'lecture_external_v3_turn_did_not_begin');
+  const externalRevision = externalLatexRevisionFixture(3, externalAttemptId);
+  const externalReady = latexReopened.completeLectureStudioTurn({
+    studio: {
+      ...externalGenerating,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 3,
+      version: externalGenerating.version + 1,
+      lastErrorCode: null,
+      updatedAt: fixedTimestamp,
+    },
+    revision: externalRevision,
+    assistantMessage: assistantMessage(externalAttemptId, 3),
+  });
+  invariant(
+    externalReady?.currentRevision === 3 &&
+      isDeepStrictEqual(latexReopened.getCurrentLectureStudioRevision(studio.id), externalRevision),
+    'lecture_external_v3_revision_was_not_decoded_exactly_before_reopen',
+  );
   latexReopened.close();
 
   const persisted = new LocalDatabase();
   persisted.open();
   invariant(
-    persisted.getCurrentLectureStudioRevision(studio.id)?.id === latexRevision.id &&
+    isDeepStrictEqual(persisted.getCurrentLectureStudioRevision(studio.id), externalRevision) &&
+      persisted.listLectureStudioRevisions(studio.id, 10).length === 3 &&
       persisted
         .listLectureStudioMessages(studio.id, 10)
         .find((message) => message.id === atomicUser.id)?.status === 'failed',
-    'lecture_history_was_not_persisted_after_reopen',
+    'lecture_external_v3_history_was_not_persisted_after_reopen',
   );
   for (let index = 1; index < LECTURE_STUDIO_MAX_STUDIOS; index += 1) {
     const capacityProjectId = randomUUID();
@@ -2865,6 +2954,7 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
           literature: [{ projectId: capacityProjectId, recordId: randomUUID() }],
           experiments: [],
           manuscripts: [],
+          externalSources: null,
         },
       }),
       'lecture_capacity_fixture_insert_failed',
@@ -2903,6 +2993,7 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
         literature: [{ projectId: capacityProjectId, recordId: randomUUID() }],
         experiments: [],
         manuscripts: [],
+        externalSources: null,
       },
       currentRevision: 0,
       version: 1,
@@ -2925,6 +3016,7 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
       literature: [{ projectId: overTrashProjectId, recordId: randomUUID() }],
       experiments: [],
       manuscripts: [],
+      externalSources: null,
     },
     currentRevision: 0,
     version: 1,
@@ -2968,6 +3060,7 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
         literature: [{ projectId: replacementProjectId, recordId: randomUUID() }],
         experiments: [],
         manuscripts: [],
+        externalSources: null,
       },
       currentRevision: 0,
       version: 1,
@@ -3032,6 +3125,271 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     'lecture_trash_purge_removed_active_studios_or_kept_purged_studio',
   );
   persisted.close();
+}
+
+async function verifyLectureExternalSourceTrashPurgeRecovery(
+  rootUserData: string,
+  fixedTimestamp: string,
+) {
+  const projectId = randomUUID();
+  const activeStudioId = randomUUID();
+  const orphanedStudioId = randomUUID();
+  const trashedKeepStudioId = randomUUID();
+  const sourceFixtureRoot = join(rootUserData, 'lecture-external-source-trash-fixtures');
+  const managedRoot = join(rootUserData, 'lecture-external-source-trash-managed');
+  mkdirSync(sourceFixtureRoot, { recursive: true });
+  let selectedPaths: readonly string[] = [];
+  const externalSources = new LectureExternalSourceService({
+    rootDirectory: () => managedRoot,
+    chooseFiles: async () => selectedPaths,
+    validateProject: async (candidateProjectId) => {
+      if (candidateProjectId !== projectId) throw new Error('project_not_found');
+    },
+    manifestAuthenticator: new LectureExternalSourceManifestAuthenticator({
+      rootDirectory: () => managedRoot,
+      encryption: safeStorage,
+    }),
+  });
+  const claimSource = async (studioId: string, label: string) => {
+    const sourcePath = join(sourceFixtureRoot, `${label}.md`);
+    writeFileSync(sourcePath, `# ${label}\n\nDurable external evidence for trash recovery.`);
+    selectedPaths = [sourcePath];
+    const staged = await externalSources.chooseAndStage({ projectId, sourceSetId: null });
+    const source = staged.sources[0];
+    invariant(source !== undefined, 'lecture_external_trash_source_not_staged');
+    await externalSources.claim({
+      projectId,
+      studioId,
+      sourceSetId: staged.id,
+      selectedSourceIds: [source.id],
+    });
+    return { sourceSetId: staged.id, sourceId: source.id };
+  };
+  const activeSource = await claimSource(activeStudioId, 'active-studio');
+  const orphanedSource = await claimSource(orphanedStudioId, 'purge-failure-orphan');
+
+  const database = new LocalDatabase();
+  database.open();
+  try {
+    const studio = (
+      id: string,
+      title: string,
+      externalSource: Readonly<{ sourceSetId: string; sourceId: string }>,
+    ): LectureStudio => ({
+      schemaVersion: 1,
+      id,
+      title,
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectId,
+      sourceProjectIds: [projectId],
+      sourceSelection: {
+        literature: [],
+        experiments: [],
+        manuscripts: [],
+        externalSources: {
+          sourceSetId: externalSource.sourceSetId,
+          sourceIds: [externalSource.sourceId],
+        },
+      },
+      generationBrief: {
+        notesTargetPages: null,
+        slidesTargetPages: null,
+        detailLevel: 'standard',
+        customInstructions: '',
+      },
+      status: 'draft',
+      activeAttemptId: null,
+      currentRevision: 0,
+      version: 1,
+      lastErrorCode: null,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    });
+    const activeStudio = studio(activeStudioId, 'Active external source', activeSource);
+    const orphanedStudio = studio(
+      orphanedStudioId,
+      'External source with failed filesystem purge',
+      orphanedSource,
+    );
+    invariant(
+      database.createLectureStudio(activeStudio) && database.createLectureStudio(orphanedStudio),
+      'lecture_external_trash_studio_insert_failed',
+    );
+    const trashedOrphan = database.setLectureStudioTrashed(
+      orphanedStudio.id,
+      orphanedStudio.version,
+      fixedTimestamp,
+      fixedTimestamp,
+    );
+    invariant(trashedOrphan !== null, 'lecture_external_trash_move_failed');
+
+    let purgeAttempts = 0;
+    const codexEvents = new EventEmitter();
+    const lifecycle = new LectureStudioService({
+      storage: database,
+      sources: database,
+      manuscripts: {
+        list: async () => {
+          throw new Error('unused_manuscript_list');
+        },
+        listCheckpointFiles: async () => {
+          throw new Error('unused_manuscript_file_list');
+        },
+        readCheckpointFile: async () => {
+          throw new Error('unused_manuscript_file_read');
+        },
+      },
+      externalSources: {
+        claim: (input) => externalSources.claim(input),
+        discard: (input) => externalSources.discard(input),
+        snapshots: (input) => externalSources.snapshots(input),
+        rollbackClaim: (input) => externalSources.rollbackClaim(input),
+        purgeStudio: async () => {
+          purgeAttempts += 1;
+          throw new Error('fixture_external_source_purge_failed');
+        },
+      },
+      workspace: {
+        snapshot: () => ({
+          schemaVersion: 1,
+          revision: 0,
+          projects: [],
+          tasks: [],
+          objectives: [],
+        }),
+      },
+      artifacts: {
+        assertRevisionDestination: () => undefined,
+        saveRevisionArtifacts: async () => {
+          throw new Error('unused_lecture_artifact_save');
+        },
+        confirmRevisionArtifacts: () => undefined,
+        rollbackRevisionArtifacts: () => undefined,
+        listPendingRevisionArtifacts: () => [],
+        confirmPendingRevisionArtifacts: () => undefined,
+        rollbackPendingRevisionArtifacts: () => undefined,
+        resolveLectureRevisionArtifact: async () => {
+          throw new Error('unused_lecture_artifact_resolve');
+        },
+      },
+      codex: {
+        on: codexEvents.on.bind(codexEvents),
+        startThread: async () => {
+          throw new Error('unused_lecture_codex_thread');
+        },
+        runTurn: async () => {
+          throw new Error('unused_lecture_codex_turn');
+        },
+        interruptTurn: async () => undefined,
+        releaseThread: async () => undefined,
+      },
+      pdfCompiler: {
+        compile: async () => {
+          throw new Error('unused_lecture_pdf_compile');
+        },
+      },
+      prepareDirectory: async () => {
+        throw new Error('unused_lecture_workspace_prepare');
+      },
+    });
+    const emptyCommand = {
+      idempotencyKey: randomUUID(),
+      confirmation: EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION,
+    } as const;
+    const receipt = await lifecycle.emptyTrash(emptyCommand);
+    invariant(
+      receipt.removedStudios.length === 1 &&
+        receipt.removedStudios[0]?.studioId === orphanedStudioId &&
+        purgeAttempts === 1,
+      'lecture_external_trash_receipt_or_purge_attempt_missing',
+    );
+    invariant(
+      database.getLectureStudio(orphanedStudioId) === null &&
+        database.getLectureStudio(activeStudioId)?.trashedAt === undefined,
+      'lecture_external_trash_sql_purge_did_not_commit',
+    );
+    const orphanedDirectory = join(managedRoot, 'studios', projectId, orphanedStudioId);
+    invariant(
+      existsSync(orphanedDirectory),
+      'lecture_external_trash_failed_purge_did_not_leave_recoverable_orphan',
+    );
+
+    // A newly trashed Studio can exist before the next launch. Retrying the earlier idempotency
+    // key must return its durable receipt without deleting this newer row.
+    const trashedKeepSource = await claimSource(trashedKeepStudioId, 'trashed-studio-to-preserve');
+    const trashedKeepStudio = studio(
+      trashedKeepStudioId,
+      'Trashed external source preserved at startup',
+      trashedKeepSource,
+    );
+    invariant(
+      database.createLectureStudio(trashedKeepStudio),
+      'lecture_external_trash_keep_studio_insert_failed',
+    );
+    invariant(
+      database.setLectureStudioTrashed(
+        trashedKeepStudio.id,
+        trashedKeepStudio.version,
+        fixedTimestamp,
+        fixedTimestamp,
+      ) !== null,
+      'lecture_external_trash_keep_studio_move_failed',
+    );
+    database.close();
+
+    const reopened = new LocalDatabase();
+    try {
+      reopened.open();
+      invariant(
+        JSON.stringify(reopened.emptyLectureStudioTrash(emptyCommand, fixedTimestamp)) ===
+          JSON.stringify(receipt),
+        'lecture_external_trash_receipt_was_not_durable',
+      );
+      invariant(
+        reopened.getLectureStudio(orphanedStudioId) === null &&
+          reopened.getLectureStudio(trashedKeepStudioId)?.trashedAt === fixedTimestamp,
+        'lecture_external_trash_rows_changed_during_idempotent_retry',
+      );
+      // Recreate the service and manifest authenticator to match the real app-start boundary,
+      // including reopening its SafeStorage-sealed manifest key from disk.
+      const restartedExternalSources = new LectureExternalSourceService({
+        rootDirectory: () => managedRoot,
+        chooseFiles: async () => [],
+        validateProject: async (candidateProjectId) => {
+          if (candidateProjectId !== projectId) throw new Error('project_not_found');
+        },
+        manifestAuthenticator: new LectureExternalSourceManifestAuthenticator({
+          rootDirectory: () => managedRoot,
+          encryption: safeStorage,
+        }),
+      });
+      const cleanup = await restartedExternalSources.cleanupOrphanedStudios(
+        reopened.listLectureStudios(true).map(({ id, outputProjectId }) => ({
+          projectId: outputProjectId,
+          studioId: id,
+        })),
+      );
+      invariant(
+        cleanup.removedStudioDirectories === 1 && cleanup.removedClaimDirectories === 0,
+        'lecture_external_startup_orphan_cleanup_was_not_exact',
+      );
+      invariant(
+        !existsSync(orphanedDirectory) &&
+          existsSync(join(managedRoot, 'studios', projectId, activeStudioId)) &&
+          existsSync(join(managedRoot, 'studios', projectId, trashedKeepStudioId)),
+        'lecture_external_startup_cleanup_removed_owned_or_kept_orphaned_sources',
+      );
+      await externalSources.discard({
+        projectId,
+        sourceSetId: trashedKeepSource.sourceSetId,
+      });
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    database.close();
+  }
 }
 
 function verifyLiteraturePersistence(fixedTimestamp: string) {
@@ -7015,6 +7373,7 @@ void app.whenReady().then(async () => {
     verifyExperimentEvaluationPersistence(fixedTimestamp);
     verifyExperimentPersistence(fixedTimestamp);
     verifyLectureStudioListDetailBoundary(fixedTimestamp);
+    await verifyLectureExternalSourceTrashPurgeRecovery(temporaryUserData, fixedTimestamp);
     verifyManuscriptWorkspacePersistence(temporaryUserData, fixedTimestamp);
     await verifyWorkspaceTrashPurge(temporaryUserData, fixedTimestamp);
 

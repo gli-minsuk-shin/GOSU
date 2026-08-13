@@ -546,6 +546,7 @@ function fixture(
     pendingArtifacts?: PendingLectureRevisionArtifacts[];
     manuscriptSnapshots?: ReadonlyMap<string, ManuscriptWorkspaceSnapshot>;
     manuscriptFiles?: ReadonlyMap<string, string>;
+    externalSourceContent?: string;
     pdfCompiler?: Pick<LectureDocumentCompiler, 'compile'>;
     artifactPlatform?: LectureArtifactPlatform;
     timeoutMs?: number;
@@ -602,6 +603,18 @@ function fixture(
     relatedPapers: readonly string[];
   }> = [];
   const artifactEvents: string[] = [];
+  const externalSourceCalls = {
+    claimed: [] as Array<{
+      projectId: string;
+      studioId: string;
+      sourceSetId: string;
+      selectedSourceIds: readonly string[];
+    }>,
+    discarded: [] as Array<{ projectId: string; sourceSetId: string }>,
+    snapshotted: [] as Array<{ projectId: string; studioId: string; sourceIds: readonly string[] }>,
+    purged: [] as Array<{ projectId: string; studioId: string }>,
+    rolledBack: [] as Array<{ projectId: string; studioId: string }>,
+  };
   const service = new LectureStudioService({
     storage,
     sources: {
@@ -671,6 +684,57 @@ function fixture(
           truncated: nextOffset < content.length,
           content: chunk,
         };
+      },
+    },
+    externalSources: {
+      claim: async (input) => {
+        externalSourceCalls.claimed.push(input);
+        return { schemaVersion: 1 as const, ...input, sources: [] };
+      },
+      discard: async (input) => {
+        externalSourceCalls.discarded.push(input);
+        return { discarded: true as const };
+      },
+      snapshots: async (input) => {
+        externalSourceCalls.snapshotted.push(input);
+        const content = options.externalSourceContent;
+        if (content === undefined) return [];
+        const sourceId = input.sourceIds[0]!;
+        return [
+          {
+            schemaVersion: 1 as const,
+            id: sourceId,
+            projectId: input.projectId,
+            studioId: input.studioId,
+            sourceLabel: 'F1',
+            displayName: 'external-evidence.md',
+            kind: 'markdown' as const,
+            mediaType: 'text/markdown' as const,
+            byteSize: Buffer.byteLength(content, 'utf8'),
+            sourceSha256: hash(content),
+            extraction: {
+              policyVersion: 1 as const,
+              characterBudget: 40_000,
+              unitLabel: 'part' as const,
+              unitCount: 1,
+              content,
+              contentSha256: hash(content),
+              extractedCharacters: content.length,
+              truncated: false,
+              textAvailable: true,
+              reconstructionNotice: 'Exact UTF-8 source text.',
+            },
+            importedAt: new Date().toISOString(),
+          },
+        ];
+      },
+      purgeStudio: async (input) => {
+        externalSourceCalls.purged.push(input);
+        return { purged: true as const };
+      },
+      rollbackClaim: async (input) => {
+        externalSourceCalls.rolledBack.push(input);
+        return { rolledBack: true as const, cleanupPending: false };
       },
     },
     workspace: { snapshot: () => workspace },
@@ -785,6 +849,7 @@ function fixture(
     metricTailQueries,
     manuscriptSnapshots,
     manuscriptFiles,
+    externalSourceCalls,
     pendingArtifacts: options.pendingArtifacts ?? [],
   };
 }
@@ -821,6 +886,70 @@ function pendingFromRevision(
 }
 
 describe('LectureStudioService', () => {
+  it('creates and generates from one frozen external file with F-label provenance', async () => {
+    const externalSourceId = randomUUID();
+    const sourceSetId = randomUUID();
+    const externalContent = '# External theorem\n\nThe estimator is consistent under assumption A.';
+    const { service, codex, projectA, externalSourceCalls } = fixture({
+      externalSourceContent: externalContent,
+    });
+    codex.response = latexResponse(['F1'], 1, 'Created from the frozen external source.');
+
+    const studio = await service.create({
+      title: 'External source lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [],
+        experiments: [],
+        manuscripts: [],
+        externalSources: { sourceSetId, sourceIds: [externalSourceId] },
+      },
+    });
+
+    expect(externalSourceCalls.claimed).toEqual([
+      {
+        projectId: projectA,
+        studioId: studio.id,
+        sourceSetId,
+        selectedSourceIds: [externalSourceId],
+      },
+    ]);
+    expect(externalSourceCalls.discarded).toEqual([{ projectId: projectA, sourceSetId }]);
+
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    expect(receipt.revision.sourceManifest.schemaVersion).toBe(3);
+    if (receipt.revision.sourceManifest.schemaVersion !== 3) {
+      throw new Error('Expected an external-source manifest');
+    }
+    expect(receipt.revision.sourceManifest.externalSources).toEqual([
+      expect.objectContaining({
+        sourceLabel: 'F1',
+        projectId: projectA,
+        studioId: studio.id,
+        id: externalSourceId,
+        sourceSha256: hash(externalContent),
+        extraction: expect.objectContaining({ content: externalContent, truncated: false }),
+      }),
+    ]);
+    expect(codex.prompt).toContain(JSON.stringify(externalContent));
+    expect(codex.prompt).toContain('"sourceLabel":"F1"');
+    if (receipt.revision.schemaVersion !== 2) {
+      throw new Error('Expected canonical LaTeX lecture documents');
+    }
+    expect(receipt.revision.lectureNotesLatex).toContain('[F1]');
+    expect(receipt.revision.slidesLatex).toContain('[F1]');
+    expect(externalSourceCalls.snapshotted).toHaveLength(2);
+  });
+
   it('moves a Studio to recoverable Trash, restores it, and purges only trashed history', async () => {
     const { service, storage, projectA, paperA } = fixture();
     const created = await service.create({

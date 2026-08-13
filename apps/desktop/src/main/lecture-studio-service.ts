@@ -67,6 +67,7 @@ import type {
   ExperimentMetricPoint,
 } from '../shared/experiment-workspace-contracts';
 import type { LiteratureRecord } from '../shared/literature-contracts';
+import type { LectureExternalSourceService } from './lecture-external-source-service';
 import type {
   ManuscriptCheckpointFileChunk,
   ManuscriptCheckpointFileList,
@@ -492,6 +493,10 @@ export class LectureStudioService {
       storage: LectureStudioStorage;
       sources: LectureStudioSourceStorage;
       manuscripts: LectureManuscriptSourcePort;
+      externalSources: Pick<
+        LectureExternalSourceService,
+        'claim' | 'discard' | 'snapshots' | 'purgeStudio' | 'rollbackClaim'
+      >;
       workspace: LectureStudioWorkspace;
       artifacts: LectureStudioArtifactWriter;
       codex: LectureStudioCodex;
@@ -699,12 +704,45 @@ export class LectureStudioService {
   async create(input: CreateLectureStudioInput): Promise<LectureStudio> {
     const command = CreateLectureStudioInputSchema.parse(input);
     this.throwIfProjectsLifecycleLocked([...command.sourceProjectIds, command.outputProjectId]);
-    await this.resolveSourceManifest(command.sourceProjectIds, command.sourceSelection);
-    this.throwIfProjectsLifecycleLocked([...command.sourceProjectIds, command.outputProjectId]);
+    const studioId = randomUUID();
+    const externalSelection = command.sourceSelection.externalSources;
+    let claimedExternalSources = false;
+    if (externalSelection) {
+      if (!command.sourceProjectIds.includes(command.outputProjectId)) {
+        throw new LectureStudioServiceError('lecture_source_conflict');
+      }
+      try {
+        await this.dependencies.externalSources.claim({
+          projectId: command.outputProjectId,
+          studioId,
+          sourceSetId: externalSelection.sourceSetId,
+          selectedSourceIds: externalSelection.sourceIds,
+        });
+        claimedExternalSources = true;
+      } catch {
+        throw new LectureStudioServiceError('lecture_source_conflict');
+      }
+    }
+    try {
+      await this.resolveSourceManifest(
+        command.sourceProjectIds,
+        command.sourceSelection,
+        studioId,
+        command.outputProjectId,
+      );
+      this.throwIfProjectsLifecycleLocked([...command.sourceProjectIds, command.outputProjectId]);
+    } catch (error) {
+      if (claimedExternalSources) {
+        await this.dependencies.externalSources
+          .rollbackClaim({ projectId: command.outputProjectId, studioId })
+          .catch(() => undefined);
+      }
+      throw error;
+    }
     const now = this.now().toISOString();
     const studio = LectureStudioSchema.parse({
       schemaVersion: 1,
-      id: randomUUID(),
+      id: studioId,
       ...command,
       status: 'draft',
       activeAttemptId: null,
@@ -718,9 +756,29 @@ export class LectureStudioService {
     try {
       created = await this.dependencies.storage.createLectureStudio(studio);
     } catch (error) {
+      if (claimedExternalSources) {
+        await this.dependencies.externalSources
+          .rollbackClaim({ projectId: command.outputProjectId, studioId })
+          .catch(() => undefined);
+      }
       throw this.normalizeStorageError(error);
     }
-    if (!created) throw new LectureStudioServiceError('lecture_persistence_failed');
+    if (!created) {
+      if (claimedExternalSources) {
+        await this.dependencies.externalSources
+          .rollbackClaim({ projectId: command.outputProjectId, studioId })
+          .catch(() => undefined);
+      }
+      throw new LectureStudioServiceError('lecture_persistence_failed');
+    }
+    if (externalSelection) {
+      await this.dependencies.externalSources
+        .discard({
+          projectId: command.outputProjectId,
+          sourceSetId: externalSelection.sourceSetId,
+        })
+        .catch(() => undefined);
+    }
     this.publish(studio);
     return studio;
   }
@@ -807,7 +865,13 @@ export class LectureStudioService {
       }
       throw new LectureStudioServiceError('lecture_persistence_failed');
     }
-    return EmptyLectureStudioTrashReceiptSchema.parse(receipt);
+    const parsed = EmptyLectureStudioTrashReceiptSchema.parse(receipt);
+    await Promise.allSettled(
+      parsed.removedStudios.map(({ outputProjectId, studioId }) =>
+        this.dependencies.externalSources.purgeStudio({ projectId: outputProjectId, studioId }),
+      ),
+    );
+    return parsed;
   }
 
   async send(input: SendLectureStudioMessageInput): Promise<LectureStudioTurnReceipt> {
@@ -1168,7 +1232,12 @@ export class LectureStudioService {
       Parameters<LectureStudioArtifactWriter['saveRevisionArtifacts']>[0] | null = null;
     try {
       const [sourceManifest, previousRevision, messages, cwd] = await Promise.all([
-        this.resolveSourceManifest(generating.sourceProjectIds, generating.sourceSelection),
+        this.resolveSourceManifest(
+          generating.sourceProjectIds,
+          generating.sourceSelection,
+          generating.id,
+          generating.outputProjectId,
+        ),
         this.dependencies.storage.getCurrentLectureStudioRevision(generating.id),
         this.dependencies.storage.listLectureStudioMessages(generating.id, 12),
         this.dependencies.prepareDirectory(generating.outputProjectId),
@@ -1495,15 +1564,18 @@ export class LectureStudioService {
         throw new Error('unsupported_citation');
       }
       const manuscriptSources =
-        sourceManifest.schemaVersion === 2 ? sourceManifest.manuscripts : [];
+        sourceManifest.schemaVersion === 1 ? [] : sourceManifest.manuscripts;
+      const externalSources =
+        sourceManifest.schemaVersion === 3 ? sourceManifest.externalSources : [];
       const allowedLabels = new Set([
         ...sourceManifest.literature.map((source) => source.sourceLabel),
         ...sourceManifest.experiments.map((source) => source.sourceLabel),
         ...manuscriptSources.map((source) => source.sourceLabel),
+        ...externalSources.map((source) => source.sourceLabel),
       ]);
       const usedLabels = new Set<string>();
       for (const latex of [notesBody, slidesBody]) {
-        const citations = [...latex.matchAll(/\[((?:P|E|M)\d+)\]/gu)].map((match) => match[1]!);
+        const citations = [...latex.matchAll(/\[((?:P|E|M|F)\d+)\]/gu)].map((match) => match[1]!);
         if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
           throw new Error('invalid_source_citation');
         }
@@ -1521,7 +1593,7 @@ export class LectureStudioService {
         ...slidesBody.matchAll(/\\begin\s*\{\s*frame\s*\}[\s\S]*?\\end\s*\{\s*frame\s*\}/gu),
       ].map((match) => match[0]);
       for (const slide of slides) {
-        const citations = [...slide.matchAll(/\[((?:P|E|M)\d+)\]/gu)].map((match) => match[1]!);
+        const citations = [...slide.matchAll(/\[((?:P|E|M|F)\d+)\]/gu)].map((match) => match[1]!);
         if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
           throw new Error('uncited_slide');
         }
@@ -1684,6 +1756,8 @@ export class LectureStudioService {
   private async resolveSourceManifest(
     projectIds: readonly string[],
     selection: LectureSourceSelection,
+    studioId?: string,
+    outputProjectId?: string,
   ): Promise<LectureSourceManifest> {
     const activeProjects = await this.requireActiveProjects(projectIds);
     const projects = new Map(activeProjects.map((project) => [project.id, project]));
@@ -1691,13 +1765,41 @@ export class LectureStudioService {
     const ideas = new Map<string, ExperimentIdea>();
     const metricsByIdea = new Map<string, ExperimentMetricPoint[]>();
     const manuscriptExtractBudgetByIdentity = new Map<string, number>();
+    const externalSelection = selection.externalSources;
+    if (
+      externalSelection &&
+      (!studioId || !outputProjectId || !projectIds.includes(outputProjectId))
+    ) {
+      throw new LectureStudioServiceError('lecture_source_conflict');
+    }
+    const externalSources = externalSelection
+      ? await this.dependencies.externalSources
+          .snapshots({
+            projectId: outputProjectId!,
+            studioId: studioId!,
+            sourceIds: externalSelection.sourceIds,
+          })
+          .catch(() => {
+            throw new LectureStudioServiceError('lecture_source_conflict');
+          })
+      : [];
+    const externalExtractJsonCharacters = externalSources.reduce(
+      (total, source) => total + JSON.stringify(source.extraction.content).length,
+      0,
+    );
+    const manuscriptTotalExtractBudget = Math.max(
+      0,
+      LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS - externalExtractJsonCharacters,
+    );
+    if (
+      selection.manuscripts.length > 0 &&
+      manuscriptTotalExtractBudget < selection.manuscripts.length * JSON.stringify('').length
+    ) {
+      throw new LectureStudioServiceError('lecture_context_too_large');
+    }
     if (selection.manuscripts.length > 0) {
-      const fairShare = Math.floor(
-        LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS / selection.manuscripts.length,
-      );
-      let remainder =
-        LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS -
-        fairShare * selection.manuscripts.length;
+      const fairShare = Math.floor(manuscriptTotalExtractBudget / selection.manuscripts.length);
+      let remainder = manuscriptTotalExtractBudget - fairShare * selection.manuscripts.length;
       for (const reference of selection.manuscripts) {
         manuscriptExtractBudgetByIdentity.set(
           `${reference.projectId}:${reference.manuscriptId}`,
@@ -1898,19 +2000,20 @@ export class LectureStudioService {
         ),
       0,
     );
-    if (manuscriptExtractJsonCharacters > LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS) {
+    if (manuscriptExtractJsonCharacters > manuscriptTotalExtractBudget) {
       throw new LectureStudioServiceError('lecture_context_too_large');
     }
     let manifest: LectureSourceManifest;
     try {
       manifest = LectureSourceManifestSchema.parse({
-        // Keep non-manuscript revisions byte-for-byte on v1 so historical manifest hashes remain
-        // reproducible. Only revisions that ingest captured source opt into v2.
-        schemaVersion: manuscriptSources.length > 0 ? 2 : 1,
+        // Keep historical non-file revisions on v1 and captured-manuscript-only revisions on v2.
+        // External frozen files opt into v3 without changing either earlier manifest hash format.
+        schemaVersion: externalSources.length > 0 ? 3 : manuscriptSources.length > 0 ? 2 : 1,
         selectedProjectIds: projectIds,
         literature,
         experiments,
         ...(manuscriptSources.length > 0 ? { manuscripts: manuscriptSources } : {}),
+        ...(externalSources.length > 0 ? { manuscripts: manuscriptSources, externalSources } : {}),
       });
     } catch {
       throw new LectureStudioServiceError('lecture_source_conflict');

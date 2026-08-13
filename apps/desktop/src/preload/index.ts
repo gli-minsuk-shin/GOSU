@@ -85,6 +85,16 @@ import type {
 } from '../shared/manuscript-workspace-contracts';
 import { unwrapManuscriptWorkspaceIpcResult } from '../shared/manuscript-workspace-ipc-result';
 import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
+import type {
+  DiscardLectureExternalSourceSetInput,
+  RemoveStagedLectureExternalSourceInput,
+  StageLectureExternalSourcesInput,
+  StagedLectureExternalSourceSetView,
+} from '../shared/lecture-external-source-contracts';
+import type {
+  ImportLectureOverleafSourceInput,
+  LectureOverleafSourceReceipt,
+} from '../shared/lecture-overleaf-source-contracts';
 import {
   LectureStudioEventSchema,
   type CancelLectureStudioInput,
@@ -560,6 +570,26 @@ const api = {
       invokeLectureStudio<LectureStudioDetail>(LECTURE_STUDIO_IPC_CHANNELS.detail, input),
     candidates: (input: ListLectureCandidatesInput) =>
       invokeLectureStudio<LectureSourceCandidates>(LECTURE_STUDIO_IPC_CHANNELS.candidates, input),
+    stageExternalSources: (input: StageLectureExternalSourcesInput) =>
+      invokeLectureStudio<StagedLectureExternalSourceSetView>(
+        LECTURE_STUDIO_IPC_CHANNELS.stageExternalSources,
+        input,
+      ),
+    removeStagedExternalSource: (input: RemoveStagedLectureExternalSourceInput) =>
+      invokeLectureStudio<StagedLectureExternalSourceSetView>(
+        LECTURE_STUDIO_IPC_CHANNELS.removeStagedExternalSource,
+        input,
+      ),
+    discardExternalSourceSet: (input: DiscardLectureExternalSourceSetInput) =>
+      invokeLectureStudio<{ discarded: true }>(
+        LECTURE_STUDIO_IPC_CHANNELS.discardExternalSourceSet,
+        input,
+      ),
+    importOverleaf: (input: ImportLectureOverleafSourceInput) =>
+      invokeLectureStudio<LectureOverleafSourceReceipt>(
+        LECTURE_STUDIO_IPC_CHANNELS.importOverleaf,
+        input,
+      ),
     create: (input: CreateLectureStudioInput) =>
       invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.create, input),
     generate: (input: GenerateLectureStudioInput) =>

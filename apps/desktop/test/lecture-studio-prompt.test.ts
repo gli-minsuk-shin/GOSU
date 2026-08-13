@@ -231,7 +231,7 @@ describe('Lecture Studio prompt', () => {
       'Every manuscript claim must cite the exact supplied source label such as [M1]',
     );
     expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
-      'Every content frame must contain at least one exact supplied [P#], [E#], or [M#]',
+      'Every content frame must contain at least one exact supplied [P#], [E#], [M#], or [F#]',
     );
     expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
       'When contentComplete is false, do not claim the entire file or manuscript was supplied',
