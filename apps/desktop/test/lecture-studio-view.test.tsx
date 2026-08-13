@@ -393,7 +393,8 @@ describe('LectureStudioView', () => {
       new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
       'utf8',
     );
-    expect(source).toContain('Move to Lecture Trash');
+    expect(source).toContain('Move to Trash');
+    expect(source).not.toContain('Move to Lecture Trash');
     expect(source).toContain(
       'Saved Research Notes and exported LaTeX/PDF files will stay on disk.',
     );

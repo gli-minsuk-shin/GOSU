@@ -668,7 +668,7 @@ export function LectureStudioView({
       studio.status === 'generating' ||
       busyStudioIds.has(studio.id) ||
       !window.confirm(
-        `Move “${studio.title}” to Lecture Trash?\n\nThe Studio session and its chat history can be restored from Settings. Saved Research Notes and exported LaTeX/PDF files will stay on disk.`,
+        `Move “${studio.title}” to Trash?\n\nThe Studio session and its chat history can be restored from Settings. Saved Research Notes and exported LaTeX/PDF files will stay on disk.`,
       )
     ) {
       return;
@@ -977,7 +977,7 @@ function StudioRail({
                 type="button"
                 className="lecture-studio-trash-button"
                 aria-label={`Move ${studio.title} to Trash`}
-                title="Move to Lecture Trash"
+                title="Move to Trash"
                 disabled={studio.status === 'generating' || busyStudioIds.has(studio.id)}
                 onClick={() => onTrash(studio)}
               >

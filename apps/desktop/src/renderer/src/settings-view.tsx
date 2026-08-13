@@ -12,6 +12,7 @@ import type {
   ProjectVersionCommand,
   RenameProjectInput,
   SetProjectArchivedInput,
+  SetTaskArchivedInput,
   WorkspaceSnapshot,
 } from '../../shared/workspace-contracts';
 import type { VaultSelection } from '../../shared/vault-contracts';
@@ -29,7 +30,7 @@ import { AgentSettingsSection } from './agent-settings-section';
 import { BoardSettingsForm } from './board-settings-form';
 import type { VaultRuntimeState } from './notes-view';
 import { ProjectSettingsSection } from './project-settings-section';
-import { LectureTrashSettingsSection } from './lecture-trash-settings-section';
+import { TrashSettingsSection } from './trash-settings-section';
 import { SSH_RESOURCE_REFRESH_INTERVAL_OPTIONS } from './ssh-resource-refresh-policy';
 import {
   type AppearancePreference,
@@ -60,8 +61,7 @@ const TEXT_SIZE_CHOICES: ReadonlyArray<{
   { id: 'extra-large', label: 'Extra large', description: '18 px base', sample: 'Aa' },
 ];
 
-export type SettingsCategory =
-  'appearance' | 'board' | 'projects' | 'lecture-trash' | 'servers' | 'agent';
+export type SettingsCategory = 'appearance' | 'board' | 'projects' | 'trash' | 'servers' | 'agent';
 
 export function SettingsView({
   preferences,
@@ -75,8 +75,11 @@ export function SettingsView({
   onRestoreProject,
   onEmptyProjectTrash,
   lectureTrashSnapshot,
+  lectureTrashState,
+  onRetryLectureTrash,
   onRestoreLectureStudio,
   onEmptyLectureStudioTrash,
+  onRestoreTask,
   initialCategory = 'appearance',
   category,
   onCategoryChange,
@@ -101,10 +104,13 @@ export function SettingsView({
   onRestoreProject: (input: ProjectVersionCommand) => Promise<boolean>;
   onEmptyProjectTrash: (input: EmptyProjectTrashInput) => Promise<EmptyProjectTrashReceipt | null>;
   lectureTrashSnapshot: LectureStudioListSnapshot | null;
+  lectureTrashState: 'idle' | 'loading' | 'ready' | 'error';
+  onRetryLectureTrash: () => void;
   onRestoreLectureStudio: (input: LectureStudioVersionCommand) => Promise<boolean>;
   onEmptyLectureStudioTrash: (
     input: EmptyLectureStudioTrashInput,
   ) => Promise<EmptyLectureStudioTrashReceipt | null>;
+  onRestoreTask: (input: SetTaskArchivedInput) => Promise<boolean>;
   initialCategory?: SettingsCategory;
   category?: SettingsCategory;
   onCategoryChange?: (category: SettingsCategory) => void;
@@ -156,7 +162,17 @@ export function SettingsView({
         >
           <i aria-hidden="true">◇</i>
           <strong>Projects</strong>
-          <span>Rename, archive, Trash, restore</span>
+          <span>Rename, archive, move to Trash</span>
+        </button>
+        <button
+          type="button"
+          className={activeCategory === 'trash' ? 'active' : ''}
+          aria-current={activeCategory === 'trash' ? 'page' : undefined}
+          onClick={() => selectCategory('trash')}
+        >
+          <i aria-hidden="true">♲</i>
+          <strong>Trash</strong>
+          <span>Restore or permanently remove</span>
         </button>
         <button
           type="button"
@@ -177,16 +193,6 @@ export function SettingsView({
           <i aria-hidden="true">✦</i>
           <strong>AI Agent</strong>
           <span>Native Codex mode and project prompt</span>
-        </button>
-        <button
-          type="button"
-          className={activeCategory === 'lecture-trash' ? 'active' : ''}
-          aria-current={activeCategory === 'lecture-trash' ? 'page' : undefined}
-          onClick={() => selectCategory('lecture-trash')}
-        >
-          <i aria-hidden="true">♲</i>
-          <strong>Lecture Trash</strong>
-          <span>Restore or permanently remove</span>
         </button>
       </nav>
 
@@ -292,15 +298,19 @@ export function SettingsView({
             onRenameProject={onRenameProject}
             onSetProjectArchived={onSetProjectArchived}
             onTrashProject={onTrashProject}
+          />
+        ) : activeCategory === 'trash' ? (
+          <TrashSettingsSection
+            workspaceSnapshot={workspaceSnapshot}
+            lectureSnapshot={lectureTrashSnapshot}
+            lectureState={lectureTrashState}
+            onRetryLectureTrash={onRetryLectureTrash}
+            busy={busyAction !== null}
             onRestoreProject={onRestoreProject}
             onEmptyProjectTrash={onEmptyProjectTrash}
-          />
-        ) : activeCategory === 'lecture-trash' ? (
-          <LectureTrashSettingsSection
-            snapshot={lectureTrashSnapshot}
-            busy={busyAction !== null}
-            onRestore={onRestoreLectureStudio}
-            onEmptyTrash={onEmptyLectureStudioTrash}
+            onRestoreLectureStudio={onRestoreLectureStudio}
+            onEmptyLectureStudioTrash={onEmptyLectureStudioTrash}
+            onRestoreTask={onRestoreTask}
           />
         ) : activeCategory === 'servers' ? (
           <article className="settings-card server-monitoring-settings-card">

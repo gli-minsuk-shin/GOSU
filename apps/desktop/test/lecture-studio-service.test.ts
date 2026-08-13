@@ -405,7 +405,16 @@ class MemoryStorage implements LectureStudioStorage {
     const prior = this.trashReceipts.get(input.idempotencyKey);
     if (prior) return structuredClone(prior);
     const doomed = this.studios.filter((studio) => studio.trashedAt !== undefined);
-    if (doomed.length === 0) return null;
+    const actualTargets = doomed
+      .map((studio) => ({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        trashedAt: studio.trashedAt!,
+      }))
+      .sort((left, right) => left.studioId.localeCompare(right.studioId));
+    if (JSON.stringify(actualTargets) !== JSON.stringify(input.targets)) {
+      throw new LectureStudioStorageError('trash_changed');
+    }
     const receipt: EmptyLectureStudioTrashReceipt = {
       schemaVersion: 1,
       idempotencyKey: input.idempotencyKey,
@@ -995,10 +1004,17 @@ describe('LectureStudioService', () => {
       studioId: restored.id,
       expectedVersion: restored.version,
     });
-    const emptyCommand = {
+    const emptyCommand: EmptyLectureStudioTrashInput = {
       idempotencyKey: randomUUID(),
       confirmation: 'EMPTY LECTURE TRASH',
-    } as const;
+      targets: [
+        {
+          studioId: trashedAgain.id,
+          expectedVersion: trashedAgain.version,
+          trashedAt: trashedAgain.trashedAt!,
+        },
+      ],
+    };
     const receipt = await service.emptyTrash(emptyCommand);
     expect(receipt.removedStudios).toEqual([
       expect.objectContaining({ studioId: trashedAgain.id, title: 'Recoverable lecture' }),
@@ -1008,6 +1024,108 @@ describe('LectureStudioService', () => {
     await expect(
       service.restore({ studioId: trashedAgain.id, expectedVersion: trashedAgain.version }),
     ).rejects.toEqual(new LectureStudioServiceError('lecture_studio_not_found'));
+  });
+
+  it('fails closed when Lecture Studio Trash changes after the displayed target fence', async () => {
+    const { service, storage, projectA, paperA } = fixture();
+    const create = (title: string) =>
+      service.create({
+        title,
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection: {
+          literature: [{ projectId: projectA, recordId: paperA.id }],
+          experiments: [],
+        },
+      });
+    const first = await create('First displayed Studio');
+    const firstTrashed = await service.trash({
+      studioId: first.id,
+      expectedVersion: first.version,
+    });
+    const staleCommand: EmptyLectureStudioTrashInput = {
+      idempotencyKey: randomUUID(),
+      confirmation: 'EMPTY LECTURE TRASH',
+      targets: [
+        {
+          studioId: firstTrashed.id,
+          expectedVersion: firstTrashed.version,
+          trashedAt: firstTrashed.trashedAt!,
+        },
+      ],
+    };
+    const second = await create('Added after confirmation view');
+    const secondTrashed = await service.trash({
+      studioId: second.id,
+      expectedVersion: second.version,
+    });
+
+    await expect(service.emptyTrash(staleCommand)).rejects.toEqual(
+      new LectureStudioServiceError('lecture_trash_changed'),
+    );
+    expect(storage.studios.map(({ id }) => id).sort()).toEqual([first.id, second.id].sort());
+    expect(storage.trashReceipts.has(staleCommand.idempotencyKey)).toBe(false);
+
+    const exactTargets = [firstTrashed, secondTrashed]
+      .map((studio) => ({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        trashedAt: studio.trashedAt!,
+      }))
+      .sort((left, right) => left.studioId.localeCompare(right.studioId));
+    await expect(
+      service.emptyTrash({
+        ...staleCommand,
+        idempotencyKey: randomUUID(),
+        targets: exactTargets.map((target, index) =>
+          index === 0 ? { ...target, expectedVersion: target.expectedVersion + 1 } : target,
+        ),
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_trash_changed'));
+    expect(storage.studios).toHaveLength(2);
+
+    const secondRestored = await service.restore({
+      studioId: secondTrashed.id,
+      expectedVersion: secondTrashed.version,
+    });
+    await expect(
+      service.emptyTrash({ ...staleCommand, idempotencyKey: randomUUID(), targets: exactTargets }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_trash_changed'));
+    expect(storage.studios).toHaveLength(2);
+    const secondTrashedAgain = await service.trash({
+      studioId: secondRestored.id,
+      expectedVersion: secondRestored.version,
+    });
+    const currentTargets = [firstTrashed, secondTrashedAgain]
+      .map((studio) => ({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        trashedAt: studio.trashedAt!,
+      }))
+      .sort((left, right) => left.studioId.localeCompare(right.studioId));
+    await expect(
+      service.emptyTrash({
+        ...staleCommand,
+        idempotencyKey: randomUUID(),
+        targets: currentTargets.map((target, index) =>
+          index === 0 ? { ...target, trashedAt: '2026-08-14T00:00:00.000Z' } : target,
+        ),
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_trash_changed'));
+    expect(storage.studios).toHaveLength(2);
+
+    const exactCommand: EmptyLectureStudioTrashInput = {
+      ...staleCommand,
+      idempotencyKey: randomUUID(),
+      targets: currentTargets,
+    };
+    const receipt = await service.emptyTrash(exactCommand);
+    expect(receipt.removedStudios.map(({ studioId }) => studioId).sort()).toEqual(
+      [first.id, second.id].sort(),
+    );
+    await expect(service.emptyTrash(exactCommand)).resolves.toEqual(receipt);
   });
 
   afterEach(() => {

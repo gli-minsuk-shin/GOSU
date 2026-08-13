@@ -9,6 +9,7 @@ import {
   LectureSourceManifestSchema,
   LectureSourceSelectionSchema,
   CreateLectureStudioInputSchema,
+  EmptyLectureStudioTrashInputSchema,
   ExportLectureStudioArtifactInputSchema,
   LectureStudioDetailSchema,
   LectureStudioListSnapshotSchema,
@@ -17,6 +18,7 @@ import {
   ListLectureCandidatesInputSchema,
   OpenLectureStudioArtifactInputSchema,
   RevealLectureStudioArtifactInputSchema,
+  buildLectureStudioTrashTargets,
 } from '../src/shared/lecture-studio-contracts';
 
 const timestamp = '2026-08-06T00:00:00.000Z';
@@ -99,6 +101,70 @@ describe('Lecture Studio list and detail contracts', () => {
         revisions: [],
       }),
     ).toThrow();
+  });
+});
+
+describe('Lecture Studio Trash purge contracts', () => {
+  it('builds one canonical target fence from the exact displayed trashed summaries', () => {
+    const first = { ...studioFixture(), id: randomUUID(), version: 4, trashedAt: timestamp };
+    const second = { ...studioFixture(), id: randomUUID(), version: 2, trashedAt: timestamp };
+    const active = { ...studioFixture(), id: randomUUID(), version: 1 };
+    const targets = buildLectureStudioTrashTargets([second, active, first]);
+
+    expect(targets).toEqual(
+      [first, second]
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .map((studio) => ({
+          studioId: studio.id,
+          expectedVersion: studio.version,
+          trashedAt: studio.trashedAt,
+        })),
+    );
+    expect(
+      EmptyLectureStudioTrashInputSchema.parse({
+        idempotencyKey: randomUUID(),
+        confirmation: 'EMPTY LECTURE TRASH',
+        targets,
+      }).targets,
+    ).toEqual(targets);
+  });
+
+  it('rejects omitted, duplicate, unsorted, unbounded, or extended purge targets', () => {
+    const left = randomUUID();
+    const right = randomUUID();
+    const [first, second] = [left, right].sort();
+    const target = { studioId: first!, expectedVersion: 1, trashedAt: timestamp };
+    const base = {
+      idempotencyKey: randomUUID(),
+      confirmation: 'EMPTY LECTURE TRASH',
+    } as const;
+
+    expect(EmptyLectureStudioTrashInputSchema.safeParse(base).success).toBe(false);
+    expect(
+      EmptyLectureStudioTrashInputSchema.safeParse({ ...base, targets: [target, target] }).success,
+    ).toBe(false);
+    expect(
+      EmptyLectureStudioTrashInputSchema.safeParse({
+        ...base,
+        targets: [{ studioId: second!, expectedVersion: 1, trashedAt: timestamp }, target],
+      }).success,
+    ).toBe(false);
+    expect(
+      EmptyLectureStudioTrashInputSchema.safeParse({
+        ...base,
+        targets: [{ ...target, localPath: '/tmp/unsafe' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      EmptyLectureStudioTrashInputSchema.safeParse({
+        ...base,
+        targets: Array.from({ length: 1_001 }, (_, index) => ({
+          studioId: `${index.toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`,
+          expectedVersion: 1,
+          trashedAt: timestamp,
+        })),
+      }).success,
+    ).toBe(false);
   });
 });
 

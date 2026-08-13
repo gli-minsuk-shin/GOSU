@@ -117,13 +117,15 @@ export function describeError(error: unknown) {
     project_not_archived: 'This project is already active.',
     project_trashed: 'This project is in Trash. Restore it before making changes.',
     project_not_trashed: 'This project is already active.',
-    trash_empty: 'Project Trash is already empty.',
+    trash_empty: 'No projects remain in Trash.',
     trash_busy:
-      'Trash was not emptied because Project Chat, SSH, or lecture work is still running. Stop or finish that work and try again.',
+      'Trash could not be emptied because Project Chat, SSH, active lecture work, or a retained Lecture Studio still depends on a project. Stop the work, permanently remove related Lecture Studios, or restore the project, then try again.',
     lecture_studio_trashed:
       'This Lecture Studio is in Trash. Restore it in Settings before generating or editing.',
     lecture_studio_not_trashed: 'This Lecture Studio is already active.',
-    lecture_trash_empty: 'Lecture Trash is already empty.',
+    lecture_trash_empty: 'No Lecture Studios remain in Trash.',
+    lecture_trash_changed:
+      'Trash changed after it was displayed. Nothing was removed. Review the refreshed items and confirm again.',
     task_not_found: 'This task no longer exists.',
     cross_project_access_denied: 'A task cannot be changed from another project.',
     objective_not_found: 'Save an objective before using revision controls.',

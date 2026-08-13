@@ -37,6 +37,7 @@ import {
   LECTURE_STUDIO_MAX_STUDIOS,
   LECTURE_STUDIO_MAX_TRASHED_STUDIOS,
   type LectureStudio,
+  type EmptyLectureStudioTrashInput,
   type LectureStudioMessage,
   type LectureStudioRevision,
 } from '../../src/shared/lecture-studio-contracts';
@@ -3040,6 +3041,15 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     {
       idempotencyKey: randomUUID(),
       confirmation: EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION,
+      targets: persisted
+        .listLectureStudios(true)
+        .filter((summary) => summary.trashedAt !== undefined)
+        .map((summary) => ({
+          studioId: summary.id,
+          expectedVersion: summary.version,
+          trashedAt: summary.trashedAt!,
+        }))
+        .sort((left, right) => left.studioId.localeCompare(right.studioId)),
     },
     fixedTimestamp,
   );
@@ -3105,10 +3115,116 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     fixedTimestamp,
   );
   invariant(trashedAgain !== null, 'lecture_trash_second_move_failed');
-  const emptyCommand = {
+  const emptyCommand: EmptyLectureStudioTrashInput = {
     idempotencyKey: randomUUID(),
     confirmation: EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION,
-  } as const;
+    targets: [
+      {
+        studioId: trashedAgain.id,
+        expectedVersion: trashedAgain.version,
+        trashedAt: trashedAgain.trashedAt!,
+      },
+    ],
+  };
+
+  const racedStudioId = randomUUID();
+  const racedProjectId = randomUUID();
+  const racedStudio: LectureStudio = {
+    ...studio,
+    id: racedStudioId,
+    title: 'Studio added after Trash confirmation',
+    outputProjectId: racedProjectId,
+    sourceProjectIds: [racedProjectId],
+    sourceSelection: {
+      literature: [{ projectId: racedProjectId, recordId: randomUUID() }],
+      experiments: [],
+      manuscripts: [],
+      externalSources: null,
+    },
+    currentRevision: 0,
+    version: 1,
+  };
+  invariant(persisted.createLectureStudio(racedStudio), 'lecture_trash_race_insert_failed');
+  const racedTrashed = persisted.setLectureStudioTrashed(
+    racedStudio.id,
+    racedStudio.version,
+    fixedTimestamp,
+    fixedTimestamp,
+  );
+  invariant(racedTrashed !== null, 'lecture_trash_race_move_failed');
+  let exactSetRejected = false;
+  try {
+    persisted.emptyLectureStudioTrash(emptyCommand, fixedTimestamp);
+  } catch (error) {
+    exactSetRejected = error instanceof LectureStudioStorageError && error.code === 'trash_changed';
+  }
+  invariant(exactSetRejected, 'lecture_trash_added_target_race_was_not_rejected');
+  invariant(
+    persisted.getLectureStudio(studio.id) !== null &&
+      persisted.getLectureStudio(racedStudio.id) !== null,
+    'lecture_trash_added_target_race_deleted_rows',
+  );
+  let exactVersionRejected = false;
+  try {
+    persisted.emptyLectureStudioTrash(
+      {
+        ...emptyCommand,
+        idempotencyKey: randomUUID(),
+        targets: [
+          { ...emptyCommand.targets[0]!, expectedVersion: trashedAgain.version + 1 },
+          {
+            studioId: racedTrashed.id,
+            expectedVersion: racedTrashed.version,
+            trashedAt: racedTrashed.trashedAt!,
+          },
+        ].sort((left, right) => left.studioId.localeCompare(right.studioId)),
+      },
+      fixedTimestamp,
+    );
+  } catch (error) {
+    exactVersionRejected =
+      error instanceof LectureStudioStorageError && error.code === 'trash_changed';
+  }
+  invariant(exactVersionRejected, 'lecture_trash_version_race_was_not_rejected');
+  invariant(
+    persisted.getLectureStudio(studio.id) !== null &&
+      persisted.getLectureStudio(racedStudio.id) !== null,
+    'lecture_trash_version_race_deleted_rows',
+  );
+  const racedRestored = persisted.setLectureStudioTrashed(
+    racedTrashed.id,
+    racedTrashed.version,
+    null,
+    fixedTimestamp,
+  );
+  invariant(racedRestored !== null, 'lecture_trash_race_restore_failed');
+  let exactRemovalRejected = false;
+  try {
+    persisted.emptyLectureStudioTrash(
+      {
+        ...emptyCommand,
+        idempotencyKey: randomUUID(),
+        targets: [
+          emptyCommand.targets[0]!,
+          {
+            studioId: racedTrashed.id,
+            expectedVersion: racedTrashed.version,
+            trashedAt: racedTrashed.trashedAt!,
+          },
+        ].sort((left, right) => left.studioId.localeCompare(right.studioId)),
+      },
+      fixedTimestamp,
+    );
+  } catch (error) {
+    exactRemovalRejected =
+      error instanceof LectureStudioStorageError && error.code === 'trash_changed';
+  }
+  invariant(exactRemovalRejected, 'lecture_trash_removed_target_race_was_not_rejected');
+  invariant(
+    persisted.getLectureStudio(studio.id) !== null &&
+      persisted.getLectureStudio(racedStudio.id)?.trashedAt === undefined,
+    'lecture_trash_removed_target_race_deleted_rows',
+  );
   const trashReceipt = persisted.emptyLectureStudioTrash(emptyCommand, fixedTimestamp);
   invariant(
     trashReceipt?.removedStudios.some((removed) => removed.studioId === studio.id) === true &&
@@ -3121,7 +3237,9 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     'lecture_trash_purge_was_not_idempotent',
   );
   invariant(
-    persisted.getLectureStudio(studio.id) === null && persisted.listLectureStudios().length === 1,
+    persisted.getLectureStudio(studio.id) === null &&
+      persisted.getLectureStudio(racedStudio.id)?.trashedAt === undefined &&
+      persisted.listLectureStudios().length === 2,
     'lecture_trash_purge_removed_active_studios_or_kept_purged_studio',
   );
   persisted.close();
@@ -3293,10 +3411,17 @@ async function verifyLectureExternalSourceTrashPurgeRecovery(
         throw new Error('unused_lecture_workspace_prepare');
       },
     });
-    const emptyCommand = {
+    const emptyCommand: EmptyLectureStudioTrashInput = {
       idempotencyKey: randomUUID(),
       confirmation: EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION,
-    } as const;
+      targets: [
+        {
+          studioId: orphanedStudioId,
+          expectedVersion: trashedOrphan.version,
+          trashedAt: trashedOrphan.trashedAt!,
+        },
+      ],
+    };
     const receipt = await lifecycle.emptyTrash(emptyCommand);
     invariant(
       receipt.removedStudios.length === 1 &&

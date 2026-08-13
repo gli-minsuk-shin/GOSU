@@ -62,4 +62,10 @@ describe('describeError', () => {
       'secret',
     );
   });
+
+  it('explains a stale Lecture Trash confirmation as a safe no-op', () => {
+    expect(describeError(new Error('lecture_trash_changed'))).toBe(
+      'Trash changed after it was displayed. Nothing was removed. Review the refreshed items and confirm again.',
+    );
+  });
 });

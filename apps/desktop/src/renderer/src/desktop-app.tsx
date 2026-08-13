@@ -489,6 +489,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   );
   const [lectureTrashSnapshot, setLectureTrashSnapshot] =
     useState<LectureStudioListSnapshot | null>(null);
+  const [lectureTrashState, setLectureTrashState] = useState<
+    'idle' | 'loading' | 'ready' | 'error'
+  >('idle');
   const [sidebarResizing, setSidebarResizing] = useState(false);
 
   const [models, setModels] = useState<CodexModel[]>([]);
@@ -1663,10 +1666,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   };
 
   const loadLectureTrash = useCallback(async () => {
+    setLectureTrashState('loading');
     try {
       setLectureTrashSnapshot(await window.gosu.lectureStudio.list({ includeTrashed: true }));
+      setLectureTrashState('ready');
     } catch {
       setLectureTrashSnapshot(null);
+      setLectureTrashState('error');
     }
   }, []);
 
@@ -1709,7 +1715,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   };
 
   useEffect(() => {
-    if (activeSurface === 'settings' && settingsCategory === 'lecture-trash') {
+    if (activeSurface === 'settings' && settingsCategory === 'trash') {
       void loadLectureTrash();
     }
   }, [activeSurface, loadLectureTrash, settingsCategory]);
@@ -2624,8 +2630,17 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             }
             onEmptyProjectTrash={emptyProjectTrash}
             lectureTrashSnapshot={lectureTrashSnapshot}
+            lectureTrashState={lectureTrashState}
+            onRetryLectureTrash={() => void loadLectureTrash()}
             onRestoreLectureStudio={restoreLectureStudio}
             onEmptyLectureStudioTrash={emptyLectureStudioTrash}
+            onRestoreTask={(input) =>
+              runWorkspaceAction(
+                `task:restore:${input.taskId}`,
+                () => window.gosu.workspace.setTaskArchived(input),
+                'Restored the task to its Board.',
+              )
+            }
             category={settingsCategory}
             onCategoryChange={setSettingsCategory}
             agentProject={activeProject}

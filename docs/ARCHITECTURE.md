@@ -1101,12 +1101,28 @@ Lecture Studio 삭제는 hard delete가 아니라 Studio-owned `trashedAt`을 �
 Studio는 일반 list·detail·generate·assistant edit에서 빠지지만 같은 Studio ID, source selection, chat,
 frozen manifest, immutable revision과 artifact provenance는 SQLCipher에 그대로 남는다. active generation은
 Trash와 경합할 수 없고 optimistic Studio version fence가 stale action을 거부한다. Settings의
-`Lecture Trash`는 같은 identity로 restore하거나, 고정 문구 `EMPTY LECTURE TRASH` 입력과 native final
-confirmation을 모두 거친 Studio만 영구 purge한다. permanent purge receipt에는 Studio/output-project
+통합 `Trash` 화면의 Lecture Studios group은 같은 identity로 restore하거나, 고정 문구
+`EMPTY LECTURE TRASH` 입력과 native final confirmation을 모두 거친 Studio만 영구 purge한다.
+Renderer는 확인 화면에 표시된 모든 trashed Studio의 `studioId`, optimistic `version`, `trashedAt`을 정렬된
+exact target fence로 함께 보낸다. Main의 immediate SQLCipher transaction은 기존 idempotency receipt를 먼저
+조회한 뒤 현재 Trash 전체 집합과 target의 identity/version/timestamp가 정확히 같은지 검사한다. 확인 뒤
+Studio가 추가·복원·변경되었으면 `lecture_trash_changed`로 아무 row도 지우지 않고 닫히며, exact predicate를
+통과한 row만 삭제한다. 이미 commit된 idempotency key 재전송은 이후 Trash 상태와 무관하게 원 receipt를
+반환한다. Permanent purge receipt에는 Studio/output-project
 identity, Trash 시각과 제거된 message/revision count를 append-only로 기록한다. purge는 Lecture-owned SQL
 row만 cascade하며 Research Notes, exported TeX/PDF, manuscript/Overleaf checkpoint, Literature와 Experiment는
 자동 삭제하지 않는다. 다만 해당 Studio만을 위해 Main이 관리한 local external-source copy는 SQL purge receipt가
 확정된 뒤 함께 제거한다. 원래 사용자가 선택한 source file은 수정하거나 삭제하지 않는다.
+
+Settings는 Project와 Lecture lifecycle마다 별도 휴지통 menu를 만들지 않고 workspace-level `Trash` 하나에서
+trashed Project, trashed Lecture Studio, deleted Board task를 type별 group으로 함께 보여준다. 각 항목은 그
+화면에서 복원한다. Project와 Lecture Studio의 영구 제거는 서로 다른 lifecycle lock·transaction·typed
+confirmation·idempotent receipt를 가지므로 같은 화면 안에서도 독립 command로 유지하며 Renderer가 순차
+호출하는 비원자적 `Empty All`을 제공하지 않는다. Board task는 현재 독립 permanent purge contract가 없어
+복원만 제공한다. trashed Project 소속 task는 Project row의 보존 count에 포함하고 task group에 중복 표시하지
+않으며, Archived parent의 task는 parent를 Active로 복원하기 전까지 복원을 막는다. Project permanent purge는
+대상 Project를 참조하는 active·trashed Lecture Studio가 하나라도 있으면 fail closed하므로 UI가 먼저 관련
+Studio를 영구 제거하거나 Project를 복원하도록 안내한다.
 
 활성 Studio 한도 100개와 별도로 recoverable Trash는 최대 1,000개까지 저장한다. 새 Studio insert trigger와
 active→Trash transition trigger가 각각 두 경계를 검사하므로 휴지통이 활성 작업 공간을 막지 않으면서도
@@ -1859,7 +1875,8 @@ flowchart LR
   project-scoped gate가 starting·active turn과 chat mutation 중 `project.trash`를 원자적으로 거절하며,
   내부 호출이 이 gate를 우회한 terminal 경합에서도 assistant text만 보존하고 action proposal은
   폐기한다.
-- Settings의 `Empty Trash`는 Trash에 이미 들어간 project만 영구적으로 GOSU workspace에서 제거하는
+- Settings 통합 `Trash` 화면의 project group에서 실행하는 `Empty Trash`는 Trash에 이미 들어간 project만
+  영구적으로 GOSU workspace에서 제거하는
   별도 `project.trash.empty` command다. 고정 문구 `EMPTY TRASH` 입력과 최종 확인을 모두 요구하고,
   expected workspace revision과 UUID idempotency key를 Main에서 검증한다. Active·Archived project는
   제거 집합에 포함될 수 없다. Main은 대상 project 전체에 Project Chat, SSH execution/approval과 Lecture
