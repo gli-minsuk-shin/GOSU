@@ -10,6 +10,7 @@ import {
   type LectureStudioStorage,
 } from '../src/main/lecture-studio-service';
 import type { LectureDocumentCompiler } from '../src/main/lecture-document-compiler';
+import type { LectureArtifactPlatform } from '../src/main/lecture-artifact-platform';
 import { LectureStudioStorageError } from '../src/main/lecture-studio-storage-error';
 import type {
   LectureStudio,
@@ -409,6 +410,7 @@ function fixture(
     manuscriptSnapshots?: ReadonlyMap<string, ManuscriptWorkspaceSnapshot>;
     manuscriptFiles?: ReadonlyMap<string, string>;
     pdfCompiler?: Pick<LectureDocumentCompiler, 'compile'>;
+    artifactPlatform?: LectureArtifactPlatform;
   }> = {},
 ) {
   const projectA = randomUUID();
@@ -577,9 +579,17 @@ function fixture(
       rollbackPendingRevisionArtifacts: () => {
         artifactEvents.push('reconcile-rollback');
       },
+      resolveLectureRevisionArtifact: (_outputProjectId, artifact) => ({
+        absolutePath: `/tmp/gosu-lecture-studio-fixture/${artifact.kind}.md`,
+        relativePath: artifact.relativePath,
+        fileName: artifact.kind === 'lecture-notes' ? 'Lecture Notes.md' : 'Slides.md',
+        content: artifact.kind === 'lecture-notes' ? '# Lecture notes' : '# Slides',
+        contentSha256: artifact.contentSha256,
+      }),
     },
     codex,
     ...(options.pdfCompiler ? { pdfCompiler: options.pdfCompiler } : {}),
+    ...(options.artifactPlatform ? { artifactPlatform: options.artifactPlatform } : {}),
     prepareDirectory: async () => '/tmp/gosu-lecture-studio-fixture',
     timeoutMs: 5_000,
   });
@@ -635,6 +645,164 @@ function pendingFromRevision(
 }
 
 describe('LectureStudioService', () => {
+  it('exports, opens, and reveals only the exact committed Research Notes artifact revision', async () => {
+    const exported: Array<{ format: string; suggestedFileName: string; bytes: Buffer }> = [];
+    const artifactPlatform: LectureArtifactPlatform = {
+      exportFile: vi.fn(async (input) => {
+        exported.push(input);
+        return { status: 'exported' as const, fileName: input.suggestedFileName };
+      }),
+      openExisting: vi.fn(async () => undefined),
+      openPdf: vi.fn(async () => 'Lecture Notes.pdf'),
+      revealExisting: vi.fn(async () => undefined),
+    };
+    const { service, codex, projectA, paperA } = fixture({ artifactPlatform });
+    codex.response = {
+      reply: 'Created one-source notes.',
+      lectureNotesMarkdown:
+        '# Canonical raw notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
+      slidesMarkdown: '# Slide 1\n\nEvidence [P1].',
+    };
+    const studio = await service.create({
+      title: 'Artifact actions',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const artifact = receipt.revision.artifacts.find(
+      (candidate) => candidate.kind === 'lecture-notes',
+    )!;
+    const binding = {
+      studioId: studio.id,
+      revisionId: receipt.revision.id,
+      revision: receipt.revision.revision,
+      kind: artifact.kind,
+      artifactContentSha256: artifact.contentSha256,
+    };
+
+    await expect(service.exportArtifact({ ...binding, format: 'markdown' })).resolves.toMatchObject(
+      {
+        status: 'exported',
+        format: 'markdown',
+        fileName: 'Lecture Notes.md',
+        relativePath: artifact.relativePath,
+      },
+    );
+    expect(exported).toHaveLength(1);
+    expect(exported[0]).toMatchObject({
+      format: 'markdown',
+      suggestedFileName: 'Lecture Notes.md',
+    });
+    expect(exported[0]?.bytes.toString('utf8')).toBe('# Lecture notes');
+
+    await service.openArtifact({ ...binding, format: 'markdown' });
+    await service.revealArtifact(binding);
+    expect(artifactPlatform.openExisting).toHaveBeenCalledWith(
+      '/tmp/gosu-lecture-studio-fixture/lecture-notes.md',
+    );
+    expect(artifactPlatform.revealExisting).toHaveBeenCalledWith(
+      '/tmp/gosu-lecture-studio-fixture/lecture-notes.md',
+    );
+
+    await expect(
+      service.exportArtifact({
+        ...binding,
+        artifactContentSha256: 'f'.repeat(64),
+        format: 'markdown',
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_artifact_changed'));
+    await expect(service.revealArtifact({ ...binding, revisionId: randomUUID() })).rejects.toEqual(
+      new LectureStudioServiceError('lecture_artifact_not_found'),
+    );
+    expect(artifactPlatform.exportFile).toHaveBeenCalledTimes(1);
+    expect(artifactPlatform.revealExisting).toHaveBeenCalledTimes(1);
+  });
+
+  it('derives an opened PDF from stored revision Markdown instead of Renderer bytes', async () => {
+    const pdfBytes = Buffer.from('%PDF-1.7\n%%EOF\n');
+    const compile = vi.fn(async (input) => ({
+      schemaVersion: 1 as const,
+      artifactId: randomUUID(),
+      title: 'Lecture notes PDF',
+      fileName: 'Lecture Notes.pdf',
+      compilerDisplayName: 'Fixture XeLaTeX',
+      sourceDescription: `PDF fixture · revision ${input.revision}`,
+      pdfSha256: `sha256:${createHash('sha256').update(pdfBytes).digest('hex')}` as const,
+      sizeBytes: pdfBytes.byteLength,
+      compiledAt: new Date().toISOString(),
+      pdfBase64: pdfBytes.toString('base64'),
+    }));
+    const artifactPlatform: LectureArtifactPlatform = {
+      exportFile: vi.fn(),
+      openExisting: vi.fn(),
+      openPdf: vi.fn(async () => 'Lecture Notes.pdf'),
+      revealExisting: vi.fn(),
+    };
+    const { service, codex, projectA, paperA } = fixture({
+      artifactPlatform,
+      pdfCompiler: { compile },
+    });
+    codex.response = {
+      reply: 'Created notes for PDF.',
+      lectureNotesMarkdown:
+        '# Stored revision notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
+      slidesMarkdown: '# Stored slide\n\nEvidence [P1].',
+    };
+    const studio = await service.create({
+      title: 'Stored PDF source',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const generated = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const artifact = generated.revision.artifacts.find(
+      (candidate) => candidate.kind === 'lecture-notes',
+    )!;
+
+    await service.openArtifact({
+      studioId: studio.id,
+      revisionId: generated.revision.id,
+      revision: generated.revision.revision,
+      kind: 'lecture-notes',
+      artifactContentSha256: artifact.contentSha256,
+      format: 'pdf',
+    });
+
+    expect(compile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        studioId: studio.id,
+        revision: generated.revision.revision,
+        markdown: generated.revision.lectureNotesMarkdown,
+        contentSha256: hash(generated.revision.lectureNotesMarkdown),
+      }),
+    );
+    expect(artifactPlatform.openPdf).toHaveBeenCalledWith({
+      kind: 'lecture-notes',
+      document: await compile.mock.results[0]?.value,
+    });
+  });
+
   it('compiles only an exact immutable revision selected by hash', async () => {
     const compile = vi.fn(async () => ({
       schemaVersion: 1 as const,

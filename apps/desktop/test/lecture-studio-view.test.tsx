@@ -27,6 +27,13 @@ import {
 import { VolatileLectureStudioDrafts } from '../src/renderer/src/lecture-studio-session-state';
 import type { ProjectRecord } from '../src/shared/workspace-contracts';
 
+const defaultModel = {
+  modelId: 'provider-default',
+  displayName: 'Provider default',
+  isDefault: true,
+  reasoningOptions: [{ id: 'high', label: 'high', isDefault: true }],
+};
+
 const project: ProjectRecord = {
   id: '11111111-1111-4111-8111-111111111111',
   name: 'Research Alpha',
@@ -45,6 +52,9 @@ const adapter: LectureStudioViewAdapter = {
   send: vi.fn(),
   cancel: vi.fn(),
   compilePdf: vi.fn(),
+  exportArtifact: vi.fn(),
+  openArtifact: vi.fn(),
+  revealArtifact: vi.fn(),
   onEvent: vi.fn(() => () => undefined),
 };
 
@@ -55,8 +65,11 @@ describe('LectureStudioView', () => {
         projects={[project]}
         adapter={adapter}
         draftStore={new VolatileLectureStudioDrafts()}
-        requestedModelId={null}
-        reasoningOptionId={null}
+        models={[defaultModel]}
+        modelsLoading={false}
+        onRefreshModels={() => undefined}
+        layout={{ schemaVersion: 1, studioRailCollapsed: false, chatCollapsed: false }}
+        onLayoutChange={() => undefined}
       />,
     );
 
@@ -65,6 +78,8 @@ describe('LectureStudioView', () => {
     expect(html).toContain('Combine captured manuscripts, reviewed paper metadata, and experiment');
     expect(html).toContain('New lecture');
     expect(html).toContain('STUDIOS');
+    expect(html).toContain('Hide lecture sessions');
+    expect(html).toContain('aria-controls="lecture-studio-sessions"');
   });
 
   it('keeps source, document, and lecture-chat panes independently scrollable', () => {
@@ -77,6 +92,9 @@ describe('LectureStudioView', () => {
     expect(styles).toMatch(/\.lecture-preview-document\s*\{[^}]*overflow:\s*auto;/su);
     expect(styles).toMatch(/\.lecture-chat-messages\s*\{[^}]*overflow:\s*auto;/su);
     expect(styles).toMatch(/@media \(max-width: 920px\)/u);
+    expect(styles).not.toMatch(/@media \(max-width: 1360px\)/u);
+    expect(styles).toMatch(/\.lecture-studio-layout\.chat-collapsed/u);
+    expect(styles).toMatch(/\.lecture-studio-layout\.studio-rail-collapsed/u);
     expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)/u);
   });
 

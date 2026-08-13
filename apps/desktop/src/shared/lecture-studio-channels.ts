@@ -7,5 +7,8 @@ export const LECTURE_STUDIO_IPC_CHANNELS = {
   send: 'gosu:lecture-studio:send',
   cancel: 'gosu:lecture-studio:cancel',
   compilePdf: 'gosu:lecture-studio:compile-pdf',
+  exportArtifact: 'gosu:lecture-studio:export-artifact',
+  openArtifact: 'gosu:lecture-studio:open-artifact',
+  revealArtifact: 'gosu:lecture-studio:reveal-artifact',
   event: 'gosu:lecture-studio:event',
 } as const;

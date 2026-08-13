@@ -385,10 +385,8 @@ describe('ResearchNotesService project workspaces', () => {
     expect(recoveredWithNewAttempt.map((artifact) => artifact.relativePath)).toEqual(
       first.map((artifact) => artifact.relativePath),
     );
-    const recoveredNotes = await readFile(
-      join(root, 'GOSU', 'Alpha Project', first[0].relativePath),
-      'utf8',
-    );
+    const recoveredNotesPath = join(root, 'GOSU', 'Alpha Project', first[0].relativePath);
+    const recoveredNotes = await readFile(recoveredNotesPath, 'utf8');
     expect(recoveredNotes).toContain('# Recovered notes');
     expect(recoveredNotes).toContain('gosu_schema_version: 2');
     expect(recoveredNotes).toContain('gosu_document_kind: "lecture-notes"');
@@ -427,6 +425,23 @@ describe('ResearchNotesService project workspaces', () => {
 
     await restarted.confirmPendingRevisionArtifacts(pending[0]!);
     expect((await readdir(bundlePath)).sort()).toEqual(['Lecture Notes.md', 'Slides.md']);
+    const resolved = await restarted.resolveLectureRevisionArtifact(
+      PROJECT_ID,
+      recoveredWithNewAttempt[0],
+    );
+    expect(resolved).toMatchObject({
+      absolutePath: recoveredNotesPath,
+      relativePath: recoveredWithNewAttempt[0].relativePath,
+      fileName: 'Lecture Notes.md',
+      contentSha256: recoveredWithNewAttempt[0].contentSha256,
+    });
+    expect(resolved.content).toContain('# Recovered notes');
+    expect(resolved.content).toContain('gosu_document_kind: "lecture-notes"');
+
+    await writeFile(recoveredNotesPath, `${resolved.content}\nRenderer mutation`, 'utf8');
+    await expect(
+      restarted.resolveLectureRevisionArtifact(PROJECT_ID, recoveredWithNewAttempt[0]),
+    ).rejects.toMatchObject({ code: 'research_notes_folder_conflict' });
     await expect(service.saveRevisionArtifacts(recoveryInput)).rejects.toThrow(
       'research_notes_folder_conflict',
     );

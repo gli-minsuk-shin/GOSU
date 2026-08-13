@@ -872,6 +872,56 @@ export type CompileLectureStudioPdfInput = z.infer<typeof CompileLectureStudioPd
 export const LectureStudioPdfPreviewSchema = PdfPreviewDocumentSchema;
 export type LectureStudioPdfPreview = z.infer<typeof LectureStudioPdfPreviewSchema>;
 
+export const LectureStudioArtifactFormatSchema = z.enum(['markdown', 'pdf']);
+export type LectureStudioArtifactFormat = z.infer<typeof LectureStudioArtifactFormatSchema>;
+
+const lectureStudioArtifactActionShape = {
+  studioId: uuidSchema,
+  revisionId: uuidSchema,
+  revision: z.number().int().positive(),
+  kind: LectureStudioPdfKindSchema,
+  artifactContentSha256: sha256Schema,
+} as const;
+
+/** Export one exact immutable revision without accepting a Renderer-controlled path or payload. */
+export const ExportLectureStudioArtifactInputSchema = z
+  .object({
+    ...lectureStudioArtifactActionShape,
+    format: LectureStudioArtifactFormatSchema,
+  })
+  .strict();
+export type ExportLectureStudioArtifactInput = z.infer<
+  typeof ExportLectureStudioArtifactInputSchema
+>;
+
+export const OpenLectureStudioArtifactInputSchema = z
+  .object({
+    ...lectureStudioArtifactActionShape,
+    format: LectureStudioArtifactFormatSchema,
+  })
+  .strict();
+export type OpenLectureStudioArtifactInput = z.infer<typeof OpenLectureStudioArtifactInputSchema>;
+
+export const RevealLectureStudioArtifactInputSchema = z
+  .object(lectureStudioArtifactActionShape)
+  .strict();
+export type RevealLectureStudioArtifactInput = z.infer<
+  typeof RevealLectureStudioArtifactInputSchema
+>;
+
+export const LectureStudioArtifactActionReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum(['cancelled', 'exported', 'opened', 'revealed']),
+    format: LectureStudioArtifactFormatSchema.nullable(),
+    fileName: z.string().trim().min(1).max(256).nullable(),
+    relativePath: z.string().trim().min(1).max(1_024).nullable(),
+  })
+  .strict();
+export type LectureStudioArtifactActionReceipt = z.infer<
+  typeof LectureStudioArtifactActionReceiptSchema
+>;
+
 export const LectureStudioGenerationOutputSchema = z
   .object({
     reply: boundedText(LECTURE_STUDIO_MAX_MESSAGE_LENGTH),
@@ -941,6 +991,11 @@ export const LECTURE_STUDIO_IPC_ERROR_CODES = [
   'lecture_pdf_compile_failed',
   'lecture_pdf_too_large',
   'lecture_pdf_invalid',
+  'lecture_artifact_not_found',
+  'lecture_artifact_changed',
+  'lecture_artifact_unavailable',
+  'lecture_export_failed',
+  'lecture_open_failed',
 ] as const;
 export type LectureStudioIpcErrorCode = (typeof LECTURE_STUDIO_IPC_ERROR_CODES)[number];
 

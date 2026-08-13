@@ -90,15 +90,19 @@ import {
   type CancelLectureStudioInput,
   type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
+  type ExportLectureStudioArtifactInput,
   type GenerateLectureStudioInput,
   type LectureSourceCandidates,
   type LectureStudio,
+  type LectureStudioArtifactActionReceipt,
   type LectureStudioDetail,
   type LectureStudioDetailInput,
   type LectureStudioEvent,
   type LectureStudioListSnapshot,
   type LectureStudioPdfPreview,
   type LectureStudioTurnReceipt,
+  type OpenLectureStudioArtifactInput,
+  type RevealLectureStudioArtifactInput,
   type ListLectureCandidatesInput,
   type ListLectureStudiosInput,
   type SendLectureStudioMessageInput,
@@ -563,6 +567,21 @@ const api = {
       invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.cancel, input),
     compilePdf: (input: CompileLectureStudioPdfInput) =>
       invokeLectureStudio<LectureStudioPdfPreview>(LECTURE_STUDIO_IPC_CHANNELS.compilePdf, input),
+    exportArtifact: (input: ExportLectureStudioArtifactInput) =>
+      invokeLectureStudio<LectureStudioArtifactActionReceipt>(
+        LECTURE_STUDIO_IPC_CHANNELS.exportArtifact,
+        input,
+      ),
+    openArtifact: (input: OpenLectureStudioArtifactInput) =>
+      invokeLectureStudio<LectureStudioArtifactActionReceipt>(
+        LECTURE_STUDIO_IPC_CHANNELS.openArtifact,
+        input,
+      ),
+    revealArtifact: (input: RevealLectureStudioArtifactInput) =>
+      invokeLectureStudio<LectureStudioArtifactActionReceipt>(
+        LECTURE_STUDIO_IPC_CHANNELS.revealArtifact,
+        input,
+      ),
     onEvent: (listener: (event: LectureStudioEvent) => void) => {
       if (typeof listener !== 'function') throw new Error('invalid_lecture_event_listener');
       const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {

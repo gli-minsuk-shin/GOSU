@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { basename, posix } from 'node:path';
+import { basename, join, posix } from 'node:path';
 
 import type { BrowserWindow } from 'electron';
 import { z } from 'zod';
@@ -206,6 +206,15 @@ export type SaveLectureRevisionArtifactsInput = Readonly<{
   invocation?: ModelInvocation;
   relatedDocuments?: readonly string[];
   relatedPapers?: readonly string[];
+}>;
+
+/** Main-process-only capability for one exact, already committed Lecture artifact. */
+export type ResolvedLectureRevisionArtifact = Readonly<{
+  absolutePath: string;
+  relativePath: string;
+  fileName: string;
+  content: string;
+  contentSha256: string;
 }>;
 
 const RESEARCH_NOTES_AGENT_CATEGORY_FOLDERS = {
@@ -792,6 +801,39 @@ export class ResearchNotesService {
       this.ownership(link),
     );
     await this.confirmAgentMarkdownWrite(outputProjectId, descriptor.id, link);
+  }
+
+  async resolveLectureRevisionArtifact(
+    outputProjectId: string,
+    artifact: LectureStudioArtifact,
+  ): Promise<ResolvedLectureRevisionArtifact> {
+    const ready = await this.readOnlyReadyLink(outputProjectId);
+    if (!ready) {
+      throw new ResearchNotesServiceError('research_notes_folder_unavailable');
+    }
+    const path = safeProjectPath(artifact.relativePath);
+    try {
+      const note = await this.dependencies.vault.readMarkdown(
+        `${this.relativeRoot(ready.link)}/${path}`,
+      );
+      await this.dependencies.vault.validateGrant(ready.link.vaultId);
+      await this.assertOwnership(ready.link);
+      const contentSha256 = sha256(note.content);
+      if (contentSha256 !== artifact.contentSha256) {
+        throw new ResearchNotesServiceError('research_notes_folder_conflict');
+      }
+      const selection = this.requireVault(ready.link.vaultId);
+      return {
+        absolutePath: join(selection.root, this.relativeRoot(ready.link), path),
+        relativePath: path,
+        fileName: basename(path),
+        content: note.content,
+        contentSha256,
+      };
+    } catch (error) {
+      if (error instanceof ResearchNotesServiceError) throw error;
+      throw new ResearchNotesServiceError('research_notes_note_not_found');
+    }
   }
 
   async listPendingRevisionArtifacts(

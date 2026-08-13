@@ -5,10 +5,13 @@ import {
   CancelLectureStudioInputSchema,
   CompileLectureStudioPdfInputSchema,
   CreateLectureStudioInputSchema,
+  ExportLectureStudioArtifactInputSchema,
   GenerateLectureStudioInputSchema,
   ListLectureCandidatesInputSchema,
   ListLectureStudiosInputSchema,
   LectureStudioDetailInputSchema,
+  OpenLectureStudioArtifactInputSchema,
+  RevealLectureStudioArtifactInputSchema,
   SendLectureStudioMessageInputSchema,
   type LectureStudioIpcResult,
 } from '../shared/lecture-studio-contracts';
@@ -82,6 +85,30 @@ export function registerLectureStudioIpc(
       input,
       CompileLectureStudioPdfInputSchema,
       (command) => service.compilePdf(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.exportArtifact, (input) =>
+    withInput(
+      input,
+      ExportLectureStudioArtifactInputSchema,
+      (command) => service.exportArtifact(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.openArtifact, (input) =>
+    withInput(
+      input,
+      OpenLectureStudioArtifactInputSchema,
+      (command) => service.openArtifact(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.revealArtifact, (input) =>
+    withInput(
+      input,
+      RevealLectureStudioArtifactInputSchema,
+      (command) => service.revealArtifact(command),
       reportUnexpected,
     ),
   );

@@ -126,6 +126,10 @@ import {
   saveResearchNotesLayoutState,
 } from './research-notes-layout-state';
 import {
+  loadLectureStudioLayoutState,
+  saveLectureStudioLayoutState,
+} from './lecture-studio-layout-state';
+import {
   archivedProjects as archivedPortfolioProjects,
   resolveActiveProjectId,
   visibleProjects,
@@ -228,6 +232,9 @@ const lectureStudioAdapter: LectureStudioViewAdapter = {
   send: (input) => window.gosu.lectureStudio.send(input),
   cancel: (input) => window.gosu.lectureStudio.cancel(input),
   compilePdf: (input) => window.gosu.lectureStudio.compilePdf(input),
+  exportArtifact: (input) => window.gosu.lectureStudio.exportArtifact(input),
+  openArtifact: (input) => window.gosu.lectureStudio.openArtifact(input),
+  revealArtifact: (input) => window.gosu.lectureStudio.revealArtifact(input),
   onEvent: (listener) => window.gosu.lectureStudio.onEvent(listener),
 };
 
@@ -441,6 +448,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   );
   const [researchNotesLayout, setResearchNotesLayout] = useState(() =>
     loadResearchNotesLayoutState(window.localStorage),
+  );
+  const [lectureStudioLayout, setLectureStudioLayout] = useState(() =>
+    loadLectureStudioLayoutState(window.localStorage),
   );
   const [sidebarResizing, setSidebarResizing] = useState(false);
 
@@ -677,6 +687,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   useEffect(() => {
     saveResearchNotesLayoutState(window.localStorage, researchNotesLayout);
   }, [researchNotesLayout]);
+
+  useEffect(() => {
+    saveLectureStudioLayoutState(window.localStorage, lectureStudioLayout);
+  }, [lectureStudioLayout]);
 
   useEffect(() => {
     activeChatSessionIdsRef.current = activeChatSessionIds;
@@ -3181,8 +3195,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 projects={snapshot.projects}
                 adapter={lectureStudioAdapter}
                 draftStore={lectureStudioDraftsRef.current}
-                requestedModelId={selectedModel}
-                reasoningOptionId={selectedReasoning}
+                models={models}
+                modelsLoading={codexBusy}
+                onRefreshModels={() => void refreshModels(true)}
+                layout={lectureStudioLayout}
+                onLayoutChange={setLectureStudioLayout}
               />
             )}
             {activeTab === 'connections' && (

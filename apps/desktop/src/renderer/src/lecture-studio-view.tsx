@@ -20,10 +20,12 @@ import {
   type CancelLectureStudioInput,
   type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
+  type ExportLectureStudioArtifactInput,
   type GenerateLectureStudioInput,
   type LectureSourceCandidates,
   type LectureSourceSelection,
   type LectureStudio,
+  type LectureStudioArtifactActionReceipt,
   type LectureStudioDetail,
   type LectureStudioDetailLevel,
   type LectureStudioDetailInput,
@@ -38,12 +40,26 @@ import {
   type LectureStudioTurnReceipt,
   type ListLectureCandidatesInput,
   type ListLectureStudiosInput,
+  type OpenLectureStudioArtifactInput,
+  type RevealLectureStudioArtifactInput,
   type SendLectureStudioMessageInput,
 } from '../../shared/lecture-studio-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
+import type { CodexModel } from './connections-view';
+import type { LectureStudioLayoutState } from './lecture-studio-layout-state';
+import {
+  AUTO_LECTURE_STUDIO_MODEL_SELECTION,
+  loadLectureStudioModelSelection,
+  resolveLectureStudioModelSelection,
+  saveLectureStudioModelSelection,
+  selectLectureStudioModel,
+  selectLectureStudioReasoning,
+  type LectureStudioModelSelection,
+} from './lecture-studio-model-selection-store';
 import type { LectureStudioDraftStore } from './lecture-studio-session-state';
 import { MarkdownDocument } from './markdown-document';
 import { PdfPreview } from './pdf-preview';
+import { CollapseChevron } from './ui-primitives';
 import './lecture-studio-view.css';
 import './pdf-preview.css';
 
@@ -56,6 +72,15 @@ export interface LectureStudioViewAdapter {
   send: (input: SendLectureStudioMessageInput) => Promise<LectureStudioTurnReceipt>;
   cancel: (input: CancelLectureStudioInput) => Promise<LectureStudio>;
   compilePdf: (input: CompileLectureStudioPdfInput) => Promise<LectureStudioPdfPreview>;
+  exportArtifact: (
+    input: ExportLectureStudioArtifactInput,
+  ) => Promise<LectureStudioArtifactActionReceipt>;
+  openArtifact: (
+    input: OpenLectureStudioArtifactInput,
+  ) => Promise<LectureStudioArtifactActionReceipt>;
+  revealArtifact: (
+    input: RevealLectureStudioArtifactInput,
+  ) => Promise<LectureStudioArtifactActionReceipt>;
   onEvent: (listener: (event: LectureStudioEvent) => void) => () => void;
 }
 
@@ -63,8 +88,11 @@ export interface LectureStudioViewProps {
   projects: readonly ProjectRecord[];
   adapter: LectureStudioViewAdapter;
   draftStore: LectureStudioDraftStore;
-  requestedModelId: string | null;
-  reasoningOptionId: string | null;
+  models: readonly CodexModel[];
+  modelsLoading: boolean;
+  onRefreshModels: () => void;
+  layout: LectureStudioLayoutState;
+  onLayoutChange: (layout: LectureStudioLayoutState) => void;
 }
 
 type PreviewTab = 'notes' | 'notes-pdf' | 'slides' | 'slides-pdf';
@@ -189,6 +217,14 @@ function lectureErrorCodeMessage(code: string) {
       'The compiled PDF exceeded the local preview limit. The saved Markdown is unchanged.',
     lecture_pdf_invalid:
       'This revision could not be converted into a safe local PDF preview. The saved Markdown is unchanged.',
+    lecture_artifact_not_found:
+      'This saved lecture file no longer matches the selected revision. Refresh and try again.',
+    lecture_artifact_changed:
+      'The saved Markdown changed outside GOSU, so it was not exported or opened as this revision.',
+    lecture_artifact_unavailable:
+      'The Research Notes output folder is unavailable. Reconnect it before opening saved files.',
+    lecture_export_failed: 'GOSU could not safely export this lecture file.',
+    lecture_open_failed: 'The file could not be opened in the system default app.',
   };
   return messages[code] ?? 'The lecture operation could not be completed.';
 }
@@ -356,8 +392,11 @@ export function LectureStudioView({
   projects,
   adapter,
   draftStore,
-  requestedModelId,
-  reasoningOptionId,
+  models,
+  modelsLoading,
+  onRefreshModels,
+  layout,
+  onLayoutChange,
 }: LectureStudioViewProps) {
   const activeProjects = useMemo(() => activeLectureSourceProjects(projects), [projects]);
   const [listSnapshot, setListSnapshot] = useState<LectureStudioListSnapshot | null>(null);
@@ -371,6 +410,9 @@ export function LectureStudioView({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
   const [previewTab, setPreviewTab] = useState<PreviewTab>('notes');
+  const [modelSelection, setModelSelection] = useState<LectureStudioModelSelection>(
+    AUTO_LECTURE_STUDIO_MODEL_SELECTION,
+  );
   const loadGeneration = useRef(0);
 
   const load = useCallback(
@@ -424,9 +466,24 @@ export function LectureStudioView({
     [detail, selectedStudioId],
   );
 
+  useEffect(() => {
+    setModelSelection(
+      selectedStudioId
+        ? loadLectureStudioModelSelection(window.localStorage, selectedStudioId)
+        : AUTO_LECTURE_STUDIO_MODEL_SELECTION,
+    );
+  }, [selectedStudioId]);
+
+  const selectedModelDescriptor = modelSelection.modelId
+    ? models.find((model) => model.modelId === modelSelection.modelId)
+    : models.find((model) => model.isDefault);
+  const modelSelectionUnavailable =
+    resolveLectureStudioModelSelection(modelSelection, models).issue !== null;
+
   const selectStudio = (studioId: string) => {
     selectedStudioIdRef.current = studioId;
     setSelectedStudioId(studioId);
+    setModelSelection(loadLectureStudioModelSelection(window.localStorage, studioId));
     setDetail(null);
     setComposing(false);
     setPreviewTab('notes');
@@ -442,7 +499,10 @@ export function LectureStudioView({
     });
   }, []);
 
-  const runGeneration = async (studio: LectureStudio) => {
+  const runGeneration = async (
+    studio: LectureStudio,
+    selection: LectureStudioModelSelection = modelSelection,
+  ) => {
     markStudioBusy(studio.id, true);
     setNotice('');
     setError(null);
@@ -450,8 +510,8 @@ export function LectureStudioView({
       await adapter.generate({
         studioId: studio.id,
         expectedVersion: studio.version,
-        requestedModelId,
-        reasoningOptionId,
+        requestedModelId: selection.modelId,
+        reasoningOptionId: selection.reasoningOptionId,
       });
       if (selectedStudioIdRef.current === studio.id) {
         setNotice('Lecture notes and slides were saved as a new Research Notes revision.');
@@ -483,6 +543,7 @@ export function LectureStudioView({
           className="secondary-button"
           onClick={() => {
             setComposing(true);
+            onLayoutChange({ ...layout, chatCollapsed: false });
             setNotice('');
             setError(null);
           }}
@@ -508,14 +569,23 @@ export function LectureStudioView({
         </div>
       )}
 
-      <div className="lecture-studio-layout">
+      <div
+        className={`lecture-studio-layout${layout.studioRailCollapsed ? ' studio-rail-collapsed' : ''}${layout.chatCollapsed ? ' chat-collapsed' : ''}`}
+      >
         <StudioRail
           studios={listSnapshot?.studios ?? []}
           selectedStudioId={selectedStudioId}
           loading={loading}
           composing={composing}
-          onNew={() => setComposing(true)}
+          onNew={() => {
+            setComposing(true);
+            onLayoutChange({ ...layout, chatCollapsed: false });
+          }}
           onSelect={selectStudio}
+          collapsed={layout.studioRailCollapsed}
+          onCollapsedChange={(studioRailCollapsed) =>
+            onLayoutChange({ ...layout, studioRailCollapsed })
+          }
         />
 
         {composing || (!loading && !selectedStudio && (listSnapshot?.studios.length ?? 0) === 0) ? (
@@ -523,13 +593,18 @@ export function LectureStudioView({
             projects={activeProjects}
             adapter={adapter}
             busy={busyStudioIds.size > 0}
+            models={models}
+            modelsLoading={modelsLoading}
+            onRefreshModels={onRefreshModels}
             onCancel={listSnapshot?.studios.length ? () => setComposing(false) : undefined}
-            onCreated={async (studio) => {
+            onCreated={async (studio, initialSelection) => {
+              setModelSelection(initialSelection);
+              saveLectureStudioModelSelection(window.localStorage, studio.id, initialSelection);
               selectedStudioIdRef.current = studio.id;
               setSelectedStudioId(studio.id);
               setComposing(false);
               await load(false, studio.id);
-              await runGeneration(studio);
+              await runGeneration(studio, initialSelection);
             }}
             onError={(nextError) => setError(lectureErrorMessage(nextError))}
           />
@@ -564,6 +639,25 @@ export function LectureStudioView({
               studio={selectedStudio}
               messages={selectedMessages}
               busy={busyStudioIds.has(selectedStudio.id) || selectedStudio.status === 'generating'}
+              collapsed={layout.chatCollapsed}
+              onCollapsedChange={(chatCollapsed) => onLayoutChange({ ...layout, chatCollapsed })}
+              models={models}
+              modelsLoading={modelsLoading}
+              selectedModel={modelSelection.modelId}
+              selectedReasoning={modelSelection.reasoningOptionId}
+              selectedModelDescriptor={selectedModelDescriptor}
+              selectionUnavailable={modelSelectionUnavailable}
+              onSelectedModel={(modelId) => {
+                const next = selectLectureStudioModel(modelSelection, modelId);
+                setModelSelection(next);
+                saveLectureStudioModelSelection(window.localStorage, selectedStudio.id, next);
+              }}
+              onSelectedReasoning={(reasoningOptionId) => {
+                const next = selectLectureStudioReasoning(modelSelection, reasoningOptionId);
+                setModelSelection(next);
+                saveLectureStudioModelSelection(window.localStorage, selectedStudio.id, next);
+              }}
+              onRefreshModels={onRefreshModels}
               draft={draftsByStudioId[selectedStudio.id] ?? draftStore.read(selectedStudio.id)}
               onDraftChange={(draft) => {
                 draftStore.write(selectedStudio.id, draft);
@@ -578,8 +672,8 @@ export function LectureStudioView({
                     studioId: selectedStudio.id,
                     expectedVersion: selectedStudio.version,
                     message,
-                    requestedModelId,
-                    reasoningOptionId,
+                    requestedModelId: modelSelection.modelId,
+                    reasoningOptionId: modelSelection.reasoningOptionId,
                   });
                   if (selectedStudioIdRef.current === selectedStudio.id) {
                     setNotice('The requested edit was saved as a new Research Notes revision.');
@@ -621,6 +715,8 @@ function StudioRail({
   composing,
   onNew,
   onSelect,
+  collapsed,
+  onCollapsedChange,
 }: {
   studios: readonly LectureStudioSummary[];
   selectedStudioId: string | null;
@@ -628,9 +724,29 @@ function StudioRail({
   composing: boolean;
   onNew: () => void;
   onSelect: (studioId: string) => void;
+  collapsed: boolean;
+  onCollapsedChange: (collapsed: boolean) => void;
 }) {
+  if (collapsed) {
+    return (
+      <aside className="lecture-studio-rail collapsed" aria-label="Lecture sessions collapsed">
+        <button
+          type="button"
+          className="lecture-pane-toggle"
+          aria-label="Show lecture sessions"
+          title="Show lecture sessions"
+          aria-expanded="false"
+          aria-controls="lecture-studio-sessions"
+          onClick={() => onCollapsedChange(false)}
+        >
+          <CollapseChevron direction="right" />
+        </button>
+        <strong>{studios.length}</strong>
+      </aside>
+    );
+  }
   return (
-    <aside className="lecture-studio-rail">
+    <aside className="lecture-studio-rail" id="lecture-studio-sessions">
       <header>
         <div>
           <span>STUDIOS</span>
@@ -638,6 +754,17 @@ function StudioRail({
         </div>
         <button type="button" className="ghost-button" onClick={onNew}>
           New
+        </button>
+        <button
+          type="button"
+          className="lecture-pane-toggle"
+          aria-label="Hide lecture sessions"
+          title="Hide lecture sessions"
+          aria-expanded="true"
+          aria-controls="lecture-studio-sessions"
+          onClick={() => onCollapsedChange(true)}
+        >
+          <CollapseChevron direction="left" />
         </button>
       </header>
       <div className="lecture-studio-list">
@@ -676,6 +803,9 @@ function LectureComposer({
   projects,
   adapter,
   busy,
+  models,
+  modelsLoading,
+  onRefreshModels,
   onCancel,
   onCreated,
   onError,
@@ -683,8 +813,11 @@ function LectureComposer({
   projects: readonly ProjectRecord[];
   adapter: LectureStudioViewAdapter;
   busy: boolean;
+  models: readonly CodexModel[];
+  modelsLoading: boolean;
+  onRefreshModels: () => void;
   onCancel?: (() => void) | undefined;
-  onCreated: (studio: LectureStudio) => Promise<void>;
+  onCreated: (studio: LectureStudio, selection: LectureStudioModelSelection) => Promise<void>;
   onError: (error: unknown) => void;
 }) {
   const [title, setTitle] = useState('');
@@ -705,6 +838,9 @@ function LectureComposer({
   const [loadingSources, setLoadingSources] = useState(false);
   const [loadingMoreProjects, setLoadingMoreProjects] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
+  const [initialModelSelection, setInitialModelSelection] = useState<LectureStudioModelSelection>(
+    AUTO_LECTURE_STUDIO_MODEL_SELECTION,
+  );
   const [selectionError, setSelectionError] = useState<string | null>(null);
 
   const candidateKey = projectIds.slice().sort().join(':');
@@ -829,7 +965,9 @@ function LectureComposer({
     projectIds.length <= LECTURE_STUDIO_MAX_SOURCE_PROJECTS &&
     outputProjectId !== '' &&
     sourceCount > 0 &&
-    sourceCount <= LECTURE_STUDIO_UI_MAX_SOURCES;
+    sourceCount <= LECTURE_STUDIO_UI_MAX_SOURCES &&
+    !modelsLoading &&
+    resolveLectureStudioModelSelection(initialModelSelection, models).issue === null;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -850,7 +988,7 @@ function LectureComposer({
           customInstructions,
         },
       });
-      await onCreated(studio);
+      await onCreated(studio, initialModelSelection);
     } catch (createError) {
       onError(createError);
     } finally {
@@ -904,6 +1042,68 @@ function LectureComposer({
           </div>
         </fieldset>
       </div>
+
+      <fieldset className="lecture-generation-model">
+        <legend>Generation model</legend>
+        <div>
+          <label>
+            Model
+            <select
+              value={initialModelSelection.modelId ?? ''}
+              onChange={(event) =>
+                setInitialModelSelection((current) =>
+                  selectLectureStudioModel(current, event.target.value || null),
+                )
+              }
+              disabled={creating || modelsLoading}
+            >
+              <option value="">Auto · provider recommended</option>
+              {models.map((model) => (
+                <option value={model.modelId} key={model.modelId}>
+                  {model.displayName}
+                  {model.isDefault ? ' · default' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Reasoning
+            <select
+              value={initialModelSelection.reasoningOptionId ?? ''}
+              onChange={(event) =>
+                setInitialModelSelection((current) =>
+                  selectLectureStudioReasoning(current, event.target.value || null),
+                )
+              }
+              disabled={creating || modelsLoading}
+            >
+              <option value="">Model default</option>
+              {(initialModelSelection.modelId
+                ? models.find((model) => model.modelId === initialModelSelection.modelId)
+                : models.find((model) => model.isDefault)
+              )?.reasoningOptions.map((option) => (
+                <option value={option.id} key={option.id}>
+                  {option.label}
+                  {option.isDefault ? ' · default' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onRefreshModels}
+            disabled={modelsLoading}
+          >
+            Refresh models
+          </button>
+        </div>
+        <small>Model names come from the live provider catalog and are never hardcoded.</small>
+        {!modelsLoading &&
+          resolveLectureStudioModelSelection(initialModelSelection, models).issue !== null && (
+            <small role="alert">Refresh the model catalog or choose an available model.</small>
+          )}
+      </fieldset>
 
       {kind === 'talk' && (
         <fieldset className="lecture-duration-picker">
@@ -1256,13 +1456,18 @@ function StudioPreview({
   >({});
   const [compilingPdf, setCompilingPdf] = useState<'lecture-notes' | 'slides' | null>(null);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  const [artifactAction, setArtifactAction] = useState<string | null>(null);
+  const [artifactError, setArtifactError] = useState<string | null>(null);
+  const [artifactActionBusy, setArtifactActionBusy] = useState(false);
   const automaticPdfCompileKey = useRef<string | null>(null);
   const pdfCompileGeneration = useRef(0);
+  const artifactActionGeneration = useRef(0);
   const mounted = useRef(true);
   const outputProjectName = lectureOutputProjectName(projects, studio.outputProjectId);
   const documentKind = previewDocumentKind(activeTab);
   const markdown = revision ? revisionMarkdown(revision, documentKind) : '';
   const pdfPreview = pdfPreviews[documentKind];
+  const currentArtifact = revision?.artifacts.find((artifact) => artifact.kind === documentKind);
 
   useEffect(() => {
     pdfCompileGeneration.current += 1;
@@ -1270,13 +1475,25 @@ function StudioPreview({
     setPdfPreviews({});
     setCompilingPdf(null);
     setPdfError(null);
+    artifactActionGeneration.current += 1;
+    setArtifactAction(null);
+    setArtifactError(null);
+    setArtifactActionBusy(false);
   }, [revision?.id, studio.id]);
+
+  useEffect(() => {
+    artifactActionGeneration.current += 1;
+    setArtifactAction(null);
+    setArtifactError(null);
+    setArtifactActionBusy(false);
+  }, [documentKind]);
 
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
       pdfCompileGeneration.current += 1;
+      artifactActionGeneration.current += 1;
     };
   }, []);
 
@@ -1303,6 +1520,59 @@ function StudioPreview({
       if (mounted.current && generation === pdfCompileGeneration.current) setCompilingPdf(null);
     }
   }, [activeTab, adapter, revision, studio.id]);
+
+  const artifactInput = () => {
+    if (!revision || !currentArtifact) return null;
+    return {
+      studioId: studio.id,
+      revisionId: revision.id,
+      revision: revision.revision,
+      kind: documentKind,
+      artifactContentSha256: currentArtifact.contentSha256,
+    } as const;
+  };
+
+  const runArtifactAction = async (
+    action: 'export' | 'open' | 'reveal',
+    format?: 'markdown' | 'pdf',
+  ) => {
+    const input = artifactInput();
+    if (!input || artifactActionBusy) return;
+    const generation = ++artifactActionGeneration.current;
+    setArtifactActionBusy(true);
+    setArtifactAction(null);
+    setArtifactError(null);
+    try {
+      const receipt =
+        action === 'export'
+          ? await adapter.exportArtifact({ ...input, format: format! })
+          : action === 'open'
+            ? await adapter.openArtifact({ ...input, format: format! })
+            : await adapter.revealArtifact(input);
+      if (
+        mounted.current &&
+        generation === artifactActionGeneration.current &&
+        receipt.status !== 'cancelled'
+      ) {
+        const location = receipt.relativePath ? ` · ${receipt.relativePath}` : '';
+        const statusLabel =
+          receipt.status === 'revealed'
+            ? 'Shown in Finder'
+            : receipt.status === 'exported'
+              ? 'Exported'
+              : 'Opened';
+        setArtifactAction(`${statusLabel}${location}`);
+      }
+    } catch (actionError) {
+      if (mounted.current && generation === artifactActionGeneration.current) {
+        setArtifactError(lectureErrorMessage(actionError));
+      }
+    } finally {
+      if (mounted.current && generation === artifactActionGeneration.current) {
+        setArtifactActionBusy(false);
+      }
+    }
+  };
 
   useEffect(() => {
     if (!revision || !previewIsPdf(activeTab) || pdfPreview || compilingPdf !== null) return;
@@ -1351,6 +1621,15 @@ function StudioPreview({
             </button>
           </div>
         )}
+        {artifactError && (
+          <div className="lecture-preview-error" role="alert">
+            <strong>Document action did not complete</strong>
+            <span>{artifactError}</span>
+            <button type="button" className="ghost-button" onClick={() => setArtifactError(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
       </header>
 
       <div className="lecture-preview-tabs" role="tablist" aria-label="Generated documents">
@@ -1391,6 +1670,40 @@ function StudioPreview({
           Slides PDF
         </button>
       </div>
+
+      {revision && currentArtifact && (
+        <div className="lecture-artifact-actions" aria-label="Lecture document actions">
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={artifactActionBusy}
+            onClick={() =>
+              void runArtifactAction('export', previewIsPdf(activeTab) ? 'pdf' : 'markdown')
+            }
+          >
+            Export {previewIsPdf(activeTab) ? 'PDF' : 'Markdown'}
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={artifactActionBusy}
+            onClick={() =>
+              void runArtifactAction('open', previewIsPdf(activeTab) ? 'pdf' : 'markdown')
+            }
+          >
+            Open in default app
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={artifactActionBusy}
+            onClick={() => void runArtifactAction('reveal')}
+          >
+            Show saved folder
+          </button>
+          {artifactAction && <span role="status">{artifactAction}</span>}
+        </div>
+      )}
 
       <section
         className={`lecture-preview-document${previewIsPdf(activeTab) ? ' pdf' : ''}`}
@@ -1466,6 +1779,17 @@ function LectureStudioChat({
   onDraftChange,
   onSend,
   onCancel,
+  collapsed,
+  onCollapsedChange,
+  models,
+  modelsLoading,
+  selectedModel,
+  selectedReasoning,
+  selectedModelDescriptor,
+  selectionUnavailable,
+  onSelectedModel,
+  onSelectedReasoning,
+  onRefreshModels,
 }: {
   studio: LectureStudio;
   messages: readonly LectureStudioMessage[];
@@ -1474,6 +1798,17 @@ function LectureStudioChat({
   onDraftChange: (draft: string) => void;
   onSend: (message: string) => Promise<boolean>;
   onCancel: () => void;
+  collapsed: boolean;
+  onCollapsedChange: (collapsed: boolean) => void;
+  models: readonly CodexModel[];
+  modelsLoading: boolean;
+  selectedModel: string | null;
+  selectedReasoning: string | null;
+  selectedModelDescriptor: CodexModel | undefined;
+  selectionUnavailable: boolean;
+  onSelectedModel: (modelId: string | null) => void;
+  onSelectedReasoning: (reasoningOptionId: string | null) => void;
+  onRefreshModels: () => void;
 }) {
   const [showNewMessageJump, setShowNewMessageJump] = useState(false);
   const messagesElement = useRef<HTMLDivElement | null>(null);
@@ -1481,6 +1816,7 @@ function LectureStudioChat({
   const previousStudioId = useRef<string | null>(null);
   const previousMessageId = useRef<string | null>(null);
   const latestMessageId = lastLectureMessageId(messages);
+  const reasoningOptions = selectedModelDescriptor?.reasoningOptions ?? [];
 
   const jumpToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const element = messagesElement.current;
@@ -1510,9 +1846,28 @@ function LectureStudioChat({
     return undefined;
   }, [jumpToLatest, latestMessageId, studio.id]);
 
+  if (collapsed) {
+    return (
+      <aside className="lecture-chat collapsed" aria-label="Lecture assistant collapsed">
+        <button
+          type="button"
+          className="lecture-pane-toggle"
+          aria-label="Show lecture assistant"
+          title="Show lecture assistant"
+          aria-expanded="false"
+          aria-controls="lecture-studio-assistant"
+          onClick={() => onCollapsedChange(false)}
+        >
+          <CollapseChevron direction="left" />
+        </button>
+        <span>AI</span>
+      </aside>
+    );
+  }
+
   const send = async () => {
     const message = draft.trim();
-    if (!message || busy || studio.status !== 'ready') return;
+    if (!message || busy || studio.status !== 'ready' || selectionUnavailable) return;
     const succeeded = await onSend(message);
     if (succeeded) onDraftChange('');
   };
@@ -1524,7 +1879,7 @@ function LectureStudioChat({
   };
 
   return (
-    <aside className="lecture-chat">
+    <aside className="lecture-chat" id="lecture-studio-assistant">
       <header>
         <div>
           <span className="eyebrow">Lecture assistant</span>
@@ -1535,7 +1890,74 @@ function LectureStudioChat({
             Stop
           </button>
         )}
+        <button
+          type="button"
+          className="lecture-pane-toggle"
+          aria-label="Hide lecture assistant"
+          title="Hide lecture assistant"
+          aria-expanded="true"
+          aria-controls="lecture-studio-assistant"
+          onClick={() => onCollapsedChange(true)}
+        >
+          <CollapseChevron direction="right" />
+        </button>
       </header>
+      <div className="lecture-chat-models">
+        <label>
+          Model
+          <select
+            value={selectedModel ?? ''}
+            onChange={(event) => onSelectedModel(event.target.value || null)}
+            disabled={busy || modelsLoading}
+          >
+            <option value="">Auto · provider recommended</option>
+            {selectedModel !== null && !models.some((model) => model.modelId === selectedModel) && (
+              <option value={selectedModel} disabled>
+                Unavailable model · choose again
+              </option>
+            )}
+            {models.map((model) => (
+              <option value={model.modelId} key={model.modelId}>
+                {model.displayName}
+                {model.isDefault ? ' · default' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Reasoning
+          <select
+            value={selectedReasoning ?? ''}
+            onChange={(event) => onSelectedReasoning(event.target.value || null)}
+            disabled={busy || modelsLoading || reasoningOptions.length === 0}
+          >
+            <option value="">Model default</option>
+            {selectedReasoning !== null &&
+              !reasoningOptions.some((option) => option.id === selectedReasoning) && (
+                <option value={selectedReasoning} disabled>
+                  Unavailable reasoning · choose again
+                </option>
+              )}
+            {reasoningOptions.map((option) => (
+              <option value={option.id} key={option.id}>
+                {option.label}
+                {option.isDefault ? ' · default' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          className="ghost-button"
+          onClick={onRefreshModels}
+          disabled={modelsLoading}
+        >
+          Refresh
+        </button>
+        {selectionUnavailable && (
+          <p role="alert">Choose an available model and reasoning option.</p>
+        )}
+      </div>
       <p className="lecture-chat-boundary">
         This chat edits only this lecture workspace. Project chats remain separate. Showing up to
         the {LECTURE_STUDIO_RECENT_MESSAGE_WINDOW} most recent messages.
@@ -1601,12 +2023,14 @@ function LectureStudioChat({
           }
           rows={3}
           maxLength={12_000}
-          disabled={busy || studio.status !== 'ready'}
+          disabled={busy || studio.status !== 'ready' || selectionUnavailable}
         />
         <button
           type="button"
           className="primary-button"
-          disabled={busy || studio.status !== 'ready' || draft.trim() === ''}
+          disabled={
+            busy || studio.status !== 'ready' || selectionUnavailable || draft.trim() === ''
+          }
           onClick={() => void send()}
         >
           {busy ? 'Working…' : 'Send'}
