@@ -1449,9 +1449,7 @@ export class LectureStudioService {
         ),
       0,
     );
-    if (
-      manuscriptExtractJsonCharacters > LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS
-    ) {
+    if (manuscriptExtractJsonCharacters > LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS) {
       throw new LectureStudioServiceError('lecture_context_too_large');
     }
     let manifest: LectureSourceManifest;

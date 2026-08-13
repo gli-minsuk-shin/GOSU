@@ -908,14 +908,7 @@ The captured result improves the bounded baseline.
   });
 
   it('shares one serialized extraction budget fairly across two large manuscripts', async () => {
-    const {
-      service,
-      codex,
-      projectA,
-      projectB,
-      manuscriptSnapshots,
-      manuscriptFiles,
-    } = fixture();
+    const { service, codex, projectA, projectB, manuscriptSnapshots, manuscriptFiles } = fixture();
     const snapshotA = manuscriptSnapshot(projectA);
     const snapshotB = manuscriptSnapshot(projectB);
     const manuscriptA = snapshotA.manuscripts[0]!.manuscript;
@@ -958,14 +951,9 @@ The captured result improves the bounded baseline.
     if (receipt.revision.sourceManifest.schemaVersion !== 2) {
       throw new Error('Expected a v2 manuscript source manifest');
     }
-    const extracts = receipt.revision.sourceManifest.manuscripts.map(
-      (source) => source.files[0]!,
-    );
+    const extracts = receipt.revision.sourceManifest.manuscripts.map((source) => source.files[0]!);
     expect(extracts).toHaveLength(2);
-    expect(extracts.map((file) => file.contentSha256)).toEqual([
-      hash(longMain),
-      hash(longMain),
-    ]);
+    expect(extracts.map((file) => file.contentSha256)).toEqual([hash(longMain), hash(longMain)]);
     expect(extracts.every((file) => file.totalCharacters === longMain.length)).toBe(true);
     expect(extracts.every((file) => file.contentComplete === false)).toBe(true);
     expect(extracts.every((file) => JSON.stringify(file.content).length > 45_000)).toBe(true);
