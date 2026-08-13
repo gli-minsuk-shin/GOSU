@@ -227,6 +227,7 @@ const lectureStudioAdapter: LectureStudioViewAdapter = {
   generate: (input) => window.gosu.lectureStudio.generate(input),
   send: (input) => window.gosu.lectureStudio.send(input),
   cancel: (input) => window.gosu.lectureStudio.cancel(input),
+  compilePdf: (input) => window.gosu.lectureStudio.compilePdf(input),
   onEvent: (listener) => window.gosu.lectureStudio.onEvent(listener),
 };
 

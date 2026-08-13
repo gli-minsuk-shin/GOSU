@@ -58,6 +58,9 @@ const manuscriptManifest: LectureStudioPromptSourceManifest = {
         {
           relativePath: 'main.tex',
           contentSha256: 'b'.repeat(64),
+          totalCharacters: 80_000,
+          contentComplete: false,
+          extractionPolicyVersion: 1,
           content: String.raw`\section{Result} Captured checkpoint evidence.`,
         },
       ],
@@ -96,6 +99,44 @@ describe('Lecture Studio prompt', () => {
     expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain('never MDX');
   });
 
+  it('carries page targets, detail level, and user guidance into the bounded authoring brief', () => {
+    const prompt = buildLectureStudioPrompt({
+      mode: 'initial',
+      title: 'Directed synthesis',
+      kind: 'lecture',
+      durationMinutes: null,
+      generationBrief: {
+        notesTargetPages: 12,
+        slidesTargetPages: 18,
+        detailLevel: 'detailed',
+        customInstructions: 'Lead with motivation and compare limitations.',
+      },
+      sourceManifest: manifest,
+      currentDraft: null,
+      recentMessages: [],
+      request: null,
+    });
+    const payload = JSON.parse(prompt.slice(prompt.indexOf('\n\n') + 2)) as {
+      generationBrief: {
+        notesTargetPages: number;
+        slidesTargetPages: number;
+        detailLevel: string;
+        customInstructions: string;
+      };
+      task: string;
+    };
+
+    expect(payload.generationBrief).toEqual({
+      notesTargetPages: 12,
+      slidesTargetPages: 18,
+      detailLevel: 'detailed',
+      customInstructions: 'Lead with motivation and compare limitations.',
+    });
+    expect(payload.task).toContain('approximately 12 lecture-note pages');
+    expect(payload.task).toContain('exactly 18 slides');
+    expect(payload.task).toContain('Detail level: detailed');
+  });
+
   it('preserves exact captured manuscript content and requires M labels', () => {
     const prompt = buildLectureStudioPrompt({
       mode: 'initial',
@@ -119,6 +160,9 @@ describe('Lecture Studio prompt', () => {
     );
     expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
       'Every slide after the title slide must contain at least one exact supplied [P#], [E#], or [M#]',
+    );
+    expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
+      'When contentComplete is false, do not claim the entire file or manuscript was supplied',
     );
   });
 

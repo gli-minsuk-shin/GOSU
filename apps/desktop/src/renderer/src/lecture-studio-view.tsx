@@ -14,15 +14,18 @@ import {
   LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES,
   LECTURE_STUDIO_MAX_LITERATURE_SOURCES,
   LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES,
+  LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS,
   LECTURE_STUDIO_MAX_SOURCE_PROJECTS,
   LECTURE_STUDIO_DURATIONS,
   type CancelLectureStudioInput,
+  type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
   type GenerateLectureStudioInput,
   type LectureSourceCandidates,
   type LectureSourceSelection,
   type LectureStudio,
   type LectureStudioDetail,
+  type LectureStudioDetailLevel,
   type LectureStudioDetailInput,
   type LectureStudioDuration,
   type LectureStudioEvent,
@@ -30,6 +33,7 @@ import {
   type LectureStudioMessage,
   type LectureStudioRevision,
   type LectureStudioListSnapshot,
+  type LectureStudioPdfPreview,
   type LectureStudioSummary,
   type LectureStudioTurnReceipt,
   type ListLectureCandidatesInput,
@@ -39,7 +43,9 @@ import {
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import type { LectureStudioDraftStore } from './lecture-studio-session-state';
 import { MarkdownDocument } from './markdown-document';
+import { PdfPreview } from './pdf-preview';
 import './lecture-studio-view.css';
+import './pdf-preview.css';
 
 export interface LectureStudioViewAdapter {
   list: (input: ListLectureStudiosInput) => Promise<LectureStudioListSnapshot>;
@@ -49,6 +55,7 @@ export interface LectureStudioViewAdapter {
   generate: (input: GenerateLectureStudioInput) => Promise<LectureStudioTurnReceipt>;
   send: (input: SendLectureStudioMessageInput) => Promise<LectureStudioTurnReceipt>;
   cancel: (input: CancelLectureStudioInput) => Promise<LectureStudio>;
+  compilePdf: (input: CompileLectureStudioPdfInput) => Promise<LectureStudioPdfPreview>;
   onEvent: (listener: (event: LectureStudioEvent) => void) => () => void;
 }
 
@@ -60,7 +67,25 @@ export interface LectureStudioViewProps {
   reasoningOptionId: string | null;
 }
 
-type PreviewTab = 'notes' | 'slides';
+type PreviewTab = 'notes' | 'notes-pdf' | 'slides' | 'slides-pdf';
+
+function previewDocumentKind(tab: PreviewTab) {
+  return tab.startsWith('notes') ? ('lecture-notes' as const) : ('slides' as const);
+}
+
+function previewIsPdf(tab: PreviewTab) {
+  return tab.endsWith('-pdf');
+}
+
+function revisionMarkdown(revision: LectureStudioRevision, kind: 'lecture-notes' | 'slides') {
+  return kind === 'lecture-notes' ? revision.lectureNotesMarkdown : revision.slidesMarkdown;
+}
+
+async function sha256Text(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 const LECTURE_STUDIO_UI_MAX_SOURCES = Math.max(
   LECTURE_STUDIO_MAX_LITERATURE_SOURCES,
@@ -156,6 +181,14 @@ function lectureErrorCodeMessage(code: string) {
       'GOSU could not safely commit this revision. Any pending file bundle was rolled back.',
     lecture_cancelled: 'Generation was stopped. The previous revision remains unchanged.',
     lecture_not_active: 'This lecture is no longer generating.',
+    lecture_pdf_compiler_unavailable:
+      'Local PDF preview needs MacTeX. Install MacTeX, then try compiling this revision again.',
+    lecture_pdf_compile_failed:
+      'The local LaTeX compiler could not build this revision. The saved Markdown is unchanged.',
+    lecture_pdf_too_large:
+      'The compiled PDF exceeded the local preview limit. The saved Markdown is unchanged.',
+    lecture_pdf_invalid:
+      'This revision could not be converted into a safe local PDF preview. The saved Markdown is unchanged.',
   };
   return messages[code] ?? 'The lecture operation could not be completed.';
 }
@@ -507,9 +540,11 @@ export function LectureStudioView({
         ) : selectedStudio ? (
           <>
             <StudioPreview
+              key={selectedStudio.id}
               studio={selectedStudio}
               revision={selectedRevision}
               projects={projects}
+              adapter={adapter}
               activeTab={previewTab}
               busy={busyStudioIds.has(selectedStudio.id)}
               onTab={setPreviewTab}
@@ -655,6 +690,10 @@ function LectureComposer({
   const [title, setTitle] = useState('');
   const [kind, setKind] = useState<LectureStudioKind>('lecture');
   const [durationMinutes, setDurationMinutes] = useState<LectureStudioDuration>(20);
+  const [notesTargetPages, setNotesTargetPages] = useState('');
+  const [slidesTargetPages, setSlidesTargetPages] = useState('');
+  const [detailLevel, setDetailLevel] = useState<LectureStudioDetailLevel>('standard');
+  const [customInstructions, setCustomInstructions] = useState('');
   const [projectIds, setProjectIds] = useState<string[]>(() =>
     projects[0] ? [projects[0].id] : [],
   );
@@ -804,6 +843,12 @@ function LectureComposer({
         outputProjectId,
         sourceProjectIds: projectIds,
         sourceSelection,
+        generationBrief: {
+          notesTargetPages: notesTargetPages === '' ? null : Number(notesTargetPages),
+          slidesTargetPages: slidesTargetPages === '' ? null : Number(slidesTargetPages),
+          detailLevel,
+          customInstructions,
+        },
       });
       await onCreated(studio);
     } catch (createError) {
@@ -879,6 +924,71 @@ function LectureComposer({
           </div>
         </fieldset>
       )}
+
+      <fieldset className="lecture-generation-brief">
+        <legend>Length &amp; detail</legend>
+        <p>
+          Set optional length targets and guidance before generation. You can continue refining the
+          result in the dedicated Lecture Studio chat.
+        </p>
+        <div className="lecture-generation-brief-grid">
+          <label>
+            Lecture-note pages
+            <input
+              type="number"
+              min={1}
+              max={100}
+              step={1}
+              inputMode="numeric"
+              value={notesTargetPages}
+              placeholder="Auto"
+              onChange={(event) => setNotesTargetPages(event.target.value)}
+            />
+            <small>Approximate PDF page target.</small>
+          </label>
+          <label>
+            Slide pages
+            <input
+              type="number"
+              min={1}
+              max={100}
+              step={1}
+              inputMode="numeric"
+              value={slidesTargetPages}
+              placeholder="Auto"
+              onChange={(event) => setSlidesTargetPages(event.target.value)}
+            />
+            <small>Exact number of Markdown slides.</small>
+          </label>
+          <label>
+            Detail
+            <select
+              value={detailLevel}
+              onChange={(event) => setDetailLevel(event.target.value as LectureStudioDetailLevel)}
+            >
+              <option value="concise">Concise</option>
+              <option value="standard">Standard</option>
+              <option value="detailed">Detailed</option>
+              <option value="exhaustive">Exhaustive</option>
+            </select>
+            <small>Controls explanation depth, not evidence quality.</small>
+          </label>
+        </div>
+        <label className="lecture-generation-instructions">
+          Additional instructions
+          <textarea
+            rows={4}
+            maxLength={LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS}
+            value={customInstructions}
+            placeholder="e.g. Focus on methodology, compare assumptions, and end with open questions."
+            onChange={(event) => setCustomInstructions(event.target.value)}
+          />
+          <small>
+            {customInstructions.length.toLocaleString()} /{' '}
+            {LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS.toLocaleString()} characters
+          </small>
+        </label>
+      </fieldset>
 
       <fieldset className="lecture-project-picker">
         <legend>Source projects</legend>
@@ -1043,6 +1153,7 @@ function LectureComposer({
                           <label
                             key={candidate.manuscript.id}
                             className={!ready ? 'unavailable' : ''}
+                            aria-label={`${candidate.manuscript.title} — ${candidate.manuscript.rootDocument} — ${ready ? 'captured checkpoint ready' : lectureManuscriptAvailabilityLabel(candidate.availability)}`}
                           >
                             <input
                               type="checkbox"
@@ -1051,10 +1162,16 @@ function LectureComposer({
                               onChange={() => toggleSource('manuscript', key)}
                             />
                             <span>
-                              <strong>{candidate.manuscript.title}</strong>
-                              <small>Root document: {candidate.manuscript.rootDocument}</small>
+                              <strong title={candidate.manuscript.title}>
+                                {candidate.manuscript.title}
+                              </strong>
+                              <small title={candidate.manuscript.rootDocument}>
+                                Root: {candidate.manuscript.rootDocument}
+                              </small>
                               {candidate.observedAt && (
-                                <small>Captured {formatUpdatedAt(candidate.observedAt)}</small>
+                                <small>
+                                  Captured checkpoint · {formatUpdatedAt(candidate.observedAt)}
+                                </small>
                               )}
                               {!ready && (
                                 <small>
@@ -1062,7 +1179,7 @@ function LectureComposer({
                                 </small>
                               )}
                             </span>
-                            <em>{ready ? 'Captured' : 'Unavailable'}</em>
+                            <em>{ready ? 'Ready' : 'Not ready'}</em>
                           </label>
                         );
                       })
@@ -1117,6 +1234,7 @@ function StudioPreview({
   studio,
   revision,
   projects,
+  adapter,
   activeTab,
   busy,
   onTab,
@@ -1126,17 +1244,74 @@ function StudioPreview({
   studio: LectureStudio;
   revision: LectureStudioRevision | null;
   projects: readonly ProjectRecord[];
+  adapter: LectureStudioViewAdapter;
   activeTab: PreviewTab;
   busy: boolean;
   onTab: (tab: PreviewTab) => void;
   onGenerate: () => void;
   onCancel: () => void;
 }) {
+  const [pdfPreviews, setPdfPreviews] = useState<
+    Partial<Record<'lecture-notes' | 'slides', LectureStudioPdfPreview>>
+  >({});
+  const [compilingPdf, setCompilingPdf] = useState<'lecture-notes' | 'slides' | null>(null);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const automaticPdfCompileKey = useRef<string | null>(null);
+  const pdfCompileGeneration = useRef(0);
+  const mounted = useRef(true);
   const outputProjectName = lectureOutputProjectName(projects, studio.outputProjectId);
-  const markdown =
-    activeTab === 'notes'
-      ? (revision?.lectureNotesMarkdown ?? '')
-      : (revision?.slidesMarkdown ?? '');
+  const documentKind = previewDocumentKind(activeTab);
+  const markdown = revision ? revisionMarkdown(revision, documentKind) : '';
+  const pdfPreview = pdfPreviews[documentKind];
+
+  useEffect(() => {
+    pdfCompileGeneration.current += 1;
+    automaticPdfCompileKey.current = null;
+    setPdfPreviews({});
+    setCompilingPdf(null);
+    setPdfError(null);
+  }, [revision?.id, studio.id]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      pdfCompileGeneration.current += 1;
+    };
+  }, []);
+
+  const compilePdf = useCallback(async () => {
+    if (!revision) return;
+    const kind = previewDocumentKind(activeTab);
+    const generation = ++pdfCompileGeneration.current;
+    setCompilingPdf(kind);
+    setPdfError(null);
+    try {
+      const contentSha256 = await sha256Text(revisionMarkdown(revision, kind));
+      const preview = await adapter.compilePdf({
+        studioId: studio.id,
+        revision: revision.revision,
+        kind,
+        contentSha256,
+      });
+      if (!mounted.current || generation !== pdfCompileGeneration.current) return;
+      setPdfPreviews((current) => ({ ...current, [kind]: preview }));
+    } catch (compileError) {
+      if (!mounted.current || generation !== pdfCompileGeneration.current) return;
+      setPdfError(lectureErrorMessage(compileError));
+    } finally {
+      if (mounted.current && generation === pdfCompileGeneration.current) setCompilingPdf(null);
+    }
+  }, [activeTab, adapter, revision, studio.id]);
+
+  useEffect(() => {
+    if (!revision || !previewIsPdf(activeTab) || pdfPreview || compilingPdf !== null) return;
+    const key = `${revision.id}:${documentKind}`;
+    if (automaticPdfCompileKey.current === key) return;
+    automaticPdfCompileKey.current = key;
+    void compilePdf();
+  }, [activeTab, compilePdf, compilingPdf, documentKind, pdfPreview, revision]);
+
   return (
     <main className="lecture-preview">
       <header className="lecture-preview-toolbar">
@@ -1167,6 +1342,15 @@ function StudioPreview({
             <code>{studio.lastErrorCode}</code>
           </div>
         )}
+        {pdfError && (
+          <div className="lecture-preview-error" role="alert">
+            <strong>PDF preview was not created</strong>
+            <span>{pdfError}</span>
+            <button type="button" className="ghost-button" onClick={() => setPdfError(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
       </header>
 
       <div className="lecture-preview-tabs" role="tablist" aria-label="Generated documents">
@@ -1188,9 +1372,30 @@ function StudioPreview({
         >
           {studio.kind === 'talk' ? 'Talk slides' : 'Lecture slides'}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'notes-pdf'}
+          className={activeTab === 'notes-pdf' ? 'active' : ''}
+          onClick={() => onTab('notes-pdf')}
+        >
+          Notes PDF
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'slides-pdf'}
+          className={activeTab === 'slides-pdf' ? 'active' : ''}
+          onClick={() => onTab('slides-pdf')}
+        >
+          Slides PDF
+        </button>
       </div>
 
-      <section className="lecture-preview-document" role="tabpanel">
+      <section
+        className={`lecture-preview-document${previewIsPdf(activeTab) ? ' pdf' : ''}`}
+        role="tabpanel"
+      >
         {studio.status === 'generating' && markdown.trim() === '' ? (
           <div className="lecture-preview-empty generating">
             <i />
@@ -1201,6 +1406,23 @@ function StudioPreview({
           <div className="lecture-preview-empty">
             <strong>No generated {activeTab} yet</strong>
             <span>Generate the first revision to preview it here.</span>
+          </div>
+        ) : previewIsPdf(activeTab) && pdfPreview ? (
+          <PdfPreview document={pdfPreview} className="lecture-studio-pdf-preview" />
+        ) : previewIsPdf(activeTab) ? (
+          <div className="lecture-preview-empty">
+            <strong>Compile this revision as PDF</strong>
+            <span>
+              GOSU compiles the exact saved Markdown locally with network access disabled.
+            </span>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={compilingPdf !== null}
+              onClick={() => void compilePdf()}
+            >
+              {compilingPdf === documentKind ? 'Compiling PDF…' : 'Compile & preview PDF'}
+            </button>
           </div>
         ) : (
           <MarkdownDocument

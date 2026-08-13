@@ -157,6 +157,49 @@ describe('Lecture Studio candidate pagination contracts', () => {
       experiments: [],
       manuscripts: [{ projectId, manuscriptId }],
     });
+    expect(manuscriptOnly.generationBrief).toEqual({
+      notesTargetPages: null,
+      slidesTargetPages: null,
+      detailLevel: 'standard',
+      customInstructions: '',
+    });
+
+    const directed = CreateLectureStudioInputSchema.parse({
+      ...manuscriptOnly,
+      generationBrief: {
+        notesTargetPages: 14,
+        slidesTargetPages: 24,
+        detailLevel: 'exhaustive',
+        customInstructions: 'Compare assumptions and end with open questions.',
+      },
+    });
+    expect(directed.generationBrief).toMatchObject({
+      notesTargetPages: 14,
+      slidesTargetPages: 24,
+      detailLevel: 'exhaustive',
+    });
+    expect(() =>
+      CreateLectureStudioInputSchema.parse({
+        ...manuscriptOnly,
+        generationBrief: {
+          notesTargetPages: null,
+          slidesTargetPages: null,
+          detailLevel: 'standard',
+          customInstructions: '\\'.repeat(6_001),
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      CreateLectureStudioInputSchema.parse({
+        ...manuscriptOnly,
+        generationBrief: {
+          notesTargetPages: null,
+          slidesTargetPages: null,
+          detailLevel: 'standard',
+          customInstructions: `unsafe${String.fromCharCode(0)}instruction`,
+        },
+      }),
+    ).toThrow();
   });
 
   it('preserves v1 revision manifests and validates captured LaTeX v2 provenance', () => {
@@ -213,7 +256,18 @@ describe('Lecture Studio candidate pagination contracts', () => {
             {
               relativePath: 'main.tex',
               contentSha256: 'b'.repeat(64),
+              totalCharacters: 181_796,
+              contentComplete: false,
+              extractionPolicyVersion: 1,
               content: '\\documentclass{article}',
+            },
+            {
+              relativePath: 'references.bib',
+              contentSha256: 'c'.repeat(64),
+              totalCharacters: 0,
+              contentComplete: true,
+              extractionPolicyVersion: 1,
+              content: '',
             },
           ],
           contentKind: 'captured_latex',
@@ -221,7 +275,18 @@ describe('Lecture Studio candidate pagination contracts', () => {
         },
       ],
     });
-    expect(v2).toMatchObject({ schemaVersion: 2, manuscripts: [{ sourceLabel: 'M1' }] });
+    expect(v2).toMatchObject({
+      schemaVersion: 2,
+      manuscripts: [
+        {
+          sourceLabel: 'M1',
+          files: [
+            { totalCharacters: 181_796, contentComplete: false },
+            { totalCharacters: 0, contentComplete: true },
+          ],
+        },
+      ],
+    });
   });
 
   it('keeps unavailable manuscripts visible without claiming a checkpoint', () => {

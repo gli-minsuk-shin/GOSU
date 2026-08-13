@@ -104,6 +104,30 @@ describe('Manuscript workspace IPC', () => {
     expect(update).toHaveBeenCalledExactlyOnceWith(command);
   });
 
+  it('validates and forwards only a typed setup-record deletion', async () => {
+    const deleteUnconfigured = vi.fn(async () => ({ schemaVersion: 1 }));
+    const { handlers } = fixture({ deleteUnconfigured });
+    const command = {
+      projectId: randomUUID(),
+      manuscriptId: randomUUID(),
+      expectedVersion: 2,
+    };
+
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.deleteUnconfigured)?.({
+        ...command,
+        force: true,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'invalid_manuscript_workspace_input' },
+    });
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.deleteUnconfigured)?.(command),
+    ).resolves.toEqual({ ok: true, value: { schemaVersion: 1 } });
+    expect(deleteUnconfigured).toHaveBeenCalledExactlyOnceWith(command);
+  });
+
   it('validates and forwards checkpoint source and PDF operations without path escape hatches', async () => {
     const listCheckpointFiles = vi.fn(async () => ({ schemaVersion: 1 }));
     const readCheckpointFile = vi.fn(async () => ({ schemaVersion: 1 }));

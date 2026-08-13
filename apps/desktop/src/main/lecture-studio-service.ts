@@ -5,6 +5,7 @@ import type { ModelInvocation } from '@gosu/contracts';
 
 import {
   CancelLectureStudioInputSchema,
+  CompileLectureStudioPdfInputSchema,
   CreateLectureStudioInputSchema,
   GenerateLectureStudioInputSchema,
   LECTURE_STUDIO_MAX_MANUSCRIPT_FILES,
@@ -25,6 +26,7 @@ import {
   ListLectureStudiosInputSchema,
   SendLectureStudioMessageInputSchema,
   type CancelLectureStudioInput,
+  type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
   type GenerateLectureStudioInput,
   type LectureSourceCandidates,
@@ -37,6 +39,7 @@ import {
   type LectureStudioEvent,
   type LectureStudioListSnapshot,
   type LectureStudioMessage,
+  type LectureStudioPdfPreview,
   type LectureStudioRevision,
   type LectureStudioSummary,
   type LectureStudioTurnReceipt,
@@ -63,6 +66,10 @@ import {
   talkSlideBudget,
 } from './lecture-studio-prompt';
 import { LectureStudioStorageError } from './lecture-studio-storage-error';
+import {
+  LectureDocumentCompilerError,
+  type LectureDocumentCompiler,
+} from './lecture-document-compiler';
 
 type MaybePromise<T> = T | Promise<T>;
 type CodexNotification = Readonly<{ method?: string; params?: unknown }>;
@@ -230,7 +237,11 @@ export class LectureStudioServiceError extends Error {
       | 'lecture_invalid_response'
       | 'lecture_persistence_failed'
       | 'lecture_capacity_reached'
-      | 'lecture_cancelled',
+      | 'lecture_cancelled'
+      | 'lecture_pdf_compiler_unavailable'
+      | 'lecture_pdf_compile_failed'
+      | 'lecture_pdf_too_large'
+      | 'lecture_pdf_invalid',
   ) {
     super(code);
     this.name = 'LectureStudioServiceError';
@@ -268,6 +279,8 @@ type TurnRequest = Readonly<{
 
 const LECTURE_STUDIO_MAX_METRICS_PER_IDEA = 64;
 const LECTURE_MANUSCRIPT_FILE_MAX_CHARACTERS = 24_000;
+const LECTURE_MANUSCRIPT_FILE_EXTRACT_MAX_CHARACTERS = 72_000;
+const LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS = 100_000;
 const LECTURE_MANUSCRIPT_SOURCE_PATH_PATTERN = /\.(?:bib|tex)$/iu;
 const RAW_HTML_PATTERN = /<\s*(?:!--|\/?\s*[A-Za-z][^>]*>)/u;
 const MARKDOWN_IMAGE_PATTERN = /!\s*\[/u;
@@ -293,6 +306,45 @@ function notificationIdentity(notification: CodexNotification) {
 
 function sha256(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function safeCharacterSlice(value: string, start: number, end?: number) {
+  let safeStart = Math.max(0, Math.min(start, value.length));
+  let safeEnd = Math.max(safeStart, Math.min(end ?? value.length, value.length));
+  const isLowSurrogate = (code: number) => code >= 0xdc00 && code <= 0xdfff;
+  const isHighSurrogate = (code: number) => code >= 0xd800 && code <= 0xdbff;
+  if (safeStart > 0 && isLowSurrogate(value.charCodeAt(safeStart))) safeStart -= 1;
+  if (safeEnd < value.length && isHighSurrogate(value.charCodeAt(safeEnd - 1))) safeEnd -= 1;
+  return value.slice(safeStart, safeEnd);
+}
+
+function boundedExactFileExtract(content: string, maximumCharacters: number) {
+  if (content.length <= maximumCharacters) return content;
+  const marker = '\n\n% [GOSU bounded exact checkpoint extract: middle omitted]\n\n';
+  const bodyBudget = Math.max(2, maximumCharacters - marker.length);
+  const prefixLength = Math.ceil(bodyBudget * 0.72);
+  const suffixLength = bodyBudget - prefixLength;
+  return `${safeCharacterSlice(content, 0, prefixLength)}${marker}${safeCharacterSlice(
+    content,
+    content.length - suffixLength,
+  )}`;
+}
+
+function boundedExactFileExtractToJsonBudget(content: string, maximumJsonCharacters: number) {
+  if (JSON.stringify(content).length <= maximumJsonCharacters) return content;
+  // An incomplete prefix/suffix extract carries a provenance marker. For very small residual
+  // budgets the marker itself cannot fit, so retain the file identity/hash with an empty exact
+  // excerpt instead of silently exceeding the caller's serialized-context allowance.
+  if (JSON.stringify(boundedExactFileExtract(content, 1)).length > maximumJsonCharacters) return '';
+  let low = 1;
+  let high = Math.min(content.length, maximumJsonCharacters);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = boundedExactFileExtract(content, middle);
+    if (JSON.stringify(candidate).length <= maximumJsonCharacters) low = middle;
+    else high = middle - 1;
+  }
+  return boundedExactFileExtract(content, low);
 }
 
 function uniqueNonEmpty(values: readonly string[], maximum: number) {
@@ -384,6 +436,7 @@ export class LectureStudioService {
       workspace: LectureStudioWorkspace;
       artifacts: LectureStudioArtifactWriter;
       codex: LectureStudioCodex;
+      pdfCompiler?: Pick<LectureDocumentCompiler, 'compile'>;
       prepareDirectory: (outputProjectId: string) => Promise<string>;
       now?: () => Date;
       timeoutMs?: number;
@@ -605,6 +658,42 @@ export class LectureStudioService {
     return this.runTurn(command);
   }
 
+  async compilePdf(input: CompileLectureStudioPdfInput): Promise<LectureStudioPdfPreview> {
+    const command = CompileLectureStudioPdfInputSchema.parse(input);
+    const compiler = this.dependencies.pdfCompiler;
+    if (!compiler) {
+      throw new LectureStudioServiceError('lecture_pdf_compiler_unavailable');
+    }
+    const studio = await this.requireStudio(command.studioId);
+    const revision = await this.dependencies.storage.getLectureStudioRevision(
+      studio.id,
+      command.revision,
+    );
+    if (!revision || revision.revision > studio.currentRevision) {
+      throw new LectureStudioServiceError('lecture_source_not_found');
+    }
+    const markdown =
+      command.kind === 'lecture-notes' ? revision.lectureNotesMarkdown : revision.slidesMarkdown;
+    if (sha256(markdown) !== command.contentSha256) {
+      throw new LectureStudioServiceError('lecture_version_conflict');
+    }
+    try {
+      return await compiler.compile({
+        studioId: studio.id,
+        revision: revision.revision,
+        title: studio.title,
+        kind: command.kind,
+        markdown,
+        contentSha256: command.contentSha256,
+      });
+    } catch (error) {
+      if (error instanceof LectureDocumentCompilerError) {
+        throw new LectureStudioServiceError(error.code);
+      }
+      throw new LectureStudioServiceError('lecture_pdf_compile_failed');
+    }
+  }
+
   async cancel(input: CancelLectureStudioInput): Promise<LectureStudio> {
     const command = CancelLectureStudioInputSchema.parse(input);
     const studio = await this.requireStudio(command.studioId);
@@ -764,6 +853,7 @@ export class LectureStudioService {
           title: generating.title,
           kind: generating.kind,
           durationMinutes: generating.durationMinutes,
+          generationBrief: generating.generationBrief,
           sourceManifest,
           currentDraft: previousRevision
             ? {
@@ -989,11 +1079,23 @@ export class LectureStudioService {
         }
       }
       if (studio.kind === 'talk') {
+        const requestedSlides = studio.generationBrief.slidesTargetPages;
+        if (requestedSlides !== null && slides.length !== requestedSlides) {
+          throw new Error('invalid_requested_slide_count');
+        }
         const budget = talkSlideBudget(studio.durationMinutes!);
         const slideCount = slides.length;
-        if (slideCount < budget.minimum || slideCount > budget.maximum) {
+        if (
+          requestedSlides === null &&
+          (slideCount < budget.minimum || slideCount > budget.maximum)
+        ) {
           throw new Error('invalid_talk_slide_count');
         }
+      } else if (
+        studio.generationBrief.slidesTargetPages !== null &&
+        slides.length !== studio.generationBrief.slidesTargetPages
+      ) {
+        throw new Error('invalid_requested_slide_count');
       }
       return output;
     } catch {
@@ -1139,6 +1241,21 @@ export class LectureStudioService {
     const records = new Map<string, LiteratureRecord>();
     const ideas = new Map<string, ExperimentIdea>();
     const metricsByIdea = new Map<string, ExperimentMetricPoint[]>();
+    const manuscriptExtractBudgetByIdentity = new Map<string, number>();
+    if (selection.manuscripts.length > 0) {
+      const fairShare = Math.floor(
+        LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS / selection.manuscripts.length,
+      );
+      let remainder =
+        LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS -
+        fairShare * selection.manuscripts.length;
+      for (const reference of selection.manuscripts) {
+        manuscriptExtractBudgetByIdentity.set(
+          `${reference.projectId}:${reference.manuscriptId}`,
+          fairShare + (remainder-- > 0 ? 1 : 0),
+        );
+      }
+    }
     const manuscripts = new Map<
       string,
       Awaited<ReturnType<LectureStudioService['resolveManuscriptSource']>>
@@ -1172,9 +1289,14 @@ export class LectureStudioService {
                 })
               : Promise.resolve([]),
             Promise.all(
-              manuscriptIds.map((manuscriptId) =>
-                this.resolveManuscriptSource(project.id, manuscriptId),
-              ),
+              manuscriptIds.map((manuscriptId) => {
+                const identity = `${project.id}:${manuscriptId}`;
+                const extractBudget = manuscriptExtractBudgetByIdentity.get(identity);
+                if (extractBudget === undefined) {
+                  throw new LectureStudioServiceError('lecture_source_conflict');
+                }
+                return this.resolveManuscriptSource(project.id, manuscriptId, extractBudget);
+              }),
             ),
           ]);
         const expectedRecordIds = new Set(recordIds);
@@ -1318,6 +1440,20 @@ export class LectureStudioService {
         ...manuscript,
       };
     });
+    const manuscriptExtractJsonCharacters = manuscriptSources.reduce(
+      (sourceTotal, manuscript) =>
+        sourceTotal +
+        manuscript.files.reduce(
+          (fileTotal, file) => fileTotal + JSON.stringify(file.content).length,
+          0,
+        ),
+      0,
+    );
+    if (
+      manuscriptExtractJsonCharacters > LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS
+    ) {
+      throw new LectureStudioServiceError('lecture_context_too_large');
+    }
     let manifest: LectureSourceManifest;
     try {
       manifest = LectureSourceManifestSchema.parse({
@@ -1338,7 +1474,11 @@ export class LectureStudioService {
     return manifest;
   }
 
-  private async resolveManuscriptSource(projectId: string, manuscriptId: string) {
+  private async resolveManuscriptSource(
+    projectId: string,
+    manuscriptId: string,
+    extractJsonCharacterBudget: number,
+  ) {
     try {
       const snapshot = await this.dependencies.manuscripts.list({ projectId });
       if (snapshot.projectId !== projectId) {
@@ -1383,7 +1523,11 @@ export class LectureStudioService {
           ({ relativePath, textReadable }) =>
             textReadable && LECTURE_MANUSCRIPT_SOURCE_PATH_PATTERN.test(relativePath),
         )
-        .sort((left, right) => left.relativePath.localeCompare(right.relativePath, 'en-US'));
+        .sort((left, right) => {
+          if (left.relativePath === manuscript.rootDocument) return -1;
+          if (right.relativePath === manuscript.rootDocument) return 1;
+          return left.relativePath.localeCompare(right.relativePath, 'en-US');
+        });
       if (
         sourceFiles.length === 0 ||
         sourceFiles.length > LECTURE_STUDIO_MAX_MANUSCRIPT_FILES ||
@@ -1393,14 +1537,18 @@ export class LectureStudioService {
         throw new LectureStudioServiceError('lecture_context_too_large');
       }
 
-      const files = await Promise.all(
-        sourceFiles.map(async ({ relativePath }) => {
+      const fullFiles: Array<{ relativePath: string; content: string }> = [];
+      let totalSourceCharacters = 0;
+      for (const { relativePath } of sourceFiles) {
+        const chunks: string[] = [];
+        let offset = 0;
+        for (;;) {
           const chunk = await this.dependencies.manuscripts.readCheckpointFile({
             projectId,
             manuscriptId,
             checkpointId: checkpoint.checkpointId,
             relativePath,
-            offset: 0,
+            offset,
             maxCharacters: LECTURE_MANUSCRIPT_FILE_MAX_CHARACTERS,
           });
           if (
@@ -1409,18 +1557,51 @@ export class LectureStudioService {
             chunk.checkpointId !== checkpoint.checkpointId ||
             chunk.providerRevision !== fileList.providerRevision ||
             chunk.relativePath !== relativePath ||
-            chunk.offset !== 0 ||
-            chunk.truncated
+            chunk.offset !== offset ||
+            chunk.nextOffset !== offset + chunk.content.length ||
+            (chunk.truncated && chunk.nextOffset <= offset)
           ) {
+            throw new LectureStudioServiceError('lecture_source_conflict');
+          }
+          chunks.push(chunk.content);
+          totalSourceCharacters += chunk.content.length;
+          if (totalSourceCharacters > 2_000_000) {
             throw new LectureStudioServiceError('lecture_context_too_large');
           }
-          return {
-            relativePath,
-            contentSha256: sha256(chunk.content),
-            content: chunk.content,
-          };
-        }),
-      );
+          offset = chunk.nextOffset;
+          if (!chunk.truncated) break;
+        }
+        fullFiles.push({ relativePath, content: chunks.join('') });
+      }
+
+      let remainingExtractJsonCharacters = extractJsonCharacterBudget;
+      if (remainingExtractJsonCharacters < fullFiles.length * JSON.stringify('').length) {
+        throw new LectureStudioServiceError('lecture_context_too_large');
+      }
+      const files = fullFiles.map(({ relativePath, content }, index) => {
+        // Files are root-first. Give the current file every remaining byte after reserving the
+        // smallest valid JSON string for each later file, so provenance stays complete without
+        // allowing a large bibliography to steal another manuscript's fair source share.
+        const futureMinimum = (fullFiles.length - index - 1) * JSON.stringify('').length;
+        const availableJsonCharacters = remainingExtractJsonCharacters - futureMinimum;
+        const perFileMaximum =
+          relativePath === manuscript.rootDocument
+            ? LECTURE_MANUSCRIPT_FILE_EXTRACT_MAX_CHARACTERS
+            : LECTURE_MANUSCRIPT_FILE_MAX_CHARACTERS;
+        const extracted = boundedExactFileExtractToJsonBudget(
+          content,
+          Math.min(availableJsonCharacters, perFileMaximum),
+        );
+        remainingExtractJsonCharacters -= JSON.stringify(extracted).length;
+        return {
+          relativePath,
+          contentSha256: sha256(content),
+          totalCharacters: content.length,
+          contentComplete: extracted.length === content.length,
+          extractionPolicyVersion: 1 as const,
+          content: extracted,
+        };
+      });
       return {
         projectId,
         manuscriptId,

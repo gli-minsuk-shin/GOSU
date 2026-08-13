@@ -7,6 +7,7 @@ import {
 } from './experiment-workspace-contracts';
 import { LiteratureRecordSchema } from './literature-contracts';
 import { ManuscriptRecordSchema } from './manuscript-workspace-contracts';
+import { PdfPreviewDocumentSchema } from './pdf-preview-contracts';
 
 export const LECTURE_STUDIO_DURATIONS = [10, 20, 30, 50] as const;
 export const LECTURE_STUDIO_MAX_STUDIOS = 100;
@@ -15,6 +16,7 @@ export const LECTURE_STUDIO_MAX_LITERATURE_SOURCES = 100;
 export const LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES = 100;
 export const LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES = 32;
 export const LECTURE_STUDIO_MAX_MANUSCRIPT_FILES = 128;
+export const LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS = 6_000;
 export const LECTURE_STUDIO_MAX_MESSAGES = 2_500;
 export const LECTURE_STUDIO_MAX_REVISIONS = 1_000;
 export const LECTURE_STUDIO_MAX_MESSAGE_LENGTH = 32_000;
@@ -28,12 +30,49 @@ const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 const prefixedSha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
 const boundedText = (maximum: number) => z.string().trim().min(1).max(maximum);
 const talkDurationSchema = z.union([z.literal(10), z.literal(20), z.literal(30), z.literal(50)]);
+const containsUnsafeControlCharacter = (value: string) =>
+  [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return (code < 32 && code !== 9 && code !== 10 && code !== 13) || code === 127;
+  });
 
 export const LectureStudioKindSchema = z.enum(['lecture', 'talk']);
 export type LectureStudioKind = z.infer<typeof LectureStudioKindSchema>;
 
 export const LectureStudioDurationSchema = talkDurationSchema;
 export type LectureStudioDuration = z.infer<typeof LectureStudioDurationSchema>;
+
+export const LectureStudioDetailLevelSchema = z.enum([
+  'concise',
+  'standard',
+  'detailed',
+  'exhaustive',
+]);
+export type LectureStudioDetailLevel = z.infer<typeof LectureStudioDetailLevelSchema>;
+
+export const LectureStudioGenerationBriefSchema = z
+  .object({
+    notesTargetPages: z.number().int().min(1).max(100).nullable().default(null),
+    slidesTargetPages: z.number().int().min(1).max(100).nullable().default(null),
+    detailLevel: LectureStudioDetailLevelSchema.default('standard'),
+    customInstructions: z
+      .string()
+      .trim()
+      .max(LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS)
+      .refine(
+        (value) => !containsUnsafeControlCharacter(value),
+        'Generation instructions cannot contain control characters',
+      )
+      .default(''),
+  })
+  .strict()
+  .default({
+    notesTargetPages: null,
+    slidesTargetPages: null,
+    detailLevel: 'standard',
+    customInstructions: '',
+  });
+export type LectureStudioGenerationBrief = z.infer<typeof LectureStudioGenerationBriefSchema>;
 
 export const LectureStudioStatusSchema = z.enum(['draft', 'generating', 'ready', 'failed']);
 export type LectureStudioStatus = z.infer<typeof LectureStudioStatusSchema>;
@@ -149,6 +188,7 @@ const lectureStudioConfigurationShape = {
   outputProjectId: uuidSchema,
   sourceProjectIds: z.array(uuidSchema).min(1).max(LECTURE_STUDIO_MAX_SOURCE_PROJECTS),
   sourceSelection: LectureSourceSelectionSchema,
+  generationBrief: LectureStudioGenerationBriefSchema,
 } as const;
 
 export const LectureStudioSchema = z
@@ -297,7 +337,10 @@ export const LectureManuscriptSourceFileSchema = z
         { message: 'Manuscript source paths must be safe checkpoint-relative paths' },
       ),
     contentSha256: sha256Schema,
-    content: z.string().max(24_000),
+    totalCharacters: z.number().int().nonnegative().max(2_000_000).optional(),
+    contentComplete: z.boolean().optional(),
+    extractionPolicyVersion: z.literal(1).optional(),
+    content: z.string().max(80_000),
   })
   .strict();
 
@@ -781,11 +824,12 @@ export const CreateLectureStudioInputSchema = z
   .superRefine(validateStudioSourceBoundary);
 export type CreateLectureStudioInput = Omit<
   z.infer<typeof CreateLectureStudioInputSchema>,
-  'sourceSelection'
+  'sourceSelection' | 'generationBrief'
 > & {
   sourceSelection: Omit<LectureSourceSelection, 'manuscripts'> & {
     manuscripts?: LectureSourceSelection['manuscripts'];
   };
+  generationBrief?: LectureStudioGenerationBrief;
 };
 
 const lectureTurnShape = {
@@ -811,6 +855,22 @@ export const CancelLectureStudioInputSchema = z
   })
   .strict();
 export type CancelLectureStudioInput = z.infer<typeof CancelLectureStudioInputSchema>;
+
+export const LectureStudioPdfKindSchema = LectureStudioArtifactSchema.shape.kind;
+export type LectureStudioPdfKind = z.infer<typeof LectureStudioPdfKindSchema>;
+
+/** Compile one exact, immutable Lecture Studio revision into an ephemeral local preview. */
+export const CompileLectureStudioPdfInputSchema = z
+  .object({
+    studioId: uuidSchema,
+    revision: z.number().int().positive(),
+    kind: LectureStudioPdfKindSchema,
+    contentSha256: sha256Schema,
+  })
+  .strict();
+export type CompileLectureStudioPdfInput = z.infer<typeof CompileLectureStudioPdfInputSchema>;
+export const LectureStudioPdfPreviewSchema = PdfPreviewDocumentSchema;
+export type LectureStudioPdfPreview = z.infer<typeof LectureStudioPdfPreviewSchema>;
 
 export const LectureStudioGenerationOutputSchema = z
   .object({
@@ -877,6 +937,10 @@ export const LECTURE_STUDIO_IPC_ERROR_CODES = [
   'lecture_persistence_failed',
   'lecture_capacity_reached',
   'lecture_cancelled',
+  'lecture_pdf_compiler_unavailable',
+  'lecture_pdf_compile_failed',
+  'lecture_pdf_too_large',
+  'lecture_pdf_invalid',
 ] as const;
 export type LectureStudioIpcErrorCode = (typeof LECTURE_STUDIO_IPC_ERROR_CODES)[number];
 

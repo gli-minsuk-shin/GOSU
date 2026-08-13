@@ -44,6 +44,7 @@ const adapter: LectureStudioViewAdapter = {
   generate: vi.fn(),
   send: vi.fn(),
   cancel: vi.fn(),
+  compilePdf: vi.fn(),
   onEvent: vi.fn(() => () => undefined),
 };
 
@@ -236,5 +237,18 @@ describe('LectureStudioView', () => {
     expect(source).toContain('the {LECTURE_STUDIO_RECENT_MESSAGE_WINDOW} most recent messages');
     expect(source).toContain('Reviewed paper metadata');
     expect(source).toContain('full text is verified');
+  });
+
+  it('offers persisted page, detail, and custom generation guidance before synthesis', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('Lecture-note pages');
+    expect(source).toContain('Slide pages');
+    expect(source).toContain('Additional instructions');
+    expect(source).toContain('generationBrief: {');
+    expect(source).toContain('detailLevel,');
   });
 });

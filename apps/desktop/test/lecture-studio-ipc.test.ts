@@ -34,9 +34,43 @@ describe('Lecture Studio IPC boundary', () => {
         LECTURE_STUDIO_IPC_CHANNELS.generate,
         LECTURE_STUDIO_IPC_CHANNELS.send,
         LECTURE_STUDIO_IPC_CHANNELS.cancel,
+        LECTURE_STUDIO_IPC_CHANNELS.compilePdf,
       ].sort(),
     );
     expect([...handlers.keys()]).not.toContain(LECTURE_STUDIO_IPC_CHANNELS.event);
+  });
+
+  it('accepts only an exact lecture revision PDF binding', async () => {
+    const compilePdf = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      artifactId: randomUUID(),
+      title: 'Lecture notes PDF',
+      fileName: 'Lecture Notes.pdf',
+      compilerDisplayName: 'Local XeLaTeX',
+      sourceDescription: 'Fixture · revision 2',
+      pdfSha256: `sha256:${'b'.repeat(64)}`,
+      sizeBytes: 16,
+      compiledAt: '2026-08-13T00:00:00.000Z',
+      pdfBase64: Buffer.from('%PDF-1.7\n%%EOF').toString('base64'),
+    }));
+    const { handlers } = fixture({ compilePdf });
+    const command = {
+      studioId: randomUUID(),
+      revision: 2,
+      kind: 'lecture-notes' as const,
+      contentSha256: 'a'.repeat(64),
+    };
+
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.compilePdf)?.(command);
+    expect(compilePdf).toHaveBeenCalledWith(command);
+
+    await expect(
+      handlers.get(LECTURE_STUDIO_IPC_CHANNELS.compilePdf)?.({
+        ...command,
+        markdown: '# renderer controlled source',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
+    expect(compilePdf).toHaveBeenCalledTimes(1);
   });
 
   it('rejects invalid duration, empty source selection, and extra renderer fields', async () => {

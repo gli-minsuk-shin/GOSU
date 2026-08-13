@@ -92,6 +92,10 @@ export function validManuscriptRootDocument(path: string) {
   return ManuscriptRootDocumentSchema.safeParse(path).success;
 }
 
+export function suggestedManuscriptTitle(existingCount: number) {
+  return existingCount === 0 ? 'Main manuscript' : `Main manuscript ${existingCount + 1}`;
+}
+
 function OverleafConnectForm({
   busy,
   connecting,
@@ -228,6 +232,7 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
   const [pdfPreviews, setPdfPreviews] = useState<Record<string, ManuscriptPdfPreviewValue>>({});
   const [latexEngines, setLatexEngines] = useState<Record<string, ManuscriptLatexEngine>>({});
   const requestGeneration = useRef(0);
+  const manuscriptCount = snapshot?.manuscripts.length;
 
   const load = async () => {
     const generation = ++requestGeneration.current;
@@ -247,11 +252,17 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
     setFailedChecks({});
     setPdfPreviews({});
     setLatexEngines({});
+    setTitle('Main manuscript');
+    setRootDocument('main.tex');
     void load();
     return () => {
       requestGeneration.current += 1;
     };
   }, [project.id]);
+
+  useEffect(() => {
+    if (manuscriptCount !== undefined) setTitle(suggestedManuscriptTitle(manuscriptCount));
+  }, [manuscriptCount, project.id]);
 
   const run = async (key: string, operation: () => Promise<ManuscriptWorkspaceSnapshot>) => {
     if (busy) return;
@@ -469,22 +480,53 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                 />
 
                 {!connection ? (
-                  <OverleafConnectForm
-                    busy={Boolean(busy)}
-                    connecting={busy === `connect:${manuscript.id}`}
-                    onConnect={(remoteUrl, accessToken) =>
-                      run(`connect:${manuscript.id}`, () =>
-                        window.gosu.manuscriptWorkspace.connectOverleafGit({
-                          projectId: project.id,
-                          manuscriptId: manuscript.id,
-                          expectedManuscriptVersion: manuscript.version,
-                          providerId: 'overleaf_git',
-                          remoteUrl,
-                          accessToken,
-                        }),
-                      )
-                    }
-                  />
+                  <>
+                    <OverleafConnectForm
+                      busy={Boolean(busy)}
+                      connecting={busy === `connect:${manuscript.id}`}
+                      onConnect={(remoteUrl, accessToken) =>
+                        run(`connect:${manuscript.id}`, () =>
+                          window.gosu.manuscriptWorkspace.connectOverleafGit({
+                            projectId: project.id,
+                            manuscriptId: manuscript.id,
+                            expectedManuscriptVersion: manuscript.version,
+                            providerId: 'overleaf_git',
+                            remoteUrl,
+                            accessToken,
+                          }),
+                        )
+                      }
+                    />
+                    {item.canDeleteUnconfigured === true && (
+                      <div className="manuscript-actions">
+                        <button
+                          type="button"
+                          className="danger-button"
+                          disabled={Boolean(busy)}
+                          onClick={() => {
+                            const confirmed = window.confirm(
+                              `Remove “${manuscript.title}”? This deletes only this unused local setup record. It cannot be undone.`,
+                            );
+                            if (!confirmed) return;
+                            void run(`delete:${manuscript.id}`, () =>
+                              window.gosu.manuscriptWorkspace.deleteUnconfigured({
+                                projectId: project.id,
+                                manuscriptId: manuscript.id,
+                                expectedVersion: manuscript.version,
+                              }),
+                            );
+                          }}
+                        >
+                          {busy === `delete:${manuscript.id}`
+                            ? 'Removing…'
+                            : 'Remove unused manuscript'}
+                        </button>
+                        <span>
+                          Available only before this manuscript has ever been connected or captured.
+                        </span>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <>
                     <div className="manuscript-status-grid">

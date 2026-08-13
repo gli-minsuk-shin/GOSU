@@ -4,6 +4,7 @@ import {
   ConnectOverleafGitInputSchema,
   CompileManuscriptPdfInputSchema,
   CreateManuscriptInputSchema,
+  DeleteUnconfiguredManuscriptInputSchema,
   FetchManuscriptCheckpointInputSchema,
   ListManuscriptCheckpointFilesInputSchema,
   ManuscriptBindingCommandSchema,
@@ -46,6 +47,14 @@ export function registerManuscriptWorkspaceIpc(
       input,
       UpdateManuscriptInputSchema,
       (command) => service.update(command),
+      reportUnexpected,
+    ),
+  );
+  register(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.deleteUnconfigured, (input) =>
+    withValidatedInput(
+      input,
+      DeleteUnconfiguredManuscriptInputSchema,
+      (command) => service.deleteUnconfigured(command),
       reportUnexpected,
     ),
   );

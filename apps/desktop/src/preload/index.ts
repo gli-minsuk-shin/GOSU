@@ -72,6 +72,7 @@ import type {
   ConnectOverleafGitInput,
   CompileManuscriptPdfInput,
   CreateManuscriptInput,
+  DeleteUnconfiguredManuscriptInput,
   FetchManuscriptCheckpointInput,
   ListManuscriptCheckpointFilesInput,
   ManuscriptBindingCommand,
@@ -87,6 +88,7 @@ import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
 import {
   LectureStudioEventSchema,
   type CancelLectureStudioInput,
+  type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
   type GenerateLectureStudioInput,
   type LectureSourceCandidates,
@@ -95,6 +97,7 @@ import {
   type LectureStudioDetailInput,
   type LectureStudioEvent,
   type LectureStudioListSnapshot,
+  type LectureStudioPdfPreview,
   type LectureStudioTurnReceipt,
   type ListLectureCandidatesInput,
   type ListLectureStudiosInput,
@@ -486,6 +489,11 @@ const api = {
         MANUSCRIPT_WORKSPACE_IPC_CHANNELS.update,
         input,
       ),
+    deleteUnconfigured: (input: DeleteUnconfiguredManuscriptInput) =>
+      invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.deleteUnconfigured,
+        input,
+      ),
     connectOverleafGit: (input: ConnectOverleafGitInput) =>
       invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
         MANUSCRIPT_WORKSPACE_IPC_CHANNELS.connectOverleafGit,
@@ -553,6 +561,8 @@ const api = {
       invokeLectureStudio<LectureStudioTurnReceipt>(LECTURE_STUDIO_IPC_CHANNELS.send, input),
     cancel: (input: CancelLectureStudioInput) =>
       invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.cancel, input),
+    compilePdf: (input: CompileLectureStudioPdfInput) =>
+      invokeLectureStudio<LectureStudioPdfPreview>(LECTURE_STUDIO_IPC_CHANNELS.compilePdf, input),
     onEvent: (listener: (event: LectureStudioEvent) => void) => {
       if (typeof listener !== 'function') throw new Error('invalid_lecture_event_listener');
       const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {

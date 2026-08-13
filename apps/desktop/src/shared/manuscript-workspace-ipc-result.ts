@@ -5,6 +5,7 @@ export const MANUSCRIPT_WORKSPACE_IPC_ERROR_CODES = [
   'manuscript_not_found',
   'manuscript_conflict',
   'manuscript_limit_reached',
+  'manuscript_delete_not_allowed',
   'manuscript_binding_not_found',
   'manuscript_binding_conflict',
   'manuscript_binding_exists',

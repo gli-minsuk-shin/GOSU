@@ -82,6 +82,32 @@ class MemoryStorage implements ManuscriptWorkspaceStorage {
     this.manuscripts.set(manuscript.id, structuredClone(manuscript));
     return true;
   }
+  canDeleteUnconfiguredManuscript(projectId: string, manuscriptId: string) {
+    const manuscript = this.manuscripts.get(manuscriptId);
+    return (
+      manuscript?.projectId === projectId &&
+      ![...this.connections.values()].some(
+        (connection) =>
+          connection.binding.projectId === projectId &&
+          connection.binding.manuscriptId === manuscriptId,
+      ) &&
+      ![...this.checkpoints.values()].some(
+        (checkpoint) =>
+          checkpoint.projectId === projectId && checkpoint.manuscriptId === manuscriptId,
+      )
+    );
+  }
+  deleteUnconfiguredManuscript(projectId: string, manuscriptId: string, expectedVersion: number) {
+    const manuscript = this.manuscripts.get(manuscriptId);
+    if (
+      manuscript?.projectId !== projectId ||
+      manuscript.version !== expectedVersion ||
+      !this.canDeleteUnconfiguredManuscript(projectId, manuscriptId)
+    ) {
+      return false;
+    }
+    return this.manuscripts.delete(manuscriptId);
+  }
   getManuscriptWorkspaceConnection(projectId: string, manuscriptId: string) {
     const connection = this.connections.get(manuscriptId) ?? null;
     return connection?.binding.projectId === projectId && connection.binding.enabled
@@ -468,6 +494,79 @@ describe('Manuscript workspace service', () => {
     });
 
     expect(fixture.repositoryRevision).not.toHaveBeenCalled();
+  });
+
+  it('removes only a never-connected setup record and keeps provenance-bearing records', async () => {
+    const fixture = serviceFixture();
+    const created = await fixture.service.create({
+      projectId: PROJECT_ID,
+      title: 'Unused setup',
+      rootDocument: 'main.tex',
+    });
+    const unused = created.manuscripts[0]!;
+
+    expect(unused.canDeleteUnconfigured).toBe(true);
+    const removed = await fixture.service.deleteUnconfigured({
+      projectId: PROJECT_ID,
+      manuscriptId: unused.manuscript.id,
+      expectedVersion: unused.manuscript.version,
+    });
+    expect(removed.manuscripts).toEqual([]);
+
+    const connected = await createAndConnect(fixture);
+    expect(
+      (await fixture.service.list({ projectId: PROJECT_ID })).manuscripts[0]?.canDeleteUnconfigured,
+    ).toBe(false);
+    await expect(
+      fixture.service.deleteUnconfigured({
+        projectId: PROJECT_ID,
+        manuscriptId: connected.manuscript.id,
+        expectedVersion: connected.manuscript.version,
+      }),
+    ).rejects.toMatchObject({ code: 'manuscript_delete_not_allowed' });
+
+    await fixture.service.disconnect({
+      projectId: PROJECT_ID,
+      manuscriptId: connected.manuscript.id,
+      bindingId: connected.connection.binding.bindingId,
+      expectedBindingVersion: connected.connection.binding.version,
+    });
+    expect(
+      (await fixture.service.list({ projectId: PROJECT_ID })).manuscripts[0]?.canDeleteUnconfigured,
+    ).toBe(false);
+    await expect(
+      fixture.service.deleteUnconfigured({
+        projectId: PROJECT_ID,
+        manuscriptId: connected.manuscript.id,
+        expectedVersion: connected.manuscript.version,
+      }),
+    ).rejects.toMatchObject({ code: 'manuscript_delete_not_allowed' });
+  });
+
+  it('does not delete a stale manuscript version', async () => {
+    const fixture = serviceFixture();
+    const created = await fixture.service.create({
+      projectId: PROJECT_ID,
+      title: 'Draft',
+      rootDocument: 'main.tex',
+    });
+    const manuscript = created.manuscripts[0]!.manuscript;
+    await fixture.service.update({
+      projectId: PROJECT_ID,
+      manuscriptId: manuscript.id,
+      expectedVersion: manuscript.version,
+      title: 'Updated draft',
+      rootDocument: 'main.tex',
+    });
+
+    await expect(
+      fixture.service.deleteUnconfigured({
+        projectId: PROJECT_ID,
+        manuscriptId: manuscript.id,
+        expectedVersion: manuscript.version,
+      }),
+    ).rejects.toMatchObject({ code: 'manuscript_conflict' });
+    expect(fixture.storage.manuscripts.has(manuscript.id)).toBe(true);
   });
 
   it('updates manuscript title and root document with an optimistic version guard', async () => {
