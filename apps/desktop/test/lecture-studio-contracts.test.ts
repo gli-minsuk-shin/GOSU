@@ -6,6 +6,9 @@ import {
   LECTURE_STUDIO_CANDIDATE_PAGE_MAX,
   LECTURE_STUDIO_IPC_ERROR_CODES,
   LectureSourceCandidatesSchema,
+  LectureSourceManifestSchema,
+  LectureSourceSelectionSchema,
+  CreateLectureStudioInputSchema,
   LectureStudioDetailSchema,
   LectureStudioListSnapshotSchema,
   LectureStudioSchema,
@@ -121,10 +124,142 @@ describe('Lecture Studio candidate pagination contracts', () => {
             literaturePage: { offset: 0, limit: 10, total: 11, hasMore: false },
             experiments: [],
             experimentPage: { offset: 0, limit: 10, total: 0, hasMore: false },
+            manuscripts: [],
           },
         ],
       }),
     ).toThrow();
+  });
+
+  it('normalizes legacy selections while accepting manuscript-only sources', () => {
+    const projectId = randomUUID();
+    expect(
+      LectureSourceSelectionSchema.parse({
+        literature: [{ projectId, recordId: randomUUID() }],
+        experiments: [],
+      }).manuscripts,
+    ).toEqual([]);
+    const manuscriptId = randomUUID();
+    const manuscriptOnly = CreateLectureStudioInputSchema.parse({
+      title: 'Manuscript lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectId,
+      sourceProjectIds: [projectId],
+      sourceSelection: {
+        literature: [],
+        experiments: [],
+        manuscripts: [{ projectId, manuscriptId }],
+      },
+    });
+    expect(manuscriptOnly.sourceSelection).toEqual({
+      literature: [],
+      experiments: [],
+      manuscripts: [{ projectId, manuscriptId }],
+    });
+  });
+
+  it('preserves v1 revision manifests and validates captured LaTeX v2 provenance', () => {
+    const projectId = randomUUID();
+    const manuscriptId = randomUUID();
+    const checkpointId = randomUUID();
+    const v1 = LectureSourceManifestSchema.parse({
+      schemaVersion: 1,
+      selectedProjectIds: [projectId],
+      literature: [
+        {
+          sourceLabel: 'P1',
+          projectId,
+          projectName: 'Project',
+          recordId: randomUUID(),
+          recordVersion: 1,
+          annotationVersion: 0,
+          title: 'Legacy paper',
+          authors: [],
+          containerTitle: null,
+          publishedYear: null,
+          doi: null,
+          citationKey: null,
+          reviewStatus: 'included',
+          topics: [],
+          metadataSummary: '',
+          metadataOnly: true,
+        },
+      ],
+      experiments: [],
+    });
+    expect(v1.schemaVersion).toBe(1);
+
+    const v2 = LectureSourceManifestSchema.parse({
+      schemaVersion: 2,
+      selectedProjectIds: [projectId],
+      literature: [],
+      experiments: [],
+      manuscripts: [
+        {
+          sourceLabel: 'M1',
+          projectId,
+          projectName: 'Project',
+          manuscriptId,
+          manuscriptVersion: 2,
+          title: 'Captured manuscript',
+          rootDocument: 'main.tex',
+          checkpointId,
+          providerId: 'overleaf_git',
+          providerRevision: 'provider-revision',
+          revisionEnvelopeDigest: `sha256:${'a'.repeat(64)}`,
+          observedAt: timestamp,
+          files: [
+            {
+              relativePath: 'main.tex',
+              contentSha256: 'b'.repeat(64),
+              content: '\\documentclass{article}',
+            },
+          ],
+          contentKind: 'captured_latex',
+          metadataOnly: false,
+        },
+      ],
+    });
+    expect(v2).toMatchObject({ schemaVersion: 2, manuscripts: [{ sourceLabel: 'M1' }] });
+  });
+
+  it('keeps unavailable manuscripts visible without claiming a checkpoint', () => {
+    const projectId = randomUUID();
+    const manuscript = {
+      schemaVersion: 1 as const,
+      id: randomUUID(),
+      projectId,
+      title: 'Needs capture',
+      rootDocument: 'main.tex',
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    expect(
+      LectureSourceCandidatesSchema.parse({
+        schemaVersion: 1,
+        projects: [
+          {
+            projectId,
+            projectName: 'Project',
+            literatureRecords: [],
+            literaturePage: { offset: 0, limit: 10, total: 0, hasMore: false },
+            experiments: [],
+            experimentPage: { offset: 0, limit: 10, total: 0, hasMore: false },
+            manuscripts: [
+              {
+                manuscript,
+                availability: 'capture_required',
+                checkpointId: null,
+                providerRevision: null,
+                observedAt: null,
+              },
+            ],
+          },
+        ],
+      }).projects[0]?.manuscripts[0]?.availability,
+    ).toBe('capture_required');
   });
 });
 

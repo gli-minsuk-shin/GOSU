@@ -2313,6 +2313,7 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
     sourceSelection: {
       literature: [{ projectId, recordId }],
       experiments: [],
+      manuscripts: [],
     },
     status: 'draft',
     activeAttemptId: null,
@@ -2413,7 +2414,7 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
     completedAt: fixedTimestamp,
   });
 
-  const database = new LocalDatabase();
+  let database = new LocalDatabase();
   database.open();
   invariant(database.createLectureStudio(studio), 'lecture_studio_insert_failed');
   const summaries = database.listLectureStudios();
@@ -2431,6 +2432,30 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
   invariant(
     initialDetail.messages.length === 0 && initialDetail.revisions.length === 0,
     'lecture_studio_detail_started_with_history',
+  );
+
+  // Simulate a studio persisted before Manuscript became a Lecture source. Reopening must
+  // normalize the absent field and keep the configuration stable through later turn completion.
+  database.close();
+  const legacyLectureKeyHex = safeStorage
+    .decryptString(readFileSync(join(app.getPath('userData'), 'local-key.bin')))
+    .trim();
+  const legacyLectureRow = new Database(join(app.getPath('userData'), 'gosu.db'));
+  legacyLectureRow.pragma(`key="x'${legacyLectureKeyHex}'"`);
+  try {
+    legacyLectureRow
+      .prepare('update lecture_studios set source_selection_json=? where id=?')
+      .run(JSON.stringify({ literature: [{ projectId, recordId }], experiments: [] }), studio.id);
+  } finally {
+    legacyLectureRow.close();
+  }
+  database = new LocalDatabase();
+  database.open();
+  const legacyDetail = database.getLectureStudioDetail(studio.id);
+  invariant(
+    legacyDetail?.studio.sourceSelection.literature[0]?.recordId === recordId &&
+      legacyDetail.studio.sourceSelection.manuscripts.length === 0,
+    'legacy_lecture_selection_was_not_normalized_after_reopen',
   );
 
   const failedAttemptId = randomUUID();
@@ -2608,6 +2633,7 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
         sourceSelection: {
           literature: [{ projectId: capacityProjectId, recordId: randomUUID() }],
           experiments: [],
+          manuscripts: [],
         },
       }),
       'lecture_capacity_fixture_insert_failed',

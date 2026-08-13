@@ -7,6 +7,7 @@ import {
   CancelLectureStudioInputSchema,
   CreateLectureStudioInputSchema,
   GenerateLectureStudioInputSchema,
+  LECTURE_STUDIO_MAX_MANUSCRIPT_FILES,
   LECTURE_STUDIO_MAX_MESSAGE_LENGTH,
   LECTURE_STUDIO_OUTPUT_SCHEMA,
   LectureSourceCandidatesSchema,
@@ -49,6 +50,11 @@ import type {
   ExperimentMetricPoint,
 } from '../shared/experiment-workspace-contracts';
 import type { LiteratureRecord } from '../shared/literature-contracts';
+import type {
+  ManuscriptCheckpointFileChunk,
+  ManuscriptCheckpointFileList,
+  ManuscriptWorkspaceSnapshot,
+} from '../shared/manuscript-workspace-contracts';
 import type { ProjectRecord, WorkspaceSnapshot } from '../shared/workspace-contracts';
 import {
   LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS,
@@ -127,6 +133,28 @@ export interface LectureStudioSourceStorage {
     }>,
   ): MaybePromise<readonly LectureExperimentMetricTail[]>;
   getExperimentIdea(projectId: string, ideaId: string): MaybePromise<ExperimentIdea | null>;
+}
+
+/**
+ * Read-only, project-scoped port into the Manuscript module. Lecture never reads manuscript
+ * tables or adapter-private mirrors directly; every source body comes from one exact captured
+ * checkpoint through the Manuscript service's existing validation boundary.
+ */
+export interface LectureManuscriptSourcePort {
+  list(input: { projectId: string }): Promise<ManuscriptWorkspaceSnapshot>;
+  listCheckpointFiles(input: {
+    projectId: string;
+    manuscriptId: string;
+    checkpointId: string;
+  }): Promise<ManuscriptCheckpointFileList>;
+  readCheckpointFile(input: {
+    projectId: string;
+    manuscriptId: string;
+    checkpointId: string;
+    relativePath: string;
+    offset?: number;
+    maxCharacters?: number;
+  }): Promise<ManuscriptCheckpointFileChunk>;
 }
 
 export interface LectureStudioWorkspace {
@@ -239,6 +267,8 @@ type TurnRequest = Readonly<{
 }>;
 
 const LECTURE_STUDIO_MAX_METRICS_PER_IDEA = 64;
+const LECTURE_MANUSCRIPT_FILE_MAX_CHARACTERS = 24_000;
+const LECTURE_MANUSCRIPT_SOURCE_PATH_PATTERN = /\.(?:bib|tex)$/iu;
 const RAW_HTML_PATTERN = /<\s*(?:!--|\/?\s*[A-Za-z][^>]*>)/u;
 const MARKDOWN_IMAGE_PATTERN = /!\s*\[/u;
 const UNSUPPORTED_CITATION_PATTERN = /\[@[^\]]+\]|\\(?:auto|paren|text)?cite\s*\{[^}]+\}/iu;
@@ -350,6 +380,7 @@ export class LectureStudioService {
     private readonly dependencies: Readonly<{
       storage: LectureStudioStorage;
       sources: LectureStudioSourceStorage;
+      manuscripts: LectureManuscriptSourcePort;
       workspace: LectureStudioWorkspace;
       artifacts: LectureStudioArtifactWriter;
       codex: LectureStudioCodex;
@@ -401,10 +432,14 @@ export class LectureStudioService {
     const projects = await this.requireActiveProjects(command.projectIds);
     const candidates = await Promise.all(
       projects.map(async (project) => {
-        const [literatureRecords, ideas] = await Promise.all([
+        const [literatureRecords, ideas, manuscriptSnapshot] = await Promise.all([
           this.dependencies.sources.listLiteratureRecords(project.id),
           this.dependencies.sources.listExperimentIdeas(project.id),
+          this.dependencies.manuscripts.list({ projectId: project.id }),
         ]);
+        if (manuscriptSnapshot.projectId !== project.id) {
+          throw new LectureStudioServiceError('lecture_source_conflict');
+        }
         const eligibleLiterature = literatureRecords.filter(
           (record) =>
             record.reviewStatus !== 'excluded' &&
@@ -480,6 +515,35 @@ export class LectureStudioService {
             total: orderedIdeas.length,
             hasMore: command.experimentOffset + command.experimentLimit < orderedIdeas.length,
           },
+          manuscripts: manuscriptSnapshot.manuscripts.map(({ manuscript, connection }) => {
+            if (manuscript.projectId !== project.id) {
+              throw new LectureStudioServiceError('lecture_source_conflict');
+            }
+            const linked =
+              connection?.binding.enabled === true &&
+              connection.binding.projectId === project.id &&
+              connection.binding.manuscriptId === manuscript.id;
+            const checkpoint =
+              linked &&
+              connection.lastCheckpoint?.bindingId === connection.binding.bindingId &&
+              connection.lastCheckpoint.projectId === project.id &&
+              connection.lastCheckpoint.manuscriptId === manuscript.id &&
+              connection.lastCheckpoint.providerId === connection.binding.providerId &&
+              connection.lastCheckpoint.rootDocument === manuscript.rootDocument
+                ? connection.lastCheckpoint
+                : null;
+            return {
+              manuscript,
+              availability: checkpoint
+                ? ('ready' as const)
+                : linked
+                  ? ('capture_required' as const)
+                  : ('unconnected' as const),
+              checkpointId: checkpoint?.checkpointId ?? null,
+              providerRevision: checkpoint?.providerRevision ?? checkpoint?.sourceRevision ?? null,
+              observedAt: checkpoint?.observedAt ?? null,
+            };
+          }),
         };
       }),
     );
@@ -890,13 +954,16 @@ export class LectureStudioService {
       ) {
         throw new Error('unsafe_or_unstructured_markdown');
       }
+      const manuscriptSources =
+        sourceManifest.schemaVersion === 2 ? sourceManifest.manuscripts : [];
       const allowedLabels = new Set([
         ...sourceManifest.literature.map((source) => source.sourceLabel),
         ...sourceManifest.experiments.map((source) => source.sourceLabel),
+        ...manuscriptSources.map((source) => source.sourceLabel),
       ]);
       const usedLabels = new Set<string>();
       for (const markdown of [output.lectureNotesMarkdown, output.slidesMarkdown]) {
-        const citations = [...markdown.matchAll(/\[((?:P|E)\d+)\]/gu)].map((match) => match[1]!);
+        const citations = [...markdown.matchAll(/\[((?:P|E|M)\d+)\]/gu)].map((match) => match[1]!);
         if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
           throw new Error('invalid_source_citation');
         }
@@ -916,7 +983,7 @@ export class LectureStudioService {
         .split(/^\s*---\s*$/mu)
         .filter((slide) => slide.trim().length > 0);
       for (const slide of slides.slice(1)) {
-        const citations = [...slide.matchAll(/\[((?:P|E)\d+)\]/gu)].map((match) => match[1]!);
+        const citations = [...slide.matchAll(/\[((?:P|E|M)\d+)\]/gu)].map((match) => match[1]!);
         if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
           throw new Error('uncited_slide');
         }
@@ -1072,6 +1139,10 @@ export class LectureStudioService {
     const records = new Map<string, LiteratureRecord>();
     const ideas = new Map<string, ExperimentIdea>();
     const metricsByIdea = new Map<string, ExperimentMetricPoint[]>();
+    const manuscripts = new Map<
+      string,
+      Awaited<ReturnType<LectureStudioService['resolveManuscriptSource']>>
+    >();
     await Promise.all(
       activeProjects.map(async (project) => {
         const recordIds = selection.literature
@@ -1080,23 +1151,32 @@ export class LectureStudioService {
         const ideaIds = selection.experiments
           .filter((reference) => reference.projectId === project.id)
           .map((reference) => reference.ideaId);
-        const [projectRecords, projectIdeas, projectMetricTails] = await Promise.all([
-          recordIds.length > 0
-            ? this.dependencies.sources.getLiteratureRecordsByIds(project.id, recordIds)
-            : Promise.resolve([]),
-          Promise.all(
-            ideaIds.map((ideaId) =>
-              this.dependencies.sources.getExperimentIdea(project.id, ideaId),
+        const manuscriptIds = selection.manuscripts
+          .filter((reference) => reference.projectId === project.id)
+          .map((reference) => reference.manuscriptId);
+        const [projectRecords, projectIdeas, projectMetricTails, projectManuscripts] =
+          await Promise.all([
+            recordIds.length > 0
+              ? this.dependencies.sources.getLiteratureRecordsByIds(project.id, recordIds)
+              : Promise.resolve([]),
+            Promise.all(
+              ideaIds.map((ideaId) =>
+                this.dependencies.sources.getExperimentIdea(project.id, ideaId),
+              ),
             ),
-          ),
-          ideaIds.length > 0
-            ? this.dependencies.sources.listExperimentMetricTails({
-                projectId: project.id,
-                ideaIds,
-                perIdeaLimit: LECTURE_STUDIO_MAX_METRICS_PER_IDEA,
-              })
-            : Promise.resolve([]),
-        ]);
+            ideaIds.length > 0
+              ? this.dependencies.sources.listExperimentMetricTails({
+                  projectId: project.id,
+                  ideaIds,
+                  perIdeaLimit: LECTURE_STUDIO_MAX_METRICS_PER_IDEA,
+                })
+              : Promise.resolve([]),
+            Promise.all(
+              manuscriptIds.map((manuscriptId) =>
+                this.resolveManuscriptSource(project.id, manuscriptId),
+              ),
+            ),
+          ]);
         const expectedRecordIds = new Set(recordIds);
         for (const record of projectRecords) {
           if (record.projectId !== project.id || !expectedRecordIds.has(record.id)) {
@@ -1133,6 +1213,17 @@ export class LectureStudioService {
             throw new LectureStudioServiceError('lecture_source_conflict');
           }
           metricsByIdea.set(`${project.id}:${tail.ideaId}`, points);
+        }
+        for (const [index, manuscript] of projectManuscripts.entries()) {
+          const manuscriptId = manuscriptIds[index]!;
+          if (
+            manuscript.projectId !== project.id ||
+            manuscript.manuscriptId !== manuscriptId ||
+            manuscripts.has(`${project.id}:${manuscriptId}`)
+          ) {
+            throw new LectureStudioServiceError('lecture_source_conflict');
+          }
+          manuscripts.set(`${project.id}:${manuscriptId}`, manuscript);
         }
       }),
     );
@@ -1215,13 +1306,28 @@ export class LectureStudioService {
           })),
       };
     });
+    const manuscriptSources = selection.manuscripts.map((reference, index) => {
+      const project = projects.get(reference.projectId);
+      const manuscript = manuscripts.get(`${reference.projectId}:${reference.manuscriptId}`);
+      if (!project || !manuscript) {
+        throw new LectureStudioServiceError('lecture_source_not_found');
+      }
+      return {
+        sourceLabel: `M${index + 1}`,
+        projectName: project.name,
+        ...manuscript,
+      };
+    });
     let manifest: LectureSourceManifest;
     try {
       manifest = LectureSourceManifestSchema.parse({
-        schemaVersion: 1,
+        // Keep non-manuscript revisions byte-for-byte on v1 so historical manifest hashes remain
+        // reproducible. Only revisions that ingest captured source opt into v2.
+        schemaVersion: manuscriptSources.length > 0 ? 2 : 1,
         selectedProjectIds: projectIds,
         literature,
         experiments,
+        ...(manuscriptSources.length > 0 ? { manuscripts: manuscriptSources } : {}),
       });
     } catch {
       throw new LectureStudioServiceError('lecture_source_conflict');
@@ -1230,6 +1336,110 @@ export class LectureStudioService {
       throw new LectureStudioServiceError('lecture_context_too_large');
     }
     return manifest;
+  }
+
+  private async resolveManuscriptSource(projectId: string, manuscriptId: string) {
+    try {
+      const snapshot = await this.dependencies.manuscripts.list({ projectId });
+      if (snapshot.projectId !== projectId) {
+        throw new LectureStudioServiceError('lecture_source_conflict');
+      }
+      const item = snapshot.manuscripts.find(
+        (candidate) =>
+          candidate.manuscript.id === manuscriptId && candidate.manuscript.projectId === projectId,
+      );
+      if (!item) throw new LectureStudioServiceError('lecture_source_not_found');
+      const { manuscript, connection } = item;
+      const checkpoint =
+        connection?.binding.enabled === true &&
+        connection.binding.projectId === projectId &&
+        connection.binding.manuscriptId === manuscriptId &&
+        connection.lastCheckpoint?.bindingId === connection.binding.bindingId &&
+        connection.lastCheckpoint.projectId === projectId &&
+        connection.lastCheckpoint.manuscriptId === manuscriptId &&
+        connection.lastCheckpoint.providerId === connection.binding.providerId &&
+        connection.lastCheckpoint.rootDocument === manuscript.rootDocument
+          ? connection.lastCheckpoint
+          : null;
+      if (!connection || !checkpoint) {
+        throw new LectureStudioServiceError('lecture_source_not_found');
+      }
+
+      const fileList = await this.dependencies.manuscripts.listCheckpointFiles({
+        projectId,
+        manuscriptId,
+        checkpointId: checkpoint.checkpointId,
+      });
+      if (
+        fileList.projectId !== projectId ||
+        fileList.manuscriptId !== manuscriptId ||
+        fileList.checkpointId !== checkpoint.checkpointId ||
+        fileList.providerRevision !== (checkpoint.providerRevision ?? checkpoint.sourceRevision)
+      ) {
+        throw new LectureStudioServiceError('lecture_source_conflict');
+      }
+      const sourceFiles = fileList.files
+        .filter(
+          ({ relativePath, textReadable }) =>
+            textReadable && LECTURE_MANUSCRIPT_SOURCE_PATH_PATTERN.test(relativePath),
+        )
+        .sort((left, right) => left.relativePath.localeCompare(right.relativePath, 'en-US'));
+      if (
+        sourceFiles.length === 0 ||
+        sourceFiles.length > LECTURE_STUDIO_MAX_MANUSCRIPT_FILES ||
+        new Set(sourceFiles.map(({ relativePath }) => relativePath)).size !== sourceFiles.length ||
+        !sourceFiles.some(({ relativePath }) => relativePath === manuscript.rootDocument)
+      ) {
+        throw new LectureStudioServiceError('lecture_context_too_large');
+      }
+
+      const files = await Promise.all(
+        sourceFiles.map(async ({ relativePath }) => {
+          const chunk = await this.dependencies.manuscripts.readCheckpointFile({
+            projectId,
+            manuscriptId,
+            checkpointId: checkpoint.checkpointId,
+            relativePath,
+            offset: 0,
+            maxCharacters: LECTURE_MANUSCRIPT_FILE_MAX_CHARACTERS,
+          });
+          if (
+            chunk.projectId !== projectId ||
+            chunk.manuscriptId !== manuscriptId ||
+            chunk.checkpointId !== checkpoint.checkpointId ||
+            chunk.providerRevision !== fileList.providerRevision ||
+            chunk.relativePath !== relativePath ||
+            chunk.offset !== 0 ||
+            chunk.truncated
+          ) {
+            throw new LectureStudioServiceError('lecture_context_too_large');
+          }
+          return {
+            relativePath,
+            contentSha256: sha256(chunk.content),
+            content: chunk.content,
+          };
+        }),
+      );
+      return {
+        projectId,
+        manuscriptId,
+        manuscriptVersion: manuscript.version,
+        title: manuscript.title,
+        rootDocument: manuscript.rootDocument,
+        checkpointId: checkpoint.checkpointId,
+        providerId: checkpoint.providerId,
+        providerRevision: checkpoint.providerRevision ?? checkpoint.sourceRevision,
+        revisionEnvelopeDigest: checkpoint.revisionEnvelopeDigest,
+        observedAt: checkpoint.observedAt,
+        files,
+        contentKind: 'captured_latex' as const,
+        metadataOnly: false as const,
+      };
+    } catch (error) {
+      if (error instanceof LectureStudioServiceError) throw error;
+      throw new LectureStudioServiceError('lecture_source_conflict');
+    }
   }
 
   private publish(studio: LectureStudio) {

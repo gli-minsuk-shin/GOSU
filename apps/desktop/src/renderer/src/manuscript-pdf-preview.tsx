@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from 'pdfjs-dist/types/src/display/api';
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 
@@ -7,6 +7,20 @@ import type { ManuscriptPdfPreview as ManuscriptPdfPreviewValue } from '../../sh
 export const MANUSCRIPT_PDF_MAX_IMAGE_PIXELS = 16 * 1024 * 1024;
 export const MANUSCRIPT_PDF_MAX_CANVAS_PIXELS = 16 * 1024 * 1024;
 export const MANUSCRIPT_PDF_MAX_CANVAS_DIMENSION = 8_192;
+export const MANUSCRIPT_PDF_MAX_PAGES = 2_000;
+export const MANUSCRIPT_PDF_RENDER_RADIUS = 1;
+
+type ManuscriptPdfPageBounds = Readonly<{
+  pageNumber: number;
+  top: number;
+  bottom: number;
+}>;
+
+type ManuscriptPdfPageDimensions = Readonly<{
+  cssWidth: number;
+  cssHeight: number;
+  scale: number;
+}>;
 
 function decodeBase64(value: string) {
   const binary = window.atob(value);
@@ -43,57 +57,54 @@ export function boundedManuscriptPdfCanvasDimensions(
   return { cssWidth, cssHeight, pixelWidth, pixelHeight, pixelRatio } as const;
 }
 
-export function ManuscriptPdfPreview({ preview }: { preview: ManuscriptPdfPreviewValue }) {
+export function resolveManuscriptPdfCurrentPage(
+  viewportCenter: number,
+  pages: readonly ManuscriptPdfPageBounds[],
+) {
+  let closestPage: number | null = null;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const page of pages) {
+    const distance =
+      viewportCenter < page.top
+        ? page.top - viewportCenter
+        : viewportCenter > page.bottom
+          ? viewportCenter - page.bottom
+          : 0;
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestPage = page.pageNumber;
+    }
+  }
+  return closestPage;
+}
+
+function estimatedPageDimensions(scale: number): ManuscriptPdfPageDimensions {
+  return {
+    cssWidth: Math.ceil(612 * scale),
+    cssHeight: Math.ceil(792 * scale),
+    scale,
+  };
+}
+
+function ManuscriptPdfPageCanvas({
+  pdfDocument,
+  pageNumber,
+  scale,
+  onDimensions,
+}: Readonly<{
+  pdfDocument: PDFDocumentProxy;
+  pageNumber: number;
+  scale: number;
+  onDimensions(pageNumber: number, dimensions: ManuscriptPdfPageDimensions): void;
+}>) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
-  const [pageNumber, setPageNumber] = useState(1);
-  const [scale, setScale] = useState(1.1);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
 
   useEffect(() => {
-    let cancelled = false;
-    let loadingTask: PDFDocumentLoadingTask | null = null;
-    setLoading(true);
-    setError(null);
-    setPageNumber(1);
-    setDocument(null);
-    void import('pdfjs-dist/legacy/build/pdf.mjs')
-      .then((pdfjs) => {
-        if (cancelled) return null;
-        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-        loadingTask = pdfjs.getDocument({
-          data: decodeBase64(preview.pdfBase64),
-          useSystemFonts: true,
-          maxImageSize: MANUSCRIPT_PDF_MAX_IMAGE_PIXELS,
-          stopAtErrors: true,
-        });
-        return loadingTask.promise;
-      })
-      .then((next) => {
-        if (!next) return;
-        if (cancelled) return;
-        setDocument(next);
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setLoading(false);
-          setError('The locally compiled PDF could not be rendered safely.');
-        }
-      });
-    return () => {
-      cancelled = true;
-      if (loadingTask) void loadingTask.destroy();
-    };
-  }, [preview.artifactId, preview.pdfBase64]);
-
-  useEffect(() => {
-    if (!document || !canvasRef.current) return;
     let cancelled = false;
     let renderTask: { cancel(): void; promise: Promise<unknown> } | null = null;
-    setError(null);
-    void document
+    setState('loading');
+    void pdfDocument
       .getPage(pageNumber)
       .then((page) => {
         if (cancelled || !canvasRef.current) return;
@@ -103,6 +114,11 @@ export function ManuscriptPdfPreview({ preview }: { preview: ManuscriptPdfPrevie
           viewport.height,
           window.devicePixelRatio || 1,
         );
+        onDimensions(pageNumber, {
+          cssWidth: dimensions.cssWidth,
+          cssHeight: dimensions.cssHeight,
+          scale,
+        });
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d', { alpha: false });
         if (!context) throw new Error('canvas_unavailable');
@@ -121,22 +137,173 @@ export function ManuscriptPdfPreview({ preview }: { preview: ManuscriptPdfPrevie
         });
         return renderTask.promise;
       })
+      .then(() => {
+        if (!cancelled) setState('ready');
+      })
       .catch((renderError) => {
         if (
           !cancelled &&
           !(renderError instanceof Error && renderError.name === 'RenderingCancelledException')
         ) {
-          setError('This PDF page could not be rendered.');
+          setState('error');
         }
       });
     return () => {
       cancelled = true;
       renderTask?.cancel();
     };
-  }, [document, pageNumber, scale]);
+  }, [onDimensions, pageNumber, pdfDocument, scale]);
 
   return (
-    <section className="manuscript-pdf-preview" aria-label="Compiled manuscript PDF preview">
+    <>
+      {state === 'loading' && <span>Rendering page {pageNumber}…</span>}
+      {state === 'error' && <span role="alert">Page {pageNumber} could not be rendered.</span>}
+      <canvas ref={canvasRef} hidden={state !== 'ready'} aria-label={`PDF page ${pageNumber}`} />
+    </>
+  );
+}
+
+export function ManuscriptPdfPreview({ preview }: { preview: ManuscriptPdfPreviewValue }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef(new Map<number, HTMLElement>());
+  const scrollFrameRef = useRef<number | null>(null);
+  const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [pageDimensions, setPageDimensions] = useState<Record<number, ManuscriptPdfPageDimensions>>(
+    {},
+  );
+  const [scale, setScale] = useState(1.1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let loadingTask: PDFDocumentLoadingTask | null = null;
+    setLoading(true);
+    setError(null);
+    setPageNumber(1);
+    setPageDimensions({});
+    setPdfDocument(null);
+    void import('pdfjs-dist/legacy/build/pdf.mjs')
+      .then((pdfjs) => {
+        if (cancelled) return null;
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+        loadingTask = pdfjs.getDocument({
+          data: decodeBase64(preview.pdfBase64),
+          useSystemFonts: true,
+          maxImageSize: MANUSCRIPT_PDF_MAX_IMAGE_PIXELS,
+          stopAtErrors: true,
+        });
+        return loadingTask.promise;
+      })
+      .then((next) => {
+        if (!next) return;
+        if (cancelled) return;
+        if (
+          !Number.isSafeInteger(next.numPages) ||
+          next.numPages < 1 ||
+          next.numPages > MANUSCRIPT_PDF_MAX_PAGES
+        ) {
+          void loadingTask?.destroy();
+          throw new Error('manuscript_pdf_page_count_invalid');
+        }
+        setPdfDocument(next);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLoading(false);
+          setError('The locally compiled PDF could not be rendered safely.');
+        }
+      });
+    return () => {
+      cancelled = true;
+      if (loadingTask) void loadingTask.destroy();
+    };
+  }, [preview.artifactId, preview.pdfBase64]);
+
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!pdfDocument || !scroll) return;
+    scroll.scrollTo({ left: 0, top: 0, behavior: 'auto' });
+  }, [pdfDocument]);
+
+  useEffect(
+    () => () => {
+      if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+    },
+    [],
+  );
+
+  const pages = useMemo(
+    () =>
+      pdfDocument ? Array.from({ length: pdfDocument.numPages }, (_, index) => index + 1) : [],
+    [pdfDocument],
+  );
+
+  const rememberPageDimensions = useCallback(
+    (nextPageNumber: number, dimensions: ManuscriptPdfPageDimensions) => {
+      setPageDimensions((current) => {
+        const existing = current[nextPageNumber];
+        if (
+          existing?.scale === dimensions.scale &&
+          existing.cssWidth === dimensions.cssWidth &&
+          existing.cssHeight === dimensions.cssHeight
+        ) {
+          return current;
+        }
+        return { ...current, [nextPageNumber]: dimensions };
+      });
+    },
+    [],
+  );
+
+  const updateCurrentPageFromScroll = useCallback(() => {
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      const scroll = scrollRef.current;
+      if (!scroll) return;
+      const scrollRect = scroll.getBoundingClientRect();
+      const bounds = [...pageRefs.current.entries()].map(([nextPageNumber, element]) => {
+        const rect = element.getBoundingClientRect();
+        return { pageNumber: nextPageNumber, top: rect.top, bottom: rect.bottom };
+      });
+      const nextPageNumber = resolveManuscriptPdfCurrentPage(
+        scrollRect.top + scroll.clientHeight / 2,
+        bounds,
+      );
+      if (nextPageNumber !== null) {
+        setPageNumber((current) => (current === nextPageNumber ? current : nextPageNumber));
+      }
+    });
+  }, []);
+
+  const goToPage = useCallback(
+    (requestedPage: number) => {
+      if (!pdfDocument) return;
+      const nextPageNumber = Math.min(pdfDocument.numPages, Math.max(1, requestedPage));
+      const scroll = scrollRef.current;
+      const page = pageRefs.current.get(nextPageNumber);
+      setPageNumber(nextPageNumber);
+      if (!scroll || !page) return;
+      const scrollRect = scroll.getBoundingClientRect();
+      const pageRect = page.getBoundingClientRect();
+      scroll.scrollTo({
+        left: scroll.scrollLeft,
+        top: Math.max(0, scroll.scrollTop + pageRect.top - scrollRect.top - 16),
+        behavior: 'auto',
+      });
+    },
+    [pdfDocument],
+  );
+
+  return (
+    <section
+      className="manuscript-pdf-preview"
+      aria-label="Compiled manuscript PDF preview"
+      data-current-page={pageNumber}
+    >
       <header>
         <div>
           <strong>Compiled PDF</strong>
@@ -150,26 +317,28 @@ export function ManuscriptPdfPreview({ preview }: { preview: ManuscriptPdfPrevie
           <button
             type="button"
             className="ghost-button"
-            disabled={!document || pageNumber <= 1}
-            onClick={() => setPageNumber((current) => Math.max(1, current - 1))}
+            aria-label="Previous PDF page"
+            disabled={!pdfDocument || pageNumber <= 1}
+            onClick={() => goToPage(pageNumber - 1)}
           >
             Previous
           </button>
-          <span>{document ? `${pageNumber} / ${document.numPages}` : 'Loading'}</span>
+          <span className="manuscript-pdf-page-counter" aria-live="polite">
+            {pdfDocument ? `${pageNumber} / ${pdfDocument.numPages}` : 'Loading'}
+          </span>
           <button
             type="button"
             className="ghost-button"
-            disabled={!document || pageNumber >= document.numPages}
-            onClick={() =>
-              setPageNumber((current) => Math.min(document?.numPages ?? current, current + 1))
-            }
+            aria-label="Next PDF page"
+            disabled={!pdfDocument || pageNumber >= pdfDocument.numPages}
+            onClick={() => goToPage(pageNumber + 1)}
           >
             Next
           </button>
           <button
             type="button"
             className="ghost-button"
-            disabled={!document || scale <= 0.6}
+            disabled={!pdfDocument || scale <= 0.6}
             onClick={() => setScale((current) => Math.max(0.6, current - 0.15))}
           >
             −
@@ -178,17 +347,65 @@ export function ManuscriptPdfPreview({ preview }: { preview: ManuscriptPdfPrevie
           <button
             type="button"
             className="ghost-button"
-            disabled={!document || scale >= 2}
+            disabled={!pdfDocument || scale >= 2}
             onClick={() => setScale((current) => Math.min(2, current + 0.15))}
           >
             ＋
           </button>
         </div>
       </header>
-      <div className="manuscript-pdf-canvas-wrap" aria-busy={loading}>
-        {loading && <span>Rendering the compiled PDF…</span>}
-        {error && <span role="alert">{error}</span>}
-        <canvas ref={canvasRef} hidden={loading || Boolean(error)} />
+      <div
+        ref={scrollRef}
+        className="manuscript-pdf-canvas-wrap"
+        aria-busy={loading}
+        onScroll={updateCurrentPageFromScroll}
+      >
+        {loading && (
+          <span className="manuscript-pdf-document-status">Rendering the compiled PDF…</span>
+        )}
+        {error && (
+          <span className="manuscript-pdf-document-status" role="alert">
+            {error}
+          </span>
+        )}
+        {pdfDocument && (
+          <div className="manuscript-pdf-pages">
+            {pages.map((nextPageNumber) => {
+              const recordedDimensions = pageDimensions[nextPageNumber];
+              const dimensions =
+                recordedDimensions?.scale === scale
+                  ? recordedDimensions
+                  : estimatedPageDimensions(scale);
+              const shouldRender =
+                Math.abs(nextPageNumber - pageNumber) <= MANUSCRIPT_PDF_RENDER_RADIUS;
+              return (
+                <article
+                  key={nextPageNumber}
+                  ref={(element) => {
+                    if (element) pageRefs.current.set(nextPageNumber, element);
+                    else pageRefs.current.delete(nextPageNumber);
+                  }}
+                  className="manuscript-pdf-page"
+                  data-page-number={nextPageNumber}
+                  aria-label={`Page ${nextPageNumber} of ${pdfDocument.numPages}`}
+                  style={{ width: dimensions.cssWidth, height: dimensions.cssHeight }}
+                >
+                  {shouldRender ? (
+                    <ManuscriptPdfPageCanvas
+                      key={`${preview.artifactId}:${nextPageNumber}:${scale}`}
+                      pdfDocument={pdfDocument}
+                      pageNumber={nextPageNumber}
+                      scale={scale}
+                      onDimensions={rememberPageDimensions}
+                    />
+                  ) : (
+                    <span>Page {nextPageNumber}</span>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
       </div>
     </section>
   );

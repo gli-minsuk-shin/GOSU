@@ -6,7 +6,10 @@ import {
   MANUSCRIPT_PDF_MAX_CANVAS_DIMENSION,
   MANUSCRIPT_PDF_MAX_CANVAS_PIXELS,
   MANUSCRIPT_PDF_MAX_IMAGE_PIXELS,
+  MANUSCRIPT_PDF_MAX_PAGES,
+  MANUSCRIPT_PDF_RENDER_RADIUS,
   ManuscriptPdfPreview,
+  resolveManuscriptPdfCurrentPage,
 } from '../src/renderer/src/manuscript-pdf-preview';
 import type { ManuscriptPdfPreview as ManuscriptPdfPreviewValue } from '../src/shared/manuscript-workspace-contracts';
 
@@ -42,7 +45,9 @@ describe('Manuscript PDF preview', () => {
     expect(html).toContain('main.tex');
     expect(html).toContain('revision aaaaaaaaaaaa');
     expect(html).toContain('Overleaf has a newer observed revision');
-    expect(html).toContain('<canvas');
+    expect(html).toContain('manuscript-pdf-canvas-wrap');
+    expect(html).toContain('Previous PDF page');
+    expect(html).toContain('Next PDF page');
     expect(html).not.toContain('<iframe');
     expect(html).not.toContain('<object');
     expect(html).not.toContain(preview.pdfBase64);
@@ -66,5 +71,25 @@ describe('Manuscript PDF preview', () => {
     expect(() => boundedManuscriptPdfCanvasDimensions(Number.POSITIVE_INFINITY, 1, 1)).toThrow(
       'manuscript_pdf_page_too_large',
     );
+  });
+
+  it('selects the page nearest the viewport center for continuous scrolling', () => {
+    const pages = [
+      { pageNumber: 1, top: 0, bottom: 500 },
+      { pageNumber: 2, top: 518, bottom: 1_018 },
+      { pageNumber: 3, top: 1_036, bottom: 1_536 },
+    ];
+
+    expect(resolveManuscriptPdfCurrentPage(250, pages)).toBe(1);
+    expect(resolveManuscriptPdfCurrentPage(760, pages)).toBe(2);
+    expect(resolveManuscriptPdfCurrentPage(1_300, pages)).toBe(3);
+    expect(resolveManuscriptPdfCurrentPage(509, pages)).toBe(1);
+    expect(resolveManuscriptPdfCurrentPage(510, pages)).toBe(2);
+    expect(resolveManuscriptPdfCurrentPage(250, [])).toBeNull();
+  });
+
+  it('keeps document size and simultaneous page rendering bounded', () => {
+    expect(MANUSCRIPT_PDF_MAX_PAGES).toBe(2_000);
+    expect(MANUSCRIPT_PDF_RENDER_RADIUS).toBe(1);
   });
 });

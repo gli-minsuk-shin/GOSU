@@ -23,6 +23,7 @@ import type {
   ExperimentMetricPoint,
 } from '../src/shared/experiment-workspace-contracts';
 import type { WorkspaceSnapshot } from '../src/shared/workspace-contracts';
+import type { ManuscriptWorkspaceSnapshot } from '../src/shared/manuscript-workspace-contracts';
 
 function hash(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -67,6 +68,102 @@ function literature(projectId: string, title: string): LiteratureRecord {
     version: 1,
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+function manuscriptSnapshot(
+  projectId: string,
+  options: Readonly<{ captured?: boolean }> = {},
+): ManuscriptWorkspaceSnapshot {
+  const now = '2026-08-11T00:00:00.000Z';
+  const manuscriptId = randomUUID();
+  const bindingId = randomUUID();
+  const checkpointId = randomUUID();
+  const providerRevision = 'provider-revision-1';
+  const capabilities = {
+    schemaVersion: 1 as const,
+    interactionModes: ['checkpoint_pull' as const],
+    revisionTopology: 'linear' as const,
+    conditionalPublish: false,
+    providerHistory: true,
+    presence: false,
+    comments: false,
+    trackChanges: false,
+    serverCompile: false,
+    reviewMetadataRoundTrip: 'unsupported' as const,
+  };
+  const checkpoint =
+    options.captured === false
+      ? null
+      : {
+          schemaVersion: 1 as const,
+          checkpointId,
+          bindingId,
+          projectId,
+          manuscriptId,
+          providerId: 'overleaf_git',
+          direction: 'fetch' as const,
+          sourceAuthority: 'provider' as const,
+          sourceRevision: providerRevision,
+          gosuRevision: null,
+          providerRevision,
+          cursor: null,
+          revisionEnvelopeDigest: `sha256:${'a'.repeat(64)}`,
+          rootDocument: 'main.tex',
+          baseCheckpointId: null,
+          actorId: randomUUID(),
+          observedAt: now,
+        };
+  return {
+    schemaVersion: 1,
+    projectId,
+    providers: [],
+    manuscripts: [
+      {
+        manuscript: {
+          schemaVersion: 1,
+          id: manuscriptId,
+          projectId,
+          title: 'Captured manuscript',
+          rootDocument: 'main.tex',
+          version: 3,
+          createdAt: now,
+          updatedAt: now,
+        },
+        connection: {
+          binding: {
+            schemaVersion: 1,
+            bindingId,
+            projectId,
+            manuscriptId,
+            providerId: 'overleaf_git',
+            capabilitiesSnapshot: capabilities,
+            authority: 'provider',
+            enabled: true,
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          },
+          providerDisplayName: 'Overleaf Git',
+          workspaceUrl: null,
+          lifecycle: 'ready',
+          syncState: checkpoint ? 'in_sync' : 'provider_ahead',
+          anchor: {
+            schemaVersion: 1,
+            bindingId,
+            generation: checkpoint ? 1 : 0,
+            lastCommonRevision: checkpoint?.providerRevision ?? null,
+            providerRevision,
+            gosuRevision: null,
+            updatedAt: now,
+          },
+          lastObservedProviderRevision: providerRevision,
+          lastObservedAt: now,
+          lastFailureCode: null,
+          lastCheckpoint: checkpoint,
+        },
+      },
+    ],
   };
 }
 
@@ -308,6 +405,8 @@ function fixture(
     artifactDestinationReady?: boolean;
     failAfterArtifactPublish?: boolean;
     pendingArtifacts?: PendingLectureRevisionArtifacts[];
+    manuscriptSnapshots?: ReadonlyMap<string, ManuscriptWorkspaceSnapshot>;
+    manuscriptFiles?: ReadonlyMap<string, string>;
   }> = {},
 ) {
   const projectA = randomUUID();
@@ -351,6 +450,8 @@ function fixture(
   }> = [];
   const storage = new MemoryStorage();
   const codex = new FakeCodex();
+  const manuscriptSnapshots = new Map(options.manuscriptSnapshots ?? []);
+  const manuscriptFiles = new Map(options.manuscriptFiles ?? []);
   const saved: Array<{
     outputProjectId: string;
     revision: number;
@@ -382,6 +483,43 @@ function fixture(
       },
       getExperimentIdea: (projectId, ideaId) =>
         (ideaRecords.get(projectId) ?? []).find((idea) => idea.id === ideaId) ?? null,
+    },
+    manuscripts: {
+      list: async ({ projectId }) =>
+        manuscriptSnapshots.get(projectId) ?? {
+          schemaVersion: 1,
+          projectId,
+          providers: [],
+          manuscripts: [],
+        },
+      listCheckpointFiles: async ({ projectId, manuscriptId, checkpointId }) => ({
+        schemaVersion: 1,
+        projectId,
+        manuscriptId,
+        checkpointId,
+        providerRevision: 'provider-revision-1',
+        files: [...manuscriptFiles.entries()].map(([relativePath, content]) => ({
+          relativePath,
+          sizeBytes: Buffer.byteLength(content, 'utf8'),
+          textReadable: true,
+        })),
+      }),
+      readCheckpointFile: async ({ projectId, manuscriptId, checkpointId, relativePath }) => {
+        const content = manuscriptFiles.get(relativePath);
+        if (content === undefined) throw new Error('missing_manuscript_file');
+        return {
+          schemaVersion: 1,
+          projectId,
+          manuscriptId,
+          checkpointId,
+          providerRevision: 'provider-revision-1',
+          relativePath,
+          offset: 0,
+          nextOffset: content.length,
+          truncated: false,
+          content,
+        };
+      },
     },
     workspace: { snapshot: () => workspace },
     artifacts: {
@@ -447,6 +585,8 @@ function fixture(
     ideaRecords,
     metricRecords,
     metricTailQueries,
+    manuscriptSnapshots,
+    manuscriptFiles,
     pendingArtifacts: options.pendingArtifacts ?? [],
   };
 }
@@ -540,6 +680,156 @@ describe('LectureStudioService', () => {
     expect(detail.studio.sourceSelection.literature).toHaveLength(2);
     expect(detail.messages).toEqual([receipt.assistantMessage]);
     expect(detail.revisions).toEqual([receipt.revision]);
+  });
+
+  it('generates a frozen v2 lecture revision from one exact captured manuscript checkpoint', async () => {
+    const { service, codex, projectA, manuscriptSnapshots, manuscriptFiles } = fixture();
+    const snapshot = manuscriptSnapshot(projectA);
+    const manuscript = snapshot.manuscripts[0]!.manuscript;
+    const checkpoint = snapshot.manuscripts[0]!.connection!.lastCheckpoint!;
+    const mainTex = String.raw`\documentclass{article}
+\begin{document}
+The captured result improves the bounded baseline.
+\bibliography{references}
+\end{document}`;
+    const bibliography = '@article{fixture2026, title={Captured evidence}}';
+    manuscriptSnapshots.set(projectA, snapshot);
+    manuscriptFiles.set('main.tex', mainTex);
+    manuscriptFiles.set('references.bib', bibliography);
+
+    const candidates = await service.candidates({ projectIds: [projectA] });
+    expect(candidates.projects[0]?.manuscripts).toEqual([
+      {
+        manuscript,
+        availability: 'ready',
+        checkpointId: checkpoint.checkpointId,
+        providerRevision: checkpoint.providerRevision,
+        observedAt: checkpoint.observedAt,
+      },
+    ]);
+
+    const studio = await service.create({
+      title: 'Manuscript-derived lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [],
+        experiments: [],
+        manuscripts: [{ projectId: projectA, manuscriptId: manuscript.id }],
+      },
+    });
+    codex.response = {
+      reply: 'Created from the captured manuscript checkpoint.',
+      lectureNotesMarkdown:
+        '# Manuscript lecture\n\nCaptured evidence [M1].\n\n## Sources used\n\n- [M1] Captured manuscript',
+      slidesMarkdown:
+        '# Manuscript lecture\n\nCaptured source [M1].\n\n---\n\n# Result\n\nCaptured evidence [M1].',
+    };
+
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    expect(receipt.revision.sourceManifest.schemaVersion).toBe(2);
+    if (receipt.revision.sourceManifest.schemaVersion !== 2) {
+      throw new Error('Expected a v2 manuscript source manifest');
+    }
+    expect(receipt.revision.sourceManifest.manuscripts).toEqual([
+      {
+        sourceLabel: 'M1',
+        projectId: projectA,
+        projectName: 'Project A',
+        manuscriptId: manuscript.id,
+        manuscriptVersion: manuscript.version,
+        title: manuscript.title,
+        rootDocument: manuscript.rootDocument,
+        checkpointId: checkpoint.checkpointId,
+        providerId: checkpoint.providerId,
+        providerRevision: checkpoint.providerRevision,
+        revisionEnvelopeDigest: checkpoint.revisionEnvelopeDigest,
+        observedAt: checkpoint.observedAt,
+        files: [
+          { relativePath: 'main.tex', contentSha256: hash(mainTex), content: mainTex },
+          {
+            relativePath: 'references.bib',
+            contentSha256: hash(bibliography),
+            content: bibliography,
+          },
+        ],
+        contentKind: 'captured_latex',
+        metadataOnly: false,
+      },
+    ]);
+    expect(codex.prompt).toContain('"sourceLabel":"M1"');
+    expect(codex.prompt).toContain('The captured result improves the bounded baseline.');
+    expect(receipt.revision.lectureNotesMarkdown).toContain('[M1]');
+
+    manuscriptFiles.set('main.tex', 'mutated after generation');
+    const detail = await service.detail({ studioId: studio.id });
+    expect(
+      detail.revisions[0]?.sourceManifest.schemaVersion === 2
+        ? detail.revisions[0].sourceManifest.manuscripts[0]?.files[0]?.content
+        : null,
+    ).toBe(mainTex);
+  });
+
+  it('fails closed when a selected manuscript lacks a captured checkpoint', async () => {
+    const { service, codex, projectA, manuscriptSnapshots } = fixture();
+    const snapshot = manuscriptSnapshot(projectA, { captured: false });
+    const manuscript = snapshot.manuscripts[0]!.manuscript;
+    manuscriptSnapshots.set(projectA, snapshot);
+
+    const candidates = await service.candidates({ projectIds: [projectA] });
+    expect(candidates.projects[0]?.manuscripts[0]).toMatchObject({
+      availability: 'capture_required',
+      checkpointId: null,
+    });
+    await expect(
+      service.create({
+        title: 'Unavailable manuscript',
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection: {
+          literature: [],
+          experiments: [],
+          manuscripts: [{ projectId: projectA, manuscriptId: manuscript.id }],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_source_not_found' });
+    expect(codex.startInput).toBeNull();
+  });
+
+  it('rejects a manuscript checkpoint that exceeds the bounded source-file count', async () => {
+    const { service, projectA, manuscriptSnapshots, manuscriptFiles } = fixture();
+    const snapshot = manuscriptSnapshot(projectA);
+    const manuscript = snapshot.manuscripts[0]!.manuscript;
+    manuscriptSnapshots.set(projectA, snapshot);
+    manuscriptFiles.set('main.tex', String.raw`\documentclass{article}`);
+    for (let index = 0; index < 128; index += 1) {
+      manuscriptFiles.set(`sections/section-${String(index).padStart(3, '0')}.tex`, 'bounded');
+    }
+
+    await expect(
+      service.create({
+        title: 'Oversized manuscript',
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection: {
+          literature: [],
+          experiments: [],
+          manuscripts: [{ projectId: projectA, manuscriptId: manuscript.id }],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_context_too_large' });
   });
 
   it('pages more than 100 ideas while resolving an explicitly selected off-page idea directly', async () => {

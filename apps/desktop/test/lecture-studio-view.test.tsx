@@ -14,6 +14,7 @@ import {
   activeLectureSourceProjects,
   currentLectureStudioRevision,
   lastLectureMessageId,
+  lectureManuscriptAvailabilityLabel,
   LectureStudioView,
   lectureOutputProjectName,
   lectureStudioMessages,
@@ -60,9 +61,7 @@ describe('LectureStudioView', () => {
 
     expect(html).toContain('Workspace / Lecture studio');
     expect(html).toContain('Lecture notes &amp; slides');
-    expect(html).toContain(
-      'Combine reviewed paper metadata and experiment evidence across multiple projects',
-    );
+    expect(html).toContain('Combine captured manuscripts, reviewed paper metadata, and experiment');
     expect(html).toContain('New lecture');
     expect(html).toContain('STUDIOS');
   });
@@ -155,6 +154,7 @@ describe('LectureStudioView', () => {
             },
             experiments: [],
             experimentPage: { offset: 0, limit: 100, total: 0, hasMore: false },
+            manuscripts: [],
           },
         ],
       }) as LectureSourceCandidates;
@@ -207,6 +207,24 @@ describe('LectureStudioView', () => {
     expect(before).toHaveLength(after.length);
     expect(lastLectureMessageId(before)).toBe('message-49');
     expect(lastLectureMessageId(after)).toBe('message-50');
+  });
+
+  it('explains why uncaptured manuscript candidates cannot be selected', () => {
+    expect(lectureManuscriptAvailabilityLabel('ready')).toBe('Captured checkpoint ready');
+    expect(lectureManuscriptAvailabilityLabel('capture_required')).toBe(
+      'Capture a checkpoint in Manuscript first',
+    );
+    expect(lectureManuscriptAvailabilityLabel('unconnected')).toBe(
+      'Connect this manuscript before using it',
+    );
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('<h4>Captured manuscripts</h4>');
+    expect(source).toContain('disabled={!ready}');
+    expect(source).toContain("toggleSource('manuscript', key)");
   });
 
   it('discloses the bounded chat history and reviewed-metadata evidence boundary', () => {

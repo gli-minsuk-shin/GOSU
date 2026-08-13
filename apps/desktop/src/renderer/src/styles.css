@@ -290,7 +290,12 @@
 }
 
 .manuscript-pdf-preview > header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
   justify-content: space-between;
+  padding: 2px;
+  background: var(--surface-soft);
 }
 
 .manuscript-pdf-preview > header > div:first-child {
@@ -314,26 +319,54 @@
 }
 
 .manuscript-pdf-canvas-wrap {
-  display: grid;
+  position: relative;
+  display: block;
+  height: clamp(320px, 72vh, 920px);
   min-height: 320px;
-  max-height: min(72vh, 920px);
   overflow: auto;
-  place-items: start center;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+  touch-action: pan-x pan-y;
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: light-dark(#dfe3de, #050706);
 }
 
-.manuscript-pdf-canvas-wrap > span {
-  place-self: center;
+.manuscript-pdf-document-status {
+  display: grid;
+  min-height: 288px;
+  place-items: center;
   color: var(--muted);
 }
 
-.manuscript-pdf-canvas-wrap canvas {
-  max-width: none;
+.manuscript-pdf-pages {
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  gap: 18px;
+  width: max-content;
+  min-width: 100%;
+}
+
+.manuscript-pdf-page {
+  position: relative;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
   background: #ffffff;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+
+.manuscript-pdf-page > span {
+  color: #687069;
+}
+
+.manuscript-pdf-page canvas {
+  display: block;
+  max-width: none;
+  background: #ffffff;
 }
 
 @media (max-width: 1050px) {

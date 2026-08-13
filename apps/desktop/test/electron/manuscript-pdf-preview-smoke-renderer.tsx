@@ -47,20 +47,44 @@ Object.defineProperty(window, 'Worker', {
 });
 
 function buildPdfFixture() {
-  const stream = [
-    '1 1 1 rg',
-    '0 0 220 220 re f',
-    '0 0 0 rg',
-    '20 20 80 80 re f',
-    '0 0 1 rg',
-    '110 110 70 70 re f',
-    '',
-  ].join('\n');
+  const streams = [
+    [
+      '1 1 1 rg',
+      '0 0 220 520 re f',
+      '0 0 0 rg',
+      '20 20 80 80 re f',
+      '0 0 1 rg',
+      '110 330 70 70 re f',
+      '',
+    ].join('\n'),
+    [
+      '1 1 1 rg',
+      '0 0 220 520 re f',
+      '0 0.75 0 rg',
+      '20 220 100 100 re f',
+      '1 0.55 0 rg',
+      '130 80 60 60 re f',
+      '',
+    ].join('\n'),
+    [
+      '1 1 1 rg',
+      '0 0 220 520 re f',
+      '1 0 0 rg',
+      '30 300 120 120 re f',
+      '0.75 0 0.75 rg',
+      '130 80 60 60 re f',
+      '',
+    ].join('\n'),
+  ];
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 220 220] /Resources << >> /Contents 4 0 R >>',
-    `<< /Length ${new TextEncoder().encode(stream).byteLength} >>\nstream\n${stream}endstream`,
+    '<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 220 520] /Resources << >> /Contents 4 0 R >>',
+    `<< /Length ${new TextEncoder().encode(streams[0]).byteLength} >>\nstream\n${streams[0]}endstream`,
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 220 520] /Resources << >> /Contents 6 0 R >>',
+    `<< /Length ${new TextEncoder().encode(streams[1]).byteLength} >>\nstream\n${streams[1]}endstream`,
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 220 520] /Resources << >> /Contents 8 0 R >>',
+    `<< /Length ${new TextEncoder().encode(streams[2]).byteLength} >>\nstream\n${streams[2]}endstream`,
   ];
   let source = '%PDF-1.4\n';
   const offsets = [0];
