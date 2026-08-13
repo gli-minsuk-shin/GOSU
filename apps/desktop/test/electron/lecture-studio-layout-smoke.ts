@@ -17,6 +17,19 @@ type RectMetrics = Readonly<{
   height: number;
 }>;
 
+type ArtifactActionMetrics = Readonly<{
+  bar: RectMetrics;
+  scrollWidth: number;
+  clientWidth: number;
+  buttons: readonly Readonly<{
+    rect: RectMetrics;
+    label: string;
+    title: string;
+    text: string;
+    svgCount: number;
+  }>[];
+}>;
+
 type LayoutMetrics = Readonly<{
   initial: RectMetrics;
   leftCollapsed: RectMetrics;
@@ -33,6 +46,7 @@ type LayoutMetrics = Readonly<{
   restoredChatCollapsed: boolean;
   leftToggleWidth: number;
   chatToggleWidth: number;
+  artifactActions: ArtifactActionMetrics;
   contentScrollWidth: number;
   contentClientWidth: number;
   narrow: Readonly<{
@@ -51,6 +65,7 @@ type LayoutMetrics = Readonly<{
     contentClientWidth: number;
     previewIdentityPreserved: boolean;
     pageCounter: string;
+    artifactActions: ArtifactActionMetrics;
   }>;
   securityViolations: readonly string[];
   windowErrors: readonly string[];
@@ -102,6 +117,28 @@ async function exerciseLayout(window: BrowserWindow) {
       );
       const pageCounter = () =>
         document.querySelector('.pdf-preview-page-counter')?.textContent?.trim() || '';
+      const artifactActions = () => {
+        const bar = document.querySelector('.lecture-artifact-actions');
+        if (!(bar instanceof HTMLElement)) {
+          throw new Error('lecture_studio_artifact_actions_missing');
+        }
+        const buttons = [...bar.querySelectorAll('[data-lecture-artifact-action]')];
+        if (!buttons.every((button) => button instanceof HTMLButtonElement)) {
+          throw new Error('lecture_studio_artifact_action_button_invalid');
+        }
+        return {
+          bar: rect(bar),
+          scrollWidth: bar.scrollWidth,
+          clientWidth: bar.clientWidth,
+          buttons: buttons.map((button) => ({
+            rect: rect(button),
+            label: button.getAttribute('aria-label') || '',
+            title: button.getAttribute('title') || '',
+            text: button.textContent?.trim() || '',
+            svgCount: button.querySelectorAll('svg[aria-hidden="true"]').length,
+          })),
+        };
+      };
       void (async () => {
         await waitFor(
           () => document.querySelector('.lecture-preview') &&
@@ -137,6 +174,7 @@ async function exerciseLayout(window: BrowserWindow) {
         });
         await waitFor(() => pageCounter() === '2 / 3', 'lecture_studio_pdf_page_two_not_active');
         const initial = rect(preview);
+        const initialArtifactActions = artifactActions();
         const initialScrollTop = scroll.scrollTop;
         const initialCounter = pageCounter();
 
@@ -238,6 +276,7 @@ async function exerciseLayout(window: BrowserWindow) {
         const narrowHideAssistantRect = rect(narrowHideAssistant);
         const chatPosition = getComputedStyle(chatDrawer).position;
         const sessionPosition = getComputedStyle(sessionDrawer).position;
+        const narrowArtifactActions = artifactActions();
 
         narrowHideAssistant.click();
         await waitFor(
@@ -283,6 +322,7 @@ async function exerciseLayout(window: BrowserWindow) {
           restoredChatCollapsed,
           leftToggleWidth,
           chatToggleWidth,
+          artifactActions: initialArtifactActions,
           contentScrollWidth: content.scrollWidth,
           contentClientWidth: content.clientWidth,
           narrow: {
@@ -303,6 +343,7 @@ async function exerciseLayout(window: BrowserWindow) {
               narrowPreview === preview &&
               narrowPreview.dataset.layoutSmokeIdentity === 'preserve-me',
             pageCounter: pageCounter(),
+            artifactActions: narrowArtifactActions,
           },
           securityViolations: [...(window.__gosuLectureStudioLayoutSmoke?.securityViolations ?? [])],
           windowErrors: [...(window.__gosuLectureStudioLayoutSmoke?.windowErrors ?? [])],
@@ -430,6 +471,45 @@ async function run() {
     );
     invariant(metrics.leftToggleWidth >= 34, 'lecture_studio_left_toggle_too_small');
     invariant(metrics.chatToggleWidth >= 34, 'lecture_studio_chat_toggle_too_small');
+    for (const [layout, actions] of [
+      ['wide', metrics.artifactActions],
+      ['narrow', metrics.narrow.artifactActions],
+    ] as const) {
+      invariant(actions.buttons.length === 3, `lecture_studio_${layout}_artifact_action_count`);
+      invariant(
+        actions.scrollWidth <= actions.clientWidth + 1,
+        `lecture_studio_${layout}_artifact_actions_overflowed`,
+      );
+      const expectedLabels = ['Export PDF', 'Open PDF in default app', 'Show saved folder'];
+      for (const [index, button] of actions.buttons.entries()) {
+        invariant(
+          button.label === expectedLabels[index],
+          `lecture_studio_${layout}_artifact_action_label:${index}:${button.label}`,
+        );
+        invariant(
+          button.title === button.label,
+          `lecture_studio_${layout}_artifact_action_tooltip:${index}`,
+        );
+        invariant(
+          button.text === '',
+          `lecture_studio_${layout}_artifact_action_visible_text:${index}:${button.text}`,
+        );
+        invariant(button.svgCount === 1, `lecture_studio_${layout}_artifact_action_icon:${index}`);
+        invariant(
+          button.rect.width >= 34 && button.rect.width <= 44 && button.rect.height >= 34,
+          `lecture_studio_${layout}_artifact_action_size:${index}`,
+        );
+        invariant(
+          button.rect.left >= actions.bar.left - 1 && button.rect.right <= actions.bar.right + 1,
+          `lecture_studio_${layout}_artifact_action_clipped:${index}`,
+        );
+      }
+      const buttonTops = actions.buttons.map(({ rect: buttonRect }) => buttonRect.top);
+      invariant(
+        Math.max(...buttonTops) - Math.min(...buttonTops) <= 1.5,
+        `lecture_studio_${layout}_artifact_actions_wrapped`,
+      );
+    }
     invariant(
       metrics.contentScrollWidth <= metrics.contentClientWidth + 1,
       'lecture_studio_layout_overflowed_horizontally',

@@ -353,17 +353,48 @@
 
 .lecture-artifact-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
-  padding: 7px 10px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface-soft) 72%, var(--surface));
 }
 
+.lecture-artifact-action-button {
+  display: grid;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  place-items: center;
+  padding: 0;
+  border-radius: 9px;
+}
+
+.lecture-artifact-action-button:hover:not(:disabled),
+.lecture-artifact-action-button:focus-visible {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.lecture-artifact-action-icon {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .lecture-artifact-actions > span {
+  flex: 1 1 auto;
   min-width: 0;
-  margin-left: auto;
+  margin-left: 4px;
   overflow: hidden;
   color: var(--muted);
   font-size: var(--font-caption);

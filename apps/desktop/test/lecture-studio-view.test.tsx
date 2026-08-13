@@ -15,6 +15,7 @@ import {
   currentLectureStudioRevision,
   lastLectureMessageId,
   lectureManuscriptAvailabilityLabel,
+  lectureArtifactActionLabels,
   LectureStudioView,
   lectureOutputProjectName,
   lectureStudioMessages,
@@ -268,5 +269,39 @@ describe('LectureStudioView', () => {
     expect(source).toContain('Additional instructions');
     expect(source).toContain('generationBrief: {');
     expect(source).toContain('detailLevel,');
+  });
+
+  it('uses compact accessible icons for revision artifact actions', () => {
+    expect(lectureArtifactActionLabels('notes')).toEqual({
+      export: 'Export Markdown',
+      open: 'Open Markdown in default app',
+      reveal: 'Show saved folder',
+    });
+    expect(lectureArtifactActionLabels('slides-pdf')).toEqual({
+      export: 'Export PDF',
+      open: 'Open PDF in default app',
+      reveal: 'Show saved folder',
+    });
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    const styles = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.css', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('aria-label={artifactActionLabels.export}');
+    expect(source).toContain('title={artifactActionLabels.export}');
+    expect(source).toContain('aria-label={artifactActionLabels.open}');
+    expect(source).toContain('title={artifactActionLabels.open}');
+    expect(source).toContain('aria-label={artifactActionLabels.reveal}');
+    expect(source).toContain('title={artifactActionLabels.reveal}');
+    expect(source).toContain('<LectureArtifactActionIcon kind="export" />');
+    expect(source).toContain('aria-hidden="true"');
+    expect(source).toContain('focusable="false"');
+    expect(styles).toMatch(
+      /\.lecture-artifact-action-button\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px;/su,
+    );
   });
 });

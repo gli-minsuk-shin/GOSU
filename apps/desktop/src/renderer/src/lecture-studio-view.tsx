@@ -105,6 +105,34 @@ function previewIsPdf(tab: PreviewTab) {
   return tab.endsWith('-pdf');
 }
 
+export function lectureArtifactActionLabels(tab: PreviewTab) {
+  const format = previewIsPdf(tab) ? 'PDF' : 'Markdown';
+  return {
+    export: `Export ${format}`,
+    open: `Open ${format} in default app`,
+    reveal: 'Show saved folder',
+  } as const;
+}
+
+function LectureArtifactActionIcon({ kind }: { kind: 'export' | 'open' | 'reveal' }) {
+  const path =
+    kind === 'export'
+      ? 'M12 3v11m0 0 4-4m-4 4-4-4M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4'
+      : kind === 'open'
+        ? 'M14 4h6v6m0-6-9 9M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5'
+        : 'M3.5 7.5V6.75A1.75 1.75 0 0 1 5.25 5h3.5l2 2h8A1.75 1.75 0 0 1 20.5 8.75v8.5A1.75 1.75 0 0 1 18.75 19H5.25a1.75 1.75 0 0 1-1.75-1.75V7.5Z';
+  return (
+    <svg
+      className="lecture-artifact-action-icon"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d={path} />
+    </svg>
+  );
+}
+
 function revisionMarkdown(revision: LectureStudioRevision, kind: 'lecture-notes' | 'slides') {
   return kind === 'lecture-notes' ? revision.lectureNotesMarkdown : revision.slidesMarkdown;
 }
@@ -1582,6 +1610,8 @@ function StudioPreview({
     void compilePdf();
   }, [activeTab, compilePdf, compilingPdf, documentKind, pdfPreview, revision]);
 
+  const artifactActionLabels = lectureArtifactActionLabels(activeTab);
+
   return (
     <main className="lecture-preview">
       <header className="lecture-preview-toolbar">
@@ -1675,31 +1705,40 @@ function StudioPreview({
         <div className="lecture-artifact-actions" aria-label="Lecture document actions">
           <button
             type="button"
-            className="ghost-button"
+            className="ghost-button lecture-artifact-action-button"
+            aria-label={artifactActionLabels.export}
+            title={artifactActionLabels.export}
+            data-lecture-artifact-action="export"
             disabled={artifactActionBusy}
             onClick={() =>
               void runArtifactAction('export', previewIsPdf(activeTab) ? 'pdf' : 'markdown')
             }
           >
-            Export {previewIsPdf(activeTab) ? 'PDF' : 'Markdown'}
+            <LectureArtifactActionIcon kind="export" />
           </button>
           <button
             type="button"
-            className="ghost-button"
+            className="ghost-button lecture-artifact-action-button"
+            aria-label={artifactActionLabels.open}
+            title={artifactActionLabels.open}
+            data-lecture-artifact-action="open"
             disabled={artifactActionBusy}
             onClick={() =>
               void runArtifactAction('open', previewIsPdf(activeTab) ? 'pdf' : 'markdown')
             }
           >
-            Open in default app
+            <LectureArtifactActionIcon kind="open" />
           </button>
           <button
             type="button"
-            className="ghost-button"
+            className="ghost-button lecture-artifact-action-button"
+            aria-label={artifactActionLabels.reveal}
+            title={artifactActionLabels.reveal}
+            data-lecture-artifact-action="reveal"
             disabled={artifactActionBusy}
             onClick={() => void runArtifactAction('reveal')}
           >
-            Show saved folder
+            <LectureArtifactActionIcon kind="reveal" />
           </button>
           {artifactAction && <span role="status">{artifactAction}</span>}
         </div>
