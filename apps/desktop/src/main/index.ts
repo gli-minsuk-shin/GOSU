@@ -14,6 +14,10 @@ import {
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import { createManuscriptWorkspaceAdapterRegistry } from '@gosu/integrations';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
+import {
+  CODEX_AUTH_IPC_CHANNELS,
+  CodexAuthenticationEventSchema,
+} from '../shared/codex-auth-channels';
 import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
 import { EXPERIMENT_EVALUATION_IPC_CHANNELS } from '../shared/experiment-evaluation-channels';
 import { ExperimentEvaluationEventSchema } from '../shared/experiment-evaluation-contracts';
@@ -27,7 +31,11 @@ import { SshEventSchema } from '../shared/ssh-contracts';
 import { buildMacApplicationMenuTemplate } from './application-menu';
 import { registerAgentAddOnIpc } from './agent-addon-ipc';
 import { createAgentAddOnRegistry } from './agent-addon-service';
-import { cleanupStaleGosuRuntimeDirectories, CodexAppServer } from './codex-app-server';
+import {
+  cleanupStaleGosuRuntimeDirectories,
+  CodexAppServer,
+  toCodexCollaborationModeCatalog,
+} from './codex-app-server';
 import { registerHermesAcpApprovalIpc } from './hermes-acp-approval-ipc';
 import { HermesAcpApprovalService } from './hermes-acp-approval-service';
 import { HermesAcpProjectChatAdapter } from './hermes-acp-project-chat-adapter';
@@ -101,12 +109,8 @@ import { isSupervisorAlive, parseSupervisorPid } from './supervisor-liveness';
 
 installProcessOutputGuards();
 
-const sharedCodexHome =
-  process.env.CODEX_HOME?.trim() ||
-  (process.env.HOME ? join(process.env.HOME, '.codex') : undefined);
 const codex = new CodexAppServer({
   isolatedCodexHome: () => join(app.getPath('userData'), 'codex-project-chat'),
-  sharedAuthFile: () => (sharedCodexHome ? join(sharedCodexHome, 'auth.json') : undefined),
   clientVersion: () => app.getVersion(),
 });
 const hermesAcpApprovals = new HermesAcpApprovalService();
@@ -600,12 +604,19 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
       status = (await codex.status()) as { account?: unknown; unavailable?: boolean };
     }
     if (status.unavailable) throw new Error('codex_unavailable');
+    if (status.account === null || status.account === undefined) {
+      return {
+        authenticated: false,
+        models: [],
+        collaborationModeCatalog: toCodexCollaborationModeCatalog([]),
+      };
+    }
     const [catalog, collaborationModeCatalog] = await Promise.all([
       codex.listModelCatalog(),
       codex.listCollaborationModeCatalog(),
     ]);
     return {
-      authenticated: status.account !== null && status.account !== undefined,
+      authenticated: true,
       models: catalog.models.map((model) => ({
         ...model,
         supportsPersonality: model.metadata?.supportsPersonality === true,
@@ -704,6 +715,16 @@ if (!primaryInstance) {
       if (!database.isReady()) return;
       database.recordModelCatalog(catalog);
       database.cache('codex', 'model-catalog', catalog, Date.now());
+    });
+    codex.on('authentication', (event: unknown) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      const parsed = CodexAuthenticationEventSchema.safeParse(event);
+      if (!parsed.success) return;
+      try {
+        mainWindow.webContents.send(CODEX_AUTH_IPC_CHANNELS.event, parsed.data);
+      } catch {
+        console.error('[GOSU] Codex authentication renderer event delivery failed.');
+      }
     });
     projectChatProvider.on(
       'invocation',

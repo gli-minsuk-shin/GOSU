@@ -9,6 +9,11 @@ import type {
   DisconnectAgentAddOnRequest,
 } from '../shared/agent-addon-contracts';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
+import {
+  CODEX_AUTH_IPC_CHANNELS,
+  CodexAuthenticationEventSchema,
+  type CodexAuthenticationEvent,
+} from '../shared/codex-auth-channels';
 import { EXPERIMENT_WORKSPACE_IPC_CHANNELS } from '../shared/experiment-workspace-channels';
 import { EXPERIMENT_EVALUATION_IPC_CHANNELS } from '../shared/experiment-evaluation-channels';
 import {
@@ -400,6 +405,20 @@ const api = {
     loginChatGpt: () => ipcRenderer.invoke('gosu:codex:login-chatgpt'),
     loginApiKey: (apiKey: string) => ipcRenderer.invoke('gosu:codex:login-api-key', apiKey),
     logout: () => ipcRenderer.invoke('gosu:codex:logout'),
+    onAuthenticationEvent: (listener: (event: CodexAuthenticationEvent) => void) => {
+      if (typeof listener !== 'function') {
+        throw new Error('invalid_codex_authentication_listener');
+      }
+      const handler = (_event: Electron.IpcRendererEvent, ...arguments_: unknown[]) => {
+        if (arguments_.length !== 1) return;
+        const parsed = CodexAuthenticationEventSchema.safeParse(arguments_[0]);
+        if (parsed.success) listener(parsed.data);
+      };
+      ipcRenderer.on(CODEX_AUTH_IPC_CHANNELS.event, handler);
+      return () => {
+        ipcRenderer.removeListener(CODEX_AUTH_IPC_CHANNELS.event, handler);
+      };
+    },
   },
   projectChat: {
     snapshot: (projectId: string, sessionId?: string) =>

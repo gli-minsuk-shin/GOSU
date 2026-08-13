@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  codexAuthenticationUiUpdate,
   isCodexUnavailableError,
   mergeProjectChatSessionCatalogUpdate,
   mergeProjectChatSessionSnapshotUpdate,
@@ -22,9 +23,25 @@ const placeholderSession: ProjectChatSession = {
 };
 
 describe('Desktop Project Chat session updates', () => {
+  it('refreshes models only after successful Codex authentication completion', () => {
+    expect(codexAuthenticationUiUpdate({ type: 'login.completed', success: true })).toEqual({
+      connectionState: 'checking',
+      status: 'Codex sign-in completed. Refreshing models…',
+      refreshModels: true,
+    });
+    expect(codexAuthenticationUiUpdate({ type: 'login.completed', success: false })).toEqual({
+      connectionState: 'auth-required',
+      status: 'Codex sign-in did not complete. Try signing in again.',
+      refreshModels: false,
+    });
+  });
+
   it('marks only an actual Codex connection error as a global disconnect', () => {
     expect(isCodexUnavailableError(new Error('lecture_codex_unavailable'))).toBe(true);
     expect(isCodexUnavailableError(new Error('lecture_generation_timed_out'))).toBe(false);
+    expect(isCodexUnavailableError(new Error('lecture_auth_required'))).toBe(false);
+    expect(isCodexUnavailableError(new Error('lecture_generation_interrupted'))).toBe(false);
+    expect(isCodexUnavailableError(new Error('lecture_usage_limit_exceeded'))).toBe(false);
     expect(isCodexUnavailableError(new Error('lecture_generation_failed'))).toBe(false);
     expect(isCodexUnavailableError(new Error('generation failed: codex_unavailable_reason'))).toBe(
       false,

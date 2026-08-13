@@ -126,7 +126,9 @@ export interface LectureStudioViewProps {
   draftStore: LectureStudioDraftStore;
   models: readonly CodexModel[];
   modelsLoading: boolean;
+  codexAuthenticationRequired: boolean;
   onRefreshModels: () => void;
+  onOpenCodexSignIn: () => void;
   layout: LectureStudioLayoutState;
   onLayoutChange: (layout: LectureStudioLayoutState) => void;
 }
@@ -298,8 +300,14 @@ function lectureErrorCodeMessage(code: string) {
     lecture_unavailable:
       'Lecture notes and slides are temporarily unavailable. Existing files were not replaced.',
     lecture_codex_unavailable: 'Codex is unavailable. Existing lecture files remain available.',
+    lecture_auth_required:
+      'Codex authentication has expired or is missing. Sign in again from Connections, then retry generation. Existing lecture files remain available.',
     lecture_generation_timed_out:
       'Generation stopped after Codex became inactive or reached the 30-minute safety limit. The previous revision remains unchanged.',
+    lecture_usage_limit_exceeded:
+      'The connected Codex account reached its usage limit. Try again after the limit resets or connect another account or API key. Existing lecture files remain available.',
+    lecture_generation_interrupted:
+      'A temporary Codex server or response-stream interruption stopped this generation. Retry generation; the previous revision remains unchanged.',
     lecture_generation_failed:
       'Codex started this generation but could not complete it. The previous revision remains unchanged.',
     lecture_version_conflict: 'This lecture changed in another action. Refresh and try again.',
@@ -520,7 +528,9 @@ export function LectureStudioView({
   draftStore,
   models,
   modelsLoading,
+  codexAuthenticationRequired,
   onRefreshModels,
+  onOpenCodexSignIn,
   layout,
   onLayoutChange,
 }: LectureStudioViewProps) {
@@ -692,10 +702,17 @@ export function LectureStudioView({
     <section className="lecture-studio" aria-label="Lecture notes and slides workspace">
       {error && (
         <div className="error-banner lecture-studio-banner" role="alert">
-          {error}
-          <button type="button" className="ghost-button" onClick={() => setError(null)}>
-            Dismiss
-          </button>
+          <span>{error}</span>
+          <div className="lecture-studio-banner-actions">
+            {selectedStudio?.lastErrorCode === 'lecture_auth_required' && (
+              <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
+                Sign in to Codex
+              </button>
+            )}
+            <button type="button" className="ghost-button" onClick={() => setError(null)}>
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
       {notice && (
@@ -735,9 +752,11 @@ export function LectureStudioView({
             projects={activeProjects}
             adapter={adapter}
             busy={busyStudioIds.size > 0}
+            codexAuthenticationRequired={codexAuthenticationRequired}
             models={models}
             modelsLoading={modelsLoading}
             onRefreshModels={onRefreshModels}
+            onOpenCodexSignIn={onOpenCodexSignIn}
             onCancel={listSnapshot?.studios.length ? () => setComposing(false) : undefined}
             onCreated={async (studio, initialSelection) => {
               setModelSelection(initialSelection);
@@ -764,8 +783,10 @@ export function LectureStudioView({
               adapter={adapter}
               activeTab={previewTab}
               busy={busyStudioIds.has(selectedStudio.id)}
+              codexAuthenticationRequired={codexAuthenticationRequired}
               onTab={setPreviewTab}
               onGenerate={() => void runGeneration(selectedStudio)}
+              onOpenCodexSignIn={onOpenCodexSignIn}
               onCancel={() => {
                 if (!selectedStudio.activeAttemptId) return;
                 void adapter
@@ -781,6 +802,8 @@ export function LectureStudioView({
               studio={selectedStudio}
               messages={selectedMessages}
               busy={busyStudioIds.has(selectedStudio.id) || selectedStudio.status === 'generating'}
+              codexAuthenticationRequired={codexAuthenticationRequired}
+              onOpenCodexSignIn={onOpenCodexSignIn}
               collapsed={layout.chatCollapsed}
               onCollapsedChange={(chatCollapsed) => onLayoutChange({ ...layout, chatCollapsed })}
               models={models}
@@ -974,9 +997,11 @@ function LectureComposer({
   projects,
   adapter,
   busy,
+  codexAuthenticationRequired,
   models,
   modelsLoading,
   onRefreshModels,
+  onOpenCodexSignIn,
   onCancel,
   onCreated,
   onError,
@@ -984,9 +1009,11 @@ function LectureComposer({
   projects: readonly ProjectRecord[];
   adapter: LectureStudioViewAdapter;
   busy: boolean;
+  codexAuthenticationRequired: boolean;
   models: readonly CodexModel[];
   modelsLoading: boolean;
   onRefreshModels: () => void;
+  onOpenCodexSignIn: () => void;
   onCancel?: (() => void) | undefined;
   onCreated: (studio: LectureStudio, selection: LectureStudioModelSelection) => Promise<void>;
   onError: (error: unknown) => void;
@@ -1180,6 +1207,7 @@ function LectureComposer({
     outputProjectId !== '' &&
     sourceCount > 0 &&
     sourceCount <= LECTURE_STUDIO_UI_MAX_SOURCES &&
+    !codexAuthenticationRequired &&
     !modelsLoading &&
     resolveLectureStudioModelSelection(initialModelSelection, models).issue === null;
 
@@ -1270,6 +1298,11 @@ function LectureComposer({
       <fieldset className="lecture-generation-model">
         <legend>Generation model</legend>
         <div>
+          {codexAuthenticationRequired && (
+            <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
+              Sign in to Codex
+            </button>
+          )}
           <label>
             Model
             <select
@@ -1771,9 +1804,11 @@ function StudioPreview({
   adapter,
   activeTab,
   busy,
+  codexAuthenticationRequired,
   onTab,
   onGenerate,
   onCancel,
+  onOpenCodexSignIn,
 }: {
   studio: LectureStudio;
   revision: LectureStudioRevision | null;
@@ -1781,9 +1816,11 @@ function StudioPreview({
   adapter: LectureStudioViewAdapter;
   activeTab: PreviewTab;
   busy: boolean;
+  codexAuthenticationRequired: boolean;
   onTab: (tab: PreviewTab) => void;
   onGenerate: () => void;
   onCancel: () => void;
+  onOpenCodexSignIn: () => void;
 }) {
   const [pdfPreviews, setPdfPreviews] = useState<
     Partial<Record<'lecture-notes' | 'slides', LectureStudioPdfPreview>>
@@ -1936,16 +1973,28 @@ function StudioPreview({
           <button type="button" className="danger-button" onClick={onCancel}>
             Stop generation
           </button>
+        ) : codexAuthenticationRequired ? (
+          <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
+            Sign in to Codex
+          </button>
         ) : (
           <button type="button" className="secondary-button" onClick={onGenerate}>
-            Generate new revision
+            {studio.currentRevision === 0 && studio.status === 'failed'
+              ? 'Retry generation'
+              : 'Generate new revision'}
           </button>
         )}
         {studio.lastErrorCode && studio.status === 'failed' && (
           <div className="lecture-preview-error" role="status">
             <strong>Last generation did not commit</strong>
             <span>{lectureErrorCodeMessage(studio.lastErrorCode)}</span>
-            <code>{studio.lastErrorCode}</code>
+            {studio.lastErrorCode === 'lecture_auth_required' || codexAuthenticationRequired ? (
+              <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
+                Sign in to Codex
+              </button>
+            ) : (
+              <code>{studio.lastErrorCode}</code>
+            )}
           </div>
         )}
         {pdfError && (
@@ -2151,6 +2200,8 @@ function LectureStudioChat({
   onSelectedModel,
   onSelectedReasoning,
   onRefreshModels,
+  codexAuthenticationRequired,
+  onOpenCodexSignIn,
 }: {
   studio: LectureStudio;
   messages: readonly LectureStudioMessage[];
@@ -2170,6 +2221,8 @@ function LectureStudioChat({
   onSelectedModel: (modelId: string | null) => void;
   onSelectedReasoning: (reasoningOptionId: string | null) => void;
   onRefreshModels: () => void;
+  codexAuthenticationRequired: boolean;
+  onOpenCodexSignIn: () => void;
 }) {
   const [showNewMessageJump, setShowNewMessageJump] = useState(false);
   const messagesElement = useRef<HTMLDivElement | null>(null);
@@ -2228,7 +2281,14 @@ function LectureStudioChat({
 
   const send = async () => {
     const message = draft.trim();
-    if (!message || busy || studio.status !== 'ready' || selectionUnavailable) return;
+    if (
+      !message ||
+      busy ||
+      codexAuthenticationRequired ||
+      studio.status !== 'ready' ||
+      selectionUnavailable
+    )
+      return;
     const succeeded = await onSend(message);
     if (succeeded) onDraftChange('');
   };
@@ -2323,6 +2383,14 @@ function LectureStudioChat({
         This chat edits only this lecture workspace. Project chats remain separate. Showing up to
         the {LECTURE_STUDIO_RECENT_MESSAGE_WINDOW} most recent messages.
       </p>
+      {codexAuthenticationRequired && (
+        <div className="lecture-chat-auth-required" role="status">
+          <span>Sign in to Codex before editing this revision.</span>
+          <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
+            Sign in to Codex
+          </button>
+        </div>
+      )}
       <div className="lecture-chat-messages-shell">
         <div
           className="lecture-chat-messages"
@@ -2378,19 +2446,27 @@ function LectureStudioChat({
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={keyDown}
           placeholder={
-            studio.status === 'ready'
-              ? 'Ask for a focused change to the notes or slides…'
-              : 'Generate a revision before editing it…'
+            codexAuthenticationRequired
+              ? 'Sign in to Codex before editing this revision…'
+              : studio.status === 'ready'
+                ? 'Ask for a focused change to the notes or slides…'
+                : 'Generate a revision before editing it…'
           }
           rows={3}
           maxLength={12_000}
-          disabled={busy || studio.status !== 'ready' || selectionUnavailable}
+          disabled={
+            busy || codexAuthenticationRequired || studio.status !== 'ready' || selectionUnavailable
+          }
         />
         <button
           type="button"
           className="primary-button"
           disabled={
-            busy || studio.status !== 'ready' || selectionUnavailable || draft.trim() === ''
+            busy ||
+            codexAuthenticationRequired ||
+            studio.status !== 'ready' ||
+            selectionUnavailable ||
+            draft.trim() === ''
           }
           onClick={() => void send()}
         >

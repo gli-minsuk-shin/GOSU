@@ -457,4 +457,10 @@ describe('Lecture Studio failure contracts', () => {
   it('exposes a stable typed capacity error across IPC', () => {
     expect(LECTURE_STUDIO_IPC_ERROR_CODES).toContain('lecture_capacity_reached');
   });
+
+  it('exposes safe structured Codex terminal errors across IPC', () => {
+    expect(LECTURE_STUDIO_IPC_ERROR_CODES).toContain('lecture_auth_required');
+    expect(LECTURE_STUDIO_IPC_ERROR_CODES).toContain('lecture_usage_limit_exceeded');
+    expect(LECTURE_STUDIO_IPC_ERROR_CODES).toContain('lecture_generation_interrupted');
+  });
 });

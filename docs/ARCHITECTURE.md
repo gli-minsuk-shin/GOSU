@@ -556,9 +556,13 @@ number/table/plot을 실제 evidence로 승격하고, duplicate/out-of-order cad
   전후에 비교한다. Node의 path API만으로 ancestor 전체를 descriptor-relative하게 고정할 수는 없으므로,
   정교한 local directory-swap race를 완전히 닫으려면 후속 native `openat` traversal이 필요하다.
 - Codex child는 허용된 최소 환경만 상속하고 stdio JSON-RPC로 initialize한다. GOSU 전용
-  `CODEX_HOME`을 사용하며 최초 한 번만 기존 로컬 Codex 인증을 mode `0600`으로 가져온다. import
-  marker가 남으므로 GOSU에서 로그아웃한 뒤 다음 실행에 개인 Codex 인증을 몰래 재수입하지 않는다.
-  인증정보는 Hosted Sync로 보내지 않는다.
+  `CODEX_HOME`은 mode `0700`, 그 안에서 GOSU의 명시적인 ChatGPT/API-key login으로 만들어진
+  `auth.json`은 regular non-symlink file과 mode `0600`을 요구한다. OAuth refresh token은 회전하므로
+  다른 Codex 설치의 인증을 읽거나 복사하지 않는다. GOSU logout 뒤에도 개인 Codex 인증을 몰래
+  재수입하지 않으며 인증정보는 Hosted Sync로 보내지 않는다. 연결 상태는 cached account/model이 아니라
+  `account/read`의 credential refresh를 통과해야 `Connected`로 표시한다. system-browser login 완료 event는
+  success boolean만 fixed Main→Preload→Renderer channel로 전달해 catalog를 자동 갱신하고, login ID·email·
+  provider error·token은 Renderer나 local DB에 노출하지 않는다.
 - Project Chat의 Codex SQLite runtime은 mode `0700` 임시 디렉터리로 분리하고 child 종료·앱 종료 시
   삭제한다. 정상 종료가 동기 삭제를 마친 뒤 child `close`에서도 한 번 더 정리해 late write를 없앤다.
   process config에서 transcript history, analytics, OTel export와 user-prompt logging을 끈다. crash 뒤
@@ -1042,8 +1046,14 @@ shell, filesystem, Apps/MCP를 허용하지 않는다. 직렬화된 prompt는 36
 제외한다. actual model invocation을 revision에 기록한다. turn은 연결 상태와 무관한 단일 3분 wall-clock
 timeout을 쓰지 않는다. 현재 turn과 일치하는 Codex progress notification·invocation이 올 때마다 3분 idle
 deadline을 갱신하고, 진행 중이어도 최대 30분 hard deadline에서만 중단한다. idle/hard timeout은
-`lecture_generation_timed_out`, terminal failure는 `lecture_generation_failed`, 실제 App Server 시작·transport
-단절만 `lecture_codex_unavailable`로 구분해 연결된 Codex를 오프라인으로 오표시하지 않는다.
+`lecture_generation_timed_out`으로 고정한다. terminal `Turn.error`에서는 allowlist된
+`codexErrorInfo` kind만 읽어 인증 만료·로그인 필요를 `lecture_auth_required`, 사용량 한도를
+`lecture_usage_limit_exceeded`, 일시적인 provider/response-stream 장애를 `lecture_generation_interrupted`,
+context/session budget을 `lecture_context_too_large`, 알 수 없는 terminal failure를
+`lecture_generation_failed`로 구분한다. raw provider message와 additional details는 Renderer·Studio record·
+telemetry에 넣지 않는다. 실제 App Server 시작·process transport 단절만 `lecture_codex_unavailable`로 분류해
+연결 상태를 오표시하지 않는다. 인증이 필요하면 같은 revision-0 Studio를 보존한 채 system-browser sign-in과
+catalog 자동 refresh 뒤 `Retry generation`으로 재사용한다.
 
 structured output은 고정 JSON field의 notes/article LaTeX body와 Beamer frame body, 알려진
 `[P#]|[E#]|[M#]|[F#]` label, substantive frame별 evidence label, notes의 `Sources used` section, duration 또는

@@ -78,7 +78,9 @@ describe('LectureStudioView', () => {
         draftStore={new VolatileLectureStudioDrafts()}
         models={[defaultModel]}
         modelsLoading={false}
+        codexAuthenticationRequired={false}
         onRefreshModels={() => undefined}
+        onOpenCodexSignIn={() => undefined}
         layout={{ schemaVersion: 1, studioRailCollapsed: false, chatCollapsed: false }}
         onLayoutChange={() => undefined}
       />,
@@ -265,6 +267,20 @@ describe('LectureStudioView', () => {
     expect(source).toContain('the {LECTURE_STUDIO_RECENT_MESSAGE_WINDOW} most recent messages');
     expect(source).toContain('Reviewed paper metadata');
     expect(source).toContain('full text is verified');
+  });
+
+  it('blocks generation and revision chat behind the same Codex sign-in recovery action', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('codexAuthenticationRequired={codexAuthenticationRequired}');
+    expect(source).toContain('Sign in to Codex before editing this revision.');
+    expect(source).toContain("? 'Sign in to Codex before editing this revision…'");
+    expect(source).toContain(
+      "busy || codexAuthenticationRequired || studio.status !== 'ready' || selectionUnavailable",
+    );
   });
 
   it('offers persisted page, detail, and custom generation guidance before synthesis', () => {

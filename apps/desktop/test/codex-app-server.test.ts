@@ -22,6 +22,9 @@ import {
   buildCodexTurnParameters,
   cleanupStaleGosuRuntimeDirectories,
   CodexAppServer,
+  CodexRequestError,
+  classifyCodexRequestError,
+  codexAuthenticationEventFromNotification,
   codexServerRequestResponse,
   assertNoProjectMcpServers,
   buildCodexAppServerArguments,
@@ -36,6 +39,46 @@ import {
 import { toModelCatalog } from '../src/main/model-catalog';
 
 describe('Codex App Server process boundary', () => {
+  it('reduces login completion notifications to a safe success-only boundary event', () => {
+    expect(
+      codexAuthenticationEventFromNotification('account/login/completed', {
+        loginId: 'provider-login-id',
+        success: true,
+        error: 'raw provider detail must not cross the boundary',
+      }),
+    ).toEqual({ type: 'login.completed', success: true });
+    expect(
+      codexAuthenticationEventFromNotification('account/login/completed', {
+        success: false,
+        error: 'refresh_token_reused',
+      }),
+    ).toEqual({ type: 'login.completed', success: false });
+    expect(
+      codexAuthenticationEventFromNotification('arbitrary/provider-event', { success: true }),
+    ).toBeNull();
+    expect(
+      codexAuthenticationEventFromNotification('account/login/completed', { success: 'yes' }),
+    ).toBeNull();
+  });
+
+  it('reduces RPC failures to non-sensitive authentication and provider categories', () => {
+    expect(classifyCodexRequestError({ code: 401, message: 'private detail' })).toBe(
+      'codex_auth_required',
+    );
+    expect(classifyCodexRequestError({ message: 'refresh_token_reused private detail' })).toBe(
+      'codex_auth_required',
+    );
+    expect(classifyCodexRequestError({ code: 429, message: 'private detail' })).toBe(
+      'codex_usage_limit_exceeded',
+    );
+    expect(classifyCodexRequestError({ code: 503, message: 'private detail' })).toBe(
+      'codex_request_interrupted',
+    );
+    expect(classifyCodexRequestError({ code: -1, message: 'private detail' })).toBe(
+      'codex_request_failed',
+    );
+  });
+
   it('removes only old owned runtime directories and never follows matching symlinks', async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), 'gosu-runtime-cleanup-test-'));
     const staleCodex = join(temporaryRoot, 'gosu-codex-runtime-stale1');
@@ -178,30 +221,102 @@ describe('Codex App Server process boundary', () => {
     );
   });
 
-  it('copies only fixture authentication into a private isolated Codex home', async () => {
+  it('creates a private isolated Codex home without authentication', async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), 'gosu-codex-home-test-'));
-    const sharedHome = join(temporaryRoot, 'shared');
     const isolatedHome = join(temporaryRoot, 'isolated');
-    const fixtureAuth = JSON.stringify({ authMode: 'fixture-only' });
     try {
-      await mkdir(sharedHome, { mode: 0o700 });
-      await writeFile(join(sharedHome, 'auth.json'), fixtureAuth, { mode: 0o600 });
+      await prepareIsolatedCodexHome(isolatedHome);
 
-      await prepareIsolatedCodexHome(isolatedHome, join(sharedHome, 'auth.json'));
-
-      expect(await readFile(join(isolatedHome, 'auth.json'), 'utf8')).toBe(fixtureAuth);
       expect((await stat(isolatedHome)).mode & 0o777).toBe(0o700);
-      expect((await stat(join(isolatedHome, 'auth.json'))).mode & 0o777).toBe(0o600);
-
-      await rm(join(isolatedHome, 'auth.json'));
-      await writeFile(join(sharedHome, 'auth.json'), JSON.stringify({ authMode: 'changed' }));
-      await prepareIsolatedCodexHome(isolatedHome, join(sharedHome, 'auth.json'));
       await expect(readFile(join(isolatedHome, 'auth.json'), 'utf8')).rejects.toMatchObject({
         code: 'ENOENT',
       });
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true });
     }
+  });
+
+  it('preserves authentication owned by GOSU', async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), 'gosu-codex-owned-auth-test-'));
+    const isolatedHome = join(temporaryRoot, 'isolated');
+    try {
+      await mkdir(isolatedHome, { mode: 0o700 });
+      await writeFile(join(isolatedHome, 'auth.json'), 'gosu-login', { mode: 0o600 });
+      await prepareIsolatedCodexHome(isolatedHome);
+
+      expect(await readFile(join(isolatedHome, 'auth.json'), 'utf8')).toBe('gosu-login');
+      expect((await stat(join(isolatedHome, 'auth.json'))).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps GOSU signed out when isolated authentication is absent', async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), 'gosu-codex-logout-test-'));
+    const isolatedHome = join(temporaryRoot, 'isolated');
+    try {
+      await mkdir(isolatedHome, { mode: 0o700 });
+      await prepareIsolatedCodexHome(isolatedHome);
+
+      await expect(readFile(join(isolatedHome, 'auth.json'), 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a symlink in the isolated authentication slot', async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), 'gosu-codex-isolated-symlink-test-'));
+    const isolatedHome = join(temporaryRoot, 'isolated');
+    const target = join(temporaryRoot, 'target-auth.json');
+    try {
+      await mkdir(isolatedHome, { mode: 0o700 });
+      await writeFile(target, 'keep-me', { mode: 0o600 });
+      await symlink(target, join(isolatedHome, 'auth.json'));
+
+      await expect(prepareIsolatedCodexHome(isolatedHome)).rejects.toThrow(
+        'codex_auth_file_not_regular',
+      );
+      expect(await readFile(target, 'utf8')).toBe('keep-me');
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('validates authentication freshness when reading Codex status', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const request = vi.fn().mockResolvedValue({ account: null });
+    (server as unknown as { request: typeof request }).request = request;
+
+    await expect(server.status()).resolves.toEqual({ account: null });
+    expect(request).toHaveBeenCalledWith('account/read', { refreshToken: true });
+  });
+
+  it('reports a rejected credential refresh as authentication-required instead of unavailable', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const request = vi.fn().mockRejectedValue(new CodexRequestError('codex_auth_required'));
+    (server as unknown as { request: typeof request }).request = request;
+
+    await expect(server.status()).resolves.toEqual({
+      account: null,
+      requiresOpenaiAuth: true,
+    });
+  });
+
+  it('keeps process and provider transport failures distinct from authentication', async () => {
+    const server = new CodexAppServer();
+    vi.spyOn(server, 'start').mockResolvedValue();
+    const request = vi.fn().mockRejectedValue(new CodexRequestError('codex_request_interrupted'));
+    (server as unknown as { request: typeof request }).request = request;
+
+    await expect(server.status()).resolves.toEqual({
+      account: null,
+      unavailable: true,
+      error: 'codex_request_interrupted',
+    });
   });
 
   it('emits every fetched dynamic model catalog for durable provenance storage', async () => {

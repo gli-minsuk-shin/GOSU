@@ -1,17 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants, rmSync } from 'node:fs';
-import {
-  access,
-  chmod,
-  copyFile,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readdir,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
@@ -115,6 +105,20 @@ type JsonRpcMessage = {
   params?: unknown;
 };
 
+export type CodexRequestErrorCode =
+  | 'codex_auth_required'
+  | 'codex_usage_limit_exceeded'
+  | 'codex_context_too_large'
+  | 'codex_request_interrupted'
+  | 'codex_request_failed';
+
+export class CodexRequestError extends Error {
+  constructor(readonly code: CodexRequestErrorCode) {
+    super(code);
+    this.name = 'CodexRequestError';
+  }
+}
+
 type BoundModelInvocation = {
   threadId: string;
   invocation: ModelInvocation;
@@ -175,6 +179,33 @@ const SAFE_PROJECT_CONFIG = {
   },
   web_search: 'disabled',
 } as const;
+
+/**
+ * Reduce provider/RPC errors to a stable non-sensitive code before they leave this module.
+ * The raw message can contain provider diagnostics and must not be persisted or sent to Renderer.
+ */
+export function classifyCodexRequestError(error: { code?: unknown; message?: unknown }) {
+  const value = `${typeof error.code === 'number' ? error.code : ''} ${
+    typeof error.message === 'string' ? error.message : ''
+  }`.toLowerCase();
+  if (
+    /(?:^|[^0-9])401(?:[^0-9]|$)|unauthori[sz]ed|refresh[_ -]?token|auth(?:entication)?[_ -]?(?:required|expired)/u.test(
+      value,
+    )
+  ) {
+    return 'codex_auth_required' as const;
+  }
+  if (/usage[_ -]?limit|rate[_ -]?limit|quota|(?:^|[^0-9])429(?:[^0-9]|$)/u.test(value)) {
+    return 'codex_usage_limit_exceeded' as const;
+  }
+  if (/context[_ -]?window|session[_ -]?budget|context length/u.test(value)) {
+    return 'codex_context_too_large' as const;
+  }
+  if (/overload|temporar|stream|connection|network|(?:^|[^0-9])50[0234](?:[^0-9]|$)/u.test(value)) {
+    return 'codex_request_interrupted' as const;
+  }
+  return 'codex_request_failed' as const;
+}
 
 export const SAFE_CODEX_PROCESS_DISABLED_FEATURES = [
   'apps',
@@ -737,45 +768,25 @@ export function buildCodexChildEnvironment(
   return environment;
 }
 
-export async function prepareIsolatedCodexHome(isolatedCodexHome: string, sharedAuthFile?: string) {
+export async function prepareIsolatedCodexHome(isolatedCodexHome: string) {
   if (!isAbsolute(isolatedCodexHome)) throw new Error('codex_home_must_be_absolute');
   await mkdir(isolatedCodexHome, { recursive: true, mode: 0o700 });
+  const isolatedHomeInfo = await lstat(isolatedCodexHome);
+  if (!isolatedHomeInfo.isDirectory() || isolatedHomeInfo.isSymbolicLink()) {
+    throw new Error('codex_home_not_private_directory');
+  }
   await chmod(isolatedCodexHome, 0o700);
-  if (!sharedAuthFile) return isolatedCodexHome;
-
-  const isolatedAuthFile = join(isolatedCodexHome, 'auth.json');
-  const importMarker = join(isolatedCodexHome, '.shared-auth-imported-v1');
-  if (resolve(sharedAuthFile) === resolve(isolatedAuthFile)) return isolatedCodexHome;
   try {
-    await access(importMarker, constants.F_OK);
-    return isolatedCodexHome;
-  } catch {
-    // Continue only when the one-time import has never completed.
-  }
-
-  let isolatedAuthReady = false;
-  try {
-    await access(isolatedAuthFile, constants.F_OK);
-    isolatedAuthReady = true;
-  } catch {
-    try {
-      await copyFile(sharedAuthFile, isolatedAuthFile, constants.COPYFILE_EXCL);
-      await chmod(isolatedAuthFile, 0o600);
-      isolatedAuthReady = true;
-    } catch (error) {
-      const code = isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
-      if (code === 'EEXIST') isolatedAuthReady = true;
-      else if (code !== 'ENOENT') throw error;
+    const isolatedAuthInfo = await lstat(join(isolatedCodexHome, 'auth.json'));
+    if (!isolatedAuthInfo.isFile() || isolatedAuthInfo.isSymbolicLink()) {
+      throw new Error('codex_auth_file_not_regular');
     }
+    await chmod(join(isolatedCodexHome, 'auth.json'), 0o600);
+  } catch (error) {
+    if (!(isRecord(error) && error.code === 'ENOENT')) throw error;
   }
-  if (isolatedAuthReady) {
-    try {
-      await writeFile(importMarker, 'imported\n', { flag: 'wx', mode: 0o600 });
-    } catch (error) {
-      const code = isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
-      if (code !== 'EEXIST') throw error;
-    }
-  }
+  // OAuth refresh tokens rotate. GOSU therefore owns an independent login in this isolated home;
+  // authentication from another Codex installation is never read or copied.
   return isolatedCodexHome;
 }
 
@@ -821,7 +832,6 @@ export class CodexAppServer extends EventEmitter {
   constructor(
     private readonly options: {
       isolatedCodexHome?: () => string;
-      sharedAuthFile?: () => string | undefined;
       clientVersion?: () => string;
     } = {},
   ) {
@@ -872,12 +882,23 @@ export class CodexAppServer extends EventEmitter {
   async status() {
     try {
       await this.start();
-      return await this.request('account/read', { refreshToken: false });
-    } catch (error) {
+    } catch {
       return {
         account: null,
         unavailable: true,
-        error: error instanceof Error ? error.message : 'codex_unavailable',
+        error: 'codex_unavailable',
+      };
+    }
+    try {
+      return await this.request('account/read', { refreshToken: true });
+    } catch (error) {
+      if (error instanceof CodexRequestError && error.code === 'codex_auth_required') {
+        return { account: null, requiresOpenaiAuth: true };
+      }
+      return {
+        account: null,
+        unavailable: true,
+        error: error instanceof CodexRequestError ? error.code : 'codex_unavailable',
       };
     }
   }
@@ -1147,10 +1168,7 @@ export class CodexAppServer extends EventEmitter {
   private async startInternal() {
     const command = codexCommand();
     const isolatedCodexHome = this.options.isolatedCodexHome
-      ? await prepareIsolatedCodexHome(
-          this.options.isolatedCodexHome(),
-          this.options.sharedAuthFile?.(),
-        )
+      ? await prepareIsolatedCodexHome(this.options.isolatedCodexHome())
       : undefined;
     const volatileSqliteHome = await mkdtemp(join(tmpdir(), 'gosu-codex-runtime-'));
     await chmod(volatileSqliteHome, 0o700);
@@ -1256,8 +1274,9 @@ export class CodexAppServer extends EventEmitter {
       if (!entry) return;
       clearTimeout(entry.timeout);
       this.pending.delete(message.id);
-      if (message.error) entry.reject(new Error(`${message.error.code}: ${message.error.message}`));
-      else entry.resolve(message.result);
+      if (message.error) {
+        entry.reject(new CodexRequestError(classifyCodexRequestError(message.error)));
+      } else entry.resolve(message.result);
       return;
     }
     if (message.id !== undefined && message.method) {
@@ -1318,6 +1337,11 @@ export class CodexAppServer extends EventEmitter {
       }
     }
     if (message.method) {
+      const authenticationEvent = codexAuthenticationEventFromNotification(
+        message.method,
+        message.params,
+      );
+      if (authenticationEvent) this.emitBoundaryEvent('authentication', authenticationEvent);
       if (message.method === 'turn/completed' && isRecord(message.params)) {
         const turn = message.params.turn;
         const threadId = message.params.threadId;
@@ -1630,4 +1654,13 @@ export class CodexAppServer extends EventEmitter {
       // Observability and renderer listeners must never break the Codex protocol state machine.
     }
   }
+}
+
+export function codexAuthenticationEventFromNotification(method: string, params: unknown) {
+  if (method !== 'account/login/completed' || !isRecord(params)) return null;
+  if (typeof params.success !== 'boolean') return null;
+  return {
+    type: 'login.completed' as const,
+    success: params.success,
+  };
 }

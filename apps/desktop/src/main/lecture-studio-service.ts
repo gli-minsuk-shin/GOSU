@@ -92,6 +92,7 @@ import {
 } from './lecture-document-compiler';
 import { lecturePdfExportBytes, type LectureArtifactPlatform } from './lecture-artifact-platform';
 import type { ResolvedLectureRevisionArtifact } from './research-notes-service';
+import { CodexRequestError } from './codex-app-server';
 
 type MaybePromise<T> = T | Promise<T>;
 type CodexNotification = Readonly<{ method?: string; params?: unknown }>;
@@ -284,7 +285,10 @@ export class LectureStudioServiceError extends Error {
       | 'lecture_busy'
       | 'lecture_not_active'
       | 'lecture_codex_unavailable'
+      | 'lecture_auth_required'
       | 'lecture_generation_timed_out'
+      | 'lecture_usage_limit_exceeded'
+      | 'lecture_generation_interrupted'
       | 'lecture_generation_failed'
       | 'lecture_invalid_response'
       | 'lecture_persistence_failed'
@@ -319,8 +323,22 @@ type PendingTurn = {
   terminal: boolean;
   markActivity: (() => void) | null;
   disposeTimers: (() => void) | null;
-  resolve: (value: { status: string; text: string | null }) => void;
+  resolve: (value: LectureTurnResult) => void;
 };
+
+type LectureTurnFailureCode =
+  | 'lecture_context_too_large'
+  | 'lecture_codex_unavailable'
+  | 'lecture_auth_required'
+  | 'lecture_usage_limit_exceeded'
+  | 'lecture_generation_interrupted'
+  | 'lecture_generation_failed';
+
+type LectureTurnResult = Readonly<{
+  status: string;
+  text: string | null;
+  failureCode: LectureTurnFailureCode | null;
+}>;
 
 type ActiveExecution = {
   studioId: string;
@@ -348,6 +366,57 @@ const UNSUPPORTED_CITATION_PATTERN = /\[@[^\]]+\]|\\(?:auto|paren|text)?cite\s*\
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function lectureErrorFromCodexRequest(error: unknown) {
+  if (!(error instanceof CodexRequestError)) return 'lecture_codex_unavailable' as const;
+  switch (error.code) {
+    case 'codex_auth_required':
+      return 'lecture_auth_required' as const;
+    case 'codex_usage_limit_exceeded':
+      return 'lecture_usage_limit_exceeded' as const;
+    case 'codex_context_too_large':
+      return 'lecture_context_too_large' as const;
+    case 'codex_request_interrupted':
+      return 'lecture_generation_interrupted' as const;
+    case 'codex_request_failed':
+      return 'lecture_generation_failed' as const;
+  }
+}
+
+/**
+ * Convert Codex's structured terminal reason to a stable, non-sensitive application error.
+ * Raw provider messages and additionalDetails can contain request context, so they must never
+ * cross the main-process boundary or be written to the Lecture Studio record.
+ */
+function classifyCodexTurnFailure(turn: unknown): LectureTurnFailureCode {
+  if (!isRecord(turn) || !isRecord(turn.error)) return 'lecture_generation_failed';
+  const info = turn.error.codexErrorInfo;
+  const kind =
+    typeof info === 'string'
+      ? info
+      : isRecord(info)
+        ? (Object.keys(info).find((key) => Object.hasOwn(info, key)) ?? null)
+        : null;
+
+  switch (kind) {
+    case 'contextWindowExceeded':
+    case 'sessionBudgetExceeded':
+      return 'lecture_context_too_large';
+    case 'usageLimitExceeded':
+      return 'lecture_usage_limit_exceeded';
+    case 'serverOverloaded':
+    case 'httpConnectionFailed':
+    case 'responseStreamConnectionFailed':
+    case 'responseStreamDisconnected':
+    case 'responseTooManyFailedAttempts':
+    case 'internalServerError':
+      return 'lecture_generation_interrupted';
+    case 'unauthorized':
+      return 'lecture_auth_required';
+    default:
+      return 'lecture_generation_failed';
+  }
 }
 
 function notificationIdentity(notification: CodexNotification) {
@@ -518,7 +587,7 @@ export class LectureStudioService {
       for (const pending of this.pendingByThread.values()) {
         if (pending.terminal) continue;
         pending.terminal = true;
-        pending.resolve({ status: 'transport_failed', text: null });
+        pending.resolve({ status: 'transport_failed', text: null, failureCode: null });
       }
     });
     dependencies.codex.on(
@@ -1254,14 +1323,14 @@ export class LectureStudioService {
           dynamicTools: [],
           webSearchMode: 'disabled',
         });
-      } catch {
-        throw new LectureStudioServiceError('lecture_codex_unavailable');
+      } catch (error) {
+        throw new LectureStudioServiceError(lectureErrorFromCodexRequest(error));
       }
       threadId = started.threadId;
       active.threadId = threadId;
       this.throwIfCancelled(active);
 
-      const completed = new Promise<{ status: string; text: string | null }>((resolve) => {
+      const completed = new Promise<LectureTurnResult>((resolve) => {
         this.pendingByThread.set(threadId!, {
           studioId: generating.id,
           attemptId,
@@ -1313,8 +1382,8 @@ export class LectureStudioService {
           cwd,
           outputSchema: LECTURE_STUDIO_OUTPUT_SCHEMA,
         });
-      } catch {
-        throw new LectureStudioServiceError('lecture_codex_unavailable');
+      } catch (error) {
+        throw new LectureStudioServiceError(lectureErrorFromCodexRequest(error));
       }
       turnId = running.turnId;
       active.turnId = turnId;
@@ -1337,8 +1406,8 @@ export class LectureStudioService {
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let hardTimer: ReturnType<typeof setTimeout> | null = null;
       let timeoutSettled = false;
-      let resolveTimeout: ((result: { status: string; text: null }) => void) | null = null;
-      const timeout = new Promise<{ status: string; text: null }>((resolve) => {
+      let resolveTimeout: ((result: LectureTurnResult) => void) | null = null;
+      const timeout = new Promise<LectureTurnResult>((resolve) => {
         resolveTimeout = resolve;
       });
       const clearGenerationTimers = () => {
@@ -1353,7 +1422,7 @@ export class LectureStudioService {
         if (timeoutSettled) return;
         timeoutSettled = true;
         clearGenerationTimers();
-        resolveTimeout?.({ status: 'timed_out', text: null });
+        resolveTimeout?.({ status: 'timed_out', text: null, failureCode: null });
       };
       const armIdleTimer = () => {
         if (timeoutSettled || pending.terminal) return;
@@ -1383,7 +1452,7 @@ export class LectureStudioService {
               ? 'lecture_generation_timed_out'
               : terminal.status === 'transport_failed'
                 ? 'lecture_codex_unavailable'
-                : 'lecture_generation_failed',
+                : (terminal.failureCode ?? 'lecture_generation_failed'),
         );
       }
       active.terminal = true;
@@ -2242,6 +2311,7 @@ export class LectureStudioService {
     pending.resolve({
       status: isRecord(turn) && typeof turn.status === 'string' ? turn.status : 'failed',
       text: pending.finalText,
+      failureCode: classifyCodexTurnFailure(turn),
     });
   }
 }
