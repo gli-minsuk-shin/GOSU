@@ -114,7 +114,10 @@ async function run() {
       trustedRenderer.entryUrl.startsWith(pathToFileURL(`${rendererRoot}${sep}`).href),
       'sidebar_icon_visual_not_loaded_from_production_bundle',
     );
-    invariant(metrics.search.width === 20 && metrics.search.height === 20, 'search_icon_size_wrong');
+    invariant(
+      metrics.search.width === 20 && metrics.search.height === 20,
+      'search_icon_size_wrong',
+    );
     invariant(
       metrics.lecture.width === 17 && metrics.lecture.height === 17,
       'lecture_icon_size_wrong',
