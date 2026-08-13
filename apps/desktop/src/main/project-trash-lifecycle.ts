@@ -22,13 +22,18 @@ export class ProjectTrashLifecycle {
     try {
       return await this.projectChat.runWhenProjectsIdle([projectId], () =>
         this.ssh.runWhenProjectsIdle([projectId], () =>
-          this.manuscripts.runWhenProjectsIdle([projectId], operation),
+          this.lecture.runWhenProjectsIdle([projectId], () =>
+            this.manuscripts.runWhenProjectsIdle([projectId], operation),
+          ),
         ),
       );
     } catch (error) {
       // Preserve the existing bounded archive/Trash response for an active chat turn.
       if (error instanceof ProjectChatServiceError && error.code === 'chat_busy') throw error;
       if (error instanceof SshConnectionServiceError && error.code === 'ssh_unavailable') {
+        throw new WorkspaceServiceError('trash_busy');
+      }
+      if (error instanceof LectureStudioServiceError && error.code === 'lecture_busy') {
         throw new WorkspaceServiceError('trash_busy');
       }
       throw error;
@@ -42,8 +47,10 @@ export class ProjectTrashLifecycle {
     try {
       const result = await this.projectChat.runWhenProjectsIdle(projectIds, () =>
         this.ssh.runWhenProjectsIdle(projectIds, () =>
-          this.lecture.runWhenProjectsIdle(projectIds, () =>
-            this.manuscripts.runWhenProjectsIdle(projectIds, operation),
+          this.lecture.runWhenProjectsIdle(
+            projectIds,
+            () => this.manuscripts.runWhenProjectsIdle(projectIds, operation),
+            true,
           ),
         ),
       );

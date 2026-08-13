@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import Database from 'better-sqlite3-multiple-ciphers';
 import { app, safeStorage } from 'electron';
@@ -15,6 +16,7 @@ import {
 import { EXPERIMENT_EVALUATION_CODE_POLICY_HASH } from '../../src/main/experiment-evaluation-code-policy';
 import { LocalDatabase } from '../../src/main/local-database';
 import { ExperimentWorkspaceStorageError } from '../../src/main/experiment-workspace-storage-error';
+import { buildLectureLatexDocument } from '../../src/main/lecture-latex-source';
 import { LectureStudioStorageError } from '../../src/main/lecture-studio-storage-error';
 import { literatureFingerprint } from '../../src/main/literature-crossref';
 import { LiteratureStorageError } from '../../src/main/literature-storage-error';
@@ -25,11 +27,15 @@ import type {
   ProjectChatMessage,
 } from '../../src/shared/project-chat-contracts';
 import {
+  EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION,
   LECTURE_STUDIO_MAX_STUDIOS,
+  LECTURE_STUDIO_MAX_TRASHED_STUDIOS,
   type LectureStudio,
   type LectureStudioMessage,
   type LectureStudioRevision,
 } from '../../src/shared/lecture-studio-contracts';
+
+type LectureStudioRevisionV2 = Extract<LectureStudioRevision, { schemaVersion: 2 }>;
 import {
   EXPERIMENT_MAX_IDEAS_PER_PROJECT,
   EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
@@ -2432,6 +2438,62 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
     },
     createdAt: fixedTimestamp,
   });
+  const latexRevisionFixture = (revision: number, attemptId: string): LectureStudioRevisionV2 => {
+    const lectureNotesLatex = buildLectureLatexDocument(
+      'lecture-notes',
+      studio.title,
+      String.raw`\section{정확한 V2 복원}
+이 리비전은 암호화된 저장소에서 $f(x)=x^2+1$을 그대로 복원해야 한다.
+\begin{theorem}
+$x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
+\end{theorem}
+\section{Sources used}
+\begin{itemize}
+\item [L1] A bounded lecture source.
+\end{itemize}`,
+    );
+    const slidesLatex = buildLectureLatexDocument(
+      'slides',
+      studio.title,
+      String.raw`\begin{frame}{정확한 V2 복원}
+\begin{itemize}
+\item 암호화 저장소를 닫았다 다시 열어도 $f(x)=x^2+1$을 보존한다.
+\item 출처: [L1]
+\end{itemize}
+\end{frame}`,
+    );
+    return {
+      schemaVersion: 2,
+      id: randomUUID(),
+      studioId: studio.id,
+      revision,
+      attemptId,
+      sourceManifest: {
+        ...revisionFixture(revision, attemptId).sourceManifest,
+        schemaVersion: 2,
+        manuscripts: [],
+      },
+      sourceManifestSha256: 'd'.repeat(64),
+      lectureNotesLatex,
+      slidesLatex,
+      artifacts: [
+        {
+          kind: 'lecture-notes',
+          relativePath: `Lecture Studio/fixture/revision-${revision}/Lecture Notes.tex`,
+          contentSha256: createHash('sha256').update(lectureNotesLatex, 'utf8').digest('hex'),
+          savedAt: fixedTimestamp,
+        },
+        {
+          kind: 'slides',
+          relativePath: `Lecture Studio/fixture/revision-${revision}/Slides.tex`,
+          contentSha256: createHash('sha256').update(slidesLatex, 'utf8').digest('hex'),
+          savedAt: fixedTimestamp,
+        },
+      ],
+      invocation: revisionFixture(revision, attemptId).invocation,
+      createdAt: fixedTimestamp,
+    };
+  };
   const assistantMessage = (
     attemptId: string,
     revision: number,
@@ -2626,11 +2688,106 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
     'lecture_current_revision_missing',
   );
 
-  const atomicAttemptId = randomUUID();
-  const atomicUser = userMessage(atomicAttemptId, 'Force an atomic completion rollback.');
-  const atomicGenerating = reopened.beginLectureStudioTurn({
+  const latexAttemptId = randomUUID();
+  const latexUser = userMessage(latexAttemptId, 'Generate the canonical LaTeX V2 revision.');
+  const latexGenerating = reopened.beginLectureStudioTurn({
     studioId: studio.id,
     expectedVersion: readyStudio.version,
+    attemptId: latexAttemptId,
+    userMessage: latexUser,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(latexGenerating !== null, 'lecture_latex_v2_turn_did_not_begin');
+  const latexRevision = latexRevisionFixture(2, latexAttemptId);
+  const latexAssistant = assistantMessage(latexAttemptId, 2);
+  const latexReadyStudio = reopened.completeLectureStudioTurn({
+    studio: {
+      ...latexGenerating,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 2,
+      version: latexGenerating.version + 1,
+      lastErrorCode: null,
+      updatedAt: fixedTimestamp,
+    },
+    revision: latexRevision,
+    assistantMessage: latexAssistant,
+  });
+  invariant(
+    latexReadyStudio?.currentRevision === 2 &&
+      isDeepStrictEqual(reopened.getCurrentLectureStudioRevision(studio.id), latexRevision),
+    'lecture_latex_v2_revision_was_not_decoded_exactly_before_reopen',
+  );
+  reopened.close();
+
+  const encryptedLatexKeyHex = safeStorage
+    .decryptString(readFileSync(join(app.getPath('userData'), 'local-key.bin')))
+    .trim();
+  const encryptedLatexInspection = new Database(join(app.getPath('userData'), 'gosu.db'));
+  encryptedLatexInspection.pragma(`key="x'${encryptedLatexKeyHex}'"`);
+  try {
+    const latexColumns = encryptedLatexInspection.pragma(
+      'table_info(lecture_studio_revisions)',
+    ) as Array<{ name: string }>;
+    const latexRow = encryptedLatexInspection
+      .prepare(
+        `select lecture_notes_markdown,slides_markdown,lecture_notes_latex,
+                slides_latex,artifacts_json
+         from lecture_studio_revisions where id=?`,
+      )
+      .get(latexRevision.id) as
+      | {
+          lecture_notes_markdown: string;
+          slides_markdown: string;
+          lecture_notes_latex: string | null;
+          slides_latex: string | null;
+          artifacts_json: string;
+        }
+      | undefined;
+    invariant(
+      latexColumns.some((column) => column.name === 'lecture_notes_latex') &&
+        latexColumns.some((column) => column.name === 'slides_latex'),
+      'lecture_latex_v2_columns_missing_after_reopen',
+    );
+    invariant(
+      latexRow?.lecture_notes_markdown === 'GOSU_LATEX_V2' &&
+        latexRow.slides_markdown === 'GOSU_LATEX_V2' &&
+        latexRow.lecture_notes_latex === latexRevision.lectureNotesLatex &&
+        latexRow.slides_latex === latexRevision.slidesLatex &&
+        latexRow.artifacts_json === JSON.stringify(latexRevision.artifacts),
+      'lecture_latex_v2_columns_or_artifacts_changed_in_encrypted_storage',
+    );
+    let rejectedHalfLatexPair = false;
+    try {
+      encryptedLatexInspection
+        .prepare('update lecture_studio_revisions set slides_latex=null where id=?')
+        .run(latexRevision.id);
+    } catch (error) {
+      rejectedHalfLatexPair =
+        error instanceof Error && error.message.includes('lecture_revision_latex_pair_required');
+    }
+    invariant(rejectedHalfLatexPair, 'lecture_latex_v2_pair_constraint_was_not_enforced');
+  } finally {
+    encryptedLatexInspection.close();
+  }
+
+  const latexReopened = new LocalDatabase();
+  latexReopened.open();
+  const decodedV1AndV2 = latexReopened.listLectureStudioRevisions(studio.id, 10);
+  invariant(
+    decodedV1AndV2.length === 2 &&
+      decodedV1AndV2[0]?.schemaVersion === 1 &&
+      decodedV1AndV2[1]?.schemaVersion === 2 &&
+      isDeepStrictEqual(decodedV1AndV2[1], latexRevision) &&
+      isDeepStrictEqual(latexReopened.getCurrentLectureStudioRevision(studio.id), latexRevision),
+    'lecture_revision_union_did_not_decode_v1_and_v2_exactly_after_reopen',
+  );
+
+  const atomicAttemptId = randomUUID();
+  const atomicUser = userMessage(atomicAttemptId, 'Force an atomic completion rollback.');
+  const atomicGenerating = latexReopened.beginLectureStudioTurn({
+    studioId: studio.id,
+    expectedVersion: latexReadyStudio.version,
     attemptId: atomicAttemptId,
     userMessage: atomicUser,
     updatedAt: fixedTimestamp,
@@ -2638,31 +2795,31 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
   invariant(atomicGenerating !== null, 'lecture_atomic_turn_did_not_begin');
   let atomicCompletionRejected = false;
   try {
-    reopened.completeLectureStudioTurn({
+    latexReopened.completeLectureStudioTurn({
       studio: {
         ...atomicGenerating,
         status: 'ready',
         activeAttemptId: null,
-        currentRevision: 2,
+        currentRevision: 3,
         version: atomicGenerating.version + 1,
         lastErrorCode: null,
         updatedAt: fixedTimestamp,
       },
-      revision: revisionFixture(2, atomicAttemptId),
-      assistantMessage: assistantMessage(atomicAttemptId, 2, firstAssistant.id),
+      revision: revisionFixture(3, atomicAttemptId),
+      assistantMessage: assistantMessage(atomicAttemptId, 3, latexAssistant.id),
     });
   } catch {
     atomicCompletionRejected = true;
   }
   invariant(atomicCompletionRejected, 'lecture_atomic_completion_fixture_did_not_fail');
   invariant(
-    reopened.getLectureStudio(studio.id)?.status === 'generating' &&
-      reopened.listLectureStudioRevisions(studio.id, 10).length === 1 &&
-      reopened.getLectureStudioRevision(studio.id, 2) === null,
+    latexReopened.getLectureStudio(studio.id)?.status === 'generating' &&
+      latexReopened.listLectureStudioRevisions(studio.id, 10).length === 2 &&
+      latexReopened.getLectureStudioRevision(studio.id, 3) === null,
     'lecture_completion_transaction_did_not_roll_back',
   );
   invariant(
-    reopened.failLectureStudioTurn({
+    latexReopened.failLectureStudioTurn({
       studioId: studio.id,
       attemptId: atomicAttemptId,
       errorCode: 'fixture_atomic_failure',
@@ -2672,24 +2829,24 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
     'lecture_atomic_turn_cleanup_failed',
   );
   invariant(
-    reopened.listLectureStudioMessages(studio.id, 2).length === 2 &&
-      reopened.listLectureStudioRevisions(studio.id, 1).length === 1,
+    latexReopened.listLectureStudioMessages(studio.id, 2).length === 2 &&
+      latexReopened.listLectureStudioRevisions(studio.id, 1).length === 1,
     'lecture_history_queries_were_not_bounded',
   );
   let invalidLimitRejected = false;
   try {
-    reopened.listLectureStudioMessages(studio.id, 0);
+    latexReopened.listLectureStudioMessages(studio.id, 0);
   } catch (error) {
     invalidLimitRejected =
       error instanceof Error && error.message === 'invalid_lecture_query_limit';
   }
   invariant(invalidLimitRejected, 'lecture_invalid_history_limit_was_not_rejected');
-  reopened.close();
+  latexReopened.close();
 
   const persisted = new LocalDatabase();
   persisted.open();
   invariant(
-    persisted.getCurrentLectureStudioRevision(studio.id)?.id === firstRevision.id &&
+    persisted.getCurrentLectureStudioRevision(studio.id)?.id === latexRevision.id &&
       persisted
         .listLectureStudioMessages(studio.id, 10)
         .find((message) => message.id === atomicUser.id)?.status === 'failed',
@@ -2721,6 +2878,159 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
       error instanceof LectureStudioStorageError && error.code === 'capacity_reached';
   }
   invariant(capacityRejected, 'lecture_studio_capacity_error_was_not_typed');
+
+  const capacityRows = persisted.listLectureStudios();
+  for (const summary of capacityRows) {
+    invariant(
+      persisted.setLectureStudioTrashed(
+        summary.id,
+        summary.version,
+        fixedTimestamp,
+        fixedTimestamp,
+      ) !== null,
+      'lecture_trash_capacity_fixture_move_failed',
+    );
+  }
+  for (let index = capacityRows.length; index < LECTURE_STUDIO_MAX_TRASHED_STUDIOS; index += 1) {
+    const capacityProjectId = randomUUID();
+    const next = {
+      ...studio,
+      id: randomUUID(),
+      title: `Trash capacity fixture ${index}`,
+      outputProjectId: capacityProjectId,
+      sourceProjectIds: [capacityProjectId],
+      sourceSelection: {
+        literature: [{ projectId: capacityProjectId, recordId: randomUUID() }],
+        experiments: [],
+        manuscripts: [],
+      },
+      currentRevision: 0,
+      version: 1,
+    };
+    invariant(persisted.createLectureStudio(next), 'lecture_trash_capacity_insert_failed');
+    invariant(
+      persisted.setLectureStudioTrashed(next.id, next.version, fixedTimestamp, fixedTimestamp) !==
+        null,
+      'lecture_trash_capacity_move_failed',
+    );
+  }
+  const overTrashProjectId = randomUUID();
+  const overTrash = {
+    ...studio,
+    id: randomUUID(),
+    title: 'Over trash capacity',
+    outputProjectId: overTrashProjectId,
+    sourceProjectIds: [overTrashProjectId],
+    sourceSelection: {
+      literature: [{ projectId: overTrashProjectId, recordId: randomUUID() }],
+      experiments: [],
+      manuscripts: [],
+    },
+    currentRevision: 0,
+    version: 1,
+  };
+  invariant(persisted.createLectureStudio(overTrash), 'lecture_over_trash_insert_failed');
+  let trashCapacityRejected = false;
+  try {
+    persisted.setLectureStudioTrashed(
+      overTrash.id,
+      overTrash.version,
+      fixedTimestamp,
+      fixedTimestamp,
+    );
+  } catch (error) {
+    trashCapacityRejected =
+      error instanceof LectureStudioStorageError && error.code === 'capacity_reached';
+  }
+  invariant(trashCapacityRejected, 'lecture_trash_capacity_error_was_not_typed');
+
+  const trashCapacityReceipt = persisted.emptyLectureStudioTrash(
+    {
+      idempotencyKey: randomUUID(),
+      confirmation: EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION,
+    },
+    fixedTimestamp,
+  );
+  invariant(
+    trashCapacityReceipt?.removedStudios.length === LECTURE_STUDIO_MAX_TRASHED_STUDIOS,
+    'lecture_full_trash_could_not_be_emptied',
+  );
+
+  const replacementProjectId = randomUUID();
+  invariant(
+    persisted.createLectureStudio({
+      ...studio,
+      id: studio.id,
+      title: 'SQLCipher lecture boundary restored after capacity check',
+      outputProjectId: replacementProjectId,
+      sourceProjectIds: [replacementProjectId],
+      sourceSelection: {
+        literature: [{ projectId: replacementProjectId, recordId: randomUUID() }],
+        experiments: [],
+        manuscripts: [],
+      },
+      currentRevision: 0,
+      version: 1,
+    }),
+    'lecture_trash_fixture_reinsert_failed',
+  );
+  const activeSummary = persisted.listLectureStudios().find((summary) => summary.id === studio.id);
+  invariant(activeSummary !== undefined, 'lecture_trash_fixture_active_studio_missing');
+  const trashedStudio = persisted.setLectureStudioTrashed(
+    activeSummary.id,
+    activeSummary.version,
+    fixedTimestamp,
+    fixedTimestamp,
+  );
+  invariant(trashedStudio?.trashedAt === fixedTimestamp, 'lecture_trash_move_failed');
+  invariant(
+    persisted.listLectureStudios().every((summary) => summary.id !== studio.id) &&
+      persisted.listLectureStudios(true).some((summary) => summary.id === studio.id),
+    'lecture_trash_list_visibility_failed',
+  );
+  invariant(
+    persisted.beginLectureStudioTurn({
+      studioId: studio.id,
+      expectedVersion: trashedStudio.version,
+      attemptId: randomUUID(),
+      userMessage: null,
+      updatedAt: fixedTimestamp,
+    }) === null,
+    'lecture_trashed_studio_started_generation',
+  );
+  const restoredStudio = persisted.setLectureStudioTrashed(
+    studio.id,
+    trashedStudio.version,
+    null,
+    fixedTimestamp,
+  );
+  invariant(restoredStudio !== null && !restoredStudio.trashedAt, 'lecture_trash_restore_failed');
+  const trashedAgain = persisted.setLectureStudioTrashed(
+    studio.id,
+    restoredStudio.version,
+    fixedTimestamp,
+    fixedTimestamp,
+  );
+  invariant(trashedAgain !== null, 'lecture_trash_second_move_failed');
+  const emptyCommand = {
+    idempotencyKey: randomUUID(),
+    confirmation: EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION,
+  } as const;
+  const trashReceipt = persisted.emptyLectureStudioTrash(emptyCommand, fixedTimestamp);
+  invariant(
+    trashReceipt?.removedStudios.some((removed) => removed.studioId === studio.id) === true &&
+      trashReceipt.removedStudios[0]?.revisionCount === 0,
+    'lecture_trash_purge_receipt_missing_history_counts',
+  );
+  invariant(
+    JSON.stringify(persisted.emptyLectureStudioTrash(emptyCommand, fixedTimestamp)) ===
+      JSON.stringify(trashReceipt),
+    'lecture_trash_purge_was_not_idempotent',
+  );
+  invariant(
+    persisted.getLectureStudio(studio.id) === null && persisted.listLectureStudios().length === 1,
+    'lecture_trash_purge_removed_active_studios_or_kept_purged_studio',
+  );
   persisted.close();
 }
 

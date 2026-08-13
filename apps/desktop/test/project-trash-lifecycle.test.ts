@@ -6,7 +6,7 @@ import { SshConnectionServiceError } from '../src/main/ssh-connection-service';
 import { WorkspaceServiceError } from '../src/main/workspace-service';
 
 describe('ProjectTrashLifecycle', () => {
-  it('holds Project Chat, SSH, and manuscript gates around one project inactivation', async () => {
+  it('holds Project Chat, SSH, Lecture, and manuscript gates around one project inactivation', async () => {
     const trace: string[] = [];
     const gate = (name: string) => ({
       async runWhenProjectsIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
@@ -38,9 +38,11 @@ describe('ProjectTrashLifecycle', () => {
     expect(trace).toEqual([
       'chat:enter:project-a',
       'ssh:enter:project-a',
+      'lecture:enter:project-a',
       'manuscript:enter:project-a',
       'inactive',
       'manuscript:exit',
+      'lecture:exit',
       'ssh:exit',
       'chat:exit',
     ]);
@@ -73,7 +75,12 @@ describe('ProjectTrashLifecycle', () => {
   it('holds Project Chat, SSH, and lecture gates around one operation', async () => {
     const trace: string[] = [];
     const gate = (name: string) => ({
-      async runWhenProjectsIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
+      async runWhenProjectsIdle<T>(
+        projectIds: readonly string[],
+        operation: () => Promise<T>,
+        requireNoStudios?: boolean,
+      ) {
+        if (name === 'lecture') trace.push(`lecture:require-empty:${requireNoStudios === true}`);
         trace.push(`${name}:enter:${projectIds.join(',')}`);
         try {
           return await operation();
@@ -102,6 +109,7 @@ describe('ProjectTrashLifecycle', () => {
     expect(trace).toEqual([
       'chat:enter:project-b,project-a',
       'ssh:enter:project-b,project-a',
+      'lecture:require-empty:true',
       'lecture:enter:project-b,project-a',
       'manuscript:enter:project-b,project-a',
       'purge',

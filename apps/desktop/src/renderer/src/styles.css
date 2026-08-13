@@ -1089,6 +1089,28 @@ button:disabled {
   line-height: 1;
 }
 
+.sidebar-nav-icon-graphic {
+  display: block;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.sidebar-nav-icon-search {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.8;
+}
+
+.sidebar-nav-icon-lecture {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.8;
+}
+
 .project-folder-children button.active .sidebar-nav-icon,
 .project-global-navigation > button.active .sidebar-nav-icon {
   color: var(--green);

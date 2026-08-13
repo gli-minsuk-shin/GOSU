@@ -5,11 +5,13 @@ import {
   CancelLectureStudioInputSchema,
   CompileLectureStudioPdfInputSchema,
   CreateLectureStudioInputSchema,
+  EmptyLectureStudioTrashInputSchema,
   ExportLectureStudioArtifactInputSchema,
   GenerateLectureStudioInputSchema,
   ListLectureCandidatesInputSchema,
   ListLectureStudiosInputSchema,
   LectureStudioDetailInputSchema,
+  LectureStudioVersionCommandSchema,
   OpenLectureStudioArtifactInputSchema,
   RevealLectureStudioArtifactInputSchema,
   SendLectureStudioMessageInputSchema,
@@ -77,6 +79,30 @@ export function registerLectureStudioIpc(
       input,
       CancelLectureStudioInputSchema,
       (command) => service.cancel(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.trash, (input) =>
+    withInput(
+      input,
+      LectureStudioVersionCommandSchema,
+      (command) => service.trash(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.restore, (input) =>
+    withInput(
+      input,
+      LectureStudioVersionCommandSchema,
+      (command) => service.restore(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.emptyTrash, (input) =>
+    withInput(
+      input,
+      EmptyLectureStudioTrashInputSchema,
+      (command) => service.emptyTrash(command),
       reportUnexpected,
     ),
   );

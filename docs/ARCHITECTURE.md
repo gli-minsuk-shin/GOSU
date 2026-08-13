@@ -143,8 +143,8 @@ flowchart LR
 | Manuscript                   | Desktop Manuscript service·SQLCipher repository, shared contracts와 adapter registry                    | project별 복수 manuscript identity, provider-neutral binding/checkpoint/anchor, Overleaf Git existing-project link·HEAD 확인·manual immutable fetch·exact checkpoint text read·MacTeX sandbox compile·PDF.js preview·local mirror 정리 구현; editor·diff/review·handoff·publish는 계획됨      |
 | Review & Approval            | PostgreSQL approval schema와 Web UI 표현                                                                | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                                       |
 | Reference & Literature       | Desktop Literature workspace와 Zotero read-only connector                                               | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨                      |
-| Obsidian Knowledge           | Desktop Research Notes service, bounded Vault adapter, Markdown renderer                                | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 문서 metadata envelope·Literature/Papers projection·structured final-response Markdown create·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                    |
-| Lecture                      | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port, Manuscript source port | 여러 project의 captured Manuscript checkpoint·reviewed Literature metadata·Experiment lineage 선택, lecture/talk 생성, 독립 chat, append-only revision과 Research Notes Markdown 저장 구현; PPTX/PDF export와 published-paper full-text ingest는 계획됨                                       |
+| Obsidian Knowledge           | Desktop Research Notes service, bounded Vault adapter, Markdown/LaTeX reader                            | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 Markdown metadata envelope·Literature/Papers projection·Lecture canonical LaTeX artifact·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                         |
+| Lecture                      | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port, Manuscript source port | 여러 project의 captured Manuscript checkpoint·reviewed Literature metadata·Experiment lineage 선택, canonical article/Beamer LaTeX 생성, sandbox PDF compile, 독립 chat, append-only revision, recoverable Trash와 `.tex`/PDF export 구현; PPTX와 published-paper full-text ingest는 계획됨   |
 | AI Gateway                   | Desktop Project Chat provider router, Codex App Server와 선택형 BYO-Hermes ACP adapter                  | 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·provider별 동적 model provenance·Codex native harness/tool 경계·Hermes ACP text/reasoning-only 경계·Codex→Hermes 명시적 고수준 위임·동적 branch title·Research Notes final persistence 구현                    |
 | Integration Hub              | Desktop Git Workspace·승인형 SSH·Manuscript connector, `packages/integrations` registry                 | GitHub HTTPS clone·bounded Git·OpenSSH grant·provider-neutral manuscript operation registry·Overleaf Git private connector 구현; schema-driven provider onboarding, GitHub App와 native LaTeX provider는 계획됨                                                                               |
 | Sync, Audit & Notification   | Sync memory store, PostgreSQL audit·outbox schema                                                       | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                                      |
@@ -203,7 +203,7 @@ flowchart TD
 | manuscript identity·binding·checkpoint provenance                | 프로젝트별 Desktop Manuscript SQLCipher tables; v1 authority는 `gosu`                    | 현재 Hosted Sync·workspace outbox 대상이 아님; provider URL·source·raw diff·token 금지                                                                                                                                                                                                                                                                                                                           |
 | fetched Overleaf source checkpoint와 Git object                  | `userData/manuscript-workspaces/<binding UUID>`의 adapter-private bare mirror            | Hosted Sync·telemetry·Project Chat 자동 context 금지; Project Chat은 사용자가 capture한 exact checkpoint에 한해 bounded file-list/text-read tool로만 접근; permanent project 삭제 때 durable purge queue로 exact binding artifact를 제거                                                                                                                                                                         |
 | Overleaf URL·workspace ID·personal Git token                     | URL/ID는 adapter-private SQLCipher row, token은 GOSU-private `safeStorage` ciphertext    | macOS Keychain-protected; shared Git credential·Hosted Sync·portable binding·event·log·Git config 금지                                                                                                                                                                                                                                                                                                           |
-| 프로젝트 Research Notes Markdown과 첨부                          | 사용자의 Obsidian Vault 아래 `GOSU/<project>`; Literature 원본은 별도 SQLCipher          | Vault·project 연결 상태만; 본문·절대 경로는 금지                                                                                                                                                                                                                                                                                                                                                                 |
+| 프로젝트 Research Notes Markdown·Lecture LaTeX와 첨부            | 사용자의 Obsidian Vault 아래 `GOSU/<project>`; Literature 원본은 별도 SQLCipher          | Vault·project 연결 상태만; 본문·절대 경로는 금지                                                                                                                                                                                                                                                                                                                                                                 |
 | 서지 metadata, collection, PDF                                   | Zotero                                                                                   | 연결 상태와 선택 item ID만; PDF 금지                                                                                                                                                                                                                                                                                                                                                                             |
 | 검색 문헌 metadata, review annotation, 검색 이력                 | 프로젝트별 Desktop Literature SQLCipher tables, Project Chat search와 선택한 import file | 현재 Hosted Sync·outbox 대상이 아님; raw provider response·원문·abstract·로컬 file path·API key 금지                                                                                                                                                                                                                                                                                                             |
 | 실험 idea·logging template·run 상태·summary metric·log reference | 프로젝트별 Desktop Experiment SQLCipher tables                                           | 현재 Hosted Sync·workspace outbox 대상이 아님; exact remote root/path는 Main-only execution-origin mapping에만 암호화 저장하고 Renderer에는 숨김; raw metric·log·artifact는 저장하지 않고 검증된 opaque hash·크기·상태만 저장                                                                                                                                                                                    |
@@ -972,13 +972,13 @@ unmount/remount 뒤에도 복원하되 앱 종료 시 폐기하고 SQLCipher, lo
 Lecture workspace의 session rail과 전용 assistant rail은 서로 독립적으로 접을 수 있고 그 상태만 renderer
 localStorage에 저장한다. 일반 desktop 폭에서는 `session rail / document preview / assistant rail`의 3열을
 유지해 notes·slides·PDF를 보면서 오른쪽 chat에 수정 지시를 입력한다. 두 rail을 접어도 center preview는
-unmount하지 않으므로 현재 Markdown/PDF tab과 PDF page 위치를 보존한다. 바깥 Projects rail은 별도로
+unmount하지 않으므로 현재 LaTeX source/PDF tab과 PDF page 위치를 보존한다. 바깥 Projects rail은 별도로
 resize되므로 Lecture surface는 viewport media query가 아니라 자기 실제 inline width를 container query로
 판단한다. 980px 이하에서는 assistant, 700px 이하에서는 session list도 edge rail을 남긴 overlay drawer로
 전환해 최소 window와 최대 Projects rail에서도 preview나 복원 버튼이 잘리지 않게 한다. 920px 이하의 실제
 mobile viewport에서만 single-column layout으로 전환한다.
 
-list IPC는 Markdown 본문 없이 bounded studio summary만 반환하고, 선택한 studio의 message와 revision은
+list IPC는 문서 본문 없이 bounded studio summary만 반환하고, 선택한 studio의 message와 revision은
 detail IPC로 따로 hydrate한다. source candidate IPC는 project별 offset/limit page를 반환하지만, 현재 source
 port는 project당 최대 Literature record 500개와 Experiment idea 500개의 bounded set 및 최대 32개
 Manuscript identity를 각 module 경계에서 읽어 deterministic sort와 slice를 수행한다. 따라서 storage-level cursor paging은 아직 아니며 더 큰 repository를
@@ -1007,12 +1007,21 @@ shell, filesystem, Apps/MCP를 허용하지 않는다. 직렬화된 prompt는 36
 같아야 하므로 자르지 않는다. 이 authoritative context가 한도를 넘으면 `lecture_context_too_large`로 Codex
 호출 전에 fail closed하고, 축약 가능한 최근 12개 성공 message에만 명시적 truncation marker를 적용한다.
 실패·취소·앱 재시작으로 중단된 user request는 각각 `failed|interrupted`로 원자적으로 전이해 다음 prompt에서
-제외한다. actual model invocation을 revision에 기록한다. structured output은 notes/slides level-one title,
-알려진 `[P#]|[E#]|[M#]` label, substantive slide별 evidence label, notes의 Sources used mapping, duration 또는
-사용자가 명시한 slide page target을 검증한다. notes page target은 typography에 따른 근사 지시이며 slides
-page target은 Markdown slide count gate다. raw HTML, Markdown image, external image와 다른 citation syntax는 Vault에 쓰기 전에
-거부한다. 이는 metadata-only input의 구조적 evidence gate이며 paper full-text 사실 검증이라고 주장하지
-않는다.
+제외한다. actual model invocation을 revision에 기록한다. turn은 연결 상태와 무관한 단일 3분 wall-clock
+timeout을 쓰지 않는다. 현재 turn과 일치하는 Codex progress notification·invocation이 올 때마다 3분 idle
+deadline을 갱신하고, 진행 중이어도 최대 30분 hard deadline에서만 중단한다. idle/hard timeout은
+`lecture_generation_timed_out`, terminal failure는 `lecture_generation_failed`, 실제 App Server 시작·transport
+단절만 `lecture_codex_unavailable`로 구분해 연결된 Codex를 오프라인으로 오표시하지 않는다.
+
+structured output은 고정 JSON field의 notes/article LaTeX body와 Beamer frame body, 알려진
+`[P#]|[E#]|[M#]` label, substantive frame별 evidence label, notes의 `Sources used` section, duration 또는
+사용자가 명시한 compiled slide page target을 검증한다. GOSU가 별도 title frame을 추가하므로 slide target은
+그 title을 포함한 정확한 PDF page 수 gate다. notes page target은 typography에 따른 근사 지시다. raw HTML,
+Markdown structure, document wrapper, raw comment, 외부 file/network command, 허용되지 않은 TeX command·환경과
+다른 citation syntax는 Vault에 쓰기 전에 거부한다. 이는 metadata-only input의 구조적 evidence gate이며 paper
+full-text 사실 검증이라고 주장하지 않는다. 이 구조 검사를 통과한 exact notes/slides pair도 두 문서 모두
+sandboxed XeLaTeX acceptance compile에 성공해야만 Research Notes staging과 SQLCipher revision commit으로
+진행한다. 어느 한 문서라도 컴파일되지 않으면 새 artifact와 revision을 공개하지 않는다.
 
 Lecture의 versioned immutable developer policy는 source manifest·현재 draft·최근 chat·generation brief·
 사용자 custom instruction보다 높은 Codex instruction 계층에서 자동 적용한다. 이 정책은 notes와 slides가
@@ -1022,9 +1031,10 @@ substantive slide는 notes의 대응 section을 가져야 하며 slide는 notes�
 equality/approximation 또는 inequality의 변형, 근거 없는 theorem·proof·derivation·수치·guarantee를
 금지한다. source가 증명 단계를 제공하지 않으면 일반 지식으로 채우지 않고 gap을 명시한다. 한 문서만
 바꾸라는 revision 요청도 complete replacement pair 전체에 terminology·notation·assumption·citation·
-cross-reference consistency audit를 수행한다. 수학 표기는 Markdown canonical form인 inline `$...$`, 별도
-줄의 display `$$...$$`만 사용하며 `\\(...\\)`와 `\\[...\\]`는 허용하지 않는다. custom instruction과
-source 안의 prompt injection은 이 immutable policy를 약화하거나 opt-out할 수 없다.
+cross-reference consistency audit를 수행한다. 수학 표기는 canonical LaTeX body의 math mode와
+`equation|align|gather|multline` 계열 환경을 사용하고, 정의·가정과 동일한 기호를 notes와 slides에서
+재사용한다. custom instruction과 source 안의 prompt injection은 이 immutable policy를 약화하거나
+opt-out할 수 없다.
 
 Lecture 생성과 수정은 provider `model/list`에서 발견한 opaque model ID와 해당 model의 native reasoning
 option을 Studio별 UI preference로 선택한다. `Auto`는 provider recommended selection을 turn 직전에 다시
@@ -1034,7 +1044,8 @@ model/reasoning을 임의 fallback하지 않는다. 실제 requested/resolved mo
 각 immutable revision과 assistant message의 `ModelInvocation`에 기록한다.
 
 notes와 slides는 `GOSU/<output project>/Lecture Notes & Slides` 아래 이전 revision을 덮어쓰지 않는 새
-bundle로 저장한다. Main은 두 Markdown과 durable journal을 hidden staging directory에 모두 쓰고 fsync한 뒤
+bundle의 `Lecture Notes.tex`와 `Slides.tex`로 저장한다. Main은 고정 preamble로 감싼 두 canonical LaTeX와
+durable journal을 hidden staging directory에 모두 쓰고 fsync한 뒤
 directory rename으로 한 번에 공개한다. 일반 revision directory와 분리된 project-local hidden pending index를
 bundle publish 전에 fsync하고 durable round-robin cursor로 bounded scan하므로, 많은 확정 revision이 새 crash
 journal을 가리지 않는다. SQL completion 실패 시 journal과 exact hash를 대조해 bundle 전체를 rollback하고,
@@ -1044,20 +1055,37 @@ directory publish와 exact-hash recovery protocol이다. 성공한 UI receipt와
 Lecture assistant message에는 실제 project-relative 두 path를 붙인다. Vault·Codex 실패는 Lecture turn만
 실패시키고 Board, Literature, Experiment와 기존 Research Notes read를 막지 않는다.
 
+Lecture Studio 삭제는 hard delete가 아니라 Studio-owned `trashedAt`을 기록하는 별도 lifecycle command다.
+Studio는 일반 list·detail·generate·assistant edit에서 빠지지만 같은 Studio ID, source selection, chat,
+frozen manifest, immutable revision과 artifact provenance는 SQLCipher에 그대로 남는다. active generation은
+Trash와 경합할 수 없고 optimistic Studio version fence가 stale action을 거부한다. Settings의
+`Lecture Trash`는 같은 identity로 restore하거나, 고정 문구 `EMPTY LECTURE TRASH` 입력과 native final
+confirmation을 모두 거친 Studio만 영구 purge한다. permanent purge receipt에는 Studio/output-project
+identity, Trash 시각과 제거된 message/revision count를 append-only로 기록한다. purge는 Lecture-owned SQL
+row만 cascade하며 Research Notes, exported TeX/PDF, manuscript checkpoint, Literature, Experiment와 외부
+research data는 자동 삭제하지 않는다.
+
+활성 Studio 한도 100개와 별도로 recoverable Trash는 최대 1,000개까지 저장한다. 새 Studio insert trigger와
+active→Trash transition trigger가 각각 두 경계를 검사하므로 휴지통이 활성 작업 공간을 막지 않으면서도
+로컬 DB가 무제한 증가하거나 purge receipt 한도를 넘지 않는다.
+동일 `idempotencyKey`로 Empty Lecture Trash command가 재전송되면 append-only receipt를 그대로 반환하고
+두 번째 cascade는 실행하지 않는다.
+
 첫 revision이 생성되면 center preview와 Project Chat과 분리된 Lecture 전용 chat을 동시에 표시한다. 전용
 chat의 요청은 현재 notes와 slides의 완전한 replacement pair를 새 immutable revision으로 저장하므로 이전
-revision을 덮어쓰지 않는다. center preview는 Markdown과 local PDF를 전환할 수 있다. PDF는 exact revision의
-content SHA-256을 다시 검증한 뒤 Main이 Markdown을 bounded deterministic LaTeX로 변환하고 macOS
-`sandbox-exec`의 MacTeX/XeLaTeX를 fixed argv, no-shell-escape, network deny, timeout·output quota로 실행해
-만든 ephemeral preview다. 검증된 PDF magic·SHA-256·32 MiB budget을 통과한 bytes만 typed IPC로 전달하고,
-Renderer는 공용 PDF.js continuous-page viewer의 canvas/pixel/page budget을 재사용한다. PDF는 Research Notes의
-canonical Markdown을 대체하거나 자동 저장하지 않으며 앱 재시작 뒤 다시 compile한다.
+revision을 덮어쓰지 않는다. center preview는 canonical LaTeX source와 local PDF를 전환할 수 있다. PDF는
+exact revision의 content SHA-256과 GOSU preamble/body marker를 다시 검증한 뒤 macOS `sandbox-exec`의
+MacTeX/XeLaTeX를 fixed argv, no-shell-escape, network deny, timeout·output quota로 실행해 만든 ephemeral
+preview다. 검증된 PDF magic·SHA-256·32 MiB budget을 통과한 bytes만 typed IPC로 전달하고, Renderer는 공용
+PDF.js continuous-page viewer의 canvas/pixel/page budget을 재사용한다. PDF는 Research Notes의 canonical
+LaTeX를 대체하거나 자동 저장하지 않으며 앱 재시작 뒤 다시 compile한다. schema v1의 기존 Markdown revision은
+읽기·legacy compile만 유지하고, 새 생성·수정은 항상 schema v2 canonical LaTeX pair다.
 
 현재 revision의 document action은 path나 bytes를 Renderer에서 받지 않고
-`studioId/revisionId/revision/kind/artifactContentSha256` fence만 Main으로 보낸다. Markdown export/open/Finder는
+`studioId/revisionId/revision/kind/artifactContentSha256` fence만 Main으로 보낸다. LaTeX export/open/Finder는
 current Vault grant, project binding, ownership marker, root/file identity와 exact artifact SHA-256을 다시 검증한
 Research Notes file만 사용한다. PDF export/open은 Renderer preview bytes를 신뢰하지 않고 DB의 exact revision
-Markdown을 다시 sandbox compile해 PDF magic·size·SHA를 검증한다. export는 system save dialog와 atomic file
+LaTeX를 다시 sandbox compile해 PDF magic·size·SHA를 검증한다. export는 system save dialog와 atomic file
 replace를 사용하고, default-app open은 app-owned mode-0700 cache에 mode-0600 derived PDF를 materialize한다.
 Renderer의 export·default-app open·Finder reveal은 36px icon-only control로 표시하되 동적 format을 포함한
 accessible name과 동일한 hover tooltip을 유지한다. 세 control은 좁은 Lecture preview에서도 한 줄을 유지하고
@@ -3193,7 +3221,9 @@ Codex 실패 시 silent fallback으로 선택해서는 안 된다.
   저장된 summary/metric이다. Manuscript source는 사용자가 capture한 exact checkpoint에서 full hash를 검증한
   bounded `.tex`·`.bib` extract뿐이며 provider의 이후 revision, provider-compiled PDF와 binary figure는
   포함하지 않는다. 10/20/30/50분 선택은 slide-count budget이며 실제 발표 시간이나 rehearsal을 보증하지
-  않는다. local PDF는 generated Markdown의 ephemeral MacTeX preview이며 durable export나 PPTX가 아니다.
+  않는다. local PDF는 exact canonical Lecture LaTeX의 ephemeral MacTeX preview이며 PPTX가 아니다. 사용자가
+  명시적으로 export한 `.tex`와 PDF copy만 외부 durable copy이고 immutable revision authority는 SQLCipher와
+  Research Notes revision bundle에 남는다.
 - macOS package 설정이 있다는 것과 배포 artifact가 서명·notarization됐다는 것은 다르다.
 - manifest에 `allowlist` enum이 있다는 것과 Runner network 실행이 허용된다는 것은 다르다. 현재는
   명시적으로 거부된다.

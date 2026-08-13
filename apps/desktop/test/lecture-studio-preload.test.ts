@@ -77,6 +77,7 @@ describe('Lecture Studio preload bridge', () => {
     electron.ipcRenderer.invoke.mockResolvedValue({ ok: true, value: {} });
 
     await api.lectureStudio.exportArtifact({ ...binding, format: 'markdown' });
+    await api.lectureStudio.exportArtifact({ ...binding, format: 'latex' });
     await api.lectureStudio.openArtifact({ ...binding, format: 'pdf' });
     await api.lectureStudio.revealArtifact(binding);
 
@@ -87,11 +88,16 @@ describe('Lecture Studio preload bridge', () => {
     );
     expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
       2,
+      LECTURE_STUDIO_IPC_CHANNELS.exportArtifact,
+      { ...binding, format: 'latex' },
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      3,
       LECTURE_STUDIO_IPC_CHANNELS.openArtifact,
       { ...binding, format: 'pdf' },
     );
     expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
-      3,
+      4,
       LECTURE_STUDIO_IPC_CHANNELS.revealArtifact,
       binding,
     );

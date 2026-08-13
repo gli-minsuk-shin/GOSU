@@ -61,12 +61,12 @@ describe('VaultAccess atomic state', () => {
     const failedRoot = await temporaryVault('failed-notes');
     const first = await choose(access, firstRoot);
     const failedCanonicalRoot = await realpath(failedRoot);
-    const originalListMarkdown = VaultReader.prototype.listMarkdown;
-    vi.spyOn(VaultReader.prototype, 'listMarkdown').mockImplementation(async function (
+    const originalListDocuments = VaultReader.prototype.listDocuments;
+    vi.spyOn(VaultReader.prototype, 'listDocuments').mockImplementation(async function (
       this: VaultReader,
     ) {
       if (this.root === failedCanonicalRoot) throw new Error('fixture_list_failed');
-      return originalListMarkdown.call(this);
+      return originalListDocuments.call(this);
     });
 
     await expect(choose(access, failedRoot)).rejects.toThrow('fixture_list_failed');
@@ -91,7 +91,7 @@ describe('VaultAccess atomic state', () => {
     const secondRoot = await temporaryVault('second-notes');
     const first = await choose(access, firstRoot);
     const firstCanonicalRoot = await realpath(firstRoot);
-    const originalListMarkdown = VaultReader.prototype.listMarkdown;
+    const originalListDocuments = VaultReader.prototype.listDocuments;
     let releaseList!: () => void;
     let reportStarted!: () => void;
     const listGate = new Promise<void>((resolve) => {
@@ -100,14 +100,14 @@ describe('VaultAccess atomic state', () => {
     const listStarted = new Promise<void>((resolve) => {
       reportStarted = resolve;
     });
-    vi.spyOn(VaultReader.prototype, 'listMarkdown').mockImplementation(async function (
+    vi.spyOn(VaultReader.prototype, 'listDocuments').mockImplementation(async function (
       this: VaultReader,
     ) {
       if (this.root === firstCanonicalRoot) {
         reportStarted();
         await listGate;
       }
-      return originalListMarkdown.call(this);
+      return originalListDocuments.call(this);
     });
 
     const staleRead = access.listForAgent(first!.id);

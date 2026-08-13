@@ -19,8 +19,9 @@ import {
   manuscriptLatexSandboxProfile,
   type ManuscriptPdfCommandRunner,
 } from './manuscript-pdf-compiler';
+import { validateCanonicalLectureLatex } from './lecture-latex-source';
 
-const MAX_MARKDOWN_CHARACTERS = 200_000;
+const MAX_LECTURE_SOURCE_CHARACTERS = 240_000;
 const MAX_PDF_BYTES = 32 * 1024 * 1024;
 const MAX_COMPILER_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_GENERATED_BYTES = 192 * 1024 * 1024;
@@ -41,6 +42,7 @@ export type CompileLectureDocumentInput = Readonly<{
   kind: LectureDocumentKind;
   markdown: string;
   contentSha256: string;
+  sourceFormat?: 'markdown' | 'latex';
 }>;
 
 export type LectureDocumentCompilerErrorCode =
@@ -69,15 +71,29 @@ function validateInput(input: CompileLectureDocumentInput) {
     input.title.trim().length > 256 ||
     (input.kind !== 'lecture-notes' && input.kind !== 'slides') ||
     input.markdown.length < 1 ||
-    input.markdown.length > MAX_MARKDOWN_CHARACTERS ||
+    input.markdown.length > MAX_LECTURE_SOURCE_CHARACTERS ||
     !/^[a-f0-9]{64}$/u.test(input.contentSha256) ||
     sha256(input.markdown) !== input.contentSha256 ||
-    RAW_HTML_PATTERN.test(input.markdown) ||
-    MARKDOWN_IMAGE_PATTERN.test(input.markdown)
+    (input.sourceFormat !== 'latex' && RAW_HTML_PATTERN.test(input.markdown)) ||
+    (input.sourceFormat !== 'latex' && MARKDOWN_IMAGE_PATTERN.test(input.markdown))
   ) {
     throw new LectureDocumentCompilerError('lecture_pdf_invalid');
   }
-  return { ...input, title: input.title.trim() };
+  const normalized = {
+    ...input,
+    title: input.title.trim(),
+    sourceFormat: input.sourceFormat ?? 'markdown',
+  } as const;
+  if (normalized.sourceFormat === 'latex') {
+    try {
+      validateCanonicalLectureLatex(normalized.kind, normalized.title, normalized.markdown);
+    } catch {
+      throw new LectureDocumentCompilerError('lecture_pdf_invalid');
+    }
+  } else if (RAW_HTML_PATTERN.test(normalized.markdown)) {
+    throw new LectureDocumentCompilerError('lecture_pdf_invalid');
+  }
+  return normalized;
 }
 
 function escapeLatex(value: string) {
@@ -776,7 +792,9 @@ export class LectureDocumentCompiler {
       ]);
       await writeFile(
         join(source, 'document.tex'),
-        lectureMarkdownToLatex(input.kind, input.title, input.markdown),
+        input.sourceFormat === 'latex'
+          ? input.markdown
+          : lectureMarkdownToLatex(input.kind, input.title, input.markdown),
         { encoding: 'utf8', flag: 'wx', mode: 0o600 },
       );
       const environment = minimalCompilerEnvironment(dirname(engine), home, output);

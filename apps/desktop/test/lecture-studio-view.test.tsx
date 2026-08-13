@@ -52,6 +52,9 @@ const adapter: LectureStudioViewAdapter = {
   generate: vi.fn(),
   send: vi.fn(),
   cancel: vi.fn(),
+  trash: vi.fn(),
+  restore: vi.fn(),
+  emptyTrash: vi.fn(),
   compilePdf: vi.fn(),
   exportArtifact: vi.fn(),
   openArtifact: vi.fn(),
@@ -272,8 +275,8 @@ describe('LectureStudioView', () => {
 
   it('uses compact accessible icons for revision artifact actions', () => {
     expect(lectureArtifactActionLabels('notes')).toEqual({
-      export: 'Export Markdown',
-      open: 'Open Markdown in default app',
+      export: 'Export LaTeX',
+      open: 'Open LaTeX in default app',
       reveal: 'Show saved folder',
     });
     expect(lectureArtifactActionLabels('slides-pdf')).toEqual({
@@ -302,5 +305,17 @@ describe('LectureStudioView', () => {
     expect(styles).toMatch(
       /\.lecture-artifact-action-button\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px;/su,
     );
+  });
+
+  it('offers a recoverable Trash action for each lecture session', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('Move to Lecture Trash');
+    expect(source).toContain(
+      'Saved Research Notes and exported LaTeX/PDF files will stay on disk.',
+    );
+    expect(source).toContain('await adapter.trash({ studioId: studio.id');
   });
 });

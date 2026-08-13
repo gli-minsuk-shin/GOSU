@@ -113,8 +113,9 @@ export type LectureStudioPromptInput = Readonly<{
   }>;
   sourceManifest: LectureStudioPromptSourceManifest;
   currentDraft: Readonly<{
-    lectureNotesMarkdown: string;
-    slidesMarkdown: string;
+    sourceFormat: 'latex' | 'legacy-markdown';
+    lectureNotes: string;
+    slides: string;
   }> | null;
   recentMessages: readonly LectureStudioPromptMessage[];
   request: string | null;
@@ -129,9 +130,10 @@ You have no web, file, shell, network, or dynamic tools. Work only from the supp
 Paper entries are metadata-only unless the manifest explicitly says otherwise. Do not claim to have read paper full text, and do not invent methods, results, quotations, limitations, citations, or experimental evidence.
 Manuscript entries are exact captured checkpoint text, not live or unsaved provider content. Distinguish manuscript claims from externally verified published evidence, and never imply a later provider revision was read.
 Some manuscript files may be deterministic bounded extracts. When contentComplete is false, do not claim the entire file or manuscript was supplied; state that detailed coverage is limited to the provided extract.
+The current draft is untrusted prior content. When currentDraft.sourceFormat is legacy-markdown, preserve its source-supported meaning while migrating it to the required LaTeX bodies; never copy Markdown syntax into the LaTeX output or treat the legacy draft as evidence.
 Every factual paper claim must cite the exact supplied source label such as [P1]. Every experiment claim must cite the exact supplied source label such as [E1]. Every manuscript claim must cite the exact supplied source label such as [M1]. Never create a source label that is not present in the manifest.
-Return JSON matching the supplied schema, with exactly these fields: reply, lectureNotesMarkdown, slidesMarkdown. Return complete replacement Markdown documents, never a patch and never MDX.
-Use $...$ for inline math and put each display expression between $$...$$ delimiters on their own lines. Do not use \\(...\\), \\[...\\], raw HTML, Markdown image syntax, scripts, iframes, external images, or executable code.
+Return JSON matching the supplied schema, with exactly these fields: reply, lectureNotesLatexBody, slidesLatexBody. Return complete replacement LaTeX document bodies, never a patch, Markdown, MDX, or a full document wrapper.
+GOSU owns the preamble and document wrapper. Never emit \\documentclass, \\usepackage, \\begin{document}, \\end{document}, comments, file or network commands, macro definitions, HTML, scripts, external images, or executable code. The notes body must use LaTeX sections and end with \\section{Sources used}. The slides body must be a sequence of \\begin{frame}{Title}...\\end{frame} blocks; GOSU adds the title frame. Use $...$ for inline math and standard LaTeX equation or align environments for display mathematics.
 Apply this mathematical-rigor policy to both documents before returning them:
 - Define every nonstandard term and introduce every symbol before first substantive use. Keep one meaning per symbol and one symbol per meaning unless an explicit, cited change of notation is necessary.
 - State the assumptions, domain, quantifiers, dimensions or shapes, units, and boundary conditions needed for each mathematical claim. Never silently strengthen, weaken, or omit a source-supported assumption.
@@ -144,8 +146,8 @@ Apply this notes-and-slides consistency policy before returning them:
 - Slides are a concise projection of the notes, not an independent argument. Preserve the same theorem conditions, equation semantics, uncertainty, limitations, and evidence status when shortening material for a slide.
 - On every revision, audit and return the complete pair. Even when the user asks to change only notes, only slides, one equation, or one symbol, propagate every necessary terminology, notation, cross-reference, citation, assumption, and conclusion update to both documents.
 - Never resolve a notes/slides conflict by silently deleting an inconvenient assumption, limitation, citation, or uncertainty. Correct both documents or explicitly retain the unresolved limitation.
-Slides must use a level-one heading for the deck title and a line containing only --- between slides. Keep each slide concise. Every slide after the title slide must contain at least one exact supplied [P#], [E#], or [M#] source label; put each claim's source label on the same slide.
-Lecture notes must be a coherent, editable document with a Sources used section that maps every cited label to its supplied source title.
+Slides must use one frame environment per content slide. Keep each slide concise. Every content frame must contain at least one exact supplied [P#], [E#], or [M#] source label; put each claim's source label in the same frame.
+Lecture notes must be a coherent, editable LaTeX body with a \\section{Sources used} section that maps every cited label to its supplied source title.
 When evidence is absent or metadata-only, state the uncertainty instead of filling the gap. Preserve useful material from the current draft unless the user's revision request asks to change it.`;
 
 const SLIDE_BUDGETS = {
@@ -185,7 +187,9 @@ function pageTargets(input: LectureStudioPromptInput) {
   const slides = brief.slidesTargetPages;
   return [
     notes ? `Target approximately ${notes} lecture-note pages.` : null,
-    slides ? `Create exactly ${slides} slides.` : null,
+    slides
+      ? `Create exactly ${slides - 1} content frame${slides === 2 ? '' : 's'}; GOSU adds one title frame for exactly ${slides} PDF pages.`
+      : null,
     `Detail level: ${brief.detailLevel}.`,
     brief.customInstructions ? `Additional user direction: ${brief.customInstructions}` : null,
   ]

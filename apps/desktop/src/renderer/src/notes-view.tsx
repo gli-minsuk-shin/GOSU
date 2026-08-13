@@ -211,6 +211,8 @@ export function ResearchNotesView({
     selectedNote && vault?.files.includes(selectedNote.path) ? selectedNote.path : null;
   const visibleSelectedNote = selectedNotePath ? selectedNote : null;
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
+  const selectedDocumentIsLatex = selectedNotePath?.toLocaleLowerCase().endsWith('.tex') ?? false;
+  const effectiveMode = selectedDocumentIsLatex ? 'source' : mode;
   const [treeState, setTreeState] = useState<{
     vaultId: string | null;
     expandedDirectories: ReadonlySet<string>;
@@ -326,7 +328,7 @@ export function ResearchNotesView({
     <section className={`notes-layout${folderTreeCollapsed ? ' folder-tree-collapsed' : ''}`}>
       <aside
         className={`note-list${folderTreeCollapsed ? ' collapsed' : ''}`}
-        aria-label="Markdown files"
+        aria-label="Research Notes files"
       >
         <header className="research-notes-tree-header">
           <strong title={vault.root} hidden={folderTreeCollapsed}>
@@ -364,7 +366,7 @@ export function ResearchNotesView({
                 )}
               </div>
             )}
-            {vault.files.length === 0 && <p className="column-empty">No Markdown files found</p>}
+            {vault.files.length === 0 && <p className="column-empty">No note files found</p>}
             {vault.files.length > 0 && (
               <ResearchNotesTree
                 key={vault.id}
@@ -445,8 +447,8 @@ export function ResearchNotesView({
       </aside>
       <article className="note-reader">
         <header>
-          <span>{visibleSelectedNote?.path ?? 'Select a Markdown file to read it locally.'}</span>
-          {visibleSelectedNote && (
+          <span>{visibleSelectedNote?.path ?? 'Select a note file to read it locally.'}</span>
+          {visibleSelectedNote && !selectedDocumentIsLatex && (
             <div className="note-reader-mode" aria-label="Markdown display mode">
               <button
                 type="button"
@@ -471,7 +473,7 @@ export function ResearchNotesView({
           {busy ? (
             <p className="note-reader-state">Reading…</p>
           ) : visibleSelectedNote ? (
-            mode === 'rendered' ? (
+            effectiveMode === 'rendered' ? (
               <MarkdownDocument
                 key={visibleSelectedNote.path}
                 notePath={visibleSelectedNote.path}

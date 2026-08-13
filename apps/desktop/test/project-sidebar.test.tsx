@@ -101,10 +101,20 @@ describe('folder-style project sidebar', () => {
       /\.sidebar-nav-icon\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px;[^}]*font-size:\s*18px;/su,
     );
     expect(styles).toMatch(
+      /\.sidebar-nav-icon-search\s*\{[^}]*width:\s*20px;[^}]*height:\s*20px;[^}]*stroke-width:\s*1\.8;/su,
+    );
+    expect(styles).toMatch(
+      /\.sidebar-nav-icon-lecture\s*\{[^}]*width:\s*17px;[^}]*height:\s*17px;[^}]*stroke-width:\s*1\.8;/su,
+    );
+    expect(styles).toMatch(
       /\.project-folder-chevron \.collapse-chevron,[^}]*\.project-group-toggle > \.collapse-chevron\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;/su,
     );
     expect(styles).toMatch(/\.project-folder-icon\s*\{[^}]*font-size:\s*18px;/su);
     expect(html).toContain('class="sidebar-nav-icon"');
+    expect(html).toContain('class="sidebar-nav-icon-graphic sidebar-nav-icon-search"');
+    expect(html).toContain('class="sidebar-nav-icon-graphic sidebar-nav-icon-lecture"');
+    expect(html).not.toContain('⌕');
+    expect(html).not.toContain('▹');
     expect(html).toContain('class="collapse-chevron"');
     expect(html).toContain('aria-label="Active projects"');
   });

@@ -32,6 +32,24 @@ describe('read-only Obsidian vault', () => {
     });
   });
 
+  it('lists and reads bounded LaTeX source without following symlinks', async () => {
+    const parent = await temporaryDirectory();
+    const root = join(parent, 'vault');
+    await mkdir(root);
+    await writeFile(join(root, 'note.md'), '# Safe note');
+    await writeFile(join(root, 'lecture.tex'), '\\documentclass{article}\n');
+    await writeFile(join(parent, 'outside.tex'), 'outside');
+    await symlink(join(parent, 'outside.tex'), join(root, 'linked.tex'));
+    const reader = await VaultReader.open(root);
+
+    await expect(reader.listDocuments()).resolves.toEqual(['lecture.tex', 'note.md']);
+    await expect(reader.readDocument('lecture.tex')).resolves.toEqual({
+      path: 'lecture.tex',
+      content: '\\documentclass{article}\n',
+    });
+    await expect(reader.readDocument('linked.tex')).rejects.toThrow('vault_path_escape');
+  });
+
   it('enforces the Markdown byte cap again at read time', async () => {
     const root = await temporaryDirectory();
     await writeFile(join(root, 'large.md'), '12345');
@@ -50,7 +68,7 @@ describe('read-only Obsidian vault', () => {
     const reader = await VaultReader.open(root);
 
     await expect(reader.readMarkdown('../outside.md')).rejects.toThrow('vault_path_escape');
-    await expect(reader.readMarkdown('inside.txt')).rejects.toThrow('markdown_only');
+    await expect(reader.readMarkdown('inside.txt')).rejects.toThrow('document_type_not_allowed');
     await expect(reader.readMarkdown('link.md')).rejects.toThrow('vault_path_escape');
   });
 

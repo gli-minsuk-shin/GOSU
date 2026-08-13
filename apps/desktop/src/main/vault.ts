@@ -57,7 +57,7 @@ export class VaultAccess {
 
   async connect(root: string, persist = true) {
     const reader = await VaultReader.open(root);
-    const files = await reader.listMarkdown();
+    const files = await reader.listDocuments();
     const selection: VaultSelection = {
       id: sha256(`${reader.root}\0${reader.identityKey()}`),
       name: basename(reader.root).slice(0, 256) || 'Obsidian Vault',
@@ -89,9 +89,13 @@ export class VaultAccess {
   }
 
   async listMarkdown(signal?: AbortSignal) {
+    return this.listDocuments(signal);
+  }
+
+  async listDocuments(signal?: AbortSignal) {
     const state = this.state;
     if (!state) return [];
-    const files = await state.reader.listMarkdown(signal);
+    const files = await state.reader.listDocuments(signal);
     this.assertCurrent(state);
     return files;
   }
@@ -104,7 +108,7 @@ export class VaultAccess {
     const state = this.requireGrant(expectedVaultId);
     const normalizedQuery = query.trim().toLocaleLowerCase();
     const limit = Math.max(1, Math.min(Math.trunc(requestedLimit), MAX_AGENT_NOTE_LIST));
-    const files = await state.reader.listMarkdown();
+    const files = await state.reader.listDocuments();
     this.assertCurrent(state);
     const matches = files
       .map((path) => ({
@@ -125,11 +129,11 @@ export class VaultAccess {
     requestedCharacters = MAX_AGENT_NOTE_CHARACTERS,
   ): Promise<AgentVaultNoteChunk> {
     const state = this.requireGrant(expectedVaultId);
-    const files = await state.reader.listMarkdown();
+    const files = await state.reader.listDocuments();
     this.assertCurrent(state);
     const path = files.find((candidate) => sha256(`${expectedVaultId}\0${candidate}`) === noteId);
     if (!path) throw new Error('vault_note_not_found');
-    const note = await state.reader.readMarkdown(path);
+    const note = await state.reader.readDocument(path);
     this.assertCurrent(state);
     const offset = Math.max(0, Math.min(Math.trunc(requestedOffset), note.content.length));
     const maxCharacters = Math.max(
@@ -152,8 +156,12 @@ export class VaultAccess {
   }
 
   async readMarkdown(relativePath: string, signal?: AbortSignal) {
+    return this.readDocument(relativePath, signal);
+  }
+
+  async readDocument(relativePath: string, signal?: AbortSignal) {
     const state = this.requireState();
-    const note = await state.reader.readMarkdown(relativePath, signal);
+    const note = await state.reader.readDocument(relativePath, signal);
     this.assertCurrent(state);
     return note;
   }

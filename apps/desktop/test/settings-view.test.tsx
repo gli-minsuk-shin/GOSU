@@ -52,7 +52,7 @@ const snapshot: WorkspaceSnapshot = {
 };
 
 function renderSettings(
-  initialCategory: 'appearance' | 'board' | 'projects' | 'servers' | 'agent',
+  initialCategory: 'appearance' | 'board' | 'projects' | 'lecture-trash' | 'servers' | 'agent',
   agentProfile = defaultProjectChatProfile(snapshot.projects[0]!.id),
 ) {
   return renderToStaticMarkup(
@@ -67,6 +67,9 @@ function renderSettings(
       onTrashProject={vi.fn()}
       onRestoreProject={vi.fn()}
       onEmptyProjectTrash={vi.fn()}
+      lectureTrashSnapshot={{ schemaVersion: 1, studios: [] }}
+      onRestoreLectureStudio={vi.fn()}
+      onEmptyLectureStudioTrash={vi.fn()}
       agentProject={snapshot.projects[0]}
       agentProfile={agentProfile}
       agentProfileLoading={false}
@@ -128,6 +131,15 @@ describe('separated application Settings', () => {
     expect(html).toContain(
       'Chat and experiment history, SSH access-audit records, and lecture revisions',
     );
+  });
+
+  it('separates recoverable Lecture Trash from project lifecycle controls', () => {
+    const html = renderSettings('lecture-trash');
+
+    expect(html).toContain('Lecture Trash');
+    expect(html).toContain('Recoverable Lecture Studios');
+    expect(html).toContain('Lecture Trash is empty');
+    expect(html).toContain('Research Notes and generated files stay untouched');
   });
 
   it('separates native Codex mode, personality, context, and project instructions from model choice', () => {

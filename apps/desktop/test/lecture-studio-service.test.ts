@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
 import type { ModelInvocation } from '@gosu/contracts';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   LectureStudioService,
@@ -10,7 +10,10 @@ import {
   type LectureStudioStorage,
 } from '../src/main/lecture-studio-service';
 import { LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS } from '../src/main/lecture-studio-prompt';
-import type { LectureDocumentCompiler } from '../src/main/lecture-document-compiler';
+import {
+  LectureDocumentCompilerError,
+  type LectureDocumentCompiler,
+} from '../src/main/lecture-document-compiler';
 import type { LectureArtifactPlatform } from '../src/main/lecture-artifact-platform';
 import { LectureStudioStorageError } from '../src/main/lecture-studio-storage-error';
 import type {
@@ -18,6 +21,8 @@ import type {
   LectureStudioDetail,
   LectureStudioMessage,
   LectureStudioRevision,
+  EmptyLectureStudioTrashInput,
+  EmptyLectureStudioTrashReceipt,
   PendingLectureRevisionArtifacts,
 } from '../src/shared/lecture-studio-contracts';
 import type { LiteratureRecord } from '../src/shared/literature-contracts';
@@ -30,6 +35,30 @@ import type { ManuscriptWorkspaceSnapshot } from '../src/shared/manuscript-works
 
 function hash(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function lectureNotesBody(labels: readonly string[], title = 'Lecture notes') {
+  return [
+    `\\section{${title}}`,
+    `Evidence ${labels.map((label) => `[${label}]`).join(' ')}.`,
+    '\\section{Sources used}',
+    ...labels.map((label) => `[${label}] Fixture source ${label}`),
+  ].join('\n');
+}
+
+function lectureSlidesBody(labels: readonly string[], frameCount = 1) {
+  return Array.from({ length: frameCount }, (_, index) => {
+    const label = labels[index % labels.length]!;
+    return `\\begin{frame}{Slide ${index + 1}}\nEvidence [${label}].\n\\end{frame}`;
+  }).join('\n');
+}
+
+function latexResponse(labels: readonly string[], frameCount = 1, reply = 'Generated.') {
+  return {
+    reply,
+    lectureNotesLatexBody: lectureNotesBody(labels),
+    slidesLatexBody: lectureSlidesBody(labels, frameCount),
+  };
 }
 
 function invocation(requestedModelId: string | null): ModelInvocation {
@@ -174,39 +203,44 @@ class MemoryStorage implements LectureStudioStorage {
   readonly studios: LectureStudio[] = [];
   readonly messages: LectureStudioMessage[] = [];
   readonly revisions: LectureStudioRevision[] = [];
+  readonly trashReceipts = new Map<string, EmptyLectureStudioTrashReceipt>();
 
-  listLectureStudios() {
-    return this.studios.map(
-      ({
-        schemaVersion,
-        id,
-        title,
-        kind,
-        durationMinutes,
-        outputProjectId,
-        status,
-        activeAttemptId,
-        currentRevision,
-        version,
-        lastErrorCode,
-        createdAt,
-        updatedAt,
-      }) => ({
-        schemaVersion,
-        id,
-        title,
-        kind,
-        durationMinutes,
-        outputProjectId,
-        status,
-        activeAttemptId,
-        currentRevision,
-        version,
-        lastErrorCode,
-        createdAt,
-        updatedAt,
-      }),
-    );
+  listLectureStudios(includeTrashed = false) {
+    return this.studios
+      .filter((studio) => includeTrashed || studio.trashedAt === undefined)
+      .map(
+        ({
+          schemaVersion,
+          id,
+          title,
+          kind,
+          durationMinutes,
+          outputProjectId,
+          status,
+          activeAttemptId,
+          currentRevision,
+          version,
+          lastErrorCode,
+          trashedAt,
+          createdAt,
+          updatedAt,
+        }) => ({
+          schemaVersion,
+          id,
+          title,
+          kind,
+          durationMinutes,
+          outputProjectId,
+          status,
+          activeAttemptId,
+          currentRevision,
+          version,
+          lastErrorCode,
+          ...(trashedAt ? { trashedAt } : {}),
+          createdAt,
+          updatedAt,
+        }),
+      );
   }
 
   getLectureStudio(studioId: string) {
@@ -270,6 +304,7 @@ class MemoryStorage implements LectureStudioStorage {
     );
     if (index < 0) return null;
     const current = this.studios[index]!;
+    if (current.trashedAt !== undefined) return null;
     const generating: LectureStudio = {
       ...current,
       status: 'generating',
@@ -338,25 +373,81 @@ class MemoryStorage implements LectureStudioStorage {
     }
     return failed;
   }
+
+  setLectureStudioTrashed(
+    studioId: string,
+    expectedVersion: number,
+    trashedAt: string | null,
+    updatedAt: string,
+  ) {
+    const index = this.studios.findIndex(
+      (studio) => studio.id === studioId && studio.version === expectedVersion,
+    );
+    if (index < 0) return null;
+    const current = this.studios[index]!;
+    if ((trashedAt === null) === (current.trashedAt === undefined)) return null;
+    const next: LectureStudio = {
+      ...current,
+      ...(trashedAt === null ? {} : { trashedAt }),
+      version: current.version + 1,
+      updatedAt,
+    };
+    if (trashedAt === null) delete (next as { trashedAt?: string }).trashedAt;
+    this.studios[index] = next;
+    return next;
+  }
+
+  emptyLectureStudioTrash(
+    input: EmptyLectureStudioTrashInput,
+    completedAt: string,
+  ): EmptyLectureStudioTrashReceipt | null {
+    const prior = this.trashReceipts.get(input.idempotencyKey);
+    if (prior) return structuredClone(prior);
+    const doomed = this.studios.filter((studio) => studio.trashedAt !== undefined);
+    if (doomed.length === 0) return null;
+    const receipt: EmptyLectureStudioTrashReceipt = {
+      schemaVersion: 1,
+      idempotencyKey: input.idempotencyKey,
+      removedStudios: doomed.map((studio) => ({
+        studioId: studio.id,
+        title: studio.title,
+        outputProjectId: studio.outputProjectId,
+        revisionCount: this.revisions.filter((revision) => revision.studioId === studio.id).length,
+        messageCount: this.messages.filter((message) => message.studioId === studio.id).length,
+        trashedAt: studio.trashedAt!,
+      })),
+      completedAt,
+    };
+    const doomedIds = new Set(doomed.map((studio) => studio.id));
+    for (let index = this.studios.length - 1; index >= 0; index -= 1) {
+      if (doomedIds.has(this.studios[index]!.id)) this.studios.splice(index, 1);
+    }
+    this.trashReceipts.set(input.idempotencyKey, structuredClone(receipt));
+    return receipt;
+  }
 }
 
 class FakeCodex extends EventEmitter {
   response: unknown = {
     reply: 'Created a cross-project synthesis.',
-    lectureNotesMarkdown:
-      '# Lecture notes\n\nEvidence [P1] and [P2].\n\n## Sources used\n\n- [P1] Paper A\n- [P2] Paper B',
-    slidesMarkdown: Array.from(
+    lectureNotesLatexBody:
+      '\\section{Lecture notes}\nEvidence [P1] and [P2].\n\\section{Sources used}\n[P1] Paper A\n[P2] Paper B',
+    slidesLatexBody: Array.from(
       { length: 10 },
-      (_, index) => `# Slide ${index + 1}\n\nEvidence [P${index % 2 === 0 ? 1 : 2}]`,
-    ).join('\n\n---\n\n'),
+      (_, index) =>
+        `\\begin{frame}{Slide ${index + 1}}\nEvidence [P${index % 2 === 0 ? 1 : 2}]\n\\end{frame}`,
+    ).join('\n'),
   };
   startInput: Record<string, unknown> | null = null;
   prompt = '';
   deferCompletion = false;
+  terminalStatus = 'completed';
+  startError: Error | null = null;
   lastThreadId: string | null = null;
   lastTurnId: string | null = null;
 
   async startThread(input: Record<string, unknown>) {
+    if (this.startError) throw this.startError;
     this.startInput = input;
     return { threadId: 'lecture-thread' };
   }
@@ -382,7 +473,10 @@ class FakeCodex extends EventEmitter {
         });
         this.emit('notification', {
           method: 'turn/completed',
-          params: { threadId: input.threadId, turn: { id: turnId, status: 'completed' } },
+          params: {
+            threadId: input.threadId,
+            turn: { id: turnId, status: this.terminalStatus },
+          },
         });
       });
     }
@@ -400,6 +494,48 @@ class FakeCodex extends EventEmitter {
     });
   }
 
+  emitActivity() {
+    if (!this.lastThreadId || !this.lastTurnId) throw new Error('missing_deferred_turn');
+    this.emit('notification', {
+      method: 'item/started',
+      params: {
+        threadId: this.lastThreadId,
+        turnId: this.lastTurnId,
+        item: { type: 'reasoning' },
+      },
+    });
+  }
+
+  completeDeferred(status = 'completed') {
+    if (!this.lastThreadId || !this.lastTurnId) throw new Error('missing_deferred_turn');
+    this.deferCompletion = false;
+    if (status === 'completed') {
+      this.emit('notification', {
+        method: 'item/completed',
+        params: {
+          threadId: this.lastThreadId,
+          turnId: this.lastTurnId,
+          item: {
+            type: 'agentMessage',
+            phase: 'final_answer',
+            text: JSON.stringify(this.response),
+          },
+        },
+      });
+    }
+    this.emit('notification', {
+      method: 'turn/completed',
+      params: {
+        threadId: this.lastThreadId,
+        turn: { id: this.lastTurnId, status },
+      },
+    });
+  }
+
+  disconnect() {
+    this.emit('disconnected');
+  }
+
   async releaseThread() {}
 }
 
@@ -412,6 +548,8 @@ function fixture(
     manuscriptFiles?: ReadonlyMap<string, string>;
     pdfCompiler?: Pick<LectureDocumentCompiler, 'compile'>;
     artifactPlatform?: LectureArtifactPlatform;
+    timeoutMs?: number;
+    hardTimeoutMs?: number;
   }> = {},
 ) {
   const projectA = randomUUID();
@@ -552,17 +690,21 @@ function fixture(
           relatedPapers: input.relatedPapers ?? [],
         });
         if (options.failAfterArtifactPublish) throw new Error('post_publish_validation_failed');
+        const notes = input.lectureNotesLatex ?? input.lectureNotesMarkdown;
+        const slides = input.slidesLatex ?? input.slidesMarkdown;
+        if (!notes || !slides) throw new Error('missing_fixture_artifact_content');
+        const extension = input.documentFormat === 'latex' ? 'tex' : 'md';
         return [
           {
             kind: 'lecture-notes',
-            relativePath: `Lecture Notes & Slides/Studio/Lecture Notes--r${input.revision}.md`,
-            contentSha256: hash(input.lectureNotesMarkdown),
+            relativePath: `Lecture Notes & Slides/Studio/Lecture Notes--r${input.revision}.${extension}`,
+            contentSha256: hash(notes),
             savedAt: input.createdAt,
           },
           {
             kind: 'slides',
-            relativePath: `Lecture Notes & Slides/Studio/Slides--r${input.revision}.md`,
-            contentSha256: hash(input.slidesMarkdown),
+            relativePath: `Lecture Notes & Slides/Studio/Slides--r${input.revision}.${extension}`,
+            contentSha256: hash(slides),
             savedAt: input.createdAt,
           },
         ];
@@ -581,18 +723,51 @@ function fixture(
         artifactEvents.push('reconcile-rollback');
       },
       resolveLectureRevisionArtifact: (_outputProjectId, artifact) => ({
-        absolutePath: `/tmp/gosu-lecture-studio-fixture/${artifact.kind}.md`,
+        absolutePath: `/tmp/gosu-lecture-studio-fixture/${artifact.kind}.tex`,
         relativePath: artifact.relativePath,
-        fileName: artifact.kind === 'lecture-notes' ? 'Lecture Notes.md' : 'Slides.md',
-        content: artifact.kind === 'lecture-notes' ? '# Lecture notes' : '# Slides',
+        fileName: artifact.kind === 'lecture-notes' ? 'Lecture Notes.tex' : 'Slides.tex',
+        content: (() => {
+          const revision = storage.revisions.find((candidate) =>
+            candidate.artifacts.some(
+              (candidateArtifact) =>
+                candidateArtifact.kind === artifact.kind &&
+                candidateArtifact.contentSha256 === artifact.contentSha256,
+            ),
+          );
+          if (!revision) throw new Error('missing_fixture_revision');
+          return revision.schemaVersion === 2
+            ? artifact.kind === 'lecture-notes'
+              ? revision.lectureNotesLatex
+              : revision.slidesLatex
+            : artifact.kind === 'lecture-notes'
+              ? revision.lectureNotesMarkdown
+              : revision.slidesMarkdown;
+        })(),
         contentSha256: artifact.contentSha256,
       }),
     },
     codex,
-    ...(options.pdfCompiler ? { pdfCompiler: options.pdfCompiler } : {}),
+    pdfCompiler: options.pdfCompiler ?? {
+      compile: async (input) => {
+        const pdfBytes = Buffer.from('%PDF-1.7\n%%EOF\n');
+        return {
+          schemaVersion: 1 as const,
+          artifactId: randomUUID(),
+          title: `${input.title} PDF`,
+          fileName: input.kind === 'lecture-notes' ? 'Lecture Notes.pdf' : 'Slides.pdf',
+          compilerDisplayName: 'Fixture XeLaTeX',
+          sourceDescription: `Fixture PDF · revision ${input.revision}`,
+          pdfSha256: `sha256:${createHash('sha256').update(pdfBytes).digest('hex')}` as const,
+          sizeBytes: pdfBytes.byteLength,
+          compiledAt: new Date().toISOString(),
+          pdfBase64: pdfBytes.toString('base64'),
+        };
+      },
+    },
     ...(options.artifactPlatform ? { artifactPlatform: options.artifactPlatform } : {}),
     prepareDirectory: async () => '/tmp/gosu-lecture-studio-fixture',
-    timeoutMs: 5_000,
+    timeoutMs: options.timeoutMs ?? 5_000,
+    hardTimeoutMs: options.hardTimeoutMs ?? 30_000,
   });
   return {
     service,
@@ -646,6 +821,231 @@ function pendingFromRevision(
 }
 
 describe('LectureStudioService', () => {
+  it('moves a Studio to recoverable Trash, restores it, and purges only trashed history', async () => {
+    const { service, storage, projectA, paperA } = fixture();
+    const created = await service.create({
+      title: 'Recoverable lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    const trashed = await service.trash({ studioId: created.id, expectedVersion: created.version });
+    expect(trashed).toMatchObject({ id: created.id, version: 2 });
+    expect(trashed.trashedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+    expect((await service.list({})).studios).toEqual([]);
+    expect((await service.list({ includeTrashed: true })).studios).toHaveLength(1);
+    await expect(service.detail({ studioId: created.id })).rejects.toEqual(
+      new LectureStudioServiceError('lecture_studio_trashed'),
+    );
+    await expect(
+      service.generate({
+        studioId: created.id,
+        expectedVersion: trashed.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_studio_trashed'));
+
+    const restored = await service.restore({
+      studioId: created.id,
+      expectedVersion: trashed.version,
+    });
+    expect(restored.id).toBe(created.id);
+    expect(restored).not.toHaveProperty('trashedAt');
+    expect((await service.list({})).studios).toHaveLength(1);
+
+    const trashedAgain = await service.trash({
+      studioId: restored.id,
+      expectedVersion: restored.version,
+    });
+    const emptyCommand = {
+      idempotencyKey: randomUUID(),
+      confirmation: 'EMPTY LECTURE TRASH',
+    } as const;
+    const receipt = await service.emptyTrash(emptyCommand);
+    expect(receipt.removedStudios).toEqual([
+      expect.objectContaining({ studioId: trashedAgain.id, title: 'Recoverable lecture' }),
+    ]);
+    expect(storage.studios).toEqual([]);
+    await expect(service.emptyTrash(emptyCommand)).resolves.toEqual(receipt);
+    await expect(
+      service.restore({ studioId: trashedAgain.id, expectedVersion: trashedAgain.version }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_studio_not_found'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('resets the idle deadline whenever the active Codex turn reports progress', async () => {
+    vi.useFakeTimers();
+    const { service, codex, projectA, paperA } = fixture({
+      timeoutMs: 5_000,
+      hardTimeoutMs: 20_000,
+    });
+    codex.response = {
+      reply: 'Created active generation.',
+      lectureNotesLatexBody:
+        '\\section{Lecture notes}\nEvidence [P1].\n\\section{Sources used}\n[P1] Paper A',
+      slidesLatexBody: '\\begin{frame}{Slide 1}\nEvidence [P1].\n\\end{frame}',
+    };
+    codex.deferCompletion = true;
+    const studio = await service.create({
+      title: 'Long active generation',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    let settled = false;
+    const running = service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    void running.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    for (let index = 0; index < 100 && !codex.lastTurnId; index += 1) await Promise.resolve();
+    expect(codex.lastTurnId).toBe('lecture-turn');
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    codex.emitActivity();
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(settled).toBe(false);
+
+    codex.completeDeferred();
+    await expect(running).resolves.toMatchObject({ studio: { status: 'ready' } });
+  });
+
+  it('enforces the hard generation deadline even while Codex remains active', async () => {
+    vi.useFakeTimers();
+    const { service, codex, projectA, paperA } = fixture({
+      timeoutMs: 5_000,
+      hardTimeoutMs: 12_000,
+    });
+    codex.deferCompletion = true;
+    const studio = await service.create({
+      title: 'Bounded generation',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    let generationError: unknown = null;
+    const running = service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const observed = running.catch((error: unknown) => {
+      generationError = error;
+      return null;
+    });
+    for (let index = 0; index < 100 && !codex.lastTurnId; index += 1) await Promise.resolve();
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    codex.emitActivity();
+    await vi.advanceTimersByTimeAsync(4_000);
+    codex.emitActivity();
+    await vi.advanceTimersByTimeAsync(4_000);
+    await observed;
+    expect(generationError).toMatchObject({ code: 'lecture_generation_timed_out' });
+  });
+
+  it('separates a terminal generation failure from Codex transport unavailability', async () => {
+    const failed = fixture();
+    failed.codex.terminalStatus = 'failed';
+    const failedStudio = await failed.service.create({
+      title: 'Failed turn',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: failed.projectA,
+      sourceProjectIds: [failed.projectA],
+      sourceSelection: {
+        literature: [{ projectId: failed.projectA, recordId: failed.paperA.id }],
+        experiments: [],
+      },
+    });
+    await expect(
+      failed.service.generate({
+        studioId: failedStudio.id,
+        expectedVersion: failedStudio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_generation_failed' });
+
+    const unavailable = fixture();
+    unavailable.codex.startError = new Error('transport unavailable');
+    const unavailableStudio = await unavailable.service.create({
+      title: 'Unavailable transport',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: unavailable.projectA,
+      sourceProjectIds: [unavailable.projectA],
+      sourceSelection: {
+        literature: [{ projectId: unavailable.projectA, recordId: unavailable.paperA.id }],
+        experiments: [],
+      },
+    });
+    await expect(
+      unavailable.service.generate({
+        studioId: unavailableStudio.id,
+        expectedVersion: unavailableStudio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_codex_unavailable' });
+
+    const disconnected = fixture();
+    disconnected.codex.deferCompletion = true;
+    const disconnectedStudio = await disconnected.service.create({
+      title: 'Disconnected transport',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: disconnected.projectA,
+      sourceProjectIds: [disconnected.projectA],
+      sourceSelection: {
+        literature: [{ projectId: disconnected.projectA, recordId: disconnected.paperA.id }],
+        experiments: [],
+      },
+    });
+    const disconnectedTurn = disconnected.service.generate({
+      studioId: disconnectedStudio.id,
+      expectedVersion: disconnectedStudio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    for (let index = 0; index < 100 && !disconnected.codex.lastTurnId; index += 1) {
+      await Promise.resolve();
+    }
+    disconnected.codex.disconnect();
+    await expect(disconnectedTurn).rejects.toMatchObject({ code: 'lecture_codex_unavailable' });
+  });
+
   it('exports, opens, and reveals only the exact committed Research Notes artifact revision', async () => {
     const exported: Array<{ format: string; suggestedFileName: string; bytes: Buffer }> = [];
     const artifactPlatform: LectureArtifactPlatform = {
@@ -658,12 +1058,7 @@ describe('LectureStudioService', () => {
       revealExisting: vi.fn(async () => undefined),
     };
     const { service, codex, projectA, paperA } = fixture({ artifactPlatform });
-    codex.response = {
-      reply: 'Created one-source notes.',
-      lectureNotesMarkdown:
-        '# Canonical raw notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
-      slidesMarkdown: '# Slide 1\n\nEvidence [P1].',
-    };
+    codex.response = latexResponse(['P1'], 1, 'Created one-source notes.');
     const studio = await service.create({
       title: 'Artifact actions',
       kind: 'lecture',
@@ -681,6 +1076,7 @@ describe('LectureStudioService', () => {
       requestedModelId: null,
       reasoningOptionId: null,
     });
+    if (receipt.revision.schemaVersion !== 2) throw new Error('Expected a LaTeX revision');
     const artifact = receipt.revision.artifacts.find(
       (candidate) => candidate.kind === 'lecture-notes',
     )!;
@@ -692,35 +1088,33 @@ describe('LectureStudioService', () => {
       artifactContentSha256: artifact.contentSha256,
     };
 
-    await expect(service.exportArtifact({ ...binding, format: 'markdown' })).resolves.toMatchObject(
-      {
-        status: 'exported',
-        format: 'markdown',
-        fileName: 'Lecture Notes.md',
-        relativePath: artifact.relativePath,
-      },
-    );
+    await expect(service.exportArtifact({ ...binding, format: 'latex' })).resolves.toMatchObject({
+      status: 'exported',
+      format: 'latex',
+      fileName: 'Lecture Notes.tex',
+      relativePath: artifact.relativePath,
+    });
     expect(exported).toHaveLength(1);
     expect(exported[0]).toMatchObject({
-      format: 'markdown',
-      suggestedFileName: 'Lecture Notes.md',
+      format: 'latex',
+      suggestedFileName: 'Lecture Notes.tex',
     });
-    expect(exported[0]?.bytes.toString('utf8')).toBe('# Lecture notes');
+    expect(exported[0]?.bytes.toString('utf8')).toBe(receipt.revision.lectureNotesLatex);
 
-    await service.openArtifact({ ...binding, format: 'markdown' });
+    await service.openArtifact({ ...binding, format: 'latex' });
     await service.revealArtifact(binding);
     expect(artifactPlatform.openExisting).toHaveBeenCalledWith(
-      '/tmp/gosu-lecture-studio-fixture/lecture-notes.md',
+      '/tmp/gosu-lecture-studio-fixture/lecture-notes.tex',
     );
     expect(artifactPlatform.revealExisting).toHaveBeenCalledWith(
-      '/tmp/gosu-lecture-studio-fixture/lecture-notes.md',
+      '/tmp/gosu-lecture-studio-fixture/lecture-notes.tex',
     );
 
     await expect(
       service.exportArtifact({
         ...binding,
         artifactContentSha256: 'f'.repeat(64),
-        format: 'markdown',
+        format: 'latex',
       }),
     ).rejects.toEqual(new LectureStudioServiceError('lecture_artifact_changed'));
     await expect(service.revealArtifact({ ...binding, revisionId: randomUUID() })).rejects.toEqual(
@@ -728,9 +1122,16 @@ describe('LectureStudioService', () => {
     );
     expect(artifactPlatform.exportFile).toHaveBeenCalledTimes(1);
     expect(artifactPlatform.revealExisting).toHaveBeenCalledTimes(1);
+
+    await expect(service.exportArtifact({ ...binding, format: 'markdown' })).rejects.toEqual(
+      new LectureStudioServiceError('lecture_artifact_changed'),
+    );
+    await expect(service.openArtifact({ ...binding, format: 'markdown' })).rejects.toEqual(
+      new LectureStudioServiceError('lecture_artifact_changed'),
+    );
   });
 
-  it('derives an opened PDF from stored revision Markdown instead of Renderer bytes', async () => {
+  it('derives an opened PDF from stored canonical LaTeX instead of Renderer bytes', async () => {
     const pdfBytes = Buffer.from('%PDF-1.7\n%%EOF\n');
     const compile = vi.fn(async (input) => ({
       schemaVersion: 1 as const,
@@ -754,12 +1155,7 @@ describe('LectureStudioService', () => {
       artifactPlatform,
       pdfCompiler: { compile },
     });
-    codex.response = {
-      reply: 'Created notes for PDF.',
-      lectureNotesMarkdown:
-        '# Stored revision notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
-      slidesMarkdown: '# Stored slide\n\nEvidence [P1].',
-    };
+    codex.response = latexResponse(['P1'], 1, 'Created notes for PDF.');
     const studio = await service.create({
       title: 'Stored PDF source',
       kind: 'lecture',
@@ -777,6 +1173,7 @@ describe('LectureStudioService', () => {
       requestedModelId: null,
       reasoningOptionId: null,
     });
+    if (generated.revision.schemaVersion !== 2) throw new Error('Expected a LaTeX revision');
     const artifact = generated.revision.artifacts.find(
       (candidate) => candidate.kind === 'lecture-notes',
     )!;
@@ -794,13 +1191,14 @@ describe('LectureStudioService', () => {
       expect.objectContaining({
         studioId: studio.id,
         revision: generated.revision.revision,
-        markdown: generated.revision.lectureNotesMarkdown,
-        contentSha256: hash(generated.revision.lectureNotesMarkdown),
+        markdown: generated.revision.lectureNotesLatex,
+        contentSha256: hash(generated.revision.lectureNotesLatex),
+        sourceFormat: 'latex',
       }),
     );
     expect(artifactPlatform.openPdf).toHaveBeenCalledWith({
       kind: 'lecture-notes',
-      document: await compile.mock.results[0]?.value,
+      document: await compile.mock.results.at(-1)?.value,
     });
   });
 
@@ -818,12 +1216,7 @@ describe('LectureStudioService', () => {
       pdfBase64: Buffer.from('%PDF-1.7\n%%EOF').toString('base64'),
     }));
     const { service, storage, codex, projectA, paperA } = fixture({ pdfCompiler: { compile } });
-    codex.response = {
-      reply: 'Created one-source notes.',
-      lectureNotesMarkdown:
-        '# Lecture notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
-      slidesMarkdown: '# Slide 1\n\nEvidence [P1].',
-    };
+    codex.response = latexResponse(['P1'], 1, 'Created one-source notes.');
     const studio = await service.create({
       title: 'PDF fixture',
       kind: 'lecture',
@@ -841,13 +1234,14 @@ describe('LectureStudioService', () => {
       requestedModelId: null,
       reasoningOptionId: null,
     });
-    const markdown = receipt.revision.lectureNotesMarkdown;
+    if (receipt.revision.schemaVersion !== 2) throw new Error('Expected a LaTeX revision');
+    const latex = receipt.revision.lectureNotesLatex;
 
     await service.compilePdf({
       studioId: studio.id,
       revision: receipt.revision.revision,
       kind: 'lecture-notes',
-      contentSha256: hash(markdown),
+      contentSha256: hash(latex),
     });
 
     expect(compile).toHaveBeenCalledWith(
@@ -855,8 +1249,9 @@ describe('LectureStudioService', () => {
         studioId: studio.id,
         revision: receipt.revision.revision,
         kind: 'lecture-notes',
-        markdown,
-        contentSha256: hash(markdown),
+        markdown: latex,
+        contentSha256: hash(latex),
+        sourceFormat: 'latex',
       }),
     );
     await expect(
@@ -902,7 +1297,7 @@ describe('LectureStudioService', () => {
     ]);
     expect(receipt.revision.invocation.resolvedModelId).toBe('opaque-model-id');
     expect(receipt.assistantMessage.content).toContain(
-      'Lecture Notes & Slides/Studio/Lecture Notes--r1.md',
+      'Lecture Notes & Slides/Studio/Lecture Notes--r1.tex',
     );
     expect(saved).toEqual([
       {
@@ -967,13 +1362,7 @@ The captured result improves the bounded baseline.
         manuscripts: [{ projectId: projectA, manuscriptId: manuscript.id }],
       },
     });
-    codex.response = {
-      reply: 'Created from the captured manuscript checkpoint.',
-      lectureNotesMarkdown:
-        '# Manuscript lecture\n\nCaptured evidence [M1].\n\n## Sources used\n\n- [M1] Captured manuscript',
-      slidesMarkdown:
-        '# Manuscript lecture\n\nCaptured source [M1].\n\n---\n\n# Result\n\nCaptured evidence [M1].',
-    };
+    codex.response = latexResponse(['M1'], 2, 'Created from the captured manuscript checkpoint.');
 
     const receipt = await service.generate({
       studioId: studio.id,
@@ -981,6 +1370,7 @@ The captured result improves the bounded baseline.
       requestedModelId: null,
       reasoningOptionId: null,
     });
+    if (receipt.revision.schemaVersion !== 2) throw new Error('Expected a LaTeX revision');
 
     expect(receipt.revision.sourceManifest.schemaVersion).toBe(2);
     if (receipt.revision.sourceManifest.schemaVersion !== 2) {
@@ -1024,7 +1414,7 @@ The captured result improves the bounded baseline.
     ]);
     expect(codex.prompt).toContain('"sourceLabel":"M1"');
     expect(codex.prompt).toContain('The captured result improves the bounded baseline.');
-    expect(receipt.revision.lectureNotesMarkdown).toContain('[M1]');
+    expect(receipt.revision.lectureNotesLatex).toContain('[M1]');
 
     manuscriptFiles.set('main.tex', 'mutated after generation');
     const detail = await service.detail({ studioId: studio.id });
@@ -1104,12 +1494,11 @@ The captured result improves the bounded baseline.
         ],
       },
     });
-    codex.response = {
-      reply: 'Created from two bounded manuscript checkpoints.',
-      lectureNotesMarkdown:
-        '# Two manuscripts\n\nEvidence from both sources [M1] [M2].\n\n## Sources used\n\n- [M1] First manuscript\n- [M2] Second manuscript',
-      slidesMarkdown: '# Two manuscripts\n\nEvidence from both sources [M1] [M2].',
-    };
+    codex.response = latexResponse(
+      ['M1', 'M2'],
+      2,
+      'Created from two bounded manuscript checkpoints.',
+    );
 
     const receipt = await service.generate({
       studioId: studio.id,
@@ -1408,12 +1797,7 @@ The captured result improves the bounded baseline.
         experiments: [{ projectId: projectA, ideaId: idea.id }],
       },
     });
-    codex.response = {
-      reply: 'Created a bounded experiment lecture.',
-      lectureNotesMarkdown:
-        '# Lecture notes\n\nExperiment evidence [E1].\n\n## Sources used\n\n- [E1] Bounded experiment history',
-      slidesMarkdown: '# Lecture slides\n\n## Result\n\nExperiment evidence [E1].',
-    };
+    codex.response = latexResponse(['E1'], 1, 'Created a bounded experiment lecture.');
     const generated = await service.generate({
       studioId: studio.id,
       expectedVersion: studio.version,
@@ -1482,12 +1866,7 @@ The captured result improves the bounded baseline.
         experiments: [],
       },
     });
-    codex.response = {
-      reply: 'Created a screening-evidence lecture.',
-      lectureNotesMarkdown:
-        '# Lecture notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Screening paper',
-      slidesMarkdown: '# Lecture slides\n\nEvidence [P1].',
-    };
+    codex.response = latexResponse(['P1'], 1, 'Created a screening-evidence lecture.');
     const generated = await service.generate({
       studioId: studio.id,
       expectedVersion: studio.version,
@@ -1527,7 +1906,7 @@ The captured result improves the bounded baseline.
         experiments: [],
       },
     });
-    codex.response = { reply: 'missing markdown fields' };
+    codex.response = { reply: 'missing latex fields' };
 
     await expect(
       service.generate({
@@ -1545,6 +1924,60 @@ The captured result improves the bounded baseline.
     expect(storage.studios[0]).toMatchObject({
       status: 'failed',
       lastErrorCode: 'lecture_invalid_response',
+    });
+  });
+
+  it('does not publish canonical LaTeX when either required PDF acceptance compile fails', async () => {
+    const compile = vi.fn(async (input: Parameters<LectureDocumentCompiler['compile']>[0]) => {
+      if (input.kind === 'slides') {
+        throw new LectureDocumentCompilerError('lecture_pdf_compile_failed');
+      }
+      const pdfBytes = Buffer.from('%PDF-1.7\n%%EOF\n');
+      return {
+        schemaVersion: 1 as const,
+        artifactId: randomUUID(),
+        title: 'Lecture Notes PDF',
+        fileName: 'Lecture Notes.pdf',
+        compilerDisplayName: 'Fixture XeLaTeX',
+        sourceDescription: 'Acceptance gate fixture',
+        pdfSha256: `sha256:${createHash('sha256').update(pdfBytes).digest('hex')}` as const,
+        sizeBytes: pdfBytes.byteLength,
+        compiledAt: new Date().toISOString(),
+        pdfBase64: pdfBytes.toString('base64'),
+      };
+    });
+    const { service, storage, saved, codex, projectA, paperA } = fixture({
+      pdfCompiler: { compile },
+    });
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'Compile-gated lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    await expect(
+      service.generate({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_pdf_compile_failed'));
+
+    expect(compile).toHaveBeenCalledTimes(2);
+    expect(saved).toEqual([]);
+    expect(storage.revisions).toEqual([]);
+    expect(storage.studios[0]).toMatchObject({
+      status: 'failed',
+      lastErrorCode: 'lecture_pdf_compile_failed',
+      currentRevision: 0,
     });
   });
 
@@ -1603,12 +2036,7 @@ The captured result improves the bounded baseline.
 
   it('applies the same immutable rigor policy to initial generation and revision chat', async () => {
     const { service, codex, projectA, paperA } = fixture();
-    codex.response = {
-      reply: 'Created a consistent paired lecture.',
-      lectureNotesMarkdown:
-        '# Lecture notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
-      slidesMarkdown: '# Lecture slides\n\nEvidence [P1].',
-    };
+    codex.response = latexResponse(['P1'], 1, 'Created a consistent paired lecture.');
     const studio = await service.create({
       title: 'Immutable paired authoring',
       kind: 'lecture',
@@ -1647,6 +2075,68 @@ The captured result improves the bounded baseline.
     expect(codex.prompt).toContain(
       'Only change the slide equation, use a conflicting symbol, and leave the notes unchanged.',
     );
+  });
+
+  it('labels a legacy Markdown revision explicitly while migrating the next revision to LaTeX', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'Legacy migration lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const generated = initial.revision;
+    const legacyNotes = '# Legacy notes\n\nSource-supported evidence [P1].';
+    const legacySlides = '# Legacy slide\n\nEvidence [P1].';
+    storage.revisions[0] = {
+      schemaVersion: 1,
+      id: generated.id,
+      studioId: generated.studioId,
+      revision: generated.revision,
+      attemptId: generated.attemptId,
+      sourceManifest: generated.sourceManifest,
+      sourceManifestSha256: generated.sourceManifestSha256,
+      lectureNotesMarkdown: legacyNotes,
+      slidesMarkdown: legacySlides,
+      artifacts: generated.artifacts,
+      invocation: generated.invocation,
+      createdAt: generated.createdAt,
+    };
+
+    codex.response = latexResponse(['P1'], 1, 'Migrated the legacy revision.');
+    const migrated = await service.send({
+      studioId: studio.id,
+      expectedVersion: initial.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: 'Preserve the supported content and update it.',
+    });
+    const promptPayload = JSON.parse(codex.prompt.slice(codex.prompt.indexOf('\n\n') + 2)) as {
+      currentDraft: {
+        sourceFormat: string;
+        lectureNotes: string;
+        slides: string;
+      };
+    };
+
+    expect(promptPayload.currentDraft).toEqual({
+      sourceFormat: 'legacy-markdown',
+      lectureNotes: legacyNotes,
+      slides: legacySlides,
+    });
+    expect(migrated.revision.schemaVersion).toBe(2);
   });
 
   it('marks a cancelled edit message interrupted and excludes it from the next prompt', async () => {
@@ -1704,6 +2194,63 @@ The captured result improves the bounded baseline.
     });
     expect(codex.prompt).toContain('Preserve the conclusion and tighten its wording.');
     expect(codex.prompt).not.toContain('CANCELLED-INSTRUCTION');
+  });
+
+  it('keeps Stop available through the required pair-compilation acceptance phase', async () => {
+    let releaseCompilers!: () => void;
+    const compilerGate = new Promise<void>((resolve) => {
+      releaseCompilers = resolve;
+    });
+    const compile = vi.fn(async (input: Parameters<LectureDocumentCompiler['compile']>[0]) => {
+      await compilerGate;
+      const pdfBytes = Buffer.from('%PDF-1.7\n%%EOF\n');
+      return {
+        schemaVersion: 1 as const,
+        artifactId: randomUUID(),
+        title: `${input.title} PDF`,
+        fileName: input.kind === 'lecture-notes' ? 'Lecture Notes.pdf' : 'Slides.pdf',
+        compilerDisplayName: 'Fixture XeLaTeX',
+        sourceDescription: 'Deferred acceptance fixture',
+        pdfSha256: `sha256:${createHash('sha256').update(pdfBytes).digest('hex')}` as const,
+        sizeBytes: pdfBytes.byteLength,
+        compiledAt: new Date().toISOString(),
+        pdfBase64: pdfBytes.toString('base64'),
+      };
+    });
+    const { service, storage, codex, projectA, paperA } = fixture({
+      pdfCompiler: { compile },
+    });
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'Cancellable acceptance compile',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const running = service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(2));
+    const generating = storage.getLectureStudio(studio.id)!;
+
+    const cancelled = await service.cancel({
+      studioId: studio.id,
+      attemptId: generating.activeAttemptId!,
+      expectedVersion: generating.version,
+    });
+    releaseCompilers();
+
+    await expect(running).rejects.toMatchObject({ code: 'lecture_cancelled' });
+    expect(cancelled).toMatchObject({ status: 'failed', lastErrorCode: 'lecture_cancelled' });
+    expect(storage.revisions).toEqual([]);
   });
 
   it('checks the Research Notes destination before starting Codex', async () => {
@@ -1765,16 +2312,16 @@ The captured result improves the bounded baseline.
   });
 
   it('requires a complete Sources used mapping and rejects unsupported citation syntax', async () => {
-    for (const lectureNotesMarkdown of [
-      '# Notes\n\nEvidence [P1].',
-      '# Notes\n\nEvidence [P1].\n\n## Sources used\n\nNo mapped label.',
-      '# Notes\n\nPandoc citation [@fake] and evidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
+    for (const lectureNotesLatexBody of [
+      '\\section{Notes}\nEvidence [P1].',
+      '\\section{Notes}\nEvidence [P1].\n\\section{Sources used}\nNo mapped label.',
+      '\\section{Notes}\nPandoc citation [@fake] and evidence [P1].\n\\section{Sources used}\n[P1] Paper A',
     ]) {
       const { service, storage, codex, projectA, paperA } = fixture();
       codex.response = {
         reply: 'Generated.',
-        lectureNotesMarkdown,
-        slidesMarkdown: '# Slides\n\nEvidence [P1].',
+        lectureNotesLatexBody,
+        slidesLatexBody: lectureSlidesBody(['P1']),
       };
       const studio = await service.create({
         title: 'Cited lecture',
@@ -1800,16 +2347,12 @@ The captured result improves the bounded baseline.
     }
   });
 
-  it('rolls back the exact staged Markdown bundle when DB completion fails', async () => {
+  it('rolls back the exact staged LaTeX bundle when DB completion fails', async () => {
     const { service, storage, codex, artifactEvents, projectA, paperA } = fixture();
     vi.spyOn(storage, 'completeLectureStudioTurn').mockImplementation(() => {
       throw new Error('db_write_failed');
     });
-    codex.response = {
-      reply: 'Generated.',
-      lectureNotesMarkdown: '# Notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
-      slidesMarkdown: '# Slides\n\nEvidence [P1].',
-    };
+    codex.response = latexResponse(['P1']);
     const studio = await service.create({
       title: 'Recoverable lecture',
       kind: 'lecture',
@@ -1955,14 +2498,14 @@ The captured result improves the bounded baseline.
     const uncitedSlideDeck = Array.from(
       { length: 10 },
       (_, index) =>
-        `# Slide ${index + 1}\n\n${index === 1 ? 'Unsupported synthesis.' : 'Evidence [P1].'}`,
-    ).join('\n\n---\n\n');
-    for (const slidesMarkdown of [
-      '# Talk\n\nUnknown evidence [P99]',
-      '# Talk\n\n<script>alert(1)</script> [P1]',
-      '# Talk\n\n<div>raw HTML</div> [P1]',
-      '# Talk\n\n![remote](https://example.invalid/plot.png) [P1]',
-      '# One\n\nEvidence [P1]\n\n---\n\n# Two\n\nEvidence [P1]',
+        `\\begin{frame}{Slide ${index + 1}}\n${index === 1 ? 'Unsupported synthesis.' : 'Evidence [P1].'}\n\\end{frame}`,
+    ).join('\n');
+    for (const slidesLatexBody of [
+      '\\begin{frame}{Talk}\nUnknown evidence [P99]\n\\end{frame}',
+      '\\begin{frame}{Talk}\n<script>alert(1)</script> [P1]\n\\end{frame}',
+      '\\begin{frame}{Talk}\n<div>raw HTML</div> [P1]\n\\end{frame>',
+      '\\begin{frame}{Talk}\n\\includegraphics{https://example.invalid/plot.png} [P1]\n\\end{frame}',
+      lectureSlidesBody(['P1'], 1),
       uncitedSlideDeck,
     ]) {
       const { service, storage, codex, projectA, paperA } = fixture();
@@ -1979,8 +2522,8 @@ The captured result improves the bounded baseline.
       });
       codex.response = {
         reply: 'Generated.',
-        lectureNotesMarkdown: '# Notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
-        slidesMarkdown,
+        lectureNotesLatexBody: lectureNotesBody(['P1']),
+        slidesLatexBody,
       };
 
       await expect(
