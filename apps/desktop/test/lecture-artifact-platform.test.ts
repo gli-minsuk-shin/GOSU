@@ -109,6 +109,30 @@ describe('Lecture artifact platform', () => {
     expect(electron.showSaveDialog.mock.calls[0]).toHaveLength(1);
   });
 
+  it('exports canonical LaTeX with a TeX save dialog instead of treating it as PDF', async () => {
+    const destination = join(temporaryRoot, 'Lecture Notes.tex');
+    electron.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    const platform = createLectureArtifactPlatform(
+      () => undefined,
+      () => join(temporaryRoot, 'pdf-cache'),
+    );
+
+    await expect(
+      platform.exportFile({
+        format: 'latex',
+        suggestedFileName: 'Lecture Notes.tex',
+        bytes: Buffer.from('\\documentclass{article}\n'),
+      }),
+    ).resolves.toEqual({ status: 'exported', fileName: 'Lecture Notes.tex' });
+
+    expect(electron.showSaveDialog).toHaveBeenCalledWith({
+      title: 'Export lecture LaTeX',
+      defaultPath: 'Lecture Notes.tex',
+      filters: [{ name: 'LaTeX', extensions: ['tex'] }],
+    });
+    await expect(readFile(destination, 'utf8')).resolves.toBe('\\documentclass{article}\n');
+  });
+
   it('rejects a symbolic-link export target without changing its destination', async () => {
     const victim = join(temporaryRoot, 'victim.md');
     const destination = join(temporaryRoot, 'Lecture Notes.md');

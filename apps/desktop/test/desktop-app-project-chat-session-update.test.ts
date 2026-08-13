@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  isCodexUnavailableError,
   mergeProjectChatSessionCatalogUpdate,
   mergeProjectChatSessionSnapshotUpdate,
 } from '../src/renderer/src/desktop-app';
@@ -21,6 +22,15 @@ const placeholderSession: ProjectChatSession = {
 };
 
 describe('Desktop Project Chat session updates', () => {
+  it('marks only an actual Codex connection error as a global disconnect', () => {
+    expect(isCodexUnavailableError(new Error('lecture_codex_unavailable'))).toBe(true);
+    expect(isCodexUnavailableError(new Error('lecture_generation_timed_out'))).toBe(false);
+    expect(isCodexUnavailableError(new Error('lecture_generation_failed'))).toBe(false);
+    expect(isCodexUnavailableError(new Error('generation failed: codex_unavailable_reason'))).toBe(
+      false,
+    );
+  });
+
   it('replaces session metadata without replacing transcript state', () => {
     const messages: ProjectChatSnapshot['messages'] = [
       {

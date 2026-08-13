@@ -34,6 +34,9 @@ describe('Lecture Studio IPC boundary', () => {
         LECTURE_STUDIO_IPC_CHANNELS.generate,
         LECTURE_STUDIO_IPC_CHANNELS.send,
         LECTURE_STUDIO_IPC_CHANNELS.cancel,
+        LECTURE_STUDIO_IPC_CHANNELS.trash,
+        LECTURE_STUDIO_IPC_CHANNELS.restore,
+        LECTURE_STUDIO_IPC_CHANNELS.emptyTrash,
         LECTURE_STUDIO_IPC_CHANNELS.compilePdf,
         LECTURE_STUDIO_IPC_CHANNELS.exportArtifact,
         LECTURE_STUDIO_IPC_CHANNELS.openArtifact,
@@ -41,6 +44,32 @@ describe('Lecture Studio IPC boundary', () => {
       ].sort(),
     );
     expect([...handlers.keys()]).not.toContain(LECTURE_STUDIO_IPC_CHANNELS.event);
+  });
+
+  it('validates recoverable Trash commands and never accepts renderer deletion targets', async () => {
+    const trash = vi.fn(async (input) => ({ ...input }));
+    const restore = vi.fn(async (input) => ({ ...input }));
+    const emptyTrash = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      idempotencyKey: randomUUID(),
+      removedStudios: [],
+      completedAt: new Date().toISOString(),
+    }));
+    const { handlers } = fixture({ trash, restore, emptyTrash });
+    const command = { studioId: randomUUID(), expectedVersion: 3 };
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.trash)?.(command);
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.restore)?.(command);
+    expect(trash).toHaveBeenCalledWith(command);
+    expect(restore).toHaveBeenCalledWith(command);
+
+    await expect(
+      handlers.get(LECTURE_STUDIO_IPC_CHANNELS.emptyTrash)?.({
+        idempotencyKey: randomUUID(),
+        confirmation: 'EMPTY LECTURE TRASH',
+        path: '/tmp/unsafe',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
+    expect(emptyTrash).not.toHaveBeenCalled();
   });
 
   it('accepts only revision-bound artifact actions without renderer paths or bytes', async () => {

@@ -12,6 +12,7 @@ import {
   LectureDocumentCompilerError,
   lectureMarkdownToLatex,
 } from '../src/main/lecture-document-compiler';
+import { buildLectureLatexDocument } from '../src/main/lecture-latex-source';
 
 const RUN_LOCAL_MACTEX_SMOKE =
   process.platform === 'darwin' &&
@@ -203,6 +204,46 @@ describe('LectureDocumentCompiler', () => {
     expect(run).toHaveBeenCalledTimes(2);
   });
 
+  it('compiles the exact canonical Lecture Studio LaTeX source without Markdown conversion', async () => {
+    let generatedSource = '';
+    const run = vi.fn(
+      async (_executable: string, arguments_: readonly string[], options: { cwd: string }) => {
+        if (arguments_.at(-1) === '-v') return { stdout: 'Latexmk, Version 4.88', stderr: '' };
+        generatedSource = await readFile(join(options.cwd, 'document.tex'), 'utf8');
+        const output = arguments_.find((argument) => argument.startsWith('-outdir='))!.slice(8);
+        await writeFile(join(output, 'document.pdf'), Buffer.from('%PDF-1.7\nfixture\n%%EOF'));
+        return { stdout: '', stderr: '' };
+      },
+    );
+    const compiler = new LectureDocumentCompiler({
+      rootDirectory: () => join(root, 'artifacts'),
+      engineCandidates: [engine],
+      sandboxExecutable,
+      run,
+      platform: 'darwin',
+    });
+    const latex = buildLectureLatexDocument(
+      'lecture-notes',
+      'Canonical source',
+      String.raw`\section{Result}
+$f'(x)=2x$ [M1].
+\section{Sources used}
+\begin{itemize}\item [M1] Manuscript\end{itemize}`,
+    );
+
+    await compiler.compile({
+      studioId: '11111111-1111-4111-8111-111111111111',
+      revision: 1,
+      title: 'Canonical source',
+      kind: 'lecture-notes',
+      markdown: latex,
+      contentSha256: hash(latex),
+      sourceFormat: 'latex',
+    });
+
+    expect(generatedSource).toBe(latex);
+  });
+
   it('binds compilation to the exact revision content hash and rejects active content', async () => {
     const compiler = new LectureDocumentCompiler({
       rootDirectory: () => join(root, 'artifacts'),
@@ -272,47 +313,55 @@ describe('LectureDocumentCompiler', () => {
         },
         platform: 'darwin',
       });
+      const notesBody = String.raw`\section{핵심 내용}
+정확한 증거 [M1]와 수식 $B\asymp\sqrt n$를 설명합니다.
+\begin{itemize}
+\item 첫 번째 근거와 표본 수 의존성을 구분합니다.
+\item 두 번째 근거와 근사 오차를 명시합니다.
+\end{itemize}
+\begin{align}
+\sup_z \left|\widehat F_{B,M}(z)-\mathbb P\{g(S_n)\le z\}\right|
+&\le \frac{C}{\sqrt M}+O_P(B^{-1}) \\
+S_{B,s} &\rightsquigarrow_{\#} N(0,\Sigma).
+\end{align}
+\begin{theorem}
+가정 $B\asymp\sqrt n$ 아래에서 요약 통계 $\bm{S}_{B,s}$의 표기와 차원을 고정합니다 [M1].
+\end{theorem}
+\begin{proof}
+제공된 extract가 지원하는 범위만 설명하며, 누락된 증명 단계는 재구성하지 않습니다 [M1].
+\end{proof}
+\section{해석과 한계}
+첫 번째 식은 유한 $M$과 $B$에 따른 오차를 분리하며, 관측되지 않은 상수의 값은 근거 없이 단정하지 않습니다 [M1].
+\section{Sources used}
+\begin{itemize}
+\item [M1] Captured manuscript checkpoint.
+\end{itemize}`;
+      const slidesBody = String.raw`\begin{frame}{연구 개요}
+\begin{itemize}
+\item 원고의 정확한 checkpoint를 근거로 사용합니다 [M1].
+\item 정의, 가정, 근사와 한계를 노트와 같은 순서로 설명합니다 [M1].
+\end{itemize}
+\end{frame}
+\begin{frame}{핵심 수렴식}
+\begin{align*}
+\widehat F_{B,M} &\xrightarrow{P} F, \\
+B &\asymp \sqrt n.
+\end{align*}
+두 관계의 역할을 서로 바꾸지 않습니다 [M1].
+\end{frame}
+\begin{frame}{가정과 경계}
+\begin{block}{고정된 가정}
+$B\asymp\sqrt n$과 벡터 $\bm{S}_{B,s}$의 의미를 노트와 동일하게 유지합니다 [M1].
+\end{block}
+\alert{제공되지 않은 증명 단계는 추가하지 않습니다} [M1].
+\end{frame}
+\begin{frame}{한계}
+추가 검증이 필요한 항목과 source가 제공하지 않은 증명 단계를 명시합니다 [M1].
+\end{frame}`;
       const notes = LOCAL_MACTEX_SMOKE_NOTES_PATH
         ? await readFile(LOCAL_MACTEX_SMOKE_NOTES_PATH, 'utf8')
-        : [
-            '# 강의 노트',
-            '',
-            '정확한 증거 [M1]와 수식 $B\\asymp\\sqrt n$를 설명합니다.',
-            '',
-            '## 핵심 내용',
-            '',
-            '- 첫 번째 근거',
-            '- 두 번째 근거',
-            '',
-            '$$',
-            '\\begin{aligned}',
-            '\\sup_z \\left|\\widehat F_{B,M}(z)-\\mathbb P\\{g(S_n)\\le z\\}\\right|',
-            '&\\le \\frac{C}{\\sqrt M}+O_P(B^{-1}) \\\\',
-            'S_{B,s} &\\rightsquigarrow_{\\#} N(0,\\Sigma).',
-            '\\end{aligned}',
-            '$$',
-          ].join('\n');
-      const slides = [
-        '# 연구 개요',
-        '',
-        '정확한 원고 [M1]',
-        '',
-        '---',
-        '',
-        '# 결과',
-        '',
-        '- 개선 결과 [M1]',
-        '',
-        '$$',
-        '\\widehat F_{B,M} \\xrightarrow{P} F, \\qquad B\\asymp\\sqrt n.',
-        '$$',
-        '',
-        '---',
-        '',
-        '# 한계',
-        '',
-        '추가 검증이 필요합니다 [M1].',
-      ].join('\n');
+        : buildLectureLatexDocument('lecture-notes', '한국어 강의', notesBody);
+      const slides = buildLectureLatexDocument('slides', '한국어 슬라이드', slidesBody);
 
       const notePdf = await compiler
         .compile({
@@ -322,6 +371,7 @@ describe('LectureDocumentCompiler', () => {
           kind: 'lecture-notes',
           markdown: notes,
           contentSha256: hash(notes),
+          sourceFormat: LOCAL_MACTEX_SMOKE_NOTES_PATH ? 'markdown' : 'latex',
         })
         .catch((error: unknown) => {
           throw commandError ?? error;
@@ -334,6 +384,7 @@ describe('LectureDocumentCompiler', () => {
           kind: 'slides',
           markdown: slides,
           contentSha256: hash(slides),
+          sourceFormat: 'latex',
         })
         .catch((error: unknown) => {
           throw commandError ?? error;

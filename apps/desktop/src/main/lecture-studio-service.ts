@@ -9,6 +9,8 @@ import {
   CreateLectureStudioInputSchema,
   ExportLectureStudioArtifactInputSchema,
   GenerateLectureStudioInputSchema,
+  EmptyLectureStudioTrashInputSchema,
+  EmptyLectureStudioTrashReceiptSchema,
   LECTURE_STUDIO_MAX_MANUSCRIPT_FILES,
   LECTURE_STUDIO_MAX_MESSAGE_LENGTH,
   LECTURE_STUDIO_OUTPUT_SCHEMA,
@@ -26,6 +28,7 @@ import {
   LectureStudioTurnReceiptSchema,
   ListLectureCandidatesInputSchema,
   ListLectureStudiosInputSchema,
+  LectureStudioVersionCommandSchema,
   OpenLectureStudioArtifactInputSchema,
   RevealLectureStudioArtifactInputSchema,
   SendLectureStudioMessageInputSchema,
@@ -34,6 +37,8 @@ import {
   type CreateLectureStudioInput,
   type ExportLectureStudioArtifactInput,
   type GenerateLectureStudioInput,
+  type EmptyLectureStudioTrashInput,
+  type EmptyLectureStudioTrashReceipt,
   type LectureSourceCandidates,
   type LectureSourceManifest,
   type LectureSourceSelection,
@@ -51,6 +56,7 @@ import {
   type LectureStudioTurnReceipt,
   type ListLectureCandidatesInput,
   type ListLectureStudiosInput,
+  type LectureStudioVersionCommand,
   type OpenLectureStudioArtifactInput,
   type PendingLectureRevisionArtifacts,
   type RevealLectureStudioArtifactInput,
@@ -73,6 +79,11 @@ import {
   buildLectureStudioPrompt,
   talkSlideBudget,
 } from './lecture-studio-prompt';
+import {
+  buildLectureLatexDocument,
+  countLectureSlidePages,
+  validateLectureLatexBody,
+} from './lecture-latex-source';
 import { LectureStudioStorageError } from './lecture-studio-storage-error';
 import {
   LectureDocumentCompilerError,
@@ -84,6 +95,17 @@ import type { ResolvedLectureRevisionArtifact } from './research-notes-service';
 type MaybePromise<T> = T | Promise<T>;
 type CodexNotification = Readonly<{ method?: string; params?: unknown }>;
 
+function lectureRevisionSource(revision: LectureStudioRevision, kind: 'lecture-notes' | 'slides') {
+  if (revision.schemaVersion === 2) {
+    return kind === 'lecture-notes' ? revision.lectureNotesLatex : revision.slidesLatex;
+  }
+  return kind === 'lecture-notes' ? revision.lectureNotesMarkdown : revision.slidesMarkdown;
+}
+
+function lectureRevisionFormat(revision: LectureStudioRevision) {
+  return revision.schemaVersion === 2 ? ('latex' as const) : ('markdown' as const);
+}
+
 export type LectureExperimentMetricTail = Readonly<{
   ideaId: string;
   metricPoints: readonly ExperimentMetricPoint[];
@@ -91,7 +113,7 @@ export type LectureExperimentMetricTail = Readonly<{
 }>;
 
 export interface LectureStudioStorage {
-  listLectureStudios(): MaybePromise<readonly LectureStudioSummary[]>;
+  listLectureStudios(includeTrashed?: boolean): MaybePromise<readonly LectureStudioSummary[]>;
   getLectureStudio(studioId: string): MaybePromise<LectureStudio | null>;
   getLectureStudioDetail(studioId: string): MaybePromise<LectureStudioDetail | null>;
   listLectureStudioMessages(
@@ -133,6 +155,16 @@ export interface LectureStudioStorage {
       updatedAt: string;
     }>,
   ): MaybePromise<LectureStudio | null>;
+  setLectureStudioTrashed(
+    studioId: string,
+    expectedVersion: number,
+    trashedAt: string | null,
+    updatedAt: string,
+  ): MaybePromise<LectureStudio | null>;
+  emptyLectureStudioTrash(
+    input: EmptyLectureStudioTrashInput,
+    completedAt: string,
+  ): MaybePromise<EmptyLectureStudioTrashReceipt | null>;
 }
 
 export interface LectureStudioSourceStorage {
@@ -188,8 +220,11 @@ export interface LectureStudioArtifactWriter {
       revision: number;
       attemptId: string;
       sourceManifestSha256: string;
-      lectureNotesMarkdown: string;
-      slidesMarkdown: string;
+      documentFormat?: 'markdown' | 'latex';
+      lectureNotesMarkdown?: string;
+      slidesMarkdown?: string;
+      lectureNotesLatex?: string;
+      slidesLatex?: string;
       createdAt: string;
       invocation?: ModelInvocation;
       relatedDocuments?: readonly string[];
@@ -248,6 +283,8 @@ export class LectureStudioServiceError extends Error {
       | 'lecture_busy'
       | 'lecture_not_active'
       | 'lecture_codex_unavailable'
+      | 'lecture_generation_timed_out'
+      | 'lecture_generation_failed'
       | 'lecture_invalid_response'
       | 'lecture_persistence_failed'
       | 'lecture_capacity_reached'
@@ -260,7 +297,10 @@ export class LectureStudioServiceError extends Error {
       | 'lecture_artifact_changed'
       | 'lecture_artifact_unavailable'
       | 'lecture_export_failed'
-      | 'lecture_open_failed',
+      | 'lecture_open_failed'
+      | 'lecture_studio_trashed'
+      | 'lecture_studio_not_trashed'
+      | 'lecture_trash_empty',
   ) {
     super(code);
     this.name = 'LectureStudioServiceError';
@@ -276,6 +316,8 @@ type PendingTurn = {
   earlyInvocation: { turnId: string; invocation: ModelInvocation } | null;
   finalText: string | null;
   terminal: boolean;
+  markActivity: (() => void) | null;
+  disposeTimers: (() => void) | null;
   resolve: (value: { status: string; text: string | null }) => void;
 };
 
@@ -301,8 +343,6 @@ const LECTURE_MANUSCRIPT_FILE_MAX_CHARACTERS = 24_000;
 const LECTURE_MANUSCRIPT_FILE_EXTRACT_MAX_CHARACTERS = 72_000;
 const LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS = 100_000;
 const LECTURE_MANUSCRIPT_SOURCE_PATH_PATTERN = /\.(?:bib|tex)$/iu;
-const RAW_HTML_PATTERN = /<\s*(?:!--|\/?\s*[A-Za-z][^>]*>)/u;
-const MARKDOWN_IMAGE_PATTERN = /!\s*\[/u;
 const UNSUPPORTED_CITATION_PATTERN = /\[@[^\]]+\]|\\(?:auto|paren|text)?cite\s*\{[^}]+\}/iu;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -455,15 +495,26 @@ export class LectureStudioService {
       workspace: LectureStudioWorkspace;
       artifacts: LectureStudioArtifactWriter;
       codex: LectureStudioCodex;
-      pdfCompiler?: Pick<LectureDocumentCompiler, 'compile'>;
+      /** Required acceptance gate: no canonical LaTeX revision is published before both PDFs compile. */
+      pdfCompiler: Pick<LectureDocumentCompiler, 'compile'>;
       artifactPlatform?: LectureArtifactPlatform;
       prepareDirectory: (outputProjectId: string) => Promise<string>;
       now?: () => Date;
+      /** Maximum time without a matching Codex notification before generation is stopped. */
       timeoutMs?: number;
+      /** Absolute deadline for one generation, even while Codex continues reporting progress. */
+      hardTimeoutMs?: number;
     }>,
   ) {
     dependencies.codex.on('notification', (notification: CodexNotification) => {
       this.routeNotification(notification);
+    });
+    dependencies.codex.on('disconnected', () => {
+      for (const pending of this.pendingByThread.values()) {
+        if (pending.terminal) continue;
+        pending.terminal = true;
+        pending.resolve({ status: 'transport_failed', text: null });
+      }
     });
     dependencies.codex.on(
       'invocation',
@@ -475,7 +526,10 @@ export class LectureStudioService {
           pending.earlyInvocation = { turnId: event.turnId, invocation: event.invocation };
           return;
         }
-        if (pending.turnId === event.turnId) pending.invocation = event.invocation;
+        if (pending.turnId === event.turnId) {
+          pending.invocation = event.invocation;
+          pending.markActivity?.();
+        }
       },
     );
   }
@@ -486,9 +540,9 @@ export class LectureStudioService {
   }
 
   async list(input: ListLectureStudiosInput): Promise<LectureStudioListSnapshot> {
-    ListLectureStudiosInputSchema.parse(input);
+    const command = ListLectureStudiosInputSchema.parse(input);
     await this.reconcilePendingArtifacts().catch(() => undefined);
-    const studios = await this.dependencies.storage.listLectureStudios();
+    const studios = await this.dependencies.storage.listLectureStudios(command.includeTrashed);
     return LectureStudioListSnapshotSchema.parse({ schemaVersion: 1, studios });
   }
 
@@ -497,6 +551,9 @@ export class LectureStudioService {
     await this.reconcilePendingArtifacts().catch(() => undefined);
     const detail = await this.dependencies.storage.getLectureStudioDetail(command.studioId);
     if (!detail) throw new LectureStudioServiceError('lecture_studio_not_found');
+    if (detail.studio.trashedAt) {
+      throw new LectureStudioServiceError('lecture_studio_trashed');
+    }
     return LectureStudioDetailSchema.parse(detail);
   }
 
@@ -673,6 +730,86 @@ export class LectureStudioService {
     return this.runTurn({ ...command, message: null });
   }
 
+  async trash(input: LectureStudioVersionCommand): Promise<LectureStudio> {
+    const command = LectureStudioVersionCommandSchema.parse(input);
+    if (this.activeByStudio.has(command.studioId)) {
+      throw new LectureStudioServiceError('lecture_busy');
+    }
+    const studio = await this.dependencies.storage.getLectureStudio(command.studioId);
+    if (!studio) throw new LectureStudioServiceError('lecture_studio_not_found');
+    if (studio.trashedAt) throw new LectureStudioServiceError('lecture_studio_trashed');
+    if (studio.status === 'generating' || studio.activeAttemptId) {
+      throw new LectureStudioServiceError('lecture_busy');
+    }
+    if (studio.version !== command.expectedVersion) {
+      throw new LectureStudioServiceError('lecture_version_conflict');
+    }
+    const now = this.now().toISOString();
+    let trashed: LectureStudio | null;
+    try {
+      trashed = await this.dependencies.storage.setLectureStudioTrashed(
+        studio.id,
+        studio.version,
+        now,
+        now,
+      );
+    } catch (error) {
+      throw this.normalizeStorageError(error);
+    }
+    if (!trashed) throw new LectureStudioServiceError('lecture_version_conflict');
+    this.publish(trashed);
+    return LectureStudioSchema.parse(trashed);
+  }
+
+  async restore(input: LectureStudioVersionCommand): Promise<LectureStudio> {
+    const command = LectureStudioVersionCommandSchema.parse(input);
+    const studio = await this.dependencies.storage.getLectureStudio(command.studioId);
+    if (!studio) throw new LectureStudioServiceError('lecture_studio_not_found');
+    if (!studio.trashedAt) throw new LectureStudioServiceError('lecture_studio_not_trashed');
+    if (studio.version !== command.expectedVersion) {
+      throw new LectureStudioServiceError('lecture_version_conflict');
+    }
+    let restored: LectureStudio | null;
+    try {
+      restored = await this.dependencies.storage.setLectureStudioTrashed(
+        studio.id,
+        studio.version,
+        null,
+        this.now().toISOString(),
+      );
+    } catch (error) {
+      throw this.normalizeStorageError(error);
+    }
+    if (!restored) throw new LectureStudioServiceError('lecture_version_conflict');
+    this.publish(restored);
+    return LectureStudioSchema.parse(restored);
+  }
+
+  async emptyTrash(input: EmptyLectureStudioTrashInput): Promise<EmptyLectureStudioTrashReceipt> {
+    const command = EmptyLectureStudioTrashInputSchema.parse(input);
+    const trashed = await this.dependencies.storage.listLectureStudios(true);
+    const trashedStudios = trashed.filter((studio) => studio.trashedAt !== undefined);
+    if (trashedStudios.some((studio) => this.activeByStudio.has(studio.id))) {
+      throw new LectureStudioServiceError('lecture_busy');
+    }
+    let receipt: EmptyLectureStudioTrashReceipt | null;
+    try {
+      receipt = await this.dependencies.storage.emptyLectureStudioTrash(
+        command,
+        this.now().toISOString(),
+      );
+    } catch (error) {
+      throw this.normalizeStorageError(error);
+    }
+    if (!receipt) {
+      if (trashedStudios.length === 0) {
+        throw new LectureStudioServiceError('lecture_trash_empty');
+      }
+      throw new LectureStudioServiceError('lecture_persistence_failed');
+    }
+    return EmptyLectureStudioTrashReceiptSchema.parse(receipt);
+  }
+
   async send(input: SendLectureStudioMessageInput): Promise<LectureStudioTurnReceipt> {
     const command = SendLectureStudioMessageInputSchema.parse(input);
     return this.runTurn(command);
@@ -692,9 +829,8 @@ export class LectureStudioService {
     if (!revision || revision.revision > studio.currentRevision) {
       throw new LectureStudioServiceError('lecture_source_not_found');
     }
-    const markdown =
-      command.kind === 'lecture-notes' ? revision.lectureNotesMarkdown : revision.slidesMarkdown;
-    if (sha256(markdown) !== command.contentSha256) {
+    const source = lectureRevisionSource(revision, command.kind);
+    if (sha256(source) !== command.contentSha256) {
       throw new LectureStudioServiceError('lecture_version_conflict');
     }
     try {
@@ -703,8 +839,9 @@ export class LectureStudioService {
         revision: revision.revision,
         title: studio.title,
         kind: command.kind,
-        markdown,
+        markdown: source,
         contentSha256: command.contentSha256,
+        sourceFormat: lectureRevisionFormat(revision),
       });
     } catch (error) {
       if (error instanceof LectureStudioServiceError) throw error;
@@ -721,9 +858,10 @@ export class LectureStudioService {
     const command = ExportLectureStudioArtifactInputSchema.parse(input);
     const platform = this.requireArtifactPlatform();
     const resolved = await this.resolveArtifactAction(command);
+    this.assertArtifactFormat(resolved.revision, command.format);
     let bytes: Buffer;
     let suggestedFileName: string;
-    if (command.format === 'markdown') {
+    if (command.format !== 'pdf') {
       bytes = Buffer.from(resolved.file.content, 'utf8');
       suggestedFileName = resolved.file.fileName;
     } else {
@@ -756,9 +894,10 @@ export class LectureStudioService {
     const command = OpenLectureStudioArtifactInputSchema.parse(input);
     const platform = this.requireArtifactPlatform();
     const resolved = await this.resolveArtifactAction(command);
+    this.assertArtifactFormat(resolved.revision, command.format);
     try {
       let fileName = resolved.file.fileName;
-      if (command.format === 'markdown') {
+      if (command.format !== 'pdf') {
         await platform.openExisting(resolved.file.absolutePath);
       } else {
         const pdf = await this.compileResolvedArtifactPdf(resolved);
@@ -802,6 +941,17 @@ export class LectureStudioService {
     const platform = this.dependencies.artifactPlatform;
     if (!platform) throw new LectureStudioServiceError('lecture_artifact_unavailable');
     return platform;
+  }
+
+  private assertArtifactFormat(
+    revision: LectureStudioRevision,
+    format: 'markdown' | 'latex' | 'pdf',
+  ) {
+    if (format === 'pdf') return;
+    const expected = lectureRevisionFormat(revision);
+    if (format !== expected) {
+      throw new LectureStudioServiceError('lecture_artifact_changed');
+    }
   }
 
   private async resolveArtifactAction(command: {
@@ -862,19 +1012,17 @@ export class LectureStudioService {
   ) {
     const compiler = this.dependencies.pdfCompiler;
     if (!compiler) throw new LectureStudioServiceError('lecture_pdf_compiler_unavailable');
-    const markdown =
-      resolved.artifact.kind === 'lecture-notes'
-        ? resolved.revision.lectureNotesMarkdown
-        : resolved.revision.slidesMarkdown;
-    const contentSha256 = sha256(markdown);
+    const source = lectureRevisionSource(resolved.revision, resolved.artifact.kind);
+    const contentSha256 = sha256(source);
     try {
       const compiled = await compiler.compile({
         studioId: resolved.studio.id,
         revision: resolved.revision.revision,
         title: resolved.studio.title,
         kind: resolved.artifact.kind,
-        markdown,
+        markdown: source,
         contentSha256,
+        sourceFormat: lectureRevisionFormat(resolved.revision),
       });
       try {
         lecturePdfExportBytes(compiled);
@@ -902,9 +1050,8 @@ export class LectureStudioService {
     }
     const active = this.activeByStudio.get(studio.id);
     if (active && active.attemptId === command.attemptId) {
-      if (active.terminal) throw new LectureStudioServiceError('lecture_not_active');
       active.cancelRequested = true;
-      if (active.threadId && active.turnId) {
+      if (!active.terminal && active.threadId && active.turnId) {
         await this.dependencies.codex
           .interruptTurn(active.threadId, active.turnId)
           .catch(() => undefined);
@@ -922,7 +1069,11 @@ export class LectureStudioService {
     return cancelled;
   }
 
-  async runWhenProjectsIdle<T>(projectIds: readonly string[], operation: () => Promise<T>) {
+  async runWhenProjectsIdle<T>(
+    projectIds: readonly string[],
+    operation: () => Promise<T>,
+    requireNoStudios = false,
+  ) {
     const lockedProjectIds = [...new Set(projectIds)].sort();
     if (lockedProjectIds.some((projectId) => this.lifecycleLockedProjects.has(projectId))) {
       throw new LectureStudioServiceError('lecture_busy');
@@ -930,7 +1081,7 @@ export class LectureStudioService {
     for (const projectId of lockedProjectIds) this.lifecycleLockedProjects.add(projectId);
     try {
       const targetIds = new Set(lockedProjectIds);
-      const summaries = await this.dependencies.storage.listLectureStudios();
+      const summaries = await this.dependencies.storage.listLectureStudios(true);
       const studios = await Promise.all(
         summaries.map((summary) => this.dependencies.storage.getLectureStudio(summary.id)),
       );
@@ -941,6 +1092,12 @@ export class LectureStudioService {
           (studio.status === 'generating' || this.activeByStudio.has(studio.id)),
       );
       if (hasActiveWork) throw new LectureStudioServiceError('lecture_busy');
+      if (
+        requireNoStudios &&
+        studios.some((studio) => studio !== null && this.studioTouchesProjects(studio, targetIds))
+      ) {
+        throw new LectureStudioServiceError('lecture_busy');
+      }
       return await operation();
     } finally {
       for (const projectId of lockedProjectIds) this.lifecycleLockedProjects.delete(projectId);
@@ -1018,14 +1175,19 @@ export class LectureStudioService {
       ]);
       this.throwIfCancelled(active);
       const sourceManifestSha256 = sha256(JSON.stringify(sourceManifest));
-      const started = await this.dependencies.codex.startThread({
-        cwd,
-        modelId: request.requestedModelId,
-        developerInstructions: LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS,
-        responseVerbosity: 'medium',
-        dynamicTools: [],
-        webSearchMode: 'disabled',
-      });
+      let started: Awaited<ReturnType<LectureStudioCodex['startThread']>>;
+      try {
+        started = await this.dependencies.codex.startThread({
+          cwd,
+          modelId: request.requestedModelId,
+          developerInstructions: LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS,
+          responseVerbosity: 'medium',
+          dynamicTools: [],
+          webSearchMode: 'disabled',
+        });
+      } catch {
+        throw new LectureStudioServiceError('lecture_codex_unavailable');
+      }
       threadId = started.threadId;
       active.threadId = threadId;
       this.throwIfCancelled(active);
@@ -1040,67 +1202,119 @@ export class LectureStudioService {
           earlyInvocation: null,
           finalText: null,
           terminal: false,
+          markActivity: null,
+          disposeTimers: null,
           resolve,
         });
       });
-      const running = await this.dependencies.codex.runTurn({
-        threadId,
-        prompt: buildLectureStudioPrompt({
-          mode: previousRevision ? 'revision' : 'initial',
-          title: generating.title,
-          kind: generating.kind,
-          durationMinutes: generating.durationMinutes,
-          generationBrief: generating.generationBrief,
-          sourceManifest,
-          currentDraft: previousRevision
-            ? {
-                lectureNotesMarkdown: previousRevision.lectureNotesMarkdown,
-                slidesMarkdown: previousRevision.slidesMarkdown,
-              }
-            : null,
-          recentMessages: messages
-            .filter((message) => message.id !== userMessage?.id && message.status === 'complete')
-            .map((message) => ({
-              role: message.role,
-              content: message.content,
-            })),
-          request: request.message,
-        }),
-        requestedModelId: request.requestedModelId,
-        reasoningOptionId: request.reasoningOptionId,
-        cwd,
-        outputSchema: LECTURE_STUDIO_OUTPUT_SCHEMA,
-      });
+      let running: Awaited<ReturnType<LectureStudioCodex['runTurn']>>;
+      try {
+        running = await this.dependencies.codex.runTurn({
+          threadId,
+          prompt: buildLectureStudioPrompt({
+            mode: previousRevision ? 'revision' : 'initial',
+            title: generating.title,
+            kind: generating.kind,
+            durationMinutes: generating.durationMinutes,
+            generationBrief: generating.generationBrief,
+            sourceManifest,
+            currentDraft: previousRevision
+              ? {
+                  sourceFormat: previousRevision.schemaVersion === 2 ? 'latex' : 'legacy-markdown',
+                  lectureNotes:
+                    previousRevision.schemaVersion === 2
+                      ? previousRevision.lectureNotesLatex
+                      : previousRevision.lectureNotesMarkdown,
+                  slides:
+                    previousRevision.schemaVersion === 2
+                      ? previousRevision.slidesLatex
+                      : previousRevision.slidesMarkdown,
+                }
+              : null,
+            recentMessages: messages
+              .filter((message) => message.id !== userMessage?.id && message.status === 'complete')
+              .map((message) => ({
+                role: message.role,
+                content: message.content,
+              })),
+            request: request.message,
+          }),
+          requestedModelId: request.requestedModelId,
+          reasoningOptionId: request.reasoningOptionId,
+          cwd,
+          outputSchema: LECTURE_STUDIO_OUTPUT_SCHEMA,
+        });
+      } catch {
+        throw new LectureStudioServiceError('lecture_codex_unavailable');
+      }
       turnId = running.turnId;
       active.turnId = turnId;
       const pending = this.pendingByThread.get(threadId);
-      if (!pending) throw new LectureStudioServiceError('lecture_codex_unavailable');
+      if (!pending) throw new LectureStudioServiceError('lecture_generation_failed');
       pending.turnId = turnId;
       pending.invocation =
         pending.earlyInvocation?.turnId === turnId
           ? pending.earlyInvocation.invocation
           : running.invocation;
+
+      const idleTimeoutMs = Math.max(
+        5_000,
+        Math.min(this.dependencies.timeoutMs ?? 180_000, 1_800_000),
+      );
+      const hardTimeoutMs = Math.max(
+        idleTimeoutMs,
+        Math.min(this.dependencies.hardTimeoutMs ?? 1_800_000, 1_800_000),
+      );
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let hardTimer: ReturnType<typeof setTimeout> | null = null;
+      let timeoutSettled = false;
+      let resolveTimeout: ((result: { status: string; text: null }) => void) | null = null;
+      const timeout = new Promise<{ status: string; text: null }>((resolve) => {
+        resolveTimeout = resolve;
+      });
+      const clearGenerationTimers = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (hardTimer) clearTimeout(hardTimer);
+        idleTimer = null;
+        hardTimer = null;
+        pending.markActivity = null;
+        pending.disposeTimers = null;
+      };
+      const expireGeneration = () => {
+        if (timeoutSettled) return;
+        timeoutSettled = true;
+        clearGenerationTimers();
+        resolveTimeout?.({ status: 'timed_out', text: null });
+      };
+      const armIdleTimer = () => {
+        if (timeoutSettled || pending.terminal) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(expireGeneration, idleTimeoutMs);
+        idleTimer.unref?.();
+      };
+      pending.markActivity = armIdleTimer;
+      pending.disposeTimers = clearGenerationTimers;
+      armIdleTimer();
+      hardTimer = setTimeout(expireGeneration, hardTimeoutMs);
+      hardTimer.unref?.();
+      void completed.then(clearGenerationTimers, clearGenerationTimers);
+
       for (const notification of this.bufferedByThread.get(threadId) ?? []) {
         this.processNotification(pending, notification);
       }
       this.bufferedByThread.delete(threadId);
       this.throwIfCancelled(active);
 
-      const timeoutMs = Math.max(5_000, Math.min(this.dependencies.timeoutMs ?? 180_000, 300_000));
-      const terminal = await Promise.race([
-        completed,
-        new Promise<never>((_resolve, reject) => {
-          const timer = setTimeout(
-            () => reject(new LectureStudioServiceError('lecture_codex_unavailable')),
-            timeoutMs,
-          );
-          timer.unref?.();
-          void completed.finally(() => clearTimeout(timer));
-        }),
-      ]);
+      const terminal = await Promise.race([completed, timeout]);
       if (terminal.status !== 'completed') {
         throw new LectureStudioServiceError(
-          active.cancelRequested ? 'lecture_cancelled' : 'lecture_codex_unavailable',
+          active.cancelRequested
+            ? 'lecture_cancelled'
+            : terminal.status === 'timed_out'
+              ? 'lecture_generation_timed_out'
+              : terminal.status === 'transport_failed'
+                ? 'lecture_codex_unavailable'
+                : 'lecture_generation_failed',
         );
       }
       active.terminal = true;
@@ -1109,6 +1323,47 @@ export class LectureStudioService {
       const completedAt = this.now().toISOString();
       const revisionNumber = generating.currentRevision + 1;
       const invocation = pending.invocation ?? running.invocation;
+      const lectureNotesLatex = buildLectureLatexDocument(
+        'lecture-notes',
+        generating.title,
+        output.lectureNotesLatexBody,
+      );
+      const slidesLatex = buildLectureLatexDocument(
+        'slides',
+        generating.title,
+        output.slidesLatexBody,
+      );
+      try {
+        const compileResults = await Promise.allSettled(
+          (
+            [
+              ['lecture-notes', lectureNotesLatex],
+              ['slides', slidesLatex],
+            ] as const
+          ).map(([kind, source]) =>
+            this.dependencies.pdfCompiler.compile({
+              studioId: generating.id,
+              revision: revisionNumber,
+              title: generating.title,
+              kind,
+              markdown: source,
+              contentSha256: sha256(source),
+              sourceFormat: 'latex',
+            }),
+          ),
+        );
+        this.throwIfCancelled(active);
+        const failedCompile = compileResults.find(
+          (result): result is PromiseRejectedResult => result.status === 'rejected',
+        );
+        if (failedCompile) throw failedCompile.reason;
+      } catch (error) {
+        this.throwIfCancelled(active);
+        if (error instanceof LectureDocumentCompilerError) {
+          throw new LectureStudioServiceError(error.code);
+        }
+        throw new LectureStudioServiceError('lecture_pdf_compile_failed');
+      }
       const artifactInput = {
         outputProjectId: generating.outputProjectId,
         studioId: generating.id,
@@ -1116,8 +1371,9 @@ export class LectureStudioService {
         revision: revisionNumber,
         attemptId,
         sourceManifestSha256,
-        lectureNotesMarkdown: output.lectureNotesMarkdown,
-        slidesMarkdown: output.slidesMarkdown,
+        documentFormat: 'latex' as const,
+        lectureNotesLatex,
+        slidesLatex,
         createdAt: completedAt,
         invocation,
         relatedDocuments: [],
@@ -1131,15 +1387,15 @@ export class LectureStudioService {
       pendingArtifactInput = artifactInput;
       const artifacts = await this.saveArtifacts(artifactInput);
       const revision = LectureStudioRevisionSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: 2,
         id: randomUUID(),
         studioId: generating.id,
         revision: revisionNumber,
         attemptId,
         sourceManifest,
         sourceManifestSha256,
-        lectureNotesMarkdown: output.lectureNotesMarkdown,
-        slidesMarkdown: output.slidesMarkdown,
+        lectureNotesLatex,
+        slidesLatex,
         artifacts,
         invocation,
         createdAt: completedAt,
@@ -1211,6 +1467,7 @@ export class LectureStudioService {
     } finally {
       this.activeByStudio.delete(generating.id);
       if (threadId) {
+        this.pendingByThread.get(threadId)?.disposeTimers?.();
         this.pendingByThread.delete(threadId);
         this.bufferedByThread.delete(threadId);
         if (turnId && !active.terminal) {
@@ -1229,17 +1486,13 @@ export class LectureStudioService {
     if (!text) throw new LectureStudioServiceError('lecture_invalid_response');
     try {
       const output = LectureStudioGenerationOutputSchema.parse(JSON.parse(text) as unknown);
+      const notesBody = validateLectureLatexBody('lecture-notes', output.lectureNotesLatexBody);
+      const slidesBody = validateLectureLatexBody('slides', output.slidesLatexBody);
       if (
-        RAW_HTML_PATTERN.test(output.lectureNotesMarkdown) ||
-        RAW_HTML_PATTERN.test(output.slidesMarkdown) ||
-        MARKDOWN_IMAGE_PATTERN.test(output.lectureNotesMarkdown) ||
-        MARKDOWN_IMAGE_PATTERN.test(output.slidesMarkdown) ||
-        UNSUPPORTED_CITATION_PATTERN.test(output.lectureNotesMarkdown) ||
-        UNSUPPORTED_CITATION_PATTERN.test(output.slidesMarkdown) ||
-        !/^#\s+\S/mu.test(output.lectureNotesMarkdown) ||
-        !/^#\s+\S/mu.test(output.slidesMarkdown)
+        UNSUPPORTED_CITATION_PATTERN.test(notesBody) ||
+        UNSUPPORTED_CITATION_PATTERN.test(slidesBody)
       ) {
-        throw new Error('unsafe_or_unstructured_markdown');
+        throw new Error('unsupported_citation');
       }
       const manuscriptSources =
         sourceManifest.schemaVersion === 2 ? sourceManifest.manuscripts : [];
@@ -1249,27 +1502,25 @@ export class LectureStudioService {
         ...manuscriptSources.map((source) => source.sourceLabel),
       ]);
       const usedLabels = new Set<string>();
-      for (const markdown of [output.lectureNotesMarkdown, output.slidesMarkdown]) {
-        const citations = [...markdown.matchAll(/\[((?:P|E|M)\d+)\]/gu)].map((match) => match[1]!);
+      for (const latex of [notesBody, slidesBody]) {
+        const citations = [...latex.matchAll(/\[((?:P|E|M)\d+)\]/gu)].map((match) => match[1]!);
         if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
           throw new Error('invalid_source_citation');
         }
         for (const label of citations) usedLabels.add(label);
       }
-      const sourcesHeading = /^#{1,6}\s+Sources used\s*$/imu.exec(output.lectureNotesMarkdown);
+      const sourcesHeading = /\\section\s*\{\s*Sources used\s*\}/iu.exec(notesBody);
       if (!sourcesHeading || sourcesHeading.index === undefined) {
         throw new Error('missing_sources_used');
       }
-      const sourcesSection = output.lectureNotesMarkdown.slice(
-        sourcesHeading.index + sourcesHeading[0].length,
-      );
+      const sourcesSection = notesBody.slice(sourcesHeading.index + sourcesHeading[0].length);
       if ([...usedLabels].some((label) => !sourcesSection.includes(`[${label}]`))) {
         throw new Error('incomplete_sources_used');
       }
-      const slides = output.slidesMarkdown
-        .split(/^\s*---\s*$/mu)
-        .filter((slide) => slide.trim().length > 0);
-      for (const slide of slides.slice(1)) {
+      const slides = [
+        ...slidesBody.matchAll(/\\begin\s*\{\s*frame\s*\}[\s\S]*?\\end\s*\{\s*frame\s*\}/gu),
+      ].map((match) => match[0]);
+      for (const slide of slides) {
         const citations = [...slide.matchAll(/\[((?:P|E|M)\d+)\]/gu)].map((match) => match[1]!);
         if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
           throw new Error('uncited_slide');
@@ -1277,11 +1528,11 @@ export class LectureStudioService {
       }
       if (studio.kind === 'talk') {
         const requestedSlides = studio.generationBrief.slidesTargetPages;
-        if (requestedSlides !== null && slides.length !== requestedSlides) {
+        if (requestedSlides !== null && countLectureSlidePages(slidesBody) !== requestedSlides) {
           throw new Error('invalid_requested_slide_count');
         }
         const budget = talkSlideBudget(studio.durationMinutes!);
-        const slideCount = slides.length;
+        const slideCount = countLectureSlidePages(slidesBody);
         if (
           requestedSlides === null &&
           (slideCount < budget.minimum || slideCount > budget.maximum)
@@ -1290,7 +1541,7 @@ export class LectureStudioService {
         }
       } else if (
         studio.generationBrief.slidesTargetPages !== null &&
-        slides.length !== studio.generationBrief.slidesTargetPages
+        countLectureSlidePages(slidesBody) !== studio.generationBrief.slidesTargetPages
       ) {
         throw new Error('invalid_requested_slide_count');
       }
@@ -1402,7 +1653,7 @@ export class LectureStudioService {
     ) {
       return new LectureStudioServiceError('lecture_research_notes_required');
     }
-    return new LectureStudioServiceError('lecture_codex_unavailable');
+    return new LectureStudioServiceError('lecture_generation_failed');
   }
 
   private throwIfCancelled(active: ActiveExecution) {
@@ -1412,6 +1663,7 @@ export class LectureStudioService {
   private async requireStudio(studioId: string) {
     const studio = await this.dependencies.storage.getLectureStudio(studioId);
     if (!studio) throw new LectureStudioServiceError('lecture_studio_not_found');
+    if (studio.trashedAt) throw new LectureStudioServiceError('lecture_studio_trashed');
     return LectureStudioSchema.parse(studio);
   }
 
@@ -1868,6 +2120,7 @@ export class LectureStudioService {
     if (!identity || identity.threadId !== pending.threadId || identity.turnId !== pending.turnId) {
       return;
     }
+    pending.markActivity?.();
     if (notification.method === 'item/completed') {
       const item = notification.params.item;
       if (

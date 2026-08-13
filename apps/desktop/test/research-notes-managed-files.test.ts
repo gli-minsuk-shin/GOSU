@@ -115,6 +115,46 @@ describe('safe Research Notes folder names', () => {
   });
 });
 
+describe('lecture revision bundle formats', () => {
+  it('accepts exact LaTeX names and rejects mixed-format journals', async () => {
+    const { writer } = await pendingFixture();
+    const base = pendingJournal('d'.repeat(64), '44444444-4444-4444-8444-444444444444');
+    const latexJournal: ResearchNotesPendingMarkdownBundle = {
+      ...base,
+      documentFormat: 'latex',
+      files: [
+        { name: 'Lecture Notes.tex', contentSha256: '0'.repeat(64) },
+        { name: 'Slides.tex', contentSha256: '0'.repeat(64) },
+      ],
+    };
+    await expect(
+      writer.createUserMarkdownBundle(
+        'Research Project',
+        'Lecture Notes & Slides/latex',
+        [
+          { name: 'Lecture Notes.tex', content: '\\documentclass{article}\n' },
+          { name: 'Slides.tex', content: '\\documentclass{beamer}\n' },
+        ],
+        latexJournal,
+        OWNERSHIP,
+      ),
+    ).resolves.toBe(true);
+
+    await expect(
+      writer.createUserMarkdownBundle(
+        'Research Project',
+        'Lecture Notes & Slides/mixed',
+        [
+          { name: 'Lecture Notes.md', content: '# Notes\n' },
+          { name: 'Slides.md', content: '# Slides\n' },
+        ],
+        latexJournal,
+        OWNERSHIP,
+      ),
+    ).rejects.toThrow('research_notes_path_escape');
+  });
+});
+
 describe('ResearchNotesManagedFiles', () => {
   it('creates an owned default workspace idempotently without overwriting user edits', async () => {
     const root = await temporaryVault();

@@ -47,6 +47,12 @@ import type {
 } from '../../shared/workspace-contracts';
 import type { ResearchNotesWorkspace } from '../../shared/research-notes-contracts';
 import type { SearchHit } from '../../shared/search-contracts';
+import type {
+  EmptyLectureStudioTrashInput,
+  EmptyLectureStudioTrashReceipt,
+  LectureStudioListSnapshot,
+  LectureStudioVersionCommand,
+} from '../../shared/lecture-studio-contracts';
 import { BoardView } from './board-view';
 import type { HermesProjectChatConnectionUiState } from './agent-addons-section';
 import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
@@ -231,6 +237,9 @@ const lectureStudioAdapter: LectureStudioViewAdapter = {
   generate: (input) => window.gosu.lectureStudio.generate(input),
   send: (input) => window.gosu.lectureStudio.send(input),
   cancel: (input) => window.gosu.lectureStudio.cancel(input),
+  trash: (input) => window.gosu.lectureStudio.trash(input),
+  restore: (input) => window.gosu.lectureStudio.restore(input),
+  emptyTrash: (input) => window.gosu.lectureStudio.emptyTrash(input),
   compilePdf: (input) => window.gosu.lectureStudio.compilePdf(input),
   exportArtifact: (input) => window.gosu.lectureStudio.exportArtifact(input),
   openArtifact: (input) => window.gosu.lectureStudio.openArtifact(input),
@@ -252,8 +261,10 @@ function createProjectCommand(
   };
 }
 
-function isCodexUnavailableError(error: unknown) {
-  return error instanceof Error && error.message.includes('codex_unavailable');
+export function isCodexUnavailableError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const codes: string[] = error.message.match(/[a-z][a-z0-9_]+/gu) ?? [];
+  return codes.includes('codex_unavailable') || codes.includes('lecture_codex_unavailable');
 }
 
 function hasErrorCode(error: unknown, code: string) {
@@ -452,6 +463,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [lectureStudioLayout, setLectureStudioLayout] = useState(() =>
     loadLectureStudioLayoutState(window.localStorage),
   );
+  const [lectureTrashSnapshot, setLectureTrashSnapshot] =
+    useState<LectureStudioListSnapshot | null>(null);
   const [sidebarResizing, setSidebarResizing] = useState(false);
 
   const [models, setModels] = useState<CodexModel[]>([]);
@@ -1590,6 +1603,58 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     }
   };
 
+  const loadLectureTrash = useCallback(async () => {
+    try {
+      setLectureTrashSnapshot(await window.gosu.lectureStudio.list({ includeTrashed: true }));
+    } catch {
+      setLectureTrashSnapshot(null);
+    }
+  }, []);
+
+  const restoreLectureStudio = async (input: LectureStudioVersionCommand) => {
+    if (busyAction !== null) return false;
+    setBusyAction(`lecture:restore:${input.studioId}`);
+    setWorkspaceError(null);
+    try {
+      await window.gosu.lectureStudio.restore(input);
+      await loadLectureTrash();
+      setAnnouncement('Restored the Lecture Studio with its chat and revision history.');
+      return true;
+    } catch (error) {
+      setWorkspaceError(describeError(error));
+      return false;
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const emptyLectureStudioTrash = async (
+    input: EmptyLectureStudioTrashInput,
+  ): Promise<EmptyLectureStudioTrashReceipt | null> => {
+    if (busyAction !== null) return null;
+    setBusyAction('lecture:trash:empty');
+    setWorkspaceError(null);
+    try {
+      const receipt = await window.gosu.lectureStudio.emptyTrash(input);
+      await loadLectureTrash();
+      setAnnouncement(
+        `Permanently removed ${receipt.removedStudios.length} Lecture Studio${receipt.removedStudios.length === 1 ? '' : 's'} from GOSU. Research Notes and exported files were preserved.`,
+      );
+      return receipt;
+    } catch (error) {
+      setWorkspaceError(describeError(error));
+      return null;
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSurface === 'settings' && settingsCategory === 'lecture-trash') {
+      void loadLectureTrash();
+    }
+  }, [activeSurface, loadLectureTrash, settingsCategory]);
+
   const runSshConnectionAction = async (
     key: string,
     action: () => Promise<unknown>,
@@ -2499,6 +2564,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               )
             }
             onEmptyProjectTrash={emptyProjectTrash}
+            lectureTrashSnapshot={lectureTrashSnapshot}
+            onRestoreLectureStudio={restoreLectureStudio}
+            onEmptyLectureStudioTrash={emptyLectureStudioTrash}
             category={settingsCategory}
             onCategoryChange={setSettingsCategory}
             agentProject={activeProject}

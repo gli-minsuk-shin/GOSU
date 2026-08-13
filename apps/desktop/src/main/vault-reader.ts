@@ -30,6 +30,7 @@ const ATTACHMENT_MIME_TYPES = Object.freeze({
   '.png': 'image/png',
   '.webp': 'image/webp',
 } as const);
+const DOCUMENT_EXTENSIONS = new Set(['.md', '.tex']);
 
 type WalkState = {
   directories: number;
@@ -88,7 +89,7 @@ export class VaultReader {
     await this.assertRootIdentity();
   }
 
-  async listMarkdown(signal?: AbortSignal) {
+  async listDocuments(signal?: AbortSignal) {
     signal?.throwIfAborted();
     await this.assertRootIdentity();
     const results: string[] = [];
@@ -99,10 +100,16 @@ export class VaultReader {
     return results.sort();
   }
 
-  async readMarkdown(relativePath: string, signal?: AbortSignal) {
+  /** @deprecated Use listDocuments; retained for existing callers and vault grants. */
+  async listMarkdown(signal?: AbortSignal) {
+    return this.listDocuments(signal);
+  }
+
+  async readDocument(relativePath: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     await this.assertRootIdentity();
-    if (extname(relativePath).toLowerCase() !== '.md') throw new Error('markdown_only');
+    const extension = extname(relativePath).toLowerCase();
+    if (!DOCUMENT_EXTENSIONS.has(extension)) throw new Error('document_type_not_allowed');
 
     const requestedTarget = resolve(this.root, relativePath);
     const target = await realpath(requestedTarget);
@@ -119,6 +126,11 @@ export class VaultReader {
       signal,
     );
     return { path, content: bytes.toString('utf8') };
+  }
+
+  /** @deprecated Use readDocument; retained for existing Markdown-only integrations. */
+  async readMarkdown(relativePath: string, signal?: AbortSignal) {
+    return this.readDocument(relativePath, signal);
   }
 
   async readAttachment(notePath: string, rawSource: string): Promise<VaultAttachment> {
@@ -263,7 +275,7 @@ export class VaultReader {
       const full = resolve(directory, entry.name);
       if (entry.isDirectory()) {
         await this.walk(full, results, state, depth + 1, signal);
-      } else if (entry.isFile() && extname(entry.name).toLowerCase() === '.md') {
+      } else if (entry.isFile() && DOCUMENT_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
         const metadata = await stat(full);
         if (metadata.size <= this.limits.maxMarkdownBytes) {
           results.push(relative(this.root, full));

@@ -34,6 +34,8 @@ export type ResearchNotesPendingMarkdownBundle = Readonly<{
   revision: number;
   attemptId: string;
   sourceManifestSha256: string;
+  /** Omitted by legacy revision journals, which always contain Markdown. */
+  documentFormat?: 'markdown' | 'latex';
   files: readonly Readonly<{ name: string; contentSha256: string }>[];
 }>;
 
@@ -58,6 +60,16 @@ export type ResearchNotesMarkdownBundleFile = Readonly<{
   content: string;
 }>;
 
+function bundleDocumentFormat(journal: ResearchNotesPendingMarkdownBundle) {
+  return journal.documentFormat ?? 'markdown';
+}
+
+function bundleFileNames(format: 'markdown' | 'latex') {
+  return format === 'latex'
+    ? (['Lecture Notes.tex', 'Slides.tex'] as const)
+    : (['Lecture Notes.md', 'Slides.md'] as const);
+}
+
 function assertInside(root: string, target: string) {
   const path = relative(root, target);
   if (path === '' || path === '..' || path.startsWith(`..${sep}`)) {
@@ -78,14 +90,15 @@ function pathSegments(path: string) {
   return segments;
 }
 
-function markdownBundleFileName(name: string) {
+function bundleFileName(name: string, format: 'markdown' | 'latex') {
+  const extension = format === 'latex' ? '.tex' : '.md';
   if (
     name.includes('\0') ||
     name.includes('/') ||
     name.includes('\\') ||
     name === '.' ||
     name === '..' ||
-    !name.endsWith('.md')
+    !name.endsWith(extension)
   ) {
     throw new Error('research_notes_path_escape');
   }
@@ -97,6 +110,8 @@ function sha256(value: string) {
 }
 
 function canonicalBundleJournal(journal: ResearchNotesPendingMarkdownBundle) {
+  const documentFormat = bundleDocumentFormat(journal);
+  const expectedFileNames = bundleFileNames(documentFormat);
   if (
     journal.schemaVersion !== 1 ||
     journal.kind !== 'lecture-revision' ||
@@ -115,13 +130,16 @@ function canonicalBundleJournal(journal: ResearchNotesPendingMarkdownBundle) {
       journal.attemptId,
     ) ||
     !/^[0-9a-f]{64}$/u.test(journal.sourceManifestSha256) ||
+    (journal.documentFormat !== undefined &&
+      journal.documentFormat !== 'markdown' &&
+      journal.documentFormat !== 'latex') ||
     journal.files.length !== 2 ||
     new Set(journal.files.map((file) => file.name)).size !== journal.files.length ||
     [...journal.files.map((file) => file.name)].sort().join('\0') !==
-      ['Lecture Notes.md', 'Slides.md'].sort().join('\0') ||
+      [...expectedFileNames].sort().join('\0') ||
     journal.files.some(
       (file) =>
-        markdownBundleFileName(file.name) !== file.name ||
+        bundleFileName(file.name, documentFormat) !== file.name ||
         !/^[0-9a-f]{64}$/u.test(file.contentSha256),
     )
   ) {
@@ -495,7 +513,8 @@ export class ResearchNotesManagedFiles {
     ) {
       throw new Error('research_notes_markdown_too_large');
     }
-    const names = files.map((file) => markdownBundleFileName(file.name));
+    const documentFormat = bundleDocumentFormat(journal);
+    const names = files.map((file) => bundleFileName(file.name, documentFormat));
     if (new Set(names).size !== names.length) throw new Error('research_notes_folder_conflict');
     const expectedJournal: ResearchNotesPendingMarkdownBundle = {
       ...journal,

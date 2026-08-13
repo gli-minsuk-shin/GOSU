@@ -90,6 +90,8 @@ import {
   type CancelLectureStudioInput,
   type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
+  type EmptyLectureStudioTrashInput,
+  type EmptyLectureStudioTrashReceipt,
   type ExportLectureStudioArtifactInput,
   type GenerateLectureStudioInput,
   type LectureSourceCandidates,
@@ -101,6 +103,7 @@ import {
   type LectureStudioListSnapshot,
   type LectureStudioPdfPreview,
   type LectureStudioTurnReceipt,
+  type LectureStudioVersionCommand,
   type OpenLectureStudioArtifactInput,
   type RevealLectureStudioArtifactInput,
   type ListLectureCandidatesInput,
@@ -565,6 +568,15 @@ const api = {
       invokeLectureStudio<LectureStudioTurnReceipt>(LECTURE_STUDIO_IPC_CHANNELS.send, input),
     cancel: (input: CancelLectureStudioInput) =>
       invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.cancel, input),
+    trash: (input: LectureStudioVersionCommand) =>
+      invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.trash, input),
+    restore: (input: LectureStudioVersionCommand) =>
+      invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.restore, input),
+    emptyTrash: (input: EmptyLectureStudioTrashInput) =>
+      invokeLectureStudio<EmptyLectureStudioTrashReceipt>(
+        LECTURE_STUDIO_IPC_CHANNELS.emptyTrash,
+        input,
+      ),
     compilePdf: (input: CompileLectureStudioPdfInput) =>
       invokeLectureStudio<LectureStudioPdfPreview>(LECTURE_STUDIO_IPC_CHANNELS.compilePdf, input),
     exportArtifact: (input: ExportLectureStudioArtifactInput) =>

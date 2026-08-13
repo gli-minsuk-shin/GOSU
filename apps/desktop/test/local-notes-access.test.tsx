@@ -402,7 +402,37 @@ describe('Research Notes project-agent access', () => {
     );
 
     expect(html).not.toContain('PRIVATE OLD PROJECT BODY');
-    expect(html).toContain('Select a Markdown file to read it locally.');
+    expect(html).toContain('Select a note file to read it locally.');
+  });
+
+  it('shows LaTeX notes as source and does not offer Markdown rendering', () => {
+    const latexWorkspace = {
+      ...workspace,
+      files: ['Lecture Notes & Slides/Lecture Notes.tex'],
+    };
+    const html = renderToStaticMarkup(
+      <ResearchNotesView
+        workspace={latexWorkspace}
+        vaultState="ready"
+        selectedNote={{
+          path: 'Lecture Notes & Slides/Lecture Notes.tex',
+          content: '\\documentclass{article}',
+        }}
+        busy={false}
+        project={project}
+        profile={defaultProjectChatProfile(project.id)}
+        profileLoading={false}
+        accessBusy={false}
+        onChoose={vi.fn()}
+        onRead={vi.fn()}
+        onSetProjectAccess={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('\\documentclass{article}');
+    expect(html).not.toContain('Markdown display mode');
+    expect(html).not.toContain('>Rendered<');
   });
 
   it('explains each fail-closed folder reconciliation reason', () => {
@@ -431,7 +461,7 @@ describe('Research Notes project-agent access', () => {
     expect(html).toContain('>Retry</button>');
     expect(html).toContain('Research Notes grant inactive');
     expect(html.indexOf('would overwrite an existing Obsidian folder')).toBeLessThan(
-      html.indexOf('aria-label="Research Notes files"'),
+      html.lastIndexOf('aria-label="Research Notes files"'),
     );
     expect(html).not.toContain('>Read + automatic Markdown saves authorized for Active study<');
   });

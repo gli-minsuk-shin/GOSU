@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import type { BrowserWindow } from 'electron';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -456,6 +456,49 @@ describe('ResearchNotesService project workspaces', () => {
     await service.assertRevisionDestination(PROJECT_ID);
 
     expect(await readdir(lectureDirectory)).toEqual([]);
+  });
+
+  it('stores canonical LaTeX lecture sources exactly and resolves them securely', async () => {
+    const { root, service } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const lectureNotesLatex =
+      '\\documentclass{article}\n\\begin{document}\nExact $x^2$.\n\\end{document}\n';
+    const slidesLatex =
+      '\\documentclass{beamer}\n\\begin{document}\n\\begin{frame}{Exact}Slide\\end{frame}\n\\end{document}\n';
+    const artifacts = await service.saveRevisionArtifacts({
+      outputProjectId: PROJECT_ID,
+      studioId: '33333333-3333-4333-8333-333333333333',
+      studioTitle: 'Canonical LaTeX',
+      revision: 1,
+      attemptId: '44444444-4444-4444-8444-444444444444',
+      sourceManifestSha256: 'e'.repeat(64),
+      documentFormat: 'latex',
+      lectureNotesLatex,
+      slidesLatex,
+      createdAt: NOW.toISOString(),
+    });
+
+    expect(artifacts.map((artifact) => basename(artifact.relativePath))).toEqual([
+      'Lecture Notes.tex',
+      'Slides.tex',
+    ]);
+    const notesPath = join(root, 'GOSU', 'Alpha Project', artifacts[0].relativePath);
+    const slidesPath = join(root, 'GOSU', 'Alpha Project', artifacts[1].relativePath);
+    await expect(readFile(notesPath, 'utf8')).resolves.toBe(lectureNotesLatex);
+    await expect(readFile(slidesPath, 'utf8')).resolves.toBe(slidesLatex);
+    await expect(service.current({ projectId: PROJECT_ID })).resolves.toMatchObject({
+      files: expect.arrayContaining(artifacts.map((artifact) => artifact.relativePath)),
+    });
+
+    const pending = await service.listPendingRevisionArtifacts();
+    expect(pending[0]?.artifacts.map((artifact) => basename(artifact.relativePath))).toEqual([
+      'Lecture Notes.tex',
+      'Slides.tex',
+    ]);
+    await service.confirmPendingRevisionArtifacts(pending[0]!);
+    await expect(
+      service.resolveLectureRevisionArtifact(PROJECT_ID, artifacts[0]),
+    ).resolves.toMatchObject({ fileName: 'Lecture Notes.tex', content: lectureNotesLatex });
   });
 
   it('never replaces a pending bundle whose immutable journal identity disagrees', async () => {

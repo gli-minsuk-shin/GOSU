@@ -43,10 +43,47 @@ const GLOBAL_TABS: ReadonlyArray<{
   label: string;
   icon: string;
 }> = [
-  { id: 'search', label: 'Search', icon: '⌕' },
-  { id: 'lecture', label: 'Lecture notes & slides', icon: '▹' },
+  { id: 'search', label: 'Search', icon: '' },
+  { id: 'lecture', label: 'Lecture notes & slides', icon: '' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
 ];
+
+function GlobalSidebarIcon({ tab }: { tab: (typeof GLOBAL_TABS)[number] }) {
+  if (tab.id === 'search') {
+    return (
+      <span className="sidebar-nav-icon" aria-hidden="true">
+        <svg
+          className="sidebar-nav-icon-graphic sidebar-nav-icon-search"
+          viewBox="0 0 24 24"
+          focusable="false"
+        >
+          <circle cx="10.5" cy="10.5" r="5.5" />
+          <path d="m14.6 14.6 4.4 4.4" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (tab.id === 'lecture') {
+    return (
+      <span className="sidebar-nav-icon" aria-hidden="true">
+        <svg
+          className="sidebar-nav-icon-graphic sidebar-nav-icon-lecture"
+          viewBox="0 0 24 24"
+          focusable="false"
+        >
+          <path d="m8.5 5.5 8.5 6.5-8.5 6.5Z" />
+        </svg>
+      </span>
+    );
+  }
+
+  return (
+    <span className="sidebar-nav-icon" aria-hidden="true">
+      {tab.icon}
+    </span>
+  );
+}
 
 export interface ProjectSidebarProps {
   projects: readonly PortfolioProjectRecord[];
@@ -354,9 +391,7 @@ export function ProjectSidebar({
             aria-current={!settingsActive && activeTab === tab.id ? 'page' : undefined}
             onClick={() => onSelectGlobalTab(tab.id)}
           >
-            <span className="sidebar-nav-icon" aria-hidden="true">
-              {tab.icon}
-            </span>
+            <GlobalSidebarIcon tab={tab} />
             {tab.label}
           </button>
         ))}

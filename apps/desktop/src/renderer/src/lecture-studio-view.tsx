@@ -28,6 +28,7 @@ import {
   type LectureStudioArtifactActionReceipt,
   type LectureStudioDetail,
   type LectureStudioDetailLevel,
+  type LectureStudioArtifactFormat,
   type LectureStudioDetailInput,
   type LectureStudioDuration,
   type LectureStudioEvent,
@@ -38,6 +39,9 @@ import {
   type LectureStudioPdfPreview,
   type LectureStudioSummary,
   type LectureStudioTurnReceipt,
+  type LectureStudioVersionCommand,
+  type EmptyLectureStudioTrashInput,
+  type EmptyLectureStudioTrashReceipt,
   type ListLectureCandidatesInput,
   type ListLectureStudiosInput,
   type OpenLectureStudioArtifactInput,
@@ -71,6 +75,9 @@ export interface LectureStudioViewAdapter {
   generate: (input: GenerateLectureStudioInput) => Promise<LectureStudioTurnReceipt>;
   send: (input: SendLectureStudioMessageInput) => Promise<LectureStudioTurnReceipt>;
   cancel: (input: CancelLectureStudioInput) => Promise<LectureStudio>;
+  trash: (input: LectureStudioVersionCommand) => Promise<LectureStudio>;
+  restore: (input: LectureStudioVersionCommand) => Promise<LectureStudio>;
+  emptyTrash: (input: EmptyLectureStudioTrashInput) => Promise<EmptyLectureStudioTrashReceipt>;
   compilePdf: (input: CompileLectureStudioPdfInput) => Promise<LectureStudioPdfPreview>;
   exportArtifact: (
     input: ExportLectureStudioArtifactInput,
@@ -106,7 +113,7 @@ function previewIsPdf(tab: PreviewTab) {
 }
 
 export function lectureArtifactActionLabels(tab: PreviewTab) {
-  const format = previewIsPdf(tab) ? 'PDF' : 'Markdown';
+  const format = previewIsPdf(tab) ? 'PDF' : 'LaTeX';
   return {
     export: `Export ${format}`,
     open: `Open ${format} in default app`,
@@ -133,7 +140,10 @@ function LectureArtifactActionIcon({ kind }: { kind: 'export' | 'open' | 'reveal
   );
 }
 
-function revisionMarkdown(revision: LectureStudioRevision, kind: 'lecture-notes' | 'slides') {
+function revisionSource(revision: LectureStudioRevision, kind: 'lecture-notes' | 'slides') {
+  if (revision.schemaVersion === 2) {
+    return kind === 'lecture-notes' ? revision.lectureNotesLatex : revision.slidesLatex;
+  }
   return kind === 'lecture-notes' ? revision.lectureNotesMarkdown : revision.slidesMarkdown;
 }
 
@@ -225,14 +235,18 @@ function lectureErrorCodeMessage(code: string) {
     lecture_capacity_reached:
       'This Lecture Studio reached its local history limit. Keep the existing files and start a new Studio.',
     lecture_research_notes_required:
-      'Connect Research Notes for the output project before generating Markdown files.',
+      'Connect Research Notes for the output project before generating LaTeX files.',
     lecture_unavailable:
       'Lecture notes and slides are temporarily unavailable. Existing files were not replaced.',
     lecture_codex_unavailable: 'Codex is unavailable. Existing lecture files remain available.',
+    lecture_generation_timed_out:
+      'Generation stopped after Codex became inactive or reached the 30-minute safety limit. The previous revision remains unchanged.',
+    lecture_generation_failed:
+      'Codex started this generation but could not complete it. The previous revision remains unchanged.',
     lecture_version_conflict: 'This lecture changed in another action. Refresh and try again.',
     lecture_source_not_found: 'A selected manuscript, paper, or experiment is no longer available.',
     lecture_invalid_response:
-      'The generated draft failed source or Markdown safety checks, so no files were changed.',
+      'The generated draft failed source or LaTeX safety checks, so no files were changed.',
     lecture_persistence_failed:
       'GOSU could not safely commit this revision. Any pending file bundle was rolled back.',
     lecture_cancelled: 'Generation was stopped. The previous revision remains unchanged.',
@@ -240,15 +254,15 @@ function lectureErrorCodeMessage(code: string) {
     lecture_pdf_compiler_unavailable:
       'Local PDF preview needs MacTeX. Install MacTeX, then try compiling this revision again.',
     lecture_pdf_compile_failed:
-      'The local LaTeX compiler could not build this revision. The saved Markdown is unchanged.',
+      'The local LaTeX compiler could not build this revision. The saved LaTeX is unchanged.',
     lecture_pdf_too_large:
-      'The compiled PDF exceeded the local preview limit. The saved Markdown is unchanged.',
+      'The compiled PDF exceeded the local preview limit. The saved LaTeX is unchanged.',
     lecture_pdf_invalid:
-      'This revision could not be converted into a safe local PDF preview. The saved Markdown is unchanged.',
+      'This revision could not be converted into a safe local PDF preview. The saved LaTeX is unchanged.',
     lecture_artifact_not_found:
       'This saved lecture file no longer matches the selected revision. Refresh and try again.',
     lecture_artifact_changed:
-      'The saved Markdown changed outside GOSU, so it was not exported or opened as this revision.',
+      'The saved document changed outside GOSU, so it was not exported or opened as this revision.',
     lecture_artifact_unavailable:
       'The Research Notes output folder is unavailable. Reconnect it before opening saved files.',
     lecture_export_failed: 'GOSU could not safely export this lecture file.',
@@ -555,6 +569,41 @@ export function LectureStudioView({
     }
   };
 
+  const moveStudioToTrash = async (studio: LectureStudioSummary) => {
+    if (
+      studio.status === 'generating' ||
+      busyStudioIds.has(studio.id) ||
+      !window.confirm(
+        `Move “${studio.title}” to Lecture Trash?\n\nThe Studio session and its chat history can be restored from Settings. Saved Research Notes and exported LaTeX/PDF files will stay on disk.`,
+      )
+    ) {
+      return;
+    }
+    markStudioBusy(studio.id, true);
+    setError(null);
+    setNotice('');
+    try {
+      await adapter.trash({ studioId: studio.id, expectedVersion: studio.version });
+      draftStore.write(studio.id, '');
+      setDraftsByStudioId((current) => {
+        const next = { ...current };
+        delete next[studio.id];
+        return next;
+      });
+      if (selectedStudioIdRef.current === studio.id) {
+        selectedStudioIdRef.current = null;
+        setSelectedStudioId(null);
+        setDetail(null);
+      }
+      await load(false, null);
+      setNotice('Moved the Lecture Studio to recoverable Trash. Saved files were preserved.');
+    } catch (trashError) {
+      setError(lectureErrorMessage(trashError));
+    } finally {
+      markStudioBusy(studio.id, false);
+    }
+  };
+
   return (
     <section className="lecture-studio" aria-label="Lecture notes and slides workspace">
       {error && (
@@ -589,6 +638,8 @@ export function LectureStudioView({
             setError(null);
           }}
           onSelect={selectStudio}
+          onTrash={(studio) => void moveStudioToTrash(studio)}
+          busyStudioIds={busyStudioIds}
           collapsed={layout.studioRailCollapsed}
           onCollapsedChange={(studioRailCollapsed) =>
             onLayoutChange({ ...layout, studioRailCollapsed })
@@ -722,6 +773,8 @@ function StudioRail({
   composing,
   onNew,
   onSelect,
+  onTrash,
+  busyStudioIds,
   collapsed,
   onCollapsedChange,
 }: {
@@ -731,6 +784,8 @@ function StudioRail({
   composing: boolean;
   onNew: () => void;
   onSelect: (studioId: string) => void;
+  onTrash: (studio: LectureStudioSummary) => void;
+  busyStudioIds: ReadonlySet<string>;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
 }) {
@@ -793,21 +848,37 @@ function StudioRail({
           </div>
         ) : (
           studios.map((studio) => (
-            <button
-              type="button"
+            <div
+              className={`lecture-studio-list-item${studio.id === selectedStudioId && !composing ? ' active' : ''}`}
               key={studio.id}
-              className={studio.id === selectedStudioId && !composing ? 'active' : ''}
-              aria-current={studio.id === selectedStudioId && !composing ? 'page' : undefined}
-              onClick={() => onSelect(studio.id)}
             >
-              <span className={`lecture-studio-status ${studio.status}`} aria-hidden="true" />
-              <span className="sr-only">Status: {lectureStudioStatusLabel(studio.status)}. </span>
-              <strong>{studio.title}</strong>
-              <small>
-                {studio.kind === 'talk' ? `${studio.durationMinutes}-minute talk` : 'Lecture'} · r
-                {studio.currentRevision}
-              </small>
-            </button>
+              <button
+                type="button"
+                className="lecture-studio-select"
+                aria-current={studio.id === selectedStudioId && !composing ? 'page' : undefined}
+                onClick={() => onSelect(studio.id)}
+              >
+                <span className={`lecture-studio-status ${studio.status}`} aria-hidden="true" />
+                <span className="sr-only">Status: {lectureStudioStatusLabel(studio.status)}. </span>
+                <strong>{studio.title}</strong>
+                <small>
+                  {studio.kind === 'talk' ? `${studio.durationMinutes}-minute talk` : 'Lecture'} · r
+                  {studio.currentRevision}
+                </small>
+              </button>
+              <button
+                type="button"
+                className="lecture-studio-trash-button"
+                aria-label={`Move ${studio.title} to Trash`}
+                title="Move to Lecture Trash"
+                disabled={studio.status === 'generating' || busyStudioIds.has(studio.id)}
+                onClick={() => onTrash(studio)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5" />
+                </svg>
+              </button>
+            </div>
           ))
         )}
       </div>
@@ -1166,7 +1237,7 @@ function LectureComposer({
             Slide pages
             <input
               type="number"
-              min={1}
+              min={2}
               max={100}
               step={1}
               inputMode="numeric"
@@ -1174,7 +1245,7 @@ function LectureComposer({
               placeholder="Auto"
               onChange={(event) => setSlidesTargetPages(event.target.value)}
             />
-            <small>Exact number of Markdown slides.</small>
+            <small>Exact number of compiled PDF slide pages, including the title page.</small>
           </label>
           <label>
             Detail
@@ -1236,7 +1307,7 @@ function LectureComposer({
       )}
 
       <label className="lecture-output-project">
-        Save generated Markdown to
+        Save generated LaTeX to
         <select
           value={outputProjectId}
           onChange={(event) => setOutputProjectId(event.target.value)}
@@ -1253,7 +1324,7 @@ function LectureComposer({
           })}
         </select>
         <small>
-          Every revision is saved as new immutable Markdown files in this project’s Research Notes.
+          Every revision is saved as new immutable LaTeX files in this project’s Research Notes.
         </small>
       </label>
 
@@ -1481,7 +1552,7 @@ function StudioPreview({
   const mounted = useRef(true);
   const outputProjectName = lectureOutputProjectName(projects, studio.outputProjectId);
   const documentKind = previewDocumentKind(activeTab);
-  const markdown = revision ? revisionMarkdown(revision, documentKind) : '';
+  const source = revision ? revisionSource(revision, documentKind) : '';
   const pdfPreview = pdfPreviews[documentKind];
   const currentArtifact = revision?.artifacts.find((artifact) => artifact.kind === documentKind);
 
@@ -1520,7 +1591,7 @@ function StudioPreview({
     setCompilingPdf(kind);
     setPdfError(null);
     try {
-      const contentSha256 = await sha256Text(revisionMarkdown(revision, kind));
+      const contentSha256 = await sha256Text(revisionSource(revision, kind));
       const preview = await adapter.compilePdf({
         studioId: studio.id,
         revision: revision.revision,
@@ -1550,7 +1621,7 @@ function StudioPreview({
 
   const runArtifactAction = async (
     action: 'export' | 'open' | 'reveal',
-    format?: 'markdown' | 'pdf',
+    format?: LectureStudioArtifactFormat,
   ) => {
     const input = artifactInput();
     if (!input || artifactActionBusy) return;
@@ -1699,7 +1770,14 @@ function StudioPreview({
             data-lecture-artifact-action="export"
             disabled={artifactActionBusy}
             onClick={() =>
-              void runArtifactAction('export', previewIsPdf(activeTab) ? 'pdf' : 'markdown')
+              void runArtifactAction(
+                'export',
+                previewIsPdf(activeTab)
+                  ? 'pdf'
+                  : revision?.schemaVersion === 2
+                    ? 'latex'
+                    : 'markdown',
+              )
             }
           >
             <LectureArtifactActionIcon kind="export" />
@@ -1712,7 +1790,14 @@ function StudioPreview({
             data-lecture-artifact-action="open"
             disabled={artifactActionBusy}
             onClick={() =>
-              void runArtifactAction('open', previewIsPdf(activeTab) ? 'pdf' : 'markdown')
+              void runArtifactAction(
+                'open',
+                previewIsPdf(activeTab)
+                  ? 'pdf'
+                  : revision?.schemaVersion === 2
+                    ? 'latex'
+                    : 'markdown',
+              )
             }
           >
             <LectureArtifactActionIcon kind="open" />
@@ -1736,13 +1821,13 @@ function StudioPreview({
         className={`lecture-preview-document${previewIsPdf(activeTab) ? ' pdf' : ''}`}
         role="tabpanel"
       >
-        {studio.status === 'generating' && markdown.trim() === '' ? (
+        {studio.status === 'generating' && source.trim() === '' ? (
           <div className="lecture-preview-empty generating">
             <i />
             <strong>Building revision {studio.currentRevision + 1}</strong>
             <span>Codex is synthesizing only the selected, frozen evidence.</span>
           </div>
-        ) : markdown.trim() === '' ? (
+        ) : source.trim() === '' ? (
           <div className="lecture-preview-empty">
             <strong>No generated {activeTab} yet</strong>
             <span>Generate the first revision to preview it here.</span>
@@ -1752,9 +1837,7 @@ function StudioPreview({
         ) : previewIsPdf(activeTab) ? (
           <div className="lecture-preview-empty">
             <strong>Compile this revision as PDF</strong>
-            <span>
-              GOSU compiles the exact saved Markdown locally with network access disabled.
-            </span>
+            <span>GOSU compiles the exact saved LaTeX locally with network access disabled.</span>
             <button
               type="button"
               className="primary-button"
@@ -1764,10 +1847,14 @@ function StudioPreview({
               {compilingPdf === documentKind ? 'Compiling PDF…' : 'Compile & preview PDF'}
             </button>
           </div>
+        ) : revision?.schemaVersion === 2 ? (
+          <pre className="lecture-latex-source" aria-label="Generated LaTeX source">
+            <code>{source}</code>
+          </pre>
         ) : (
           <MarkdownDocument
             notePath={`${studio.title}-${activeTab}.md`}
-            source={markdown}
+            source={source}
             vaultFiles={[]}
             onOpenNote={() => undefined}
             loadVaultImages={false}
@@ -2063,7 +2150,7 @@ function LectureStudioChat({
           {busy ? 'Working…' : 'Send'}
           <small>Enter</small>
         </button>
-        <p>Shift + Enter for a new line. Each accepted edit creates new Markdown files.</p>
+        <p>Shift + Enter for a new line. Each accepted edit creates new LaTeX files.</p>
       </footer>
     </aside>
   );

@@ -21,7 +21,7 @@ import type {
   LectureStudioPdfKind,
 } from '../shared/lecture-studio-contracts';
 
-const MAX_MARKDOWN_EXPORT_BYTES = 2 * 1024 * 1024;
+const MAX_SOURCE_EXPORT_BYTES = 2 * 1024 * 1024;
 const MAX_PDF_EXPORT_BYTES = 32 * 1024 * 1024;
 const PDF_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const PDF_CACHE_MAX_FILES = 12;
@@ -191,19 +191,25 @@ export function createLectureArtifactPlatform(
 ): LectureArtifactPlatform {
   return {
     async exportFile(input) {
-      const maximumBytes =
-        input.format === 'markdown' ? MAX_MARKDOWN_EXPORT_BYTES : MAX_PDF_EXPORT_BYTES;
+      const maximumBytes = input.format === 'pdf' ? MAX_PDF_EXPORT_BYTES : MAX_SOURCE_EXPORT_BYTES;
       if (input.bytes.byteLength < 1 || input.bytes.byteLength > maximumBytes) {
         throw new Error('lecture_export_failed');
       }
       const owner = window();
       const options: Electron.SaveDialogOptions = {
-        title: input.format === 'markdown' ? 'Export lecture Markdown' : 'Export lecture PDF',
+        title:
+          input.format === 'pdf'
+            ? 'Export lecture PDF'
+            : input.format === 'latex'
+              ? 'Export lecture LaTeX'
+              : 'Export lecture Markdown',
         defaultPath: input.suggestedFileName,
         filters: [
-          input.format === 'markdown'
-            ? { name: 'Markdown', extensions: ['md'] }
-            : { name: 'PDF', extensions: ['pdf'] },
+          input.format === 'pdf'
+            ? { name: 'PDF', extensions: ['pdf'] }
+            : input.format === 'latex'
+              ? { name: 'LaTeX', extensions: ['tex'] }
+              : { name: 'Markdown', extensions: ['md'] },
         ],
       };
       const result = owner

@@ -197,6 +197,17 @@ describe('Lecture Studio candidate pagination contracts', () => {
         ...manuscriptOnly,
         generationBrief: {
           notesTargetPages: null,
+          slidesTargetPages: 1,
+          detailLevel: 'standard',
+          customInstructions: '',
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      CreateLectureStudioInputSchema.parse({
+        ...manuscriptOnly,
+        generationBrief: {
+          notesTargetPages: null,
           slidesTargetPages: null,
           detailLevel: 'standard',
           customInstructions: `unsafe${String.fromCharCode(0)}instruction`,
@@ -346,6 +357,10 @@ describe('Lecture Studio artifact action contracts', () => {
     ).toEqual({
       ...binding,
       format: 'markdown',
+    });
+    expect(ExportLectureStudioArtifactInputSchema.parse({ ...binding, format: 'latex' })).toEqual({
+      ...binding,
+      format: 'latex',
     });
     expect(OpenLectureStudioArtifactInputSchema.parse({ ...binding, format: 'pdf' })).toEqual({
       ...binding,

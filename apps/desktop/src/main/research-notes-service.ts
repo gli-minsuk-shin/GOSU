@@ -62,8 +62,20 @@ const MAX_AGENT_MARKDOWN_CHARACTERS = 1_000_000;
 const MAX_AGENT_MARKDOWN_TITLE_BYTES = 180;
 const AGENT_MARKDOWN_ARTIFACT_ID_CHARACTERS = 16;
 const MAX_PENDING_LECTURE_PROJECT_SCAN = 32;
-const LECTURE_NOTES_FILE_NAME = 'Lecture Notes.md';
-const LECTURE_SLIDES_FILE_NAME = 'Slides.md';
+const LECTURE_MARKDOWN_FILE_NAMES = {
+  notes: 'Lecture Notes.md',
+  slides: 'Slides.md',
+} as const;
+const LECTURE_LATEX_FILE_NAMES = {
+  notes: 'Lecture Notes.tex',
+  slides: 'Slides.tex',
+} as const;
+
+type LectureDocumentFormat = 'markdown' | 'latex';
+
+function lectureFileNames(documentFormat: LectureDocumentFormat) {
+  return documentFormat === 'latex' ? LECTURE_LATEX_FILE_NAMES : LECTURE_MARKDOWN_FILE_NAMES;
+}
 
 export function researchNotesAgentMarkdownArtifactId(
   projectId: string,
@@ -200,8 +212,11 @@ export type SaveLectureRevisionArtifactsInput = Readonly<{
   revision: number;
   attemptId: string;
   sourceManifestSha256: string;
-  lectureNotesMarkdown: string;
-  slidesMarkdown: string;
+  documentFormat?: LectureDocumentFormat;
+  lectureNotesMarkdown?: string;
+  slidesMarkdown?: string;
+  lectureNotesLatex?: string;
+  slidesLatex?: string;
   createdAt: string;
   invocation?: ModelInvocation;
   relatedDocuments?: readonly string[];
@@ -403,13 +418,20 @@ function pendingRevisionJournal(
   pending: PendingLectureRevisionArtifacts,
 ): ResearchNotesPendingMarkdownBundle {
   const relativeBundlePath = safeProjectPath(pending.relativeBundlePath);
+  const notesFileName = basename(
+    pending.artifacts.find((artifact) => artifact.kind === 'lecture-notes')?.relativePath ?? '',
+  );
+  const documentFormat: LectureDocumentFormat = notesFileName.endsWith('.tex')
+    ? 'latex'
+    : 'markdown';
+  const fileNames = lectureFileNames(documentFormat);
   const notes = pending.artifacts.find((artifact) => artifact.kind === 'lecture-notes');
   const slides = pending.artifacts.find((artifact) => artifact.kind === 'slides');
   if (
     !notes ||
     !slides ||
-    notes.relativePath !== `${relativeBundlePath}/${LECTURE_NOTES_FILE_NAME}` ||
-    slides.relativePath !== `${relativeBundlePath}/${LECTURE_SLIDES_FILE_NAME}`
+    notes.relativePath !== `${relativeBundlePath}/${fileNames.notes}` ||
+    slides.relativePath !== `${relativeBundlePath}/${fileNames.slides}`
   ) {
     throw new ResearchNotesServiceError('research_notes_folder_conflict');
   }
@@ -424,9 +446,10 @@ function pendingRevisionJournal(
     revision: pending.revision,
     attemptId: pending.attemptId,
     sourceManifestSha256: pending.sourceManifestSha256,
+    ...(documentFormat === 'latex' ? { documentFormat } : {}),
     files: [
-      { name: LECTURE_NOTES_FILE_NAME, contentSha256: notes.contentSha256 },
-      { name: LECTURE_SLIDES_FILE_NAME, contentSha256: slides.contentSha256 },
+      { name: fileNames.notes, contentSha256: notes.contentSha256 },
+      { name: fileNames.slides, contentSha256: slides.contentSha256 },
     ],
   };
 }
@@ -569,7 +592,7 @@ export class ResearchNotesService {
     if (!ready) throw new ResearchNotesServiceError('research_notes_folder_unavailable');
     const path = safeProjectPath(command.path);
     try {
-      const note = await this.dependencies.vault.readMarkdown(
+      const note = await this.dependencies.vault.readDocument(
         `${this.relativeRoot(ready.link)}/${path}`,
         signal,
       );
@@ -602,7 +625,7 @@ export class ResearchNotesService {
     await this.assertOwnership(link);
     const path = safeProjectPath(command.path);
     try {
-      const note = await this.dependencies.vault.readMarkdown(`${this.relativeRoot(link)}/${path}`);
+      const note = await this.dependencies.vault.readDocument(`${this.relativeRoot(link)}/${path}`);
       return { path, content: note.content };
     } catch (error) {
       if (error instanceof ResearchNotesServiceError) throw error;
@@ -664,7 +687,7 @@ export class ResearchNotesService {
     const files = await this.projectFiles(link);
     const path = files.find((candidate) => sha256(`${link.bindingId}\0${candidate}`) === noteId);
     if (!path) throw new Error('vault_note_not_found');
-    const note = await this.dependencies.vault.readMarkdown(`${this.relativeRoot(link)}/${path}`);
+    const note = await this.dependencies.vault.readDocument(`${this.relativeRoot(link)}/${path}`);
     const offset = Math.max(0, Math.min(Math.trunc(requestedOffset), note.content.length));
     const maxCharacters = Math.max(
       1,
@@ -813,7 +836,7 @@ export class ResearchNotesService {
     }
     const path = safeProjectPath(artifact.relativePath);
     try {
-      const note = await this.dependencies.vault.readMarkdown(
+      const note = await this.dependencies.vault.readDocument(
         `${this.relativeRoot(ready.link)}/${path}`,
       );
       await this.dependencies.vault.validateGrant(ready.link.vaultId);
@@ -874,8 +897,10 @@ export class ResearchNotesService {
           limit - pending.length,
         );
         for (const entry of entries) {
-          const notes = entry.journal.files.find((file) => file.name === LECTURE_NOTES_FILE_NAME);
-          const slides = entry.journal.files.find((file) => file.name === LECTURE_SLIDES_FILE_NAME);
+          const documentFormat = entry.journal.documentFormat ?? 'markdown';
+          const fileNames = lectureFileNames(documentFormat);
+          const notes = entry.journal.files.find((file) => file.name === fileNames.notes);
+          const slides = entry.journal.files.find((file) => file.name === fileNames.slides);
           if (!notes || !slides) continue;
           pending.push({
             outputProjectId: entry.journal.projectId,
@@ -890,12 +915,12 @@ export class ResearchNotesService {
             artifacts: [
               {
                 kind: 'lecture-notes',
-                relativePath: `${entry.relativeBundlePath}/${LECTURE_NOTES_FILE_NAME}`,
+                relativePath: `${entry.relativeBundlePath}/${fileNames.notes}`,
                 contentSha256: notes.contentSha256,
               },
               {
                 kind: 'slides',
-                relativePath: `${entry.relativeBundlePath}/${LECTURE_SLIDES_FILE_NAME}`,
+                relativePath: `${entry.relativeBundlePath}/${fileNames.slides}`,
                 contentSha256: slides.contentSha256,
               },
             ],
@@ -1233,7 +1258,7 @@ export class ResearchNotesService {
     signal?.throwIfAborted();
     this.requireVault(link.vaultId);
     const prefix = `${this.relativeRoot(link)}/`;
-    const files = await this.dependencies.vault.listMarkdown(signal);
+    const files = await this.dependencies.vault.listDocuments(signal);
     signal?.throwIfAborted();
     return files.filter((path) => path.startsWith(prefix)).map((path) => path.slice(prefix.length));
   }
@@ -1251,8 +1276,13 @@ export class ResearchNotesService {
     ) {
       throw new ResearchNotesServiceError('research_notes_folder_conflict');
     }
-    const wrap = (kind: 'lecture-notes' | 'slides', markdown: string) => {
-      const body = markdown.trim();
+    const documentFormat = input.documentFormat ?? 'markdown';
+    const fileNames = lectureFileNames(documentFormat);
+    const rawNotes =
+      documentFormat === 'latex' ? input.lectureNotesLatex : input.lectureNotesMarkdown;
+    const rawSlides = documentFormat === 'latex' ? input.slidesLatex : input.slidesMarkdown;
+    const wrapMarkdown = (kind: 'lecture-notes' | 'slides', markdown: string | undefined) => {
+      const body = markdown?.trim() ?? '';
       if (!body) throw new ResearchNotesServiceError('research_notes_folder_conflict');
       const invocation = input.invocation;
       return serializeResearchNotesDocument({
@@ -1296,15 +1326,21 @@ export class ResearchNotesService {
         body,
       });
     };
-    const notesContent = wrap('lecture-notes', input.lectureNotesMarkdown);
-    const slidesContent = wrap('slides', input.slidesMarkdown);
+    const exactLatex = (latex: string | undefined) => {
+      if (!latex?.trim()) throw new ResearchNotesServiceError('research_notes_folder_conflict');
+      return latex;
+    };
+    const notesContent =
+      documentFormat === 'latex' ? exactLatex(rawNotes) : wrapMarkdown('lecture-notes', rawNotes);
+    const slidesContent =
+      documentFormat === 'latex' ? exactLatex(rawSlides) : wrapMarkdown('slides', rawSlides);
     const bundleId = lectureRevisionBundleId(input, link.bindingId);
     const revisionLabel = String(input.revision).padStart(4, '0');
     const folderName = `${safeAgentMarkdownFileStem(input.studioTitle)}--r${revisionLabel}--${bundleId.slice(0, AGENT_MARKDOWN_ARTIFACT_ID_CHARACTERS)}`;
     const relativeBundlePath = safeProjectPath(`Lecture Notes & Slides/${folderName}`);
     const files: readonly ResearchNotesMarkdownBundleFile[] = [
-      { name: LECTURE_NOTES_FILE_NAME, content: notesContent },
-      { name: LECTURE_SLIDES_FILE_NAME, content: slidesContent },
+      { name: fileNames.notes, content: notesContent },
+      { name: fileNames.slides, content: slidesContent },
     ];
     const journal: ResearchNotesPendingMarkdownBundle = {
       schemaVersion: 1,
@@ -1317,18 +1353,19 @@ export class ResearchNotesService {
       revision: input.revision,
       attemptId: input.attemptId,
       sourceManifestSha256: input.sourceManifestSha256,
+      ...(documentFormat === 'latex' ? { documentFormat } : {}),
       files: files.map((file) => ({ name: file.name, contentSha256: sha256(file.content) })),
     };
     const artifacts: readonly [LectureStudioArtifact, LectureStudioArtifact] = [
       {
         kind: 'lecture-notes',
-        relativePath: `${relativeBundlePath}/${LECTURE_NOTES_FILE_NAME}`,
+        relativePath: `${relativeBundlePath}/${fileNames.notes}`,
         contentSha256: sha256(notesContent),
         savedAt: input.createdAt,
       },
       {
         kind: 'slides',
-        relativePath: `${relativeBundlePath}/${LECTURE_SLIDES_FILE_NAME}`,
+        relativePath: `${relativeBundlePath}/${fileNames.slides}`,
         contentSha256: sha256(slidesContent),
         savedAt: input.createdAt,
       },

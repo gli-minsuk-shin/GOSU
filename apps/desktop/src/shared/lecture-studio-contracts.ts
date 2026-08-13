@@ -11,6 +11,9 @@ import { PdfPreviewDocumentSchema } from './pdf-preview-contracts';
 
 export const LECTURE_STUDIO_DURATIONS = [10, 20, 30, 50] as const;
 export const LECTURE_STUDIO_MAX_STUDIOS = 100;
+export const LECTURE_STUDIO_MAX_TRASHED_STUDIOS = 1_000;
+export const LECTURE_STUDIO_MAX_STORED_STUDIOS =
+  LECTURE_STUDIO_MAX_STUDIOS + LECTURE_STUDIO_MAX_TRASHED_STUDIOS;
 export const LECTURE_STUDIO_MAX_SOURCE_PROJECTS = 12;
 export const LECTURE_STUDIO_MAX_LITERATURE_SOURCES = 100;
 export const LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES = 100;
@@ -21,6 +24,8 @@ export const LECTURE_STUDIO_MAX_MESSAGES = 2_500;
 export const LECTURE_STUDIO_MAX_REVISIONS = 1_000;
 export const LECTURE_STUDIO_MAX_MESSAGE_LENGTH = 32_000;
 export const LECTURE_STUDIO_MAX_MARKDOWN_LENGTH = 200_000;
+export const LECTURE_STUDIO_MAX_LATEX_LENGTH = 240_000;
+export const EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION = 'EMPTY LECTURE TRASH';
 export const LECTURE_STUDIO_CANDIDATE_PAGE_MAX = 100;
 export const LECTURE_STUDIO_CANDIDATE_METRIC_LIMIT_DEFAULT = 20;
 
@@ -53,7 +58,7 @@ export type LectureStudioDetailLevel = z.infer<typeof LectureStudioDetailLevelSc
 export const LectureStudioGenerationBriefSchema = z
   .object({
     notesTargetPages: z.number().int().min(1).max(100).nullable().default(null),
-    slidesTargetPages: z.number().int().min(1).max(100).nullable().default(null),
+    slidesTargetPages: z.number().int().min(2).max(100).nullable().default(null),
     detailLevel: LectureStudioDetailLevelSchema.default('standard'),
     customInstructions: z
       .string()
@@ -201,6 +206,7 @@ export const LectureStudioSchema = z
     currentRevision: z.number().int().nonnegative(),
     version: z.number().int().positive(),
     lastErrorCode: z.string().trim().min(1).max(128).nullable(),
+    trashedAt: timestampSchema.optional(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
   })
@@ -219,6 +225,13 @@ export const LectureStudioSchema = z
         code: 'custom',
         path: ['lastErrorCode'],
         message: 'Only a failed studio can retain an error code',
+      });
+    }
+    if (studio.trashedAt !== undefined && studio.status === 'generating') {
+      context.addIssue({
+        code: 'custom',
+        path: ['trashedAt'],
+        message: 'A generating Studio cannot be moved to Trash',
       });
     }
   });
@@ -481,22 +494,35 @@ export const LectureSourceManifestSchema = z.discriminatedUnion('schemaVersion',
 ]);
 export type LectureSourceManifest = z.infer<typeof LectureSourceManifestSchema>;
 
+const LectureStudioRevisionBaseSchema = z.object({
+  id: uuidSchema,
+  studioId: uuidSchema,
+  revision: z.number().int().positive(),
+  attemptId: uuidSchema,
+  sourceManifest: LectureSourceManifestSchema,
+  sourceManifestSha256: sha256Schema,
+  artifacts: z.array(LectureStudioArtifactSchema).length(2),
+  invocation: ModelInvocationSchema,
+  createdAt: timestampSchema,
+});
+
+export const LectureStudioRevisionV1Schema = LectureStudioRevisionBaseSchema.extend({
+  schemaVersion: z.literal(1),
+  lectureNotesMarkdown: z.string().min(1).max(LECTURE_STUDIO_MAX_MARKDOWN_LENGTH),
+  slidesMarkdown: z.string().min(1).max(LECTURE_STUDIO_MAX_MARKDOWN_LENGTH),
+}).strict();
+
+export const LectureStudioRevisionV2Schema = LectureStudioRevisionBaseSchema.extend({
+  schemaVersion: z.literal(2),
+  lectureNotesLatex: z.string().min(1).max(LECTURE_STUDIO_MAX_LATEX_LENGTH),
+  slidesLatex: z.string().min(1).max(LECTURE_STUDIO_MAX_LATEX_LENGTH),
+}).strict();
+
 export const LectureStudioRevisionSchema = z
-  .object({
-    schemaVersion: z.literal(1),
-    id: uuidSchema,
-    studioId: uuidSchema,
-    revision: z.number().int().positive(),
-    attemptId: uuidSchema,
-    sourceManifest: LectureSourceManifestSchema,
-    sourceManifestSha256: sha256Schema,
-    lectureNotesMarkdown: z.string().min(1).max(LECTURE_STUDIO_MAX_MARKDOWN_LENGTH),
-    slidesMarkdown: z.string().min(1).max(LECTURE_STUDIO_MAX_MARKDOWN_LENGTH),
-    artifacts: z.array(LectureStudioArtifactSchema).length(2),
-    invocation: ModelInvocationSchema,
-    createdAt: timestampSchema,
-  })
-  .strict()
+  .discriminatedUnion('schemaVersion', [
+    LectureStudioRevisionV1Schema,
+    LectureStudioRevisionV2Schema,
+  ])
   .superRefine((revision, context) => {
     const artifactKinds = new Set(revision.artifacts.map((artifact) => artifact.kind));
     if (!artifactKinds.has('lecture-notes') || !artifactKinds.has('slides')) {
@@ -547,6 +573,7 @@ export const LectureStudioSummarySchema = z
     currentRevision: z.number().int().nonnegative(),
     version: z.number().int().positive(),
     lastErrorCode: z.string().trim().min(1).max(128).nullable(),
+    trashedAt: timestampSchema.optional(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
   })
@@ -573,13 +600,20 @@ export const LectureStudioSummarySchema = z
         message: 'Only a failed studio summary can retain an error code',
       });
     }
+    if (studio.trashedAt !== undefined && studio.status === 'generating') {
+      context.addIssue({
+        code: 'custom',
+        path: ['trashedAt'],
+        message: 'A generating Studio summary cannot be in Trash',
+      });
+    }
   });
 export type LectureStudioSummary = z.infer<typeof LectureStudioSummarySchema>;
 
 export const LectureStudioListSnapshotSchema = z
   .object({
     schemaVersion: z.literal(1),
-    studios: z.array(LectureStudioSummarySchema).max(LECTURE_STUDIO_MAX_STUDIOS),
+    studios: z.array(LectureStudioSummarySchema).max(LECTURE_STUDIO_MAX_STORED_STUDIOS),
   })
   .strict();
 export type LectureStudioListSnapshot = z.infer<typeof LectureStudioListSnapshotSchema>;
@@ -780,8 +814,10 @@ export const LectureSourceCandidatesSchema = z
   );
 export type LectureSourceCandidates = z.infer<typeof LectureSourceCandidatesSchema>;
 
-export const ListLectureStudiosInputSchema = z.object({}).strict();
-export type ListLectureStudiosInput = z.infer<typeof ListLectureStudiosInputSchema>;
+export const ListLectureStudiosInputSchema = z
+  .object({ includeTrashed: z.boolean().default(false) })
+  .strict();
+export type ListLectureStudiosInput = z.input<typeof ListLectureStudiosInputSchema>;
 
 export const LectureStudioDetailInputSchema = z.object({ studioId: uuidSchema }).strict();
 export type LectureStudioDetailInput = z.infer<typeof LectureStudioDetailInputSchema>;
@@ -856,6 +892,43 @@ export const CancelLectureStudioInputSchema = z
   .strict();
 export type CancelLectureStudioInput = z.infer<typeof CancelLectureStudioInputSchema>;
 
+export const LectureStudioVersionCommandSchema = z
+  .object({ studioId: uuidSchema, expectedVersion: z.number().int().positive() })
+  .strict();
+export type LectureStudioVersionCommand = z.infer<typeof LectureStudioVersionCommandSchema>;
+
+export const EmptyLectureStudioTrashInputSchema = z
+  .object({
+    idempotencyKey: uuidSchema,
+    confirmation: z.literal(EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION),
+  })
+  .strict();
+export type EmptyLectureStudioTrashInput = z.infer<typeof EmptyLectureStudioTrashInputSchema>;
+
+export const EmptyLectureStudioTrashReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    idempotencyKey: uuidSchema,
+    removedStudios: z
+      .array(
+        z
+          .object({
+            studioId: uuidSchema,
+            title: boundedText(160),
+            outputProjectId: uuidSchema,
+            revisionCount: z.number().int().nonnegative(),
+            messageCount: z.number().int().nonnegative(),
+            trashedAt: timestampSchema,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(LECTURE_STUDIO_MAX_TRASHED_STUDIOS),
+    completedAt: timestampSchema,
+  })
+  .strict();
+export type EmptyLectureStudioTrashReceipt = z.infer<typeof EmptyLectureStudioTrashReceiptSchema>;
+
 export const LectureStudioPdfKindSchema = LectureStudioArtifactSchema.shape.kind;
 export type LectureStudioPdfKind = z.infer<typeof LectureStudioPdfKindSchema>;
 
@@ -872,7 +945,7 @@ export type CompileLectureStudioPdfInput = z.infer<typeof CompileLectureStudioPd
 export const LectureStudioPdfPreviewSchema = PdfPreviewDocumentSchema;
 export type LectureStudioPdfPreview = z.infer<typeof LectureStudioPdfPreviewSchema>;
 
-export const LectureStudioArtifactFormatSchema = z.enum(['markdown', 'pdf']);
+export const LectureStudioArtifactFormatSchema = z.enum(['markdown', 'latex', 'pdf']);
 export type LectureStudioArtifactFormat = z.infer<typeof LectureStudioArtifactFormatSchema>;
 
 const lectureStudioArtifactActionShape = {
@@ -925,8 +998,8 @@ export type LectureStudioArtifactActionReceipt = z.infer<
 export const LectureStudioGenerationOutputSchema = z
   .object({
     reply: boundedText(LECTURE_STUDIO_MAX_MESSAGE_LENGTH),
-    lectureNotesMarkdown: z.string().min(1).max(LECTURE_STUDIO_MAX_MARKDOWN_LENGTH),
-    slidesMarkdown: z.string().min(1).max(LECTURE_STUDIO_MAX_MARKDOWN_LENGTH),
+    lectureNotesLatexBody: z.string().min(1).max(LECTURE_STUDIO_MAX_MARKDOWN_LENGTH),
+    slidesLatexBody: z.string().min(1).max(LECTURE_STUDIO_MAX_MARKDOWN_LENGTH),
   })
   .strict();
 export type LectureStudioGenerationOutput = z.infer<typeof LectureStudioGenerationOutputSchema>;
@@ -936,18 +1009,18 @@ export const LECTURE_STUDIO_OUTPUT_SCHEMA = {
   additionalProperties: false,
   properties: {
     reply: { type: 'string', minLength: 1, maxLength: LECTURE_STUDIO_MAX_MESSAGE_LENGTH },
-    lectureNotesMarkdown: {
+    lectureNotesLatexBody: {
       type: 'string',
       minLength: 1,
       maxLength: LECTURE_STUDIO_MAX_MARKDOWN_LENGTH,
     },
-    slidesMarkdown: {
+    slidesLatexBody: {
       type: 'string',
       minLength: 1,
       maxLength: LECTURE_STUDIO_MAX_MARKDOWN_LENGTH,
     },
   },
-  required: ['reply', 'lectureNotesMarkdown', 'slidesMarkdown'],
+  required: ['reply', 'lectureNotesLatexBody', 'slidesLatexBody'],
 } as const;
 
 export const LectureStudioTurnReceiptSchema = z
@@ -983,6 +1056,8 @@ export const LECTURE_STUDIO_IPC_ERROR_CODES = [
   'lecture_busy',
   'lecture_not_active',
   'lecture_codex_unavailable',
+  'lecture_generation_timed_out',
+  'lecture_generation_failed',
   'lecture_invalid_response',
   'lecture_persistence_failed',
   'lecture_capacity_reached',
@@ -996,6 +1071,9 @@ export const LECTURE_STUDIO_IPC_ERROR_CODES = [
   'lecture_artifact_unavailable',
   'lecture_export_failed',
   'lecture_open_failed',
+  'lecture_studio_trashed',
+  'lecture_studio_not_trashed',
+  'lecture_trash_empty',
 ] as const;
 export type LectureStudioIpcErrorCode = (typeof LECTURE_STUDIO_IPC_ERROR_CODES)[number];
 

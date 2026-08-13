@@ -32,7 +32,7 @@ talk duration, notes/slides page target, detail level, 추가 생성 지시, 그
 새 studio의 source/output 후보는 active project만 보여준다. 기존 studio의 artifact preview는 archived
 project를 포함한 workspace snapshot에서 output project 이름을 resolve해 과거 저장 위치의 가독성을 유지한다.
 
-Studio list는 제목·상태·현재 revision 같은 bounded summary만 반환한다. 메시지와 Markdown revision은
+Studio list는 제목·상태·현재 revision 같은 bounded summary만 반환한다. 메시지와 document revision은
 사용자가 고른 studio의 detail query로만 불러온다. candidate IPC는 project별 offset/limit page만 반환한다.
 현재 source port는 project당 최대 Literature record 500개와 Experiment idea 500개의 bounded set 전체를
 메모리에서 읽어 정렬·slice하므로 storage-level cursor paging은 아니다. 더 큰 repository를 지원할 때 source
@@ -68,10 +68,13 @@ authoritative Literature·Experiment repository와 Manuscript service에서 다�
 ### 3. Lecture와 timed talk
 
 `lecture`는 재사용 가능한 lecture notes와 teaching deck을 만든다. `talk`는 10, 20, 30, 50분 중 하나를
-필수로 선택하고 duration별 bounded slide budget을 적용한다. 생성 전에 notes page target, exact Markdown
-slide count, detail level과 최대 6,000자의 추가 지시를 선택할 수 있고 SQLCipher configuration에 보존한다.
-notes와 slides는 항상 완전한 Markdown
-replacement pair이며 수식은 `$...$`과 `$$...$$`, slide boundary는 단독 `---`를 사용한다.
+필수로 선택하고 duration별 bounded slide budget을 적용한다. 생성 전에 notes page target, compiled slide
+page count, detail level과 최대 6,000자의 추가 지시를 선택할 수 있고 SQLCipher configuration에 보존한다.
+notes와 slides는 항상 완전한 canonical LaTeX replacement pair다. notes는 GOSU가 소유한 article preamble,
+slides는 고정 Beamer preamble과 title frame을 사용하고 model은 allowlisted body만 반환한다.
+두 exact document가 모두 sandboxed XeLaTeX acceptance compile을 통과한 뒤에만 Research Notes artifact와
+SQLCipher revision을 commit한다. 한쪽이라도 컴파일되지 않으면 기존 revision을 유지하고 새 파일을 공개하지
+않는다.
 
 전용 Lecture chat의 user/assistant message는 Lecture-owned SQLCipher table에 저장한다. Project Chat session,
 queue, profile, tool grant와 message history는 읽거나 수정하지 않는다. 수정 요청 하나가 성공할 때마다 새
@@ -86,14 +89,15 @@ model ID 및 그 model의 native reasoning option을 선택한다. model 변경 
 사라진 selection은 임의 fallback하지 않는다. local preference와 별개로 실제 invocation은 revision/message에
 계속 저장한다.
 
-현재 revision의 center preview는 Markdown과 ephemeral local PDF를 전환한다. PDF compile은 revision content
-hash를 검증하고 Markdown을 deterministic bounded LaTeX로 변환한 뒤 macOS sandbox에서 XeLaTeX를
+현재 revision의 center preview는 canonical LaTeX source와 ephemeral local PDF를 전환한다. preview compile은
+revision content hash와 고정 GOSU document envelope를 검증한 뒤 macOS sandbox에서 XeLaTeX를
 no-shell-escape·network deny·resource budget으로 실행한다. 검증된 PDF bytes만 typed IPC와 PDF.js continuous
-page viewer로 전달하며 canonical Research Notes artifact는 계속 Markdown이다. 사용자는 같은 화면의 Lecture
-전용 chat으로 수정 지시를 보내고 새 revision의 Markdown/PDF를 다시 확인한다.
+page viewer로 전달하며 canonical Research Notes artifact는 `.tex`다. 사용자는 같은 화면의 Lecture 전용
+chat으로 수정 지시를 보내고 새 revision의 LaTeX/PDF를 다시 확인한다. schema v1의 기존 Markdown revision은
+읽기와 legacy compile 호환만 유지한다.
 
-현재 revision은 Markdown/PDF export, default application open, Finder reveal을 제공한다. Renderer는 절대
-path나 bytes를 제출하지 않고 exact studio/revision/kind/artifact hash fence만 보낸다. Main은 Markdown action
+현재 revision은 LaTeX/PDF export, default application open, Finder reveal을 제공한다. Renderer는 절대
+path나 bytes를 제출하지 않고 exact studio/revision/kind/artifact hash fence만 보낸다. Main은 LaTeX action
 전에 Vault binding·ownership·file identity·artifact SHA를 재검증하고, PDF action은 DB revision을 다시
 sandbox compile해 PDF magic·size·SHA를 검증한다. export는 save dialog와 atomic write를 사용하고 PDF default
 open은 app-owned bounded cache의 derived copy만 사용한다. absolute path는 IPC receipt에 포함하지 않으며 PDF
@@ -109,7 +113,9 @@ localStorage, Hosted Sync 또는 telemetry에 기록하지 않는다.
 Electron Main만 local Codex App Server를 호출한다. Studio turn은 web search, shell, filesystem, Apps/MCP와
 dynamic tool을 모두 비활성화하고, source manifest·현재 draft·최근 Lecture chat만 untrusted prompt data로
 전달한다. 실제 requested/resolved model과 reasoning invocation을 revision에 기록하며 model이 사라져도
-임의 fallback하지 않는다.
+임의 fallback하지 않는다. 생성 turn의 timeout은 transport connection과 분리한다. matching progress가 올
+때마다 3분 idle timer를 갱신하고 30분 hard deadline만 절대 상한으로 사용한다. timeout과 terminal failure,
+실제 Codex start/transport unavailable을 서로 다른 typed error로 표시한다.
 
 직렬화된 prompt는 최대 360,000자, source manifest는 최대 120,000자로 제한한다. captured source 전체는
 chunk로 hash/length를 검증하되 prompt/manifest content에는 policy와 completeness가 표시된 deterministic exact
@@ -119,10 +125,12 @@ fail closed한다. 최근 12개 성공 chat message만 별도 bounded history로
 명시적인 marker를 넣는다. 실패·취소·restart로 중단된 요청은 `failed|interrupted`로 원자적으로 기록하고 이후
 prompt history에서 제외한다. Main은 structured response를 저장하기 전에 다음을 검증한다.
 
-- notes와 slides 모두 level-one title과 허용된 source label을 가진다.
-- substantive slide마다 해당 slide 안의 `[P#]`, `[E#]` 또는 `[M#]` evidence label을 요구한다.
+- notes body는 `Sources used` section, slides body는 allowlisted Beamer frame을 가지며 GOSU가 title/frame
+  document wrapper를 소유한다.
+- substantive frame마다 해당 frame 안의 `[P#]`, `[E#]` 또는 `[M#]` evidence label을 요구한다.
 - notes의 Sources used mapping과 모든 인용 label이 frozen manifest에 존재한다.
-- 임의 citation syntax, raw HTML, Markdown image와 external image destination을 거부한다.
+- 임의 citation syntax, raw HTML/Markdown structure, document wrapper, raw TeX comment, 외부 file/network
+  command와 allowlist 밖 command/environment를 거부한다.
 - timed talk의 slide count가 선택한 duration budget 안에 있다.
 
 고정 developer instruction에는 versioned authoring policy를 둔다. 이 policy는 generation brief의 custom
@@ -131,8 +139,9 @@ data가 policy를 변경하거나 해제할 수 없다. policy는 notes/slides�
 equation·citation·conclusion을 유지하고, 각 substantive slide가 notes의 대응 근거를 가지도록 요구한다.
 정의·가정·domain·quantifier·dimension/shape·unit·boundary condition을 필요한 위치에 명시하며, 근거가 없는
 theorem/proof/derivation/equation/result를 만들지 않는다. source에 없는 proof step은 일반 지식으로 메우지
-않고 evidence gap으로 표시한다. 한쪽만 수정하라는 request도 두 Markdown의 complete replacement pair에
-consistency update를 적용한다. math delimiter는 inline `$...$`와 별도 줄의 `$$...$$`로 고정한다.
+않고 evidence gap으로 표시한다. 한쪽만 수정하라는 request도 두 LaTeX body의 complete replacement pair에
+consistency update를 적용한다. 수학은 동일한 정의·기호를 쓰는 LaTeX math mode와 bounded amsmath 환경으로
+표현한다.
 
 이 검사는 fabricated claim을 완전히 판별하는 사실 검증기가 아니다. metadata-only 한계를 출력에 유지하고
 full text를 읽었다는 표현을 금지하는 bounded structural/evidence gate다.
@@ -146,9 +155,18 @@ restart에서 실행 중이던 turn은 무인 재호출하지 않고 bounded int
 Studio/message/revision capacity는 SQL trigger와 같은 Main preflight로 turn 시작 transaction 안에서 확인해
 Codex 호출 뒤 저장 실패를 막고, 한도 도달은 `lecture_capacity_reached`로 명시한다.
 
+Studio 삭제는 recoverable lifecycle이다. `trashed_at`이 설정된 Studio는 기본 summary list와
+detail/generation surface에서 제외하지만 message, revision, frozen manifest와 artifact reference는 보존한다.
+Settings에서 같은 Studio ID로 restore할 수 있다. 영구 제거는 `EMPTY LECTURE TRASH` typed phrase와 OS
+confirmation을 모두 거친 별도 command만 허용하며, append-only purge receipt를 구성한 한 immediate
+SQLCipher transaction에서 trashed Studio row와 owned message/revision만 cascade한다. Research Notes와
+exported TeX/PDF, selected source module의 record는 외부 연구 data이므로 purge하지 않는다.
+active Studio는 100개, recoverable Trash는 1,000개로 별도 제한하고 insert trigger가 두 경계를 모두
+검사한다. purge command의 UUID idempotency key가 재전송되면 저장된 append-only receipt를 반환한다.
+
 Codex를 호출하기 전에 Main이 output project의 Vault grant, binding과 ownership marker를 preflight한다.
 생성된 notes와 slides는 `GOSU/<output project>/Lecture Notes & Slides` 아래 새 revision bundle로만
-저장한다. 두 Markdown과 durable journal을 같은 hidden staging directory에 쓰고 file·directory를 fsync한
+저장한다. 두 canonical `.tex`와 durable journal을 같은 hidden staging directory에 쓰고 file·directory를 fsync한
 뒤 directory rename으로 한 번에 공개한다. bundle publish 전에 일반 revision folder와 분리된 project-local
 hidden pending index를 fsync하고 durable round-robin cursor로 bounded scan한다. 따라서 확정 revision이
 256개를 넘어도 새 pending journal이 starvation되지 않는다. SQL completion이 실패하면 journal과 exact
@@ -178,11 +196,11 @@ studio를 중복 생성하게 되어 거절했다.
 발견성은 높지만 어느 copy가 원본인지 불명확하고 rename·부분 실패·동시 편집 복구가 복잡하다. 선택한 한
 output project만 artifact를 소유하고 다른 project는 frozen source reference로 남긴다.
 
-### 바로 PPTX/PDF를 canonical artifact로 생성
+### 바로 PPTX/PDF만 canonical artifact로 생성
 
-배포 가능한 결과에는 유리하지만 theme/PPTX engine과 durable export provenance가 아직 없다. MVP는
-Obsidian에서 바로 편집 가능한 Markdown notes/slides를 canonical output으로 두고, exact revision을 검토하기
-위한 sandboxed local PDF preview만 파생한다.
+배포 가능한 결과에는 유리하지만 editable source와 재현 가능한 compiler input을 잃는다. canonical output은
+Obsidian에서 편집 가능한 self-contained article/Beamer `.tex` pair로 두고 exact revision을 검토하기 위한
+sandboxed local PDF preview와 명시적 PDF export를 파생한다. PPTX engine은 후속 범위다.
 
 ## Consequences
 
@@ -212,12 +230,14 @@ Obsidian에서 바로 편집 가능한 Markdown notes/slides를 canonical output
 - 10/20/30/50분 duration과 slide budget
 - notes/slides page target, detail level, 추가 prompt의 legacy-default·SQLCipher round-trip
 - Project Chat과 분리된 message/revision persistence
-- 전용 chat 옆 Markdown/PDF 전환, exact revision hash compile과 다중-page scroll
+- 전용 chat 옆 LaTeX/PDF 전환, exact revision hash compile과 다중-page scroll
 - session/assistant rail 독립 collapse와 center preview 보존, Studio별 dynamic model/reasoning selection
 - 최소 window·최대 Projects rail에서 overlay drawer 전환, 복원 control 접근성과 horizontal overflow 방지
-- exact artifact fence 기반 Markdown/PDF export·default-app open·Finder reveal과 absolute-path 비노출
+- exact artifact fence 기반 LaTeX/PDF export·default-app open·Finder reveal과 absolute-path 비노출
 - derived PDF open cache의 TTL·count·total-byte quota
-- Codex tool/web denial, dynamic model invocation provenance와 cancel fencing
-- raw HTML/image, unknown citation, uncited substantive slide와 Sources used mismatch 거부
+- Codex tool/web denial, progress-aware idle/hard timeout, dynamic model invocation provenance와 cancel fencing
+- raw HTML/Markdown/unsafe TeX, unknown citation, uncited substantive frame와 Sources used mismatch 거부
 - Vault preflight, staged bundle의 second-file/SQL failure, crash journal reconciliation과 exact path receipt
 - restart, duplicate/out-of-order completion과 optimistic version conflict
+- recoverable Studio Trash·same-ID restore, active-generation rejection, typed permanent purge와
+  Research Notes/TeX/PDF preservation

@@ -69,8 +69,12 @@ import {
 import {
   LECTURE_STUDIO_MAX_MESSAGES,
   LECTURE_STUDIO_MAX_REVISIONS,
+  LECTURE_STUDIO_MAX_STORED_STUDIOS,
   LECTURE_STUDIO_MAX_STUDIOS,
+  LECTURE_STUDIO_MAX_TRASHED_STUDIOS,
   LectureStudioDetailSchema,
+  EmptyLectureStudioTrashInputSchema,
+  EmptyLectureStudioTrashReceiptSchema,
   LectureStudioGenerationBriefSchema,
   LectureStudioMessageSchema,
   LectureStudioRevisionSchema,
@@ -81,6 +85,8 @@ import {
   type LectureStudioMessage,
   type LectureStudioRevision,
   type LectureStudioSummary,
+  type EmptyLectureStudioTrashInput,
+  type EmptyLectureStudioTrashReceipt,
 } from '../shared/lecture-studio-contracts';
 import {
   ManuscriptRecordSchema,
@@ -958,6 +964,7 @@ type LectureStudioRow = Readonly<{
   current_revision: number;
   version: number;
   last_error_code: string | null;
+  trashed_at: string | null;
   created_at: string;
   updated_at: string;
 }>;
@@ -991,6 +998,8 @@ type LectureStudioRevisionRow = Readonly<{
   source_manifest_sha256: string;
   lecture_notes_markdown: string;
   slides_markdown: string;
+  lecture_notes_latex: string | null;
+  slides_latex: string | null;
   artifacts_json: string;
   invocation_json: string;
   created_at: string;
@@ -1326,6 +1335,94 @@ function migrateLectureStudioGenerationBrief(database: Database.Database) {
   );
 }
 
+function migrateLectureStudioTrash(database: Database.Database) {
+  const columns = database.pragma('table_info(lecture_studios)') as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'trashed_at')) {
+    database.exec('alter table lecture_studios add column trashed_at text');
+  }
+  database.exec(`
+    create index if not exists lecture_studios_by_trash_updated
+      on lecture_studios(trashed_at,updated_at desc,id);
+    create table if not exists lecture_studio_trash_receipts (
+      idempotency_key text primary key check (length(idempotency_key) = 36),
+      receipt_json text not null check (length(receipt_json) between 2 and 1048576),
+      completed_at text not null
+    );
+    create trigger if not exists lecture_studio_trash_receipts_update_guard
+      before update on lecture_studio_trash_receipts
+      begin
+        select raise(abort,'lecture_studio_trash_receipt_append_only');
+      end;
+    create trigger if not exists lecture_studio_trash_receipts_delete_guard
+      before delete on lecture_studio_trash_receipts
+      begin
+        select raise(abort,'lecture_studio_trash_receipt_append_only');
+      end;
+    drop trigger if exists lecture_studios_limit;
+    create trigger lecture_studios_limit
+      before insert on lecture_studios
+      when
+        (select count(*) from lecture_studios where trashed_at is null) >=
+          ${LECTURE_STUDIO_MAX_STUDIOS}
+        or (select count(*) from lecture_studios) >= ${LECTURE_STUDIO_MAX_STORED_STUDIOS}
+      begin
+        select raise(abort,'lecture_studio_limit_reached');
+      end;
+    drop trigger if exists lecture_studios_restore_limit;
+    create trigger lecture_studios_restore_limit
+      before update of trashed_at on lecture_studios
+      when old.trashed_at is not null and new.trashed_at is null
+        and (select count(*) from lecture_studios where trashed_at is null) >=
+          ${LECTURE_STUDIO_MAX_STUDIOS}
+      begin
+        select raise(abort,'lecture_studio_limit_reached');
+      end;
+    drop trigger if exists lecture_studios_trash_limit;
+    create trigger lecture_studios_trash_limit
+      before update of trashed_at on lecture_studios
+      when old.trashed_at is null and new.trashed_at is not null
+        and (select count(*) from lecture_studios where trashed_at is not null) >=
+          ${LECTURE_STUDIO_MAX_TRASHED_STUDIOS}
+      begin
+        select raise(abort,'lecture_studio_limit_reached');
+      end;
+  `);
+}
+
+function migrateLectureStudioRevisionLatex(database: Database.Database) {
+  const columns = database.pragma('table_info(lecture_studio_revisions)') as Array<{
+    name: string;
+  }>;
+  if (!columns.some((column) => column.name === 'lecture_notes_latex')) {
+    database.exec(
+      `alter table lecture_studio_revisions
+       add column lecture_notes_latex text
+       check (lecture_notes_latex is null or length(lecture_notes_latex) between 1 and 240000)`,
+    );
+  }
+  if (!columns.some((column) => column.name === 'slides_latex')) {
+    database.exec(
+      `alter table lecture_studio_revisions
+       add column slides_latex text
+       check (slides_latex is null or length(slides_latex) between 1 and 240000)`,
+    );
+  }
+  database.exec(`
+    create trigger if not exists lecture_studio_revisions_latex_pair_insert
+      before insert on lecture_studio_revisions
+      when (new.lecture_notes_latex is null) != (new.slides_latex is null)
+      begin
+        select raise(abort,'lecture_revision_latex_pair_required');
+      end;
+    create trigger if not exists lecture_studio_revisions_latex_pair_update
+      before update of lecture_notes_latex,slides_latex on lecture_studio_revisions
+      when (new.lecture_notes_latex is null) != (new.slides_latex is null)
+      begin
+        select raise(abort,'lecture_revision_latex_pair_required');
+      end;
+  `);
+}
+
 function toLectureStudio(row: LectureStudioRow): LectureStudio {
   return LectureStudioSchema.parse({
     schemaVersion: row.schema_version,
@@ -1342,6 +1439,7 @@ function toLectureStudio(row: LectureStudioRow): LectureStudio {
     currentRevision: row.current_revision,
     version: row.version,
     lastErrorCode: row.last_error_code,
+    ...(row.trashed_at ? { trashedAt: row.trashed_at } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -1360,6 +1458,7 @@ function toLectureStudioSummary(row: LectureStudioSummaryRow): LectureStudioSumm
     currentRevision: row.current_revision,
     version: row.version,
     lastErrorCode: row.last_error_code,
+    ...(row.trashed_at ? { trashedAt: row.trashed_at } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -1383,15 +1482,19 @@ function toLectureStudioMessage(row: LectureStudioMessageRow): LectureStudioMess
 
 function toLectureStudioRevision(row: LectureStudioRevisionRow): LectureStudioRevision {
   return LectureStudioRevisionSchema.parse({
-    schemaVersion: row.schema_version,
+    schemaVersion: row.lecture_notes_latex !== null ? 2 : 1,
     id: row.id,
     studioId: row.studio_id,
     revision: row.revision,
     attemptId: row.attempt_id,
     sourceManifest: JSON.parse(row.source_manifest_json) as unknown,
     sourceManifestSha256: row.source_manifest_sha256,
-    lectureNotesMarkdown: row.lecture_notes_markdown,
-    slidesMarkdown: row.slides_markdown,
+    ...(row.lecture_notes_latex !== null && row.slides_latex !== null
+      ? { lectureNotesLatex: row.lecture_notes_latex, slidesLatex: row.slides_latex }
+      : {
+          lectureNotesMarkdown: row.lecture_notes_markdown,
+          slidesMarkdown: row.slides_markdown,
+        }),
     artifacts: JSON.parse(row.artifacts_json) as unknown,
     invocation: JSON.parse(row.invocation_json) as unknown,
     createdAt: row.created_at,
@@ -1428,20 +1531,22 @@ function insertLectureStudioRevision(database: Database.Database, input: Lecture
     .prepare(
       `insert into lecture_studio_revisions(
          id,schema_version,studio_id,revision,attempt_id,source_manifest_json,
-         source_manifest_sha256,lecture_notes_markdown,slides_markdown,artifacts_json,
-         invocation_json,created_at
-       ) values(?,?,?,?,?,?,?,?,?,?,?,?)`,
+         source_manifest_sha256,lecture_notes_markdown,slides_markdown,lecture_notes_latex,
+         slides_latex,artifacts_json,invocation_json,created_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       revision.id,
-      revision.schemaVersion,
+      1,
       revision.studioId,
       revision.revision,
       revision.attemptId,
       JSON.stringify(revision.sourceManifest),
       revision.sourceManifestSha256,
-      revision.lectureNotesMarkdown,
-      revision.slidesMarkdown,
+      revision.schemaVersion === 1 ? revision.lectureNotesMarkdown : 'GOSU_LATEX_V2',
+      revision.schemaVersion === 1 ? revision.slidesMarkdown : 'GOSU_LATEX_V2',
+      revision.schemaVersion === 2 ? revision.lectureNotesLatex : null,
+      revision.schemaVersion === 2 ? revision.slidesLatex : null,
       JSON.stringify(revision.artifacts),
       JSON.stringify(revision.invocation),
       revision.createdAt,
@@ -4011,6 +4116,7 @@ export class LocalDatabase {
         last_error_code text check (
           last_error_code is null or length(last_error_code) between 1 and 128
         ),
+        trashed_at text,
         created_at text not null,
         updated_at text not null,
         check ((status = 'generating') = (active_attempt_id is not null)),
@@ -4072,6 +4178,12 @@ export class LocalDatabase {
           length(lecture_notes_markdown) between 1 and 200000
         ),
         slides_markdown text not null check (length(slides_markdown) between 1 and 200000),
+        lecture_notes_latex text check (
+          lecture_notes_latex is null or length(lecture_notes_latex) between 1 and 240000
+        ),
+        slides_latex text check (
+          slides_latex is null or length(slides_latex) between 1 and 240000
+        ),
         artifacts_json text not null check (length(artifacts_json) between 2 and 32768),
         invocation_json text not null check (length(invocation_json) between 2 and 8192),
         created_at text not null,
@@ -4366,6 +4478,8 @@ export class LocalDatabase {
     `);
       migrateExperimentEvaluationProfileCodePolicy(database);
       migrateLectureStudioGenerationBrief(database);
+      migrateLectureStudioTrash(database);
+      migrateLectureStudioRevisionLatex(database);
       migrateExperimentRunsHardening(database);
       migrateProjectChatResearchNoteAbandoned(database);
       const manuscriptWorkspaceConnectionColumns = database.pragma(
@@ -7715,15 +7829,17 @@ export class LocalDatabase {
       .immediate();
   }
 
-  listLectureStudios(): LectureStudioSummary[] {
+  listLectureStudios(includeTrashed = false): LectureStudioSummary[] {
     const rows = this.require()
       .prepare(
         `select id,schema_version,title,kind,duration_minutes,output_project_id,
                 status,active_attempt_id,current_revision,version,last_error_code,
-                created_at,updated_at
-         from lecture_studios order by updated_at desc,id asc`,
+                trashed_at,created_at,updated_at
+         from lecture_studios
+         where (?=1 or trashed_at is null)
+         order by updated_at desc,id asc`,
       )
-      .all() as LectureStudioSummaryRow[];
+      .all(includeTrashed ? 1 : 0) as LectureStudioSummaryRow[];
     return rows.map(toLectureStudioSummary);
   }
 
@@ -7831,8 +7947,9 @@ export class LocalDatabase {
             `insert or ignore into lecture_studios(
                id,schema_version,title,kind,duration_minutes,output_project_id,
                source_project_ids_json,source_selection_json,generation_brief_json,
-               status,active_attempt_id,current_revision,version,last_error_code,created_at,updated_at
-             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+               status,active_attempt_id,current_revision,version,last_error_code,trashed_at,
+               created_at,updated_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           )
           .run(
             studio.id,
@@ -7849,6 +7966,7 @@ export class LocalDatabase {
             studio.currentRevision,
             studio.version,
             studio.lastErrorCode,
+            studio.trashedAt ?? null,
             studio.createdAt,
             studio.updatedAt,
           ).changes === 1
@@ -7893,7 +8011,7 @@ export class LocalDatabase {
                set status='generating',active_attempt_id=?,last_error_code=null,
                    version=version+1,updated_at=?
                where id=? and version=? and status in ('draft','ready','failed')
-                 and active_attempt_id is null`,
+                 and active_attempt_id is null and trashed_at is null`,
             )
             .run(input.attemptId, input.updatedAt, input.studioId, input.expectedVersion);
           if (changed.changes !== 1) return null;
@@ -8050,6 +8168,129 @@ export class LocalDatabase {
         return toLectureStudio(row);
       })
       .immediate();
+  }
+
+  setLectureStudioTrashed(
+    studioId: string,
+    expectedVersion: number,
+    trashedAt: string | null,
+    updatedAt: string,
+  ): LectureStudio | null {
+    const database = this.require();
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+      throw new Error('invalid_lecture_version');
+    }
+    try {
+      return database
+        .transaction(() => {
+          const changed = database
+            .prepare(
+              `update lecture_studios
+               set trashed_at=?,version=version+1,updated_at=?
+               where id=? and version=? and active_attempt_id is null
+                 and ((? is null and trashed_at is not null) or (? is not null and trashed_at is null))`,
+            )
+            .run(trashedAt, updatedAt, studioId, expectedVersion, trashedAt, trashedAt);
+          if (changed.changes !== 1) return null;
+          return toLectureStudio(
+            database
+              .prepare('select * from lecture_studios where id=?')
+              .get(studioId) as LectureStudioRow,
+          );
+        })
+        .immediate();
+    } catch (error) {
+      if (error instanceof LectureStudioStorageError) throw error;
+      throwMappedLectureStudioStorageError(error);
+    }
+  }
+
+  emptyLectureStudioTrash(
+    input: EmptyLectureStudioTrashInput,
+    completedAt: string,
+  ): EmptyLectureStudioTrashReceipt | null {
+    const command = EmptyLectureStudioTrashInputSchema.parse(input);
+    const database = this.require();
+    try {
+      return database
+        .transaction(() => {
+          const prior = database
+            .prepare(
+              `select receipt_json from lecture_studio_trash_receipts where idempotency_key=?`,
+            )
+            .get(command.idempotencyKey) as { receipt_json: string } | undefined;
+          if (prior) {
+            return EmptyLectureStudioTrashReceiptSchema.parse(JSON.parse(prior.receipt_json));
+          }
+          const rows = database
+            .prepare(
+              `select s.id,s.title,s.output_project_id,s.trashed_at,
+                    (select count(*) from lecture_studio_revisions where studio_id=s.id) as revision_count,
+                    (select count(*) from lecture_studio_messages where studio_id=s.id) as message_count
+             from lecture_studios s
+             where s.trashed_at is not null and s.active_attempt_id is null
+             order by s.trashed_at asc,s.id asc`,
+            )
+            .all() as Array<{
+            id: string;
+            title: string;
+            output_project_id: string;
+            trashed_at: string;
+            revision_count: number;
+            message_count: number;
+          }>;
+          if (rows.length === 0) return null;
+          const receipt = EmptyLectureStudioTrashReceiptSchema.parse({
+            schemaVersion: 1,
+            idempotencyKey: command.idempotencyKey,
+            removedStudios: rows.map((row) => ({
+              studioId: row.id,
+              title: row.title,
+              outputProjectId: row.output_project_id,
+              revisionCount: row.revision_count,
+              messageCount: row.message_count,
+              trashedAt: row.trashed_at,
+            })),
+            completedAt,
+          });
+          // A confirmed permanent purge temporarily drops the revision append-only guard inside
+          // one immediate transaction; active and restored Studio rows never match this delete.
+          database.exec('drop trigger if exists lecture_studio_revisions_delete_guard');
+          const remove = database.prepare(
+            'delete from lecture_studios where id=? and trashed_at is not null',
+          );
+          for (const row of rows) {
+            if (remove.run(row.id).changes !== 1) {
+              throw new Error('lecture_trash_purge_conflict');
+            }
+          }
+          database.exec(`
+            create trigger if not exists lecture_studio_revisions_delete_guard
+              before delete on lecture_studio_revisions
+              begin
+                select raise(abort,'lecture_revision_append_only');
+              end;
+          `);
+          database
+            .prepare(
+              `insert into lecture_studio_trash_receipts(idempotency_key,receipt_json,completed_at)
+             values(?,?,?)`,
+            )
+            .run(command.idempotencyKey, JSON.stringify(receipt), completedAt);
+          return receipt;
+        })
+        .immediate();
+    } finally {
+      // DDL participates in SQLite transactions, so a rollback restores the guard. Reasserting it
+      // here also protects a future schema that changes transaction behavior.
+      database.exec(`
+        create trigger if not exists lecture_studio_revisions_delete_guard
+          before delete on lecture_studio_revisions
+          begin
+            select raise(abort,'lecture_revision_append_only');
+          end;
+      `);
+    }
   }
 
   listLiteratureRecords(projectId: string): LiteratureRecord[] {
