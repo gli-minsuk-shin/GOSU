@@ -104,7 +104,7 @@ export function ConnectionsView({
   onSshWorkspaceSetupHandled?: (requestId: number) => void;
 }) {
   return (
-    <section className="connection-grid">
+    <section className="connection-grid" aria-label="Connections">
       <SshConnectionsCard
         connections={sshConnections}
         busy={sshBusy}

@@ -20,7 +20,8 @@ describe('SearchView', () => {
       />,
     );
     expect(html).toContain('Search all projects');
-    expect(html).toContain('Content stays on this Mac');
+    expect(html).not.toContain('<h1>Search</h1>');
+    expect(html).not.toContain('LOCAL SEARCH');
     expect(searches).toBe(0);
   });
 

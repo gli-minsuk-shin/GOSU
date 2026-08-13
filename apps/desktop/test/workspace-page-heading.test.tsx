@@ -88,4 +88,8 @@ describe('workspace page heading', () => {
     expect(html).toContain('across projects');
     expect(shouldShowActiveProjectPageHeading('lecture')).toBe(false);
   });
+
+  it('lets Connections begin directly with connection controls', () => {
+    expect(shouldShowActiveProjectPageHeading('connections')).toBe(false);
+  });
 });

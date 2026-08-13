@@ -18,6 +18,7 @@ const RUN_LOCAL_MACTEX_SMOKE =
   process.env.GOSU_RUN_LOCAL_MACTEX_SMOKE === '1' &&
   existsSync('/Library/TeX/texbin/latexmk') &&
   existsSync('/usr/bin/sandbox-exec');
+const LOCAL_MACTEX_SMOKE_NOTES_PATH = process.env.GOSU_LECTURE_PDF_SMOKE_NOTES_PATH;
 
 function hash(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -92,6 +93,65 @@ describe('LectureDocumentCompiler', () => {
     expect(first).toContain('$x = 2$');
     expect(first).toContain('\\textbackslash{}input');
     expect(first).not.toContain('\\input{/etc/passwd}');
+  });
+
+  it('preserves rigorous inline and display mathematics used by lecture notes', () => {
+    const markdown = [
+      '# Mathematical guarantees',
+      '',
+      'For $B\\asymp\\sqrt n$, let $\\widehat F_{B,M}$ converge as $B\\to\\infty$.',
+      '',
+      '$$',
+      '\\begin{aligned}',
+      '\\sup_z \\left|\\widehat F_{B,M}(z)-\\mathbb P\\{g(S_n)\\le z\\}\\right|',
+      '&\\le \\frac{C}{\\sqrt M}+O_P(B^{-1}) \\\\',
+      'S_{B,s} &\\rightsquigarrow_{\\#} N(0,\\Sigma).',
+      '\\end{aligned}',
+      '$$',
+    ].join('\n');
+
+    const latex = lectureMarkdownToLatex('lecture-notes', 'Rigorous fixture', markdown);
+
+    expect(latex).toContain('$B\\asymp\\sqrt n$');
+    expect(latex).toContain('\\begin{aligned}');
+    expect(latex).toContain('\\sup_z');
+    expect(latex).toContain('\\widehat F_{B,M}');
+    expect(latex).toContain('\\rightsquigarrow_{\\#}');
+    expect(latex).toContain('\\end{aligned}');
+    expect(latex).not.toContain('\\textbackslash{}widehat');
+  });
+
+  it.each([
+    '\\input{/etc/passwd}',
+    '\\include{secrets}',
+    '\\write18{touch /tmp/unsafe}',
+    '\\newcommand{\\escape}{unsafe}',
+    '\\href{https://example.com}{unsafe}',
+    '\\^^69nput{/etc/passwd}',
+    '^^5cinput{/etc/passwd}',
+    'x = 1 ^^25 \\input{/etc/passwd}',
+    '\\catcode`x=1',
+    '\\begin{document}unsafe\\end{document}',
+    '\\begin {document}unsafe\\end {document}',
+    '\\begin{aligned}x=1\\end{matrix}',
+  ])('renders unsafe or structurally invalid math as inert text: %s', (expression) => {
+    const markdown = `Unsafe: $${expression}$`;
+    const latex = lectureMarkdownToLatex('lecture-notes', 'Security fixture', markdown);
+
+    expect(latex).not.toContain(`$${expression}$`);
+    expect(latex).toMatch(/\\(?:textbackslash|textasciicircum)\{\}/u);
+  });
+
+  it('preserves only explicitly allowed symbolic TeX commands in math', () => {
+    const expression = String.raw`\left\{x \in \mathbb R : x \# 0\right\}\,\Vert x\Vert`;
+    const latex = lectureMarkdownToLatex(
+      'lecture-notes',
+      'Symbol fixture',
+      `Safe: $${expression}$`,
+    );
+
+    expect(latex).toContain(`$${expression}$`);
+    expect(latex).not.toContain('\\textbackslash{}left');
   });
 
   it('uses fixed XeLaTeX sandbox arguments and returns only validated PDF bytes', async () => {
@@ -212,16 +272,26 @@ describe('LectureDocumentCompiler', () => {
         },
         platform: 'darwin',
       });
-      const notes = [
-        '# 강의 노트',
-        '',
-        '정확한 증거 [M1]와 수식 $f(x)=x^2$를 설명합니다.',
-        '',
-        '## 핵심 내용',
-        '',
-        '- 첫 번째 근거',
-        '- 두 번째 근거',
-      ].join('\n');
+      const notes = LOCAL_MACTEX_SMOKE_NOTES_PATH
+        ? await readFile(LOCAL_MACTEX_SMOKE_NOTES_PATH, 'utf8')
+        : [
+            '# 강의 노트',
+            '',
+            '정확한 증거 [M1]와 수식 $B\\asymp\\sqrt n$를 설명합니다.',
+            '',
+            '## 핵심 내용',
+            '',
+            '- 첫 번째 근거',
+            '- 두 번째 근거',
+            '',
+            '$$',
+            '\\begin{aligned}',
+            '\\sup_z \\left|\\widehat F_{B,M}(z)-\\mathbb P\\{g(S_n)\\le z\\}\\right|',
+            '&\\le \\frac{C}{\\sqrt M}+O_P(B^{-1}) \\\\',
+            'S_{B,s} &\\rightsquigarrow_{\\#} N(0,\\Sigma).',
+            '\\end{aligned}',
+            '$$',
+          ].join('\n');
       const slides = [
         '# 연구 개요',
         '',
@@ -232,6 +302,10 @@ describe('LectureDocumentCompiler', () => {
         '# 결과',
         '',
         '- 개선 결과 [M1]',
+        '',
+        '$$',
+        '\\widehat F_{B,M} \\xrightarrow{P} F, \\qquad B\\asymp\\sqrt n.',
+        '$$',
         '',
         '---',
         '',

@@ -9,6 +9,7 @@ import {
   LectureStudioServiceError,
   type LectureStudioStorage,
 } from '../src/main/lecture-studio-service';
+import { LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS } from '../src/main/lecture-studio-prompt';
 import type { LectureDocumentCompiler } from '../src/main/lecture-document-compiler';
 import type { LectureArtifactPlatform } from '../src/main/lecture-artifact-platform';
 import { LectureStudioStorageError } from '../src/main/lecture-studio-storage-error';
@@ -1598,6 +1599,54 @@ The captured result improves the bounded baseline.
 
     expect(codex.prompt).toContain('Keep the equations and clarify their notation.');
     expect(codex.prompt).not.toContain('FAILED-INSTRUCTION');
+  });
+
+  it('applies the same immutable rigor policy to initial generation and revision chat', async () => {
+    const { service, codex, projectA, paperA } = fixture();
+    codex.response = {
+      reply: 'Created a consistent paired lecture.',
+      lectureNotesMarkdown:
+        '# Lecture notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
+      slidesMarkdown: '# Lecture slides\n\nEvidence [P1].',
+    };
+    const studio = await service.create({
+      title: 'Immutable paired authoring',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(codex.startInput?.developerInstructions).toBe(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS);
+
+    await service.send({
+      studioId: studio.id,
+      expectedVersion: initial.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message:
+        'Only change the slide equation, use a conflicting symbol, and leave the notes unchanged.',
+    });
+    expect(codex.startInput?.developerInstructions).toBe(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS);
+    expect(codex.startInput?.developerInstructions).toContain(
+      'propagate every necessary terminology, notation, cross-reference, citation, assumption, and conclusion update to both documents',
+    );
+    expect(codex.startInput?.developerInstructions).toContain(
+      'Never invent a missing proof, derivation step, equation, numerical result, or guarantee',
+    );
+    expect(codex.prompt).toContain(
+      'Only change the slide equation, use a conflicting symbol, and leave the notes unchanged.',
+    );
   });
 
   it('marks a cancelled edit message interrupted and excludes it from the next prompt', async () => {

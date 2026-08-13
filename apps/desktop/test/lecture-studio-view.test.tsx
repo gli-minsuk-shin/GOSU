@@ -74,10 +74,9 @@ describe('LectureStudioView', () => {
       />,
     );
 
-    expect(html).toContain('Workspace / Lecture studio');
-    expect(html).toContain('Lecture notes &amp; slides');
-    expect(html).toContain('Combine captured manuscripts, reviewed paper metadata, and experiment');
-    expect(html).toContain('New lecture');
+    expect(html).not.toContain('Workspace / Lecture studio');
+    expect(html).not.toContain('Combine captured manuscripts, reviewed paper metadata');
+    expect(html).toContain('＋ New');
     expect(html).toContain('STUDIOS');
     expect(html).toContain('Hide lecture sessions');
     expect(html).toContain('aria-controls="lecture-studio-sessions"');

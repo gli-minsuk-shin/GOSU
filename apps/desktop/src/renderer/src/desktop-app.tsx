@@ -2460,76 +2460,60 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         )}
 
         {activeSurface === 'settings' ? (
-          <>
-            <header className="page-heading settings-page-heading">
-              <div>
-                <span className="eyebrow">GOSU / Settings</span>
-                <h1>Settings</h1>
-                <p>Configure this Mac, project defaults, and recoverable project management.</p>
-              </div>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => setActiveSurface('workspace')}
-              >
-                Done
-              </button>
-            </header>
-            <SettingsView
-              preferences={preferences}
-              onChange={updatePreferences}
-              hermesConnection={hermesProjectChatConnection}
-              onRefreshHermesConnection={refreshHermesProjectChatConnection}
-              workspaceSnapshot={snapshot}
-              busyAction={busyAction}
-              chatBusyProjectIds={chatBusyProjectIds}
-              onRenameProject={(input) =>
-                runWorkspaceAction(
-                  `project:rename:${input.projectId}`,
-                  () => window.gosu.workspace.renameProject(input),
-                  `Renamed the project to ${input.name}.`,
-                )
-              }
-              onSetProjectArchived={(input) =>
-                runWorkspaceAction(
-                  `project:${input.archived ? 'archive' : 'unarchive'}:${input.projectId}`,
-                  () => window.gosu.workspace.setProjectArchived(input),
-                  input.archived
-                    ? 'Archived the project with all local work preserved.'
-                    : 'Restored the project to active projects.',
-                )
-              }
-              onTrashProject={(input) =>
-                runWorkspaceAction(
-                  `project:trash:${input.projectId}`,
-                  () => window.gosu.workspace.trashProject(input),
-                  'Moved the project to recoverable Trash.',
-                )
-              }
-              onRestoreProject={(input) =>
-                runWorkspaceAction(
-                  `project:restore:${input.projectId}`,
-                  () => window.gosu.workspace.restoreProject(input),
-                  'Restored the project with its preserved local work.',
-                )
-              }
-              onEmptyProjectTrash={emptyProjectTrash}
-              category={settingsCategory}
-              onCategoryChange={setSettingsCategory}
-              agentProject={activeProject}
-              agentProfile={activeProjectChatSnapshot?.profile}
-              agentProfileLoading={Boolean(
-                activeProject &&
-                activeProjectChatSessionKey &&
-                chatLoadingSessionKeys.has(activeProjectChatSessionKey) &&
-                !activeProjectChatSnapshot?.profile,
-              )}
-              collaborationModes={collaborationModes}
-              vault={activeResearchNotesSelection}
-              vaultState={researchNotesState}
-              onUpdateAgentProfile={updateProjectChatProfile}
-            />
-          </>
+          <SettingsView
+            preferences={preferences}
+            onChange={updatePreferences}
+            hermesConnection={hermesProjectChatConnection}
+            onRefreshHermesConnection={refreshHermesProjectChatConnection}
+            workspaceSnapshot={snapshot}
+            busyAction={busyAction}
+            chatBusyProjectIds={chatBusyProjectIds}
+            onRenameProject={(input) =>
+              runWorkspaceAction(
+                `project:rename:${input.projectId}`,
+                () => window.gosu.workspace.renameProject(input),
+                `Renamed the project to ${input.name}.`,
+              )
+            }
+            onSetProjectArchived={(input) =>
+              runWorkspaceAction(
+                `project:${input.archived ? 'archive' : 'unarchive'}:${input.projectId}`,
+                () => window.gosu.workspace.setProjectArchived(input),
+                input.archived
+                  ? 'Archived the project with all local work preserved.'
+                  : 'Restored the project to active projects.',
+              )
+            }
+            onTrashProject={(input) =>
+              runWorkspaceAction(
+                `project:trash:${input.projectId}`,
+                () => window.gosu.workspace.trashProject(input),
+                'Moved the project to recoverable Trash.',
+              )
+            }
+            onRestoreProject={(input) =>
+              runWorkspaceAction(
+                `project:restore:${input.projectId}`,
+                () => window.gosu.workspace.restoreProject(input),
+                'Restored the project with its preserved local work.',
+              )
+            }
+            onEmptyProjectTrash={emptyProjectTrash}
+            category={settingsCategory}
+            onCategoryChange={setSettingsCategory}
+            agentProject={activeProject}
+            agentProfile={activeProjectChatSnapshot?.profile}
+            agentProfileLoading={Boolean(
+              activeProject &&
+              activeProjectChatSessionKey &&
+              chatLoadingSessionKeys.has(activeProjectChatSessionKey) &&
+              !activeProjectChatSnapshot?.profile,
+            )}
+            collaborationModes={collaborationModes}
+            vault={activeResearchNotesSelection}
+            vaultState={researchNotesState}
+            onUpdateAgentProfile={updateProjectChatProfile}
+          />
         ) : workspaceLoading ? (
           <div className="loading-state" role="status">
             Opening the encrypted local workspace…
