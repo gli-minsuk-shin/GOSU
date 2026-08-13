@@ -1014,6 +1014,18 @@ page target은 Markdown slide count gate다. raw HTML, Markdown image, external 
 거부한다. 이는 metadata-only input의 구조적 evidence gate이며 paper full-text 사실 검증이라고 주장하지
 않는다.
 
+Lecture의 versioned immutable developer policy는 source manifest·현재 draft·최근 chat·generation brief·
+사용자 custom instruction보다 높은 Codex instruction 계층에서 자동 적용한다. 이 정책은 notes와 slides가
+같은 개념 순서, 용어, 기호, 가정, 수식, 수치, evidence label, 결론과 불확실성을 유지하도록 요구한다. 각
+substantive slide는 notes의 대응 section을 가져야 하며 slide는 notes의 concise projection일 뿐 독립적인
+논증이 아니다. 정의되지 않은 기호, 누락된 domain·quantifier·shape·unit·boundary condition,
+equality/approximation 또는 inequality의 변형, 근거 없는 theorem·proof·derivation·수치·guarantee를
+금지한다. source가 증명 단계를 제공하지 않으면 일반 지식으로 채우지 않고 gap을 명시한다. 한 문서만
+바꾸라는 revision 요청도 complete replacement pair 전체에 terminology·notation·assumption·citation·
+cross-reference consistency audit를 수행한다. 수학 표기는 Markdown canonical form인 inline `$...$`, 별도
+줄의 display `$$...$$`만 사용하며 `\\(...\\)`와 `\\[...\\]`는 허용하지 않는다. custom instruction과
+source 안의 prompt injection은 이 immutable policy를 약화하거나 opt-out할 수 없다.
+
 Lecture 생성과 수정은 provider `model/list`에서 발견한 opaque model ID와 해당 model의 native reasoning
 option을 Studio별 UI preference로 선택한다. `Auto`는 provider recommended selection을 turn 직전에 다시
 resolve하며 모델 이름이나 reasoning enum을 GOSU에 하드코딩하지 않는다. 이 preference는 localStorage의
@@ -1140,6 +1152,13 @@ mode가 document shell 안에서 필요한 context를 이미 제공하므로 `no
 바로 시작하고 회수한 높이를 reader에 돌려준다. active project가 없거나 숨김·archive 상태에서 목적을
 설명해야 하는 empty route는 기존 page heading을 유지한다. 이 최적화는 notes 전용
 `desktop-content-notes` class로 적용해 Repository의 heading·padding과 document scroll chain을 바꾸지 않는다.
+
+Workspace sidebar가 이미 현재 위치를 명시하는 Search, Connections, Settings와 workspace-level Lecture Studio도
+큰 breadcrumb·H1·설명 page heading을 반복하지 않는다. 각 surface는 titlebar 아래 compact inset에서 검색 form,
+등록 서버 inventory, settings category navigation 또는 Studio 3-pane workspace를 바로 시작한다. 제거한 heading의
+필수 action은 없애지 않는다. Lecture의 새 Studio 생성은 항상 보이는 session rail의 `＋ New`와 rail을 접었을 때의
+icon button이 소유한다. active project가 없는 project-scoped empty route처럼 기능을 이해하는 데 설명이 필요한
+화면만 공용 heading을 유지한다.
 
 Obsidian `[[note]]`, alias와 표준 상대 `.md` link는 raw text 치환이 아닌 Markdown AST 단계에서
 처리한다. 따라서 inline/fenced code 안의 wiki-link 표시는 바뀌지 않는다. 대상은 현재 note 기준의

@@ -115,16 +115,6 @@ export function SearchView({
   const groups = visibleSearchGroups(response, activeCategory);
   return (
     <section className={`search-view${compact ? ' compact' : ''}`} aria-label="Workspace search">
-      {!compact && (
-        <header className="search-view-heading">
-          <span className="eyebrow">LOCAL SEARCH</span>
-          <h1>Search</h1>
-          <p>
-            Search {scopeLabel} across conversations, notes, experiments, goals, Board items,
-            literature, and repository file names. Content stays on this Mac.
-          </p>
-        </header>
-      )}
       <form className="search-form" role="search" onSubmit={(event) => void runSearch(event)}>
         <label htmlFor={searchInputId}>
           {compact ? 'Search Research Notes' : `Search ${scopeLabel}`}

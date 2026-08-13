@@ -557,29 +557,6 @@ export function LectureStudioView({
 
   return (
     <section className="lecture-studio" aria-label="Lecture notes and slides workspace">
-      <header className="lecture-studio-heading">
-        <div>
-          <span className="eyebrow">Workspace / Lecture studio</span>
-          <h1>Lecture notes &amp; slides</h1>
-          <p>
-            Combine captured manuscripts, reviewed paper metadata, and experiment evidence across
-            multiple projects.
-          </p>
-        </div>
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={() => {
-            setComposing(true);
-            onLayoutChange({ ...layout, chatCollapsed: false });
-            setNotice('');
-            setError(null);
-          }}
-        >
-          ＋ New lecture
-        </button>
-      </header>
-
       {error && (
         <div className="error-banner lecture-studio-banner" role="alert">
           {error}
@@ -608,6 +585,8 @@ export function LectureStudioView({
           onNew={() => {
             setComposing(true);
             onLayoutChange({ ...layout, chatCollapsed: false });
+            setNotice('');
+            setError(null);
           }}
           onSelect={selectStudio}
           collapsed={layout.studioRailCollapsed}
@@ -769,6 +748,15 @@ function StudioRail({
         >
           <CollapseChevron direction="right" />
         </button>
+        <button
+          type="button"
+          className="lecture-rail-new-button"
+          aria-label="New lecture"
+          title="New lecture"
+          onClick={onNew}
+        >
+          ＋
+        </button>
         <strong>{studios.length}</strong>
       </aside>
     );
@@ -781,7 +769,7 @@ function StudioRail({
           <strong>{studios.length}</strong>
         </div>
         <button type="button" className="ghost-button" onClick={onNew}>
-          New
+          ＋ New
         </button>
         <button
           type="button"

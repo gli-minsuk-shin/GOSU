@@ -1,5 +1,5 @@
 .desktop-content.desktop-content-lecture {
-  padding: 18px clamp(14px, 1.8vw, 28px) 28px;
+  padding: 10px clamp(12px, 1.6vw, 24px) 14px;
   container-name: lecture-workspace;
   container-type: inline-size;
 }
@@ -10,29 +10,8 @@
   width: 100%;
   min-width: 0;
   min-height: 680px;
-  height: calc(100vh - 92px);
+  height: calc(100vh - 70px);
   gap: 12px;
-}
-
-.lecture-studio-heading {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  min-height: 62px;
-}
-
-.lecture-studio-heading h1 {
-  margin: 2px 0 0;
-  font-size: clamp(22px, 2.5vw, 30px);
-  letter-spacing: -0.04em;
-}
-
-.lecture-studio-heading p {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: var(--font-control);
 }
 
 .lecture-studio-banner {
@@ -138,6 +117,25 @@
   color: var(--text);
   font-size: 25px;
   line-height: 1;
+}
+
+.lecture-rail-new-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.lecture-rail-new-button:hover {
+  border-color: var(--line-strong);
+  color: var(--green);
 }
 
 .lecture-pane-toggle:hover {
@@ -1165,10 +1163,6 @@
     min-height: 0;
   }
 
-  .lecture-studio-heading {
-    align-items: flex-start;
-  }
-
   .lecture-studio-layout {
     grid-template-columns: 1fr;
     overflow: visible;
@@ -1224,7 +1218,6 @@
 }
 
 @media (max-width: 600px) {
-  .lecture-studio-heading,
   .lecture-composer > footer,
   .lecture-preview-toolbar {
     align-items: stretch;

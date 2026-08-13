@@ -1195,6 +1195,10 @@ button:disabled {
   padding: 18px clamp(18px, 2.4vw, 34px) 32px;
 }
 
+.desktop-content.desktop-content-compact {
+  padding: 10px clamp(12px, 1.6vw, 24px) 14px;
+}
+
 .desktop-content.desktop-content-document {
   display: flex;
   flex-direction: column;
@@ -2359,7 +2363,7 @@ textarea:focus {
   display: grid;
   grid-template-columns: repeat(2, minmax(280px, 1fr));
   gap: 12px;
-  max-width: 1100px;
+  max-width: 1500px;
 }
 
 .ssh-connections-card {
@@ -6240,7 +6244,7 @@ button.chat-toolbar-status {
   grid-template-columns: 210px minmax(0, 1fr);
   align-items: start;
   gap: 16px;
-  width: min(100%, 1180px);
+  width: min(100%, 1500px);
 }
 
 .settings-category-nav {
@@ -7658,8 +7662,9 @@ button.chat-toolbar-status {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  gap: 18px;
-  padding: 28px 36px 48px;
+  gap: 14px;
+  width: min(100%, 1500px);
+  padding: 0;
 }
 
 .search-view.compact {
@@ -7730,12 +7735,6 @@ button.chat-toolbar-status {
   white-space: nowrap;
 }
 
-.search-view-heading h1 {
-  margin: 5px 0 4px;
-  font-size: calc(32px + var(--font-adjustment));
-}
-
-.search-view-heading p,
 .search-empty,
 .search-source-warning {
   margin: 0;

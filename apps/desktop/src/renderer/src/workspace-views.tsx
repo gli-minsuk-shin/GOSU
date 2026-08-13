@@ -140,7 +140,8 @@ export function shouldShowActiveProjectPageHeading(activeTab: WorkspaceTabId) {
     activeTab !== 'notes' &&
     activeTab !== 'literature' &&
     activeTab !== 'lecture' &&
-    activeTab !== 'search'
+    activeTab !== 'search' &&
+    activeTab !== 'connections'
   );
 }
 

@@ -125,6 +125,15 @@ prompt history에서 제외한다. Main은 structured response를 저장하기 �
 - 임의 citation syntax, raw HTML, Markdown image와 external image destination을 거부한다.
 - timed talk의 slide count가 선택한 duration budget 안에 있다.
 
+고정 developer instruction에는 versioned authoring policy를 둔다. 이 policy는 generation brief의 custom
+instruction, revision request, 이전 chat, draft와 source manifest보다 높은 instruction 계층이며 이 untrusted
+data가 policy를 변경하거나 해제할 수 없다. policy는 notes/slides가 공통 outline·용어·notation·assumption·
+equation·citation·conclusion을 유지하고, 각 substantive slide가 notes의 대응 근거를 가지도록 요구한다.
+정의·가정·domain·quantifier·dimension/shape·unit·boundary condition을 필요한 위치에 명시하며, 근거가 없는
+theorem/proof/derivation/equation/result를 만들지 않는다. source에 없는 proof step은 일반 지식으로 메우지
+않고 evidence gap으로 표시한다. 한쪽만 수정하라는 request도 두 Markdown의 complete replacement pair에
+consistency update를 적용한다. math delimiter는 inline `$...$`와 별도 줄의 `$$...$$`로 고정한다.
+
 이 검사는 fabricated claim을 완전히 판별하는 사실 검증기가 아니다. metadata-only 한계를 출력에 유지하고
 full text를 읽었다는 표현을 금지하는 bounded structural/evidence gate다.
 

@@ -152,26 +152,64 @@ const SAFE_MATH_COMMANDS = new Set([
   'min',
   'argmax',
   'argmin',
+  'arccos',
+  'arcsin',
+  'arctan',
+  'csc',
+  'deg',
+  'det',
+  'dim',
+  'gcd',
+  'hom',
+  'inf',
+  'ker',
+  'Pr',
+  'sec',
+  'sup',
   'mathbb',
   'mathbf',
+  'boldsymbol',
   'mathrm',
   'mathcal',
   'mathsf',
+  'mathtt',
+  'mathit',
+  'mathfrak',
   'text',
+  'textnormal',
   'operatorname',
   'overline',
   'underline',
+  'overbrace',
+  'underbrace',
   'hat',
+  'widehat',
+  'widetilde',
+  'tilde',
   'bar',
   'vec',
   'dot',
   'ddot',
+  'overset',
+  'underset',
+  'stackrel',
+  'substack',
+  'limits',
+  'nolimits',
   'left',
   'right',
   'big',
   'Big',
+  'bigg',
+  'Bigg',
   'bigl',
   'bigr',
+  'Bigl',
+  'Bigr',
+  'biggl',
+  'biggr',
+  'Biggl',
+  'Biggr',
   'cdot',
   'times',
   'div',
@@ -181,8 +219,17 @@ const SAFE_MATH_COMMANDS = new Set([
   'leq',
   'ge',
   'geq',
+  'gtrsim',
+  'lesssim',
+  'll',
+  'gg',
   'neq',
   'approx',
+  'asymp',
+  'cong',
+  'propto',
+  'sim',
+  'simeq',
   'equiv',
   'in',
   'notin',
@@ -194,32 +241,176 @@ const SAFE_MATH_COMMANDS = new Set([
   'cap',
   'to',
   'mapsto',
+  'gets',
+  'leftarrow',
+  'rightarrow',
+  'leftrightarrow',
+  'Leftarrow',
+  'Rightarrow',
+  'Leftrightarrow',
+  'longleftarrow',
+  'longrightarrow',
+  'longleftrightarrow',
+  'Longleftarrow',
+  'Longrightarrow',
+  'Longleftrightarrow',
+  'uparrow',
+  'downarrow',
+  'updownarrow',
+  'Uparrow',
+  'Downarrow',
+  'Updownarrow',
+  'hookleftarrow',
+  'hookrightarrow',
+  'leftharpoonup',
+  'leftharpoondown',
+  'rightharpoonup',
+  'rightharpoondown',
+  'rightleftharpoons',
+  'leadsto',
+  'xleftarrow',
+  'xrightarrow',
+  'rightsquigarrow',
   'infty',
   'partial',
   'nabla',
+  'ell',
+  'imath',
+  'jmath',
+  'Re',
+  'Im',
+  'top',
+  'bot',
+  'perp',
+  'parallel',
+  'angle',
+  'triangle',
+  'square',
+  'Box',
+  'Diamond',
+  'emptyset',
+  'varnothing',
   'forall',
   'exists',
   'neg',
+  'not',
   'land',
   'lor',
   'implies',
   'iff',
   'quad',
   'qquad',
+  'enspace',
   'ldots',
   'cdots',
   'vdots',
   'ddots',
+  'colon',
+  'mid',
+  'vert',
+  'Vert',
+  'langle',
+  'rangle',
+  'lceil',
+  'rceil',
+  'lfloor',
+  'rfloor',
+  'choose',
+  'binom',
+  'tfrac',
+  'dfrac',
+  'pmod',
+  'mod',
+  'bmod',
+  'displaystyle',
+  'textstyle',
+  'scriptstyle',
+  'scriptscriptstyle',
   'begin',
   'end',
 ]);
 
-const SAFE_MATH_ENVIRONMENTS = new Set(['aligned', 'matrix', 'pmatrix', 'bmatrix', 'cases']);
+const SAFE_MATH_ENVIRONMENTS = new Set([
+  'aligned',
+  'alignedat',
+  'gathered',
+  'split',
+  'matrix',
+  'pmatrix',
+  'bmatrix',
+  'Bmatrix',
+  'vmatrix',
+  'Vmatrix',
+  'smallmatrix',
+  'cases',
+]);
+
+const SAFE_MATH_SYMBOL_COMMANDS = new Set(['\\', '{', '}', '|', ',', ';', ':', '!', ' ', '#', '%']);
+
+function hasUnsafeMathCharacter(value: string) {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (
+      character === '$' ||
+      (codePoint >= 0 && codePoint <= 8) ||
+      codePoint === 11 ||
+      codePoint === 12 ||
+      (codePoint >= 14 && codePoint <= 31) ||
+      codePoint === 127
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasUnescapedMathSpecial(value: string) {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== '%' && value[index] !== '#' && value[index] !== '~') continue;
+    let precedingBackslashes = 0;
+    for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor -= 1) {
+      precedingBackslashes += 1;
+    }
+    if (precedingBackslashes % 2 === 0) return true;
+  }
+  return false;
+}
+
+function hasBalancedMathEnvironments(value: string) {
+  const stack: string[] = [];
+  let matchedEnvironmentCommands = 0;
+  for (const match of value.matchAll(/\\(begin|end)\{([^}]+)\}/gu)) {
+    matchedEnvironmentCommands += 1;
+    const action = match[1]!;
+    const environment = match[2]!;
+    if (!SAFE_MATH_ENVIRONMENTS.has(environment)) return false;
+    if (action === 'begin') {
+      stack.push(environment);
+      if (stack.length > 8) return false;
+      continue;
+    }
+    if (stack.pop() !== environment) return false;
+  }
+  const allEnvironmentCommands = [...value.matchAll(/\\(?:begin|end)(?![A-Za-z])/gu)].length;
+  return stack.length === 0 && matchedEnvironmentCommands === allEnvironmentCommands;
+}
 
 function safeMath(value: string) {
-  if (value.length > 8_000 || /[%$#~]/u.test(value)) return null;
+  if (
+    value.length > 8_000 ||
+    value.includes('^^') ||
+    hasUnsafeMathCharacter(value) ||
+    hasUnescapedMathSpecial(value)
+  ) {
+    return null;
+  }
   let depth = 0;
-  for (const character of value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (character === '\\' && (value[index + 1] === '{' || value[index + 1] === '}')) {
+      index += 1;
+      continue;
+    }
     if (character === '{') depth += 1;
     if (character === '}') depth -= 1;
     if (depth < 0 || depth > 64) return null;
@@ -227,10 +418,18 @@ function safeMath(value: string) {
   if (depth !== 0) return null;
   const commands = [...value.matchAll(/\\([A-Za-z]+)/gu)].map((match) => match[1]!);
   if (commands.some((command) => !SAFE_MATH_COMMANDS.has(command))) return null;
-  const environments = [...value.matchAll(/\\(?:begin|end)\{([^}]+)\}/gu)].map(
-    (match) => match[1]!,
-  );
-  if (environments.some((environment) => !SAFE_MATH_ENVIRONMENTS.has(environment))) return null;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== '\\') continue;
+    const next = value[index + 1];
+    if (next === undefined || next === '^') return null;
+    if (/[A-Za-z]/u.test(next)) {
+      while (index + 1 < value.length && /[A-Za-z]/u.test(value[index + 1]!)) index += 1;
+      continue;
+    }
+    if (!SAFE_MATH_SYMBOL_COMMANDS.has(next)) return null;
+    index += 1;
+  }
+  if (!hasBalancedMathEnvironments(value)) return null;
   return value;
 }
 
