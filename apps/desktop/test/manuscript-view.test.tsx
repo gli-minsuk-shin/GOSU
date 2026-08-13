@@ -30,6 +30,7 @@ vi.mock('react', async (importOriginal) => {
 import {
   ManuscriptView,
   describeManuscriptOperationError,
+  suggestedManuscriptTitle,
   validManuscriptRootDocument,
 } from '../src/renderer/src/manuscript-view';
 import { deriveManuscriptProviderChange } from '../src/renderer/src/manuscript-provider-change';
@@ -149,6 +150,11 @@ beforeEach(() => {
 });
 
 describe('Manuscript workspace view', () => {
+  it('suggests distinct default names as manuscript records accumulate', () => {
+    expect(suggestedManuscriptTitle(0)).toBe('Main manuscript');
+    expect(suggestedManuscriptTitle(1)).toBe('Main manuscript 2');
+    expect(suggestedManuscriptTitle(2)).toBe('Main manuscript 3');
+  });
   it('validates project-relative TeX roots before submitting a manuscript', () => {
     expect(validManuscriptRootDocument('paper/main.tex')).toBe(true);
     expect(validManuscriptRootDocument('main.tex')).toBe(true);
@@ -196,7 +202,7 @@ describe('Manuscript workspace view', () => {
       projectId: project.id,
       providers: [descriptor],
       manuscripts: [
-        { manuscript, connection: null },
+        { manuscript, connection: null, canDeleteUnconfigured: true },
         {
           manuscript: {
             ...manuscript,
@@ -205,6 +211,7 @@ describe('Manuscript workspace view', () => {
             rootDocument: 'supplement/main.tex',
           },
           connection: null,
+          canDeleteUnconfigured: false,
         },
       ],
     });
@@ -220,6 +227,8 @@ describe('Manuscript workspace view', () => {
     expect(html.match(/Edit manuscript name or root document/gu)).toHaveLength(2);
     expect(html).toContain('Save manuscript details');
     expect(html).toContain('value="main.tex"');
+    expect(html.match(/Remove unused manuscript/gu)).toHaveLength(1);
+    expect(html).toContain('ever been connected or captured');
   });
 
   it('describes capture truthfully, derives realtime copy from capabilities, and exposes no publish', () => {

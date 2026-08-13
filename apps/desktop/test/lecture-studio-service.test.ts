@@ -9,6 +9,7 @@ import {
   LectureStudioServiceError,
   type LectureStudioStorage,
 } from '../src/main/lecture-studio-service';
+import type { LectureDocumentCompiler } from '../src/main/lecture-document-compiler';
 import { LectureStudioStorageError } from '../src/main/lecture-studio-storage-error';
 import type {
   LectureStudio,
@@ -407,6 +408,7 @@ function fixture(
     pendingArtifacts?: PendingLectureRevisionArtifacts[];
     manuscriptSnapshots?: ReadonlyMap<string, ManuscriptWorkspaceSnapshot>;
     manuscriptFiles?: ReadonlyMap<string, string>;
+    pdfCompiler?: Pick<LectureDocumentCompiler, 'compile'>;
   }> = {},
 ) {
   const projectA = randomUUID();
@@ -504,9 +506,18 @@ function fixture(
           textReadable: true,
         })),
       }),
-      readCheckpointFile: async ({ projectId, manuscriptId, checkpointId, relativePath }) => {
+      readCheckpointFile: async ({
+        projectId,
+        manuscriptId,
+        checkpointId,
+        relativePath,
+        offset = 0,
+        maxCharacters = 24_000,
+      }) => {
         const content = manuscriptFiles.get(relativePath);
         if (content === undefined) throw new Error('missing_manuscript_file');
+        const chunk = content.slice(offset, offset + maxCharacters);
+        const nextOffset = offset + chunk.length;
         return {
           schemaVersion: 1,
           projectId,
@@ -514,10 +525,10 @@ function fixture(
           checkpointId,
           providerRevision: 'provider-revision-1',
           relativePath,
-          offset: 0,
-          nextOffset: content.length,
-          truncated: false,
-          content,
+          offset,
+          nextOffset,
+          truncated: nextOffset < content.length,
+          content: chunk,
         };
       },
     },
@@ -568,6 +579,7 @@ function fixture(
       },
     },
     codex,
+    ...(options.pdfCompiler ? { pdfCompiler: options.pdfCompiler } : {}),
     prepareDirectory: async () => '/tmp/gosu-lecture-studio-fixture',
     timeoutMs: 5_000,
   });
@@ -623,6 +635,72 @@ function pendingFromRevision(
 }
 
 describe('LectureStudioService', () => {
+  it('compiles only an exact immutable revision selected by hash', async () => {
+    const compile = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      artifactId: randomUUID(),
+      title: 'Lecture notes PDF',
+      fileName: 'Lecture Notes.pdf',
+      compilerDisplayName: 'Fixture XeLaTeX',
+      sourceDescription: 'PDF fixture · revision 1',
+      pdfSha256: `sha256:${'a'.repeat(64)}` as const,
+      sizeBytes: 16,
+      compiledAt: new Date().toISOString(),
+      pdfBase64: Buffer.from('%PDF-1.7\n%%EOF').toString('base64'),
+    }));
+    const { service, storage, codex, projectA, paperA } = fixture({ pdfCompiler: { compile } });
+    codex.response = {
+      reply: 'Created one-source notes.',
+      lectureNotesMarkdown:
+        '# Lecture notes\n\nEvidence [P1].\n\n## Sources used\n\n- [P1] Paper A',
+      slidesMarkdown: '# Slide 1\n\nEvidence [P1].',
+    };
+    const studio = await service.create({
+      title: 'PDF fixture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const markdown = receipt.revision.lectureNotesMarkdown;
+
+    await service.compilePdf({
+      studioId: studio.id,
+      revision: receipt.revision.revision,
+      kind: 'lecture-notes',
+      contentSha256: hash(markdown),
+    });
+
+    expect(compile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        studioId: studio.id,
+        revision: receipt.revision.revision,
+        kind: 'lecture-notes',
+        markdown,
+        contentSha256: hash(markdown),
+      }),
+    );
+    await expect(
+      service.compilePdf({
+        studioId: studio.id,
+        revision: receipt.revision.revision,
+        kind: 'lecture-notes',
+        contentSha256: 'a'.repeat(64),
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_version_conflict'));
+    expect(storage.revisions).toHaveLength(1);
+  });
+
   it('builds one immutable talk revision from sources selected across projects', async () => {
     const { service, codex, saved, projectA, projectB, paperA, paperB } = fixture();
     const studio = await service.create({
@@ -754,10 +832,20 @@ The captured result improves the bounded baseline.
         revisionEnvelopeDigest: checkpoint.revisionEnvelopeDigest,
         observedAt: checkpoint.observedAt,
         files: [
-          { relativePath: 'main.tex', contentSha256: hash(mainTex), content: mainTex },
+          {
+            relativePath: 'main.tex',
+            contentSha256: hash(mainTex),
+            totalCharacters: mainTex.length,
+            contentComplete: true,
+            extractionPolicyVersion: 1,
+            content: mainTex,
+          },
           {
             relativePath: 'references.bib',
             contentSha256: hash(bibliography),
+            totalCharacters: bibliography.length,
+            contentComplete: true,
+            extractionPolicyVersion: 1,
             content: bibliography,
           },
         ],
@@ -776,6 +864,136 @@ The captured result improves the bounded baseline.
         ? detail.revisions[0].sourceManifest.manuscripts[0]?.files[0]?.content
         : null,
     ).toBe(mainTex);
+  });
+
+  it('accepts a normal long manuscript through deterministic bounded exact extracts', async () => {
+    const { service, codex, projectA, manuscriptSnapshots, manuscriptFiles } = fixture();
+    const snapshot = manuscriptSnapshot(projectA);
+    const manuscript = snapshot.manuscripts[0]!.manuscript;
+    manuscriptSnapshots.set(projectA, snapshot);
+    const longMain = `${String.raw`\documentclass{article}\begin{document}`}\n${'A'.repeat(
+      181_796,
+    )}\n${String.raw`\end{document}`}`;
+    const longBibliography = `@article{fixture,title={${'B'.repeat(20_949)}}}`;
+    manuscriptFiles.set('main.tex', longMain);
+    manuscriptFiles.set('references.bib', longBibliography);
+
+    const studio = await service.create({
+      title: 'Long manuscript lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [],
+        experiments: [],
+        manuscripts: [{ projectId: projectA, manuscriptId: manuscript.id }],
+      },
+      generationBrief: {
+        notesTargetPages: 12,
+        slidesTargetPages: 18,
+        detailLevel: 'detailed',
+        customInstructions: 'Emphasize the theorem and ablations.',
+      },
+    });
+
+    expect(studio.status).toBe('draft');
+    expect(codex.startInput).toBeNull();
+    expect(studio.generationBrief).toEqual({
+      notesTargetPages: 12,
+      slidesTargetPages: 18,
+      detailLevel: 'detailed',
+      customInstructions: 'Emphasize the theorem and ablations.',
+    });
+  });
+
+  it('shares one serialized extraction budget fairly across two large manuscripts', async () => {
+    const { service, codex, projectA, projectB, manuscriptSnapshots, manuscriptFiles } = fixture();
+    const snapshotA = manuscriptSnapshot(projectA);
+    const snapshotB = manuscriptSnapshot(projectB);
+    const manuscriptA = snapshotA.manuscripts[0]!.manuscript;
+    const manuscriptB = snapshotB.manuscripts[0]!.manuscript;
+    manuscriptSnapshots.set(projectA, snapshotA);
+    manuscriptSnapshots.set(projectB, snapshotB);
+    const longMain = `${String.raw`\documentclass{article}\begin{document}`}${'\\section{Evidence}\n'.repeat(
+      20_000,
+    )}${String.raw`\end{document}`}`;
+    manuscriptFiles.set('main.tex', longMain);
+
+    const studio = await service.create({
+      title: 'Two manuscript lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA, projectB],
+      sourceSelection: {
+        literature: [],
+        experiments: [],
+        manuscripts: [
+          { projectId: projectA, manuscriptId: manuscriptA.id },
+          { projectId: projectB, manuscriptId: manuscriptB.id },
+        ],
+      },
+    });
+    codex.response = {
+      reply: 'Created from two bounded manuscript checkpoints.',
+      lectureNotesMarkdown:
+        '# Two manuscripts\n\nEvidence from both sources [M1] [M2].\n\n## Sources used\n\n- [M1] First manuscript\n- [M2] Second manuscript',
+      slidesMarkdown: '# Two manuscripts\n\nEvidence from both sources [M1] [M2].',
+    };
+
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (receipt.revision.sourceManifest.schemaVersion !== 2) {
+      throw new Error('Expected a v2 manuscript source manifest');
+    }
+    const extracts = receipt.revision.sourceManifest.manuscripts.map((source) => source.files[0]!);
+    expect(extracts).toHaveLength(2);
+    expect(extracts.map((file) => file.contentSha256)).toEqual([hash(longMain), hash(longMain)]);
+    expect(extracts.every((file) => file.totalCharacters === longMain.length)).toBe(true);
+    expect(extracts.every((file) => file.contentComplete === false)).toBe(true);
+    expect(extracts.every((file) => JSON.stringify(file.content).length > 45_000)).toBe(true);
+    expect(
+      Math.abs(
+        JSON.stringify(extracts[0]!.content).length - JSON.stringify(extracts[1]!.content).length,
+      ),
+    ).toBeLessThanOrEqual(1);
+    expect(
+      extracts.reduce((sum, file) => sum + JSON.stringify(file.content).length, 0),
+    ).toBeLessThanOrEqual(100_000);
+    expect(codex.prompt).toContain('"sourceLabel":"M1"');
+    expect(codex.prompt).toContain('"sourceLabel":"M2"');
+  });
+
+  it('budgets escaped LaTeX source by serialized prompt size instead of raw characters', async () => {
+    const { service, projectA, manuscriptSnapshots, manuscriptFiles } = fixture();
+    const snapshot = manuscriptSnapshot(projectA);
+    const manuscript = snapshot.manuscripts[0]!.manuscript;
+    manuscriptSnapshots.set(projectA, snapshot);
+    manuscriptFiles.set(
+      'main.tex',
+      `${String.raw`\documentclass{article}\begin{document}`}${'\\alpha{value}\n'.repeat(20_000)}${String.raw`\end{document}`}`,
+    );
+    manuscriptFiles.set('references.bib', '@article{fixture,title={Escaped source}}');
+
+    await expect(
+      service.create({
+        title: 'Escaped manuscript lecture',
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection: {
+          literature: [],
+          experiments: [],
+          manuscripts: [{ projectId: projectA, manuscriptId: manuscript.id }],
+        },
+      }),
+    ).resolves.toMatchObject({ status: 'draft' });
   });
 
   it('fails closed when a selected manuscript lacks a captured checkpoint', async () => {

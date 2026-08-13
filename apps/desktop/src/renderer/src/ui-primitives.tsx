@@ -234,6 +234,8 @@ export function describeError(error: unknown) {
     manuscript_conflict:
       'This manuscript changed since it was opened. GOSU kept the newer version.',
     manuscript_limit_reached: 'This project has reached its local manuscript limit.',
+    manuscript_delete_not_allowed:
+      'Only a manuscript that has never been connected or captured can be removed. GOSU kept this manuscript and its provenance.',
     manuscript_binding_not_found:
       'This manuscript workspace connection no longer exists. Refresh and reconnect if needed.',
     manuscript_binding_conflict:

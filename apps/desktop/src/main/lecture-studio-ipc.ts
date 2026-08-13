@@ -3,6 +3,7 @@ import type { ZodType } from 'zod';
 import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
 import {
   CancelLectureStudioInputSchema,
+  CompileLectureStudioPdfInputSchema,
   CreateLectureStudioInputSchema,
   GenerateLectureStudioInputSchema,
   ListLectureCandidatesInputSchema,
@@ -73,6 +74,14 @@ export function registerLectureStudioIpc(
       input,
       CancelLectureStudioInputSchema,
       (command) => service.cancel(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.compilePdf, (input) =>
+    withInput(
+      input,
+      CompileLectureStudioPdfInputSchema,
+      (command) => service.compilePdf(command),
       reportUnexpected,
     ),
   );

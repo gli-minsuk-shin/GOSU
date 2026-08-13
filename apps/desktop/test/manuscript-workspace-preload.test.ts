@@ -40,6 +40,7 @@ describe('Manuscript Workspace preload bridge', () => {
       'list',
       'create',
       'update',
+      'deleteUnconfigured',
       'connectOverleafGit',
       'inspect',
       'fetchCheckpoint',
@@ -67,7 +68,7 @@ describe('Manuscript Workspace preload bridge', () => {
     };
     const providerRevision = 'a'.repeat(40);
     const token = 'renderer-to-main-one-shot-token';
-    for (let index = 0; index < 10; index += 1) {
+    for (let index = 0; index < 11; index += 1) {
       electron.ipcRenderer.invoke.mockResolvedValueOnce({ ok: true, value: { call: index + 1 } });
     }
 
@@ -84,6 +85,8 @@ describe('Manuscript Workspace preload bridge', () => {
       title: 'Renamed paper',
       rootDocument: 'manuscript/main.tex',
     });
+    const deleteCommand = { projectId, manuscriptId, expectedVersion: 2 };
+    await api.manuscriptWorkspace.deleteUnconfigured(deleteCommand);
     await api.manuscriptWorkspace.connectOverleafGit({
       projectId,
       manuscriptId,
@@ -125,6 +128,7 @@ describe('Manuscript Workspace preload bridge', () => {
           rootDocument: 'manuscript/main.tex',
         },
       ],
+      [MANUSCRIPT_WORKSPACE_IPC_CHANNELS.deleteUnconfigured, deleteCommand],
       [
         MANUSCRIPT_WORKSPACE_IPC_CHANNELS.connectOverleafGit,
         {

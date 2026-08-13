@@ -49,6 +49,7 @@ import { SemanticScholarLiteratureProvider } from './literature-semantic-scholar
 import { LiteratureService } from './literature-service';
 import { registerLectureStudioIpc } from './lecture-studio-ipc';
 import { LectureStudioService } from './lecture-studio-service';
+import { LectureDocumentCompiler } from './lecture-document-compiler';
 import { createLiteratureTransferPlatform } from './literature-transfer-platform';
 import { registerExperimentRunLogIpc } from './experiment-run-log-ipc';
 import { ExperimentRunLogService } from './experiment-run-log-service';
@@ -178,6 +179,9 @@ const manuscriptPdfCompiler = new ManuscriptPdfCompiler({
   materializer: overleafGitTransport,
   rootDirectory: () => join(app.getPath('userData'), 'manuscript-pdf-previews'),
 });
+const lectureDocumentCompiler = new LectureDocumentCompiler({
+  rootDirectory: () => join(app.getPath('userData'), 'lecture-pdf-previews'),
+});
 const manuscriptWorkspaceAdapters = createManuscriptWorkspaceAdapterRegistry([
   new OverleafGitManuscriptWorkspaceAdapter(
     database,
@@ -279,6 +283,7 @@ const lectureStudio = new LectureStudioService({
   workspace,
   artifacts: researchNotes,
   codex,
+  pdfCompiler: lectureDocumentCompiler,
   async prepareDirectory(outputProjectId) {
     const directory = join(app.getPath('userData'), 'lecture-studio-workspaces', outputProjectId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -640,6 +645,7 @@ if (!primaryInstance) {
         .reconcilePending(database.listManuscriptCredentialReferences('overleaf_git'))
         .catch(() => undefined);
       await manuscriptWorkspace.reconcileArtifactPurgeQueue().catch(() => undefined);
+      await lectureDocumentCompiler.reconcileStaleStaging().catch(() => undefined);
       await vault.restore().catch(() => null);
       await lectureStudio.reconcilePendingArtifacts().catch(() => undefined);
       await projectChat.reconcileResearchNoteSaveReceipts().catch(() => undefined);
@@ -739,6 +745,7 @@ if (!primaryInstance) {
   });
   app.on('before-quit', () => {
     manuscriptPdfCompiler.dispose();
+    lectureDocumentCompiler.dispose();
     projectChatAttachments.disposeImmediately();
     literature.shutdown();
     ssh.shutdown();

@@ -71,6 +71,7 @@ import {
   LECTURE_STUDIO_MAX_REVISIONS,
   LECTURE_STUDIO_MAX_STUDIOS,
   LectureStudioDetailSchema,
+  LectureStudioGenerationBriefSchema,
   LectureStudioMessageSchema,
   LectureStudioRevisionSchema,
   LectureStudioSchema,
@@ -174,6 +175,9 @@ const LITERATURE_HUGGING_FACE_PROVIDER_MIGRATION = 'literature-hugging-face-prov
 const LITERATURE_CANONICAL_IDENTITY_MIGRATION = 'literature-canonical-identity-v1';
 const EXPERIMENT_RUNS_HARDENING_MIGRATION = 'experiment-runs-hardening-v1';
 const EXPERIMENT_RUN_INTENT_AUTHORITY_MIGRATION = 'experiment-run-intent-authority-v2';
+const DEFAULT_LECTURE_STUDIO_GENERATION_BRIEF_JSON = JSON.stringify(
+  LectureStudioGenerationBriefSchema.parse(undefined),
+);
 const LEGACY_EXPERIMENT_EXECUTION_POLICY_HASH = createHash('sha256')
   .update('gosu:legacy-experiment-execution-policy-unrecoverable:v1', 'utf8')
   .digest('hex');
@@ -948,6 +952,7 @@ type LectureStudioRow = Readonly<{
   output_project_id: string;
   source_project_ids_json: string;
   source_selection_json: string;
+  generation_brief_json: string;
   status: LectureStudio['status'];
   active_attempt_id: string | null;
   current_revision: number;
@@ -959,7 +964,7 @@ type LectureStudioRow = Readonly<{
 
 type LectureStudioSummaryRow = Omit<
   LectureStudioRow,
-  'source_project_ids_json' | 'source_selection_json'
+  'source_project_ids_json' | 'source_selection_json' | 'generation_brief_json'
 >;
 
 type LectureStudioMessageRow = Readonly<{
@@ -1310,6 +1315,17 @@ function migrateExperimentEvaluationProfileCodePolicy(database: Database.Databas
   `);
 }
 
+function migrateLectureStudioGenerationBrief(database: Database.Database) {
+  const columns = database.pragma('table_info(lecture_studios)') as Array<{ name: string }>;
+  if (columns.some((column) => column.name === 'generation_brief_json')) return;
+  const escapedDefault = DEFAULT_LECTURE_STUDIO_GENERATION_BRIEF_JSON.replaceAll("'", "''");
+  database.exec(
+    `alter table lecture_studios
+     add column generation_brief_json text not null default '${escapedDefault}'
+     check (length(generation_brief_json) between 2 and 16384)`,
+  );
+}
+
 function toLectureStudio(row: LectureStudioRow): LectureStudio {
   return LectureStudioSchema.parse({
     schemaVersion: row.schema_version,
@@ -1320,6 +1336,7 @@ function toLectureStudio(row: LectureStudioRow): LectureStudio {
     outputProjectId: row.output_project_id,
     sourceProjectIds: JSON.parse(row.source_project_ids_json) as unknown,
     sourceSelection: JSON.parse(row.source_selection_json) as unknown,
+    generationBrief: JSON.parse(row.generation_brief_json) as unknown,
     status: row.status,
     activeAttemptId: row.active_attempt_id,
     currentRevision: row.current_revision,
@@ -3982,6 +3999,9 @@ export class LocalDatabase {
         source_selection_json text not null check (
           length(source_selection_json) between 2 and 65536
         ),
+        generation_brief_json text not null check (
+          length(generation_brief_json) between 2 and 16384
+        ),
         status text not null check (status in ('draft','generating','ready','failed')),
         active_attempt_id text check (
           active_attempt_id is null or length(active_attempt_id) = 36
@@ -4345,6 +4365,7 @@ export class LocalDatabase {
         on project_chat_actions(message_id,created_at,id);
     `);
       migrateExperimentEvaluationProfileCodePolicy(database);
+      migrateLectureStudioGenerationBrief(database);
       migrateExperimentRunsHardening(database);
       migrateProjectChatResearchNoteAbandoned(database);
       const manuscriptWorkspaceConnectionColumns = database.pragma(
@@ -7809,9 +7830,9 @@ export class LocalDatabase {
           .prepare(
             `insert or ignore into lecture_studios(
                id,schema_version,title,kind,duration_minutes,output_project_id,
-               source_project_ids_json,source_selection_json,status,active_attempt_id,
-               current_revision,version,last_error_code,created_at,updated_at
-             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+               source_project_ids_json,source_selection_json,generation_brief_json,
+               status,active_attempt_id,current_revision,version,last_error_code,created_at,updated_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           )
           .run(
             studio.id,
@@ -7822,6 +7843,7 @@ export class LocalDatabase {
             studio.outputProjectId,
             JSON.stringify(studio.sourceProjectIds),
             JSON.stringify(studio.sourceSelection),
+            JSON.stringify(studio.generationBrief),
             studio.status,
             studio.activeAttemptId,
             studio.currentRevision,
@@ -7948,7 +7970,8 @@ export class LocalDatabase {
             studio.durationMinutes !== existing.durationMinutes ||
             studio.outputProjectId !== existing.outputProjectId ||
             JSON.stringify(studio.sourceProjectIds) !== JSON.stringify(existing.sourceProjectIds) ||
-            JSON.stringify(studio.sourceSelection) !== JSON.stringify(existing.sourceSelection);
+            JSON.stringify(studio.sourceSelection) !== JSON.stringify(existing.sourceSelection) ||
+            JSON.stringify(studio.generationBrief) !== JSON.stringify(existing.generationBrief);
           if (
             existing.status !== 'generating' ||
             existing.activeAttemptId !== revision.attemptId ||
@@ -8530,6 +8553,49 @@ export class LocalDatabase {
           manuscript.id,
           expectedVersion,
         ).changes === 1
+    );
+  }
+
+  canDeleteUnconfiguredManuscript(projectId: string, manuscriptId: string) {
+    return Boolean(
+      this.require()
+        .prepare(
+          `select 1
+           from manuscript_records manuscript
+           where manuscript.project_id=? and manuscript.id=?
+             and not exists (
+               select 1 from manuscript_workspace_connections connection
+               where connection.project_id=manuscript.project_id
+                 and connection.manuscript_id=manuscript.id
+             )
+             and not exists (
+               select 1 from manuscript_checkpoints checkpoint
+               where checkpoint.project_id=manuscript.project_id
+                 and checkpoint.manuscript_id=manuscript.id
+             )`,
+        )
+        .get(projectId, manuscriptId),
+    );
+  }
+
+  deleteUnconfiguredManuscript(projectId: string, manuscriptId: string, expectedVersion: number) {
+    return (
+      this.require()
+        .prepare(
+          `delete from manuscript_records
+           where project_id=? and id=? and version=?
+             and not exists (
+               select 1 from manuscript_workspace_connections connection
+               where connection.project_id=manuscript_records.project_id
+                 and connection.manuscript_id=manuscript_records.id
+             )
+             and not exists (
+               select 1 from manuscript_checkpoints checkpoint
+               where checkpoint.project_id=manuscript_records.project_id
+                 and checkpoint.manuscript_id=manuscript_records.id
+             )`,
+        )
+        .run(projectId, manuscriptId, expectedVersion).changes === 1
     );
   }
 

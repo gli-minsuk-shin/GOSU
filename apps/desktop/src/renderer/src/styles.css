@@ -321,8 +321,12 @@
 .manuscript-pdf-canvas-wrap {
   position: relative;
   display: block;
-  height: clamp(320px, 72vh, 920px);
-  min-height: 320px;
+  /* Keep the document usable as a workspace instead of a short card. The
+     dynamic viewport unit follows the actual Electron content area while the
+     clamp keeps compact windows and very large displays predictable. */
+  height: clamp(460px, 84vh, 1280px);
+  height: clamp(460px, calc(100dvh - 112px), 1280px);
+  min-height: 460px;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable both-edges;

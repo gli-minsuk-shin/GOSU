@@ -960,8 +960,10 @@ content SHA-256만 반환하고 Main이 terminal answer에
 
 Lecture Studio는 project child tab이 아니라 여러 active project를 source로 선택하는 Workspace 전역 module이다.
 한 studio는 source project·Literature record·Experiment idea·captured Manuscript, `lecture|talk`, 선택적인
-`10|20|30|50`분 duration과 한 `outputProjectId`를 소유한다. output project는 source project 중 하나여야
-한다. SQLCipher의 Lecture-owned schema가 studio configuration, 전용 user/assistant message, append-only
+`10|20|30|50`분 duration, notes·slides page target, `concise|standard|detailed|exhaustive` detail level,
+최대 6,000자의 추가 생성 지시와 한 `outputProjectId`를 소유한다. output project는 source project 중
+하나여야 한다. SQLCipher의 Lecture-owned schema가 이 generation brief를 포함한 studio configuration,
+전용 user/assistant message, append-only
 revision을 보존하며 Project Chat session·queue·profile·message table을 읽거나 수정하지 않는다.
 새 studio의 source/output 후보는 active project로 제한하지만, 기존 artifact preview는 archived project를
 포함한 workspace snapshot에서 output project 이름을 resolve해 과거 저장 위치를 ID로 퇴행시키지 않는다.
@@ -979,8 +981,13 @@ count만 받고, generation은 candidate page를 신뢰하지 않고 selected ID
 version, review status, metadata-only 표시와 manual/AI topic, Experiment idea version·parent·outcome과 bounded
 최신 metric tail의 Objective/evaluator/dataset/holdout lineage가 들어간다. Manuscript 후보는 current
 binding의 exact captured checkpoint가 있을 때만 선택 가능하다. 생성 시 Main이 checkpoint를 다시 검증하고
-deterministic path 순서의 UTF-8 `.tex`·`.bib` source, file SHA-256, checkpoint/provider revision과 envelope
-digest를 v2 manifest에 고정한다. checkpoint가 없으면 Manuscript 탭에서 capture하라는 안내를 표시한다.
+deterministic path 순서의 UTF-8 `.tex`·`.bib` source 전체를 bounded chunk로 읽어 full-file SHA-256과
+총 문자 수를 계산한다. model context에는 root-first deterministic bounded exact extract만 넣고 v2
+manifest에는 `contentComplete`, extraction policy version, full-file SHA-256, checkpoint/provider revision과
+envelope digest를 고정한다. 따라서 24,000자를 넘는 일반 논문도 한 chunk 제한으로 오판하지 않지만, extract만
+제공된 경우 model과 UI는 원문 전체를 읽었다고 주장하지 않는다. serialized extract는 전체 100,000자 JSON
+budget과 source manifest 120,000자 budget을 함께 지킨다. checkpoint가 없으면 Manuscript 탭에서 capture하라는
+안내를 표시한다.
 Live·저장 전 Overleaf edit, provider PDF, image/binary와 이후 provider revision은 Lecture source가 아니다.
 모든 revision은 자기 manifest SHA-256을 보존하므로
 이후 source 변경이 과거 deck을 소급 변경하지 않는다.
@@ -993,8 +1000,9 @@ shell, filesystem, Apps/MCP를 허용하지 않는다. 직렬화된 prompt는 36
 호출 전에 fail closed하고, 축약 가능한 최근 12개 성공 message에만 명시적 truncation marker를 적용한다.
 실패·취소·앱 재시작으로 중단된 user request는 각각 `failed|interrupted`로 원자적으로 전이해 다음 prompt에서
 제외한다. actual model invocation을 revision에 기록한다. structured output은 notes/slides level-one title,
-알려진 `[P#]|[E#]|[M#]` label, substantive slide별 evidence label, notes의 Sources used mapping, duration별 slide
-budget을 검증한다. raw HTML, Markdown image, external image와 다른 citation syntax는 Vault에 쓰기 전에
+알려진 `[P#]|[E#]|[M#]` label, substantive slide별 evidence label, notes의 Sources used mapping, duration 또는
+사용자가 명시한 slide page target을 검증한다. notes page target은 typography에 따른 근사 지시이며 slides
+page target은 Markdown slide count gate다. raw HTML, Markdown image, external image와 다른 citation syntax는 Vault에 쓰기 전에
 거부한다. 이는 metadata-only input의 구조적 evidence gate이며 paper full-text 사실 검증이라고 주장하지
 않는다.
 
@@ -1008,6 +1016,15 @@ crash 뒤 남은 journal은 다음 시도에서 reconcile한다. orphan index는
 directory publish와 exact-hash recovery protocol이다. 성공한 UI receipt와
 Lecture assistant message에는 실제 project-relative 두 path를 붙인다. Vault·Codex 실패는 Lecture turn만
 실패시키고 Board, Literature, Experiment와 기존 Research Notes read를 막지 않는다.
+
+첫 revision이 생성되면 center preview와 Project Chat과 분리된 Lecture 전용 chat을 동시에 표시한다. 전용
+chat의 요청은 현재 notes와 slides의 완전한 replacement pair를 새 immutable revision으로 저장하므로 이전
+revision을 덮어쓰지 않는다. center preview는 Markdown과 local PDF를 전환할 수 있다. PDF는 exact revision의
+content SHA-256을 다시 검증한 뒤 Main이 Markdown을 bounded deterministic LaTeX로 변환하고 macOS
+`sandbox-exec`의 MacTeX/XeLaTeX를 fixed argv, no-shell-escape, network deny, timeout·output quota로 실행해
+만든 ephemeral preview다. 검증된 PDF magic·SHA-256·32 MiB budget을 통과한 bytes만 typed IPC로 전달하고,
+Renderer는 공용 PDF.js continuous-page viewer의 canvas/pixel/page budget을 재사용한다. PDF는 Research Notes의
+canonical Markdown을 대체하거나 자동 저장하지 않으며 앱 재시작 뒤 다시 compile한다.
 
 Studio 100개, studio별 message 2,500개와 revision 1,000개의 local capacity는 SQL trigger와 동일한 Main
 preflight로 방어한다. message/revision 잔여 용량은 turn 시작 transaction에서 user/assistant pair와 다음
@@ -1557,6 +1574,10 @@ flowchart LR
   둔다. disconnect된 binding과 checkpoint는 provenance를 위해 남기며 새 binding의 checkpoint도 같은
   manuscript lineage의 이전 checkpoint를 base로 잇는다. title과 root TeX path는 optimistic manuscript
   version을 사용해 연결 후에도 수정할 수 있고 stale form은 덮어쓰지 않는다.
+- 새 identity의 기본 표시는 기존 개수에 따라 `Main manuscript`, `Main manuscript 2`, ...로 제안해 서로 다른
+  record가 같은 제목으로 보이는 혼동을 줄인다. title이나 root path가 같다는 이유만으로 자동 병합하지 않는다.
+  provider 연결과 checkpoint 이력이 모두 없는 setup-only record만 확인 dialog 뒤 삭제할 수 있으며, 한 번이라도
+  연결되었거나 provenance가 생긴 record는 Renderer, service와 SQL query가 모두 삭제를 거부한다.
 - portable `ManuscriptWorkspaceBindingV1`, `ManuscriptCheckpointV1`, `ManuscriptSyncAnchorV1`에는
   provider-private URL, workspace locator, token, local path, LaTeX 본문과 raw diff가 없다. Desktop의
   Overleaf connector만 private SQLCipher table과 GOSU-private encrypted credential을 읽는다.
@@ -3120,9 +3141,10 @@ Codex 실패 시 silent fallback으로 선택해서는 안 된다.
   OCR·Office layout 복원·원문 검증이 아니다.
 - Lecture Studio가 여러 project의 source를 합친다는 것과 published paper full text·PDF figure·live
   Overleaf workspace를 읽었다는 것은 다르다. Literature source는 metadata-only이고 Experiment source도
-  저장된 summary/metric이다. Manuscript source는 사용자가 capture한 exact checkpoint의 bounded `.tex`·`.bib`
-  text뿐이며 provider의 이후 revision, compiled PDF와 binary figure는 포함하지 않는다.
-  10/20/30/50분 선택은 slide-count budget이며 실제 발표 시간, PPTX/PDF export나 rehearsal을 보증하지 않는다.
+  저장된 summary/metric이다. Manuscript source는 사용자가 capture한 exact checkpoint에서 full hash를 검증한
+  bounded `.tex`·`.bib` extract뿐이며 provider의 이후 revision, provider-compiled PDF와 binary figure는
+  포함하지 않는다. 10/20/30/50분 선택은 slide-count budget이며 실제 발표 시간이나 rehearsal을 보증하지
+  않는다. local PDF는 generated Markdown의 ephemeral MacTeX preview이며 durable export나 PPTX가 아니다.
 - macOS package 설정이 있다는 것과 배포 artifact가 서명·notarization됐다는 것은 다르다.
 - manifest에 `allowlist` enum이 있다는 것과 Runner network 실행이 허용된다는 것은 다르다. 현재는
   명시적으로 거부된다.

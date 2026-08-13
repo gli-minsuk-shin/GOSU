@@ -15,6 +15,7 @@ import {
 import {
   ConnectOverleafGitInputSchema,
   CreateManuscriptInputSchema,
+  DeleteUnconfiguredManuscriptInputSchema,
   FetchManuscriptCheckpointInputSchema,
   CompileManuscriptPdfInputSchema,
   ListManuscriptCheckpointFilesInputSchema,
@@ -30,6 +31,7 @@ import {
   UpdateManuscriptInputSchema,
   type ConnectOverleafGitInput,
   type CreateManuscriptInput,
+  type DeleteUnconfiguredManuscriptInput,
   type FetchManuscriptCheckpointInput,
   type CompileManuscriptPdfInput,
   type ListManuscriptCheckpointFilesInput,
@@ -59,6 +61,12 @@ export interface ManuscriptWorkspaceStorage {
   getManuscript(projectId: string, manuscriptId: string): MaybePromise<ManuscriptRecord | null>;
   createManuscript(manuscript: ManuscriptRecord): MaybePromise<boolean>;
   updateManuscript(manuscript: ManuscriptRecord, expectedVersion: number): MaybePromise<boolean>;
+  canDeleteUnconfiguredManuscript(projectId: string, manuscriptId: string): MaybePromise<boolean>;
+  deleteUnconfiguredManuscript(
+    projectId: string,
+    manuscriptId: string,
+    expectedVersion: number,
+  ): MaybePromise<boolean>;
   getManuscriptWorkspaceConnection(
     projectId: string,
     manuscriptId: string,
@@ -230,11 +238,18 @@ export class ManuscriptWorkspaceService {
     const command = ManuscriptProjectInputSchema.parse(input);
     await this.requireActiveProject(command.projectId);
     const manuscripts = await this.storage.listManuscripts(command.projectId);
-    const connections = await Promise.all(
-      manuscripts.map((manuscript) =>
-        this.storage.getManuscriptWorkspaceConnection(command.projectId, manuscript.id),
+    const [connections, deletable] = await Promise.all([
+      Promise.all(
+        manuscripts.map((manuscript) =>
+          this.storage.getManuscriptWorkspaceConnection(command.projectId, manuscript.id),
+        ),
       ),
-    );
+      Promise.all(
+        manuscripts.map((manuscript) =>
+          this.storage.canDeleteUnconfiguredManuscript(command.projectId, manuscript.id),
+        ),
+      ),
+    ]);
     const gosuRevision = connections.some((connection) => connection?.binding.enabled)
       ? await this.repository.revision(command.projectId)
       : null;
@@ -242,6 +257,7 @@ export class ManuscriptWorkspaceService {
       manuscripts.map(async (manuscript, index) => ({
         manuscript: ManuscriptRecordSchema.parse(manuscript),
         connection: await this.connectionView(manuscript, connections[index] ?? null, gosuRevision),
+        canDeleteUnconfigured: deletable[index] === true,
       })),
     );
     return ManuscriptWorkspaceSnapshotSchema.parse({
@@ -295,6 +311,42 @@ export class ManuscriptWorkspaceService {
       });
       if (!(await this.storage.updateManuscript(updated, command.expectedVersion))) {
         throw new ManuscriptWorkspaceServiceError('manuscript_conflict');
+      }
+      return this.list({ projectId: command.projectId });
+    });
+  }
+
+  async deleteUnconfigured(
+    input: DeleteUnconfiguredManuscriptInput,
+  ): Promise<ManuscriptWorkspaceSnapshot> {
+    const command = DeleteUnconfiguredManuscriptInputSchema.parse(input);
+    return this.exclusive(command.projectId, async () => {
+      await this.requireActiveProject(command.projectId);
+      const current = await this.requireManuscript(command.projectId, command.manuscriptId);
+      if (current.version !== command.expectedVersion) {
+        throw new ManuscriptWorkspaceServiceError('manuscript_conflict');
+      }
+      if (
+        !(await this.storage.canDeleteUnconfiguredManuscript(
+          command.projectId,
+          command.manuscriptId,
+        ))
+      ) {
+        throw new ManuscriptWorkspaceServiceError('manuscript_delete_not_allowed');
+      }
+      if (
+        !(await this.storage.deleteUnconfiguredManuscript(
+          command.projectId,
+          command.manuscriptId,
+          command.expectedVersion,
+        ))
+      ) {
+        const latest = await this.storage.getManuscript(command.projectId, command.manuscriptId);
+        if (!latest) throw new ManuscriptWorkspaceServiceError('manuscript_not_found');
+        if (latest.version !== command.expectedVersion) {
+          throw new ManuscriptWorkspaceServiceError('manuscript_conflict');
+        }
+        throw new ManuscriptWorkspaceServiceError('manuscript_delete_not_allowed');
       }
       return this.list({ projectId: command.projectId });
     });

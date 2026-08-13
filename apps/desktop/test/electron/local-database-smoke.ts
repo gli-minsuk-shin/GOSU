@@ -597,6 +597,28 @@ function verifyManuscriptWorkspacePersistence(rootUserData: string, fixedTimesta
   const database = new LocalDatabase();
   try {
     database.open();
+    const unusedManuscriptId = randomUUID();
+    const unusedManuscript = ManuscriptRecordSchema.parse({
+      ...manuscript,
+      id: unusedManuscriptId,
+      title: 'Unused setup manuscript',
+    });
+    invariant(
+      database.createManuscript(unusedManuscript),
+      'unused_manuscript_record_insert_failed',
+    );
+    invariant(
+      database.canDeleteUnconfiguredManuscript(projectId, unusedManuscriptId),
+      'unused_manuscript_was_not_deletable',
+    );
+    invariant(
+      database.deleteUnconfiguredManuscript(projectId, unusedManuscriptId, 1),
+      'unused_manuscript_was_not_deleted',
+    );
+    invariant(
+      database.getManuscript(projectId, unusedManuscriptId) === null,
+      'unused_manuscript_delete_was_not_durable',
+    );
     invariant(database.createManuscript(manuscript), 'manuscript_record_insert_failed');
     for (const invalidConfiguration of [
       {
@@ -639,6 +661,14 @@ function verifyManuscriptWorkspacePersistence(rootUserData: string, fixedTimesta
     invariant(
       database.appendManuscriptCheckpoint(checkpoint).checkpointId === checkpointId,
       'manuscript_checkpoint_insert_failed',
+    );
+    invariant(
+      !database.canDeleteUnconfiguredManuscript(projectId, manuscriptId),
+      'provenance_manuscript_was_marked_deletable',
+    );
+    invariant(
+      !database.deleteUnconfiguredManuscript(projectId, manuscriptId, 1),
+      'provenance_manuscript_was_deleted',
     );
     invariant(
       database.appendManuscriptCheckpoint({ ...checkpoint, checkpointId: randomUUID() })
@@ -2315,6 +2345,12 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
       experiments: [],
       manuscripts: [],
     },
+    generationBrief: {
+      notesTargetPages: 12,
+      slidesTargetPages: 24,
+      detailLevel: 'detailed',
+      customInstructions: 'Emphasize the reproducibility checklist.',
+    },
     status: 'draft',
     activeAttemptId: null,
     currentRevision: 0,
@@ -2434,15 +2470,26 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
     'lecture_studio_detail_started_with_history',
   );
 
-  // Simulate a studio persisted before Manuscript became a Lecture source. Reopening must
-  // normalize the absent field and keep the configuration stable through later turn completion.
+  // New, non-default generation controls must survive an encrypted database reopen.
   database.close();
+  const generationRoundTrip = new LocalDatabase();
+  generationRoundTrip.open();
+  invariant(
+    JSON.stringify(generationRoundTrip.getLectureStudio(studio.id)?.generationBrief) ===
+      JSON.stringify(studio.generationBrief),
+    'lecture_generation_brief_was_not_persisted_after_reopen',
+  );
+  generationRoundTrip.close();
+
+  // Simulate a studio persisted before both Manuscript sources and generation controls existed.
+  // Reopening must add the column, restore the safe default, and normalize the old selection.
   const legacyLectureKeyHex = safeStorage
     .decryptString(readFileSync(join(app.getPath('userData'), 'local-key.bin')))
     .trim();
   const legacyLectureRow = new Database(join(app.getPath('userData'), 'gosu.db'));
   legacyLectureRow.pragma(`key="x'${legacyLectureKeyHex}'"`);
   try {
+    legacyLectureRow.exec('alter table lecture_studios drop column generation_brief_json');
     legacyLectureRow
       .prepare('update lecture_studios set source_selection_json=? where id=?')
       .run(JSON.stringify({ literature: [{ projectId, recordId }], experiments: [] }), studio.id);
@@ -2454,7 +2501,14 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
   const legacyDetail = database.getLectureStudioDetail(studio.id);
   invariant(
     legacyDetail?.studio.sourceSelection.literature[0]?.recordId === recordId &&
-      legacyDetail.studio.sourceSelection.manuscripts.length === 0,
+      legacyDetail.studio.sourceSelection.manuscripts.length === 0 &&
+      JSON.stringify(legacyDetail.studio.generationBrief) ===
+        JSON.stringify({
+          notesTargetPages: null,
+          slidesTargetPages: null,
+          detailLevel: 'standard',
+          customInstructions: '',
+        }),
     'legacy_lecture_selection_was_not_normalized_after_reopen',
   );
 
@@ -2530,6 +2584,26 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
   invariant(successfulGenerating !== null, 'lecture_successful_turn_did_not_begin');
   const firstRevision = revisionFixture(1, successfulAttemptId);
   const firstAssistant = assistantMessage(successfulAttemptId, 1);
+  invariant(
+    reopened.completeLectureStudioTurn({
+      studio: {
+        ...successfulGenerating,
+        generationBrief: {
+          ...successfulGenerating.generationBrief,
+          detailLevel: 'exhaustive',
+        },
+        status: 'ready',
+        activeAttemptId: null,
+        currentRevision: 1,
+        version: successfulGenerating.version + 1,
+        lastErrorCode: null,
+        updatedAt: fixedTimestamp,
+      },
+      revision: firstRevision,
+      assistantMessage: firstAssistant,
+    }) === null,
+    'lecture_generation_brief_changed_during_completion',
+  );
   const readyStudio = reopened.completeLectureStudioTurn({
     studio: {
       ...successfulGenerating,

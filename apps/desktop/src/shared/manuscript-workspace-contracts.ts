@@ -80,6 +80,9 @@ export const ManuscriptWorkspaceItemSchema = z
   .object({
     manuscript: ManuscriptRecordSchema,
     connection: ManuscriptWorkspaceConnectionSchema.nullable(),
+    // This is derived from local provenance, not persisted in the manuscript record.
+    // Older snapshots omit it and must remain safely non-deletable.
+    canDeleteUnconfigured: z.boolean().optional(),
   })
   .strict();
 export type ManuscriptWorkspaceItem = z.infer<typeof ManuscriptWorkspaceItemSchema>;
@@ -115,6 +118,17 @@ export const UpdateManuscriptInputSchema = z
   })
   .strict();
 export type UpdateManuscriptInput = z.infer<typeof UpdateManuscriptInputSchema>;
+
+export const DeleteUnconfiguredManuscriptInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    manuscriptId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
+export type DeleteUnconfiguredManuscriptInput = z.infer<
+  typeof DeleteUnconfiguredManuscriptInputSchema
+>;
 
 export const ConnectOverleafGitInputSchema = z
   .object({

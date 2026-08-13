@@ -59,7 +59,7 @@ async function waitForRenderedPreview(window: BrowserWindow) {
             return;
           }
           if (alert) {
-            rejectWait(new Error('pdf_preview_alert:' + (alert.textContent || 'unknown')));
+            rejectWait(new Error('lecture_pdf_preview_alert:' + (alert.textContent || 'unknown')));
             return;
           }
           const value = read();
@@ -77,7 +77,7 @@ async function waitForRenderedPreview(window: BrowserWindow) {
       });
       const pixelsFor = (canvas) => {
         const context = canvas.getContext('2d');
-        if (!context) throw new Error('pdf_preview_canvas_context_missing');
+        if (!context) throw new Error('lecture_pdf_preview_canvas_context_missing');
         const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
         let lightPixels = 0;
         let darkPixels = 0;
@@ -107,20 +107,20 @@ async function waitForRenderedPreview(window: BrowserWindow) {
         };
       };
       const renderedPage = (pageNumber) => {
-        const preview = document.querySelector('.manuscript-pdf-preview');
+        const preview = document.querySelector('.pdf-preview');
         const page = document.querySelector(
-          '.manuscript-pdf-page[data-page-number="' + pageNumber + '"]'
+          '.pdf-preview-page[data-page-number="' + pageNumber + '"]'
         );
         const canvas = page?.querySelector('canvas');
-        if (!(preview instanceof HTMLElement) || preview.dataset.currentPage !== String(pageNumber) ||
+        if (!(preview instanceof HTMLElement) ||
+            preview.dataset.currentPage !== String(pageNumber) ||
             !(canvas instanceof HTMLCanvasElement) || canvas.hidden ||
             canvas.width < 1 || canvas.height < 1) return null;
         return pixelsFor(canvas);
       };
       const currentCounter = () =>
-        document.querySelector('.manuscript-pdf-page-counter')?.textContent?.trim() || '';
-      const mountedCanvases = () =>
-        document.querySelectorAll('.manuscript-pdf-page canvas').length;
+        document.querySelector('.pdf-preview-page-counter')?.textContent?.trim() || '';
+      const mountedCanvases = () => document.querySelectorAll('.pdf-preview-page canvas').length;
       const scrollPageToTop = (scroll, page) => {
         const scrollRect = scroll.getBoundingClientRect();
         const pageRect = page.getBoundingClientRect();
@@ -133,16 +133,16 @@ async function waitForRenderedPreview(window: BrowserWindow) {
 
       void (async () => {
         const initialPage = await waitFor(
-          () => window.__gosuPdfPreviewSmoke?.workerUrls?.length > 0 && renderedPage(1),
-          'manuscript_pdf_preview_first_page_did_not_render',
+          () => window.__gosuLecturePdfPreviewSmoke?.workerUrls?.length > 0 && renderedPage(1),
+          'lecture_pdf_preview_first_page_did_not_render',
         );
-        const scroll = document.querySelector('.manuscript-pdf-canvas-wrap');
-        const pages = [...document.querySelectorAll('.manuscript-pdf-page')];
-        const pageTwo = document.querySelector('.manuscript-pdf-page[data-page-number="2"]');
-        const pageThree = document.querySelector('.manuscript-pdf-page[data-page-number="3"]');
+        const scroll = document.querySelector('.pdf-preview-scroll');
+        const pages = [...document.querySelectorAll('.pdf-preview-page')];
+        const pageTwo = document.querySelector('.pdf-preview-page[data-page-number="2"]');
+        const pageThree = document.querySelector('.pdf-preview-page[data-page-number="3"]');
         if (!(scroll instanceof HTMLElement) || !(pageTwo instanceof HTMLElement) ||
             !(pageThree instanceof HTMLElement)) {
-          throw new Error('manuscript_pdf_preview_continuous_pages_missing');
+          throw new Error('lecture_pdf_preview_continuous_pages_missing');
         }
         const initialCounter = currentCounter();
         let maximumMountedCanvases = mountedCanvases();
@@ -150,7 +150,7 @@ async function waitForRenderedPreview(window: BrowserWindow) {
         scrollPageToTop(scroll, pageTwo);
         const secondPage = await waitFor(
           () => renderedPage(2),
-          'manuscript_pdf_preview_second_page_did_not_render_after_scroll',
+          'lecture_pdf_preview_second_page_did_not_render_after_scroll',
         );
         const scrolledCounter = currentCounter();
         const scrolledPageTwoTop = scroll.scrollTop;
@@ -158,12 +158,12 @@ async function waitForRenderedPreview(window: BrowserWindow) {
 
         const next = document.querySelector('[aria-label="Next PDF page"]');
         if (!(next instanceof HTMLButtonElement) || next.disabled) {
-          throw new Error('manuscript_pdf_preview_next_button_unavailable');
+          throw new Error('lecture_pdf_preview_next_button_unavailable');
         }
         next.click();
         const thirdPage = await waitFor(
           () => renderedPage(3),
-          'manuscript_pdf_preview_third_page_did_not_render_after_next',
+          'lecture_pdf_preview_third_page_did_not_render_after_next',
         );
         const nextCounter = currentCounter();
         const nextPageThreeTop = scroll.scrollTop;
@@ -171,17 +171,17 @@ async function waitForRenderedPreview(window: BrowserWindow) {
 
         const previous = document.querySelector('[aria-label="Previous PDF page"]');
         if (!(previous instanceof HTMLButtonElement) || previous.disabled) {
-          throw new Error('manuscript_pdf_preview_previous_button_unavailable');
+          throw new Error('lecture_pdf_preview_previous_button_unavailable');
         }
         previous.click();
         await waitFor(
           () => renderedPage(2),
-          'manuscript_pdf_preview_second_page_did_not_render_after_previous',
+          'lecture_pdf_preview_second_page_did_not_render_after_previous',
         );
         const previousCounter = currentCounter();
         const previousPageTwoTop = scroll.scrollTop;
         maximumMountedCanvases = Math.max(maximumMountedCanvases, mountedCanvases());
-        const smoke = window.__gosuPdfPreviewSmoke;
+        const smoke = window.__gosuLecturePdfPreviewSmoke;
         const alert = document.querySelector('[role="alert"]');
         resolve({
           initialPage,
@@ -210,8 +210,8 @@ async function waitForRenderedPreview(window: BrowserWindow) {
 }
 
 async function run() {
-  const rendererRoot = resolve(process.cwd(), 'out/manuscript-pdf-preview-smoke/renderer');
-  const rendererEntry = resolve(rendererRoot, 'manuscript-pdf-preview-smoke.html');
+  const rendererRoot = resolve(process.cwd(), 'out/lecture-pdf-preview-smoke/renderer');
+  const rendererEntry = resolve(rendererRoot, 'lecture-pdf-preview-smoke.html');
   const trustedRenderer = createTrustedRenderer({
     developmentUrl: undefined,
     isPackaged: true,
@@ -233,8 +233,8 @@ async function run() {
   let renderProcessFailure: string | null = null;
   const window = new BrowserWindow({
     show: false,
-    width: 900,
-    height: 700,
+    width: 1100,
+    height: 760,
     useContentSize: true,
     webPreferences: {
       contextIsolation: true,
@@ -260,92 +260,71 @@ async function run() {
     const metrics = await waitForRenderedPreview(window);
     const rendererRootUrl = pathToFileURL(`${rendererRoot}${sep}`).href;
 
-    invariant(entryCspApplied, 'manuscript_pdf_preview_production_csp_not_applied');
+    invariant(entryCspApplied, 'lecture_pdf_preview_production_csp_not_applied');
     invariant(
       contentSecurityPolicy.includes("script-src 'self'") &&
         !contentSecurityPolicy.includes("script-src 'self' 'unsafe-inline'"),
-      'manuscript_pdf_preview_csp_not_production_strict',
+      'lecture_pdf_preview_csp_not_production_strict',
     );
-    invariant(metrics.initialPage.canvasWidth > 0, 'manuscript_pdf_preview_canvas_width_zero');
-    invariant(metrics.initialPage.canvasHeight > 0, 'manuscript_pdf_preview_canvas_height_zero');
-    invariant(
-      Boolean(metrics.initialPage.canvasCssWidth),
-      'manuscript_pdf_preview_canvas_css_width_missing',
-    );
+    invariant(metrics.initialPage.canvasWidth > 0, 'lecture_pdf_preview_canvas_width_zero');
+    invariant(metrics.initialPage.canvasHeight > 0, 'lecture_pdf_preview_canvas_height_zero');
+    invariant(Boolean(metrics.initialPage.canvasCssWidth), 'lecture_pdf_preview_css_width_missing');
     invariant(
       Boolean(metrics.initialPage.canvasCssHeight),
-      'manuscript_pdf_preview_canvas_css_height_missing',
+      'lecture_pdf_preview_css_height_missing',
     );
-    invariant(
-      metrics.initialPage.lightPixels > 0,
-      `manuscript_pdf_preview_light_fixture_pixels_missing:${JSON.stringify(metrics)}`,
-    );
-    invariant(
-      metrics.initialPage.darkPixels > 0,
-      `manuscript_pdf_preview_dark_fixture_pixels_missing:${JSON.stringify(metrics)}`,
-    );
-    invariant(
-      metrics.initialPage.bluePixels > 0,
-      `manuscript_pdf_preview_blue_fixture_pixels_missing:${JSON.stringify(metrics)}`,
-    );
-    invariant(
-      metrics.secondPage.greenPixels > 0,
-      `manuscript_pdf_preview_green_second_page_missing:${JSON.stringify(metrics)}`,
-    );
-    invariant(
-      metrics.thirdPage.redPixels > 0,
-      `manuscript_pdf_preview_red_third_page_missing:${JSON.stringify(metrics)}`,
-    );
-    invariant(metrics.pageCount === 3, 'manuscript_pdf_preview_page_count_not_three');
-    invariant(metrics.initialCounter === '1 / 3', 'manuscript_pdf_preview_initial_counter_wrong');
-    invariant(metrics.scrolledCounter === '2 / 3', 'manuscript_pdf_preview_scroll_counter_wrong');
-    invariant(metrics.nextCounter === '3 / 3', 'manuscript_pdf_preview_next_counter_wrong');
-    invariant(metrics.previousCounter === '2 / 3', 'manuscript_pdf_preview_previous_counter_wrong');
+    invariant(metrics.initialPage.lightPixels > 0, 'lecture_pdf_preview_light_pixels_missing');
+    invariant(metrics.initialPage.darkPixels > 0, 'lecture_pdf_preview_dark_pixels_missing');
+    invariant(metrics.initialPage.bluePixels > 0, 'lecture_pdf_preview_blue_pixels_missing');
+    invariant(metrics.secondPage.greenPixels > 0, 'lecture_pdf_preview_green_pixels_missing');
+    invariant(metrics.thirdPage.redPixels > 0, 'lecture_pdf_preview_red_pixels_missing');
+    invariant(metrics.pageCount === 3, 'lecture_pdf_preview_page_count_not_three');
+    invariant(metrics.initialCounter === '1 / 3', 'lecture_pdf_preview_initial_counter_wrong');
+    invariant(metrics.scrolledCounter === '2 / 3', 'lecture_pdf_preview_scroll_counter_wrong');
+    invariant(metrics.nextCounter === '3 / 3', 'lecture_pdf_preview_next_counter_wrong');
+    invariant(metrics.previousCounter === '2 / 3', 'lecture_pdf_preview_previous_counter_wrong');
     invariant(
       metrics.scrollHeight > metrics.scrollClientHeight,
-      'manuscript_pdf_preview_continuous_region_not_scrollable',
+      'lecture_pdf_preview_continuous_region_not_scrollable',
     );
     invariant(
-      metrics.scrollClientHeight >= 450 &&
-        metrics.scrollClientHeight >= metrics.viewportHeight * 0.8,
-      `manuscript_pdf_preview_workspace_too_short:${JSON.stringify(metrics)}`,
+      metrics.scrollClientHeight >= 480 &&
+        metrics.scrollClientHeight >= metrics.viewportHeight * 0.7,
+      `lecture_pdf_preview_workspace_too_short:${JSON.stringify(metrics)}`,
     );
-    invariant(metrics.scrolledPageTwoTop > 0, 'manuscript_pdf_preview_scroll_did_not_move');
+    invariant(metrics.scrolledPageTwoTop > 0, 'lecture_pdf_preview_scroll_did_not_move');
     invariant(
       metrics.nextPageThreeTop > metrics.scrolledPageTwoTop,
-      'manuscript_pdf_preview_next_did_not_move_to_third_page',
+      'lecture_pdf_preview_next_did_not_move_to_third_page',
     );
     invariant(
       metrics.previousPageTwoTop < metrics.nextPageThreeTop,
-      'manuscript_pdf_preview_previous_did_not_move_to_second_page',
+      'lecture_pdf_preview_previous_did_not_move_to_second_page',
     );
     invariant(
       metrics.maximumMountedCanvases <= 3,
-      `manuscript_pdf_preview_render_window_unbounded:${metrics.maximumMountedCanvases}`,
+      `lecture_pdf_preview_render_window_unbounded:${metrics.maximumMountedCanvases}`,
     );
-    invariant(metrics.workerUrls.length > 0, 'manuscript_pdf_preview_worker_not_created');
+    invariant(metrics.workerUrls.length > 0, 'lecture_pdf_preview_worker_not_created');
     invariant(
       metrics.workerUrls.every((url) => url.startsWith('file:') && url.startsWith(rendererRootUrl)),
-      `manuscript_pdf_preview_worker_not_bundled_file:${metrics.workerUrls.join(',')}`,
+      `lecture_pdf_preview_worker_not_bundled_file:${metrics.workerUrls.join(',')}`,
     );
     invariant(
       metrics.securityViolations.length === 0,
-      `manuscript_pdf_preview_csp_violation:${metrics.securityViolations.join('|')}`,
+      `lecture_pdf_preview_csp_violation:${metrics.securityViolations.join('|')}`,
     );
     invariant(
       metrics.windowErrors.length === 0,
-      `manuscript_pdf_preview_renderer_error:${metrics.windowErrors.join('|')}`,
+      `lecture_pdf_preview_renderer_error:${metrics.windowErrors.join('|')}`,
     );
-    invariant(
-      consoleIssues.length === 0,
-      `manuscript_pdf_preview_console_error:${consoleIssues.join('|')}`,
-    );
+    invariant(consoleIssues.length === 0, `lecture_pdf_preview_console_error:${consoleIssues}`);
     invariant(
       renderProcessFailure === null,
-      `manuscript_pdf_preview_process_gone:${renderProcessFailure}`,
+      `lecture_pdf_preview_process_gone:${renderProcessFailure}`,
     );
-    invariant(metrics.alertText === null, `manuscript_pdf_preview_alert:${metrics.alertText}`);
-    console.log('Manuscript production PDF.js renderer smoke test passed');
+    invariant(metrics.alertText === null, `lecture_pdf_preview_alert:${metrics.alertText}`);
+    console.log('Lecture Studio production PDF.js renderer smoke test passed');
   } finally {
     window.destroy();
   }
@@ -356,6 +335,6 @@ app
   .then(run)
   .then(() => app.quit())
   .catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : 'manuscript_pdf_preview_smoke_failed');
+    console.error(error instanceof Error ? error.message : 'lecture_pdf_preview_smoke_failed');
     app.exit(1);
   });

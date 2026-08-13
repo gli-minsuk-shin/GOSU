@@ -26,7 +26,7 @@ PDF figure, live·저장 전 Overleaf edit나 원격 trial의 존재를 암시�
 
 Lecture Studio는 project navigation의 child tab이 아니라 Workspace 전역 section이다. 한 studio는 최대
 12개의 active source project, 선택한 Literature record·Experiment idea·captured Manuscript, presentation kind, 선택적인
-talk duration, 그리고 정확히 하나의 `outputProjectId`를 소유한다. 출력 project는 source project 중 하나여야
+talk duration, notes/slides page target, detail level, 추가 생성 지시, 그리고 정확히 하나의 `outputProjectId`를 소유한다. 출력 project는 source project 중 하나여야
 하며 해당 project의 Research Notes binding이 ready여야 한다.
 
 새 studio의 source/output 후보는 active project만 보여준다. 기존 studio의 artifact preview는 archived
@@ -50,8 +50,11 @@ authoritative Literature·Experiment repository와 Manuscript service에서 다�
 - Experiment source에는 idea version, parent lineage, outcome, result summary와 Objective/evaluator/dataset/
   holdout hash가 포함된 bounded metric snapshot을 기록한다.
 - Manuscript는 current binding의 exact captured checkpoint가 있을 때만 선택 가능하다. 생성 시 checkpoint를
-  다시 검증하고 safe UTF-8 `.tex`·`.bib` file을 deterministic path 순서로 읽는다. v2 manifest에는
-  manuscript/file version과 SHA-256, checkpoint/provider revision, revision-envelope digest를 고정한다.
+  다시 검증하고 safe UTF-8 `.tex`·`.bib` file 전체를 deterministic path 순서와 bounded chunk로 읽어 full-file
+  SHA-256과 총 문자 수를 계산한다. prompt에는 root-first bounded exact extract만 제공하며 v2 manifest에는
+  `contentComplete`, extraction policy version, manuscript/file version과 full-file SHA-256,
+  checkpoint/provider revision, revision-envelope digest를 고정한다. extract만 포함되면 전체 원문을 읽었다고
+  주장하지 않는다.
   이후 provider revision, compiled PDF와 binary figure는 포함하지 않는다.
 - candidate picker는 현재 page의 idea ID만 SQL window query로 조회해 idea별 최신 metric 1개와 total count를
   받는다. generation은 선택한 idea ID만 다시 조회해 최신 64개를 오름차순으로 고정하므로 project 전체
@@ -65,12 +68,20 @@ authoritative Literature·Experiment repository와 Manuscript service에서 다�
 ### 3. Lecture와 timed talk
 
 `lecture`는 재사용 가능한 lecture notes와 teaching deck을 만든다. `talk`는 10, 20, 30, 50분 중 하나를
-필수로 선택하고 duration별 bounded slide budget을 적용한다. notes와 slides는 항상 완전한 Markdown
+필수로 선택하고 duration별 bounded slide budget을 적용한다. 생성 전에 notes page target, exact Markdown
+slide count, detail level과 최대 6,000자의 추가 지시를 선택할 수 있고 SQLCipher configuration에 보존한다.
+notes와 slides는 항상 완전한 Markdown
 replacement pair이며 수식은 `$...$`과 `$$...$$`, slide boundary는 단독 `---`를 사용한다.
 
 전용 Lecture chat의 user/assistant message는 Lecture-owned SQLCipher table에 저장한다. Project Chat session,
 queue, profile, tool grant와 message history는 읽거나 수정하지 않는다. 수정 요청 하나가 성공할 때마다 새
 immutable revision을 만들고 과거 revision을 덮어쓰지 않는다.
+
+현재 revision의 center preview는 Markdown과 ephemeral local PDF를 전환한다. PDF compile은 revision content
+hash를 검증하고 Markdown을 deterministic bounded LaTeX로 변환한 뒤 macOS sandbox에서 XeLaTeX를
+no-shell-escape·network deny·resource budget으로 실행한다. 검증된 PDF bytes만 typed IPC와 PDF.js continuous
+page viewer로 전달하며 canonical Research Notes artifact는 계속 Markdown이다. 사용자는 같은 화면의 Lecture
+전용 chat으로 수정 지시를 보내고 새 revision의 Markdown/PDF를 다시 확인한다.
 
 아직 전송하지 않은 studio별 draft는 DesktopApp이 소유한 renderer-session volatile map에만 둔다. Lecture
 view가 tab 전환으로 unmount/remount되어도 같은 앱 session에서는 복원하지만, 앱 종료 시 폐기하며 SQLCipher,
@@ -83,9 +94,10 @@ dynamic tool을 모두 비활성화하고, source manifest·현재 draft·최근
 전달한다. 실제 requested/resolved model과 reasoning invocation을 revision에 기록하며 model이 사라져도
 임의 fallback하지 않는다.
 
-직렬화된 prompt는 최대 360,000자, source manifest는 최대 120,000자로 제한한다. frozen source manifest,
-현재 notes/slides와 이번 user request는 모델이 실제로 보는 값과 저장되는 provenance가 같아야 하므로 절대
-자르지 않는다. 이 authoritative context가 한도를 넘으면 `lecture_context_too_large`로 Codex 호출 전에
+직렬화된 prompt는 최대 360,000자, source manifest는 최대 120,000자로 제한한다. captured source 전체는
+chunk로 hash/length를 검증하되 prompt/manifest content에는 policy와 completeness가 표시된 deterministic exact
+extract를 넣는다. 이 bounded manifest, 현재 notes/slides와 이번 user request는 모델이 실제로 보는 값과 저장되는
+provenance가 같아야 하므로 그 이후에는 자르지 않는다. 이 authoritative context가 한도를 넘으면 `lecture_context_too_large`로 Codex 호출 전에
 fail closed한다. 최근 12개 성공 chat message만 별도 bounded history로 축약할 수 있고, 잘린 history에는
 명시적인 marker를 넣는다. 실패·취소·restart로 중단된 요청은 `failed|interrupted`로 원자적으로 기록하고 이후
 prompt history에서 제외한다. Main은 structured response를 저장하기 전에 다음을 검증한다.
@@ -140,10 +152,11 @@ studio를 중복 생성하게 되어 거절했다.
 발견성은 높지만 어느 copy가 원본인지 불명확하고 rename·부분 실패·동시 편집 복구가 복잡하다. 선택한 한
 output project만 artifact를 소유하고 다른 project는 frozen source reference로 남긴다.
 
-### 바로 PPTX/PDF 생성
+### 바로 PPTX/PDF를 canonical artifact로 생성
 
-배포 가능한 결과에는 유리하지만 layout engine과 export provenance가 아직 없다. MVP는 Obsidian에서 바로
-편집 가능한 Markdown notes/slides와 rendered preview를 canonical output으로 둔다.
+배포 가능한 결과에는 유리하지만 theme/PPTX engine과 durable export provenance가 아직 없다. MVP는
+Obsidian에서 바로 편집 가능한 Markdown notes/slides를 canonical output으로 두고, exact revision을 검토하기
+위한 sandboxed local PDF preview만 파생한다.
 
 ## Consequences
 
@@ -159,7 +172,8 @@ output project만 artifact를 소유하고 다른 project는 frozen source refer
 - output project의 Research Notes 연결이 없으면 generation을 시작하지 않는다.
 - Literature published full text와 PDF figure, live/uncaptured Manuscript section은 source가 아니다.
 - duration은 slide budget이지 실제 rehearsal time 보증이 아니다.
-- PPTX/PDF, theme template, presenter notes export와 공동 편집은 후속 범위다.
+- PPTX, durable PDF export, theme template, presenter notes export와 공동 편집은 후속 범위다. local PDF는
+  ephemeral preview만 제공한다.
 - source 변경은 기존 revision을 재작성하지 않고 다음 revision의 새 manifest로만 반영된다.
 
 ## Verification
@@ -170,7 +184,9 @@ output project만 artifact를 소유하고 다른 project는 frozen source refer
 - bounded in-memory candidate offset paging과 최신 metric tail/truncation
 - summary list와 selected-studio detail payload 분리
 - 10/20/30/50분 duration과 slide budget
+- notes/slides page target, detail level, 추가 prompt의 legacy-default·SQLCipher round-trip
 - Project Chat과 분리된 message/revision persistence
+- 전용 chat 옆 Markdown/PDF 전환, exact revision hash compile과 다중-page scroll
 - Codex tool/web denial, dynamic model invocation provenance와 cancel fencing
 - raw HTML/image, unknown citation, uncited substantive slide와 Sources used mismatch 거부
 - Vault preflight, staged bundle의 second-file/SQL failure, crash journal reconciliation과 exact path receipt

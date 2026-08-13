@@ -49,6 +49,23 @@ describe('Lecture Studio preload bridge', () => {
     });
   });
 
+  it('maps bounded PDF preview compilation to its fixed channel', async () => {
+    const input = {
+      studioId: '11111111-1111-4111-8111-111111111111',
+      revision: 3,
+      kind: 'slides' as const,
+      contentSha256: 'a'.repeat(64),
+    };
+    electron.ipcRenderer.invoke.mockResolvedValue({ ok: true, value: {} });
+
+    await api.lectureStudio.compilePdf(input);
+
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      LECTURE_STUDIO_IPC_CHANNELS.compilePdf,
+      input,
+    );
+  });
+
   it('maps rejected or undeclared detail results to bounded unavailability', async () => {
     electron.ipcRenderer.invoke
       .mockRejectedValueOnce(new Error('/Users/researcher/private-lecture.md'))

@@ -286,11 +286,42 @@
 }
 
 .lecture-duration-picker,
+.lecture-generation-brief,
 .lecture-project-picker,
 .lecture-output-project,
 .lecture-source-picker {
   display: block;
   margin-top: 22px;
+}
+
+.lecture-generation-brief > p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.lecture-generation-brief-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.lecture-generation-brief small,
+.lecture-generation-instructions small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.lecture-generation-instructions {
+  display: block;
+  margin-top: 12px;
+}
+
+.lecture-generation-instructions textarea {
+  resize: vertical;
 }
 
 .lecture-duration-picker > div {
@@ -641,6 +672,21 @@
   margin-top: 0;
 }
 
+.lecture-preview-document.pdf {
+  display: grid;
+  padding: 10px;
+  overflow: hidden;
+}
+
+.lecture-studio-pdf-preview {
+  height: 100%;
+}
+
+.lecture-studio-pdf-preview .pdf-preview-scroll {
+  height: auto;
+  min-height: 0;
+}
+
 .lecture-preview-empty {
   display: grid;
   place-content: center;
@@ -967,6 +1013,7 @@
   }
 
   .lecture-composer-basics,
+  .lecture-generation-brief-grid,
   .lecture-source-columns {
     grid-template-columns: 1fr;
   }

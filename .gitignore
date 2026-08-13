@@ -50,3 +50,6 @@ __pycache__/
 *.swp
 *.swo
 *~
+
+# Local visual QA artifacts
+/tmp/
