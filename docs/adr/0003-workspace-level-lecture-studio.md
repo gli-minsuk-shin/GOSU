@@ -183,13 +183,25 @@ Codex 호출 뒤 저장 실패를 막고, 한도 도달은 `lecture_capacity_rea
 
 Studio 삭제는 recoverable lifecycle이다. `trashed_at`이 설정된 Studio는 기본 summary list와
 detail/generation surface에서 제외하지만 message, revision, frozen manifest와 artifact reference는 보존한다.
-Settings에서 같은 Studio ID로 restore할 수 있다. 영구 제거는 `EMPTY LECTURE TRASH` typed phrase와 OS
-confirmation을 모두 거친 별도 command만 허용하며, append-only purge receipt를 구성한 한 immediate
-SQLCipher transaction에서 trashed Studio row와 owned message/revision만 cascade한다. Research Notes와
-exported TeX/PDF, Manuscript/Overleaf checkpoint와 selected source module의 record는 외부 연구 data이므로
+Settings의 workspace-level `Trash` 화면은 Project, Lecture Studio와 deleted Board task를 type별 group으로
+함께 표시하고 같은 Studio ID로 restore할 수 있다. 영구 제거는 `EMPTY LECTURE TRASH` typed phrase와 OS
+confirmation을 모두 거친 별도 Lecture command만 허용하며, append-only purge receipt를 구성한 한 immediate
+SQLCipher transaction에서 trashed Studio row와 owned message/revision만 cascade한다. Command는 확인 화면의
+trashed Studio 전체를 `studioId`/`version`/`trashedAt` exact target fence로 고정한다.
+transaction은 저장된 idempotency receipt를 먼저 찾고, receipt가 없을 때만 현재 Trash 전체 집합을 target과
+비교한다. 추가·복원·version/timestamp 변경은 `lecture_trash_changed`로 fail closed하며 삭제나 receipt 기록을
+전혀 하지 않는다. exact row delete도 같은 version과 Trash timestamp를 predicate로 재검증한다.
+Research Notes와 exported TeX/PDF, Manuscript/Overleaf checkpoint와 selected source module의 record는 외부 연구 data이므로
 purge하지 않는다. 해당 Studio용으로 Main이 만든 local external-source copy만 SQL purge 확정 뒤 제거한다.
 active Studio는 100개, recoverable Trash는 1,000개로 별도 제한하고 insert trigger가 두 경계를 모두
 검사한다. purge command의 UUID idempotency key가 재전송되면 저장된 append-only receipt를 반환한다.
+
+통합 `Trash`는 Project와 Lecture의 서로 다른 transaction·lifecycle lock·confirmation·receipt를 Renderer에서
+하나의 비원자적 `Empty All`로 묶지 않는다. 각 group의 영구 제거는 독립적으로 실행하고, Board task는 별도
+permanent purge contract가 없으므로 이 화면에서 복원만 제공한다. trashed Project 안의 task는 Project 보존
+count에 포함해 task group에 중복 표시하지 않는다. Project purge는 해당 Project를 참조하는 active 또는
+trashed Lecture Studio가 남아 있으면 fail closed하고, UI는 관련 Studio를 먼저 영구 제거하거나 Project를
+복원하도록 안내한다.
 
 Codex를 호출하기 전에 Main이 output project의 Vault grant, binding과 ownership marker를 preflight한다.
 생성된 notes와 slides는 `GOSU/<output project>/Lecture Notes & Slides` 아래 새 revision bundle로만

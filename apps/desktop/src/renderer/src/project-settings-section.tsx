@@ -1,10 +1,6 @@
 import { useState } from 'react';
 
 import {
-  EMPTY_PROJECT_TRASH_CONFIRMATION,
-  type EmptyProjectTrashInput,
-  type EmptyProjectTrashReceipt,
-  type ProjectRecord,
   type ProjectVersionCommand,
   type RenameProjectInput,
   type SetProjectArchivedInput,
@@ -20,8 +16,6 @@ export function ProjectSettingsSection({
   onRenameProject,
   onSetProjectArchived,
   onTrashProject,
-  onRestoreProject,
-  onEmptyProjectTrash,
 }: {
   snapshot: WorkspaceSnapshot | null;
   busyAction: string | null;
@@ -29,15 +23,11 @@ export function ProjectSettingsSection({
   onRenameProject: (input: RenameProjectInput) => Promise<boolean>;
   onSetProjectArchived: (input: SetProjectArchivedInput) => Promise<boolean>;
   onTrashProject: ProjectMutation;
-  onRestoreProject: ProjectMutation;
-  onEmptyProjectTrash: (input: EmptyProjectTrashInput) => Promise<EmptyProjectTrashReceipt | null>;
 }) {
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [trashCandidateId, setTrashCandidateId] = useState<string | null>(null);
   const [trashName, setTrashName] = useState('');
-  const [emptyTrashPhrase, setEmptyTrashPhrase] = useState('');
-  const [emptyTrashReceipt, setEmptyTrashReceipt] = useState<EmptyProjectTrashReceipt | null>(null);
 
   if (!snapshot) {
     return (
@@ -59,7 +49,6 @@ export function ProjectSettingsSection({
   const archivedProjects = snapshot.projects.filter(
     (project) => project.trashedAt === undefined && project.archivedAt !== undefined,
   );
-  const trashedProjects = snapshot.projects.filter((project) => project.trashedAt !== undefined);
   const trashCandidate = [...activeProjects, ...archivedProjects].find(
     (project) => project.id === trashCandidateId,
   );
@@ -88,7 +77,7 @@ export function ProjectSettingsSection({
         </div>
         {activeProjects.length === 0 ? (
           <div className="settings-empty-row">
-            No active projects. Create one or restore it below.
+            No active projects. Create one or restore it from Trash.
           </div>
         ) : (
           <div className="project-settings-list">
@@ -323,130 +312,6 @@ export function ProjectSettingsSection({
           </div>
         )}
       </article>
-
-      <article className="settings-card">
-        <div className="settings-card-heading">
-          <span>TRASH</span>
-          <h2>Recoverable projects</h2>
-          <p>
-            Restore keeps the same project ID. Empty Trash permanently removes only projects already
-            shown here from the GOSU workspace. Active and archived projects are never included.
-          </p>
-        </div>
-        {trashedProjects.length === 0 ? (
-          <div className="settings-empty-row">Trash is empty.</div>
-        ) : (
-          <div className="project-settings-list">
-            {trashedProjects.map((project) => (
-              <TrashedProjectRow
-                key={project.id}
-                project={project}
-                counts={preservedCounts(project.id)}
-                busy={busyAction !== null}
-                onRestore={onRestoreProject}
-              />
-            ))}
-          </div>
-        )}
-        {trashedProjects.length > 0 && (
-          <section className="project-empty-trash" aria-label="Empty project Trash">
-            <div className="settings-template-callout">
-              <strong>External research data is preserved</strong>
-              <span>
-                GitHub repositories, local Git worktrees, Obsidian/Research Notes files, and remote
-                server data are not deleted. GOSU only detaches note and SSH workspace links.
-              </span>
-              <span>
-                Chat and experiment history, SSH access-audit records, and lecture revisions remain
-                in the encrypted local store, but the removed projects cannot be restored in GOSU.
-              </span>
-            </div>
-            <label>
-              Type {EMPTY_PROJECT_TRASH_CONFIRMATION} to permanently remove all projects in Trash
-              <input
-                value={emptyTrashPhrase}
-                onChange={(event) => setEmptyTrashPhrase(event.target.value)}
-                autoComplete="off"
-                disabled={busyAction !== null}
-              />
-            </label>
-            <button
-              type="button"
-              className="danger-button"
-              disabled={
-                busyAction !== null || emptyTrashPhrase !== EMPTY_PROJECT_TRASH_CONFIRMATION
-              }
-              onClick={() => {
-                if (emptyTrashPhrase !== EMPTY_PROJECT_TRASH_CONFIRMATION) return;
-                const confirmed = window.confirm(
-                  `Final warning (2 of 2): permanently remove ${trashedProjects.length} project${trashedProjects.length === 1 ? '' : 's'} from GOSU? External repositories, Research Notes files, and remote server data will be preserved. This cannot be undone in GOSU.`,
-                );
-                if (!confirmed) return;
-                void onEmptyProjectTrash({
-                  expectedWorkspaceRevision: snapshot.revision,
-                  idempotencyKey: window.crypto.randomUUID(),
-                  confirmation: EMPTY_PROJECT_TRASH_CONFIRMATION,
-                }).then((receipt) => {
-                  if (!receipt) return;
-                  setEmptyTrashPhrase('');
-                  setEmptyTrashReceipt(receipt);
-                });
-              }}
-            >
-              Empty Trash permanently
-            </button>
-          </section>
-        )}
-        {emptyTrashReceipt && (
-          <section className="settings-template-callout project-trash-receipt" role="status">
-            <strong>
-              Removed {emptyTrashReceipt.removedProjects.length} project
-              {emptyTrashReceipt.removedProjects.length === 1 ? '' : 's'} from GOSU
-            </strong>
-            <span>
-              Preserved GitHub repositories, local worktrees, Obsidian files, remote server data,
-              and immutable audit/provenance records. Completed{' '}
-              {new Date(emptyTrashReceipt.completedAt).toLocaleString()}.
-            </span>
-          </section>
-        )}
-      </article>
     </div>
-  );
-}
-
-function TrashedProjectRow({
-  project,
-  counts,
-  busy,
-  onRestore,
-}: {
-  project: ProjectRecord;
-  counts: Readonly<{ tasks: number; objectiveVersions: number }>;
-  busy: boolean;
-  onRestore: ProjectMutation;
-}) {
-  return (
-    <section className="project-settings-row trashed">
-      <div className="project-settings-summary">
-        <strong>{project.name}</strong>
-        <span>
-          Trashed {project.trashedAt ? new Date(project.trashedAt).toLocaleString() : 'locally'} ·{' '}
-          {counts.tasks} tasks · {counts.objectiveVersions} objective revisions preserved
-        </span>
-      </div>
-      <div className="project-settings-actions">
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={busy}
-          onClick={() =>
-            void onRestore({ projectId: project.id, expectedVersion: project.version })
-          }
-        >
-          Restore
-        </button>
-      </div>
-    </section>
   );
 }

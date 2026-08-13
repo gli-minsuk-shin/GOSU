@@ -156,7 +156,22 @@ describe('Lecture Studio IPC boundary', () => {
       handlers.get(LECTURE_STUDIO_IPC_CHANNELS.emptyTrash)?.({
         idempotencyKey: randomUUID(),
         confirmation: 'EMPTY LECTURE TRASH',
+        targets: [
+          {
+            studioId: randomUUID(),
+            expectedVersion: 1,
+            trashedAt: new Date().toISOString(),
+          },
+        ],
         path: '/tmp/unsafe',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
+    expect(emptyTrash).not.toHaveBeenCalled();
+
+    await expect(
+      handlers.get(LECTURE_STUDIO_IPC_CHANNELS.emptyTrash)?.({
+        idempotencyKey: randomUUID(),
+        confirmation: 'EMPTY LECTURE TRASH',
       }),
     ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
     expect(emptyTrash).not.toHaveBeenCalled();

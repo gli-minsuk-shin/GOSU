@@ -983,12 +983,51 @@ export const LectureStudioVersionCommandSchema = z
   .strict();
 export type LectureStudioVersionCommand = z.infer<typeof LectureStudioVersionCommandSchema>;
 
+export const LectureStudioTrashTargetSchema = z
+  .object({
+    studioId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+    trashedAt: timestampSchema,
+  })
+  .strict();
+export type LectureStudioTrashTarget = z.infer<typeof LectureStudioTrashTargetSchema>;
+
+export function buildLectureStudioTrashTargets(
+  studios: readonly Pick<LectureStudioSummary, 'id' | 'version' | 'trashedAt'>[],
+): LectureStudioTrashTarget[] {
+  return studios
+    .filter(
+      (studio): studio is Pick<LectureStudioSummary, 'id' | 'version'> & { trashedAt: string } =>
+        studio.trashedAt !== undefined,
+    )
+    .map((studio) => ({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      trashedAt: studio.trashedAt,
+    }))
+    .sort((left, right) =>
+      left.studioId < right.studioId ? -1 : left.studioId > right.studioId ? 1 : 0,
+    );
+}
+
 export const EmptyLectureStudioTrashInputSchema = z
   .object({
     idempotencyKey: uuidSchema,
     confirmation: z.literal(EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION),
+    targets: z.array(LectureStudioTrashTargetSchema).min(1).max(LECTURE_STUDIO_MAX_TRASHED_STUDIOS),
   })
-  .strict();
+  .strict()
+  .superRefine((command, context) => {
+    for (let index = 1; index < command.targets.length; index += 1) {
+      if (command.targets[index - 1]!.studioId >= command.targets[index]!.studioId) {
+        context.addIssue({
+          code: 'custom',
+          path: ['targets', index, 'studioId'],
+          message: 'Lecture Studio Trash targets must be unique and sorted by Studio ID',
+        });
+      }
+    }
+  });
 export type EmptyLectureStudioTrashInput = z.infer<typeof EmptyLectureStudioTrashInputSchema>;
 
 export const EmptyLectureStudioTrashReceiptSchema = z
@@ -1185,6 +1224,7 @@ export const LECTURE_STUDIO_IPC_ERROR_CODES = [
   'lecture_studio_trashed',
   'lecture_studio_not_trashed',
   'lecture_trash_empty',
+  'lecture_trash_changed',
   'project_not_found',
   'project_archived',
   'project_trashed',

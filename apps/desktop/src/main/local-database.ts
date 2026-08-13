@@ -8224,22 +8224,36 @@ export class LocalDatabase {
           }
           const rows = database
             .prepare(
-              `select s.id,s.title,s.output_project_id,s.trashed_at,
+              `select s.id,s.title,s.output_project_id,s.version,s.trashed_at,
                     (select count(*) from lecture_studio_revisions where studio_id=s.id) as revision_count,
                     (select count(*) from lecture_studio_messages where studio_id=s.id) as message_count
              from lecture_studios s
-             where s.trashed_at is not null and s.active_attempt_id is null
-             order by s.trashed_at asc,s.id asc`,
+             where s.trashed_at is not null
+             order by s.id asc`,
             )
             .all() as Array<{
             id: string;
             title: string;
             output_project_id: string;
+            version: number;
             trashed_at: string;
             revision_count: number;
             message_count: number;
           }>;
-          if (rows.length === 0) return null;
+          const exactTargetsMatch =
+            rows.length === command.targets.length &&
+            rows.every((row, index) => {
+              const target = command.targets[index];
+              return (
+                target !== undefined &&
+                row.id === target.studioId &&
+                row.version === target.expectedVersion &&
+                row.trashed_at === target.trashedAt
+              );
+            });
+          if (!exactTargetsMatch) {
+            throw new LectureStudioStorageError('trash_changed');
+          }
           const receipt = EmptyLectureStudioTrashReceiptSchema.parse({
             schemaVersion: 1,
             idempotencyKey: command.idempotencyKey,
@@ -8257,11 +8271,13 @@ export class LocalDatabase {
           // one immediate transaction; active and restored Studio rows never match this delete.
           database.exec('drop trigger if exists lecture_studio_revisions_delete_guard');
           const remove = database.prepare(
-            'delete from lecture_studios where id=? and trashed_at is not null',
+            `delete from lecture_studios
+             where id=? and version=? and trashed_at=? and active_attempt_id is null`,
           );
-          for (const row of rows) {
-            if (remove.run(row.id).changes !== 1) {
-              throw new Error('lecture_trash_purge_conflict');
+          for (const [index, row] of rows.entries()) {
+            const target = command.targets[index]!;
+            if (remove.run(row.id, target.expectedVersion, target.trashedAt).changes !== 1) {
+              throw new LectureStudioStorageError('trash_changed');
             }
           }
           database.exec(`

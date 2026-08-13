@@ -305,7 +305,8 @@ export class LectureStudioServiceError extends Error {
       | 'lecture_open_failed'
       | 'lecture_studio_trashed'
       | 'lecture_studio_not_trashed'
-      | 'lecture_trash_empty',
+      | 'lecture_trash_empty'
+      | 'lecture_trash_changed',
   ) {
     super(code);
     this.name = 'LectureStudioServiceError';
@@ -1770,8 +1771,13 @@ export class LectureStudioService {
   }
 
   private normalizeStorageError(error: unknown) {
-    if (error instanceof LectureStudioStorageError && error.code === 'capacity_reached') {
-      return new LectureStudioServiceError('lecture_capacity_reached');
+    if (error instanceof LectureStudioStorageError) {
+      if (error.code === 'capacity_reached') {
+        return new LectureStudioServiceError('lecture_capacity_reached');
+      }
+      if (error.code === 'trash_changed') {
+        return new LectureStudioServiceError('lecture_trash_changed');
+      }
     }
     return new LectureStudioServiceError('lecture_persistence_failed');
   }
