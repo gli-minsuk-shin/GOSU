@@ -132,7 +132,17 @@ describe('Manuscript workspace IPC', () => {
     const listCheckpointFiles = vi.fn(async () => ({ schemaVersion: 1 }));
     const readCheckpointFile = vi.fn(async () => ({ schemaVersion: 1 }));
     const compilePdf = vi.fn(async () => ({ schemaVersion: 1 }));
-    const { handlers } = fixture({ listCheckpointFiles, readCheckpointFile, compilePdf });
+    const exportPdf = vi.fn(async () => ({ schemaVersion: 1 }));
+    const openPdf = vi.fn(async () => ({ schemaVersion: 1 }));
+    const revealPdf = vi.fn(async () => ({ schemaVersion: 1 }));
+    const { handlers } = fixture({
+      listCheckpointFiles,
+      readCheckpointFile,
+      compilePdf,
+      exportPdf,
+      openPdf,
+      revealPdf,
+    });
     const identity = {
       projectId: randomUUID(),
       manuscriptId: randomUUID(),
@@ -184,10 +194,45 @@ describe('Manuscript workspace IPC', () => {
     await expect(
       handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.compilePdf)?.(compileCommand),
     ).resolves.toEqual({ ok: true, value: { schemaVersion: 1 } });
+    const artifactBinding = {
+      ...identity,
+      artifactId: randomUUID(),
+      pdfSha256: `sha256:${'a'.repeat(64)}`,
+    };
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.exportPdf)?.({
+        ...artifactBinding,
+        pdfBase64: 'renderer-controlled-bytes',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'invalid_manuscript_workspace_input' },
+    });
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.openPdf)?.({
+        ...artifactBinding,
+        absolutePath: '/tmp/paper.pdf',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'invalid_manuscript_workspace_input' },
+    });
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.exportPdf)?.(artifactBinding),
+    ).resolves.toEqual({ ok: true, value: { schemaVersion: 1 } });
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.openPdf)?.(artifactBinding),
+    ).resolves.toEqual({ ok: true, value: { schemaVersion: 1 } });
+    await expect(
+      handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.revealPdf)?.(artifactBinding),
+    ).resolves.toEqual({ ok: true, value: { schemaVersion: 1 } });
 
     expect(listCheckpointFiles).toHaveBeenCalledExactlyOnceWith(identity);
     expect(readCheckpointFile).toHaveBeenCalledExactlyOnceWith(readCommand);
     expect(compilePdf).toHaveBeenCalledExactlyOnceWith(compileCommand);
+    expect(exportPdf).toHaveBeenCalledExactlyOnceWith(artifactBinding);
+    expect(openPdf).toHaveBeenCalledExactlyOnceWith(artifactBinding);
+    expect(revealPdf).toHaveBeenCalledExactlyOnceWith(artifactBinding);
   });
 
   it('never reflects tokens or private diagnostics in a service failure', async () => {

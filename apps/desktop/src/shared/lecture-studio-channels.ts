@@ -7,6 +7,7 @@ export const LECTURE_STUDIO_IPC_CHANNELS = {
   discardExternalSourceSet: 'gosu:lecture-studio:discard-external-source-set',
   importOverleaf: 'gosu:lecture-studio:import-overleaf',
   create: 'gosu:lecture-studio:create',
+  updateGenerationBrief: 'gosu:lecture-studio:update-generation-brief',
   generate: 'gosu:lecture-studio:generate',
   send: 'gosu:lecture-studio:send',
   cancel: 'gosu:lecture-studio:cancel',

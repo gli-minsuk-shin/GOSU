@@ -240,6 +240,7 @@ const lectureStudioAdapter: LectureStudioViewAdapter = {
   discardExternalSourceSet: (input) => window.gosu.lectureStudio.discardExternalSourceSet(input),
   importOverleaf: (input) => window.gosu.lectureStudio.importOverleaf(input),
   create: (input) => window.gosu.lectureStudio.create(input),
+  updateGenerationBrief: (input) => window.gosu.lectureStudio.updateGenerationBrief(input),
   generate: (input) => window.gosu.lectureStudio.generate(input),
   send: (input) => window.gosu.lectureStudio.send(input),
   cancel: (input) => window.gosu.lectureStudio.cancel(input),

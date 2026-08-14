@@ -80,6 +80,7 @@ import {
   LectureStudioRevisionSchema,
   LectureStudioSchema,
   LectureStudioSummarySchema,
+  UpdateLectureStudioGenerationBriefInputSchema,
   type LectureStudio,
   type LectureStudioDetail,
   type LectureStudioMessage,
@@ -7971,6 +7972,43 @@ export class LocalDatabase {
             studio.updatedAt,
           ).changes === 1
       );
+    } catch (error) {
+      throwMappedLectureStudioStorageError(error);
+    }
+  }
+
+  updateLectureStudioGenerationBrief(
+    studioId: string,
+    expectedVersion: number,
+    generationBrief: LectureStudio['generationBrief'],
+    updatedAt: string,
+  ): LectureStudio | null {
+    const database = this.require();
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+      throw new Error('invalid_lecture_version');
+    }
+    const parsedBrief = UpdateLectureStudioGenerationBriefInputSchema.shape.generationBrief.parse(
+      structuredClone(generationBrief),
+    );
+    try {
+      return database
+        .transaction(() => {
+          const changed = database
+            .prepare(
+              `update lecture_studios
+               set generation_brief_json=?,version=version+1,updated_at=?
+               where id=? and version=? and status in ('draft','ready','failed')
+                 and active_attempt_id is null and trashed_at is null`,
+            )
+            .run(JSON.stringify(parsedBrief), updatedAt, studioId, expectedVersion);
+          if (changed.changes !== 1) return null;
+          return toLectureStudio(
+            database
+              .prepare('select * from lecture_studios where id=?')
+              .get(studioId) as LectureStudioRow,
+          );
+        })
+        .immediate();
     } catch (error) {
       throwMappedLectureStudioStorageError(error);
     }

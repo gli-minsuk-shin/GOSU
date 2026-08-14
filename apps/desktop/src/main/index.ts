@@ -46,6 +46,7 @@ import { registerGitWorkspaceIpc } from './git-workspace-ipc';
 import { GitWorkspaceService } from './git-workspace-service';
 import { registerManuscriptWorkspaceIpc } from './manuscript-workspace-ipc';
 import { ManuscriptWorkspaceService } from './manuscript-workspace-service';
+import { createManuscriptPdfArtifactPlatform } from './manuscript-pdf-artifact-platform';
 import { ManuscriptPdfCompiler } from './manuscript-pdf-compiler';
 import { OverleafGitCredentialStore } from './overleaf-git-credential-store';
 import { OverleafGitManuscriptWorkspaceAdapter } from './overleaf-git-manuscript-adapter';
@@ -178,6 +179,7 @@ const gitWorkspace = new GitWorkspaceService({
   workspace,
   rootDirectory: () => join(app.getPath('userData'), 'git-workspaces'),
 });
+let mainWindow: BrowserWindow | undefined;
 const overleafGitCredentials = new OverleafGitCredentialStore({
   rootDirectory: () => join(app.getPath('userData'), 'credentials', 'overleaf-git'),
   encryption: safeStorage,
@@ -210,6 +212,10 @@ const manuscriptWorkspace = new ManuscriptWorkspaceService({
   adapters: manuscriptWorkspaceAdapters,
   overleafGit: overleafGitTransport,
   pdfCompiler: manuscriptPdfCompiler,
+  pdfArtifacts: createManuscriptPdfArtifactPlatform(
+    () => mainWindow,
+    () => join(app.getPath('userData'), 'manuscript-pdf-artifacts'),
+  ),
   credentials: overleafGitCredentials,
 });
 const researchNotes = new ResearchNotesService({
@@ -233,7 +239,6 @@ const search = new SearchService({
   researchNotes: new ResearchNotesSearchSource(researchNotes),
   repository: new RepositorySearchSource(gitWorkspace),
 });
-let mainWindow: BrowserWindow | undefined;
 const projectChatAttachments = new ProjectChatAttachmentService({
   chooseFiles: createProjectChatAttachmentPicker(() => mainWindow),
   async validateScope(projectId, sessionId) {

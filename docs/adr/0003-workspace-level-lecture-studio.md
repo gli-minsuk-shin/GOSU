@@ -96,6 +96,11 @@ authoritative Literature·Experiment repository와 Manuscript service에서 다�
 `lecture`는 재사용 가능한 lecture notes와 teaching deck을 만든다. `talk`는 10, 20, 30, 50분 중 하나를
 필수로 선택하고 duration별 bounded slide budget을 적용한다. 생성 전에 notes page target, compiled slide
 page count, detail level과 최대 6,000자의 추가 지시를 선택할 수 있고 SQLCipher configuration에 보존한다.
+생성 후에도 Studio의 compact option editor에서 이 네 field 전체를 수정할 수 있다. update는
+`expectedVersion`으로 fence하고 `draft|ready|failed`이면서 active attempt와 Trash 상태가 아닐 때만
+brief·version·`updatedAt`을 원자적으로 바꾼다. 동일한 normalized 값은 version을 올리지 않는 no-op이며,
+저장된 값은 다음 generation/retry와 Lecture chat edit부터 적용한다. 기존 immutable revision, frozen source
+manifest와 artifact에는 소급 적용하지 않는다.
 notes와 slides는 항상 완전한 canonical LaTeX replacement pair다. notes는 GOSU가 소유한 article preamble,
 slides는 고정 Beamer preamble과 title frame을 사용하고 model은 allowlisted body만 반환한다.
 두 exact document가 모두 sandboxed XeLaTeX acceptance compile을 통과한 뒤에만 Research Notes artifact와

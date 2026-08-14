@@ -39,6 +39,7 @@ import {
   type LectureStudioArtifactActionReceipt,
   type LectureStudioDetail,
   type LectureStudioDetailLevel,
+  type LectureStudioGenerationBrief,
   type LectureStudioArtifactFormat,
   type LectureStudioDetailInput,
   type LectureStudioDuration,
@@ -58,6 +59,7 @@ import {
   type OpenLectureStudioArtifactInput,
   type RevealLectureStudioArtifactInput,
   type SendLectureStudioMessageInput,
+  type UpdateLectureStudioGenerationBriefInput,
 } from '../../shared/lecture-studio-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
 import type { CodexModel } from './connections-view';
@@ -101,6 +103,7 @@ export interface LectureStudioViewAdapter {
     input: ImportLectureOverleafSourceInput,
   ) => Promise<LectureOverleafSourceReceipt>;
   create: (input: CreateLectureStudioInput) => Promise<LectureStudio>;
+  updateGenerationBrief: (input: UpdateLectureStudioGenerationBriefInput) => Promise<LectureStudio>;
   generate: (input: GenerateLectureStudioInput) => Promise<LectureStudioTurnReceipt>;
   send: (input: SendLectureStudioMessageInput) => Promise<LectureStudioTurnReceipt>;
   cancel: (input: CancelLectureStudioInput) => Promise<LectureStudio>;
@@ -786,6 +789,33 @@ export function LectureStudioView({
               codexAuthenticationRequired={codexAuthenticationRequired}
               onTab={setPreviewTab}
               onGenerate={() => void runGeneration(selectedStudio)}
+              onUpdateGenerationBrief={async (generationBrief) => {
+                markStudioBusy(selectedStudio.id, true);
+                setError(null);
+                setNotice('');
+                try {
+                  await adapter.updateGenerationBrief({
+                    studioId: selectedStudio.id,
+                    expectedVersion: selectedStudio.version,
+                    generationBrief,
+                  });
+                  await load(false, selectedStudio.id);
+                  if (selectedStudioIdRef.current === selectedStudio.id) {
+                    setNotice(
+                      'Generation options updated. Existing revisions were left unchanged.',
+                    );
+                  }
+                  return true;
+                } catch (updateError) {
+                  await load(false, selectedStudio.id);
+                  if (selectedStudioIdRef.current === selectedStudio.id) {
+                    setError(lectureErrorMessage(updateError));
+                  }
+                  return false;
+                } finally {
+                  markStudioBusy(selectedStudio.id, false);
+                }
+              }}
               onOpenCodexSignIn={onOpenCodexSignIn}
               onCancel={() => {
                 if (!selectedStudio.activeAttemptId) return;
@@ -1807,6 +1837,7 @@ function StudioPreview({
   codexAuthenticationRequired,
   onTab,
   onGenerate,
+  onUpdateGenerationBrief,
   onCancel,
   onOpenCodexSignIn,
 }: {
@@ -1819,6 +1850,7 @@ function StudioPreview({
   codexAuthenticationRequired: boolean;
   onTab: (tab: PreviewTab) => void;
   onGenerate: () => void;
+  onUpdateGenerationBrief: (generationBrief: LectureStudioGenerationBrief) => Promise<boolean>;
   onCancel: () => void;
   onOpenCodexSignIn: () => void;
 }) {
@@ -1830,6 +1862,20 @@ function StudioPreview({
   const [artifactAction, setArtifactAction] = useState<string | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const [artifactActionBusy, setArtifactActionBusy] = useState(false);
+  const [editingGenerationBrief, setEditingGenerationBrief] = useState(false);
+  const [notesTargetPages, setNotesTargetPages] = useState(
+    studio.generationBrief.notesTargetPages?.toString() ?? '',
+  );
+  const [slidesTargetPages, setSlidesTargetPages] = useState(
+    studio.generationBrief.slidesTargetPages?.toString() ?? '',
+  );
+  const [detailLevel, setDetailLevel] = useState<LectureStudioDetailLevel>(
+    studio.generationBrief.detailLevel,
+  );
+  const [customInstructions, setCustomInstructions] = useState(
+    studio.generationBrief.customInstructions,
+  );
+  const [savingGenerationBrief, setSavingGenerationBrief] = useState(false);
   const automaticPdfCompileKey = useRef<string | null>(null);
   const pdfCompileGeneration = useRef(0);
   const artifactActionGeneration = useRef(0);
@@ -1839,6 +1885,43 @@ function StudioPreview({
   const source = revision ? revisionSource(revision, documentKind) : '';
   const pdfPreview = pdfPreviews[documentKind];
   const currentArtifact = revision?.artifacts.find((artifact) => artifact.kind === documentKind);
+
+  const resetGenerationBriefDraft = useCallback(() => {
+    setNotesTargetPages(studio.generationBrief.notesTargetPages?.toString() ?? '');
+    setSlidesTargetPages(studio.generationBrief.slidesTargetPages?.toString() ?? '');
+    setDetailLevel(studio.generationBrief.detailLevel);
+    setCustomInstructions(studio.generationBrief.customInstructions);
+  }, [studio.generationBrief]);
+
+  useEffect(() => {
+    if (!editingGenerationBrief && !savingGenerationBrief) resetGenerationBriefDraft();
+  }, [editingGenerationBrief, resetGenerationBriefDraft, savingGenerationBrief]);
+
+  const notesPages = notesTargetPages === '' ? null : Number(notesTargetPages);
+  const slidesPages = slidesTargetPages === '' ? null : Number(slidesTargetPages);
+  const generationBriefDraftValid =
+    (notesPages === null ||
+      (Number.isInteger(notesPages) && notesPages >= 1 && notesPages <= 100)) &&
+    (slidesPages === null ||
+      (Number.isInteger(slidesPages) && slidesPages >= 2 && slidesPages <= 100)) &&
+    customInstructions.length <= LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS;
+
+  const saveGenerationBrief = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!generationBriefDraftValid || savingGenerationBrief || busy) return;
+    setSavingGenerationBrief(true);
+    try {
+      const succeeded = await onUpdateGenerationBrief({
+        notesTargetPages: notesPages,
+        slidesTargetPages: slidesPages,
+        detailLevel,
+        customInstructions,
+      });
+      if (succeeded) setEditingGenerationBrief(false);
+    } finally {
+      setSavingGenerationBrief(false);
+    }
+  };
 
   useEffect(() => {
     pdfCompileGeneration.current += 1;
@@ -1969,20 +2052,122 @@ function StudioPreview({
             </p>
           </div>
         </div>
-        {studio.status === 'generating' || busy ? (
-          <button type="button" className="danger-button" onClick={onCancel}>
-            Stop generation
+        <div className="lecture-preview-toolbar-actions">
+          <button
+            type="button"
+            className="ghost-button"
+            aria-expanded={editingGenerationBrief}
+            aria-controls={`lecture-generation-options-editor-${studio.id}`}
+            disabled={studio.status === 'generating' || busy}
+            onClick={() => {
+              if (editingGenerationBrief) resetGenerationBriefDraft();
+              setEditingGenerationBrief((current) => !current);
+            }}
+          >
+            Edit options
           </button>
-        ) : codexAuthenticationRequired ? (
-          <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
-            Sign in to Codex
-          </button>
-        ) : (
-          <button type="button" className="secondary-button" onClick={onGenerate}>
-            {studio.currentRevision === 0 && studio.status === 'failed'
-              ? 'Retry generation'
-              : 'Generate new revision'}
-          </button>
+          {studio.status === 'generating' ? (
+            <button type="button" className="danger-button" onClick={onCancel}>
+              Stop generation
+            </button>
+          ) : codexAuthenticationRequired ? (
+            <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
+              Sign in to Codex
+            </button>
+          ) : (
+            <button type="button" className="secondary-button" disabled={busy} onClick={onGenerate}>
+              {studio.currentRevision === 0 && studio.status === 'failed'
+                ? 'Retry generation'
+                : 'Generate new revision'}
+            </button>
+          )}
+        </div>
+        {editingGenerationBrief && (
+          <form
+            id={`lecture-generation-options-editor-${studio.id}`}
+            className="lecture-generation-options-editor"
+            onSubmit={(event) => void saveGenerationBrief(event)}
+          >
+            <div>
+              <strong>Generation options</strong>
+              <span>Changes apply to the next generation, retry, and chat edit only.</span>
+            </div>
+            <label>
+              Lecture-note pages
+              <input
+                type="number"
+                min={1}
+                max={100}
+                step={1}
+                inputMode="numeric"
+                value={notesTargetPages}
+                placeholder="Auto"
+                disabled={savingGenerationBrief}
+                onChange={(event) => setNotesTargetPages(event.target.value)}
+              />
+            </label>
+            <label>
+              Slide pages
+              <input
+                type="number"
+                min={2}
+                max={100}
+                step={1}
+                inputMode="numeric"
+                value={slidesTargetPages}
+                placeholder="Auto"
+                disabled={savingGenerationBrief}
+                onChange={(event) => setSlidesTargetPages(event.target.value)}
+              />
+            </label>
+            <label>
+              Detail
+              <select
+                value={detailLevel}
+                disabled={savingGenerationBrief}
+                onChange={(event) => setDetailLevel(event.target.value as LectureStudioDetailLevel)}
+              >
+                <option value="concise">Concise</option>
+                <option value="standard">Standard</option>
+                <option value="detailed">Detailed</option>
+                <option value="exhaustive">Exhaustive</option>
+              </select>
+            </label>
+            <label className="lecture-generation-options-instructions">
+              Additional instructions
+              <textarea
+                rows={3}
+                maxLength={LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS}
+                value={customInstructions}
+                disabled={savingGenerationBrief}
+                onChange={(event) => setCustomInstructions(event.target.value)}
+              />
+              <small>
+                {customInstructions.length.toLocaleString()} /{' '}
+                {LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS.toLocaleString()}
+              </small>
+            </label>
+            <div className="lecture-generation-options-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={savingGenerationBrief}
+                onClick={() => {
+                  resetGenerationBriefDraft();
+                  setEditingGenerationBrief(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="primary-button"
+                disabled={!generationBriefDraftValid || savingGenerationBrief || busy}
+              >
+                {savingGenerationBrief ? 'Saving…' : 'Save options'}
+              </button>
+            </div>
+          </form>
         )}
         {studio.lastErrorCode && studio.status === 'failed' && (
           <div className="lecture-preview-error" role="status">

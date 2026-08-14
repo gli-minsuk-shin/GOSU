@@ -32,6 +32,7 @@ import {
   OpenLectureStudioArtifactInputSchema,
   RevealLectureStudioArtifactInputSchema,
   SendLectureStudioMessageInputSchema,
+  UpdateLectureStudioGenerationBriefInputSchema,
   type CancelLectureStudioInput,
   type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
@@ -61,6 +62,7 @@ import {
   type PendingLectureRevisionArtifacts,
   type RevealLectureStudioArtifactInput,
   type SendLectureStudioMessageInput,
+  type UpdateLectureStudioGenerationBriefInput,
 } from '../shared/lecture-studio-contracts';
 import type {
   ExperimentIdea,
@@ -132,6 +134,12 @@ export interface LectureStudioStorage {
     revision: number,
   ): MaybePromise<LectureStudioRevision | null>;
   createLectureStudio(studio: LectureStudio): MaybePromise<boolean>;
+  updateLectureStudioGenerationBrief(
+    studioId: string,
+    expectedVersion: number,
+    generationBrief: LectureStudio['generationBrief'],
+    updatedAt: string,
+  ): MaybePromise<LectureStudio | null>;
   beginLectureStudioTurn(
     input: Readonly<{
       studioId: string;
@@ -856,6 +864,42 @@ export class LectureStudioService {
   async generate(input: GenerateLectureStudioInput): Promise<LectureStudioTurnReceipt> {
     const command = GenerateLectureStudioInputSchema.parse(input);
     return this.runTurn({ ...command, message: null });
+  }
+
+  async updateGenerationBrief(
+    input: UpdateLectureStudioGenerationBriefInput,
+  ): Promise<LectureStudio> {
+    const command = UpdateLectureStudioGenerationBriefInputSchema.parse(input);
+    if (this.activeByStudio.has(command.studioId)) {
+      throw new LectureStudioServiceError('lecture_busy');
+    }
+    const studio = await this.dependencies.storage.getLectureStudio(command.studioId);
+    if (!studio) throw new LectureStudioServiceError('lecture_studio_not_found');
+    if (studio.trashedAt) throw new LectureStudioServiceError('lecture_studio_trashed');
+    if (studio.status === 'generating' || studio.activeAttemptId) {
+      throw new LectureStudioServiceError('lecture_busy');
+    }
+    if (studio.version !== command.expectedVersion) {
+      throw new LectureStudioServiceError('lecture_version_conflict');
+    }
+    this.throwIfProjectsLifecycleLocked([...studio.sourceProjectIds, studio.outputProjectId]);
+    if (JSON.stringify(studio.generationBrief) === JSON.stringify(command.generationBrief)) {
+      return LectureStudioSchema.parse(studio);
+    }
+    let updated: LectureStudio | null;
+    try {
+      updated = await this.dependencies.storage.updateLectureStudioGenerationBrief(
+        studio.id,
+        studio.version,
+        command.generationBrief,
+        this.now().toISOString(),
+      );
+    } catch (error) {
+      throw this.normalizeStorageError(error);
+    }
+    if (!updated) throw new LectureStudioServiceError('lecture_version_conflict');
+    this.publish(updated);
+    return LectureStudioSchema.parse(updated);
   }
 
   async trash(input: LectureStudioVersionCommand): Promise<LectureStudio> {

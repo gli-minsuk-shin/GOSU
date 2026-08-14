@@ -832,6 +832,51 @@
   font-size: var(--font-caption);
 }
 
+.lecture-preview-toolbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.lecture-generation-options-editor {
+  display: grid;
+  flex: 1 0 100%;
+  grid-template-columns: minmax(170px, 1.2fr) repeat(3, minmax(110px, 0.7fr));
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.lecture-generation-options-editor > div:first-child,
+.lecture-generation-options-editor label {
+  display: grid;
+  gap: 4px;
+}
+
+.lecture-generation-options-editor > div:first-child span,
+.lecture-generation-options-editor small {
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+
+.lecture-generation-options-instructions {
+  grid-column: 1 / -2;
+}
+
+.lecture-generation-options-instructions textarea {
+  resize: vertical;
+}
+
+.lecture-generation-options-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .lecture-preview-tabs {
   display: flex;
   gap: 3px;
@@ -1173,6 +1218,16 @@
    room Lecture Studio actually has. At constrained content widths the assistant becomes a right
    drawer while its 46px rail remains reachable; the document therefore never clips horizontally. */
 @container lecture-workspace (max-width: 980px) {
+  .lecture-generation-options-editor {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lecture-generation-options-editor > div:first-child,
+  .lecture-generation-options-instructions,
+  .lecture-generation-options-actions {
+    grid-column: 1 / -1;
+  }
+
   .lecture-studio-layout,
   .lecture-studio-layout.chat-collapsed {
     position: relative;
@@ -1202,6 +1257,14 @@
 }
 
 @container lecture-workspace (max-width: 700px) {
+  .lecture-generation-options-editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lecture-generation-options-editor > * {
+    grid-column: 1;
+  }
+
   .lecture-studio-layout,
   .lecture-studio-layout.studio-rail-collapsed,
   .lecture-studio-layout.chat-collapsed,

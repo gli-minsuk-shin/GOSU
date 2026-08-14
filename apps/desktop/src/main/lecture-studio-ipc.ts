@@ -21,6 +21,7 @@ import {
   OpenLectureStudioArtifactInputSchema,
   RevealLectureStudioArtifactInputSchema,
   SendLectureStudioMessageInputSchema,
+  UpdateLectureStudioGenerationBriefInputSchema,
   type LectureStudioIpcErrorCode,
   type LectureStudioIpcResult,
 } from '../shared/lecture-studio-contracts';
@@ -105,6 +106,14 @@ export function registerLectureStudioIpc(
       input,
       CreateLectureStudioInputSchema,
       (command) => service.create(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.updateGenerationBrief, (input) =>
+    withInput(
+      input,
+      UpdateLectureStudioGenerationBriefInputSchema,
+      (command) => service.updateGenerationBrief(command),
       reportUnexpected,
     ),
   );

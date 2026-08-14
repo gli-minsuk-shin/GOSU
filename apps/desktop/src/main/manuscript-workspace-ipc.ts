@@ -8,6 +8,7 @@ import {
   FetchManuscriptCheckpointInputSchema,
   ListManuscriptCheckpointFilesInputSchema,
   ManuscriptBindingCommandSchema,
+  ManuscriptPdfArtifactBindingSchema,
   ManuscriptProjectInputSchema,
   ReadManuscriptCheckpointFileInputSchema,
   UpdateManuscriptInputSchema,
@@ -103,6 +104,30 @@ export function registerManuscriptWorkspaceIpc(
       input,
       CompileManuscriptPdfInputSchema,
       (command) => service.compilePdf(command),
+      reportUnexpected,
+    ),
+  );
+  register(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.exportPdf, (input) =>
+    withValidatedInput(
+      input,
+      ManuscriptPdfArtifactBindingSchema,
+      (command) => service.exportPdf(command),
+      reportUnexpected,
+    ),
+  );
+  register(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.openPdf, (input) =>
+    withValidatedInput(
+      input,
+      ManuscriptPdfArtifactBindingSchema,
+      (command) => service.openPdf(command),
+      reportUnexpected,
+    ),
+  );
+  register(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.revealPdf, (input) =>
+    withValidatedInput(
+      input,
+      ManuscriptPdfArtifactBindingSchema,
+      (command) => service.revealPdf(command),
       reportUnexpected,
     ),
   );

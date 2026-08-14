@@ -970,6 +970,11 @@ Lecture Studio는 project child tab이 아니라 여러 active project를 source
 하나여야 한다. SQLCipher의 Lecture-owned schema가 이 generation brief를 포함한 studio configuration,
 전용 user/assistant message, append-only
 revision을 보존하며 Project Chat session·queue·profile·message table을 읽거나 수정하지 않는다.
+기존 Studio의 compact `Edit options` panel은 현재 generation brief 네 field 전체를 다시 제출한다. Main은
+`expectedVersion`이 정확하고 Studio가 `draft|ready|failed`, non-trashed, non-generating일 때만 같은 SQL
+transaction에서 brief·`updatedAt`·version을 갱신한다. 동일한 normalized brief는 version을 올리지 않는
+no-op이다. 저장 뒤 Renderer는 detail과 version을 즉시 다시 읽으며 새 brief는 다음 initial/retry generation과
+Lecture chat revision부터 적용된다. 이미 commit된 revision, frozen manifest와 artifact는 수정하지 않는다.
 새 studio의 source/output 후보는 active project로 제한하지만, 기존 artifact preview는 archived project를
 포함한 workspace snapshot에서 output project 이름을 resolve해 과거 저장 위치를 ID로 퇴행시키지 않는다.
 전송하지 않은 studio별 chat draft는 DesktopApp이 소유한 renderer-session volatile map에만 두어 tab
@@ -1763,7 +1768,11 @@ flowchart LR
   dimension/pixel budget을 검사하고 한 번에 한 preview만 보유한다. 다중 페이지는 고정 높이의 연속 page
   stack으로 스크롤하며 현재 page 앞뒤만 독립 canvas로 렌더링한다. 스크롤 중심으로 page counter를 갱신하고
   Previous/Next는 같은 nested viewer의 exact page 위치로 이동한다. absolute path나 `file://`를 Renderer에
-  노출하지 않는다. timeout·resource/output overflow·앱 종료 때 detached process group 전체를
+  노출하지 않는다. 컴파일 직후 검증된 exact PDF는 Main-owned cache에 최대 12개·128 MiB·7일로 제한해
+  보존하며, Export·default-app Open·Finder reveal은 project·manuscript·checkpoint·artifact ID·SHA-256
+  fence를 모두 다시 검증한다. Renderer는 임의 path나 PDF bytes를 action IPC로 보낼 수 없고, cache prune과
+  OS action은 같은 root queue에서 직렬화되어 화면에 표시된 artifact가 중간에 교체되지 않는다.
+  timeout·resource/output overflow·앱 종료 때 detached process group 전체를
   종료하고 staging은 성공·실패 모두 삭제한다. crash 뒤 남은 strict `.compile-XXXXXX` directory는
   Renderer/IPC가 열리기 전 startup reconciliation이 symlink와 lookalike를 보존한 채 정리한다. 현재 prototype은 Mac에 설치된
   MacTeX를 사용하므로 Overleaf의 TeX Live 버전·compiler 설정과 일치함을 보장하지 않는다.

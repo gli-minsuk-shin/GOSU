@@ -47,6 +47,9 @@ describe('Manuscript Workspace preload bridge', () => {
       'listCheckpointFiles',
       'readCheckpointFile',
       'compilePdf',
+      'exportPdf',
+      'openPdf',
+      'revealPdf',
       'disconnect',
     ]);
     expect(api.manuscriptWorkspace).not.toHaveProperty('run');
@@ -68,7 +71,7 @@ describe('Manuscript Workspace preload bridge', () => {
     };
     const providerRevision = 'a'.repeat(40);
     const token = 'renderer-to-main-one-shot-token';
-    for (let index = 0; index < 11; index += 1) {
+    for (let index = 0; index < 14; index += 1) {
       electron.ipcRenderer.invoke.mockResolvedValueOnce({ ok: true, value: { call: index + 1 } });
     }
 
@@ -110,6 +113,14 @@ describe('Manuscript Workspace preload bridge', () => {
     });
     const compileCommand = { ...checkpointIdentity, engine: 'lualatex' as const };
     await api.manuscriptWorkspace.compilePdf(compileCommand);
+    const artifactBinding = {
+      ...checkpointIdentity,
+      artifactId: '33333333-3333-4333-8333-333333333333',
+      pdfSha256: `sha256:${'c'.repeat(64)}`,
+    };
+    await api.manuscriptWorkspace.exportPdf(artifactBinding);
+    await api.manuscriptWorkspace.openPdf(artifactBinding);
+    await api.manuscriptWorkspace.revealPdf(artifactBinding);
     await api.manuscriptWorkspace.disconnect(bindingCommand);
 
     expect(electron.ipcRenderer.invoke.mock.calls).toEqual([
@@ -156,6 +167,9 @@ describe('Manuscript Workspace preload bridge', () => {
         },
       ],
       [MANUSCRIPT_WORKSPACE_IPC_CHANNELS.compilePdf, compileCommand],
+      [MANUSCRIPT_WORKSPACE_IPC_CHANNELS.exportPdf, artifactBinding],
+      [MANUSCRIPT_WORKSPACE_IPC_CHANNELS.openPdf, artifactBinding],
+      [MANUSCRIPT_WORKSPACE_IPC_CHANNELS.revealPdf, artifactBinding],
       [MANUSCRIPT_WORKSPACE_IPC_CHANNELS.disconnect, bindingCommand],
     ]);
   });
