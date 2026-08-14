@@ -9,5 +9,8 @@ export const MANUSCRIPT_WORKSPACE_IPC_CHANNELS = {
   listCheckpointFiles: 'gosu:manuscript-workspace:list-checkpoint-files',
   readCheckpointFile: 'gosu:manuscript-workspace:read-checkpoint-file',
   compilePdf: 'gosu:manuscript-workspace:compile-pdf',
+  exportPdf: 'gosu:manuscript-workspace:export-pdf',
+  openPdf: 'gosu:manuscript-workspace:open-pdf',
+  revealPdf: 'gosu:manuscript-workspace:reveal-pdf',
   disconnect: 'gosu:manuscript-workspace:disconnect',
 } as const;

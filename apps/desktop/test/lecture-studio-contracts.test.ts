@@ -18,6 +18,7 @@ import {
   ListLectureCandidatesInputSchema,
   OpenLectureStudioArtifactInputSchema,
   RevealLectureStudioArtifactInputSchema,
+  UpdateLectureStudioGenerationBriefInputSchema,
   buildLectureStudioTrashTargets,
 } from '../src/shared/lecture-studio-contracts';
 
@@ -281,6 +282,48 @@ describe('Lecture Studio candidate pagination contracts', () => {
         },
       }),
     ).toThrow();
+  });
+
+  it('requires an exact version-fenced full generation brief update', () => {
+    const command = {
+      studioId: randomUUID(),
+      expectedVersion: 4,
+      generationBrief: {
+        notesTargetPages: 20,
+        slidesTargetPages: 30,
+        detailLevel: 'detailed' as const,
+        customInstructions: 'Keep the proofs rigorous.',
+      },
+    };
+    expect(UpdateLectureStudioGenerationBriefInputSchema.parse(command)).toEqual(command);
+    expect(
+      UpdateLectureStudioGenerationBriefInputSchema.safeParse({
+        studioId: command.studioId,
+        expectedVersion: command.expectedVersion,
+        generationBrief: { detailLevel: 'concise' },
+      }).success,
+    ).toBe(false);
+    expect(
+      UpdateLectureStudioGenerationBriefInputSchema.safeParse({
+        ...command,
+        sourceSelection: { literature: [], experiments: [] },
+      }).success,
+    ).toBe(false);
+    expect(
+      UpdateLectureStudioGenerationBriefInputSchema.safeParse({
+        ...command,
+        expectedVersion: 0,
+      }).success,
+    ).toBe(false);
+    expect(
+      UpdateLectureStudioGenerationBriefInputSchema.safeParse({
+        ...command,
+        generationBrief: {
+          ...command.generationBrief,
+          customInstructions: `unsafe${String.fromCharCode(0)}instruction`,
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it('preserves v1/v2 manifests and validates frozen external-source v3 provenance', () => {

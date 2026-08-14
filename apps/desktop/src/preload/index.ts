@@ -84,6 +84,8 @@ import type {
   ManuscriptCheckpointFileChunk,
   ManuscriptCheckpointFileList,
   ManuscriptPdfPreview,
+  ManuscriptPdfArtifactActionReceipt,
+  ManuscriptPdfArtifactBinding,
   ManuscriptWorkspaceSnapshot,
   ReadManuscriptCheckpointFileInput,
   UpdateManuscriptInput,
@@ -124,6 +126,7 @@ import {
   type ListLectureCandidatesInput,
   type ListLectureStudiosInput,
   type SendLectureStudioMessageInput,
+  type UpdateLectureStudioGenerationBriefInput,
 } from '../shared/lecture-studio-contracts';
 import { unwrapLectureStudioIpcResult } from '../shared/lecture-studio-ipc-result';
 import type {
@@ -560,6 +563,21 @@ const api = {
         MANUSCRIPT_WORKSPACE_IPC_CHANNELS.compilePdf,
         input,
       ),
+    exportPdf: (input: ManuscriptPdfArtifactBinding) =>
+      invokeManuscriptWorkspace<ManuscriptPdfArtifactActionReceipt>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.exportPdf,
+        input,
+      ),
+    openPdf: (input: ManuscriptPdfArtifactBinding) =>
+      invokeManuscriptWorkspace<ManuscriptPdfArtifactActionReceipt>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.openPdf,
+        input,
+      ),
+    revealPdf: (input: ManuscriptPdfArtifactBinding) =>
+      invokeManuscriptWorkspace<ManuscriptPdfArtifactActionReceipt>(
+        MANUSCRIPT_WORKSPACE_IPC_CHANNELS.revealPdf,
+        input,
+      ),
     disconnect: (input: ManuscriptBindingCommand) =>
       invokeManuscriptWorkspace<ManuscriptWorkspaceSnapshot>(
         MANUSCRIPT_WORKSPACE_IPC_CHANNELS.disconnect,
@@ -611,6 +629,8 @@ const api = {
       ),
     create: (input: CreateLectureStudioInput) =>
       invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.create, input),
+    updateGenerationBrief: (input: UpdateLectureStudioGenerationBriefInput) =>
+      invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.updateGenerationBrief, input),
     generate: (input: GenerateLectureStudioInput) =>
       invokeLectureStudio<LectureStudioTurnReceipt>(LECTURE_STUDIO_IPC_CHANNELS.generate, input),
     send: (input: SendLectureStudioMessageInput) =>

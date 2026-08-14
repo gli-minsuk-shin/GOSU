@@ -56,6 +56,7 @@ const adapter: LectureStudioViewAdapter = {
   discardExternalSourceSet: vi.fn(),
   importOverleaf: vi.fn(),
   create: vi.fn(),
+  updateGenerationBrief: vi.fn(),
   generate: vi.fn(),
   send: vi.fn(),
   cancel: vi.fn(),
@@ -294,6 +295,12 @@ describe('LectureStudioView', () => {
     expect(source).toContain('Additional instructions');
     expect(source).toContain('generationBrief: {');
     expect(source).toContain('detailLevel,');
+    expect(source).toContain('Edit options');
+    expect(source).toContain('Changes apply to the next generation, retry, and chat edit only.');
+    expect(source).toContain('adapter.updateGenerationBrief');
+    expect(source).toContain('expectedVersion: selectedStudio.version');
+    expect(source).toContain('Existing revisions were left unchanged.');
+    expect(source).toContain('if (!editingGenerationBrief && !savingGenerationBrief)');
   });
 
   it('maps external files and Overleaf checkpoints to safe renderer cards', () => {

@@ -9,6 +9,7 @@ import {
   MANUSCRIPT_PDF_MAX_PAGES,
   MANUSCRIPT_PDF_RENDER_RADIUS,
   ManuscriptPdfPreview,
+  manuscriptPdfArtifactActionLabels,
   resolveManuscriptPdfCurrentPage,
 } from '../src/renderer/src/manuscript-pdf-preview';
 import type { ManuscriptPdfPreview as ManuscriptPdfPreviewValue } from '../src/shared/manuscript-workspace-contracts';
@@ -37,7 +38,18 @@ const preview: ManuscriptPdfPreviewValue = {
 
 describe('Manuscript PDF preview', () => {
   it('uses a canvas-only local viewer and labels checkpoint provenance truthfully', () => {
-    const html = renderToStaticMarkup(<ManuscriptPdfPreview preview={preview} />);
+    const html = renderToStaticMarkup(
+      <ManuscriptPdfPreview
+        preview={preview}
+        artifactActions={{
+          busy: false,
+          status: null,
+          onExport: () => undefined,
+          onOpen: () => undefined,
+          onReveal: () => undefined,
+        }}
+      />,
+    );
 
     expect(html).toContain('Compiled PDF');
     expect(html).toContain('MacTeX latexmk');
@@ -51,6 +63,12 @@ describe('Manuscript PDF preview', () => {
     expect(html).not.toContain('<iframe');
     expect(html).not.toContain('<object');
     expect(html).not.toContain(preview.pdfBase64);
+    for (const label of Object.values(manuscriptPdfArtifactActionLabels())) {
+      expect(html).toContain(`aria-label="${label}"`);
+      expect(html).toContain(`title="${label}"`);
+    }
+    expect(html.match(/class="manuscript-pdf-artifact-action-icon"/gu)).toHaveLength(3);
+    expect(html.match(/aria-hidden="true"/gu)).toHaveLength(3);
   });
 
   it('bounds decoded images and canvas allocation before rendering', () => {

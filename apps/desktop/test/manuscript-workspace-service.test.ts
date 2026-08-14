@@ -358,6 +358,13 @@ function serviceFixture(
     sizeBytes: 9,
     pdfBase64: Buffer.from('%PDF-1.4\n').toString('base64'),
   }));
+  const stagePdf = vi.fn(async () => undefined);
+  const exportExisting = vi.fn(async () => ({
+    status: 'exported' as const,
+    fileName: 'Main-manuscript.pdf',
+  }));
+  const openExisting = vi.fn(async () => '33333333-3333-4333-8333-333333333333-manuscript.pdf');
+  const revealExisting = vi.fn(async () => '33333333-3333-4333-8333-333333333333-manuscript.pdf');
   const now = () => new Date('2026-08-11T01:02:03.000Z');
   const repositoryRevision = vi.fn(async () => GOSU_REVISION);
   const adapters = createManuscriptWorkspaceAdapterRegistry([
@@ -372,6 +379,7 @@ function serviceFixture(
     adapters,
     overleafGit: transport,
     pdfCompiler: { compile: compilePdf },
+    pdfArtifacts: { stagePdf, exportExisting, openExisting, revealExisting },
     credentials: { stage: stageCredential },
     now,
   });
@@ -387,6 +395,10 @@ function serviceFixture(
     listCheckpointFiles,
     readCheckpointText,
     compilePdf,
+    stagePdf,
+    exportExisting,
+    openExisting,
+    revealExisting,
     restoreCheckpoint,
     removeBindingArtifacts,
     eraseCredential,
@@ -1015,6 +1027,80 @@ describe('Manuscript workspace service', () => {
         engine: 'lualatex',
       }),
     ).rejects.toMatchObject({ code: 'manuscript_pdf_compile_failed' });
+  });
+
+  it('exports, opens, and reveals only the exact Main-retained compiled artifact', async () => {
+    const fixture = serviceFixture();
+    const { manuscript, checkpoint } = await createConnectAndCapture(fixture);
+    const preview = await fixture.service.compilePdf({
+      projectId: PROJECT_ID,
+      manuscriptId: manuscript.id,
+      checkpointId: checkpoint.checkpointId,
+      engine: 'xelatex',
+    });
+    const binding = {
+      projectId: preview.projectId,
+      manuscriptId: preview.manuscriptId,
+      checkpointId: preview.checkpointId,
+      artifactId: preview.artifactId,
+      pdfSha256: preview.pdfSha256,
+    };
+
+    await expect(fixture.service.exportPdf(binding)).resolves.toEqual({
+      schemaVersion: 1,
+      status: 'exported',
+      fileName: 'Main-manuscript.pdf',
+    });
+    await expect(fixture.service.openPdf(binding)).resolves.toMatchObject({
+      schemaVersion: 1,
+      status: 'opened',
+    });
+    await expect(fixture.service.revealPdf(binding)).resolves.toMatchObject({
+      schemaVersion: 1,
+      status: 'revealed',
+    });
+
+    const descriptor = {
+      artifactId: preview.artifactId,
+      pdfSha256: preview.pdfSha256,
+      sizeBytes: preview.sizeBytes,
+    };
+    expect(fixture.stagePdf).toHaveBeenCalledExactlyOnceWith(preview);
+    expect(fixture.exportExisting).toHaveBeenCalledExactlyOnceWith(
+      descriptor,
+      'Main-manuscript.pdf',
+    );
+    expect(fixture.openExisting).toHaveBeenCalledExactlyOnceWith(descriptor);
+    expect(fixture.revealExisting).toHaveBeenCalledExactlyOnceWith(descriptor);
+
+    await expect(
+      fixture.service.openPdf({ ...binding, pdfSha256: `sha256:${'0'.repeat(64)}` }),
+    ).rejects.toMatchObject({ code: 'manuscript_pdf_artifact_not_found' });
+    await expect(
+      fixture.service.openPdf({ ...binding, artifactId: randomUUID() }),
+    ).rejects.toMatchObject({ code: 'manuscript_pdf_artifact_not_found' });
+    await expect(
+      fixture.service.openPdf({ ...binding, manuscriptId: randomUUID() }),
+    ).rejects.toMatchObject({ code: 'manuscript_not_found' });
+    await expect(
+      fixture.service.openPdf({ ...binding, projectId: OTHER_PROJECT_ID }),
+    ).rejects.toMatchObject({ code: 'manuscript_not_found' });
+    await expect(
+      fixture.service.openPdf({ ...binding, checkpointId: randomUUID() }),
+    ).rejects.toMatchObject({ code: 'manuscript_checkpoint_not_found' });
+
+    const newerCheckpoint = {
+      ...checkpoint,
+      checkpointId: randomUUID(),
+      providerRevision: 'f'.repeat(40),
+      sourceRevision: 'f'.repeat(40),
+      observedAt: '2026-08-11T01:03:03.000Z',
+    };
+    fixture.storage.checkpoints.set(newerCheckpoint.checkpointId, newerCheckpoint);
+    await expect(fixture.service.openPdf(binding)).rejects.toMatchObject({
+      code: 'manuscript_checkpoint_not_found',
+    });
+    expect(fixture.openExisting).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed on a stale provider revision and does not append a checkpoint', async () => {

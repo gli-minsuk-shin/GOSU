@@ -37,6 +37,27 @@ beforeEach(() => {
 });
 
 describe('Lecture Studio preload bridge', () => {
+  it('maps full generation-option updates to their fixed channel', async () => {
+    const input = {
+      studioId: '11111111-1111-4111-8111-111111111111',
+      expectedVersion: 5,
+      generationBrief: {
+        notesTargetPages: 16,
+        slidesTargetPages: null,
+        detailLevel: 'exhaustive' as const,
+        customInstructions: 'Retain every proof obligation.',
+      },
+    };
+    electron.ipcRenderer.invoke.mockResolvedValue({ ok: true, value: {} });
+
+    await api.lectureStudio.updateGenerationBrief(input);
+
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(
+      LECTURE_STUDIO_IPC_CHANNELS.updateGenerationBrief,
+      input,
+    );
+  });
+
   it('maps detail to its fixed IPC channel and exact input only', async () => {
     const studioId = '11111111-1111-4111-8111-111111111111';
     electron.ipcRenderer.invoke.mockResolvedValue({ ok: true, value: {} });

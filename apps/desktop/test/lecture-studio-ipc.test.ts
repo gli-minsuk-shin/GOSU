@@ -54,6 +54,7 @@ describe('Lecture Studio IPC boundary', () => {
         LECTURE_STUDIO_IPC_CHANNELS.discardExternalSourceSet,
         LECTURE_STUDIO_IPC_CHANNELS.importOverleaf,
         LECTURE_STUDIO_IPC_CHANNELS.create,
+        LECTURE_STUDIO_IPC_CHANNELS.updateGenerationBrief,
         LECTURE_STUDIO_IPC_CHANNELS.generate,
         LECTURE_STUDIO_IPC_CHANNELS.send,
         LECTURE_STUDIO_IPC_CHANNELS.cancel,
@@ -67,6 +68,38 @@ describe('Lecture Studio IPC boundary', () => {
       ].sort(),
     );
     expect([...handlers.keys()]).not.toContain(LECTURE_STUDIO_IPC_CHANNELS.event);
+  });
+
+  it('routes only a strict full version-fenced generation brief update', async () => {
+    const updateGenerationBrief = vi.fn(async () => undefined as never);
+    const { handlers } = fixture({ updateGenerationBrief });
+    const command = {
+      studioId: randomUUID(),
+      expectedVersion: 3,
+      generationBrief: {
+        notesTargetPages: 12,
+        slidesTargetPages: 20,
+        detailLevel: 'detailed' as const,
+        customInstructions: 'Emphasize assumptions.',
+      },
+    };
+
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.updateGenerationBrief)?.(command);
+    expect(updateGenerationBrief).toHaveBeenCalledWith(command);
+
+    await expect(
+      handlers.get(LECTURE_STUDIO_IPC_CHANNELS.updateGenerationBrief)?.({
+        ...command,
+        generationBrief: { detailLevel: 'concise' },
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
+    await expect(
+      handlers.get(LECTURE_STUDIO_IPC_CHANNELS.updateGenerationBrief)?.({
+        ...command,
+        sourceSelection: {},
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
+    expect(updateGenerationBrief).toHaveBeenCalledTimes(1);
   });
 
   it('routes only exact staged-file and Overleaf source commands', async () => {

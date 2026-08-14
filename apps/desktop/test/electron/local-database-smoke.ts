@@ -2599,7 +2599,107 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
       JSON.stringify(studio.generationBrief),
     'lecture_generation_brief_was_not_persisted_after_reopen',
   );
+  const editedBrief = {
+    notesTargetPages: 30,
+    slidesTargetPages: 40,
+    detailLevel: 'exhaustive' as const,
+    customInstructions: 'Persist this revised generation policy.',
+  };
+  const generationUpdateStudio: LectureStudio = {
+    ...studio,
+    id: randomUUID(),
+    title: 'Generation brief update fixture',
+  };
+  invariant(
+    generationRoundTrip.createLectureStudio(generationUpdateStudio),
+    'lecture_generation_brief_update_fixture_insert_failed',
+  );
+  const editedStudio = generationRoundTrip.updateLectureStudioGenerationBrief(
+    generationUpdateStudio.id,
+    generationUpdateStudio.version,
+    editedBrief,
+    fixedTimestamp,
+  );
+  invariant(
+    editedStudio?.version === generationUpdateStudio.version + 1 &&
+      JSON.stringify(editedStudio.generationBrief) === JSON.stringify(editedBrief) &&
+      generationRoundTrip.listLectureStudioRevisions(generationUpdateStudio.id, 10).length === 0,
+    'lecture_generation_brief_update_failed_or_mutated_history',
+  );
+  invariant(
+    generationRoundTrip.updateLectureStudioGenerationBrief(
+      generationUpdateStudio.id,
+      generationUpdateStudio.version,
+      generationUpdateStudio.generationBrief,
+      fixedTimestamp,
+    ) === null,
+    'lecture_generation_brief_stale_version_was_accepted',
+  );
   generationRoundTrip.close();
+
+  const generationUpdateReopen = new LocalDatabase();
+  generationUpdateReopen.open();
+  const reopenedEditedStudio = generationUpdateReopen.getLectureStudio(generationUpdateStudio.id);
+  invariant(
+    reopenedEditedStudio?.version === editedStudio.version &&
+      JSON.stringify(reopenedEditedStudio.generationBrief) === JSON.stringify(editedBrief),
+    'lecture_generation_brief_update_was_not_persisted_after_reopen',
+  );
+  const updateRaceAttemptId = randomUUID();
+  const updateRaceGenerating = generationUpdateReopen.beginLectureStudioTurn({
+    studioId: generationUpdateStudio.id,
+    expectedVersion: reopenedEditedStudio.version,
+    attemptId: updateRaceAttemptId,
+    userMessage: null,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(updateRaceGenerating !== null, 'lecture_generation_brief_race_turn_did_not_begin');
+  invariant(
+    generationUpdateReopen.updateLectureStudioGenerationBrief(
+      generationUpdateStudio.id,
+      updateRaceGenerating.version,
+      generationUpdateStudio.generationBrief,
+      fixedTimestamp,
+    ) === null,
+    'lecture_generation_brief_update_won_after_generation_started',
+  );
+  const updateRaceFailed = generationUpdateReopen.failLectureStudioTurn({
+    studioId: generationUpdateStudio.id,
+    attemptId: updateRaceAttemptId,
+    errorCode: 'fixture_race_complete',
+    messageStatus: 'interrupted',
+    updatedAt: fixedTimestamp,
+  });
+  invariant(updateRaceFailed !== null, 'lecture_generation_brief_race_turn_did_not_finish');
+  const trashedUpdateFixture = generationUpdateReopen.setLectureStudioTrashed(
+    generationUpdateStudio.id,
+    updateRaceFailed.version,
+    fixedTimestamp,
+    fixedTimestamp,
+  );
+  invariant(
+    trashedUpdateFixture?.trashedAt !== undefined,
+    'lecture_generation_brief_fixture_trash_failed',
+  );
+  invariant(
+    generationUpdateReopen.emptyLectureStudioTrash(
+      {
+        idempotencyKey: randomUUID(),
+        confirmation: 'EMPTY LECTURE TRASH',
+        targets: [
+          {
+            studioId: trashedUpdateFixture.id,
+            expectedVersion: trashedUpdateFixture.version,
+            trashedAt: trashedUpdateFixture.trashedAt,
+          },
+        ],
+      },
+      fixedTimestamp,
+    )?.removedStudios.length === 1 &&
+      generationUpdateReopen.getLectureStudio(generationUpdateStudio.id) === null,
+    'lecture_generation_brief_fixture_cleanup_failed',
+  );
+  generationUpdateReopen.close();
 
   // Simulate a studio persisted before both Manuscript sources and generation controls existed.
   // Reopening must add the column, restore the safe default, and normalize the old selection.

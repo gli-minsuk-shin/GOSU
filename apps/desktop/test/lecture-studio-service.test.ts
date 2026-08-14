@@ -293,6 +293,29 @@ class MemoryStorage implements LectureStudioStorage {
     return true;
   }
 
+  updateLectureStudioGenerationBrief(
+    studioId: string,
+    expectedVersion: number,
+    generationBrief: LectureStudio['generationBrief'],
+    updatedAt: string,
+  ) {
+    const index = this.studios.findIndex(
+      (studio) => studio.id === studioId && studio.version === expectedVersion,
+    );
+    if (index < 0) return null;
+    const current = this.studios[index]!;
+    if (current.trashedAt || current.status === 'generating' || current.activeAttemptId)
+      return null;
+    const updated: LectureStudio = {
+      ...current,
+      generationBrief,
+      version: current.version + 1,
+      updatedAt,
+    };
+    this.studios[index] = updated;
+    return updated;
+  }
+
   beginLectureStudioTurn(input: {
     studioId: string;
     expectedVersion: number;
@@ -1877,6 +1900,136 @@ The captured result improves the bounded baseline.
       detailLevel: 'detailed',
       customInstructions: 'Emphasize the theorem and ablations.',
     });
+  });
+
+  it('updates future generation options without mutating committed revisions', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.response = latexResponse(['P1']);
+    const created = await service.create({
+      title: 'Editable generation options',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const initialBrief = {
+      notesTargetPages: 18,
+      slidesTargetPages: null,
+      detailLevel: 'detailed' as const,
+      customInstructions: 'INITIAL-UPDATED-BRIEF',
+    };
+    const configured = await service.updateGenerationBrief({
+      studioId: created.id,
+      expectedVersion: created.version,
+      generationBrief: initialBrief,
+    });
+    expect(configured).toMatchObject({
+      generationBrief: initialBrief,
+      version: created.version + 1,
+    });
+
+    const initial = await service.generate({
+      studioId: configured.id,
+      expectedVersion: configured.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(codex.prompt).toContain('INITIAL-UPDATED-BRIEF');
+    expect(codex.prompt).toContain('"notesTargetPages":18');
+    const immutableFirstRevision = structuredClone(initial.revision);
+
+    const revisionBrief = {
+      notesTargetPages: null,
+      slidesTargetPages: null,
+      detailLevel: 'exhaustive' as const,
+      customInstructions: 'REVISION-UPDATED-BRIEF',
+    };
+    const reconfigured = await service.updateGenerationBrief({
+      studioId: created.id,
+      expectedVersion: initial.studio.version,
+      generationBrief: revisionBrief,
+    });
+    const noOp = await service.updateGenerationBrief({
+      studioId: created.id,
+      expectedVersion: reconfigured.version,
+      generationBrief: revisionBrief,
+    });
+    expect(noOp.version).toBe(reconfigured.version);
+    expect(storage.revisions).toEqual([immutableFirstRevision]);
+
+    await expect(
+      service.updateGenerationBrief({
+        studioId: created.id,
+        expectedVersion: initial.studio.version,
+        generationBrief: initialBrief,
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_version_conflict'));
+
+    await service.send({
+      studioId: created.id,
+      expectedVersion: reconfigured.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: 'Use the revised generation plan.',
+    });
+    expect(codex.prompt).toContain('REVISION-UPDATED-BRIEF');
+    expect(codex.prompt).toContain('"detailLevel":"exhaustive"');
+    expect(storage.revisions[0]).toEqual(immutableFirstRevision);
+    expect(storage.revisions).toHaveLength(2);
+  });
+
+  it('rejects generation-option edits while generating or after moving to Trash', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.response = latexResponse(['P1']);
+    const created = await service.create({
+      title: 'Guarded generation options',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const nextBrief = {
+      notesTargetPages: 10,
+      slidesTargetPages: null,
+      detailLevel: 'concise' as const,
+      customInstructions: 'Guarded update.',
+    };
+    codex.deferCompletion = true;
+    const running = service.generate({
+      studioId: created.id,
+      expectedVersion: created.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await vi.waitFor(() => expect(storage.getLectureStudio(created.id)?.status).toBe('generating'));
+    await expect(
+      service.updateGenerationBrief({
+        studioId: created.id,
+        expectedVersion: storage.getLectureStudio(created.id)!.version,
+        generationBrief: nextBrief,
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_busy'));
+    codex.completeDeferred();
+    const completed = await running;
+    const trashed = await service.trash({
+      studioId: created.id,
+      expectedVersion: completed.studio.version,
+    });
+    await expect(
+      service.updateGenerationBrief({
+        studioId: created.id,
+        expectedVersion: trashed.version,
+        generationBrief: nextBrief,
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_studio_trashed'));
   });
 
   it('shares one serialized extraction budget fairly across two large manuscripts', async () => {

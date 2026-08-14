@@ -57,20 +57,26 @@ export const LectureStudioDetailLevelSchema = z.enum([
 ]);
 export type LectureStudioDetailLevel = z.infer<typeof LectureStudioDetailLevelSchema>;
 
+const lectureStudioGenerationBriefShape = {
+  notesTargetPages: z.number().int().min(1).max(100).nullable(),
+  slidesTargetPages: z.number().int().min(2).max(100).nullable(),
+  detailLevel: LectureStudioDetailLevelSchema,
+  customInstructions: z
+    .string()
+    .trim()
+    .max(LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS)
+    .refine(
+      (value) => !containsUnsafeControlCharacter(value),
+      'Generation instructions cannot contain control characters',
+    ),
+} as const;
+
 export const LectureStudioGenerationBriefSchema = z
   .object({
-    notesTargetPages: z.number().int().min(1).max(100).nullable().default(null),
-    slidesTargetPages: z.number().int().min(2).max(100).nullable().default(null),
-    detailLevel: LectureStudioDetailLevelSchema.default('standard'),
-    customInstructions: z
-      .string()
-      .trim()
-      .max(LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS)
-      .refine(
-        (value) => !containsUnsafeControlCharacter(value),
-        'Generation instructions cannot contain control characters',
-      )
-      .default(''),
+    notesTargetPages: lectureStudioGenerationBriefShape.notesTargetPages.default(null),
+    slidesTargetPages: lectureStudioGenerationBriefShape.slidesTargetPages.default(null),
+    detailLevel: lectureStudioGenerationBriefShape.detailLevel.default('standard'),
+    customInstructions: lectureStudioGenerationBriefShape.customInstructions.default(''),
   })
   .strict()
   .default({
@@ -963,6 +969,17 @@ const lectureTurnShape = {
 
 export const GenerateLectureStudioInputSchema = z.object(lectureTurnShape).strict();
 export type GenerateLectureStudioInput = z.infer<typeof GenerateLectureStudioInputSchema>;
+
+export const UpdateLectureStudioGenerationBriefInputSchema = z
+  .object({
+    studioId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+    generationBrief: z.object(lectureStudioGenerationBriefShape).strict(),
+  })
+  .strict();
+export type UpdateLectureStudioGenerationBriefInput = z.infer<
+  typeof UpdateLectureStudioGenerationBriefInputSchema
+>;
 
 export const SendLectureStudioMessageInputSchema = z
   .object({ ...lectureTurnShape, message: boundedText(LECTURE_STUDIO_MAX_MESSAGE_LENGTH) })

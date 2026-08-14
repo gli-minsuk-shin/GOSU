@@ -22,6 +22,8 @@ import {
   ManuscriptBindingCommandSchema,
   ManuscriptCheckpointFileChunkSchema,
   ManuscriptCheckpointFileListSchema,
+  ManuscriptPdfArtifactActionReceiptSchema,
+  ManuscriptPdfArtifactBindingSchema,
   ManuscriptPdfPreviewSchema,
   ManuscriptProjectInputSchema,
   ReadManuscriptCheckpointFileInputSchema,
@@ -41,6 +43,8 @@ import {
   type ManuscriptWorkspaceSnapshot,
   type ManuscriptCheckpointFileChunk,
   type ManuscriptCheckpointFileList,
+  type ManuscriptPdfArtifactActionReceipt,
+  type ManuscriptPdfArtifactBinding,
   type ManuscriptPdfPreview,
   type OverleafGitBindingConfiguration,
   type StoredManuscriptWorkspaceConnection,
@@ -49,6 +53,11 @@ import {
 } from '../shared/manuscript-workspace-contracts';
 import type { ManuscriptWorkspaceIpcErrorCode } from '../shared/manuscript-workspace-ipc-result';
 import type { OverleafGitCredentialStore } from './overleaf-git-credential-store';
+import {
+  ManuscriptPdfArtifactError,
+  type ManuscriptPdfArtifactDescriptor,
+  type ManuscriptPdfArtifactPlatform,
+} from './manuscript-pdf-artifact-platform';
 import { ManuscriptPdfCompilerError, type ManuscriptPdfCompiler } from './manuscript-pdf-compiler';
 import { OverleafGitTransportError, parseOverleafGitRemote } from './overleaf-git-transport';
 import type { OverleafGitTransport } from './overleaf-git-transport';
@@ -163,12 +172,21 @@ type ManuscriptWorkspaceServiceOptions = Readonly<{
   adapters: ManuscriptWorkspaceAdapterRegistry;
   overleafGit: CheckpointTransport;
   pdfCompiler?: Pick<ManuscriptPdfCompiler, 'compile'>;
+  pdfArtifacts?: ManuscriptPdfArtifactPlatform;
   credentials: CredentialStore;
   now?: () => Date;
 }>;
 
 const MAX_MANUSCRIPTS_PER_PROJECT = 32;
 const MAX_ARTIFACT_PURGE_RECONCILIATION_BATCHES = 64;
+const MAX_RETAINED_PDF_ARTIFACTS = 12;
+const MAX_RETAINED_PDF_ARTIFACT_BYTES = 128 * 1024 * 1024;
+
+type RetainedManuscriptPdfArtifact = Readonly<{
+  binding: ManuscriptPdfArtifactBinding;
+  descriptor: ManuscriptPdfArtifactDescriptor;
+  suggestedFileName: string;
+}>;
 
 function mapProviderError(error: unknown): ManuscriptWorkspaceServiceError {
   if (error instanceof ManuscriptWorkspaceServiceError) return error;
@@ -195,6 +213,9 @@ function mapProviderError(error: unknown): ManuscriptWorkspaceServiceError {
   if (error instanceof ManuscriptPdfCompilerError) {
     return new ManuscriptWorkspaceServiceError(error.code);
   }
+  if (error instanceof ManuscriptPdfArtifactError) {
+    return new ManuscriptWorkspaceServiceError(error.code);
+  }
   if (error instanceof Error) {
     if (error.message === 'overleaf_keychain_unavailable') {
       return new ManuscriptWorkspaceServiceError('overleaf_keychain_unavailable');
@@ -213,9 +234,11 @@ export class ManuscriptWorkspaceService {
   private readonly adapters: ManuscriptWorkspaceAdapterRegistry;
   private readonly overleafGit: CheckpointTransport;
   private readonly pdfCompiler: Pick<ManuscriptPdfCompiler, 'compile'>;
+  private readonly pdfArtifacts: ManuscriptPdfArtifactPlatform;
   private readonly credentials: CredentialStore;
   private readonly now: () => Date;
   private readonly tails = new Map<string, Promise<void>>();
+  private readonly retainedPdfArtifacts = new Map<string, RetainedManuscriptPdfArtifact>();
 
   constructor(options: ManuscriptWorkspaceServiceOptions) {
     this.storage = options.storage;
@@ -230,6 +253,20 @@ export class ManuscriptWorkspaceService {
           throw new ManuscriptPdfCompilerError('manuscript_pdf_compiler_unavailable');
         },
       } satisfies Pick<ManuscriptPdfCompiler, 'compile'>);
+    this.pdfArtifacts =
+      options.pdfArtifacts ??
+      ({
+        stagePdf: async () => undefined,
+        exportExisting: async () => {
+          throw new ManuscriptPdfArtifactError('manuscript_pdf_artifact_not_found');
+        },
+        openExisting: async () => {
+          throw new ManuscriptPdfArtifactError('manuscript_pdf_artifact_not_found');
+        },
+        revealExisting: async () => {
+          throw new ManuscriptPdfArtifactError('manuscript_pdf_artifact_not_found');
+        },
+      } satisfies ManuscriptPdfArtifactPlatform);
     this.credentials = options.credentials;
     this.now = options.now ?? (() => new Date());
   }
@@ -633,14 +670,14 @@ export class ManuscriptWorkspaceService {
   async compilePdf(input: CompileManuscriptPdfInput): Promise<ManuscriptPdfPreview> {
     const command = CompileManuscriptPdfInputSchema.parse(input);
     return this.exclusive(command.projectId, async () => {
-      const { connection, checkpoint } = await this.requireLatestCheckpoint(command);
+      const { connection, checkpoint, manuscript } = await this.requireLatestCheckpoint(command);
       try {
         const compiled = await this.pdfCompiler.compile(
           connection.binding.bindingId,
           checkpoint,
           command.engine,
         );
-        return ManuscriptPdfPreviewSchema.parse({
+        const preview = ManuscriptPdfPreviewSchema.parse({
           schemaVersion: 1,
           ...compiled,
           projectId: command.projectId,
@@ -653,6 +690,66 @@ export class ManuscriptWorkspaceService {
             connection.lastObservedProviderRevision !==
               (checkpoint.providerRevision ?? checkpoint.sourceRevision),
           compiledAt: this.now().toISOString(),
+        });
+        await this.pdfArtifacts.stagePdf(preview);
+        this.retainPdfArtifact(preview, manuscript.title);
+        return preview;
+      } catch (error) {
+        throw mapProviderError(error);
+      }
+    });
+  }
+
+  async exportPdf(
+    input: ManuscriptPdfArtifactBinding,
+  ): Promise<ManuscriptPdfArtifactActionReceipt> {
+    const command = ManuscriptPdfArtifactBindingSchema.parse(input);
+    return this.exclusive(command.projectId, async () => {
+      const artifact = await this.requireRetainedPdfArtifact(command);
+      try {
+        const result = await this.pdfArtifacts.exportExisting(
+          artifact.descriptor,
+          artifact.suggestedFileName,
+        );
+        return ManuscriptPdfArtifactActionReceiptSchema.parse({
+          schemaVersion: 1,
+          ...result,
+        });
+      } catch (error) {
+        throw mapProviderError(error);
+      }
+    });
+  }
+
+  async openPdf(input: ManuscriptPdfArtifactBinding): Promise<ManuscriptPdfArtifactActionReceipt> {
+    const command = ManuscriptPdfArtifactBindingSchema.parse(input);
+    return this.exclusive(command.projectId, async () => {
+      const artifact = await this.requireRetainedPdfArtifact(command);
+      try {
+        const fileName = await this.pdfArtifacts.openExisting(artifact.descriptor);
+        return ManuscriptPdfArtifactActionReceiptSchema.parse({
+          schemaVersion: 1,
+          status: 'opened',
+          fileName,
+        });
+      } catch (error) {
+        throw mapProviderError(error);
+      }
+    });
+  }
+
+  async revealPdf(
+    input: ManuscriptPdfArtifactBinding,
+  ): Promise<ManuscriptPdfArtifactActionReceipt> {
+    const command = ManuscriptPdfArtifactBindingSchema.parse(input);
+    return this.exclusive(command.projectId, async () => {
+      const artifact = await this.requireRetainedPdfArtifact(command);
+      try {
+        const fileName = await this.pdfArtifacts.revealExisting(artifact.descriptor);
+        return ManuscriptPdfArtifactActionReceiptSchema.parse({
+          schemaVersion: 1,
+          status: 'revealed',
+          fileName,
         });
       } catch (error) {
         throw mapProviderError(error);
@@ -684,7 +781,7 @@ export class ManuscriptWorkspaceService {
     checkpointId: string;
   }) {
     await this.requireActiveProject(command.projectId);
-    await this.requireManuscript(command.projectId, command.manuscriptId);
+    const manuscript = await this.requireManuscript(command.projectId, command.manuscriptId);
     const connection = await this.storage.getManuscriptWorkspaceConnection(
       command.projectId,
       command.manuscriptId,
@@ -706,7 +803,62 @@ export class ManuscriptWorkspaceService {
     ) {
       throw new ManuscriptWorkspaceServiceError('manuscript_checkpoint_not_found');
     }
-    return { connection, checkpoint };
+    return { connection, checkpoint, manuscript };
+  }
+
+  private retainPdfArtifact(preview: ManuscriptPdfPreview, manuscriptTitle: string) {
+    const binding = ManuscriptPdfArtifactBindingSchema.parse({
+      projectId: preview.projectId,
+      manuscriptId: preview.manuscriptId,
+      checkpointId: preview.checkpointId,
+      artifactId: preview.artifactId,
+      pdfSha256: preview.pdfSha256,
+    });
+    const descriptor = {
+      artifactId: preview.artifactId,
+      pdfSha256: preview.pdfSha256,
+      sizeBytes: preview.sizeBytes,
+    } satisfies ManuscriptPdfArtifactDescriptor;
+    const safeTitle = manuscriptTitle
+      .normalize('NFKC')
+      .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+      .replace(/^-+|-+$/gu, '')
+      .slice(0, 120);
+    this.retainedPdfArtifacts.delete(preview.artifactId);
+    this.retainedPdfArtifacts.set(preview.artifactId, {
+      binding,
+      descriptor,
+      suggestedFileName: `${safeTitle || 'manuscript'}.pdf`,
+    });
+    let retainedBytes = [...this.retainedPdfArtifacts.values()].reduce(
+      (total, artifact) => total + artifact.descriptor.sizeBytes,
+      0,
+    );
+    while (
+      this.retainedPdfArtifacts.size > MAX_RETAINED_PDF_ARTIFACTS ||
+      retainedBytes > MAX_RETAINED_PDF_ARTIFACT_BYTES
+    ) {
+      const oldest = this.retainedPdfArtifacts.entries().next().value as
+        [string, RetainedManuscriptPdfArtifact] | undefined;
+      if (!oldest) break;
+      this.retainedPdfArtifacts.delete(oldest[0]);
+      retainedBytes -= oldest[1].descriptor.sizeBytes;
+    }
+  }
+
+  private async requireRetainedPdfArtifact(command: ManuscriptPdfArtifactBinding) {
+    await this.requireLatestCheckpoint(command);
+    const artifact = this.retainedPdfArtifacts.get(command.artifactId);
+    if (
+      !artifact ||
+      artifact.binding.projectId !== command.projectId ||
+      artifact.binding.manuscriptId !== command.manuscriptId ||
+      artifact.binding.checkpointId !== command.checkpointId ||
+      artifact.binding.pdfSha256 !== command.pdfSha256
+    ) {
+      throw new ManuscriptWorkspaceServiceError('manuscript_pdf_artifact_not_found');
+    }
+    return artifact;
   }
 
   runWhenProjectsIdle<T>(projectIds: readonly string[], operation: () => Promise<T>): Promise<T> {

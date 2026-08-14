@@ -4,6 +4,7 @@ import { ManuscriptRootDocumentSchema } from '@gosu/contracts';
 import {
   MANUSCRIPT_LATEX_ENGINE_DISPLAY_NAMES,
   type ManuscriptLatexEngine,
+  type ManuscriptPdfArtifactBinding,
   type ManuscriptPdfPreview as ManuscriptPdfPreviewValue,
   type ManuscriptRecord,
   type ManuscriptWorkspaceItem,
@@ -84,6 +85,18 @@ export function describeManuscriptOperationError(
     if (code === 'manuscript_checkpoint_not_found') {
       return 'This captured checkpoint is no longer available. Check Overleaf changes and capture a new inbound checkpoint.';
     }
+    if (code === 'manuscript_pdf_cache_failed') {
+      return 'The compiled PDF could not be retained in GOSU’s protected local cache. Check available disk space and retry the compile.';
+    }
+    if (code === 'manuscript_pdf_artifact_not_found') {
+      return 'This compiled PDF is no longer in the protected local cache. Compile it again before exporting or opening it.';
+    }
+    if (code === 'manuscript_pdf_export_failed') {
+      return 'The PDF could not be exported to the selected location. Choose another local folder and retry.';
+    }
+    if (code === 'manuscript_pdf_open_failed') {
+      return 'The compiled PDF could not be opened in the system default PDF app.';
+    }
   }
   return describeError(error);
 }
@@ -94,6 +107,18 @@ export function validManuscriptRootDocument(path: string) {
 
 export function suggestedManuscriptTitle(existingCount: number) {
   return existingCount === 0 ? 'Main manuscript' : `Main manuscript ${existingCount + 1}`;
+}
+
+export function manuscriptPdfArtifactBinding(
+  preview: ManuscriptPdfPreviewValue,
+): ManuscriptPdfArtifactBinding {
+  return {
+    projectId: preview.projectId,
+    manuscriptId: preview.manuscriptId,
+    checkpointId: preview.checkpointId,
+    artifactId: preview.artifactId,
+    pdfSha256: preview.pdfSha256,
+  };
 }
 
 function OverleafConnectForm({
@@ -230,6 +255,7 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
   const [rootDocument, setRootDocument] = useState('main.tex');
   const [failedChecks, setFailedChecks] = useState<Record<string, true>>({});
   const [pdfPreviews, setPdfPreviews] = useState<Record<string, ManuscriptPdfPreviewValue>>({});
+  const [pdfArtifactStatuses, setPdfArtifactStatuses] = useState<Record<string, string>>({});
   const [latexEngines, setLatexEngines] = useState<Record<string, ManuscriptLatexEngine>>({});
   const requestGeneration = useRef(0);
   const manuscriptCount = snapshot?.manuscripts.length;
@@ -251,6 +277,7 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
     setBusy(null);
     setFailedChecks({});
     setPdfPreviews({});
+    setPdfArtifactStatuses({});
     setLatexEngines({});
     setTitle('Main manuscript');
     setRootDocument('main.tex');
@@ -274,9 +301,49 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
       if (generation === requestGeneration.current) {
         setSnapshot(next);
         setPdfPreviews({});
+        setPdfArtifactStatuses({});
       }
     } catch (operationError) {
       if (generation === requestGeneration.current) setError(describeError(operationError));
+    } finally {
+      if (generation === requestGeneration.current) setBusy(null);
+    }
+  };
+
+  const runPdfArtifactAction = async (
+    preview: ManuscriptPdfPreviewValue,
+    action: 'export' | 'open' | 'reveal',
+  ) => {
+    if (busy) return;
+    const generation = ++requestGeneration.current;
+    setBusy(`pdf-${action}:${preview.manuscriptId}`);
+    setError(null);
+    try {
+      const binding = manuscriptPdfArtifactBinding(preview);
+      const receipt =
+        action === 'export'
+          ? await window.gosu.manuscriptWorkspace.exportPdf(binding)
+          : action === 'open'
+            ? await window.gosu.manuscriptWorkspace.openPdf(binding)
+            : await window.gosu.manuscriptWorkspace.revealPdf(binding);
+      if (generation === requestGeneration.current) {
+        const status =
+          receipt.status === 'cancelled'
+            ? 'Export cancelled.'
+            : receipt.status === 'exported'
+              ? `Exported ${receipt.fileName ?? 'PDF'}.`
+              : receipt.status === 'opened'
+                ? 'Opened in the default PDF app.'
+                : 'Shown in Finder.';
+        setPdfArtifactStatuses((current) => ({
+          ...current,
+          [preview.manuscriptId]: status,
+        }));
+      }
+    } catch (actionError) {
+      if (generation === requestGeneration.current) {
+        setError(describeManuscriptOperationError(actionError));
+      }
     } finally {
       if (generation === requestGeneration.current) setBusy(null);
     }
@@ -302,6 +369,7 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
         // Keep one bounded PDF document resident at a time. A project can own
         // many manuscripts, and each preview may carry up to 32 MiB of bytes.
         setPdfPreviews({ [manuscriptId]: preview });
+        setPdfArtifactStatuses({});
       }
     } catch (compileError) {
       if (generation === requestGeneration.current) {
@@ -331,6 +399,12 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
           const nextPreviews = { ...current };
           delete nextPreviews[manuscriptId];
           return nextPreviews;
+        });
+        setPdfArtifactStatuses((current) => {
+          if (!current[manuscriptId]) return current;
+          const nextStatuses = { ...current };
+          delete nextStatuses[manuscriptId];
+          return nextStatuses;
         });
         setFailedChecks((current) => {
           if (!current[bindingId]) return current;
@@ -698,7 +772,18 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                         {busy === `disconnect:${manuscript.id}` ? 'Disconnecting…' : 'Disconnect'}
                       </button>
                     </div>
-                    {pdfPreview && <ManuscriptPdfPreview preview={pdfPreview} />}
+                    {pdfPreview && (
+                      <ManuscriptPdfPreview
+                        preview={pdfPreview}
+                        artifactActions={{
+                          busy: Boolean(busy),
+                          status: pdfArtifactStatuses[manuscript.id] ?? null,
+                          onExport: () => void runPdfArtifactAction(pdfPreview, 'export'),
+                          onOpen: () => void runPdfArtifactAction(pdfPreview, 'open'),
+                          onReveal: () => void runPdfArtifactAction(pdfPreview, 'reveal'),
+                        }}
+                      />
+                    )}
                   </>
                 )}
               </article>

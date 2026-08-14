@@ -10,6 +10,41 @@ export const MANUSCRIPT_PDF_MAX_CANVAS_DIMENSION = 8_192;
 export const MANUSCRIPT_PDF_MAX_PAGES = 2_000;
 export const MANUSCRIPT_PDF_RENDER_RADIUS = 1;
 
+export type ManuscriptPdfArtifactActions = Readonly<{
+  busy: boolean;
+  status: string | null;
+  onExport(): void;
+  onOpen(): void;
+  onReveal(): void;
+}>;
+
+export function manuscriptPdfArtifactActionLabels() {
+  return {
+    export: 'Export PDF',
+    open: 'Open PDF in default app',
+    reveal: 'Show in Finder',
+  } as const;
+}
+
+function ManuscriptPdfArtifactActionIcon({ kind }: { kind: 'export' | 'open' | 'reveal' }) {
+  const path =
+    kind === 'export'
+      ? 'M12 3v11m0 0 4-4m-4 4-4-4M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4'
+      : kind === 'open'
+        ? 'M14 4h6v6m0-6-9 9M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5'
+        : 'M3.5 7.5V6.75A1.75 1.75 0 0 1 5.25 5h3.5l2 2h8A1.75 1.75 0 0 1 20.5 8.75v8.5A1.75 1.75 0 0 1 18.75 19H5.25a1.75 1.75 0 0 1-1.75-1.75V7.5Z';
+  return (
+    <svg
+      className="manuscript-pdf-artifact-action-icon"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d={path} />
+    </svg>
+  );
+}
+
 type ManuscriptPdfPageBounds = Readonly<{
   pageNumber: number;
   top: number;
@@ -163,7 +198,13 @@ function ManuscriptPdfPageCanvas({
   );
 }
 
-export function ManuscriptPdfPreview({ preview }: { preview: ManuscriptPdfPreviewValue }) {
+export function ManuscriptPdfPreview({
+  preview,
+  artifactActions,
+}: {
+  preview: ManuscriptPdfPreviewValue;
+  artifactActions?: ManuscriptPdfArtifactActions;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLElement>());
   const scrollFrameRef = useRef<number | null>(null);
@@ -175,6 +216,7 @@ export function ManuscriptPdfPreview({ preview }: { preview: ManuscriptPdfPrevie
   const [scale, setScale] = useState(1.1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const artifactActionLabels = manuscriptPdfArtifactActionLabels();
 
   useEffect(() => {
     let cancelled = false;
@@ -313,6 +355,41 @@ export function ManuscriptPdfPreview({ preview }: { preview: ManuscriptPdfPrevie
           </span>
         </div>
         {preview.providerAhead && <b>Overleaf has a newer observed revision</b>}
+        {artifactActions && (
+          <div className="manuscript-pdf-artifact-actions" aria-label="Manuscript PDF actions">
+            <button
+              type="button"
+              className="ghost-button manuscript-pdf-artifact-action-button"
+              aria-label={artifactActionLabels.export}
+              title={artifactActionLabels.export}
+              disabled={artifactActions.busy}
+              onClick={artifactActions.onExport}
+            >
+              <ManuscriptPdfArtifactActionIcon kind="export" />
+            </button>
+            <button
+              type="button"
+              className="ghost-button manuscript-pdf-artifact-action-button"
+              aria-label={artifactActionLabels.open}
+              title={artifactActionLabels.open}
+              disabled={artifactActions.busy}
+              onClick={artifactActions.onOpen}
+            >
+              <ManuscriptPdfArtifactActionIcon kind="open" />
+            </button>
+            <button
+              type="button"
+              className="ghost-button manuscript-pdf-artifact-action-button"
+              aria-label={artifactActionLabels.reveal}
+              title={artifactActionLabels.reveal}
+              disabled={artifactActions.busy}
+              onClick={artifactActions.onReveal}
+            >
+              <ManuscriptPdfArtifactActionIcon kind="reveal" />
+            </button>
+            {artifactActions.status && <span role="status">{artifactActions.status}</span>}
+          </div>
+        )}
         <div className="manuscript-pdf-controls">
           <button
             type="button"

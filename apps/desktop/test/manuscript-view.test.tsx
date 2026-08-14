@@ -30,6 +30,7 @@ vi.mock('react', async (importOriginal) => {
 import {
   ManuscriptView,
   describeManuscriptOperationError,
+  manuscriptPdfArtifactBinding,
   suggestedManuscriptTitle,
   validManuscriptRootDocument,
 } from '../src/renderer/src/manuscript-view';
@@ -185,6 +186,43 @@ describe('Manuscript workspace view', () => {
         new Error('manuscript_pdf_compile_failed:private-compiler-output'),
       ),
     ).not.toContain('private-compiler-output');
+    expect(
+      describeManuscriptOperationError(new Error('manuscript_pdf_artifact_not_found')),
+    ).toContain('Compile it again');
+  });
+
+  it('derives a path-free exact artifact binding from a compiled preview', () => {
+    const binding = manuscriptPdfArtifactBinding({
+      schemaVersion: 1,
+      artifactId: '33333333-3333-4333-8333-333333333333',
+      projectId: project.id,
+      manuscriptId: manuscript.id,
+      checkpointId: '55555555-5555-4555-8555-555555555555',
+      providerRevision: 'a'.repeat(40),
+      rootDocument: manuscript.rootDocument,
+      providerAhead: false,
+      compiler: {
+        kind: 'latexmk',
+        displayName: 'MacTeX latexmk',
+        version: '4.87',
+        engine: 'xelatex',
+        engineDisplayName: 'XeLaTeX',
+      },
+      pdfSha256: `sha256:${'e'.repeat(64)}`,
+      sizeBytes: 9,
+      compiledAt: '2026-08-14T00:00:00.000+09:00',
+      pdfBase64: Buffer.from('%PDF-1.4\n').toString('base64'),
+    });
+
+    expect(binding).toEqual({
+      projectId: project.id,
+      manuscriptId: manuscript.id,
+      checkpointId: '55555555-5555-4555-8555-555555555555',
+      artifactId: '33333333-3333-4333-8333-333333333333',
+      pdfSha256: `sha256:${'e'.repeat(64)}`,
+    });
+    expect(binding).not.toHaveProperty('pdfBase64');
+    expect(binding).not.toHaveProperty('absolutePath');
   });
 
   it('responds to the manuscript pane width instead of the full window width', () => {
@@ -193,6 +231,9 @@ describe('Manuscript workspace view', () => {
     expect(styles).toMatch(/\.manuscript-workspace\s*\{[^}]*container-type:\s*inline-size;/su);
     expect(styles).toMatch(
       /@container \(max-width: 720px\)[\s\S]*?\.manuscript-form-grid,[\s\S]*?\.manuscript-status-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\);/u,
+    );
+    expect(styles).toMatch(
+      /\.manuscript-pdf-artifact-action-button\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px;/su,
     );
   });
 

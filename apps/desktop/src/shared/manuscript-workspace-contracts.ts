@@ -278,6 +278,28 @@ export const ManuscriptPdfPreviewSchema = z
   .strict();
 export type ManuscriptPdfPreview = z.infer<typeof ManuscriptPdfPreviewSchema>;
 
+export const ManuscriptPdfArtifactBindingSchema = z
+  .object({
+    projectId: uuidSchema,
+    manuscriptId: uuidSchema,
+    checkpointId: uuidSchema,
+    artifactId: uuidSchema,
+    pdfSha256: sha256DigestSchema,
+  })
+  .strict();
+export type ManuscriptPdfArtifactBinding = z.infer<typeof ManuscriptPdfArtifactBindingSchema>;
+
+export const ManuscriptPdfArtifactActionReceiptSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum(['cancelled', 'exported', 'opened', 'revealed']),
+    fileName: z.string().trim().min(1).max(256).nullable(),
+  })
+  .strict();
+export type ManuscriptPdfArtifactActionReceipt = z.infer<
+  typeof ManuscriptPdfArtifactActionReceiptSchema
+>;
+
 export const DisconnectManuscriptWorkspaceInputSchema = ManuscriptBindingCommandSchema;
 export type DisconnectManuscriptWorkspaceInput = ManuscriptBindingCommand;
 
