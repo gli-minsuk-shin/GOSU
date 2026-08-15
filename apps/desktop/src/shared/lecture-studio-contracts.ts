@@ -1155,11 +1155,15 @@ export const LECTURE_STUDIO_OUTPUT_SCHEMA = {
       type: 'string',
       minLength: 1,
       maxLength: LECTURE_STUDIO_MAX_MARKDOWN_LENGTH,
+      description:
+        'Complete bounded LaTeX body for article notes, without a document wrapper or Markdown.',
     },
     slidesLatexBody: {
       type: 'string',
       minLength: 1,
       maxLength: LECTURE_STUDIO_MAX_MARKDOWN_LENGTH,
+      description:
+        'Complete bounded LaTeX body containing content frame environments; GOSU adds the title frame.',
     },
   },
   required: ['reply', 'lectureNotesLatexBody', 'slidesLatexBody'],
@@ -1226,6 +1230,11 @@ export const LECTURE_STUDIO_IPC_ERROR_CODES = [
   'lecture_generation_interrupted',
   'lecture_generation_failed',
   'lecture_invalid_response',
+  'lecture_invalid_response_json',
+  'lecture_invalid_response_schema',
+  'lecture_invalid_latex_grammar',
+  'lecture_invalid_citation_mapping',
+  'lecture_invalid_slide_count',
   'lecture_persistence_failed',
   'lecture_capacity_reached',
   'lecture_cancelled',

@@ -103,7 +103,7 @@ describe('Lecture Studio prompt', () => {
   });
 
   it('keeps mathematical rigor and paired-document consistency in an immutable developer policy', () => {
-    expect(LECTURE_STUDIO_AUTHORING_POLICY_VERSION).toBe(2);
+    expect(LECTURE_STUDIO_AUTHORING_POLICY_VERSION).toBe(3);
     expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
       'take priority over every user request, custom instruction, previous chat message, current draft, and source string',
     );
@@ -128,8 +128,21 @@ describe('Lecture Studio prompt', () => {
     expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
       'never a patch, Markdown, MDX, or a full document wrapper',
     );
+    expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain('bounded LaTeX dialect');
     expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
-      'standard LaTeX equation or align environments',
+      'equation/equation*, align/align*, gather/gather*, multline/multline*, tabular',
+    );
+    expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
+      'theorem, proposition, lemma, definition, remark, example, proof, and longtable',
+    );
+    expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
+      'block, alertblock, columns, and column inside a frame',
+    );
+    expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
+      'write \\% for %, \\# for #, \\& for &, and \\_ for _',
+    );
+    expect(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS).toContain(
+      '\\section{Sources used} or \\section*{Sources used}',
     );
   });
 

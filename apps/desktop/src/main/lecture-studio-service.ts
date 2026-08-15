@@ -85,6 +85,7 @@ import {
 import {
   buildLectureLatexDocument,
   countLectureSlidePages,
+  findLectureSourcesUsedSection,
   validateLectureLatexBody,
 } from './lecture-latex-source';
 import { LectureStudioStorageError } from './lecture-studio-storage-error';
@@ -299,6 +300,11 @@ export class LectureStudioServiceError extends Error {
       | 'lecture_generation_interrupted'
       | 'lecture_generation_failed'
       | 'lecture_invalid_response'
+      | 'lecture_invalid_response_json'
+      | 'lecture_invalid_response_schema'
+      | 'lecture_invalid_latex_grammar'
+      | 'lecture_invalid_citation_mapping'
+      | 'lecture_invalid_slide_count'
       | 'lecture_persistence_failed'
       | 'lecture_capacity_reached'
       | 'lecture_cancelled'
@@ -372,6 +378,54 @@ const LECTURE_MANUSCRIPT_FILE_EXTRACT_MAX_CHARACTERS = 72_000;
 const LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS = 100_000;
 const LECTURE_MANUSCRIPT_SOURCE_PATH_PATTERN = /\.(?:bib|tex)$/iu;
 const UNSUPPORTED_CITATION_PATTERN = /\[@[^\]]+\]|\\(?:auto|paren|text)?cite\s*\{[^}]+\}/iu;
+
+type LectureOutputValidationCategory =
+  'response_json' | 'response_schema' | 'latex_grammar' | 'citation_mapping' | 'slide_count';
+
+const LECTURE_OUTPUT_VALIDATION_ERROR_CODES = {
+  response_json: 'lecture_invalid_response_json',
+  response_schema: 'lecture_invalid_response_schema',
+  latex_grammar: 'lecture_invalid_latex_grammar',
+  citation_mapping: 'lecture_invalid_citation_mapping',
+  slide_count: 'lecture_invalid_slide_count',
+} as const satisfies Record<LectureOutputValidationCategory, LectureStudioServiceError['code']>;
+
+class LectureOutputValidationError extends Error {
+  readonly code: LectureStudioServiceError['code'];
+
+  constructor(readonly category: LectureOutputValidationCategory) {
+    super(category);
+    this.name = 'LectureOutputValidationError';
+    this.code = LECTURE_OUTPUT_VALIDATION_ERROR_CODES[category];
+  }
+}
+
+const LECTURE_OUTPUT_CORRECTION_GUIDANCE = {
+  response_json:
+    'Return only one JSON object matching the supplied output schema. Do not add a Markdown fence or explanatory text outside the object.',
+  response_schema:
+    'Return exactly reply, lectureNotesLatexBody, and slidesLatexBody as non-empty strings, with no additional fields.',
+  latex_grammar:
+    'Regenerate both complete bodies using only the bounded LaTeX dialect and escaping rules in the developer instructions. Do not emit wrappers, comments, raw special characters, custom commands, or unsupported environments.',
+  citation_mapping:
+    'Regenerate both complete bodies so every content frame has an allowed source label and the final Sources used section maps every label cited anywhere in either document.',
+  slide_count:
+    'Regenerate the complete pair with the required content-frame count. GOSU adds one title frame to the final PDF page count.',
+} as const satisfies Record<LectureOutputValidationCategory, string>;
+
+function correctionPrompt(category: LectureOutputValidationCategory, studio: LectureStudio) {
+  let slideCountGuidance = '';
+  if (category === 'slide_count') {
+    const requestedPages = studio.generationBrief.slidesTargetPages;
+    if (requestedPages !== null) {
+      slideCountGuidance = ` Emit exactly ${requestedPages - 1} content frames; GOSU adds one title frame for exactly ${requestedPages} PDF pages.`;
+    } else if (studio.kind === 'talk') {
+      const budget = talkSlideBudget(studio.durationMinutes!);
+      slideCountGuidance = ` Emit between ${budget.minimum - 1} and ${budget.maximum - 1} content frames; GOSU adds one title frame for ${budget.minimum}-${budget.maximum} PDF pages.`;
+    }
+  }
+  return `The previous candidate was rejected by GOSU's bounded ${category} check and was not saved. ${LECTURE_OUTPUT_CORRECTION_GUIDANCE[category]}${slideCountGuidance} Recheck both documents and return one complete replacement JSON object now.`;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -1371,74 +1425,10 @@ export class LectureStudioService {
       } catch (error) {
         throw new LectureStudioServiceError(lectureErrorFromCodexRequest(error));
       }
-      threadId = started.threadId;
-      active.threadId = threadId;
+      const activeThreadId = started.threadId;
+      threadId = activeThreadId;
+      active.threadId = activeThreadId;
       this.throwIfCancelled(active);
-
-      const completed = new Promise<LectureTurnResult>((resolve) => {
-        this.pendingByThread.set(threadId!, {
-          studioId: generating.id,
-          attemptId,
-          threadId: threadId!,
-          turnId: null,
-          invocation: null,
-          earlyInvocation: null,
-          finalText: null,
-          terminal: false,
-          markActivity: null,
-          disposeTimers: null,
-          resolve,
-        });
-      });
-      let running: Awaited<ReturnType<LectureStudioCodex['runTurn']>>;
-      try {
-        running = await this.dependencies.codex.runTurn({
-          threadId,
-          prompt: buildLectureStudioPrompt({
-            mode: previousRevision ? 'revision' : 'initial',
-            title: generating.title,
-            kind: generating.kind,
-            durationMinutes: generating.durationMinutes,
-            generationBrief: generating.generationBrief,
-            sourceManifest,
-            currentDraft: previousRevision
-              ? {
-                  sourceFormat: previousRevision.schemaVersion === 2 ? 'latex' : 'legacy-markdown',
-                  lectureNotes:
-                    previousRevision.schemaVersion === 2
-                      ? previousRevision.lectureNotesLatex
-                      : previousRevision.lectureNotesMarkdown,
-                  slides:
-                    previousRevision.schemaVersion === 2
-                      ? previousRevision.slidesLatex
-                      : previousRevision.slidesMarkdown,
-                }
-              : null,
-            recentMessages: messages
-              .filter((message) => message.id !== userMessage?.id && message.status === 'complete')
-              .map((message) => ({
-                role: message.role,
-                content: message.content,
-              })),
-            request: request.message,
-          }),
-          requestedModelId: request.requestedModelId,
-          reasoningOptionId: request.reasoningOptionId,
-          cwd,
-          outputSchema: LECTURE_STUDIO_OUTPUT_SCHEMA,
-        });
-      } catch (error) {
-        throw new LectureStudioServiceError(lectureErrorFromCodexRequest(error));
-      }
-      turnId = running.turnId;
-      active.turnId = turnId;
-      const pending = this.pendingByThread.get(threadId);
-      if (!pending) throw new LectureStudioServiceError('lecture_generation_failed');
-      pending.turnId = turnId;
-      pending.invocation =
-        pending.earlyInvocation?.turnId === turnId
-          ? pending.earlyInvocation.invocation
-          : running.invocation;
 
       const idleTimeoutMs = Math.max(
         5_000,
@@ -1448,64 +1438,161 @@ export class LectureStudioService {
         idleTimeoutMs,
         Math.min(this.dependencies.hardTimeoutMs ?? 1_800_000, 1_800_000),
       );
-      let idleTimer: ReturnType<typeof setTimeout> | null = null;
-      let hardTimer: ReturnType<typeof setTimeout> | null = null;
-      let timeoutSettled = false;
-      let resolveTimeout: ((result: LectureTurnResult) => void) | null = null;
-      const timeout = new Promise<LectureTurnResult>((resolve) => {
-        resolveTimeout = resolve;
+      const hardDeadline = Date.now() + hardTimeoutMs;
+      const executeCodexTurn = async (prompt: string) => {
+        if (Date.now() >= hardDeadline) {
+          throw new LectureStudioServiceError('lecture_generation_timed_out');
+        }
+        active.terminal = false;
+        active.turnId = null;
+        turnId = null;
+        const completed = new Promise<LectureTurnResult>((resolve) => {
+          this.pendingByThread.set(activeThreadId, {
+            studioId: generating.id,
+            attemptId,
+            threadId: activeThreadId,
+            turnId: null,
+            invocation: null,
+            earlyInvocation: null,
+            finalText: null,
+            terminal: false,
+            markActivity: null,
+            disposeTimers: null,
+            resolve,
+          });
+        });
+        let running: Awaited<ReturnType<LectureStudioCodex['runTurn']>>;
+        try {
+          running = await this.dependencies.codex.runTurn({
+            threadId: activeThreadId,
+            prompt,
+            requestedModelId: request.requestedModelId,
+            reasoningOptionId: request.reasoningOptionId,
+            cwd,
+            outputSchema: LECTURE_STUDIO_OUTPUT_SCHEMA,
+          });
+        } catch (error) {
+          throw new LectureStudioServiceError(lectureErrorFromCodexRequest(error));
+        }
+        turnId = running.turnId;
+        active.turnId = turnId;
+        if (Date.now() >= hardDeadline) {
+          throw new LectureStudioServiceError('lecture_generation_timed_out');
+        }
+        this.throwIfCancelled(active);
+        const pending = this.pendingByThread.get(activeThreadId);
+        if (!pending) throw new LectureStudioServiceError('lecture_generation_failed');
+        pending.turnId = turnId;
+        pending.invocation =
+          pending.earlyInvocation?.turnId === turnId
+            ? pending.earlyInvocation.invocation
+            : running.invocation;
+
+        let idleTimer: ReturnType<typeof setTimeout> | null = null;
+        let hardTimer: ReturnType<typeof setTimeout> | null = null;
+        let timeoutSettled = false;
+        let resolveTimeout: ((result: LectureTurnResult) => void) | null = null;
+        const timeout = new Promise<LectureTurnResult>((resolve) => {
+          resolveTimeout = resolve;
+        });
+        const clearGenerationTimers = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          if (hardTimer) clearTimeout(hardTimer);
+          idleTimer = null;
+          hardTimer = null;
+          pending.markActivity = null;
+          pending.disposeTimers = null;
+        };
+        const expireGeneration = () => {
+          if (timeoutSettled) return;
+          timeoutSettled = true;
+          clearGenerationTimers();
+          resolveTimeout?.({ status: 'timed_out', text: null, failureCode: null });
+        };
+        const armIdleTimer = () => {
+          if (timeoutSettled || pending.terminal) return;
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(expireGeneration, idleTimeoutMs);
+          idleTimer.unref?.();
+        };
+        pending.markActivity = armIdleTimer;
+        pending.disposeTimers = clearGenerationTimers;
+        armIdleTimer();
+        hardTimer = setTimeout(expireGeneration, Math.max(0, hardDeadline - Date.now()));
+        hardTimer.unref?.();
+        void completed.then(clearGenerationTimers, clearGenerationTimers);
+
+        for (const notification of this.bufferedByThread.get(activeThreadId) ?? []) {
+          this.processNotification(pending, notification);
+        }
+        this.bufferedByThread.delete(activeThreadId);
+        this.throwIfCancelled(active);
+
+        const terminal = await Promise.race([completed, timeout]);
+        if (terminal.status !== 'timed_out') active.terminal = true;
+        if (terminal.status !== 'completed') {
+          throw new LectureStudioServiceError(
+            active.cancelRequested
+              ? 'lecture_cancelled'
+              : terminal.status === 'timed_out'
+                ? 'lecture_generation_timed_out'
+                : terminal.status === 'transport_failed'
+                  ? 'lecture_codex_unavailable'
+                  : (terminal.failureCode ?? 'lecture_generation_failed'),
+          );
+        }
+        this.throwIfCancelled(active);
+        return { terminal, pending, running };
+      };
+
+      const initialPrompt = buildLectureStudioPrompt({
+        mode: previousRevision ? 'revision' : 'initial',
+        title: generating.title,
+        kind: generating.kind,
+        durationMinutes: generating.durationMinutes,
+        generationBrief: generating.generationBrief,
+        sourceManifest,
+        currentDraft: previousRevision
+          ? {
+              sourceFormat: previousRevision.schemaVersion === 2 ? 'latex' : 'legacy-markdown',
+              lectureNotes:
+                previousRevision.schemaVersion === 2
+                  ? previousRevision.lectureNotesLatex
+                  : previousRevision.lectureNotesMarkdown,
+              slides:
+                previousRevision.schemaVersion === 2
+                  ? previousRevision.slidesLatex
+                  : previousRevision.slidesMarkdown,
+            }
+          : null,
+        recentMessages: messages
+          .filter((message) => message.id !== userMessage?.id && message.status === 'complete')
+          .map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+        request: request.message,
       });
-      const clearGenerationTimers = () => {
-        if (idleTimer) clearTimeout(idleTimer);
-        if (hardTimer) clearTimeout(hardTimer);
-        idleTimer = null;
-        hardTimer = null;
-        pending.markActivity = null;
-        pending.disposeTimers = null;
-      };
-      const expireGeneration = () => {
-        if (timeoutSettled) return;
-        timeoutSettled = true;
-        clearGenerationTimers();
-        resolveTimeout?.({ status: 'timed_out', text: null, failureCode: null });
-      };
-      const armIdleTimer = () => {
-        if (timeoutSettled || pending.terminal) return;
-        if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = setTimeout(expireGeneration, idleTimeoutMs);
-        idleTimer.unref?.();
-      };
-      pending.markActivity = armIdleTimer;
-      pending.disposeTimers = clearGenerationTimers;
-      armIdleTimer();
-      hardTimer = setTimeout(expireGeneration, hardTimeoutMs);
-      hardTimer.unref?.();
-      void completed.then(clearGenerationTimers, clearGenerationTimers);
-
-      for (const notification of this.bufferedByThread.get(threadId) ?? []) {
-        this.processNotification(pending, notification);
+      let execution = await executeCodexTurn(initialPrompt);
+      let output;
+      try {
+        output = this.parseOutput(execution.terminal.text, generating, sourceManifest);
+      } catch (error) {
+        if (!(error instanceof LectureOutputValidationError)) throw error;
+        this.throwIfCancelled(active);
+        execution = await executeCodexTurn(correctionPrompt(error.category, generating));
+        try {
+          output = this.parseOutput(execution.terminal.text, generating, sourceManifest);
+        } catch (correctionError) {
+          if (correctionError instanceof LectureOutputValidationError) {
+            throw new LectureStudioServiceError(correctionError.code);
+          }
+          throw correctionError;
+        }
       }
-      this.bufferedByThread.delete(threadId);
-      this.throwIfCancelled(active);
-
-      const terminal = await Promise.race([completed, timeout]);
-      if (terminal.status !== 'completed') {
-        throw new LectureStudioServiceError(
-          active.cancelRequested
-            ? 'lecture_cancelled'
-            : terminal.status === 'timed_out'
-              ? 'lecture_generation_timed_out'
-              : terminal.status === 'transport_failed'
-                ? 'lecture_codex_unavailable'
-                : (terminal.failureCode ?? 'lecture_generation_failed'),
-        );
-      }
-      active.terminal = true;
-      this.throwIfCancelled(active);
-      const output = this.parseOutput(terminal.text, generating, sourceManifest);
       const completedAt = this.now().toISOString();
       const revisionNumber = generating.currentRevision + 1;
-      const invocation = pending.invocation ?? running.invocation;
+      const invocation = execution.pending.invocation ?? execution.running.invocation;
       const lectureNotesLatex = buildLectureLatexDocument(
         'lecture-notes',
         generating.title,
@@ -1666,75 +1753,87 @@ export class LectureStudioService {
     studio: LectureStudio,
     sourceManifest: LectureSourceManifest,
   ) {
-    if (!text) throw new LectureStudioServiceError('lecture_invalid_response');
+    if (!text) throw new LectureOutputValidationError('response_json');
+    let parsed: unknown;
     try {
-      const output = LectureStudioGenerationOutputSchema.parse(JSON.parse(text) as unknown);
-      const notesBody = validateLectureLatexBody('lecture-notes', output.lectureNotesLatexBody);
-      const slidesBody = validateLectureLatexBody('slides', output.slidesLatexBody);
-      if (
-        UNSUPPORTED_CITATION_PATTERN.test(notesBody) ||
-        UNSUPPORTED_CITATION_PATTERN.test(slidesBody)
-      ) {
-        throw new Error('unsupported_citation');
-      }
-      const manuscriptSources =
-        sourceManifest.schemaVersion === 1 ? [] : sourceManifest.manuscripts;
-      const externalSources =
-        sourceManifest.schemaVersion === 3 ? sourceManifest.externalSources : [];
-      const allowedLabels = new Set([
-        ...sourceManifest.literature.map((source) => source.sourceLabel),
-        ...sourceManifest.experiments.map((source) => source.sourceLabel),
-        ...manuscriptSources.map((source) => source.sourceLabel),
-        ...externalSources.map((source) => source.sourceLabel),
-      ]);
-      const usedLabels = new Set<string>();
-      for (const latex of [notesBody, slidesBody]) {
-        const citations = [...latex.matchAll(/\[((?:P|E|M|F)\d+)\]/gu)].map((match) => match[1]!);
-        if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
-          throw new Error('invalid_source_citation');
-        }
-        for (const label of citations) usedLabels.add(label);
-      }
-      const sourcesHeading = /\\section\s*\{\s*Sources used\s*\}/iu.exec(notesBody);
-      if (!sourcesHeading || sourcesHeading.index === undefined) {
-        throw new Error('missing_sources_used');
-      }
-      const sourcesSection = notesBody.slice(sourcesHeading.index + sourcesHeading[0].length);
-      if ([...usedLabels].some((label) => !sourcesSection.includes(`[${label}]`))) {
-        throw new Error('incomplete_sources_used');
-      }
-      const slides = [
-        ...slidesBody.matchAll(/\\begin\s*\{\s*frame\s*\}[\s\S]*?\\end\s*\{\s*frame\s*\}/gu),
-      ].map((match) => match[0]);
-      for (const slide of slides) {
-        const citations = [...slide.matchAll(/\[((?:P|E|M|F)\d+)\]/gu)].map((match) => match[1]!);
-        if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
-          throw new Error('uncited_slide');
-        }
-      }
-      if (studio.kind === 'talk') {
-        const requestedSlides = studio.generationBrief.slidesTargetPages;
-        if (requestedSlides !== null && countLectureSlidePages(slidesBody) !== requestedSlides) {
-          throw new Error('invalid_requested_slide_count');
-        }
-        const budget = talkSlideBudget(studio.durationMinutes!);
-        const slideCount = countLectureSlidePages(slidesBody);
-        if (
-          requestedSlides === null &&
-          (slideCount < budget.minimum || slideCount > budget.maximum)
-        ) {
-          throw new Error('invalid_talk_slide_count');
-        }
-      } else if (
-        studio.generationBrief.slidesTargetPages !== null &&
-        countLectureSlidePages(slidesBody) !== studio.generationBrief.slidesTargetPages
-      ) {
-        throw new Error('invalid_requested_slide_count');
-      }
-      return output;
+      parsed = JSON.parse(text) as unknown;
     } catch {
-      throw new LectureStudioServiceError('lecture_invalid_response');
+      throw new LectureOutputValidationError('response_json');
     }
+    const outputResult = LectureStudioGenerationOutputSchema.safeParse(parsed);
+    if (!outputResult.success) throw new LectureOutputValidationError('response_schema');
+    const output = outputResult.data;
+    let notesBody: string;
+    let slidesBody: string;
+    try {
+      notesBody = validateLectureLatexBody('lecture-notes', output.lectureNotesLatexBody, {
+        requireSourcesUsed: false,
+      });
+      slidesBody = validateLectureLatexBody('slides', output.slidesLatexBody);
+    } catch {
+      throw new LectureOutputValidationError('latex_grammar');
+    }
+    if (!findLectureSourcesUsedSection(notesBody)) {
+      throw new LectureOutputValidationError('citation_mapping');
+    }
+    if (
+      UNSUPPORTED_CITATION_PATTERN.test(notesBody) ||
+      UNSUPPORTED_CITATION_PATTERN.test(slidesBody)
+    ) {
+      throw new LectureOutputValidationError('citation_mapping');
+    }
+    const manuscriptSources = sourceManifest.schemaVersion === 1 ? [] : sourceManifest.manuscripts;
+    const externalSources =
+      sourceManifest.schemaVersion === 3 ? sourceManifest.externalSources : [];
+    const allowedLabels = new Set([
+      ...sourceManifest.literature.map((source) => source.sourceLabel),
+      ...sourceManifest.experiments.map((source) => source.sourceLabel),
+      ...manuscriptSources.map((source) => source.sourceLabel),
+      ...externalSources.map((source) => source.sourceLabel),
+    ]);
+    const usedLabels = new Set<string>();
+    for (const latex of [notesBody, slidesBody]) {
+      const citations = [...latex.matchAll(/\[((?:P|E|M|F)\d+)\]/gu)].map((match) => match[1]!);
+      if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
+        throw new LectureOutputValidationError('citation_mapping');
+      }
+      for (const label of citations) usedLabels.add(label);
+    }
+    const sourcesHeading = findLectureSourcesUsedSection(notesBody);
+    if (!sourcesHeading) throw new LectureOutputValidationError('citation_mapping');
+    const sourcesSection = notesBody.slice(sourcesHeading.end);
+    if ([...usedLabels].some((label) => !sourcesSection.includes(`[${label}]`))) {
+      throw new LectureOutputValidationError('citation_mapping');
+    }
+    const slides = [
+      ...slidesBody.matchAll(/\\begin\s*\{\s*frame\s*\}[\s\S]*?\\end\s*\{\s*frame\s*\}/gu),
+    ].map((match) => match[0]);
+    for (const slide of slides) {
+      const citations = [...slide.matchAll(/\[((?:P|E|M|F)\d+)\]/gu)].map((match) => match[1]!);
+      if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
+        throw new LectureOutputValidationError('citation_mapping');
+      }
+    }
+    if (studio.kind === 'talk') {
+      const requestedSlides = studio.generationBrief.slidesTargetPages;
+      if (requestedSlides !== null && countLectureSlidePages(slidesBody) !== requestedSlides) {
+        throw new LectureOutputValidationError('slide_count');
+      }
+      const budget = talkSlideBudget(studio.durationMinutes!);
+      const slideCount = countLectureSlidePages(slidesBody);
+      if (
+        requestedSlides === null &&
+        (slideCount < budget.minimum || slideCount > budget.maximum)
+      ) {
+        throw new LectureOutputValidationError('slide_count');
+      }
+    } else if (
+      studio.generationBrief.slidesTargetPages !== null &&
+      countLectureSlidePages(slidesBody) !== studio.generationBrief.slidesTargetPages
+    ) {
+      throw new LectureOutputValidationError('slide_count');
+    }
+    return { ...output, lectureNotesLatexBody: notesBody, slidesLatexBody: slidesBody };
   }
 
   private async saveArtifacts(
