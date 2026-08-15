@@ -144,9 +144,12 @@ localStorage, Hosted Sync 또는 telemetry에 기록하지 않는다.
 Electron Main만 local Codex App Server를 호출한다. Studio turn은 web search, shell, filesystem, Apps/MCP와
 dynamic tool을 모두 비활성화하고, source manifest·현재 draft·최근 Lecture chat만 untrusted prompt data로
 전달한다. 실제 requested/resolved model과 reasoning invocation을 revision에 기록하며 model이 사라져도
-임의 fallback하지 않는다. 생성 turn의 timeout은 transport connection과 분리한다. matching progress가 올
-때마다 3분 idle timer를 갱신하고 30분 hard deadline만 절대 상한으로 사용한다. timeout과 terminal failure,
-실제 Codex start/transport unavailable을 서로 다른 typed error로 표시한다.
+임의 fallback하지 않는다. 생성 attempt의 timeout은 transport connection과 분리한다. initial turn과 필요한
+경우의 한 correction turn은 matching progress마다 갱신되는 새 3분 idle timer를 각각 가지며, 두 turn은 같은
+30분 absolute hard deadline을 공유한다. timeout과 terminal failure, 실제 Codex start/transport unavailable을
+서로 다른 typed error로 표시한다.
+각 `runTurn` control-plane request는 App Server의 별도 최대 30초 request bound를 가지며, Main은 응답 직후
+공유 hard deadline과 cancel state를 다시 검사해 늦게 도착한 turn을 승인하거나 저장하지 않는다.
 
 직렬화된 prompt는 최대 360,000자, source manifest는 최대 120,000자로 제한한다. captured source 전체는
 chunk로 hash/length를 검증하되 prompt/manifest content에는 policy와 completeness가 표시된 deterministic exact
@@ -156,13 +159,27 @@ fail closed한다. 최근 12개 성공 chat message만 별도 bounded history로
 명시적인 marker를 넣는다. 실패·취소·restart로 중단된 요청은 `failed|interrupted`로 원자적으로 기록하고 이후
 prompt history에서 제외한다. Main은 structured response를 저장하기 전에 다음을 검증한다.
 
-- notes body는 `Sources used` section, slides body는 allowlisted Beamer frame을 가지며 GOSU가 title/frame
+- notes body는 `Sources used` 또는 starred section, slides body는 allowlisted Beamer frame을 가지며 GOSU가 title/frame
   document wrapper를 소유한다.
 - substantive frame마다 해당 frame 안의 `[P#]`, `[E#]`, `[M#]` 또는 `[F#]` evidence label을 요구한다.
 - notes의 Sources used mapping과 모든 인용 label이 frozen manifest에 존재한다.
 - 임의 citation syntax, raw HTML/Markdown structure, document wrapper, raw TeX comment, 외부 file/network
   command와 allowlist 밖 command/environment를 거부한다.
 - timed talk의 slide count가 선택한 duration budget 안에 있다.
+
+validator grammar는 고정 preamble이 실제 load한 AMS matrix/alignment, `binom|mid|Vert|langle|rangle|pmod`
+계열 수학 command와 Beamer `columns|column`을 포함하는 bounded dialect다. developer instruction은 prose의
+`%|#|&|_` escape, raw `~` 금지, balanced delimiter/environment를 명시하므로 모델 contract와 validator가 같은
+문법을 말한다.
+
+첫 candidate가 JSON parse, exact schema, bounded LaTeX grammar, citation mapping 또는 slide count에서
+거부되면 같은 Codex thread에 safe category와 고정 교정 지시만 보내 complete pair를 최대 한 번 다시 생성한다.
+raw candidate는 prompt나 persistence에 다시 넣지 않고 initial turn의 frozen manifest, current draft와 generation
+brief를 그대로 사용한다. 두 subturn은 위 absolute hard deadline을 공유하고 correction은 새 idle timer를 가진다.
+거부된 candidate는 compile, Research Notes staging 또는 SQL revision에 진입하지 않는다. correction도 실패하면
+`response_json|response_schema|latex_grammar|citation_mapping|slide_count`에 대응하는 bounded public error code만
+노출하며 raw model output이나 parser detail은 저장·표시하지 않는다. 성공하면 최종 승인 turn의 actual model
+invocation만 revision provenance에 기록한다.
 
 고정 developer instruction에는 versioned authoring policy를 둔다. 이 policy는 generation brief의 custom
 instruction, revision request, 이전 chat, draft와 source manifest보다 높은 instruction 계층이며 이 untrusted
@@ -171,8 +188,8 @@ equation·citation·conclusion을 유지하고, 각 substantive slide가 notes�
 정의·가정·domain·quantifier·dimension/shape·unit·boundary condition을 필요한 위치에 명시하며, 근거가 없는
 theorem/proof/derivation/equation/result를 만들지 않는다. source에 없는 proof step은 일반 지식으로 메우지
 않고 evidence gap으로 표시한다. 한쪽만 수정하라는 request도 두 LaTeX body의 complete replacement pair에
-consistency update를 적용한다. 수학은 동일한 정의·기호를 쓰는 LaTeX math mode와 bounded amsmath 환경으로
-표현한다.
+consistency update를 적용한다. 수학은 동일한 정의·기호를 쓰는 LaTeX math mode와 bounded
+`equation|align|aligned|gather|matrix|cases|split|array|tabular` 환경으로 표현한다.
 
 이 검사는 fabricated claim을 완전히 판별하는 사실 검증기가 아니다. metadata-only 한계를 출력에 유지하고
 full text를 읽었다는 표현을 금지하는 bounded structural/evidence gate다.

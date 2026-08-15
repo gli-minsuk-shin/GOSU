@@ -332,7 +332,18 @@ S_{B,s} &\rightsquigarrow_{\#} N(0,\Sigma).
 \end{proof}
 \section{해석과 한계}
 첫 번째 식은 유한 $M$과 $B$에 따른 오차를 분리하며, 관측되지 않은 상수의 값은 근거 없이 단정하지 않습니다 [M1].
-\section{Sources used}
+\section{조합과 행렬 표기}
+$B\mid n$일 때 $\binom{n}{B}$와 $B\pmod n$을 구분합니다 [M1].
+\begin{equation}
+\left\lVert
+\begin{pmatrix}
+B & 0 \\
+0 & n
+\end{pmatrix}
+\right\rVert_2 \coloneqq \max\{B,n\}.
+\end{equation}
+성공률 95\%, bias \& variance, model\_id를 안전하게 표기합니다 [M1].
+\section*{Sources used}
 \begin{itemize}
 \item [M1] Captured manuscript checkpoint.
 \end{itemize}`;
@@ -357,6 +368,16 @@ $B\asymp\sqrt n$과 벡터 $\bm{S}_{B,s}$의 의미를 노트와 동일하게 �
 \end{frame}
 \begin{frame}{한계}
 추가 검증이 필요한 항목과 source가 제공하지 않은 증명 단계를 명시합니다 [M1].
+\end{frame}
+\begin{frame}{조합과 행렬 표기}
+\begin{columns}
+\begin{column}{0.48\textwidth}
+$B\mid n$과 $\binom{n}{B}$ [M1].
+\end{column}
+\begin{column}{0.48\textwidth}
+$\langle B,n\rangle$과 $\lVert(B,n)\rVert_2$ [M1].
+\end{column}
+\end{columns}
 \end{frame}`;
       const notes = LOCAL_MACTEX_SMOKE_NOTES_PATH
         ? await readFile(LOCAL_MACTEX_SMOKE_NOTES_PATH, 'utf8')

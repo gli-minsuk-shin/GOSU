@@ -286,7 +286,7 @@ export function lectureManuscriptAvailabilityLabel(
   return labels[availability];
 }
 
-function lectureErrorCodeMessage(code: string) {
+export function lectureErrorCodeMessage(code: string) {
   const messages: Record<string, string> = {
     invalid_lecture_input: 'Review the selected projects, sources, and presentation settings.',
     lecture_studio_not_found:
@@ -342,6 +342,16 @@ function lectureErrorCodeMessage(code: string) {
     overleaf_token_invalid: 'Overleaf rejected this personal Git token.',
     lecture_invalid_response:
       'The generated draft failed source or LaTeX safety checks, so no files were changed.',
+    lecture_invalid_response_json:
+      'The model did not return a readable structured lecture draft after one automatic correction. No files were changed.',
+    lecture_invalid_response_schema:
+      'The model returned an incomplete lecture draft after one automatic correction. No files were changed.',
+    lecture_invalid_latex_grammar:
+      'The generated notes or slides still used unsupported LaTeX after one automatic correction. No files were changed.',
+    lecture_invalid_citation_mapping:
+      'The generated draft still had missing or unknown source labels after one automatic correction. No files were changed.',
+    lecture_invalid_slide_count:
+      'The generated deck still did not match the requested slide count after one automatic correction. Adjust the slide target or retry.',
     lecture_persistence_failed:
       'GOSU could not safely commit this revision. Any pending file bundle was rolled back.',
     lecture_cancelled: 'Generation was stopped. The previous revision remains unchanged.',

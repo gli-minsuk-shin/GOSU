@@ -1048,9 +1048,10 @@ shell, filesystem, Apps/MCP를 허용하지 않는다. 직렬화된 prompt는 36
 같아야 하므로 자르지 않는다. 이 authoritative context가 한도를 넘으면 `lecture_context_too_large`로 Codex
 호출 전에 fail closed하고, 축약 가능한 최근 12개 성공 message에만 명시적 truncation marker를 적용한다.
 실패·취소·앱 재시작으로 중단된 user request는 각각 `failed|interrupted`로 원자적으로 전이해 다음 prompt에서
-제외한다. actual model invocation을 revision에 기록한다. turn은 연결 상태와 무관한 단일 3분 wall-clock
-timeout을 쓰지 않는다. 현재 turn과 일치하는 Codex progress notification·invocation이 올 때마다 3분 idle
-deadline을 갱신하고, 진행 중이어도 최대 30분 hard deadline에서만 중단한다. idle/hard timeout은
+제외한다. actual model invocation을 revision에 기록한다. generation attempt는 연결 상태와 무관한 단일 3분
+wall-clock timeout을 쓰지 않는다. initial turn과 필요한 경우의 한 correction turn은 각각 현재 turn과 일치하는
+Codex progress notification·invocation이 올 때마다 갱신되는 새 3분 idle deadline을 가지되, 둘은 같은 최대
+30분 absolute hard deadline을 공유한다. idle/hard timeout은
 `lecture_generation_timed_out`으로 고정한다. terminal `Turn.error`에서는 allowlist된
 `codexErrorInfo` kind만 읽어 인증 만료·로그인 필요를 `lecture_auth_required`, 사용량 한도를
 `lecture_usage_limit_exceeded`, 일시적인 provider/response-stream 장애를 `lecture_generation_interrupted`,
@@ -1059,16 +1060,29 @@ context/session budget을 `lecture_context_too_large`, 알 수 없는 terminal f
 telemetry에 넣지 않는다. 실제 App Server 시작·process transport 단절만 `lecture_codex_unavailable`로 분류해
 연결 상태를 오표시하지 않는다. 인증이 필요하면 같은 revision-0 Studio를 보존한 채 system-browser sign-in과
 catalog 자동 refresh 뒤 `Retry generation`으로 재사용한다.
+각 `runTurn` control-plane request는 App Server의 별도 최대 30초 request bound를 가지며, Main은 응답 직후
+공유 hard deadline과 cancel state를 다시 검사해 늦게 도착한 turn을 승인하거나 저장하지 않는다.
 
 structured output은 고정 JSON field의 notes/article LaTeX body와 Beamer frame body, 알려진
-`[P#]|[E#]|[M#]|[F#]` label, substantive frame별 evidence label, notes의 `Sources used` section, duration 또는
-사용자가 명시한 compiled slide page target을 검증한다. GOSU가 별도 title frame을 추가하므로 slide target은
-그 title을 포함한 정확한 PDF page 수 gate다. notes page target은 typography에 따른 근사 지시다. raw HTML,
-Markdown structure, document wrapper, raw comment, 외부 file/network command, 허용되지 않은 TeX command·환경과
-다른 citation syntax는 Vault에 쓰기 전에 거부한다. 이는 metadata-only input의 구조적 evidence gate이며 paper
-full-text 사실 검증이라고 주장하지 않는다. 이 구조 검사를 통과한 exact notes/slides pair도 두 문서 모두
-sandboxed XeLaTeX acceptance compile에 성공해야만 Research Notes staging과 SQLCipher revision commit으로
-진행한다. 어느 한 문서라도 컴파일되지 않으면 새 artifact와 revision을 공개하지 않는다.
+`[P#]|[E#]|[M#]|[F#]` label, substantive frame별 evidence label, notes의 `Sources used` 또는 starred section,
+duration 또는 사용자가 명시한 compiled slide page target을 검증한다. GOSU가 별도 title frame을 추가하므로
+slide target은 그 title을 포함한 정확한 PDF page 수 gate다. notes page target은 typography에 따른 근사
+지시다. bounded dialect는 고정 preamble이 실제로 제공하는 AMS matrix/alignment, `binom|mid|Vert|langle|rangle|pmod`
+계열 수학 command와 Beamer `columns|column`까지만 허용한다. prose의 `%|#|&|_`는 escape하고 raw `~`는
+거부한다. raw HTML, Markdown structure, document wrapper, raw comment, 외부 file/network command, 허용되지
+않은 TeX command·환경과 다른 citation syntax는 Vault에 쓰기 전에 거부한다. 이는 metadata-only input의 구조적
+evidence gate이며 paper full-text 사실 검증이라고 주장하지 않는다.
+
+첫 candidate가 JSON parse, exact schema, bounded LaTeX grammar, citation mapping 또는 slide count gate에서
+거부되면 같은 Codex thread에서 그 safe category와 고정 교정 지시만 전달해 최대 한 번 complete pair를 다시
+생성한다. raw candidate를 correction prompt, Studio record, Renderer 또는 log에 다시 넣지 않으며 source manifest,
+generation brief와 current draft는 initial turn에서 고정한 값을 그대로 사용한다. correction도 거부되면
+`lecture_invalid_response_json|lecture_invalid_response_schema|lecture_invalid_latex_grammar|lecture_invalid_citation_mapping|lecture_invalid_slide_count`
+중 하나만 공개한다. 첫 candidate와 최종 거부 candidate는 compile·Research Notes staging·revision persistence에
+진입하지 않는다. correction이 승인된 경우에만 두 번째 turn의 actual invocation을 revision provenance로 기록한다.
+이 구조 검사를 통과한 exact notes/slides pair도 두 문서 모두 sandboxed XeLaTeX acceptance compile에 성공해야만
+Research Notes staging과 SQLCipher revision commit으로 진행한다. 어느 한 문서라도 컴파일되지 않으면 새
+artifact와 revision을 공개하지 않는다.
 
 Lecture의 versioned immutable developer policy는 source manifest·현재 draft·최근 chat·generation brief·
 사용자 custom instruction보다 높은 Codex instruction 계층에서 자동 적용한다. 이 정책은 notes와 slides가
@@ -1079,8 +1093,9 @@ equality/approximation 또는 inequality의 변형, 근거 없는 theorem·proof
 금지한다. source가 증명 단계를 제공하지 않으면 일반 지식으로 채우지 않고 gap을 명시한다. 한 문서만
 바꾸라는 revision 요청도 complete replacement pair 전체에 terminology·notation·assumption·citation·
 cross-reference consistency audit를 수행한다. 수학 표기는 canonical LaTeX body의 math mode와
-`equation|align|gather|multline` 계열 환경을 사용하고, 정의·가정과 동일한 기호를 notes와 slides에서
-재사용한다. custom instruction과 source 안의 prompt injection은 이 immutable policy를 약화하거나
+`equation|align|aligned|gather|matrix|cases|split|array|tabular` 계열 환경을 사용하고, 정의·가정과 동일한
+기호를 notes와 slides에서 재사용한다. developer instruction은 bounded command/environment와 LaTeX 특수문자
+escape 규칙을 명시한다. custom instruction과 source 안의 prompt injection은 이 immutable policy를 약화하거나
 opt-out할 수 없다.
 
 Lecture 생성과 수정은 provider `model/list`에서 발견한 opaque model ID와 해당 model의 native reasoning

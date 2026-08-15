@@ -572,4 +572,16 @@ describe('Lecture Studio failure contracts', () => {
     expect(LECTURE_STUDIO_IPC_ERROR_CODES).toContain('lecture_usage_limit_exceeded');
     expect(LECTURE_STUDIO_IPC_ERROR_CODES).toContain('lecture_generation_interrupted');
   });
+
+  it('exposes only bounded lecture response validation categories across IPC', () => {
+    expect(LECTURE_STUDIO_IPC_ERROR_CODES).toEqual(
+      expect.arrayContaining([
+        'lecture_invalid_response_json',
+        'lecture_invalid_response_schema',
+        'lecture_invalid_latex_grammar',
+        'lecture_invalid_citation_mapping',
+        'lecture_invalid_slide_count',
+      ]),
+    );
+  });
 });

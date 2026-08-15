@@ -17,6 +17,7 @@ import {
   lastLectureMessageId,
   lectureManuscriptAvailabilityLabel,
   lectureArtifactActionLabels,
+  lectureErrorCodeMessage,
   LectureStudioView,
   lectureOutputProjectName,
   lectureExternalSourceCard,
@@ -166,6 +167,22 @@ describe('LectureStudioView', () => {
     );
     expect(source).toContain(
       '<span className="sr-only">Status: {lectureStudioStatusLabel(studio.status)}. </span>',
+    );
+  });
+
+  it('maps bounded generation validation categories to actionable messages', () => {
+    expect(lectureErrorCodeMessage('lecture_invalid_response_json')).toContain(
+      'after one automatic correction',
+    );
+    expect(lectureErrorCodeMessage('lecture_invalid_response_schema')).toContain(
+      'incomplete lecture draft',
+    );
+    expect(lectureErrorCodeMessage('lecture_invalid_latex_grammar')).toContain('unsupported LaTeX');
+    expect(lectureErrorCodeMessage('lecture_invalid_citation_mapping')).toContain(
+      'missing or unknown source labels',
+    );
+    expect(lectureErrorCodeMessage('lecture_invalid_slide_count')).toContain(
+      'Adjust the slide target or retry',
     );
   });
 

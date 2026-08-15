@@ -115,4 +115,36 @@ $\bm{x}\in\mathbb{R}$.
     );
     expect(() => validateLectureLatexBody('slides', notes)).toThrow(LectureLatexSourceError);
   });
+
+  it('accepts the bounded AMS matrix dialect, escaped prose, starred sources, and Beamer columns', () => {
+    const realisticNotes = String.raw`\section{Bootstrap construction}
+For $B\mid n$, the count $\binom{n}{B}$ is evaluated modulo $m$ as $B\pmod m$ [M1].
+The reported rate is 95\%, bias \& variance use model\_id, C\#, and the literal \textasciitilde{} symbol [M1].
+\begin{equation}
+\left\lVert
+\begin{pmatrix}
+B & 0 \\
+0 & n
+\end{pmatrix}
+\right\rVert_2 \coloneqq \max\{B,n\}.
+\end{equation}
+\section*{Sources used}
+[M1] Cheap Bootstrap manuscript.`;
+    const realisticSlides = String.raw`\begin{frame}{Bootstrap construction}
+\begin{columns}
+\begin{column}{0.48\textwidth}
+$B\mid n$ and $\binom{n}{B}$ [M1].
+\end{column}
+\begin{column}{0.48\textwidth}
+$\langle B,n\rangle$ with $\lVert(B,n)\rVert_2$ [M1].
+\end{column}
+\end{columns}
+\end{frame}`;
+
+    expect(() => validateLectureLatexBody('lecture-notes', realisticNotes)).not.toThrow();
+    expect(() => validateLectureLatexBody('slides', realisticSlides)).not.toThrow();
+    expect(buildLectureLatexDocument('lecture-notes', 'Cheap Bootstrap', realisticNotes)).toContain(
+      '\\section*{Sources used}',
+    );
+  });
 });

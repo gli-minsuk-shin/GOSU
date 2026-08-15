@@ -473,12 +473,20 @@ class FakeCodex extends EventEmitter {
   };
   startInput: Record<string, unknown> | null = null;
   prompt = '';
+  prompts: string[] = [];
+  responseQueue: unknown[] = [];
+  invocations: ModelInvocation[] = [];
+  runTurnErrors = new Map<number, Error>();
   deferCompletion = false;
+  deferTurnNumbers = new Set<number>();
+  deferredTurnActive = false;
+  interruptions: Array<{ threadId: string; turnId: string }> = [];
   terminalStatus = 'completed';
   terminalError: unknown = null;
   startError: Error | null = null;
   lastThreadId: string | null = null;
   lastTurnId: string | null = null;
+  turnSequence = 0;
 
   async startThread(input: Record<string, unknown>) {
     if (this.startError) throw this.startError;
@@ -488,10 +496,18 @@ class FakeCodex extends EventEmitter {
 
   async runTurn(input: { threadId: string; prompt: string; requestedModelId: string | null }) {
     this.prompt = input.prompt;
-    const turnId = 'lecture-turn';
+    this.prompts.push(input.prompt);
+    this.turnSequence += 1;
+    const runTurnError = this.runTurnErrors.get(this.turnSequence);
+    if (runTurnError) throw runTurnError;
+    const turnId = this.turnSequence === 1 ? 'lecture-turn' : `lecture-turn-${this.turnSequence}`;
+    const response = this.responseQueue.shift() ?? this.response;
+    const turnInvocation = invocation(input.requestedModelId);
+    this.invocations.push(turnInvocation);
     this.lastThreadId = input.threadId;
     this.lastTurnId = turnId;
-    if (!this.deferCompletion) {
+    this.deferredTurnActive = this.deferCompletion || this.deferTurnNumbers.has(this.turnSequence);
+    if (!this.deferredTurnActive) {
       queueMicrotask(() => {
         this.emit('notification', {
           method: 'item/completed',
@@ -501,7 +517,7 @@ class FakeCodex extends EventEmitter {
             item: {
               type: 'agentMessage',
               phase: 'final_answer',
-              text: JSON.stringify(this.response),
+              text: JSON.stringify(response),
             },
           },
         });
@@ -514,12 +530,14 @@ class FakeCodex extends EventEmitter {
         });
       });
     }
-    return { turnId, invocation: invocation(input.requestedModelId) };
+    return { turnId, invocation: turnInvocation };
   }
 
   async interruptTurn(threadId: string, turnId: string) {
-    if (!this.deferCompletion) return;
+    this.interruptions.push({ threadId, turnId });
+    if (!this.deferredTurnActive) return;
     this.deferCompletion = false;
+    this.deferredTurnActive = false;
     queueMicrotask(() => {
       this.emit('notification', {
         method: 'turn/completed',
@@ -543,6 +561,7 @@ class FakeCodex extends EventEmitter {
   completeDeferred(status = 'completed') {
     if (!this.lastThreadId || !this.lastTurnId) throw new Error('missing_deferred_turn');
     this.deferCompletion = false;
+    this.deferredTurnActive = false;
     if (status === 'completed') {
       this.emit('notification', {
         method: 'item/completed',
@@ -2483,14 +2502,198 @@ The captured result improves the bounded baseline.
       }),
     ).rejects.toEqual(
       expect.objectContaining<Partial<LectureStudioServiceError>>({
-        code: 'lecture_invalid_response',
+        code: 'lecture_invalid_response_schema',
       }),
     );
     expect(storage.revisions).toEqual([]);
     expect(storage.studios[0]).toMatchObject({
       status: 'failed',
-      lastErrorCode: 'lecture_invalid_response',
+      lastErrorCode: 'lecture_invalid_response_schema',
     });
+    expect(codex.turnSequence).toBe(2);
+  });
+
+  it('repairs one exact slide-count failure on the same thread and records the accepted invocation', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.responseQueue = [
+      latexResponse(['P1'], 18, 'PRIVATE-FIRST-CANDIDATE'),
+      latexResponse(['P1'], 19, 'Corrected exact page count.'),
+    ];
+    const studio = await service.create({
+      title: 'Twenty-page lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+      generationBrief: {
+        notesTargetPages: 10,
+        slidesTargetPages: 20,
+        detailLevel: 'exhaustive',
+        customInstructions: '',
+      },
+    });
+
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: 'ultra',
+    });
+
+    expect(codex.turnSequence).toBe(2);
+    expect(codex.prompts[1]).toContain('bounded slide_count check');
+    expect(codex.prompts[1]).toContain(
+      'exactly 19 content frames; GOSU adds one title frame for exactly 20 PDF pages',
+    );
+    expect(codex.prompts[1]).not.toContain('PRIVATE-FIRST-CANDIDATE');
+    expect(receipt.revision.invocation.invocationId).toBe(codex.invocations[1]?.invocationId);
+    if (receipt.revision.schemaVersion !== 2) throw new Error('Expected canonical LaTeX revision');
+    expect(receipt.revision.slidesLatex.match(/\\begin\{frame\}/gu)).toHaveLength(20);
+    expect(storage.revisions).toHaveLength(1);
+    expect(codex.interruptions).toEqual([]);
+  });
+
+  it('stops after one correction and publishes only a bounded grammar error category', async () => {
+    const { service, storage, saved, codex, projectA, paperA } = fixture();
+    const unsafe = {
+      reply: 'PRIVATE-UNSAFE-CANDIDATE',
+      lectureNotesLatexBody:
+        '\\section{Notes}\n\\includegraphics{/tmp/private.png} [P1].\n\\section{Sources used}\n[P1] Paper A',
+      slidesLatexBody: lectureSlidesBody(['P1']),
+    };
+    codex.responseQueue = [unsafe, unsafe, latexResponse(['P1'])];
+    const studio = await service.create({
+      title: 'One repair only',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    await expect(
+      service.generate({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_latex_grammar' });
+
+    expect(codex.turnSequence).toBe(2);
+    expect(codex.responseQueue).toHaveLength(1);
+    expect(codex.prompts[1]).toContain('bounded latex_grammar check');
+    expect(codex.prompts[1]).not.toContain('PRIVATE-UNSAFE-CANDIDATE');
+    expect(storage.revisions).toHaveLength(0);
+    expect(saved).toHaveLength(0);
+  });
+
+  it('classifies unsafe LaTeX before a simultaneously missing Sources used section', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    const unsafeWithoutSources = {
+      reply: 'unsafe without source mapping',
+      lectureNotesLatexBody: '\\section{Notes}\n\\includegraphics{/tmp/private.png} [P1].',
+      slidesLatexBody: lectureSlidesBody(['P1']),
+    };
+    codex.responseQueue = [unsafeWithoutSources, unsafeWithoutSources];
+    const studio = await service.create({
+      title: 'Grammar classification order',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    await expect(
+      service.generate({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_latex_grammar' });
+
+    expect(codex.prompts[1]).toContain('bounded latex_grammar check');
+    expect(storage.revisions).toHaveLength(0);
+  });
+
+  it('keeps cancellation actionable while the correction turn is active', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.responseQueue = [{ reply: 'missing documents' }];
+    codex.deferTurnNumbers.add(2);
+    const studio = await service.create({
+      title: 'Cancelled correction',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const generation = service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await vi.waitFor(() => expect(codex.turnSequence).toBe(2));
+    const generating = storage.getLectureStudio(studio.id)!;
+
+    await service.cancel({
+      studioId: studio.id,
+      expectedVersion: generating.version,
+      attemptId: generating.activeAttemptId!,
+    });
+
+    await expect(generation).rejects.toMatchObject({ code: 'lecture_cancelled' });
+    expect(codex.interruptions).toContainEqual({
+      threadId: 'lecture-thread',
+      turnId: 'lecture-turn-2',
+    });
+    expect(storage.revisions).toHaveLength(0);
+  });
+
+  it('does not interrupt the completed primary turn when correction startup fails', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.responseQueue = [{ reply: 'missing documents' }];
+    codex.runTurnErrors.set(2, new Error('correction request failed'));
+    const studio = await service.create({
+      title: 'Correction startup failure',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    await expect(
+      service.generate({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_codex_unavailable' });
+
+    expect(codex.turnSequence).toBe(2);
+    expect(codex.interruptions).toEqual([]);
+    expect(storage.revisions).toHaveLength(0);
   });
 
   it('does not publish canonical LaTeX when either required PDF acceptance compile fails', async () => {
@@ -2545,6 +2748,7 @@ The captured result improves the bounded baseline.
       lastErrorCode: 'lecture_pdf_compile_failed',
       currentRevision: 0,
     });
+    expect(codex.interruptions).toEqual([]);
   });
 
   it('marks a failed edit message and excludes it from the next revision prompt', async () => {
@@ -2580,7 +2784,7 @@ The captured result improves the bounded baseline.
         reasoningOptionId: null,
         message: 'FAILED-INSTRUCTION: remove every equation.',
       }),
-    ).rejects.toMatchObject({ code: 'lecture_invalid_response' });
+    ).rejects.toMatchObject({ code: 'lecture_invalid_response_schema' });
     expect(storage.messages.find((message) => message.role === 'user')).toMatchObject({
       status: 'failed',
       content: 'FAILED-INSTRUCTION: remove every equation.',
@@ -2908,7 +3112,7 @@ The captured result improves the bounded baseline.
           requestedModelId: null,
           reasoningOptionId: null,
         }),
-      ).rejects.toMatchObject({ code: 'lecture_invalid_response' });
+      ).rejects.toMatchObject({ code: 'lecture_invalid_citation_mapping' });
       expect(storage.revisions).toEqual([]);
     }
   });
@@ -3066,14 +3270,26 @@ The captured result improves the bounded baseline.
       (_, index) =>
         `\\begin{frame}{Slide ${index + 1}}\n${index === 1 ? 'Unsupported synthesis.' : 'Evidence [P1].'}\n\\end{frame}`,
     ).join('\n');
-    for (const slidesLatexBody of [
-      '\\begin{frame}{Talk}\nUnknown evidence [P99]\n\\end{frame}',
-      '\\begin{frame}{Talk}\n<script>alert(1)</script> [P1]\n\\end{frame}',
-      '\\begin{frame}{Talk}\n<div>raw HTML</div> [P1]\n\\end{frame>',
-      '\\begin{frame}{Talk}\n\\includegraphics{https://example.invalid/plot.png} [P1]\n\\end{frame}',
-      lectureSlidesBody(['P1'], 1),
-      uncitedSlideDeck,
-    ]) {
+    for (const [slidesLatexBody, expectedCode] of [
+      [
+        '\\begin{frame}{Talk}\nUnknown evidence [P99]\n\\end{frame}',
+        'lecture_invalid_citation_mapping',
+      ],
+      [
+        '\\begin{frame}{Talk}\n<script>alert(1)</script> [P1]\n\\end{frame>',
+        'lecture_invalid_latex_grammar',
+      ],
+      [
+        '\\begin{frame}{Talk}\n<div>raw HTML</div> [P1]\n\\end{frame>',
+        'lecture_invalid_latex_grammar',
+      ],
+      [
+        '\\begin{frame}{Talk}\n\\includegraphics{https://example.invalid/plot.png} [P1]\n\\end{frame}',
+        'lecture_invalid_latex_grammar',
+      ],
+      [lectureSlidesBody(['P1'], 1), 'lecture_invalid_slide_count'],
+      [uncitedSlideDeck, 'lecture_invalid_citation_mapping'],
+    ] as const) {
       const { service, storage, codex, projectA, paperA } = fixture();
       const studio = await service.create({
         title: 'Bounded talk',
@@ -3099,7 +3315,7 @@ The captured result improves the bounded baseline.
           requestedModelId: null,
           reasoningOptionId: null,
         }),
-      ).rejects.toMatchObject({ code: 'lecture_invalid_response' });
+      ).rejects.toMatchObject({ code: expectedCode });
       expect(storage.revisions).toHaveLength(0);
     }
   });

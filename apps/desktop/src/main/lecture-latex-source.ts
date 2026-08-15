@@ -19,6 +19,11 @@ const ENVIRONMENT_PATTERN = /\\(begin|end)\s*\{\s*([A-Za-z*]+)\s*\}/gu;
 const COMMON_ENVIRONMENTS = new Set([
   'align',
   'align*',
+  'aligned',
+  'alignedat',
+  'array',
+  'Bmatrix',
+  'bmatrix',
   'cases',
   'center',
   'description',
@@ -27,12 +32,18 @@ const COMMON_ENVIRONMENTS = new Set([
   'equation*',
   'gather',
   'gather*',
+  'gathered',
   'itemize',
+  'matrix',
   'multline',
   'multline*',
+  'pmatrix',
   'quote',
+  'smallmatrix',
   'split',
   'tabular',
+  'Vmatrix',
+  'vmatrix',
 ]);
 const NOTES_ENVIRONMENTS = new Set([
   ...COMMON_ENVIRONMENTS,
@@ -45,29 +56,64 @@ const NOTES_ENVIRONMENTS = new Set([
   'remark',
   'theorem',
 ]);
-const SLIDES_ENVIRONMENTS = new Set([...COMMON_ENVIRONMENTS, 'alertblock', 'block', 'frame']);
+const SLIDES_ENVIRONMENTS = new Set([
+  ...COMMON_ENVIRONMENTS,
+  'alertblock',
+  'block',
+  'column',
+  'columns',
+  'frame',
+]);
 const MATH_ENVIRONMENTS = new Set([
   'align',
   'align*',
+  'aligned',
+  'alignedat',
+  'array',
+  'Bmatrix',
+  'bmatrix',
   'cases',
   'equation',
   'equation*',
   'gather',
   'gather*',
+  'gathered',
+  'matrix',
   'multline',
   'multline*',
+  'pmatrix',
+  'smallmatrix',
   'split',
+  'Vmatrix',
+  'vmatrix',
 ]);
-const ALIGNMENT_ENVIRONMENTS = new Set(['align', 'align*', 'cases', 'split', 'tabular']);
+const ALIGNMENT_ENVIRONMENTS = new Set([
+  'align',
+  'align*',
+  'aligned',
+  'alignedat',
+  'array',
+  'Bmatrix',
+  'bmatrix',
+  'cases',
+  'gathered',
+  'matrix',
+  'pmatrix',
+  'smallmatrix',
+  'split',
+  'tabular',
+  'Vmatrix',
+  'vmatrix',
+]);
 
 const COMMON_COMMANDS = new Set(
   `begin end section subsection subsubsection paragraph item textbf textit texttt textsc emph
   footnote label ref eqref pageref autoref cite top mid bottomrule multicolumn
   alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa lambda mu nu xi
   pi varpi rho sigma tau upsilon phi varphi chi psi omega Gamma Delta Theta Lambda Xi Pi Sigma
-  Upsilon Phi Psi Omega frac dfrac tfrac sqrt sum prod int iint iiint oint lim log ln exp sin cos
+  Upsilon Phi Psi Omega frac dfrac tfrac binom choose sqrt sum prod int iint iiint oint lim log ln exp sin cos
   tan max min argmax argmin arccos arcsin arctan csc deg det dim gcd hom inf ker Pr sec sup mathbb
-  mathbf boldsymbol bm mathrm mathcal mathsf mathtt mathit mathfrak text textnormal operatorname
+  mathbf boldsymbol bm mathrm mathcal mathsf mathtt mathit mathfrak text textnormal operatorname mathop
   overline underline overbrace underbrace hat widehat widetilde tilde bar vec dot ddot overset
   underset stackrel substack limits nolimits left right big Big bigg Bigg bigl bigr Bigl Bigr biggl
   biggr Biggl Biggr cdot times div pm mp le leq ge geq gtrsim lesssim ll gg neq approx asymp cong
@@ -75,12 +121,13 @@ const COMMON_COMMANDS = new Set(
   varnothing forall exists nexists neg land lor implies iff to mapsto gets leftarrow rightarrow
   leftrightarrow Leftarrow Rightarrow Leftrightarrow longleftarrow longrightarrow
   longleftrightarrow hookrightarrow rightsquigarrow xrightarrow uparrow downarrow partial nabla
-  infty ell ldots cdots vdots ddots dots prime top bot perp parallel angle triangle square Box
+  infty ell ldots cdots vdots ddots dots prime top bot perp parallel mid vert Vert lVert rVert
+  langle rangle lceil rceil lfloor rfloor pmod mod bmod coloneqq colon angle triangle square Box
   Diamond circ bullet star ast dagger ddagger oplus otimes odot oslash bigcup bigcap bigoplus
-  bigotimes begin end quad qquad hfill vfill smallskip medskip bigskip noindent centering linewidth
-  columnwidth textwidth normalsize small footnotesize scriptsize tiny Large LARGE huge Huge`.split(
-    /\s+/u,
-  ),
+  bigotimes begin end quad qquad enspace hfill vfill smallskip medskip bigskip noindent centering
+  linewidth columnwidth textwidth displaystyle textstyle scriptstyle scriptscriptstyle
+  textbackslash textasciicircum textasciitilde normalsize small footnotesize scriptsize tiny
+  Large LARGE huge Huge`.split(/\s+/u),
 );
 const NOTES_COMMANDS = COMMON_COMMANDS;
 const SLIDES_COMMANDS = new Set([...COMMON_COMMANDS, 'alert', 'pause']);
@@ -197,7 +244,15 @@ function assertMathAndSpecialCharacters(value: string) {
   if (delimiter !== null) throw new LectureLatexSourceError();
 }
 
-export function validateLectureLatexBody(kind: LectureLatexKind, rawBody: string) {
+type LectureLatexValidationOptions = Readonly<{
+  requireSourcesUsed?: boolean;
+}>;
+
+export function validateLectureLatexBody(
+  kind: LectureLatexKind,
+  rawBody: string,
+  options: LectureLatexValidationOptions = {},
+) {
   const body = rawBody.trim();
   if (
     body.length < 1 ||
@@ -224,7 +279,7 @@ export function validateLectureLatexBody(kind: LectureLatexKind, rawBody: string
   assertCommands(body, kind);
   assertMathAndSpecialCharacters(body);
   if (kind === 'lecture-notes') {
-    if (!/\\section\s*\{\s*Sources used\s*\}/iu.test(body)) {
+    if (options.requireSourcesUsed !== false && !findLectureSourcesUsedSection(body)) {
       throw new LectureLatexSourceError();
     }
   } else {
@@ -232,6 +287,13 @@ export function validateLectureLatexBody(kind: LectureLatexKind, rawBody: string
     if (frames.length < 1) throw new LectureLatexSourceError();
   }
   return body;
+}
+
+export function findLectureSourcesUsedSection(body: string) {
+  const match = /\\section\s*\*?\s*\{\s*Sources used\s*\}/iu.exec(body);
+  return match?.index === undefined
+    ? null
+    : { index: match.index, end: match.index + match[0].length };
 }
 
 function notesPrefix(title: string) {
