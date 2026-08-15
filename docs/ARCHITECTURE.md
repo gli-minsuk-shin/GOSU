@@ -1080,16 +1080,26 @@ structured output은 고정 JSON field의 notes/article LaTeX body와 Beamer fra
 `[P#]|[E#]|[M#]|[F#]` label, substantive frame별 evidence label, notes의 `Sources used` 또는 starred section,
 duration 또는 사용자가 명시한 compiled slide page target을 검증한다. GOSU가 별도 title frame을 추가하므로
 slide target은 그 title을 포함한 정확한 PDF page 수 gate다. notes page target은 typography에 따른 근사
-지시다. bounded dialect는 고정 preamble이 실제로 제공하는 AMS matrix/alignment, `binom|mid|Vert|langle|rangle|pmod`
-계열 수학 command와 Beamer `columns|column`까지만 허용한다. prose의 `%|#|&|_`는 escape하고 raw `~`는
-거부한다. raw HTML, Markdown structure, document wrapper, raw comment, 외부 file/network command, 허용되지
-않은 TeX command·환경과 다른 citation syntax는 Vault에 쓰기 전에 거부한다. 이는 metadata-only input의 구조적
-evidence gate이며 paper full-text 사실 검증이라고 주장하지 않는다.
+지시다. bounded dialect는 고정 preamble이 실제로 제공하는 AMS matrix/alignment, command math delimiter,
+`binom`, `mid`, `\|`, `Vert`, `langle`, `rangle`, `pmod`, `nonumber`, `intertext` 계열 수학 command, 안전한
+table·booktabs layout과
+Beamer `columns|column`까지만 허용한다. prose의 `%|#|&|_`는 escape하고 raw `~`는 거부한다. source가 정의한
+custom macro는 복사하지 않고 같은 의미의 허용된 primitive로 풀어 쓴다. HTML 검사는 math delimiter와 math
+environment를 구분하므로 정상적인 부등호 `<|>`를 tag로 오인하지 않지만, math 밖의 실제 HTML tag·comment는
+계속 거부한다. 새 slide body는 frame별 한 PDF page invariant를 위해 optional frame argument,
+overlay specification·overlay command와 `allowframebreaks`를 길이·줄바꿈과 무관하게 거부한다. 이전 release가
+이미 commit한 canonical overlay artifact만 read/export
+compatibility를 유지한다. Markdown structure, document wrapper, raw comment, 외부 file/network command,
+허용되지 않은 TeX command·환경과 다른 citation syntax는 Vault에 쓰기 전에 거부한다. 이는 metadata-only
+input의 구조적 evidence gate이며 paper full-text 사실 검증이라고 주장하지 않는다.
 
 첫 candidate가 JSON parse, exact schema, bounded LaTeX grammar, citation mapping 또는 slide count gate에서
 거부되면 같은 Codex thread에서 그 safe category와 고정 교정 지시만 전달해 최대 한 번 complete pair를 다시
-생성한다. raw candidate를 correction prompt, Studio record, Renderer 또는 log에 다시 넣지 않으며 source manifest,
-generation brief와 current draft는 initial turn에서 고정한 값을 그대로 사용한다. correction도 거부되면
+생성한다. LaTeX grammar 거부는 notes/slides별 고정 reason ID와 엄격히 정규화·중복 제거한 최대 8개 command 또는
+environment token 예시만 correction에 추가해 source-native custom macro를 primitive로 풀도록 안내한다. raw
+candidate·임의 parser message·source text·path를 correction prompt, Studio record, Renderer 또는 log에 다시
+넣지 않으며 source manifest, generation brief와 current draft는 initial turn에서 고정한 값을 그대로 사용한다.
+correction도 거부되면
 `lecture_invalid_response_json|lecture_invalid_response_schema|lecture_invalid_latex_grammar|lecture_invalid_citation_mapping|lecture_invalid_slide_count`
 중 하나만 공개한다. 첫 candidate와 최종 거부 candidate는 compile·Research Notes staging·revision persistence에
 진입하지 않는다. correction이 승인된 경우에만 두 번째 turn의 actual invocation을 revision provenance로 기록한다.

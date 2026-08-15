@@ -183,15 +183,22 @@ prompt history에서 제외한다. Main은 structured response를 저장하기 �
   command와 allowlist 밖 command/environment를 거부한다.
 - timed talk의 slide count가 선택한 duration budget 안에 있다.
 
-validator grammar는 고정 preamble이 실제 load한 AMS matrix/alignment, `binom|mid|Vert|langle|rangle|pmod`
-계열 수학 command와 Beamer `columns|column`을 포함하는 bounded dialect다. developer instruction은 prose의
-`%|#|&|_` escape, raw `~` 금지, balanced delimiter/environment를 명시하므로 모델 contract와 validator가 같은
-문법을 말한다.
+validator grammar는 고정 preamble이 실제 load한 AMS matrix/alignment, command math delimiter,
+`binom`, `mid`, `\|`, `Vert`, `langle`, `rangle`, `pmod`, `nonumber`, `intertext` 계열 수학 command, 안전한
+table·booktabs layout과
+Beamer `columns|column`을 포함하는 bounded dialect다. developer instruction은 prose의 `%|#|&|_` escape,
+raw `~` 금지, balanced delimiter/environment와 source-defined macro의 primitive expansion을 명시하므로 모델
+contract와 validator가 같은 문법을 말한다. HTML 검사는 math context를 구분해 정상 부등호 `<|>`를 tag로
+오인하지 않고 math 밖의 실제 tag·comment만 거부한다. 새 slide는 한 frame이 정확히 한 PDF page가 되도록
+optional frame argument, overlay specification·command와 `allowframebreaks`를 길이·줄바꿈과 무관하게
+거부하되, 이전 release에서 commit된 canonical overlay artifact는 read/export compatibility를 유지한다.
 
 첫 candidate가 JSON parse, exact schema, bounded LaTeX grammar, citation mapping 또는 slide count에서
 거부되면 같은 Codex thread에 safe category와 고정 교정 지시만 보내 complete pair를 최대 한 번 다시 생성한다.
-raw candidate는 prompt나 persistence에 다시 넣지 않고 initial turn의 frozen manifest, current draft와 generation
-brief를 그대로 사용한다. 두 subturn은 위 absolute hard deadline을 공유하고 correction은 새 idle timer를 가진다.
+LaTeX grammar 거부는 notes/slides별 고정 reason ID와 엄격히 정규화·중복 제거한 최대 8개 command 또는
+environment token 예시만 전달한다. raw candidate·임의 parser message·source text·path는 prompt나
+persistence에 다시 넣지 않고 initial turn의 frozen manifest, current draft와 generation brief를 그대로 사용한다.
+두 subturn은 위 absolute hard deadline을 공유하고 correction은 새 idle timer를 가진다.
 거부된 candidate는 compile, Research Notes staging 또는 SQL revision에 진입하지 않는다. correction도 실패하면
 `response_json|response_schema|latex_grammar|citation_mapping|slide_count`에 대응하는 bounded public error code만
 노출하며 raw model output이나 parser detail은 저장·표시하지 않는다. 성공하면 최종 승인 turn의 actual model

@@ -84,9 +84,12 @@ import {
   talkSlideBudget,
 } from './lecture-studio-prompt';
 import {
+  LECTURE_LATEX_VALIDATION_REASON_GUIDANCE,
+  LectureLatexSourceError,
   buildLectureLatexDocument,
   countLectureSlidePages,
   findLectureSourcesUsedSection,
+  type LectureLatexValidationReason,
   validateLectureLatexBody,
 } from './lecture-latex-source';
 import { LectureStudioStorageError } from './lecture-studio-storage-error';
@@ -384,10 +387,16 @@ const LECTURE_MANUSCRIPT_FILE_MAX_CHARACTERS = 24_000;
 const LECTURE_MANUSCRIPT_FILE_EXTRACT_MAX_CHARACTERS = 72_000;
 const LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS = 100_000;
 const LECTURE_MANUSCRIPT_SOURCE_PATH_PATTERN = /\.(?:bib|tex)$/iu;
-const UNSUPPORTED_CITATION_PATTERN = /\[@[^\]]+\]|\\(?:auto|paren|text)?cite\s*\{[^}]+\}/iu;
+const UNSUPPORTED_CITATION_PATTERN = /\[@[^\]]+\]|\\(?:auto|paren|text)?cite\b/iu;
 
 type LectureOutputValidationCategory =
   'response_json' | 'response_schema' | 'latex_grammar' | 'citation_mapping' | 'slide_count';
+
+type LectureOutputLatexDiagnostic = Readonly<{
+  document: 'lecture-notes' | 'slides';
+  reason: LectureLatexValidationReason;
+  tokens: readonly string[];
+}>;
 
 const LECTURE_OUTPUT_VALIDATION_ERROR_CODES = {
   response_json: 'lecture_invalid_response_json',
@@ -400,7 +409,10 @@ const LECTURE_OUTPUT_VALIDATION_ERROR_CODES = {
 class LectureOutputValidationError extends Error {
   readonly code: LectureStudioServiceError['code'];
 
-  constructor(readonly category: LectureOutputValidationCategory) {
+  constructor(
+    readonly category: LectureOutputValidationCategory,
+    readonly latexDiagnostics: readonly LectureOutputLatexDiagnostic[] = [],
+  ) {
     super(category);
     this.name = 'LectureOutputValidationError';
     this.code = LECTURE_OUTPUT_VALIDATION_ERROR_CODES[category];
@@ -420,7 +432,8 @@ const LECTURE_OUTPUT_CORRECTION_GUIDANCE = {
     'Regenerate the complete pair with the required content-frame count. GOSU adds one title frame to the final PDF page count.',
 } as const satisfies Record<LectureOutputValidationCategory, string>;
 
-function correctionPrompt(category: LectureOutputValidationCategory, studio: LectureStudio) {
+function correctionPrompt(error: LectureOutputValidationError, studio: LectureStudio) {
+  const { category } = error;
   let slideCountGuidance = '';
   if (category === 'slide_count') {
     const requestedPages = studio.generationBrief.slidesTargetPages;
@@ -431,7 +444,22 @@ function correctionPrompt(category: LectureOutputValidationCategory, studio: Lec
       slideCountGuidance = ` Emit between ${budget.minimum - 1} and ${budget.maximum - 1} content frames; GOSU adds one title frame for ${budget.minimum}-${budget.maximum} PDF pages.`;
     }
   }
-  return `The previous candidate was rejected by GOSU's bounded ${category} check and was not saved. ${LECTURE_OUTPUT_CORRECTION_GUIDANCE[category]}${slideCountGuidance} Recheck both documents and return one complete replacement JSON object now.`;
+  const latexGuidance =
+    category === 'latex_grammar' && error.latexDiagnostics.length > 0
+      ? ` Bounded validator diagnostics: ${error.latexDiagnostics
+          .slice(0, 2)
+          .map((diagnostic) => {
+            const tokenExamples =
+              diagnostic.tokens.length > 0
+                ? ` Offending token examples: ${diagnostic.tokens.join(', ')}.`
+                : '';
+            return `${diagnostic.document}: ${diagnostic.reason}. ${LECTURE_LATEX_VALIDATION_REASON_GUIDANCE[diagnostic.reason]}${tokenExamples}`;
+          })
+          .join(
+            ' ',
+          )} These diagnostics contain no candidate text and are bounded examples; scan both complete bodies for every occurrence and every other violation, not only the listed examples.`
+      : '';
+  return `The previous candidate was rejected by GOSU's bounded ${category} check and was not saved. ${LECTURE_OUTPUT_CORRECTION_GUIDANCE[category]}${slideCountGuidance}${latexGuidance} Recheck both documents and return one complete replacement JSON object now.`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1601,7 +1629,7 @@ export class LectureStudioService {
         if (!(error instanceof LectureOutputValidationError)) throw error;
         this.throwIfCancelled(active);
         this.publishProgress(active, 'correcting_output');
-        execution = await executeCodexTurn(correctionPrompt(error.category, generating));
+        execution = await executeCodexTurn(correctionPrompt(error, generating));
         try {
           this.publishProgress(active, 'validating_output');
           output = this.parseOutput(execution.terminal.text, generating, sourceManifest);
@@ -1792,15 +1820,29 @@ export class LectureStudioService {
     const outputResult = LectureStudioGenerationOutputSchema.safeParse(parsed);
     if (!outputResult.success) throw new LectureOutputValidationError('response_schema');
     const output = outputResult.data;
-    let notesBody: string;
-    let slidesBody: string;
+    const latexDiagnostics: LectureOutputLatexDiagnostic[] = [];
+    let notesBody: string | null = null;
+    let slidesBody: string | null = null;
     try {
       notesBody = validateLectureLatexBody('lecture-notes', output.lectureNotesLatexBody, {
         requireSourcesUsed: false,
       });
+    } catch (error) {
+      if (!(error instanceof LectureLatexSourceError)) throw error;
+      latexDiagnostics.push({
+        document: 'lecture-notes',
+        reason: error.reason,
+        tokens: error.tokens,
+      });
+    }
+    try {
       slidesBody = validateLectureLatexBody('slides', output.slidesLatexBody);
-    } catch {
-      throw new LectureOutputValidationError('latex_grammar');
+    } catch (error) {
+      if (!(error instanceof LectureLatexSourceError)) throw error;
+      latexDiagnostics.push({ document: 'slides', reason: error.reason, tokens: error.tokens });
+    }
+    if (latexDiagnostics.length > 0 || notesBody === null || slidesBody === null) {
+      throw new LectureOutputValidationError('latex_grammar', latexDiagnostics);
     }
     if (!findLectureSourcesUsedSection(notesBody)) {
       throw new LectureOutputValidationError('citation_mapping');
