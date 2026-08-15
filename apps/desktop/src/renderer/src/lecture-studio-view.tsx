@@ -74,6 +74,7 @@ import {
   type LectureStudioModelSelection,
 } from './lecture-studio-model-selection-store';
 import type { LectureStudioDraftStore } from './lecture-studio-session-state';
+import type { OverleafPersonalTokenUiState } from './overleaf-personal-token-ui';
 import { MarkdownDocument } from './markdown-document';
 import {
   LectureExternalSourcePicker,
@@ -132,6 +133,8 @@ export interface LectureStudioViewProps {
   codexAuthenticationRequired: boolean;
   onRefreshModels: () => void;
   onOpenCodexSignIn: () => void;
+  overleafPersonalTokenState: OverleafPersonalTokenUiState;
+  onOpenOverleafSettings: () => void;
   layout: LectureStudioLayoutState;
   onLayoutChange: (layout: LectureStudioLayoutState) => void;
 }
@@ -544,6 +547,8 @@ export function LectureStudioView({
   codexAuthenticationRequired,
   onRefreshModels,
   onOpenCodexSignIn,
+  overleafPersonalTokenState,
+  onOpenOverleafSettings,
   layout,
   onLayoutChange,
 }: LectureStudioViewProps) {
@@ -770,6 +775,8 @@ export function LectureStudioView({
             modelsLoading={modelsLoading}
             onRefreshModels={onRefreshModels}
             onOpenCodexSignIn={onOpenCodexSignIn}
+            overleafPersonalTokenState={overleafPersonalTokenState}
+            onOpenOverleafSettings={onOpenOverleafSettings}
             onCancel={listSnapshot?.studios.length ? () => setComposing(false) : undefined}
             onCreated={async (studio, initialSelection) => {
               setModelSelection(initialSelection);
@@ -1042,6 +1049,8 @@ function LectureComposer({
   modelsLoading,
   onRefreshModels,
   onOpenCodexSignIn,
+  overleafPersonalTokenState,
+  onOpenOverleafSettings,
   onCancel,
   onCreated,
   onError,
@@ -1054,6 +1063,8 @@ function LectureComposer({
   modelsLoading: boolean;
   onRefreshModels: () => void;
   onOpenCodexSignIn: () => void;
+  overleafPersonalTokenState: OverleafPersonalTokenUiState;
+  onOpenOverleafSettings: () => void;
   onCancel?: (() => void) | undefined;
   onCreated: (studio: LectureStudio, selection: LectureStudioModelSelection) => Promise<void>;
   onError: (error: unknown) => void;
@@ -1546,6 +1557,8 @@ function LectureComposer({
         outputProjectName={
           projects.find(({ id }) => id === outputProjectId)?.name ?? 'the output project'
         }
+        overleafPersonalTokenState={overleafPersonalTokenState}
+        onOpenOverleafSettings={onOpenOverleafSettings}
         onChooseFiles={async () => {
           if (!outputProjectId) return;
           try {

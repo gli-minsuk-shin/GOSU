@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { OverleafGitTransportError, parseOverleafGitRemote } from './overleaf-git-transport';
@@ -7,6 +8,7 @@ import { OverleafGitTransportError, parseOverleafGitRemote } from './overleaf-gi
 const MAX_TOKEN_LENGTH = 2_048;
 const MAX_SEALED_CREDENTIAL_BYTES = 64 * 1024;
 const MAX_RECONCILIATION_ENTRIES = 4_096;
+const PERSONAL_TOKEN_FILE_NAME = 'personal-token.bin';
 const OWNED_CREDENTIAL_REFERENCE =
   /^overleaf-git:([0-9a-f]{24}):([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/u;
 const LEGACY_CANONICAL_CREDENTIAL_REFERENCE = /^overleaf-git:([0-9a-f]{24})$/u;
@@ -81,12 +83,61 @@ function credentialRefFromPendingName(fileName: string) {
  * Electron safeStorage protects ciphertext with the OS secure-storage backend.
  */
 export class OverleafGitCredentialStore {
+  private personalTokenTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly options: CredentialStoreOptions) {}
 
   async stage(remoteValue: string, token: string): Promise<OverleafGitCredentialStage> {
     const remote = parseOverleafGitRemote(remoteValue);
     if (!validToken(token)) throw new Error('overleaf_token_invalid');
-    const credentialRef = `overleaf-git:${remote.workspaceId}:${randomUUID()}`;
+    return this.stageToken(remote.workspaceId, token);
+  }
+
+  /** New renderer-triggered links always use the one personal token configured in Settings. */
+  async stageFromPersonal(remoteValue: string): Promise<OverleafGitCredentialStage> {
+    const remote = parseOverleafGitRemote(remoteValue);
+    return this.withPersonalTokenLock(async () => {
+      const token = await this.readPersonalTokenIfConfigured();
+      if (token === null) throw new OverleafGitTransportError('overleaf_git_auth_required');
+      return this.stageToken(remote.workspaceId, token);
+    });
+  }
+
+  async personalTokenStatus(): Promise<'configured' | 'not_configured'> {
+    return this.withPersonalTokenLock(async () =>
+      (await this.readPersonalTokenIfConfigured()) === null ? 'not_configured' : 'configured',
+    );
+  }
+
+  async savePersonalToken(token: string): Promise<void> {
+    if (!validToken(token)) throw new Error('overleaf_token_invalid');
+    await this.withPersonalTokenLock(async () => {
+      const root = this.options.rootDirectory();
+      const target = join(root, PERSONAL_TOKEN_FILE_NAME);
+      await this.assertRegularFileOrMissing(target);
+      await this.writeSealedToken(
+        target,
+        join(root, `.${PERSONAL_TOKEN_FILE_NAME}.${randomUUID()}.tmp`),
+        token,
+      );
+    });
+  }
+
+  async removePersonalToken(): Promise<void> {
+    await this.withPersonalTokenLock(async () => {
+      await rm(join(this.options.rootDirectory(), PERSONAL_TOKEN_FILE_NAME), { force: true }).catch(
+        (error) => {
+          throw new Error('overleaf_keychain_unavailable', { cause: error });
+        },
+      );
+    });
+  }
+
+  private async stageToken(
+    workspaceId: string,
+    token: string,
+  ): Promise<OverleafGitCredentialStage> {
+    const credentialRef = `overleaf-git:${workspaceId}:${randomUUID()}`;
     const paths = this.pathsForReference(credentialRef);
     await this.writePending(paths, token);
     let finalized = false;
@@ -122,26 +173,9 @@ export class OverleafGitCredentialStore {
     ) {
       throw new OverleafGitTransportError('overleaf_git_auth_required');
     }
-    this.requireEncryption();
-    let sealed: Buffer;
-    try {
-      sealed = await readFile(join(this.options.rootDirectory(), parsed.fileName));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new OverleafGitTransportError('overleaf_git_auth_required');
-      }
-      throw new Error('overleaf_keychain_unavailable', { cause: error });
-    }
-    if (sealed.length < 1 || sealed.length > MAX_SEALED_CREDENTIAL_BYTES) {
-      throw new Error('overleaf_keychain_unavailable');
-    }
-    try {
-      const token = this.options.encryption.decryptString(sealed);
-      if (!validToken(token)) throw new Error('overleaf_keychain_unavailable');
-      return token;
-    } catch (error) {
-      throw new Error('overleaf_keychain_unavailable', { cause: error });
-    }
+    // Existing links stay pinned to the exact credential snapshot minted when the binding was
+    // created. Replacing or clearing the Settings token affects future links only.
+    return this.readSealedToken(join(this.options.rootDirectory(), parsed.fileName), true);
   }
 
   async eraseByReference(credentialRef: string): Promise<void> {
@@ -194,6 +228,78 @@ export class OverleafGitCredentialStore {
     paths: Readonly<{ credential: string; pending: string; temporary: string }>,
     token: string,
   ) {
+    await mkdir(this.options.rootDirectory(), { recursive: true, mode: 0o700 }).catch((error) => {
+      throw new Error('overleaf_keychain_unavailable', { cause: error });
+    });
+    try {
+      await writeFile(paths.pending, '', { flag: 'wx', mode: 0o600 });
+      await this.writeSealedToken(paths.credential, paths.temporary, token);
+    } catch {
+      await Promise.all([
+        rm(paths.pending, { force: true }),
+        rm(paths.temporary, { force: true }),
+        rm(paths.credential, { force: true }),
+      ]).catch(() => undefined);
+      throw new Error('overleaf_keychain_unavailable');
+    }
+  }
+
+  private async readPersonalTokenIfConfigured(): Promise<string | null> {
+    return this.readSealedToken(
+      join(this.options.rootDirectory(), PERSONAL_TOKEN_FILE_NAME),
+      false,
+    );
+  }
+
+  private async readSealedToken(path: string, missingIsAuthRequired: true): Promise<string>;
+  private async readSealedToken(path: string, missingIsAuthRequired: false): Promise<string | null>;
+  private async readSealedToken(path: string, missingIsAuthRequired: boolean) {
+    this.requireEncryption();
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        if (missingIsAuthRequired) {
+          throw new OverleafGitTransportError('overleaf_git_auth_required');
+        }
+        return null;
+      }
+      throw new Error('overleaf_keychain_unavailable', { cause: error });
+    }
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size < 1 || stat.size > MAX_SEALED_CREDENTIAL_BYTES) {
+        throw new Error('overleaf_keychain_unavailable');
+      }
+      const sealed = await handle.readFile();
+      if (sealed.length < 1 || sealed.length > MAX_SEALED_CREDENTIAL_BYTES) {
+        throw new Error('overleaf_keychain_unavailable');
+      }
+      const token = this.options.encryption.decryptString(sealed);
+      if (!validToken(token)) throw new Error('overleaf_keychain_unavailable');
+      return token;
+    } catch (error) {
+      throw new Error('overleaf_keychain_unavailable', { cause: error });
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+
+  private async assertRegularFileOrMissing(path: string) {
+    try {
+      const stat = await lstat(path);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw new Error('overleaf_keychain_unavailable');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      if (error instanceof Error && error.message === 'overleaf_keychain_unavailable') throw error;
+      throw new Error('overleaf_keychain_unavailable', { cause: error });
+    }
+  }
+
+  private async writeSealedToken(path: string, temporaryPath: string, token: string) {
     this.requireEncryption();
     let sealed: Buffer;
     try {
@@ -206,16 +312,11 @@ export class OverleafGitCredentialStore {
     }
     await mkdir(this.options.rootDirectory(), { recursive: true, mode: 0o700 });
     try {
-      await writeFile(paths.pending, '', { flag: 'wx', mode: 0o600 });
-      await writeFile(paths.temporary, sealed, { flag: 'wx', mode: 0o600 });
-      await rename(paths.temporary, paths.credential);
-    } catch {
-      await Promise.all([
-        rm(paths.pending, { force: true }),
-        rm(paths.temporary, { force: true }),
-        rm(paths.credential, { force: true }),
-      ]).catch(() => undefined);
-      throw new Error('overleaf_keychain_unavailable');
+      await writeFile(temporaryPath, sealed, { flag: 'wx', mode: 0o600 });
+      await rename(temporaryPath, path);
+    } catch (error) {
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
+      throw new Error('overleaf_keychain_unavailable', { cause: error });
     }
   }
 
@@ -233,6 +334,23 @@ export class OverleafGitCredentialStore {
   private requireEncryption() {
     if (!this.options.encryption.isEncryptionAvailable()) {
       throw new Error('overleaf_keychain_unavailable');
+    }
+  }
+
+  private async withPersonalTokenLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.personalTokenTail;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => undefined).then(() => gate);
+    this.personalTokenTail = tail;
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.personalTokenTail === tail) this.personalTokenTail = Promise.resolve();
     }
   }
 }

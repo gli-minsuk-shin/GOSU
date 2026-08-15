@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as ReactModule from 'react';
 
 import type {
   ManuscriptWorkspaceConnection,
@@ -15,7 +16,7 @@ const hookState = vi.hoisted(() => ({
 }));
 
 vi.mock('react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('react')>();
+  const actual = await importOriginal<typeof ReactModule>();
   return {
     ...actual,
     useEffect: () => undefined,
@@ -257,19 +258,48 @@ describe('Manuscript workspace view', () => {
       ],
     });
 
-    const html = renderToStaticMarkup(<ManuscriptView project={project} />);
+    const html = renderToStaticMarkup(
+      <ManuscriptView
+        project={project}
+        overleafPersonalTokenState="configured"
+        onOpenOverleafSettings={vi.fn()}
+      />,
+    );
 
     expect(html).toContain('Main manuscript');
     expect(html).toContain('Supplement');
     expect(html.match(/Overleaf Git URL/gu)).toHaveLength(2);
-    expect(html.match(/type="password"/gu)).toHaveLength(2);
-    expect(html).toContain('Saved to macOS Keychain');
+    expect(html).not.toContain('type="password"');
+    expect(html).not.toContain('Personal Git token');
+    expect(html).toContain('Uses the token saved in Overleaf Settings');
     expect(html).toContain('Captures inbound Git checkpoints only');
     expect(html.match(/Edit manuscript name or root document/gu)).toHaveLength(2);
     expect(html).toContain('Save manuscript details');
     expect(html).toContain('value="main.tex"');
     expect(html.match(/Remove unused manuscript/gu)).toHaveLength(1);
     expect(html).toContain('ever been connected or captured');
+  });
+
+  it('guides new Overleaf links to Settings when no reusable token is saved', () => {
+    prepare({
+      schemaVersion: 1,
+      projectId: project.id,
+      providers: [descriptor],
+      manuscripts: [{ manuscript, connection: null, canDeleteUnconfigured: true }],
+    });
+
+    const html = renderToStaticMarkup(
+      <ManuscriptView
+        project={project}
+        overleafPersonalTokenState="not_configured"
+        onOpenOverleafSettings={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Save an Overleaf token before linking');
+    expect(html).toContain('Open Overleaf Settings');
+    expect(html).not.toContain('Overleaf Git URL');
+    expect(html).not.toContain('type="password"');
   });
 
   it('describes capture truthfully, derives realtime copy from capabilities, and exposes no publish', () => {

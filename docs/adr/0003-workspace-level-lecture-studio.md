@@ -78,9 +78,12 @@ authoritative Literature·Experiment repository와 Manuscript service에서 다�
   제거한다. SQL purge 뒤 filesystem 정리가 실패하면 다음 startup이 active·trashed Studio identity와 exact
   managed manifest를 대조해 orphan Studio/claim directory를 bounded reconciliation한다. 사용자의 원본 file은
   건드리지 않는다.
-- Overleaf Git URL/token은 새로운 live-source path를 만들지 않고 Manuscript의 create/connect/fetch-checkpoint
-  boundary를 재사용한다. token은 fixed IPC 뒤 macOS Keychain에만 저장하며 URL/token을 receipt·Lecture manifest·
-  Renderer persistence에 복사하지 않는다. imported checkpoint는 일반 `[M#]` source이고 이후 live edit는
+- Overleaf Git URL은 새로운 live-source path를 만들지 않고 Manuscript의 create/connect/fetch-checkpoint
+  boundary를 재사용한다. personal token은 Settings fixed IPC에서만 입력되고 Lecture import
+  contract에는 token field가 없다. 새 link는 Settings token의 immutable·workspace-bound encrypted snapshot을
+  받으며, Settings 교체·삭제는 향후 link에만 영향을 준다. 삭제는 Overleaf token revoke가 아니다.
+  URL/token을 receipt·Lecture manifest·Renderer persistence에 복사하지 않는다. imported checkpoint는
+  일반 `[M#]` source이고 이후 live edit는
   다시 capture하기 전까지 반영하지 않는다.
 - candidate picker는 현재 page의 idea ID만 SQL window query로 조회해 idea별 최신 metric 1개와 total count를
   받는다. generation은 선택한 idea ID만 다시 조회해 최신 64개를 오름차순으로 고정하므로 project 전체
@@ -289,7 +292,7 @@ sandboxed local PDF preview와 명시적 PDF export를 파생한다. PPTX engine
 - 여러 project source 선택, output-project membership과 active/trash isolation
 - included/reviewed Literature 기본값, captured Manuscript 선택·`[M#]` provenance, review status·manual topic 보존, metadata-only 표시
 - local `.tex/.md/.pdf` native picker, strict size/count/UTF-8/PDF-text 경계, `[F#]` provenance와 path 비노출
-- Overleaf Git → Keychain → exact Manuscript checkpoint 연결과 URL/token 비노출
+- Settings personal token → link별 encrypted snapshot → exact Manuscript checkpoint 연결과 URL/token 비노출
 - external-source staging claim/create/discard, create 실패 rollback, expiry cleanup과 permanent-trash purge
 - bounded in-memory candidate offset paging과 최신 metric tail/truncation
 - summary list와 selected-studio detail payload 분리

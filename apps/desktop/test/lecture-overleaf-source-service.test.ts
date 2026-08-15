@@ -166,7 +166,6 @@ const command = {
   title: 'Imported Overleaf source',
   rootDocument: 'paper/main.tex',
   remoteUrl: 'https://git.overleaf.com/0123456789abcdef01234567',
-  accessToken: 'one-time-private-token',
 };
 
 describe('Lecture Overleaf source orchestration', () => {
@@ -187,9 +186,8 @@ describe('Lecture Overleaf source orchestration', () => {
       expectedManuscriptVersion: 1,
       providerId: 'overleaf_git',
       remoteUrl: command.remoteUrl,
-      accessToken: command.accessToken,
     });
-    expect(JSON.stringify(receipt)).not.toContain(command.accessToken);
+    expect(JSON.stringify(receipt)).not.toContain('accessToken');
     expect(JSON.stringify(receipt)).not.toContain('git.overleaf.com');
     expect(test.deleteUnconfigured).not.toHaveBeenCalled();
   });

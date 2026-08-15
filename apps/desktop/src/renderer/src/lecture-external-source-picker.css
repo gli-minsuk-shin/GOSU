@@ -48,10 +48,7 @@
 
 .lecture-overleaf-source-grid {
   display: grid;
-  grid-template-columns: minmax(150px, 0.75fr) minmax(130px, 0.55fr) minmax(260px, 1.35fr) minmax(
-      190px,
-      0.9fr
-    );
+  grid-template-columns: minmax(150px, 0.75fr) minmax(130px, 0.55fr) minmax(260px, 1.35fr);
   gap: 10px;
 }
 

@@ -228,7 +228,11 @@ function Fixture() {
             },
           ]}
           modelsLoading={false}
+          codexAuthenticationRequired={false}
           onRefreshModels={() => undefined}
+          onOpenCodexSignIn={() => undefined}
+          overleafPersonalTokenState="configured"
+          onOpenOverleafSettings={() => undefined}
           layout={layout}
           onLayoutChange={setLayout}
         />

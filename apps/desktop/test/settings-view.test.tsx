@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SettingsView } from '../src/renderer/src/settings-view';
+import type { OverleafPersonalTokenUiState } from '../src/renderer/src/overleaf-personal-token-ui';
 import { DEFAULT_USER_PREFERENCES } from '../src/renderer/src/user-preferences';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
 import type { LectureStudioListSnapshot } from '../src/shared/lecture-studio-contracts';
@@ -96,9 +97,10 @@ const lectureTrashSnapshot: LectureStudioListSnapshot = {
 };
 
 function renderSettings(
-  initialCategory: 'appearance' | 'board' | 'projects' | 'trash' | 'servers' | 'agent',
+  initialCategory: 'appearance' | 'board' | 'projects' | 'trash' | 'overleaf' | 'servers' | 'agent',
   agentProfile = defaultProjectChatProfile(snapshot.projects[0]!.id),
   lectureSnapshot: LectureStudioListSnapshot | null = lectureTrashSnapshot,
+  overleafPersonalTokenState: OverleafPersonalTokenUiState = 'configured',
 ) {
   return renderToStaticMarkup(
     <SettingsView
@@ -118,6 +120,10 @@ function renderSettings(
       onRestoreLectureStudio={vi.fn()}
       onEmptyLectureStudioTrash={vi.fn()}
       onRestoreTask={vi.fn()}
+      overleafPersonalTokenState={overleafPersonalTokenState}
+      onRefreshOverleafPersonalToken={vi.fn()}
+      onSaveOverleafPersonalToken={vi.fn()}
+      onRemoveOverleafPersonalToken={vi.fn()}
       agentProject={snapshot.projects[0]}
       agentProfile={agentProfile}
       agentProfileLoading={false}
@@ -225,6 +231,10 @@ describe('separated application Settings', () => {
         onRestoreLectureStudio={vi.fn()}
         onEmptyLectureStudioTrash={vi.fn()}
         onRestoreTask={vi.fn()}
+        overleafPersonalTokenState="configured"
+        onRefreshOverleafPersonalToken={vi.fn()}
+        onSaveOverleafPersonalToken={vi.fn()}
+        onRemoveOverleafPersonalToken={vi.fn()}
         agentProject={snapshot.projects[0]}
         agentProfile={defaultProjectChatProfile(snapshot.projects[0]!.id)}
         agentProfileLoading={false}
@@ -308,6 +318,36 @@ describe('separated application Settings', () => {
       .match(/<button[^>]*aria-pressed="true"[^>]*>.*?<\/button>/g)
       ?.find((button) => button.includes('1 minute'));
     expect(selectedChoice).toContain('<strong>1 minute</strong>');
+  });
+
+  it('stores one reusable Overleaf token without ever displaying its saved value', () => {
+    const html = renderSettings('overleaf');
+
+    expect(html).toContain('<strong>Overleaf</strong>');
+    expect(html).toContain('Use one token for every new Overleaf link');
+    expect(html).toContain('Saved');
+    expect(html).toContain('type="password"');
+    expect(html).toContain('placeholder="Enter a new token to replace it"');
+    expect(html).toContain('>Replace</button>');
+    expect(html).toContain('>Clear</button>');
+    expect(html).toContain('operating-system secure storage');
+    expect(html).toContain('Existing linked manuscripts');
+    expect(html).toContain('does not revoke the token in Overleaf');
+    expect(html).not.toContain('macOS Keychain');
+  });
+
+  it('keeps replace and clear recovery available when the saved token cannot be read', () => {
+    const html = renderSettings(
+      'overleaf',
+      defaultProjectChatProfile(snapshot.projects[0]!.id),
+      lectureTrashSnapshot,
+      'unavailable',
+    );
+
+    expect(html).toContain('Status unavailable');
+    expect(html).toContain('Retry the check, or replace or clear the saved data to recover.');
+    expect(html).toContain('>Replace</button>');
+    expect(html).toContain('>Clear</button>');
   });
 
   it('keeps a migrated Reviewer profile in compatibility mode until a native mode is chosen', () => {

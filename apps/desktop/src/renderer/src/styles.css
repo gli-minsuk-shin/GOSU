@@ -6417,6 +6417,234 @@ button.chat-toolbar-status {
   line-height: 1.65;
 }
 
+.overleaf-token-settings-card {
+  gap: 16px;
+}
+
+.overleaf-token-settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.overleaf-token-settings-heading > div > span {
+  color: var(--green);
+  font-size: var(--font-meta);
+  font-weight: 760;
+  letter-spacing: 0.14em;
+}
+
+.overleaf-token-status {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 750;
+  letter-spacing: normal;
+  white-space: nowrap;
+}
+
+.overleaf-token-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.overleaf-token-status.state-configured {
+  border-color: color-mix(in srgb, var(--green) 34%, var(--line));
+  background: color-mix(in srgb, var(--green) 8%, var(--surface));
+  color: var(--green);
+}
+
+.overleaf-token-status.state-unavailable {
+  border-color: color-mix(in srgb, var(--orange) 30%, var(--line));
+  color: var(--orange);
+}
+
+.overleaf-token-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.overleaf-token-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 720;
+}
+
+.overleaf-token-form input {
+  min-height: 42px;
+}
+
+.overleaf-token-form button {
+  min-width: 104px;
+  min-height: 42px;
+}
+
+.overleaf-token-privacy-note,
+.overleaf-token-clear-row,
+.overleaf-token-unavailable {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.overleaf-token-privacy-note {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.overleaf-token-privacy-note strong,
+.overleaf-token-clear-row strong,
+.overleaf-token-unavailable strong {
+  display: block;
+  color: var(--text);
+  font-size: var(--font-control);
+}
+
+.overleaf-token-privacy-note span,
+.overleaf-token-clear-row span,
+.overleaf-token-unavailable span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.45;
+}
+
+.overleaf-token-clear-row button,
+.overleaf-token-unavailable button {
+  flex: 0 0 auto;
+}
+
+.overleaf-token-error {
+  margin: 0;
+}
+
+.overleaf-token-required {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--orange) 28%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--orange) 5%, var(--surface-soft));
+}
+
+.overleaf-token-required strong,
+.overleaf-token-required span {
+  display: block;
+}
+
+.overleaf-token-required strong {
+  color: var(--text);
+  font-size: var(--font-control);
+}
+
+.overleaf-token-required span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 500;
+}
+
+.overleaf-token-required button {
+  flex: 0 0 auto;
+}
+
+.overleaf-token-dialog-backdrop {
+  position: fixed;
+  z-index: 950;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  place-items: center;
+  background: rgba(20, 28, 18, 0.48);
+  backdrop-filter: blur(4px);
+}
+
+.overleaf-token-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(100%, 720px);
+  max-height: min(calc(100dvh - 48px), 760px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--green) 38%, var(--line));
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 28px 100px rgba(0, 0, 0, 0.34);
+}
+
+.overleaf-token-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.overleaf-token-dialog > header > div {
+  min-width: 0;
+}
+
+.overleaf-token-dialog > header span {
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.overleaf-token-dialog > header h2 {
+  margin: 4px 0 0;
+  font-size: clamp(21px, 2.4vw, 28px);
+}
+
+.overleaf-token-dialog > header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.overleaf-token-dialog > header .icon-button {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  font-size: 27px;
+  line-height: 1;
+}
+
+.overleaf-token-dialog-body {
+  min-height: 0;
+  padding: 18px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.overleaf-token-dialog-body .overleaf-token-settings-card {
+  margin: 0;
+}
+
 .preference-options {
   display: grid;
   gap: 10px;
@@ -7636,6 +7864,35 @@ button.chat-toolbar-status {
 
   .settings-category-nav {
     grid-template-columns: 1fr;
+  }
+
+  .overleaf-token-settings-heading,
+  .overleaf-token-form,
+  .overleaf-token-clear-row,
+  .overleaf-token-unavailable,
+  .overleaf-token-required {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .overleaf-token-status {
+    align-self: flex-start;
+  }
+
+  .overleaf-token-form button,
+  .overleaf-token-clear-row button,
+  .overleaf-token-unavailable button,
+  .overleaf-token-required button {
+    width: 100%;
+  }
+
+  .overleaf-token-dialog-backdrop {
+    padding: 10px;
+  }
+
+  .overleaf-token-dialog {
+    max-height: calc(100dvh - 20px);
   }
 
   .agent-notes-access,

@@ -147,7 +147,7 @@ type RepositoryRevisionPort = Readonly<{
   revision(projectId: string): Promise<string | null>;
 }>;
 
-type CredentialStore = Pick<OverleafGitCredentialStore, 'stage'>;
+type CredentialStore = Pick<OverleafGitCredentialStore, 'stageFromPersonal'>;
 type CheckpointTransport = Pick<
   OverleafGitTransport,
   'inspect' | 'fetchCheckpoint' | 'hasCheckpoint' | 'listCheckpointFiles' | 'readCheckpointText'
@@ -406,10 +406,7 @@ export class ManuscriptWorkspaceService {
           this.providerWorkspaceQueueKey(command.providerId, remote.workspaceId),
           async () => {
             const provider = this.adapterFor(command.providerId).descriptor;
-            const credentialStage = await this.credentials.stage(
-              remote.remoteUrl,
-              command.accessToken,
-            );
+            const credentialStage = await this.credentials.stageFromPersonal(remote.remoteUrl);
             try {
               const [observation, gosuRevision] = await Promise.all([
                 this.overleafGit.inspect(remote.remoteUrl, credentialStage.credentialRef),

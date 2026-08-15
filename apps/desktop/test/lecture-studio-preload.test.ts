@@ -101,7 +101,6 @@ describe('Lecture Studio preload bridge', () => {
       title: 'Captured paper',
       rootDocument: 'main.tex',
       remoteUrl: 'https://git.overleaf.com/project-id',
-      accessToken: 'write-only-token',
     });
 
     expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(

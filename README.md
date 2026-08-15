@@ -83,19 +83,21 @@ but it is not yet a deployed end-to-end product:
   Experiment evidence from multiple active projects. It creates lecture notes and teaching slides,
   or a 10/20/30/50-minute talk deck, then keeps revisions in a dedicated Codex chat that is separate
   from Project Chat. Every accepted revision is immutable in local SQLCipher and is written as new
-  Markdown artifacts under one explicitly selected source project's `Lecture Notes & Slides`
+  canonical LaTeX artifacts under one explicitly selected source project's `Lecture Notes & Slides`
   Research Notes folder. Selected evidence and current documents are never silently truncated; an
   oversized revision stops before model execution with an actionable error; and
 - each project also has an app-managed Repository workspace for GitHub HTTPS clone,
   file tree and Markdown preview, staged/unstaged diff, commit history, local branches, commit,
   Fetch, fast-forward-only Pull, and reviewed-SHA-only non-force Push;
 - each project can own several provider-neutral manuscript records. The current Overleaf Git
-  adapter links an existing official project URL, keeps its token in a GOSU-private Electron
-  `safeStorage` ciphertext protected by the macOS Keychain, checks the remote revision, and manually
-  captures an immutable checkpoint in an isolated local mirror. It never reads or deletes another
-  Git client's shared Keychain entry. Each link gets an immutable credential reference; a failed
-  link removes only its own staged value, while an interrupted link is reconciled on the next app
-  start. Final
+  adapter links an existing official project URL. A personal Git token is saved once in Settings as
+  GOSU-private Electron `safeStorage` ciphertext protected by operating-system secure storage; the
+  Manuscript and Lecture link contracts never carry token input. Every new link receives its own
+  immutable, workspace-bound encrypted snapshot of the saved token, so replacing or clearing the
+  Settings copy affects future links only and does not revoke the token in Overleaf. GOSU checks the
+  remote revision and manually captures an immutable checkpoint in an isolated local mirror. It
+  never reads or deletes another Git client's shared Keychain entry. A failed link removes only its
+  own staged snapshot, while an interrupted link is reconciled on the next app start. Final
   disconnect or permanent deletion removes it only after the last active GOSU reference is gone.
   Retained mirrors are bounded per binding and across the app, and failed unpinned fetches are
   pruned. Checkpoints are accepted only after the complete reachable Git object graph and the

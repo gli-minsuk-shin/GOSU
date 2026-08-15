@@ -137,7 +137,6 @@ export const ConnectOverleafGitInputSchema = z
     expectedManuscriptVersion: z.number().int().positive(),
     providerId: z.literal('overleaf_git'),
     remoteUrl: z.string().trim().min(1).max(2_048),
-    accessToken: z.string().min(1).max(2_048),
   })
   .strict();
 export type ConnectOverleafGitInput = z.infer<typeof ConnectOverleafGitInputSchema>;

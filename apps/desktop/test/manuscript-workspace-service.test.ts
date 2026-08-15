@@ -380,7 +380,7 @@ function serviceFixture(
     overleafGit: transport,
     pdfCompiler: { compile: compilePdf },
     pdfArtifacts: { stagePdf, exportExisting, openExisting, revealExisting },
-    credentials: { stage: stageCredential },
+    credentials: { stageFromPersonal: stageCredential },
     now,
   });
   return {
@@ -413,16 +413,14 @@ async function createAndConnect(fixture: ReturnType<typeof serviceFixture>) {
     rootDocument: 'paper/main.tex',
   });
   const manuscript = created.manuscripts[0]!.manuscript;
-  const token = 'private-overleaf-token';
   const connected = await fixture.service.connectOverleafGit({
     projectId: PROJECT_ID,
     manuscriptId: manuscript.id,
     expectedManuscriptVersion: manuscript.version,
     providerId: 'overleaf_git',
     remoteUrl: REMOTE,
-    accessToken: token,
   });
-  return { manuscript, connection: connected.manuscripts[0]!.connection!, token };
+  return { manuscript, connection: connected.manuscripts[0]!.connection! };
 }
 
 async function createConnectAndCapture(fixture: ReturnType<typeof serviceFixture>) {
@@ -638,7 +636,6 @@ describe('Manuscript workspace service', () => {
         expectedManuscriptVersion: manuscript.version,
         providerId: 'overleaf_git',
         remoteUrl: 'https://example.invalid/not-overleaf',
-        accessToken: 'fixture-token',
       }),
     ).rejects.toMatchObject({ code: 'overleaf_git_url_invalid' });
     expect(fixture.stageCredential).not.toHaveBeenCalled();
@@ -660,11 +657,10 @@ describe('Manuscript workspace service', () => {
     expect(first.connection.syncState).toBe('diverged');
     expect(fixture.stageCredential).toHaveBeenCalledExactlyOnceWith(
       'https://git@git.overleaf.com/0123456789abcdef01234567',
-      first.token,
     );
     expect(fixture.commitCredential).toHaveBeenCalledOnce();
     expect(fixture.rollbackCredential).not.toHaveBeenCalled();
-    expect(JSON.stringify(fixture.storage)).not.toContain(first.token);
+    expect(JSON.stringify(fixture.storage)).not.toContain('accessToken');
     expect(JSON.stringify(first.connection.binding)).not.toContain('overleaf.com');
     expect(() =>
       ManuscriptWorkspaceConnectionSchema.parse({
@@ -692,7 +688,6 @@ describe('Manuscript workspace service', () => {
         expectedManuscriptVersion: manuscript.version,
         providerId: 'overleaf_git',
         remoteUrl: REMOTE,
-        accessToken: 'rejected-fixture-token',
       }),
     ).rejects.toMatchObject({ code: 'overleaf_git_auth_required' });
     expect(fixture.rollbackCredential).toHaveBeenCalledOnce();
@@ -715,7 +710,6 @@ describe('Manuscript workspace service', () => {
       expectedManuscriptVersion: secondManuscript.version,
       providerId: 'overleaf_git',
       remoteUrl: REMOTE,
-      accessToken: 'shared-workspace-fixture-token',
     });
     const secondConnection = secondConnected.manuscripts[0]!.connection!;
 
@@ -771,7 +765,6 @@ describe('Manuscript workspace service', () => {
       expectedManuscriptVersion: secondManuscript.version,
       providerId: 'overleaf_git',
       remoteUrl: REMOTE,
-      accessToken: 'replacement-workspace-fixture-token',
     });
     await stageStarted.promise;
 
@@ -1192,7 +1185,6 @@ describe('Manuscript workspace service', () => {
       expectedManuscriptVersion: manuscript.version,
       providerId: 'overleaf_git',
       remoteUrl: REMOTE,
-      accessToken: 'next-private-token',
     });
     const nextConnection = reconnected.manuscripts[0]!.connection!;
     const fetched = await fixture.service.fetchCheckpoint({

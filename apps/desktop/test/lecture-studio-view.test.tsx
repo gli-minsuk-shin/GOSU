@@ -83,6 +83,8 @@ describe('LectureStudioView', () => {
         codexAuthenticationRequired={false}
         onRefreshModels={() => undefined}
         onOpenCodexSignIn={() => undefined}
+        overleafPersonalTokenState="configured"
+        onOpenOverleafSettings={() => undefined}
         layout={{ schemaVersion: 1, studioRailCollapsed: false, chatCollapsed: false }}
         onLayoutChange={() => undefined}
       />,
