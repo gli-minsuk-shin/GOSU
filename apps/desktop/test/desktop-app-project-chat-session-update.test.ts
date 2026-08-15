@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -5,6 +7,7 @@ import {
   isCodexUnavailableError,
   mergeProjectChatSessionCatalogUpdate,
   mergeProjectChatSessionSnapshotUpdate,
+  projectChatSelectionFromDefault,
 } from '../src/renderer/src/desktop-app';
 import { projectChatSessionKey } from '../src/renderer/src/project-chat-session-state';
 import type { ProjectChatSession, ProjectChatSnapshot } from '../src/shared/project-chat-contracts';
@@ -23,6 +26,48 @@ const placeholderSession: ProjectChatSession = {
 };
 
 describe('Desktop Project Chat session updates', () => {
+  it('snapshots the Settings default into each new Codex chat scope', () => {
+    expect(projectChatSelectionFromDefault({ modelId: null, reasoningOptionId: 'high' })).toEqual({
+      providerId: null,
+      modelId: null,
+      reasoningOptionId: 'high',
+    });
+    expect(
+      projectChatSelectionFromDefault({
+        modelId: 'gpt-current',
+        reasoningOptionId: 'ultra',
+      }),
+    ).toEqual({
+      providerId: 'codex',
+      modelId: 'gpt-current',
+      reasoningOptionId: 'ultra',
+    });
+  });
+
+  it('routes saved defaults to every unscoped AI surface and new scoped work', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/desktop-app.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(
+      source.match(/projectChatSelectionFromDefault\(preferences\.defaultAiSelection\)/gu),
+    ).toHaveLength(1);
+    expect(source.match(/loadScopedProjectChatModelSelection\(/gu)).toHaveLength(2);
+    expect(source).toContain(
+      'setProjectChatModelSelection(loadScopedProjectChatModelSelection(projectId, sessionId))',
+    );
+    expect(
+      source.match(/requestedModelId=\{preferences\.defaultAiSelection\.modelId\}/gu),
+    ).toHaveLength(2);
+    expect(
+      source.match(/reasoningOptionId=\{preferences\.defaultAiSelection\.reasoningOptionId\}/gu),
+    ).toHaveLength(2);
+    expect(source).toContain('defaultModelSelection={preferences.defaultAiSelection}');
+    expect(source).toContain('requestedModelId: projectChatModelSelection.modelId');
+    expect(source).toContain('reasoningOptionId: projectChatModelSelection.reasoningOptionId');
+  });
+
   it('refreshes models only after successful Codex authentication completion', () => {
     expect(codexAuthenticationUiUpdate({ type: 'login.completed', success: true })).toEqual({
       connectionState: 'checking',

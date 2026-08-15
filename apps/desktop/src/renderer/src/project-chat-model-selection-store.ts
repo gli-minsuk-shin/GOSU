@@ -23,6 +23,11 @@ type StoredProjectChatModelSelectionV1 = Readonly<{
   reasoningOptionId: string | null;
 }>;
 
+export type ProjectChatModelSelectionLoadState = Readonly<{
+  selection: ProjectChatModelSelection;
+  status: 'missing' | 'stored' | 'invalid' | 'unavailable';
+}>;
+
 const STORED_SELECTION_KEYS = [
   'modelId',
   'providerId',
@@ -96,19 +101,38 @@ export function loadProjectChatModelSelection(
   projectId: string,
   sessionId: string,
 ): ProjectChatModelSelection {
+  return loadProjectChatModelSelectionState(storage, projectId, sessionId).selection;
+}
+
+export function loadProjectChatModelSelectionState(
+  storage: Pick<ModelSelectionStorage, 'getItem'>,
+  projectId: string,
+  sessionId: string,
+): ProjectChatModelSelectionLoadState {
   const key = projectChatModelSelectionStorageKey(projectId, sessionId);
-  if (!key) return AUTO_PROJECT_CHAT_MODEL_SELECTION;
+  if (!key) return { selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'invalid' };
+  let serialized: string | null;
   try {
-    const serialized = storage.getItem(key);
-    if (!serialized || serialized.length > PROJECT_CHAT_MODEL_SELECTION_MAX_SERIALIZED_LENGTH) {
-      return AUTO_PROJECT_CHAT_MODEL_SELECTION;
-    }
-    return (
-      parseStoredProjectChatModelSelection(JSON.parse(serialized) as unknown) ??
-      AUTO_PROJECT_CHAT_MODEL_SELECTION
-    );
+    serialized = storage.getItem(key);
   } catch {
-    return AUTO_PROJECT_CHAT_MODEL_SELECTION;
+    return { selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'unavailable' };
+  }
+  if (serialized === null) {
+    return { selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'missing' };
+  }
+  if (
+    serialized.length === 0 ||
+    serialized.length > PROJECT_CHAT_MODEL_SELECTION_MAX_SERIALIZED_LENGTH
+  ) {
+    return { selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'invalid' };
+  }
+  try {
+    const selection = parseStoredProjectChatModelSelection(JSON.parse(serialized) as unknown);
+    return selection
+      ? { selection, status: 'stored' }
+      : { selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'invalid' };
+  } catch {
+    return { selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'invalid' };
   }
 }
 
@@ -126,14 +150,6 @@ export function saveProjectChatModelSelection(
   });
   if (!parsed) return false;
   try {
-    if (
-      parsed.providerId === null &&
-      parsed.modelId === null &&
-      parsed.reasoningOptionId === null
-    ) {
-      storage.removeItem(key);
-      return true;
-    }
     const value: StoredProjectChatModelSelectionV1 = {
       schemaVersion: PROJECT_CHAT_MODEL_SELECTION_SCHEMA_VERSION,
       ...parsed,

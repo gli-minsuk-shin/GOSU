@@ -17,9 +17,21 @@ import {
 
 export const APPEARANCE_OPTIONS = ['system', 'dark', 'light'] as const;
 export const TEXT_SIZE_OPTIONS = ['compact', 'default', 'large', 'extra-large'] as const;
+export const DEFAULT_AI_MODEL_ID_MAX_LENGTH = 256;
+export const DEFAULT_AI_REASONING_OPTION_ID_MAX_LENGTH = 128;
 
 export type AppearancePreference = (typeof APPEARANCE_OPTIONS)[number];
 export type TextSizePreference = (typeof TEXT_SIZE_OPTIONS)[number];
+
+export type DefaultAiSelection = Readonly<{
+  modelId: string | null;
+  reasoningOptionId: string | null;
+}>;
+
+export const DEFAULT_AI_SELECTION: DefaultAiSelection = Object.freeze({
+  modelId: null,
+  reasoningOptionId: 'high',
+});
 
 export type UserPreferences = Readonly<{
   schemaVersion: 1;
@@ -27,6 +39,7 @@ export type UserPreferences = Readonly<{
   textSize: TextSizePreference;
   sshResourceRefreshInterval: SshResourceRefreshInterval;
   defaultBoardTemplate: WorkspaceBoardSettings;
+  defaultAiSelection: DefaultAiSelection;
   agentAddOns: Readonly<Record<AgentAddOnId, AgentAddOnPreference>>;
 }>;
 
@@ -40,6 +53,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   textSize: 'default',
   sshResourceRefreshInterval: '1m',
   defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+  defaultAiSelection: DEFAULT_AI_SELECTION,
   agentAddOns: {
     openclaw: 'disabled',
     hermes: 'disabled',
@@ -48,6 +62,38 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function boundedOpaqueId(value: unknown, maximumLength: number): string | null | undefined {
+  if (value === null) return null;
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > maximumLength ||
+    value !== value.trim() ||
+    [...value].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 31 || codePoint === 127;
+    })
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+export function parseDefaultAiSelection(value: unknown): DefaultAiSelection {
+  if (!isRecord(value) || Object.keys(value).sort().join(',') !== 'modelId,reasoningOptionId') {
+    return { ...DEFAULT_AI_SELECTION };
+  }
+  const modelId = boundedOpaqueId(value.modelId, DEFAULT_AI_MODEL_ID_MAX_LENGTH);
+  const reasoningOptionId = boundedOpaqueId(
+    value.reasoningOptionId,
+    DEFAULT_AI_REASONING_OPTION_ID_MAX_LENGTH,
+  );
+  if (modelId === undefined || reasoningOptionId === undefined) {
+    return { ...DEFAULT_AI_SELECTION };
+  }
+  return { modelId, reasoningOptionId };
 }
 
 export function parseUserPreferences(value: unknown): UserPreferences {
@@ -79,6 +125,7 @@ export function parseUserPreferences(value: unknown): UserPreferences {
     defaultBoardTemplate: template.success
       ? template.data
       : resolveWorkspaceBoardSettings(undefined),
+    defaultAiSelection: parseDefaultAiSelection(value.defaultAiSelection),
     agentAddOns,
   };
 }
@@ -98,6 +145,7 @@ function defaultUserPreferences(): UserPreferences {
   return {
     ...DEFAULT_USER_PREFERENCES,
     defaultBoardTemplate: resolveWorkspaceBoardSettings(undefined),
+    defaultAiSelection: { ...DEFAULT_AI_SELECTION },
     agentAddOns: { ...DEFAULT_USER_PREFERENCES.agentAddOns },
   };
 }

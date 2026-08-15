@@ -1,0 +1,115 @@
+.ai-default-settings-card {
+  gap: 16px;
+}
+
+.ai-default-settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.ai-default-settings-heading > div > span {
+  color: var(--green);
+  font-size: var(--font-meta);
+  font-weight: 760;
+  letter-spacing: 0.14em;
+}
+
+.ai-default-status {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--green) 30%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 7%, var(--surface));
+  color: var(--green);
+  font-size: var(--font-control);
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.ai-default-status.state-warning {
+  border-color: color-mix(in srgb, var(--orange) 34%, var(--line));
+  background: color-mix(in srgb, var(--orange) 6%, var(--surface));
+  color: var(--orange);
+}
+
+.ai-default-form {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(170px, 0.8fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.ai-default-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 720;
+}
+
+.ai-default-form select,
+.ai-default-actions button {
+  min-height: 42px;
+}
+
+.ai-default-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ai-default-unavailable,
+.ai-default-scope-note {
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.ai-default-unavailable {
+  border-color: color-mix(in srgb, var(--orange) 32%, var(--line));
+  background: color-mix(in srgb, var(--orange) 5%, var(--surface-soft));
+}
+
+.ai-default-unavailable strong {
+  color: var(--orange);
+}
+
+.ai-default-unavailable strong,
+.ai-default-scope-note strong {
+  font-size: var(--font-control);
+}
+
+.ai-default-unavailable span,
+.ai-default-scope-note span {
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.5;
+}
+
+.ai-default-message {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .ai-default-settings-heading,
+  .ai-default-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ai-default-status {
+    align-self: flex-start;
+  }
+
+  .ai-default-form {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-default-actions button {
+    width: 100%;
+  }
+}

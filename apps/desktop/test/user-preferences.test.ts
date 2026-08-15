@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_WORKSPACE_BOARD_SETTINGS } from '../src/shared/workspace-contracts';
 import {
+  DEFAULT_AI_SELECTION,
   DEFAULT_USER_PREFERENCES,
   USER_PREFERENCES_STORAGE_KEY,
   applyUserPreferences,
   loadUserPreferences,
+  parseDefaultAiSelection,
   parseUserPreferences,
   saveUserPreferences,
 } from '../src/renderer/src/user-preferences';
@@ -58,6 +60,7 @@ describe('local user preferences', () => {
       textSize: 'large',
       sshResourceRefreshInterval: '1m',
       defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+      defaultAiSelection: DEFAULT_AI_SELECTION,
       agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
     });
   });
@@ -81,6 +84,7 @@ describe('local user preferences', () => {
       textSize: 'large',
       sshResourceRefreshInterval: '5m',
       defaultBoardTemplate: customBoardTemplate,
+      defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'ultra' },
       agentAddOns: { openclaw: 'detect-local', hermes: 'connect-local' },
     } as const;
     expect(saveUserPreferences(storage, preferences)).toBe(true);
@@ -109,6 +113,7 @@ describe('local user preferences', () => {
       textSize: 'extra-large',
       sshResourceRefreshInterval: '1m',
       defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+      defaultAiSelection: DEFAULT_AI_SELECTION,
       agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
     });
   });
@@ -138,6 +143,33 @@ describe('local user preferences', () => {
         sshResourceRefreshInterval: 'continuous',
       }).sshResourceRefreshInterval,
     ).toBe('1m');
+  });
+
+  it('defaults new AI work to provider Auto with high reasoning and round-trips opaque IDs', () => {
+    expect(DEFAULT_USER_PREFERENCES.defaultAiSelection).toEqual({
+      modelId: null,
+      reasoningOptionId: 'high',
+    });
+    expect(
+      parseDefaultAiSelection({ modelId: 'future-model', reasoningOptionId: 'future-effort' }),
+    ).toEqual({ modelId: 'future-model', reasoningOptionId: 'future-effort' });
+    expect(parseDefaultAiSelection({ modelId: null, reasoningOptionId: null })).toEqual({
+      modelId: null,
+      reasoningOptionId: null,
+    });
+  });
+
+  it('fails closed to the safe high default for malformed AI Settings records', () => {
+    const invalidSelections = [
+      null,
+      { modelId: ' model-a', reasoningOptionId: 'high' },
+      { modelId: 'model-a', reasoningOptionId: 'high', unexpected: true },
+      { modelId: 'model-a', reasoningOptionId: 'hi\u0000gh' },
+    ];
+
+    for (const selection of invalidSelections) {
+      expect(parseDefaultAiSelection(selection)).toEqual(DEFAULT_AI_SELECTION);
+    }
   });
 
   it('applies validated data attributes to the document root', () => {

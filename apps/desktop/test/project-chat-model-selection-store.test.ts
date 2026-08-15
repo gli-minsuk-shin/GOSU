@@ -6,6 +6,7 @@ import {
   PROJECT_CHAT_MODEL_SELECTION_MAX_SERIALIZED_LENGTH,
   clearProjectChatModelSelection,
   loadProjectChatModelSelection,
+  loadProjectChatModelSelectionState,
   parseStoredProjectChatModelSelection,
   projectChatModelSelectionStorageKey,
   saveProjectChatModelSelection,
@@ -92,7 +93,7 @@ describe('Project Chat model selection store', () => {
     );
   });
 
-  it('removes the stored override when the user explicitly returns to Auto', () => {
+  it('persists an explicit Auto choice so it remains distinct from a new scope', () => {
     const { storage, values } = memoryStorage();
     saveProjectChatModelSelection(storage, projectId, defaultSessionId, {
       providerId: 'hermes',
@@ -110,10 +111,46 @@ describe('Project Chat model selection store', () => {
         AUTO_PROJECT_CHAT_MODEL_SELECTION,
       ),
     ).toBe(true);
-    expect(values.has(key)).toBe(false);
-    expect(loadProjectChatModelSelection(storage, projectId, defaultSessionId)).toBe(
+    expect(values.has(key)).toBe(true);
+    expect(loadProjectChatModelSelection(storage, projectId, defaultSessionId)).toEqual(
+      // The parsed record is an independent value even though it has the same fields as Auto.
+      // Presence is what prevents a later global Settings change from rewriting this scope.
       AUTO_PROJECT_CHAT_MODEL_SELECTION,
     );
+    expect(loadProjectChatModelSelectionState(storage, projectId, defaultSessionId)).toEqual({
+      selection: AUTO_PROJECT_CHAT_MODEL_SELECTION,
+      status: 'stored',
+    });
+  });
+
+  it('distinguishes new, stored, corrupt, and inaccessible scopes without overwriting them', () => {
+    const { storage, values } = memoryStorage();
+    const key = projectChatModelSelectionStorageKey(projectId, defaultSessionId)!;
+    expect(loadProjectChatModelSelectionState(storage, projectId, defaultSessionId)).toEqual({
+      selection: AUTO_PROJECT_CHAT_MODEL_SELECTION,
+      status: 'missing',
+    });
+
+    values.set(key, '{');
+    expect(loadProjectChatModelSelectionState(storage, projectId, defaultSessionId)).toEqual({
+      selection: AUTO_PROJECT_CHAT_MODEL_SELECTION,
+      status: 'invalid',
+    });
+
+    expect(
+      loadProjectChatModelSelectionState({ getItem: () => '' }, projectId, defaultSessionId),
+    ).toEqual({ selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'invalid' });
+    expect(
+      loadProjectChatModelSelectionState(
+        {
+          getItem: () => {
+            throw new Error('blocked');
+          },
+        },
+        projectId,
+        defaultSessionId,
+      ),
+    ).toEqual({ selection: AUTO_PROJECT_CHAT_MODEL_SELECTION, status: 'unavailable' });
   });
 
   it('fails closed on malformed, oversized, future-version, or incoherent records', () => {

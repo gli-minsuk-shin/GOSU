@@ -91,6 +91,7 @@ describe('advanced Project Chat controls', () => {
           },
         ]}
         collaborationModes={[]}
+        selectedProviderId="hermes"
         selectedModel="hermes-configured-model"
         selectedReasoning="high"
         applyingActionId={null}
@@ -152,6 +153,7 @@ describe('advanced Project Chat controls', () => {
           },
         ]}
         collaborationModes={[]}
+        selectedProviderId="hermes"
         selectedModel="hermes-configured-model"
         selectedReasoning={null}
         applyingActionId={null}
@@ -747,12 +749,42 @@ describe('advanced Project Chat controls', () => {
       },
     ];
 
-    expect(resolveEffectiveCodexModel(models, modes, null, 'future-mode')?.modelId).toBe(
+    expect(resolveEffectiveCodexModel(models, modes, null, null, 'future-mode')?.modelId).toBe(
       'mode-recommended',
     );
     expect(
-      resolveEffectiveCodexModel(models, modes, 'provider-default', 'future-mode')?.modelId,
+      resolveEffectiveCodexModel(models, modes, 'codex', 'provider-default', 'future-mode')
+        ?.modelId,
     ).toBe('provider-default');
+  });
+
+  it('keeps explicit provider provenance when model ids collide', () => {
+    const models = [
+      {
+        providerId: 'codex',
+        modelId: 'shared-id',
+        displayName: 'Codex model',
+        isDefault: true,
+        reasoningOptions: [{ id: 'high', label: 'High', isDefault: true }],
+      },
+      {
+        providerId: 'hermes',
+        modelId: 'shared-id',
+        displayName: 'Hermes model',
+        isDefault: false,
+        reasoningOptions: [{ id: 'high', label: 'High', isDefault: true }],
+      },
+    ];
+
+    expect(resolveEffectiveCodexModel(models, [], 'codex', 'shared-id', null)?.displayName).toBe(
+      'Codex model',
+    );
+    expect(resolveEffectiveCodexModel(models, [], 'hermes', 'shared-id', null)?.displayName).toBe(
+      'Hermes model',
+    );
+    expect(resolveEffectiveCodexModel(models, [], 'future-provider', 'shared-id', null)).toBe(
+      undefined,
+    );
   });
 
   it('exposes dynamic reasoning separately from the bounded project harness', () => {
@@ -798,6 +830,7 @@ describe('advanced Project Chat controls', () => {
             recommendedReasoningOptionId: null,
           },
         ]}
+        selectedProviderId="codex"
         selectedModel="fixture-live-model"
         selectedReasoning="provider-high"
         applyingActionId={null}
@@ -873,6 +906,7 @@ describe('advanced Project Chat controls', () => {
           },
         ]}
         collaborationModes={[]}
+        selectedProviderId="codex"
         selectedModel="fixture-live-model"
         selectedReasoning="provider-high"
         applyingActionId={null}

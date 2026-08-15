@@ -123,6 +123,13 @@ model ID 및 그 model의 native reasoning option을 선택한다. model 변경 
 사라진 selection은 임의 fallback하지 않는다. local preference와 별개로 실제 invocation은 revision/message에
 계속 저장한다.
 
+Settings의 application-local AI default는 provider `Auto`와 opaque native reasoning ID `high`로 시작한다.
+저장된 model preference가 없는 새 Studio는 이 pair를 한 번 복사하고 이후 Studio별 picker가 독립적으로
+소유한다. Settings 변경은 기존 Studio, 생성 중 attempt, revision/message provenance를 바꾸지 않는다.
+effective provider-default model이 `high`를 광고하지 않거나 저장된 ID가 catalog에서 사라지면 더 낮은
+reasoning으로 조용히 바꾸지 않고 생성 전에 명시적 재선택을 요구한다. reasoning option 목록과 label은 계속
+live `model/list`만 사용한다.
+
 현재 revision의 center preview는 canonical LaTeX source와 ephemeral local PDF를 전환한다. preview compile은
 revision content hash와 고정 GOSU document envelope를 검증한 뒤 macOS sandbox에서 XeLaTeX를
 no-shell-escape·network deny·resource budget으로 실행한다. 검증된 PDF bytes만 typed IPC와 PDF.js continuous

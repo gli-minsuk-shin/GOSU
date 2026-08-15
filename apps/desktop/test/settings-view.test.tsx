@@ -74,6 +74,16 @@ const snapshot: WorkspaceSnapshot = {
   objectives: [],
 };
 
+const codexModels = [
+  {
+    providerId: 'codex',
+    modelId: 'provider-default',
+    displayName: 'Codex Default',
+    isDefault: true,
+    reasoningOptions: [{ id: 'high', label: 'High', isDefault: true }],
+  },
+] as const;
+
 const lectureTrashSnapshot: LectureStudioListSnapshot = {
   schemaVersion: 1,
   studios: [
@@ -124,6 +134,9 @@ function renderSettings(
       onRefreshOverleafPersonalToken={vi.fn()}
       onSaveOverleafPersonalToken={vi.fn()}
       onRemoveOverleafPersonalToken={vi.fn()}
+      models={codexModels}
+      modelsLoading={false}
+      onRefreshModels={vi.fn()}
       agentProject={snapshot.projects[0]}
       agentProfile={agentProfile}
       agentProfileLoading={false}
@@ -235,6 +248,9 @@ describe('separated application Settings', () => {
         onRefreshOverleafPersonalToken={vi.fn()}
         onSaveOverleafPersonalToken={vi.fn()}
         onRemoveOverleafPersonalToken={vi.fn()}
+        models={codexModels}
+        modelsLoading={false}
+        onRefreshModels={vi.fn()}
         agentProject={snapshot.projects[0]}
         agentProfile={defaultProjectChatProfile(snapshot.projects[0]!.id)}
         agentProfileLoading={false}
@@ -256,6 +272,10 @@ describe('separated application Settings', () => {
   it('separates native Codex mode, personality, context, and project instructions from model choice', () => {
     const html = renderSettings('agent');
 
+    expect(html).toContain('DEFAULT AI');
+    expect(html).toContain('Auto · provider default');
+    expect(html).toContain('Save defaults');
+    expect(html).toContain('Existing scoped choices and generated revisions remain unchanged');
     expect(html).toContain('NATIVE CODEX HARNESS');
     expect(html).toContain('Default');
     expect(html).toContain('Plan');

@@ -24,6 +24,11 @@ type StoredLectureStudioModelSelectionV1 = Readonly<{
   reasoningOptionId: string | null;
 }>;
 
+export type LectureStudioModelSelectionLoadState = Readonly<{
+  selection: LectureStudioModelSelection;
+  status: 'missing' | 'stored' | 'invalid' | 'unavailable';
+}>;
+
 const STORED_SELECTION_KEYS = ['modelId', 'reasoningOptionId', 'schemaVersion'] as const;
 
 function boundedOpaqueId(value: unknown, maximumLength: number): string | null | undefined {
@@ -86,19 +91,37 @@ export function loadLectureStudioModelSelection(
   storage: Pick<ModelSelectionStorage, 'getItem'>,
   studioId: string,
 ): LectureStudioModelSelection {
+  return loadLectureStudioModelSelectionState(storage, studioId).selection;
+}
+
+export function loadLectureStudioModelSelectionState(
+  storage: Pick<ModelSelectionStorage, 'getItem'>,
+  studioId: string,
+): LectureStudioModelSelectionLoadState {
   const key = lectureStudioModelSelectionStorageKey(studioId);
-  if (!key) return AUTO_LECTURE_STUDIO_MODEL_SELECTION;
+  if (!key) return { selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION, status: 'invalid' };
+  let serialized: string | null;
   try {
-    const serialized = storage.getItem(key);
-    if (!serialized || serialized.length > LECTURE_STUDIO_MODEL_SELECTION_MAX_SERIALIZED_LENGTH) {
-      return AUTO_LECTURE_STUDIO_MODEL_SELECTION;
-    }
-    return (
-      parseStoredLectureStudioModelSelection(JSON.parse(serialized) as unknown) ??
-      AUTO_LECTURE_STUDIO_MODEL_SELECTION
-    );
+    serialized = storage.getItem(key);
   } catch {
-    return AUTO_LECTURE_STUDIO_MODEL_SELECTION;
+    return { selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION, status: 'unavailable' };
+  }
+  if (serialized === null) {
+    return { selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION, status: 'missing' };
+  }
+  if (
+    serialized.length === 0 ||
+    serialized.length > LECTURE_STUDIO_MODEL_SELECTION_MAX_SERIALIZED_LENGTH
+  ) {
+    return { selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION, status: 'invalid' };
+  }
+  try {
+    const selection = parseStoredLectureStudioModelSelection(JSON.parse(serialized) as unknown);
+    return selection
+      ? { selection, status: 'stored' }
+      : { selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION, status: 'invalid' };
+  } catch {
+    return { selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION, status: 'invalid' };
   }
 }
 
@@ -115,10 +138,6 @@ export function saveLectureStudioModelSelection(
   });
   if (!parsed) return false;
   try {
-    if (parsed.modelId === null && parsed.reasoningOptionId === null) {
-      storage.removeItem(key);
-      return true;
-    }
     const value: StoredLectureStudioModelSelectionV1 = {
       schemaVersion: LECTURE_STUDIO_MODEL_SELECTION_SCHEMA_VERSION,
       ...parsed,

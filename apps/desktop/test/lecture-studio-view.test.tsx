@@ -77,6 +77,20 @@ const adapter: LectureStudioViewAdapter = {
 };
 
 describe('LectureStudioView', () => {
+  it('snapshots the Settings model default only for a missing Studio scope', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('loadLectureStudioModelSelectionState(window.localStorage, studioId)');
+    expect(source).toContain("if (loaded.status !== 'missing') return loaded.selection;");
+    expect(source).toContain(
+      'saveLectureStudioModelSelection(window.localStorage, studioId, defaultModelSelection)',
+    );
+    expect(source).toContain('useState<LectureStudioModelSelection>(defaultModelSelection);');
+  });
+
   it('presents a workspace-level studio instead of a project-scoped lecture tab', () => {
     const html = renderToStaticMarkup(
       <LectureStudioView
