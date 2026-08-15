@@ -167,7 +167,7 @@ export function createGitCommandRunner(
         !safeCredential(options.credential.password, 4_096) ||
         !credentialScope ||
         credentialScope.protocol !== 'https:' ||
-        credentialScope.username === '' ||
+        credentialScope.username !== '' ||
         credentialScope.password !== '' ||
         credentialScope.port !== '' ||
         credentialScope.search !== '' ||

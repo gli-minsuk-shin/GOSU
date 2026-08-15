@@ -253,7 +253,7 @@ export function describeError(error: unknown) {
     manuscript_provider_revision_required:
       'Check the provider revision before capturing an inbound checkpoint.',
     overleaf_git_url_invalid:
-      'Paste the official HTTPS Overleaf Git URL for this project. Credential-bearing or non-Overleaf URLs are blocked.',
+      'Paste the official HTTPS Overleaf Git URL for this project; Overleaf’s fixed git@ prefix is supported. Other usernames, passwords, query strings, and non-Overleaf URLs are blocked.',
     overleaf_git_auth_required:
       'Overleaf Git authentication failed. Check your personal Git token and Premium Git access.',
     overleaf_git_project_not_found:

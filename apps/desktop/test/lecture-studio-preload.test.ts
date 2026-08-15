@@ -174,4 +174,34 @@ describe('Lecture Studio preload bridge', () => {
       'lecture_unavailable',
     );
   });
+
+  it('forwards only strict content-free generation progress events', () => {
+    const listener = vi.fn();
+    const unsubscribe = api.lectureStudio.onEvent(listener);
+    const handler = electron.ipcRenderer.on.mock.calls[0]?.[1] as (
+      event: unknown,
+      value: unknown,
+    ) => void;
+    const progress = {
+      schemaVersion: 1,
+      type: 'lecture.generation.progress',
+      studioId: crypto.randomUUID(),
+      attemptId: crypto.randomUUID(),
+      phase: 'generating_draft',
+      sequence: 3,
+      startedAt: '2026-08-15T00:00:00.000Z',
+      occurredAt: '2026-08-15T00:00:03.000Z',
+    } as const;
+
+    handler({}, progress);
+    handler({}, { ...progress, providerMessage: 'must not cross IPC' });
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith(progress);
+    unsubscribe();
+    expect(electron.ipcRenderer.removeListener).toHaveBeenCalledWith(
+      LECTURE_STUDIO_IPC_CHANNELS.event,
+      handler,
+    );
+  });
 });

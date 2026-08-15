@@ -20,6 +20,7 @@ import { LectureStudioStorageError } from '../src/main/lecture-studio-storage-er
 import type {
   LectureStudio,
   LectureStudioDetail,
+  LectureStudioEvent,
   LectureStudioMessage,
   LectureStudioRevision,
   EmptyLectureStudioTrashInput,
@@ -602,6 +603,7 @@ function fixture(
     externalSourceContent?: string;
     pdfCompiler?: Pick<LectureDocumentCompiler, 'compile'>;
     artifactPlatform?: LectureArtifactPlatform;
+    prepareDirectory?: (outputProjectId: string) => Promise<string>;
     timeoutMs?: number;
     hardTimeoutMs?: number;
   }> = {},
@@ -882,7 +884,7 @@ function fixture(
       },
     },
     ...(options.artifactPlatform ? { artifactPlatform: options.artifactPlatform } : {}),
-    prepareDirectory: async () => '/tmp/gosu-lecture-studio-fixture',
+    prepareDirectory: options.prepareDirectory ?? (async () => '/tmp/gosu-lecture-studio-fixture'),
     timeoutMs: options.timeoutMs ?? 5_000,
     hardTimeoutMs: options.hardTimeoutMs ?? 30_000,
   });
@@ -1001,6 +1003,49 @@ describe('LectureStudioService', () => {
     expect(receipt.revision.lectureNotesLatex).toContain('[F1]');
     expect(receipt.revision.slidesLatex).toContain('[F1]');
     expect(externalSourceCalls.snapshotted).toHaveLength(2);
+  });
+
+  it('publishes ordered content-free progress while a generation is active', async () => {
+    const { service, codex, projectA, paperA } = fixture();
+    codex.response = latexResponse(['P1'], 1, 'Private completion text must stay out of progress.');
+    const events: LectureStudioEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    const studio = await service.create({
+      title: 'Progress receipt lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    const progress = events.filter((event) => event.type === 'lecture.generation.progress');
+    expect(progress.map((event) => event.phase)).toEqual([
+      'preparing_sources',
+      'starting_model',
+      'generating_draft',
+      'model_active',
+      'validating_output',
+      'compiling_documents',
+      'saving_revision',
+    ]);
+    expect(progress.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(new Set(progress.map((event) => event.attemptId))).toEqual(
+      new Set([progress[0]!.attemptId]),
+    );
+    expect(JSON.stringify(progress)).not.toContain('Private completion text');
+    expect(JSON.stringify(progress)).not.toContain('/tmp/');
+    expect(JSON.stringify(progress)).not.toContain('lecture-thread');
   });
 
   it('moves a Studio to recoverable Trash, restores it, and purges only trashed history', async () => {
@@ -1180,6 +1225,8 @@ describe('LectureStudioService', () => {
       timeoutMs: 5_000,
       hardTimeoutMs: 20_000,
     });
+    const events: LectureStudioEvent[] = [];
+    service.onEvent((event) => events.push(event));
     codex.response = {
       reply: 'Created active generation.',
       lectureNotesLatexBody:
@@ -1217,13 +1264,114 @@ describe('LectureStudioService', () => {
     for (let index = 0; index < 100 && !codex.lastTurnId; index += 1) await Promise.resolve();
     expect(codex.lastTurnId).toBe('lecture-turn');
 
-    await vi.advanceTimersByTimeAsync(4_000);
     codex.emitActivity();
     await vi.advanceTimersByTimeAsync(4_000);
+    codex.emitActivity();
+    expect(
+      events.filter(
+        (event) => event.type === 'lecture.generation.progress' && event.phase === 'model_active',
+      ),
+    ).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    codex.emitActivity();
+    expect(
+      events.filter(
+        (event) => event.type === 'lecture.generation.progress' && event.phase === 'model_active',
+      ),
+    ).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(2_000);
     expect(settled).toBe(false);
 
     codex.completeDeferred();
     await expect(running).resolves.toMatchObject({ studio: { status: 'ready' } });
+  });
+
+  it('does not let a cancelled attempt cleanup delete a newer active attempt', async () => {
+    let releaseFirstPreparation!: () => void;
+    const firstPreparation = new Promise<void>((resolve) => {
+      releaseFirstPreparation = resolve;
+    });
+    let preparationCalls = 0;
+    const { service, storage, codex, projectA, paperA } = fixture({
+      prepareDirectory: async () => {
+        preparationCalls += 1;
+        if (preparationCalls === 1) await firstPreparation;
+        return '/tmp/gosu-lecture-studio-fixture';
+      },
+    });
+    const events: LectureStudioEvent[] = [];
+    service.onEvent((event) => events.push(event));
+    const studio = await service.create({
+      title: 'Attempt cleanup fence',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const first = service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await vi.waitFor(() => expect(preparationCalls).toBe(1));
+    const activeExecutions = (
+      service as unknown as {
+        activeByStudio: Map<string, { attemptId: string }>;
+      }
+    ).activeByStudio;
+    const oldActive = activeExecutions.get(studio.id)!;
+    const firstGenerating = storage.getLectureStudio(studio.id)!;
+    const cancelled = await service.cancel({
+      studioId: studio.id,
+      attemptId: firstGenerating.activeAttemptId!,
+      expectedVersion: firstGenerating.version,
+    });
+
+    // Simulate a scheduler handing the now-cancelled studio to a retry before the old source
+    // preparation promise unwinds. The old finally block must be fenced to its own identity.
+    activeExecutions.delete(studio.id);
+    codex.deferCompletion = true;
+    const second = service.generate({
+      studioId: studio.id,
+      expectedVersion: cancelled.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await vi.waitFor(() => {
+      expect(preparationCalls).toBe(2);
+      expect(codex.lastTurnId).toBe('lecture-turn');
+    });
+    const newActive = activeExecutions.get(studio.id)!;
+    expect(newActive).not.toBe(oldActive);
+
+    releaseFirstPreparation();
+    await expect(first).rejects.toMatchObject({ code: 'lecture_cancelled' });
+    expect(activeExecutions.get(studio.id)).toBe(newActive);
+
+    const progressBeforeActivity = events.filter(
+      (event) =>
+        event.type === 'lecture.generation.progress' && event.attemptId === newActive.attemptId,
+    ).length;
+    codex.emitActivity();
+    expect(
+      events.filter(
+        (event) =>
+          event.type === 'lecture.generation.progress' && event.attemptId === newActive.attemptId,
+      ),
+    ).toHaveLength(progressBeforeActivity + 1);
+
+    const secondGenerating = storage.getLectureStudio(studio.id)!;
+    await service.cancel({
+      studioId: studio.id,
+      attemptId: secondGenerating.activeAttemptId!,
+      expectedVersion: secondGenerating.version,
+    });
+    await expect(second).rejects.toMatchObject({ code: 'lecture_cancelled' });
   });
 
   it('enforces the hard generation deadline even while Codex remains active', async () => {
@@ -1232,6 +1380,8 @@ describe('LectureStudioService', () => {
       timeoutMs: 5_000,
       hardTimeoutMs: 12_000,
     });
+    const events: LectureStudioEvent[] = [];
+    service.onEvent((event) => events.push(event));
     codex.deferCompletion = true;
     const studio = await service.create({
       title: 'Bounded generation',
@@ -1264,6 +1414,14 @@ describe('LectureStudioService', () => {
     await vi.advanceTimersByTimeAsync(4_000);
     await observed;
     expect(generationError).toMatchObject({ code: 'lecture_generation_timed_out' });
+    const progressCount = events.filter(
+      (event) => event.type === 'lecture.generation.progress',
+    ).length;
+    codex.emitActivity();
+    codex.completeDeferred();
+    expect(events.filter((event) => event.type === 'lecture.generation.progress')).toHaveLength(
+      progressCount,
+    );
   });
 
   it('separates a terminal generation failure from Codex transport unavailability', async () => {
@@ -2515,6 +2673,8 @@ The captured result improves the bounded baseline.
 
   it('repairs one exact slide-count failure on the same thread and records the accepted invocation', async () => {
     const { service, storage, codex, projectA, paperA } = fixture();
+    const events: LectureStudioEvent[] = [];
+    service.onEvent((event) => events.push(event));
     codex.responseQueue = [
       latexResponse(['P1'], 18, 'PRIVATE-FIRST-CANDIDATE'),
       latexResponse(['P1'], 19, 'Corrected exact page count.'),
@@ -2555,6 +2715,11 @@ The captured result improves the bounded baseline.
     expect(receipt.revision.slidesLatex.match(/\\begin\{frame\}/gu)).toHaveLength(20);
     expect(storage.revisions).toHaveLength(1);
     expect(codex.interruptions).toEqual([]);
+    expect(
+      events
+        .filter((event) => event.type === 'lecture.generation.progress')
+        .map((event) => event.phase),
+    ).toContain('correcting_output');
   });
 
   it('stops after one correction and publishes only a bounded grammar error category', async () => {
@@ -2630,6 +2795,8 @@ The captured result improves the bounded baseline.
 
   it('keeps cancellation actionable while the correction turn is active', async () => {
     const { service, storage, codex, projectA, paperA } = fixture();
+    const events: LectureStudioEvent[] = [];
+    service.onEvent((event) => events.push(event));
     codex.responseQueue = [{ reply: 'missing documents' }];
     codex.deferTurnNumbers.add(2);
     const studio = await service.create({
@@ -2664,6 +2831,13 @@ The captured result improves the bounded baseline.
       turnId: 'lecture-turn-2',
     });
     expect(storage.revisions).toHaveLength(0);
+    const progressCount = events.filter(
+      (event) => event.type === 'lecture.generation.progress',
+    ).length;
+    codex.emitActivity();
+    expect(events.filter((event) => event.type === 'lecture.generation.progress')).toHaveLength(
+      progressCount,
+    );
   });
 
   it('does not interrupt the completed primary turn when correction startup fails', async () => {

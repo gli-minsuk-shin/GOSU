@@ -12,6 +12,7 @@ import {
   EmptyLectureStudioTrashInputSchema,
   ExportLectureStudioArtifactInputSchema,
   LectureStudioDetailSchema,
+  LectureStudioEventSchema,
   LectureStudioListSnapshotSchema,
   LectureStudioSchema,
   LectureStudioSummarySchema,
@@ -102,6 +103,33 @@ describe('Lecture Studio list and detail contracts', () => {
         revisions: [],
       }),
     ).toThrow();
+  });
+});
+
+describe('Lecture Studio progress event contracts', () => {
+  it('accepts only content-free fixed generation phases', () => {
+    const event = {
+      schemaVersion: 1,
+      type: 'lecture.generation.progress',
+      studioId: randomUUID(),
+      attemptId: randomUUID(),
+      phase: 'compiling_documents',
+      sequence: 7,
+      startedAt: timestamp,
+      occurredAt: timestamp,
+    } as const;
+
+    expect(LectureStudioEventSchema.parse(event)).toEqual(event);
+    expect(
+      LectureStudioEventSchema.safeParse({
+        ...event,
+        rawProviderMessage: 'private model output',
+      }).success,
+    ).toBe(false);
+    expect(LectureStudioEventSchema.safeParse({ ...event, phase: 'reading_secret' }).success).toBe(
+      false,
+    );
+    expect(LectureStudioEventSchema.safeParse({ ...event, sequence: 0 }).success).toBe(false);
   });
 });
 

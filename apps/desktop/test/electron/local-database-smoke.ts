@@ -710,6 +710,9 @@ function verifyManuscriptWorkspacePersistence(rootUserData: string, fixedTimesta
     const legacy = new Database(join(manuscriptUserData, 'gosu.db'));
     try {
       legacy.pragma(`key="x'${keyHex}'"`);
+      legacy
+        .prepare('update overleaf_git_bindings set remote_url=? where binding_id=?')
+        .run('https://git@git.overleaf.com/0123456789abcdef01234567', bindingId);
       legacy.exec(`
         drop trigger manuscript_workspace_connections_identity_insert_guard;
         drop trigger manuscript_workspace_connections_identity_update_guard;
@@ -741,6 +744,8 @@ function verifyManuscriptWorkspacePersistence(rootUserData: string, fixedTimesta
     invariant(
       reopened.getOverleafGitBindingConfiguration(bindingId)?.workspaceId ===
         '0123456789abcdef01234567' &&
+        reopened.getOverleafGitBindingConfiguration(bindingId)?.remoteUrl ===
+          'https://git.overleaf.com/0123456789abcdef01234567' &&
         reopened.getOverleafGitBindingConfiguration(bindingId)?.credentialRef ===
           'overleaf-git:0123456789abcdef01234567',
       'overleaf_private_binding_was_not_restored',

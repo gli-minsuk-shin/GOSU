@@ -43,6 +43,9 @@ describe('describeError', () => {
     expect(describeError(new Error('overleaf_git_url_invalid:https://private.example'))).toContain(
       'official HTTPS Overleaf Git URL',
     );
+    expect(describeError(new Error('overleaf_git_url_invalid'))).toContain(
+      'fixed git@ prefix is supported',
+    );
     expect(describeError(new Error('overleaf_git_remote_rewritten:private-sha'))).toContain(
       'changed after the revision was observed',
     );

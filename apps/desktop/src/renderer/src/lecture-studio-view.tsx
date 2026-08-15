@@ -44,6 +44,8 @@ import {
   type LectureStudioDetailInput,
   type LectureStudioDuration,
   type LectureStudioEvent,
+  type LectureGenerationProgressEvent,
+  type LectureGenerationProgressPhase,
   type LectureStudioKind,
   type LectureStudioMessage,
   type LectureStudioRevision,
@@ -140,6 +142,69 @@ export interface LectureStudioViewProps {
 }
 
 type PreviewTab = 'notes' | 'notes-pdf' | 'slides' | 'slides-pdf';
+
+export type LectureGenerationProgressState = Readonly<{
+  attemptId: string;
+  startedAt: string;
+  events: readonly LectureGenerationProgressEvent[];
+}>;
+
+const LECTURE_GENERATION_PROGRESS_EVENT_LIMIT = 12;
+
+export const LECTURE_GENERATION_PROGRESS_LABELS = {
+  preparing_sources: 'Preparing selected sources',
+  starting_model: 'Starting the selected model',
+  generating_draft: 'Drafting lecture notes and slides',
+  model_active: 'Model is working on the draft',
+  validating_output: 'Checking citations and LaTeX',
+  correcting_output: 'Correcting the draft automatically',
+  compiling_documents: 'Compiling both PDFs',
+  saving_revision: 'Saving the new revision',
+} as const satisfies Record<LectureGenerationProgressPhase, string>;
+
+export function appendLectureGenerationProgress(
+  current: LectureGenerationProgressState | undefined,
+  event: LectureGenerationProgressEvent,
+): LectureGenerationProgressState {
+  if (!current || current.attemptId !== event.attemptId) {
+    if (current && Date.parse(event.startedAt) < Date.parse(current.startedAt)) return current;
+    return { attemptId: event.attemptId, startedAt: event.startedAt, events: [event] };
+  }
+  const previous = current.events.at(-1);
+  if (previous && event.sequence <= previous.sequence) return current;
+  const events =
+    previous?.phase === event.phase
+      ? [...current.events.slice(0, -1), event]
+      : [...current.events, event];
+  return {
+    ...current,
+    events: events.slice(-LECTURE_GENERATION_PROGRESS_EVENT_LIMIT),
+  };
+}
+
+export function isCurrentLectureGenerationProgress(
+  event: LectureGenerationProgressEvent,
+  activeAttemptId: string | null | undefined,
+) {
+  return activeAttemptId === event.attemptId;
+}
+
+export function shouldClearLectureGenerationProgress(
+  current: LectureGenerationProgressState | undefined,
+  event: Extract<LectureStudioEvent, { type: 'lecture.studio.changed' }>,
+) {
+  return (
+    current !== undefined &&
+    (event.status !== 'generating' || current.attemptId !== event.activeAttemptId)
+  );
+}
+
+export function formatLectureGenerationElapsed(startedAt: string, nowMs: number) {
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - Date.parse(startedAt)) / 1_000));
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, '0')}s` : `${seconds}s`;
+}
 
 function previewDocumentKind(tab: PreviewTab) {
   return tab.startsWith('notes') ? ('lecture-notes' as const) : ('slides' as const);
@@ -338,11 +403,14 @@ export function lectureErrorCodeMessage(code: string) {
       'GOSU could not create a unique Overleaf manuscript connection for this source.',
     lecture_overleaf_source_not_ready:
       'Overleaf connected, but the requested root TeX checkpoint is not ready. Review it in Manuscript.',
-    overleaf_git_auth_required: 'Enter an Overleaf personal Git token to capture this source.',
-    overleaf_git_url_invalid: 'Enter the Git URL shown in your Overleaf project settings.',
+    overleaf_git_auth_required:
+      'Overleaf authentication is not ready. Save or replace the personal Git token in Settings, then confirm Git access is enabled for your Overleaf Premium project.',
+    overleaf_git_url_invalid:
+      'Enter an official Overleaf Git URL: https://git.overleaf.com/<project-id> or https://git@git.overleaf.com/<project-id>.',
     overleaf_git_root_document_missing:
       'The root TeX file was not found in the captured Overleaf checkpoint.',
-    overleaf_token_invalid: 'Overleaf rejected this personal Git token.',
+    overleaf_token_invalid:
+      'Overleaf rejected the saved personal Git token. Replace it in Settings and try again.',
     lecture_invalid_response:
       'The generated draft failed source or LaTeX safety checks, so no files were changed.',
     lecture_invalid_response_json:
@@ -560,6 +628,9 @@ export function LectureStudioView({
   const [composing, setComposing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyStudioIds, setBusyStudioIds] = useState<Set<string>>(new Set());
+  const [generationProgressByStudioId, setGenerationProgressByStudioId] = useState<
+    Record<string, LectureGenerationProgressState>
+  >({});
   const [draftsByStudioId, setDraftsByStudioId] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
@@ -568,6 +639,7 @@ export function LectureStudioView({
     AUTO_LECTURE_STUDIO_MODEL_SELECTION,
   );
   const loadGeneration = useRef(0);
+  const activeAttemptByStudioId = useRef<Record<string, string | null>>({});
 
   const load = useCallback(
     async (showLoading = false, preferredStudioId?: string | null) => {
@@ -576,6 +648,9 @@ export function LectureStudioView({
       try {
         const next = await adapter.list({});
         if (generation !== loadGeneration.current) return;
+        activeAttemptByStudioId.current = Object.fromEntries(
+          next.studios.map((studio) => [studio.id, studio.activeAttemptId]),
+        );
         setListSnapshot(next);
         const requestedStudioId = preferredStudioId ?? selectedStudioIdRef.current;
         const nextStudioId =
@@ -604,7 +679,33 @@ export function LectureStudioView({
 
   useEffect(
     () =>
-      adapter.onEvent(() => {
+      adapter.onEvent((event) => {
+        if (event.type === 'lecture.generation.progress') {
+          if (
+            !isCurrentLectureGenerationProgress(
+              event,
+              activeAttemptByStudioId.current[event.studioId],
+            )
+          ) {
+            return;
+          }
+          setGenerationProgressByStudioId((current) => ({
+            ...current,
+            [event.studioId]: appendLectureGenerationProgress(current[event.studioId], event),
+          }));
+          return;
+        }
+        activeAttemptByStudioId.current = {
+          ...activeAttemptByStudioId.current,
+          [event.studioId]: event.activeAttemptId,
+        };
+        setGenerationProgressByStudioId((current) => {
+          const existing = current[event.studioId];
+          if (!shouldClearLectureGenerationProgress(existing, event)) return current;
+          const next = { ...current };
+          delete next[event.studioId];
+          return next;
+        });
         void load();
       }),
     [adapter, load],
@@ -803,6 +904,7 @@ export function LectureStudioView({
               adapter={adapter}
               activeTab={previewTab}
               busy={busyStudioIds.has(selectedStudio.id)}
+              generationProgress={generationProgressByStudioId[selectedStudio.id]}
               codexAuthenticationRequired={codexAuthenticationRequired}
               onTab={setPreviewTab}
               onGenerate={() => void runGeneration(selectedStudio)}
@@ -1850,6 +1952,61 @@ function LectureComposer({
   );
 }
 
+function LectureGenerationProgressPanel({
+  studio,
+  progress,
+}: {
+  studio: LectureStudio;
+  progress: LectureGenerationProgressState | undefined;
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [studio.activeAttemptId]);
+
+  const startedAt = progress?.startedAt ?? studio.updatedAt;
+  const events = progress?.events ?? [];
+  const latest = events.at(-1);
+  const currentLabel = latest
+    ? LECTURE_GENERATION_PROGRESS_LABELS[latest.phase]
+    : 'Waiting for the next progress update';
+
+  return (
+    <section className="lecture-generation-progress">
+      <div className="lecture-generation-progress-summary">
+        <span className="lecture-generation-progress-spinner" aria-hidden="true" />
+        <strong role="status" aria-live="polite" aria-atomic="true">
+          {currentLabel}
+        </strong>
+        <time dateTime={startedAt}>{formatLectureGenerationElapsed(startedAt, nowMs)}</time>
+      </div>
+      <p>
+        Detailed page targets and rigorous checks can take several minutes. If a draft fails a
+        bounded check, GOSU makes one correction pass before compiling both PDFs.
+      </p>
+      {events.length > 0 && (
+        <ol aria-label="Generation activity">
+          {events.map((event) => (
+            <li key={`${event.attemptId}:${event.sequence}`}>
+              <time dateTime={event.occurredAt}>
+                {new Date(event.occurredAt).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit',
+                })}
+              </time>
+              <span>{LECTURE_GENERATION_PROGRESS_LABELS[event.phase]}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 function StudioPreview({
   studio,
   revision,
@@ -1857,6 +2014,7 @@ function StudioPreview({
   adapter,
   activeTab,
   busy,
+  generationProgress,
   codexAuthenticationRequired,
   onTab,
   onGenerate,
@@ -1870,6 +2028,7 @@ function StudioPreview({
   adapter: LectureStudioViewAdapter;
   activeTab: PreviewTab;
   busy: boolean;
+  generationProgress: LectureGenerationProgressState | undefined;
   codexAuthenticationRequired: boolean;
   onTab: (tab: PreviewTab) => void;
   onGenerate: () => void;
@@ -2191,6 +2350,9 @@ function StudioPreview({
               </button>
             </div>
           </form>
+        )}
+        {studio.status === 'generating' && (
+          <LectureGenerationProgressPanel studio={studio} progress={generationProgress} />
         )}
         {studio.lastErrorCode && studio.status === 'failed' && (
           <div className="lecture-preview-error" role="status">

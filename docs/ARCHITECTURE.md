@@ -1066,6 +1066,13 @@ telemetry에 넣지 않는다. 실제 App Server 시작·process transport 단�
 catalog 자동 refresh 뒤 `Retry generation`으로 재사용한다.
 각 `runTurn` control-plane request는 App Server의 별도 최대 30초 request bound를 가지며, Main은 응답 직후
 공유 hard deadline과 cancel state를 다시 검사해 늦게 도착한 turn을 승인하거나 저장하지 않는다.
+생성 중 Renderer에는 `attemptId`, 단조 증가 sequence, 시작·발생 timestamp와 GOSU가 정의한 고정 phase만
+담은 strict `lecture.generation.progress` event를 보낸다. source 준비, model 시작·draft/activity, output 검증,
+한 번의 자동 교정, 두 PDF compile, revision 저장을 구분하며 Renderer는 경과 시간과 최근 bounded activity를
+표시한다. model activity는 5초에 한 번 이하로 제한하고 같은 연속 phase는 UI에서 합치므로 event storm이
+detail reload를 유발하지 않는다. 이 receipt는 근사적인 live 상태일 뿐 model reasoning log가 아니며 raw Codex
+notification, source/output 본문, token, provider message, thread/turn ID와 filesystem path를 포함하거나
+SQLCipher·Hosted Sync·telemetry에 저장하지 않는다.
 
 structured output은 고정 JSON field의 notes/article LaTeX body와 Beamer frame body, 알려진
 `[P#]|[E#]|[M#]|[F#]` label, substantive frame별 evidence label, notes의 `Sources used` 또는 starred section,
@@ -1806,7 +1813,11 @@ flowchart LR
 
 - Git child는 Renderer가 아니라 Main에서 shell 없이 고정 argv로 실행하고 hook, prompt, submodule,
   non-HTTPS protocol과 user config를 끈다. remote URL은 credential/userinfo/query가 없는 official Overleaf
-  HTTPS project endpoint만 허용한다.
+  HTTPS project endpoint만 허용한다. 사용자가 Overleaf에서 복사한
+  `https://git@git.overleaf.com/<24-hex-project-id>` 형식은 password 없는 exact `git` username인지 먼저
+  검증한 뒤 userinfo 없는 canonical endpoint로 정규화한다. 다른 username, password, query와 fragment는
+  거부한다. 이전 버전이 저장한 fixed `git@` URL도 private binding read 경계에서 같은 canonical endpoint로
+  승격한다.
 - personal Git token은 Settings 전용 fixed IPC로만 Renderer에서 Main으로 이동하고 GOSU user-data의
   Electron `safeStorage` ciphertext로 저장한다. Manuscript connect와 Lecture import의 strict contract에는
   token field가 없다. 새 link는 그 시점의 Settings token으로 overwrite되지 않는 immutable

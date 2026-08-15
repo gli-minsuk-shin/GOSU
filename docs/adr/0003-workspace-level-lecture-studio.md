@@ -153,6 +153,12 @@ dynamic tool을 모두 비활성화하고, source manifest·현재 draft·최근
 서로 다른 typed error로 표시한다.
 각 `runTurn` control-plane request는 App Server의 별도 최대 30초 request bound를 가지며, Main은 응답 직후
 공유 hard deadline과 cancel state를 다시 검사해 늦게 도착한 turn을 승인하거나 저장하지 않는다.
+Main은 generation 중 source 준비, model 시작·draft/activity, validator, 한 번의 correction, 두 PDF compile,
+revision 저장을 나타내는 고정 phase event만 Renderer에 보낸다. event에는 studio/attempt identity, 단조 증가
+sequence와 시작·발생 timestamp만 있고 raw notification, reasoning, source/output text, provider message,
+thread/turn ID, path나 credential은 없다. model activity는 최대 5초에 한 번으로 제한하며 Renderer는 같은 연속
+phase를 합쳐 경과 시간과 최근 12개 activity만 표시한다. progress는 ephemeral UI receipt로서 SQLCipher,
+Hosted Sync 또는 telemetry에 저장하지 않는다.
 
 직렬화된 prompt는 최대 360,000자, source manifest는 최대 120,000자로 제한한다. captured source 전체는
 chunk로 hash/length를 검증하되 prompt/manifest content에는 policy와 completeness가 표시된 deterministic exact

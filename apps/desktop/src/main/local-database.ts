@@ -207,7 +207,12 @@ function validateOverleafGitBindingConfiguration(
   ) {
     throw new Error('manuscript_binding_invalid');
   }
-  return configuration;
+  return {
+    ...configuration,
+    remoteUrl: remote.remoteUrl,
+    workspaceId: remote.workspaceId,
+    webUrl: remote.webUrl,
+  };
 }
 
 const ManuscriptArtifactPurgeQueueEntrySchema = z

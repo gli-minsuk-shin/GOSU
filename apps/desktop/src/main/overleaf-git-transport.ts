@@ -143,7 +143,10 @@ export function parseOverleafGitRemote(value: string): OverleafGitRemote {
   }
   return {
     workspaceId,
-    remoteUrl: `https://git@${OVERLEAF_GIT_HOST}/${workspaceId}`,
+    // Overleaf's copyable Git URL includes the fixed `git@` user marker. Authentication is
+    // supplied through the scoped authorization header below, so keep userinfo out of the
+    // durable/network URL after validating that the pasted username was exactly `git`.
+    remoteUrl: `https://${OVERLEAF_GIT_HOST}/${workspaceId}`,
     webUrl: `https://${OVERLEAF_WEB_HOST}/project/${workspaceId}`,
   };
 }

@@ -104,7 +104,7 @@ process.stdout.write(JSON.stringify({
       credential: {
         username: 'git',
         password: token,
-        scopeUrl: 'https://git@git.overleaf.com/0123456789abcdef01234567',
+        scopeUrl: 'https://git.overleaf.com/0123456789abcdef01234567',
       },
     });
     const result = JSON.parse(output) as {
@@ -113,7 +113,7 @@ process.stdout.write(JSON.stringify({
     };
 
     expect(result.args).toContain(
-      '--config-env=http.https://git@git.overleaf.com/0123456789abcdef01234567.extraHeader=GOSU_GIT_AUTHORIZATION',
+      '--config-env=http.https://git.overleaf.com/0123456789abcdef01234567.extraHeader=GOSU_GIT_AUTHORIZATION',
     );
     expect(JSON.stringify(result.args)).not.toContain(token);
     expect(result.args).not.toContain('credential.helper=osxkeychain');
@@ -122,19 +122,25 @@ process.stdout.write(JSON.stringify({
     });
   });
 
-  it('rejects a credential without an exact HTTPS user and path scope', async () => {
-    const runner = createGitCommandRunner(executable);
-    await expect(
-      runner(directory, ['fetch', 'origin'], {
-        network: true,
-        credential: {
-          username: 'git',
-          password: 'fixture-token',
-          scopeUrl: 'https://git.overleaf.com/0123456789abcdef01234567?redirect=1',
-        },
-      }),
-    ).rejects.toMatchObject({ kind: 'auth' });
-  });
+  it.each([
+    'https://git@git.overleaf.com/0123456789abcdef01234567',
+    'https://git.overleaf.com/0123456789abcdef01234567?redirect=1',
+  ])(
+    'rejects a credential without an exact credential-free HTTPS path scope: %s',
+    async (scopeUrl) => {
+      const runner = createGitCommandRunner(executable);
+      await expect(
+        runner(directory, ['fetch', 'origin'], {
+          network: true,
+          credential: {
+            username: 'git',
+            password: 'fixture-token',
+            scopeUrl,
+          },
+        }),
+      ).rejects.toMatchObject({ kind: 'auth' });
+    },
+  );
 
   it('isolates user configuration by default and opens it only for an explicit config read', async () => {
     const runner = createGitCommandRunner(executable);
