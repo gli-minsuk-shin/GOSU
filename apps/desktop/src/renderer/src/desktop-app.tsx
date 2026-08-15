@@ -54,6 +54,7 @@ import type {
   LectureStudioListSnapshot,
   LectureStudioVersionCommand,
 } from '../../shared/lecture-studio-contracts';
+import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
 import { BoardView } from './board-view';
 import type { HermesProjectChatConnectionUiState } from './agent-addons-section';
 import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
@@ -65,6 +66,8 @@ import { HermesAcpApprovalCenter } from './hermes-acp-approval-center';
 import { buildLocalNotesGrantUpdate } from './local-notes-access-model';
 import { LiteratureView, type LiteratureViewAdapter } from './literature-view';
 import { ManuscriptView } from './manuscript-view';
+import { OverleafPersonalTokenDialog } from './overleaf-personal-token-dialog';
+import type { OverleafPersonalTokenUiState } from './overleaf-personal-token-ui';
 import { VolatileLectureStudioDrafts } from './lecture-studio-session-state';
 import { LectureStudioView, type LectureStudioViewAdapter } from './lecture-studio-view';
 import {
@@ -493,6 +496,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [lectureTrashState, setLectureTrashState] = useState<
     'idle' | 'loading' | 'ready' | 'error'
   >('idle');
+  const [overleafPersonalTokenState, setOverleafPersonalTokenState] =
+    useState<OverleafPersonalTokenUiState>('loading');
+  const [overleafTokenSettingsOpen, setOverleafTokenSettingsOpen] = useState(false);
   const [sidebarResizing, setSidebarResizing] = useState(false);
 
   const [models, setModels] = useState<CodexModel[]>([]);
@@ -1232,6 +1238,35 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     registeredSshConnectionIdsKey,
     registeredSshResourceProfilesKey,
   ]);
+
+  const refreshOverleafPersonalToken = useCallback(async () => {
+    setOverleafPersonalTokenState('loading');
+    try {
+      const status = await window.gosu.overleafPersonalToken.status();
+      setOverleafPersonalTokenState(status.state);
+    } catch {
+      setOverleafPersonalTokenState('unavailable');
+      throw new Error('overleaf_personal_token_unavailable');
+    }
+  }, []);
+
+  const saveOverleafPersonalToken = useCallback(async (input: SaveOverleafPersonalTokenInput) => {
+    const status = await window.gosu.overleafPersonalToken.save(input);
+    setOverleafPersonalTokenState(status.state);
+    setAnnouncement('Saved the Overleaf token for future links on this Mac.');
+  }, []);
+
+  const removeOverleafPersonalToken = useCallback(async () => {
+    const status = await window.gosu.overleafPersonalToken.remove();
+    setOverleafPersonalTokenState(status.state);
+    setAnnouncement(
+      'Cleared GOSU’s saved Overleaf token. Existing links were preserved, and the token was not revoked in Overleaf.',
+    );
+  }, []);
+
+  useEffect(() => {
+    void refreshOverleafPersonalToken().catch(() => undefined);
+  }, [refreshOverleafPersonalToken]);
 
   useEffect(
     () =>
@@ -2102,6 +2137,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setShowProjectForm(false);
   };
 
+  const openOverleafSettings = () => {
+    setOverleafTokenSettingsOpen(true);
+  };
+
   const openSshWorkspaceSetup = (
     connectionId: string | null = null,
     projectId: string | null = activeProject?.id ?? null,
@@ -2642,6 +2681,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 'Restored the task to its Board.',
               )
             }
+            overleafPersonalTokenState={overleafPersonalTokenState}
+            onRefreshOverleafPersonalToken={refreshOverleafPersonalToken}
+            onSaveOverleafPersonalToken={saveOverleafPersonalToken}
+            onRemoveOverleafPersonalToken={removeOverleafPersonalToken}
             category={settingsCategory}
             onCategoryChange={setSettingsCategory}
             agentProject={activeProject}
@@ -3236,7 +3279,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               />
             )}
             {activeTab === 'manuscript' && activeProject && (
-              <ManuscriptView key={activeProject.id} project={activeProject} />
+              <ManuscriptView
+                key={activeProject.id}
+                project={activeProject}
+                overleafPersonalTokenState={overleafPersonalTokenState}
+                onOpenOverleafSettings={openOverleafSettings}
+              />
             )}
             {activeTab === 'objective' && activeProject && (
               <ObjectiveEditor
@@ -3327,6 +3375,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 codexAuthenticationRequired={codexConnectionState === 'auth-required'}
                 onRefreshModels={() => void refreshModels(true)}
                 onOpenCodexSignIn={startCodexChatGptLogin}
+                overleafPersonalTokenState={overleafPersonalTokenState}
+                onOpenOverleafSettings={openOverleafSettings}
                 layout={lectureStudioLayout}
                 onLayoutChange={setLectureStudioLayout}
               />
@@ -3588,6 +3638,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           </>
         )}
       </section>
+      {overleafTokenSettingsOpen && (
+        <OverleafPersonalTokenDialog
+          state={overleafPersonalTokenState}
+          onRefresh={refreshOverleafPersonalToken}
+          onSave={saveOverleafPersonalToken}
+          onRemove={removeOverleafPersonalToken}
+          onClose={() => setOverleafTokenSettingsOpen(false)}
+        />
+      )}
       <SshApprovalCenter
         requests={presentHermesAcpApproval ? [] : sshApprovals}
         busyApprovalIds={sshApprovalBusyIds}

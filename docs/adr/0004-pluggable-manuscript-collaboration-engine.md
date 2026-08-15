@@ -98,10 +98,15 @@ compile input set과 source-content digest를 별도 계약으로 정의하고 �
 
 ### 5. Secret, local artifact와 삭제 경계를 지킨다
 
-- Renderer는 Git, Keychain, filesystem에 직접 접근하지 않고 고정된 typed IPC만 호출한다.
-- Overleaf personal Git token은 GOSU 전용 user-data 파일에 Electron `safeStorage`로 암호화해 보관한다.
-  macOS에서는 암호화 key가 Keychain으로 보호된다. 공유 `git-osxkeychain` entry를 읽거나 덮어쓰거나
-  삭제하지 않는다. 각 연결은 overwrite되지 않는 immutable credential reference를 갖는다. 네트워크 Git
+- Renderer는 Git, OS secure storage, filesystem에 직접 접근하지 않고 고정된 typed IPC만 호출한다.
+- Overleaf personal Git token은 Settings의 전용 fixed IPC에서만 입력되고 GOSU 전용 user-data
+  파일에 Electron `safeStorage`로 암호화해 보관한다. Manuscript connect와 Lecture import strict
+  contract에는 token field가 없고, Renderer는 저장된 값을 다시 받지 않는다. 새 연결은 그 시점의
+  Settings token으로 overwrite되지 않는 immutable credential reference와 workspace-bound encrypted
+  snapshot을 각자 갖는다. Settings token 교체·삭제는 향후 연결에만 적용되고 기존 연결은
+  자신의 snapshot으로 계속 작동한다. 삭제는 GOSU copy만 제거하며 Overleaf token을 revoke하지
+  않는다. macOS에서 `safeStorage` 암호화 key는 Keychain으로 보호된다. 공유
+  `git-osxkeychain` entry를 읽거나 덮어쓰거나 삭제하지 않는다. 네트워크 Git
   child에는 redirect를 끈 상태에서 검증된 exact Overleaf project URL로 scope한 HTTP authorization config와
   child 전용 environment로만 전달하며 token을 process argument, SQLCipher, portable contract, URL, 영구 Git
   config, log, telemetry 또는 Hosted Sync에 저장하지 않는다.
@@ -143,9 +148,10 @@ provider credential을 참조하는 enabled binding이 하나라도 있으면 �
 GOSU 소유 ciphertext를 지운 경우에만 ACK한다. legacy shared credential은 GOSU 소유권을 증명할 수 없으므로
 `legacy-unowned` recovery marker로 처리해 외부 Git client의 entry를 삭제하지 않는다.
 
-새 token은 동일 Overleaf workspace ID 단위 exclusive section에서 새 immutable reference와 `.pending`
-marker로 staged한다. remote 검증 또는 binding transaction이 실패하면 그 새 reference만 rollback하므로 기존
-정상 credential을 덮어쓰지 않는다. DB commit 뒤 marker 정리 전에 앱이 종료되면 다음 시작에서 SQLCipher가
+새 link를 위한 personal-token snapshot은 동일 Overleaf workspace ID 단위 exclusive section에서 새
+immutable reference와 `.pending` marker로 staged한다. remote 검증 또는 binding transaction이 실패하면
+그 새 snapshot reference만 rollback하므로 Settings copy나 기존 binding credential을 덮어쓰지 않는다. DB
+commit 뒤 marker 정리 전에 앱이 종료되면 다음 시작에서 SQLCipher가
 실제로 참조하는 pending credential은 commit하고, 참조하지 않는 pending ciphertext는 제거한다. connect,
 inspect, fetch와 credential cleanup은 project가 달라도 같은 provider/workspace lock을 공유한다.
 

@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { GosuDesktopApi } from '../src/preload/index';
 import { MANUSCRIPT_WORKSPACE_IPC_CHANNELS } from '../src/shared/manuscript-workspace-channels';
+import { OVERLEAF_PERSONAL_TOKEN_IPC_CHANNELS } from '../src/shared/overleaf-personal-token-channels';
 
 const electron = vi.hoisted(() => {
   const exposed: unknown[][] = [];
@@ -35,6 +36,58 @@ beforeEach(() => {
 });
 
 describe('Manuscript Workspace preload bridge', () => {
+  it('maps the personal token boundary without ever returning secret material', async () => {
+    electron.ipcRenderer.invoke
+      .mockResolvedValueOnce({ ok: true, value: { schemaVersion: 1, state: 'not_configured' } })
+      .mockResolvedValueOnce({ ok: true, value: { schemaVersion: 1, state: 'configured' } })
+      .mockResolvedValueOnce({ ok: true, value: { schemaVersion: 1, state: 'not_configured' } });
+    const token = 'renderer-write-only-personal-token';
+
+    await expect(api.overleafPersonalToken.status()).resolves.toEqual({
+      schemaVersion: 1,
+      state: 'not_configured',
+    });
+    await expect(api.overleafPersonalToken.save({ accessToken: token })).resolves.toEqual({
+      schemaVersion: 1,
+      state: 'configured',
+    });
+    await expect(api.overleafPersonalToken.remove()).resolves.toEqual({
+      schemaVersion: 1,
+      state: 'not_configured',
+    });
+    expect(electron.ipcRenderer.invoke.mock.calls).toEqual([
+      [OVERLEAF_PERSONAL_TOKEN_IPC_CHANNELS.status, {}],
+      [OVERLEAF_PERSONAL_TOKEN_IPC_CHANNELS.save, { accessToken: token }],
+      [OVERLEAF_PERSONAL_TOKEN_IPC_CHANNELS.remove, {}],
+    ]);
+    expect(Object.keys(api.overleafPersonalToken)).toEqual(['status', 'save', 'remove']);
+    expect(api.overleafPersonalToken).not.toHaveProperty('read');
+  });
+
+  it('redacts rejected and undeclared personal-token responses', async () => {
+    const secret = 'renderer-write-only-personal-token';
+    electron.ipcRenderer.invoke
+      .mockRejectedValueOnce(new Error(`provider echoed ${secret}`))
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { code: `undeclared-${secret}` },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schemaVersion: 1, state: 'configured', accessToken: secret },
+      });
+
+    await expect(api.overleafPersonalToken.save({ accessToken: secret })).rejects.toThrow(
+      'overleaf_personal_token_unavailable',
+    );
+    await expect(api.overleafPersonalToken.status()).rejects.toThrow(
+      'overleaf_personal_token_unavailable',
+    );
+    await expect(api.overleafPersonalToken.status()).rejects.toThrow(
+      'overleaf_personal_token_unavailable',
+    );
+  });
+
   it('exposes only fixed manuscript operations and no generic Git or publish escape hatch', () => {
     expect(Object.keys(api.manuscriptWorkspace)).toEqual([
       'list',
@@ -70,7 +123,6 @@ describe('Manuscript Workspace preload bridge', () => {
       expectedBindingVersion: 1,
     };
     const providerRevision = 'a'.repeat(40);
-    const token = 'renderer-to-main-one-shot-token';
     for (let index = 0; index < 14; index += 1) {
       electron.ipcRenderer.invoke.mockResolvedValueOnce({ ok: true, value: { call: index + 1 } });
     }
@@ -96,7 +148,6 @@ describe('Manuscript Workspace preload bridge', () => {
       expectedManuscriptVersion: 1,
       providerId: 'overleaf_git',
       remoteUrl: 'https://git.overleaf.com/0123456789abcdef01234567',
-      accessToken: token,
     });
     await api.manuscriptWorkspace.inspect(bindingCommand);
     await api.manuscriptWorkspace.fetchCheckpoint({
@@ -148,7 +199,6 @@ describe('Manuscript Workspace preload bridge', () => {
           expectedManuscriptVersion: 1,
           providerId: 'overleaf_git',
           remoteUrl: 'https://git.overleaf.com/0123456789abcdef01234567',
-          accessToken: token,
         },
       ],
       [MANUSCRIPT_WORKSPACE_IPC_CHANNELS.inspect, bindingCommand],

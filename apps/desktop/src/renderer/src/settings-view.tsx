@@ -22,6 +22,7 @@ import type {
   LectureStudioListSnapshot,
   LectureStudioVersionCommand,
 } from '../../shared/lecture-studio-contracts';
+import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
 import {
   AgentAddOnsSection,
   type HermesProjectChatConnectionUiState,
@@ -29,6 +30,8 @@ import {
 import { AgentSettingsSection } from './agent-settings-section';
 import { BoardSettingsForm } from './board-settings-form';
 import type { VaultRuntimeState } from './notes-view';
+import { OverleafPersonalTokenSettings } from './overleaf-personal-token-settings';
+import type { OverleafPersonalTokenUiState } from './overleaf-personal-token-ui';
 import { ProjectSettingsSection } from './project-settings-section';
 import { TrashSettingsSection } from './trash-settings-section';
 import { SSH_RESOURCE_REFRESH_INTERVAL_OPTIONS } from './ssh-resource-refresh-policy';
@@ -61,7 +64,8 @@ const TEXT_SIZE_CHOICES: ReadonlyArray<{
   { id: 'extra-large', label: 'Extra large', description: '18 px base', sample: 'Aa' },
 ];
 
-export type SettingsCategory = 'appearance' | 'board' | 'projects' | 'trash' | 'servers' | 'agent';
+export type SettingsCategory =
+  'appearance' | 'board' | 'projects' | 'trash' | 'overleaf' | 'servers' | 'agent';
 
 export function SettingsView({
   preferences,
@@ -80,6 +84,10 @@ export function SettingsView({
   onRestoreLectureStudio,
   onEmptyLectureStudioTrash,
   onRestoreTask,
+  overleafPersonalTokenState,
+  onRefreshOverleafPersonalToken,
+  onSaveOverleafPersonalToken,
+  onRemoveOverleafPersonalToken,
   initialCategory = 'appearance',
   category,
   onCategoryChange,
@@ -111,6 +119,10 @@ export function SettingsView({
     input: EmptyLectureStudioTrashInput,
   ) => Promise<EmptyLectureStudioTrashReceipt | null>;
   onRestoreTask: (input: SetTaskArchivedInput) => Promise<boolean>;
+  overleafPersonalTokenState: OverleafPersonalTokenUiState;
+  onRefreshOverleafPersonalToken: () => Promise<void>;
+  onSaveOverleafPersonalToken: (input: SaveOverleafPersonalTokenInput) => Promise<void>;
+  onRemoveOverleafPersonalToken: () => Promise<void>;
   initialCategory?: SettingsCategory;
   category?: SettingsCategory;
   onCategoryChange?: (category: SettingsCategory) => void;
@@ -173,6 +185,16 @@ export function SettingsView({
           <i aria-hidden="true">♲</i>
           <strong>Trash</strong>
           <span>Restore or permanently remove</span>
+        </button>
+        <button
+          type="button"
+          className={activeCategory === 'overleaf' ? 'active' : ''}
+          aria-current={activeCategory === 'overleaf' ? 'page' : undefined}
+          onClick={() => selectCategory('overleaf')}
+        >
+          <i aria-hidden="true">OL</i>
+          <strong>Overleaf</strong>
+          <span>Personal Git token</span>
         </button>
         <button
           type="button"
@@ -311,6 +333,13 @@ export function SettingsView({
             onRestoreLectureStudio={onRestoreLectureStudio}
             onEmptyLectureStudioTrash={onEmptyLectureStudioTrash}
             onRestoreTask={onRestoreTask}
+          />
+        ) : activeCategory === 'overleaf' ? (
+          <OverleafPersonalTokenSettings
+            state={overleafPersonalTokenState}
+            onRefresh={onRefreshOverleafPersonalToken}
+            onSave={onSaveOverleafPersonalToken}
+            onRemove={onRemoveOverleafPersonalToken}
           />
         ) : activeCategory === 'servers' ? (
           <article className="settings-card server-monitoring-settings-card">

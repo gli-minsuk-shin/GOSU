@@ -8,18 +8,13 @@ import {
 const uuidSchema = z.string().uuid();
 const timestampSchema = z.string().datetime({ offset: true });
 
-/**
- * Write-only connector input. `accessToken` may cross the isolated preload IPC once, but it is
- * consumed by the Manuscript module's Keychain-backed connector and is never copied into a
- * Lecture source receipt, Studio record, source manifest, or renderer persistence.
- */
+/** Token-free connector input. Main mints a workspace-bound credential snapshot from Settings. */
 export const ImportLectureOverleafSourceInputSchema = z
   .object({
     projectId: uuidSchema,
     title: z.string().trim().min(1).max(160),
     rootDocument: ManuscriptRootDocumentSchema,
     remoteUrl: z.string().trim().min(1).max(2_048),
-    accessToken: z.string().min(1).max(2_048),
   })
   .strict();
 export type ImportLectureOverleafSourceInput = z.infer<

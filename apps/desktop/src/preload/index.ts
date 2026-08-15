@@ -73,6 +73,13 @@ import type {
 import { unwrapGitWorkspaceIpcResult } from '../shared/git-workspace-ipc-result';
 import { LITERATURE_IPC_CHANNELS } from '../shared/literature-channels';
 import { MANUSCRIPT_WORKSPACE_IPC_CHANNELS } from '../shared/manuscript-workspace-channels';
+import { OVERLEAF_PERSONAL_TOKEN_IPC_CHANNELS } from '../shared/overleaf-personal-token-channels';
+import {
+  OverleafPersonalTokenStatusSchema,
+  type OverleafPersonalTokenStatus,
+  type SaveOverleafPersonalTokenInput,
+} from '../shared/overleaf-personal-token-contracts';
+import { unwrapOverleafPersonalTokenIpcResult } from '../shared/overleaf-personal-token-ipc-result';
 import type {
   ConnectOverleafGitInput,
   CompileManuscriptPdfInput,
@@ -280,6 +287,20 @@ async function invokeManuscriptWorkspace<T>(channel: string, input: unknown): Pr
     error: { code: 'manuscript_workspace_unavailable' },
   }));
   return unwrapManuscriptWorkspaceIpcResult<T>(result);
+}
+
+async function invokeOverleafPersonalToken(
+  channel: string,
+  input: unknown,
+): Promise<OverleafPersonalTokenStatus> {
+  const result = await ipcRenderer.invoke(channel, input).catch(() => ({
+    ok: false,
+    error: { code: 'overleaf_personal_token_unavailable' },
+  }));
+  const value = unwrapOverleafPersonalTokenIpcResult<unknown>(result);
+  const parsed = OverleafPersonalTokenStatusSchema.safeParse(value);
+  if (!parsed.success) throw new Error('overleaf_personal_token_unavailable');
+  return parsed.data;
 }
 
 async function invokeLectureStudio<T>(channel: string, input: unknown): Promise<T> {
@@ -583,6 +604,12 @@ const api = {
         MANUSCRIPT_WORKSPACE_IPC_CHANNELS.disconnect,
         input,
       ),
+  },
+  overleafPersonalToken: {
+    status: () => invokeOverleafPersonalToken(OVERLEAF_PERSONAL_TOKEN_IPC_CHANNELS.status, {}),
+    save: (input: SaveOverleafPersonalTokenInput) =>
+      invokeOverleafPersonalToken(OVERLEAF_PERSONAL_TOKEN_IPC_CHANNELS.save, input),
+    remove: () => invokeOverleafPersonalToken(OVERLEAF_PERSONAL_TOKEN_IPC_CHANNELS.remove, {}),
   },
   literature: {
     list: (input: ListLiteratureInput) =>

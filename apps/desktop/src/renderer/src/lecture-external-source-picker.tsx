@@ -2,6 +2,8 @@ import { ManuscriptRootDocumentSchema } from '@gosu/contracts';
 import { useState, type FormEvent } from 'react';
 
 import './lecture-external-source-picker.css';
+import { OverleafPersonalTokenNotice } from './overleaf-personal-token-notice';
+import type { OverleafPersonalTokenUiState } from './overleaf-personal-token-ui';
 
 export type LectureExternalSourceCard = Readonly<{
   id: string;
@@ -28,7 +30,6 @@ export type LectureOverleafSourceDraft = Readonly<{
   title: string;
   rootDocument: string;
   remoteUrl: string;
-  accessToken: string;
 }>;
 
 export function formatLectureSourceBytes(bytes: number) {
@@ -56,6 +57,8 @@ export function LectureExternalSourcePicker({
   overleafSources,
   busy,
   outputProjectName,
+  overleafPersonalTokenState,
+  onOpenOverleafSettings,
   onChooseFiles,
   onRemoveFile,
   onImportOverleaf,
@@ -65,6 +68,8 @@ export function LectureExternalSourcePicker({
   overleafSources: readonly LectureOverleafSourceCard[];
   busy: boolean;
   outputProjectName: string;
+  overleafPersonalTokenState: OverleafPersonalTokenUiState;
+  onOpenOverleafSettings: () => void;
   onChooseFiles: () => Promise<void>;
   onRemoveFile: (sourceId: string) => Promise<void>;
   onImportOverleaf: (draft: LectureOverleafSourceDraft) => Promise<boolean>;
@@ -74,7 +79,6 @@ export function LectureExternalSourcePicker({
   const [title, setTitle] = useState('');
   const [rootDocument, setRootDocument] = useState('main.tex');
   const [remoteUrl, setRemoteUrl] = useState('');
-  const [accessToken, setAccessToken] = useState('');
   const [addingFiles, setAddingFiles] = useState(false);
   const [addingOverleaf, setAddingOverleaf] = useState(false);
   const rootDocumentValid = ManuscriptRootDocumentSchema.safeParse(rootDocument.trim()).success;
@@ -82,7 +86,6 @@ export function LectureExternalSourcePicker({
   const resetOverleafDraft = () => {
     setTitle('');
     setRemoteUrl('');
-    setAccessToken('');
     setRootDocument('main.tex');
   };
 
@@ -105,7 +108,6 @@ export function LectureExternalSourcePicker({
         title: title.trim() || 'Overleaf manuscript',
         rootDocument: rootDocument.trim(),
         remoteUrl: remoteUrl.trim(),
-        accessToken,
       });
       if (imported) {
         setTitle('');
@@ -114,8 +116,6 @@ export function LectureExternalSourcePicker({
         setOverleafOpen(false);
       }
     } finally {
-      // The credential is write-only and must not linger in renderer state after an attempt.
-      setAccessToken('');
       setAddingOverleaf(false);
     }
   };
@@ -159,7 +159,16 @@ export function LectureExternalSourcePicker({
         </div>
       </header>
 
-      {overleafOpen && (
+      {overleafOpen && overleafPersonalTokenState !== 'configured' && (
+        <div id="lecture-overleaf-source-form" className="lecture-overleaf-source-form">
+          <OverleafPersonalTokenNotice
+            state={overleafPersonalTokenState}
+            onOpenSettings={onOpenOverleafSettings}
+          />
+        </div>
+      )}
+
+      {overleafOpen && overleafPersonalTokenState === 'configured' && (
         <form
           id="lecture-overleaf-source-form"
           className="lecture-overleaf-source-form"
@@ -193,6 +202,7 @@ export function LectureExternalSourcePicker({
             <label className="lecture-overleaf-url-field">
               Overleaf Git URL
               <input
+                data-overleaf-token-focus-fallback
                 value={remoteUrl}
                 maxLength={2_048}
                 placeholder="https://git.overleaf.com/PROJECT_ID"
@@ -204,24 +214,11 @@ export function LectureExternalSourcePicker({
                 onChange={(event) => setRemoteUrl(event.target.value)}
               />
             </label>
-            <label>
-              Personal Git token
-              <input
-                type="password"
-                value={accessToken}
-                maxLength={2_048}
-                placeholder="Stored in macOS Keychain"
-                autoComplete="off"
-                required
-                disabled={busy || addingOverleaf}
-                onChange={(event) => setAccessToken(event.target.value)}
-              />
-            </label>
           </div>
           <footer>
             <small>
-              GOSU captures one exact Git checkpoint for {outputProjectName}. The token goes
-              directly to macOS Keychain and is never saved in the lecture source list.
+              Uses the token saved in Overleaf Settings. GOSU captures one exact Git checkpoint for{' '}
+              {outputProjectName}.
             </small>
             <button
               type="submit"
@@ -231,8 +228,7 @@ export function LectureExternalSourcePicker({
                 addingOverleaf ||
                 remoteUrl.trim() === '' ||
                 rootDocument.trim() === '' ||
-                !rootDocumentValid ||
-                accessToken === ''
+                !rootDocumentValid
               }
             >
               {addingOverleaf ? 'Capturing…' : 'Capture source'}

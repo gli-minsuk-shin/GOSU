@@ -50,6 +50,8 @@ import { createManuscriptPdfArtifactPlatform } from './manuscript-pdf-artifact-p
 import { ManuscriptPdfCompiler } from './manuscript-pdf-compiler';
 import { OverleafGitCredentialStore } from './overleaf-git-credential-store';
 import { OverleafGitManuscriptWorkspaceAdapter } from './overleaf-git-manuscript-adapter';
+import { registerOverleafPersonalTokenIpc } from './overleaf-personal-token-ipc';
+import { OverleafPersonalTokenService } from './overleaf-personal-token-service';
 import { OverleafGitTransport } from './overleaf-git-transport';
 import { LiteratureAiService } from './literature-ai-service';
 import { CrossrefLiteratureProvider } from './literature-crossref';
@@ -184,6 +186,7 @@ const overleafGitCredentials = new OverleafGitCredentialStore({
   rootDirectory: () => join(app.getPath('userData'), 'credentials', 'overleaf-git'),
   encryption: safeStorage,
 });
+const overleafPersonalToken = new OverleafPersonalTokenService(overleafGitCredentials);
 const overleafGitTransport = new OverleafGitTransport({
   rootDirectory: () => join(app.getPath('userData'), 'manuscript-workspaces'),
   credentials: overleafGitCredentials,
@@ -517,6 +520,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
   registerManuscriptWorkspaceIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     manuscriptWorkspace,
+    reportUnexpectedWorkspaceError,
+  );
+  registerOverleafPersonalTokenIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    overleafPersonalToken,
     reportUnexpectedWorkspaceError,
   );
   registerSshIpc(

@@ -124,7 +124,6 @@ describe('Lecture Studio IPC boundary', () => {
       title: 'Imported Overleaf source',
       rootDocument: 'main.tex',
       remoteUrl: 'https://git.overleaf.com/fixture-project',
-      accessToken: 'write-only-fixture-token',
     };
 
     await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.stageExternalSources)?.(stageCommand);
@@ -138,7 +137,7 @@ describe('Lecture Studio IPC boundary', () => {
     expect(removeStaged).toHaveBeenCalledWith(removeCommand);
     expect(discard).toHaveBeenCalledWith(discardCommand);
     expect(importOverleaf).toHaveBeenCalledWith(overleafCommand);
-    expect(JSON.stringify(overleafResult)).not.toContain(overleafCommand.accessToken);
+    expect(JSON.stringify(overleafResult)).not.toContain('accessToken');
 
     for (const [channel, malicious] of [
       [
@@ -156,6 +155,10 @@ describe('Lecture Studio IPC boundary', () => {
       [
         LECTURE_STUDIO_IPC_CHANNELS.importOverleaf,
         { ...overleafCommand, localClonePath: '/tmp/overleaf' },
+      ],
+      [
+        LECTURE_STUDIO_IPC_CHANNELS.importOverleaf,
+        { ...overleafCommand, accessToken: 'renderer-secret-must-not-cross-this-channel' },
       ],
     ] as const) {
       await expect(handlers.get(channel)?.(malicious)).resolves.toEqual({

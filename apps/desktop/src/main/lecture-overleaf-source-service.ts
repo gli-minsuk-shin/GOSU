@@ -75,7 +75,6 @@ export class LectureOverleafSourceService {
         expectedManuscriptVersion: created.version,
         providerId: 'overleaf_git',
         remoteUrl: command.remoteUrl,
-        accessToken: command.accessToken,
       });
       const linked = linkedSnapshot.manuscripts.find(
         ({ manuscript }) => manuscript.id === created!.id,

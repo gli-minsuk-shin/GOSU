@@ -54,12 +54,11 @@ describe('Manuscript workspace IPC', () => {
       expectedManuscriptVersion: 1,
       providerId: 'overleaf_git' as const,
       remoteUrl: 'https://git.overleaf.com/0123456789abcdef01234567',
-      accessToken: 'token',
     };
     await expect(
       handlers.get(MANUSCRIPT_WORKSPACE_IPC_CHANNELS.connectOverleafGit)?.({
         ...command,
-        ignored: true,
+        accessToken: 'renderer-secret-must-not-cross-this-channel',
       }),
     ).resolves.toEqual({
       ok: false,
@@ -247,7 +246,6 @@ describe('Manuscript workspace IPC', () => {
       expectedManuscriptVersion: 1,
       providerId: 'overleaf_git',
       remoteUrl: 'https://git.overleaf.com/0123456789abcdef01234567',
-      accessToken: secret,
     });
 
     expect(result).toEqual({

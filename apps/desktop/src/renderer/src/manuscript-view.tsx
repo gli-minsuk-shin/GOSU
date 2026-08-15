@@ -17,6 +17,8 @@ import {
 } from './manuscript-provider-change';
 import { describeError } from './ui-primitives';
 import { ManuscriptPdfPreview } from './manuscript-pdf-preview';
+import { OverleafPersonalTokenNotice } from './overleaf-personal-token-notice';
+import type { OverleafPersonalTokenUiState } from './overleaf-personal-token-ui';
 
 const MANUSCRIPT_LATEX_ENGINE_OPTIONS = [
   { id: 'pdflatex', displayName: MANUSCRIPT_LATEX_ENGINE_DISPLAY_NAMES.pdflatex },
@@ -124,21 +126,29 @@ export function manuscriptPdfArtifactBinding(
 function OverleafConnectForm({
   busy,
   connecting,
+  tokenState,
+  onOpenOverleafSettings,
   onConnect,
 }: {
   busy: boolean;
   connecting: boolean;
-  onConnect(remoteUrl: string, accessToken: string): Promise<void>;
+  tokenState: OverleafPersonalTokenUiState;
+  onOpenOverleafSettings: () => void;
+  onConnect(remoteUrl: string): Promise<void>;
 }) {
   const [remoteUrl, setRemoteUrl] = useState('');
-  const [accessToken, setAccessToken] = useState('');
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    void onConnect(remoteUrl, accessToken).then(() => {
-      setAccessToken('');
-    });
+    if (tokenState !== 'configured') return;
+    void onConnect(remoteUrl);
   };
+
+  if (tokenState !== 'configured') {
+    return (
+      <OverleafPersonalTokenNotice state={tokenState} onOpenSettings={onOpenOverleafSettings} />
+    );
+  }
 
   return (
     <form className="manuscript-connect-form" onSubmit={submit}>
@@ -146,6 +156,7 @@ function OverleafConnectForm({
         <label>
           Overleaf Git URL
           <input
+            data-overleaf-token-focus-fallback
             value={remoteUrl}
             onChange={(event) => setRemoteUrl(event.target.value)}
             placeholder="https://git.overleaf.com/PROJECT_ID"
@@ -156,30 +167,14 @@ function OverleafConnectForm({
             disabled={busy}
           />
         </label>
-        <label>
-          Personal Git token
-          <input
-            type="password"
-            value={accessToken}
-            onChange={(event) => setAccessToken(event.target.value)}
-            placeholder="Saved to macOS Keychain"
-            autoComplete="off"
-            required
-            disabled={busy}
-          />
-        </label>
       </div>
       <div className="manuscript-actions">
-        <button
-          type="submit"
-          className="primary-button"
-          disabled={busy || remoteUrl.trim() === '' || accessToken === ''}
-        >
+        <button type="submit" className="primary-button" disabled={busy || remoteUrl.trim() === ''}>
           {connecting ? 'Connecting…' : 'Connect Overleaf Git'}
         </button>
         <span>
-          Captures inbound Git checkpoints only. Realtime editing stays in the provider workspace
-          when the adapter advertises it.
+          Uses the token saved in Overleaf Settings. Captures inbound Git checkpoints only; realtime
+          editing stays in the provider workspace when available.
         </span>
       </div>
     </form>
@@ -247,7 +242,15 @@ function ManuscriptEditForm({
   );
 }
 
-export function ManuscriptView({ project }: { project: ProjectRecord }) {
+export function ManuscriptView({
+  project,
+  overleafPersonalTokenState = 'loading',
+  onOpenOverleafSettings = () => undefined,
+}: {
+  project: ProjectRecord;
+  overleafPersonalTokenState?: OverleafPersonalTokenUiState;
+  onOpenOverleafSettings?: () => void;
+}) {
   const [snapshot, setSnapshot] = useState<ManuscriptWorkspaceSnapshot | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -558,7 +561,9 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                     <OverleafConnectForm
                       busy={Boolean(busy)}
                       connecting={busy === `connect:${manuscript.id}`}
-                      onConnect={(remoteUrl, accessToken) =>
+                      tokenState={overleafPersonalTokenState}
+                      onOpenOverleafSettings={onOpenOverleafSettings}
+                      onConnect={(remoteUrl) =>
                         run(`connect:${manuscript.id}`, () =>
                           window.gosu.manuscriptWorkspace.connectOverleafGit({
                             projectId: project.id,
@@ -566,7 +571,6 @@ export function ManuscriptView({ project }: { project: ProjectRecord }) {
                             expectedManuscriptVersion: manuscript.version,
                             providerId: 'overleaf_git',
                             remoteUrl,
-                            accessToken,
                           }),
                         )
                       }

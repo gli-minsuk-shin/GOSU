@@ -50,6 +50,8 @@ describe('LectureExternalSourcePicker', () => {
         ]}
         busy={false}
         outputProjectName="Research Alpha"
+        overleafPersonalTokenState="configured"
+        onOpenOverleafSettings={vi.fn()}
         onChooseFiles={vi.fn()}
         onRemoveFile={vi.fn()}
         onImportOverleaf={vi.fn()}
@@ -77,5 +79,17 @@ describe('LectureExternalSourcePicker', () => {
     );
     expect(styles).toMatch(/@container lecture-workspace \(max-width: 720px\)/u);
     expect(styles).toMatch(/\.lecture-overleaf-source-grid\s*\{[^}]*grid-template-columns:/su);
+  });
+
+  it('keeps the Overleaf capture form and import draft token-free', () => {
+    const componentSource = readFileSync(
+      new URL('../src/renderer/src/lecture-external-source-picker.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(componentSource).not.toContain('accessToken');
+    expect(componentSource).not.toContain('Personal Git token');
+    expect(componentSource).toContain('Uses the token saved in Overleaf Settings');
+    expect(componentSource).toContain('OpenOverleafSettings');
   });
 });
