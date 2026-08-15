@@ -632,7 +632,9 @@ number/table/plot을 실제 evidence로 승격하고, duplicate/out-of-order cad
   Literature와 Lecture 생성은 현재 Codex 전용이다. provider router는 `codex:`와 `hermes:` thread 소유권과
   disconnect를 분리하고 각 Hermes thread를 별도 ACP process로 실행하므로 같은 project의 여러 session에서
   Codex/Hermes turn을 병렬 실행할 수 있다. model/reasoning 선택은 project/session별 Renderer local
-  preference로 복원한다. ACP cwd는 Git worktree나 Vault가 아니라 app-private
+  preference로 복원한다. 저장된 scope 선택이 없는 새 session은 Settings의 Codex default model/reasoning을
+  한 번 복사하며, 그 뒤 Settings 변경은 기존 session이나 queued turn을 바꾸지 않는다. ACP cwd는 Git
+  worktree나 Vault가 아니라 app-private
   `project-chat-workspaces/<project UUID>`지만 현재 allowlist에는 이를 읽거나 바꾸는 file/shell tool이 없다.
   Settings에서 Hermes를 명시적으로 끄면 Main이 connection authority를
   폐기하고 새 turn을 차단하며 primary·delegation을 포함한 모든 live client process와 pending approval을
@@ -1110,11 +1112,12 @@ escape 규칙을 명시한다. custom instruction과 source 안의 prompt inject
 opt-out할 수 없다.
 
 Lecture 생성과 수정은 provider `model/list`에서 발견한 opaque model ID와 해당 model의 native reasoning
-option을 Studio별 UI preference로 선택한다. `Auto`는 provider recommended selection을 turn 직전에 다시
-resolve하며 모델 이름이나 reasoning enum을 GOSU에 하드코딩하지 않는다. 이 preference는 localStorage의
-편의 설정일 뿐 authoritative provenance가 아니며, Main은 매 turn마다 live catalog로 ID를 검증하고 사라진
-model/reasoning을 임의 fallback하지 않는다. 실제 requested/resolved model ID, catalog version과 reasoning은
-각 immutable revision과 assistant message의 `ModelInvocation`에 기록한다.
+option을 Studio별 UI preference로 선택한다. 저장된 선택이 없는 새 Studio는 Settings의 Codex default를 한 번
+복사하고 이후에는 독립적으로 수정한다. `Auto`는 provider recommended selection을 turn 직전에 다시
+resolve한다. 이 preference는 localStorage의 편의 설정일 뿐 authoritative provenance가 아니며, Main은 매
+turn마다 live catalog로 ID를 검증하고 사라진 model/reasoning을 임의 fallback하지 않는다. 실제
+requested/resolved model ID, catalog version과 reasoning은 각 immutable revision과 assistant message의
+`ModelInvocation`에 기록한다.
 
 notes와 slides는 `GOSU/<output project>/Lecture Notes & Slides` 아래 이전 revision을 덮어쓰지 않는 새
 bundle의 `Lecture Notes.tex`와 `Slides.tex`로 저장한다. Main은 고정 preamble로 감싼 두 canonical LaTeX와
@@ -2398,8 +2401,10 @@ flowchart LR
   없어졌을 때 다른 model로 조용히 바꾸지 않는다.
 - model별 reasoning option과 personality 지원 여부는 paginated `model/list` catalog가 제공한 실제 값만
   사용한다. `supportedReasoningEfforts[].reasoningEffort`의 opaque ID를 option ID와 짧은 label에 그대로
-  쓰고 provider description을 label로 바꾸거나 `medium`·`high` 같은 목록을 하드코딩·번역·재정렬하지
-  않는다. 따라서 provider가 새 effort ID를 추가하면 앱 업데이트 없이 catalog 순서대로 나타난다.
+  쓰고 provider description을 label로 바꾸거나 reasoning 목록을 하드코딩·번역·재정렬하지 않는다. 새 local
+  profile의 bootstrap preference만 사용자가 요청한 opaque ID `high`로 시작하며, effective default model이
+  이를 실제 catalog에서 제공하지 않으면 낮은 값으로 바꾸지 않고 Settings에서 명시적 선택을 요구한다.
+  따라서 provider가 새 effort ID를 추가하면 앱 업데이트 없이 catalog 순서대로 나타난다.
   `Model default`는 null이며 `defaultReasoningEffort`는 default 표시만 결정한다. 선택 ID가 refresh 뒤
   사라지거나 다른 model에서 지원되지 않으면 unavailable로 남기고 send를 중단하지 임의 fallback하지
   않는다. requested/resolved model ID, catalog hash, 실제 reasoning ID와 native mode 설정은 각 attempt
@@ -2468,6 +2473,14 @@ flowchart LR
 - 같은 local preference에는 새 project용 default Board title, column 표시명·순서와 WIP limit도
   들어간다. legacy preference에 이 필드가 없거나 유효하지 않으면 display 설정은 보존하고 Board
   template만 GOSU 기본값으로 복구한다.
+- Codex default model/reasoning도 같은 Renderer local preference에 저장한다. 초기값은 provider `Auto`와
+  native reasoning ID `high`이며 Settings의 AI Agent category에서 live Codex catalog로 선택한다. 이 값은 새
+  Project Chat session과 새 Lecture Studio에 scope preference로 한 번 복사되고 Literature·Experiment의
+  scope 없는 AI action에는 현재 값이 직접 적용된다. 기존 scope, active/queued attempt와 immutable
+  invocation provenance는 Settings 변경으로 다시 쓰지 않는다. 명시적 `Auto`/`Model default`도 별도 stored
+  record로 보존해 새 scope와 구분하며, legacy에서 key가 없던 Auto scope는 처음 열 때 새 default를 한 번
+  채택한다. catalog에서 model이나 reasoning이 사라지면 UI와 Main 모두 fail closed하고 임의 fallback하지
+  않는다.
 - OpenClaw·Hermes 선택도 같은 Renderer local preference에 저장한다. OpenClaw는
   `disabled|detect-local`, Hermes는 `disabled|detect-local|connect-local`만 허용하고 legacy·unknown 값이나
   OpenClaw의 연결 mode는 `disabled`로 fail closed한다. `connect-local`은 기존 Hermes 설치를 공식 ACP

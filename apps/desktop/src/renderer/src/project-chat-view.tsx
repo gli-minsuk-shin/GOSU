@@ -285,18 +285,24 @@ const WEB_SEARCH_LABELS: Record<ProjectChatWebSearchMode, string> = {
 export function resolveEffectiveCodexModel(
   models: readonly CodexModel[],
   collaborationModes: readonly CodexCollaborationModeDescriptor[],
+  selectedProviderId: string | null,
   selectedModelId: string | null,
   collaborationModeId: string | null,
 ) {
   if (selectedModelId !== null) {
-    return models.find((model) => model.modelId === selectedModelId);
+    if (selectedProviderId === null) return undefined;
+    return models.find(
+      (model) =>
+        model.modelId === selectedModelId && (model.providerId ?? 'codex') === selectedProviderId,
+    );
   }
+  const codexModels = models.filter((model) => (model.providerId ?? 'codex') === 'codex');
   const recommendedModelId = collaborationModeId
     ? collaborationModes.find((mode) => mode.id === collaborationModeId)?.recommendedModelId
     : null;
   return recommendedModelId
-    ? models.find((model) => model.modelId === recommendedModelId)
-    : models.find((model) => model.isDefault);
+    ? codexModels.find((model) => model.modelId === recommendedModelId)
+    : codexModels.find((model) => model.isDefault);
 }
 
 export function ProjectChatView({
@@ -545,8 +551,14 @@ export function ProjectChatView({
     : null;
   const selectedDescriptor = useMemo(
     () =>
-      resolveEffectiveCodexModel(models, collaborationModes, selectedModel, collaborationModeId),
-    [collaborationModeId, collaborationModes, models, selectedModel],
+      resolveEffectiveCodexModel(
+        models,
+        collaborationModes,
+        selectedProviderId,
+        selectedModel,
+        collaborationModeId,
+      ),
+    [collaborationModeId, collaborationModes, models, selectedModel, selectedProviderId],
   );
   const reasoningOptions = selectedDescriptor?.reasoningOptions ?? [];
   const effectiveReasoningId =

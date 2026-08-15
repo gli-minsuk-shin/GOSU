@@ -28,7 +28,9 @@ import {
   type HermesProjectChatConnectionUiState,
 } from './agent-addons-section';
 import { AgentSettingsSection } from './agent-settings-section';
+import { AiDefaultSettings } from './ai-default-settings';
 import { BoardSettingsForm } from './board-settings-form';
+import type { CodexModel } from './connections-view';
 import type { VaultRuntimeState } from './notes-view';
 import { OverleafPersonalTokenSettings } from './overleaf-personal-token-settings';
 import type { OverleafPersonalTokenUiState } from './overleaf-personal-token-ui';
@@ -88,6 +90,9 @@ export function SettingsView({
   onRefreshOverleafPersonalToken,
   onSaveOverleafPersonalToken,
   onRemoveOverleafPersonalToken,
+  models,
+  modelsLoading,
+  onRefreshModels,
   initialCategory = 'appearance',
   category,
   onCategoryChange,
@@ -123,6 +128,9 @@ export function SettingsView({
   onRefreshOverleafPersonalToken: () => Promise<void>;
   onSaveOverleafPersonalToken: (input: SaveOverleafPersonalTokenInput) => Promise<void>;
   onRemoveOverleafPersonalToken: () => Promise<void>;
+  models: readonly CodexModel[];
+  modelsLoading: boolean;
+  onRefreshModels: () => void | Promise<void>;
   initialCategory?: SettingsCategory;
   category?: SettingsCategory;
   onCategoryChange?: (category: SettingsCategory) => void;
@@ -214,7 +222,7 @@ export function SettingsView({
         >
           <i aria-hidden="true">✦</i>
           <strong>AI Agent</strong>
-          <span>Native Codex mode and project prompt</span>
+          <span>Defaults, native mode, project prompt</span>
         </button>
       </nav>
 
@@ -382,6 +390,13 @@ export function SettingsView({
           </article>
         ) : (
           <>
+            <AiDefaultSettings
+              selection={preferences.defaultAiSelection}
+              models={models}
+              modelsLoading={modelsLoading}
+              onRefreshModels={onRefreshModels}
+              onSave={(defaultAiSelection) => onChange({ ...preferences, defaultAiSelection })}
+            />
             <AgentAddOnsSection
               preferences={preferences.agentAddOns}
               onChange={(agentAddOns) => onChange({ ...preferences, agentAddOns })}

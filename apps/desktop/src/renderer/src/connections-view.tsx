@@ -31,12 +31,13 @@ export type CodexModel = {
 export function ConnectionsView({
   runtime,
   models,
-  selectedModel,
+  defaultModelId,
+  defaultReasoningOptionId,
   status,
   busy,
   apiKeyMode,
   apiKey,
-  onSelectedModel,
+  onOpenAiDefaults,
   onRefresh,
   onReconnect,
   onToggleApiKey,
@@ -68,12 +69,13 @@ export function ConnectionsView({
 }: {
   runtime: RuntimeReadiness | null;
   models: readonly CodexModel[];
-  selectedModel: string | null;
+  defaultModelId: string | null;
+  defaultReasoningOptionId: string | null;
   status: string;
   busy: boolean;
   apiKeyMode: boolean;
   apiKey: string;
-  onSelectedModel: (modelId: string | null) => void;
+  onOpenAiDefaults: () => void;
   onRefresh: () => void;
   onReconnect: () => void;
   onToggleApiKey: () => void;
@@ -125,22 +127,22 @@ export function ConnectionsView({
       <RuntimeCard runtime={runtime} />
       <article className="card codex-card">
         <CardHead title="Local Codex" detail={status} />
-        <label>
-          Discovered model
-          <select
-            value={selectedModel ?? ''}
-            onChange={(event) => onSelectedModel(event.target.value || null)}
-            disabled={busy}
-          >
-            <option value="">Auto · provider recommended</option>
-            {models.map((model) => (
-              <option key={model.modelId} value={model.modelId}>
-                {model.displayName}
-                {model.isDefault ? ' · default' : ''}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="settings-preview codex-default-summary">
+          <span>DEFAULT FOR NEW AI WORK</span>
+          <strong>
+            {defaultModelId === null
+              ? 'Auto · provider recommended'
+              : (models.find((model) => model.modelId === defaultModelId)?.displayName ??
+                `${defaultModelId} · unavailable`)}
+          </strong>
+          <p>
+            Reasoning:{' '}
+            {defaultReasoningOptionId === null ? 'Model default' : defaultReasoningOptionId}
+          </p>
+          <button type="button" className="secondary-button" onClick={onOpenAiDefaults}>
+            Open AI defaults
+          </button>
+        </div>
         <div className="codex-actions">
           <button className="secondary-button" type="button" onClick={onReconnect} disabled={busy}>
             Reconnect Codex
@@ -199,7 +201,8 @@ export function ConnectionsView({
         )}
         <div className="privacy">
           Authentication and the live model catalog are handled by the local Codex App Server. The
-          selected model is used by Project chat and every turn records the resolved model locally.
+          Settings defaults seed new AI work; Project Chat and Lecture can keep their own scoped
+          choices. Every turn records the resolved model locally.
         </div>
       </article>
       <SshWorkspaceGrantsCard

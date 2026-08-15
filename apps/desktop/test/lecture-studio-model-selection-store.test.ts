@@ -7,6 +7,7 @@ import {
   clearLectureStudioModelSelection,
   lectureStudioModelSelectionStorageKey,
   loadLectureStudioModelSelection,
+  loadLectureStudioModelSelectionState,
   parseStoredLectureStudioModelSelection,
   resolveLectureStudioModelSelection,
   saveLectureStudioModelSelection,
@@ -72,7 +73,7 @@ describe('Lecture Studio model selection store', () => {
     });
   });
 
-  it('removes the stored override when the user returns to Auto', () => {
+  it('persists an explicit Auto choice so it remains distinct from a new Studio', () => {
     const { storage, values } = memoryStorage();
     saveLectureStudioModelSelection(storage, firstStudioId, {
       modelId: 'model-a',
@@ -84,7 +85,40 @@ describe('Lecture Studio model selection store', () => {
     expect(
       saveLectureStudioModelSelection(storage, firstStudioId, AUTO_LECTURE_STUDIO_MODEL_SELECTION),
     ).toBe(true);
-    expect(values.has(key)).toBe(false);
+    expect(values.has(key)).toBe(true);
+    expect(loadLectureStudioModelSelectionState(storage, firstStudioId)).toEqual({
+      selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION,
+      status: 'stored',
+    });
+  });
+
+  it('distinguishes new, stored, corrupt, and inaccessible Studio scopes', () => {
+    const { storage, values } = memoryStorage();
+    const key = lectureStudioModelSelectionStorageKey(firstStudioId)!;
+    expect(loadLectureStudioModelSelectionState(storage, firstStudioId)).toEqual({
+      selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION,
+      status: 'missing',
+    });
+
+    values.set(key, '{');
+    expect(loadLectureStudioModelSelectionState(storage, firstStudioId)).toEqual({
+      selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION,
+      status: 'invalid',
+    });
+    expect(loadLectureStudioModelSelectionState({ getItem: () => '' }, firstStudioId)).toEqual({
+      selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION,
+      status: 'invalid',
+    });
+    expect(
+      loadLectureStudioModelSelectionState(
+        {
+          getItem: () => {
+            throw new Error('blocked');
+          },
+        },
+        firstStudioId,
+      ),
+    ).toEqual({ selection: AUTO_LECTURE_STUDIO_MODEL_SELECTION, status: 'unavailable' });
   });
 
   it('fails closed on malformed, oversized, future-version, or unexpected records', () => {

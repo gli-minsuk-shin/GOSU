@@ -68,7 +68,7 @@ import type { CodexModel } from './connections-view';
 import type { LectureStudioLayoutState } from './lecture-studio-layout-state';
 import {
   AUTO_LECTURE_STUDIO_MODEL_SELECTION,
-  loadLectureStudioModelSelection,
+  loadLectureStudioModelSelectionState,
   resolveLectureStudioModelSelection,
   saveLectureStudioModelSelection,
   selectLectureStudioModel,
@@ -132,6 +132,7 @@ export interface LectureStudioViewProps {
   draftStore: LectureStudioDraftStore;
   models: readonly CodexModel[];
   modelsLoading: boolean;
+  defaultModelSelection?: LectureStudioModelSelection;
   codexAuthenticationRequired: boolean;
   onRefreshModels: () => void;
   onOpenCodexSignIn: () => void;
@@ -612,6 +613,7 @@ export function LectureStudioView({
   draftStore,
   models,
   modelsLoading,
+  defaultModelSelection = AUTO_LECTURE_STUDIO_MODEL_SELECTION,
   codexAuthenticationRequired,
   onRefreshModels,
   onOpenCodexSignIn,
@@ -640,6 +642,16 @@ export function LectureStudioView({
   );
   const loadGeneration = useRef(0);
   const activeAttemptByStudioId = useRef<Record<string, string | null>>({});
+
+  const loadScopedModelSelection = useCallback(
+    (studioId: string) => {
+      const loaded = loadLectureStudioModelSelectionState(window.localStorage, studioId);
+      if (loaded.status !== 'missing') return loaded.selection;
+      saveLectureStudioModelSelection(window.localStorage, studioId, defaultModelSelection);
+      return defaultModelSelection;
+    },
+    [defaultModelSelection],
+  );
 
   const load = useCallback(
     async (showLoading = false, preferredStudioId?: string | null) => {
@@ -723,11 +735,9 @@ export function LectureStudioView({
 
   useEffect(() => {
     setModelSelection(
-      selectedStudioId
-        ? loadLectureStudioModelSelection(window.localStorage, selectedStudioId)
-        : AUTO_LECTURE_STUDIO_MODEL_SELECTION,
+      selectedStudioId ? loadScopedModelSelection(selectedStudioId) : defaultModelSelection,
     );
-  }, [selectedStudioId]);
+  }, [defaultModelSelection, loadScopedModelSelection, selectedStudioId]);
 
   const selectedModelDescriptor = modelSelection.modelId
     ? models.find((model) => model.modelId === modelSelection.modelId)
@@ -738,7 +748,7 @@ export function LectureStudioView({
   const selectStudio = (studioId: string) => {
     selectedStudioIdRef.current = studioId;
     setSelectedStudioId(studioId);
-    setModelSelection(loadLectureStudioModelSelection(window.localStorage, studioId));
+    setModelSelection(loadScopedModelSelection(studioId));
     setDetail(null);
     setComposing(false);
     setPreviewTab('notes');
@@ -874,6 +884,7 @@ export function LectureStudioView({
             codexAuthenticationRequired={codexAuthenticationRequired}
             models={models}
             modelsLoading={modelsLoading}
+            defaultModelSelection={defaultModelSelection}
             onRefreshModels={onRefreshModels}
             onOpenCodexSignIn={onOpenCodexSignIn}
             overleafPersonalTokenState={overleafPersonalTokenState}
@@ -1149,6 +1160,7 @@ function LectureComposer({
   codexAuthenticationRequired,
   models,
   modelsLoading,
+  defaultModelSelection,
   onRefreshModels,
   onOpenCodexSignIn,
   overleafPersonalTokenState,
@@ -1163,6 +1175,7 @@ function LectureComposer({
   codexAuthenticationRequired: boolean;
   models: readonly CodexModel[];
   modelsLoading: boolean;
+  defaultModelSelection: LectureStudioModelSelection;
   onRefreshModels: () => void;
   onOpenCodexSignIn: () => void;
   overleafPersonalTokenState: OverleafPersonalTokenUiState;
@@ -1193,9 +1206,8 @@ function LectureComposer({
   const [loadingSources, setLoadingSources] = useState(false);
   const [loadingMoreProjects, setLoadingMoreProjects] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
-  const [initialModelSelection, setInitialModelSelection] = useState<LectureStudioModelSelection>(
-    AUTO_LECTURE_STUDIO_MODEL_SELECTION,
-  );
+  const [initialModelSelection, setInitialModelSelection] =
+    useState<LectureStudioModelSelection>(defaultModelSelection);
   const [selectionError, setSelectionError] = useState<string | null>(null);
   const previousOutputProjectId = useRef(outputProjectId);
   const createCommittedRef = useRef(false);

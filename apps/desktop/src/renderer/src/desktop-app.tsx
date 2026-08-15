@@ -57,7 +57,6 @@ import type {
 import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
 import { BoardView } from './board-view';
 import type { HermesProjectChatConnectionUiState } from './agent-addons-section';
-import { resetCodexPicker, selectCodexModel } from './codex-picker-state';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import { desktopContentClassName } from './desktop-content-layout';
 import { ExperimentsView, type ExperimentsViewAdapter } from './experiments-view';
@@ -99,7 +98,7 @@ import {
 } from './project-chat-provider-selection';
 import {
   AUTO_PROJECT_CHAT_MODEL_SELECTION,
-  loadProjectChatModelSelection,
+  loadProjectChatModelSelectionState,
   saveProjectChatModelSelection,
 } from './project-chat-model-selection-store';
 import {
@@ -268,6 +267,16 @@ function createProjectCommand(
   return {
     ...input,
     board: structuredClone(preferences.defaultBoardTemplate),
+  };
+}
+
+export function projectChatSelectionFromDefault(
+  selection: UserPreferences['defaultAiSelection'],
+): ProjectChatModelSelection {
+  return {
+    providerId: selection.modelId === null ? null : 'codex',
+    modelId: selection.modelId,
+    reasoningOptionId: selection.reasoningOptionId,
   };
 }
 
@@ -505,8 +514,6 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [collaborationModes, setCollaborationModes] = useState<CodexCollaborationModeDescriptor[]>(
     [],
   );
-  const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const [selectedReasoning, setSelectedReasoning] = useState<string | null>(null);
   const [hermesProjectChatModel, setHermesProjectChatModel] = useState<CodexModel | null>(null);
   const [hermesProjectChatConnection, setHermesProjectChatConnection] =
     useState<HermesProjectChatConnectionUiState>({ phase: 'disabled', status: null });
@@ -784,7 +791,33 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setProjectChatSessions(projectChatSessionsRef.current);
   };
 
+  const loadScopedProjectChatModelSelection = useCallback(
+    (projectId: string, sessionId: string) => {
+      const loaded = loadProjectChatModelSelectionState(window.localStorage, projectId, sessionId);
+      const saved =
+        loaded.status === 'missing'
+          ? projectChatSelectionFromDefault(preferences.defaultAiSelection)
+          : loaded.selection;
+      if (loaded.status === 'missing') {
+        saveProjectChatModelSelection(window.localStorage, projectId, sessionId, saved);
+      }
+      const selection =
+        preferences.agentAddOns.hermes === 'connect-local'
+          ? saved
+          : reconcileRemovedProjectChatProvider(saved, {
+              removedProviderId: 'hermes',
+              reason: 'explicit-disconnect',
+            });
+      if (selection !== saved) {
+        saveProjectChatModelSelection(window.localStorage, projectId, sessionId, selection);
+      }
+      return selection;
+    },
+    [preferences.agentAddOns.hermes, preferences.defaultAiSelection],
+  );
+
   const activateChatSession = (projectId: string, sessionId: string) => {
+    setProjectChatModelSelection(loadScopedProjectChatModelSelection(projectId, sessionId));
     activeChatSessionIdsRef.current = {
       ...activeChatSessionIdsRef.current,
       [projectId]: sessionId,
@@ -2314,28 +2347,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       setProjectChatModelSelection(AUTO_PROJECT_CHAT_MODEL_SELECTION);
       return;
     }
-    const saved = loadProjectChatModelSelection(
-      window.localStorage,
-      activeProject.id,
-      activeProjectChatSessionId,
+    setProjectChatModelSelection(
+      loadScopedProjectChatModelSelection(activeProject.id, activeProjectChatSessionId),
     );
-    const selection =
-      preferences.agentAddOns.hermes === 'connect-local'
-        ? saved
-        : reconcileRemovedProjectChatProvider(saved, {
-            removedProviderId: 'hermes',
-            reason: 'explicit-disconnect',
-          });
-    if (selection !== saved) {
-      saveProjectChatModelSelection(
-        window.localStorage,
-        activeProject.id,
-        activeProjectChatSessionId,
-        selection,
-      );
-    }
-    setProjectChatModelSelection(selection);
-  }, [activeProject, activeProjectChatSessionId, preferences.agentAddOns.hermes]);
+  }, [activeProject, activeProjectChatSessionId, loadScopedProjectChatModelSelection]);
 
   useEffect(() => {
     if (
@@ -2633,6 +2648,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           <SettingsView
             preferences={preferences}
             onChange={updatePreferences}
+            models={models}
+            modelsLoading={codexBusy}
+            onRefreshModels={() => refreshModels(true)}
             hermesConnection={hermesProjectChatConnection}
             onRefreshHermesConnection={refreshHermesProjectChatConnection}
             workspaceSnapshot={snapshot}
@@ -2980,6 +2998,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   const selectedDescriptor = resolveEffectiveCodexModel(
                     projectChatModels,
                     collaborationModes,
+                    projectChatModelSelection.providerId,
                     projectChatModelSelection.modelId,
                     controls.collaborationModeId ?? null,
                   );
@@ -3322,8 +3341,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 objective={activeObjective}
                 adapter={experimentsAdapter}
                 evaluationAdapter={experimentEvaluationAdapter}
-                requestedModelId={selectedModel}
-                reasoningOptionId={selectedReasoning}
+                requestedModelId={preferences.defaultAiSelection.modelId}
+                reasoningOptionId={preferences.defaultAiSelection.reasoningOptionId}
                 searchTarget={
                   pendingSearchNavigation?.hit.projectId === activeProject.id &&
                   pendingSearchNavigation.hit.target.kind === 'experiment'
@@ -3343,8 +3362,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 project={activeProject}
                 adapter={literatureAdapter}
                 aiAvailable={codexConnectionState === 'ready'}
-                requestedModelId={selectedModel}
-                reasoningOptionId={selectedReasoning}
+                requestedModelId={preferences.defaultAiSelection.modelId}
+                reasoningOptionId={preferences.defaultAiSelection.reasoningOptionId}
                 searchTarget={
                   pendingSearchNavigation?.hit.projectId === activeProject.id &&
                   pendingSearchNavigation.hit.target.kind === 'literature'
@@ -3372,6 +3391,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 draftStore={lectureStudioDraftsRef.current}
                 models={models}
                 modelsLoading={codexBusy}
+                defaultModelSelection={preferences.defaultAiSelection}
                 codexAuthenticationRequired={codexConnectionState === 'auth-required'}
                 onRefreshModels={() => void refreshModels(true)}
                 onOpenCodexSignIn={startCodexChatGptLogin}
@@ -3385,16 +3405,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               <ConnectionsView
                 runtime={runtime}
                 models={models}
-                selectedModel={selectedModel}
+                defaultModelId={preferences.defaultAiSelection.modelId}
+                defaultReasoningOptionId={preferences.defaultAiSelection.reasoningOptionId}
                 status={codexStatus}
                 busy={codexBusy}
                 apiKeyMode={apiKeyMode}
                 apiKey={apiKey}
-                onSelectedModel={(modelId) => {
-                  const selection = selectCodexModel(modelId, selectedReasoning);
-                  setSelectedModel(selection.modelId);
-                  setSelectedReasoning(selection.reasoningOptionId);
-                }}
+                onOpenAiDefaults={openAgentSettings}
                 onRefresh={() => void refreshModels()}
                 onReconnect={() => void refreshModels(true)}
                 onToggleApiKey={() => setApiKeyMode((visible) => !visible)}
@@ -3418,10 +3435,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   void window.gosu.codex
                     .logout()
                     .then(() => {
-                      const selection = resetCodexPicker();
                       setModels([]);
-                      setSelectedModel(selection.modelId);
-                      setSelectedReasoning(selection.reasoningOptionId);
                       setCodexConnectionState('auth-required');
                       setCodexStatus('Signed out from local Codex.');
                     })

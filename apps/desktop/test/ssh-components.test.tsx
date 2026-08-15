@@ -168,12 +168,13 @@ describe('independent SSH connection UI', () => {
       <ConnectionsView
         runtime={null}
         models={[]}
-        selectedModel={null}
+        defaultModelId={null}
+        defaultReasoningOptionId="high"
         status="Disconnected"
         busy={false}
         apiKeyMode={false}
         apiKey=""
-        onSelectedModel={vi.fn()}
+        onOpenAiDefaults={vi.fn()}
         onRefresh={vi.fn()}
         onReconnect={vi.fn()}
         onToggleApiKey={vi.fn()}
@@ -204,6 +205,10 @@ describe('independent SSH connection UI', () => {
     expect(serverCardIndex).toBeLessThan(html.indexOf('LOCAL RUNTIME'));
     expect(serverCardIndex).toBeLessThan(html.indexOf('Local Codex'));
     expect(serverCardIndex).toBeLessThan(html.indexOf('Remote workspace access'));
+    expect(html).toContain('DEFAULT FOR NEW AI WORK');
+    expect(html).toContain('Reasoning:');
+    expect(html).toContain('high');
+    expect(html).toContain('Open AI defaults');
   });
 
   it('keeps the empty server inventory above registration controls', () => {
