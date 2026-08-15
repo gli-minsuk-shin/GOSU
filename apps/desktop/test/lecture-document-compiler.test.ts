@@ -313,17 +313,26 @@ $f'(x)=2x$ [M1].
         },
         platform: 'darwin',
       });
-      const notesBody = String.raw`\section{핵심 내용}
-정확한 증거 [M1]와 수식 $B\asymp\sqrt n$를 설명합니다.
+      const notesBody = String.raw`\begin{abstract}
+안전한 article 환경과 수학 표기를 함께 검증합니다 [M1].
+\end{abstract}
+\section{핵심 내용}
+\begin{flushleft}
+정확한 증거 [M1]와 수식 \(B\asymp\sqrt n\)를 설명합니다\textsuperscript{2}와 \textsubscript{n}.
+\end{flushleft}
 \begin{itemize}
 \item 첫 번째 근거와 표본 수 의존성을 구분합니다.
 \item 두 번째 근거와 근사 오차를 명시합니다.
 \end{itemize}
 \begin{align}
 \sup_z \left|\widehat F_{B,M}(z)-\mathbb P\{g(S_n)\le z\}\right|
-&\le \frac{C}{\sqrt M}+O_P(B^{-1}) \\
+&\le \frac{C}{\sqrt M}+O_P(B^{-1}) \nonumber \\
+\intertext{제공된 원고 표기를 그대로 유지하면 [M1],}
 S_{B,s} &\rightsquigarrow_{\#} N(0,\Sigma).
 \end{align}
+\begin{displaymath}
+\boxed{0 < p < 1}, \qquad \|\bm{S}_{B,s}\|_2 < \infty
+\end{displaymath}
 \begin{theorem}
 가정 $B\asymp\sqrt n$ 아래에서 요약 통계 $\bm{S}_{B,s}$의 표기와 차원을 고정합니다 [M1].
 \end{theorem}
@@ -340,8 +349,24 @@ $B\mid n$일 때 $\binom{n}{B}$와 $B\pmod n$을 구분합니다 [M1].
 B & 0 \\
 0 & n
 \end{pmatrix}
-\right\rVert_2 \coloneqq \max\{B,n\}.
+\right\rVert_2 \coloneqq \max\{B,n\}. \tag{A}
 \end{equation}
+\begin{minipage}{0.9\textwidth}
+표의 기호는 본문과 같은 의미를 유지합니다 [M1].
+\end{minipage}
+\begin{table*}
+\centering
+\caption{안전한 표 구성}
+\begin{tabular}{cc}
+\toprule
+Term & Value \\
+\cmidrule{1-2}
+$B$ & $n$ \\[0.5em]
+\addlinespace
+$p$ & $1-p$ \\
+\bottomrule
+\end{tabular}
+\end{table*}
 성공률 95\%, bias \& variance, model\_id를 안전하게 표기합니다 [M1].
 \section*{Sources used}
 \begin{itemize}
@@ -366,8 +391,11 @@ $B\asymp\sqrt n$과 벡터 $\bm{S}_{B,s}$의 의미를 노트와 동일하게 �
 \end{block}
 \alert{제공되지 않은 증명 단계는 추가하지 않습니다} [M1].
 \end{frame}
-\begin{frame}{한계}
+\begin{frame}
+\frametitle{한계}
+\begin{flushright}
 추가 검증이 필요한 항목과 source가 제공하지 않은 증명 단계를 명시합니다 [M1].
+\end{flushright}
 \end{frame}
 \begin{frame}{조합과 행렬 표기}
 \begin{columns}
@@ -378,6 +406,18 @@ $B\mid n$과 $\binom{n}{B}$ [M1].
 $\langle B,n\rangle$과 $\lVert(B,n)\rVert_2$ [M1].
 \end{column}
 \end{columns}
+\begin{minipage}{0.8\textwidth}
+표의 기호는 노트와 같습니다 [M1].
+\end{minipage}
+\begin{table}
+\begin{tabular}{cc}
+\hline
+$B$ & $n$ \\
+\cline{1-2}
+$p$ & $1-p$ \\
+\hline
+\end{tabular}
+\end{table}
 \end{frame}`;
       const notes = LOCAL_MACTEX_SMOKE_NOTES_PATH
         ? await readFile(LOCAL_MACTEX_SMOKE_NOTES_PATH, 'utf8')

@@ -2755,9 +2755,54 @@ The captured result improves the bounded baseline.
     expect(codex.turnSequence).toBe(2);
     expect(codex.responseQueue).toHaveLength(1);
     expect(codex.prompts[1]).toContain('bounded latex_grammar check');
+    expect(codex.prompts[1]).toContain('lecture-notes: unsupported_command');
+    expect(codex.prompts[1]).toContain('Offending token examples: \\includegraphics');
     expect(codex.prompts[1]).not.toContain('PRIVATE-UNSAFE-CANDIDATE');
     expect(storage.revisions).toHaveLength(0);
     expect(saved).toHaveLength(0);
+  });
+
+  it('gives one correction bounded diagnostics for both documents and source-defined aliases', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    const sourceNativeMacros = {
+      reply: 'PRIVATE-SOURCE-NATIVE-MACROS',
+      lectureNotesLatexBody: String.raw`\section{Notation}
+Use $\R$, $\E[X]$, $\PP(A)$, and \mainref only as source-native aliases [P1].
+\section{Sources used}
+[P1] Paper A.`,
+      slidesLatexBody: String.raw`\begin{frame}{Notation}
+Use $\1$ only as a source-native alias [P1].
+\end{frame}`,
+    };
+    codex.responseQueue = [sourceNativeMacros, latexResponse(['P1'])];
+    const studio = await service.create({
+      title: 'Expand source aliases',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    expect(codex.turnSequence).toBe(2);
+    expect(codex.prompts[1]).toContain('lecture-notes: unsupported_command');
+    expect(codex.prompts[1]).toContain('Offending token examples: \\R, \\E, \\PP, \\mainref');
+    expect(codex.prompts[1]).toContain('slides: unsupported_escape');
+    expect(codex.prompts[1]).toContain('Offending token examples: \\1');
+    expect(codex.prompts[1]).toContain('scan both complete bodies');
+    expect(codex.prompts[1]).not.toContain('PRIVATE-SOURCE-NATIVE-MACROS');
+    expect(receipt.revision.revision).toBe(1);
+    expect(storage.revisions).toHaveLength(1);
   });
 
   it('classifies unsafe LaTeX before a simultaneously missing Sources used section', async () => {
@@ -3260,6 +3305,7 @@ The captured result improves the bounded baseline.
       '\\section{Notes}\nEvidence [P1].',
       '\\section{Notes}\nEvidence [P1].\n\\section{Sources used}\nNo mapped label.',
       '\\section{Notes}\nPandoc citation [@fake] and evidence [P1].\n\\section{Sources used}\n[P1] Paper A',
+      '\\section{Notes}\nUnsupported \\cite[see][p. 2]{not-in-manifest} and evidence [P1].\n\\section{Sources used}\n[P1] Paper A',
     ]) {
       const { service, storage, codex, projectA, paperA } = fixture();
       codex.response = {
