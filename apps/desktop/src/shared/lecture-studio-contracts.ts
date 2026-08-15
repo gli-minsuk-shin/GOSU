@@ -1178,16 +1178,55 @@ export const LectureStudioTurnReceiptSchema = z
   .strict();
 export type LectureStudioTurnReceipt = z.infer<typeof LectureStudioTurnReceiptSchema>;
 
-export const LectureStudioEventSchema = z
+export const LectureStudioChangedEventSchema = z
   .object({
     schemaVersion: z.literal(1),
     type: z.literal('lecture.studio.changed'),
     studioId: uuidSchema,
     status: LectureStudioStatusSchema,
+    activeAttemptId: uuidSchema.nullable(),
     version: z.number().int().positive(),
     occurredAt: timestampSchema,
   })
   .strict();
+
+export const LECTURE_GENERATION_PROGRESS_PHASES = [
+  'preparing_sources',
+  'starting_model',
+  'generating_draft',
+  'model_active',
+  'validating_output',
+  'correcting_output',
+  'compiling_documents',
+  'saving_revision',
+] as const;
+
+export const LectureGenerationProgressPhaseSchema = z.enum(LECTURE_GENERATION_PROGRESS_PHASES);
+export type LectureGenerationProgressPhase = z.infer<typeof LectureGenerationProgressPhaseSchema>;
+
+/**
+ * A deliberately content-free activity receipt. Progress events expose only GOSU-owned phase
+ * labels and timestamps; raw model notifications, source text, paths, tokens, and provider
+ * messages never cross the main-process boundary.
+ */
+export const LectureGenerationProgressEventSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    type: z.literal('lecture.generation.progress'),
+    studioId: uuidSchema,
+    attemptId: uuidSchema,
+    phase: LectureGenerationProgressPhaseSchema,
+    sequence: z.number().int().positive().max(10_000),
+    startedAt: timestampSchema,
+    occurredAt: timestampSchema,
+  })
+  .strict();
+export type LectureGenerationProgressEvent = z.infer<typeof LectureGenerationProgressEventSchema>;
+
+export const LectureStudioEventSchema = z.discriminatedUnion('type', [
+  LectureStudioChangedEventSchema,
+  LectureGenerationProgressEventSchema,
+]);
 export type LectureStudioEvent = z.infer<typeof LectureStudioEventSchema>;
 
 export const LECTURE_STUDIO_IPC_ERROR_CODES = [

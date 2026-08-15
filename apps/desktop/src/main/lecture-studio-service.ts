@@ -49,6 +49,7 @@ import {
   type LectureStudioDetail,
   type LectureStudioDetailInput,
   type LectureStudioEvent,
+  type LectureGenerationProgressPhase,
   type LectureStudioListSnapshot,
   type LectureStudioMessage,
   type LectureStudioPdfPreview,
@@ -358,10 +359,16 @@ type LectureTurnResult = Readonly<{
 type ActiveExecution = {
   studioId: string;
   attemptId: string;
+  startedAt: string;
+  progressSequence: number;
+  lastActivityProgressAt: number;
   threadId: string | null;
   turnId: string | null;
   cancelRequested: boolean;
+  /** True only after the entire generation attempt is settled. */
   terminal: boolean;
+  /** Tracks the current provider turn separately so validation/compile progress stays publishable. */
+  turnTerminal: boolean;
 };
 
 type TurnRequest = Readonly<{
@@ -1282,10 +1289,12 @@ export class LectureStudioService {
     }
     const active = this.activeByStudio.get(studio.id);
     if (active && active.attemptId === command.attemptId) {
+      const shouldInterruptTurn = !active.turnTerminal && active.threadId && active.turnId;
       active.cancelRequested = true;
-      if (!active.terminal && active.threadId && active.turnId) {
+      active.terminal = true;
+      if (shouldInterruptTurn) {
         await this.dependencies.codex
-          .interruptTurn(active.threadId, active.turnId)
+          .interruptTurn(active.threadId!, active.turnId!)
           .catch(() => undefined);
       }
     }
@@ -1386,13 +1395,18 @@ export class LectureStudioService {
     const active: ActiveExecution = {
       studioId: generating.id,
       attemptId,
+      startedAt,
+      progressSequence: 0,
+      lastActivityProgressAt: Number.NEGATIVE_INFINITY,
       threadId: null,
       turnId: null,
       cancelRequested: false,
       terminal: false,
+      turnTerminal: false,
     };
     this.activeByStudio.set(generating.id, active);
     this.publish(generating);
+    this.publishProgress(active, 'preparing_sources');
 
     let threadId: string | null = null;
     let turnId: string | null = null;
@@ -1412,6 +1426,7 @@ export class LectureStudioService {
       ]);
       this.throwIfCancelled(active);
       const sourceManifestSha256 = sha256(JSON.stringify(sourceManifest));
+      this.publishProgress(active, 'starting_model');
       let started: Awaited<ReturnType<LectureStudioCodex['startThread']>>;
       try {
         started = await this.dependencies.codex.startThread({
@@ -1443,7 +1458,7 @@ export class LectureStudioService {
         if (Date.now() >= hardDeadline) {
           throw new LectureStudioServiceError('lecture_generation_timed_out');
         }
-        active.terminal = false;
+        active.turnTerminal = false;
         active.turnId = null;
         turnId = null;
         const completed = new Promise<LectureTurnResult>((resolve) => {
@@ -1515,7 +1530,10 @@ export class LectureStudioService {
           idleTimer = setTimeout(expireGeneration, idleTimeoutMs);
           idleTimer.unref?.();
         };
-        pending.markActivity = armIdleTimer;
+        pending.markActivity = () => {
+          armIdleTimer();
+          this.publishProgress(active, 'model_active', true);
+        };
         pending.disposeTimers = clearGenerationTimers;
         armIdleTimer();
         hardTimer = setTimeout(expireGeneration, Math.max(0, hardDeadline - Date.now()));
@@ -1529,7 +1547,7 @@ export class LectureStudioService {
         this.throwIfCancelled(active);
 
         const terminal = await Promise.race([completed, timeout]);
-        if (terminal.status !== 'timed_out') active.terminal = true;
+        if (terminal.status !== 'timed_out') active.turnTerminal = true;
         if (terminal.status !== 'completed') {
           throw new LectureStudioServiceError(
             active.cancelRequested
@@ -1573,15 +1591,19 @@ export class LectureStudioService {
           })),
         request: request.message,
       });
+      this.publishProgress(active, 'generating_draft');
       let execution = await executeCodexTurn(initialPrompt);
       let output;
       try {
+        this.publishProgress(active, 'validating_output');
         output = this.parseOutput(execution.terminal.text, generating, sourceManifest);
       } catch (error) {
         if (!(error instanceof LectureOutputValidationError)) throw error;
         this.throwIfCancelled(active);
+        this.publishProgress(active, 'correcting_output');
         execution = await executeCodexTurn(correctionPrompt(error.category, generating));
         try {
+          this.publishProgress(active, 'validating_output');
           output = this.parseOutput(execution.terminal.text, generating, sourceManifest);
         } catch (correctionError) {
           if (correctionError instanceof LectureOutputValidationError) {
@@ -1603,6 +1625,7 @@ export class LectureStudioService {
         generating.title,
         output.slidesLatexBody,
       );
+      this.publishProgress(active, 'compiling_documents');
       try {
         const compileResults = await Promise.allSettled(
           (
@@ -1655,6 +1678,7 @@ export class LectureStudioService {
         ),
       } as const;
       pendingArtifactInput = artifactInput;
+      this.publishProgress(active, 'saving_revision');
       const artifacts = await this.saveArtifacts(artifactInput);
       const revision = LectureStudioRevisionSchema.parse({
         schemaVersion: 2,
@@ -1707,6 +1731,7 @@ export class LectureStudioService {
       await Promise.resolve(
         this.dependencies.artifacts.confirmRevisionArtifacts(artifactInput),
       ).catch(() => undefined);
+      active.terminal = true;
       this.publish(stored);
       return LectureStudioTurnReceiptSchema.parse({
         studio: stored,
@@ -1714,6 +1739,7 @@ export class LectureStudioService {
         assistantMessage,
       });
     } catch (error) {
+      active.terminal = true;
       if (pendingArtifactInput) {
         await Promise.resolve(
           this.dependencies.artifacts.rollbackRevisionArtifacts(pendingArtifactInput),
@@ -1735,12 +1761,15 @@ export class LectureStudioService {
       if (failed) this.publish(failed);
       throw normalized;
     } finally {
-      this.activeByStudio.delete(generating.id);
+      active.terminal = true;
+      if (this.activeByStudio.get(generating.id) === active) {
+        this.activeByStudio.delete(generating.id);
+      }
       if (threadId) {
         this.pendingByThread.get(threadId)?.disposeTimers?.();
         this.pendingByThread.delete(threadId);
         this.bufferedByThread.delete(threadId);
-        if (turnId && !active.terminal) {
+        if (turnId && !active.turnTerminal) {
           await this.dependencies.codex.interruptTurn(threadId, turnId).catch(() => undefined);
         }
         await this.dependencies.codex.releaseThread(threadId).catch(() => undefined);
@@ -2397,8 +2426,38 @@ export class LectureStudioService {
       type: 'lecture.studio.changed',
       studioId: studio.id,
       status: studio.status,
+      activeAttemptId: studio.activeAttemptId,
       version: studio.version,
       occurredAt: studio.updatedAt,
+    });
+    for (const listener of this.listeners) listener(event);
+  }
+
+  private publishProgress(
+    active: ActiveExecution,
+    phase: LectureGenerationProgressPhase,
+    throttleActivity = false,
+  ) {
+    if (
+      this.activeByStudio.get(active.studioId) !== active ||
+      active.cancelRequested ||
+      active.terminal
+    ) {
+      return;
+    }
+    const monotonicNow = Date.now();
+    if (throttleActivity && monotonicNow - active.lastActivityProgressAt < 5_000) return;
+    if (throttleActivity) active.lastActivityProgressAt = monotonicNow;
+    active.progressSequence += 1;
+    const event = LectureStudioEventSchema.parse({
+      schemaVersion: 1,
+      type: 'lecture.generation.progress',
+      studioId: active.studioId,
+      attemptId: active.attemptId,
+      phase,
+      sequence: active.progressSequence,
+      startedAt: active.startedAt,
+      occurredAt: this.now().toISOString(),
     });
     for (const listener of this.listeners) listener(event);
   }

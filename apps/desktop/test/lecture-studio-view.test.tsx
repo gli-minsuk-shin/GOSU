@@ -7,13 +7,17 @@ import type {
   LectureSourceCandidates,
   LectureStudio,
   LectureStudioDetail,
+  LectureGenerationProgressEvent,
   LectureStudioMessage,
   LectureStudioRevision,
 } from '../src/shared/lecture-studio-contracts';
 import type { StagedLectureExternalSourceCard } from '../src/shared/lecture-external-source-contracts';
 import {
   activeLectureSourceProjects,
+  appendLectureGenerationProgress,
   currentLectureStudioRevision,
+  formatLectureGenerationElapsed,
+  isCurrentLectureGenerationProgress,
   lastLectureMessageId,
   lectureManuscriptAvailabilityLabel,
   lectureArtifactActionLabels,
@@ -25,6 +29,7 @@ import {
   lectureStudioMessages,
   lectureStudioStatusLabel,
   mergeLectureCandidatePages,
+  shouldClearLectureGenerationProgress,
   toggleLectureProjectSelection,
   toggleLectureSourceSelection,
   type LectureStudioViewAdapter,
@@ -170,6 +175,70 @@ describe('LectureStudioView', () => {
     expect(source).toContain(
       '<span className="sr-only">Status: {lectureStudioStatusLabel(studio.status)}. </span>',
     );
+  });
+
+  it('keeps a bounded ordered generation activity view and resets it per attempt', () => {
+    const event = (
+      attemptId: string,
+      sequence: number,
+      phase: LectureGenerationProgressEvent['phase'],
+    ): LectureGenerationProgressEvent => ({
+      schemaVersion: 1,
+      type: 'lecture.generation.progress',
+      studioId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      attemptId,
+      phase,
+      sequence,
+      startedAt: '2026-08-15T00:00:00.000Z',
+      occurredAt: `2026-08-15T00:00:${sequence.toString().padStart(2, '0')}.000Z`,
+    });
+    const firstAttempt = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const secondAttempt = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    let progress = appendLectureGenerationProgress(
+      undefined,
+      event(firstAttempt, 1, 'preparing_sources'),
+    );
+    progress = appendLectureGenerationProgress(progress, event(firstAttempt, 2, 'model_active'));
+    progress = appendLectureGenerationProgress(progress, event(firstAttempt, 3, 'model_active'));
+
+    expect(progress.events.map(({ sequence }) => sequence)).toEqual([1, 3]);
+    expect(
+      appendLectureGenerationProgress(progress, event(firstAttempt, 2, 'saving_revision')),
+    ).toBe(progress);
+    progress = appendLectureGenerationProgress(
+      progress,
+      event(secondAttempt, 1, 'preparing_sources'),
+    );
+    expect(progress).toMatchObject({ attemptId: secondAttempt, events: [{ sequence: 1 }] });
+    const latePriorAttempt = {
+      ...event(firstAttempt, 4, 'saving_revision'),
+      startedAt: '2026-08-14T23:59:59.000Z',
+    };
+    expect(appendLectureGenerationProgress(progress, latePriorAttempt)).toBe(progress);
+    expect(isCurrentLectureGenerationProgress(latePriorAttempt, secondAttempt)).toBe(false);
+    expect(
+      isCurrentLectureGenerationProgress(event(secondAttempt, 2, 'starting_model'), secondAttempt),
+    ).toBe(true);
+    expect(
+      isCurrentLectureGenerationProgress(event(secondAttempt, 2, 'starting_model'), null),
+    ).toBe(false);
+    expect(
+      shouldClearLectureGenerationProgress(progress, {
+        schemaVersion: 1,
+        type: 'lecture.studio.changed',
+        studioId: event(firstAttempt, 1, 'preparing_sources').studioId,
+        status: 'generating',
+        activeAttemptId: firstAttempt,
+        version: 3,
+        occurredAt: '2026-08-15T00:01:00.000Z',
+      }),
+    ).toBe(true);
+    expect(
+      formatLectureGenerationElapsed(
+        '2026-08-15T00:00:00.000Z',
+        Date.parse('2026-08-15T00:02:05.000Z'),
+      ),
+    ).toBe('2m 05s');
   });
 
   it('maps bounded generation validation categories to actionable messages', () => {

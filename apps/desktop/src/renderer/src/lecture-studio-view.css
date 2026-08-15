@@ -809,6 +809,62 @@
   color: var(--muted);
 }
 
+.lecture-generation-progress {
+  display: grid;
+  flex: 1 0 100%;
+  gap: 7px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--green) 32%, var(--line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--green) 5%, var(--surface));
+}
+
+.lecture-generation-progress-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.lecture-generation-progress-summary time,
+.lecture-generation-progress li time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lecture-generation-progress-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid color-mix(in srgb, var(--green) 24%, transparent);
+  border-top-color: var(--green);
+  border-radius: 999px;
+  animation: lecture-spin 800ms linear infinite;
+}
+
+.lecture-generation-progress p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+
+.lecture-generation-progress ol {
+  display: grid;
+  gap: 3px;
+  max-height: 112px;
+  margin: 0;
+  padding: 6px 0 0;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.lecture-generation-progress li {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 8px;
+  font-size: var(--font-caption);
+}
+
 .lecture-preview-toolbar > div {
   display: flex;
   min-width: 0;
@@ -1371,6 +1427,10 @@
   }
 
   .lecture-preview-empty i {
+    animation: none;
+  }
+
+  .lecture-generation-progress-spinner {
     animation: none;
   }
 }

@@ -109,7 +109,10 @@ compile input set과 source-content digest를 별도 계약으로 정의하고 �
   `git-osxkeychain` entry를 읽거나 덮어쓰거나 삭제하지 않는다. 네트워크 Git
   child에는 redirect를 끈 상태에서 검증된 exact Overleaf project URL로 scope한 HTTP authorization config와
   child 전용 environment로만 전달하며 token을 process argument, SQLCipher, portable contract, URL, 영구 Git
-  config, log, telemetry 또는 Hosted Sync에 저장하지 않는다.
+  config, log, telemetry 또는 Hosted Sync에 저장하지 않는다. Overleaf가 복사해 주는
+  `https://git@git.overleaf.com/<24-hex-project-id>` 형식은 password 없는 exact `git` username만 입력으로
+  허용하고 userinfo 없는 canonical URL로 정규화한다. 다른 username, password, query와 fragment는 거부한다.
+  이전 버전의 private binding에 남은 fixed `git@` URL도 read 때 같은 canonical URL로 승격한다.
 - remote URL과 workspace ID는 adapter-private SQLCipher row에만 저장한다.
 - bare mirror는 `userData/manuscript-workspaces/<binding UUID>` 아래에서만 만든다. binding UUID가 아닌 path는
   거부한다.

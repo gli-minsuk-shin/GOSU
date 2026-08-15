@@ -642,6 +642,32 @@ describe('Manuscript workspace service', () => {
     expect(fixture.inspect).not.toHaveBeenCalled();
   });
 
+  it('accepts Overleaf’s copyable git@ URL but keeps userinfo out of the binding', async () => {
+    const fixture = serviceFixture();
+    const created = await fixture.service.create({
+      projectId: PROJECT_ID,
+      title: 'Copied Overleaf URL fixture',
+      rootDocument: 'paper/main.tex',
+    });
+    const manuscript = created.manuscripts[0]!.manuscript;
+
+    const connected = await fixture.service.connectOverleafGit({
+      projectId: PROJECT_ID,
+      manuscriptId: manuscript.id,
+      expectedManuscriptVersion: manuscript.version,
+      providerId: 'overleaf_git',
+      remoteUrl: 'https://git@git.overleaf.com/0123456789abcdef01234567',
+    });
+    const bindingId = connected.manuscripts[0]!.connection!.binding.bindingId;
+
+    expect(fixture.stageCredential).toHaveBeenCalledExactlyOnceWith(REMOTE);
+    expect(fixture.inspect).toHaveBeenCalledExactlyOnceWith(
+      REMOTE,
+      'overleaf-git:0123456789abcdef01234567',
+    );
+    expect(fixture.storage.configurations.get(bindingId)?.remoteUrl).toBe(REMOTE);
+  });
+
   it('keeps multiple manuscripts independent and stores no token in portable records', async () => {
     const fixture = serviceFixture();
     const first = await createAndConnect(fixture);
@@ -656,7 +682,7 @@ describe('Manuscript workspace service', () => {
     expect(first.connection.binding.authority).toBe('gosu');
     expect(first.connection.syncState).toBe('diverged');
     expect(fixture.stageCredential).toHaveBeenCalledExactlyOnceWith(
-      'https://git@git.overleaf.com/0123456789abcdef01234567',
+      'https://git.overleaf.com/0123456789abcdef01234567',
     );
     expect(fixture.commitCredential).toHaveBeenCalledOnce();
     expect(fixture.rollbackCredential).not.toHaveBeenCalled();
@@ -1141,7 +1167,7 @@ describe('Manuscript workspace service', () => {
     expect(fixture.fetchCheckpoint).toHaveBeenCalledTimes(1);
     expect(fixture.restoreCheckpoint).toHaveBeenCalledExactlyOnceWith(
       connection.binding.bindingId,
-      'https://git@git.overleaf.com/0123456789abcdef01234567',
+      'https://git.overleaf.com/0123456789abcdef01234567',
       'overleaf-git:0123456789abcdef01234567',
       PROVIDER_REVISION,
       'paper/main.tex',

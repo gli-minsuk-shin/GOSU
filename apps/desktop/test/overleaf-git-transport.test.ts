@@ -176,11 +176,11 @@ describe('Overleaf Git checkpoint transport', () => {
     }
   });
 
-  it('normalizes only the official credential-free HTTPS project endpoint', () => {
+  it('normalizes the official copied and credential-free HTTPS project endpoints', () => {
     expect(parseOverleafGitRemote('https://git@git.overleaf.com/0123456789abcdef01234567')).toEqual(
       {
         workspaceId: '0123456789abcdef01234567',
-        remoteUrl: 'https://git@git.overleaf.com/0123456789abcdef01234567',
+        remoteUrl: 'https://git.overleaf.com/0123456789abcdef01234567',
         webUrl: 'https://www.overleaf.com/project/0123456789abcdef01234567',
       },
     );
@@ -191,10 +191,13 @@ describe('Overleaf Git checkpoint transport', () => {
 
   it.each([
     'http://git.overleaf.com/0123456789abcdef01234567',
+    'https://GIT@git.overleaf.com/0123456789abcdef01234567',
+    'https://other@git.overleaf.com/0123456789abcdef01234567',
     'https://git:secret@git.overleaf.com/0123456789abcdef01234567',
     'https://evil.example/0123456789abcdef01234567',
     'https://git.overleaf.com/not-a-project',
     'https://git.overleaf.com/0123456789abcdef01234567?token=secret',
+    'https://git@git.overleaf.com/0123456789abcdef01234567#fragment',
   ])('rejects unsafe or non-official remotes: %s', (remote) => {
     expect(() => parseOverleafGitRemote(remote)).toThrow(
       expect.objectContaining<Partial<OverleafGitTransportError>>({
@@ -209,7 +212,7 @@ describe('Overleaf Git checkpoint transport', () => {
       expect(arguments_).toEqual([
         'ls-remote',
         '--refs',
-        'https://git@git.overleaf.com/0123456789abcdef01234567',
+        'https://git.overleaf.com/0123456789abcdef01234567',
         'refs/heads/master',
       ]);
       return `${revision}\trefs/heads/master\n`;
@@ -217,7 +220,7 @@ describe('Overleaf Git checkpoint transport', () => {
     const transport = new OverleafGitTransport({ rootDirectory: () => root, credentials, runGit });
 
     await expect(
-      transport.inspect('https://git.overleaf.com/0123456789abcdef01234567', CREDENTIAL_REF),
+      transport.inspect('https://git@git.overleaf.com/0123456789abcdef01234567', CREDENTIAL_REF),
     ).resolves.toEqual({
       workspaceRevision: revision,
       treeRevision: '',
@@ -228,7 +231,7 @@ describe('Overleaf Git checkpoint transport', () => {
       network: true,
       credential: {
         username: 'git',
-        scopeUrl: 'https://git@git.overleaf.com/0123456789abcdef01234567',
+        scopeUrl: 'https://git.overleaf.com/0123456789abcdef01234567',
       },
     });
   });
@@ -288,7 +291,7 @@ describe('Overleaf Git checkpoint transport', () => {
 
     const checkpoint = await transport.fetchCheckpoint(
       '01234567-89ab-4cde-8fab-0123456789ab',
-      'https://git.overleaf.com/0123456789abcdef01234567',
+      'https://git@git.overleaf.com/0123456789abcdef01234567',
       CREDENTIAL_REF,
       undefined,
       'paper/main.tex',
@@ -303,6 +306,15 @@ describe('Overleaf Git checkpoint transport', () => {
     expect(flat).not.toContain('--force');
     expect(commands.some((command) => command[0] === 'fetch')).toBe(true);
     expect(commands.find((command) => command[0] === 'fetch')).toContain('--depth=1');
+    expect(commands.flat()).not.toContain('https://git@git.overleaf.com/0123456789abcdef01234567');
+    expect(
+      runGit.mock.calls
+        .filter(([, , options]) => options?.network)
+        .every(
+          ([, , options]) =>
+            options?.credential?.scopeUrl === 'https://git.overleaf.com/0123456789abcdef01234567',
+        ),
+    ).toBe(true);
     expect(commands.some((command) => command[0] === 'update-ref')).toBe(true);
   });
 
