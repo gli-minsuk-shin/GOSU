@@ -82,6 +82,7 @@ import {
   EmptyLectureStudioTrashInputSchema,
   EmptyLectureStudioTrashReceiptSchema,
   LectureStudioGenerationBriefSchema,
+  LectureStudioGenerationBriefValueSchema,
   LectureStudioMessageSchema,
   LectureStudioRevisionSchema,
   LectureStudioSchema,
@@ -1034,6 +1035,10 @@ type LectureStudioRevisionRow = Readonly<{
   slides_markdown: string;
   lecture_notes_latex: string | null;
   slides_latex: string | null;
+  generation_brief_json: string | null;
+  generation_brief_sha256: string | null;
+  authoring_policy_version: number | null;
+  authoring_policy_sha256: string | null;
   artifacts_json: string;
   invocation_json: string;
   created_at: string;
@@ -1457,6 +1462,53 @@ function migrateLectureStudioRevisionLatex(database: Database.Database) {
   `);
 }
 
+function migrateLectureStudioRevisionGenerationBrief(database: Database.Database) {
+  const columns = database.pragma('table_info(lecture_studio_revisions)') as Array<{
+    name: string;
+  }>;
+  if (!columns.some((column) => column.name === 'generation_brief_json')) {
+    database.exec(
+      `alter table lecture_studio_revisions
+       add column generation_brief_json text
+       check (generation_brief_json is null or length(generation_brief_json) between 2 and 14000)`,
+    );
+  }
+  if (!columns.some((column) => column.name === 'generation_brief_sha256')) {
+    database.exec(
+      `alter table lecture_studio_revisions
+       add column generation_brief_sha256 text
+       check (generation_brief_sha256 is null or length(generation_brief_sha256) = 64)`,
+    );
+  }
+  if (!columns.some((column) => column.name === 'authoring_policy_version')) {
+    database.exec(
+      `alter table lecture_studio_revisions
+       add column authoring_policy_version integer
+       check (authoring_policy_version is null or authoring_policy_version > 0)`,
+    );
+  }
+  if (!columns.some((column) => column.name === 'authoring_policy_sha256')) {
+    database.exec(
+      `alter table lecture_studio_revisions
+       add column authoring_policy_sha256 text
+       check (authoring_policy_sha256 is null or length(authoring_policy_sha256) = 64)`,
+    );
+  }
+  database.exec(`
+    create trigger if not exists lecture_studio_revisions_generation_brief_insert
+      before insert on lecture_studio_revisions
+      when
+        ((new.generation_brief_json is not null) +
+         (new.generation_brief_sha256 is not null) +
+         (new.authoring_policy_version is not null) +
+         (new.authoring_policy_sha256 is not null)) not in (0,4)
+        or (new.generation_brief_json is not null and new.lecture_notes_latex is null)
+      begin
+        select raise(abort,'lecture_revision_generation_brief_provenance_required');
+      end;
+  `);
+}
+
 function migrateLectureStudioMessageAttachments(database: Database.Database) {
   const columns = database.pragma('table_info(lecture_studio_messages)') as Array<{
     name: string;
@@ -1736,8 +1788,31 @@ function toLectureStudioMessage(row: LectureStudioMessageRow): LectureStudioMess
 }
 
 function toLectureStudioRevision(row: LectureStudioRevisionRow): LectureStudioRevision {
+  const provenanceValues = [
+    row.generation_brief_json,
+    row.generation_brief_sha256,
+    row.authoring_policy_version,
+    row.authoring_policy_sha256,
+  ];
+  const provenanceCount = provenanceValues.filter((value) => value !== null).length;
+  if (provenanceCount !== 0 && provenanceCount !== provenanceValues.length) {
+    throw new Error('invalid_lecture_revision_generation_brief_provenance');
+  }
+  const schemaVersion =
+    row.lecture_notes_latex === null ? 1 : provenanceCount === provenanceValues.length ? 3 : 2;
+  const generationBriefSnapshot =
+    schemaVersion === 3
+      ? LectureStudioGenerationBriefValueSchema.parse(JSON.parse(row.generation_brief_json!))
+      : null;
+  if (
+    generationBriefSnapshot !== null &&
+    createHash('sha256').update(JSON.stringify(generationBriefSnapshot), 'utf8').digest('hex') !==
+      row.generation_brief_sha256
+  ) {
+    throw new Error('invalid_lecture_revision_generation_brief_hash');
+  }
   return LectureStudioRevisionSchema.parse({
-    schemaVersion: row.lecture_notes_latex !== null ? 2 : 1,
+    schemaVersion,
     id: row.id,
     studioId: row.studio_id,
     revision: row.revision,
@@ -1750,6 +1825,14 @@ function toLectureStudioRevision(row: LectureStudioRevisionRow): LectureStudioRe
           lectureNotesMarkdown: row.lecture_notes_markdown,
           slidesMarkdown: row.slides_markdown,
         }),
+    ...(schemaVersion === 3
+      ? {
+          generationBriefSnapshot,
+          generationBriefSha256: row.generation_brief_sha256,
+          authoringPolicyVersion: row.authoring_policy_version,
+          authoringPolicySha256: row.authoring_policy_sha256,
+        }
+      : {}),
     artifacts: JSON.parse(row.artifacts_json) as unknown,
     invocation: JSON.parse(row.invocation_json) as unknown,
     createdAt: row.created_at,
@@ -1788,8 +1871,9 @@ function insertLectureStudioRevision(database: Database.Database, input: Lecture
       `insert into lecture_studio_revisions(
          id,schema_version,studio_id,revision,attempt_id,source_manifest_json,
          source_manifest_sha256,lecture_notes_markdown,slides_markdown,lecture_notes_latex,
-         slides_latex,artifacts_json,invocation_json,created_at
-       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         slides_latex,generation_brief_json,generation_brief_sha256,authoring_policy_version,
+         authoring_policy_sha256,artifacts_json,invocation_json,created_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       revision.id,
@@ -1801,8 +1885,12 @@ function insertLectureStudioRevision(database: Database.Database, input: Lecture
       revision.sourceManifestSha256,
       revision.schemaVersion === 1 ? revision.lectureNotesMarkdown : 'GOSU_LATEX_V2',
       revision.schemaVersion === 1 ? revision.slidesMarkdown : 'GOSU_LATEX_V2',
-      revision.schemaVersion === 2 ? revision.lectureNotesLatex : null,
-      revision.schemaVersion === 2 ? revision.slidesLatex : null,
+      revision.schemaVersion === 1 ? null : revision.lectureNotesLatex,
+      revision.schemaVersion === 1 ? null : revision.slidesLatex,
+      revision.schemaVersion === 3 ? JSON.stringify(revision.generationBriefSnapshot) : null,
+      revision.schemaVersion === 3 ? revision.generationBriefSha256 : null,
+      revision.schemaVersion === 3 ? revision.authoringPolicyVersion : null,
+      revision.schemaVersion === 3 ? revision.authoringPolicySha256 : null,
       JSON.stringify(revision.artifacts),
       JSON.stringify(revision.invocation),
       revision.createdAt,
@@ -4443,6 +4531,18 @@ export class LocalDatabase {
         slides_latex text check (
           slides_latex is null or length(slides_latex) between 1 and 240000
         ),
+        generation_brief_json text check (
+          generation_brief_json is null or length(generation_brief_json) between 2 and 14000
+        ),
+        generation_brief_sha256 text check (
+          generation_brief_sha256 is null or length(generation_brief_sha256) = 64
+        ),
+        authoring_policy_version integer check (
+          authoring_policy_version is null or authoring_policy_version > 0
+        ),
+        authoring_policy_sha256 text check (
+          authoring_policy_sha256 is null or length(authoring_policy_sha256) = 64
+        ),
         artifacts_json text not null check (length(artifacts_json) between 2 and 32768),
         invocation_json text not null check (length(invocation_json) between 2 and 8192),
         created_at text not null,
@@ -4739,6 +4839,7 @@ export class LocalDatabase {
       migrateLectureStudioGenerationBrief(database);
       migrateLectureStudioTrash(database);
       migrateLectureStudioRevisionLatex(database);
+      migrateLectureStudioRevisionGenerationBrief(database);
       migrateLectureStudioMessageAttachments(database);
       migrateLectureStudioAttempts(database);
       migrateExperimentRunsHardening(database);

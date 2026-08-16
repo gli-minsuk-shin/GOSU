@@ -90,6 +90,7 @@ import type {
 } from '../shared/manuscript-workspace-contracts';
 import type { ProjectRecord, WorkspaceSnapshot } from '../shared/workspace-contracts';
 import {
+  LECTURE_STUDIO_AUTHORING_POLICY_VERSION,
   LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS,
   LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER,
   LECTURE_STUDIO_SOURCE_MANIFEST_MAX_CHARACTERS,
@@ -120,14 +121,14 @@ type MaybePromise<T> = T | Promise<T>;
 type CodexNotification = Readonly<{ method?: string; params?: unknown }>;
 
 function lectureRevisionSource(revision: LectureStudioRevision, kind: 'lecture-notes' | 'slides') {
-  if (revision.schemaVersion === 2) {
+  if (revision.schemaVersion !== 1) {
     return kind === 'lecture-notes' ? revision.lectureNotesLatex : revision.slidesLatex;
   }
   return kind === 'lecture-notes' ? revision.lectureNotesMarkdown : revision.slidesMarkdown;
 }
 
 function lectureRevisionFormat(revision: LectureStudioRevision) {
-  return revision.schemaVersion === 2 ? ('latex' as const) : ('markdown' as const);
+  return revision.schemaVersion !== 1 ? ('latex' as const) : ('markdown' as const);
 }
 
 const CANONICAL_CONTENT_BEGIN = '\n% GOSU-CONTENT-BEGIN\n';
@@ -171,7 +172,7 @@ function unchangedDraftRetainsRetiredAttachmentCitation(
   notesBody: string,
   slidesBody: string,
 ) {
-  if (!previousRevision || previousRevision.schemaVersion !== 2 || retiredLabels.length === 0) {
+  if (!previousRevision || previousRevision.schemaVersion === 1 || retiredLabels.length === 0) {
     return false;
   }
   const previousNotesBody = canonicalLectureBody(previousRevision.lectureNotesLatex);
@@ -320,6 +321,9 @@ export interface LectureStudioArtifactWriter {
       revision: number;
       attemptId: string;
       sourceManifestSha256: string;
+      generationBriefSha256: string;
+      authoringPolicyVersion: number;
+      authoringPolicySha256: string;
       documentFormat?: 'markdown' | 'latex';
       lectureNotesMarkdown?: string;
       slidesMarkdown?: string;
@@ -771,6 +775,21 @@ function committedRevisionMatchesPending(
     revision.attemptId !== pending.attemptId ||
     revision.sourceManifestSha256 !== pending.sourceManifestSha256
   ) {
+    return false;
+  }
+  const pendingHasGenerationProvenance =
+    pending.generationBriefSha256 !== undefined ||
+    pending.authoringPolicyVersion !== undefined ||
+    pending.authoringPolicySha256 !== undefined;
+  if (revision.schemaVersion === 3) {
+    if (
+      pending.generationBriefSha256 !== revision.generationBriefSha256 ||
+      pending.authoringPolicyVersion !== revision.authoringPolicyVersion ||
+      pending.authoringPolicySha256 !== revision.authoringPolicySha256
+    ) {
+      return false;
+    }
+  } else if (pendingHasGenerationProvenance) {
     return false;
   }
   return (
@@ -1808,15 +1827,15 @@ export class LectureStudioService {
       const previousDraft = previousRevision
         ? {
             sourceFormat:
-              previousRevision.schemaVersion === 2
+              previousRevision.schemaVersion !== 1
                 ? ('latex' as const)
                 : ('legacy-markdown' as const),
             lectureNotes:
-              previousRevision.schemaVersion === 2
+              previousRevision.schemaVersion !== 1
                 ? previousRevision.lectureNotesLatex
                 : previousRevision.lectureNotesMarkdown,
             slides:
-              previousRevision.schemaVersion === 2
+              previousRevision.schemaVersion !== 1
                 ? previousRevision.slidesLatex
                 : previousRevision.slidesMarkdown,
           }
@@ -1927,6 +1946,9 @@ export class LectureStudioService {
         revision: revisionNumber,
         attemptId,
         sourceManifestSha256,
+        generationBriefSha256: sha256(JSON.stringify(generating.generationBrief)),
+        authoringPolicyVersion: LECTURE_STUDIO_AUTHORING_POLICY_VERSION,
+        authoringPolicySha256: sha256(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS),
         documentFormat: 'latex' as const,
         lectureNotesLatex,
         slidesLatex,
@@ -1944,7 +1966,7 @@ export class LectureStudioService {
       const artifacts = await this.saveArtifacts(artifactInput);
       const completedAt = this.now().toISOString();
       const revision = LectureStudioRevisionSchema.parse({
-        schemaVersion: 2,
+        schemaVersion: 3,
         id: randomUUID(),
         studioId: generating.id,
         revision: revisionNumber,
@@ -1953,6 +1975,10 @@ export class LectureStudioService {
         sourceManifestSha256,
         lectureNotesLatex,
         slidesLatex,
+        generationBriefSnapshot: generating.generationBrief,
+        generationBriefSha256: sha256(JSON.stringify(generating.generationBrief)),
+        authoringPolicyVersion: LECTURE_STUDIO_AUTHORING_POLICY_VERSION,
+        authoringPolicySha256: sha256(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS),
         artifacts,
         invocation,
         createdAt: revisionCreatedAt,

@@ -493,6 +493,21 @@
   resize: vertical;
 }
 
+.lecture-generation-structure-summary {
+  display: grid;
+  gap: 3px;
+  margin-top: 12px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.lecture-generation-structure-summary span,
+.lecture-generation-structure-summary small {
+  color: var(--muted);
+}
+
 .lecture-duration-picker > div {
   display: grid;
   grid-template-columns: repeat(4, minmax(72px, 1fr));
@@ -1020,6 +1035,13 @@
   grid-column: 1 / -2;
 }
 
+.lecture-generation-options-structure {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
 .lecture-generation-options-instructions textarea {
   resize: vertical;
 }
@@ -1480,6 +1502,7 @@
 
   .lecture-generation-options-editor > div:first-child,
   .lecture-generation-options-instructions,
+  .lecture-generation-options-structure,
   .lecture-generation-options-actions {
     grid-column: 1 / -1;
   }

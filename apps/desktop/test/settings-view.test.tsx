@@ -1,11 +1,19 @@
+import { readFileSync } from 'node:fs';
+
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import { SettingsView } from '../src/renderer/src/settings-view';
+import { SettingsView, type SettingsCategory } from '../src/renderer/src/settings-view';
 import type { OverleafPersonalTokenUiState } from '../src/renderer/src/overleaf-personal-token-ui';
-import { DEFAULT_USER_PREFERENCES } from '../src/renderer/src/user-preferences';
+import {
+  DEFAULT_USER_PREFERENCES,
+  type UserPreferences,
+} from '../src/renderer/src/user-preferences';
 import { defaultProjectChatProfile } from '../src/shared/project-chat-contracts';
-import type { LectureStudioListSnapshot } from '../src/shared/lecture-studio-contracts';
+import {
+  GOSU_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+  type LectureStudioListSnapshot,
+} from '../src/shared/lecture-studio-contracts';
 import type { WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 
 const snapshot: WorkspaceSnapshot = {
@@ -107,14 +115,15 @@ const lectureTrashSnapshot: LectureStudioListSnapshot = {
 };
 
 function renderSettings(
-  initialCategory: 'appearance' | 'board' | 'projects' | 'trash' | 'overleaf' | 'servers' | 'agent',
+  initialCategory: SettingsCategory,
   agentProfile = defaultProjectChatProfile(snapshot.projects[0]!.id),
   lectureSnapshot: LectureStudioListSnapshot | null = lectureTrashSnapshot,
   overleafPersonalTokenState: OverleafPersonalTokenUiState = 'configured',
+  preferences: UserPreferences = DEFAULT_USER_PREFERENCES,
 ) {
   return renderToStaticMarkup(
     <SettingsView
-      preferences={DEFAULT_USER_PREFERENCES}
+      preferences={preferences}
       onChange={vi.fn()}
       workspaceSnapshot={snapshot}
       busyAction={null}
@@ -177,6 +186,77 @@ describe('separated application Settings', () => {
     expect(html).toContain('FONT SIZE');
     expect(html).toContain('12 px base');
     expect(html).toContain('18 px base');
+  });
+
+  it('adds one dedicated Lecture defaults category without changing the existing categories', () => {
+    const html = renderSettings('lecture');
+    const navigationLabels = [
+      'Appearance',
+      'Board defaults',
+      'Lecture defaults',
+      'Projects',
+      'Trash',
+      'Overleaf',
+      'Servers',
+      'AI Agent',
+    ];
+
+    for (const label of navigationLabels) {
+      expect(html.match(new RegExp(`<strong>${label}</strong>`, 'gu'))).toHaveLength(1);
+    }
+    expect(html).toContain(
+      '<button type="button" class="active" aria-current="page"><i aria-hidden="true">▤</i><strong>Lecture defaults</strong>',
+    );
+    expect(html).toContain('Notes &amp; slides structure');
+  });
+
+  it('shows adaptive and custom Lecture defaults with explicit save, revert, and locked scope', () => {
+    const adaptiveHtml = renderSettings('lecture');
+    expect(adaptiveHtml).toContain('LECTURE DEFAULTS');
+    expect(adaptiveHtml).toContain('Choose the default content flow');
+    expect(adaptiveHtml).toContain('Existing Studios and saved revisions do not change.');
+    expect(adaptiveHtml).toContain('checked="" value="adaptive"');
+    expect(adaptiveHtml).toContain('<strong>Current default</strong>');
+    expect(adaptiveHtml).toContain('class="ghost-button" disabled="">Revert changes</button>');
+    expect(adaptiveHtml).toContain('class="primary-button" disabled=""');
+    expect(adaptiveHtml).toContain('>Save default structure</button>');
+    expect(adaptiveHtml).toContain('Title slide');
+    expect(adaptiveHtml).toContain('Evidence citations');
+    expect(adaptiveHtml).toContain('Sources used');
+    expect(adaptiveHtml.match(/<em>Locked<\/em>/gu)).toHaveLength(3);
+
+    const customHtml = renderSettings(
+      'lecture',
+      defaultProjectChatProfile(snapshot.projects[0]!.id),
+      lectureTrashSnapshot,
+      'configured',
+      {
+        ...DEFAULT_USER_PREFERENCES,
+        defaultLectureStructure: structuredClone(GOSU_LECTURE_STUDIO_STRUCTURE_TEMPLATE),
+      },
+    );
+    expect(customHtml).toContain('checked="" value="custom"');
+    expect(customHtml).toContain('6 sections');
+    expect(customHtml).toContain('Overview and learning goals');
+    expect(customHtml).toContain('Methods, examples, and comparisons');
+    expect(customHtml).toContain('Load GOSU outline');
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/settings-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain("| 'lecture'");
+    expect(source).toContain("onClick={() => selectCategory('lecture')}");
+    expect(source).toContain(
+      'JSON.stringify(lectureStructureDraft) !== JSON.stringify(preferences.defaultLectureStructure)',
+    );
+    expect(source).toContain("lectureStructureDirty ? 'Unsaved changes' : 'Current default'");
+    expect(source).toContain(
+      'setLectureStructureDraft(structuredClone(preferences.defaultLectureStructure))',
+    );
+    expect(source).toContain('resetDisabled={!lectureStructureDirty}');
+    expect(source).toContain('disabled={!lectureStructureDirty || !lectureStructureValid}');
+    expect(source).toContain('defaultLectureStructure: structuredClone(normalized.data)');
   });
 
   it('keeps project lifecycle controls separate from the unified Trash manager', () => {

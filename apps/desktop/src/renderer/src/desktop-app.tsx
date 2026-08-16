@@ -3394,6 +3394,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 models={models}
                 modelsLoading={codexBusy}
                 defaultModelSelection={preferences.defaultAiSelection}
+                defaultStructure={preferences.defaultLectureStructure}
                 codexAuthenticationRequired={codexConnectionState === 'auth-required'}
                 onRefreshModels={() => void refreshModels(true)}
                 onOpenCodexSignIn={startCodexChatGptLogin}

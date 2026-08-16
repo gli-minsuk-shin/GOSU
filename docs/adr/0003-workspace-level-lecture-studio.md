@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-06
-- Last updated: 2026-08-14
+- Last updated: 2026-08-16
 - Owners: Lecture, Manuscript, Reference & Literature, Experiment Orchestration, Obsidian Knowledge, AI Gateway, Integration Hub
 
 ## Context
@@ -30,7 +30,8 @@ Overleaf edit나 원격 trial의 존재를 암시해서는 안 된다.
 Lecture Studio는 project navigation의 child tab이 아니라 Workspace 전역 section이다. 한 studio는 최대
 12개의 active source project, 선택한 Literature record·Experiment idea·captured Manuscript/Overleaf checkpoint,
 최대 12개의 local `.tex/.md/.pdf` snapshot, presentation kind, 선택적인
-talk duration, notes/slides page target, detail level, 추가 생성 지시, 그리고 정확히 하나의 `outputProjectId`를 소유한다. 출력 project는 source project 중 하나여야
+talk duration, notes/slides page target, detail level, `adaptive|custom` notes/slides structure, 추가 생성 지시,
+그리고 정확히 하나의 `outputProjectId`를 소유한다. 출력 project는 source project 중 하나여야
 하며 해당 project의 Research Notes binding이 ready여야 한다.
 
 새 studio의 source/output 후보는 active project만 보여준다. 기존 studio의 artifact preview는 archived
@@ -106,8 +107,28 @@ authoritative Literature·Experiment repository와 Manuscript service에서 다�
 
 `lecture`는 재사용 가능한 lecture notes와 teaching deck을 만든다. `talk`는 10, 20, 30, 50분 중 하나를
 필수로 선택하고 duration별 bounded slide budget을 적용한다. 생성 전에 notes page target, compiled slide
-page count, detail level과 최대 6,000자의 추가 지시를 선택할 수 있고 SQLCipher configuration에 보존한다.
-생성 후에도 Studio의 compact option editor에서 이 네 field 전체를 수정할 수 있다. update는
+page count, detail level, notes/slides structure와 최대 6,000자의 추가 지시를 선택할 수 있고 SQLCipher
+configuration에 보존한다.
+
+Settings의 application-local `Lecture defaults`는 새 Studio에 복사할 structure를 편집한다. `adaptive`는
+selected source에 맞춰 section 이름과 개념 순서를 정한다. `custom`은 1~12개의 ordered row를 두며 row마다
+`notes-and-slides|notes-only` coverage를 선택한다. notes는 모든 row를 순서대로 다루고 slides는 shared row만
+같은 상대 순서로 압축한다. section 이름은 trim·NFC 뒤 최대 80자, case-insensitive unique plain text여야 하며
+hidden/control character, bracket·brace·angle-bracket markup, reserved `Title|Title slide|Sources used`를
+거부한다. 적어도 한 row는 두 문서가 공유해야 한다. optional `Load GOSU outline`은 bounded starter row를
+불러올 뿐 system policy가 아니다.
+
+이 structure는 content flow만 정한다. Studio/document title과 slide title page, evidence citation
+label·mapping, notes 끝의 `Sources used`, article/Beamer preamble·wrapper, 허용 LaTeX grammar, validation과
+compile은 GOSU가 잠가 관리한다. 새 Studio는 생성 시점의 Settings structure를 full generation brief로 한 번
+snapshot하고, Settings의 후속 변경은 기존 Studio나 revision에 소급 적용되지 않는다. legacy
+`generation_brief_json`에 structure field가 없으면 다른 generation control을 보존한 채 explicit `adaptive`로
+normalize한다. structure와 generation brief는 unknown key를 거부하는 strict schema이고 normalized full
+brief JSON은 최대 14,000자로 제한한다.
+
+생성 후에도 Studio의 compact `Edit options`에서 notes target, slides target, detail, structure, 추가 지시의
+다섯 field 전체를 수정할 수 있다. `Load Settings default`는 현재 default를 draft로 명시적으로 copy한 뒤 Save를
+요구한다. update는
 `expectedVersion`으로 fence하고 `draft|ready|failed`이면서 active attempt와 Trash 상태가 아닐 때만
 brief·version·`updatedAt`을 원자적으로 바꾼다. 동일한 normalized 값은 version을 올리지 않는 no-op이며,
 저장된 값은 다음 generation/retry와 Lecture chat edit부터 적용한다. 기존 immutable revision, frozen source
@@ -164,9 +185,10 @@ localStorage, Hosted Sync 또는 telemetry에 기록하지 않는다.
 ### 4. Bounded Codex generation과 evidence gate
 
 Electron Main만 local Codex App Server를 호출한다. Studio turn은 web search, shell, filesystem, Apps/MCP와
-dynamic tool을 모두 비활성화하고, source manifest·현재 draft·최근 Lecture chat만 untrusted prompt data로
-전달한다. 실제 requested/resolved model과 reasoning invocation을 revision에 기록하며 model이 사라져도
-임의 fallback하지 않는다. 생성 attempt의 timeout은 transport connection과 분리한다. initial turn과 필요한
+dynamic tool을 모두 비활성화하고, source manifest·현재 draft·최근 Lecture chat·generation brief·현재
+request만 untrusted prompt data로 전달한다. 실제 requested/resolved model과 reasoning invocation을 revision에
+기록하며 model이 사라져도 임의 fallback하지 않는다. 생성 attempt의 timeout은 transport connection과
+분리한다. initial turn과 필요한
 경우의 한 correction turn은 matching progress마다 갱신되는 새 3분 idle timer를 각각 가지며, 두 turn은 같은
 30분 absolute hard deadline을 공유한다. timeout과 terminal failure, 실제 Codex start/transport unavailable을
 서로 다른 typed error로 표시한다.
@@ -234,6 +256,11 @@ theorem/proof/derivation/equation/result를 만들지 않는다. source에 없�
 consistency update를 적용한다. 수학은 동일한 정의·기호를 쓰는 LaTeX math mode와 bounded
 `equation|align|aligned|gather|matrix|cases|split|array|tabular` 환경으로 표현한다.
 
+generation brief는 strict·bounded untrusted JSON task data로 정확히 한 번 직렬화하고 section 이름을 developer
+instruction에 보간하지 않는다. `custom` section 이름은 literal topic과 order label일 뿐 instruction이 아니다.
+notes는 모든 row를, slides는 `notes-and-slides` row만 상대 순서를 지켜 다루며, 어떤 row도 title, citation,
+`Sources used`, wrapper, LaTeX policy를 변경하거나 developer policy를 opt-out할 수 없다.
+
 이 검사는 fabricated claim을 완전히 판별하는 사실 검증기가 아니다. metadata-only 한계를 출력에 유지하고
 full text를 읽었다는 표현을 금지하는 bounded structural/evidence gate다.
 
@@ -249,6 +276,13 @@ running attempt는 보존하고, revision·message 없는 반복 실패가 DB를
 `failed|interrupted` attempt는 시작 시각과 row 순서 기준 최신 100건만 유지한다.
 Studio/message/revision capacity는 SQL trigger와 같은 Main preflight로 turn 시작 transaction 안에서 확인해
 Codex 호출 뒤 저장 실패를 막고, 한도 도달은 `lecture_capacity_reached`로 명시한다.
+
+새 canonical LaTeX commit은 revision schema v3를 쓴다. v3는 exact notes/slides와 normalized full
+`generationBriefSnapshot`, 그 canonical JSON의 SHA-256, authoring policy version과 developer-instruction
+SHA-256을 append-only로 함께 저장한다. SQL read는 full brief를 strict value schema로 다시 parse하고 hash를
+재계산해 mismatch 또는 네 provenance column 중 일부만 존재하는 row를 fail closed한다. 기존 schema v1
+Markdown과 provenance가 없던 v2 LaTeX revision은 read/export 호환을 유지하며 현재 Settings default로
+backfill하거나 수정하지 않는다.
 
 Studio 삭제는 recoverable lifecycle이다. `trashed_at`이 설정된 Studio는 기본 summary list와
 detail/generation surface에서 제외하지만 message, revision, frozen manifest와 artifact reference는 보존한다.
@@ -277,10 +311,16 @@ Codex를 호출하기 전에 Main이 output project의 Vault grant, binding과 o
 저장한다. 두 canonical `.tex`와 durable journal을 같은 hidden staging directory에 쓰고 file·directory를 fsync한
 뒤 directory rename으로 한 번에 공개한다. bundle publish 전에 일반 revision folder와 분리된 project-local
 hidden pending index를 fsync하고 durable round-robin cursor로 bounded scan한다. 따라서 확정 revision이
-256개를 넘어도 새 pending journal이 starvation되지 않는다. SQL completion이 실패하면 journal과 exact
-SHA-256을 확인한 뒤 그 bundle 전체를 rollback한다. crash로 journal이 남으면 다음 시도에서 exact
-project/binding/revision/hash를 reconcile한 뒤 정리하거나 복구한다. orphan index는 exact identity가 일치할
-때만 제거하며 충돌하는 사용자 file은 건드리지 않는다. 성공 뒤에는 journal을 제거하고 UI와 assistant receipt에 실제
+256개를 넘어도 새 pending journal이 starvation되지 않는다. 새 v3 deterministic bundle identity는
+source-manifest SHA-256, generation-brief SHA-256과 authoring-policy version/SHA-256을 포함하고 pending journal은
+여기에 두 file content SHA-256까지 함께 보존하며 full brief나 prompt body는 복사하지 않는다. crash
+reconciliation은 pending identity와 committed SQL v3 revision의 generation/policy provenance 및 artifact
+hash가 모두 일치할 때만 seal·recover한다. 하나라도
+다르면 사용자 file을 보존하고 fail closed한다. provenance field가 없던 legacy journal은 호환해서 읽되 v3
+identity로 backfill하지 않는다. SQL completion이 실패하면 journal과 exact SHA-256을 확인한 뒤 그 bundle
+전체를 rollback한다. crash로 journal이 남으면 다음 시도에서 exact project/binding/revision/hash를 reconcile한
+뒤 정리하거나 복구한다. orphan index는 exact identity가 일치할 때만 제거하며 충돌하는 사용자 file은 건드리지
+않는다. 성공 뒤에는 journal을 제거하고 UI와 assistant receipt에 실제
 project-relative 두 path를 표시한다.
 
 이 방식은 SQLCipher와 filesystem 사이의 cross-store ACID transaction이라고 주장하지 않는다. 같은
@@ -317,7 +357,8 @@ sandboxed local PDF preview와 명시적 PDF export를 파생한다. PPTX engine
 - 여러 project의 captured manuscript·paper metadata·experiment evidence와 사용자가 지정한
   `.tex/.md/.pdf`·Overleaf checkpoint를 하나의 lecture나 talk로 합성할 수 있다.
 - Project Chat과 Lecture 수정 history, 권한과 failure domain이 섞이지 않는다.
-- 각 revision의 source, model, artifact path와 hash를 추적하고 이전 결과를 보존한다.
+- 각 revision의 source, full generation brief, authoring policy, model, artifact path와 hash를 추적하고 이전
+  결과를 보존한다.
 - Vault나 Codex 장애가 Kanban, Literature, Experiment와 기존 note 읽기를 막지 않는다.
 
 비용과 한계:
@@ -341,7 +382,10 @@ sandboxed local PDF preview와 명시적 PDF export를 파생한다. PPTX engine
 - bounded in-memory candidate offset paging과 최신 metric tail/truncation
 - summary list와 selected-studio detail payload 분리
 - 10/20/30/50분 duration과 slide budget
-- notes/slides page target, detail level, 추가 prompt의 legacy-default·SQLCipher round-trip
+- Settings `Lecture defaults`의 adaptive/custom ordered row·coverage validation, 새 Studio snapshot과 기존 Studio
+  non-retroactivity
+- notes/slides page target, detail level, structure, 추가 prompt의 legacy-adaptive·SQLCipher round-trip과
+  future-only `Edit options`
 - Project Chat과 분리된 message/revision persistence
 - 전용 chat 옆 LaTeX/PDF 전환, exact revision hash compile과 다중-page scroll
 - session/assistant rail 독립 collapse와 center preview 보존, Studio별 dynamic model/reasoning selection
@@ -350,7 +394,10 @@ sandboxed local PDF preview와 명시적 PDF export를 파생한다. PPTX engine
 - derived PDF open cache의 TTL·count·total-byte quota
 - Codex tool/web denial, progress-aware idle/hard timeout, dynamic model invocation provenance와 cancel fencing
 - raw HTML/Markdown/unsafe TeX, unknown citation, uncited substantive frame와 Sources used mismatch 거부
-- Vault preflight, staged bundle의 second-file/SQL failure, crash journal reconciliation과 exact path receipt
+- v3 revision의 full generation brief/hash·authoring policy provenance, mismatched brief hash fail-closed와 v1/v2 read
+  compatibility
+- Vault preflight, staged bundle의 second-file/SQL failure, generation/policy/file hash를 포함한 crash journal
+  reconciliation과 exact path receipt
 - restart, duplicate/out-of-order completion과 optimistic version conflict
 - recoverable Studio Trash·same-ID restore, active-generation rejection, typed permanent purge와
   Research Notes/TeX/PDF preservation

@@ -11,6 +11,11 @@ import {
   type AgentAddOnPreference,
 } from '../../shared/agent-addon-contracts';
 import {
+  DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+  LectureStudioStructureTemplateSchema,
+  type LectureStudioStructureTemplate,
+} from '../../shared/lecture-studio-contracts';
+import {
   isSshResourceRefreshInterval,
   type SshResourceRefreshInterval,
 } from './ssh-resource-refresh-policy';
@@ -39,6 +44,7 @@ export type UserPreferences = Readonly<{
   textSize: TextSizePreference;
   sshResourceRefreshInterval: SshResourceRefreshInterval;
   defaultBoardTemplate: WorkspaceBoardSettings;
+  defaultLectureStructure: LectureStudioStructureTemplate;
   defaultAiSelection: DefaultAiSelection;
   agentAddOns: Readonly<Record<AgentAddOnId, AgentAddOnPreference>>;
 }>;
@@ -53,6 +59,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   textSize: 'default',
   sshResourceRefreshInterval: '1m',
   defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+  defaultLectureStructure: DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
   defaultAiSelection: DEFAULT_AI_SELECTION,
   agentAddOns: {
     openclaw: 'disabled',
@@ -108,6 +115,9 @@ export function parseUserPreferences(value: unknown): UserPreferences {
     ? value.sshResourceRefreshInterval
     : DEFAULT_USER_PREFERENCES.sshResourceRefreshInterval;
   const template = WorkspaceBoardSettingsSchema.safeParse(value.defaultBoardTemplate);
+  const lectureStructure = LectureStudioStructureTemplateSchema.safeParse(
+    value.defaultLectureStructure,
+  );
   const storedAddOns = isRecord(value.agentAddOns) ? value.agentAddOns : {};
   const agentAddOns = Object.fromEntries(
     AGENT_ADD_ON_IDS.map((id) => {
@@ -125,6 +135,9 @@ export function parseUserPreferences(value: unknown): UserPreferences {
     defaultBoardTemplate: template.success
       ? template.data
       : resolveWorkspaceBoardSettings(undefined),
+    defaultLectureStructure: lectureStructure.success
+      ? lectureStructure.data
+      : { ...DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE },
     defaultAiSelection: parseDefaultAiSelection(value.defaultAiSelection),
     agentAddOns,
   };
@@ -145,6 +158,7 @@ function defaultUserPreferences(): UserPreferences {
   return {
     ...DEFAULT_USER_PREFERENCES,
     defaultBoardTemplate: resolveWorkspaceBoardSettings(undefined),
+    defaultLectureStructure: { ...DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE },
     defaultAiSelection: { ...DEFAULT_AI_SELECTION },
     agentAddOns: { ...DEFAULT_USER_PREFERENCES.agentAddOns },
   };

@@ -153,6 +153,107 @@ describe('lecture revision bundle formats', () => {
       ),
     ).rejects.toThrow('research_notes_path_escape');
   });
+
+  it('round-trips complete authoring provenance while preserving legacy journals', async () => {
+    const { writer } = await pendingFixture();
+    const complete: ResearchNotesPendingMarkdownBundle = {
+      ...pendingJournal('e'.repeat(64), '44444444-4444-4444-8444-444444444444'),
+      generationBriefSha256: 'd'.repeat(64),
+      authoringPolicyVersion: 5,
+      authoringPolicySha256: 'f'.repeat(64),
+    };
+    await writer.createUserMarkdownBundle(
+      'Research Project',
+      'Lecture Notes & Slides/complete-provenance',
+      [
+        { name: 'Lecture Notes.md', content: '# Complete provenance notes\n' },
+        { name: 'Slides.md', content: '# Complete provenance slides\n' },
+      ],
+      complete,
+      OWNERSHIP,
+    );
+    const legacy = pendingJournal('1'.repeat(64), '55555555-5555-4555-8555-555555555555');
+    await writer.createUserMarkdownBundle(
+      'Research Project',
+      'Lecture Notes & Slides/legacy-provenance',
+      [
+        { name: 'Lecture Notes.md', content: '# Legacy notes\n' },
+        { name: 'Slides.md', content: '# Legacy slides\n' },
+      ],
+      legacy,
+      OWNERSHIP,
+    );
+
+    const pending = await writer.listPendingUserMarkdownBundles(
+      'Research Project',
+      'Lecture Notes & Slides',
+      OWNERSHIP,
+    );
+    const completePending = pending.find((entry) =>
+      entry.relativeBundlePath.endsWith('/complete-provenance'),
+    );
+    expect(completePending).toMatchObject({
+      relativeBundlePath: 'Lecture Notes & Slides/complete-provenance',
+      journal: {
+        bundleId: complete.bundleId,
+        attemptId: complete.attemptId,
+        generationBriefSha256: complete.generationBriefSha256,
+        authoringPolicyVersion: complete.authoringPolicyVersion,
+        authoringPolicySha256: complete.authoringPolicySha256,
+      },
+    });
+    expect(completePending?.journal.files).toEqual([
+      { name: 'Lecture Notes.md', contentSha256: expect.stringMatching(/^[0-9a-f]{64}$/u) },
+      { name: 'Slides.md', contentSha256: expect.stringMatching(/^[0-9a-f]{64}$/u) },
+    ]);
+    const legacyPending = pending.find((entry) =>
+      entry.relativeBundlePath.endsWith('/legacy-provenance'),
+    );
+    expect(legacyPending).toMatchObject({
+      relativeBundlePath: 'Lecture Notes & Slides/legacy-provenance',
+      journal: { bundleId: legacy.bundleId, attemptId: legacy.attemptId },
+    });
+    expect(legacyPending?.journal).not.toHaveProperty('generationBriefSha256');
+    expect(legacyPending?.journal).not.toHaveProperty('authoringPolicyVersion');
+    expect(legacyPending?.journal).not.toHaveProperty('authoringPolicySha256');
+    expect(legacy).not.toHaveProperty('generationBriefSha256');
+    expect(legacy).not.toHaveProperty('authoringPolicyVersion');
+    expect(legacy).not.toHaveProperty('authoringPolicySha256');
+  });
+
+  it('rejects partial and invalid authoring provenance as one journal identity', async () => {
+    const { writer } = await pendingFixture();
+    const base = pendingJournal('2'.repeat(64), '44444444-4444-4444-8444-444444444444');
+    const invalidJournals: ResearchNotesPendingMarkdownBundle[] = [
+      { ...base, generationBriefSha256: 'd'.repeat(64) },
+      {
+        ...base,
+        generationBriefSha256: 'd'.repeat(64),
+        authoringPolicyVersion: 5,
+      },
+      {
+        ...base,
+        generationBriefSha256: 'invalid',
+        authoringPolicyVersion: 5,
+        authoringPolicySha256: 'f'.repeat(64),
+      },
+    ];
+
+    for (const [index, journal] of invalidJournals.entries()) {
+      await expect(
+        writer.createUserMarkdownBundle(
+          'Research Project',
+          `Lecture Notes & Slides/invalid-provenance-${index}`,
+          [
+            { name: 'Lecture Notes.md', content: '# Notes\n' },
+            { name: 'Slides.md', content: '# Slides\n' },
+          ],
+          journal,
+          OWNERSHIP,
+        ),
+      ).rejects.toThrow('research_notes_folder_conflict');
+    }
+  });
 });
 
 describe('ResearchNotesManagedFiles', () => {

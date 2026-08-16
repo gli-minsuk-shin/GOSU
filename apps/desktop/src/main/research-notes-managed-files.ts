@@ -34,6 +34,9 @@ export type ResearchNotesPendingMarkdownBundle = Readonly<{
   revision: number;
   attemptId: string;
   sourceManifestSha256: string;
+  generationBriefSha256?: string;
+  authoringPolicyVersion?: number;
+  authoringPolicySha256?: string;
   /** Omitted by legacy revision journals, which always contain Markdown. */
   documentFormat?: 'markdown' | 'latex';
   files: readonly Readonly<{ name: string; contentSha256: string }>[];
@@ -112,6 +115,12 @@ function sha256(value: string) {
 function canonicalBundleJournal(journal: ResearchNotesPendingMarkdownBundle) {
   const documentFormat = bundleDocumentFormat(journal);
   const expectedFileNames = bundleFileNames(documentFormat);
+  const provenanceValues = [
+    journal.generationBriefSha256,
+    journal.authoringPolicyVersion,
+    journal.authoringPolicySha256,
+  ];
+  const provenanceCount = provenanceValues.filter((value) => value !== undefined).length;
   if (
     journal.schemaVersion !== 1 ||
     journal.kind !== 'lecture-revision' ||
@@ -130,6 +139,14 @@ function canonicalBundleJournal(journal: ResearchNotesPendingMarkdownBundle) {
       journal.attemptId,
     ) ||
     !/^[0-9a-f]{64}$/u.test(journal.sourceManifestSha256) ||
+    (provenanceCount !== 0 && provenanceCount !== provenanceValues.length) ||
+    (journal.generationBriefSha256 !== undefined &&
+      !/^[0-9a-f]{64}$/u.test(journal.generationBriefSha256)) ||
+    (journal.authoringPolicyVersion !== undefined &&
+      (!Number.isSafeInteger(journal.authoringPolicyVersion) ||
+        journal.authoringPolicyVersion < 1)) ||
+    (journal.authoringPolicySha256 !== undefined &&
+      !/^[0-9a-f]{64}$/u.test(journal.authoringPolicySha256)) ||
     (journal.documentFormat !== undefined &&
       journal.documentFormat !== 'markdown' &&
       journal.documentFormat !== 'latex') ||
@@ -976,6 +993,9 @@ function samePendingBundleIdentity(
     left.bundleId === right.bundleId &&
     left.studioId === right.studioId &&
     left.revision === right.revision &&
-    left.sourceManifestSha256 === right.sourceManifestSha256
+    left.sourceManifestSha256 === right.sourceManifestSha256 &&
+    left.generationBriefSha256 === right.generationBriefSha256 &&
+    left.authoringPolicyVersion === right.authoringPolicyVersion &&
+    left.authoringPolicySha256 === right.authoringPolicySha256
   );
 }

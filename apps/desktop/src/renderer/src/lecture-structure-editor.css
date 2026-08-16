@@ -1,0 +1,323 @@
+.lecture-structure-editor {
+  container: lecture-structure-editor / inline-size;
+  display: grid;
+  min-width: 0;
+  gap: 15px;
+}
+
+.lecture-structure-editor-heading,
+.lecture-structure-custom-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.lecture-structure-editor-heading h3 {
+  margin: 0 0 4px;
+  font-size: var(--font-section);
+}
+
+.lecture-structure-editor-heading p,
+.lecture-structure-adaptive-note span,
+.lecture-structure-custom-toolbar span {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.5;
+}
+
+.lecture-structure-editor-status {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--green) 28%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 6%, var(--surface-soft));
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.lecture-structure-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.lecture-structure-mode legend {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 700;
+}
+
+.lecture-structure-mode label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.lecture-structure-mode label.selected {
+  border-color: color-mix(in srgb, var(--green) 42%, var(--line));
+  background: color-mix(in srgb, var(--green) 6%, var(--surface-soft));
+}
+
+.lecture-structure-mode input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--green);
+}
+
+.lecture-structure-mode label > span {
+  display: grid;
+  gap: 3px;
+}
+
+.lecture-structure-mode small,
+.lecture-structure-system-items small {
+  color: var(--muted);
+  font-size: var(--font-caption);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.lecture-structure-adaptive-note,
+.lecture-structure-validation {
+  display: grid;
+  gap: 3px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.lecture-structure-custom-editor {
+  display: grid;
+  min-width: 0;
+  gap: 9px;
+}
+
+.lecture-structure-custom-toolbar {
+  align-items: center;
+}
+
+.lecture-structure-custom-toolbar > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.lecture-structure-validation {
+  border-color: color-mix(in srgb, var(--orange) 46%, var(--line));
+  background: color-mix(in srgb, var(--orange) 7%, var(--surface-soft));
+  color: var(--orange);
+}
+
+.lecture-structure-validation ul {
+  display: grid;
+  gap: 2px;
+  margin: 2px 0 0;
+  padding-left: 19px;
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+
+.lecture-structure-sections {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lecture-structure-sections > li {
+  display: grid;
+  grid-template-columns: 28px minmax(170px, 1fr) minmax(150px, 190px) auto;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: light-dark(rgba(247, 250, 246, 0.8), rgba(8, 12, 9, 0.52));
+}
+
+.lecture-structure-sections > li.invalid {
+  border-color: color-mix(in srgb, var(--orange) 48%, var(--line));
+}
+
+.lecture-structure-section-number {
+  display: grid;
+  place-items: center;
+  align-self: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--green) 11%, transparent);
+  color: var(--green);
+  font-size: var(--font-meta);
+  font-weight: 800;
+}
+
+.lecture-structure-sections label {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.lecture-structure-sections input,
+.lecture-structure-sections select {
+  width: 100%;
+  min-width: 0;
+}
+
+.lecture-structure-section-issue {
+  color: var(--orange);
+  font-size: var(--font-caption);
+  line-height: 1.35;
+}
+
+.lecture-structure-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 3px;
+}
+
+.lecture-structure-section-actions button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.lecture-structure-section-actions .lecture-structure-remove-section {
+  border-color: color-mix(in srgb, var(--red) 30%, var(--line));
+  color: var(--red);
+}
+
+.lecture-structure-add-section {
+  justify-self: start;
+  min-height: 34px;
+  border: 1px dashed var(--line-strong);
+  background: var(--surface-soft);
+  color: var(--green);
+}
+
+.lecture-structure-system-items {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--green) 3%, var(--surface-soft));
+}
+
+.lecture-structure-system-items > strong {
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.lecture-structure-system-items ul {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lecture-structure-system-items li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.lecture-structure-system-items li > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.lecture-structure-system-items em {
+  color: var(--green);
+  font-size: var(--font-meta);
+  font-style: normal;
+  font-weight: 750;
+}
+
+.lecture-structure-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@container lecture-structure-editor (max-width: 720px) {
+  .lecture-structure-sections > li {
+    grid-template-columns: 28px minmax(0, 1fr) minmax(145px, 0.55fr);
+  }
+
+  .lecture-structure-section-actions {
+    grid-column: 2 / -1;
+    justify-content: flex-end;
+    padding-bottom: 0;
+  }
+
+  .lecture-structure-system-items ul {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container lecture-structure-editor (max-width: 480px) {
+  .lecture-structure-editor-heading,
+  .lecture-structure-custom-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lecture-structure-editor-status {
+    align-self: flex-start;
+  }
+
+  .lecture-structure-mode {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lecture-structure-sections > li {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .lecture-structure-sections > li > label,
+  .lecture-structure-section-actions {
+    grid-column: 2;
+  }
+
+  .lecture-structure-section-actions {
+    justify-content: flex-start;
+  }
+
+  .lecture-structure-custom-toolbar button,
+  .lecture-structure-add-section {
+    width: 100%;
+  }
+}

@@ -394,6 +394,9 @@ describe('ResearchNotesService project workspaces', () => {
     expect(recoveredNotes).toContain('gosu_origin_session_id: null');
     expect(recoveredNotes).toContain('related_documents: ["Experiments/Experiment Log.md"]');
     expect(recoveredNotes).toContain('related_papers: ["https://doi.org/10.1000/fixture"]');
+    expect(recoveredNotes).not.toContain('gosu_generation_brief_sha256');
+    expect(recoveredNotes).not.toContain('gosu_authoring_policy_version');
+    expect(recoveredNotes).not.toContain('gosu_authoring_policy_sha256');
     await expect(
       readFile(
         join(root, 'GOSU', 'Alpha Project', recoveredWithNewAttempt[0].relativePath),
@@ -422,6 +425,9 @@ describe('ResearchNotesService project workspaces', () => {
       sourceManifestSha256: base.sourceManifestSha256,
       relativeBundlePath: dirname(recoveredWithNewAttempt[0].relativePath),
     });
+    expect(pending[0]).not.toHaveProperty('generationBriefSha256');
+    expect(pending[0]).not.toHaveProperty('authoringPolicyVersion');
+    expect(pending[0]).not.toHaveProperty('authoringPolicySha256');
 
     await restarted.confirmPendingRevisionArtifacts(pending[0]!);
     expect((await readdir(bundlePath)).sort()).toEqual(['Lecture Notes.md', 'Slides.md']);
@@ -445,6 +451,153 @@ describe('ResearchNotesService project workspaces', () => {
     await expect(service.saveRevisionArtifacts(recoveryInput)).rejects.toThrow(
       'research_notes_folder_conflict',
     );
+  });
+
+  it('persists complete v3 authoring provenance in Markdown, pending journals, and recovery identity', async () => {
+    const { root, service, storage, vault, literature, workspace } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const input = {
+      outputProjectId: PROJECT_ID,
+      studioId: '33333333-3333-4333-8333-333333333333',
+      studioTitle: 'Provenance synthesis',
+      revision: 3,
+      attemptId: '44444444-4444-4444-8444-444444444444',
+      sourceManifestSha256: 'b'.repeat(64),
+      generationBriefSha256: 'c'.repeat(64),
+      authoringPolicyVersion: 5,
+      authoringPolicySha256: 'd'.repeat(64),
+      lectureNotesMarkdown: '# Provenance notes\n',
+      slidesMarkdown: '# Provenance slides\n',
+      createdAt: NOW.toISOString(),
+    };
+
+    const artifacts = await service.saveRevisionArtifacts(input);
+    await expect(service.saveRevisionArtifacts(input)).resolves.toEqual(artifacts);
+    const bundlePath = dirname(join(root, 'GOSU', 'Alpha Project', artifacts[0].relativePath));
+    const notes = await readFile(join(bundlePath, 'Lecture Notes.md'), 'utf8');
+    expect(notes).toContain(
+      `gosu_generation_brief_sha256: ${JSON.stringify(input.generationBriefSha256)}`,
+    );
+    expect(notes).toContain(`gosu_authoring_policy_version: ${input.authoringPolicyVersion}`);
+    expect(notes).toContain(
+      `gosu_authoring_policy_sha256: ${JSON.stringify(input.authoringPolicySha256)}`,
+    );
+    expect(notes).toContain(
+      `"generation_brief_sha256":${JSON.stringify(input.generationBriefSha256)}`,
+    );
+    expect(notes).toContain(`"authoring_policy_version":${input.authoringPolicyVersion}`);
+    expect(notes).toContain(
+      `"authoring_policy_sha256":${JSON.stringify(input.authoringPolicySha256)}`,
+    );
+    const journalPath = join(bundlePath, '.gosu-pending-bundle.json');
+    const journal = JSON.parse(await readFile(journalPath, 'utf8')) as Record<string, unknown>;
+    expect(journal).toMatchObject({
+      sourceManifestSha256: input.sourceManifestSha256,
+      generationBriefSha256: input.generationBriefSha256,
+      authoringPolicyVersion: input.authoringPolicyVersion,
+      authoringPolicySha256: input.authoringPolicySha256,
+    });
+
+    const restarted = new ResearchNotesService({
+      storage,
+      literature,
+      workspace,
+      vault,
+      now: () => NOW,
+    });
+    const pending = await restarted.listPendingRevisionArtifacts();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      relativeBundlePath: dirname(artifacts[0].relativePath),
+      sourceManifestSha256: input.sourceManifestSha256,
+      generationBriefSha256: input.generationBriefSha256,
+      authoringPolicyVersion: input.authoringPolicyVersion,
+      authoringPolicySha256: input.authoringPolicySha256,
+    });
+
+    await expect(
+      restarted.confirmPendingRevisionArtifacts({
+        ...pending[0]!,
+        authoringPolicySha256: 'e'.repeat(64),
+      }),
+    ).rejects.toThrow('research_notes_folder_conflict');
+    await expect(readFile(journalPath, 'utf8')).resolves.toContain(input.authoringPolicySha256);
+  });
+
+  it('makes authoring hashes part of the pending bundle identity', async () => {
+    const { service } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const base = {
+      outputProjectId: PROJECT_ID,
+      studioId: '33333333-3333-4333-8333-333333333333',
+      studioTitle: 'Hashed identity',
+      revision: 2,
+      attemptId: '44444444-4444-4444-8444-444444444444',
+      sourceManifestSha256: 'a'.repeat(64),
+      generationBriefSha256: 'b'.repeat(64),
+      authoringPolicyVersion: 5,
+      authoringPolicySha256: 'c'.repeat(64),
+      lectureNotesMarkdown: '# Notes\n',
+      slidesMarkdown: '# Slides\n',
+      createdAt: NOW.toISOString(),
+    };
+
+    const first = await service.saveRevisionArtifacts(base);
+    const changed = await service.saveRevisionArtifacts({
+      ...base,
+      attemptId: '55555555-5555-4555-8555-555555555555',
+      generationBriefSha256: 'd'.repeat(64),
+    });
+
+    expect(dirname(changed[0].relativePath)).not.toBe(dirname(first[0].relativePath));
+  });
+
+  it('rejects partial or invalid authoring provenance before writing either artifact', async () => {
+    const { root, service } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const base = {
+      outputProjectId: PROJECT_ID,
+      studioId: '33333333-3333-4333-8333-333333333333',
+      studioTitle: 'Invalid provenance',
+      revision: 1,
+      attemptId: '44444444-4444-4444-8444-444444444444',
+      sourceManifestSha256: 'a'.repeat(64),
+      lectureNotesMarkdown: '# Notes\n',
+      slidesMarkdown: '# Slides\n',
+      createdAt: NOW.toISOString(),
+    };
+    const invalidProvenance: Array<{
+      generationBriefSha256?: string;
+      authoringPolicyVersion?: number;
+      authoringPolicySha256?: string;
+    }> = [
+      { generationBriefSha256: 'b'.repeat(64) },
+      {
+        generationBriefSha256: 'b'.repeat(64),
+        authoringPolicyVersion: 5,
+      },
+      {
+        generationBriefSha256: 'not-a-hash',
+        authoringPolicyVersion: 5,
+        authoringPolicySha256: 'c'.repeat(64),
+      },
+      {
+        generationBriefSha256: 'b'.repeat(64),
+        authoringPolicyVersion: 0,
+        authoringPolicySha256: 'c'.repeat(64),
+      },
+    ];
+
+    for (const provenance of invalidProvenance) {
+      await expect(service.saveRevisionArtifacts({ ...base, ...provenance })).rejects.toMatchObject(
+        {
+          code: 'research_notes_folder_conflict',
+        },
+      );
+    }
+    await expect(
+      readdir(join(root, 'GOSU', 'Alpha Project', 'Lecture Notes & Slides')),
+    ).resolves.toEqual([]);
   });
 
   it('preflights the lecture destination with a cleaned-up write probe', async () => {
