@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   LectureSourceCandidates,
   LectureStudio,
+  LectureStudioAttempt,
   LectureStudioDetail,
   LectureGenerationProgressEvent,
   LectureStudioMessage,
@@ -22,9 +23,11 @@ import {
   lectureManuscriptAvailabilityLabel,
   lectureArtifactActionLabels,
   lectureErrorCodeMessage,
+  LectureGenerationAttemptDetails,
   LectureStudioView,
   lectureOutputProjectName,
   lectureExternalSourceCard,
+  lectureGenerationAttemptSummary,
   lectureOverleafSourceCard,
   lectureStudioMessages,
   lectureStudioStatusLabel,
@@ -269,6 +272,150 @@ describe('LectureStudioView', () => {
     expect(lectureErrorCodeMessage('lecture_invalid_slide_count')).toContain(
       'Adjust the slide target or retry',
     );
+  });
+
+  it('projects persisted validation attempts into fixed, content-free generation details', () => {
+    const attempt = {
+      schemaVersion: 1,
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      studioId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      status: 'failed',
+      requestedModelId: 'private-requested-model-id',
+      resolvedModelId: 'private-resolved-model-id',
+      providerId: 'private-provider-id',
+      catalogVersion: 'private-catalog-version',
+      reasoningOptionId: 'high',
+      phases: [
+        {
+          phase: 'preparing_sources',
+          sequence: 1,
+          occurredAt: '2026-08-15T00:00:01.000Z',
+        },
+        {
+          phase: 'correcting_output',
+          sequence: 2,
+          occurredAt: '2026-08-15T00:01:30.000Z',
+        },
+      ],
+      validations: [
+        {
+          pass: 'initial',
+          category: 'latex_grammar',
+          diagnostics: [
+            {
+              document: 'lecture-notes',
+              reason: 'unsupported_command',
+              tokenCount: 3,
+              token: '\\privateSourceMacro',
+            },
+            {
+              document: 'slides',
+              reason: 'control_character',
+              tokenCount: 1,
+            },
+          ],
+          recordedAt: '2026-08-15T00:01:00.000Z',
+        },
+        {
+          pass: 'correction',
+          category: 'latex_grammar',
+          diagnostics: [
+            {
+              document: 'lecture-notes',
+              reason: 'ambiguous_json_backslash_escape',
+              tokenCount: 2,
+            },
+          ],
+          recordedAt: '2026-08-15T00:02:00.000Z',
+        },
+      ],
+      terminalCode: 'lecture_invalid_latex_grammar',
+      startedAt: '2026-08-15T00:00:00.000Z',
+      completedAt: '2026-08-15T00:02:05.000Z',
+    } as unknown as LectureStudioAttempt;
+
+    const summary = lectureGenerationAttemptSummary(attempt);
+    expect(summary).toMatchObject({
+      outcome: 'Failed',
+      elapsed: '2m 05s',
+      model: 'Selected model',
+      reasoning: 'High',
+      phases: [
+        { label: 'Preparing selected sources', occurredAt: '2026-08-15T00:00:01.000Z' },
+        {
+          label: 'Correcting the draft automatically',
+          occurredAt: '2026-08-15T00:01:30.000Z',
+        },
+      ],
+      validations: [
+        {
+          pass: 'Initial check',
+          category: 'LaTeX compatibility',
+          diagnostics: [
+            { document: 'Notes', reason: 'Unsupported LaTeX command', tokenCount: 3 },
+            { document: 'Slides', reason: 'Invalid hidden character', tokenCount: 1 },
+          ],
+        },
+        {
+          pass: 'Correction check',
+          category: 'LaTeX compatibility',
+          diagnostics: [{ document: 'Notes', reason: 'Ambiguous LaTeX backslash', tokenCount: 2 }],
+        },
+      ],
+    });
+    const serialized = JSON.stringify(summary);
+    expect(serialized).not.toContain('private-requested-model-id');
+    expect(serialized).not.toContain('private-resolved-model-id');
+    expect(serialized).not.toContain('private-provider-id');
+    expect(serialized).not.toContain('privateSourceMacro');
+
+    const html = renderToStaticMarkup(<LectureGenerationAttemptDetails attempt={attempt} />);
+    expect(html).toContain('<summary>Generation details</summary>');
+    expect(html).toContain('aria-label="Generation activity"');
+    expect(html).toContain('aria-label="Validation checks"');
+    expect(html).toContain('3 flagged items');
+    expect(html).not.toContain('private-requested-model-id');
+    expect(html).not.toContain('private-resolved-model-id');
+    expect(html).not.toContain('private-provider-id');
+    expect(html).not.toContain('privateSourceMacro');
+  });
+
+  it('renders terminal attempt codes as fixed recovery copy without exposing raw codes', () => {
+    const attempt = (terminalCode: LectureStudioAttempt['terminalCode']) =>
+      ({
+        schemaVersion: 1,
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        studioId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        status: 'failed',
+        requestedModelId: null,
+        resolvedModelId: null,
+        providerId: null,
+        catalogVersion: null,
+        reasoningOptionId: null,
+        phases: [],
+        validations: [],
+        terminalCode,
+        startedAt: '2026-08-15T00:00:00.000Z',
+        completedAt: '2026-08-15T00:00:12.000Z',
+      }) as LectureStudioAttempt;
+
+    expect(lectureGenerationAttemptSummary(attempt('lecture_generation_timed_out'))).toMatchObject({
+      elapsed: '12s',
+      model: 'Automatic selection',
+      reasoning: 'Provider default',
+      terminal: expect.stringContaining('30-minute safety limit'),
+    });
+    expect(lectureGenerationAttemptSummary(attempt('lecture_pdf_compile_failed')).terminal).toBe(
+      'The local LaTeX compiler could not build this revision. The saved LaTeX is unchanged.',
+    );
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('lastAttempt={detail?.lastAttempt ?? null}');
+    expect(source).toContain('<summary>Generation details</summary>');
+    expect(source).toContain('!lastAttempt && <code>{studio.lastErrorCode}</code>');
   });
 
   it('merges project-scoped source pages without dropping already loaded records', () => {

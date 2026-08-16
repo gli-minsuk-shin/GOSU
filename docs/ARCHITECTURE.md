@@ -1072,17 +1072,24 @@ catalog 자동 refresh 뒤 `Retry generation`으로 재사용한다.
 담은 strict `lecture.generation.progress` event를 보낸다. source 준비, model 시작·draft/activity, output 검증,
 한 번의 자동 교정, 두 PDF compile, revision 저장을 구분하며 Renderer는 경과 시간과 최근 bounded activity를
 표시한다. model activity는 5초에 한 번 이하로 제한하고 같은 연속 phase는 UI에서 합치므로 event storm이
-detail reload를 유발하지 않는다. 이 receipt는 근사적인 live 상태일 뿐 model reasoning log가 아니며 raw Codex
-notification, source/output 본문, token, provider message, thread/turn ID와 filesystem path를 포함하거나
-SQLCipher·Hosted Sync·telemetry에 저장하지 않는다.
+detail reload를 유발하지 않는다. live event는 근사적인 상태일 뿐 model reasoning log가 아니다. 별도의
+`lecture_studio_attempts` row에는 semantic phase의 첫 발생 시각, requested/resolved model identity, initial·
+correction validation의 고정 category와 notes/slides별 reason, token 개수와 terminal code만 bounded하게 남긴다.
+임의 token 문자열, raw Codex notification, prompt/source/output 본문, provider message, compiler stderr,
+thread/turn ID와 filesystem path는 attempt row·Renderer·Hosted Sync·telemetry 어디에도 넣지 않는다.
 
 structured output은 고정 JSON field의 notes/article LaTeX body와 Beamer frame body, 알려진
 `[P#]|[E#]|[M#]|[F#]` label, substantive frame별 evidence label, notes의 `Sources used` 또는 starred section,
 duration 또는 사용자가 명시한 compiled slide page target을 검증한다. GOSU가 별도 title frame을 추가하므로
 slide target은 그 title을 포함한 정확한 PDF page 수 gate다. notes page target은 typography에 따른 근사
-지시다. bounded dialect는 고정 preamble이 실제로 제공하는 AMS matrix/alignment, command math delimiter,
-`binom`, `mid`, `\|`, `Vert`, `langle`, `rangle`, `pmod`, `nonumber`, `intertext` 계열 수학 command, 안전한
-table·booktabs layout과
+지시다. authoring policy v5는 JSON 안의 모든 LaTeX backslash를 `\\`로 encode하도록 요구한다. 새 generated
+body에서 raw `\b`·`\f`가 U+0008·U+000C로 decode된 경우에만 literal backslash prefix로 복원하고 전체
+deny-by-default LaTeX validator를 다시 통과시킨다. TAB·CR 또는 `\nonumber` 같은 `\n...` command로 해석될 수
+있는 모호한 line break는 `ambiguous_json_backslash_escape`로 fail closed한다. 이미 commit된 canonical body는
+이 transport normalization을 거치지 않는다. bounded dialect는 고정 preamble이 실제로 제공하는 AMS
+matrix/alignment, `samepage|subequations|alignat`, command math delimiter, `arg`, `longmapsto`, notes-only
+`qedhere`, `operatorname*`, `binom`, `mid`, `\|`, `Vert`, `langle`, `rangle`, `pmod`, `nonumber`, `intertext` 계열
+수학 command, 안전한 table·booktabs layout과
 Beamer `columns|column`까지만 허용한다. prose의 `%|#|&|_`는 escape하고 raw `~`는 거부한다. source가 정의한
 custom macro는 복사하지 않고 같은 의미의 허용된 primitive로 풀어 쓴다. HTML 검사는 math delimiter와 math
 environment를 구분하므로 정상적인 부등호 `<|>`를 tag로 오인하지 않지만, math 밖의 실제 HTML tag·comment는
@@ -1095,7 +1102,7 @@ input의 구조적 evidence gate이며 paper full-text 사실 검증이라고 �
 
 첫 candidate가 JSON parse, exact schema, bounded LaTeX grammar, citation mapping 또는 slide count gate에서
 거부되면 같은 Codex thread에서 그 safe category와 고정 교정 지시만 전달해 최대 한 번 complete pair를 다시
-생성한다. LaTeX grammar 거부는 notes/slides별 고정 reason ID와 엄격히 정규화·중복 제거한 최대 8개 command 또는
+생성한다. LaTeX grammar 거부는 notes/slides별 고정 reason ID와 엄격히 정규화·중복 제거한 최대 32개 command 또는
 environment token 예시만 correction에 추가해 source-native custom macro를 primitive로 풀도록 안내한다. raw
 candidate·임의 parser message·source text·path를 correction prompt, Studio record, Renderer 또는 log에 다시
 넣지 않으며 source manifest, generation brief와 current draft는 initial turn에서 고정한 값을 그대로 사용한다.
@@ -1120,6 +1127,14 @@ cross-reference consistency audit를 수행한다. 수학 표기는 canonical La
 기호를 notes와 slides에서 재사용한다. developer instruction은 bounded command/environment와 LaTeX 특수문자
 escape 규칙을 명시한다. custom instruction과 source 안의 prompt injection은 이 immutable policy를 약화하거나
 opt-out할 수 없다.
+
+Lecture SQLCipher state는 `lecture_studios`, `lecture_studio_messages`, `lecture_studio_revisions`와
+content-free `lecture_studio_attempts`를 소유한다. running attempt 생성은 Studio begin과, terminal attempt는
+assistant message·revision·Studio completion 또는 failure와 같은 transaction으로 commit한다. restart에서
+남은 running row는 무인 재호출하지 않고 Studio와 함께 `application_interrupted`로 reconciliation한다.
+Studio detail은 최신 attempt 하나만 반환하며 attempt 도입 전 Studio는 `null`로 호환한다. 성공 attempt와
+현재 running attempt는 보존하고, revision이나 message를 만들지 못한 반복 실패가 DB를 무한히 키우지 않도록
+각 Studio의 `failed|interrupted` attempt는 시작 시각과 row 순서 기준 최신 100건만 유지한다.
 
 Lecture 생성과 수정은 provider `model/list`에서 발견한 opaque model ID와 해당 model의 native reasoning
 option을 Studio별 UI preference로 선택한다. 저장된 선택이 없는 새 Studio는 Settings의 Codex default를 한 번

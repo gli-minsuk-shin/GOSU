@@ -24,6 +24,7 @@ export const LECTURE_STUDIO_MAX_MANUSCRIPT_FILES = 128;
 export const LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS = 6_000;
 export const LECTURE_STUDIO_MAX_MESSAGES = 2_500;
 export const LECTURE_STUDIO_MAX_REVISIONS = 1_000;
+export const LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS = 100;
 export const LECTURE_STUDIO_MAX_MESSAGE_LENGTH = 32_000;
 export const LECTURE_STUDIO_MAX_MARKDOWN_LENGTH = 200_000;
 export const LECTURE_STUDIO_MAX_LATEX_LENGTH = 240_000;
@@ -89,6 +90,274 @@ export type LectureStudioGenerationBrief = z.infer<typeof LectureStudioGeneratio
 
 export const LectureStudioStatusSchema = z.enum(['draft', 'generating', 'ready', 'failed']);
 export type LectureStudioStatus = z.infer<typeof LectureStudioStatusSchema>;
+
+export const LECTURE_GENERATION_PROGRESS_PHASES = [
+  'preparing_sources',
+  'starting_model',
+  'generating_draft',
+  'model_active',
+  'validating_output',
+  'correcting_output',
+  'compiling_documents',
+  'saving_revision',
+] as const;
+
+export const LectureGenerationProgressPhaseSchema = z.enum(LECTURE_GENERATION_PROGRESS_PHASES);
+export type LectureGenerationProgressPhase = z.infer<typeof LectureGenerationProgressPhaseSchema>;
+
+export const LectureStudioAttemptStatusSchema = z.enum([
+  'running',
+  'succeeded',
+  'failed',
+  'interrupted',
+]);
+export type LectureStudioAttemptStatus = z.infer<typeof LectureStudioAttemptStatusSchema>;
+
+export const LectureStudioAttemptValidationPassSchema = z.enum(['initial', 'correction']);
+export type LectureStudioAttemptValidationPass = z.infer<
+  typeof LectureStudioAttemptValidationPassSchema
+>;
+
+export const LectureStudioAttemptValidationCategorySchema = z.enum([
+  'response_json',
+  'response_schema',
+  'latex_grammar',
+  'citation_mapping',
+  'slide_count',
+]);
+export type LectureStudioAttemptValidationCategory = z.infer<
+  typeof LectureStudioAttemptValidationCategorySchema
+>;
+
+/** Keep this fixed enum aligned with the bounded LaTeX validator's public reason vocabulary. */
+export const LectureStudioAttemptLatexReasonSchema = z.enum([
+  'empty_body',
+  'body_too_large',
+  'control_character',
+  'ambiguous_json_backslash_escape',
+  'tex_caret_escape',
+  'raw_html',
+  'markdown_structure',
+  'document_wrapper',
+  'raw_comment',
+  'raw_parameter',
+  'beamer_overlay',
+  'beamer_multipage_frame',
+  'beamer_frame_option',
+  'unbalanced_braces',
+  'malformed_environment',
+  'unsupported_environment',
+  'unbalanced_environment',
+  'unsupported_command',
+  'unsupported_escape',
+  'math_delimiter_in_math_environment',
+  'unbalanced_math',
+  'raw_subscript_or_superscript',
+  'raw_alignment_character',
+  'raw_tilde',
+  'missing_sources_used',
+  'missing_frame',
+  'invalid_title',
+  'invalid_canonical_wrapper',
+]);
+export type LectureStudioAttemptLatexReason = z.infer<typeof LectureStudioAttemptLatexReasonSchema>;
+
+export const LectureStudioAttemptLatexDiagnosticSchema = z
+  .object({
+    document: z.enum(['lecture-notes', 'slides']),
+    reason: LectureStudioAttemptLatexReasonSchema,
+    /** Count only; diagnostic token text remains ephemeral because it can encode source content. */
+    tokenCount: z.number().int().nonnegative().max(32),
+  })
+  .strict();
+export type LectureStudioAttemptLatexDiagnostic = z.infer<
+  typeof LectureStudioAttemptLatexDiagnosticSchema
+>;
+
+export const LectureStudioAttemptValidationSchema = z
+  .object({
+    pass: LectureStudioAttemptValidationPassSchema,
+    category: LectureStudioAttemptValidationCategorySchema,
+    diagnostics: z.array(LectureStudioAttemptLatexDiagnosticSchema).max(2),
+    recordedAt: timestampSchema,
+  })
+  .strict()
+  .superRefine((validation, context) => {
+    const documents = validation.diagnostics.map((diagnostic) => diagnostic.document);
+    if (new Set(documents).size !== documents.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['diagnostics'],
+        message: 'Lecture attempt diagnostics must contain at most one result per document',
+      });
+    }
+    if ((validation.category === 'latex_grammar') !== validation.diagnostics.length > 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['diagnostics'],
+        message: 'Only LaTeX grammar failures can retain bounded document diagnostics',
+      });
+    }
+  });
+export type LectureStudioAttemptValidation = z.infer<typeof LectureStudioAttemptValidationSchema>;
+
+export const LectureStudioAttemptPhaseSchema = z
+  .object({
+    phase: LectureGenerationProgressPhaseSchema,
+    sequence: z.number().int().positive().max(10_000),
+    occurredAt: timestampSchema,
+  })
+  .strict();
+export type LectureStudioAttemptPhase = z.infer<typeof LectureStudioAttemptPhaseSchema>;
+
+export const LectureStudioAttemptTerminalCodeSchema = z.enum([
+  'application_interrupted',
+  'lecture_source_not_found',
+  'lecture_source_conflict',
+  'lecture_context_too_large',
+  'lecture_research_notes_required',
+  'lecture_codex_unavailable',
+  'lecture_auth_required',
+  'lecture_generation_timed_out',
+  'lecture_usage_limit_exceeded',
+  'lecture_generation_interrupted',
+  'lecture_generation_failed',
+  'lecture_invalid_response',
+  'lecture_invalid_response_json',
+  'lecture_invalid_response_schema',
+  'lecture_invalid_latex_grammar',
+  'lecture_invalid_citation_mapping',
+  'lecture_invalid_slide_count',
+  'lecture_persistence_failed',
+  'lecture_cancelled',
+  'lecture_pdf_compiler_unavailable',
+  'lecture_pdf_compile_failed',
+  'lecture_pdf_too_large',
+  'lecture_pdf_invalid',
+]);
+export type LectureStudioAttemptTerminalCode = z.infer<
+  typeof LectureStudioAttemptTerminalCodeSchema
+>;
+
+/**
+ * A content-free, bounded record of one generation attempt. It deliberately cannot contain
+ * prompts, candidate output, source text, paths, provider messages, compiler output, or stderr.
+ */
+export const LectureStudioAttemptSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    id: uuidSchema,
+    studioId: uuidSchema,
+    status: LectureStudioAttemptStatusSchema,
+    requestedModelId: z.string().trim().min(1).max(256).nullable(),
+    resolvedModelId: z.string().trim().min(1).max(256).nullable(),
+    providerId: z.string().trim().min(1).max(128).nullable(),
+    catalogVersion: z.string().trim().min(1).max(128).nullable(),
+    reasoningOptionId: z.string().trim().min(1).max(128).nullable(),
+    phases: z.array(LectureStudioAttemptPhaseSchema).max(LECTURE_GENERATION_PROGRESS_PHASES.length),
+    validations: z.array(LectureStudioAttemptValidationSchema).max(2),
+    terminalCode: LectureStudioAttemptTerminalCodeSchema.nullable(),
+    startedAt: timestampSchema,
+    completedAt: timestampSchema.nullable(),
+  })
+  .strict()
+  .superRefine((attempt, context) => {
+    const invocationFields = [attempt.resolvedModelId, attempt.providerId, attempt.catalogVersion];
+    if (!invocationFields.every((value) => value === null) && !invocationFields.every(Boolean)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['resolvedModelId'],
+        message: 'Resolved model identity fields must be recorded together',
+      });
+    }
+    const isRunning = attempt.status === 'running';
+    const isSucceeded = attempt.status === 'succeeded';
+    if (
+      (isRunning && (attempt.completedAt !== null || attempt.terminalCode !== null)) ||
+      (!isRunning && attempt.completedAt === null) ||
+      (isSucceeded && attempt.terminalCode !== null) ||
+      (!isRunning && !isSucceeded && attempt.terminalCode === null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['terminalCode'],
+        message: 'Lecture attempt terminal fields do not match its status',
+      });
+    }
+    if (isSucceeded && attempt.resolvedModelId === null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['resolvedModelId'],
+        message: 'A successful Lecture attempt must retain its resolved model identity',
+      });
+    }
+    const phases = attempt.phases;
+    if (new Set(phases.map((entry) => entry.phase)).size !== phases.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['phases'],
+        message: 'Lecture attempt phases retain only their first occurrence',
+      });
+    }
+    for (let index = 0; index < phases.length; index += 1) {
+      const phase = phases[index]!;
+      const previous = phases[index - 1];
+      if (
+        Date.parse(phase.occurredAt) < Date.parse(attempt.startedAt) ||
+        (previous !== undefined &&
+          (phase.sequence <= previous.sequence ||
+            Date.parse(phase.occurredAt) < Date.parse(previous.occurredAt)))
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['phases', index],
+          message: 'Lecture attempt phases must be chronological',
+        });
+      }
+    }
+    const validations = attempt.validations;
+    if (
+      new Set(validations.map((validation) => validation.pass)).size !== validations.length ||
+      validations[0]?.pass === 'correction' ||
+      (validations[1] !== undefined && validations[1].pass !== 'correction')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['validations'],
+        message: 'Lecture attempt validation passes must be initial then correction',
+      });
+    }
+    for (const [index, validation] of validations.entries()) {
+      const previous = validations[index - 1];
+      if (
+        Date.parse(validation.recordedAt) < Date.parse(attempt.startedAt) ||
+        (previous !== undefined &&
+          Date.parse(validation.recordedAt) < Date.parse(previous.recordedAt))
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['validations', index, 'recordedAt'],
+          message: 'Lecture attempt validations cannot predate the attempt',
+        });
+      }
+    }
+    const completedAt = attempt.completedAt;
+    if (
+      completedAt !== null &&
+      (Date.parse(completedAt) < Date.parse(attempt.startedAt) ||
+        phases.some((phase) => Date.parse(phase.occurredAt) > Date.parse(completedAt)) ||
+        validations.some(
+          (validation) => Date.parse(validation.recordedAt) > Date.parse(completedAt),
+        ))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['completedAt'],
+        message: 'Lecture attempt completion must follow all recorded activity',
+      });
+    }
+  });
+export type LectureStudioAttempt = z.infer<typeof LectureStudioAttemptSchema>;
 
 export const LectureLiteratureSelectionSchema = z
   .object({ projectId: uuidSchema, recordId: uuidSchema })
@@ -715,6 +984,7 @@ export const LectureStudioDetailSchema = z
     studio: LectureStudioSchema,
     messages: z.array(LectureStudioMessageSchema).max(LECTURE_STUDIO_MAX_MESSAGES),
     revisions: z.array(LectureStudioRevisionSchema).max(LECTURE_STUDIO_MAX_REVISIONS),
+    lastAttempt: LectureStudioAttemptSchema.nullable().optional(),
   })
   .strict()
   .superRefine((detail, context) => {
@@ -739,6 +1009,13 @@ export const LectureStudioDetailSchema = z
         });
       }
     });
+    if (detail.lastAttempt && detail.lastAttempt.studioId !== detail.studio.id) {
+      context.addIssue({
+        code: 'custom',
+        path: ['lastAttempt', 'studioId'],
+        message: 'The latest Lecture attempt must belong to the detailed studio',
+      });
+    }
   });
 export type LectureStudioDetail = z.infer<typeof LectureStudioDetailSchema>;
 
@@ -1189,20 +1466,6 @@ export const LectureStudioChangedEventSchema = z
     occurredAt: timestampSchema,
   })
   .strict();
-
-export const LECTURE_GENERATION_PROGRESS_PHASES = [
-  'preparing_sources',
-  'starting_model',
-  'generating_draft',
-  'model_active',
-  'validating_output',
-  'correcting_output',
-  'compiling_documents',
-  'saving_revision',
-] as const;
-
-export const LectureGenerationProgressPhaseSchema = z.enum(LECTURE_GENERATION_PROGRESS_PHASES);
-export type LectureGenerationProgressPhase = z.infer<typeof LectureGenerationProgressPhaseSchema>;
 
 /**
  * A deliberately content-free activity receipt. Progress events expose only GOSU-owned phase

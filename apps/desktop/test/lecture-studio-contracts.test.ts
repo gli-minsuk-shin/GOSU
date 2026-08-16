@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   LECTURE_STUDIO_CANDIDATE_PAGE_MAX,
   LECTURE_STUDIO_IPC_ERROR_CODES,
+  LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS,
   LectureSourceCandidatesSchema,
   LectureSourceManifestSchema,
   LectureSourceSelectionSchema,
@@ -12,6 +13,7 @@ import {
   EmptyLectureStudioTrashInputSchema,
   ExportLectureStudioArtifactInputSchema,
   LectureStudioDetailSchema,
+  LectureStudioAttemptSchema,
   LectureStudioEventSchema,
   LectureStudioListSnapshotSchema,
   LectureStudioSchema,
@@ -130,6 +132,119 @@ describe('Lecture Studio progress event contracts', () => {
       false,
     );
     expect(LectureStudioEventSchema.safeParse({ ...event, sequence: 0 }).success).toBe(false);
+  });
+});
+
+describe('Lecture Studio persistent attempt diagnostics', () => {
+  it('keeps a fixed bounded failure history per Studio', () => {
+    expect(LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS).toBe(100);
+  });
+
+  it('accepts bounded content-free initial and correction diagnostics', () => {
+    const studioId = randomUUID();
+    const attempt = LectureStudioAttemptSchema.parse({
+      schemaVersion: 1,
+      id: randomUUID(),
+      studioId,
+      status: 'failed',
+      requestedModelId: null,
+      resolvedModelId: 'gpt-5.6-sol',
+      providerId: 'codex',
+      catalogVersion: 'catalog-v1',
+      reasoningOptionId: 'high',
+      phases: [
+        { phase: 'preparing_sources', sequence: 1, occurredAt: timestamp },
+        { phase: 'validating_output', sequence: 5, occurredAt: timestamp },
+        { phase: 'correcting_output', sequence: 6, occurredAt: timestamp },
+      ],
+      validations: [
+        {
+          pass: 'initial',
+          category: 'latex_grammar',
+          diagnostics: [
+            {
+              document: 'lecture-notes',
+              reason: 'unsupported_command',
+              tokenCount: 2,
+            },
+          ],
+          recordedAt: timestamp,
+        },
+        {
+          pass: 'correction',
+          category: 'latex_grammar',
+          diagnostics: [
+            {
+              document: 'slides',
+              reason: 'control_character',
+              tokenCount: 0,
+            },
+          ],
+          recordedAt: timestamp,
+        },
+      ],
+      terminalCode: 'lecture_invalid_latex_grammar',
+      startedAt: timestamp,
+      completedAt: timestamp,
+    });
+
+    expect(attempt.validations).toHaveLength(2);
+    expect(JSON.stringify(attempt)).not.toContain('candidate');
+  });
+
+  it('rejects raw excerpts, paths, provider messages, token text, and unbounded repeats', () => {
+    const base = {
+      schemaVersion: 1,
+      id: randomUUID(),
+      studioId: randomUUID(),
+      status: 'running',
+      requestedModelId: null,
+      resolvedModelId: null,
+      providerId: null,
+      catalogVersion: null,
+      reasoningOptionId: 'high',
+      phases: [],
+      validations: [],
+      terminalCode: null,
+      startedAt: timestamp,
+      completedAt: null,
+    } as const;
+
+    expect(
+      LectureStudioAttemptSchema.safeParse({ ...base, rawProviderMessage: 'private output' })
+        .success,
+    ).toBe(false);
+    expect(
+      LectureStudioAttemptSchema.safeParse({
+        ...base,
+        validations: [
+          {
+            pass: 'initial',
+            category: 'latex_grammar',
+            diagnostics: [
+              {
+                document: 'lecture-notes',
+                reason: 'unsupported_command',
+                tokenCount: 1,
+                tokens: ['\\privateSourceCommand'],
+                sourcePath: '/private/source.tex',
+              },
+            ],
+            recordedAt: timestamp,
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      LectureStudioAttemptSchema.safeParse({
+        ...base,
+        phases: Array.from({ length: 9 }, (_, index) => ({
+          phase: 'model_active',
+          sequence: index + 1,
+          occurredAt: timestamp,
+        })),
+      }).success,
+    ).toBe(false);
   });
 });
 

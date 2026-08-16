@@ -37,6 +37,9 @@ import {
   type LectureSourceSelection,
   type LectureStudio,
   type LectureStudioArtifactActionReceipt,
+  type LectureStudioAttempt,
+  type LectureStudioAttemptLatexReason,
+  type LectureStudioAttemptValidationCategory,
   type LectureStudioDetail,
   type LectureStudioDetailLevel,
   type LectureStudioGenerationBrief,
@@ -207,6 +210,94 @@ export function formatLectureGenerationElapsed(startedAt: string, nowMs: number)
   return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, '0')}s` : `${seconds}s`;
 }
 
+const LECTURE_ATTEMPT_VALIDATION_CATEGORY_LABELS: Record<
+  LectureStudioAttemptValidationCategory,
+  string
+> = {
+  response_json: 'Response format',
+  response_schema: 'Required lecture fields',
+  latex_grammar: 'LaTeX compatibility',
+  citation_mapping: 'Source references',
+  slide_count: 'Slide count',
+};
+
+const LECTURE_ATTEMPT_LATEX_REASON_LABELS: Record<LectureStudioAttemptLatexReason, string> = {
+  empty_body: 'Document was empty',
+  body_too_large: 'Document exceeded the size limit',
+  control_character: 'Invalid hidden character',
+  ambiguous_json_backslash_escape: 'Ambiguous LaTeX backslash',
+  tex_caret_escape: 'Unsupported caret escape',
+  raw_html: 'HTML appeared in the document',
+  markdown_structure: 'Markdown structure appeared in LaTeX',
+  document_wrapper: 'Extra document wrapper',
+  raw_comment: 'Unsupported LaTeX comment',
+  raw_parameter: 'Unsupported LaTeX parameter marker',
+  beamer_overlay: 'Unsupported slide overlay',
+  beamer_multipage_frame: 'Unsupported multi-page slide',
+  beamer_frame_option: 'Unsupported slide option',
+  unbalanced_braces: 'Unmatched braces',
+  malformed_environment: 'Malformed LaTeX environment',
+  unsupported_environment: 'Unsupported LaTeX environment',
+  unbalanced_environment: 'Unmatched LaTeX environment',
+  unsupported_command: 'Unsupported LaTeX command',
+  unsupported_escape: 'Unsupported LaTeX escape',
+  math_delimiter_in_math_environment: 'Conflicting math delimiters',
+  unbalanced_math: 'Unmatched math delimiter',
+  raw_subscript_or_superscript: 'Subscript or superscript outside math',
+  raw_alignment_character: 'Alignment marker outside a supported layout',
+  raw_tilde: 'Unsupported tilde',
+  missing_sources_used: 'Missing source list',
+  missing_frame: 'Slides were missing a frame',
+  invalid_title: 'Invalid slide title',
+  invalid_canonical_wrapper: 'Invalid saved document wrapper',
+};
+
+const LECTURE_ATTEMPT_REASONING_LABELS: Readonly<Record<string, string>> = {
+  none: 'None',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+  max: 'Maximum',
+  ultra: 'Ultra',
+};
+
+const LECTURE_ATTEMPT_STATUS_LABELS: Record<LectureStudioAttempt['status'], string> = {
+  running: 'In progress',
+  succeeded: 'Completed',
+  failed: 'Failed',
+  interrupted: 'Interrupted',
+};
+
+export function lectureGenerationAttemptSummary(attempt: LectureStudioAttempt) {
+  return {
+    outcome: LECTURE_ATTEMPT_STATUS_LABELS[attempt.status],
+    elapsed: attempt.completedAt
+      ? formatLectureGenerationElapsed(attempt.startedAt, Date.parse(attempt.completedAt))
+      : 'Not recorded',
+    model: attempt.requestedModelId === null ? 'Automatic selection' : 'Selected model',
+    reasoning:
+      attempt.reasoningOptionId === null
+        ? 'Provider default'
+        : (LECTURE_ATTEMPT_REASONING_LABELS[attempt.reasoningOptionId] ?? 'Selected setting'),
+    terminal: attempt.terminalCode ? lectureErrorCodeMessage(attempt.terminalCode) : null,
+    phases: attempt.phases.map((phase) => ({
+      label: LECTURE_GENERATION_PROGRESS_LABELS[phase.phase],
+      occurredAt: phase.occurredAt,
+    })),
+    validations: attempt.validations.map((validation) => ({
+      pass: validation.pass === 'initial' ? 'Initial check' : 'Correction check',
+      category: LECTURE_ATTEMPT_VALIDATION_CATEGORY_LABELS[validation.category],
+      diagnostics: validation.diagnostics.map((diagnostic) => ({
+        document: diagnostic.document === 'lecture-notes' ? 'Notes' : 'Slides',
+        reason: LECTURE_ATTEMPT_LATEX_REASON_LABELS[diagnostic.reason],
+        tokenCount: diagnostic.tokenCount,
+      })),
+    })),
+  };
+}
+
 function previewDocumentKind(tab: PreviewTab) {
   return tab.startsWith('notes') ? ('lecture-notes' as const) : ('slides' as const);
 }
@@ -357,6 +448,8 @@ export function lectureManuscriptAvailabilityLabel(
 
 export function lectureErrorCodeMessage(code: string) {
   const messages: Record<string, string> = {
+    application_interrupted:
+      'GOSU closed before this generation finished. Retry when you are ready.',
     invalid_lecture_input: 'Review the selected projects, sources, and presentation settings.',
     lecture_studio_not_found:
       'This lecture workspace no longer exists. Refresh and choose another.',
@@ -911,6 +1004,7 @@ export function LectureStudioView({
               key={selectedStudio.id}
               studio={selectedStudio}
               revision={selectedRevision}
+              lastAttempt={detail?.lastAttempt ?? null}
               projects={projects}
               adapter={adapter}
               activeTab={previewTab}
@@ -2019,9 +2113,85 @@ function LectureGenerationProgressPanel({
   );
 }
 
+export function LectureGenerationAttemptDetails({ attempt }: { attempt: LectureStudioAttempt }) {
+  const summary = lectureGenerationAttemptSummary(attempt);
+
+  return (
+    <details className="lecture-generation-details">
+      <summary>Generation details</summary>
+      <div className="lecture-generation-details-body">
+        <dl>
+          <div>
+            <dt>Outcome</dt>
+            <dd>{summary.outcome}</dd>
+          </div>
+          <div>
+            <dt>Elapsed</dt>
+            <dd>{summary.elapsed}</dd>
+          </div>
+          <div>
+            <dt>Model</dt>
+            <dd>{summary.model}</dd>
+          </div>
+          <div>
+            <dt>Reasoning</dt>
+            <dd>{summary.reasoning}</dd>
+          </div>
+        </dl>
+        {summary.terminal && (
+          <p className="lecture-generation-details-terminal">{summary.terminal}</p>
+        )}
+        {summary.phases.length > 0 && (
+          <ol className="lecture-generation-details-phases" aria-label="Generation activity">
+            {summary.phases.map((phase) => (
+              <li key={`${phase.occurredAt}:${phase.label}`}>
+                <time dateTime={phase.occurredAt} title={formatUpdatedAt(phase.occurredAt)}>
+                  {new Date(phase.occurredAt).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                  })}
+                </time>
+                <span>{phase.label}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+        {summary.validations.length > 0 && (
+          <ol className="lecture-generation-details-validations" aria-label="Validation checks">
+            {summary.validations.map((validation) => (
+              <li key={validation.pass}>
+                <div>
+                  <strong>{validation.pass}</strong>
+                  <span>{validation.category}</span>
+                </div>
+                {validation.diagnostics.length > 0 && (
+                  <ul>
+                    {validation.diagnostics.map((diagnostic) => (
+                      <li key={diagnostic.document}>
+                        <strong>{diagnostic.document}</strong>
+                        <span>{diagnostic.reason}</span>
+                        <span>
+                          {diagnostic.tokenCount} flagged item
+                          {diagnostic.tokenCount === 1 ? '' : 's'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </details>
+  );
+}
+
 function StudioPreview({
   studio,
   revision,
+  lastAttempt,
   projects,
   adapter,
   activeTab,
@@ -2036,6 +2206,7 @@ function StudioPreview({
 }: {
   studio: LectureStudio;
   revision: LectureStudioRevision | null;
+  lastAttempt: LectureStudioAttempt | null;
   projects: readonly ProjectRecord[];
   adapter: LectureStudioViewAdapter;
   activeTab: PreviewTab;
@@ -2375,8 +2546,9 @@ function StudioPreview({
                 Sign in to Codex
               </button>
             ) : (
-              <code>{studio.lastErrorCode}</code>
+              !lastAttempt && <code>{studio.lastErrorCode}</code>
             )}
+            {lastAttempt && <LectureGenerationAttemptDetails attempt={lastAttempt} />}
           </div>
         )}
         {pdfError && (

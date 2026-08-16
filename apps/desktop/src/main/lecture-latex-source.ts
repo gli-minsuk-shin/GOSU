@@ -8,7 +8,10 @@ export type LectureLatexKind = 'lecture-notes' | 'slides';
 export const LECTURE_LATEX_VALIDATION_REASON_GUIDANCE = {
   empty_body: 'Return a non-empty LaTeX body.',
   body_too_large: 'Shorten the body to the configured size limit.',
-  control_character: 'Remove control characters from the body.',
+  control_character:
+    'Encode every LaTeX backslash as \\\\ in JSON; never use a single-backslash \\b or \\f JSON escape.',
+  ambiguous_json_backslash_escape:
+    'Encode every LaTeX backslash as \\\\ in JSON. If the reported text is an intentional new source line, indent it with spaces; otherwise restore the reported LaTeX command with a double-escaped backslash.',
   tex_caret_escape: 'Do not use TeX ^^ character escapes.',
   raw_html: 'Remove HTML and express the content with the bounded LaTeX dialect.',
   markdown_structure: 'Remove Markdown headings, fences, and horizontal rules.',
@@ -42,7 +45,10 @@ export type LectureLatexValidationReason = keyof typeof LECTURE_LATEX_VALIDATION
 
 function normalizedDiagnosticToken(reason: LectureLatexValidationReason, rawToken: string | null) {
   if (rawToken === null) return null;
-  if (reason === 'unsupported_command' && /^[A-Za-z]{1,64}$/u.test(rawToken)) {
+  if (
+    (reason === 'unsupported_command' || reason === 'ambiguous_json_backslash_escape') &&
+    /^[A-Za-z]{1,64}$/u.test(rawToken)
+  ) {
     return `\\${rawToken}`;
   }
   if (reason === 'unsupported_environment' && /^[A-Za-z][A-Za-z0-9*]{0,63}$/u.test(rawToken)) {
@@ -54,7 +60,7 @@ function normalizedDiagnosticToken(reason: LectureLatexValidationReason, rawToke
   return null;
 }
 
-const MAX_LECTURE_LATEX_DIAGNOSTIC_TOKENS = 8;
+const MAX_LECTURE_LATEX_DIAGNOSTIC_TOKENS = 32;
 
 export class LectureLatexSourceError extends Error {
   readonly token: string | null;
@@ -89,6 +95,8 @@ const SLIDE_ANGLE_SPEC_PATTERN = /<[^<>]*>/gu;
 const COMMON_ENVIRONMENTS = new Set([
   'align',
   'align*',
+  'alignat',
+  'alignat*',
   'aligned',
   'alignedat',
   'array',
@@ -113,8 +121,10 @@ const COMMON_ENVIRONMENTS = new Set([
   'minipage',
   'pmatrix',
   'quote',
+  'samepage',
   'smallmatrix',
   'split',
+  'subequations',
   'table',
   'tabular',
   'Vmatrix',
@@ -144,6 +154,8 @@ const SLIDES_ENVIRONMENTS = new Set([
 const MATH_ENVIRONMENTS = new Set([
   'align',
   'align*',
+  'alignat',
+  'alignat*',
   'aligned',
   'alignedat',
   'array',
@@ -168,6 +180,8 @@ const MATH_ENVIRONMENTS = new Set([
 const ALIGNMENT_ENVIRONMENTS = new Set([
   'align',
   'align*',
+  'alignat',
+  'alignat*',
   'aligned',
   'alignedat',
   'array',
@@ -192,14 +206,14 @@ const COMMON_COMMANDS = new Set(
   alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa lambda mu nu xi
   pi varpi rho sigma tau upsilon phi varphi chi psi omega Gamma Delta Theta Lambda Xi Pi Sigma
   Upsilon Phi Psi Omega varsigma varrho frac dfrac tfrac binom choose genfrac sqrt sum prod int iint iiint oint lim log ln exp sin cos
-  tan sinh cosh tanh coth max min argmax argmin arccos arcsin arctan csc deg det dim gcd hom inf ker Pr sec sup mathbb
+  tan sinh cosh tanh coth max min arg arccos arcsin arctan csc deg det dim gcd hom inf ker Pr sec sup mathbb
   mathbf boldsymbol bm mathrm mathcal mathsf mathtt mathit mathfrak text textnormal operatorname mathop
   overline underline overbrace underbrace hat widehat widetilde tilde bar vec dot ddot overset
   check breve acute grave boxed phantom hphantom vphantom smash underset stackrel substack limits nolimits not tag notag nonumber intertext shortintertext left right big Big bigg Bigg bigl bigr Bigl Bigr biggl
   biggr Biggl Biggr cdot times div pm mp le leq ge geq gtrsim lesssim ll gg neq approx asymp cong
   propto sim simeq equiv doteq prec preceq succ succeq in notin ni subset subseteq supset supseteq cup cap setminus emptyset
   varnothing forall exists nexists neg land lor wedge vee bigwedge bigvee implies iff to mapsto gets leftarrow rightarrow
-  leftrightarrow Leftarrow Rightarrow Leftrightarrow longleftarrow longrightarrow
+  leftrightarrow Leftarrow Rightarrow Leftrightarrow longleftarrow longrightarrow longmapsto
   longleftrightarrow hookrightarrow rightsquigarrow xrightarrow xleftarrow uparrow downarrow partial nabla
   infty ell ldots cdots vdots ddots dots prime top bot perp parallel mid vert Vert lVert rVert
   langle rangle lceil rceil lfloor rfloor pmod mod bmod coloneqq colon angle triangle square Box
@@ -209,7 +223,7 @@ const COMMON_COMMANDS = new Set(
   textbackslash textasciicircum textasciitilde normalsize small footnotesize scriptsize tiny
   Large LARGE huge Huge`.split(/\s+/u),
 );
-const NOTES_COMMANDS = COMMON_COMMANDS;
+const NOTES_COMMANDS = new Set([...COMMON_COMMANDS, 'qedhere']);
 const SLIDES_COMMANDS = new Set([
   ...COMMON_COMMANDS,
   'alert',
@@ -221,6 +235,73 @@ const SLIDES_COMMANDS = new Set([
   // New bodies reject it before command validation as a multipage Beamer overlay.
   'pause',
 ]);
+
+const BLOCKED_N_PREFIX_COMMANDS = new Set([
+  'newbox',
+  'newcommand',
+  'newcounter',
+  'newenvironment',
+  'newfont',
+  'newgeometry',
+  'newhelp',
+  'newif',
+  'newinsert',
+  'newlabel',
+  'newlength',
+  'newpage',
+  'newread',
+  'newsavebox',
+  'newtheorem',
+  'newtoks',
+  'newwrite',
+  'nobibliography',
+  'nocite',
+  'nofiles',
+  'nolinebreak',
+  'nopagebreak',
+  'numberline',
+  'numberwithin',
+]);
+
+function asciiCommandSuffixAfter(value: string, index: number) {
+  let end = index + 1;
+  while (end < value.length && /[A-Za-z]/u.test(value[end]!)) end += 1;
+  return value.slice(index + 1, end);
+}
+
+/**
+ * Repairs only the two JSON escapes whose decoded values have a unique,
+ * forbidden meaning in a generated LaTeX body. Tabs and carriage returns are
+ * ambiguous (for example, `\\theta` and `\\ref`) and therefore fail closed.
+ * A line feed fails closed only when its immediately adjacent letters can be
+ * the decoded suffix of a known `\\n...` command. Indented source lines are
+ * unambiguous and pass unchanged. Canonical files never use this transport
+ * gate.
+ */
+export function normalizeGeneratedLectureLatexBody(kind: LectureLatexKind, rawBody: string) {
+  const body = rawBody.replaceAll('\u0008', '\\b').replaceAll('\u000c', '\\f');
+  const allowedCommands = kind === 'lecture-notes' ? NOTES_COMMANDS : SLIDES_COMMANDS;
+
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index]!;
+    if (character === '\t' || character === '\r') {
+      const prefix = character === '\t' ? 't' : 'r';
+      throw new LectureLatexSourceError(
+        'ambiguous_json_backslash_escape',
+        `${prefix}${asciiCommandSuffixAfter(body, index)}`,
+      );
+    }
+    if (character !== '\n') continue;
+    const suffix = asciiCommandSuffixAfter(body, index);
+    if (suffix.length < 1) continue;
+    const command = `n${suffix}`;
+    if (allowedCommands.has(command) || BLOCKED_N_PREFIX_COMMANDS.has(command)) {
+      throw new LectureLatexSourceError('ambiguous_json_backslash_escape', command);
+    }
+  }
+
+  return body;
+}
 
 function escapeLatex(value: string) {
   const replacements: Record<string, string> = {

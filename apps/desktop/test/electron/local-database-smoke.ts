@@ -34,6 +34,7 @@ import type {
 } from '../../src/shared/project-chat-contracts';
 import {
   EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION,
+  LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS,
   LECTURE_STUDIO_MAX_STUDIOS,
   LECTURE_STUDIO_MAX_TRASHED_STUDIOS,
   type LectureStudio,
@@ -2745,8 +2746,58 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     attemptId: failedAttemptId,
     userMessage: failedUser,
     updatedAt: fixedTimestamp,
+    attempt: {
+      schemaVersion: 1,
+      id: failedAttemptId,
+      studioId: studio.id,
+      status: 'running',
+      requestedModelId: null,
+      resolvedModelId: null,
+      providerId: null,
+      catalogVersion: null,
+      reasoningOptionId: 'high',
+      phases: [],
+      validations: [],
+      terminalCode: null,
+      startedAt: fixedTimestamp,
+      completedAt: null,
+    },
   });
   invariant(failedGenerating?.status === 'generating', 'lecture_failed_turn_did_not_begin');
+  invariant(
+    database.recordLectureStudioAttemptPhase(studio.id, failedAttemptId, {
+      phase: 'preparing_sources',
+      sequence: 1,
+      occurredAt: fixedTimestamp,
+    })?.phases.length === 1 &&
+      database.recordLectureStudioAttemptPhase(studio.id, failedAttemptId, {
+        phase: 'validating_output',
+        sequence: 5,
+        occurredAt: fixedTimestamp,
+      })?.phases.length === 2,
+    'lecture_attempt_phases_were_not_persisted',
+  );
+  invariant(
+    database.recordLectureStudioAttemptValidation(studio.id, failedAttemptId, {
+      pass: 'initial',
+      category: 'latex_grammar',
+      diagnostics: [{ document: 'lecture-notes', reason: 'unsupported_command', tokenCount: 2 }],
+      recordedAt: fixedTimestamp,
+    })?.validations.length === 1 &&
+      database.recordLectureStudioAttemptValidation(studio.id, failedAttemptId, {
+        pass: 'correction',
+        category: 'latex_grammar',
+        diagnostics: [{ document: 'slides', reason: 'control_character', tokenCount: 0 }],
+        recordedAt: fixedTimestamp,
+      })?.validations.length === 2,
+    'lecture_attempt_validations_were_not_persisted',
+  );
+  const failedInvocation = revisionFixture(1, failedAttemptId).invocation;
+  invariant(
+    database.recordLectureStudioAttemptInvocation(studio.id, failedAttemptId, failedInvocation)
+      ?.resolvedModelId === failedInvocation.resolvedModelId,
+    'lecture_attempt_invocation_was_not_persisted',
+  );
   invariant(
     database.beginLectureStudioTurn({
       studioId: studio.id,
@@ -2760,7 +2811,7 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
   const failedStudio = database.failLectureStudioTurn({
     studioId: studio.id,
     attemptId: failedAttemptId,
-    errorCode: 'fixture_failed',
+    errorCode: 'lecture_invalid_latex_grammar',
     messageStatus: 'failed',
     updatedAt: fixedTimestamp,
   });
@@ -2768,6 +2819,18 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
   invariant(
     database.listLectureStudioMessages(studio.id, 10)[0]?.status === 'failed',
     'lecture_failed_user_message_remained_complete',
+  );
+  const failedAttempt = database.getLatestLectureStudioAttempt(studio.id);
+  invariant(
+    failedAttempt?.status === 'failed' &&
+      failedAttempt.terminalCode === 'lecture_invalid_latex_grammar' &&
+      failedAttempt.resolvedModelId === failedInvocation.resolvedModelId &&
+      failedAttempt.providerId === failedInvocation.providerId &&
+      failedAttempt.catalogVersion === failedInvocation.catalogVersion &&
+      failedAttempt.phases.length === 2 &&
+      failedAttempt.validations.length === 2 &&
+      database.getLectureStudioDetail(studio.id)?.lastAttempt?.id === failedAttemptId,
+    'lecture_failed_attempt_diagnostics_or_model_identity_were_not_finalized_atomically',
   );
 
   const interruptedAttemptId = randomUUID();
@@ -2778,6 +2841,22 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     attemptId: interruptedAttemptId,
     userMessage: interruptedUser,
     updatedAt: fixedTimestamp,
+    attempt: {
+      schemaVersion: 1,
+      id: interruptedAttemptId,
+      studioId: studio.id,
+      status: 'running',
+      requestedModelId: 'fixture-requested-model',
+      resolvedModelId: null,
+      providerId: null,
+      catalogVersion: null,
+      reasoningOptionId: 'high',
+      phases: [],
+      validations: [],
+      terminalCode: null,
+      startedAt: fixedTimestamp,
+      completedAt: null,
+    },
   });
   invariant(interruptedGenerating !== null, 'lecture_interrupted_turn_did_not_begin');
   database.close();
@@ -2796,6 +2875,11 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
       .find((message) => message.id === interruptedUser.id)?.status === 'interrupted',
     'lecture_restart_did_not_interrupt_active_user_message',
   );
+  invariant(
+    reopened.getLatestLectureStudioAttempt(studio.id)?.status === 'interrupted' &&
+      reopened.getLatestLectureStudioAttempt(studio.id)?.terminalCode === 'application_interrupted',
+    'lecture_restart_did_not_reconcile_running_attempt_diagnostics',
+  );
 
   const successfulAttemptId = randomUUID();
   const successfulUser = userMessage(successfulAttemptId, 'Generate the first revision.');
@@ -2805,6 +2889,22 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     attemptId: successfulAttemptId,
     userMessage: successfulUser,
     updatedAt: fixedTimestamp,
+    attempt: {
+      schemaVersion: 1,
+      id: successfulAttemptId,
+      studioId: studio.id,
+      status: 'running',
+      requestedModelId: null,
+      resolvedModelId: null,
+      providerId: null,
+      catalogVersion: null,
+      reasoningOptionId: 'high',
+      phases: [],
+      validations: [],
+      terminalCode: null,
+      startedAt: fixedTimestamp,
+      completedAt: null,
+    },
   });
   invariant(successfulGenerating !== null, 'lecture_successful_turn_did_not_begin');
   const firstRevision = revisionFixture(1, successfulAttemptId);
@@ -2849,6 +2949,13 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
   invariant(
     reopened.getCurrentLectureStudioRevision(studio.id)?.id === firstRevision.id,
     'lecture_current_revision_missing',
+  );
+  invariant(
+    reopened.getLatestLectureStudioAttempt(studio.id)?.status === 'succeeded' &&
+      reopened.getLatestLectureStudioAttempt(studio.id)?.terminalCode === null &&
+      reopened.getLatestLectureStudioAttempt(studio.id)?.resolvedModelId ===
+        firstRevision.invocation.resolvedModelId,
+    'lecture_success_attempt_was_not_finalized_with_the_revision',
   );
 
   const latexAttemptId = randomUUID();
@@ -3348,6 +3455,282 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     'lecture_trash_purge_removed_active_studios_or_kept_purged_studio',
   );
   persisted.close();
+}
+
+function verifyLectureStudioAttemptRetention(fixedTimestamp: string) {
+  const studioFixture = (title: string): LectureStudio => {
+    const projectId = randomUUID();
+    return {
+      schemaVersion: 1,
+      id: randomUUID(),
+      title,
+      kind: 'talk',
+      durationMinutes: 20,
+      outputProjectId: projectId,
+      sourceProjectIds: [projectId],
+      sourceSelection: {
+        literature: [{ projectId, recordId: randomUUID() }],
+        experiments: [],
+        manuscripts: [],
+        externalSources: null,
+      },
+      generationBrief: {
+        notesTargetPages: null,
+        slidesTargetPages: null,
+        detailLevel: 'standard',
+        customInstructions: '',
+      },
+      status: 'draft',
+      activeAttemptId: null,
+      currentRevision: 0,
+      version: 1,
+      lastErrorCode: null,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    };
+  };
+  const runningAttempt = (studioId: string, id: string) => ({
+    schemaVersion: 1 as const,
+    id,
+    studioId,
+    status: 'running' as const,
+    requestedModelId: null,
+    resolvedModelId: null,
+    providerId: null,
+    catalogVersion: null,
+    reasoningOptionId: 'high',
+    phases: [],
+    validations: [],
+    terminalCode: null,
+    startedAt: fixedTimestamp,
+    completedAt: null,
+  });
+  const retainedStudio = studioFixture('Bounded Lecture attempt diagnostics');
+  const activeStudio = studioFixture('Running Lecture attempt diagnostics');
+  const database = new LocalDatabase();
+  database.open();
+  invariant(database.createLectureStudio(retainedStudio), 'lecture_retention_studio_insert_failed');
+  invariant(database.createLectureStudio(activeStudio), 'lecture_running_studio_insert_failed');
+
+  const succeededAttemptId = randomUUID();
+  const succeededGenerating = database.beginLectureStudioTurn({
+    studioId: retainedStudio.id,
+    expectedVersion: retainedStudio.version,
+    attemptId: succeededAttemptId,
+    userMessage: null,
+    updatedAt: fixedTimestamp,
+    attempt: runningAttempt(retainedStudio.id, succeededAttemptId),
+  });
+  invariant(succeededGenerating !== null, 'lecture_retention_success_did_not_begin');
+  const invocation: ModelInvocation = {
+    schemaVersion: 1,
+    invocationId: randomUUID(),
+    providerId: 'codex',
+    requestedModelId: null,
+    resolvedModelId: 'fixture-model',
+    catalogVersion: 'fixture-catalog',
+    reasoningOptionId: 'high',
+    startedAt: fixedTimestamp,
+  };
+  const revision: LectureStudioRevision = {
+    schemaVersion: 1,
+    id: randomUUID(),
+    studioId: retainedStudio.id,
+    revision: 1,
+    attemptId: succeededAttemptId,
+    sourceManifest: {
+      schemaVersion: 1,
+      selectedProjectIds: retainedStudio.sourceProjectIds,
+      literature: [
+        {
+          sourceLabel: 'L1',
+          projectId: retainedStudio.outputProjectId,
+          projectName: 'Retention fixture project',
+          recordId: retainedStudio.sourceSelection.literature[0]!.recordId,
+          recordVersion: 1,
+          annotationVersion: 0,
+          title: 'Bounded diagnostic retention',
+          authors: ['Fixture Author'],
+          containerTitle: null,
+          publishedYear: 2026,
+          doi: null,
+          citationKey: null,
+          reviewStatus: 'included',
+          topics: [],
+          metadataSummary: 'A content-free attempt-retention fixture.',
+          metadataOnly: true,
+        },
+      ],
+      experiments: [],
+    },
+    sourceManifestSha256: 'a'.repeat(64),
+    lectureNotesMarkdown: '# Retained successful revision',
+    slidesMarkdown: '# Retained successful slides',
+    artifacts: [
+      {
+        kind: 'lecture-notes',
+        relativePath: 'Lecture Studio/retention/revision-1/lecture-notes.md',
+        contentSha256: 'b'.repeat(64),
+        savedAt: fixedTimestamp,
+      },
+      {
+        kind: 'slides',
+        relativePath: 'Lecture Studio/retention/revision-1/slides.md',
+        contentSha256: 'c'.repeat(64),
+        savedAt: fixedTimestamp,
+      },
+    ],
+    invocation,
+    createdAt: fixedTimestamp,
+  };
+  let retainedState = database.completeLectureStudioTurn({
+    studio: {
+      ...succeededGenerating,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 1,
+      version: succeededGenerating.version + 1,
+      lastErrorCode: null,
+      updatedAt: fixedTimestamp,
+    },
+    revision,
+    assistantMessage: null,
+  });
+  invariant(retainedState !== null, 'lecture_retention_success_did_not_complete');
+
+  const failureAttemptIds: string[] = [];
+  for (let index = 0; index < LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS + 5; index += 1) {
+    const attemptId = randomUUID();
+    failureAttemptIds.push(attemptId);
+    const generating = database.beginLectureStudioTurn({
+      studioId: retainedStudio.id,
+      expectedVersion: retainedState.version,
+      attemptId,
+      userMessage: null,
+      updatedAt: fixedTimestamp,
+      attempt: runningAttempt(retainedStudio.id, attemptId),
+    });
+    invariant(generating !== null, 'lecture_retention_failure_did_not_begin');
+    retainedState = database.failLectureStudioTurn({
+      studioId: retainedStudio.id,
+      attemptId,
+      errorCode: 'lecture_generation_failed',
+      messageStatus: 'failed',
+      updatedAt: fixedTimestamp,
+    });
+    invariant(retainedState !== null, 'lecture_retention_failure_did_not_finish');
+  }
+  invariant(
+    database.getLatestLectureStudioAttempt(retainedStudio.id)?.id === failureAttemptIds.at(-1) &&
+      database.listLectureStudioMessages(retainedStudio.id, 10).length === 0,
+    'lecture_retention_latest_message_less_failure_was_not_preserved',
+  );
+
+  const activeAttemptId = randomUUID();
+  invariant(
+    database.beginLectureStudioTurn({
+      studioId: activeStudio.id,
+      expectedVersion: activeStudio.version,
+      attemptId: activeAttemptId,
+      userMessage: null,
+      updatedAt: fixedTimestamp,
+      attempt: runningAttempt(activeStudio.id, activeAttemptId),
+    }) !== null,
+    'lecture_retention_running_attempt_did_not_begin',
+  );
+  database.close();
+
+  const keyHex = safeStorage
+    .decryptString(readFileSync(join(app.getPath('userData'), 'local-key.bin')))
+    .trim();
+  const beforeRestart = new Database(join(app.getPath('userData'), 'gosu.db'));
+  beforeRestart.pragma(`key="x'${keyHex}'"`);
+  const retainedFailureRows = beforeRestart
+    .prepare(
+      `select id from lecture_studio_attempts
+       where studio_id=? and status in ('failed','interrupted')
+       order by started_at desc,rowid desc`,
+    )
+    .all(retainedStudio.id) as Array<{ id: string }>;
+  invariant(
+    retainedFailureRows.length === LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS &&
+      isDeepStrictEqual(
+        retainedFailureRows.map((row) => row.id),
+        failureAttemptIds.slice(-LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS).reverse(),
+      ) &&
+      (
+        beforeRestart
+          .prepare(
+            `select count(*) as count from lecture_studio_attempts
+             where studio_id=? and id=? and status='succeeded'`,
+          )
+          .get(retainedStudio.id, succeededAttemptId) as { count: number }
+      ).count === 1 &&
+      (
+        beforeRestart
+          .prepare(
+            `select count(*) as count from lecture_studio_attempts
+             where studio_id=? and id=? and status='running'`,
+          )
+          .get(activeStudio.id, activeAttemptId) as { count: number }
+      ).count === 1,
+    'lecture_retention_pruned_success_or_running_or_kept_old_failures',
+  );
+  const insertOverflow = beforeRestart.prepare(
+    `insert into lecture_studio_attempts(
+       id,schema_version,studio_id,status,requested_model_id,resolved_model_id,provider_id,
+       catalog_version,reasoning_option_id,phases_json,validations_json,terminal_code,
+       started_at,completed_at
+     ) values(?,1,?,'failed',null,null,null,null,'high','[]','[]',
+              'lecture_generation_failed',?,?)`,
+  );
+  const oldTimestamp = new Date(Date.parse(fixedTimestamp) - 86_400_000).toISOString();
+  const overflowAttemptIds = Array.from({ length: 5 }, () => randomUUID());
+  for (const attemptId of overflowAttemptIds) {
+    insertOverflow.run(attemptId, retainedStudio.id, oldTimestamp, fixedTimestamp);
+  }
+  beforeRestart.close();
+
+  const reopened = new LocalDatabase();
+  reopened.open();
+  invariant(
+    reopened.getLatestLectureStudioAttempt(retainedStudio.id)?.id === failureAttemptIds.at(-1) &&
+      reopened.getLatestLectureStudioAttempt(activeStudio.id)?.id === activeAttemptId &&
+      reopened.getLatestLectureStudioAttempt(activeStudio.id)?.status === 'interrupted',
+    'lecture_retention_startup_reconciliation_changed_the_latest_attempt',
+  );
+  reopened.close();
+
+  const afterRestart = new Database(join(app.getPath('userData'), 'gosu.db'));
+  afterRestart.pragma(`key="x'${keyHex}'"`);
+  try {
+    const terminalCount = afterRestart
+      .prepare(
+        `select count(*) as count from lecture_studio_attempts
+         where studio_id=? and status in ('failed','interrupted')`,
+      )
+      .get(retainedStudio.id) as { count: number };
+    const succeededCount = afterRestart
+      .prepare(
+        `select count(*) as count from lecture_studio_attempts
+         where studio_id=? and id=? and status='succeeded'`,
+      )
+      .get(retainedStudio.id, succeededAttemptId) as { count: number };
+    const staleOverflowCount = afterRestart
+      .prepare(
+        `select count(*) as count from lecture_studio_attempts
+         where studio_id=? and id in (${overflowAttemptIds.map(() => '?').join(',')})`,
+      )
+      .get(retainedStudio.id, ...overflowAttemptIds) as { count: number };
+    invariant(
+      terminalCount.count === LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS &&
+        succeededCount.count === 1 &&
+        staleOverflowCount.count === 0,
+      'lecture_retention_startup_cleanup_was_not_bounded_or_preserved_success',
+    );
+  } finally {
+    afterRestart.close();
+  }
 }
 
 async function verifyLectureExternalSourceTrashPurgeRecovery(
@@ -7603,6 +7986,7 @@ void app.whenReady().then(async () => {
     verifyExperimentEvaluationPersistence(fixedTimestamp);
     verifyExperimentPersistence(fixedTimestamp);
     verifyLectureStudioListDetailBoundary(fixedTimestamp);
+    verifyLectureStudioAttemptRetention(fixedTimestamp);
     await verifyLectureExternalSourceTrashPurgeRecovery(temporaryUserData, fixedTimestamp);
     verifyManuscriptWorkspacePersistence(temporaryUserData, fixedTimestamp);
     await verifyWorkspaceTrashPurge(temporaryUserData, fixedTimestamp);

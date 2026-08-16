@@ -164,8 +164,11 @@ Main은 generation 중 source 준비, model 시작·draft/activity, validator, �
 revision 저장을 나타내는 고정 phase event만 Renderer에 보낸다. event에는 studio/attempt identity, 단조 증가
 sequence와 시작·발생 timestamp만 있고 raw notification, reasoning, source/output text, provider message,
 thread/turn ID, path나 credential은 없다. model activity는 최대 5초에 한 번으로 제한하며 Renderer는 같은 연속
-phase를 합쳐 경과 시간과 최근 12개 activity만 표시한다. progress는 ephemeral UI receipt로서 SQLCipher,
-Hosted Sync 또는 telemetry에 저장하지 않는다.
+phase를 합쳐 경과 시간과 최근 12개 activity만 표시한다. live progress event 자체는 ephemeral이다. 별도의
+content-free attempt row에는 semantic phase의 첫 시각, requested/resolved model identity, initial·correction의
+고정 validation category와 notes/slides별 reason·token 개수, terminal code만 bounded하게 저장한다. 임의 token
+문자열, raw notification, prompt/source/output, provider message, compiler stderr, thread/turn ID와 path는
+SQLCipher·Renderer·Hosted Sync·telemetry에 저장하지 않는다.
 
 직렬화된 prompt는 최대 360,000자, source manifest는 최대 120,000자로 제한한다. captured source 전체는
 chunk로 hash/length를 검증하되 prompt/manifest content에는 policy와 completeness가 표시된 deterministic exact
@@ -183,9 +186,14 @@ prompt history에서 제외한다. Main은 structured response를 저장하기 �
   command와 allowlist 밖 command/environment를 거부한다.
 - timed talk의 slide count가 선택한 duration budget 안에 있다.
 
-validator grammar는 고정 preamble이 실제 load한 AMS matrix/alignment, command math delimiter,
-`binom`, `mid`, `\|`, `Vert`, `langle`, `rangle`, `pmod`, `nonumber`, `intertext` 계열 수학 command, 안전한
-table·booktabs layout과
+authoring policy v5는 JSON body string의 모든 LaTeX backslash를 `\\`로 encode하게 한다. 새 generated body에서
+U+0008·U+000C로 decode된 raw `\b`·`\f`만 literal backslash prefix로 복원한 뒤 전체 validator를 다시
+통과시키고, TAB·CR 또는 `\n...` command로 해석될 수 있는 모호한 line break는
+`ambiguous_json_backslash_escape`로 fail closed한다. 기존 canonical artifact에는 이 transport normalization을
+적용하지 않는다. validator grammar는 고정 preamble이 실제 load한 AMS matrix/alignment,
+`samepage|subequations|alignat`, command math delimiter, `arg`, `longmapsto`, notes-only `qedhere`,
+`operatorname*`, `binom`, `mid`, `\|`, `Vert`, `langle`, `rangle`, `pmod`, `nonumber`, `intertext` 계열 수학 command,
+안전한 table·booktabs layout과
 Beamer `columns|column`을 포함하는 bounded dialect다. developer instruction은 prose의 `%|#|&|_` escape,
 raw `~` 금지, balanced delimiter/environment와 source-defined macro의 primitive expansion을 명시하므로 모델
 contract와 validator가 같은 문법을 말한다. HTML 검사는 math context를 구분해 정상 부등호 `<|>`를 tag로
@@ -195,7 +203,7 @@ optional frame argument, overlay specification·command와 `allowframebreaks`를
 
 첫 candidate가 JSON parse, exact schema, bounded LaTeX grammar, citation mapping 또는 slide count에서
 거부되면 같은 Codex thread에 safe category와 고정 교정 지시만 보내 complete pair를 최대 한 번 다시 생성한다.
-LaTeX grammar 거부는 notes/slides별 고정 reason ID와 엄격히 정규화·중복 제거한 최대 8개 command 또는
+LaTeX grammar 거부는 notes/slides별 고정 reason ID와 엄격히 정규화·중복 제거한 최대 32개 command 또는
 environment token 예시만 전달한다. raw candidate·임의 parser message·source text·path는 prompt나
 persistence에 다시 넣지 않고 initial turn의 frozen manifest, current draft와 generation brief를 그대로 사용한다.
 두 subturn은 위 absolute hard deadline을 공유하고 correction은 새 idle timer를 가진다.
@@ -219,10 +227,14 @@ full text를 읽었다는 표현을 금지하는 bounded structural/evidence gat
 
 ### 5. SQLCipher state와 Research Notes artifact commit
 
-Lecture module은 `lecture_studios`, `lecture_studio_messages`,
-`lecture_studio_revisions`를 소유한다. configuration과 turn start는 optimistic version과 attempt fencing을
-사용하고, assistant message·revision·studio completion은 한 SQLCipher transaction으로 commit한다.
-restart에서 실행 중이던 turn은 무인 재호출하지 않고 bounded interrupted/failed state로 reconciliation한다.
+Lecture module은 `lecture_studios`, `lecture_studio_messages`, `lecture_studio_revisions`와 content-free
+`lecture_studio_attempts`를 소유한다. configuration과 turn start는 optimistic version과 attempt fencing을
+사용하고, running attempt 생성은 Studio begin과, terminal attempt는 assistant message·revision·studio
+completion 또는 failure와 한 SQLCipher transaction으로 commit한다. restart에서 실행 중이던 turn은 무인
+재호출하지 않고 Studio와 attempt를 함께 bounded `application_interrupted` state로 reconciliation한다. Studio
+detail은 최신 attempt 하나만 반환하며 attempt 도입 전 Studio는 `null`로 호환한다. 성공 attempt와 현재
+running attempt는 보존하고, revision·message 없는 반복 실패가 DB를 무한히 키우지 않도록 각 Studio의
+`failed|interrupted` attempt는 시작 시각과 row 순서 기준 최신 100건만 유지한다.
 Studio/message/revision capacity는 SQL trigger와 같은 Main preflight로 turn 시작 transaction 안에서 확인해
 Codex 호출 뒤 저장 실패를 막고, 한도 도달은 `lecture_capacity_reached`로 명시한다.
 

@@ -9,6 +9,7 @@ import {
   ManuscriptCheckpointV1Schema,
   ManuscriptSyncAnchorV1Schema,
   ManuscriptWorkspaceBindingV1Schema,
+  ModelInvocationSchema,
   type ManuscriptCheckpointV1,
   type ModelCatalog,
   type ModelInvocation,
@@ -68,11 +69,16 @@ import {
 } from '../shared/literature-search-tags';
 import {
   LECTURE_STUDIO_MAX_MESSAGES,
+  LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS,
   LECTURE_STUDIO_MAX_REVISIONS,
   LECTURE_STUDIO_MAX_STORED_STUDIOS,
   LECTURE_STUDIO_MAX_STUDIOS,
   LECTURE_STUDIO_MAX_TRASHED_STUDIOS,
   LectureStudioDetailSchema,
+  LectureStudioAttemptPhaseSchema,
+  LectureStudioAttemptSchema,
+  LectureStudioAttemptTerminalCodeSchema,
+  LectureStudioAttemptValidationSchema,
   EmptyLectureStudioTrashInputSchema,
   EmptyLectureStudioTrashReceiptSchema,
   LectureStudioGenerationBriefSchema,
@@ -82,6 +88,10 @@ import {
   LectureStudioSummarySchema,
   UpdateLectureStudioGenerationBriefInputSchema,
   type LectureStudio,
+  type LectureStudioAttempt,
+  type LectureStudioAttemptPhase,
+  type LectureStudioAttemptTerminalCode,
+  type LectureStudioAttemptValidation,
   type LectureStudioDetail,
   type LectureStudioMessage,
   type LectureStudioRevision,
@@ -980,6 +990,23 @@ type LectureStudioSummaryRow = Omit<
   'source_project_ids_json' | 'source_selection_json' | 'generation_brief_json'
 >;
 
+type LectureStudioAttemptRow = Readonly<{
+  id: string;
+  schema_version: number;
+  studio_id: string;
+  status: LectureStudioAttempt['status'];
+  requested_model_id: string | null;
+  resolved_model_id: string | null;
+  provider_id: string | null;
+  catalog_version: string | null;
+  reasoning_option_id: string | null;
+  phases_json: string;
+  validations_json: string;
+  terminal_code: string | null;
+  started_at: string;
+  completed_at: string | null;
+}>;
+
 type LectureStudioMessageRow = Readonly<{
   id: string;
   schema_version: number;
@@ -1429,6 +1456,84 @@ function migrateLectureStudioRevisionLatex(database: Database.Database) {
   `);
 }
 
+function migrateLectureStudioAttempts(database: Database.Database) {
+  database.exec(`
+    create table if not exists lecture_studio_attempts (
+      id text primary key check (length(id) = 36),
+      schema_version integer not null check (schema_version = 1),
+      studio_id text not null check (length(studio_id) = 36),
+      status text not null check (status in ('running','succeeded','failed','interrupted')),
+      requested_model_id text check (
+        requested_model_id is null or length(requested_model_id) between 1 and 256
+      ),
+      resolved_model_id text check (
+        resolved_model_id is null or length(resolved_model_id) between 1 and 256
+      ),
+      provider_id text check (provider_id is null or length(provider_id) between 1 and 128),
+      catalog_version text check (
+        catalog_version is null or length(catalog_version) between 1 and 128
+      ),
+      reasoning_option_id text check (
+        reasoning_option_id is null or length(reasoning_option_id) between 1 and 128
+      ),
+      phases_json text not null check (length(phases_json) between 2 and 16384),
+      validations_json text not null check (length(validations_json) between 2 and 32768),
+      terminal_code text check (
+        terminal_code is null or terminal_code in (
+          'application_interrupted',
+          'lecture_source_not_found',
+          'lecture_source_conflict',
+          'lecture_context_too_large',
+          'lecture_research_notes_required',
+          'lecture_codex_unavailable',
+          'lecture_auth_required',
+          'lecture_generation_timed_out',
+          'lecture_usage_limit_exceeded',
+          'lecture_generation_interrupted',
+          'lecture_generation_failed',
+          'lecture_invalid_response',
+          'lecture_invalid_response_json',
+          'lecture_invalid_response_schema',
+          'lecture_invalid_latex_grammar',
+          'lecture_invalid_citation_mapping',
+          'lecture_invalid_slide_count',
+          'lecture_persistence_failed',
+          'lecture_cancelled',
+          'lecture_pdf_compiler_unavailable',
+          'lecture_pdf_compile_failed',
+          'lecture_pdf_too_large',
+          'lecture_pdf_invalid'
+        )
+      ),
+      started_at text not null,
+      completed_at text,
+      foreign key(studio_id) references lecture_studios(id) on delete cascade,
+      check (
+        (resolved_model_id is null and provider_id is null and catalog_version is null) or
+        (resolved_model_id is not null and provider_id is not null and catalog_version is not null)
+      ),
+      check (
+        (status = 'running' and completed_at is null and terminal_code is null) or
+        (status = 'succeeded' and completed_at is not null and terminal_code is null) or
+        (status in ('failed','interrupted') and completed_at is not null and terminal_code is not null)
+      )
+    );
+    create index if not exists lecture_studio_attempts_by_studio
+      on lecture_studio_attempts(studio_id,started_at desc);
+    create index if not exists lecture_studio_failure_attempts_by_studio
+      on lecture_studio_attempts(studio_id,started_at desc)
+      where status in ('failed','interrupted');
+    create unique index if not exists lecture_studio_one_running_attempt
+      on lecture_studio_attempts(studio_id) where status='running';
+    create trigger if not exists lecture_studio_attempt_identity_guard
+      before update of id,schema_version,studio_id,requested_model_id,reasoning_option_id,started_at
+      on lecture_studio_attempts
+      begin
+        select raise(abort,'lecture_studio_attempt_identity_immutable');
+      end;
+  `);
+}
+
 function toLectureStudio(row: LectureStudioRow): LectureStudio {
   return LectureStudioSchema.parse({
     schemaVersion: row.schema_version,
@@ -1468,6 +1573,134 @@ function toLectureStudioSummary(row: LectureStudioSummaryRow): LectureStudioSumm
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
+}
+
+function toLectureStudioAttempt(row: LectureStudioAttemptRow): LectureStudioAttempt {
+  return LectureStudioAttemptSchema.parse({
+    schemaVersion: row.schema_version,
+    id: row.id,
+    studioId: row.studio_id,
+    status: row.status,
+    requestedModelId: row.requested_model_id,
+    resolvedModelId: row.resolved_model_id,
+    providerId: row.provider_id,
+    catalogVersion: row.catalog_version,
+    reasoningOptionId: row.reasoning_option_id,
+    phases: JSON.parse(row.phases_json) as unknown,
+    validations: JSON.parse(row.validations_json) as unknown,
+    terminalCode: row.terminal_code,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  });
+}
+
+function insertLectureStudioAttempt(database: Database.Database, input: LectureStudioAttempt) {
+  const attempt = LectureStudioAttemptSchema.parse(structuredClone(input));
+  if (
+    attempt.status !== 'running' ||
+    attempt.resolvedModelId !== null ||
+    attempt.providerId !== null ||
+    attempt.catalogVersion !== null ||
+    attempt.phases.length !== 0 ||
+    attempt.validations.length !== 0 ||
+    attempt.terminalCode !== null ||
+    attempt.completedAt !== null
+  ) {
+    throw new Error('invalid_lecture_attempt_initial_state');
+  }
+  database
+    .prepare(
+      `insert into lecture_studio_attempts(
+         id,schema_version,studio_id,status,requested_model_id,resolved_model_id,provider_id,
+         catalog_version,reasoning_option_id,phases_json,validations_json,terminal_code,
+         started_at,completed_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      attempt.id,
+      attempt.schemaVersion,
+      attempt.studioId,
+      attempt.status,
+      attempt.requestedModelId,
+      attempt.resolvedModelId,
+      attempt.providerId,
+      attempt.catalogVersion,
+      attempt.reasoningOptionId,
+      JSON.stringify(attempt.phases),
+      JSON.stringify(attempt.validations),
+      attempt.terminalCode,
+      attempt.startedAt,
+      attempt.completedAt,
+    );
+}
+
+function finishLectureStudioAttempt(
+  database: Database.Database,
+  input: Readonly<{
+    studioId: string;
+    attemptId: string;
+    status: Exclude<LectureStudioAttempt['status'], 'running'>;
+    terminalCode: LectureStudioAttemptTerminalCode | null;
+    invocation: ModelInvocation | null;
+    completedAt: string;
+  }>,
+) {
+  const terminalCode =
+    input.terminalCode === null
+      ? null
+      : LectureStudioAttemptTerminalCodeSchema.parse(input.terminalCode);
+  if ((input.status === 'succeeded') !== (terminalCode === null)) {
+    throw new Error('invalid_lecture_attempt_terminal_state');
+  }
+  const invocation =
+    input.invocation === null
+      ? null
+      : ModelInvocationSchema.parse(structuredClone(input.invocation));
+  if (input.status === 'succeeded' && invocation === null) {
+    throw new Error('invalid_lecture_attempt_success_invocation');
+  }
+  return database
+    .prepare(
+      `update lecture_studio_attempts
+       set status=?,resolved_model_id=coalesce(?,resolved_model_id),
+           provider_id=coalesce(?,provider_id),catalog_version=coalesce(?,catalog_version),
+           terminal_code=?,completed_at=?
+       where id=? and studio_id=? and status='running'`,
+    )
+    .run(
+      input.status,
+      invocation?.resolvedModelId ?? null,
+      invocation?.providerId ?? null,
+      invocation?.catalogVersion ?? null,
+      terminalCode,
+      input.completedAt,
+      input.attemptId,
+      input.studioId,
+    ).changes;
+}
+
+function pruneLectureStudioFailureAttempts(database: Database.Database, studioId?: string) {
+  const studioRows =
+    studioId === undefined
+      ? (database
+          .prepare(
+            `select distinct studio_id from lecture_studio_attempts
+             where status in ('failed','interrupted')`,
+          )
+          .all() as Array<{ studio_id: string }>)
+      : [{ studio_id: studioId }];
+  const prune = database.prepare(
+    `delete from lecture_studio_attempts
+     where studio_id=? and status in ('failed','interrupted') and rowid not in (
+       select rowid from lecture_studio_attempts
+       where studio_id=? and status in ('failed','interrupted')
+       order by started_at desc,rowid desc
+       limit ?
+     )`,
+  );
+  for (const row of studioRows) {
+    prune.run(row.studio_id, row.studio_id, LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS);
+  }
 }
 
 function toLectureStudioMessage(row: LectureStudioMessageRow): LectureStudioMessage {
@@ -4486,6 +4719,7 @@ export class LocalDatabase {
       migrateLectureStudioGenerationBrief(database);
       migrateLectureStudioTrash(database);
       migrateLectureStudioRevisionLatex(database);
+      migrateLectureStudioAttempts(database);
       migrateExperimentRunsHardening(database);
       migrateProjectChatResearchNoteAbandoned(database);
       const manuscriptWorkspaceConnectionColumns = database.pragma(
@@ -4783,22 +5017,23 @@ export class LocalDatabase {
         );
       }
       const initializedDatabase = database;
-      initializedDatabase.transaction(() => {
-        const reconciledAt = new Date().toISOString();
-        reconcileInterruptedChatAttempts(initializedDatabase, reconciledAt);
-        reconcileCommittedResearchNoteReceipts(initializedDatabase, reconciledAt);
-        initializedDatabase
-          .prepare(
-            `update experiment_runs
+      initializedDatabase
+        .transaction(() => {
+          const reconciledAt = new Date().toISOString();
+          reconcileInterruptedChatAttempts(initializedDatabase, reconciledAt);
+          reconcileCommittedResearchNoteReceipts(initializedDatabase, reconciledAt);
+          initializedDatabase
+            .prepare(
+              `update experiment_runs
              set status='lost',
                  current_step='Application interrupted; remote outcome unknown',
                  completed_at=?,updated_at=?,version=version+1
              where status='running'`,
-          )
-          .run(reconciledAt, reconciledAt);
-        initializedDatabase
-          .prepare(
-            `update lecture_studio_messages
+            )
+            .run(reconciledAt, reconciledAt);
+          initializedDatabase
+            .prepare(
+              `update lecture_studio_messages
              set status='interrupted',completed_at=?
              where role='user' and status='complete' and exists (
                select 1 from lecture_studios studio
@@ -4806,19 +5041,27 @@ export class LocalDatabase {
                  and studio.status='generating'
                  and studio.active_attempt_id=lecture_studio_messages.attempt_id
              )`,
-          )
-          .run(reconciledAt);
-        initializedDatabase
-          .prepare(
-            `update lecture_studios
+            )
+            .run(reconciledAt);
+          initializedDatabase
+            .prepare(
+              `update lecture_studio_attempts
+             set status='interrupted',terminal_code='application_interrupted',completed_at=?
+             where status='running'`,
+            )
+            .run(reconciledAt);
+          pruneLectureStudioFailureAttempts(initializedDatabase);
+          initializedDatabase
+            .prepare(
+              `update lecture_studios
              set status='failed',active_attempt_id=null,last_error_code='application_interrupted',
                  version=version+1,updated_at=?
              where status='generating'`,
-          )
-          .run(reconciledAt);
-        initializedDatabase
-          .prepare(
-            `update experiment_evaluation_messages
+            )
+            .run(reconciledAt);
+          initializedDatabase
+            .prepare(
+              `update experiment_evaluation_messages
              set status='interrupted',completed_at=?
              where role='user' and status='complete' and exists (
                select 1 from experiment_evaluation_sessions session
@@ -4826,19 +5069,21 @@ export class LocalDatabase {
                  and session.status='generating'
                  and session.active_attempt_id=experiment_evaluation_messages.attempt_id
              )`,
-          )
-          .run(reconciledAt);
-        initializedDatabase
-          .prepare(
-            `update experiment_evaluation_sessions
+            )
+            .run(reconciledAt);
+          initializedDatabase
+            .prepare(
+              `update experiment_evaluation_sessions
              set status='failed',active_attempt_id=null,last_error_code='application_interrupted',
                  version=version+1,updated_at=?
              where status='generating'`,
-          )
-          .run(reconciledAt);
-        this.workspaceOutboxOrderingReady = backfillLegacyWorkspaceRevisions(initializedDatabase);
-        if (this.workspaceOutboxOrderingReady) reconcileWorkspaceOutboxStatus(initializedDatabase);
-      })();
+            )
+            .run(reconciledAt);
+          this.workspaceOutboxOrderingReady = backfillLegacyWorkspaceRevisions(initializedDatabase);
+          if (this.workspaceOutboxOrderingReady)
+            reconcileWorkspaceOutboxStatus(initializedDatabase);
+        })
+        .immediate();
       initializedDatabase.exec(`
         create unique index if not exists project_chat_one_active_attempt_per_session
           on project_chat_attempts(project_id,session_id)
@@ -7876,13 +8121,142 @@ export class LocalDatabase {
            where studio_id=? order by revision desc limit 1`,
         )
         .all(studioId) as LectureStudioRevisionRow[];
+      const attemptRow = database
+        .prepare(
+          `select * from lecture_studio_attempts
+           where studio_id=? order by started_at desc,rowid desc limit 1`,
+        )
+        .get(studioId) as LectureStudioAttemptRow | undefined;
       return LectureStudioDetailSchema.parse({
         schemaVersion: 1,
         studio: toLectureStudio(studioRow),
         messages: messageRows.map(toLectureStudioMessage),
         revisions: revisionRows.map(toLectureStudioRevision),
+        lastAttempt: attemptRow ? toLectureStudioAttempt(attemptRow) : null,
       });
     })();
+  }
+
+  getLatestLectureStudioAttempt(studioId: string): LectureStudioAttempt | null {
+    const row = this.require()
+      .prepare(
+        `select * from lecture_studio_attempts
+         where studio_id=? order by started_at desc,rowid desc limit 1`,
+      )
+      .get(studioId) as LectureStudioAttemptRow | undefined;
+    return row ? toLectureStudioAttempt(row) : null;
+  }
+
+  recordLectureStudioAttemptInvocation(
+    studioId: string,
+    attemptId: string,
+    input: ModelInvocation,
+  ): LectureStudioAttempt | null {
+    const invocation = ModelInvocationSchema.parse(structuredClone(input));
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const changed = database
+          .prepare(
+            `update lecture_studio_attempts
+             set resolved_model_id=?,provider_id=?,catalog_version=?
+             where id=? and studio_id=? and status='running'
+               and (resolved_model_id is null or (
+                 resolved_model_id=? and provider_id=? and catalog_version=?
+               ))`,
+          )
+          .run(
+            invocation.resolvedModelId,
+            invocation.providerId,
+            invocation.catalogVersion,
+            attemptId,
+            studioId,
+            invocation.resolvedModelId,
+            invocation.providerId,
+            invocation.catalogVersion,
+          );
+        if (changed.changes !== 1) return null;
+        return toLectureStudioAttempt(
+          database
+            .prepare('select * from lecture_studio_attempts where id=? and studio_id=?')
+            .get(attemptId, studioId) as LectureStudioAttemptRow,
+        );
+      })
+      .immediate();
+  }
+
+  recordLectureStudioAttemptPhase(
+    studioId: string,
+    attemptId: string,
+    input: LectureStudioAttemptPhase,
+  ): LectureStudioAttempt | null {
+    const phase = LectureStudioAttemptPhaseSchema.parse(structuredClone(input));
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const row = database
+          .prepare('select * from lecture_studio_attempts where id=? and studio_id=?')
+          .get(attemptId, studioId) as LectureStudioAttemptRow | undefined;
+        if (!row) return null;
+        const attempt = toLectureStudioAttempt(row);
+        if (attempt.status !== 'running') return null;
+        const existing = attempt.phases.find((entry) => entry.phase === phase.phase);
+        if (existing) return attempt;
+        const updated = LectureStudioAttemptSchema.parse({
+          ...attempt,
+          phases: [...attempt.phases, phase],
+        });
+        const changed = database
+          .prepare(
+            `update lecture_studio_attempts set phases_json=?
+             where id=? and studio_id=? and status='running' and phases_json=?`,
+          )
+          .run(JSON.stringify(updated.phases), attemptId, studioId, JSON.stringify(attempt.phases));
+        if (changed.changes !== 1) return null;
+        return updated;
+      })
+      .immediate();
+  }
+
+  recordLectureStudioAttemptValidation(
+    studioId: string,
+    attemptId: string,
+    input: LectureStudioAttemptValidation,
+  ): LectureStudioAttempt | null {
+    const validation = LectureStudioAttemptValidationSchema.parse(structuredClone(input));
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const row = database
+          .prepare('select * from lecture_studio_attempts where id=? and studio_id=?')
+          .get(attemptId, studioId) as LectureStudioAttemptRow | undefined;
+        if (!row) return null;
+        const attempt = toLectureStudioAttempt(row);
+        if (
+          attempt.status !== 'running' ||
+          attempt.validations.some((entry) => entry.pass === validation.pass)
+        ) {
+          return null;
+        }
+        const updated = LectureStudioAttemptSchema.parse({
+          ...attempt,
+          validations: [...attempt.validations, validation],
+        });
+        const changed = database
+          .prepare(
+            `update lecture_studio_attempts set validations_json=?
+             where id=? and studio_id=? and status='running' and validations_json=?`,
+          )
+          .run(
+            JSON.stringify(updated.validations),
+            attemptId,
+            studioId,
+            JSON.stringify(attempt.validations),
+          );
+        if (changed.changes !== 1) return null;
+        return updated;
+      })
+      .immediate();
   }
 
   listLectureStudioMessages(studioId: string, limit: number): LectureStudioMessage[] {
@@ -8026,6 +8400,7 @@ export class LocalDatabase {
       attemptId: string;
       userMessage: LectureStudioMessage | null;
       updatedAt: string;
+      attempt?: LectureStudioAttempt;
     }>,
   ): LectureStudio | null {
     const database = this.require();
@@ -8036,6 +8411,10 @@ export class LocalDatabase {
       input.userMessage === null
         ? null
         : LectureStudioMessageSchema.parse(structuredClone(input.userMessage));
+    const attempt =
+      input.attempt === undefined
+        ? null
+        : LectureStudioAttemptSchema.parse(structuredClone(input.attempt));
     if (
       userMessage &&
       (userMessage.studioId !== input.studioId ||
@@ -8044,6 +8423,14 @@ export class LocalDatabase {
         userMessage.status !== 'complete')
     ) {
       throw new Error('invalid_lecture_user_message');
+    }
+    if (
+      attempt !== null &&
+      (attempt.id !== input.attemptId ||
+        attempt.studioId !== input.studioId ||
+        attempt.startedAt !== input.updatedAt)
+    ) {
+      throw new Error('invalid_lecture_attempt');
     }
     try {
       return database
@@ -8076,6 +8463,7 @@ export class LocalDatabase {
             throw new LectureStudioStorageError('capacity_reached');
           }
           if (userMessage) insertLectureStudioMessage(database, userMessage);
+          if (attempt) insertLectureStudioAttempt(database, attempt);
           const row = database
             .prepare('select * from lecture_studios where id=?')
             .get(input.studioId) as LectureStudioRow;
@@ -8160,6 +8548,25 @@ export class LocalDatabase {
           if (changed.changes !== 1) return null;
           insertLectureStudioRevision(database, revision);
           if (assistantMessage) insertLectureStudioMessage(database, assistantMessage);
+          const runningAttempt = database
+            .prepare(
+              `select 1 from lecture_studio_attempts
+               where id=? and studio_id=? and status='running'`,
+            )
+            .get(revision.attemptId, studio.id);
+          if (
+            runningAttempt &&
+            finishLectureStudioAttempt(database, {
+              studioId: studio.id,
+              attemptId: revision.attemptId,
+              status: 'succeeded',
+              terminalCode: null,
+              invocation: revision.invocation,
+              completedAt: studio.updatedAt,
+            }) !== 1
+          ) {
+            throw new Error('lecture_attempt_completion_failed');
+          }
           const row = database
             .prepare('select * from lecture_studios where id=?')
             .get(studio.id) as LectureStudioRow;
@@ -8205,6 +8612,33 @@ export class LocalDatabase {
              where studio_id=? and attempt_id=? and role='user' and status='complete'`,
           )
           .run(input.messageStatus, input.updatedAt, input.studioId, input.attemptId);
+        const runningAttempt = database
+          .prepare(
+            `select 1 from lecture_studio_attempts
+             where id=? and studio_id=? and status='running'`,
+          )
+          .get(input.attemptId, input.studioId);
+        if (runningAttempt) {
+          const parsedTerminalCode = LectureStudioAttemptTerminalCodeSchema.safeParse(
+            input.errorCode,
+          );
+          const terminalCode = parsedTerminalCode.success
+            ? parsedTerminalCode.data
+            : 'lecture_generation_failed';
+          if (
+            finishLectureStudioAttempt(database, {
+              studioId: input.studioId,
+              attemptId: input.attemptId,
+              status: input.messageStatus === 'interrupted' ? 'interrupted' : 'failed',
+              terminalCode,
+              invocation: null,
+              completedAt: input.updatedAt,
+            }) !== 1
+          ) {
+            throw new Error('lecture_attempt_completion_failed');
+          }
+        }
+        pruneLectureStudioFailureAttempts(database, input.studioId);
         const row = database
           .prepare('select * from lecture_studios where id=?')
           .get(input.studioId) as LectureStudioRow;

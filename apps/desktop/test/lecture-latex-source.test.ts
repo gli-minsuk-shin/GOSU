@@ -4,6 +4,7 @@ import {
   buildLectureLatexDocument,
   countLectureSlidePages,
   LectureLatexSourceError,
+  normalizeGeneratedLectureLatexBody,
   validateCanonicalLectureLatex,
   validateLectureLatexBody,
 } from '../src/main/lecture-latex-source';
@@ -156,7 +157,7 @@ $1$ & $2$
     ).toBe('unbalanced_math');
   });
 
-  it('reports bounded reason IDs and up to eight normalized unsupported tokens', () => {
+  it('reports bounded reason IDs and up to 32 normalized unsupported tokens', () => {
     const commands = validationError(
       'lecture-notes',
       String.raw`\section{Aliases}
@@ -178,7 +179,21 @@ $\R+\E+\PP+\mainref+\includegraphics+\captionof+\foo+\bar+\baz+\quux+\R$ [M1].
       String.raw`\captionof`,
       String.raw`\foo`,
       String.raw`\baz`,
+      String.raw`\quux`,
     ]);
+
+    const aliases = Array.from(
+      { length: 40 },
+      (_, index) => `\\unsupported${'a'.repeat(index + 1)}`,
+    );
+    const bounded = validationError(
+      'lecture-notes',
+      `\\section{Aliases}\n${aliases.join(' ')}\n\\section{Sources used}\n[M1] Source.`,
+    );
+    expect(bounded.reason).toBe('unsupported_command');
+    expect(bounded.tokens).toHaveLength(32);
+    expect(bounded.tokens[0]).toBe(aliases[0]);
+    expect(bounded.tokens.at(-1)).toBe(aliases[31]);
 
     const environments = validationError(
       'lecture-notes',
@@ -254,6 +269,121 @@ $c$ & $d$ \\
 
     expect(() => validateLectureLatexBody('lecture-notes', notes)).not.toThrow();
     expect(() => validateLectureLatexBody('slides', slides)).not.toThrow();
+  });
+
+  it('repairs deterministic JSON backslash escapes before validating generated bodies', () => {
+    const decodedNotes =
+      '\u0008egin{samepage}\n\\section{Transport}\nThe ratio is $\u000Crac{1}{2}$ [M1].\n\\end{samepage}\n\\section{Sources used}\n[M1] Captured manuscript.';
+    const decodedSlides =
+      '\u0008egin{frame}{Transport}\nThe ratio is $\u000Crac{1}{2}$ [M1].\n\\end{frame}';
+
+    const notes = normalizeGeneratedLectureLatexBody('lecture-notes', decodedNotes);
+    const slides = normalizeGeneratedLectureLatexBody('slides', decodedSlides);
+
+    expect(notes).toContain(String.raw`\begin{samepage}`);
+    expect(notes).toContain(String.raw`\frac{1}{2}`);
+    expect(slides).toContain(String.raw`\begin{frame}`);
+    expect(() => validateLectureLatexBody('lecture-notes', notes)).not.toThrow();
+    expect(() => validateLectureLatexBody('slides', slides)).not.toThrow();
+
+    const unsupported = normalizeGeneratedLectureLatexBody(
+      'lecture-notes',
+      '\\section{Transport}\n\u000Coo{value}\n\\section{Sources used}\n[M1] Source.',
+    );
+    expect(validationError('lecture-notes', unsupported)).toMatchObject({
+      reason: 'unsupported_command',
+      token: String.raw`\foo`,
+    });
+
+    const restoredWrapper = normalizeGeneratedLectureLatexBody(
+      'lecture-notes',
+      '\u0008egin{document}hidden\\end{document}',
+    );
+    expect(validationError('lecture-notes', restoredWrapper).reason).toBe('document_wrapper');
+  });
+
+  it('fails closed on ambiguous JSON tab, carriage-return, and line-feed escapes', () => {
+    for (const [body, token] of [
+      ['\\section{Transport}\n\theta', String.raw`\theta`],
+      ['\\section{Transport}\n\ref', String.raw`\ref`],
+      ['\\section{Transport}\nonumber', String.raw`\nonumber`],
+      ['\\section{Transport}\newcommand', String.raw`\newcommand`],
+    ] as const) {
+      try {
+        normalizeGeneratedLectureLatexBody('lecture-notes', body);
+        throw new Error('Expected LectureLatexSourceError');
+      } catch (error) {
+        expect(error).toBeInstanceOf(LectureLatexSourceError);
+        expect(error).toMatchObject({
+          reason: 'ambiguous_json_backslash_escape',
+          token,
+        });
+      }
+    }
+
+    const ordinaryLineBreak = '\\section{Transport}\nNarrative continues [M1].';
+    expect(normalizeGeneratedLectureLatexBody('lecture-notes', ordinaryLineBreak)).toBe(
+      ordinaryLineBreak,
+    );
+    const intentionalIndentedEquationLine = '\\begin{align}\n  u &= v.\n\\end{align}';
+    expect(
+      normalizeGeneratedLectureLatexBody('lecture-notes', intentionalIndentedEquationLine),
+    ).toBe(intentionalIndentedEquationLine);
+    expect(() =>
+      normalizeGeneratedLectureLatexBody('lecture-notes', '\\begin{align}\nu &= v.\n\\end{align}'),
+    ).toThrowError(
+      expect.objectContaining({
+        reason: 'ambiguous_json_backslash_escape',
+        token: String.raw`\nu`,
+      }),
+    );
+
+    const canonicalBody =
+      '\\section{Legacy}\nA\tlegacy tab and carriage return\r\nremain valid.\n\\section{Sources used}\n[M1] Source.';
+    expect(() => validateLectureLatexBody('lecture-notes', canonicalBody)).not.toThrow();
+  });
+
+  it('accepts compiler-backed AMS constructs while keeping note-only proof commands scoped', () => {
+    const notes = String.raw`\begin{samepage}
+\section{Optimization}
+For $x \longmapsto f(x)$, compare $\arg f$ with $\operatorname*{arg\,max}_x f(x)$ [M1].
+\begin{subequations}
+\begin{alignat}{2}
+x &={} y \qquad & z &={} w, \\
+u &={} v & q &={} r.
+\end{alignat}
+\end{subequations}
+\begin{proof}
+The supplied identity is preserved [M1].
+\begin{equation}x=x.\qedhere\end{equation}
+\end{proof}
+\end{samepage}
+\section{Sources used}
+[M1] Captured manuscript.`;
+    const slides = String.raw`\begin{frame}{Optimization}
+\begin{samepage}
+\begin{subequations}
+\begin{alignat*}{2}
+x &={} y \qquad & z &={} w.
+\end{alignat*}
+\end{subequations}
+$x \longmapsto f(x)$ and $\arg f$ [M1].
+\end{samepage}
+\end{frame}`;
+
+    expect(() => validateLectureLatexBody('lecture-notes', notes)).not.toThrow();
+    expect(() => validateLectureLatexBody('slides', slides)).not.toThrow();
+    expect(
+      validationError('slides', String.raw`\begin{frame}{Proof}$x=x.\qedhere$ [M1].\end{frame}`),
+    ).toMatchObject({ reason: 'unsupported_command', token: String.raw`\qedhere` });
+    for (const unsupportedOperator of ['argmax', 'argmin']) {
+      expect(
+        validationError(
+          'lecture-notes',
+          `\\section{Operator}\n$\\${unsupportedOperator}_x f(x)$ [M1].\n\\section{Sources used}\n[M1] Source.`,
+        ),
+      ).toMatchObject({ reason: 'unsupported_command', token: `\\${unsupportedOperator}` });
+    }
   });
 
   it('rejects new overlays and automatic frame splitting but reopens legacy canonical slides', () => {

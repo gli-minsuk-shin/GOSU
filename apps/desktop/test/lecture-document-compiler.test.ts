@@ -155,6 +155,26 @@ describe('LectureDocumentCompiler', () => {
     expect(latex).not.toContain('\\textbackslash{}left');
   });
 
+  it('preserves compiler-backed operators without relying on undefined custom commands', () => {
+    const expression = String.raw`x \longmapsto f(x),\quad \arg f,\quad \operatorname*{arg\,max}_x f(x)`;
+    const latex = lectureMarkdownToLatex(
+      'lecture-notes',
+      'Operator fixture',
+      `Safe: $${expression}$`,
+    );
+
+    expect(latex).toContain(`$${expression}$`);
+    expect(latex).not.toContain('\\DeclareMathOperator');
+    for (const unsupportedOperator of ['argmax', 'argmin']) {
+      const unsafe = lectureMarkdownToLatex(
+        'lecture-notes',
+        'Operator fixture',
+        `Unsupported: $\\${unsupportedOperator}_x f(x)$`,
+      );
+      expect(unsafe).not.toContain(`$\\${unsupportedOperator}_x f(x)$`);
+    }
+  });
+
   it('uses fixed XeLaTeX sandbox arguments and returns only validated PDF bytes', async () => {
     let generatedSource = '';
     const run = vi.fn(
@@ -338,6 +358,9 @@ S_{B,s} &\rightsquigarrow_{\#} N(0,\Sigma).
 \end{theorem}
 \begin{proof}
 제공된 extract가 지원하는 범위만 설명하며, 누락된 증명 단계는 재구성하지 않습니다 [M1].
+\begin{equation}
+x=x.\qedhere
+\end{equation}
 \end{proof}
 \section{해석과 한계}
 첫 번째 식은 유한 $M$과 $B$에 따른 오차를 분리하며, 관측되지 않은 상수의 값은 근거 없이 단정하지 않습니다 [M1].
@@ -351,6 +374,14 @@ B & 0 \\
 \end{pmatrix}
 \right\rVert_2 \coloneqq \max\{B,n\}. \tag{A}
 \end{equation}
+\begin{samepage}
+\begin{subequations}
+\begin{alignat}{2}
+x &\longmapsto f(x) \qquad & \arg f &={} \operatorname*{arg\,max}_x f(x), \\
+u &={} v & q &={} r.
+\end{alignat}
+\end{subequations}
+\end{samepage}
 \begin{minipage}{0.9\textwidth}
 표의 기호는 본문과 같은 의미를 유지합니다 [M1].
 \end{minipage}
@@ -384,6 +415,16 @@ $p$ & $1-p$ \\
 B &\asymp \sqrt n.
 \end{align*}
 두 관계의 역할을 서로 바꾸지 않습니다 [M1].
+\end{frame}
+\begin{frame}{안전한 AMS 환경}
+\begin{samepage}
+\begin{subequations}
+\begin{alignat*}{2}
+x &\longmapsto f(x) \qquad & \arg f &={} \operatorname*{arg\,min}_x f(x).
+\end{alignat*}
+\end{subequations}
+\end{samepage}
+근거 표기를 같은 프레임에 유지합니다 [M1].
 \end{frame}
 \begin{frame}{가정과 경계}
 \begin{block}{고정된 가정}

@@ -18,6 +18,7 @@ import {
   LectureSourceManifestSchema,
   LectureStudioDetailInputSchema,
   LectureStudioDetailSchema,
+  LectureStudioAttemptSchema,
   LectureStudioArtifactActionReceiptSchema,
   LectureStudioEventSchema,
   LectureStudioGenerationOutputSchema,
@@ -44,6 +45,9 @@ import {
   type LectureSourceManifest,
   type LectureSourceSelection,
   type LectureStudio,
+  type LectureStudioAttempt,
+  type LectureStudioAttemptPhase,
+  type LectureStudioAttemptValidation,
   type LectureStudioArtifact,
   type LectureStudioArtifactActionReceipt,
   type LectureStudioDetail,
@@ -89,6 +93,7 @@ import {
   buildLectureLatexDocument,
   countLectureSlidePages,
   findLectureSourcesUsedSection,
+  normalizeGeneratedLectureLatexBody,
   type LectureLatexValidationReason,
   validateLectureLatexBody,
 } from './lecture-latex-source';
@@ -152,8 +157,24 @@ export interface LectureStudioStorage {
       attemptId: string;
       userMessage: LectureStudioMessage | null;
       updatedAt: string;
+      attempt?: LectureStudioAttempt;
     }>,
   ): MaybePromise<LectureStudio | null>;
+  recordLectureStudioAttemptInvocation(
+    studioId: string,
+    attemptId: string,
+    input: ModelInvocation,
+  ): MaybePromise<LectureStudioAttempt | null>;
+  recordLectureStudioAttemptPhase(
+    studioId: string,
+    attemptId: string,
+    input: LectureStudioAttemptPhase,
+  ): MaybePromise<LectureStudioAttempt | null>;
+  recordLectureStudioAttemptValidation(
+    studioId: string,
+    attemptId: string,
+    input: LectureStudioAttemptValidation,
+  ): MaybePromise<LectureStudioAttempt | null>;
   completeLectureStudioTurn(
     input: Readonly<{
       studio: LectureStudio;
@@ -1391,6 +1412,22 @@ export class LectureStudioService {
 
     const attemptId = randomUUID();
     const startedAt = this.now().toISOString();
+    const attempt = LectureStudioAttemptSchema.parse({
+      schemaVersion: 1,
+      id: attemptId,
+      studioId: current.id,
+      status: 'running',
+      requestedModelId: request.requestedModelId,
+      resolvedModelId: null,
+      providerId: null,
+      catalogVersion: null,
+      reasoningOptionId: request.reasoningOptionId,
+      phases: [],
+      validations: [],
+      terminalCode: null,
+      startedAt,
+      completedAt: null,
+    });
     const userMessage = request.message
       ? LectureStudioMessageSchema.parse({
           schemaVersion: 1,
@@ -1415,6 +1452,7 @@ export class LectureStudioService {
         attemptId,
         userMessage,
         updatedAt: startedAt,
+        attempt,
       });
     } catch (error) {
       throw this.normalizeStorageError(error);
@@ -1526,10 +1564,18 @@ export class LectureStudioService {
         const pending = this.pendingByThread.get(activeThreadId);
         if (!pending) throw new LectureStudioServiceError('lecture_generation_failed');
         pending.turnId = turnId;
-        pending.invocation =
+        const attemptInvocation =
           pending.earlyInvocation?.turnId === turnId
             ? pending.earlyInvocation.invocation
             : running.invocation;
+        pending.invocation = attemptInvocation;
+        await this.recordAttemptBestEffort(() =>
+          this.dependencies.storage.recordLectureStudioAttemptInvocation(
+            generating.id,
+            attemptId,
+            attemptInvocation,
+          ),
+        );
 
         let idleTimer: ReturnType<typeof setTimeout> | null = null;
         let hardTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1590,6 +1636,28 @@ export class LectureStudioService {
         this.throwIfCancelled(active);
         return { terminal, pending, running };
       };
+      const recordValidation = async (
+        pass: LectureStudioAttemptValidation['pass'],
+        error: LectureOutputValidationError,
+      ) => {
+        const validation: LectureStudioAttemptValidation = {
+          pass,
+          category: error.category,
+          diagnostics: error.latexDiagnostics.map((diagnostic) => ({
+            document: diagnostic.document,
+            reason: diagnostic.reason,
+            tokenCount: diagnostic.tokens.length,
+          })),
+          recordedAt: this.now().toISOString(),
+        };
+        await this.recordAttemptBestEffort(() =>
+          this.dependencies.storage.recordLectureStudioAttemptValidation(
+            generating.id,
+            attemptId,
+            validation,
+          ),
+        );
+      };
 
       const initialPrompt = buildLectureStudioPrompt({
         mode: previousRevision ? 'revision' : 'initial',
@@ -1627,6 +1695,7 @@ export class LectureStudioService {
         output = this.parseOutput(execution.terminal.text, generating, sourceManifest);
       } catch (error) {
         if (!(error instanceof LectureOutputValidationError)) throw error;
+        await recordValidation('initial', error);
         this.throwIfCancelled(active);
         this.publishProgress(active, 'correcting_output');
         execution = await executeCodexTurn(correctionPrompt(error, generating));
@@ -1635,12 +1704,12 @@ export class LectureStudioService {
           output = this.parseOutput(execution.terminal.text, generating, sourceManifest);
         } catch (correctionError) {
           if (correctionError instanceof LectureOutputValidationError) {
+            await recordValidation('correction', correctionError);
             throw new LectureStudioServiceError(correctionError.code);
           }
           throw correctionError;
         }
       }
-      const completedAt = this.now().toISOString();
       const revisionNumber = generating.currentRevision + 1;
       const invocation = execution.pending.invocation ?? execution.running.invocation;
       const lectureNotesLatex = buildLectureLatexDocument(
@@ -1685,6 +1754,8 @@ export class LectureStudioService {
         }
         throw new LectureStudioServiceError('lecture_pdf_compile_failed');
       }
+      this.publishProgress(active, 'saving_revision');
+      const revisionCreatedAt = this.now().toISOString();
       const artifactInput = {
         outputProjectId: generating.outputProjectId,
         studioId: generating.id,
@@ -1695,7 +1766,7 @@ export class LectureStudioService {
         documentFormat: 'latex' as const,
         lectureNotesLatex,
         slidesLatex,
-        createdAt: completedAt,
+        createdAt: revisionCreatedAt,
         invocation,
         relatedDocuments: [],
         relatedPapers: uniqueNonEmpty(
@@ -1706,8 +1777,8 @@ export class LectureStudioService {
         ),
       } as const;
       pendingArtifactInput = artifactInput;
-      this.publishProgress(active, 'saving_revision');
       const artifacts = await this.saveArtifacts(artifactInput);
+      const completedAt = this.now().toISOString();
       const revision = LectureStudioRevisionSchema.parse({
         schemaVersion: 2,
         id: randomUUID(),
@@ -1720,7 +1791,7 @@ export class LectureStudioService {
         slidesLatex,
         artifacts,
         invocation,
-        createdAt: completedAt,
+        createdAt: revisionCreatedAt,
       });
       const assistantMessage = LectureStudioMessageSchema.parse({
         schemaVersion: 1,
@@ -1824,9 +1895,13 @@ export class LectureStudioService {
     let notesBody: string | null = null;
     let slidesBody: string | null = null;
     try {
-      notesBody = validateLectureLatexBody('lecture-notes', output.lectureNotesLatexBody, {
-        requireSourcesUsed: false,
-      });
+      notesBody = validateLectureLatexBody(
+        'lecture-notes',
+        normalizeGeneratedLectureLatexBody('lecture-notes', output.lectureNotesLatexBody),
+        {
+          requireSourcesUsed: false,
+        },
+      );
     } catch (error) {
       if (!(error instanceof LectureLatexSourceError)) throw error;
       latexDiagnostics.push({
@@ -1836,7 +1911,10 @@ export class LectureStudioService {
       });
     }
     try {
-      slidesBody = validateLectureLatexBody('slides', output.slidesLatexBody);
+      slidesBody = validateLectureLatexBody(
+        'slides',
+        normalizeGeneratedLectureLatexBody('slides', output.slidesLatexBody),
+      );
     } catch (error) {
       if (!(error instanceof LectureLatexSourceError)) throw error;
       latexDiagnostics.push({ document: 'slides', reason: error.reason, tokens: error.tokens });
@@ -2491,6 +2569,7 @@ export class LectureStudioService {
     if (throttleActivity && monotonicNow - active.lastActivityProgressAt < 5_000) return;
     if (throttleActivity) active.lastActivityProgressAt = monotonicNow;
     active.progressSequence += 1;
+    const occurredAt = this.now().toISOString();
     const event = LectureStudioEventSchema.parse({
       schemaVersion: 1,
       type: 'lecture.generation.progress',
@@ -2499,9 +2578,24 @@ export class LectureStudioService {
       phase,
       sequence: active.progressSequence,
       startedAt: active.startedAt,
-      occurredAt: this.now().toISOString(),
+      occurredAt,
     });
+    void this.recordAttemptBestEffort(() =>
+      this.dependencies.storage.recordLectureStudioAttemptPhase(active.studioId, active.attemptId, {
+        phase,
+        sequence: active.progressSequence,
+        occurredAt,
+      }),
+    );
     for (const listener of this.listeners) listener(event);
+  }
+
+  private async recordAttemptBestEffort(operation: () => MaybePromise<unknown>) {
+    try {
+      await operation();
+    } catch {
+      // Diagnostics must never block or strand the generation they describe.
+    }
   }
 
   private throwIfProjectsLifecycleLocked(projectIds: readonly string[]) {

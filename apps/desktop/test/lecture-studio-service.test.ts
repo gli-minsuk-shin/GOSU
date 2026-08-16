@@ -23,6 +23,9 @@ import type {
   LectureStudioEvent,
   LectureStudioMessage,
   LectureStudioRevision,
+  LectureStudioAttempt,
+  LectureStudioAttemptPhase,
+  LectureStudioAttemptValidation,
   EmptyLectureStudioTrashInput,
   EmptyLectureStudioTrashReceipt,
   PendingLectureRevisionArtifacts,
@@ -205,6 +208,7 @@ class MemoryStorage implements LectureStudioStorage {
   readonly studios: LectureStudio[] = [];
   readonly messages: LectureStudioMessage[] = [];
   readonly revisions: LectureStudioRevision[] = [];
+  readonly attempts: LectureStudioAttempt[] = [];
   readonly trashReceipts = new Map<string, EmptyLectureStudioTrashReceipt>();
 
   listLectureStudios(includeTrashed = false) {
@@ -257,6 +261,10 @@ class MemoryStorage implements LectureStudioStorage {
           studio,
           messages: this.listLectureStudioMessages(studioId, 50),
           revisions: this.listLectureStudioRevisions(studioId, 1),
+          lastAttempt:
+            this.attempts
+              .filter((attempt) => attempt.studioId === studioId)
+              .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0] ?? null,
         }
       : null;
   }
@@ -323,6 +331,7 @@ class MemoryStorage implements LectureStudioStorage {
     attemptId: string;
     userMessage: LectureStudioMessage | null;
     updatedAt: string;
+    attempt?: LectureStudioAttempt;
   }) {
     const index = this.studios.findIndex(
       (studio) => studio.id === input.studioId && studio.version === input.expectedVersion,
@@ -340,7 +349,69 @@ class MemoryStorage implements LectureStudioStorage {
     };
     this.studios[index] = generating;
     if (input.userMessage) this.messages.push(input.userMessage);
+    if (input.attempt) this.attempts.push(structuredClone(input.attempt));
     return generating;
+  }
+
+  recordLectureStudioAttemptInvocation(
+    studioId: string,
+    attemptId: string,
+    input: ModelInvocation,
+  ) {
+    const index = this.attempts.findIndex(
+      (attempt) =>
+        attempt.id === attemptId && attempt.studioId === studioId && attempt.status === 'running',
+    );
+    if (index < 0) return null;
+    const current = this.attempts[index]!;
+    const updated: LectureStudioAttempt = {
+      ...current,
+      resolvedModelId: input.resolvedModelId,
+      providerId: input.providerId,
+      catalogVersion: input.catalogVersion,
+    };
+    this.attempts[index] = updated;
+    return updated;
+  }
+
+  recordLectureStudioAttemptPhase(
+    studioId: string,
+    attemptId: string,
+    input: LectureStudioAttemptPhase,
+  ) {
+    const index = this.attempts.findIndex(
+      (attempt) =>
+        attempt.id === attemptId && attempt.studioId === studioId && attempt.status === 'running',
+    );
+    if (index < 0) return null;
+    const current = this.attempts[index]!;
+    if (current.phases.some((phase) => phase.phase === input.phase)) return current;
+    const updated: LectureStudioAttempt = {
+      ...current,
+      phases: [...current.phases, structuredClone(input)],
+    };
+    this.attempts[index] = updated;
+    return updated;
+  }
+
+  recordLectureStudioAttemptValidation(
+    studioId: string,
+    attemptId: string,
+    input: LectureStudioAttemptValidation,
+  ) {
+    const index = this.attempts.findIndex(
+      (attempt) =>
+        attempt.id === attemptId && attempt.studioId === studioId && attempt.status === 'running',
+    );
+    if (index < 0) return null;
+    const current = this.attempts[index]!;
+    if (current.validations.some((validation) => validation.pass === input.pass)) return null;
+    const updated: LectureStudioAttempt = {
+      ...current,
+      validations: [...current.validations, structuredClone(input)],
+    };
+    this.attempts[index] = updated;
+    return updated;
   }
 
   completeLectureStudioTurn(input: {
@@ -358,6 +429,23 @@ class MemoryStorage implements LectureStudioStorage {
     this.studios[index] = input.studio;
     this.revisions.push(input.revision);
     this.messages.push(input.assistantMessage);
+    const attemptIndex = this.attempts.findIndex(
+      (attempt) => attempt.id === input.revision.attemptId && attempt.status === 'running',
+    );
+    if (attemptIndex >= 0) {
+      this.attempts[attemptIndex] = {
+        ...this.attempts[attemptIndex]!,
+        status: 'succeeded',
+        resolvedModelId: input.revision.invocation.resolvedModelId,
+        providerId: input.revision.invocation.providerId,
+        catalogVersion: input.revision.invocation.catalogVersion,
+        reasoningOptionId:
+          input.revision.invocation.reasoningOptionId ??
+          this.attempts[attemptIndex]!.reasoningOptionId,
+        terminalCode: null,
+        completedAt: input.studio.updatedAt,
+      };
+    }
     return input.studio;
   }
 
@@ -382,6 +470,17 @@ class MemoryStorage implements LectureStudioStorage {
       updatedAt: input.updatedAt,
     };
     this.studios[index] = failed;
+    const attemptIndex = this.attempts.findIndex(
+      (attempt) => attempt.id === input.attemptId && attempt.status === 'running',
+    );
+    if (attemptIndex >= 0) {
+      this.attempts[attemptIndex] = {
+        ...this.attempts[attemptIndex]!,
+        status: input.messageStatus === 'interrupted' ? 'interrupted' : 'failed',
+        terminalCode: input.errorCode as LectureStudioAttempt['terminalCode'],
+        completedAt: input.updatedAt,
+      };
+    }
     for (const [messageIndex, message] of this.messages.entries()) {
       if (
         message.studioId === input.studioId &&
@@ -2671,6 +2770,49 @@ The captured result improves the bounded baseline.
     expect(codex.turnSequence).toBe(2);
   });
 
+  it('repairs JSON-decoded backspace and form-feed LaTeX prefixes before validation', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    const studio = await service.create({
+      title: 'JSON-safe LaTeX lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    codex.response = {
+      reply: 'Generated JSON-safe LaTeX.',
+      lectureNotesLatexBody: [
+        '\\section{Result}',
+        `The ratio is $${'\f'}rac{1}{2}$ [P1].`,
+        '\\section{Sources used}',
+        '[P1] Paper A',
+      ].join('\n'),
+      slidesLatexBody: [
+        `${'\b'}egin{frame}{Result}`,
+        `The ratio is $${'\f'}rac{1}{2}$ [P1].`,
+        '\\end{frame}',
+      ].join('\n'),
+    };
+
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    expect(codex.turnSequence).toBe(1);
+    expect(receipt.revision.schemaVersion).toBe(2);
+    if (receipt.revision.schemaVersion !== 2) throw new Error('Expected canonical LaTeX revision');
+    expect(receipt.revision.lectureNotesLatex).toContain('\\frac{1}{2}');
+    expect(receipt.revision.slidesLatex).toContain('\\begin{frame}{Result}');
+    expect(storage.revisions).toHaveLength(1);
+  });
+
   it('repairs one exact slide-count failure on the same thread and records the accepted invocation', async () => {
     const { service, storage, codex, projectA, paperA } = fixture();
     const events: LectureStudioEvent[] = [];
@@ -2760,6 +2902,72 @@ The captured result improves the bounded baseline.
     expect(codex.prompts[1]).not.toContain('PRIVATE-UNSAFE-CANDIDATE');
     expect(storage.revisions).toHaveLength(0);
     expect(saved).toHaveLength(0);
+    expect(storage.attempts).toHaveLength(1);
+    expect(storage.attempts[0]).toMatchObject({
+      status: 'failed',
+      resolvedModelId: 'provider-default',
+      terminalCode: 'lecture_invalid_latex_grammar',
+      validations: [
+        {
+          pass: 'initial',
+          category: 'latex_grammar',
+          diagnostics: [
+            { document: 'lecture-notes', reason: 'unsupported_command', tokenCount: 1 },
+          ],
+        },
+        {
+          pass: 'correction',
+          category: 'latex_grammar',
+          diagnostics: [
+            { document: 'lecture-notes', reason: 'unsupported_command', tokenCount: 1 },
+          ],
+        },
+      ],
+    });
+    expect(JSON.stringify(storage.attempts[0])).not.toContain('includegraphics');
+    expect(JSON.stringify(storage.attempts[0])).not.toContain('PRIVATE-UNSAFE-CANDIDATE');
+  });
+
+  it('keeps generation alive when best-effort attempt diagnostics throw synchronously', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    storage.recordLectureStudioAttemptPhase = () => {
+      throw new Error('diagnostic phase unavailable');
+    };
+    storage.recordLectureStudioAttemptInvocation = () => {
+      throw new Error('diagnostic invocation unavailable');
+    };
+    storage.recordLectureStudioAttemptValidation = () => {
+      throw new Error('diagnostic validation unavailable');
+    };
+    codex.responseQueue = [
+      { reply: 'missing body fields' },
+      latexResponse(['P1'], 1, 'Recovered without diagnostics.'),
+    ];
+    const studio = await service.create({
+      title: 'Best-effort diagnostics',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    expect(receipt.studio.status).toBe('ready');
+    expect(receipt.revision.revision).toBe(1);
+    expect(storage.getLectureStudio(studio.id)).toMatchObject({
+      status: 'ready',
+      activeAttemptId: null,
+    });
   });
 
   it('gives one correction bounded diagnostics for both documents and source-defined aliases', async () => {
