@@ -614,12 +614,17 @@ describe('LectureStudioView', () => {
     expect(lectureArtifactActionLabels('notes')).toEqual({
       export: 'Export LaTeX',
       open: 'Open LaTeX in default app',
-      reveal: 'Show saved folder',
+      reveal: 'Show LaTeX in Finder',
     });
     expect(lectureArtifactActionLabels('slides-pdf')).toEqual({
       export: 'Export PDF',
       open: 'Open PDF in default app',
-      reveal: 'Show saved folder',
+      reveal: 'Show PDF in Finder',
+    });
+    expect(lectureArtifactActionLabels('notes', 'markdown')).toEqual({
+      export: 'Export Markdown',
+      open: 'Open Markdown in default app',
+      reveal: 'Show Markdown in Finder',
     });
 
     const source = readFileSync(
@@ -636,6 +641,7 @@ describe('LectureStudioView', () => {
     expect(source).toContain('title={artifactActionLabels.open}');
     expect(source).toContain('aria-label={artifactActionLabels.reveal}');
     expect(source).toContain('title={artifactActionLabels.reveal}');
+    expect(source).toContain('adapter.revealArtifact({ ...input, format: format! })');
     expect(source).toContain('<LectureArtifactActionIcon kind="export" />');
     expect(source).toContain('aria-hidden="true"');
     expect(source).toContain('focusable="false"');

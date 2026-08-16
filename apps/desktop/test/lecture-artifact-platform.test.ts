@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   mkdtemp,
+  mkdir,
   readFile,
   readdir,
   realpath,
@@ -171,7 +172,7 @@ describe('Lecture artifact platform', () => {
     expect(electron.openPath).toHaveBeenCalledWith(artifact);
   });
 
-  it('verifies, caches, and opens compiled PDF bytes', async () => {
+  it('verifies and reuses exact cached PDF bytes for open and Finder reveal', async () => {
     const bytes = Buffer.from('%PDF-1.7\n% exact compiled lecture\n%%EOF\n');
     const cache = join(temporaryRoot, 'pdf-cache');
     const platform = createLectureArtifactPlatform(
@@ -182,10 +183,17 @@ describe('Lecture artifact platform', () => {
     await expect(
       platform.openPdf({ kind: 'lecture-notes', document: pdfDocument(bytes) }),
     ).resolves.toBe('7d143229-011a-4ea8-bc5a-6374421c69f7-lecture-notes.pdf');
+    await expect(
+      platform.revealPdf({ kind: 'lecture-notes', document: pdfDocument(bytes) }),
+    ).resolves.toBe('7d143229-011a-4ea8-bc5a-6374421c69f7-lecture-notes.pdf');
 
     const cachedPath = join(cache, '7d143229-011a-4ea8-bc5a-6374421c69f7-lecture-notes.pdf');
     await expect(readFile(cachedPath)).resolves.toEqual(bytes);
+    await expect(readdir(cache)).resolves.toEqual([
+      '7d143229-011a-4ea8-bc5a-6374421c69f7-lecture-notes.pdf',
+    ]);
     expect(electron.openPath).toHaveBeenCalledWith(await realpath(cachedPath));
+    expect(electron.showItemInFolder).toHaveBeenCalledWith(await realpath(cachedPath));
   });
 
   it('bounds the derived PDF cache by evicting the oldest verified entries', async () => {
@@ -275,9 +283,34 @@ describe('Lecture artifact platform', () => {
     await expect(
       platform.openPdf({ kind: 'slides', document: pdfDocument(invalid) }),
     ).rejects.toThrow('lecture_pdf_invalid');
+    await expect(
+      platform.revealPdf({ kind: 'slides', document: pdfDocument(invalid) }),
+    ).rejects.toThrow('lecture_pdf_invalid');
 
     await expect(readdir(temporaryRoot)).resolves.toEqual([]);
     expect(electron.openPath).not.toHaveBeenCalled();
+    expect(electron.showItemInFolder).not.toHaveBeenCalled();
+  });
+
+  it('rejects a symbolic-link PDF cache entry without revealing its destination', async () => {
+    const bytes = Buffer.from('%PDF-1.7\n% protected cache entry\n%%EOF\n');
+    const cache = join(temporaryRoot, 'pdf-cache');
+    const victim = join(temporaryRoot, 'victim.pdf');
+    const target = join(cache, '7d143229-011a-4ea8-bc5a-6374421c69f7-lecture-notes.pdf');
+    await mkdir(cache);
+    await writeFile(victim, bytes);
+    await symlink(victim, target);
+    const platform = createLectureArtifactPlatform(
+      () => undefined,
+      () => cache,
+    );
+
+    await expect(
+      platform.revealPdf({ kind: 'lecture-notes', document: pdfDocument(bytes) }),
+    ).rejects.toThrow('lecture_open_failed');
+
+    await expect(readFile(victim)).resolves.toEqual(bytes);
+    expect(electron.showItemInFolder).not.toHaveBeenCalled();
   });
 
   it('reveals only an existing regular artifact through the operating system shell', async () => {

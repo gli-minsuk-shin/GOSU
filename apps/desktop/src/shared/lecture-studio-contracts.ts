@@ -1395,7 +1395,10 @@ export const OpenLectureStudioArtifactInputSchema = z
 export type OpenLectureStudioArtifactInput = z.infer<typeof OpenLectureStudioArtifactInputSchema>;
 
 export const RevealLectureStudioArtifactInputSchema = z
-  .object(lectureStudioArtifactActionShape)
+  .object({
+    ...lectureStudioArtifactActionShape,
+    format: LectureStudioArtifactFormatSchema,
+  })
   .strict();
 export type RevealLectureStudioArtifactInput = z.infer<
   typeof RevealLectureStudioArtifactInputSchema

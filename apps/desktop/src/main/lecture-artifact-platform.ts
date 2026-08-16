@@ -46,6 +46,7 @@ export interface LectureArtifactPlatform {
   ): Promise<Readonly<{ status: 'cancelled' | 'exported'; fileName: string | null }>>;
   openExisting(path: string): Promise<void>;
   openPdf(input: LectureArtifactPlatformPdf): Promise<string>;
+  revealPdf(input: LectureArtifactPlatformPdf): Promise<string>;
   revealExisting(path: string): Promise<void>;
 }
 
@@ -185,6 +186,60 @@ function verifiedPdfBytes(document: PdfPreviewDocument) {
   return { parsed, bytes };
 }
 
+async function cachedPdfMatches(path: string, expected: Buffer) {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw new Error('lecture_open_failed', { cause: error });
+  }
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size !== expected.byteLength) {
+      throw new Error('lecture_open_failed');
+    }
+    const bytes = Buffer.allocUnsafe(metadata.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const read = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
+      if (read.bytesRead === 0) break;
+      offset += read.bytesRead;
+    }
+    if (offset !== bytes.byteLength || !bytes.equals(expected)) {
+      throw new Error('lecture_open_failed');
+    }
+    return true;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function withCachedPdf<T>(
+  pdfCacheRoot: () => string,
+  input: LectureArtifactPlatformPdf,
+  operation: (path: string, fileName: string) => Promise<T> | T,
+) {
+  const { parsed, bytes } = verifiedPdfBytes(input.document);
+  const requestedRoot = pdfCacheRoot();
+  if (!isAbsolute(requestedRoot)) throw new Error('lecture_open_failed');
+  await mkdir(requestedRoot, { recursive: true, mode: 0o700 });
+  const rootMetadata = await lstat(requestedRoot);
+  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
+    throw new Error('lecture_open_failed');
+  }
+  const root = await realpath(requestedRoot);
+  return withPdfCacheLock(root, async () => {
+    const fileName = `${parsed.artifactId}-${input.kind}.pdf`;
+    const path = join(root, fileName);
+    if (!(await cachedPdfMatches(path, bytes))) {
+      await prunePdfCache(root, bytes.byteLength);
+      await writeAtomicFile(path, bytes, MAX_PDF_EXPORT_BYTES, false);
+    }
+    return operation(path, fileName);
+  });
+}
+
 export function createLectureArtifactPlatform(
   window: () => BrowserWindow | undefined,
   pdfCacheRoot: () => string,
@@ -227,29 +282,19 @@ export function createLectureArtifactPlatform(
     },
 
     async openPdf(input) {
-      const { parsed, bytes } = verifiedPdfBytes(input.document);
-      const requestedRoot = pdfCacheRoot();
-      if (!isAbsolute(requestedRoot)) throw new Error('lecture_open_failed');
-      await mkdir(requestedRoot, { recursive: true, mode: 0o700 });
-      const rootMetadata = await lstat(requestedRoot);
-      if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
-        throw new Error('lecture_open_failed');
-      }
-      const root = await realpath(requestedRoot);
-      return withPdfCacheLock(root, async () => {
-        await prunePdfCache(root, bytes.byteLength);
-        const fileName = `${parsed.artifactId}-${input.kind}.pdf`;
-        const path = await writeAtomicFile(
-          join(root, fileName),
-          bytes,
-          MAX_PDF_EXPORT_BYTES,
-          false,
-        );
+      return withCachedPdf(pdfCacheRoot, input, async (path, fileName) => {
         const error = await shell.openPath(path);
         if (error) {
           await rm(path, { force: true }).catch(() => undefined);
           throw new Error('lecture_open_failed');
         }
+        return fileName;
+      });
+    },
+
+    async revealPdf(input) {
+      return withCachedPdf(pdfCacheRoot, input, (path, fileName) => {
+        shell.showItemInFolder(path);
         return fileName;
       });
     },

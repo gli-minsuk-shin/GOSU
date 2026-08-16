@@ -1767,6 +1767,7 @@ describe('LectureStudioService', () => {
       }),
       openExisting: vi.fn(async () => undefined),
       openPdf: vi.fn(async () => 'Lecture Notes.pdf'),
+      revealPdf: vi.fn(async () => 'Lecture Notes.pdf'),
       revealExisting: vi.fn(async () => undefined),
     };
     const { service, codex, projectA, paperA } = fixture({ artifactPlatform });
@@ -1814,7 +1815,12 @@ describe('LectureStudioService', () => {
     expect(exported[0]?.bytes.toString('utf8')).toBe(receipt.revision.lectureNotesLatex);
 
     await service.openArtifact({ ...binding, format: 'latex' });
-    await service.revealArtifact(binding);
+    await expect(service.revealArtifact({ ...binding, format: 'latex' })).resolves.toMatchObject({
+      status: 'revealed',
+      format: 'latex',
+      fileName: 'Lecture Notes.tex',
+      relativePath: artifact.relativePath,
+    });
     expect(artifactPlatform.openExisting).toHaveBeenCalledWith(
       '/tmp/gosu-lecture-studio-fixture/lecture-notes.tex',
     );
@@ -1829,9 +1835,9 @@ describe('LectureStudioService', () => {
         format: 'latex',
       }),
     ).rejects.toEqual(new LectureStudioServiceError('lecture_artifact_changed'));
-    await expect(service.revealArtifact({ ...binding, revisionId: randomUUID() })).rejects.toEqual(
-      new LectureStudioServiceError('lecture_artifact_not_found'),
-    );
+    await expect(
+      service.revealArtifact({ ...binding, revisionId: randomUUID(), format: 'latex' }),
+    ).rejects.toEqual(new LectureStudioServiceError('lecture_artifact_not_found'));
     expect(artifactPlatform.exportFile).toHaveBeenCalledTimes(1);
     expect(artifactPlatform.revealExisting).toHaveBeenCalledTimes(1);
 
@@ -1861,6 +1867,7 @@ describe('LectureStudioService', () => {
       exportFile: vi.fn(),
       openExisting: vi.fn(),
       openPdf: vi.fn(async () => 'Lecture Notes.pdf'),
+      revealPdf: vi.fn(async () => 'Lecture Notes.pdf'),
       revealExisting: vi.fn(),
     };
     const { service, codex, projectA, paperA } = fixture({
@@ -1898,6 +1905,21 @@ describe('LectureStudioService', () => {
       artifactContentSha256: artifact.contentSha256,
       format: 'pdf',
     });
+    await expect(
+      service.revealArtifact({
+        studioId: studio.id,
+        revisionId: generated.revision.id,
+        revision: generated.revision.revision,
+        kind: 'lecture-notes',
+        artifactContentSha256: artifact.contentSha256,
+        format: 'pdf',
+      }),
+    ).resolves.toMatchObject({
+      status: 'revealed',
+      format: 'pdf',
+      fileName: 'Lecture Notes.pdf',
+      relativePath: null,
+    });
 
     expect(compile).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1909,6 +1931,10 @@ describe('LectureStudioService', () => {
       }),
     );
     expect(artifactPlatform.openPdf).toHaveBeenCalledWith({
+      kind: 'lecture-notes',
+      document: await compile.mock.results.at(-2)?.value,
+    });
+    expect(artifactPlatform.revealPdf).toHaveBeenCalledWith({
       kind: 'lecture-notes',
       document: await compile.mock.results.at(-1)?.value,
     });

@@ -681,7 +681,11 @@ describe('Lecture Studio artifact action contracts', () => {
       ...binding,
       format: 'pdf',
     });
-    expect(RevealLectureStudioArtifactInputSchema.parse(binding)).toEqual(binding);
+    expect(RevealLectureStudioArtifactInputSchema.parse({ ...binding, format: 'pdf' })).toEqual({
+      ...binding,
+      format: 'pdf',
+    });
+    expect(() => RevealLectureStudioArtifactInputSchema.parse(binding)).toThrow();
     expect(() =>
       ExportLectureStudioArtifactInputSchema.parse({
         ...binding,
@@ -700,6 +704,7 @@ describe('Lecture Studio artifact action contracts', () => {
       RevealLectureStudioArtifactInputSchema.parse({
         ...binding,
         artifactContentSha256: 'short',
+        format: 'pdf',
       }),
     ).toThrow();
   });

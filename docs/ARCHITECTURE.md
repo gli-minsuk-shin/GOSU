@@ -1200,17 +1200,21 @@ LaTeX를 대체하거나 자동 저장하지 않으며 앱 재시작 뒤 다시 
 읽기·legacy compile만 유지하고, 새 생성·수정은 항상 schema v2 canonical LaTeX pair다.
 
 현재 revision의 document action은 path나 bytes를 Renderer에서 받지 않고
-`studioId/revisionId/revision/kind/artifactContentSha256` fence만 Main으로 보낸다. LaTeX export/open/Finder는
+`studioId/revisionId/revision/kind/artifactContentSha256/format` fence만 Main으로 보낸다. LaTeX
+export/open/Finder는
 current Vault grant, project binding, ownership marker, root/file identity와 exact artifact SHA-256을 다시 검증한
-Research Notes file만 사용한다. PDF export/open은 Renderer preview bytes를 신뢰하지 않고 DB의 exact revision
-LaTeX를 다시 sandbox compile해 PDF magic·size·SHA를 검증한다. export는 system save dialog와 atomic file
-replace를 사용하고, default-app open은 app-owned mode-0700 cache에 mode-0600 derived PDF를 materialize한다.
+Research Notes file만 사용한다. PDF export/open/Finder reveal은 Renderer preview bytes를 신뢰하지 않고 DB의
+exact revision LaTeX를 다시 sandbox compile해 PDF magic·size·SHA를 검증한다. export는 system save dialog와
+atomic file replace를 사용한다. default-app open과 PDF-tab Finder reveal은 app-owned mode-0700 cache에
+mode-0600 derived PDF를 materialize하고, Finder reveal은 그 exact PDF file을 선택한다. source tab의 Finder
+reveal만 canonical `.tex` 또는 legacy `.md`를 선택한다.
 Renderer의 export·default-app open·Finder reveal은 36px icon-only control로 표시하되 동적 format을 포함한
 accessible name과 동일한 hover tooltip을 유지한다. 세 control은 좁은 Lecture preview에서도 한 줄을 유지하고
 visible text를 action receipt에만 사용하므로 문서 폭을 불필요하게 잠식하지 않는다.
-derived PDF cache는 7일 TTL뿐 아니라 최대 12개·총 128 MiB LRU quota를 적용해 반복 open이 디스크를
+derived PDF cache는 7일 TTL뿐 아니라 최대 12개·총 128 MiB LRU quota를 적용해 반복 open/reveal이 디스크를
 무한히 소비하지 않게 한다.
-receipt에는 status, basename과 project-relative path만 반환하며 absolute path는 Renderer·telemetry·Hosted Sync에
+receipt에는 status, basename과 nullable project-relative path만 반환하며 PDF cache reveal은 source path를
+PDF path처럼 오해하지 않도록 relative path를 비운다. absolute path는 Renderer·telemetry·Hosted Sync에
 노출하지 않는다. exported PDF는 사용자가 요청한 durable copy이지만 canonical revision이나 sync artifact가
 되지는 않는다.
 
