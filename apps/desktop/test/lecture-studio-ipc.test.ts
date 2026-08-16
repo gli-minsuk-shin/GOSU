@@ -231,9 +231,9 @@ describe('Lecture Studio IPC boundary', () => {
     const revealArtifact = vi.fn(async () => ({
       schemaVersion: 1 as const,
       status: 'revealed' as const,
-      format: null,
-      fileName: 'Lecture Notes.md',
-      relativePath: 'Lecture Notes & Slides/Studio/Lecture Notes.md',
+      format: 'pdf' as const,
+      fileName: 'Lecture Notes.pdf',
+      relativePath: null,
     }));
     const { handlers } = fixture({ exportArtifact, openArtifact, revealArtifact });
     const binding = {
@@ -252,11 +252,14 @@ describe('Lecture Studio IPC boundary', () => {
       ...binding,
       format: 'pdf',
     });
-    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.revealArtifact)?.(binding);
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.revealArtifact)?.({
+      ...binding,
+      format: 'pdf',
+    });
 
     expect(exportArtifact).toHaveBeenCalledWith({ ...binding, format: 'markdown' });
     expect(openArtifact).toHaveBeenCalledWith({ ...binding, format: 'pdf' });
-    expect(revealArtifact).toHaveBeenCalledWith(binding);
+    expect(revealArtifact).toHaveBeenCalledWith({ ...binding, format: 'pdf' });
 
     for (const [channel, malicious] of [
       [
@@ -267,7 +270,11 @@ describe('Lecture Studio IPC boundary', () => {
         LECTURE_STUDIO_IPC_CHANNELS.openArtifact,
         { ...binding, format: 'pdf', pdfBase64: 'unsafe' },
       ],
-      [LECTURE_STUDIO_IPC_CHANNELS.revealArtifact, { ...binding, absolutePath: '/tmp/x' }],
+      [
+        LECTURE_STUDIO_IPC_CHANNELS.revealArtifact,
+        { ...binding, format: 'pdf', absolutePath: '/tmp/x' },
+      ],
+      [LECTURE_STUDIO_IPC_CHANNELS.revealArtifact, binding],
     ] as const) {
       await expect(handlers.get(channel)?.(malicious)).resolves.toEqual({
         ok: false,

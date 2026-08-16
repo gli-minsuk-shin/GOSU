@@ -138,12 +138,13 @@ chat으로 수정 지시를 보내고 새 revision의 LaTeX/PDF를 다시 확인
 읽기와 legacy compile 호환만 유지한다.
 
 현재 revision은 LaTeX/PDF export, default application open, Finder reveal을 제공한다. Renderer는 절대
-path나 bytes를 제출하지 않고 exact studio/revision/kind/artifact hash fence만 보낸다. Main은 LaTeX action
+path나 bytes를 제출하지 않고 exact studio/revision/kind/artifact hash와 requested format fence만 보낸다. Main은 LaTeX action
 전에 Vault binding·ownership·file identity·artifact SHA를 재검증하고, PDF action은 DB revision을 다시
-sandbox compile해 PDF magic·size·SHA를 검증한다. export는 save dialog와 atomic write를 사용하고 PDF default
-open은 app-owned bounded cache의 derived copy만 사용한다. absolute path는 IPC receipt에 포함하지 않으며 PDF
-copy는 canonical Lecture artifact가 아니다. derived PDF cache는 7일 TTL, 최대 12개와 총 128 MiB quota를
-함께 적용한다.
+sandbox compile해 PDF magic·size·SHA를 검증한다. export는 save dialog와 atomic write를 사용한다. PDF default
+open과 PDF-tab Finder reveal은 app-owned bounded cache의 derived copy를 만들고 Finder는 그 exact PDF를
+선택한다. source tab의 Finder reveal만 canonical `.tex` 또는 legacy `.md`를 선택한다. absolute path는 IPC
+receipt에 포함하지 않고, PDF cache reveal receipt의 project-relative source path는 `null`이다. PDF copy는
+canonical Lecture artifact가 아니다. derived PDF cache는 7일 TTL, 최대 12개와 총 128 MiB quota를 함께 적용한다.
 
 아직 전송하지 않은 studio별 draft는 DesktopApp이 소유한 renderer-session volatile map에만 둔다. Lecture
 view가 tab 전환으로 unmount/remount되어도 같은 앱 session에서는 복원하지만, 앱 종료 시 폐기하며 SQLCipher,

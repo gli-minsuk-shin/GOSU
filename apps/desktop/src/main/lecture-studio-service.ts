@@ -1210,14 +1210,23 @@ export class LectureStudioService {
     const command = RevealLectureStudioArtifactInputSchema.parse(input);
     const platform = this.requireArtifactPlatform();
     const resolved = await this.resolveArtifactAction(command);
+    this.assertArtifactFormat(resolved.revision, command.format);
     try {
-      await platform.revealExisting(resolved.file.absolutePath);
+      let fileName = resolved.file.fileName;
+      let relativePath: string | null = resolved.file.relativePath;
+      if (command.format !== 'pdf') {
+        await platform.revealExisting(resolved.file.absolutePath);
+      } else {
+        const pdf = await this.compileResolvedArtifactPdf(resolved);
+        fileName = await platform.revealPdf({ kind: command.kind, document: pdf });
+        relativePath = null;
+      }
       return LectureStudioArtifactActionReceiptSchema.parse({
         schemaVersion: 1,
         status: 'revealed',
-        format: null,
-        fileName: resolved.file.fileName,
-        relativePath: resolved.file.relativePath,
+        format: command.format,
+        fileName,
+        relativePath,
       });
     } catch (error) {
       if (error instanceof LectureStudioServiceError) throw error;

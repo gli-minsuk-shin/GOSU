@@ -306,12 +306,15 @@ function previewIsPdf(tab: PreviewTab) {
   return tab.endsWith('-pdf');
 }
 
-export function lectureArtifactActionLabels(tab: PreviewTab) {
-  const format = previewIsPdf(tab) ? 'PDF' : 'LaTeX';
+export function lectureArtifactActionLabels(
+  tab: PreviewTab,
+  sourceFormat: 'markdown' | 'latex' = 'latex',
+) {
+  const format = previewIsPdf(tab) ? 'PDF' : sourceFormat === 'latex' ? 'LaTeX' : 'Markdown';
   return {
     export: `Export ${format}`,
     open: `Open ${format} in default app`,
-    reveal: 'Show saved folder',
+    reveal: `Show ${format} in Finder`,
   } as const;
 }
 
@@ -2367,7 +2370,7 @@ function StudioPreview({
           ? await adapter.exportArtifact({ ...input, format: format! })
           : action === 'open'
             ? await adapter.openArtifact({ ...input, format: format! })
-            : await adapter.revealArtifact(input);
+            : await adapter.revealArtifact({ ...input, format: format! });
       if (
         mounted.current &&
         generation === artifactActionGeneration.current &&
@@ -2401,7 +2404,10 @@ function StudioPreview({
     void compilePdf();
   }, [activeTab, compilePdf, compilingPdf, documentKind, pdfPreview, revision]);
 
-  const artifactActionLabels = lectureArtifactActionLabels(activeTab);
+  const artifactActionLabels = lectureArtifactActionLabels(
+    activeTab,
+    revision?.schemaVersion === 1 ? 'markdown' : 'latex',
+  );
 
   return (
     <main className="lecture-preview">
@@ -2659,7 +2665,16 @@ function StudioPreview({
             title={artifactActionLabels.reveal}
             data-lecture-artifact-action="reveal"
             disabled={artifactActionBusy}
-            onClick={() => void runArtifactAction('reveal')}
+            onClick={() =>
+              void runArtifactAction(
+                'reveal',
+                previewIsPdf(activeTab)
+                  ? 'pdf'
+                  : revision?.schemaVersion === 2
+                    ? 'latex'
+                    : 'markdown',
+              )
+            }
           >
             <LectureArtifactActionIcon kind="reveal" />
           </button>
