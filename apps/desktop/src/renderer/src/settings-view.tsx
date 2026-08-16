@@ -16,11 +16,12 @@ import type {
   WorkspaceSnapshot,
 } from '../../shared/workspace-contracts';
 import type { VaultSelection } from '../../shared/vault-contracts';
-import type {
-  EmptyLectureStudioTrashInput,
-  EmptyLectureStudioTrashReceipt,
-  LectureStudioListSnapshot,
-  LectureStudioVersionCommand,
+import {
+  LectureStudioStructureTemplateSchema,
+  type EmptyLectureStudioTrashInput,
+  type EmptyLectureStudioTrashReceipt,
+  type LectureStudioListSnapshot,
+  type LectureStudioVersionCommand,
 } from '../../shared/lecture-studio-contracts';
 import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
 import {
@@ -30,6 +31,10 @@ import {
 import { AgentSettingsSection } from './agent-settings-section';
 import { AiDefaultSettings } from './ai-default-settings';
 import { BoardSettingsForm } from './board-settings-form';
+import {
+  LectureStructureEditor,
+  lectureStructureEditorValidation,
+} from './lecture-structure-editor';
 import type { CodexModel } from './connections-view';
 import type { VaultRuntimeState } from './notes-view';
 import { OverleafPersonalTokenSettings } from './overleaf-personal-token-settings';
@@ -67,7 +72,7 @@ const TEXT_SIZE_CHOICES: ReadonlyArray<{
 ];
 
 export type SettingsCategory =
-  'appearance' | 'board' | 'projects' | 'trash' | 'overleaf' | 'servers' | 'agent';
+  'appearance' | 'board' | 'lecture' | 'projects' | 'trash' | 'overleaf' | 'servers' | 'agent';
 
 export function SettingsView({
   preferences,
@@ -145,7 +150,13 @@ export function SettingsView({
   onRefreshHermesConnection?: () => Promise<unknown>;
 }) {
   const [localCategory, setLocalCategory] = useState<SettingsCategory>(initialCategory);
+  const [lectureStructureDraft, setLectureStructureDraft] = useState(() =>
+    structuredClone(preferences.defaultLectureStructure),
+  );
   const activeCategory = category ?? localCategory;
+  const lectureStructureDirty =
+    JSON.stringify(lectureStructureDraft) !== JSON.stringify(preferences.defaultLectureStructure);
+  const lectureStructureValid = lectureStructureEditorValidation(lectureStructureDraft).valid;
   const selectCategory = (nextCategory: SettingsCategory) => {
     setLocalCategory(nextCategory);
     onCategoryChange?.(nextCategory);
@@ -173,6 +184,16 @@ export function SettingsView({
           <i aria-hidden="true">▦</i>
           <strong>Board defaults</strong>
           <span>New project template</span>
+        </button>
+        <button
+          type="button"
+          className={activeCategory === 'lecture' ? 'active' : ''}
+          aria-current={activeCategory === 'lecture' ? 'page' : undefined}
+          onClick={() => selectCategory('lecture')}
+        >
+          <i aria-hidden="true">▤</i>
+          <strong>Lecture defaults</strong>
+          <span>Notes &amp; slides structure</span>
         </button>
         <button
           type="button"
@@ -319,6 +340,56 @@ export function SettingsView({
               saveLabel="Save default template"
               onSave={(defaultBoardTemplate) => onChange({ ...preferences, defaultBoardTemplate })}
             />
+          </article>
+        ) : activeCategory === 'lecture' ? (
+          <article className="settings-card lecture-default-structure-card">
+            <div className="settings-card-heading">
+              <span>LECTURE DEFAULTS</span>
+              <h2>Choose the default content flow</h2>
+              <p>
+                Arrange the sections GOSU should use for new Lecture Studios. Slides follow the same
+                order in a shorter form. Existing Studios and saved revisions do not change.
+              </p>
+            </div>
+            <LectureStructureEditor
+              value={lectureStructureDraft}
+              onChange={setLectureStructureDraft}
+              heading="Default notes & slides structure"
+              idPrefix="settings-lecture-structure"
+              contextCopy="This local default is copied into each new Studio. GOSU still manages document formatting, citations, the slide title page, and Sources used."
+              onReset={() =>
+                setLectureStructureDraft(structuredClone(preferences.defaultLectureStructure))
+              }
+              resetDisabled={!lectureStructureDirty}
+              resetLabel="Revert changes"
+            />
+            <div className="settings-template-callout" role="status" aria-live="polite">
+              <strong>{lectureStructureDirty ? 'Unsaved changes' : 'Current default'}</strong>
+              <span>
+                {lectureStructureDraft.mode === 'adaptive'
+                  ? 'Adaptive to each Studio’s selected sources'
+                  : `${lectureStructureDraft.sections.length} custom sections`}
+              </span>
+            </div>
+            <div className="settings-form-actions">
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!lectureStructureDirty || !lectureStructureValid}
+                onClick={() => {
+                  const normalized =
+                    LectureStudioStructureTemplateSchema.safeParse(lectureStructureDraft);
+                  if (!normalized.success) return;
+                  setLectureStructureDraft(structuredClone(normalized.data));
+                  onChange({
+                    ...preferences,
+                    defaultLectureStructure: structuredClone(normalized.data),
+                  });
+                }}
+              >
+                Save default structure
+              </button>
+            </div>
           </article>
         ) : activeCategory === 'projects' ? (
           <ProjectSettingsSection

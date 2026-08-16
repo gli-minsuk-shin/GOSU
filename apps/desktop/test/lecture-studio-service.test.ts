@@ -14,6 +14,7 @@ import type {
   PreparedLectureStudioAttachments,
 } from '../src/main/lecture-studio-attachment-service';
 import {
+  LECTURE_STUDIO_AUTHORING_POLICY_VERSION,
   LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS,
   LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER,
 } from '../src/main/lecture-studio-prompt';
@@ -962,7 +963,7 @@ function fixture(
             ),
           );
           if (!revision) throw new Error('missing_fixture_revision');
-          return revision.schemaVersion === 2
+          return revision.schemaVersion !== 1
             ? artifact.kind === 'lecture-notes'
               ? revision.lectureNotesLatex
               : revision.slidesLatex
@@ -1033,6 +1034,13 @@ function pendingFromRevision(
     revision: revision.revision,
     attemptId: revision.attemptId,
     sourceManifestSha256: revision.sourceManifestSha256,
+    ...(revision.schemaVersion === 3
+      ? {
+          generationBriefSha256: revision.generationBriefSha256,
+          authoringPolicyVersion: revision.authoringPolicyVersion,
+          authoringPolicySha256: revision.authoringPolicySha256,
+        }
+      : {}),
     artifacts: [
       {
         kind: notes.kind,
@@ -1345,11 +1353,11 @@ describe('LectureStudioService', () => {
     expect(rebindPayload.request).toBe('Use this unrelated replacement attachment as [A1].');
     expect(rebindPrompt).not.toContain(oldContent);
     expect(oldAttachmentRevision.revision).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       lectureNotesLatex: expect.stringContaining('[A1] same-raw-source.md'),
     });
     expect(storage.revisions.at(-1)).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       lectureNotesLatex: expect.stringContaining('[A1] same-raw-source.md'),
     });
   });
@@ -1510,7 +1518,7 @@ describe('LectureStudioService', () => {
     ]);
     expect(codex.prompt).toContain(JSON.stringify(externalContent));
     expect(codex.prompt).toContain('"sourceLabel":"F1"');
-    if (receipt.revision.schemaVersion !== 2) {
+    if (receipt.revision.schemaVersion === 1) {
       throw new Error('Expected canonical LaTeX lecture documents');
     }
     expect(receipt.revision.lectureNotesLatex).toContain('[F1]');
@@ -2203,7 +2211,7 @@ describe('LectureStudioService', () => {
       requestedModelId: null,
       reasoningOptionId: null,
     });
-    if (receipt.revision.schemaVersion !== 2) throw new Error('Expected a LaTeX revision');
+    if (receipt.revision.schemaVersion === 1) throw new Error('Expected a LaTeX revision');
     const artifact = receipt.revision.artifacts.find(
       (candidate) => candidate.kind === 'lecture-notes',
     )!;
@@ -2306,7 +2314,7 @@ describe('LectureStudioService', () => {
       requestedModelId: null,
       reasoningOptionId: null,
     });
-    if (generated.revision.schemaVersion !== 2) throw new Error('Expected a LaTeX revision');
+    if (generated.revision.schemaVersion === 1) throw new Error('Expected a LaTeX revision');
     const artifact = generated.revision.artifacts.find(
       (candidate) => candidate.kind === 'lecture-notes',
     )!;
@@ -2386,7 +2394,7 @@ describe('LectureStudioService', () => {
       requestedModelId: null,
       reasoningOptionId: null,
     });
-    if (receipt.revision.schemaVersion !== 2) throw new Error('Expected a LaTeX revision');
+    if (receipt.revision.schemaVersion === 1) throw new Error('Expected a LaTeX revision');
     const latex = receipt.revision.lectureNotesLatex;
 
     await service.compilePdf({
@@ -2522,7 +2530,7 @@ The captured result improves the bounded baseline.
       requestedModelId: null,
       reasoningOptionId: null,
     });
-    if (receipt.revision.schemaVersion !== 2) throw new Error('Expected a LaTeX revision');
+    if (receipt.revision.schemaVersion === 1) throw new Error('Expected a LaTeX revision');
 
     expect(receipt.revision.sourceManifest.schemaVersion).toBe(2);
     if (receipt.revision.sourceManifest.schemaVersion !== 2) {
@@ -2577,6 +2585,79 @@ The captured result improves the bounded baseline.
     ).toBe(mainTex);
   });
 
+  it('copies a normalized custom structure into the Studio, initial prompt, and v3 provenance', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.response = latexResponse(['P1']);
+    const mutableSettingsDefault = {
+      mode: 'custom' as const,
+      sections: [
+        { title: '  Cafe\u0301 foundations  ', coverage: 'notes-and-slides' as const },
+        { title: 'Proof details', coverage: 'notes-only' as const },
+        { title: 'Takeaways', coverage: 'notes-and-slides' as const },
+      ],
+    };
+    const studio = await service.create({
+      title: 'Frozen custom structure',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+      generationBrief: {
+        notesTargetPages: 14,
+        slidesTargetPages: null,
+        detailLevel: 'detailed',
+        structure: mutableSettingsDefault,
+        customInstructions: 'Keep the requested content flow.',
+      },
+    });
+    const frozenBrief = {
+      notesTargetPages: 14,
+      slidesTargetPages: null,
+      detailLevel: 'detailed' as const,
+      structure: {
+        mode: 'custom' as const,
+        sections: [
+          { title: 'Café foundations', coverage: 'notes-and-slides' as const },
+          { title: 'Proof details', coverage: 'notes-only' as const },
+          { title: 'Takeaways', coverage: 'notes-and-slides' as const },
+        ],
+      },
+      customInstructions: 'Keep the requested content flow.',
+    };
+
+    expect(studio.generationBrief).toEqual(frozenBrief);
+    expect(storage.getLectureStudio(studio.id)?.generationBrief).toEqual(frozenBrief);
+    mutableSettingsDefault.sections[0]!.title = 'Changed later in Settings';
+    expect(storage.getLectureStudio(studio.id)?.generationBrief).toEqual(frozenBrief);
+
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const initialPayload = JSON.parse(
+      codex.prompts[0]!.slice(codex.prompts[0]!.indexOf('\n\n') + 2),
+    ) as { generationBrief: LectureStudio['generationBrief'] };
+    expect(initialPayload.generationBrief).toEqual(frozenBrief);
+    expect(JSON.stringify(initialPayload.generationBrief.structure)).not.toContain(
+      'Changed later in Settings',
+    );
+
+    expect(receipt.revision.schemaVersion).toBe(3);
+    if (receipt.revision.schemaVersion !== 3) throw new Error('Expected v3 authoring provenance');
+    expect(receipt.revision.generationBriefSnapshot).toEqual(frozenBrief);
+    expect(receipt.revision.generationBriefSha256).toBe(hash(JSON.stringify(frozenBrief)));
+    expect(receipt.revision.authoringPolicyVersion).toBe(LECTURE_STUDIO_AUTHORING_POLICY_VERSION);
+    expect(receipt.revision.authoringPolicySha256).toBe(
+      hash(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS),
+    );
+  });
+
   it('accepts a normal long manuscript through deterministic bounded exact extracts', async () => {
     const { service, codex, projectA, manuscriptSnapshots, manuscriptFiles } = fixture();
     const snapshot = manuscriptSnapshot(projectA);
@@ -2604,6 +2685,7 @@ The captured result improves the bounded baseline.
         notesTargetPages: 12,
         slidesTargetPages: 18,
         detailLevel: 'detailed',
+        structure: { mode: 'adaptive' },
         customInstructions: 'Emphasize the theorem and ablations.',
       },
     });
@@ -2614,6 +2696,7 @@ The captured result improves the bounded baseline.
       notesTargetPages: 12,
       slidesTargetPages: 18,
       detailLevel: 'detailed',
+      structure: { mode: 'adaptive' },
       customInstructions: 'Emphasize the theorem and ablations.',
     });
   });
@@ -2636,6 +2719,7 @@ The captured result improves the bounded baseline.
       notesTargetPages: 18,
       slidesTargetPages: null,
       detailLevel: 'detailed' as const,
+      structure: { mode: 'adaptive' as const },
       customInstructions: 'INITIAL-UPDATED-BRIEF',
     };
     const configured = await service.updateGenerationBrief({
@@ -2656,12 +2740,24 @@ The captured result improves the bounded baseline.
     });
     expect(codex.prompt).toContain('INITIAL-UPDATED-BRIEF');
     expect(codex.prompt).toContain('"notesTargetPages":18');
+    expect(initial.revision.schemaVersion).toBe(3);
+    if (initial.revision.schemaVersion !== 3) throw new Error('Expected v3 authoring provenance');
+    expect(initial.revision.generationBriefSnapshot).toEqual(initialBrief);
+    expect(initial.revision.generationBriefSha256).toBe(hash(JSON.stringify(initialBrief)));
     const immutableFirstRevision = structuredClone(initial.revision);
 
     const revisionBrief = {
       notesTargetPages: null,
       slidesTargetPages: null,
       detailLevel: 'exhaustive' as const,
+      structure: {
+        mode: 'custom' as const,
+        sections: [
+          { title: 'Problem and assumptions', coverage: 'notes-and-slides' as const },
+          { title: 'Proof details', coverage: 'notes-only' as const },
+          { title: 'Takeaways', coverage: 'notes-and-slides' as const },
+        ],
+      },
       customInstructions: 'REVISION-UPDATED-BRIEF',
     };
     const reconfigured = await service.updateGenerationBrief({
@@ -2685,17 +2781,100 @@ The captured result improves the bounded baseline.
       }),
     ).rejects.toEqual(new LectureStudioServiceError('lecture_version_conflict'));
 
-    await service.send({
+    const revisionPromptIndex = codex.prompts.length;
+    codex.responseQueue = [
+      { reply: 'Rejected candidate without the required document pair.' },
+      latexResponse(['P1'], 1, 'Corrected with the frozen revised generation plan.'),
+    ];
+    const edited = await service.send({
       studioId: created.id,
       expectedVersion: reconfigured.version,
       requestedModelId: null,
       reasoningOptionId: null,
       message: 'Use the revised generation plan.',
     });
-    expect(codex.prompt).toContain('REVISION-UPDATED-BRIEF');
-    expect(codex.prompt).toContain('"detailLevel":"exhaustive"');
+    const revisionPayload = JSON.parse(
+      codex.prompts[revisionPromptIndex]!.slice(
+        codex.prompts[revisionPromptIndex]!.indexOf('\n\n') + 2,
+      ),
+    ) as { generationBrief: LectureStudio['generationBrief'] };
+    expect(revisionPayload.generationBrief).toEqual(revisionBrief);
+    expect(codex.prompts[revisionPromptIndex]).toContain('REVISION-UPDATED-BRIEF');
+    expect(codex.prompts[revisionPromptIndex]).toContain('"detailLevel":"exhaustive"');
+    expect(codex.prompts[revisionPromptIndex + 1]).toContain('bounded response_schema check');
+    expect(codex.prompts[revisionPromptIndex + 1]).not.toContain('Problem and assumptions');
+    expect(codex.prompts).toHaveLength(revisionPromptIndex + 2);
     expect(storage.revisions[0]).toEqual(immutableFirstRevision);
     expect(storage.revisions).toHaveLength(2);
+    expect(edited.revision.schemaVersion).toBe(3);
+    if (edited.revision.schemaVersion !== 3) throw new Error('Expected v3 authoring provenance');
+    expect(edited.revision.generationBriefSnapshot).toEqual(revisionBrief);
+    expect(edited.revision.generationBriefSha256).toBe(hash(JSON.stringify(revisionBrief)));
+    expect(edited.revision.authoringPolicyVersion).toBe(LECTURE_STUDIO_AUTHORING_POLICY_VERSION);
+    expect(edited.revision.authoringPolicySha256).toBe(hash(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS));
+  });
+
+  it('uses an updated custom structure for a failed Studio retry only', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    const created = await service.create({
+      title: 'Retry with updated structure',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    codex.response = { reply: 'Missing both generated documents.' };
+    await expect(
+      service.generate({
+        studioId: created.id,
+        expectedVersion: created.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_response_schema' });
+    expect(storage.revisions).toEqual([]);
+
+    const retryBrief = {
+      notesTargetPages: null,
+      slidesTargetPages: null,
+      detailLevel: 'standard' as const,
+      structure: {
+        mode: 'custom' as const,
+        sections: [
+          { title: 'Motivation', coverage: 'notes-and-slides' as const },
+          { title: 'Technical appendix', coverage: 'notes-only' as const },
+          { title: 'Conclusion', coverage: 'notes-and-slides' as const },
+        ],
+      },
+      customInstructions: '',
+    };
+    const failed = storage.getLectureStudio(created.id)!;
+    const reconfigured = await service.updateGenerationBrief({
+      studioId: created.id,
+      expectedVersion: failed.version,
+      generationBrief: retryBrief,
+    });
+    const retryPromptIndex = codex.prompts.length;
+    codex.response = latexResponse(['P1']);
+    const retried = await service.generate({
+      studioId: created.id,
+      expectedVersion: reconfigured.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const retryPayload = JSON.parse(
+      codex.prompts[retryPromptIndex]!.slice(codex.prompts[retryPromptIndex]!.indexOf('\n\n') + 2),
+    ) as { generationBrief: LectureStudio['generationBrief'] };
+    expect(retryPayload.generationBrief).toEqual(retryBrief);
+    expect(retried.revision.schemaVersion).toBe(3);
+    if (retried.revision.schemaVersion !== 3) throw new Error('Expected v3 authoring provenance');
+    expect(retried.revision.generationBriefSnapshot).toEqual(retryBrief);
+    expect(retried.revision.generationBriefSha256).toBe(hash(JSON.stringify(retryBrief)));
+    expect(storage.revisions).toEqual([retried.revision]);
   });
 
   it('rejects generation-option edits while generating or after moving to Trash', async () => {
@@ -2716,6 +2895,7 @@ The captured result improves the bounded baseline.
       notesTargetPages: 10,
       slidesTargetPages: null,
       detailLevel: 'concise' as const,
+      structure: { mode: 'adaptive' as const },
       customInstructions: 'Guarded update.',
     };
     codex.deferCompletion = true;
@@ -3246,8 +3426,8 @@ The captured result improves the bounded baseline.
     });
 
     expect(codex.turnSequence).toBe(1);
-    expect(receipt.revision.schemaVersion).toBe(2);
-    if (receipt.revision.schemaVersion !== 2) throw new Error('Expected canonical LaTeX revision');
+    expect(receipt.revision.schemaVersion).toBe(3);
+    if (receipt.revision.schemaVersion === 1) throw new Error('Expected canonical LaTeX revision');
     expect(receipt.revision.lectureNotesLatex).toContain('\\frac{1}{2}');
     expect(receipt.revision.slidesLatex).toContain('\\begin{frame}{Result}');
     expect(storage.revisions).toHaveLength(1);
@@ -3275,6 +3455,7 @@ The captured result improves the bounded baseline.
         notesTargetPages: 10,
         slidesTargetPages: 20,
         detailLevel: 'exhaustive',
+        structure: { mode: 'adaptive' },
         customInstructions: '',
       },
     });
@@ -3293,7 +3474,7 @@ The captured result improves the bounded baseline.
     );
     expect(codex.prompts[1]).not.toContain('PRIVATE-FIRST-CANDIDATE');
     expect(receipt.revision.invocation.invocationId).toBe(codex.invocations[1]?.invocationId);
-    if (receipt.revision.schemaVersion !== 2) throw new Error('Expected canonical LaTeX revision');
+    if (receipt.revision.schemaVersion === 1) throw new Error('Expected canonical LaTeX revision');
     expect(receipt.revision.slidesLatex.match(/\\begin\{frame\}/gu)).toHaveLength(20);
     expect(storage.revisions).toHaveLength(1);
     expect(codex.interruptions).toEqual([]);
@@ -3773,7 +3954,7 @@ Use $\1$ only as a source-native alias [P1].
       lectureNotes: legacyNotes,
       slides: legacySlides,
     });
-    expect(migrated.revision.schemaVersion).toBe(2);
+    expect(migrated.revision.schemaVersion).toBe(3);
   });
 
   it('marks a cancelled edit message interrupted and excludes it from the next prompt', async () => {
@@ -4079,6 +4260,45 @@ Use $\1$ only as a source-native alias [P1].
     await service.list({});
 
     expect(artifactEvents).toEqual(['reconcile-confirm']);
+  });
+
+  it('does not seal a v3 pending bundle when its generation provenance was stripped', async () => {
+    const pendingArtifacts: PendingLectureRevisionArtifacts[] = [];
+    const { service, artifactEvents, projectA, projectB, paperA, paperB } = fixture({
+      pendingArtifacts,
+    });
+    const studio = await service.create({
+      title: 'Strict restart recovery',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA, projectB],
+      sourceSelection: {
+        literature: [
+          { projectId: projectA, recordId: paperA.id },
+          { projectId: projectB, recordId: paperB.id },
+        ],
+        experiments: [],
+      },
+    });
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    artifactEvents.splice(0);
+    const {
+      generationBriefSha256: _generationBriefSha256,
+      authoringPolicyVersion: _authoringPolicyVersion,
+      authoringPolicySha256: _authoringPolicySha256,
+      ...stripped
+    } = pendingFromRevision(receipt.studio, receipt.revision);
+    pendingArtifacts.push(stripped);
+
+    await service.list({});
+
+    expect(artifactEvents).toEqual([]);
   });
 
   it('rolls back an uncommitted stale bundle but skips the matching active attempt', async () => {

@@ -212,6 +212,9 @@ export type SaveLectureRevisionArtifactsInput = Readonly<{
   revision: number;
   attemptId: string;
   sourceManifestSha256: string;
+  generationBriefSha256?: string;
+  authoringPolicyVersion?: number;
+  authoringPolicySha256?: string;
   documentFormat?: LectureDocumentFormat;
   lectureNotesMarkdown?: string;
   slidesMarkdown?: string;
@@ -403,15 +406,21 @@ function safeAgentMarkdownFileStem(title: string) {
 }
 
 function lectureRevisionBundleId(input: SaveLectureRevisionArtifactsInput, bindingId: string) {
-  return sha256(
-    [
-      input.outputProjectId,
-      bindingId,
-      input.studioId,
-      String(input.revision),
-      input.sourceManifestSha256,
-    ].join('\0'),
-  );
+  const identity = [
+    input.outputProjectId,
+    bindingId,
+    input.studioId,
+    String(input.revision),
+    input.sourceManifestSha256,
+  ];
+  if (input.generationBriefSha256 !== undefined) {
+    identity.push(
+      input.generationBriefSha256,
+      String(input.authoringPolicyVersion),
+      input.authoringPolicySha256!,
+    );
+  }
+  return sha256(identity.join('\0'));
 }
 
 function pendingRevisionJournal(
@@ -446,6 +455,13 @@ function pendingRevisionJournal(
     revision: pending.revision,
     attemptId: pending.attemptId,
     sourceManifestSha256: pending.sourceManifestSha256,
+    ...(pending.generationBriefSha256
+      ? {
+          generationBriefSha256: pending.generationBriefSha256,
+          authoringPolicyVersion: pending.authoringPolicyVersion,
+          authoringPolicySha256: pending.authoringPolicySha256,
+        }
+      : {}),
     ...(documentFormat === 'latex' ? { documentFormat } : {}),
     files: [
       { name: fileNames.notes, contentSha256: notes.contentSha256 },
@@ -912,6 +928,13 @@ export class ResearchNotesService {
             revision: entry.journal.revision,
             attemptId: entry.journal.attemptId,
             sourceManifestSha256: entry.journal.sourceManifestSha256,
+            ...(entry.journal.generationBriefSha256
+              ? {
+                  generationBriefSha256: entry.journal.generationBriefSha256,
+                  authoringPolicyVersion: entry.journal.authoringPolicyVersion,
+                  authoringPolicySha256: entry.journal.authoringPolicySha256,
+                }
+              : {}),
             artifacts: [
               {
                 kind: 'lecture-notes',
@@ -1268,10 +1291,27 @@ export class ResearchNotesService {
     project: ProjectRecord,
     link: ResearchNotesProjectLink,
   ) {
+    const generationProvenance = [
+      input.generationBriefSha256,
+      input.authoringPolicyVersion,
+      input.authoringPolicySha256,
+    ];
+    const generationProvenanceCount = generationProvenance.filter(
+      (value) => value !== undefined,
+    ).length;
     if (
       !Number.isInteger(input.revision) ||
       input.revision < 1 ||
       !/^[0-9a-f]{64}$/u.test(input.sourceManifestSha256) ||
+      (generationProvenanceCount !== 0 &&
+        generationProvenanceCount !== generationProvenance.length) ||
+      (input.generationBriefSha256 !== undefined &&
+        !/^[0-9a-f]{64}$/u.test(input.generationBriefSha256)) ||
+      (input.authoringPolicyVersion !== undefined &&
+        (!Number.isSafeInteger(input.authoringPolicyVersion) ||
+          input.authoringPolicyVersion < 1)) ||
+      (input.authoringPolicySha256 !== undefined &&
+        !/^[0-9a-f]{64}$/u.test(input.authoringPolicySha256)) ||
       !/^\S+$/u.test(input.attemptId)
     ) {
       throw new ResearchNotesServiceError('research_notes_folder_conflict');
@@ -1309,6 +1349,13 @@ export class ResearchNotesService {
             revision: input.revision,
             attempt_id: input.attemptId,
             source_manifest_sha256: input.sourceManifestSha256,
+            ...(input.generationBriefSha256
+              ? {
+                  generation_brief_sha256: input.generationBriefSha256,
+                  authoring_policy_version: input.authoringPolicyVersion,
+                  authoring_policy_sha256: input.authoringPolicySha256,
+                }
+              : {}),
             invocation_id: invocation?.invocationId ?? null,
             provider_id: invocation?.providerId ?? null,
             requested_model_id: invocation?.requestedModelId ?? null,
@@ -1321,6 +1368,13 @@ export class ResearchNotesService {
           gosu_lecture_studio_id: input.studioId,
           gosu_lecture_revision: input.revision,
           gosu_source_manifest_sha256: input.sourceManifestSha256,
+          ...(input.generationBriefSha256
+            ? {
+                gosu_generation_brief_sha256: input.generationBriefSha256,
+                gosu_authoring_policy_version: input.authoringPolicyVersion,
+                gosu_authoring_policy_sha256: input.authoringPolicySha256,
+              }
+            : {}),
           gosu_generated_at: input.createdAt,
         },
         body,
@@ -1353,6 +1407,13 @@ export class ResearchNotesService {
       revision: input.revision,
       attemptId: input.attemptId,
       sourceManifestSha256: input.sourceManifestSha256,
+      ...(input.generationBriefSha256
+        ? {
+            generationBriefSha256: input.generationBriefSha256,
+            authoringPolicyVersion: input.authoringPolicyVersion!,
+            authoringPolicySha256: input.authoringPolicySha256!,
+          }
+        : {}),
       ...(documentFormat === 'latex' ? { documentFormat } : {}),
       files: files.map((file) => ({ name: file.name, contentSha256: sha256(file.content) })),
     };

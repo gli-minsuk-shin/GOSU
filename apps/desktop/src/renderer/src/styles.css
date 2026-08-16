@@ -6396,6 +6396,21 @@ button.chat-toolbar-status {
   overflow-wrap: anywhere;
 }
 
+.lecture-default-structure-card {
+  container: lecture-default-settings / inline-size;
+}
+
+.settings-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@container lecture-default-settings (max-width: 480px) {
+  .settings-form-actions > button {
+    width: 100%;
+  }
+}
+
 .settings-card-heading > span,
 .settings-preview > span {
   color: var(--green);

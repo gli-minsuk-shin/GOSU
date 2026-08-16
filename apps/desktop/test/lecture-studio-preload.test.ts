@@ -45,6 +45,7 @@ describe('Lecture Studio preload bridge', () => {
         notesTargetPages: 16,
         slidesTargetPages: null,
         detailLevel: 'exhaustive' as const,
+        structure: { mode: 'adaptive' as const },
         customInstructions: 'Retain every proof obligation.',
       },
     };

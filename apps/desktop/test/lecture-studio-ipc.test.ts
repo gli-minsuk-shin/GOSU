@@ -88,6 +88,13 @@ describe('Lecture Studio IPC boundary', () => {
         notesTargetPages: 12,
         slidesTargetPages: 20,
         detailLevel: 'detailed' as const,
+        structure: {
+          mode: 'custom' as const,
+          sections: [
+            { title: 'Methods', coverage: 'notes-and-slides' as const },
+            { title: 'Appendix', coverage: 'notes-only' as const },
+          ],
+        },
         customInstructions: 'Emphasize assumptions.',
       },
     };

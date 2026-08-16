@@ -19,6 +19,10 @@ import { LocalDatabase } from '../../src/main/local-database';
 import { ExperimentWorkspaceStorageError } from '../../src/main/experiment-workspace-storage-error';
 import { buildLectureLatexDocument } from '../../src/main/lecture-latex-source';
 import {
+  LECTURE_STUDIO_AUTHORING_POLICY_VERSION,
+  LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS,
+} from '../../src/main/lecture-studio-prompt';
+import {
   LectureExternalSourceManifestAuthenticator,
   LectureExternalSourceService,
 } from '../../src/main/lecture-external-source-service';
@@ -46,6 +50,7 @@ import {
 import type { LectureStudioAttachmentCard } from '../../src/shared/lecture-studio-attachment-contracts';
 
 type LectureStudioRevisionV2 = Extract<LectureStudioRevision, { schemaVersion: 2 }>;
+type LectureStudioRevisionV3 = Extract<LectureStudioRevision, { schemaVersion: 3 }>;
 import {
   EXPERIMENT_MAX_IDEAS_PER_PROJECT,
   EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
@@ -2371,6 +2376,7 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
       notesTargetPages: 12,
       slidesTargetPages: 24,
       detailLevel: 'detailed',
+      structure: { mode: 'adaptive' },
       customInstructions: 'Emphasize the reproducibility checklist.',
     },
     status: 'draft',
@@ -2544,6 +2550,26 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
       createdAt: fixedTimestamp,
     };
   };
+  const provenanceRevisionFixture = (
+    revision: number,
+    attemptId: string,
+    generationBriefSnapshot: LectureStudio['generationBrief'],
+  ): LectureStudioRevisionV3 => {
+    const base = latexRevisionFixture(revision, attemptId);
+    const snapshot = structuredClone(generationBriefSnapshot);
+    return {
+      ...base,
+      schemaVersion: 3,
+      generationBriefSnapshot: snapshot,
+      generationBriefSha256: createHash('sha256')
+        .update(JSON.stringify(snapshot), 'utf8')
+        .digest('hex'),
+      authoringPolicyVersion: LECTURE_STUDIO_AUTHORING_POLICY_VERSION,
+      authoringPolicySha256: createHash('sha256')
+        .update(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS, 'utf8')
+        .digest('hex'),
+    };
+  };
   const externalLatexRevisionFixture = (
     revision: number,
     attemptId: string,
@@ -2667,6 +2693,13 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     notesTargetPages: 30,
     slidesTargetPages: 40,
     detailLevel: 'exhaustive' as const,
+    structure: {
+      mode: 'custom' as const,
+      sections: [
+        { title: 'Evidence', coverage: 'notes-and-slides' as const },
+        { title: 'Technical appendix', coverage: 'notes-only' as const },
+      ],
+    },
     customInstructions: 'Persist this revised generation policy.',
   };
   const generationUpdateStudio: LectureStudio = {
@@ -2704,9 +2737,12 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
   const generationUpdateReopen = new LocalDatabase();
   generationUpdateReopen.open();
   const reopenedEditedStudio = generationUpdateReopen.getLectureStudio(generationUpdateStudio.id);
+  const reopenedCustomStructure = reopenedEditedStudio?.generationBrief.structure;
   invariant(
     reopenedEditedStudio?.version === editedStudio.version &&
-      JSON.stringify(reopenedEditedStudio.generationBrief) === JSON.stringify(editedBrief),
+      JSON.stringify(reopenedEditedStudio.generationBrief) === JSON.stringify(editedBrief) &&
+      reopenedCustomStructure?.mode === 'custom' &&
+      isDeepStrictEqual(reopenedCustomStructure.sections, editedBrief.structure.sections),
     'lecture_generation_brief_update_was_not_persisted_after_reopen',
   );
   const updateRaceAttemptId = randomUUID();
@@ -2813,6 +2849,7 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
           notesTargetPages: null,
           slidesTargetPages: null,
           detailLevel: 'standard',
+          structure: { mode: 'adaptive' },
           customInstructions: '',
         }),
     'legacy_lecture_selection_was_not_normalized_after_reopen',
@@ -2823,6 +2860,34 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
   invariant(
     legacyAttachmentMessage !== undefined && legacyAttachmentMessage.attachments === undefined,
     'legacy_lecture_message_did_not_decode_null_attachments_as_undefined',
+  );
+
+  // A generation brief written before structure templates existed must retain its other controls
+  // while receiving the adaptive structure default after a full encrypted-database reopen.
+  database.close();
+  const legacyGenerationBriefWithoutStructure = {
+    notesTargetPages: 18,
+    slidesTargetPages: 26,
+    detailLevel: 'detailed',
+    customInstructions: 'Legacy generation brief without a structure field.',
+  };
+  const legacyGenerationBriefRow = new Database(join(app.getPath('userData'), 'gosu.db'));
+  legacyGenerationBriefRow.pragma(`key="x'${legacyLectureKeyHex}'"`);
+  try {
+    legacyGenerationBriefRow
+      .prepare('update lecture_studios set generation_brief_json=? where id=?')
+      .run(JSON.stringify(legacyGenerationBriefWithoutStructure), studio.id);
+  } finally {
+    legacyGenerationBriefRow.close();
+  }
+  database = new LocalDatabase();
+  database.open();
+  invariant(
+    isDeepStrictEqual(database.getLectureStudio(studio.id)?.generationBrief, {
+      ...legacyGenerationBriefWithoutStructure,
+      structure: { mode: 'adaptive' },
+    }),
+    'legacy_lecture_generation_brief_without_structure_did_not_default_to_adaptive_after_reopen',
   );
 
   const failedAttemptId = randomUUID();
@@ -3344,7 +3409,100 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
       !('studioId' in persistedAttachmentCard),
     'lecture_attachment_card_or_v4_revision_changed_before_reopen',
   );
+
+  const provenanceAttemptId = randomUUID();
+  const provenanceGenerating = latexReopened.beginLectureStudioTurn({
+    studioId: studio.id,
+    expectedVersion: attachmentReady.version,
+    attemptId: provenanceAttemptId,
+    userMessage: userMessage(
+      provenanceAttemptId,
+      'Persist the complete generation brief and authoring policy provenance.',
+    ),
+    updatedAt: fixedTimestamp,
+  });
+  invariant(provenanceGenerating !== null, 'lecture_provenance_v3_turn_did_not_begin');
+  const provenanceRevision = provenanceRevisionFixture(
+    5,
+    provenanceAttemptId,
+    provenanceGenerating.generationBrief,
+  );
+  const provenanceReady = latexReopened.completeLectureStudioTurn({
+    studio: {
+      ...provenanceGenerating,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 5,
+      version: provenanceGenerating.version + 1,
+      lastErrorCode: null,
+      updatedAt: fixedTimestamp,
+    },
+    revision: provenanceRevision,
+    assistantMessage: assistantMessage(provenanceAttemptId, 5),
+  });
+  invariant(
+    provenanceReady?.currentRevision === 5 &&
+      isDeepStrictEqual(
+        latexReopened.getCurrentLectureStudioRevision(studio.id),
+        provenanceRevision,
+      ),
+    'lecture_provenance_v3_revision_changed_before_reopen',
+  );
   latexReopened.close();
+
+  const provenanceRoundTrip = new LocalDatabase();
+  provenanceRoundTrip.open();
+  invariant(
+    isDeepStrictEqual(
+      provenanceRoundTrip.getLectureStudioRevision(studio.id, 5),
+      provenanceRevision,
+    ) &&
+      isDeepStrictEqual(
+        provenanceRoundTrip.getCurrentLectureStudioRevision(studio.id),
+        provenanceRevision,
+      ),
+    'lecture_provenance_v3_revision_was_not_persisted_exactly_after_reopen',
+  );
+  provenanceRoundTrip.close();
+
+  // Revision rows are append-only through the application. Simulate encrypted-file corruption by
+  // temporarily removing the raw SQL update guard, then prove the decoder rejects a brief/hash
+  // mismatch. The canonical hash is restored before the rest of the smoke test continues.
+  const corruptProvenanceRow = new Database(join(app.getPath('userData'), 'gosu.db'));
+  corruptProvenanceRow.pragma(`key="x'${legacyLectureKeyHex}'"`);
+  try {
+    corruptProvenanceRow.exec('drop trigger if exists lecture_studio_revisions_update_guard');
+    corruptProvenanceRow
+      .prepare('update lecture_studio_revisions set generation_brief_sha256=? where id=?')
+      .run('f'.repeat(64), provenanceRevision.id);
+  } finally {
+    corruptProvenanceRow.close();
+  }
+  const mismatchedProvenance = new LocalDatabase();
+  mismatchedProvenance.open();
+  let mismatchedProvenanceRejected = false;
+  try {
+    mismatchedProvenance.getLectureStudioRevision(studio.id, 5);
+  } catch (error) {
+    mismatchedProvenanceRejected =
+      error instanceof Error && error.message === 'invalid_lecture_revision_generation_brief_hash';
+  }
+  invariant(
+    mismatchedProvenanceRejected,
+    'lecture_provenance_v3_mismatched_generation_brief_hash_did_not_fail_closed',
+  );
+  mismatchedProvenance.close();
+
+  const restoreProvenanceRow = new Database(join(app.getPath('userData'), 'gosu.db'));
+  restoreProvenanceRow.pragma(`key="x'${legacyLectureKeyHex}'"`);
+  try {
+    restoreProvenanceRow.exec('drop trigger if exists lecture_studio_revisions_update_guard');
+    restoreProvenanceRow
+      .prepare('update lecture_studio_revisions set generation_brief_sha256=? where id=?')
+      .run(provenanceRevision.generationBriefSha256, provenanceRevision.id);
+  } finally {
+    restoreProvenanceRow.close();
+  }
 
   const persisted = new LocalDatabase();
   persisted.open();
@@ -3352,20 +3510,21 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     .listLectureStudioMessages(studio.id, 50)
     .find((message) => message.id === attachmentUser.id);
   invariant(
-    isDeepStrictEqual(persisted.getCurrentLectureStudioRevision(studio.id), attachmentRevision) &&
+    isDeepStrictEqual(persisted.getCurrentLectureStudioRevision(studio.id), provenanceRevision) &&
+      isDeepStrictEqual(persisted.getLectureStudioRevision(studio.id, 4), attachmentRevision) &&
       isDeepStrictEqual(persisted.getLectureStudioRevision(studio.id, 3), externalRevision) &&
-      persisted.listLectureStudioRevisions(studio.id, 10).length === 4 &&
+      persisted.listLectureStudioRevisions(studio.id, 10).length === 5 &&
       isDeepStrictEqual(attachmentMessageAfterReopen?.attachments, [attachmentCard]) &&
       isDeepStrictEqual(
         (
-          persisted.getCurrentLectureStudioRevision(studio.id)?.sourceManifest as {
+          persisted.getLectureStudioRevision(studio.id, 4)?.sourceManifest as {
             turnAttachments?: readonly LectureStudioAttachmentSnapshot[];
           }
         ).turnAttachments,
         [attachmentSnapshot],
       ) &&
       persisted
-        .listLectureStudioMessages(studio.id, 10)
+        .listLectureStudioMessages(studio.id, 50)
         .find((message) => message.id === atomicUser.id)?.status === 'failed',
     'lecture_attachment_cards_or_v4_source_manifest_were_not_persisted_after_reopen',
   );
@@ -3693,6 +3852,7 @@ function verifyLectureStudioAttemptRetention(fixedTimestamp: string) {
         notesTargetPages: null,
         slidesTargetPages: null,
         detailLevel: 'standard',
+        structure: { mode: 'adaptive' },
         customInstructions: '',
       },
       status: 'draft',
@@ -4017,6 +4177,7 @@ async function verifyLectureExternalSourceTrashPurgeRecovery(
         notesTargetPages: null,
         slidesTargetPages: null,
         detailLevel: 'standard',
+        structure: { mode: 'adaptive' },
         customInstructions: '',
       },
       status: 'draft',

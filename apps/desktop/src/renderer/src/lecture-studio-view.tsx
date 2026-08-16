@@ -35,6 +35,8 @@ import {
   LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS,
   LECTURE_STUDIO_MAX_SOURCE_PROJECTS,
   LECTURE_STUDIO_DURATIONS,
+  DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+  LectureStudioStructureTemplateSchema,
   type CancelLectureStudioInput,
   type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
@@ -62,6 +64,7 @@ import {
   type LectureStudioListSnapshot,
   type LectureStudioPdfPreview,
   type LectureStudioSummary,
+  type LectureStudioStructureTemplate,
   type LectureStudioTurnReceipt,
   type LectureStudioVersionCommand,
   type EmptyLectureStudioTrashInput,
@@ -88,6 +91,7 @@ import {
 import type { LectureStudioDraftStore } from './lecture-studio-session-state';
 import type { OverleafPersonalTokenUiState } from './overleaf-personal-token-ui';
 import { MarkdownDocument } from './markdown-document';
+import { LectureStructureEditor } from './lecture-structure-editor';
 import {
   LectureExternalSourcePicker,
   type LectureExternalSourceCard,
@@ -242,6 +246,7 @@ export interface LectureStudioViewProps {
   models: readonly CodexModel[];
   modelsLoading: boolean;
   defaultModelSelection?: LectureStudioModelSelection;
+  defaultStructure?: LectureStudioStructureTemplate;
   codexAuthenticationRequired: boolean;
   onRefreshModels: () => void;
   onOpenCodexSignIn: () => void;
@@ -444,7 +449,7 @@ function LectureArtifactActionIcon({ kind }: { kind: 'export' | 'open' | 'reveal
 }
 
 function revisionSource(revision: LectureStudioRevision, kind: 'lecture-notes' | 'slides') {
-  if (revision.schemaVersion === 2) {
+  if (revision.schemaVersion !== 1) {
     return kind === 'lecture-notes' ? revision.lectureNotesLatex : revision.slidesLatex;
   }
   return kind === 'lecture-notes' ? revision.lectureNotesMarkdown : revision.slidesMarkdown;
@@ -819,6 +824,7 @@ export function LectureStudioView({
   models,
   modelsLoading,
   defaultModelSelection = AUTO_LECTURE_STUDIO_MODEL_SELECTION,
+  defaultStructure = DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
   codexAuthenticationRequired,
   onRefreshModels,
   onOpenCodexSignIn,
@@ -1090,6 +1096,7 @@ export function LectureStudioView({
             models={models}
             modelsLoading={modelsLoading}
             defaultModelSelection={defaultModelSelection}
+            defaultStructure={defaultStructure}
             onRefreshModels={onRefreshModels}
             onOpenCodexSignIn={onOpenCodexSignIn}
             overleafPersonalTokenState={overleafPersonalTokenState}
@@ -1152,6 +1159,7 @@ export function LectureStudioView({
                   markStudioBusy(selectedStudio.id, false);
                 }
               }}
+              defaultStructure={defaultStructure}
               onOpenCodexSignIn={onOpenCodexSignIn}
               onCancel={() => {
                 if (!selectedStudio.activeAttemptId) return;
@@ -1378,6 +1386,7 @@ function LectureComposer({
   models,
   modelsLoading,
   defaultModelSelection,
+  defaultStructure,
   onRefreshModels,
   onOpenCodexSignIn,
   overleafPersonalTokenState,
@@ -1393,6 +1402,7 @@ function LectureComposer({
   models: readonly CodexModel[];
   modelsLoading: boolean;
   defaultModelSelection: LectureStudioModelSelection;
+  defaultStructure: LectureStudioStructureTemplate;
   onRefreshModels: () => void;
   onOpenCodexSignIn: () => void;
   overleafPersonalTokenState: OverleafPersonalTokenUiState;
@@ -1407,6 +1417,9 @@ function LectureComposer({
   const [notesTargetPages, setNotesTargetPages] = useState('');
   const [slidesTargetPages, setSlidesTargetPages] = useState('');
   const [detailLevel, setDetailLevel] = useState<LectureStudioDetailLevel>('standard');
+  const [structure] = useState<LectureStudioStructureTemplate>(() =>
+    structuredClone(defaultStructure),
+  );
   const [customInstructions, setCustomInstructions] = useState('');
   const [projectIds, setProjectIds] = useState<string[]>(() =>
     projects[0] ? [projects[0].id] : [],
@@ -1611,6 +1624,7 @@ function LectureComposer({
           notesTargetPages: notesTargetPages === '' ? null : Number(notesTargetPages),
           slidesTargetPages: slidesTargetPages === '' ? null : Number(slidesTargetPages),
           detailLevel,
+          structure,
           customInstructions,
         },
       });
@@ -1827,6 +1841,15 @@ function LectureComposer({
             {LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS.toLocaleString()} characters
           </small>
         </label>
+        <div className="lecture-generation-structure-summary">
+          <strong>Structure</strong>
+          <span>
+            {structure.mode === 'adaptive'
+              ? 'Adaptive to the selected sources'
+              : `${structure.sections.length} custom sections`}
+          </span>
+          <small>Copied from Settings → Lecture defaults when this Studio is created.</small>
+        </div>
       </fieldset>
 
       <fieldset className="lecture-project-picker">
@@ -2324,6 +2347,7 @@ function StudioPreview({
   onTab,
   onGenerate,
   onUpdateGenerationBrief,
+  defaultStructure,
   onCancel,
   onOpenCodexSignIn,
 }: {
@@ -2339,6 +2363,7 @@ function StudioPreview({
   onTab: (tab: PreviewTab) => void;
   onGenerate: () => void;
   onUpdateGenerationBrief: (generationBrief: LectureStudioGenerationBrief) => Promise<boolean>;
+  defaultStructure: LectureStudioStructureTemplate;
   onCancel: () => void;
   onOpenCodexSignIn: () => void;
 }) {
@@ -2360,6 +2385,9 @@ function StudioPreview({
   const [detailLevel, setDetailLevel] = useState<LectureStudioDetailLevel>(
     studio.generationBrief.detailLevel,
   );
+  const [structure, setStructure] = useState<LectureStudioStructureTemplate>(() =>
+    structuredClone(studio.generationBrief.structure),
+  );
   const [customInstructions, setCustomInstructions] = useState(
     studio.generationBrief.customInstructions,
   );
@@ -2378,6 +2406,7 @@ function StudioPreview({
     setNotesTargetPages(studio.generationBrief.notesTargetPages?.toString() ?? '');
     setSlidesTargetPages(studio.generationBrief.slidesTargetPages?.toString() ?? '');
     setDetailLevel(studio.generationBrief.detailLevel);
+    setStructure(structuredClone(studio.generationBrief.structure));
     setCustomInstructions(studio.generationBrief.customInstructions);
   }, [studio.generationBrief]);
 
@@ -2392,17 +2421,20 @@ function StudioPreview({
       (Number.isInteger(notesPages) && notesPages >= 1 && notesPages <= 100)) &&
     (slidesPages === null ||
       (Number.isInteger(slidesPages) && slidesPages >= 2 && slidesPages <= 100)) &&
+    LectureStudioStructureTemplateSchema.safeParse(structure).success &&
     customInstructions.length <= LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS;
+  const generationOptionsDisabled = savingGenerationBrief || busy || studio.status === 'generating';
 
   const saveGenerationBrief = async (event: FormEvent) => {
     event.preventDefault();
-    if (!generationBriefDraftValid || savingGenerationBrief || busy) return;
+    if (!generationBriefDraftValid || generationOptionsDisabled) return;
     setSavingGenerationBrief(true);
     try {
       const succeeded = await onUpdateGenerationBrief({
         notesTargetPages: notesPages,
         slidesTargetPages: slidesPages,
         detailLevel,
+        structure,
         customInstructions,
       });
       if (succeeded) setEditingGenerationBrief(false);
@@ -2593,7 +2625,7 @@ function StudioPreview({
                 inputMode="numeric"
                 value={notesTargetPages}
                 placeholder="Auto"
-                disabled={savingGenerationBrief}
+                disabled={generationOptionsDisabled}
                 onChange={(event) => setNotesTargetPages(event.target.value)}
               />
             </label>
@@ -2607,7 +2639,7 @@ function StudioPreview({
                 inputMode="numeric"
                 value={slidesTargetPages}
                 placeholder="Auto"
-                disabled={savingGenerationBrief}
+                disabled={generationOptionsDisabled}
                 onChange={(event) => setSlidesTargetPages(event.target.value)}
               />
             </label>
@@ -2615,7 +2647,7 @@ function StudioPreview({
               Detail
               <select
                 value={detailLevel}
-                disabled={savingGenerationBrief}
+                disabled={generationOptionsDisabled}
                 onChange={(event) => setDetailLevel(event.target.value as LectureStudioDetailLevel)}
               >
                 <option value="concise">Concise</option>
@@ -2630,7 +2662,7 @@ function StudioPreview({
                 rows={3}
                 maxLength={LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS}
                 value={customInstructions}
-                disabled={savingGenerationBrief}
+                disabled={generationOptionsDisabled}
                 onChange={(event) => setCustomInstructions(event.target.value)}
               />
               <small>
@@ -2638,11 +2670,23 @@ function StudioPreview({
                 {LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS.toLocaleString()}
               </small>
             </label>
+            <div className="lecture-generation-options-structure">
+              <LectureStructureEditor
+                value={structure}
+                onChange={setStructure}
+                disabled={generationOptionsDisabled}
+                heading="Notes & slides structure"
+                idPrefix={`studio-${studio.id}-lecture-structure`}
+                contextCopy="This Studio keeps its own structure. Saving changes affects the next generation, retry, and chat edit only."
+                onReset={() => setStructure(structuredClone(defaultStructure))}
+                resetLabel="Load Settings default"
+              />
+            </div>
             <div className="lecture-generation-options-actions">
               <button
                 type="button"
                 className="ghost-button"
-                disabled={savingGenerationBrief}
+                disabled={generationOptionsDisabled}
                 onClick={() => {
                   resetGenerationBriefDraft();
                   setEditingGenerationBrief(false);
@@ -2653,7 +2697,7 @@ function StudioPreview({
               <button
                 type="submit"
                 className="primary-button"
-                disabled={!generationBriefDraftValid || savingGenerationBrief || busy}
+                disabled={!generationBriefDraftValid || generationOptionsDisabled}
               >
                 {savingGenerationBrief ? 'Saving…' : 'Save options'}
               </button>
@@ -2750,7 +2794,7 @@ function StudioPreview({
                 'export',
                 previewIsPdf(activeTab)
                   ? 'pdf'
-                  : revision?.schemaVersion === 2
+                  : revision?.schemaVersion !== 1
                     ? 'latex'
                     : 'markdown',
               )
@@ -2770,7 +2814,7 @@ function StudioPreview({
                 'open',
                 previewIsPdf(activeTab)
                   ? 'pdf'
-                  : revision?.schemaVersion === 2
+                  : revision?.schemaVersion !== 1
                     ? 'latex'
                     : 'markdown',
               )
@@ -2790,7 +2834,7 @@ function StudioPreview({
                 'reveal',
                 previewIsPdf(activeTab)
                   ? 'pdf'
-                  : revision?.schemaVersion === 2
+                  : revision?.schemaVersion !== 1
                     ? 'latex'
                     : 'markdown',
               )
@@ -2832,7 +2876,7 @@ function StudioPreview({
               {compilingPdf === documentKind ? 'Compiling PDF…' : 'Compile & preview PDF'}
             </button>
           </div>
-        ) : revision?.schemaVersion === 2 ? (
+        ) : revision?.schemaVersion !== 1 ? (
           <pre className="lecture-latex-source" aria-label="Generated LaTeX source">
             <code>{source}</code>
           </pre>

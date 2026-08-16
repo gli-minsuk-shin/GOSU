@@ -17,6 +17,10 @@ import {
   LectureStudioView,
   type LectureStudioViewAdapter,
 } from '../../src/renderer/src/lecture-studio-view';
+import {
+  LectureStructureEditor,
+  gosuLectureStructureTemplate,
+} from '../../src/renderer/src/lecture-structure-editor';
 import type { LectureStudioLayoutState } from '../../src/renderer/src/lecture-studio-layout-state';
 import { VolatileLectureStudioDrafts } from '../../src/renderer/src/lecture-studio-session-state';
 
@@ -212,32 +216,45 @@ function Fixture() {
     studioRailCollapsed: false,
     chatCollapsed: false,
   });
+  const [structure, setStructure] = useState(gosuLectureStructureTemplate);
   return (
-    <main className="lecture-studio-layout-smoke-shell">
-      <section className="desktop-content desktop-content-lecture">
-        <LectureStudioView
-          projects={[project]}
-          adapter={adapter}
-          draftStore={new VolatileLectureStudioDrafts()}
-          models={[
-            {
-              modelId: 'fixture-model',
-              displayName: 'Fixture model',
-              isDefault: true,
-              reasoningOptions: [{ id: 'medium', label: 'medium', isDefault: true }],
-            },
-          ]}
-          modelsLoading={false}
-          codexAuthenticationRequired={false}
-          onRefreshModels={() => undefined}
-          onOpenCodexSignIn={() => undefined}
-          overleafPersonalTokenState="configured"
-          onOpenOverleafSettings={() => undefined}
-          layout={layout}
-          onLayoutChange={setLayout}
+    <>
+      <main className="lecture-studio-layout-smoke-shell">
+        <section className="desktop-content desktop-content-lecture">
+          <LectureStudioView
+            projects={[project]}
+            adapter={adapter}
+            draftStore={new VolatileLectureStudioDrafts()}
+            models={[
+              {
+                modelId: 'fixture-model',
+                displayName: 'Fixture model',
+                isDefault: true,
+                reasoningOptions: [{ id: 'medium', label: 'medium', isDefault: true }],
+              },
+            ]}
+            modelsLoading={false}
+            codexAuthenticationRequired={false}
+            onRefreshModels={() => undefined}
+            onOpenCodexSignIn={() => undefined}
+            overleafPersonalTokenState="configured"
+            onOpenOverleafSettings={() => undefined}
+            layout={layout}
+            onLayoutChange={setLayout}
+          />
+        </section>
+      </main>
+      <aside
+        aria-label="Lecture structure focus fixture"
+        style={{ position: 'fixed', left: '-2000px', top: 0, width: 700 }}
+      >
+        <LectureStructureEditor
+          value={structure}
+          onChange={setStructure}
+          idPrefix="layout-focus-structure"
         />
-      </section>
-    </main>
+      </aside>
+    </>
   );
 }
 

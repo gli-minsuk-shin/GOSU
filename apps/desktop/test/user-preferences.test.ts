@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import {
+  DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+  type LectureStudioStructureTemplate,
+} from '../src/shared/lecture-studio-contracts';
 import { DEFAULT_WORKSPACE_BOARD_SETTINGS } from '../src/shared/workspace-contracts';
 import {
   DEFAULT_AI_SELECTION,
@@ -31,6 +35,15 @@ const customBoardTemplate = {
   },
 } as const;
 
+const customLectureStructure: LectureStudioStructureTemplate = {
+  mode: 'custom',
+  sections: [
+    { title: 'Overview and learning goals', coverage: 'notes-and-slides' },
+    { title: 'Technical details', coverage: 'notes-only' },
+    { title: 'Summary', coverage: 'notes-and-slides' },
+  ],
+};
+
 function memoryStorage(initial?: string) {
   const values = new Map<string, string>();
   if (initial) values.set(USER_PREFERENCES_STORAGE_KEY, initial);
@@ -60,8 +73,32 @@ describe('local user preferences', () => {
       textSize: 'large',
       sshResourceRefreshInterval: '1m',
       defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+      defaultLectureStructure: DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
       defaultAiSelection: DEFAULT_AI_SELECTION,
       agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
+    });
+  });
+
+  it('migrates a missing legacy Lecture structure to adaptive without disturbing other preferences', () => {
+    expect(
+      parseUserPreferences({
+        schemaVersion: 1,
+        appearance: 'dark',
+        textSize: 'large',
+        sshResourceRefreshInterval: '5m',
+        defaultBoardTemplate: customBoardTemplate,
+        defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'ultra' },
+        agentAddOns: { openclaw: 'detect-local', hermes: 'connect-local' },
+      }),
+    ).toEqual({
+      schemaVersion: 1,
+      appearance: 'dark',
+      textSize: 'large',
+      sshResourceRefreshInterval: '5m',
+      defaultBoardTemplate: customBoardTemplate,
+      defaultLectureStructure: { mode: 'adaptive' },
+      defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'ultra' },
+      agentAddOns: { openclaw: 'detect-local', hermes: 'connect-local' },
     });
   });
 
@@ -84,6 +121,7 @@ describe('local user preferences', () => {
       textSize: 'large',
       sshResourceRefreshInterval: '5m',
       defaultBoardTemplate: customBoardTemplate,
+      defaultLectureStructure: customLectureStructure,
       defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'ultra' },
       agentAddOns: { openclaw: 'detect-local', hermes: 'connect-local' },
     } as const;
@@ -113,9 +151,114 @@ describe('local user preferences', () => {
       textSize: 'extra-large',
       sshResourceRefreshInterval: '1m',
       defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
+      defaultLectureStructure: DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
       defaultAiSelection: DEFAULT_AI_SELECTION,
       agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
     });
+  });
+
+  it('normalizes and returns deep-independent custom Lecture structure copies', () => {
+    const stored = {
+      ...DEFAULT_USER_PREFERENCES,
+      defaultLectureStructure: {
+        mode: 'custom',
+        sections: [
+          { title: '  Cafe\u0301 foundations  ', coverage: 'notes-and-slides' },
+          { title: 'Details', coverage: 'notes-only' },
+        ],
+      },
+    } as const;
+
+    const storage = memoryStorage(JSON.stringify(stored));
+    const first = loadUserPreferences(storage);
+    const second = loadUserPreferences(storage);
+
+    expect(first.defaultLectureStructure).toEqual({
+      mode: 'custom',
+      sections: [
+        { title: 'Café foundations', coverage: 'notes-and-slides' },
+        { title: 'Details', coverage: 'notes-only' },
+      ],
+    });
+    expect(first.defaultLectureStructure).not.toBe(stored.defaultLectureStructure);
+    expect(first.defaultLectureStructure).not.toBe(second.defaultLectureStructure);
+    if (
+      first.defaultLectureStructure.mode === 'custom' &&
+      second.defaultLectureStructure.mode === 'custom'
+    ) {
+      expect(first.defaultLectureStructure.sections).not.toBe(
+        second.defaultLectureStructure.sections,
+      );
+      expect(first.defaultLectureStructure.sections[0]).not.toBe(
+        second.defaultLectureStructure.sections[0],
+      );
+    }
+  });
+
+  it('falls back only the malformed Lecture structure while preserving other valid settings', () => {
+    const parsed = parseUserPreferences({
+      schemaVersion: 1,
+      appearance: 'dark',
+      textSize: 'extra-large',
+      sshResourceRefreshInterval: 'manual',
+      defaultBoardTemplate: customBoardTemplate,
+      defaultLectureStructure: {
+        mode: 'custom',
+        sections: [{ title: 'Private appendix', coverage: 'notes-only' }],
+      },
+      defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'high' },
+      agentAddOns: { openclaw: 'detect-local', hermes: 'detect-local' },
+    });
+
+    expect(parsed).toEqual({
+      schemaVersion: 1,
+      appearance: 'dark',
+      textSize: 'extra-large',
+      sshResourceRefreshInterval: 'manual',
+      defaultBoardTemplate: customBoardTemplate,
+      defaultLectureStructure: { mode: 'adaptive' },
+      defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'high' },
+      agentAddOns: { openclaw: 'detect-local', hermes: 'detect-local' },
+    });
+  });
+
+  it('saves and loads a validated custom Lecture structure', () => {
+    const storage = memoryStorage();
+    const preferences = {
+      ...DEFAULT_USER_PREFERENCES,
+      defaultLectureStructure: customLectureStructure,
+    } as const;
+
+    expect(saveUserPreferences(storage, preferences)).toBe(true);
+    const loaded = loadUserPreferences(storage);
+    expect(loaded.defaultLectureStructure).toEqual(customLectureStructure);
+    expect(loaded.defaultLectureStructure).not.toBe(preferences.defaultLectureStructure);
+  });
+
+  it('fails closed for hidden, unknown, reserved, and TeX-like Lecture structure input', () => {
+    const invalidStructures = [
+      {
+        mode: 'custom',
+        sections: [{ title: 'Overview\u202e hidden', coverage: 'notes-and-slides' }],
+      },
+      { mode: 'adaptive', hiddenOverride: true },
+      {
+        mode: 'custom',
+        sections: [{ title: 'Sources used', coverage: 'notes-and-slides' }],
+      },
+      {
+        mode: 'custom',
+        sections: [{ title: '\\input{private.tex}', coverage: 'notes-and-slides' }],
+      },
+    ];
+
+    for (const defaultLectureStructure of invalidStructures) {
+      const parsed = parseUserPreferences({
+        ...DEFAULT_USER_PREFERENCES,
+        defaultLectureStructure,
+      });
+      expect(parsed.defaultLectureStructure).toEqual({ mode: 'adaptive' });
+    }
   });
 
   it('fails closed for unknown add-on preferences while preserving valid choices', () => {

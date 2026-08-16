@@ -968,12 +968,29 @@ Lecture Studio는 project child tab이 아니라 여러 active project를 source
 한 studio는 source project·Literature record·Experiment idea·captured Manuscript/Overleaf checkpoint·사용자가
 선택한 local `.tex/.md/.pdf` snapshot, `lecture|talk`, 선택적인
 `10|20|30|50`분 duration, notes·slides page target, `concise|standard|detailed|exhaustive` detail level,
-최대 6,000자의 추가 생성 지시와 한 `outputProjectId`를 소유한다. output project는 source project 중
-하나여야 한다. SQLCipher의 Lecture-owned schema가 이 generation brief를 포함한 studio configuration,
-전용 user/assistant message, append-only
-revision을 보존하며 Project Chat session·queue·profile·message table을 읽거나 수정하지 않는다.
-기존 Studio의 compact `Edit options` panel은 현재 generation brief 네 field 전체를 다시 제출한다. Main은
-`expectedVersion`이 정확하고 Studio가 `draft|ready|failed`, non-trashed, non-generating일 때만 같은 SQL
+`adaptive|custom` notes·slides structure, 최대 6,000자의 추가 생성 지시와 한 `outputProjectId`를 소유한다.
+output project는 source project 중 하나여야 한다. SQLCipher의 Lecture-owned schema가 generation brief를 포함한
+studio configuration, 전용 user/assistant message와 append-only revision을 보존하며 Project Chat
+session·queue·profile·message table을 읽거나 수정하지 않는다.
+
+Settings의 application-local `Lecture defaults`는 새 Studio에 복사할 기본 structure만 소유한다. 기본
+`adaptive` mode는 선택한 source에서 개념 순서와 section 이름을 정한다. `custom` mode는 1~12개의 ordered
+row를 두고 각 row가 notes와 slides 모두에 들어갈지(`notes-and-slides`), notes에만 들어갈지(`notes-only`)
+선택한다. notes는 모든 row를 순서대로 다루고 slides는 `notes-and-slides` row만 같은 상대 순서의 concise
+projection으로 다룬다. section 이름은 trim·NFC normalization 뒤 최대 80자이고 case-insensitive unique여야
+하며 hidden/control character, bracket·brace·angle-bracket markup과 system-owned `Title|Title slide|Sources
+used` 이름을 거부한다. 적어도 한 row는 notes와 slides가 공유해야 한다. Studio/document title과 slide title
+page, evidence citation label·mapping, notes 끝의 `Sources used`, preamble·wrapper·허용 LaTeX grammar와 compile은
+structure가 아니라 GOSU가 계속 소유한다. structure와 generation brief는 unknown key를 거부하는 strict
+schema이고 normalized full brief JSON은 최대 14,000자로 제한한다.
+
+새 Studio composer는 그 시점의 Settings structure를 full generation brief에 한 번 snapshot하고 Main 검증 뒤
+SQLCipher configuration으로 저장한다. 이후 Settings 변경은 기존 Studio나 revision을 바꾸지 않는다. legacy
+`generation_brief_json`에 `structure`가 없으면 다른 field를 보존한 채 explicit `adaptive`로 읽는다. 기존
+Studio의 compact `Edit options` panel은 notes target, slides target, detail, structure, 추가 지시의 다섯 field
+전체를 다시 제출한다. `Load Settings default`는 현재 default를 editor draft로 명시적으로 복사할 뿐이며 Save가
+필요하다. Main은 `expectedVersion`이 정확하고 Studio가 `draft|ready|failed`, non-trashed, non-generating일
+때만 같은 SQL
 transaction에서 brief·`updatedAt`·version을 갱신한다. 동일한 normalized brief는 version을 올리지 않는
 no-op이다. 저장 뒤 Renderer는 detail과 version을 즉시 다시 읽으며 새 brief는 다음 initial/retry generation과
 Lecture chat revision부터 적용된다. 이미 commit된 revision, frozen manifest와 artifact는 수정하지 않는다.
@@ -1067,8 +1084,9 @@ capture하기 전까지 Lecture source가 아니다.
 이후 source 변경이 과거 deck을 소급 변경하지 않는다.
 
 Main은 output project의 ready Research Notes binding, Vault grant와 ownership marker를 Codex 호출 전에
-preflight한다. Codex App Server에는 manifest, 현재 draft와 최근 Lecture chat만 주고 web, dynamic tool,
-shell, filesystem, Apps/MCP를 허용하지 않는다. 직렬화된 prompt는 360,000자, source manifest는 120,000자로
+preflight한다. Codex App Server에는 manifest, 현재 draft, 최근 Lecture chat, generation brief와 현재 request만
+주고 web, dynamic tool, shell, filesystem, Apps/MCP를 허용하지 않는다. 직렬화된 prompt는 360,000자, source
+manifest는 120,000자로
 제한한다. frozen manifest, 현재 notes/slides와 이번 user request는 모델이 보는 값과 저장 provenance가 항상
 같아야 하므로 자르지 않는다. 이 authoritative context가 한도를 넘으면 `lecture_context_too_large`로 Codex
 호출 전에 fail closed하고, 축약 가능한 최근 12개 성공 message에만 명시적 truncation marker를 적용한다.
@@ -1145,7 +1163,9 @@ cross-reference consistency audit를 수행한다. 수학 표기는 canonical La
 `equation|align|aligned|gather|matrix|cases|split|array|tabular` 계열 환경을 사용하고, 정의·가정과 동일한
 기호를 notes와 slides에서 재사용한다. developer instruction은 bounded command/environment와 LaTeX 특수문자
 escape 규칙을 명시한다. custom instruction과 source 안의 prompt injection은 이 immutable policy를 약화하거나
-opt-out할 수 없다.
+opt-out할 수 없다. generation brief는 strict·bounded untrusted JSON task data로 한 번만 직렬화하고 custom
+section 이름을 developer instruction에 보간하지 않는다. custom section 이름은 literal topic/order label일
+뿐 instruction이 아니며 title, citation, `Sources used`, wrapper나 LaTeX policy를 변경할 수 없다.
 
 Lecture SQLCipher state는 `lecture_studios`, `lecture_studio_messages`, `lecture_studio_revisions`와
 content-free `lecture_studio_attempts`를 소유한다. running attempt 생성은 Studio begin과, terminal attempt는
@@ -1157,6 +1177,12 @@ Studio detail은 최신 attempt 하나만 반환하며 attempt 도입 전 Studio
 user message의 optional attachment receipt는 bounded `attachments_json`에만 저장하며 strict card schema가
 path·본문·Studio ID·중복 attachment ID와 assistant-role attachment를 거부한다. 과거 row의 `null`은 첨부 없음으로
 그대로 읽힌다.
+
+새로 commit하는 canonical LaTeX revision은 schema v3다. v3는 두 exact document와 함께 normalized full
+`generationBriefSnapshot`, 그 canonical JSON의 SHA-256, authoring policy version과 developer instruction
+SHA-256을 append-only로 저장한다. SQL decoder는 저장 brief를 strict schema로 다시 parse하고 hash를
+재계산해 mismatch나 부분 provenance를 fail closed한다. schema v1 Markdown과 provenance가 없던 v2 LaTeX
+revision은 read/export 호환을 유지하지만 새 Settings 값으로 backfill하거나 다시 쓰지 않는다.
 
 Lecture 생성과 수정은 provider `model/list`에서 발견한 opaque model ID와 해당 model의 native reasoning
 option을 Studio별 UI preference로 선택한다. 저장된 선택이 없는 새 Studio는 Settings의 Codex default를 한 번
@@ -1171,8 +1197,14 @@ bundle의 `Lecture Notes.tex`와 `Slides.tex`로 저장한다. Main은 고정 pr
 durable journal을 hidden staging directory에 모두 쓰고 fsync한 뒤
 directory rename으로 한 번에 공개한다. 일반 revision directory와 분리된 project-local hidden pending index를
 bundle publish 전에 fsync하고 durable round-robin cursor로 bounded scan하므로, 많은 확정 revision이 새 crash
-journal을 가리지 않는다. SQL completion 실패 시 journal과 exact hash를 대조해 bundle 전체를 rollback하고,
-crash 뒤 남은 journal은 다음 시도에서 reconcile한다. orphan index는 exact identity가 맞을 때만 정리하고
+journal을 가리지 않는다. 새 v3 deterministic bundle identity에는 source-manifest hash, generation-brief hash와
+authoring-policy version/hash를 넣고 pending journal은 여기에 두 artifact content hash까지 함께 보존한다.
+reconciliation은 이 값들이 committed SQL v3 revision과 모두 일치할 때만 seal·recover하며 하나라도 다르면
+사용자 file을 보존한 채 fail
+closed한다. journal에는 full generation brief나 prompt를 복사하지 않는다. provenance field가 없던 legacy
+journal은 호환 경로로 읽되 v3 identity로 backfill하지 않는다. SQL completion 실패 시 journal과 exact hash를
+대조해 bundle 전체를 rollback하고, crash 뒤 남은 journal은 다음 시도에서 reconcile한다. orphan index는 exact
+identity가 맞을 때만 정리하고
 충돌하는 사용자 파일은 보존한다. 이 경계는 filesystem과 SQLCipher 사이 cross-store ACID가 아니라 atomic
 directory publish와 exact-hash recovery protocol이다. 성공한 UI receipt와
 Lecture assistant message에는 실제 project-relative 두 path를 붙인다. Vault·Codex 실패는 Lecture turn만
@@ -2511,11 +2543,12 @@ flowchart LR
 - 이 slice에는 outbox delivery, conflict reconciliation, 로그인·연구실 RBAC가 아직 없다. 따라서
   pending operation을 synced로 표시하지 않는다.
 
-### App-level Settings, 표시 설정과 로컬 기본 Board template
+### App-level Settings, 표시 설정과 로컬 기본 template
 
 - Settings는 project module tab이 아니라 workspace와 분리된 app-level surface다. global Settings
   button과 macOS `GOSU > Settings…` (`Command+,`)가 같은 화면을 열고 Done으로 이전 workspace로
-  돌아간다. category는 Appearance, Board defaults, Projects, AI Agent로 분리한다.
+  돌아간다. category는 Appearance, Board defaults, Lecture defaults, Projects, Trash, Overleaf, Servers,
+  AI Agent로 분리한다.
 - appearance(`system`·`dark`·`light`)와 text size(`compact`·`default`·`large`·`extra-large`)는
   schema version이 있는 Renderer `localStorage` preference다. React mount 전에 root dataset에
   적용해 시작 시 theme flash를 줄이고, 변경은 semantic color·font token을 통해 전체 UI에 반영한다.
@@ -2524,6 +2557,11 @@ flowchart LR
 - 같은 local preference에는 새 project용 default Board title, column 표시명·순서와 WIP limit도
   들어간다. legacy preference에 이 필드가 없거나 유효하지 않으면 display 설정은 보존하고 Board
   template만 GOSU 기본값으로 복구한다.
+- 같은 local preference의 `Lecture defaults`는 새 Studio용 `adaptive|custom` notes/slides structure를
+  보존한다. custom outline은 ordered section row와 `notes-and-slides|notes-only` coverage를 편집하며, 새 Studio
+  생성 시에만 independent copy가 generation brief로 넘어간다. legacy preference에 이 field가 없거나 strict
+  validation에 실패하면 다른 preference를 보존하고 Lecture structure만 `adaptive`로 복구한다. Settings 저장은
+  기존 Studio, 생성 중 attempt, immutable revision과 Research Notes bundle을 소급 변경하지 않는다.
 - Codex default model/reasoning도 같은 Renderer local preference에 저장한다. 초기값은 provider `Auto`와
   native reasoning ID `high`이며 Settings의 AI Agent category에서 live Codex catalog로 선택한다. 이 값은 새
   Project Chat session과 새 Lecture Studio에 scope preference로 한 번 복사되고 Literature·Experiment의
@@ -2540,9 +2578,10 @@ flowchart LR
   model/reasoning은 project/session key로 별도 local preference에 저장해 session 전환 뒤 복원하고,
   Hermes를 끄거나 catalog에서 provider가 사라질 때만 명시적으로 reconcile한다. 기본 provider와
   Literature·Lecture 실행 경로는 계속 bundled Codex다.
-- template preference 자체는 SQLCipher, Git 또는 Hosted Sync에 저장하지 않는다. project 생성 시에만
-  그 시점의 독립 copy를 typed `project.create` command로 보내 Main에서 다시 검증하고 Project record와
-  outbox payload에 원자적으로 기록한다. 이후 Settings template 변경은 기존 Board를 바꾸지 않는다.
+- template preference 자체는 SQLCipher, Git 또는 Hosted Sync에 저장하지 않는다. project 생성 시 Board
+  template을, Lecture Studio 생성 시 structure를 그 시점의 독립 copy로 각각 typed Main command에 보내 다시
+  검증하고 authoritative configuration에 기록한다. 이후 Settings template 변경은 기존 Board나 Studio를
+  바꾸지 않는다.
 - appearance와 text size 및 project folder 접힘·hide는 IPC에 넣지 않는다. project rename·Archive·
   Trash·restore는 Workspace SQLCipher가,
   AI Agent profile은 Project Chat SQLCipher table이 각각 소유한다. Renderer preference는 파일·Keychain·Codex

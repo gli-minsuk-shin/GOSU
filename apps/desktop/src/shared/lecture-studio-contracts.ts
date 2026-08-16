@@ -29,6 +29,9 @@ export const LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES = 32;
 export const LECTURE_STUDIO_MAX_EXTERNAL_SOURCES = 12;
 export const LECTURE_STUDIO_MAX_MANUSCRIPT_FILES = 128;
 export const LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS = 6_000;
+export const LECTURE_STUDIO_MAX_GENERATION_BRIEF_JSON = 14_000;
+export const LECTURE_STUDIO_MAX_STRUCTURE_SECTIONS = 12;
+export const LECTURE_STUDIO_MAX_STRUCTURE_SECTION_TITLE = 80;
 export const LECTURE_STUDIO_MAX_MESSAGES = 2_500;
 export const LECTURE_STUDIO_MAX_REVISIONS = 1_000;
 export const LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS = 100;
@@ -65,10 +68,101 @@ export const LectureStudioDetailLevelSchema = z.enum([
 ]);
 export type LectureStudioDetailLevel = z.infer<typeof LectureStudioDetailLevelSchema>;
 
+export const LectureStudioStructureCoverageSchema = z.enum(['notes-and-slides', 'notes-only']);
+export type LectureStudioStructureCoverage = z.infer<typeof LectureStudioStructureCoverageSchema>;
+
+export const DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE = {
+  mode: 'adaptive',
+} as const;
+
+export const GOSU_LECTURE_STUDIO_STRUCTURE_TEMPLATE = {
+  mode: 'custom',
+  sections: [
+    { title: 'Overview and learning goals', coverage: 'notes-and-slides' },
+    { title: 'Background, definitions, and notation', coverage: 'notes-and-slides' },
+    { title: 'Main concepts and evidence', coverage: 'notes-and-slides' },
+    { title: 'Methods, examples, and comparisons', coverage: 'notes-and-slides' },
+    { title: 'Limitations and open questions', coverage: 'notes-and-slides' },
+    { title: 'Summary', coverage: 'notes-and-slides' },
+  ],
+} as const;
+
+const hasUnsafeStructureCharacter = (value: string) =>
+  [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return (
+      codePoint <= 31 ||
+      (codePoint >= 127 && codePoint <= 159) ||
+      (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+      codePoint === 0x061c ||
+      (codePoint >= 0x200b && codePoint <= 0x200f) ||
+      (codePoint >= 0x202a && codePoint <= 0x202e) ||
+      codePoint === 0x2060 ||
+      (codePoint >= 0x2066 && codePoint <= 0x2069) ||
+      codePoint === 0xfeff
+    );
+  });
+
+export const LectureStudioStructureSectionSchema = z
+  .object({
+    title: z
+      .string()
+      .trim()
+      .min(1)
+      .max(LECTURE_STUDIO_MAX_STRUCTURE_SECTION_TITLE)
+      .transform((value) => value.normalize('NFC'))
+      .refine((value) => !hasUnsafeStructureCharacter(value), {
+        message: 'Structure section names cannot contain hidden or control characters',
+      })
+      .refine((value) => !/[\\[\]{}<>]/u.test(value), {
+        message: 'Structure section names must be plain text',
+      })
+      .refine((value) => !['sources used', 'title', 'title slide'].includes(value.toLowerCase()), {
+        message: 'System-owned structure items cannot be added to the content flow',
+      }),
+    coverage: LectureStudioStructureCoverageSchema,
+  })
+  .strict();
+export type LectureStudioStructureSection = z.infer<typeof LectureStudioStructureSectionSchema>;
+
+export const LectureStudioStructureTemplateSchema = z
+  .discriminatedUnion('mode', [
+    z.object({ mode: z.literal('adaptive') }).strict(),
+    z
+      .object({
+        mode: z.literal('custom'),
+        sections: z
+          .array(LectureStudioStructureSectionSchema)
+          .min(1)
+          .max(LECTURE_STUDIO_MAX_STRUCTURE_SECTIONS),
+      })
+      .strict(),
+  ])
+  .superRefine((template, context) => {
+    if (template.mode !== 'custom') return;
+    const normalizedTitles = template.sections.map((section) => section.title.toLowerCase());
+    if (new Set(normalizedTitles).size !== normalizedTitles.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['sections'],
+        message: 'Structure section names must be unique',
+      });
+    }
+    if (!template.sections.some((section) => section.coverage === 'notes-and-slides')) {
+      context.addIssue({
+        code: 'custom',
+        path: ['sections'],
+        message: 'At least one section must be covered in both notes and slides',
+      });
+    }
+  });
+export type LectureStudioStructureTemplate = z.infer<typeof LectureStudioStructureTemplateSchema>;
+
 const lectureStudioGenerationBriefShape = {
   notesTargetPages: z.number().int().min(1).max(100).nullable(),
   slidesTargetPages: z.number().int().min(2).max(100).nullable(),
   detailLevel: LectureStudioDetailLevelSchema,
+  structure: LectureStudioStructureTemplateSchema,
   customInstructions: z
     .string()
     .trim()
@@ -79,18 +173,31 @@ const lectureStudioGenerationBriefShape = {
     ),
 } as const;
 
+const lectureStudioGenerationBriefFitsStorage = (brief: unknown) =>
+  JSON.stringify(brief).length <= LECTURE_STUDIO_MAX_GENERATION_BRIEF_JSON;
+
+export const LectureStudioGenerationBriefValueSchema = z
+  .object(lectureStudioGenerationBriefShape)
+  .strict()
+  .refine(lectureStudioGenerationBriefFitsStorage, 'The complete generation options are too large');
+
 export const LectureStudioGenerationBriefSchema = z
   .object({
     notesTargetPages: lectureStudioGenerationBriefShape.notesTargetPages.default(null),
     slidesTargetPages: lectureStudioGenerationBriefShape.slidesTargetPages.default(null),
     detailLevel: lectureStudioGenerationBriefShape.detailLevel.default('standard'),
+    structure: lectureStudioGenerationBriefShape.structure.default({
+      ...DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+    }),
     customInstructions: lectureStudioGenerationBriefShape.customInstructions.default(''),
   })
   .strict()
+  .refine(lectureStudioGenerationBriefFitsStorage, 'The complete generation options are too large')
   .default({
     notesTargetPages: null,
     slidesTargetPages: null,
     detailLevel: 'standard',
+    structure: { ...DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE },
     customInstructions: '',
   });
 export type LectureStudioGenerationBrief = z.infer<typeof LectureStudioGenerationBriefSchema>;
@@ -570,6 +677,9 @@ export type PendingLectureRevisionArtifacts = Readonly<{
   revision: number;
   attemptId: string;
   sourceManifestSha256: string;
+  generationBriefSha256?: string;
+  authoringPolicyVersion?: number;
+  authoringPolicySha256?: string;
   artifacts: readonly [
     Omit<LectureStudioArtifact, 'savedAt'>,
     Omit<LectureStudioArtifact, 'savedAt'>,
@@ -999,10 +1109,21 @@ export const LectureStudioRevisionV2Schema = LectureStudioRevisionBaseSchema.ext
   slidesLatex: z.string().min(1).max(LECTURE_STUDIO_MAX_LATEX_LENGTH),
 }).strict();
 
+export const LectureStudioRevisionV3Schema = LectureStudioRevisionBaseSchema.extend({
+  schemaVersion: z.literal(3),
+  lectureNotesLatex: z.string().min(1).max(LECTURE_STUDIO_MAX_LATEX_LENGTH),
+  slidesLatex: z.string().min(1).max(LECTURE_STUDIO_MAX_LATEX_LENGTH),
+  generationBriefSnapshot: LectureStudioGenerationBriefValueSchema,
+  generationBriefSha256: sha256Schema,
+  authoringPolicyVersion: z.number().int().positive(),
+  authoringPolicySha256: sha256Schema,
+}).strict();
+
 export const LectureStudioRevisionSchema = z
   .discriminatedUnion('schemaVersion', [
     LectureStudioRevisionV1Schema,
     LectureStudioRevisionV2Schema,
+    LectureStudioRevisionV3Schema,
   ])
   .superRefine((revision, context) => {
     const artifactKinds = new Set(revision.artifacts.map((artifact) => artifact.kind));
@@ -1406,7 +1527,7 @@ export const UpdateLectureStudioGenerationBriefInputSchema = z
   .object({
     studioId: uuidSchema,
     expectedVersion: z.number().int().positive(),
-    generationBrief: z.object(lectureStudioGenerationBriefShape).strict(),
+    generationBrief: LectureStudioGenerationBriefValueSchema,
   })
   .strict();
 export type UpdateLectureStudioGenerationBriefInput = z.infer<

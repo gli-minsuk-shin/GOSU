@@ -714,6 +714,61 @@ describe('LectureStudioView', () => {
     expect(source).toContain('if (!editingGenerationBrief && !savingGenerationBrief)');
   });
 
+  it('copies the Settings structure once into a new Studio and shows that scope before creation', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    const desktopSource = readFileSync(
+      new URL('../src/renderer/src/desktop-app.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(desktopSource).toContain('defaultStructure={preferences.defaultLectureStructure}');
+    expect(source).toMatch(
+      /const \[structure\] = useState<LectureStudioStructureTemplate>\(\(\) =>\s*structuredClone\(defaultStructure\),?\s*\);/u,
+    );
+    expect(source).toMatch(
+      /studio = await adapter\.create\(\{[\s\S]*?generationBrief:\s*\{[\s\S]*?detailLevel,[\s\S]*?structure,[\s\S]*?customInstructions,/u,
+    );
+    expect(source).toContain('Adaptive to the selected sources');
+    expect(source).toContain('`${structure.sections.length} custom sections`');
+    expect(source).toContain(
+      'Copied from Settings → Lecture defaults when this Studio is created.',
+    );
+  });
+
+  it('hydrates and saves a complete existing-Studio structure without changing prior revisions', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toMatch(
+      /const \[structure, setStructure\] = useState<LectureStudioStructureTemplate>\(\(\) =>\s*structuredClone\(studio\.generationBrief\.structure\),?\s*\);/u,
+    );
+    expect(source).toContain('setStructure(structuredClone(studio.generationBrief.structure));');
+    expect(source).toContain('LectureStudioStructureTemplateSchema.safeParse(structure).success');
+    expect(source).toMatch(
+      /const succeeded = await onUpdateGenerationBrief\(\{\s*notesTargetPages: notesPages,\s*slidesTargetPages: slidesPages,\s*detailLevel,\s*structure,\s*customInstructions,\s*\}\);/u,
+    );
+    expect(source).toContain('onReset={() => setStructure(structuredClone(defaultStructure))}');
+    expect(source).toContain('resetLabel="Load Settings default"');
+    expect(source).toContain(
+      'This Studio keeps its own structure. Saving changes affects the next generation, retry, and chat edit only.',
+    );
+    expect(source).toContain("savingGenerationBrief || busy || studio.status === 'generating'");
+    expect(source).toContain('disabled={generationOptionsDisabled}');
+    expect(source).toContain('disabled={!generationBriefDraftValid || generationOptionsDisabled}');
+    expect(source).toContain('Generation options updated. Existing revisions were left unchanged.');
+
+    const resetHandler = source.match(
+      /onReset=\{\(\) => setStructure\(structuredClone\(defaultStructure\)\)\}/u,
+    )?.[0];
+    expect(resetHandler).toBeDefined();
+    expect(resetHandler).not.toContain('adapter');
+  });
+
   it('maps external files and Overleaf checkpoints to safe renderer cards', () => {
     const staged = {
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',

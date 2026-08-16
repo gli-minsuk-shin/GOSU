@@ -49,6 +49,10 @@ type LayoutMetrics = Readonly<{
   artifactActions: ArtifactActionMetrics;
   contentScrollWidth: number;
   contentClientWidth: number;
+  structureFocus: Readonly<{
+    movedActionLabel: string;
+    removalTargetValue: string;
+  }>;
   narrow: Readonly<{
     content: RectMetrics;
     layout: RectMetrics;
@@ -143,9 +147,39 @@ async function exerciseLayout(window: BrowserWindow) {
         await waitFor(
           () => document.querySelector('.lecture-preview') &&
             document.querySelector('[aria-label="Hide lecture sessions"]') &&
-            document.querySelector('[aria-label="Hide lecture assistant"]'),
+            document.querySelector('[aria-label="Hide lecture assistant"]') &&
+            document.querySelector('[aria-label="Move Main concepts and evidence up"]'),
           'lecture_studio_layout_fixture_did_not_render',
         );
+        const moveStructureSection = document.querySelector(
+          '[aria-label="Move Main concepts and evidence up"]'
+        );
+        if (!(moveStructureSection instanceof HTMLButtonElement)) {
+          throw new Error('lecture_structure_move_action_missing');
+        }
+        moveStructureSection.focus();
+        moveStructureSection.click();
+        await waitFor(
+          () => document.activeElement?.getAttribute('aria-label') ===
+            'Move Main concepts and evidence up',
+          'lecture_structure_move_focus_not_preserved',
+        );
+        const movedActionLabel = document.activeElement?.getAttribute('aria-label') || '';
+        const removeStructureSection = document.querySelector(
+          '[aria-label="Remove Main concepts and evidence"]'
+        );
+        if (!(removeStructureSection instanceof HTMLButtonElement)) {
+          throw new Error('lecture_structure_remove_action_missing');
+        }
+        removeStructureSection.focus();
+        removeStructureSection.click();
+        await waitFor(
+          () => document.activeElement instanceof HTMLInputElement &&
+            document.activeElement.value === 'Background, definitions, and notation',
+          'lecture_structure_remove_focus_not_restored',
+        );
+        const removalTargetValue =
+          document.activeElement instanceof HTMLInputElement ? document.activeElement.value : '';
         const notesPdf = [...document.querySelectorAll('[role="tab"]')].find(
           (tab) => tab.textContent?.trim() === 'Notes PDF'
         );
@@ -325,6 +359,7 @@ async function exerciseLayout(window: BrowserWindow) {
           artifactActions: initialArtifactActions,
           contentScrollWidth: content.scrollWidth,
           contentClientWidth: content.clientWidth,
+          structureFocus: { movedActionLabel, removalTargetValue },
           narrow: {
             content: narrowContentRect,
             layout: narrowLayoutRect,
@@ -513,6 +548,14 @@ async function run() {
     invariant(
       metrics.contentScrollWidth <= metrics.contentClientWidth + 1,
       'lecture_studio_layout_overflowed_horizontally',
+    );
+    invariant(
+      metrics.structureFocus.movedActionLabel === 'Move Main concepts and evidence up',
+      'lecture_structure_move_focus_changed_rows',
+    );
+    invariant(
+      metrics.structureFocus.removalTargetValue === 'Background, definitions, and notation',
+      'lecture_structure_remove_focus_not_restored',
     );
     invariant(
       metrics.narrow.content.width >= 619 && metrics.narrow.content.width <= 721,
