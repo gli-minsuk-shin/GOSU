@@ -60,6 +60,7 @@ import {
   type LectureStudioRevision,
   type LectureStudioSummary,
   type LectureStudioTurnReceipt,
+  type LectureStudioAttachmentSnapshot,
   type ListLectureCandidatesInput,
   type ListLectureStudiosInput,
   type LectureStudioVersionCommand,
@@ -74,7 +75,14 @@ import type {
   ExperimentMetricPoint,
 } from '../shared/experiment-workspace-contracts';
 import type { LiteratureRecord } from '../shared/literature-contracts';
-import type { LectureExternalSourceService } from './lecture-external-source-service';
+import {
+  LectureExternalSourceError,
+  type LectureExternalSourceService,
+} from './lecture-external-source-service';
+import type {
+  LectureStudioAttachmentService,
+  PreparedLectureStudioAttachments,
+} from './lecture-studio-attachment-service';
 import type {
   ManuscriptCheckpointFileChunk,
   ManuscriptCheckpointFileList,
@@ -83,8 +91,10 @@ import type {
 import type { ProjectRecord, WorkspaceSnapshot } from '../shared/workspace-contracts';
 import {
   LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS,
+  LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER,
   LECTURE_STUDIO_SOURCE_MANIFEST_MAX_CHARACTERS,
   buildLectureStudioPrompt,
+  sanitizeLectureStudioCurrentDraftTurnAttachments,
   talkSlideBudget,
 } from './lecture-studio-prompt';
 import {
@@ -118,6 +128,60 @@ function lectureRevisionSource(revision: LectureStudioRevision, kind: 'lecture-n
 
 function lectureRevisionFormat(revision: LectureStudioRevision) {
   return revision.schemaVersion === 2 ? ('latex' as const) : ('markdown' as const);
+}
+
+const CANONICAL_CONTENT_BEGIN = '\n% GOSU-CONTENT-BEGIN\n';
+const CANONICAL_CONTENT_END = '\n% GOSU-CONTENT-END\n';
+
+function canonicalLectureBody(source: string) {
+  const start = source.indexOf(CANONICAL_CONTENT_BEGIN);
+  if (start < 0) return null;
+  const bodyStart = start + CANONICAL_CONTENT_BEGIN.length;
+  const end = source.indexOf(CANONICAL_CONTENT_END, bodyStart);
+  return end < 0 ? null : source.slice(bodyStart, end);
+}
+
+function retiredTurnAttachmentLabels(
+  previousRevision: LectureStudioRevision | null,
+  currentManifest: LectureSourceManifest,
+) {
+  if (!previousRevision || previousRevision.sourceManifest.schemaVersion !== 4) return [];
+  const currentAttachments =
+    currentManifest.schemaVersion === 4 ? currentManifest.turnAttachments : [];
+  const binding = (attachment: (typeof currentAttachments)[number]) =>
+    JSON.stringify([
+      attachment.format,
+      attachment.displayName,
+      attachment.sourceSha256,
+      attachment.contentSha256,
+    ]);
+  const currentBindingByLabel = new Map(
+    currentAttachments.map((attachment) => [attachment.sourceLabel, binding(attachment)]),
+  );
+  return previousRevision.sourceManifest.turnAttachments
+    .filter(
+      (attachment) => currentBindingByLabel.get(attachment.sourceLabel) !== binding(attachment),
+    )
+    .map((attachment) => attachment.sourceLabel);
+}
+
+function unchangedDraftRetainsRetiredAttachmentCitation(
+  previousRevision: LectureStudioRevision | null,
+  retiredLabels: readonly string[],
+  notesBody: string,
+  slidesBody: string,
+) {
+  if (!previousRevision || previousRevision.schemaVersion !== 2 || retiredLabels.length === 0) {
+    return false;
+  }
+  const previousNotesBody = canonicalLectureBody(previousRevision.lectureNotesLatex);
+  const previousSlidesBody = canonicalLectureBody(previousRevision.slidesLatex);
+  const hasRetiredCitation = (body: string) =>
+    retiredLabels.some((label) => body.includes(`[${label}]`));
+  return (
+    (previousNotesBody === notesBody && hasRetiredCitation(notesBody)) ||
+    (previousSlidesBody === slidesBody && hasRetiredCitation(slidesBody))
+  );
 }
 
 export type LectureExperimentMetricTail = Readonly<{
@@ -401,6 +465,7 @@ type TurnRequest = Readonly<{
   requestedModelId: string | null;
   reasoningOptionId: string | null;
   message: string | null;
+  attachmentIds: readonly string[];
 }>;
 
 const LECTURE_STUDIO_MAX_METRICS_PER_IDEA = 64;
@@ -556,6 +621,59 @@ function sha256(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
+function sourceManifestWithTurnAttachments(
+  base: LectureSourceManifest,
+  attachments: readonly LectureStudioAttachmentSnapshot[],
+) {
+  if (attachments.length === 0) return base;
+  const manuscripts = base.schemaVersion === 1 ? [] : base.manuscripts;
+  const externalSources =
+    base.schemaVersion === 3 || base.schemaVersion === 4 ? base.externalSources : [];
+  const build = (perAttachmentCharacters: number) =>
+    LectureSourceManifestSchema.parse({
+      schemaVersion: 4,
+      selectedProjectIds: base.selectedProjectIds,
+      literature: base.literature,
+      experiments: base.experiments,
+      manuscripts,
+      externalSources,
+      turnAttachments: attachments.map((attachment) => {
+        const content = safeCharacterSlice(
+          attachment.content,
+          0,
+          Math.min(attachment.content.length, Math.max(2, perAttachmentCharacters)),
+        );
+        return {
+          ...attachment,
+          content,
+          contentSha256: sha256(content),
+          extractedCharacters: content.length,
+          truncated: attachment.truncated || content.length < attachment.content.length,
+        };
+      }),
+    });
+  const maximum = Math.max(...attachments.map((attachment) => attachment.content.length));
+  const complete = build(maximum);
+  if (JSON.stringify(complete).length <= LECTURE_STUDIO_SOURCE_MANIFEST_MAX_CHARACTERS) {
+    return complete;
+  }
+  let low = 1;
+  let high = maximum;
+  let accepted: LectureSourceManifest | null = null;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = build(middle);
+    if (JSON.stringify(candidate).length <= LECTURE_STUDIO_SOURCE_MANIFEST_MAX_CHARACTERS) {
+      accepted = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  if (!accepted) throw new LectureStudioServiceError('lecture_context_too_large');
+  return accepted;
+}
+
 function safeCharacterSlice(value: string, start: number, end?: number) {
   let safeStart = Math.max(0, Math.min(start, value.length));
   let safeEnd = Math.max(safeStart, Math.min(end ?? value.length, value.length));
@@ -685,6 +803,7 @@ export class LectureStudioService {
         LectureExternalSourceService,
         'claim' | 'discard' | 'snapshots' | 'purgeStudio' | 'rollbackClaim'
       >;
+      attachments?: Pick<LectureStudioAttachmentService, 'prepare'>;
       workspace: LectureStudioWorkspace;
       artifacts: LectureStudioArtifactWriter;
       codex: LectureStudioCodex;
@@ -973,7 +1092,7 @@ export class LectureStudioService {
 
   async generate(input: GenerateLectureStudioInput): Promise<LectureStudioTurnReceipt> {
     const command = GenerateLectureStudioInputSchema.parse(input);
-    return this.runTurn({ ...command, message: null });
+    return this.runTurn({ ...command, message: null, attachmentIds: [] });
   }
 
   async updateGenerationBrief(
@@ -1100,7 +1219,7 @@ export class LectureStudioService {
 
   async send(input: SendLectureStudioMessageInput): Promise<LectureStudioTurnReceipt> {
     const command = SendLectureStudioMessageInputSchema.parse(input);
-    return this.runTurn(command);
+    return this.runTurn({ ...command, attachmentIds: command.attachmentIds ?? [] });
   }
 
   async compilePdf(input: CompileLectureStudioPdfInput): Promise<LectureStudioPdfPreview> {
@@ -1419,6 +1538,17 @@ export class LectureStudioService {
       throw this.normalizeArtifactError(error);
     }
 
+    let preparedAttachments: PreparedLectureStudioAttachments | null = null;
+    if (request.attachmentIds.length > 0) {
+      if (!this.dependencies.attachments) {
+        throw new LectureExternalSourceError('lecture_external_source_expired');
+      }
+      preparedAttachments = await this.dependencies.attachments.prepare(
+        current,
+        request.attachmentIds,
+      );
+    }
+
     const attemptId = randomUUID();
     const startedAt = this.now().toISOString();
     const attempt = LectureStudioAttemptSchema.parse({
@@ -1448,6 +1578,7 @@ export class LectureStudioService {
           attemptId,
           revision: null,
           invocation: null,
+          ...(preparedAttachments ? { attachments: preparedAttachments.cards } : {}),
           createdAt: startedAt,
           completedAt: startedAt,
         })
@@ -1464,6 +1595,7 @@ export class LectureStudioService {
         attempt,
       });
     } catch (error) {
+      await preparedAttachments?.rollback().catch(() => undefined);
       throw this.normalizeStorageError(error);
     }
     if (!generating) throw new LectureStudioServiceError('lecture_version_conflict');
@@ -1488,7 +1620,7 @@ export class LectureStudioService {
     let pendingArtifactInput:
       Parameters<LectureStudioArtifactWriter['saveRevisionArtifacts']>[0] | null = null;
     try {
-      const [sourceManifest, previousRevision, messages, cwd] = await Promise.all([
+      const [baseSourceManifest, previousRevision, messages, cwd] = await Promise.all([
         this.resolveSourceManifest(
           generating.sourceProjectIds,
           generating.sourceSelection,
@@ -1499,6 +1631,11 @@ export class LectureStudioService {
         this.dependencies.storage.listLectureStudioMessages(generating.id, 12),
         this.dependencies.prepareDirectory(generating.outputProjectId),
       ]);
+      const sourceManifest = sourceManifestWithTurnAttachments(
+        baseSourceManifest,
+        preparedAttachments?.snapshots ?? [],
+      );
+      const retiredAttachmentLabels = retiredTurnAttachmentLabels(previousRevision, sourceManifest);
       this.throwIfCancelled(active);
       const sourceManifestSha256 = sha256(JSON.stringify(sourceManifest));
       this.publishProgress(active, 'starting_model');
@@ -1668,6 +1805,22 @@ export class LectureStudioService {
         );
       };
 
+      const previousDraft = previousRevision
+        ? {
+            sourceFormat:
+              previousRevision.schemaVersion === 2
+                ? ('latex' as const)
+                : ('legacy-markdown' as const),
+            lectureNotes:
+              previousRevision.schemaVersion === 2
+                ? previousRevision.lectureNotesLatex
+                : previousRevision.lectureNotesMarkdown,
+            slides:
+              previousRevision.schemaVersion === 2
+                ? previousRevision.slidesLatex
+                : previousRevision.slidesMarkdown,
+          }
+        : null;
       const initialPrompt = buildLectureStudioPrompt({
         mode: previousRevision ? 'revision' : 'initial',
         title: generating.title,
@@ -1675,18 +1828,8 @@ export class LectureStudioService {
         durationMinutes: generating.durationMinutes,
         generationBrief: generating.generationBrief,
         sourceManifest,
-        currentDraft: previousRevision
-          ? {
-              sourceFormat: previousRevision.schemaVersion === 2 ? 'latex' : 'legacy-markdown',
-              lectureNotes:
-                previousRevision.schemaVersion === 2
-                  ? previousRevision.lectureNotesLatex
-                  : previousRevision.lectureNotesMarkdown,
-              slides:
-                previousRevision.schemaVersion === 2
-                  ? previousRevision.slidesLatex
-                  : previousRevision.slidesMarkdown,
-            }
+        currentDraft: previousDraft
+          ? sanitizeLectureStudioCurrentDraftTurnAttachments(previousDraft, retiredAttachmentLabels)
           : null,
         recentMessages: messages
           .filter((message) => message.id !== userMessage?.id && message.status === 'complete')
@@ -1701,7 +1844,13 @@ export class LectureStudioService {
       let output;
       try {
         this.publishProgress(active, 'validating_output');
-        output = this.parseOutput(execution.terminal.text, generating, sourceManifest);
+        output = this.parseOutput(
+          execution.terminal.text,
+          generating,
+          sourceManifest,
+          previousRevision,
+          retiredAttachmentLabels,
+        );
       } catch (error) {
         if (!(error instanceof LectureOutputValidationError)) throw error;
         await recordValidation('initial', error);
@@ -1710,7 +1859,13 @@ export class LectureStudioService {
         execution = await executeCodexTurn(correctionPrompt(error, generating));
         try {
           this.publishProgress(active, 'validating_output');
-          output = this.parseOutput(execution.terminal.text, generating, sourceManifest);
+          output = this.parseOutput(
+            execution.terminal.text,
+            generating,
+            sourceManifest,
+            previousRevision,
+            retiredAttachmentLabels,
+          );
         } catch (correctionError) {
           if (correctionError instanceof LectureOutputValidationError) {
             await recordValidation('correction', correctionError);
@@ -1839,6 +1994,7 @@ export class LectureStudioService {
       await Promise.resolve(
         this.dependencies.artifacts.confirmRevisionArtifacts(artifactInput),
       ).catch(() => undefined);
+      await preparedAttachments?.commit().catch(() => undefined);
       active.terminal = true;
       this.publish(stored);
       return LectureStudioTurnReceiptSchema.parse({
@@ -1848,6 +2004,7 @@ export class LectureStudioService {
       });
     } catch (error) {
       active.terminal = true;
+      await preparedAttachments?.rollback().catch(() => undefined);
       if (pendingArtifactInput) {
         await Promise.resolve(
           this.dependencies.artifacts.rollbackRevisionArtifacts(pendingArtifactInput),
@@ -1889,6 +2046,8 @@ export class LectureStudioService {
     text: string | null,
     studio: LectureStudio,
     sourceManifest: LectureSourceManifest,
+    previousRevision: LectureStudioRevision | null,
+    retiredAttachmentLabels: readonly string[],
   ) {
     if (!text) throw new LectureOutputValidationError('response_json');
     let parsed: unknown;
@@ -1931,6 +2090,22 @@ export class LectureStudioService {
     if (latexDiagnostics.length > 0 || notesBody === null || slidesBody === null) {
       throw new LectureOutputValidationError('latex_grammar', latexDiagnostics);
     }
+    if (
+      notesBody.includes(LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER) ||
+      slidesBody.includes(LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER)
+    ) {
+      throw new LectureOutputValidationError('citation_mapping');
+    }
+    if (
+      unchangedDraftRetainsRetiredAttachmentCitation(
+        previousRevision,
+        retiredAttachmentLabels,
+        notesBody,
+        slidesBody,
+      )
+    ) {
+      throw new LectureOutputValidationError('citation_mapping');
+    }
     if (!findLectureSourcesUsedSection(notesBody)) {
       throw new LectureOutputValidationError('citation_mapping');
     }
@@ -1942,16 +2117,21 @@ export class LectureStudioService {
     }
     const manuscriptSources = sourceManifest.schemaVersion === 1 ? [] : sourceManifest.manuscripts;
     const externalSources =
-      sourceManifest.schemaVersion === 3 ? sourceManifest.externalSources : [];
+      sourceManifest.schemaVersion === 3 || sourceManifest.schemaVersion === 4
+        ? sourceManifest.externalSources
+        : [];
+    const turnAttachments =
+      sourceManifest.schemaVersion === 4 ? sourceManifest.turnAttachments : [];
     const allowedLabels = new Set([
       ...sourceManifest.literature.map((source) => source.sourceLabel),
       ...sourceManifest.experiments.map((source) => source.sourceLabel),
       ...manuscriptSources.map((source) => source.sourceLabel),
       ...externalSources.map((source) => source.sourceLabel),
+      ...turnAttachments.map((source) => source.sourceLabel),
     ]);
     const usedLabels = new Set<string>();
     for (const latex of [notesBody, slidesBody]) {
-      const citations = [...latex.matchAll(/\[((?:P|E|M|F)\d+)\]/gu)].map((match) => match[1]!);
+      const citations = [...latex.matchAll(/\[((?:P|E|M|F|A)\d+)\]/gu)].map((match) => match[1]!);
       if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
         throw new LectureOutputValidationError('citation_mapping');
       }
@@ -1967,7 +2147,7 @@ export class LectureStudioService {
       ...slidesBody.matchAll(/\\begin\s*\{\s*frame\s*\}[\s\S]*?\\end\s*\{\s*frame\s*\}/gu),
     ].map((match) => match[0]);
     for (const slide of slides) {
-      const citations = [...slide.matchAll(/\[((?:P|E|M|F)\d+)\]/gu)].map((match) => match[1]!);
+      const citations = [...slide.matchAll(/\[((?:P|E|M|F|A)\d+)\]/gu)].map((match) => match[1]!);
       if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
         throw new LectureOutputValidationError('citation_mapping');
       }

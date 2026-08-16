@@ -8,6 +8,10 @@ import {
 } from '../shared/lecture-external-source-contracts';
 import { ImportLectureOverleafSourceInputSchema } from '../shared/lecture-overleaf-source-contracts';
 import {
+  ChooseLectureStudioAttachmentsInputSchema,
+  ReleaseLectureStudioAttachmentInputSchema,
+} from '../shared/lecture-studio-attachment-contracts';
+import {
   CancelLectureStudioInputSchema,
   CompileLectureStudioPdfInputSchema,
   CreateLectureStudioInputSchema,
@@ -35,6 +39,7 @@ import {
   type LectureOverleafSourceService,
 } from './lecture-overleaf-source-service';
 import { ManuscriptWorkspaceServiceError } from './manuscript-workspace-service';
+import type { LectureStudioAttachmentService } from './lecture-studio-attachment-service';
 
 type RegisterHandler = (channel: string, listener: (...arguments_: unknown[]) => unknown) => void;
 
@@ -43,6 +48,7 @@ export function registerLectureStudioIpc(
   service: LectureStudioService,
   externalSources: LectureExternalSourceService,
   overleafSources: LectureOverleafSourceService,
+  attachments: LectureStudioAttachmentService,
   reportUnexpected: (error: unknown) => void = () => undefined,
 ) {
   register(LECTURE_STUDIO_IPC_CHANNELS.list, (input) =>
@@ -98,6 +104,22 @@ export function registerLectureStudioIpc(
       input,
       ImportLectureOverleafSourceInputSchema,
       (command) => overleafSources.importOverleaf(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.chooseAttachments, (input) =>
+    withInput(
+      input,
+      ChooseLectureStudioAttachmentsInputSchema,
+      (command) => attachments.choose(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.releaseAttachment, (input) =>
+    withInput(
+      input,
+      ReleaseLectureStudioAttachmentInputSchema,
+      (command) => attachments.release(command),
       reportUnexpected,
     ),
   );

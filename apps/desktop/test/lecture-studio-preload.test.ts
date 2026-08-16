@@ -125,6 +125,26 @@ describe('Lecture Studio preload bridge', () => {
     );
   });
 
+  it('maps Lecture Assistant attachment actions to fixed Studio-scoped channels', async () => {
+    const studioId = '11111111-1111-4111-8111-111111111111';
+    const attachmentId = '22222222-2222-4222-8222-222222222222';
+    electron.ipcRenderer.invoke.mockResolvedValue({ ok: true, value: [] });
+
+    await api.lectureStudio.chooseAttachments({ studioId });
+    await api.lectureStudio.releaseAttachment({ studioId, attachmentId });
+
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      1,
+      LECTURE_STUDIO_IPC_CHANNELS.chooseAttachments,
+      { studioId },
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      2,
+      LECTURE_STUDIO_IPC_CHANNELS.releaseAttachment,
+      { studioId, attachmentId },
+    );
+  });
+
   it('maps revision-bound export, open, and reveal actions to fixed channels', async () => {
     const binding = {
       studioId: '11111111-1111-4111-8111-111111111111',

@@ -78,6 +78,14 @@ authoritative Literature·Experiment repository와 Manuscript service에서 다�
   제거한다. SQL purge 뒤 filesystem 정리가 실패하면 다음 startup이 active·trashed Studio identity와 exact
   managed manifest를 대조해 orphan Studio/claim directory를 bounded reconciliation한다. 사용자의 원본 file은
   건드리지 않는다.
+- revision이 있는 Lecture assistant의 한 edit에는 `.tex/.md/.markdown/.pdf`를 최대 5개 첨부할 수 있다.
+  Renderer는 Studio ID와 opaque attachment ID만 보내고 Main이 output project와 lifecycle/version을 다시
+  검증한다. picker 뒤 상태가 바뀌면 새 copy를 폐기하며 snapshot/release는 같은 keyed queue에서 직렬화한다.
+  send는 bytes·source SHA·extraction SHA가 일치하는 frozen snapshot만 사용하고 lease를 갱신한다. 성공 revision은
+  v4 manifest에 `[A1]…[A5]` bounded content와 hash를 보존하며, SQL commit 뒤에만 staged original을 consume한다.
+  실패·cancel은 staging을 보존해 같은 ID로 retry할 수 있고 다음 edit에는 자동 상속하지 않는다. 성공 user
+  message에는 path/body/Studio ID 없는 bounded filename·format·hash receipt만 남는다. 다음 edit prompt는 이전
+  `[A#]` 인용·Sources mapping과 과거 chat의 attachment label을 중립화해 ordinal 재사용이 evidence를 바꾸지 못하게 한다.
 - Overleaf Git URL은 새로운 live-source path를 만들지 않고 Manuscript의 create/connect/fetch-checkpoint
   boundary를 재사용한다. personal token은 Settings fixed IPC에서만 입력되고 Lecture import
   contract에는 token field가 없다. 새 link는 Settings token의 immutable·workspace-bound encrypted snapshot을
@@ -113,6 +121,9 @@ SQLCipher revision을 commit한다. 한쪽이라도 컴파일되지 않으면 �
 전용 Lecture chat의 user/assistant message는 Lecture-owned SQLCipher table에 저장한다. Project Chat session,
 queue, profile, tool grant와 message history는 읽거나 수정하지 않는다. 수정 요청 하나가 성공할 때마다 새
 immutable revision을 만들고 과거 revision을 덮어쓰지 않는다.
+한-turn 첨부가 있는 user message는 strict `attachments_json` receipt를 함께 저장한다. bounded extracted text는
+모델에 전달된 성공 revision의 v4 provenance로 남고 original path/file은 남지 않는다. assistant message나
+중복 attachment ID는 이 field를 가질 수 없다.
 
 일반 desktop layout은 접을 수 있는 Studio session rail, 항상 중앙에 남는 document preview, 접을 수 있는
 오른쪽 Lecture assistant rail의 3열이다. 사용자는 notes·slides·PDF를 보면서 오른쪽 chat으로 수정하며 rail
@@ -181,7 +192,7 @@ prompt history에서 제외한다. Main은 structured response를 저장하기 �
 
 - notes body는 `Sources used` 또는 starred section, slides body는 allowlisted Beamer frame을 가지며 GOSU가 title/frame
   document wrapper를 소유한다.
-- substantive frame마다 해당 frame 안의 `[P#]`, `[E#]`, `[M#]` 또는 `[F#]` evidence label을 요구한다.
+- substantive frame마다 해당 frame 안의 `[P#]`, `[E#]`, `[M#]`, `[F#]` 또는 `[A#]` evidence label을 요구한다.
 - notes의 Sources used mapping과 모든 인용 label이 frozen manifest에 존재한다.
 - 임의 citation syntax, raw HTML/Markdown structure, document wrapper, raw TeX comment, 외부 file/network
   command와 allowlist 밖 command/environment를 거부한다.

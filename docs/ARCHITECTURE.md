@@ -1033,6 +1033,25 @@ startup cleanup으로 만료 후 정리한다. recoverable Lecture Trash 동안 
 정리가 일시 실패해도 다음 startup이 active·trashed Studio identity 전체와 managed manifest를 대조해 orphan
 Studio copy와 중단된 claim directory를 bounded scan으로 재정리한다.
 
+이미 revision이 있는 Studio의 Lecture assistant는 한 편집에만 쓰는 `.tex`, `.md`/`.markdown`, `.pdf`
+첨부를 최대 5개 받는다. Renderer는 Studio ID와 Main-generated opaque attachment ID만 보내고 file path,
+bytes, 추출 본문이나 project scope를 정하지 않는다. Main은 현재 Studio에서 output project를 다시 resolve한
+뒤 위와 같은 authenticated `0700/0600` staging·UTF-8/PDF selectable-text extraction을 재사용하며, picker가
+열린 사이 Studio version·상태가 바뀌면 새 copy를 폐기한다. send 직전 keyed source-set queue 안에서 exact
+bytes·source SHA·extraction SHA를 다시 검증해 immutable in-memory snapshot을 만들고 lease를 1시간 갱신한다.
+release와 snapshot은 직렬화되어 release가 먼저면 send가 fail closed하고, snapshot이 먼저면 이후 원본 copy를
+지워도 active turn의 frozen evidence는 바뀌지 않는다.
+
+첨부 snapshot은 해당 turn의 v4 source manifest에 `[A1]`부터 순서대로 들어가며 serialized manifest 전체는
+기존 120,000자 한도를 지킨다. prompt에 보낸 bounded content와 revision에 저장한 content·hash가 동일하고,
+assistant output의 `[A#]` 인용도 다른 source label과 같은 gate를 통과해야 한다. 성공한 SQLCipher revision
+commit 뒤에만 staged original copy를 consume하고, cleanup 실패는 성공을 되돌리지 않으며 TTL cleanup이
+처리한다. provider·validator·compile·artifact·DB 실패와 cancel은 copy를 보존해 같은 composer ID로 재시도할
+수 있다. 다음 edit에는 자동 상속하지 않으므로 다시 첨부해야 한다. 성공 user message에는 path/body 없는
+파일명·format·크기·hash receipt만 남고, bounded extracted text는 그 성공 revision의 provenance로 보존됨을
+UI가 명시한다. 다음 edit의 prompt copy에서는 이전 `[A#]` 인용과 Sources mapping을 retired marker로 치환하고
+과거 chat의 모든 `[A#]`도 중립화해, 새 attachment가 같은 ordinal을 받아도 이전 evidence로 오인되지 않게 한다.
+
 Lecture composer의 Overleaf Git URL은 별도 live reader가 아니다. 기존 Manuscript module의 fixed
 `create → saved-personal-token snapshot → connect → fetch checkpoint` port를 호출해 exact captured
 checkpoint를 만든 뒤 일반 Manuscript `[M#]` source로 선택한다. personal token은 Settings의
@@ -1079,7 +1098,7 @@ correction validation의 고정 category와 notes/slides별 reason, token 개수
 thread/turn ID와 filesystem path는 attempt row·Renderer·Hosted Sync·telemetry 어디에도 넣지 않는다.
 
 structured output은 고정 JSON field의 notes/article LaTeX body와 Beamer frame body, 알려진
-`[P#]|[E#]|[M#]|[F#]` label, substantive frame별 evidence label, notes의 `Sources used` 또는 starred section,
+`[P#]|[E#]|[M#]|[F#]|[A#]` label, substantive frame별 evidence label, notes의 `Sources used` 또는 starred section,
 duration 또는 사용자가 명시한 compiled slide page target을 검증한다. GOSU가 별도 title frame을 추가하므로
 slide target은 그 title을 포함한 정확한 PDF page 수 gate다. notes page target은 typography에 따른 근사
 지시다. authoring policy v5는 JSON 안의 모든 LaTeX backslash를 `\\`로 encode하도록 요구한다. 새 generated
@@ -1135,6 +1154,9 @@ assistant message·revision·Studio completion 또는 failure와 같은 transact
 Studio detail은 최신 attempt 하나만 반환하며 attempt 도입 전 Studio는 `null`로 호환한다. 성공 attempt와
 현재 running attempt는 보존하고, revision이나 message를 만들지 못한 반복 실패가 DB를 무한히 키우지 않도록
 각 Studio의 `failed|interrupted` attempt는 시작 시각과 row 순서 기준 최신 100건만 유지한다.
+user message의 optional attachment receipt는 bounded `attachments_json`에만 저장하며 strict card schema가
+path·본문·Studio ID·중복 attachment ID와 assistant-role attachment를 거부한다. 과거 row의 `null`은 첨부 없음으로
+그대로 읽힌다.
 
 Lecture 생성과 수정은 provider `model/list`에서 발견한 opaque model ID와 해당 model의 native reasoning
 option을 Studio별 UI preference로 선택한다. 저장된 선택이 없는 새 Studio는 Settings의 Codex default를 한 번

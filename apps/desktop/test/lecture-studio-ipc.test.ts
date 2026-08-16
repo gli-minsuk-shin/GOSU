@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { LectureExternalSourceService } from '../src/main/lecture-external-source-service';
 import type { LectureOverleafSourceService } from '../src/main/lecture-overleaf-source-service';
+import type { LectureStudioAttachmentService } from '../src/main/lecture-studio-attachment-service';
 import { registerLectureStudioIpc } from '../src/main/lecture-studio-ipc';
 import {
   LectureStudioServiceError,
@@ -30,14 +31,19 @@ function fixture(
     importOverleaf: vi.fn(async () => undefined as never),
     ...overleafSourceOverrides,
   } as LectureOverleafSourceService;
+  const attachments = {
+    choose: vi.fn(async () => []),
+    release: vi.fn(async () => ({ released: true as const })),
+  } as unknown as LectureStudioAttachmentService;
   registerLectureStudioIpc(
     (channel, handler) => handlers.set(channel, handler),
     service as LectureStudioService,
     externalSources,
     overleafSources,
+    attachments,
     reportUnexpected,
   );
-  return { handlers, reportUnexpected, externalSources, overleafSources };
+  return { handlers, reportUnexpected, externalSources, overleafSources, attachments };
 }
 
 describe('Lecture Studio IPC boundary', () => {
@@ -53,6 +59,8 @@ describe('Lecture Studio IPC boundary', () => {
         LECTURE_STUDIO_IPC_CHANNELS.removeStagedExternalSource,
         LECTURE_STUDIO_IPC_CHANNELS.discardExternalSourceSet,
         LECTURE_STUDIO_IPC_CHANNELS.importOverleaf,
+        LECTURE_STUDIO_IPC_CHANNELS.chooseAttachments,
+        LECTURE_STUDIO_IPC_CHANNELS.releaseAttachment,
         LECTURE_STUDIO_IPC_CHANNELS.create,
         LECTURE_STUDIO_IPC_CHANNELS.updateGenerationBrief,
         LECTURE_STUDIO_IPC_CHANNELS.generate,
@@ -100,6 +108,36 @@ describe('Lecture Studio IPC boundary', () => {
       }),
     ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
     expect(updateGenerationBrief).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes only Studio-scoped attachment picker and release commands', async () => {
+    const { handlers, attachments } = fixture({});
+    const studioId = randomUUID();
+    const attachmentId = randomUUID();
+
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.chooseAttachments)?.({ studioId });
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.releaseAttachment)?.({
+      studioId,
+      attachmentId,
+    });
+
+    expect(attachments.choose).toHaveBeenCalledWith({ studioId });
+    expect(attachments.release).toHaveBeenCalledWith({ studioId, attachmentId });
+    await expect(
+      handlers.get(LECTURE_STUDIO_IPC_CHANNELS.chooseAttachments)?.({
+        studioId,
+        projectId: randomUUID(),
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
+    await expect(
+      handlers.get(LECTURE_STUDIO_IPC_CHANNELS.releaseAttachment)?.({
+        studioId,
+        attachmentId,
+        path: '/private/reference.tex',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
+    expect(attachments.choose).toHaveBeenCalledTimes(1);
+    expect(attachments.release).toHaveBeenCalledTimes(1);
   });
 
   it('routes only exact staged-file and Overleaf source commands', async () => {

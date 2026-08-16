@@ -62,6 +62,7 @@ import { LiteratureService } from './literature-service';
 import { registerLectureStudioIpc } from './lecture-studio-ipc';
 import { createLectureArtifactPlatform } from './lecture-artifact-platform';
 import { LectureStudioService } from './lecture-studio-service';
+import { LectureStudioAttachmentService } from './lecture-studio-attachment-service';
 import { LectureDocumentCompiler } from './lecture-document-compiler';
 import {
   LectureExternalSourceManifestAuthenticator,
@@ -319,11 +320,16 @@ const lectureExternalSources = new LectureExternalSourceService({
   }),
 });
 const lectureOverleafSources = new LectureOverleafSourceService(manuscriptWorkspace);
+const lectureStudioAttachments = new LectureStudioAttachmentService({
+  externalSources: lectureExternalSources,
+  getStudio: (studioId) => database.getLectureStudio(studioId),
+});
 const lectureStudio = new LectureStudioService({
   storage: database,
   sources: database,
   manuscripts: manuscriptWorkspace,
   externalSources: lectureExternalSources,
+  attachments: lectureStudioAttachments,
   workspace,
   artifacts: researchNotes,
   codex,
@@ -583,6 +589,7 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     lectureStudio,
     lectureExternalSources,
     lectureOverleafSources,
+    lectureStudioAttachments,
     reportUnexpectedWorkspaceError,
   );
   registerAgentAddOnIpc(

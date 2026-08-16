@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -21,6 +22,12 @@ import type {
   ImportLectureOverleafSourceInput,
   LectureOverleafSourceReceipt,
 } from '../../shared/lecture-overleaf-source-contracts';
+import {
+  LECTURE_STUDIO_MAX_ATTACHMENTS,
+  type ChooseLectureStudioAttachmentsInput,
+  type LectureStudioAttachmentCard,
+  type ReleaseLectureStudioAttachmentInput,
+} from '../../shared/lecture-studio-attachment-contracts';
 import {
   LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES,
   LECTURE_STUDIO_MAX_LITERATURE_SOURCES,
@@ -108,6 +115,10 @@ export interface LectureStudioViewAdapter {
   importOverleaf: (
     input: ImportLectureOverleafSourceInput,
   ) => Promise<LectureOverleafSourceReceipt>;
+  chooseAttachments: (
+    input: ChooseLectureStudioAttachmentsInput,
+  ) => Promise<readonly LectureStudioAttachmentCard[]>;
+  releaseAttachment: (input: ReleaseLectureStudioAttachmentInput) => Promise<{ released: true }>;
   create: (input: CreateLectureStudioInput) => Promise<LectureStudio>;
   updateGenerationBrief: (input: UpdateLectureStudioGenerationBriefInput) => Promise<LectureStudio>;
   generate: (input: GenerateLectureStudioInput) => Promise<LectureStudioTurnReceipt>;
@@ -127,6 +138,101 @@ export interface LectureStudioViewAdapter {
     input: RevealLectureStudioArtifactInput,
   ) => Promise<LectureStudioArtifactActionReceipt>;
   onEvent: (listener: (event: LectureStudioEvent) => void) => () => void;
+}
+
+export function shouldAcceptLectureAttachmentPickerResult(
+  mounted: boolean,
+  pickerStudioId: string,
+  currentStudioId: string,
+  pickerStudioVersion: number,
+  currentStudioVersion: number,
+  pickerGeneration: number,
+  currentGeneration: number,
+  currentlyEligible: boolean,
+) {
+  return (
+    mounted &&
+    pickerStudioId === currentStudioId &&
+    pickerStudioVersion === currentStudioVersion &&
+    pickerGeneration === currentGeneration &&
+    currentlyEligible
+  );
+}
+
+export function canEditLectureStudioRevision(
+  studio: Pick<LectureStudio, 'status' | 'currentRevision' | 'activeAttemptId'>,
+) {
+  return (
+    (studio.status === 'ready' || studio.status === 'failed') &&
+    studio.currentRevision > 0 &&
+    studio.activeAttemptId === null
+  );
+}
+
+export function mergeLectureStudioAttachments(
+  current: readonly LectureStudioAttachmentCard[],
+  selected: readonly LectureStudioAttachmentCard[],
+): Readonly<{
+  attachments: readonly LectureStudioAttachmentCard[];
+  rejected: readonly LectureStudioAttachmentCard[];
+}> {
+  const seenIds = new Set(current.map((attachment) => attachment.id));
+  const additions: LectureStudioAttachmentCard[] = [];
+  for (const attachment of selected) {
+    if (seenIds.has(attachment.id)) continue;
+    seenIds.add(attachment.id);
+    additions.push(attachment);
+  }
+  const remaining = Math.max(0, LECTURE_STUDIO_MAX_ATTACHMENTS - current.length);
+  return {
+    attachments: [...current, ...additions.slice(0, remaining)],
+    rejected: additions.slice(remaining),
+  };
+}
+
+export function lectureStudioAttachmentsAfterSend(
+  current: readonly LectureStudioAttachmentCard[],
+  sentAttachmentIds: ReadonlySet<string>,
+  accepted: boolean,
+) {
+  if (!accepted) return current;
+  return current.filter((attachment) => !sentAttachmentIds.has(attachment.id));
+}
+
+export function lectureStudioAttachmentsAfterReleaseFailure(
+  current: readonly LectureStudioAttachmentCard[],
+  releasedAttachment: LectureStudioAttachmentCard,
+  previousIndex: number,
+  error: unknown,
+) {
+  const errorCodes = lectureAttachmentErrorCodes(error);
+  if (
+    errorCodes.includes('lecture_external_source_expired') ||
+    errorCodes.includes('lecture_external_source_not_found') ||
+    errorCodes.includes('lecture_external_source_corrupt') ||
+    current.some((attachment) => attachment.id === releasedAttachment.id)
+  ) {
+    return current;
+  }
+  const insertionIndex = Math.max(0, Math.min(previousIndex, current.length));
+  return [
+    ...current.slice(0, insertionIndex),
+    releasedAttachment,
+    ...current.slice(insertionIndex),
+  ];
+}
+
+function lectureAttachmentErrorCodes(error: unknown): readonly string[] {
+  return error instanceof Error ? (error.message.match(/[a-z][a-z0-9_]+/gu) ?? []) : [];
+}
+
+export function shouldDiscardLectureStudioAttachments(error: unknown) {
+  const codes = lectureAttachmentErrorCodes(error);
+  return (
+    codes.includes('lecture_external_source_expired') ||
+    codes.includes('lecture_external_source_not_found') ||
+    codes.includes('lecture_external_source_corrupt')
+  );
 }
 
 export interface LectureStudioViewProps {
@@ -485,15 +591,18 @@ export function lectureErrorCodeMessage(code: string) {
     lecture_external_source_unsupported: 'Choose a LaTeX, Markdown, or PDF file.',
     lecture_external_source_too_large: 'Each source file must be 20 MB or smaller.',
     lecture_external_source_total_too_large:
-      'These added files exceed the 50 MB local source limit. Remove a source and try again.',
-    lecture_external_source_too_many: 'Add no more than 12 local source files.',
+      'These files contain too much data to use together. Remove one or choose smaller files.',
+    lecture_external_source_too_many:
+      'The local source limit was reached. Remove a file before adding another.',
     lecture_external_source_encrypted: 'Password-protected PDF sources cannot be read yet.',
     lecture_external_source_extraction_failed:
       'GOSU could not extract readable evidence from that PDF.',
     lecture_external_source_not_found:
       'That temporary file source expired or was removed. Add it again.',
     lecture_external_source_expired:
-      'That temporary file source expired before the lecture was created. Add it again.',
+      'That temporary file source expired before it could be used. Add it again.',
+    lecture_external_source_scope_mismatch:
+      'That temporary file belongs to another Lecture Studio or is no longer editable. Add it here again.',
     lecture_external_source_corrupt:
       'A staged source changed unexpectedly, so GOSU stopped before using it. Add it again.',
     lecture_overleaf_source_conflict:
@@ -1080,12 +1189,22 @@ export function LectureStudioView({
                 saveLectureStudioModelSelection(window.localStorage, selectedStudio.id, next);
               }}
               onRefreshModels={onRefreshModels}
+              onChooseAttachments={() => adapter.chooseAttachments({ studioId: selectedStudio.id })}
+              onReleaseAttachment={(studioId, attachment) =>
+                adapter.releaseAttachment({
+                  studioId,
+                  attachmentId: attachment.id,
+                })
+              }
+              onAttachmentError={(attachmentError) =>
+                setError(lectureErrorMessage(attachmentError))
+              }
               draft={draftsByStudioId[selectedStudio.id] ?? draftStore.read(selectedStudio.id)}
               onDraftChange={(draft) => {
                 draftStore.write(selectedStudio.id, draft);
                 setDraftsByStudioId((current) => ({ ...current, [selectedStudio.id]: draft }));
               }}
-              onSend={async (message) => {
+              onSend={async (message, attachmentIds) => {
                 markStudioBusy(selectedStudio.id, true);
                 setError(null);
                 setNotice('');
@@ -1096,6 +1215,7 @@ export function LectureStudioView({
                     message,
                     requestedModelId: modelSelection.modelId,
                     reasoningOptionId: modelSelection.reasoningOptionId,
+                    ...(attachmentIds.length > 0 ? { attachmentIds: [...attachmentIds] } : {}),
                   });
                   if (selectedStudioIdRef.current === selectedStudio.id) {
                     setNotice('The requested edit was saved as a new Research Notes revision.');
@@ -2750,6 +2870,25 @@ function StudioPreview({
   );
 }
 
+function LectureAttachmentIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="m20.5 11.5-8.7 8.7a6 6 0 0 1-8.5-8.5l9.1-9.1a4 4 0 1 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" />
+    </svg>
+  );
+}
+
 function LectureStudioChat({
   studio,
   messages,
@@ -2769,6 +2908,9 @@ function LectureStudioChat({
   onSelectedModel,
   onSelectedReasoning,
   onRefreshModels,
+  onChooseAttachments,
+  onReleaseAttachment,
+  onAttachmentError,
   codexAuthenticationRequired,
   onOpenCodexSignIn,
 }: {
@@ -2777,7 +2919,7 @@ function LectureStudioChat({
   busy: boolean;
   draft: string;
   onDraftChange: (draft: string) => void;
-  onSend: (message: string) => Promise<boolean>;
+  onSend: (message: string, attachmentIds: readonly string[]) => Promise<boolean>;
   onCancel: () => void;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
@@ -2790,14 +2932,40 @@ function LectureStudioChat({
   onSelectedModel: (modelId: string | null) => void;
   onSelectedReasoning: (reasoningOptionId: string | null) => void;
   onRefreshModels: () => void;
+  onChooseAttachments: () => Promise<readonly LectureStudioAttachmentCard[]>;
+  onReleaseAttachment: (
+    studioId: string,
+    attachment: LectureStudioAttachmentCard,
+  ) => Promise<unknown>;
+  onAttachmentError: (error: unknown) => void;
   codexAuthenticationRequired: boolean;
   onOpenCodexSignIn: () => void;
 }) {
+  const attachmentPrivacyDescriptionId = useId();
+  const chatEditable = canEditLectureStudioRevision(studio);
   const [showNewMessageJump, setShowNewMessageJump] = useState(false);
+  const [attachments, setAttachments] = useState<readonly LectureStudioAttachmentCard[]>([]);
+  const [choosingAttachments, setChoosingAttachments] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const messagesElement = useRef<HTMLDivElement | null>(null);
   const pinnedToBottom = useRef(true);
   const previousStudioId = useRef<string | null>(null);
   const previousMessageId = useRef<string | null>(null);
+  const attachmentsRef = useRef(attachments);
+  const attachmentStudioIdRef = useRef(studio.id);
+  const attachmentPickerGenerationRef = useRef(0);
+  const releaseAttachmentHandlerRef = useRef(onReleaseAttachment);
+  const mountedRef = useRef(true);
+  const attachmentEligibilityRef = useRef({
+    studioId: studio.id,
+    studioVersion: studio.version,
+    eligible: false,
+  });
+  attachmentEligibilityRef.current = {
+    studioId: studio.id,
+    studioVersion: studio.version,
+    eligible: chatEditable && !busy && !codexAuthenticationRequired && !selectionUnavailable,
+  };
   const latestMessageId = lastLectureMessageId(messages);
   const reasoningOptions = selectedModelDescriptor?.reasoningOptions ?? [];
 
@@ -2807,6 +2975,127 @@ function LectureStudioChat({
     element.scrollTo({ top: element.scrollHeight, behavior });
     pinnedToBottom.current = true;
     setShowNewMessageJump(false);
+  }, []);
+
+  const releaseAttachment = (attachment: LectureStudioAttachmentCard) => {
+    const releaseStudioId = attachmentStudioIdRef.current;
+    const previousIndex = attachmentsRef.current.findIndex(
+      (candidate) => candidate.id === attachment.id,
+    );
+    const next = attachmentsRef.current.filter((candidate) => candidate.id !== attachment.id);
+    attachmentsRef.current = next;
+    setAttachments(next);
+    void onReleaseAttachment(releaseStudioId, attachment).catch((releaseError) => {
+      if (mountedRef.current && attachmentStudioIdRef.current === releaseStudioId) {
+        const restored = lectureStudioAttachmentsAfterReleaseFailure(
+          attachmentsRef.current,
+          attachment,
+          previousIndex,
+          releaseError,
+        );
+        if (restored !== attachmentsRef.current) {
+          attachmentsRef.current = restored;
+          setAttachments(restored);
+        }
+      }
+      onAttachmentError(releaseError);
+    });
+  };
+
+  const chooseAttachments = async () => {
+    if (
+      busy ||
+      submitting ||
+      choosingAttachments ||
+      codexAuthenticationRequired ||
+      !chatEditable ||
+      selectionUnavailable ||
+      attachmentsRef.current.length >= LECTURE_STUDIO_MAX_ATTACHMENTS
+    )
+      return;
+    const pickerStudioId = studio.id;
+    const pickerStudioVersion = studio.version;
+    const pickerGeneration = ++attachmentPickerGenerationRef.current;
+    setChoosingAttachments(true);
+    try {
+      const selected = await onChooseAttachments();
+      if (
+        !shouldAcceptLectureAttachmentPickerResult(
+          mountedRef.current,
+          pickerStudioId,
+          attachmentEligibilityRef.current.studioId,
+          pickerStudioVersion,
+          attachmentEligibilityRef.current.studioVersion,
+          pickerGeneration,
+          attachmentPickerGenerationRef.current,
+          attachmentEligibilityRef.current.eligible,
+        )
+      ) {
+        for (const attachment of selected) {
+          void releaseAttachmentHandlerRef
+            .current(pickerStudioId, attachment)
+            .catch(() => undefined);
+        }
+        return;
+      }
+      const merged = mergeLectureStudioAttachments(attachmentsRef.current, selected);
+      attachmentsRef.current = merged.attachments;
+      setAttachments(merged.attachments);
+      for (const attachment of merged.rejected) {
+        void onReleaseAttachment(pickerStudioId, attachment).catch(() => undefined);
+      }
+    } catch (attachmentError) {
+      if (mountedRef.current && attachmentPickerGenerationRef.current === pickerGeneration) {
+        if (shouldDiscardLectureStudioAttachments(attachmentError)) {
+          attachmentsRef.current = [];
+          setAttachments([]);
+        }
+        onAttachmentError(attachmentError);
+      }
+    } finally {
+      if (mountedRef.current && attachmentPickerGenerationRef.current === pickerGeneration) {
+        setChoosingAttachments(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
+  useEffect(() => {
+    releaseAttachmentHandlerRef.current = onReleaseAttachment;
+  }, [onReleaseAttachment]);
+
+  useEffect(() => {
+    const previousAttachmentStudioId = attachmentStudioIdRef.current;
+    if (previousAttachmentStudioId === studio.id) return;
+    attachmentStudioIdRef.current = studio.id;
+    attachmentPickerGenerationRef.current += 1;
+    setChoosingAttachments(false);
+    setSubmitting(false);
+    const staleAttachments = attachmentsRef.current;
+    attachmentsRef.current = [];
+    setAttachments([]);
+    for (const attachment of staleAttachments) {
+      void releaseAttachmentHandlerRef
+        .current(previousAttachmentStudioId, attachment)
+        .catch(() => undefined);
+    }
+  }, [studio.id]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      attachmentPickerGenerationRef.current += 1;
+      for (const attachment of attachmentsRef.current) {
+        void releaseAttachmentHandlerRef
+          .current(attachmentStudioIdRef.current, attachment)
+          .catch(() => undefined);
+      }
+      attachmentsRef.current = [];
+    };
   }, []);
 
   useEffect(() => {
@@ -2853,13 +3142,35 @@ function LectureStudioChat({
     if (
       !message ||
       busy ||
+      submitting ||
+      choosingAttachments ||
       codexAuthenticationRequired ||
-      studio.status !== 'ready' ||
+      !chatEditable ||
       selectionUnavailable
     )
       return;
-    const succeeded = await onSend(message);
-    if (succeeded) onDraftChange('');
+    const sendStudioId = studio.id;
+    const sentAttachmentIds = new Set(attachmentsRef.current.map((attachment) => attachment.id));
+    setSubmitting(true);
+    try {
+      const succeeded = await onSend(message, [...sentAttachmentIds]);
+      if (succeeded) {
+        if (attachmentStudioIdRef.current === sendStudioId) {
+          const next = lectureStudioAttachmentsAfterSend(
+            attachmentsRef.current,
+            sentAttachmentIds,
+            true,
+          );
+          attachmentsRef.current = next;
+          setAttachments(next);
+        }
+        onDraftChange('');
+      }
+    } finally {
+      if (mountedRef.current && attachmentStudioIdRef.current === sendStudioId) {
+        setSubmitting(false);
+      }
+    }
   };
 
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2999,6 +3310,16 @@ function LectureStudioChat({
                   onOpenNote={() => undefined}
                   loadVaultImages={false}
                 />
+                {(message.attachments?.length ?? 0) > 0 && (
+                  <ul className="lecture-chat-message-attachments" aria-label="Attached references">
+                    {message.attachments?.map((attachment) => (
+                      <li key={attachment.id} title={attachment.reconstructionNotice}>
+                        <span>{attachment.displayName}</span>
+                        <small>{attachment.format.toUpperCase()}</small>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </article>
             ))
           )}
@@ -3010,38 +3331,95 @@ function LectureStudioChat({
         )}
       </div>
       <footer>
-        <textarea
-          value={draft}
-          onChange={(event) => onDraftChange(event.target.value)}
-          onKeyDown={keyDown}
-          placeholder={
-            codexAuthenticationRequired
-              ? 'Sign in to Codex before editing this revision…'
-              : studio.status === 'ready'
-                ? 'Ask for a focused change to the notes or slides…'
-                : 'Generate a revision before editing it…'
-          }
-          rows={3}
-          maxLength={12_000}
-          disabled={
-            busy || codexAuthenticationRequired || studio.status !== 'ready' || selectionUnavailable
-          }
-        />
-        <button
-          type="button"
-          className="primary-button"
-          disabled={
-            busy ||
-            codexAuthenticationRequired ||
-            studio.status !== 'ready' ||
-            selectionUnavailable ||
-            draft.trim() === ''
-          }
-          onClick={() => void send()}
-        >
-          {busy ? 'Working…' : 'Send'}
-          <small>Enter</small>
-        </button>
+        {attachments.length > 0 && (
+          <div className="lecture-chat-attachments" aria-label="Lecture edit attachments">
+            {attachments.map((attachment) => (
+              <span className="lecture-chat-attachment-card" key={attachment.id}>
+                <span title={attachment.displayName}>{attachment.displayName}</span>
+                <small title={attachment.reconstructionNotice}>
+                  {attachment.format.toUpperCase()} · {attachment.unitCount} {attachment.unitLabel}
+                  {attachment.unitCount === 1 ? '' : 's'}
+                  {attachment.truncated ? ' · excerpted' : ''}
+                </small>
+                <button
+                  type="button"
+                  onClick={() => releaseAttachment(attachment)}
+                  aria-label={`Remove ${attachment.displayName}`}
+                  title={`Remove ${attachment.displayName}`}
+                  disabled={busy || submitting}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <span className="lecture-chat-attachment-privacy" id={attachmentPrivacyDescriptionId}>
+              Original files and local paths stay on this Mac. A bounded text snapshot is sent to
+              the selected model for this edit and retained with the successful revision’s source
+              provenance.
+            </span>
+          </div>
+        )}
+        <div className="lecture-chat-composer">
+          <button
+            type="button"
+            className="lecture-chat-attach-button"
+            onClick={() => void chooseAttachments()}
+            disabled={
+              busy ||
+              submitting ||
+              choosingAttachments ||
+              codexAuthenticationRequired ||
+              !chatEditable ||
+              selectionUnavailable ||
+              attachments.length >= LECTURE_STUDIO_MAX_ATTACHMENTS
+            }
+            aria-label="Attach lecture reference files"
+            aria-describedby={attachments.length > 0 ? attachmentPrivacyDescriptionId : undefined}
+            title="Attach up to 5 LaTeX, Markdown, or PDF files to this edit"
+          >
+            {choosingAttachments ? <span aria-hidden="true">…</span> : <LectureAttachmentIcon />}
+            <small>Files</small>
+          </button>
+          <textarea
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={keyDown}
+            placeholder={
+              codexAuthenticationRequired
+                ? 'Sign in to Codex before editing this revision…'
+                : chatEditable
+                  ? 'Ask for a focused change to the notes or slides…'
+                  : 'Generate a revision before editing it…'
+            }
+            rows={3}
+            maxLength={12_000}
+            disabled={
+              busy ||
+              submitting ||
+              codexAuthenticationRequired ||
+              !chatEditable ||
+              selectionUnavailable
+            }
+            aria-label="Message the Lecture Assistant"
+          />
+          <button
+            type="button"
+            className="primary-button lecture-chat-send-button"
+            disabled={
+              busy ||
+              submitting ||
+              choosingAttachments ||
+              codexAuthenticationRequired ||
+              !chatEditable ||
+              selectionUnavailable ||
+              draft.trim() === ''
+            }
+            onClick={() => void send()}
+          >
+            {busy || submitting ? 'Working…' : 'Send'}
+            <small>Enter</small>
+          </button>
+        </div>
         <p>Shift + Enter for a new line. Each accepted edit creates new LaTeX files.</p>
       </footer>
     </aside>
