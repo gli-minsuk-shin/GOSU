@@ -1312,6 +1312,38 @@
   margin-bottom: 0;
 }
 
+.lecture-chat-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lecture-chat-message-attachments li {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--blue) 28%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--blue) 6%, var(--surface));
+  font-size: var(--font-caption);
+}
+
+.lecture-chat-message-attachments span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lecture-chat-message-attachments small {
+  color: var(--subtle);
+}
+
 .lecture-chat-empty {
   display: grid;
   place-content: center;
@@ -1323,15 +1355,68 @@
 }
 
 .lecture-chat > footer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
   padding: 10px;
   border-top: 1px solid var(--line);
   background: var(--surface-soft);
 }
 
-.lecture-chat textarea {
+.lecture-chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.lecture-chat-attachment-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1px 7px;
+  max-width: min(300px, 100%);
+  padding: 6px 7px 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--blue) 34%, var(--line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--blue) 7%, var(--surface));
+}
+
+.lecture-chat-attachment-card > span {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--font-caption);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lecture-chat-attachment-card small {
+  grid-column: 1;
+  color: var(--subtle);
+  font-size: calc(var(--font-caption) - 1px);
+}
+
+.lecture-chat-attachment-card button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  padding: 2px 5px;
+  border: 0;
+  background: transparent;
+  color: var(--subtle);
+}
+
+.lecture-chat-attachment-privacy {
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+
+.lecture-chat-composer {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.lecture-chat-composer textarea {
   width: 100%;
   min-height: 72px;
   max-height: 150px;
@@ -1342,20 +1427,38 @@
   background: var(--surface);
 }
 
-.lecture-chat > footer > button {
+.lecture-chat-attach-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.lecture-chat-attach-button small {
+  color: var(--subtle);
+  font-size: calc(var(--font-caption) - 1px);
+}
+
+.lecture-chat-send-button {
   display: grid;
   place-content: center;
   min-width: 70px;
 }
 
-.lecture-chat > footer > button small {
+.lecture-chat-send-button small {
   opacity: 0.72;
   font-weight: 500;
 }
 
 .lecture-chat > footer > p {
-  grid-column: 1 / -1;
-  margin: 0;
+  margin: 7px 0 0;
   color: var(--muted);
   font-size: var(--font-caption);
 }

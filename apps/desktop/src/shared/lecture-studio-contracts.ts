@@ -7,6 +7,13 @@ import {
 } from './experiment-workspace-contracts';
 import { LiteratureRecordSchema } from './literature-contracts';
 import { LectureExternalSourceSnapshotSchema } from './lecture-external-source-contracts';
+import {
+  LECTURE_STUDIO_MAX_ATTACHMENTS,
+  LectureStudioAttachmentCardSchema,
+  LectureStudioAttachmentFormatSchema,
+  LectureStudioAttachmentIdsSchema,
+  LectureStudioAttachmentUnitLabelSchema,
+} from './lecture-studio-attachment-contracts';
 import { ManuscriptRecordSchema } from './manuscript-workspace-contracts';
 import { PdfPreviewDocumentSchema } from './pdf-preview-contracts';
 
@@ -673,6 +680,48 @@ export const LectureManuscriptSourceSnapshotSchema = z
   })
   .strict();
 
+export const LectureStudioAttachmentSnapshotSchema = z
+  .object({
+    sourceLabel: z.string().regex(/^A[1-5]$/u),
+    attachmentId: uuidSchema,
+    projectId: uuidSchema,
+    studioId: uuidSchema,
+    displayName: z.string().trim().min(1).max(255),
+    format: LectureStudioAttachmentFormatSchema,
+    byteSize: z
+      .number()
+      .int()
+      .positive()
+      .max(20 * 1024 * 1024),
+    sourceSha256: sha256Schema,
+    unitLabel: LectureStudioAttachmentUnitLabelSchema,
+    unitCount: z.number().int().positive().max(500),
+    content: z.string().min(1).max(60_000),
+    contentSha256: sha256Schema,
+    extractedCharacters: z.number().int().positive().max(60_000),
+    truncated: z.boolean(),
+    reconstructionNotice: z.string().trim().min(1).max(240),
+    capturedAt: timestampSchema,
+  })
+  .strict()
+  .superRefine((attachment, context) => {
+    if (attachment.content.length !== attachment.extractedCharacters) {
+      context.addIssue({
+        code: 'custom',
+        path: ['extractedCharacters'],
+        message: 'Attachment extracted characters must match its frozen content',
+      });
+    }
+    if (attachment.unitLabel !== (attachment.format === 'pdf' ? 'page' : 'part')) {
+      context.addIssue({
+        code: 'custom',
+        path: ['unitLabel'],
+        message: 'Attachment unit label must match its format',
+      });
+    }
+  });
+export type LectureStudioAttachmentSnapshot = z.infer<typeof LectureStudioAttachmentSnapshotSchema>;
+
 export const LectureSourceManifestV1Schema = z
   .object({
     schemaVersion: z.literal(1),
@@ -847,10 +896,82 @@ export const LectureSourceManifestV3Schema = z
     });
   });
 
+export const LectureSourceManifestV4Schema = z
+  .object({
+    schemaVersion: z.literal(4),
+    selectedProjectIds: z.array(uuidSchema).min(1).max(LECTURE_STUDIO_MAX_SOURCE_PROJECTS),
+    literature: z
+      .array(LectureLiteratureSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_LITERATURE_SOURCES),
+    experiments: z
+      .array(LectureExperimentSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_EXPERIMENT_SOURCES),
+    manuscripts: z
+      .array(LectureManuscriptSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES),
+    externalSources: z
+      .array(LectureExternalSourceSnapshotSchema)
+      .max(LECTURE_STUDIO_MAX_EXTERNAL_SOURCES),
+    turnAttachments: z
+      .array(LectureStudioAttachmentSnapshotSchema)
+      .min(1)
+      .max(LECTURE_STUDIO_MAX_ATTACHMENTS),
+  })
+  .strict()
+  .superRefine((manifest, context) => {
+    if (new Set(manifest.selectedProjectIds).size !== manifest.selectedProjectIds.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['selectedProjectIds'],
+        message: 'Selected projects must be unique',
+      });
+    }
+    const projects = new Set(manifest.selectedProjectIds);
+    const groups = [
+      manifest.literature,
+      manifest.experiments,
+      manifest.manuscripts,
+      manifest.externalSources,
+      manifest.turnAttachments,
+    ] as const;
+    const labels = groups.flatMap((values) => values.map((value) => value.sourceLabel));
+    if (new Set(labels).size !== labels.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['turnAttachments'],
+        message: 'Source labels must be unique across the manifest',
+      });
+    }
+    groups.forEach((values, groupIndex) => {
+      const groupName = (
+        ['literature', 'experiments', 'manuscripts', 'externalSources', 'turnAttachments'] as const
+      )[groupIndex];
+      values.forEach((value, index) => {
+        if (!projects.has(value.projectId)) {
+          context.addIssue({
+            code: 'custom',
+            path: [groupName ?? 'turnAttachments', index, 'projectId'],
+            message: 'Manifest sources must belong to a selected project',
+          });
+        }
+      });
+    });
+    manifest.turnAttachments.forEach((attachment, index) => {
+      if (attachment.sourceLabel !== `A${index + 1}`) {
+        context.addIssue({
+          code: 'custom',
+          path: ['turnAttachments', index, 'sourceLabel'],
+          message: 'Turn attachment labels must be canonical and ordered',
+        });
+      }
+    });
+  });
+
 export const LectureSourceManifestSchema = z.discriminatedUnion('schemaVersion', [
   LectureSourceManifestV1Schema,
   LectureSourceManifestV2Schema,
   LectureSourceManifestV3Schema,
+  LectureSourceManifestV4Schema,
 ]);
 export type LectureSourceManifest = z.infer<typeof LectureSourceManifestSchema>;
 
@@ -892,6 +1013,18 @@ export const LectureStudioRevisionSchema = z
         message: 'Every revision must record both lecture notes and slides artifacts',
       });
     }
+    if (
+      revision.sourceManifest.schemaVersion === 4 &&
+      revision.sourceManifest.turnAttachments.some(
+        (attachment) => attachment.studioId !== revision.studioId,
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['sourceManifest', 'turnAttachments'],
+        message: 'Turn attachments must belong to the revision Lecture Studio',
+      });
+    }
   });
 export type LectureStudioRevision = z.infer<typeof LectureStudioRevisionSchema>;
 
@@ -906,6 +1039,10 @@ export const LectureStudioMessageSchema = z
     attemptId: uuidSchema.nullable(),
     revision: z.number().int().positive().nullable(),
     invocation: ModelInvocationSchema.nullable(),
+    attachments: z
+      .array(LectureStudioAttachmentCardSchema)
+      .max(LECTURE_STUDIO_MAX_ATTACHMENTS)
+      .optional(),
     createdAt: timestampSchema,
     completedAt: timestampSchema,
   })
@@ -915,6 +1052,24 @@ export const LectureStudioMessageSchema = z
       context.addIssue({
         code: 'custom',
         message: 'User messages cannot claim a generated revision or model invocation',
+      });
+    }
+    if (message.role !== 'user' && (message.attachments?.length ?? 0) > 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['attachments'],
+        message: 'Only user messages can carry attachment receipts',
+      });
+    }
+    if (
+      message.attachments &&
+      new Set(message.attachments.map((attachment) => attachment.id)).size !==
+        message.attachments.length
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['attachments'],
+        message: 'Message attachment IDs must be unique',
       });
     }
   });
@@ -1259,7 +1414,11 @@ export type UpdateLectureStudioGenerationBriefInput = z.infer<
 >;
 
 export const SendLectureStudioMessageInputSchema = z
-  .object({ ...lectureTurnShape, message: boundedText(LECTURE_STUDIO_MAX_MESSAGE_LENGTH) })
+  .object({
+    ...lectureTurnShape,
+    message: boundedText(LECTURE_STUDIO_MAX_MESSAGE_LENGTH),
+    attachmentIds: LectureStudioAttachmentIdsSchema.optional(),
+  })
   .strict();
 export type SendLectureStudioMessageInput = z.infer<typeof SendLectureStudioMessageInputSchema>;
 

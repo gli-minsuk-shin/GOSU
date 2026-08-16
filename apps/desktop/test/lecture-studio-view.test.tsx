@@ -14,13 +14,20 @@ import type {
 } from '../src/shared/lecture-studio-contracts';
 import type { StagedLectureExternalSourceCard } from '../src/shared/lecture-external-source-contracts';
 import {
+  LECTURE_STUDIO_MAX_ATTACHMENTS,
+  type LectureStudioAttachmentCard,
+} from '../src/shared/lecture-studio-attachment-contracts';
+import {
   activeLectureSourceProjects,
   appendLectureGenerationProgress,
+  canEditLectureStudioRevision,
   currentLectureStudioRevision,
   formatLectureGenerationElapsed,
   isCurrentLectureGenerationProgress,
   lastLectureMessageId,
   lectureManuscriptAvailabilityLabel,
+  lectureStudioAttachmentsAfterReleaseFailure,
+  lectureStudioAttachmentsAfterSend,
   lectureArtifactActionLabels,
   lectureErrorCodeMessage,
   LectureGenerationAttemptDetails,
@@ -32,6 +39,9 @@ import {
   lectureStudioMessages,
   lectureStudioStatusLabel,
   mergeLectureCandidatePages,
+  mergeLectureStudioAttachments,
+  shouldAcceptLectureAttachmentPickerResult,
+  shouldDiscardLectureStudioAttachments,
   shouldClearLectureGenerationProgress,
   toggleLectureProjectSelection,
   toggleLectureSourceSelection,
@@ -56,6 +66,23 @@ const project: ProjectRecord = {
   updatedAt: '2026-08-06T00:00:00.000Z',
 };
 
+function lectureAttachment(index: number): LectureStudioAttachmentCard {
+  return {
+    id: `aaaaaaaa-aaaa-4aaa-8aaa-${index.toString().padStart(12, '0')}`,
+    displayName: `reference-${index}.tex`,
+    format: 'latex',
+    byteSize: 1_024,
+    sha256: index.toString(16).padStart(64, '0'),
+    unitLabel: 'part',
+    unitCount: 1,
+    extractedCharacters: 900,
+    truncated: false,
+    textAvailable: true,
+    reconstructionNotice: 'Exact UTF-8 source text.',
+    expiresAt: '2026-08-16T10:00:00.000Z',
+  };
+}
+
 const adapter: LectureStudioViewAdapter = {
   list: vi.fn(),
   detail: vi.fn(),
@@ -64,6 +91,8 @@ const adapter: LectureStudioViewAdapter = {
   removeStagedExternalSource: vi.fn(),
   discardExternalSourceSet: vi.fn(),
   importOverleaf: vi.fn(),
+  chooseAttachments: vi.fn(),
+  releaseAttachment: vi.fn(),
   create: vi.fn(),
   updateGenerationBrief: vi.fn(),
   generate: vi.fn(),
@@ -490,6 +519,139 @@ describe('LectureStudioView', () => {
     expect(lastLectureMessageId(after)).toBe('message-50');
   });
 
+  it('bounds attachment picker results and rejects results from a stale Studio scope', () => {
+    const existing = [lectureAttachment(0), lectureAttachment(1)];
+    const selected = [
+      lectureAttachment(1),
+      lectureAttachment(2),
+      lectureAttachment(2),
+      lectureAttachment(3),
+      lectureAttachment(4),
+      lectureAttachment(5),
+    ];
+    const merged = mergeLectureStudioAttachments(existing, selected);
+
+    expect(merged.attachments).toHaveLength(LECTURE_STUDIO_MAX_ATTACHMENTS);
+    expect(merged.attachments.map(({ id }) => id)).toEqual(
+      [0, 1, 2, 3, 4].map((index) => lectureAttachment(index).id),
+    );
+    expect(merged.rejected.map(({ id }) => id)).toEqual([lectureAttachment(5).id]);
+    expect(
+      shouldAcceptLectureAttachmentPickerResult(true, 'studio-a', 'studio-a', 4, 4, 3, 3, true),
+    ).toBe(true);
+    expect(
+      shouldAcceptLectureAttachmentPickerResult(true, 'studio-a', 'studio-b', 4, 4, 3, 3, true),
+    ).toBe(false);
+    expect(
+      shouldAcceptLectureAttachmentPickerResult(true, 'studio-a', 'studio-a', 4, 5, 3, 3, true),
+    ).toBe(false);
+    expect(
+      shouldAcceptLectureAttachmentPickerResult(false, 'studio-a', 'studio-a', 4, 4, 3, 3, true),
+    ).toBe(false);
+    expect(
+      shouldAcceptLectureAttachmentPickerResult(true, 'studio-a', 'studio-a', 4, 4, 2, 3, true),
+    ).toBe(false);
+    expect(
+      shouldAcceptLectureAttachmentPickerResult(true, 'studio-a', 'studio-a', 4, 4, 3, 3, false),
+    ).toBe(false);
+  });
+
+  it('keeps a failed edit retryable when a prior revision remains available', () => {
+    const base = {
+      currentRevision: 2,
+      activeAttemptId: null,
+    } as const;
+    expect(canEditLectureStudioRevision({ ...base, status: 'ready' })).toBe(true);
+    expect(canEditLectureStudioRevision({ ...base, status: 'failed' })).toBe(true);
+    expect(
+      canEditLectureStudioRevision({ status: 'failed', currentRevision: 0, activeAttemptId: null }),
+    ).toBe(false);
+    expect(
+      canEditLectureStudioRevision({
+        ...base,
+        status: 'generating',
+        activeAttemptId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      }),
+    ).toBe(false);
+  });
+
+  it('clears consumed attachments only after an accepted edit and preserves them on failure', () => {
+    const attachments = [lectureAttachment(0), lectureAttachment(1)];
+    const sent = new Set([attachments[0]!.id]);
+
+    expect(lectureStudioAttachmentsAfterSend(attachments, sent, false)).toBe(attachments);
+    expect(lectureStudioAttachmentsAfterSend(attachments, sent, true)).toEqual([attachments[1]]);
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('aria-label="Attach lecture reference files"');
+    expect(source).toContain('Attach up to 5 LaTeX, Markdown, or PDF files to this edit');
+    expect(source).toContain('aria-label={`Remove ${attachment.displayName}`}');
+    expect(source).toContain('aria-label="Attached references"');
+    expect(source).toContain('retained with the successful revision’s source');
+    expect(source).toContain('const succeeded = await onSend(message, [...sentAttachmentIds]);');
+    expect(source).toContain('if (succeeded) {');
+    expect(source).not.toContain('if (!succeeded) setAttachments([])');
+  });
+
+  it('restores an optimistically removed attachment when Main release fails non-terminally', () => {
+    const removed = lectureAttachment(0);
+    const remaining = [lectureAttachment(1)];
+
+    expect(
+      lectureStudioAttachmentsAfterReleaseFailure(
+        remaining,
+        removed,
+        0,
+        new Error('lecture_external_source_scope_mismatch'),
+      ).map(({ id }) => id),
+    ).toEqual([removed.id, remaining[0]!.id]);
+    expect(
+      lectureStudioAttachmentsAfterReleaseFailure(
+        remaining,
+        removed,
+        0,
+        new Error(
+          "Error invoking remote method 'lecture-studio:release-attachment': lecture_external_source_expired",
+        ),
+      ),
+    ).toBe(remaining);
+    expect(
+      shouldDiscardLectureStudioAttachments(new Error('lecture_external_source_expired')),
+    ).toBe(true);
+    expect(
+      shouldDiscardLectureStudioAttachments(new Error('lecture_external_source_corrupt')),
+    ).toBe(true);
+    expect(
+      shouldDiscardLectureStudioAttachments(new Error('lecture_external_source_scope_mismatch')),
+    ).toBe(false);
+    expect(
+      lectureStudioAttachmentsAfterReleaseFailure(
+        remaining,
+        removed,
+        0,
+        new Error('lecture_external_source_corrupt'),
+      ),
+    ).toBe(remaining);
+    expect(
+      lectureStudioAttachmentsAfterReleaseFailure(
+        remaining,
+        removed,
+        0,
+        new Error('lecture_external_source_not_found'),
+      ),
+    ).toBe(remaining);
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('attachmentStudioIdRef.current === releaseStudioId');
+    expect(source).toContain('lectureStudioAttachmentsAfterReleaseFailure(');
+  });
+
   it('explains why uncaptured manuscript candidates cannot be selected', () => {
     expect(lectureManuscriptAvailabilityLabel('ready')).toBe('Captured checkpoint ready');
     expect(lectureManuscriptAvailabilityLabel('capture_required')).toBe(
@@ -528,9 +690,9 @@ describe('LectureStudioView', () => {
     expect(source).toContain('codexAuthenticationRequired={codexAuthenticationRequired}');
     expect(source).toContain('Sign in to Codex before editing this revision.');
     expect(source).toContain("? 'Sign in to Codex before editing this revision…'");
-    expect(source).toContain(
-      "busy || codexAuthenticationRequired || studio.status !== 'ready' || selectionUnavailable",
-    );
+    expect(source).toContain('!chatEditable');
+    expect(source).toContain('codexAuthenticationRequired ||');
+    expect(source).toContain('selectionUnavailable');
   });
 
   it('offers persisted page, detail, and custom generation guidance before synthesis', () => {

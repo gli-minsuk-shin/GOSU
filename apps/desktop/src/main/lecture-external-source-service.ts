@@ -34,6 +34,7 @@ import {
   RemoveLectureExternalSourceInputSchema,
   RemoveStagedLectureExternalSourceInputSchema,
   SnapshotLectureExternalSourcesInputSchema,
+  SnapshotStagedLectureExternalSourcesInputSchema,
   StageLectureExternalSourcesInputSchema,
   StagedLectureExternalSourceSchema,
   StagedLectureExternalSourceSetSchema,
@@ -49,6 +50,7 @@ import {
   type RemoveLectureExternalSourceInput,
   type RemoveStagedLectureExternalSourceInput,
   type SnapshotLectureExternalSourcesInput,
+  type SnapshotStagedLectureExternalSourcesInput,
   type StageLectureExternalSourcesInput,
   type StagedLectureExternalSource,
   type StagedLectureExternalSourceSet,
@@ -367,23 +369,48 @@ export class LectureExternalSourceService {
     },
   ) {}
 
-  async chooseAndStage(input: StageLectureExternalSourcesInput) {
+  async chooseAndStage(
+    input: StageLectureExternalSourcesInput,
+    options: Readonly<{
+      maxSources?: number;
+      maxTotalExtractedCharacters?: number;
+    }> = {},
+  ) {
     const command = StageLectureExternalSourcesInputSchema.parse(input);
     await this.validateProject(command.projectId);
     const selectedPaths = await this.dependencies.chooseFiles();
     if (command.sourceSetId) {
       return this.withSourceSetMutation(command.projectId, command.sourceSetId, () =>
-        this.stageSelected(command, selectedPaths),
+        this.stageSelected(command, selectedPaths, options),
       );
     }
     // A new set receives a fresh unguessable identity, so it cannot alias another in-flight set.
-    return this.stageSelected(command, selectedPaths);
+    return this.stageSelected(command, selectedPaths, options);
   }
 
   private async stageSelected(
     command: StageLectureExternalSourcesInput,
     selectedPaths: readonly string[],
+    options: Readonly<{
+      maxSources?: number;
+      maxTotalExtractedCharacters?: number;
+    }>,
   ) {
+    const maxSources = Math.max(
+      1,
+      Math.min(
+        LECTURE_EXTERNAL_SOURCE_MAX_SOURCES,
+        options.maxSources ?? LECTURE_EXTERNAL_SOURCE_MAX_SOURCES,
+      ),
+    );
+    const maxTotalExtractedCharacters = Math.max(
+      1,
+      Math.min(
+        LECTURE_EXTERNAL_SOURCE_MAX_TOTAL_EXTRACTED_CHARACTERS,
+        options.maxTotalExtractedCharacters ??
+          LECTURE_EXTERNAL_SOURCE_MAX_TOTAL_EXTRACTED_CHARACTERS,
+      ),
+    );
     const sourceSetKey = command.sourceSetId
       ? this.sourceSetMutationKey(command.projectId, command.sourceSetId)
       : null;
@@ -418,7 +445,7 @@ export class LectureExternalSourceService {
         throw new LectureExternalSourceError('lecture_external_source_corrupt');
       }
     }
-    if (selectedPaths.length > LECTURE_EXTERNAL_SOURCE_MAX_SOURCES) {
+    if (selectedPaths.length > maxSources) {
       throw new LectureExternalSourceError('lecture_external_source_too_many');
     }
     if (new Set(selectedPaths).size !== selectedPaths.length) {
@@ -433,10 +460,7 @@ export class LectureExternalSourceService {
     const existing = command.sourceSetId
       ? await this.loadStaged({ projectId: command.projectId, sourceSetId: command.sourceSetId })
       : null;
-    if (
-      existing &&
-      existing.sources.length + definitions.length > LECTURE_EXTERNAL_SOURCE_MAX_SOURCES
-    ) {
+    if (existing && existing.sources.length + definitions.length > maxSources) {
       throw new LectureExternalSourceError('lecture_external_source_too_many');
     }
     const setId = existing?.id ?? randomUUID();
@@ -465,7 +489,7 @@ export class LectureExternalSourceService {
             1,
             Math.min(
               LECTURE_EXTERNAL_SOURCE_MAX_EXTRACTED_CHARACTERS,
-              LECTURE_EXTERNAL_SOURCE_MAX_TOTAL_EXTRACTED_CHARACTERS - totalExtracted,
+              maxTotalExtractedCharacters - totalExtracted,
             ),
           );
           extraction = pdfExtraction(
@@ -481,7 +505,7 @@ export class LectureExternalSourceService {
         extraction = decodeText(bytes);
       }
       totalExtracted += extraction.extractedCharacters;
-      if (totalExtracted > LECTURE_EXTERNAL_SOURCE_MAX_TOTAL_EXTRACTED_CHARACTERS) {
+      if (totalExtracted > maxTotalExtractedCharacters) {
         throw new LectureExternalSourceError('lecture_external_source_total_too_large');
       }
       const sourceId = randomUUID();
@@ -544,6 +568,85 @@ export class LectureExternalSourceService {
     const command = ListStagedLectureExternalSourcesInputSchema.parse(input);
     await this.validateProject(command.projectId);
     return this.stagedView(await this.loadStaged(command));
+  }
+
+  async snapshotStaged(
+    input: SnapshotStagedLectureExternalSourcesInput,
+  ): Promise<readonly StagedLectureExternalSource[]> {
+    const command = SnapshotStagedLectureExternalSourcesInputSchema.parse(input);
+    await this.validateProject(command.projectId);
+    return this.withSourceSetMutation(command.projectId, command.sourceSetId, async () => {
+      const set = await this.loadStaged(command);
+      const selected = command.sourceIds.map((id) =>
+        set.sources.find((source) => source.id === id),
+      );
+      if (selected.some((source) => !source)) {
+        throw new LectureExternalSourceError('lecture_external_source_not_found');
+      }
+      const root = await this.ensureRoot();
+      for (const source of selected as StagedLectureExternalSource[]) {
+        const bytes = await readBoundedRegularFile(join(root, source.managedRelativePath));
+        if (
+          bytes.length !== source.byteSize ||
+          sha256(bytes) !== source.sourceSha256 ||
+          source.extraction.policyVersion !== 1 ||
+          sha256(source.extraction.content) !== source.extraction.contentSha256
+        ) {
+          throw new LectureExternalSourceError('lecture_external_source_corrupt');
+        }
+      }
+      const now = this.dependencies.now?.() ?? new Date();
+      const renewed = StagedLectureExternalSourceSetSchema.parse({
+        ...set,
+        expiresAt: new Date(now.getTime() + LECTURE_EXTERNAL_SOURCE_SET_TTL_MS).toISOString(),
+      });
+      await this.writeManifest(join(root, 'staging', set.projectId, set.id), renewed);
+      return command.sourceIds.map((id) =>
+        structuredClone(renewed.sources.find((source) => source.id === id)!),
+      );
+    });
+  }
+
+  async consumeStaged(
+    input: SnapshotStagedLectureExternalSourcesInput,
+  ): Promise<{ consumed: true; remainingSources: number }> {
+    const command = SnapshotStagedLectureExternalSourcesInputSchema.parse(input);
+    await this.validateProject(command.projectId);
+    return this.withSourceSetMutation(command.projectId, command.sourceSetId, async () => {
+      let set: StagedLectureExternalSourceSet;
+      try {
+        set = await this.loadStaged(command);
+      } catch (error) {
+        if (
+          error instanceof LectureExternalSourceError &&
+          (error.code === 'lecture_external_source_not_found' ||
+            error.code === 'lecture_external_source_expired')
+        ) {
+          return { consumed: true as const, remainingSources: 0 };
+        }
+        throw error;
+      }
+      const selected = new Set(command.sourceIds);
+      const next = StagedLectureExternalSourceSetSchema.parse({
+        ...set,
+        sources: set.sources.filter((source) => !selected.has(source.id)),
+      });
+      const root = await this.ensureRoot();
+      const directory = join(root, 'staging', set.projectId, set.id);
+      if (next.sources.length === 0) {
+        await rm(directory, { recursive: true, force: true });
+      } else {
+        await this.writeManifest(directory, next);
+        await Promise.all(
+          set.sources
+            .filter((source) => selected.has(source.id))
+            .map((source) =>
+              rm(join(root, source.managedRelativePath), { force: true }).catch(() => undefined),
+            ),
+        );
+      }
+      return { consumed: true as const, remainingSources: next.sources.length };
+    });
   }
 
   async removeStaged(input: RemoveStagedLectureExternalSourceInput) {

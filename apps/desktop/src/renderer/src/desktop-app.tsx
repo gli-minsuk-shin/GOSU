@@ -241,6 +241,8 @@ const lectureStudioAdapter: LectureStudioViewAdapter = {
     window.gosu.lectureStudio.removeStagedExternalSource(input),
   discardExternalSourceSet: (input) => window.gosu.lectureStudio.discardExternalSourceSet(input),
   importOverleaf: (input) => window.gosu.lectureStudio.importOverleaf(input),
+  chooseAttachments: (input) => window.gosu.lectureStudio.chooseAttachments(input),
+  releaseAttachment: (input) => window.gosu.lectureStudio.releaseAttachment(input),
   create: (input) => window.gosu.lectureStudio.create(input),
   updateGenerationBrief: (input) => window.gosu.lectureStudio.updateGenerationBrief(input),
   generate: (input) => window.gosu.lectureStudio.generate(input),

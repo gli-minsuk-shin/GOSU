@@ -109,6 +109,11 @@ import type {
   ImportLectureOverleafSourceInput,
   LectureOverleafSourceReceipt,
 } from '../shared/lecture-overleaf-source-contracts';
+import type {
+  ChooseLectureStudioAttachmentsInput,
+  LectureStudioAttachmentCard,
+  ReleaseLectureStudioAttachmentInput,
+} from '../shared/lecture-studio-attachment-contracts';
 import {
   LectureStudioEventSchema,
   type CancelLectureStudioInput,
@@ -654,6 +659,13 @@ const api = {
         LECTURE_STUDIO_IPC_CHANNELS.importOverleaf,
         input,
       ),
+    chooseAttachments: (input: ChooseLectureStudioAttachmentsInput) =>
+      invokeLectureStudio<readonly LectureStudioAttachmentCard[]>(
+        LECTURE_STUDIO_IPC_CHANNELS.chooseAttachments,
+        input,
+      ),
+    releaseAttachment: (input: ReleaseLectureStudioAttachmentInput) =>
+      invokeLectureStudio<{ released: true }>(LECTURE_STUDIO_IPC_CHANNELS.releaseAttachment, input),
     create: (input: CreateLectureStudioInput) =>
       invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.create, input),
     updateGenerationBrief: (input: UpdateLectureStudioGenerationBriefInput) =>

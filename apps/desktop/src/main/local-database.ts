@@ -1017,6 +1017,7 @@ type LectureStudioMessageRow = Readonly<{
   attempt_id: string | null;
   revision: number | null;
   invocation_json: string | null;
+  attachments_json: string | null;
   created_at: string;
   completed_at: string;
 }>;
@@ -1456,6 +1457,18 @@ function migrateLectureStudioRevisionLatex(database: Database.Database) {
   `);
 }
 
+function migrateLectureStudioMessageAttachments(database: Database.Database) {
+  const columns = database.pragma('table_info(lecture_studio_messages)') as Array<{
+    name: string;
+  }>;
+  if (columns.some((column) => column.name === 'attachments_json')) return;
+  database.exec(
+    `alter table lecture_studio_messages
+     add column attachments_json text
+     check (attachments_json is null or length(attachments_json) between 2 and 32768)`,
+  );
+}
+
 function migrateLectureStudioAttempts(database: Database.Database) {
   database.exec(`
     create table if not exists lecture_studio_attempts (
@@ -1714,6 +1727,9 @@ function toLectureStudioMessage(row: LectureStudioMessageRow): LectureStudioMess
     attemptId: row.attempt_id,
     revision: row.revision,
     invocation: row.invocation_json === null ? null : JSON.parse(row.invocation_json),
+    ...(row.attachments_json === null
+      ? {}
+      : { attachments: JSON.parse(row.attachments_json) as unknown }),
     createdAt: row.created_at,
     completedAt: row.completed_at,
   });
@@ -1746,8 +1762,8 @@ function insertLectureStudioMessage(database: Database.Database, input: LectureS
     .prepare(
       `insert into lecture_studio_messages(
          id,schema_version,studio_id,role,status,content,attempt_id,revision,
-         invocation_json,created_at,completed_at
-       ) values(?,?,?,?,?,?,?,?,?,?,?)`,
+         invocation_json,attachments_json,created_at,completed_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       message.id,
@@ -1759,6 +1775,7 @@ function insertLectureStudioMessage(database: Database.Database, input: LectureS
       message.attemptId,
       message.revision,
       message.invocation === null ? null : JSON.stringify(message.invocation),
+      message.attachments ? JSON.stringify(message.attachments) : null,
       message.createdAt,
       message.completedAt,
     );
@@ -4385,6 +4402,9 @@ export class LocalDatabase {
         invocation_json text check (
           invocation_json is null or length(invocation_json) between 2 and 8192
         ),
+        attachments_json text check (
+          attachments_json is null or length(attachments_json) between 2 and 32768
+        ),
         created_at text not null,
         completed_at text not null,
         foreign key(studio_id) references lecture_studios(id) on delete cascade,
@@ -4719,6 +4739,7 @@ export class LocalDatabase {
       migrateLectureStudioGenerationBrief(database);
       migrateLectureStudioTrash(database);
       migrateLectureStudioRevisionLatex(database);
+      migrateLectureStudioMessageAttachments(database);
       migrateLectureStudioAttempts(database);
       migrateExperimentRunsHardening(database);
       migrateProjectChatResearchNoteAbandoned(database);

@@ -9,7 +9,14 @@ import {
   LectureStudioServiceError,
   type LectureStudioStorage,
 } from '../src/main/lecture-studio-service';
-import { LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS } from '../src/main/lecture-studio-prompt';
+import type {
+  LectureStudioAttachmentService,
+  PreparedLectureStudioAttachments,
+} from '../src/main/lecture-studio-attachment-service';
+import {
+  LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS,
+  LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER,
+} from '../src/main/lecture-studio-prompt';
 import { CodexRequestError } from '../src/main/codex-app-server';
 import {
   LectureDocumentCompilerError,
@@ -702,6 +709,7 @@ function fixture(
     externalSourceContent?: string;
     pdfCompiler?: Pick<LectureDocumentCompiler, 'compile'>;
     artifactPlatform?: LectureArtifactPlatform;
+    attachments?: Pick<LectureStudioAttachmentService, 'prepare'>;
     prepareDirectory?: (outputProjectId: string) => Promise<string>;
     timeoutMs?: number;
     hardTimeoutMs?: number;
@@ -891,6 +899,7 @@ function fixture(
         return { rolledBack: true as const, cleanupPending: false };
       },
     },
+    ...(options.attachments ? { attachments: options.attachments } : {}),
     workspace: { snapshot: () => workspace },
     artifacts: {
       assertRevisionDestination: () => {
@@ -1040,6 +1049,411 @@ function pendingFromRevision(
 }
 
 describe('LectureStudioService', () => {
+  it('uses one-turn attachments as A-labelled evidence and commits them only with the revision', async () => {
+    const attachmentId = randomUUID();
+    const attachmentContent = '# Attached theorem\n\nThe variance is bounded by the cited lemma.';
+    const commit = vi.fn(async () => undefined);
+    const rollback = vi.fn(async () => undefined);
+    const prepare = vi.fn(
+      async (studio: LectureStudio, _attachmentIds: readonly string[]) =>
+        ({
+          cards: [
+            {
+              id: attachmentId,
+              displayName: 'revision-evidence.md',
+              format: 'markdown',
+              byteSize: Buffer.byteLength(attachmentContent, 'utf8'),
+              sha256: hash(attachmentContent),
+              unitLabel: 'part',
+              unitCount: 1,
+              extractedCharacters: attachmentContent.length,
+              truncated: false,
+              textAvailable: true,
+              reconstructionNotice: 'Exact UTF-8 source text.',
+              expiresAt: '2026-08-16T01:00:00.000Z',
+            },
+          ],
+          snapshots: [
+            {
+              sourceLabel: 'A1',
+              attachmentId,
+              projectId: studio.outputProjectId,
+              studioId: studio.id,
+              displayName: 'revision-evidence.md',
+              format: 'markdown',
+              byteSize: Buffer.byteLength(attachmentContent, 'utf8'),
+              sourceSha256: hash(attachmentContent),
+              unitLabel: 'part',
+              unitCount: 1,
+              content: attachmentContent,
+              contentSha256: hash(attachmentContent),
+              extractedCharacters: attachmentContent.length,
+              truncated: false,
+              reconstructionNotice: 'Exact UTF-8 source text.',
+              capturedAt: '2026-08-16T00:00:00.000Z',
+            },
+          ],
+          commit,
+          rollback,
+        }) satisfies PreparedLectureStudioAttachments,
+    );
+    const { service, storage, codex, projectA, paperA } = fixture({
+      attachments: { prepare },
+    });
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'Attachment-backed edit',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    codex.response = latexResponse(['A1'], 1, 'Applied the attached evidence.');
+    const edited = await service.send({
+      studioId: studio.id,
+      expectedVersion: initial.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: 'Use the attached lemma to revise the explanation.',
+      attachmentIds: [attachmentId],
+    });
+
+    expect(prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ id: studio.id, version: initial.studio.version }),
+      [attachmentId],
+    );
+    expect(codex.prompt).toContain('"sourceLabel":"A1"');
+    expect(codex.prompt).toContain(JSON.stringify(attachmentContent));
+    expect(edited.revision.sourceManifest.schemaVersion).toBe(4);
+    if (edited.revision.sourceManifest.schemaVersion !== 4) {
+      throw new Error('Expected a turn-attachment source manifest');
+    }
+    expect(edited.revision.sourceManifest.turnAttachments).toEqual([
+      expect.objectContaining({
+        sourceLabel: 'A1',
+        attachmentId,
+        studioId: studio.id,
+        content: attachmentContent,
+        contentSha256: hash(attachmentContent),
+      }),
+    ]);
+    expect(
+      storage.messages.find((message) => message.content.startsWith('Use the attached')),
+    ).toMatchObject({
+      role: 'user',
+      status: 'complete',
+      attachments: [
+        expect.objectContaining({ id: attachmentId, displayName: 'revision-evidence.md' }),
+      ],
+    });
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(rollback).not.toHaveBeenCalled();
+
+    codex.response = latexResponse(['P1'], 1, 'Edited without the prior attachment.');
+    const later = await service.send({
+      studioId: studio.id,
+      expectedVersion: edited.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: 'Tighten the introduction without added files.',
+    });
+    expect(later.revision.sourceManifest.schemaVersion).not.toBe(4);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(codex.prompt).not.toContain(attachmentContent);
+    const laterPromptPayload = JSON.parse(codex.prompt.slice(codex.prompt.indexOf('\n\n') + 2)) as {
+      currentDraft: { lectureNotes: string; slides: string };
+    };
+    expect(laterPromptPayload.currentDraft.lectureNotes).toContain(
+      LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER,
+    );
+    expect(laterPromptPayload.currentDraft.slides).toContain(
+      LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER,
+    );
+    expect(laterPromptPayload.currentDraft.lectureNotes).not.toContain('[A1]');
+    expect(laterPromptPayload.currentDraft.slides).not.toContain('[A1]');
+    expect(laterPromptPayload.currentDraft.lectureNotes).not.toContain('Fixture source A1');
+  });
+
+  it('does not silently rebind an unchanged prior A1 draft to unrelated new A1 evidence', async () => {
+    const oldAttachmentId = randomUUID();
+    const newAttachmentId = randomUUID();
+    const oldContent = 'PRIVATE-OLD-ATTACHMENT-RAW-CONTENT';
+    const newContent = 'Unrelated new attachment evidence.';
+    const sharedRawSourceSha256 = hash('same-raw-file-bytes');
+    const attachmentById = new Map<
+      string,
+      { displayName: string; content: string; sourceSha256: string }
+    >([
+      [
+        oldAttachmentId,
+        {
+          displayName: 'same-raw-source.md',
+          content: oldContent,
+          sourceSha256: sharedRawSourceSha256,
+        },
+      ],
+      [
+        newAttachmentId,
+        {
+          displayName: 'same-raw-source.md',
+          content: newContent,
+          sourceSha256: sharedRawSourceSha256,
+        },
+      ],
+    ]);
+    const prepare = vi.fn(async (studio: LectureStudio, attachmentIds: readonly string[]) => {
+      const selected = attachmentIds.map((id) => {
+        const attachment = attachmentById.get(id);
+        if (!attachment) throw new Error('unknown_attachment');
+        return { id, ...attachment };
+      });
+      return {
+        cards: selected.map((attachment) => ({
+          id: attachment.id,
+          displayName: attachment.displayName,
+          format: 'markdown' as const,
+          byteSize: Buffer.byteLength(attachment.content, 'utf8'),
+          sha256: attachment.sourceSha256,
+          unitLabel: 'part' as const,
+          unitCount: 1,
+          extractedCharacters: attachment.content.length,
+          truncated: false,
+          textAvailable: true as const,
+          reconstructionNotice: 'Exact UTF-8 source text.',
+          expiresAt: '2026-08-16T01:00:00.000Z',
+        })),
+        snapshots: selected.map((attachment, index) => ({
+          sourceLabel: `A${index + 1}` as 'A1',
+          attachmentId: attachment.id,
+          projectId: studio.outputProjectId,
+          studioId: studio.id,
+          displayName: attachment.displayName,
+          format: 'markdown' as const,
+          byteSize: Buffer.byteLength(attachment.content, 'utf8'),
+          sourceSha256: attachment.sourceSha256,
+          unitLabel: 'part' as const,
+          unitCount: 1,
+          content: attachment.content,
+          contentSha256: hash(attachment.content),
+          extractedCharacters: attachment.content.length,
+          truncated: false,
+          reconstructionNotice: 'Exact UTF-8 source text.',
+          capturedAt: '2026-08-16T00:00:00.000Z',
+        })),
+        commit: vi.fn(async () => undefined),
+        rollback: vi.fn(async () => undefined),
+      } satisfies PreparedLectureStudioAttachments;
+    });
+    const { service, storage, codex, projectA, paperA } = fixture({ attachments: { prepare } });
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'Attachment label isolation',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const oldDraftResponse = {
+      reply: 'Applied the old attachment as [A1].',
+      lectureNotesLatexBody: [
+        '\\section{Old attachment result}',
+        'A claim from the old attachment [A1].',
+        '\\section{Sources used}',
+        '[A1] same-raw-source.md',
+      ].join('\n'),
+      slidesLatexBody: [
+        '\\begin{frame}{Old attachment result}',
+        'A claim from the old attachment [A1].',
+        '\\end{frame}',
+      ].join('\n'),
+    };
+    codex.response = oldDraftResponse;
+    const oldAttachmentRevision = await service.send({
+      studioId: studio.id,
+      expectedVersion: initial.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: 'Use the old attachment as [A1].',
+      attachmentIds: [oldAttachmentId],
+    });
+    const promptCountBeforeRebindAttempt = codex.prompts.length;
+
+    await expect(
+      service.send({
+        studioId: studio.id,
+        expectedVersion: oldAttachmentRevision.studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+        message: 'Use this unrelated replacement attachment as [A1].',
+        attachmentIds: [newAttachmentId],
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_citation_mapping' });
+
+    const rebindPrompt = codex.prompts[promptCountBeforeRebindAttempt]!;
+    const rebindPayload = JSON.parse(rebindPrompt.slice(rebindPrompt.indexOf('\n\n') + 2)) as {
+      sourceManifest: {
+        turnAttachments: Array<{ sourceLabel: string; displayName: string; content: string }>;
+      };
+      currentDraft: { lectureNotes: string; slides: string };
+      recentStudioChat: Array<{ role: string; content: string }>;
+      request: string;
+    };
+    expect(rebindPayload.sourceManifest.turnAttachments).toEqual([
+      expect.objectContaining({
+        sourceLabel: 'A1',
+        displayName: 'same-raw-source.md',
+        content: newContent,
+      }),
+    ]);
+    expect(rebindPayload.currentDraft.lectureNotes).toContain(
+      LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER,
+    );
+    expect(rebindPayload.currentDraft.slides).toContain(
+      LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER,
+    );
+    expect(rebindPayload.currentDraft.lectureNotes).not.toContain('[A1]');
+    expect(rebindPayload.currentDraft.slides).not.toContain('[A1]');
+    expect(rebindPayload.recentStudioChat.some((message) => message.content.includes('[A1]'))).toBe(
+      false,
+    );
+    expect(
+      rebindPayload.recentStudioChat.some((message) =>
+        message.content.includes(LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER),
+      ),
+    ).toBe(true);
+    expect(rebindPayload.request).toBe('Use this unrelated replacement attachment as [A1].');
+    expect(rebindPrompt).not.toContain(oldContent);
+    expect(oldAttachmentRevision.revision).toMatchObject({
+      schemaVersion: 2,
+      lectureNotesLatex: expect.stringContaining('[A1] same-raw-source.md'),
+    });
+    expect(storage.revisions.at(-1)).toMatchObject({
+      schemaVersion: 2,
+      lectureNotesLatex: expect.stringContaining('[A1] same-raw-source.md'),
+    });
+  });
+
+  it('preserves staged one-turn attachments when an edit fails so the same IDs can retry', async () => {
+    const attachmentId = randomUUID();
+    const content = 'Retryable attachment evidence.';
+    const commits: Array<ReturnType<typeof vi.fn>> = [];
+    const rollbacks: Array<ReturnType<typeof vi.fn>> = [];
+    const prepare = vi.fn(async (studio: LectureStudio) => {
+      const commit = vi.fn(async () => undefined);
+      const rollback = vi.fn(async () => undefined);
+      commits.push(commit);
+      rollbacks.push(rollback);
+      return {
+        cards: [
+          {
+            id: attachmentId,
+            displayName: 'retry.md',
+            format: 'markdown' as const,
+            byteSize: content.length,
+            sha256: hash(content),
+            unitLabel: 'part' as const,
+            unitCount: 1,
+            extractedCharacters: content.length,
+            truncated: false,
+            textAvailable: true as const,
+            reconstructionNotice: 'Exact UTF-8 source text.',
+            expiresAt: '2026-08-16T01:00:00.000Z',
+          },
+        ],
+        snapshots: [
+          {
+            sourceLabel: 'A1',
+            attachmentId,
+            projectId: studio.outputProjectId,
+            studioId: studio.id,
+            displayName: 'retry.md',
+            format: 'markdown' as const,
+            byteSize: content.length,
+            sourceSha256: hash(content),
+            unitLabel: 'part' as const,
+            unitCount: 1,
+            content,
+            contentSha256: hash(content),
+            extractedCharacters: content.length,
+            truncated: false,
+            reconstructionNotice: 'Exact UTF-8 source text.',
+            capturedAt: '2026-08-16T00:00:00.000Z',
+          },
+        ],
+        commit,
+        rollback,
+      } satisfies PreparedLectureStudioAttachments;
+    });
+    const { service, storage, codex, projectA, paperA } = fixture({ attachments: { prepare } });
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'Retryable attachment edit',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.response = { reply: 'Missing both required documents.' };
+
+    await expect(
+      service.send({
+        studioId: studio.id,
+        expectedVersion: initial.studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+        message: 'Apply this attachment.',
+        attachmentIds: [attachmentId],
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_response_schema' });
+    expect(commits[0]).not.toHaveBeenCalled();
+    expect(rollbacks[0]).toHaveBeenCalledTimes(1);
+
+    const failed = storage.getLectureStudio(studio.id)!;
+    codex.response = latexResponse(['A1']);
+    await service.send({
+      studioId: studio.id,
+      expectedVersion: failed.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: 'Retry with the same attachment.',
+      attachmentIds: [attachmentId],
+    });
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(commits[1]).toHaveBeenCalledTimes(1);
+    expect(rollbacks[1]).not.toHaveBeenCalled();
+  });
+
   it('creates and generates from one frozen external file with F-label provenance', async () => {
     const externalSourceId = randomUUID();
     const sourceSetId = randomUUID();
@@ -3540,6 +3954,7 @@ Use $\1$ only as a source-native alias [P1].
       '\\section{Notes}\nEvidence [P1].\n\\section{Sources used}\nNo mapped label.',
       '\\section{Notes}\nPandoc citation [@fake] and evidence [P1].\n\\section{Sources used}\n[P1] Paper A',
       '\\section{Notes}\nUnsupported \\cite[see][p. 2]{not-in-manifest} and evidence [P1].\n\\section{Sources used}\n[P1] Paper A',
+      `\\section{Notes}\n${LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER} Evidence [P1].\n\\section{Sources used}\n[P1] Paper A`,
     ]) {
       const { service, storage, codex, projectA, paperA } = fixture();
       codex.response = {

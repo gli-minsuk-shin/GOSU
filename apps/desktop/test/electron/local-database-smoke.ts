@@ -39,9 +39,11 @@ import {
   LECTURE_STUDIO_MAX_TRASHED_STUDIOS,
   type LectureStudio,
   type EmptyLectureStudioTrashInput,
+  type LectureStudioAttachmentSnapshot,
   type LectureStudioMessage,
   type LectureStudioRevision,
 } from '../../src/shared/lecture-studio-contracts';
+import type { LectureStudioAttachmentCard } from '../../src/shared/lecture-studio-attachment-contracts';
 
 type LectureStudioRevisionV2 = Extract<LectureStudioRevision, { schemaVersion: 2 }>;
 import {
@@ -2392,6 +2394,40 @@ function verifyLectureStudioListDetailBoundary(fixedTimestamp: string) {
     createdAt: fixedTimestamp,
     completedAt: fixedTimestamp,
   });
+  const attachmentContent = String.raw`\section{Turn attachment evidence}
+The attached derivation contributes the bounded source label [A1].`;
+  const attachmentCard: LectureStudioAttachmentCard = {
+    id: randomUUID(),
+    displayName: 'turn-evidence.tex',
+    format: 'latex',
+    byteSize: Buffer.byteLength(attachmentContent, 'utf8'),
+    sha256: createHash('sha256').update(attachmentContent, 'utf8').digest('hex'),
+    unitLabel: 'part',
+    unitCount: 1,
+    extractedCharacters: attachmentContent.length,
+    truncated: false,
+    textAvailable: true,
+    reconstructionNotice: 'Exact UTF-8 LaTeX text imported for this Lecture Assistant turn.',
+    expiresAt: fixedTimestamp,
+  };
+  const attachmentSnapshot: LectureStudioAttachmentSnapshot = {
+    sourceLabel: 'A1',
+    attachmentId: attachmentCard.id,
+    projectId,
+    studioId: studio.id,
+    displayName: attachmentCard.displayName,
+    format: attachmentCard.format,
+    byteSize: attachmentCard.byteSize,
+    sourceSha256: attachmentCard.sha256,
+    unitLabel: attachmentCard.unitLabel,
+    unitCount: attachmentCard.unitCount,
+    content: attachmentContent,
+    contentSha256: createHash('sha256').update(attachmentContent, 'utf8').digest('hex'),
+    extractedCharacters: attachmentContent.length,
+    truncated: false,
+    reconstructionNotice: attachmentCard.reconstructionNotice!,
+    capturedAt: fixedTimestamp,
+  };
   const revisionFixture = (revision: number, attemptId: string): LectureStudioRevision => ({
     schemaVersion: 1,
     id: randomUUID(),
@@ -2558,6 +2594,28 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
         .digest('hex'),
     };
   };
+  const attachmentLatexRevisionFixture = (
+    revision: number,
+    attemptId: string,
+  ): LectureStudioRevisionV2 => {
+    const base = latexRevisionFixture(revision, attemptId);
+    const sourceManifest = {
+      schemaVersion: 4 as const,
+      selectedProjectIds: [projectId],
+      literature: [],
+      experiments: [],
+      manuscripts: [],
+      externalSources: [],
+      turnAttachments: [attachmentSnapshot],
+    };
+    return {
+      ...base,
+      sourceManifest,
+      sourceManifestSha256: createHash('sha256')
+        .update(JSON.stringify(sourceManifest), 'utf8')
+        .digest('hex'),
+    };
+  };
   const assistantMessage = (
     attemptId: string,
     revision: number,
@@ -2712,13 +2770,35 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
   const legacyLectureKeyHex = safeStorage
     .decryptString(readFileSync(join(app.getPath('userData'), 'local-key.bin')))
     .trim();
+  const legacyAttachmentMessageId = randomUUID();
   const legacyLectureRow = new Database(join(app.getPath('userData'), 'gosu.db'));
   legacyLectureRow.pragma(`key="x'${legacyLectureKeyHex}'"`);
   try {
     legacyLectureRow.exec('alter table lecture_studios drop column generation_brief_json');
+    legacyLectureRow.exec('alter table lecture_studio_messages drop column attachments_json');
     legacyLectureRow
       .prepare('update lecture_studios set source_selection_json=? where id=?')
       .run(JSON.stringify({ literature: [{ projectId, recordId }], experiments: [] }), studio.id);
+    legacyLectureRow
+      .prepare(
+        `insert into lecture_studio_messages(
+           id,schema_version,studio_id,role,status,content,attempt_id,revision,
+           invocation_json,created_at,completed_at
+         ) values(?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        legacyAttachmentMessageId,
+        1,
+        studio.id,
+        'user',
+        'failed',
+        'Legacy Lecture Assistant message without attachment storage.',
+        null,
+        null,
+        null,
+        fixedTimestamp,
+        fixedTimestamp,
+      );
   } finally {
     legacyLectureRow.close();
   }
@@ -2736,6 +2816,13 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
           customInstructions: '',
         }),
     'legacy_lecture_selection_was_not_normalized_after_reopen',
+  );
+  const legacyAttachmentMessage = legacyDetail.messages.find(
+    (message) => message.id === legacyAttachmentMessageId,
+  );
+  invariant(
+    legacyAttachmentMessage !== undefined && legacyAttachmentMessage.attachments === undefined,
+    'legacy_lecture_message_did_not_decode_null_attachments_as_undefined',
   );
 
   const failedAttemptId = randomUUID();
@@ -3142,17 +3229,145 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
       isDeepStrictEqual(latexReopened.getCurrentLectureStudioRevision(studio.id), externalRevision),
     'lecture_external_v3_revision_was_not_decoded_exactly_before_reopen',
   );
+
+  const attachmentAttemptId = randomUUID();
+  const malformedAttachmentUser = {
+    ...userMessage(attachmentAttemptId, 'Reject unsafe attachment receipt fields.'),
+    attachments: [
+      {
+        ...attachmentCard,
+        localPath: '/private/turn-evidence.tex',
+        content: attachmentContent,
+        studioId: studio.id,
+      },
+    ],
+  } as unknown as LectureStudioMessage;
+  let malformedAttachmentRejected = false;
+  try {
+    latexReopened.beginLectureStudioTurn({
+      studioId: studio.id,
+      expectedVersion: externalReady.version,
+      attemptId: attachmentAttemptId,
+      userMessage: malformedAttachmentUser,
+      updatedAt: fixedTimestamp,
+    });
+  } catch {
+    malformedAttachmentRejected = true;
+  }
+  invariant(
+    malformedAttachmentRejected &&
+      latexReopened.getLectureStudio(studio.id)?.status === 'ready' &&
+      latexReopened.getLectureStudio(studio.id)?.version === externalReady.version &&
+      !latexReopened
+        .listLectureStudioMessages(studio.id, 50)
+        .some((message) => message.id === malformedAttachmentUser.id),
+    'lecture_message_accepted_unsafe_attachment_receipt_fields',
+  );
+
+  const attachmentUser: LectureStudioMessage = {
+    ...userMessage(attachmentAttemptId, 'Use the attached LaTeX evidence in this revision.'),
+    attachments: [attachmentCard],
+  };
+  const attachmentGenerating = latexReopened.beginLectureStudioTurn({
+    studioId: studio.id,
+    expectedVersion: externalReady.version,
+    attemptId: attachmentAttemptId,
+    userMessage: attachmentUser,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(attachmentGenerating !== null, 'lecture_attachment_v4_turn_did_not_begin');
+  const attachmentRevision = attachmentLatexRevisionFixture(4, attachmentAttemptId);
+  invariant(
+    attachmentRevision.sourceManifest.schemaVersion === 4,
+    'lecture_attachment_fixture_was_not_v4',
+  );
+  const wrongStudioAttachmentRevision: LectureStudioRevisionV2 = {
+    ...attachmentRevision,
+    sourceManifest: {
+      ...attachmentRevision.sourceManifest,
+      turnAttachments: [{ ...attachmentSnapshot, studioId: randomUUID() }],
+    },
+  };
+  let wrongStudioRevisionRejected = false;
+  try {
+    latexReopened.completeLectureStudioTurn({
+      studio: {
+        ...attachmentGenerating,
+        status: 'ready',
+        activeAttemptId: null,
+        currentRevision: 4,
+        version: attachmentGenerating.version + 1,
+        lastErrorCode: null,
+        updatedAt: fixedTimestamp,
+      },
+      revision: wrongStudioAttachmentRevision,
+      assistantMessage: assistantMessage(attachmentAttemptId, 4),
+    });
+  } catch {
+    wrongStudioRevisionRejected = true;
+  }
+  invariant(
+    wrongStudioRevisionRejected &&
+      latexReopened.getLectureStudio(studio.id)?.status === 'generating' &&
+      latexReopened.getLectureStudioRevision(studio.id, 4) === null,
+    'lecture_wrong_studio_v4_attachment_revision_did_not_fail_closed',
+  );
+  const attachmentReady = latexReopened.completeLectureStudioTurn({
+    studio: {
+      ...attachmentGenerating,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 4,
+      version: attachmentGenerating.version + 1,
+      lastErrorCode: null,
+      updatedAt: fixedTimestamp,
+    },
+    revision: attachmentRevision,
+    assistantMessage: assistantMessage(attachmentAttemptId, 4),
+  });
+  const attachmentMessageBeforeReopen = latexReopened
+    .listLectureStudioMessages(studio.id, 50)
+    .find((message) => message.id === attachmentUser.id);
+  const persistedAttachmentCard = attachmentMessageBeforeReopen?.attachments?.[0];
+  invariant(
+    attachmentReady?.currentRevision === 4 &&
+      isDeepStrictEqual(
+        latexReopened.getCurrentLectureStudioRevision(studio.id),
+        attachmentRevision,
+      ) &&
+      isDeepStrictEqual(attachmentMessageBeforeReopen?.attachments, [attachmentCard]) &&
+      persistedAttachmentCard !== undefined &&
+      !('path' in persistedAttachmentCard) &&
+      !('localPath' in persistedAttachmentCard) &&
+      !('content' in persistedAttachmentCard) &&
+      !('body' in persistedAttachmentCard) &&
+      !('studioId' in persistedAttachmentCard),
+    'lecture_attachment_card_or_v4_revision_changed_before_reopen',
+  );
   latexReopened.close();
 
   const persisted = new LocalDatabase();
   persisted.open();
+  const attachmentMessageAfterReopen = persisted
+    .listLectureStudioMessages(studio.id, 50)
+    .find((message) => message.id === attachmentUser.id);
   invariant(
-    isDeepStrictEqual(persisted.getCurrentLectureStudioRevision(studio.id), externalRevision) &&
-      persisted.listLectureStudioRevisions(studio.id, 10).length === 3 &&
+    isDeepStrictEqual(persisted.getCurrentLectureStudioRevision(studio.id), attachmentRevision) &&
+      isDeepStrictEqual(persisted.getLectureStudioRevision(studio.id, 3), externalRevision) &&
+      persisted.listLectureStudioRevisions(studio.id, 10).length === 4 &&
+      isDeepStrictEqual(attachmentMessageAfterReopen?.attachments, [attachmentCard]) &&
+      isDeepStrictEqual(
+        (
+          persisted.getCurrentLectureStudioRevision(studio.id)?.sourceManifest as {
+            turnAttachments?: readonly LectureStudioAttachmentSnapshot[];
+          }
+        ).turnAttachments,
+        [attachmentSnapshot],
+      ) &&
       persisted
         .listLectureStudioMessages(studio.id, 10)
         .find((message) => message.id === atomicUser.id)?.status === 'failed',
-    'lecture_external_v3_history_was_not_persisted_after_reopen',
+    'lecture_attachment_cards_or_v4_source_manifest_were_not_persisted_after_reopen',
   );
   for (let index = 1; index < LECTURE_STUDIO_MAX_STUDIOS; index += 1) {
     const capacityProjectId = randomUUID();

@@ -291,6 +291,26 @@ export type StagedLectureExternalSourceSetView = z.infer<
   typeof StagedLectureExternalSourceSetViewSchema
 >;
 
+export const SnapshotStagedLectureExternalSourcesInputSchema = z
+  .object({
+    projectId: uuidSchema,
+    sourceSetId: uuidSchema,
+    sourceIds: z.array(uuidSchema).min(1).max(LECTURE_EXTERNAL_SOURCE_MAX_SOURCES),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (new Set(input.sourceIds).size !== input.sourceIds.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['sourceIds'],
+        message: 'Staged source IDs must be unique',
+      });
+    }
+  });
+export type SnapshotStagedLectureExternalSourcesInput = z.infer<
+  typeof SnapshotStagedLectureExternalSourcesInputSchema
+>;
+
 export const LectureExternalSourceListSchema = z
   .object({
     schemaVersion: z.literal(1),

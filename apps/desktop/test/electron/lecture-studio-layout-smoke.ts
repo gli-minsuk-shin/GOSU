@@ -480,7 +480,7 @@ async function run() {
         actions.scrollWidth <= actions.clientWidth + 1,
         `lecture_studio_${layout}_artifact_actions_overflowed`,
       );
-      const expectedLabels = ['Export PDF', 'Open PDF in default app', 'Show saved folder'];
+      const expectedLabels = ['Export PDF', 'Open PDF in default app', 'Show PDF in Finder'];
       for (const [index, button] of actions.buttons.entries()) {
         invariant(
           button.label === expectedLabels[index],

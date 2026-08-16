@@ -1,4 +1,13 @@
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -212,6 +221,195 @@ describe('LectureExternalSourceService', () => {
     expect(final.sources).toHaveLength(12);
     expect(final.sources.map((source) => source.displayName)).toContain('twelfth.md');
     expect(final.sources.map((source) => source.displayName)).not.toContain('thirteenth.md');
+  });
+
+  it('enforces caller-specific source and extracted-text limits inside the append queue', async () => {
+    const root = await fixtureRoot();
+    const initial = await Promise.all(
+      Array.from({ length: 4 }, async (_, index) => {
+        const path = join(root, `initial-${index}.md`);
+        await writeFile(path, `# Initial ${index}`);
+        return path;
+      }),
+    );
+    const fifth = join(root, 'fifth.md');
+    const rejectedSixth = join(root, 'rejected-sixth.md');
+    await writeFile(fifth, '# Fifth');
+    await writeFile(rejectedSixth, '# Rejected sixth');
+    const selections: string[][] = [initial, [fifth], [rejectedSixth]];
+    const importer = service(root, async () => selections.shift() ?? []);
+    const options = { maxSources: 5, maxTotalExtractedCharacters: 60_000 } as const;
+    const staged = await importer.chooseAndStage(
+      { projectId: PROJECT_ID, sourceSetId: null },
+      options,
+    );
+
+    const appends = await Promise.allSettled([
+      importer.chooseAndStage({ projectId: PROJECT_ID, sourceSetId: staged.id }, options),
+      importer.chooseAndStage({ projectId: PROJECT_ID, sourceSetId: staged.id }, options),
+    ]);
+
+    expect(appends.filter((append) => append.status === 'fulfilled')).toHaveLength(1);
+    expect(appends.find((append) => append.status === 'rejected')).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({ code: 'lecture_external_source_too_many' }),
+    });
+    const final = await importer.listStaged({ projectId: PROJECT_ID, sourceSetId: staged.id });
+    expect(final.sources).toHaveLength(5);
+    expect(
+      final.sources.filter(({ displayName }) =>
+        ['fifth.md', 'rejected-sixth.md'].includes(displayName),
+      ),
+    ).toHaveLength(1);
+    expect(
+      (await readdir(join(root, 'managed', 'staging', PROJECT_ID, staged.id))).filter((name) =>
+        name.endsWith('.md'),
+      ),
+    ).toHaveLength(5);
+
+    const oversizedRoot = await fixtureRoot();
+    const firstLarge = join(oversizedRoot, 'large-a.md');
+    const secondLarge = join(oversizedRoot, 'large-b.md');
+    await writeFile(firstLarge, `# A\n${'a'.repeat(30_000)}`);
+    await writeFile(secondLarge, `# B\n${'b'.repeat(30_000)}`);
+    const oversized = service(oversizedRoot, async () => [firstLarge, secondLarge]);
+    await expect(
+      oversized.chooseAndStage(
+        { projectId: PROJECT_ID, sourceSetId: null },
+        { maxSources: 5, maxTotalExtractedCharacters: 60_000 },
+      ),
+    ).rejects.toHaveProperty('code', 'lecture_external_source_total_too_large');
+  });
+
+  it('snapshots staged sources in requested order, renews their lease, and detects tampering', async () => {
+    const root = await fixtureRoot();
+    const first = join(root, 'first.md');
+    const second = join(root, 'second.tex');
+    await writeFile(first, '# First snapshot');
+    await writeFile(second, String.raw`\section{Second snapshot}`);
+    let now = new Date('2026-08-16T00:00:00.000Z');
+    const importer = service(root, async () => [first, second], { now: () => now });
+    const staged = await importer.chooseAndStage({ projectId: PROJECT_ID, sourceSetId: null });
+    const [firstSource, secondSource] = staged.sources;
+    now = new Date('2026-08-16T00:45:00.000Z');
+
+    const snapshots = await importer.snapshotStaged({
+      projectId: PROJECT_ID,
+      sourceSetId: staged.id,
+      sourceIds: [secondSource!.id, firstSource!.id],
+    });
+
+    expect(snapshots.map(({ id }) => id)).toEqual([secondSource!.id, firstSource!.id]);
+    expect(snapshots.map(({ extraction }) => extraction.content)).toEqual([
+      String.raw`\section{Second snapshot}`,
+      '# First snapshot',
+    ]);
+    expect(
+      (await importer.listStaged({ projectId: PROJECT_ID, sourceSetId: staged.id })).expiresAt,
+    ).toBe('2026-08-16T01:45:00.000Z');
+
+    await writeFile(
+      join(root, 'managed', 'staging', PROJECT_ID, staged.id, `${firstSource!.id}.md`),
+      '# Tampered snapshot',
+    );
+    await expect(
+      importer.snapshotStaged({
+        projectId: PROJECT_ID,
+        sourceSetId: staged.id,
+        sourceIds: [firstSource!.id],
+      }),
+    ).rejects.toHaveProperty('code', 'lecture_external_source_corrupt');
+  });
+
+  it('serializes snapshot and release operations without returning a torn source', async () => {
+    const root = await fixtureRoot();
+    const first = join(root, 'first.md');
+    const second = join(root, 'second.md');
+    await writeFile(first, '# Atomic first');
+    await writeFile(second, '# Atomic second');
+    const importer = service(root, async () => [first, second]);
+    const staged = await importer.chooseAndStage({ projectId: PROJECT_ID, sourceSetId: null });
+    const [firstSource, secondSource] = staged.sources;
+
+    const snapshot = importer.snapshotStaged({
+      projectId: PROJECT_ID,
+      sourceSetId: staged.id,
+      sourceIds: [firstSource!.id],
+    });
+    const release = importer.removeStaged({
+      projectId: PROJECT_ID,
+      sourceSetId: staged.id,
+      sourceId: firstSource!.id,
+    });
+
+    await expect(snapshot).resolves.toEqual([
+      expect.objectContaining({
+        id: firstSource!.id,
+        extraction: expect.objectContaining({ content: '# Atomic first' }),
+      }),
+    ]);
+    await expect(release).resolves.toMatchObject({
+      sources: [expect.objectContaining({ id: secondSource!.id })],
+    });
+    await expect(
+      importer.snapshotStaged({
+        projectId: PROJECT_ID,
+        sourceSetId: staged.id,
+        sourceIds: [firstSource!.id],
+      }),
+    ).rejects.toHaveProperty('code', 'lecture_external_source_not_found');
+  });
+
+  it('consumes only selected staged sources after a successful snapshot and is idempotent', async () => {
+    const root = await fixtureRoot();
+    const first = join(root, 'first.md');
+    const second = join(root, 'second.md');
+    await writeFile(first, '# Consume first');
+    await writeFile(second, '# Preserve second');
+    const importer = service(root, async () => [first, second]);
+    const staged = await importer.chooseAndStage({ projectId: PROJECT_ID, sourceSetId: null });
+    const [firstSource, secondSource] = staged.sources;
+    const input = {
+      projectId: PROJECT_ID,
+      sourceSetId: staged.id,
+      sourceIds: [firstSource!.id],
+    };
+
+    await expect(importer.snapshotStaged(input)).resolves.toHaveLength(1);
+    await expect(importer.consumeStaged(input)).resolves.toEqual({
+      consumed: true,
+      remainingSources: 1,
+    });
+    await expect(
+      access(join(root, 'managed', 'staging', PROJECT_ID, staged.id, `${firstSource!.id}.md`)),
+    ).rejects.toHaveProperty('code', 'ENOENT');
+    await expect(
+      importer.snapshotStaged({
+        projectId: PROJECT_ID,
+        sourceSetId: staged.id,
+        sourceIds: [secondSource!.id],
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: secondSource!.id,
+        extraction: expect.objectContaining({ content: '# Preserve second' }),
+      }),
+    ]);
+
+    await expect(
+      importer.consumeStaged({
+        projectId: PROJECT_ID,
+        sourceSetId: staged.id,
+        sourceIds: [secondSource!.id],
+      }),
+    ).resolves.toEqual({ consumed: true, remainingSources: 0 });
+    await expect(importer.consumeStaged(input)).resolves.toEqual({
+      consumed: true,
+      remainingSources: 0,
+    });
+    await expect(
+      access(join(root, 'managed', 'staging', PROJECT_ID, staged.id)),
+    ).rejects.toHaveProperty('code', 'ENOENT');
   });
 
   it('claims selected sources before Studio persistence and freezes only requested snapshots', async () => {
@@ -457,6 +655,20 @@ describe('LectureExternalSourceService', () => {
     const staged = await importer.chooseAndStage({ projectId: PROJECT_ID, sourceSetId: null });
     await expect(
       importer.listStaged({ projectId: OTHER_PROJECT_ID, sourceSetId: staged.id }),
+    ).rejects.toHaveProperty('code', 'lecture_external_source_scope_mismatch');
+    await expect(
+      importer.snapshotStaged({
+        projectId: OTHER_PROJECT_ID,
+        sourceSetId: staged.id,
+        sourceIds: [staged.sources[0]!.id],
+      }),
+    ).rejects.toHaveProperty('code', 'lecture_external_source_scope_mismatch');
+    await expect(
+      importer.consumeStaged({
+        projectId: OTHER_PROJECT_ID,
+        sourceSetId: staged.id,
+        sourceIds: [staged.sources[0]!.id],
+      }),
     ).rejects.toHaveProperty('code', 'lecture_external_source_scope_mismatch');
   });
 
