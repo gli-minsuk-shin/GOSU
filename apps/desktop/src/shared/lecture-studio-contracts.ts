@@ -118,7 +118,7 @@ export const LectureStudioStructureSectionSchema = z
         message: 'Structure section names must be plain text',
       })
       .refine((value) => !['sources used', 'title', 'title slide'].includes(value.toLowerCase()), {
-        message: 'System-owned structure items cannot be added to the content flow',
+        message: 'Document-level items cannot be added to the custom content flow',
       }),
     coverage: LectureStudioStructureCoverageSchema,
   })

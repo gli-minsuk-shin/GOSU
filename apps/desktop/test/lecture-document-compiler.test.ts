@@ -224,7 +224,7 @@ describe('LectureDocumentCompiler', () => {
     expect(run).toHaveBeenCalledTimes(2);
   });
 
-  it('compiles the exact canonical Lecture Studio LaTeX source without Markdown conversion', async () => {
+  it('compiles exact canonical Lecture Studio LaTeX without a visible source list', async () => {
     let generatedSource = '';
     const run = vi.fn(
       async (_executable: string, arguments_: readonly string[], options: { cwd: string }) => {
@@ -246,9 +246,7 @@ describe('LectureDocumentCompiler', () => {
       'lecture-notes',
       'Canonical source',
       String.raw`\section{Result}
-$f'(x)=2x$ [M1].
-\section{Sources used}
-\begin{itemize}\item [M1] Manuscript\end{itemize}`,
+$f'(x)=2x$ [M1].`,
     );
 
     await compiler.compile({

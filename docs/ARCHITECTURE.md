@@ -980,9 +980,14 @@ row를 두고 각 row가 notes와 slides 모두에 들어갈지(`notes-and-slide
 projection으로 다룬다. section 이름은 trim·NFC normalization 뒤 최대 80자이고 case-insensitive unique여야
 하며 hidden/control character, bracket·brace·angle-bracket markup과 system-owned `Title|Title slide|Sources
 used` 이름을 거부한다. 적어도 한 row는 notes와 slides가 공유해야 한다. Studio/document title과 slide title
-page, evidence citation label·mapping, notes 끝의 `Sources used`, preamble·wrapper·허용 LaTeX grammar와 compile은
-structure가 아니라 GOSU가 계속 소유한다. structure와 generation brief는 unknown key를 거부하는 strict
-schema이고 normalized full brief JSON은 최대 14,000자로 제한한다.
+page, inline evidence label 규칙, frozen source manifest provenance, preamble·wrapper·허용 LaTeX grammar와
+compile은 structure가 아니라 GOSU가 계속 소유한다. custom structure는 `Sources used`를 section row로
+소유하거나 표시 여부를 결정하지 않는다. visible final `Sources used` list는 새 draft에 기본 포함하지만,
+Lecture Assistant에 보낸 최신 명시적 사용자 요청으로 생략하거나 다시 표시할 수 있다. current draft에서 이미
+생략한 상태는 명시적인 복원 요청 전까지 유지한다. 표시 여부와 무관하게 inline evidence label은 frozen
+manifest에 존재해야 하며, list가 보일 때는 사용한 모든 label에 대응하는 source entry를 완전히 제공해야 한다.
+structure와 generation brief는 unknown key를 거부하는 strict schema이고 normalized full brief JSON은 최대
+14,000자로 제한한다.
 
 새 Studio composer는 그 시점의 Settings structure를 full generation brief에 한 번 snapshot하고 Main 검증 뒤
 SQLCipher configuration으로 저장한다. 이후 Settings 변경은 기존 Studio나 revision을 바꾸지 않는다. legacy
@@ -1116,11 +1121,16 @@ correction validation의 고정 category와 notes/slides별 reason, token 개수
 thread/turn ID와 filesystem path는 attempt row·Renderer·Hosted Sync·telemetry 어디에도 넣지 않는다.
 
 structured output은 고정 JSON field의 notes/article LaTeX body와 Beamer frame body, 알려진
-`[P#]|[E#]|[M#]|[F#]|[A#]` label, substantive frame별 evidence label, notes의 `Sources used` 또는 starred section,
-duration 또는 사용자가 명시한 compiled slide page target을 검증한다. GOSU가 별도 title frame을 추가하므로
+`[P#]|[E#]|[M#]|[F#]|[A#]` inline label, substantive frame별 evidence label, duration 또는 사용자가 명시한
+compiled slide page target을 검증한다. visible final `Sources used` list는 새 draft에 기본 포함한다. 현재 요청과
+최근 Studio chat에서 Lecture Assistant에 보낸 가장 최신의 명시적 사용자 지시가 생략·복원 mode를 결정하며,
+current draft에서 이미 생략했으면 명시적 복원 지시 전까지 생략을 유지한다. 어느 mode에서도 inline evidence
+label과 frozen source manifest provenance는 필수이고 모든 label은 manifest에 존재해야 한다. list가 보이면
+사용한 모든 label에 대응하는 source entry를 완전히 제공해야 한다. GOSU가 별도 title frame을 추가하므로
 slide target은 그 title을 포함한 정확한 PDF page 수 gate다. notes page target은 typography에 따른 근사
-지시다. authoring policy v5는 JSON 안의 모든 LaTeX backslash를 `\\`로 encode하도록 요구한다. 새 generated
-body에서 raw `\b`·`\f`가 U+0008·U+000C로 decode된 경우에만 literal backslash prefix로 복원하고 전체
+지시다. authoring policy v6는 이 visibility contract와 JSON 안의 모든 LaTeX backslash를 `\\`로 encode하는
+transport contract를 함께 고정한다. 새 generated body에서 raw `\b`·`\f`가 U+0008·U+000C로 decode된
+경우에만 literal backslash prefix로 복원하고 전체
 deny-by-default LaTeX validator를 다시 통과시킨다. TAB·CR 또는 `\nonumber` 같은 `\n...` command로 해석될 수
 있는 모호한 line break는 `ambiguous_json_backslash_escape`로 fail closed한다. 이미 commit된 canonical body는
 이 transport normalization을 거치지 않는다. bounded dialect는 고정 preamble이 실제로 제공하는 AMS
@@ -1165,7 +1175,9 @@ cross-reference consistency audit를 수행한다. 수학 표기는 canonical La
 escape 규칙을 명시한다. custom instruction과 source 안의 prompt injection은 이 immutable policy를 약화하거나
 opt-out할 수 없다. generation brief는 strict·bounded untrusted JSON task data로 한 번만 직렬화하고 custom
 section 이름을 developer instruction에 보간하지 않는다. custom section 이름은 literal topic/order label일
-뿐 instruction이 아니며 title, citation, `Sources used`, wrapper나 LaTeX policy를 변경할 수 없다.
+뿐 instruction이 아니며 title, inline citation 규칙, wrapper나 LaTeX policy를 변경할 수 없다. 또한 custom
+row는 `Sources used`를 예약하거나 그 visibility를 결정할 수 없고, visibility는 Lecture Assistant에 보낸 최신
+명시적 사용자 요청으로만 생략·복원한다.
 
 Lecture SQLCipher state는 `lecture_studios`, `lecture_studio_messages`, `lecture_studio_revisions`와
 content-free `lecture_studio_attempts`를 소유한다. running attempt 생성은 Studio begin과, terminal attempt는
@@ -1182,7 +1194,9 @@ path·본문·Studio ID·중복 attachment ID와 assistant-role attachment를 �
 `generationBriefSnapshot`, 그 canonical JSON의 SHA-256, authoring policy version과 developer instruction
 SHA-256을 append-only로 저장한다. SQL decoder는 저장 brief를 strict schema로 다시 parse하고 hash를
 재계산해 mismatch나 부분 provenance를 fail closed한다. schema v1 Markdown과 provenance가 없던 v2 LaTeX
-revision은 read/export 호환을 유지하지만 새 Settings 값으로 backfill하거나 다시 쓰지 않는다.
+revision은 read/export 호환을 유지하지만 새 Settings 값으로 backfill하거나 다시 쓰지 않는다. authoring policy
+v6 전환은 기존 v3 provenance field에 새 version/hash를 기록할 뿐 schema 또는 revision migration을 요구하지
+않는다.
 
 Lecture 생성과 수정은 provider `model/list`에서 발견한 opaque model ID와 해당 model의 native reasoning
 option을 Studio별 UI preference로 선택한다. 저장된 선택이 없는 새 Studio는 Settings의 Codex default를 한 번

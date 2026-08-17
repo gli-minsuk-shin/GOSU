@@ -356,7 +356,7 @@ export function SettingsView({
               onChange={setLectureStructureDraft}
               heading="Default notes & slides structure"
               idPrefix="settings-lecture-structure"
-              contextCopy="This local default is copied into each new Studio. GOSU still manages document formatting, citations, the slide title page, and Sources used."
+              contextCopy="This local default is copied into each new Studio. GOSU still manages document formatting, inline citations, and the slide title page. Sources used is included by default but can be removed through an explicit Assistant request."
               onReset={() =>
                 setLectureStructureDraft(structuredClone(preferences.defaultLectureStructure))
               }

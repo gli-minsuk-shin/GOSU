@@ -631,7 +631,7 @@ export function lectureErrorCodeMessage(code: string) {
     lecture_invalid_latex_grammar:
       'The generated notes or slides still used unsupported LaTeX after one automatic correction. No files were changed.',
     lecture_invalid_citation_mapping:
-      'The generated draft still had missing or unknown source labels after one automatic correction. No files were changed.',
+      'The generated draft still had missing or unknown source labels, an incomplete source mapping, or the wrong Sources used visibility after one automatic correction. No files were changed.',
     lecture_invalid_slide_count:
       'The generated deck still did not match the requested slide count after one automatic correction. Adjust the slide target or retry.',
     lecture_persistence_failed:

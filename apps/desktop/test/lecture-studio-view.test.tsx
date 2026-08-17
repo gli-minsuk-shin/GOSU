@@ -296,7 +296,7 @@ describe('LectureStudioView', () => {
     );
     expect(lectureErrorCodeMessage('lecture_invalid_latex_grammar')).toContain('unsupported LaTeX');
     expect(lectureErrorCodeMessage('lecture_invalid_citation_mapping')).toContain(
-      'missing or unknown source labels',
+      'wrong Sources used visibility',
     );
     expect(lectureErrorCodeMessage('lecture_invalid_slide_count')).toContain(
       'Adjust the slide target or retry',

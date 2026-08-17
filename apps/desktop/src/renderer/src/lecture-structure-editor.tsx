@@ -120,7 +120,7 @@ function friendlySectionIssue(section: LectureStudioStructureSection | undefined
     return `Keep section names within ${LECTURE_STUDIO_MAX_STRUCTURE_SECTION_TITLE} characters.`;
   }
   if (['sources used', 'title', 'title slide'].includes(normalized)) {
-    return 'Title slide and Sources used are already added by GOSU.';
+    return 'Title slide and Sources used are document-level items, not custom content sections.';
   }
   return 'Use a plain-text section name without brackets, braces, or LaTeX commands.';
 }
@@ -451,8 +451,8 @@ export function LectureStructureEditor({
         </div>
       )}
 
-      <div className="lecture-structure-system-items" aria-label="System-managed structure items">
-        <strong>Always managed by GOSU</strong>
+      <div className="lecture-structure-system-items" aria-label="Document defaults and safeguards">
+        <strong>Document defaults and safeguards</strong>
         <ul>
           <li>
             <span>
@@ -471,9 +471,9 @@ export function LectureStructureEditor({
           <li>
             <span>
               <strong>Sources used</strong>
-              <small>Added at the end of the notes</small>
+              <small>Included by default; removable by an explicit Assistant request</small>
             </span>
-            <em>Locked</em>
+            <em>Default</em>
           </li>
         </ul>
       </div>
