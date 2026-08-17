@@ -53,6 +53,21 @@ describe('Lecture LaTeX source', () => {
     expect(validateCanonicalLectureLatex('slides', 'Calculus', slides)).toBe(slides);
   });
 
+  it('builds and revalidates canonical notes without a visible Sources used section', () => {
+    const body = String.raw`\section{Result}
+The estimator is consistent under the stated assumptions [M1].`;
+
+    expect(validationError('lecture-notes', body).reason).toBe('missing_sources_used');
+    expect(() =>
+      validateLectureLatexBody('lecture-notes', body, { requireSourcesUsed: false }),
+    ).not.toThrow();
+    const source = buildLectureLatexDocument('lecture-notes', 'Optional source list', body);
+    expect(source).not.toContain('Sources used');
+    expect(validateCanonicalLectureLatex('lecture-notes', 'Optional source list', source)).toBe(
+      source,
+    );
+  });
+
   it.each([
     ['input', String.raw`\input{/etc/passwd}\section{Sources used}`],
     ['write18', String.raw`\write18{touch /tmp/x}\section{Sources used}`],

@@ -5,6 +5,7 @@ import type { ModelInvocation } from '@gosu/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  classifyLectureSourcesUsedDirective,
   LectureStudioService,
   LectureStudioServiceError,
   type LectureStudioStorage,
@@ -57,6 +58,12 @@ function lectureNotesBody(labels: readonly string[], title = 'Lecture notes') {
     '\\section{Sources used}',
     ...labels.map((label) => `[${label}] Fixture source ${label}`),
   ].join('\n');
+}
+
+function lectureNotesBodyWithoutSources(labels: readonly string[], title = 'Lecture notes') {
+  return [`\\section{${title}}`, `Evidence ${labels.map((label) => `[${label}]`).join(' ')}.`].join(
+    '\n',
+  );
 }
 
 function lectureSlidesBody(labels: readonly string[], frameCount = 1) {
@@ -1057,6 +1064,48 @@ function pendingFromRevision(
 }
 
 describe('LectureStudioService', () => {
+  it.each([
+    ['Remove Sources used but keep inline citations.', 'omitted'],
+    ["Don't include the Sources used section.", 'omitted'],
+    ["Remove Sources used and don't add it back.", 'omitted'],
+    ['Sources used 섹션을 삭제하지 마.', 'required'],
+    ['Sources used 섹션은 넣지 마.', 'omitted'],
+    ['Sources used 섹션을 지우고 inline citation은 유지해.', 'omitted'],
+    ['I did not ask to remove Sources used.', 'required'],
+    ['Sources used 앞의 17만 지워줘.', null],
+    ['Sources used section 을 아예 빼달라니까.', 'omitted'],
+    ['Sources used section 다시 넣어줘.', 'required'],
+    ['Do not exclude the Sources used section.', 'required'],
+    ["Don't get rid of Sources used.", 'required'],
+    ["Don't bring back Sources used.", 'omitted'],
+    ['Sources used section 추가 안 해도 돼.', 'omitted'],
+    ['Sources used 없어도 돼.', 'omitted'],
+    ['Sources used 필요 없어.', 'omitted'],
+    ['Sources used 안 넣어도 돼.', 'omitted'],
+    ['Sources used는 없어도 돼.', 'omitted'],
+    ['Sources used 섹션은 필요 없어.', 'omitted'],
+    ['Sources used를 안 넣어도 돼.', 'omitted'],
+    ['출처 섹션은 필요 없어.', 'omitted'],
+    ["I don't want a Sources used section.", 'omitted'],
+    ["I don't need a Sources used section.", 'omitted'],
+    ['Leave out Sources used.', 'omitted'],
+    ['The phrase says “remove Sources used”; what does it mean?', null],
+    ['The phrase says ‘remove Sources used’; what does it mean?', null],
+    ['The phrase says `remove Sources used`; what does it mean?', null],
+    ["I don't want to remove Sources used.", 'required'],
+    ["I don't want you to remove Sources used.", 'required'],
+    ["Don't leave out Sources used.", 'required'],
+    ['Can you not remove Sources used?', 'required'],
+    ["Don't ever remove Sources used.", 'required'],
+    ['Sources used를 삭제하고 싶지 않아.', 'required'],
+    [
+      '"반드시 마지막에 Sources used 출처 매핑으로 끝나야 하므로 해당 섹션을 완전히 삭제할 수 없습니다." 이게 무슨이야기야?',
+      null,
+    ],
+  ] as const)('classifies a target-scoped source-list directive: %s', (request, expected) => {
+    expect(classifyLectureSourcesUsedDirective(request)).toBe(expected);
+  });
+
   it('uses one-turn attachments as A-labelled evidence and commits them only with the revision', async () => {
     const attachmentId = randomUUID();
     const attachmentContent = '# Attached theorem\n\nThe variance is bounded by the cited lemma.';
@@ -4129,10 +4178,175 @@ Use $\1$ only as a source-native alias [P1].
     expect(storage.getLectureStudio(studio.id)).toMatchObject({ status: 'draft' });
   });
 
-  it('requires a complete Sources used mapping and rejects unsupported citation syntax', async () => {
+  it('keeps Sources used by default for a new Studio', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.response = {
+      reply: 'Missing the default source list.',
+      lectureNotesLatexBody: lectureNotesBodyWithoutSources(['P1']),
+      slidesLatexBody: lectureSlidesBody(['P1']),
+    };
+    const studio = await service.create({
+      title: 'Default source list',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    await expect(
+      service.generate({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_citation_mapping' });
+    expect(codex.prompts.at(-1)).toContain('Finish the notes with a complete Sources used mapping');
+    expect(storage.revisions).toEqual([]);
+  });
+
+  it('honors the latest explicit request to omit or restore Sources used', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'Optional source list',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const priorDirectionAt = new Date().toISOString();
+    storage.messages.push({
+      schemaVersion: 1,
+      id: randomUUID(),
+      studioId: studio.id,
+      role: 'user',
+      status: 'complete',
+      content: 'Source used section 을 아예 빼달라니까',
+      attemptId: null,
+      revision: initial.revision.revision,
+      invocation: null,
+      createdAt: priorDirectionAt,
+      completedAt: priorDirectionAt,
+    });
+    codex.responseQueue = [
+      {
+        reply: 'Candidate kept the source list and used invalid LaTeX.',
+        lectureNotesLatexBody: `${lectureNotesBody(['P1'])}\n\\unsupportedSourceAlias{bad}`,
+        slidesLatexBody: lectureSlidesBody(['P1']),
+      },
+      {
+        reply: 'Removed the visible source list while preserving inline evidence labels.',
+        lectureNotesLatexBody: lectureNotesBodyWithoutSources(['P1']),
+        slidesLatexBody: lectureSlidesBody(['P1']),
+      },
+    ];
+
+    const omitted = await service.send({
+      studioId: studio.id,
+      expectedVersion: initial.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: '왜 아직 남아 있어?',
+    });
+
+    expect(omitted.revision.schemaVersion).toBe(3);
+    if (omitted.revision.schemaVersion !== 3) throw new Error('expected LaTeX revision');
+    expect(omitted.revision.lectureNotesLatex).not.toContain('Sources used');
+    expect(omitted.revision.lectureNotesLatex).toContain('[P1]');
+    expect(codex.prompts.at(-2)).toContain('"sourcesUsedMode":"omitted"');
+    expect(codex.prompts.at(-1)).toContain('bounded latex_grammar check');
+    expect(codex.prompts.at(-1)).toContain('Omit the Sources used section completely');
+
+    codex.response = latexResponse(['P1'], 1, 'Restored the visible source list.');
+    const restored = await service.send({
+      studioId: studio.id,
+      expectedVersion: omitted.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: 'Sources used section은 삭제하지 말고 그대로 유지해줘.',
+    });
+    expect(restored.revision.schemaVersion).toBe(3);
+    if (restored.revision.schemaVersion !== 3) throw new Error('expected LaTeX revision');
+    expect(restored.revision.lectureNotesLatex).toContain('\\section{Sources used}');
+  });
+
+  it('preserves an explicit source-list direction when a failed edit is retried', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'Retry source-list direction',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.response = { reply: 'Incomplete replacement.' };
+
+    await expect(
+      service.send({
+        studioId: studio.id,
+        expectedVersion: initial.studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+        message: 'Sources used section을 완전히 없애줘.',
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_response_schema' });
+    const failed = storage.getLectureStudio(studio.id)!;
+    expect(failed.status).toBe('failed');
+    expect(
+      storage.messages.find(
+        (message) => message.role === 'user' && message.content.includes('완전히 없애줘'),
+      ),
+    ).toMatchObject({ status: 'failed' });
+
+    codex.response = {
+      reply: 'Retried without the visible source list.',
+      lectureNotesLatexBody: lectureNotesBodyWithoutSources(['P1']),
+      slidesLatexBody: lectureSlidesBody(['P1']),
+    };
+    const retried = await service.generate({
+      studioId: studio.id,
+      expectedVersion: failed.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    expect(retried.revision.schemaVersion).toBe(3);
+    if (retried.revision.schemaVersion !== 3) throw new Error('expected LaTeX revision');
+    expect(retried.revision.lectureNotesLatex).not.toContain('Sources used');
+    expect(codex.prompts.at(-1)).toContain('"sourcesUsedMode":"omitted"');
+  });
+
+  it('requires a complete mapping when Sources used is present and rejects unsupported syntax', async () => {
     for (const lectureNotesLatexBody of [
-      '\\section{Notes}\nEvidence [P1].',
+      '\\section{Notes}\nUncited factual prose.\n\\section{Sources used}\n[P1] Paper A',
       '\\section{Notes}\nEvidence [P1].\n\\section{Sources used}\nNo mapped label.',
+      '\\section{Notes}\nEvidence [P1].\n\\section{Sources used}\n[P1]',
       '\\section{Notes}\nPandoc citation [@fake] and evidence [P1].\n\\section{Sources used}\n[P1] Paper A',
       '\\section{Notes}\nUnsupported \\cite[see][p. 2]{not-in-manifest} and evidence [P1].\n\\section{Sources used}\n[P1] Paper A',
       `\\section{Notes}\n${LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER} Evidence [P1].\n\\section{Sources used}\n[P1] Paper A`,

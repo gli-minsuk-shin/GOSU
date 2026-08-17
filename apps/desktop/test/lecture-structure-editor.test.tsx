@@ -33,18 +33,20 @@ function render(value: LectureStudioStructureTemplate, disabled = false) {
 }
 
 describe('Lecture structure editor', () => {
-  it('offers an adaptive source-led mode with the non-editable document invariants', () => {
+  it('offers an adaptive source-led mode with document defaults and safeguards', () => {
     const html = render(DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE);
 
     expect(html).toContain('Fixture scope copy.');
     expect(html).toContain('checked="" value="adaptive"');
     expect(html).toContain('Custom outline');
     expect(html).toContain('Source-led structure');
-    expect(html).toContain('aria-label="System-managed structure items"');
+    expect(html).toContain('aria-label="Document defaults and safeguards"');
     expect(html).toContain('Title slide');
     expect(html).toContain('Evidence citations');
     expect(html).toContain('Sources used');
-    expect(html.match(/<em>Locked<\/em>/gu)).toHaveLength(3);
+    expect(html.match(/<em>Locked<\/em>/gu)).toHaveLength(2);
+    expect(html).toContain('<em>Default</em>');
+    expect(html).toContain('removable by an explicit Assistant request');
     expect(html).toContain('Revert changes');
   });
 
@@ -133,7 +135,7 @@ describe('Lecture structure editor', () => {
     const validation = lectureStructureEditorValidation(invalid);
     expect(validation.valid).toBe(false);
     expect(validation.messages).toContain(
-      'Title slide and Sources used are already added by GOSU.',
+      'Title slide and Sources used are document-level items, not custom content sections.',
     );
     expect(validation.messages).toContain('Use a different name for each section.');
     expect(validation.messages).toContain(

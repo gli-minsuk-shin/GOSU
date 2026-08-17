@@ -686,7 +686,7 @@ export function buildLectureLatexDocument(kind: LectureLatexKind, title: string,
   if (normalizedTitle.length < 1 || normalizedTitle.length > 256) {
     throw new LectureLatexSourceError('invalid_title');
   }
-  const body = validateLectureLatexBody(kind, rawBody);
+  const body = validateLectureLatexBody(kind, rawBody, { requireSourcesUsed: false });
   return `${prefix(kind, normalizedTitle)}\n${body}\n${SUFFIX}`;
 }
 
@@ -701,6 +701,7 @@ export function validateCanonicalLectureLatex(
   }
   const body = source.slice(expectedPrefix.length, -SUFFIX.length).replace(/\n$/u, '');
   const normalizedBody = validateLectureLatexBody(kind, body, {
+    requireSourcesUsed: false,
     allowLegacySlidePagination: kind === 'slides',
   });
   const normalized = `${prefix(kind, title.trim())}\n${normalizedBody}\n${SUFFIX}`;

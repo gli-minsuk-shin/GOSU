@@ -478,6 +478,146 @@ const LECTURE_MANUSCRIPT_FILE_EXTRACT_MAX_CHARACTERS = 72_000;
 const LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS = 100_000;
 const LECTURE_MANUSCRIPT_SOURCE_PATH_PATTERN = /\.(?:bib|tex)$/iu;
 const UNSUPPORTED_CITATION_PATTERN = /\[@[^\]]+\]|\\(?:auto|paren|text)?cite\b/iu;
+const SOURCES_USED_TARGET_SOURCE = String.raw`(?:sources?\s*used|source\s*(?:list|section)|references?\s*(?:list|section)|출처\s*(?:목록|섹션|매핑)|참고\s*문헌)`;
+const SOURCES_USED_TARGET_WITH_SUFFIX_SOURCE = String.raw`${SOURCES_USED_TARGET_SOURCE}(?:\s*(?:section|list|mapping|섹션|목록|매핑))?`;
+const ENGLISH_SOURCES_USED_TARGET_SOURCE = String.raw`(?:(?:the|a|an)\s+)?(?:final\s+)?(?:visible\s+)?${SOURCES_USED_TARGET_WITH_SUFFIX_SOURCE}`;
+const KOREAN_SOURCES_USED_TARGET_SOURCE = String.raw`${SOURCES_USED_TARGET_WITH_SUFFIX_SOURCE}\s*(?:을|를|은|는|이|가)?\s*(?:아예|완전히|통째로|다시)?\s*`;
+const SOURCES_USED_REQUIRED_NEGATION_PATTERNS = [
+  new RegExp(
+    String.raw`(?:do\s+not|don['’]t|never)\s+(?:ever\s+)?(?:remove|delete|omit|exclude|hide|drop|leave\s+out|get\s+rid\s+of)\s+${ENGLISH_SOURCES_USED_TARGET_SOURCE}`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`(?:can|could|would|will)\s+you\s+not\s+(?:remove|delete|omit|exclude|hide|drop|leave\s+out|get\s+rid\s+of)\s+${ENGLISH_SOURCES_USED_TARGET_SOURCE}`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`don['’]t\s+want\s+(?:you\s+)?to\s+(?:remove|delete|omit|exclude|hide|drop|leave\s+out|get\s+rid\s+of)\s+${ENGLISH_SOURCES_USED_TARGET_SOURCE}`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`(?:did\s+not|didn['’]t)\s+(?:(?:ask|want|mean|tell)(?:ed)?\s+(?:you\s+)?to\s+)?(?:remove|delete|omit|hide|drop)\s+${ENGLISH_SOURCES_USED_TARGET_SOURCE}`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`${KOREAN_SOURCES_USED_TARGET_SOURCE}(?:(?:지우|빼|없애)지|(?:삭제|제거)하지)\s*(?:마|말|않)`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`${KOREAN_SOURCES_USED_TARGET_SOURCE}(?:지우|삭제|제거|빼|없애)(?:면|해선)\s*안`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`${KOREAN_SOURCES_USED_TARGET_SOURCE}(?:지우|삭제|제거|빼|없애)(?:고|하길|하고)?\s*싶지\s*않`,
+    'iu',
+  ),
+];
+const SOURCES_USED_OMITTED_NEGATION_PATTERNS = [
+  new RegExp(
+    String.raw`(?:do\s+not|don['’]t|never)\s+(?:ever\s+)?(?:include|add|show|keep|retain|restore|bring\s+back)\s+${ENGLISH_SOURCES_USED_TARGET_SOURCE}`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`(?:do\s+not|don['’]t)\s+(?:want|need)\s+${ENGLISH_SOURCES_USED_TARGET_SOURCE}`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`${KOREAN_SOURCES_USED_TARGET_SOURCE}(?:넣|추가|복원|보여|유지|남겨)지\s*(?:마|말|않)`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`${KOREAN_SOURCES_USED_TARGET_SOURCE}(?:넣|추가|복원|보여|유지|남겨)\s*안\s*(?:해도|해|돼|됨|괜찮)`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`${KOREAN_SOURCES_USED_TARGET_SOURCE}(?:없어도\s*(?:돼|됨|괜찮)|필요\s*없|안\s*(?:넣(?:어)?|추가|보여)도\s*(?:돼|됨|괜찮))`,
+    'iu',
+  ),
+];
+const SOURCES_USED_OMITTED_DIRECT_PATTERNS = [
+  new RegExp(
+    String.raw`^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:remove|delete|omit|exclude|hide|drop|leave\s+out|get\s+rid\s+of)\s+${ENGLISH_SOURCES_USED_TARGET_SOURCE}`,
+    'iu',
+  ),
+  new RegExp(String.raw`(?:without|no)\s+${ENGLISH_SOURCES_USED_TARGET_SOURCE}`, 'iu'),
+  new RegExp(
+    String.raw`${ENGLISH_SOURCES_USED_TARGET_SOURCE}\s+(?:should|must|needs?\s+to)\s+be\s+(?:removed|deleted|omitted|hidden|dropped)`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`${KOREAN_SOURCES_USED_TARGET_SOURCE}(?:지워|지우|삭제|제거|빼|없애|생략|제외)`,
+    'iu',
+  ),
+  new RegExp(String.raw`${SOURCES_USED_TARGET_WITH_SUFFIX_SOURCE}\s*없이`, 'iu'),
+];
+const SOURCES_USED_REQUIRED_DIRECT_PATTERNS = [
+  new RegExp(
+    String.raw`^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:include|add|restore|show|keep|retain|bring\s+back)\s+${ENGLISH_SOURCES_USED_TARGET_SOURCE}`,
+    'iu',
+  ),
+  new RegExp(
+    String.raw`${ENGLISH_SOURCES_USED_TARGET_SOURCE}\s+(?:should|must|needs?\s+to)\s+(?:stay|remain|be\s+(?:included|shown|kept|restored))`,
+    'iu',
+  ),
+  new RegExp(String.raw`${KOREAN_SOURCES_USED_TARGET_SOURCE}(?:남겨|유지|넣|추가|복원|보여)`, 'iu'),
+];
+
+type LectureSourcesUsedMode = 'required' | 'omitted';
+
+function matchesAny(value: string, patterns: readonly RegExp[]) {
+  return patterns.some((pattern) => pattern.test(value));
+}
+
+function sourcesSectionMapsLabel(section: string, label: string) {
+  const pattern = new RegExp(`\\[${label}\\]`, 'gu');
+  for (const match of section.matchAll(pattern)) {
+    const lineEnd = section.indexOf('\n', match.index + match[0].length);
+    const tail = section
+      .slice(match.index + match[0].length, lineEnd < 0 ? section.length : lineEnd)
+      .replace(/^[\s}\]]+/u, '')
+      .trim();
+    if (tail.length > 0) return true;
+  }
+  return false;
+}
+
+export function classifyLectureSourcesUsedDirective(value: string): LectureSourcesUsedMode | null {
+  let mode: LectureSourcesUsedMode | null = null;
+  const normalized = value.normalize('NFC');
+  const withoutQuotedExplanation =
+    /(?:what\s+does(?:\s+it|\s+that)?\s+mean|what\s+is\s+that\s+supposed\s+to\s+mean|무슨\s*(?:뜻|이야기)|이게\s*뭐|phrase\s+says|문구|라고\s*(?:했|말했))/iu.test(
+      normalized,
+    )
+      ? normalized.replace(/["'`“‘][^"'`”’]*["'`”’]/gu, ' ')
+      : normalized;
+  const directiveText = withoutQuotedExplanation.replace(/["“”]/gu, '');
+  for (const clause of directiveText.split(
+    /[.!?;\n]+|\b(?:but|however|instead|actually)\b|(?:하지만|그런데|대신|아니고)/iu,
+  )) {
+    if (matchesAny(clause, SOURCES_USED_REQUIRED_NEGATION_PATTERNS)) mode = 'required';
+    else if (matchesAny(clause, SOURCES_USED_OMITTED_NEGATION_PATTERNS)) mode = 'omitted';
+    else if (matchesAny(clause, SOURCES_USED_OMITTED_DIRECT_PATTERNS)) mode = 'omitted';
+    else if (matchesAny(clause, SOURCES_USED_REQUIRED_DIRECT_PATTERNS)) mode = 'required';
+  }
+  return mode;
+}
+
+function resolveSourcesUsedMode(
+  previousRevision: LectureStudioRevision | null,
+  priorUserRequests: readonly string[],
+  currentRequest: string | null,
+): LectureSourcesUsedMode {
+  let mode: LectureSourcesUsedMode =
+    previousRevision &&
+    previousRevision.schemaVersion !== 1 &&
+    !findLectureSourcesUsedSection(previousRevision.lectureNotesLatex)
+      ? 'omitted'
+      : 'required';
+  for (const value of [...priorUserRequests, ...(currentRequest ? [currentRequest] : [])]) {
+    mode = classifyLectureSourcesUsedDirective(value) ?? mode;
+  }
+  return mode;
+}
 
 type LectureOutputValidationCategory =
   'response_json' | 'response_schema' | 'latex_grammar' | 'citation_mapping' | 'slide_count';
@@ -517,12 +657,16 @@ const LECTURE_OUTPUT_CORRECTION_GUIDANCE = {
   latex_grammar:
     'Regenerate both complete bodies using only the bounded LaTeX dialect and escaping rules in the developer instructions. Do not emit wrappers, comments, raw special characters, custom commands, or unsupported environments.',
   citation_mapping:
-    'Regenerate both complete bodies so every content frame has an allowed source label and the final Sources used section maps every label cited anywhere in either document.',
+    'Regenerate both complete bodies so every factual claim and content frame uses only allowed source labels. If the notes include a Sources used section, map every cited label there; preserve an explicit current-user request to omit that section.',
   slide_count:
     'Regenerate the complete pair with the required content-frame count. GOSU adds one title frame to the final PDF page count.',
 } as const satisfies Record<LectureOutputValidationCategory, string>;
 
-function correctionPrompt(error: LectureOutputValidationError, studio: LectureStudio) {
+function correctionPrompt(
+  error: LectureOutputValidationError,
+  studio: LectureStudio,
+  sourcesUsedMode: LectureSourcesUsedMode,
+) {
   const { category } = error;
   let slideCountGuidance = '';
   if (category === 'slide_count') {
@@ -549,7 +693,11 @@ function correctionPrompt(error: LectureOutputValidationError, studio: LectureSt
             ' ',
           )} These diagnostics contain no candidate text and are bounded examples; scan both complete bodies for every occurrence and every other violation, not only the listed examples.`
       : '';
-  return `The previous candidate was rejected by GOSU's bounded ${category} check and was not saved. ${LECTURE_OUTPUT_CORRECTION_GUIDANCE[category]}${slideCountGuidance}${latexGuidance} Recheck both documents and return one complete replacement JSON object now.`;
+  const sourcesUsedGuidance =
+    sourcesUsedMode === 'omitted'
+      ? ' Omit the Sources used section completely while retaining allowed inline source labels.'
+      : ' Finish the notes with a complete Sources used mapping for every cited label.';
+  return `The previous candidate was rejected by GOSU's bounded ${category} check and was not saved. ${LECTURE_OUTPUT_CORRECTION_GUIDANCE[category]}${sourcesUsedGuidance}${slideCountGuidance}${latexGuidance} Recheck both documents and return one complete replacement JSON object now.`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1840,8 +1988,16 @@ export class LectureStudioService {
                 : previousRevision.slidesMarkdown,
           }
         : null;
+      const sourcesUsedMode = resolveSourcesUsedMode(
+        previousRevision,
+        messages
+          .filter((message) => message.id !== userMessage?.id && message.role === 'user')
+          .map((message) => message.content),
+        request.message,
+      );
       const initialPrompt = buildLectureStudioPrompt({
         mode: previousRevision ? 'revision' : 'initial',
+        sourcesUsedMode,
         title: generating.title,
         kind: generating.kind,
         durationMinutes: generating.durationMinutes,
@@ -1869,13 +2025,14 @@ export class LectureStudioService {
           sourceManifest,
           previousRevision,
           retiredAttachmentLabels,
+          sourcesUsedMode,
         );
       } catch (error) {
         if (!(error instanceof LectureOutputValidationError)) throw error;
         await recordValidation('initial', error);
         this.throwIfCancelled(active);
         this.publishProgress(active, 'correcting_output');
-        execution = await executeCodexTurn(correctionPrompt(error, generating));
+        execution = await executeCodexTurn(correctionPrompt(error, generating, sourcesUsedMode));
         try {
           this.publishProgress(active, 'validating_output');
           output = this.parseOutput(
@@ -1884,6 +2041,7 @@ export class LectureStudioService {
             sourceManifest,
             previousRevision,
             retiredAttachmentLabels,
+            sourcesUsedMode,
           );
         } catch (correctionError) {
           if (correctionError instanceof LectureOutputValidationError) {
@@ -2074,6 +2232,7 @@ export class LectureStudioService {
     sourceManifest: LectureSourceManifest,
     previousRevision: LectureStudioRevision | null,
     retiredAttachmentLabels: readonly string[],
+    sourcesUsedMode: LectureSourcesUsedMode,
   ) {
     if (!text) throw new LectureOutputValidationError('response_json');
     let parsed: unknown;
@@ -2132,9 +2291,6 @@ export class LectureStudioService {
     ) {
       throw new LectureOutputValidationError('citation_mapping');
     }
-    if (!findLectureSourcesUsedSection(notesBody)) {
-      throw new LectureOutputValidationError('citation_mapping');
-    }
     if (
       UNSUPPORTED_CITATION_PATTERN.test(notesBody) ||
       UNSUPPORTED_CITATION_PATTERN.test(slidesBody)
@@ -2155,19 +2311,33 @@ export class LectureStudioService {
       ...externalSources.map((source) => source.sourceLabel),
       ...turnAttachments.map((source) => source.sourceLabel),
     ]);
+    const sourcesHeading = findLectureSourcesUsedSection(notesBody);
+    const notesEvidenceBody = sourcesHeading ? notesBody.slice(0, sourcesHeading.index) : notesBody;
+    const allCitations = [
+      ...`${notesBody}\n${slidesBody}`.matchAll(/\[((?:P|E|M|F|A)\d+)\]/gu),
+    ].map((match) => match[1]!);
+    if (allCitations.some((label) => !allowedLabels.has(label))) {
+      throw new LectureOutputValidationError('citation_mapping');
+    }
     const usedLabels = new Set<string>();
-    for (const latex of [notesBody, slidesBody]) {
+    for (const latex of [notesEvidenceBody, slidesBody]) {
       const citations = [...latex.matchAll(/\[((?:P|E|M|F|A)\d+)\]/gu)].map((match) => match[1]!);
-      if (citations.length === 0 || citations.some((label) => !allowedLabels.has(label))) {
+      if (citations.length === 0) {
         throw new LectureOutputValidationError('citation_mapping');
       }
       for (const label of citations) usedLabels.add(label);
     }
-    const sourcesHeading = findLectureSourcesUsedSection(notesBody);
-    if (!sourcesHeading) throw new LectureOutputValidationError('citation_mapping');
-    const sourcesSection = notesBody.slice(sourcesHeading.end);
-    if ([...usedLabels].some((label) => !sourcesSection.includes(`[${label}]`))) {
+    if (
+      (sourcesUsedMode === 'required' && !sourcesHeading) ||
+      (sourcesUsedMode === 'omitted' && sourcesHeading)
+    ) {
       throw new LectureOutputValidationError('citation_mapping');
+    }
+    if (sourcesHeading) {
+      const sourcesSection = notesBody.slice(sourcesHeading.end);
+      if ([...usedLabels].some((label) => !sourcesSectionMapsLabel(sourcesSection, label))) {
+        throw new LectureOutputValidationError('citation_mapping');
+      }
     }
     const slides = [
       ...slidesBody.matchAll(/\\begin\s*\{\s*frame\s*\}[\s\S]*?\\end\s*\{\s*frame\s*\}/gu),

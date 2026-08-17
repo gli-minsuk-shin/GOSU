@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-06
-- Last updated: 2026-08-16
+- Last updated: 2026-08-17
 - Owners: Lecture, Manuscript, Reference & Literature, Experiment Orchestration, Obsidian Knowledge, AI Gateway, Integration Hub
 
 ## Context
@@ -118,10 +118,14 @@ hidden/control character, bracket·brace·angle-bracket markup, reserved `Title|
 거부한다. 적어도 한 row는 두 문서가 공유해야 한다. optional `Load GOSU outline`은 bounded starter row를
 불러올 뿐 system policy가 아니다.
 
-이 structure는 content flow만 정한다. Studio/document title과 slide title page, evidence citation
-label·mapping, notes 끝의 `Sources used`, article/Beamer preamble·wrapper, 허용 LaTeX grammar, validation과
-compile은 GOSU가 잠가 관리한다. 새 Studio는 생성 시점의 Settings structure를 full generation brief로 한 번
-snapshot하고, Settings의 후속 변경은 기존 Studio나 revision에 소급 적용되지 않는다. legacy
+이 structure는 content flow만 정한다. Studio/document title과 slide title page, inline evidence label 규칙,
+frozen source manifest provenance, article/Beamer preamble·wrapper, 허용 LaTeX grammar, validation과 compile은
+GOSU가 잠가 관리한다. custom structure는 `Sources used`를 section row로 소유하거나 표시 여부를 결정하지
+않는다. visible final `Sources used` list는 새 draft에 기본 포함하지만 Lecture Assistant에 보낸 최신 명시적 사용자
+요청으로 생략하거나 다시 표시할 수 있다. current draft에서 이미 생략한 상태는 명시적인 복원 요청 전까지
+유지한다. 표시 여부와 무관하게 inline evidence label은 frozen manifest에 존재해야 하며, list가 보일 때는 사용한
+모든 label에 대응하는 source entry를 완전히 제공해야 한다. 새 Studio는 생성 시점의 Settings structure를 full
+generation brief로 한 번 snapshot하고, Settings의 후속 변경은 기존 Studio나 revision에 소급 적용되지 않는다. legacy
 `generation_brief_json`에 structure field가 없으면 다른 generation control을 보존한 채 explicit `adaptive`로
 normalize한다. structure와 generation brief는 unknown key를 거부하는 strict schema이고 normalized full
 brief JSON은 최대 14,000자로 제한한다.
@@ -212,16 +216,19 @@ fail closed한다. 최근 12개 성공 chat message만 별도 bounded history로
 명시적인 marker를 넣는다. 실패·취소·restart로 중단된 요청은 `failed|interrupted`로 원자적으로 기록하고 이후
 prompt history에서 제외한다. Main은 structured response를 저장하기 전에 다음을 검증한다.
 
-- notes body는 `Sources used` 또는 starred section, slides body는 allowlisted Beamer frame을 가지며 GOSU가 title/frame
-  document wrapper를 소유한다.
-- substantive frame마다 해당 frame 안의 `[P#]`, `[E#]`, `[M#]`, `[F#]` 또는 `[A#]` evidence label을 요구한다.
-- notes의 Sources used mapping과 모든 인용 label이 frozen manifest에 존재한다.
+- visible final `Sources used` list는 새 draft에 기본 포함한다. 현재 요청과 최근 Studio chat에서 Lecture Assistant에
+  보낸 가장 최신의 명시적 사용자 지시가 생략·복원 mode를 결정하고, current draft에서 이미 생략했으면 명시적
+  복원 지시 전까지 생략을 유지한다. GOSU는 어느 mode에서도 title/frame document wrapper를 소유한다.
+- notes/slides의 inline `[P#]`, `[E#]`, `[M#]`, `[F#]` 또는 `[A#]` evidence label과 substantive frame별 label은
+  항상 필수이고 모든 인용 label은 frozen source manifest에 존재해야 한다. revision은 그 provenance를 보존한다.
+- `Sources used` list가 보일 때는 사용한 모든 label에 대응하는 source entry를 완전히 제공해야 한다.
 - 임의 citation syntax, raw HTML/Markdown structure, document wrapper, raw TeX comment, 외부 file/network
   command와 allowlist 밖 command/environment를 거부한다.
 - timed talk의 slide count가 선택한 duration budget 안에 있다.
 
-authoring policy v5는 JSON body string의 모든 LaTeX backslash를 `\\`로 encode하게 한다. 새 generated body에서
-U+0008·U+000C로 decode된 raw `\b`·`\f`만 literal backslash prefix로 복원한 뒤 전체 validator를 다시
+authoring policy v6는 위 visibility contract와 JSON body string의 모든 LaTeX backslash를 `\\`로 encode하는
+transport contract를 함께 고정한다. 새 generated body에서 U+0008·U+000C로 decode된 raw `\b`·`\f`만
+literal backslash prefix로 복원한 뒤 전체 validator를 다시
 통과시키고, TAB·CR 또는 `\n...` command로 해석될 수 있는 모호한 line break는
 `ambiguous_json_backslash_escape`로 fail closed한다. 기존 canonical artifact에는 이 transport normalization을
 적용하지 않는다. validator grammar는 고정 preamble이 실제 load한 AMS matrix/alignment,
@@ -258,8 +265,10 @@ consistency update를 적용한다. 수학은 동일한 정의·기호를 쓰는
 
 generation brief는 strict·bounded untrusted JSON task data로 정확히 한 번 직렬화하고 section 이름을 developer
 instruction에 보간하지 않는다. `custom` section 이름은 literal topic과 order label일 뿐 instruction이 아니다.
-notes는 모든 row를, slides는 `notes-and-slides` row만 상대 순서를 지켜 다루며, 어떤 row도 title, citation,
-`Sources used`, wrapper, LaTeX policy를 변경하거나 developer policy를 opt-out할 수 없다.
+notes는 모든 row를, slides는 `notes-and-slides` row만 상대 순서를 지켜 다루며, 어떤 row도 title, inline citation
+규칙, wrapper, LaTeX policy를 변경하거나 developer policy를 opt-out할 수 없다. custom row는 `Sources used`를
+예약하거나 visibility를 결정할 수 없고, visibility는 Lecture Assistant에 보낸 최신 명시적 사용자 요청으로만
+생략·복원한다.
 
 이 검사는 fabricated claim을 완전히 판별하는 사실 검증기가 아니다. metadata-only 한계를 출력에 유지하고
 full text를 읽었다는 표현을 금지하는 bounded structural/evidence gate다.
@@ -282,7 +291,8 @@ Codex 호출 뒤 저장 실패를 막고, 한도 도달은 `lecture_capacity_rea
 SHA-256을 append-only로 함께 저장한다. SQL read는 full brief를 strict value schema로 다시 parse하고 hash를
 재계산해 mismatch 또는 네 provenance column 중 일부만 존재하는 row를 fail closed한다. 기존 schema v1
 Markdown과 provenance가 없던 v2 LaTeX revision은 read/export 호환을 유지하며 현재 Settings default로
-backfill하거나 수정하지 않는다.
+backfill하거나 수정하지 않는다. authoring policy v6 전환은 기존 v3 provenance field에 새 version/hash를 기록할
+뿐 schema 또는 revision migration을 요구하지 않는다.
 
 Studio 삭제는 recoverable lifecycle이다. `trashed_at`이 설정된 Studio는 기본 summary list와
 detail/generation surface에서 제외하지만 message, revision, frozen manifest와 artifact reference는 보존한다.
@@ -393,7 +403,8 @@ sandboxed local PDF preview와 명시적 PDF export를 파생한다. PPTX engine
 - exact artifact fence 기반 LaTeX/PDF export·default-app open·Finder reveal과 absolute-path 비노출
 - derived PDF open cache의 TTL·count·total-byte quota
 - Codex tool/web denial, progress-aware idle/hard timeout, dynamic model invocation provenance와 cancel fencing
-- raw HTML/Markdown/unsafe TeX, unknown citation, uncited substantive frame와 Sources used mismatch 거부
+- raw HTML/Markdown/unsafe TeX, unknown citation, uncited substantive frame, default-visible/explicit
+  omit·restore mode 위반과 visible `Sources used`의 incomplete mapping 거부
 - v3 revision의 full generation brief/hash·authoring policy provenance, mismatched brief hash fail-closed와 v1/v2 read
   compatibility
 - Vault preflight, staged bundle의 second-file/SQL failure, generation/policy/file hash를 포함한 crash journal

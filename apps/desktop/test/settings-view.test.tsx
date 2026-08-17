@@ -210,7 +210,7 @@ describe('separated application Settings', () => {
     expect(html).toContain('Notes &amp; slides structure');
   });
 
-  it('shows adaptive and custom Lecture defaults with explicit save, revert, and locked scope', () => {
+  it('shows adaptive and custom Lecture defaults with explicit save, revert, and safeguards', () => {
     const adaptiveHtml = renderSettings('lecture');
     expect(adaptiveHtml).toContain('LECTURE DEFAULTS');
     expect(adaptiveHtml).toContain('Choose the default content flow');
@@ -223,7 +223,9 @@ describe('separated application Settings', () => {
     expect(adaptiveHtml).toContain('Title slide');
     expect(adaptiveHtml).toContain('Evidence citations');
     expect(adaptiveHtml).toContain('Sources used');
-    expect(adaptiveHtml.match(/<em>Locked<\/em>/gu)).toHaveLength(3);
+    expect(adaptiveHtml.match(/<em>Locked<\/em>/gu)).toHaveLength(2);
+    expect(adaptiveHtml).toContain('<em>Default</em>');
+    expect(adaptiveHtml).toContain('can be removed through an explicit Assistant request');
 
     const customHtml = renderSettings(
       'lecture',
