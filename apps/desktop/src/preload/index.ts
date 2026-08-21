@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 import { AGENT_ADD_ON_CHANNELS } from '../shared/agent-addon-channels';
 import type {
@@ -19,8 +19,10 @@ import { EXPERIMENT_EVALUATION_IPC_CHANNELS } from '../shared/experiment-evaluat
 import {
   ExperimentEvaluationEventSchema,
   type ApproveExperimentEvaluationInput,
+  type CancelExperimentEvaluationInput,
   type CreateExperimentEvaluationSessionInput,
   type ExperimentEvaluationApprovalReceipt,
+  type ExperimentEvaluationCancelReceipt,
   type ExperimentEvaluationDetailInput,
   type ExperimentEvaluationEvent,
   type ExperimentEvaluationListSnapshot,
@@ -73,6 +75,11 @@ import type {
 import { unwrapGitWorkspaceIpcResult } from '../shared/git-workspace-ipc-result';
 import { LITERATURE_IPC_CHANNELS } from '../shared/literature-channels';
 import { MANUSCRIPT_WORKSPACE_IPC_CHANNELS } from '../shared/manuscript-workspace-channels';
+import { MODEL_USAGE_IPC_CHANNELS } from '../shared/model-usage-channels';
+import type {
+  ModelUsageAnalyticsQuery,
+  ModelUsageAnalyticsReport,
+} from '../shared/model-usage-contracts';
 import { OVERLEAF_PERSONAL_TOKEN_IPC_CHANNELS } from '../shared/overleaf-personal-token-channels';
 import {
   OverleafPersonalTokenStatusSchema,
@@ -123,6 +130,17 @@ import {
   type EmptyLectureStudioTrashReceipt,
   type ExportLectureStudioArtifactInput,
   type GenerateLectureStudioInput,
+  type GetLectureStudioEditDraftInput,
+  type LectureStudioEditDraft,
+  type SaveLectureStudioManualRevisionInput,
+  type LectureStudioManualRevisionReceipt,
+  type ListLectureStudioFiguresInput,
+  type ChooseLectureStudioFiguresInput,
+  type RemoveLectureStudioFigureInput,
+  type PreviewLectureStudioFigureInput,
+  type LectureStudioFigureAsset,
+  type LectureStudioFigureLibraryReceipt,
+  type LectureStudioFigurePreview,
   type LectureSourceCandidates,
   type LectureStudio,
   type LectureStudioArtifactActionReceipt,
@@ -142,6 +160,7 @@ import {
 } from '../shared/lecture-studio-contracts';
 import { unwrapLectureStudioIpcResult } from '../shared/lecture-studio-ipc-result';
 import type {
+  CancelLiteratureAiInput,
   DeleteLiteratureRecordInput,
   DeleteLiteratureRecordReceipt,
   LiteratureExportReceipt,
@@ -150,6 +169,7 @@ import type {
   LiteratureImportRequest,
   LiteratureLibrary,
   LiteratureOrganizeReceipt,
+  LiteratureAiCancelReceipt,
   LiteratureRecord,
   LiteratureSearchInput,
   LiteratureSearchReceipt,
@@ -449,6 +469,13 @@ const api = {
       };
     },
   },
+  modelUsage: {
+    query: (input: ModelUsageAnalyticsQuery) =>
+      ipcRenderer.invoke(
+        MODEL_USAGE_IPC_CHANNELS.query,
+        input,
+      ) as Promise<ModelUsageAnalyticsReport>,
+  },
   projectChat: {
     snapshot: (projectId: string, sessionId?: string) =>
       invokeProjectChat<ProjectChatSnapshot>(PROJECT_CHAT_IPC_CHANNELS.snapshot, {
@@ -631,6 +658,8 @@ const api = {
       invokeLiterature<LiteratureExportReceipt>(LITERATURE_IPC_CHANNELS.exportRecords, input),
     organize: (input: OrganizeLiteratureInput) =>
       invokeLiterature<LiteratureOrganizeReceipt>(LITERATURE_IPC_CHANNELS.organize, input),
+    cancelOrganize: (input: CancelLiteratureAiInput) =>
+      invokeLiterature<LiteratureAiCancelReceipt>(LITERATURE_IPC_CHANNELS.cancelOrganize, input),
   },
   lectureStudio: {
     list: (input: ListLectureStudiosInput) =>
@@ -670,6 +699,51 @@ const api = {
       invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.create, input),
     updateGenerationBrief: (input: UpdateLectureStudioGenerationBriefInput) =>
       invokeLectureStudio<LectureStudio>(LECTURE_STUDIO_IPC_CHANNELS.updateGenerationBrief, input),
+    editDraft: (input: GetLectureStudioEditDraftInput) =>
+      invokeLectureStudio<LectureStudioEditDraft>(LECTURE_STUDIO_IPC_CHANNELS.editDraft, input),
+    saveManualRevision: (input: SaveLectureStudioManualRevisionInput) =>
+      invokeLectureStudio<LectureStudioManualRevisionReceipt>(
+        LECTURE_STUDIO_IPC_CHANNELS.saveManualRevision,
+        input,
+      ),
+    listFigures: (input: ListLectureStudioFiguresInput) =>
+      invokeLectureStudio<readonly LectureStudioFigureAsset[]>(
+        LECTURE_STUDIO_IPC_CHANNELS.listFigures,
+        input,
+      ),
+    chooseFigures: (input: ChooseLectureStudioFiguresInput) =>
+      invokeLectureStudio<LectureStudioFigureLibraryReceipt>(
+        LECTURE_STUDIO_IPC_CHANNELS.chooseFigures,
+        input,
+      ),
+    stageDroppedFigures: (input: ChooseLectureStudioFiguresInput, files: readonly File[]) => {
+      if (!Array.isArray(files) || files.length < 1 || files.length > 5) {
+        return Promise.reject(new Error('invalid_lecture_input'));
+      }
+      let paths: string[];
+      try {
+        paths = files.map((file) => webUtils.getPathForFile(file));
+      } catch {
+        return Promise.reject(new Error('invalid_lecture_input'));
+      }
+      if (paths.some((path) => path.length === 0)) {
+        return Promise.reject(new Error('invalid_lecture_input'));
+      }
+      return invokeLectureStudio<LectureStudioFigureLibraryReceipt>(
+        LECTURE_STUDIO_IPC_CHANNELS.stageDroppedFigures,
+        { ...input, paths },
+      );
+    },
+    removeFigure: (input: RemoveLectureStudioFigureInput) =>
+      invokeLectureStudio<LectureStudioFigureLibraryReceipt>(
+        LECTURE_STUDIO_IPC_CHANNELS.removeFigure,
+        input,
+      ),
+    previewFigure: (input: PreviewLectureStudioFigureInput) =>
+      invokeLectureStudio<LectureStudioFigurePreview>(
+        LECTURE_STUDIO_IPC_CHANNELS.previewFigure,
+        input,
+      ),
     generate: (input: GenerateLectureStudioInput) =>
       invokeLectureStudio<LectureStudioTurnReceipt>(LECTURE_STUDIO_IPC_CHANNELS.generate, input),
     send: (input: SendLectureStudioMessageInput) =>
@@ -764,6 +838,11 @@ const api = {
     send: (input: SendExperimentEvaluationMessageInput) =>
       invokeExperimentEvaluation<ExperimentEvaluationTurnReceipt>(
         EXPERIMENT_EVALUATION_IPC_CHANNELS.send,
+        input,
+      ),
+    cancel: (input: CancelExperimentEvaluationInput) =>
+      invokeExperimentEvaluation<ExperimentEvaluationCancelReceipt>(
+        EXPERIMENT_EVALUATION_IPC_CHANNELS.cancel,
         input,
       ),
     approve: (input: ApproveExperimentEvaluationInput) =>

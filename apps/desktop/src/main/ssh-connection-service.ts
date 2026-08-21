@@ -514,6 +514,7 @@ function connectionPrivilegeClass(profile: SshConnectionProfile) {
 
 function trustedAccessMatches(grant: RemoteWorkspaceGrant, profile: SshConnectionProfile) {
   const access = grant.trustedAccess;
+  const privilegeClass = connectionPrivilegeClass(profile);
   return Boolean(
     access &&
     access.policyVersion === SSH_TRUSTED_WORKSPACE_POLICY_VERSION &&
@@ -525,7 +526,7 @@ function trustedAccessMatches(grant: RemoteWorkspaceGrant, profile: SshConnectio
     access.canonicalRoot === grant.canonicalRoot &&
     grant.permissionMode === 'workspace' &&
     Boolean(profile.directTarget) &&
-    connectionPrivilegeClass(profile) === 'standard',
+    privilegeClass !== 'unknown',
   );
 }
 
@@ -743,10 +744,12 @@ export class SshConnectionService extends EventEmitter {
         throw new SshConnectionServiceError('ssh_workspace_grant_conflict');
       }
       const connection = await this.readRequiredConnection(current.connectionId);
+      const privilegeClass = connectionPrivilegeClass(connection);
       if (
         current.permissionMode !== 'workspace' ||
         !connection.directTarget ||
-        connectionPrivilegeClass(connection) !== 'standard'
+        privilegeClass === 'unknown' ||
+        (privilegeClass === 'root' && command.confirmRootTrustedWorkspaceRisk !== true)
       ) {
         throw new SshConnectionServiceError('ssh_trusted_workspace_not_allowed');
       }

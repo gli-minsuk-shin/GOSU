@@ -374,6 +374,95 @@
   gap: 18px;
 }
 
+.lecture-composer-figures {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.lecture-composer-figures > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lecture-composer-figures h3,
+.lecture-composer-figures p {
+  margin: 0;
+}
+
+.lecture-composer-figures header p,
+.lecture-composer-figure-status {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: var(--font-control);
+}
+
+.lecture-composer-figure-drop {
+  display: grid;
+  min-height: 72px;
+  place-content: center;
+  gap: 3px;
+  padding: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.lecture-composer-figure-drop.active {
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 10%, var(--surface));
+  color: var(--green);
+}
+
+.lecture-composer-figure-error {
+  color: var(--danger);
+  font-size: var(--font-control);
+}
+
+.lecture-composer-figure-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lecture-composer-figure-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.lecture-composer-figure-list li > span {
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lecture-composer-figure-list li > small {
+  grid-column: 1;
+  color: var(--muted);
+}
+
+.lecture-composer-figure-list li > button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
 .lecture-segmented-control {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -405,6 +494,7 @@
 
 .lecture-artifact-actions {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
@@ -451,6 +541,16 @@
   color: var(--muted);
   font-size: var(--font-caption);
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lecture-edit-source-button {
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.lecture-figure-drawer-toggle {
+  margin-left: auto;
   white-space: nowrap;
 }
 
@@ -506,6 +606,32 @@
 .lecture-generation-structure-summary span,
 .lecture-generation-structure-summary small {
   color: var(--muted);
+}
+
+.lecture-generation-document-features {
+  display: grid;
+  gap: 10px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
+
+.lecture-generation-document-feature-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lecture-generation-document-feature-status > span {
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+
+.lecture-generation-document-feature-status > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .lecture-duration-picker > div {
@@ -786,20 +912,21 @@
 }
 
 .lecture-preview {
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   border-right: 1px solid var(--line);
   overflow: hidden;
 }
 
 .lecture-preview-toolbar {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  min-height: 66px;
-  padding: 11px 14px;
+  min-height: 56px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -1036,7 +1163,9 @@
 }
 
 .lecture-generation-options-structure {
+  display: grid;
   grid-column: 1 / -1;
+  gap: 16px;
   min-width: 0;
   padding-top: 4px;
   border-top: 1px solid var(--line);
@@ -1054,8 +1183,9 @@
 
 .lecture-preview-tabs {
   display: flex;
+  flex: 0 0 auto;
   gap: 3px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-soft);
 }
@@ -1065,6 +1195,7 @@
 }
 
 .lecture-preview-document {
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   padding: 22px clamp(18px, 3vw, 34px) 40px;
@@ -1089,8 +1220,67 @@
   overflow: hidden;
 }
 
+.lecture-preview-document.editing {
+  display: grid;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.lecture-manual-edit-workspace {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.lecture-manual-edit-workspace.figures-open {
+  grid-template-columns: minmax(420px, 1fr) minmax(250px, 34%);
+}
+
+.lecture-manual-edit-workspace > .lecture-source-editor,
+.lecture-manual-figure-drawer,
+.lecture-manual-figure-drawer > .lecture-figure-library {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.lecture-manual-figure-drawer {
+  display: grid;
+}
+
+.lecture-pre-generation-figures {
+  width: min(760px, calc(100% - 32px));
+  min-height: 0;
+  margin: 16px auto;
+  text-align: left;
+}
+
 .lecture-studio-pdf-preview {
   height: 100%;
+  gap: 8px;
+  padding: 8px;
+}
+
+.lecture-studio-pdf-preview > header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.lecture-studio-pdf-preview > header > div:first-child {
+  min-width: 0;
+}
+
+.lecture-studio-pdf-preview > header > div:first-child span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lecture-studio-pdf-preview .pdf-preview-controls {
+  flex-wrap: nowrap;
 }
 
 .lecture-studio-pdf-preview .pdf-preview-scroll {
@@ -1117,77 +1307,26 @@
   animation: lecture-spin 800ms linear infinite;
 }
 
+.lecture-preview-empty.pre-generation {
+  align-content: start;
+  place-content: initial;
+  padding: 20px 0;
+  overflow: auto;
+  text-align: left;
+}
+
+.lecture-pre-generation-copy {
+  display: grid;
+  width: min(760px, calc(100% - 32px));
+  margin: 0 auto;
+  gap: 4px;
+  text-align: center;
+}
+
 @keyframes lecture-spin {
   to {
     transform: rotate(360deg);
   }
-}
-
-.lecture-preview-receipts {
-  display: grid;
-  grid-template-columns: minmax(150px, 0.7fr) minmax(220px, 1.3fr);
-  gap: 12px;
-  max-height: 138px;
-  padding: 11px 14px;
-  overflow: auto;
-  border-top: 1px solid var(--line);
-  background: var(--surface-soft);
-}
-
-.lecture-preview-receipts > div {
-  display: grid;
-  align-content: start;
-  gap: 2px;
-}
-
-.lecture-preview-receipts > div span {
-  color: var(--green);
-  font-size: var(--font-caption);
-  font-weight: 800;
-  letter-spacing: 0.1em;
-}
-
-.lecture-preview-receipts > div strong,
-.lecture-preview-receipts > div small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lecture-preview-receipts > div small,
-.lecture-preview-receipts > p {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--font-caption);
-}
-
-.lecture-preview-receipts ul {
-  display: grid;
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.lecture-preview-receipts li {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 7px;
-}
-
-.lecture-preview-receipts li span {
-  color: var(--green);
-  font-size: var(--font-caption);
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.lecture-preview-receipts code {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--font-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .lecture-chat {
@@ -1243,6 +1382,12 @@
   background: color-mix(in srgb, var(--green) 5%, var(--surface));
   color: var(--muted);
   font-size: var(--font-caption);
+}
+
+.lecture-chat-boundary strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--orange);
 }
 
 .lecture-chat-auth-required {
@@ -1495,6 +1640,23 @@
 /* The project rail is independently resizable, so viewport media queries cannot know how much
    room Lecture Studio actually has. At constrained content widths the assistant becomes a right
    drawer while its 46px rail remains reachable; the document therefore never clips horizontally. */
+@container lecture-workspace (max-width: 1250px) {
+  .lecture-preview-document.editing {
+    overflow: auto;
+  }
+
+  .lecture-manual-edit-workspace.figures-open {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(540px, 1fr) minmax(300px, 480px);
+  }
+
+  .lecture-manual-edit-workspace.figures-open > .lecture-source-editor,
+  .lecture-manual-edit-workspace.figures-open .lecture-manual-figure-drawer {
+    height: auto;
+  }
+}
+
 @container lecture-workspace (max-width: 980px) {
   .lecture-generation-options-editor {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1532,6 +1694,21 @@
     border-left: 1px solid var(--line);
     background: var(--surface);
     box-shadow: -18px 0 42px rgba(19, 36, 20, 0.16);
+  }
+}
+
+@container lecture-workspace (max-width: 620px) {
+  .lecture-generation-document-feature-status {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lecture-generation-document-feature-status > div {
+    justify-content: stretch;
+  }
+
+  .lecture-generation-document-feature-status button {
+    flex: 1 1 180px;
   }
 }
 
@@ -1632,18 +1809,22 @@
   }
 
   .lecture-segmented-control,
-  .lecture-duration-picker > div,
-  .lecture-preview-receipts {
+  .lecture-duration-picker > div {
     grid-template-columns: 1fr 1fr;
-  }
-
-  .lecture-preview-receipts ul {
-    grid-column: 1 / -1;
   }
 
   .lecture-generation-details ol > li > div,
   .lecture-generation-details ul > li {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lecture-composer-figures > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lecture-composer-figure-list {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1661,4 +1842,67 @@
   .lecture-generation-progress-spinner {
     animation: none;
   }
+}
+
+/* PDF focus is transient presentation state: it leaves the user's independent rail/chat
+   preferences untouched and restores both panels exactly when focus exits. */
+.desktop-content.desktop-content-lecture:has(.lecture-studio.pdf-focus) {
+  padding: 4px;
+  overflow: hidden;
+}
+
+.lecture-studio.pdf-focus {
+  height: calc(100dvh - 50px);
+  min-height: 0;
+  gap: 0;
+}
+
+.lecture-studio.pdf-focus > .lecture-studio-banner,
+.lecture-studio-layout.pdf-focused > .lecture-studio-rail,
+.lecture-studio-layout.pdf-focused > .lecture-chat,
+.lecture-preview.pdf-focused > .lecture-preview-toolbar,
+.lecture-preview.pdf-focused > .lecture-preview-tabs,
+.lecture-preview.pdf-focused > .lecture-artifact-actions {
+  display: none;
+}
+
+.lecture-studio-layout.pdf-focused,
+.lecture-studio-layout.studio-rail-collapsed.pdf-focused,
+.lecture-studio-layout.chat-collapsed.pdf-focused,
+.lecture-studio-layout.studio-rail-collapsed.chat-collapsed.pdf-focused {
+  grid-template-columns: minmax(0, 1fr);
+  border-radius: 10px;
+}
+
+.lecture-studio-layout.pdf-focused > .lecture-preview {
+  grid-column: 1;
+  min-height: 0;
+  border-right: 0;
+}
+
+.lecture-preview.pdf-focused > .lecture-preview-document.pdf {
+  padding: 0;
+}
+
+.lecture-preview.pdf-focused .lecture-studio-pdf-preview {
+  gap: 5px;
+  padding: 5px;
+  border: 0;
+  border-radius: 0;
+}
+
+.lecture-preview.pdf-focused .lecture-studio-pdf-preview > header > div:first-child span {
+  display: none;
+}
+
+.lecture-preview.pdf-focused .lecture-studio-pdf-preview .pdf-preview-scroll {
+  height: auto;
+  min-height: 0;
+  padding: 8px;
+  border-radius: 8px;
+}
+
+.lecture-pdf-focus-button {
+  min-height: 32px;
+  white-space: nowrap;
 }

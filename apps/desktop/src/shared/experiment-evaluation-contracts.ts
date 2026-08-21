@@ -488,6 +488,11 @@ export type SendExperimentEvaluationMessageInput = z.infer<
   typeof SendExperimentEvaluationMessageInputSchema
 >;
 
+export const CancelExperimentEvaluationInputSchema = z
+  .object({ projectId: uuidSchema, sessionId: uuidSchema })
+  .strict();
+export type CancelExperimentEvaluationInput = z.infer<typeof CancelExperimentEvaluationInputSchema>;
+
 export const ApproveExperimentEvaluationInputSchema = z
   .object({
     projectId: uuidSchema,
@@ -516,6 +521,16 @@ export const ExperimentEvaluationTurnReceiptSchema = z
   })
   .strict();
 export type ExperimentEvaluationTurnReceipt = z.infer<typeof ExperimentEvaluationTurnReceiptSchema>;
+
+export const ExperimentEvaluationCancelReceiptSchema = z
+  .object({
+    session: ExperimentEvaluationSessionSchema,
+    cancelRequested: z.boolean(),
+  })
+  .strict();
+export type ExperimentEvaluationCancelReceipt = z.infer<
+  typeof ExperimentEvaluationCancelReceiptSchema
+>;
 
 export const ExperimentEvaluationApprovalReceiptSchema = z
   .object({
@@ -843,6 +858,7 @@ export const EXPERIMENT_EVALUATION_IPC_ERROR_CODES = [
   'experiment_evaluation_profile_not_found',
   'experiment_evaluation_version_conflict',
   'experiment_evaluation_busy',
+  'experiment_evaluation_interrupted',
   'experiment_evaluation_codex_unavailable',
   'experiment_evaluation_invalid_response',
   'experiment_evaluation_revision_not_found',

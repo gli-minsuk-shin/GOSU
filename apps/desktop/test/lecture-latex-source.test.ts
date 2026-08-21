@@ -3,8 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   buildLectureLatexDocument,
   countLectureSlidePages,
+  extractEditableLectureLatexBody,
+  findLectureFigureAssetIds,
+  findLectureSourceListSections,
   LectureLatexSourceError,
   normalizeGeneratedLectureLatexBody,
+  rehydrateLectureEvidenceAnchors,
   validateCanonicalLectureLatex,
   validateLectureLatexBody,
 } from '../src/main/lecture-latex-source';
@@ -39,15 +43,59 @@ Let $x \in \mathbb{R}$ [M1].
 $f'(x)=2x$ [M1].
 \end{frame}`;
 
+const allDocumentFeatures = {
+  includeSlideTitlePage: true,
+  showInlineEvidenceLabels: true,
+  includeSourcesUsedSection: true,
+} as const;
+
+const figureId = '4b78cc25-2bd7-4c31-87c3-1f7ac3f5609a';
+
+function legacyCanonicalSlides(title: string, body: string) {
+  return [
+    '% GOSU-LECTURE-LATEX v1 slides',
+    '\\documentclass[aspectratio=169]{beamer}',
+    '\\usepackage{fontspec}',
+    '\\usepackage{kotex}',
+    '\\usepackage{amsmath,amssymb,mathtools}',
+    '\\usepackage{bm}',
+    '\\usepackage{booktabs,array}',
+    '\\usetheme{default}',
+    '\\setbeamertemplate{navigation symbols}{}',
+    '\\setbeamertemplate{footline}[frame number]',
+    `\\title{${title}}`,
+    '\\author{GOSU Lecture Studio}',
+    '\\date{}',
+    '\\begin{document}',
+    '\\begin{frame}',
+    '\\titlepage',
+    '\\end{frame}',
+    '% GOSU-CONTENT-BEGIN',
+    body,
+    '% GOSU-CONTENT-END',
+    '\\end{document}',
+    '',
+  ].join('\n');
+}
+
 describe('Lecture LaTeX source', () => {
   it('builds deterministic self-contained notes and slides', () => {
     const notes = buildLectureLatexDocument('lecture-notes', 'Calculus', notesBody);
     const slides = buildLectureLatexDocument('slides', 'Calculus', slidesBody);
 
+    expect(notes).toContain('% GOSU-LECTURE-LATEX v3 lecture-notes');
     expect(notes).toContain('\\documentclass[11pt]{article}');
-    expect(notes).toContain(notesBody);
+    expect(notes).toContain('\\usepackage{graphicx}');
+    expect(notes).toContain('\\newcommand{\\gosuevidence}[1]{[#1]}');
+    expect(notes).toContain(
+      '\\newcommand{\\gosuimage}[1]{\\includegraphics[width=0.88\\linewidth]{Figure-#1.jpg}}',
+    );
+    expect(notes).toContain('\\gosuevidence{M1}');
+    expect(notes).not.toContain('[M1] Captured manuscript');
+    expect(rehydrateLectureEvidenceAnchors(notes)).toContain(notesBody);
     expect(slides).toContain('\\documentclass[aspectratio=169]{beamer}');
-    expect(slides).toContain(slidesBody);
+    expect(slides).toContain('\\gosuevidence{M1}');
+    expect(rehydrateLectureEvidenceAnchors(slides)).toContain(slidesBody);
     expect(countLectureSlidePages(slidesBody)).toBe(3);
     expect(validateCanonicalLectureLatex('lecture-notes', 'Calculus', notes)).toBe(notes);
     expect(validateCanonicalLectureLatex('slides', 'Calculus', slides)).toBe(slides);
@@ -61,9 +109,270 @@ The estimator is consistent under the stated assumptions [M1].`;
     expect(() =>
       validateLectureLatexBody('lecture-notes', body, { requireSourcesUsed: false }),
     ).not.toThrow();
-    const source = buildLectureLatexDocument('lecture-notes', 'Optional source list', body);
+    const source = buildLectureLatexDocument('lecture-notes', 'Optional source list', body, {
+      ...allDocumentFeatures,
+      includeSourcesUsedSection: false,
+    });
     expect(source).not.toContain('Sources used');
     expect(validateCanonicalLectureLatex('lecture-notes', 'Optional source list', source)).toBe(
+      source,
+    );
+  });
+
+  it('encodes configurable document elements in a strict v3 wrapper while retaining evidence anchors', () => {
+    const notesWithoutSourceList = String.raw`\section{Result}
+The estimator remains source-bound [M1].`;
+    const hiddenFeatures = {
+      includeSlideTitlePage: false,
+      showInlineEvidenceLabels: false,
+      includeSourcesUsedSection: false,
+    } as const;
+    const notes = buildLectureLatexDocument(
+      'lecture-notes',
+      'Hidden elements',
+      notesWithoutSourceList,
+      hiddenFeatures,
+    );
+    const slides = buildLectureLatexDocument(
+      'slides',
+      'Hidden elements',
+      slidesBody,
+      hiddenFeatures,
+    );
+
+    for (const source of [notes, slides]) {
+      expect(source).toContain(
+        '% GOSU-DOCUMENT-FEATURES includeSlideTitlePage=false showInlineEvidenceLabels=false includeSourcesUsedSection=false',
+      );
+      expect(source).toContain('\\newcommand{\\gosuevidence}[1]{\\ifhmode\\unskip\\fi}');
+      expect(source).toContain('\\gosuevidence{M1}');
+      expect(
+        validateCanonicalLectureLatex(
+          source === notes ? 'lecture-notes' : 'slides',
+          'Hidden elements',
+          source,
+        ),
+      ).toBe(source);
+    }
+    expect(slides).not.toContain('\\titlepage');
+    expect(countLectureSlidePages(slidesBody, hiddenFeatures)).toBe(2);
+    expect(rehydrateLectureEvidenceAnchors(notes)).toContain('[M1]');
+    expect(extractEditableLectureLatexBody('lecture-notes', 'Hidden elements', notes)).toEqual({
+      body: notesWithoutSourceList,
+      features: hiddenFeatures,
+    });
+
+    const titleOnly = buildLectureLatexDocument('slides', 'Visible elements', slidesBody, {
+      ...hiddenFeatures,
+      includeSlideTitlePage: true,
+      showInlineEvidenceLabels: true,
+    });
+    expect(titleOnly).toContain('\\titlepage');
+    expect(titleOnly).toContain('\\newcommand{\\gosuevidence}[1]{[#1]}');
+    expect(countLectureSlidePages(slidesBody, allDocumentFeatures)).toBe(3);
+  });
+
+  it('fails closed when current feature metadata, wrappers, or evidence anchors are changed', () => {
+    const source = buildLectureLatexDocument('lecture-notes', 'Canonical integrity', notesBody);
+    const tamperedSources = [
+      source.replace(
+        'includeSlideTitlePage=true showInlineEvidenceLabels=true',
+        'showInlineEvidenceLabels=true includeSlideTitlePage=true',
+      ),
+      source.replace('showInlineEvidenceLabels=true', 'showInlineEvidenceLabels=false'),
+      source.replace(
+        '\\newcommand{\\gosuevidence}[1]{[#1]}',
+        '\\newcommand{\\gosuevidence}[1]{\\ifhmode\\unskip\\fi}',
+      ),
+      source.replace('\\gosuevidence{M1}', '[M1]'),
+      source.replace('\\gosuevidence{M1}', '\\gosuevidence{Z1}'),
+      source.replace('\\gosuevidence{M1}', '\\gosuevidence {M1}'),
+    ];
+
+    for (const tampered of tamperedSources) {
+      expect(() =>
+        validateCanonicalLectureLatex('lecture-notes', 'Canonical integrity', tampered),
+      ).toThrow(LectureLatexSourceError);
+    }
+  });
+
+  it('requires the configured Sources used combination when building v2 notes', () => {
+    const withoutSources = String.raw`\section{Result}
+Source-bound result [M1].`;
+    expect(() =>
+      buildLectureLatexDocument('lecture-notes', 'Missing list', withoutSources),
+    ).toThrow(expect.objectContaining({ reason: 'missing_sources_used' }));
+    expect(() =>
+      buildLectureLatexDocument('lecture-notes', 'Unexpected list', notesBody, {
+        ...allDocumentFeatures,
+        includeSourcesUsedSection: false,
+      }),
+    ).toThrow(expect.objectContaining({ reason: 'invalid_canonical_wrapper' }));
+  });
+
+  it.each([
+    String.raw`\section{Source used}`,
+    String.raw`\section{Source}`,
+    String.raw`\section{Sources}`,
+    String.raw`\section{Source list}`,
+    String.raw`\section{References}`,
+    String.raw`\section{Bibliography}`,
+    String.raw`\section{Citations}`,
+    String.raw`\section{Cited sources}`,
+    String.raw`\section{Literature cited}`,
+    String.raw`\section{출처 목록}`,
+    String.raw`\section{참고 문헌}`,
+    String.raw`\section{Sources   used}`,
+    String.raw`\section{\textbf{References}}`,
+    String.raw`\section{\textrm{References}}`,
+    String.raw`\section{\textnormal{\textit{References}}}`,
+    String.raw`\section{\underline{References}}`,
+    String.raw`\section{\textsuperscript{References}}`,
+    String.raw`\section{\Large References}`,
+    String.raw`\section{Refer{ences}}`,
+    String.raw`\subsection{References}`,
+    String.raw`\subsubsection{출처 목록}`,
+    String.raw`\paragraph{Bibliography}`,
+  ])(
+    'rejects an unconfigured semantic source-list heading while the list is hidden: %s',
+    (heading) => {
+      const body = `${String.raw`\section{Result}
+Source-bound result [M1].`}
+${heading}
+[M1] Captured manuscript.`;
+      expect(() =>
+        buildLectureLatexDocument('lecture-notes', 'Hidden source list', body, {
+          ...allDocumentFeatures,
+          includeSourcesUsedSection: false,
+        }),
+      ).toThrow(expect.objectContaining({ reason: 'invalid_canonical_wrapper' }));
+    },
+  );
+
+  it('distinguishes semantic source-list headings from prose and similarly named topics', () => {
+    const body = String.raw`\section{\textbf{Reference methods}}
+References and 출처 목록 are discussed as ordinary prose, not emitted as a source list [M1].`;
+    expect(findLectureSourceListSections(body)).toEqual([]);
+    expect(() =>
+      buildLectureLatexDocument('lecture-notes', 'Reference methods', body, {
+        ...allDocumentFeatures,
+        includeSourcesUsedSection: false,
+      }),
+    ).not.toThrow();
+  });
+
+  it('grandfathers an exact custom content title without weakening canonical Sources used rules', () => {
+    const hiddenBody = String.raw`\section{References}
+Reference-estimator content remains evidence-bound [M1].`;
+    const hidden = buildLectureLatexDocument(
+      'lecture-notes',
+      'Legacy custom structure',
+      hiddenBody,
+      { ...allDocumentFeatures, includeSourcesUsedSection: false },
+      ['References'],
+    );
+    expect(validateCanonicalLectureLatex('lecture-notes', 'Legacy custom structure', hidden)).toBe(
+      hidden,
+    );
+    expect(() =>
+      buildLectureLatexDocument('lecture-notes', 'Not grandfathered', hiddenBody, {
+        ...allDocumentFeatures,
+        includeSourcesUsedSection: false,
+      }),
+    ).toThrow(expect.objectContaining({ reason: 'invalid_canonical_wrapper' }));
+
+    const visibleBody = `${hiddenBody}
+${String.raw`\section{Sources used}
+[M1] Captured manuscript.`}`;
+    expect(() =>
+      buildLectureLatexDocument(
+        'lecture-notes',
+        'Legacy custom structure',
+        visibleBody,
+        allDocumentFeatures,
+        ['References'],
+      ),
+    ).not.toThrow();
+  });
+
+  it.each(['section', 'subsection', 'subsubsection', 'paragraph'])(
+    'requires Sources used to remain the final structural block before a later \\%s',
+    (command) => {
+      const body = `${notesBody}
+\\${command}{Later material}
+Later claim [M1].`;
+      expect(() => buildLectureLatexDocument('lecture-notes', 'Terminal mapping', body)).toThrow(
+        expect.objectContaining({ reason: 'invalid_canonical_wrapper' }),
+      );
+    },
+  );
+
+  it('rejects duplicate source-list aliases when the canonical mapping is enabled', () => {
+    const body = `${String.raw`\section{References}
+Reference content [M1].`}
+${notesBody}`;
+    expect(() => buildLectureLatexDocument('lecture-notes', 'Duplicate mapping', body)).toThrow(
+      expect.objectContaining({ reason: 'invalid_canonical_wrapper' }),
+    );
+  });
+
+  it('rejects optional short titles on newly authored structural headings', () => {
+    const body = String.raw`\section[Short]{References}
+Source mapping [M1].`;
+    expect(() =>
+      buildLectureLatexDocument('lecture-notes', 'Optional heading', body, {
+        ...allDocumentFeatures,
+        includeSourcesUsedSection: false,
+      }),
+    ).toThrow(expect.objectContaining({ reason: 'structural_heading_option' }));
+  });
+
+  it.each([
+    String.raw`Claim [M1], [P2].`,
+    String.raw`Claim [M1] and [P2].`,
+    String.raw`Claim [M1]
+and [P2].`,
+    String.raw`Claim ([M1]).`,
+    String.raw`Claim [[M1]].`,
+    String.raw`Claim, [M1].`,
+    String.raw`Claim. [M1]`,
+    String.raw`Claim: [M1].`,
+    String.raw`Claim [M1] .`,
+  ])(
+    'rejects evidence typography that would leave artifacts when labels are hidden: %s',
+    (claim) => {
+      const body = `${String.raw`\section{Result}`}
+${claim}
+${String.raw`\section{Sources used}
+[M1] Manuscript
+[P2] Paper`}`;
+      expect(() => validateLectureLatexBody('lecture-notes', body)).toThrow(
+        expect.objectContaining({ reason: 'evidence_label_typography' }),
+      );
+    },
+  );
+
+  it('accepts whitespace-only evidence clusters with sentence punctuation after the final label', () => {
+    const body = String.raw`\section{Result}
+Claim [M1] [P2].
+\section{Sources used}
+[M1] Manuscript
+[P2] Paper`;
+    expect(() => validateLectureLatexBody('lecture-notes', body)).not.toThrow();
+  });
+
+  it.each([
+    String.raw`\item[[M1]] Captured manuscript`,
+    String.raw`\item[{[M1]}] Captured manuscript`,
+  ])('keeps a Sources used description-item label valid: %s', (item) => {
+    const body = `${String.raw`\section{Result}
+Claim [M1].
+\section{Sources used}
+\begin{description}`}
+${item}
+${String.raw`\end{description}`}`;
+    const source = buildLectureLatexDocument('lecture-notes', 'Description mapping', body);
+    expect(validateCanonicalLectureLatex('lecture-notes', 'Description mapping', source)).toBe(
       source,
     );
   });
@@ -218,7 +527,7 @@ $\R+\E+\PP+\mainref+\includegraphics+\captionof+\foo+\bar+\baz+\quux+\R$ [M1].
 \section{Sources used}`,
     );
     expect(environments.reason).toBe('unsupported_environment');
-    expect(environments.tokens).toEqual(['tikzpicture', 'figure']);
+    expect(environments.tokens).toEqual(['tikzpicture']);
 
     const customControlSymbol = validationError(
       'lecture-notes',
@@ -229,6 +538,66 @@ Use $\1$ only as a source-defined alias [M1].
     );
     expect(customControlSymbol.reason).toBe('unsupported_escape');
     expect(customControlSymbol.tokens).toEqual([String.raw`\1`]);
+  });
+
+  it('accepts only opaque GOSU figure references and preserves legacy v2 wrappers', () => {
+    const body = String.raw`\section{Figure}
+\begin{figure}
+\centering
+\gosuimage{${figureId}}
+\caption{Captured estimator geometry}
+\end{figure}
+The geometry is supported by the captured manuscript [M1].
+\section{Sources used}
+[M1] Captured manuscript.`;
+    const source = buildLectureLatexDocument('lecture-notes', 'Figure bundle', body);
+
+    expect(findLectureFigureAssetIds(body)).toEqual([figureId]);
+    expect(validateCanonicalLectureLatex('lecture-notes', 'Figure bundle', source)).toBe(source);
+    expect(extractEditableLectureLatexBody('lecture-notes', 'Figure bundle', source).body).toBe(
+      body,
+    );
+
+    for (const invalidBody of [
+      body.replace(figureId, '../private-file'),
+      body.replace(figureId, figureId.toUpperCase()),
+      body.replace(`\\gosuimage{${figureId}}`, String.raw`\includegraphics{/tmp/private.jpg}`),
+      body.replace(`\\gosuimage{${figureId}}`, String.raw`\gosuimage [width=2in]{${figureId}}`),
+      body.replace(figureId, `${figureId}.jpg`),
+    ]) {
+      expect(() => validateLectureLatexBody('lecture-notes', invalidBody)).toThrow(
+        LectureLatexSourceError,
+      );
+    }
+
+    const currentPrefix = source.slice(0, source.indexOf('% GOSU-CONTENT-BEGIN'));
+    const legacyV2WithFigure = source
+      .replace('% GOSU-LECTURE-LATEX v3', '% GOSU-LECTURE-LATEX v2')
+      .replace('\\usepackage{graphicx}\n', '')
+      .replace(
+        '\\newcommand{\\gosuimage}[1]{\\includegraphics[width=0.88\\linewidth]{Figure-#1.jpg}}\n',
+        '',
+      );
+    expect(currentPrefix).toContain('\\usepackage{graphicx}');
+    expect(() =>
+      validateCanonicalLectureLatex('lecture-notes', 'Figure bundle', legacyV2WithFigure),
+    ).toThrow(LectureLatexSourceError);
+
+    const currentWithoutFigure = buildLectureLatexDocument(
+      'lecture-notes',
+      'Legacy v2 compatibility',
+      notesBody,
+    );
+    const legacyV2 = currentWithoutFigure
+      .replace('% GOSU-LECTURE-LATEX v3', '% GOSU-LECTURE-LATEX v2')
+      .replace('\\usepackage{graphicx}\n', '')
+      .replace(
+        '\\newcommand{\\gosuimage}[1]{\\includegraphics[width=0.88\\linewidth]{Figure-#1.jpg}}\n',
+        '',
+      );
+    expect(
+      validateCanonicalLectureLatex('lecture-notes', 'Legacy v2 compatibility', legacyV2),
+    ).toBe(legacyV2);
   });
 
   it('accepts safe article and single-page Beamer layout constructs', () => {
@@ -447,21 +816,42 @@ $x \longmapsto f(x)$ and $\arg f$ [M1].
       ).reason,
     ).toBe('beamer_frame_option');
 
-    const canonical = buildLectureLatexDocument(
-      'slides',
+    const legacyCanonical = legacyCanonicalSlides(
       'Legacy deck',
-      String.raw`\begin{frame}{Result}Evidence [M1].\end{frame}`,
+      String.raw`\begin{frame}{Result}\pause Evidence [M1].\end{frame}`,
     );
-    const legacyCanonical = canonical.replace('Evidence [M1].', '\\pause Evidence [M1].');
     expect(validateCanonicalLectureLatex('slides', 'Legacy deck', legacyCanonical)).toBe(
       legacyCanonical,
     );
-    const legacyMultipageCanonical = canonical.replace(
-      '\\begin{frame}{Result}',
-      '\\begin{frame}[\n  allowframebreaks\n]{Result}',
+    const legacyTypographyCanonical = legacyCanonicalSlides(
+      'Legacy deck',
+      String.raw`\begin{frame}{Result}Legacy evidence ([M1], [P2]).\end{frame}`,
     );
+    expect(validateCanonicalLectureLatex('slides', 'Legacy deck', legacyTypographyCanonical)).toBe(
+      legacyTypographyCanonical,
+    );
+    const legacyOptionalHeadingCanonical = legacyCanonicalSlides(
+      'Legacy deck',
+      String.raw`\section[Short]{References}
+\begin{frame}{Result}Legacy evidence [M1].\end{frame}`,
+    );
+    expect(
+      validateCanonicalLectureLatex('slides', 'Legacy deck', legacyOptionalHeadingCanonical),
+    ).toBe(legacyOptionalHeadingCanonical);
+    const legacyMultipageCanonical = legacyCanonicalSlides(
+      'Legacy deck',
+      String.raw`\begin{frame}{Result}Evidence [M1].\end{frame}`,
+    ).replace('\\begin{frame}{Result}', '\\begin{frame}[\n  allowframebreaks\n]{Result}');
     expect(validateCanonicalLectureLatex('slides', 'Legacy deck', legacyMultipageCanonical)).toBe(
       legacyMultipageCanonical,
+    );
+    const v2Canonical = buildLectureLatexDocument(
+      'slides',
+      'Current deck',
+      String.raw`\begin{frame}{Result}Evidence [M1].\end{frame}`,
+    ).replace('Evidence \\gosuevidence{M1}.', '\\pause Evidence \\gosuevidence{M1}.');
+    expect(() => validateCanonicalLectureLatex('slides', 'Current deck', v2Canonical)).toThrow(
+      expect.objectContaining({ reason: 'beamer_overlay' }),
     );
     expect(() =>
       validateLectureLatexBody(

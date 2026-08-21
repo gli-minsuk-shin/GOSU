@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LectureExternalSourceService } from '../src/main/lecture-external-source-service';
 import type { LectureOverleafSourceService } from '../src/main/lecture-overleaf-source-service';
 import type { LectureStudioAttachmentService } from '../src/main/lecture-studio-attachment-service';
+import type { LectureStudioFigureService } from '../src/main/lecture-studio-figure-service';
 import { registerLectureStudioIpc } from '../src/main/lecture-studio-ipc';
 import {
   LectureStudioServiceError,
@@ -35,15 +36,23 @@ function fixture(
     choose: vi.fn(async () => []),
     release: vi.fn(async () => ({ released: true as const })),
   } as unknown as LectureStudioAttachmentService;
+  const figures = {
+    list: vi.fn(async () => []),
+    choose: vi.fn(async () => undefined as never),
+    addPaths: vi.fn(async () => undefined as never),
+    remove: vi.fn(async () => undefined as never),
+    preview: vi.fn(async () => undefined as never),
+  } as unknown as LectureStudioFigureService;
   registerLectureStudioIpc(
     (channel, handler) => handlers.set(channel, handler),
     service as LectureStudioService,
     externalSources,
     overleafSources,
     attachments,
+    figures,
     reportUnexpected,
   );
-  return { handlers, reportUnexpected, externalSources, overleafSources, attachments };
+  return { handlers, reportUnexpected, externalSources, overleafSources, attachments, figures };
 }
 
 describe('Lecture Studio IPC boundary', () => {
@@ -63,6 +72,13 @@ describe('Lecture Studio IPC boundary', () => {
         LECTURE_STUDIO_IPC_CHANNELS.releaseAttachment,
         LECTURE_STUDIO_IPC_CHANNELS.create,
         LECTURE_STUDIO_IPC_CHANNELS.updateGenerationBrief,
+        LECTURE_STUDIO_IPC_CHANNELS.editDraft,
+        LECTURE_STUDIO_IPC_CHANNELS.saveManualRevision,
+        LECTURE_STUDIO_IPC_CHANNELS.listFigures,
+        LECTURE_STUDIO_IPC_CHANNELS.chooseFigures,
+        LECTURE_STUDIO_IPC_CHANNELS.stageDroppedFigures,
+        LECTURE_STUDIO_IPC_CHANNELS.removeFigure,
+        LECTURE_STUDIO_IPC_CHANNELS.previewFigure,
         LECTURE_STUDIO_IPC_CHANNELS.generate,
         LECTURE_STUDIO_IPC_CHANNELS.send,
         LECTURE_STUDIO_IPC_CHANNELS.cancel,
@@ -94,6 +110,11 @@ describe('Lecture Studio IPC boundary', () => {
             { title: 'Methods', coverage: 'notes-and-slides' as const },
             { title: 'Appendix', coverage: 'notes-only' as const },
           ],
+        },
+        documentFeatures: {
+          includeSlideTitlePage: false,
+          showInlineEvidenceLabels: false,
+          includeSourcesUsedSection: false,
         },
         customInstructions: 'Emphasize assumptions.',
       },
@@ -145,6 +166,69 @@ describe('Lecture Studio IPC boundary', () => {
     ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
     expect(attachments.choose).toHaveBeenCalledTimes(1);
     expect(attachments.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes direct revision editing and Studio-scoped figure commands through strict DTOs', async () => {
+    const editDraft = vi.fn(async () => undefined as never);
+    const saveManualRevision = vi.fn(async () => undefined as never);
+    const { handlers, figures } = fixture({ editDraft, saveManualRevision });
+    const studioId = randomUUID();
+    const baseRevisionId = randomUUID();
+    const figureId = randomUUID();
+    const sha256 = 'a'.repeat(64);
+    const edit = { studioId, expectedVersion: 4, baseRevisionId, baseRevision: 2 };
+    const save = {
+      ...edit,
+      lectureNotesLatexBody: '\\section{Notes}\nEvidence [P1].',
+      slidesLatexBody: '\\begin{frame}{Slide}\nEvidence [P1].\n\\end{frame}',
+    };
+
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.editDraft)?.(edit);
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.saveManualRevision)?.(save);
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.listFigures)?.({ studioId });
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.chooseFigures)?.({
+      studioId,
+      expectedVersion: 4,
+    });
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.stageDroppedFigures)?.({
+      studioId,
+      expectedVersion: 4,
+      paths: ['/private/figure.png'],
+    });
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.removeFigure)?.({
+      studioId,
+      expectedVersion: 4,
+      figureId,
+      sha256,
+    });
+    await handlers.get(LECTURE_STUDIO_IPC_CHANNELS.previewFigure)?.({
+      studioId,
+      figureId,
+      sha256,
+    });
+
+    expect(editDraft).toHaveBeenCalledWith(edit);
+    expect(saveManualRevision).toHaveBeenCalledWith(save);
+    expect(figures.list).toHaveBeenCalledWith({ studioId });
+    expect(figures.addPaths).toHaveBeenCalledWith({
+      studioId,
+      expectedVersion: 4,
+      paths: ['/private/figure.png'],
+    });
+    await expect(
+      handlers.get(LECTURE_STUDIO_IPC_CHANNELS.stageDroppedFigures)?.({
+        studioId,
+        expectedVersion: 4,
+        paths: ['/private/figure.png'],
+        bytes: 'renderer-must-not-send-bytes',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
+    await expect(
+      handlers.get(LECTURE_STUDIO_IPC_CHANNELS.saveManualRevision)?.({
+        ...save,
+        outputPath: '/tmp/overwrite.tex',
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_lecture_input' } });
   });
 
   it('routes only exact staged-file and Overleaf source commands', async () => {

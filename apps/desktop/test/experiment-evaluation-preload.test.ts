@@ -54,6 +54,7 @@ describe('Experiment Evaluation preload bridge', () => {
       requestedModelId: null,
       reasoningOptionId: 'medium',
     });
+    await api.experimentEvaluation.cancel({ projectId, sessionId });
     await api.experimentEvaluation.approve({
       projectId,
       sessionId,
@@ -81,6 +82,7 @@ describe('Experiment Evaluation preload bridge', () => {
           reasoningOptionId: 'medium',
         },
       ],
+      [EXPERIMENT_EVALUATION_IPC_CHANNELS.cancel, { projectId, sessionId }],
       [
         EXPERIMENT_EVALUATION_IPC_CHANNELS.approve,
         {

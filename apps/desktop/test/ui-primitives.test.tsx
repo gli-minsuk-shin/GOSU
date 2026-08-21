@@ -21,9 +21,9 @@ describe('CollapseChevron', () => {
 });
 
 describe('describeError', () => {
-  it('explains BYO Hermes setup failures without exposing technical output', () => {
+  it('explains verified Hermes runtime failures without exposing technical output', () => {
     expect(describeError(new Error('hermes_installation_not_supported:/Users/private'))).toBe(
-      'GOSU could not find a standard local Hermes installation. Install Hermes with its standard installer, then try again.',
+      'The verified Hermes runtime is unavailable. Reinstall this GOSU release; development builds may instead use a compatible Hermes 0.19.1 installation.',
     );
     expect(describeError(new Error('hermes_runtime_check_failed:secret stderr'))).toBe(
       'GOSU could not safely verify this Hermes setup. Check its model configuration and sign-in, then try again.',

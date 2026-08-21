@@ -31,6 +31,13 @@ describe('SSH workspace file contracts', () => {
         confirmNoRemoteSandbox: true,
       }).success,
     ).toBe(true);
+    expect(
+      EnableTrustedRemoteWorkspaceInputSchema.safeParse({
+        ...base,
+        confirmNoRemoteSandbox: true,
+        confirmRootTrustedWorkspaceRisk: true,
+      }).success,
+    ).toBe(true);
   });
 
   it('accepts bounded list, read, create, and expected-hash replacement requests', () => {

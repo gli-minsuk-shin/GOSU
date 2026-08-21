@@ -20,5 +20,6 @@ export function buildLocalNotesGrantUpdate(
     contextScope: profile.contextScope,
     localNotesVault,
     customInstructions: profile.customInstructions,
+    policyRules: profile.policyRules,
   };
 }

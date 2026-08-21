@@ -9,7 +9,7 @@ export const SSH_WORKSPACE_FILE_PATH_MAX_LENGTH = 512;
 export const SSH_WORKSPACE_FILE_MAX_CHARACTERS = 24_000;
 export const SSH_WORKSPACE_FILE_READ_MAX_CHARACTERS = 16_000;
 export const SSH_WORKSPACE_FILE_LIST_MAX_ENTRIES = 200;
-export const SSH_TRUSTED_WORKSPACE_POLICY_VERSION = 1;
+export const SSH_TRUSTED_WORKSPACE_POLICY_VERSION = 2;
 
 const uuidSchema = z.string().uuid();
 const timestampSchema = z.string().datetime({ offset: true });
@@ -156,6 +156,7 @@ export const EnableTrustedRemoteWorkspaceInputSchema = z
     expectedVersion: z.number().int().positive(),
     confirmTrustedWorkspaceRisk: z.literal(true),
     confirmNoRemoteSandbox: z.literal(true),
+    confirmRootTrustedWorkspaceRisk: z.literal(true).optional(),
   })
   .strict();
 

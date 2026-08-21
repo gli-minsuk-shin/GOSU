@@ -2,18 +2,23 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 
 import type { ModelInvocation } from '@gosu/contracts';
+import { zipSync } from 'fflate';
 
 import {
   CancelLectureStudioInputSchema,
   CompileLectureStudioPdfInputSchema,
+  CurrentLectureStudioGenerationBriefValueSchema,
   CreateLectureStudioInputSchema,
+  DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
   ExportLectureStudioArtifactInputSchema,
   GenerateLectureStudioInputSchema,
   EmptyLectureStudioTrashInputSchema,
   EmptyLectureStudioTrashReceiptSchema,
+  LECTURE_STUDIO_SOURCE_LIST_SECTION_TITLES,
   LECTURE_STUDIO_MAX_MANUSCRIPT_FILES,
   LECTURE_STUDIO_MAX_MESSAGE_LENGTH,
   LECTURE_STUDIO_OUTPUT_SCHEMA,
+  LECTURE_STUDIO_REVISION_PATCH_OUTPUT_SCHEMA,
   LectureSourceCandidatesSchema,
   LectureSourceManifestSchema,
   LectureStudioDetailInputSchema,
@@ -22,9 +27,11 @@ import {
   LectureStudioArtifactActionReceiptSchema,
   LectureStudioEventSchema,
   LectureStudioGenerationOutputSchema,
+  LectureStudioRevisionPatchOutputSchema,
   LectureStudioListSnapshotSchema,
   LectureStudioMessageSchema,
   LectureStudioRevisionSchema,
+  LectureStudioRevisionV4Schema,
   LectureStudioSchema,
   LectureStudioTurnReceiptSchema,
   ListLectureCandidatesInputSchema,
@@ -34,6 +41,12 @@ import {
   RevealLectureStudioArtifactInputSchema,
   SendLectureStudioMessageInputSchema,
   UpdateLectureStudioGenerationBriefInputSchema,
+  GetLectureStudioEditDraftInputSchema,
+  LectureStudioEditDraftSchema,
+  SaveLectureStudioManualRevisionInputSchema,
+  LectureStudioManualRevisionReceiptSchema,
+  normalizeLectureStudioDocumentSectionTitle,
+  resolveLectureStudioDocumentFeatures,
   type CancelLectureStudioInput,
   type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
@@ -51,13 +64,21 @@ import {
   type LectureStudioArtifact,
   type LectureStudioArtifactActionReceipt,
   type LectureStudioDetail,
+  type LectureStudioDocumentFeatures,
   type LectureStudioDetailInput,
   type LectureStudioEvent,
+  type LectureStudioGenerationBrief,
   type LectureGenerationProgressPhase,
   type LectureStudioListSnapshot,
   type LectureStudioMessage,
   type LectureStudioPdfPreview,
   type LectureStudioRevision,
+  type LectureStudioRevisionPatchOutput,
+  type LectureStudioFigureAsset,
+  type LectureStudioEditDraft,
+  type GetLectureStudioEditDraftInput,
+  type SaveLectureStudioManualRevisionInput,
+  type LectureStudioManualRevisionReceipt,
   type LectureStudioSummary,
   type LectureStudioTurnReceipt,
   type LectureStudioAttachmentSnapshot,
@@ -103,8 +124,12 @@ import {
   LectureLatexSourceError,
   buildLectureLatexDocument,
   countLectureSlidePages,
+  findLectureSourceListSections,
   findLectureSourcesUsedSection,
+  findLectureFigureAssetIds,
+  extractEditableLectureLatexBody,
   normalizeGeneratedLectureLatexBody,
+  rehydrateLectureEvidenceAnchors,
   type LectureLatexValidationReason,
   validateLectureLatexBody,
 } from './lecture-latex-source';
@@ -116,6 +141,13 @@ import {
 import { lecturePdfExportBytes, type LectureArtifactPlatform } from './lecture-artifact-platform';
 import type { ResolvedLectureRevisionArtifact } from './research-notes-service';
 import { CodexRequestError } from './codex-app-server';
+import {
+  LectureStudioFigureServiceError,
+  type LectureStudioFigureService,
+  type LectureStudioFigureSnapshot,
+  type MaterializedLectureStudioFigures,
+} from './lecture-studio-figure-service';
+import type { ModelUsageService } from './model-usage-service';
 
 type MaybePromise<T> = T | Promise<T>;
 type CodexNotification = Readonly<{ method?: string; params?: unknown }>;
@@ -175,8 +207,12 @@ function unchangedDraftRetainsRetiredAttachmentCitation(
   if (!previousRevision || previousRevision.schemaVersion === 1 || retiredLabels.length === 0) {
     return false;
   }
-  const previousNotesBody = canonicalLectureBody(previousRevision.lectureNotesLatex);
-  const previousSlidesBody = canonicalLectureBody(previousRevision.slidesLatex);
+  const previousNotesBody = canonicalLectureBody(
+    rehydrateLectureEvidenceAnchors(previousRevision.lectureNotesLatex),
+  );
+  const previousSlidesBody = canonicalLectureBody(
+    rehydrateLectureEvidenceAnchors(previousRevision.slidesLatex),
+  );
   const hasRetiredCitation = (body: string) =>
     retiredLabels.some((label) => body.includes(`[${label}]`));
   return (
@@ -222,6 +258,7 @@ export interface LectureStudioStorage {
       attemptId: string;
       userMessage: LectureStudioMessage | null;
       updatedAt: string;
+      generationBrief?: LectureStudioGenerationBrief;
       attempt?: LectureStudioAttempt;
     }>,
   ): MaybePromise<LectureStudio | null>;
@@ -266,6 +303,16 @@ export interface LectureStudioStorage {
     input: EmptyLectureStudioTrashInput,
     completedAt: string,
   ): MaybePromise<EmptyLectureStudioTrashReceipt | null>;
+  listLectureStudioFigures(studioId: string): MaybePromise<readonly LectureStudioFigureAsset[]>;
+  commitManualLectureStudioRevision(
+    input: Readonly<{
+      studioId: string;
+      expectedVersion: number;
+      expectedCurrentRevision: number;
+      revision: Extract<LectureStudioRevision, { schemaVersion: 4 }>;
+      updatedAt: string;
+    }>,
+  ): MaybePromise<LectureStudio | null>;
 }
 
 export interface LectureStudioSourceStorage {
@@ -331,6 +378,7 @@ export interface LectureStudioArtifactWriter {
       slidesLatex?: string;
       createdAt: string;
       invocation?: ModelInvocation;
+      figureAssets?: readonly LectureStudioFigureSnapshot[];
       relatedDocuments?: readonly string[];
       relatedPapers?: readonly string[];
     }>,
@@ -368,6 +416,7 @@ export interface LectureStudioCodex {
     requestedModelId: string | null;
     reasoningOptionId: string | null;
     cwd: string;
+    localImagePaths?: readonly string[];
     outputSchema?: Readonly<Record<string, unknown>>;
   }): Promise<{ turnId: string; invocation: ModelInvocation }>;
   interruptTurn(threadId: string, turnId: string): Promise<void>;
@@ -377,6 +426,7 @@ export interface LectureStudioCodex {
 export class LectureStudioServiceError extends Error {
   constructor(
     readonly code:
+      | 'invalid_lecture_input'
       | 'lecture_unavailable'
       | 'lecture_studio_not_found'
       | 'lecture_version_conflict'
@@ -405,6 +455,12 @@ export class LectureStudioServiceError extends Error {
       | 'lecture_pdf_compile_failed'
       | 'lecture_pdf_too_large'
       | 'lecture_pdf_invalid'
+      | 'lecture_figure_unavailable'
+      | 'lecture_figure_invalid'
+      | 'lecture_figure_too_large'
+      | 'lecture_figure_limit_reached'
+      | 'lecture_figure_in_use'
+      | 'lecture_figure_model_unsupported'
       | 'lecture_artifact_not_found'
       | 'lecture_artifact_changed'
       | 'lecture_artifact_unavailable'
@@ -429,6 +485,7 @@ type PendingTurn = {
   earlyInvocation: { turnId: string; invocation: ModelInvocation } | null;
   finalText: string | null;
   terminal: boolean;
+  nativeImageRejected: boolean;
   markActivity: (() => void) | null;
   disposeTimers: (() => void) | null;
   resolve: (value: LectureTurnResult) => void;
@@ -440,7 +497,8 @@ type LectureTurnFailureCode =
   | 'lecture_auth_required'
   | 'lecture_usage_limit_exceeded'
   | 'lecture_generation_interrupted'
-  | 'lecture_generation_failed';
+  | 'lecture_generation_failed'
+  | 'lecture_figure_model_unsupported';
 
 type LectureTurnResult = Readonly<{
   status: string;
@@ -478,6 +536,7 @@ const LECTURE_MANUSCRIPT_FILE_EXTRACT_MAX_CHARACTERS = 72_000;
 const LECTURE_MANUSCRIPT_TOTAL_EXTRACT_MAX_JSON_CHARACTERS = 100_000;
 const LECTURE_MANUSCRIPT_SOURCE_PATH_PATTERN = /\.(?:bib|tex)$/iu;
 const UNSUPPORTED_CITATION_PATTERN = /\[@[^\]]+\]|\\(?:auto|paren|text)?cite\b/iu;
+const EVIDENCE_LIKE_CITATION_PATTERN = /\[([A-Za-z]\d+)\]/gu;
 const SOURCES_USED_TARGET_SOURCE = String.raw`(?:sources?\s*used|source\s*(?:list|section)|references?\s*(?:list|section)|출처\s*(?:목록|섹션|매핑)|참고\s*문헌)`;
 const SOURCES_USED_TARGET_WITH_SUFFIX_SOURCE = String.raw`${SOURCES_USED_TARGET_SOURCE}(?:\s*(?:section|list|mapping|섹션|목록|매핑))?`;
 const ENGLISH_SOURCES_USED_TARGET_SOURCE = String.raw`(?:(?:the|a|an)\s+)?(?:final\s+)?(?:visible\s+)?${SOURCES_USED_TARGET_WITH_SUFFIX_SOURCE}`;
@@ -548,6 +607,10 @@ const SOURCES_USED_OMITTED_DIRECT_PATTERNS = [
     String.raw`${KOREAN_SOURCES_USED_TARGET_SOURCE}(?:지워|지우|삭제|제거|빼|없애|생략|제외)`,
     'iu',
   ),
+  new RegExp(
+    String.raw`${SOURCES_USED_TARGET_WITH_SUFFIX_SOURCE}\s*(?:(?:이\s*)?부분|해당\s*부분)\s*(?:을|를|은|는)?\s*(?:지워|지우|삭제|제거|빼|없애|생략|제외)`,
+    'iu',
+  ),
   new RegExp(String.raw`${SOURCES_USED_TARGET_WITH_SUFFIX_SOURCE}\s*없이`, 'iu'),
 ];
 const SOURCES_USED_REQUIRED_DIRECT_PATTERNS = [
@@ -562,10 +625,105 @@ const SOURCES_USED_REQUIRED_DIRECT_PATTERNS = [
   new RegExp(String.raw`${KOREAN_SOURCES_USED_TARGET_SOURCE}(?:남겨|유지|넣|추가|복원|보여)`, 'iu'),
 ];
 
+const TITLE_SLIDE_TARGET_SOURCE = String.raw`(?:slide\s+title\s+page|title\s+(?:page|slide)|cover\s+slide|제목\s*슬라이드|타이틀\s*슬라이드|표지\s*슬라이드)`;
+const EVIDENCE_LABEL_TARGET_SOURCE = String.raw`(?:inline\s+(?:evidence|source|citation)\s+(?:labels?|citations?|markers?)|evidence\s+(?:labels?|citations?|markers?)|(?:source|citation)\s+(?:labels?|markers?)|\[(?:P|E|M|F|A)#?\]\s*(?:labels?|markers?)?|인라인\s*(?:근거|출처|인용)\s*(?:라벨|표시|마커)|(?:근거|출처|인용)\s*(?:라벨|표시|마커))`;
+
+function targetedTogglePatterns(target: string) {
+  return {
+    enabledNegation: [
+      new RegExp(
+        String.raw`(?:do\s+not|don['’]t|never)\s+(?:remove|delete|omit|exclude|hide|drop)\s+(?:the\s+)?${target}`,
+        'iu',
+      ),
+      new RegExp(
+        String.raw`${target}\s*(?:을|를|은|는)?\s*(?:(?:지우|빼|없애)지|(?:삭제|제거|숨기)하지)\s*(?:마|말|않)`,
+        'iu',
+      ),
+    ],
+    disabledNegation: [
+      new RegExp(
+        String.raw`(?:do\s+not|don['’]t|never)\s+(?:include|add|show|keep|retain|restore|bring\s+back)\s+(?:the\s+)?${target}`,
+        'iu',
+      ),
+      new RegExp(
+        String.raw`${target}\s*(?:을|를|은|는)?\s*(?:넣|추가|복원|보여|표시|유지)지\s*(?:마|말|않)`,
+        'iu',
+      ),
+    ],
+    disabledDirect: [
+      new RegExp(
+        String.raw`^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:remove|delete|omit|exclude|hide|drop|leave\s+out|get\s+rid\s+of)\s+(?:the\s+)?${target}`,
+        'iu',
+      ),
+      new RegExp(String.raw`(?:without|no)\s+(?:the\s+)?${target}`, 'iu'),
+      new RegExp(
+        String.raw`${target}\s*(?:을|를|은|는)?\s*(?:지워|지우|삭제|제거|빼|없애|생략|제외|숨겨|숨기)`,
+        'iu',
+      ),
+    ],
+    enabledDirect: [
+      new RegExp(
+        String.raw`^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:include|add|restore|show|keep|retain|bring\s+back)\s+(?:the\s+)?${target}`,
+        'iu',
+      ),
+      new RegExp(
+        String.raw`${target}\s*(?:을|를|은|는)?\s*(?:다시\s*)?(?:남겨|유지|넣|추가|복원|보여|표시)`,
+        'iu',
+      ),
+    ],
+  } as const;
+}
+
+const TITLE_SLIDE_PATTERNS = targetedTogglePatterns(TITLE_SLIDE_TARGET_SOURCE);
+const EVIDENCE_LABEL_PATTERNS = targetedTogglePatterns(EVIDENCE_LABEL_TARGET_SOURCE);
+
 type LectureSourcesUsedMode = 'required' | 'omitted';
 
 function matchesAny(value: string, patterns: readonly RegExp[]) {
   return patterns.some((pattern) => pattern.test(value));
+}
+
+function lectureDirectiveClauses(value: string) {
+  const normalized = value.normalize('NFC');
+  const metaQuestionPattern =
+    /(?:what\s+does(?:\s+it|\s+that)?\s+mean|what\s+is\s+that\s+supposed\s+to\s+mean|무슨\s*(?:뜻|이야기)|이게\s*뭐|phrase\s+says|문구)/iu;
+  const koreanConditionalQuestionPattern =
+    /(?:빼|뺀|없애|없앤|숨기|숨긴|지우|지운|삭제하|삭제한|제거하|제거한|생략하|생략한|제외하|제외한|넣|넣는|추가하|추가한|복원하|복원한|보이|보인|표시하|표시한|유지하|유지한|남기|남긴)(?:으?면|다면|는다면)[^.!?;\n]*(?:어떻게|어떤|뭐|무엇|왜|될까|되나|되나요|돼|문제|확인)/iu;
+  const englishHypotheticalPattern = /^\s*(?:what|how)\b/iu;
+  const withoutQuotedExplanation = metaQuestionPattern.test(normalized)
+    ? normalized.replace(/["'`“‘][^"'`”’]*["'`”’]/gu, ' ')
+    : normalized;
+  return withoutQuotedExplanation
+    .replace(/["“”]/gu, '')
+    .split(/[.!?;\n]+|\b(?:but|however|instead|actually)\b|(?:하지만|그런데|대신|아니고)/iu)
+    .filter(
+      (clause) =>
+        !metaQuestionPattern.test(clause) &&
+        !koreanConditionalQuestionPattern.test(clause) &&
+        !englishHypotheticalPattern.test(clause),
+    );
+}
+
+function classifyTargetedToggle(
+  value: string,
+  patterns: ReturnType<typeof targetedTogglePatterns>,
+) {
+  let enabled: boolean | null = null;
+  for (const clause of lectureDirectiveClauses(value)) {
+    if (matchesAny(clause, patterns.enabledNegation)) enabled = true;
+    else if (matchesAny(clause, patterns.disabledNegation)) enabled = false;
+    else if (matchesAny(clause, patterns.disabledDirect)) enabled = false;
+    else if (matchesAny(clause, patterns.enabledDirect)) enabled = true;
+  }
+  return enabled;
+}
+
+export function classifyLectureTitleSlideDirective(value: string) {
+  return classifyTargetedToggle(value, TITLE_SLIDE_PATTERNS);
+}
+
+export function classifyLectureEvidenceLabelDirective(value: string) {
+  return classifyTargetedToggle(value, EVIDENCE_LABEL_PATTERNS);
 }
 
 function sourcesSectionMapsLabel(section: string, label: string) {
@@ -583,17 +741,7 @@ function sourcesSectionMapsLabel(section: string, label: string) {
 
 export function classifyLectureSourcesUsedDirective(value: string): LectureSourcesUsedMode | null {
   let mode: LectureSourcesUsedMode | null = null;
-  const normalized = value.normalize('NFC');
-  const withoutQuotedExplanation =
-    /(?:what\s+does(?:\s+it|\s+that)?\s+mean|what\s+is\s+that\s+supposed\s+to\s+mean|무슨\s*(?:뜻|이야기)|이게\s*뭐|phrase\s+says|문구|라고\s*(?:했|말했))/iu.test(
-      normalized,
-    )
-      ? normalized.replace(/["'`“‘][^"'`”’]*["'`”’]/gu, ' ')
-      : normalized;
-  const directiveText = withoutQuotedExplanation.replace(/["“”]/gu, '');
-  for (const clause of directiveText.split(
-    /[.!?;\n]+|\b(?:but|however|instead|actually)\b|(?:하지만|그런데|대신|아니고)/iu,
-  )) {
+  for (const clause of lectureDirectiveClauses(value)) {
     if (matchesAny(clause, SOURCES_USED_REQUIRED_NEGATION_PATTERNS)) mode = 'required';
     else if (matchesAny(clause, SOURCES_USED_OMITTED_NEGATION_PATTERNS)) mode = 'omitted';
     else if (matchesAny(clause, SOURCES_USED_OMITTED_DIRECT_PATTERNS)) mode = 'omitted';
@@ -602,21 +750,86 @@ export function classifyLectureSourcesUsedDirective(value: string): LectureSourc
   return mode;
 }
 
-function resolveSourcesUsedMode(
+function resolveBaseLectureDocumentFeatures(
+  studio: LectureStudio,
   previousRevision: LectureStudioRevision | null,
-  priorUserRequests: readonly string[],
-  currentRequest: string | null,
-): LectureSourcesUsedMode {
-  let mode: LectureSourcesUsedMode =
-    previousRevision &&
-    previousRevision.schemaVersion !== 1 &&
-    !findLectureSourcesUsedSection(previousRevision.lectureNotesLatex)
-      ? 'omitted'
-      : 'required';
-  for (const value of [...priorUserRequests, ...(currentRequest ? [currentRequest] : [])]) {
-    mode = classifyLectureSourcesUsedDirective(value) ?? mode;
+) {
+  if (studio.generationBrief.documentFeatures) {
+    return resolveLectureStudioDocumentFeatures(studio.generationBrief.documentFeatures);
   }
-  return mode;
+  if (
+    (previousRevision?.schemaVersion === 3 || previousRevision?.schemaVersion === 4) &&
+    previousRevision.generationBriefSnapshot.documentFeatures
+  ) {
+    return resolveLectureStudioDocumentFeatures(
+      previousRevision.generationBriefSnapshot.documentFeatures,
+    );
+  }
+  const includeSourcesUsedSection =
+    previousRevision?.schemaVersion !== undefined && previousRevision.schemaVersion !== 1
+      ? findLectureSourcesUsedSection(
+          rehydrateLectureEvidenceAnchors(previousRevision.lectureNotesLatex),
+        ) !== null
+      : DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES.includeSourcesUsedSection;
+  return {
+    ...DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+    includeSourcesUsedSection,
+  };
+}
+
+function resolveLectureDocumentFeaturesForTurn(
+  studio: LectureStudio,
+  previousRevision: LectureStudioRevision | null,
+  currentRequest: string | null,
+): LectureStudioDocumentFeatures {
+  const features = resolveBaseLectureDocumentFeatures(studio, previousRevision);
+  if (!currentRequest) return features;
+  const includeSlideTitlePage = classifyLectureTitleSlideDirective(currentRequest);
+  const showInlineEvidenceLabels = classifyLectureEvidenceLabelDirective(currentRequest);
+  const sourcesUsedMode = classifyLectureSourcesUsedDirective(currentRequest);
+  return {
+    includeSlideTitlePage: includeSlideTitlePage ?? features.includeSlideTitlePage,
+    showInlineEvidenceLabels: showInlineEvidenceLabels ?? features.showInlineEvidenceLabels,
+    includeSourcesUsedSection:
+      sourcesUsedMode === null
+        ? features.includeSourcesUsedSection
+        : sourcesUsedMode === 'required',
+  };
+}
+
+const NORMALIZED_LECTURE_SOURCE_LIST_TITLES = new Set(
+  LECTURE_STUDIO_SOURCE_LIST_SECTION_TITLES.map((title) =>
+    normalizeLectureStudioDocumentSectionTitle(title),
+  ),
+);
+function customLectureContentSectionTitles(
+  generationBrief: LectureStudioGenerationBrief,
+): readonly string[] {
+  return generationBrief.structure.mode === 'custom'
+    ? generationBrief.structure.sections.map((section) => section.title)
+    : [];
+}
+
+function customLectureSourceListAliasTitles(generationBrief: LectureStudioGenerationBrief) {
+  return new Set(
+    customLectureContentSectionTitles(generationBrief)
+      .filter((title) => title.normalize('NFC').trim().toLowerCase() !== 'sources used')
+      .map((title) => normalizeLectureStudioDocumentSectionTitle(title))
+      .filter((title) => NORMALIZED_LECTURE_SOURCE_LIST_TITLES.has(title)),
+  );
+}
+
+function assertNoNewLectureSourceListAliasTitles(
+  generationBrief: LectureStudioGenerationBrief,
+  grandfatheredGenerationBrief?: LectureStudioGenerationBrief,
+) {
+  const grandfathered = grandfatheredGenerationBrief
+    ? customLectureSourceListAliasTitles(grandfatheredGenerationBrief)
+    : new Set<string>();
+  const proposed = customLectureSourceListAliasTitles(generationBrief);
+  if ([...proposed].some((title) => !grandfathered.has(title))) {
+    throw new LectureStudioServiceError('invalid_lecture_input');
+  }
 }
 
 type LectureOutputValidationCategory =
@@ -657,25 +870,43 @@ const LECTURE_OUTPUT_CORRECTION_GUIDANCE = {
   latex_grammar:
     'Regenerate both complete bodies using only the bounded LaTeX dialect and escaping rules in the developer instructions. Do not emit wrappers, comments, raw special characters, custom commands, or unsupported environments.',
   citation_mapping:
-    'Regenerate both complete bodies so every factual claim and content frame uses only allowed source labels. If the notes include a Sources used section, map every cited label there; preserve an explicit current-user request to omit that section.',
+    'Regenerate both complete raw bodies so every factual claim and content frame uses only allowed source labels. GOSU validates these anchors before applying their visible or hidden rendering. If the notes include a Sources used section, map every cited label there.',
   slide_count:
-    'Regenerate the complete pair with the required content-frame count. GOSU adds one title frame to the final PDF page count.',
+    'Regenerate the complete pair with the required content-frame count. GOSU applies the frozen title-page option to the final PDF page count.',
 } as const satisfies Record<LectureOutputValidationCategory, string>;
 
 function correctionPrompt(
   error: LectureOutputValidationError,
   studio: LectureStudio,
-  sourcesUsedMode: LectureSourcesUsedMode,
+  documentFeatures: LectureStudioDocumentFeatures,
+  outputMode: 'complete' | 'patch',
 ) {
   const { category } = error;
+  const correctionGuidance =
+    outputMode === 'patch'
+      ? {
+          response_json:
+            'Return only one JSON object matching the revision-patch output schema, with no Markdown fence or text outside it.',
+          response_schema:
+            'Return exactly reply and edits. Each edit requires document, find, and replace, with no additional fields.',
+          latex_grammar:
+            'Correct the localized replacements using only the bounded LaTeX dialect and escaping rules in the developer instructions.',
+          citation_mapping:
+            'Correct the localized edits so the complete resulting notes and slides retain allowed evidence labels, frame evidence, and the configured source-list state.',
+          slide_count:
+            'Correct only the frame blocks needed to satisfy the required content-frame count.',
+        }[category]
+      : LECTURE_OUTPUT_CORRECTION_GUIDANCE[category];
   let slideCountGuidance = '';
   if (category === 'slide_count') {
     const requestedPages = studio.generationBrief.slidesTargetPages;
+    const titlePageOffset = documentFeatures.includeSlideTitlePage ? 1 : 0;
     if (requestedPages !== null) {
-      slideCountGuidance = ` Emit exactly ${requestedPages - 1} content frames; GOSU adds one title frame for exactly ${requestedPages} PDF pages.`;
+      const contentFrames = requestedPages - titlePageOffset;
+      slideCountGuidance = ` Emit exactly ${contentFrames} content frame${contentFrames === 1 ? '' : 's'}; GOSU ${titlePageOffset === 1 ? 'adds one title frame' : 'does not add a title frame'} for exactly ${requestedPages} PDF page${requestedPages === 1 ? '' : 's'}.`;
     } else if (studio.kind === 'talk') {
       const budget = talkSlideBudget(studio.durationMinutes!);
-      slideCountGuidance = ` Emit between ${budget.minimum - 1} and ${budget.maximum - 1} content frames; GOSU adds one title frame for ${budget.minimum}-${budget.maximum} PDF pages.`;
+      slideCountGuidance = ` Emit between ${budget.minimum - titlePageOffset} and ${budget.maximum - titlePageOffset} content frames; GOSU ${titlePageOffset === 1 ? 'adds one title frame' : 'does not add a title frame'} for ${budget.minimum}-${budget.maximum} PDF pages.`;
     }
   }
   const latexGuidance =
@@ -693,11 +924,56 @@ function correctionPrompt(
             ' ',
           )} These diagnostics contain no candidate text and are bounded examples; scan both complete bodies for every occurrence and every other violation, not only the listed examples.`
       : '';
-  const sourcesUsedGuidance =
-    sourcesUsedMode === 'omitted'
-      ? ' Omit the Sources used section completely while retaining allowed inline source labels.'
-      : ' Finish the notes with a complete Sources used mapping for every cited label.';
-  return `The previous candidate was rejected by GOSU's bounded ${category} check and was not saved. ${LECTURE_OUTPUT_CORRECTION_GUIDANCE[category]}${sourcesUsedGuidance}${slideCountGuidance}${latexGuidance} Recheck both documents and return one complete replacement JSON object now.`;
+  const sourcesUsedGuidance = !documentFeatures.includeSourcesUsedSection
+    ? ' Omit the Sources used section completely while retaining every allowed raw inline source label.'
+    : ' Finish the notes with a complete Sources used mapping for every cited label.';
+  const evidenceGuidance = documentFeatures.showInlineEvidenceLabels
+    ? ' GOSU will render the validated evidence anchors visibly. Put consecutive labels next to each other with whitespace only; never wrap them or join them with punctuation or connector words.'
+    : ' GOSU will hide the validated evidence anchors later; keep their raw [P#], [E#], [M#], [F#], or [A#] labels in the returned bodies. Put consecutive labels next to each other with whitespace only; never wrap them or join them with punctuation or connector words.';
+  const outputGuidance =
+    outputMode === 'patch'
+      ? ' Return exactly reply and edits. Every edit must target one exact unique substring from the original currentDraft supplied at the start of this thread; return only the smallest corrected edits and never resend a complete body.'
+      : ' Return one complete replacement JSON object now.';
+  return `The previous candidate was rejected by GOSU's bounded ${category} check and was not saved. ${correctionGuidance}${sourcesUsedGuidance}${evidenceGuidance}${slideCountGuidance}${latexGuidance}${outputGuidance}`;
+}
+
+type LectureStudioRevisionDraftBodies = Readonly<{
+  lectureNotes: string;
+  slides: string;
+}>;
+
+export function applyLectureStudioRevisionPatch(
+  currentDraft: LectureStudioRevisionDraftBodies,
+  output: LectureStudioRevisionPatchOutput,
+) {
+  const bodies = {
+    lectureNotes: currentDraft.lectureNotes,
+    slides: currentDraft.slides,
+  };
+  const originalLengths = {
+    lectureNotes: currentDraft.lectureNotes.length,
+    slides: currentDraft.slides.length,
+  };
+  const affectedCharacters = { lectureNotes: 0, slides: 0 };
+  for (const edit of output.edits) {
+    const key = edit.document === 'lecture-notes' ? 'lectureNotes' : 'slides';
+    const body = bodies[key];
+    if (edit.find === edit.replace) throw new Error('lecture_revision_patch_noop');
+    const first = body.indexOf(edit.find);
+    if (first < 0) throw new Error('lecture_revision_patch_missing_match');
+    if (body.indexOf(edit.find, first + edit.find.length) >= 0) {
+      throw new Error('lecture_revision_patch_ambiguous_match');
+    }
+    affectedCharacters[key] += Math.max(edit.find.length, edit.replace.length);
+    if (
+      originalLengths[key] > 4_000 &&
+      affectedCharacters[key] >= Math.floor(originalLengths[key] * 0.8)
+    ) {
+      throw new Error('lecture_revision_patch_not_localized');
+    }
+    bodies[key] = `${body.slice(0, first)}${edit.replace}${body.slice(first + edit.find.length)}`;
+  }
+  return bodies;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -705,6 +981,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function lectureErrorFromCodexRequest(error: unknown) {
+  if (
+    error instanceof Error &&
+    (error.message === 'attachment_model_modality_unsupported' ||
+      error.message === 'codex_image_modality_unsupported')
+  ) {
+    return 'lecture_figure_model_unsupported' as const;
+  }
   if (!(error instanceof CodexRequestError)) return 'lecture_codex_unavailable' as const;
   switch (error.code) {
     case 'codex_auth_required':
@@ -717,6 +1000,33 @@ function lectureErrorFromCodexRequest(error: unknown) {
       return 'lecture_generation_interrupted' as const;
     case 'codex_request_failed':
       return 'lecture_generation_failed' as const;
+  }
+}
+
+function lectureErrorFromFigureService(error: unknown) {
+  if (!(error instanceof LectureStudioFigureServiceError)) {
+    return new LectureStudioServiceError('lecture_figure_unavailable');
+  }
+  switch (error.code) {
+    case 'figure_invalid':
+    case 'figure_unsupported':
+    case 'figure_extraction_failed':
+      return new LectureStudioServiceError('lecture_figure_invalid');
+    case 'figure_too_large':
+    case 'figure_total_too_large':
+      return new LectureStudioServiceError('lecture_figure_too_large');
+    case 'figure_too_many':
+      return new LectureStudioServiceError('lecture_figure_limit_reached');
+    case 'figure_version_conflict':
+      return new LectureStudioServiceError('lecture_version_conflict');
+    case 'figure_studio_not_found':
+      return new LectureStudioServiceError('lecture_studio_not_found');
+    case 'figure_in_use':
+      return new LectureStudioServiceError('lecture_figure_in_use');
+    case 'figure_scope_unavailable':
+    case 'figure_not_found':
+    case 'figure_storage_failed':
+      return new LectureStudioServiceError('lecture_figure_unavailable');
   }
 }
 
@@ -929,7 +1239,7 @@ function committedRevisionMatchesPending(
     pending.generationBriefSha256 !== undefined ||
     pending.authoringPolicyVersion !== undefined ||
     pending.authoringPolicySha256 !== undefined;
-  if (revision.schemaVersion === 3) {
+  if (revision.schemaVersion === 3 || revision.schemaVersion === 4) {
     if (
       pending.generationBriefSha256 !== revision.generationBriefSha256 ||
       pending.authoringPolicyVersion !== revision.authoringPolicyVersion ||
@@ -938,6 +1248,14 @@ function committedRevisionMatchesPending(
       return false;
     }
   } else if (pendingHasGenerationProvenance) {
+    return false;
+  }
+  const pendingFigureAssets = pending.figureAssets ?? [];
+  if (
+    revision.schemaVersion === 4
+      ? JSON.stringify(revision.figureAssets) !== JSON.stringify(pendingFigureAssets)
+      : pendingFigureAssets.length > 0
+  ) {
     return false;
   }
   return (
@@ -957,6 +1275,7 @@ export class LectureStudioService {
   private readonly pendingByThread = new Map<string, PendingTurn>();
   private readonly bufferedByThread = new Map<string, CodexNotification[]>();
   private readonly activeByStudio = new Map<string, ActiveExecution>();
+  private readonly manualSaveByStudio = new Set<string>();
   private readonly lifecycleLockedProjects = new Set<string>();
   private readonly listeners = new Set<(event: LectureStudioEvent) => void>();
   private pendingArtifactReconciliation: Promise<void> | null = null;
@@ -971,9 +1290,14 @@ export class LectureStudioService {
         'claim' | 'discard' | 'snapshots' | 'purgeStudio' | 'rollbackClaim'
       >;
       attachments?: Pick<LectureStudioAttachmentService, 'prepare'>;
+      figures?: Pick<
+        LectureStudioFigureService,
+        'list' | 'snapshotFigures' | 'snapshotRevisionFigures' | 'materializeActiveFigures'
+      >;
       workspace: LectureStudioWorkspace;
       artifacts: LectureStudioArtifactWriter;
       codex: LectureStudioCodex;
+      usage?: Pick<ModelUsageService, 'bindThread' | 'releaseThread'>;
       /** Required acceptance gate: no canonical LaTeX revision is published before both PDFs compile. */
       pdfCompiler: Pick<LectureDocumentCompiler, 'compile'>;
       artifactPlatform?: LectureArtifactPlatform;
@@ -992,7 +1316,17 @@ export class LectureStudioService {
       for (const pending of this.pendingByThread.values()) {
         if (pending.terminal) continue;
         pending.terminal = true;
-        pending.resolve({ status: 'transport_failed', text: null, failureCode: null });
+        const bufferedNativeImageRejection = (
+          this.bufferedByThread.get(pending.threadId) ?? []
+        ).some((notification) => notification.method === 'gosu/attachment-model-modality-rejected');
+        pending.resolve({
+          status: 'transport_failed',
+          text: null,
+          failureCode:
+            pending.nativeImageRejected || bufferedNativeImageRejection
+              ? 'lecture_figure_model_unsupported'
+              : null,
+        });
       }
     });
     dependencies.codex.on(
@@ -1177,6 +1511,13 @@ export class LectureStudioService {
 
   async create(input: CreateLectureStudioInput): Promise<LectureStudio> {
     const command = CreateLectureStudioInputSchema.parse(input);
+    const generationBrief = CurrentLectureStudioGenerationBriefValueSchema.parse({
+      ...command.generationBrief,
+      documentFeatures: resolveLectureStudioDocumentFeatures(
+        command.generationBrief.documentFeatures,
+      ),
+    });
+    assertNoNewLectureSourceListAliasTitles(generationBrief);
     this.throwIfProjectsLifecycleLocked([...command.sourceProjectIds, command.outputProjectId]);
     const studioId = randomUUID();
     const externalSelection = command.sourceSelection.externalSources;
@@ -1218,6 +1559,7 @@ export class LectureStudioService {
       schemaVersion: 1,
       id: studioId,
       ...command,
+      generationBrief,
       status: 'draft',
       activeAttemptId: null,
       currentRevision: 0,
@@ -1266,7 +1608,10 @@ export class LectureStudioService {
     input: UpdateLectureStudioGenerationBriefInput,
   ): Promise<LectureStudio> {
     const command = UpdateLectureStudioGenerationBriefInputSchema.parse(input);
-    if (this.activeByStudio.has(command.studioId)) {
+    if (
+      this.activeByStudio.has(command.studioId) ||
+      this.manualSaveByStudio.has(command.studioId)
+    ) {
       throw new LectureStudioServiceError('lecture_busy');
     }
     const studio = await this.dependencies.storage.getLectureStudio(command.studioId);
@@ -1278,6 +1623,7 @@ export class LectureStudioService {
     if (studio.version !== command.expectedVersion) {
       throw new LectureStudioServiceError('lecture_version_conflict');
     }
+    assertNoNewLectureSourceListAliasTitles(command.generationBrief, studio.generationBrief);
     this.throwIfProjectsLifecycleLocked([...studio.sourceProjectIds, studio.outputProjectId]);
     if (JSON.stringify(studio.generationBrief) === JSON.stringify(command.generationBrief)) {
       return LectureStudioSchema.parse(studio);
@@ -1298,9 +1644,343 @@ export class LectureStudioService {
     return LectureStudioSchema.parse(updated);
   }
 
+  async editDraft(input: GetLectureStudioEditDraftInput): Promise<LectureStudioEditDraft> {
+    const command = GetLectureStudioEditDraftInputSchema.parse(input);
+    if (this.manualSaveByStudio.has(command.studioId)) {
+      throw new LectureStudioServiceError('lecture_busy');
+    }
+    const studio = await this.requireStudio(command.studioId);
+    if (studio.version !== command.expectedVersion) {
+      throw new LectureStudioServiceError('lecture_version_conflict');
+    }
+    if (studio.status === 'generating' || studio.activeAttemptId) {
+      throw new LectureStudioServiceError('lecture_busy');
+    }
+    if (studio.currentRevision !== command.baseRevision) {
+      throw new LectureStudioServiceError('lecture_version_conflict');
+    }
+    const revision = await this.dependencies.storage.getLectureStudioRevision(
+      studio.id,
+      command.baseRevision,
+    );
+    if (!revision || revision.id !== command.baseRevisionId) {
+      throw new LectureStudioServiceError('lecture_version_conflict');
+    }
+    if (revision.schemaVersion === 1) {
+      throw new LectureStudioServiceError('lecture_unavailable');
+    }
+    const notes = extractEditableLectureLatexBody(
+      'lecture-notes',
+      studio.title,
+      revision.lectureNotesLatex,
+    );
+    const slides = extractEditableLectureLatexBody('slides', studio.title, revision.slidesLatex);
+    if (JSON.stringify(notes.features) !== JSON.stringify(slides.features)) {
+      throw new LectureStudioServiceError('lecture_artifact_changed');
+    }
+    const figures = await this.dependencies.storage.listLectureStudioFigures(studio.id);
+    return LectureStudioEditDraftSchema.parse({
+      schemaVersion: 1,
+      studioId: studio.id,
+      studioVersion: studio.version,
+      baseRevisionId: revision.id,
+      baseRevision: revision.revision,
+      lectureNotesLatexBody: notes.body,
+      slidesLatexBody: slides.body,
+      figures,
+    });
+  }
+
+  async saveManualRevision(
+    input: SaveLectureStudioManualRevisionInput,
+  ): Promise<LectureStudioManualRevisionReceipt> {
+    const command = SaveLectureStudioManualRevisionInputSchema.parse(input);
+    if (
+      this.activeByStudio.has(command.studioId) ||
+      this.manualSaveByStudio.has(command.studioId)
+    ) {
+      throw new LectureStudioServiceError('lecture_busy');
+    }
+    this.manualSaveByStudio.add(command.studioId);
+    let pendingArtifactInput:
+      Parameters<LectureStudioArtifactWriter['saveRevisionArtifacts']>[0] | null = null;
+    try {
+      const studio = await this.requireStudio(command.studioId);
+      this.throwIfProjectsLifecycleLocked([...studio.sourceProjectIds, studio.outputProjectId]);
+      if (
+        studio.version !== command.expectedVersion ||
+        studio.currentRevision !== command.baseRevision
+      ) {
+        throw new LectureStudioServiceError('lecture_version_conflict');
+      }
+      if (studio.status === 'generating' || studio.activeAttemptId) {
+        throw new LectureStudioServiceError('lecture_busy');
+      }
+      if (studio.currentRevision < 1 || (studio.status !== 'ready' && studio.status !== 'failed')) {
+        throw new LectureStudioServiceError('lecture_unavailable');
+      }
+      try {
+        await this.dependencies.artifacts.assertRevisionDestination(studio.outputProjectId);
+      } catch (error) {
+        throw this.normalizeArtifactError(error);
+      }
+      const baseRevision = await this.dependencies.storage.getLectureStudioRevision(
+        studio.id,
+        command.baseRevision,
+      );
+      if (!baseRevision || baseRevision.id !== command.baseRevisionId) {
+        throw new LectureStudioServiceError('lecture_version_conflict');
+      }
+      if (baseRevision.schemaVersion === 1) {
+        throw new LectureStudioServiceError('lecture_unavailable');
+      }
+      const baseNotes = extractEditableLectureLatexBody(
+        'lecture-notes',
+        studio.title,
+        baseRevision.lectureNotesLatex,
+      );
+      const baseSlides = extractEditableLectureLatexBody(
+        'slides',
+        studio.title,
+        baseRevision.slidesLatex,
+      );
+      if (JSON.stringify(baseNotes.features) !== JSON.stringify(baseSlides.features)) {
+        throw new LectureStudioServiceError('lecture_artifact_changed');
+      }
+      const figures = this.dependencies.figures;
+      const availableFigures = figures
+        ? await figures.list({ studioId: studio.id })
+        : await this.dependencies.storage.listLectureStudioFigures(studio.id);
+      const validationGenerationBrief = CurrentLectureStudioGenerationBriefValueSchema.parse({
+        ...(baseRevision.schemaVersion === 3 || baseRevision.schemaVersion === 4
+          ? baseRevision.generationBriefSnapshot
+          : studio.generationBrief),
+        documentFeatures: baseNotes.features,
+      });
+      // Manual edits preserve the exact historical authoring provenance. In particular, a
+      // pre-policy-v7 v3 snapshot intentionally has no documentFeatures field; materializing
+      // that field here would change the hashed JSON and make an otherwise valid direct edit
+      // fail the append-only DB compare-and-swap. The enriched brief is only for validating
+      // the edited bodies against the effective canonical wrapper features.
+      const revisionGenerationBrief =
+        baseRevision.schemaVersion === 3 || baseRevision.schemaVersion === 4
+          ? baseRevision.generationBriefSnapshot
+          : validationGenerationBrief;
+      const frozenStudio = { ...studio, generationBrief: validationGenerationBrief };
+      const requestedEditedKinds = [
+        ...(command.lectureNotesLatexBody !== baseNotes.body ? (['lecture-notes'] as const) : []),
+        ...(command.slidesLatexBody !== baseSlides.body ? (['slides'] as const) : []),
+      ];
+      if (requestedEditedKinds.length === 0) {
+        throw new LectureStudioServiceError('invalid_lecture_input');
+      }
+      const output = this.parseOutput(
+        null,
+        frozenStudio,
+        baseRevision.sourceManifest,
+        baseRevision,
+        [],
+        baseNotes.features,
+        {
+          prevalidatedOutput: {
+            reply: 'Saved a direct source edit.',
+            lectureNotesLatexBody: command.lectureNotesLatexBody,
+            slidesLatexBody: command.slidesLatexBody,
+          },
+          trustedCanonicalBodies: {
+            ...(requestedEditedKinds.includes('lecture-notes')
+              ? {}
+              : { 'lecture-notes': baseNotes.body }),
+            ...(requestedEditedKinds.includes('slides') ? {} : { slides: baseSlides.body }),
+          },
+          availableFigureIds: availableFigures.map((figure) => figure.id),
+          enforceSlideCount: false,
+        },
+      );
+      const editedKinds = [
+        ...(output.lectureNotesLatexBody !== baseNotes.body ? (['lecture-notes'] as const) : []),
+        ...(output.slidesLatexBody !== baseSlides.body ? (['slides'] as const) : []),
+      ];
+      if (editedKinds.length === 0) {
+        throw new LectureStudioServiceError('invalid_lecture_input');
+      }
+      if (output.figureIds.length > 0 && !figures) {
+        throw new LectureStudioServiceError('lecture_figure_unavailable');
+      }
+      let figureSnapshots: readonly LectureStudioFigureSnapshot[] = [];
+      if (output.figureIds.length > 0) {
+        try {
+          figureSnapshots = await figures!.snapshotFigures(studio.id, output.figureIds);
+        } catch (error) {
+          throw lectureErrorFromFigureService(error);
+        }
+      }
+      const revisionNumber = baseRevision.revision + 1;
+      const operationId = randomUUID();
+      const manualAuthoringPolicy =
+        baseRevision.schemaVersion === 3 || baseRevision.schemaVersion === 4
+          ? {
+              version: baseRevision.authoringPolicyVersion,
+              sha256: baseRevision.authoringPolicySha256,
+            }
+          : {
+              version: LECTURE_STUDIO_AUTHORING_POLICY_VERSION,
+              sha256: sha256(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS),
+            };
+      // A paired manual revision keeps the untouched counterpart byte-for-byte identical.
+      // This is also required for legacy v1/v2 canonical wrappers: rebuilding an unchanged
+      // document with the current wrapper would turn a one-document edit into an implicit
+      // two-document migration and disagree with the append-only authorship record.
+      const lectureNotesLatex = editedKinds.includes('lecture-notes')
+        ? buildLectureLatexDocument(
+            'lecture-notes',
+            studio.title,
+            output.lectureNotesLatexBody,
+            baseNotes.features,
+            [...customLectureSourceListAliasTitles(revisionGenerationBrief)],
+          )
+        : baseRevision.lectureNotesLatex;
+      const slidesLatex = editedKinds.includes('slides')
+        ? buildLectureLatexDocument(
+            'slides',
+            studio.title,
+            output.slidesLatexBody,
+            baseNotes.features,
+          )
+        : baseRevision.slidesLatex;
+      try {
+        const compileResults = await Promise.allSettled(
+          (
+            [
+              ['lecture-notes', lectureNotesLatex],
+              ['slides', slidesLatex],
+            ] as const
+          ).map(([kind, source]) =>
+            this.dependencies.pdfCompiler.compile({
+              studioId: studio.id,
+              revision: revisionNumber,
+              title: studio.title,
+              kind,
+              markdown: source,
+              contentSha256: sha256(source),
+              sourceFormat: 'latex',
+              figureAssets: figureSnapshots,
+            }),
+          ),
+        );
+        const failed = compileResults.find(
+          (result): result is PromiseRejectedResult => result.status === 'rejected',
+        );
+        if (failed) throw failed.reason;
+      } catch (error) {
+        if (error instanceof LectureDocumentCompilerError) {
+          throw new LectureStudioServiceError(error.code);
+        }
+        if (error instanceof LectureStudioServiceError) throw error;
+        throw new LectureStudioServiceError('lecture_pdf_compile_failed');
+      }
+      const createdAt = this.now().toISOString();
+      const generationBriefSha256 =
+        baseRevision.schemaVersion === 3 || baseRevision.schemaVersion === 4
+          ? baseRevision.generationBriefSha256
+          : sha256(JSON.stringify(revisionGenerationBrief));
+      const artifactInput = {
+        outputProjectId: studio.outputProjectId,
+        studioId: studio.id,
+        studioTitle: studio.title,
+        revision: revisionNumber,
+        attemptId: operationId,
+        sourceManifestSha256: baseRevision.sourceManifestSha256,
+        generationBriefSha256,
+        authoringPolicyVersion: manualAuthoringPolicy.version,
+        authoringPolicySha256: manualAuthoringPolicy.sha256,
+        documentFormat: 'latex' as const,
+        lectureNotesLatex,
+        slidesLatex,
+        createdAt,
+        figureAssets: figureSnapshots,
+        relatedDocuments: [],
+        relatedPapers: uniqueNonEmpty(
+          baseRevision.sourceManifest.literature
+            .map((source) => canonicalDoiUrl(source.doi))
+            .filter((value): value is string => value !== null),
+          128,
+        ),
+      } as const;
+      pendingArtifactInput = artifactInput;
+      const artifacts = await this.saveArtifacts(artifactInput);
+      const revision = LectureStudioRevisionV4Schema.parse({
+        schemaVersion: 4,
+        id: randomUUID(),
+        studioId: studio.id,
+        revision: revisionNumber,
+        attemptId: operationId,
+        sourceManifest: baseRevision.sourceManifest,
+        sourceManifestSha256: baseRevision.sourceManifestSha256,
+        lectureNotesLatex,
+        slidesLatex,
+        generationBriefSnapshot: revisionGenerationBrief,
+        generationBriefSha256,
+        authoringPolicyVersion: manualAuthoringPolicy.version,
+        authoringPolicySha256: manualAuthoringPolicy.sha256,
+        artifacts,
+        invocation: null,
+        authorship: {
+          kind: 'manual',
+          baseRevisionId: baseRevision.id,
+          baseRevision: baseRevision.revision,
+          editedKinds,
+        },
+        figureAssets: figureSnapshots.map((snapshot) => snapshot.asset),
+        createdAt,
+      });
+      let stored: LectureStudio | null;
+      try {
+        stored = await this.dependencies.storage.commitManualLectureStudioRevision({
+          studioId: studio.id,
+          expectedVersion: studio.version,
+          expectedCurrentRevision: baseRevision.revision,
+          revision,
+          updatedAt: createdAt,
+        });
+      } catch (error) {
+        throw this.normalizeStorageError(error);
+      }
+      if (!stored) throw new LectureStudioServiceError('lecture_version_conflict');
+      pendingArtifactInput = null;
+      await Promise.resolve(
+        this.dependencies.artifacts.confirmRevisionArtifacts(artifactInput),
+      ).catch(() => undefined);
+      this.publish(stored);
+      return LectureStudioManualRevisionReceiptSchema.parse({ studio: stored, revision });
+    } catch (error) {
+      if (pendingArtifactInput) {
+        await Promise.resolve(
+          this.dependencies.artifacts.rollbackRevisionArtifacts(pendingArtifactInput),
+        ).catch(() => undefined);
+      }
+      if (error instanceof LectureStudioServiceError) throw error;
+      if (error instanceof LectureOutputValidationError) {
+        throw new LectureStudioServiceError(error.code);
+      }
+      if (error instanceof LectureLatexSourceError) {
+        throw new LectureStudioServiceError('lecture_invalid_latex_grammar');
+      }
+      if (error instanceof LectureStudioFigureServiceError) {
+        throw lectureErrorFromFigureService(error);
+      }
+      throw error;
+    } finally {
+      this.manualSaveByStudio.delete(command.studioId);
+    }
+  }
+
   async trash(input: LectureStudioVersionCommand): Promise<LectureStudio> {
     const command = LectureStudioVersionCommandSchema.parse(input);
-    if (this.activeByStudio.has(command.studioId)) {
+    if (
+      this.activeByStudio.has(command.studioId) ||
+      this.manualSaveByStudio.has(command.studioId)
+    ) {
       throw new LectureStudioServiceError('lecture_busy');
     }
     const studio = await this.dependencies.storage.getLectureStudio(command.studioId);
@@ -1408,6 +2088,7 @@ export class LectureStudioService {
       throw new LectureStudioServiceError('lecture_version_conflict');
     }
     try {
+      const figureAssets = await this.figureSnapshotsForRevision(revision);
       return await compiler.compile({
         studioId: studio.id,
         revision: revision.revision,
@@ -1416,6 +2097,7 @@ export class LectureStudioService {
         markdown: source,
         contentSha256: command.contentSha256,
         sourceFormat: lectureRevisionFormat(revision),
+        figureAssets,
       });
     } catch (error) {
       if (error instanceof LectureStudioServiceError) throw error;
@@ -1436,8 +2118,27 @@ export class LectureStudioService {
     let bytes: Buffer;
     let suggestedFileName: string;
     if (command.format !== 'pdf') {
-      bytes = Buffer.from(resolved.file.content, 'utf8');
-      suggestedFileName = resolved.file.fileName;
+      const referencedFigureIds =
+        command.format === 'latex' ? findLectureFigureAssetIds(resolved.file.content) : [];
+      if (referencedFigureIds.length > 0) {
+        const snapshots = await this.figureSnapshotsForRevision(resolved.revision);
+        const byId = new Map(snapshots.map((snapshot) => [snapshot.asset.id, snapshot]));
+        if (referencedFigureIds.some((figureId) => !byId.has(figureId))) {
+          throw new LectureStudioServiceError('lecture_figure_unavailable');
+        }
+        const bundleEntries: Record<string, Uint8Array> = {
+          [resolved.file.fileName]: Buffer.from(resolved.file.content, 'utf8'),
+        };
+        for (const figureId of referencedFigureIds) {
+          const snapshot = byId.get(figureId)!;
+          bundleEntries[snapshot.asset.fileName] = snapshot.bytes;
+        }
+        bytes = Buffer.from(zipSync(bundleEntries, { level: 6 }));
+        suggestedFileName = `${resolved.file.fileName.replace(/\.tex$/iu, '')} bundle.zip`;
+      } else {
+        bytes = Buffer.from(resolved.file.content, 'utf8');
+        suggestedFileName = resolved.file.fileName;
+      }
     } else {
       const pdf = await this.compileResolvedArtifactPdf(resolved);
       bytes = lecturePdfExportBytes(pdf);
@@ -1598,6 +2299,7 @@ export class LectureStudioService {
     const source = lectureRevisionSource(resolved.revision, resolved.artifact.kind);
     const contentSha256 = sha256(source);
     try {
+      const figureAssets = await this.figureSnapshotsForRevision(resolved.revision);
       const compiled = await compiler.compile({
         studioId: resolved.studio.id,
         revision: resolved.revision.revision,
@@ -1606,6 +2308,7 @@ export class LectureStudioService {
         markdown: source,
         contentSha256,
         sourceFormat: lectureRevisionFormat(resolved.revision),
+        figureAssets,
       });
       try {
         lecturePdfExportBytes(compiled);
@@ -1619,6 +2322,17 @@ export class LectureStudioService {
         throw new LectureStudioServiceError(error.code);
       }
       throw new LectureStudioServiceError('lecture_pdf_compile_failed');
+    }
+  }
+
+  private async figureSnapshotsForRevision(revision: LectureStudioRevision) {
+    if (revision.schemaVersion !== 4 || revision.figureAssets.length === 0) return [];
+    const figures = this.dependencies.figures;
+    if (!figures) throw new LectureStudioServiceError('lecture_figure_unavailable');
+    try {
+      return await figures.snapshotRevisionFigures(revision.studioId, revision.figureAssets);
+    } catch (error) {
+      throw lectureErrorFromFigureService(error);
     }
   }
 
@@ -1674,7 +2388,9 @@ export class LectureStudioService {
         (studio) =>
           studio !== null &&
           this.studioTouchesProjects(studio, targetIds) &&
-          (studio.status === 'generating' || this.activeByStudio.has(studio.id)),
+          (studio.status === 'generating' ||
+            this.activeByStudio.has(studio.id) ||
+            this.manualSaveByStudio.has(studio.id)),
       );
       if (hasActiveWork) throw new LectureStudioServiceError('lecture_busy');
       if (
@@ -1690,7 +2406,10 @@ export class LectureStudioService {
   }
 
   private async runTurn(request: TurnRequest): Promise<LectureStudioTurnReceipt> {
-    if (this.activeByStudio.has(request.studioId)) {
+    if (
+      this.activeByStudio.has(request.studioId) ||
+      this.manualSaveByStudio.has(request.studioId)
+    ) {
       throw new LectureStudioServiceError('lecture_busy');
     }
     const current = await this.requireStudio(request.studioId);
@@ -1704,6 +2423,24 @@ export class LectureStudioService {
     } catch (error) {
       throw this.normalizeArtifactError(error);
     }
+    const previousRevision = await this.dependencies.storage.getCurrentLectureStudioRevision(
+      current.id,
+    );
+    const documentFeatures = resolveLectureDocumentFeaturesForTurn(
+      current,
+      previousRevision,
+      request.message,
+    );
+    const explicitlyEnabledTitlePage =
+      request.message !== null && classifyLectureTitleSlideDirective(request.message) === true;
+    const turnGenerationBrief = CurrentLectureStudioGenerationBriefValueSchema.parse({
+      ...current.generationBrief,
+      slidesTargetPages:
+        explicitlyEnabledTitlePage && current.generationBrief.slidesTargetPages === 1
+          ? 2
+          : current.generationBrief.slidesTargetPages,
+      documentFeatures,
+    });
 
     let preparedAttachments: PreparedLectureStudioAttachments | null = null;
     if (request.attachmentIds.length > 0) {
@@ -1714,6 +2451,23 @@ export class LectureStudioService {
         current,
         request.attachmentIds,
       );
+    }
+
+    let availableFigureSnapshots: readonly LectureStudioFigureSnapshot[] = [];
+    let materializedFigures: MaterializedLectureStudioFigures | null = null;
+    if (this.dependencies.figures) {
+      try {
+        availableFigureSnapshots = await this.dependencies.figures.snapshotFigures(current.id);
+        if (availableFigureSnapshots.length > 0) {
+          materializedFigures = await this.dependencies.figures.materializeActiveFigures(
+            current.id,
+            availableFigureSnapshots.map((snapshot) => snapshot.asset.id),
+          );
+        }
+      } catch (error) {
+        await preparedAttachments?.rollback().catch(() => undefined);
+        throw lectureErrorFromFigureService(error);
+      }
     }
 
     const attemptId = randomUUID();
@@ -1759,13 +2513,18 @@ export class LectureStudioService {
         attemptId,
         userMessage,
         updatedAt: startedAt,
+        generationBrief: turnGenerationBrief,
         attempt,
       });
     } catch (error) {
       await preparedAttachments?.rollback().catch(() => undefined);
+      await materializedFigures?.cleanup().catch(() => undefined);
       throw this.normalizeStorageError(error);
     }
-    if (!generating) throw new LectureStudioServiceError('lecture_version_conflict');
+    if (!generating) {
+      await materializedFigures?.cleanup().catch(() => undefined);
+      throw new LectureStudioServiceError('lecture_version_conflict');
+    }
     const active: ActiveExecution = {
       studioId: generating.id,
       attemptId,
@@ -1781,20 +2540,20 @@ export class LectureStudioService {
     this.activeByStudio.set(generating.id, active);
     this.publish(generating);
     this.publishProgress(active, 'preparing_sources');
+    if (previousRevision) this.publishProgress(active, 'loading_current_revision');
 
     let threadId: string | null = null;
     let turnId: string | null = null;
     let pendingArtifactInput:
       Parameters<LectureStudioArtifactWriter['saveRevisionArtifacts']>[0] | null = null;
     try {
-      const [baseSourceManifest, previousRevision, messages, cwd] = await Promise.all([
+      const [baseSourceManifest, messages, cwd] = await Promise.all([
         this.resolveSourceManifest(
           generating.sourceProjectIds,
           generating.sourceSelection,
           generating.id,
           generating.outputProjectId,
         ),
-        this.dependencies.storage.getCurrentLectureStudioRevision(generating.id),
         this.dependencies.storage.listLectureStudioMessages(generating.id, 12),
         this.dependencies.prepareDirectory(generating.outputProjectId),
       ]);
@@ -1805,6 +2564,7 @@ export class LectureStudioService {
       const retiredAttachmentLabels = retiredTurnAttachmentLabels(previousRevision, sourceManifest);
       this.throwIfCancelled(active);
       const sourceManifestSha256 = sha256(JSON.stringify(sourceManifest));
+      this.publishProgress(active, 'preparing_edit_context');
       this.publishProgress(active, 'starting_model');
       let started: Awaited<ReturnType<LectureStudioCodex['startThread']>>;
       try {
@@ -1822,6 +2582,12 @@ export class LectureStudioService {
       const activeThreadId = started.threadId;
       threadId = activeThreadId;
       active.threadId = activeThreadId;
+      this.dependencies.usage?.bindThread(activeThreadId, {
+        workloadKind: 'lecture_generation',
+        projectId: generating.outputProjectId,
+        lectureStudioId: generating.id,
+        lectureAttemptId: attemptId,
+      });
       this.throwIfCancelled(active);
 
       const idleTimeoutMs = Math.max(
@@ -1833,7 +2599,10 @@ export class LectureStudioService {
         Math.min(this.dependencies.hardTimeoutMs ?? 1_800_000, 1_800_000),
       );
       const hardDeadline = Date.now() + hardTimeoutMs;
-      const executeCodexTurn = async (prompt: string) => {
+      const executeCodexTurn = async (
+        prompt: string,
+        outputSchema: Readonly<Record<string, unknown>>,
+      ) => {
         if (Date.now() >= hardDeadline) {
           throw new LectureStudioServiceError('lecture_generation_timed_out');
         }
@@ -1850,6 +2619,7 @@ export class LectureStudioService {
             earlyInvocation: null,
             finalText: null,
             terminal: false,
+            nativeImageRejected: false,
             markActivity: null,
             disposeTimers: null,
             resolve,
@@ -1860,10 +2630,13 @@ export class LectureStudioService {
           running = await this.dependencies.codex.runTurn({
             threadId: activeThreadId,
             prompt,
+            ...(materializedFigures?.localImagePaths.length
+              ? { localImagePaths: materializedFigures.localImagePaths }
+              : {}),
             requestedModelId: request.requestedModelId,
             reasoningOptionId: request.reasoningOptionId,
             cwd,
-            outputSchema: LECTURE_STUDIO_OUTPUT_SCHEMA,
+            outputSchema,
           });
         } catch (error) {
           throw new LectureStudioServiceError(lectureErrorFromCodexRequest(error));
@@ -1942,7 +2715,7 @@ export class LectureStudioService {
               : terminal.status === 'timed_out'
                 ? 'lecture_generation_timed_out'
                 : terminal.status === 'transport_failed'
-                  ? 'lecture_codex_unavailable'
+                  ? (terminal.failureCode ?? 'lecture_codex_unavailable')
                   : (terminal.failureCode ?? 'lecture_generation_failed'),
           );
         }
@@ -1980,32 +2753,59 @@ export class LectureStudioService {
                 : ('legacy-markdown' as const),
             lectureNotes:
               previousRevision.schemaVersion !== 1
-                ? previousRevision.lectureNotesLatex
+                ? rehydrateLectureEvidenceAnchors(
+                    extractEditableLectureLatexBody(
+                      'lecture-notes',
+                      generating.title,
+                      previousRevision.lectureNotesLatex,
+                    ).body,
+                  )
                 : previousRevision.lectureNotesMarkdown,
             slides:
               previousRevision.schemaVersion !== 1
-                ? previousRevision.slidesLatex
+                ? rehydrateLectureEvidenceAnchors(
+                    extractEditableLectureLatexBody(
+                      'slides',
+                      generating.title,
+                      previousRevision.slidesLatex,
+                    ).body,
+                  )
                 : previousRevision.slidesMarkdown,
           }
         : null;
-      const sourcesUsedMode = resolveSourcesUsedMode(
-        previousRevision,
-        messages
-          .filter((message) => message.id !== userMessage?.id && message.role === 'user')
-          .map((message) => message.content),
-        request.message,
+      const currentDraft = previousDraft
+        ? sanitizeLectureStudioCurrentDraftTurnAttachments(previousDraft, retiredAttachmentLabels)
+        : null;
+      const revisionPatchMode = request.message !== null && currentDraft?.sourceFormat === 'latex';
+      const turnOutputSchema = revisionPatchMode
+        ? LECTURE_STUDIO_REVISION_PATCH_OUTPUT_SCHEMA
+        : LECTURE_STUDIO_OUTPUT_SCHEMA;
+      const activeDocumentFeatures = resolveLectureStudioDocumentFeatures(
+        generating.generationBrief.documentFeatures,
       );
+      const frozenGenerationBrief = CurrentLectureStudioGenerationBriefValueSchema.parse({
+        ...generating.generationBrief,
+        documentFeatures: activeDocumentFeatures,
+      });
       const initialPrompt = buildLectureStudioPrompt({
         mode: previousRevision ? 'revision' : 'initial',
-        sourcesUsedMode,
         title: generating.title,
         kind: generating.kind,
         durationMinutes: generating.durationMinutes,
-        generationBrief: generating.generationBrief,
+        generationBrief: frozenGenerationBrief,
         sourceManifest,
-        currentDraft: previousDraft
-          ? sanitizeLectureStudioCurrentDraftTurnAttachments(previousDraft, retiredAttachmentLabels)
-          : null,
+        figureAssets: (materializedFigures?.figures ?? []).map((figure) => ({
+          id: figure.id,
+          displayName: figure.displayName,
+          fileName: figure.fileName,
+          mediaType: figure.mediaType,
+          byteSize: figure.byteSize,
+          width: figure.width,
+          height: figure.height,
+          contentSha256: figure.sha256,
+          origin: figure.origin,
+        })),
+        currentDraft,
         recentMessages: messages
           .filter((message) => message.id !== userMessage?.id && message.status === 'complete')
           .map((message) => ({
@@ -2014,35 +2814,52 @@ export class LectureStudioService {
           })),
         request: request.message,
       });
-      this.publishProgress(active, 'generating_draft');
-      let execution = await executeCodexTurn(initialPrompt);
+      this.publishProgress(active, previousRevision ? 'revising_draft' : 'generating_draft');
+      const parseTurnOutput = (text: string | null) =>
+        revisionPatchMode
+          ? this.parseRevisionPatchOutput(
+              text,
+              currentDraft,
+              generating,
+              sourceManifest,
+              previousRevision,
+              retiredAttachmentLabels,
+              activeDocumentFeatures,
+              availableFigureSnapshots.map((snapshot) => snapshot.asset.id),
+            )
+          : this.parseOutput(
+              text,
+              generating,
+              sourceManifest,
+              previousRevision,
+              retiredAttachmentLabels,
+              activeDocumentFeatures,
+              {
+                availableFigureIds: availableFigureSnapshots.map((snapshot) => snapshot.asset.id),
+              },
+            );
+      let execution = await executeCodexTurn(initialPrompt, turnOutputSchema);
       let output;
       try {
         this.publishProgress(active, 'validating_output');
-        output = this.parseOutput(
-          execution.terminal.text,
-          generating,
-          sourceManifest,
-          previousRevision,
-          retiredAttachmentLabels,
-          sourcesUsedMode,
-        );
+        output = parseTurnOutput(execution.terminal.text);
       } catch (error) {
         if (!(error instanceof LectureOutputValidationError)) throw error;
         await recordValidation('initial', error);
         this.throwIfCancelled(active);
         this.publishProgress(active, 'correcting_output');
-        execution = await executeCodexTurn(correctionPrompt(error, generating, sourcesUsedMode));
+        execution = await executeCodexTurn(
+          correctionPrompt(
+            error,
+            generating,
+            activeDocumentFeatures,
+            revisionPatchMode ? 'patch' : 'complete',
+          ),
+          turnOutputSchema,
+        );
         try {
           this.publishProgress(active, 'validating_output');
-          output = this.parseOutput(
-            execution.terminal.text,
-            generating,
-            sourceManifest,
-            previousRevision,
-            retiredAttachmentLabels,
-            sourcesUsedMode,
-          );
+          output = parseTurnOutput(execution.terminal.text);
         } catch (correctionError) {
           if (correctionError instanceof LectureOutputValidationError) {
             await recordValidation('correction', correctionError);
@@ -2053,15 +2870,26 @@ export class LectureStudioService {
       }
       const revisionNumber = generating.currentRevision + 1;
       const invocation = execution.pending.invocation ?? execution.running.invocation;
+      const figureSnapshotById = new Map(
+        availableFigureSnapshots.map((snapshot) => [snapshot.asset.id.toLowerCase(), snapshot]),
+      );
+      const usedFigureSnapshots = output.figureIds.map((figureId) => {
+        const snapshot = figureSnapshotById.get(figureId.toLowerCase());
+        if (!snapshot) throw new LectureStudioServiceError('lecture_figure_unavailable');
+        return snapshot;
+      });
       const lectureNotesLatex = buildLectureLatexDocument(
         'lecture-notes',
         generating.title,
         output.lectureNotesLatexBody,
+        activeDocumentFeatures,
+        [...customLectureSourceListAliasTitles(generating.generationBrief)],
       );
       const slidesLatex = buildLectureLatexDocument(
         'slides',
         generating.title,
         output.slidesLatexBody,
+        activeDocumentFeatures,
       );
       this.publishProgress(active, 'compiling_documents');
       try {
@@ -2080,6 +2908,7 @@ export class LectureStudioService {
               markdown: source,
               contentSha256: sha256(source),
               sourceFormat: 'latex',
+              figureAssets: usedFigureSnapshots,
             }),
           ),
         );
@@ -2104,7 +2933,7 @@ export class LectureStudioService {
         revision: revisionNumber,
         attemptId,
         sourceManifestSha256,
-        generationBriefSha256: sha256(JSON.stringify(generating.generationBrief)),
+        generationBriefSha256: sha256(JSON.stringify(frozenGenerationBrief)),
         authoringPolicyVersion: LECTURE_STUDIO_AUTHORING_POLICY_VERSION,
         authoringPolicySha256: sha256(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS),
         documentFormat: 'latex' as const,
@@ -2112,6 +2941,7 @@ export class LectureStudioService {
         slidesLatex,
         createdAt: revisionCreatedAt,
         invocation,
+        figureAssets: usedFigureSnapshots,
         relatedDocuments: [],
         relatedPapers: uniqueNonEmpty(
           sourceManifest.literature
@@ -2122,9 +2952,10 @@ export class LectureStudioService {
       } as const;
       pendingArtifactInput = artifactInput;
       const artifacts = await this.saveArtifacts(artifactInput);
+      this.publishProgress(active, 'committing_revision');
       const completedAt = this.now().toISOString();
       const revision = LectureStudioRevisionSchema.parse({
-        schemaVersion: 3,
+        schemaVersion: usedFigureSnapshots.length > 0 ? 4 : 3,
         id: randomUUID(),
         studioId: generating.id,
         revision: revisionNumber,
@@ -2133,12 +2964,18 @@ export class LectureStudioService {
         sourceManifestSha256,
         lectureNotesLatex,
         slidesLatex,
-        generationBriefSnapshot: generating.generationBrief,
-        generationBriefSha256: sha256(JSON.stringify(generating.generationBrief)),
+        generationBriefSnapshot: frozenGenerationBrief,
+        generationBriefSha256: sha256(JSON.stringify(frozenGenerationBrief)),
         authoringPolicyVersion: LECTURE_STUDIO_AUTHORING_POLICY_VERSION,
         authoringPolicySha256: sha256(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS),
         artifacts,
         invocation,
+        ...(usedFigureSnapshots.length > 0
+          ? {
+              authorship: { kind: 'model' as const },
+              figureAssets: usedFigureSnapshots.map((snapshot) => snapshot.asset),
+            }
+          : {}),
         createdAt: revisionCreatedAt,
       });
       const assistantMessage = LectureStudioMessageSchema.parse({
@@ -2215,6 +3052,7 @@ export class LectureStudioService {
         this.activeByStudio.delete(generating.id);
       }
       if (threadId) {
+        this.dependencies.usage?.releaseThread(threadId);
         this.pendingByThread.get(threadId)?.disposeTimers?.();
         this.pendingByThread.delete(threadId);
         this.bufferedByThread.delete(threadId);
@@ -2223,16 +3061,23 @@ export class LectureStudioService {
         }
         await this.dependencies.codex.releaseThread(threadId).catch(() => undefined);
       }
+      await materializedFigures?.cleanup().catch(() => undefined);
     }
   }
 
-  private parseOutput(
+  private parseRevisionPatchOutput(
     text: string | null,
+    currentDraft: Readonly<{
+      sourceFormat: 'latex' | 'legacy-markdown';
+      lectureNotes: string;
+      slides: string;
+    }> | null,
     studio: LectureStudio,
     sourceManifest: LectureSourceManifest,
     previousRevision: LectureStudioRevision | null,
     retiredAttachmentLabels: readonly string[],
-    sourcesUsedMode: LectureSourcesUsedMode,
+    documentFeatures: LectureStudioDocumentFeatures,
+    availableFigureIds: readonly string[],
   ) {
     if (!text) throw new LectureOutputValidationError('response_json');
     let parsed: unknown;
@@ -2241,20 +3086,91 @@ export class LectureStudioService {
     } catch {
       throw new LectureOutputValidationError('response_json');
     }
-    const outputResult = LectureStudioGenerationOutputSchema.safeParse(parsed);
-    if (!outputResult.success) throw new LectureOutputValidationError('response_schema');
-    const output = outputResult.data;
+    const result = LectureStudioRevisionPatchOutputSchema.safeParse(parsed);
+    if (!result.success || currentDraft?.sourceFormat !== 'latex') {
+      throw new LectureOutputValidationError('response_schema');
+    }
+    let patched: LectureStudioRevisionDraftBodies;
+    try {
+      patched = applyLectureStudioRevisionPatch(currentDraft, result.data);
+    } catch {
+      throw new LectureOutputValidationError('response_schema');
+    }
+    const editedDocuments = new Set(result.data.edits.map((edit) => edit.document));
+    return this.parseOutput(
+      null,
+      studio,
+      sourceManifest,
+      previousRevision,
+      retiredAttachmentLabels,
+      documentFeatures,
+      {
+        availableFigureIds,
+        prevalidatedOutput: {
+          reply: result.data.reply,
+          lectureNotesLatexBody: patched.lectureNotes,
+          slidesLatexBody: patched.slides,
+        },
+        trustedCanonicalBodies: {
+          ...(editedDocuments.has('lecture-notes')
+            ? {}
+            : { 'lecture-notes': currentDraft.lectureNotes }),
+          ...(editedDocuments.has('slides') ? {} : { slides: currentDraft.slides }),
+        },
+      },
+    );
+  }
+
+  private parseOutput(
+    text: string | null,
+    studio: LectureStudio,
+    sourceManifest: LectureSourceManifest,
+    previousRevision: LectureStudioRevision | null,
+    retiredAttachmentLabels: readonly string[],
+    documentFeatures: LectureStudioDocumentFeatures,
+    options: Readonly<{
+      availableFigureIds?: readonly string[];
+      enforceSlideCount?: boolean;
+      prevalidatedOutput?: Readonly<{
+        reply: string;
+        lectureNotesLatexBody: string;
+        slidesLatexBody: string;
+      }>;
+      trustedCanonicalBodies?: Readonly<Partial<Record<'lecture-notes' | 'slides', string>>>;
+    }> = {},
+  ) {
+    let output: Readonly<{
+      reply: string;
+      lectureNotesLatexBody: string;
+      slidesLatexBody: string;
+    }>;
+    if (options.prevalidatedOutput) {
+      output = options.prevalidatedOutput;
+    } else {
+      if (!text) throw new LectureOutputValidationError('response_json');
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text) as unknown;
+      } catch {
+        throw new LectureOutputValidationError('response_json');
+      }
+      const outputResult = LectureStudioGenerationOutputSchema.safeParse(parsed);
+      if (!outputResult.success) throw new LectureOutputValidationError('response_schema');
+      output = outputResult.data;
+    }
     const latexDiagnostics: LectureOutputLatexDiagnostic[] = [];
     let notesBody: string | null = null;
     let slidesBody: string | null = null;
     try {
-      notesBody = validateLectureLatexBody(
-        'lecture-notes',
-        normalizeGeneratedLectureLatexBody('lecture-notes', output.lectureNotesLatexBody),
-        {
-          requireSourcesUsed: false,
-        },
-      );
+      notesBody =
+        options.trustedCanonicalBodies?.['lecture-notes'] ??
+        validateLectureLatexBody(
+          'lecture-notes',
+          normalizeGeneratedLectureLatexBody('lecture-notes', output.lectureNotesLatexBody),
+          {
+            requireSourcesUsed: false,
+          },
+        );
     } catch (error) {
       if (!(error instanceof LectureLatexSourceError)) throw error;
       latexDiagnostics.push({
@@ -2264,16 +3180,39 @@ export class LectureStudioService {
       });
     }
     try {
-      slidesBody = validateLectureLatexBody(
-        'slides',
-        normalizeGeneratedLectureLatexBody('slides', output.slidesLatexBody),
-      );
+      slidesBody =
+        options.trustedCanonicalBodies?.slides ??
+        validateLectureLatexBody(
+          'slides',
+          normalizeGeneratedLectureLatexBody('slides', output.slidesLatexBody),
+        );
     } catch (error) {
       if (!(error instanceof LectureLatexSourceError)) throw error;
       latexDiagnostics.push({ document: 'slides', reason: error.reason, tokens: error.tokens });
     }
     if (latexDiagnostics.length > 0 || notesBody === null || slidesBody === null) {
       throw new LectureOutputValidationError('latex_grammar', latexDiagnostics);
+    }
+    const availableFigureIds = new Set(
+      (options.availableFigureIds ?? []).map((figureId) => figureId.toLowerCase()),
+    );
+    const notesFigureIds = findLectureFigureAssetIds(notesBody);
+    const slidesFigureIds = findLectureFigureAssetIds(slidesBody);
+    const unknownFigureDocuments = [
+      ['lecture-notes', notesFigureIds] as const,
+      ['slides', slidesFigureIds] as const,
+    ].filter(([, figureIds]) =>
+      figureIds.some((figureId) => !availableFigureIds.has(figureId.toLowerCase())),
+    );
+    if (unknownFigureDocuments.length > 0) {
+      throw new LectureOutputValidationError(
+        'latex_grammar',
+        unknownFigureDocuments.map(([document]) => ({
+          document,
+          reason: 'invalid_figure_reference',
+          tokens: [],
+        })),
+      );
     }
     if (
       notesBody.includes(LECTURE_STUDIO_RETIRED_TURN_ATTACHMENT_CITATION_MARKER) ||
@@ -2311,7 +3250,21 @@ export class LectureStudioService {
       ...externalSources.map((source) => source.sourceLabel),
       ...turnAttachments.map((source) => source.sourceLabel),
     ]);
-    const sourcesHeading = findLectureSourcesUsedSection(notesBody);
+    const evidenceLikeCitations = [
+      ...`${notesBody}\n${slidesBody}`.matchAll(EVIDENCE_LIKE_CITATION_PATTERN),
+    ].map((match) => match[1]!);
+    if (evidenceLikeCitations.some((label) => !allowedLabels.has(label))) {
+      throw new LectureOutputValidationError('citation_mapping');
+    }
+    const sourceListSections = findLectureSourceListSections(notesBody);
+    const canonicalSourceListSections = sourceListSections.filter((section) => section.isCanonical);
+    const grandfatheredSourceListAliases = customLectureSourceListAliasTitles(
+      studio.generationBrief,
+    );
+    const enforcedSourceListSections = sourceListSections.filter(
+      (section) => section.isCanonical || !grandfatheredSourceListAliases.has(section.title),
+    );
+    const sourcesHeading = canonicalSourceListSections[0] ?? null;
     const notesEvidenceBody = sourcesHeading ? notesBody.slice(0, sourcesHeading.index) : notesBody;
     const allCitations = [
       ...`${notesBody}\n${slidesBody}`.matchAll(/\[((?:P|E|M|F|A)\d+)\]/gu),
@@ -2327,10 +3280,12 @@ export class LectureStudioService {
       }
       for (const label of citations) usedLabels.add(label);
     }
-    if (
-      (sourcesUsedMode === 'required' && !sourcesHeading) ||
-      (sourcesUsedMode === 'omitted' && sourcesHeading)
-    ) {
+    const hasValidSourceListConfiguration = documentFeatures.includeSourcesUsedSection
+      ? enforcedSourceListSections.length === 1 &&
+        canonicalSourceListSections.length === 1 &&
+        sourcesHeading?.isTerminal === true
+      : enforcedSourceListSections.length === 0;
+    if (!hasValidSourceListConfiguration) {
       throw new LectureOutputValidationError('citation_mapping');
     }
     if (sourcesHeading) {
@@ -2348,13 +3303,16 @@ export class LectureStudioService {
         throw new LectureOutputValidationError('citation_mapping');
       }
     }
-    if (studio.kind === 'talk') {
+    if ((options.enforceSlideCount ?? true) && studio.kind === 'talk') {
       const requestedSlides = studio.generationBrief.slidesTargetPages;
-      if (requestedSlides !== null && countLectureSlidePages(slidesBody) !== requestedSlides) {
+      if (
+        requestedSlides !== null &&
+        countLectureSlidePages(slidesBody, documentFeatures) !== requestedSlides
+      ) {
         throw new LectureOutputValidationError('slide_count');
       }
       const budget = talkSlideBudget(studio.durationMinutes!);
-      const slideCount = countLectureSlidePages(slidesBody);
+      const slideCount = countLectureSlidePages(slidesBody, documentFeatures);
       if (
         requestedSlides === null &&
         (slideCount < budget.minimum || slideCount > budget.maximum)
@@ -2362,12 +3320,19 @@ export class LectureStudioService {
         throw new LectureOutputValidationError('slide_count');
       }
     } else if (
+      (options.enforceSlideCount ?? true) &&
       studio.generationBrief.slidesTargetPages !== null &&
-      countLectureSlidePages(slidesBody) !== studio.generationBrief.slidesTargetPages
+      countLectureSlidePages(slidesBody, documentFeatures) !==
+        studio.generationBrief.slidesTargetPages
     ) {
       throw new LectureOutputValidationError('slide_count');
     }
-    return { ...output, lectureNotesLatexBody: notesBody, slidesLatexBody: slidesBody };
+    return {
+      ...output,
+      lectureNotesLatexBody: notesBody,
+      slidesLatexBody: slidesBody,
+      figureIds: [...new Set([...notesFigureIds, ...slidesFigureIds])],
+    };
   }
 
   private async saveArtifacts(
@@ -3006,6 +3971,12 @@ export class LectureStudioService {
     const pending = this.pendingByThread.get(identity.threadId);
     if (!pending) return;
     if (pending.turnId === null) {
+      // This private modality notification can race the runTurn() response that supplies the
+      // turn id. Preserve it immediately so a following transport disconnect cannot downgrade
+      // the actionable figure/model error to a generic Codex-unavailable failure.
+      if (notification.method === 'gosu/attachment-model-modality-rejected') {
+        pending.nativeImageRejected = true;
+      }
       const buffered = this.bufferedByThread.get(identity.threadId) ?? [];
       if (buffered.length < 100) buffered.push(notification);
       this.bufferedByThread.set(identity.threadId, buffered);
@@ -3022,6 +3993,10 @@ export class LectureStudioService {
       return;
     }
     pending.markActivity?.();
+    if (notification.method === 'gosu/attachment-model-modality-rejected') {
+      pending.nativeImageRejected = true;
+      return;
+    }
     if (notification.method === 'item/completed') {
       const item = notification.params.item;
       if (
@@ -3040,7 +4015,11 @@ export class LectureStudioService {
     pending.resolve({
       status: isRecord(turn) && typeof turn.status === 'string' ? turn.status : 'failed',
       text: pending.finalText,
-      failureCode: classifyCodexTurnFailure(turn),
+      failureCode:
+        pending.nativeImageRejected ||
+        notification.params.gosuErrorCode === 'attachment_model_modality_unsupported'
+          ? 'lecture_figure_model_unsupported'
+          : classifyCodexTurnFailure(turn),
     });
   }
 }

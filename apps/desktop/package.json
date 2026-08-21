@@ -1,6 +1,6 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.52.0",
+  "version": "0.57.2",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
@@ -10,9 +10,12 @@
     "build": "electron-vite build && node ../../scripts/verify-preload-bundle.mjs",
     "preview": "electron-vite preview",
     "package:mac": "pnpm run package:mac:dev",
-    "package:mac:dev": "pnpm --filter @gosu/contracts build && pnpm --filter @gosu/integrations build && pnpm build && electron-builder --mac dmg --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false && node ../../scripts/verify-packaged-app-startup.mjs dist",
-    "package:mac:dir:dev": "pnpm --filter @gosu/contracts build && pnpm --filter @gosu/integrations build && pnpm build && electron-builder --mac dir --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false && node ../../scripts/verify-packaged-app-startup.mjs dist",
-    "package:mac:release": "pnpm --filter @gosu/contracts build && pnpm --filter @gosu/integrations build && pnpm build && electron-builder --mac dmg --publish never --config.forceCodeSigning=true && node ../../scripts/verify-packaged-app-startup.mjs dist",
+    "package:mac:dev": "pnpm --filter @gosu/contracts build && pnpm --filter @gosu/integrations build && pnpm build && pnpm hermes:runtime:prepare && electron-builder --mac dmg --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false && node ../../scripts/verify-packaged-app-startup.mjs dist",
+    "package:mac:dir:dev": "pnpm --filter @gosu/contracts build && pnpm --filter @gosu/integrations build && pnpm build && pnpm hermes:runtime:prepare && electron-builder --mac dir --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false && node ../../scripts/verify-packaged-app-startup.mjs dist",
+    "package:mac:release": "pnpm --filter @gosu/contracts build && pnpm --filter @gosu/integrations build && pnpm build && pnpm hermes:runtime:prepare:required && electron-builder --mac dmg --publish never --config.forceCodeSigning=true && node ../../scripts/verify-packaged-app-startup.mjs dist --require-hermes",
+    "hermes:runtime:prepare": "node ../../scripts/prepare-hermes-runtime.mjs",
+    "hermes:runtime:prepare:required": "node ../../scripts/prepare-hermes-runtime.mjs --required",
+    "hermes:runtime:build-source": "node ../../scripts/build-hermes-runtime-source.mjs",
     "smoke:local-db:mac": "electron-builder install-app-deps && electron-vite build --config test/electron/electron.vite.config.ts && electron out/local-database-smoke/main.cjs",
     "smoke:kanban-board-layout:mac": "electron-vite build --config test/electron/kanban-board-layout.electron.vite.config.ts && electron out/kanban-board-layout-smoke/main.cjs",
     "smoke:literature-scroll:mac": "electron-vite build --config test/electron/literature-scroll.electron.vite.config.ts && electron out/literature-scroll-smoke/main.cjs",
@@ -26,7 +29,7 @@
     "smoke:ssh-approval-dialog:mac": "electron-vite build --config test/electron/ssh-approval-dialog.electron.vite.config.ts && electron out/ssh-approval-dialog-smoke/main.cjs",
     "lint": "eslint src electron.vite.config.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --maxWorkers=1 --passWithNoTests"
+    "test": "vitest run --exclude '.runtime/**' --maxWorkers=1 --passWithNoTests"
   },
   "dependencies": {
     "@gosu/contracts": "workspace:*",
@@ -80,6 +83,12 @@
       "out/preload/**/*",
       "out/renderer/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".runtime/hermes-runtime.zip",
+        "to": "hermes-runtime.zip"
+      }
     ],
     "mac": {
       "category": "public.app-category.education",

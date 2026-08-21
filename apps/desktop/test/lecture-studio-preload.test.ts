@@ -15,12 +15,16 @@ const electron = vi.hoisted(() => {
       on: vi.fn(),
       removeListener: vi.fn(),
     },
+    webUtils: {
+      getPathForFile: vi.fn((file: { name: string }) => `/private-drop/${file.name}`),
+    },
   };
 });
 
 vi.mock('electron', () => ({
   contextBridge: electron.contextBridge,
   ipcRenderer: electron.ipcRenderer,
+  webUtils: electron.webUtils,
 }));
 
 let api: GosuDesktopApi;
@@ -34,6 +38,7 @@ beforeEach(() => {
   electron.ipcRenderer.invoke.mockReset();
   electron.ipcRenderer.on.mockClear();
   electron.ipcRenderer.removeListener.mockClear();
+  electron.webUtils.getPathForFile.mockClear();
 });
 
 describe('Lecture Studio preload bridge', () => {
@@ -46,6 +51,11 @@ describe('Lecture Studio preload bridge', () => {
         slidesTargetPages: null,
         detailLevel: 'exhaustive' as const,
         structure: { mode: 'adaptive' as const },
+        documentFeatures: {
+          includeSlideTitlePage: false,
+          showInlineEvidenceLabels: false,
+          includeSourcesUsedSection: false,
+        },
         customInstructions: 'Retain every proof obligation.',
       },
     };
@@ -69,6 +79,41 @@ describe('Lecture Studio preload bridge', () => {
     expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith(LECTURE_STUDIO_IPC_CHANNELS.detail, {
       studioId,
     });
+  });
+
+  it('maps direct edits and keeps Finder paths inside the preload boundary', async () => {
+    const studioId = '11111111-1111-4111-8111-111111111111';
+    const baseRevisionId = '22222222-2222-4222-8222-222222222222';
+    const editInput = { studioId, expectedVersion: 5, baseRevisionId, baseRevision: 3 };
+    const saveInput = {
+      ...editInput,
+      lectureNotesLatexBody: '\\section{Notes}\nEvidence [P1].',
+      slidesLatexBody: '\\begin{frame}{Slide}\nEvidence [P1].\n\\end{frame}',
+    };
+    const dropped = [{ name: 'figure.png' }] as unknown as readonly File[];
+    electron.ipcRenderer.invoke.mockResolvedValue({ ok: true, value: {} });
+
+    await api.lectureStudio.editDraft(editInput);
+    await api.lectureStudio.saveManualRevision(saveInput);
+    await api.lectureStudio.stageDroppedFigures({ studioId, expectedVersion: 5 }, dropped);
+
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      1,
+      LECTURE_STUDIO_IPC_CHANNELS.editDraft,
+      editInput,
+    );
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      2,
+      LECTURE_STUDIO_IPC_CHANNELS.saveManualRevision,
+      saveInput,
+    );
+    expect(electron.webUtils.getPathForFile).toHaveBeenCalledWith(dropped[0]);
+    expect(electron.ipcRenderer.invoke).toHaveBeenNthCalledWith(
+      3,
+      LECTURE_STUDIO_IPC_CHANNELS.stageDroppedFigures,
+      { studioId, expectedVersion: 5, paths: ['/private-drop/figure.png'] },
+    );
+    expect(JSON.stringify(api.lectureStudio)).not.toContain('/private-drop/figure.png');
   });
 
   it('maps bounded PDF preview compilation to its fixed channel', async () => {

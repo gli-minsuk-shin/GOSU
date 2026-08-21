@@ -2,8 +2,9 @@ export const AGENT_ADD_ON_IDS = ['openclaw', 'hermes'] as const;
 
 export type AgentAddOnId = (typeof AGENT_ADD_ON_IDS)[number];
 export type AgentAddOnPreference = 'disabled' | 'detect-local' | 'connect-local';
-export type AgentAddOnDetectionState = 'detected_local_cli' | 'not_detected';
-export type AgentAddOnDetectionEvidence = 'path' | 'known_install_location' | null;
+export type AgentAddOnDetectionState = 'bundled_runtime' | 'detected_local_cli' | 'not_detected';
+export type AgentAddOnDetectionEvidence =
+  'bundled_resource' | 'path' | 'known_install_location' | null;
 
 export type AgentAddOnProjectChatModel = Readonly<{
   providerId: string;
@@ -23,7 +24,7 @@ export type AgentAddOnIntegrationCapabilities = Readonly<{
   localInstallationDetection: 'available';
   setupGuidance: 'available';
   projectChatProvider: 'available' | 'not_implemented';
-  automaticInstaller: 'not_implemented';
+  automaticInstaller: 'bundled' | 'not_implemented';
   credentialManagement: 'not_implemented';
 }>;
 
@@ -42,7 +43,7 @@ export type AgentAddOnStatus = Readonly<{
   state: AgentAddOnDetectionState;
   evidence: AgentAddOnDetectionEvidence;
   connected: boolean;
-  connectionMode: 'byo-local-acp-agent' | null;
+  connectionMode: 'bundled-acp-agent' | 'byo-local-acp-agent' | null;
   version: string | null;
   projectChatModel: AgentAddOnProjectChatModel | null;
 }>;
@@ -67,9 +68,10 @@ const DETECTION_ONLY_CAPABILITIES: AgentAddOnIntegrationCapabilities = {
   credentialManagement: 'not_implemented',
 };
 
-const HERMES_BYO_CAPABILITIES: AgentAddOnIntegrationCapabilities = {
+const HERMES_CAPABILITIES: AgentAddOnIntegrationCapabilities = {
   ...DETECTION_ONLY_CAPABILITIES,
   projectChatProvider: 'available',
+  automaticInstaller: 'bundled',
 };
 
 export const AGENT_ADD_ON_DESCRIPTORS: readonly AgentAddOnDescriptor[] = [
@@ -89,7 +91,7 @@ export const AGENT_ADD_ON_DESCRIPTORS: readonly AgentAddOnDescriptor[] = [
     executableName: 'hermes',
     officialRepositoryUrl: 'https://github.com/NousResearch/hermes-agent',
     officialSetupUrl: 'https://hermes-agent.nousresearch.com/docs/',
-    capabilities: HERMES_BYO_CAPABILITIES,
+    capabilities: HERMES_CAPABILITIES,
   },
 ] as const;
 

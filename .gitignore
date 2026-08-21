@@ -53,3 +53,6 @@ __pycache__/
 
 # Local visual QA artifacts
 /tmp/
+
+# Prepared, platform-specific sidecar runtimes are generated and hash-verified before packaging.
+apps/desktop/.runtime/

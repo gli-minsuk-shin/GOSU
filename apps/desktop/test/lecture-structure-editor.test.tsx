@@ -4,22 +4,30 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  LectureDocumentFeaturesEditor,
   LectureStructureEditor,
   addLectureStructureSection,
   gosuLectureStructureTemplate,
   lectureStructureEditorValidation,
   moveLectureStructureSection,
   removeLectureStructureSection,
+  sourceListSectionTitlesInLectureStructure,
   updateLectureStructureSection,
 } from '../src/renderer/src/lecture-structure-editor';
 import {
+  DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
   DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
   GOSU_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
   LECTURE_STUDIO_MAX_STRUCTURE_SECTIONS,
+  LECTURE_STUDIO_SOURCE_LIST_SECTION_TITLES,
   type LectureStudioStructureTemplate,
 } from '../src/shared/lecture-studio-contracts';
 
-function render(value: LectureStudioStructureTemplate, disabled = false) {
+function render(
+  value: LectureStudioStructureTemplate,
+  disabled = false,
+  allowedSourceListSectionTitles: readonly string[] = [],
+) {
   return renderToStaticMarkup(
     <LectureStructureEditor
       value={value}
@@ -28,26 +36,54 @@ function render(value: LectureStudioStructureTemplate, disabled = false) {
       idPrefix="fixture-structure"
       contextCopy="Fixture scope copy."
       onReset={vi.fn()}
+      allowedSourceListSectionTitles={allowedSourceListSectionTitles}
     />,
   );
 }
 
 describe('Lecture structure editor', () => {
-  it('offers an adaptive source-led mode with document defaults and safeguards', () => {
+  it('offers an adaptive source-led content mode without hidden document locks', () => {
     const html = render(DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE);
 
     expect(html).toContain('Fixture scope copy.');
     expect(html).toContain('checked="" value="adaptive"');
     expect(html).toContain('Custom outline');
     expect(html).toContain('Source-led structure');
-    expect(html).toContain('aria-label="Document defaults and safeguards"');
-    expect(html).toContain('Title slide');
-    expect(html).toContain('Evidence citations');
-    expect(html).toContain('Sources used');
-    expect(html.match(/<em>Locked<\/em>/gu)).toHaveLength(2);
-    expect(html).toContain('<em>Default</em>');
-    expect(html).toContain('removable by an explicit Assistant request');
+    expect(html).not.toContain('Locked');
     expect(html).toContain('Revert changes');
+  });
+
+  it('renders three adjustable native document checkboxes with accessible help', () => {
+    const html = renderToStaticMarkup(
+      <LectureDocumentFeaturesEditor
+        value={DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES}
+        onChange={vi.fn()}
+        idPrefix="fixture-document-features"
+      />,
+    );
+
+    expect(html).toContain(
+      '<fieldset class="lecture-document-features" aria-describedby="fixture-document-features-description">',
+    );
+    expect(html).toContain('<legend>Document elements</legend>');
+    expect(html.match(/type="checkbox"/gu)).toHaveLength(3);
+    expect(html.match(/checked=""/gu)).toHaveLength(3);
+    expect(html).toContain('Show a title page in slides');
+    expect(html).toContain('Show source markers in notes and slides');
+    expect(html).toContain('Add a Sources used list to notes');
+    expect(html).toContain('Hidden markers still retain the revision&#x27;s evidence record.');
+    expect(html).toContain('aria-describedby="fixture-document-features-evidence-labels-help"');
+    expect(html).not.toContain('Locked');
+
+    const disabledHtml = renderToStaticMarkup(
+      <LectureDocumentFeaturesEditor
+        value={DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES}
+        onChange={vi.fn()}
+        idPrefix="disabled-document-features"
+        disabled
+      />,
+    );
+    expect(disabledHtml).toContain('<fieldset class="lecture-document-features" disabled=""');
   });
 
   it('renders an ordered custom outline with explicit coverage and accessible actions', () => {
@@ -135,7 +171,7 @@ describe('Lecture structure editor', () => {
     const validation = lectureStructureEditorValidation(invalid);
     expect(validation.valid).toBe(false);
     expect(validation.messages).toContain(
-      'Title slide and Sources used are document-level items, not custom content sections.',
+      'Source lists are controlled by Document elements. Choose a content topic instead.',
     );
     expect(validation.messages).toContain('Use a different name for each section.');
     expect(validation.messages).toContain(
@@ -150,6 +186,54 @@ describe('Lecture structure editor', () => {
     expect(validation.sectionMessages[0]).toContain('Use a different name for each section.');
     expect(validation.coverageInvalid).toBe(true);
     expect(html).toContain('aria-describedby="fixture-structure-validation"');
+  });
+
+  it('rejects every source-list alias while grandfathering only exact normalized saved titles', () => {
+    for (const title of LECTURE_STUDIO_SOURCE_LIST_SECTION_TITLES) {
+      const structure: LectureStudioStructureTemplate = {
+        mode: 'custom',
+        sections: [{ title, coverage: 'notes-and-slides' }],
+      };
+      const validation = lectureStructureEditorValidation(structure);
+      expect(validation.valid, title).toBe(false);
+      expect(validation.sectionMessages[0], title).toContain(
+        'Source lists are controlled by Document elements. Choose a content topic instead.',
+      );
+    }
+
+    const saved: LectureStudioStructureTemplate = {
+      mode: 'custom',
+      sections: [{ title: ' References ', coverage: 'notes-and-slides' }],
+    };
+    expect(sourceListSectionTitlesInLectureStructure(saved)).toEqual(['references']);
+    expect(lectureStructureEditorValidation(saved, ['references']).valid).toBe(true);
+    expect(render(saved, false, ['references'])).not.toContain('Check the content flow');
+
+    const historicalCollapsedLookalike: LectureStudioStructureTemplate = {
+      mode: 'custom',
+      sections: [{ title: 'Sources   used', coverage: 'notes-and-slides' }],
+    };
+    expect(sourceListSectionTitlesInLectureStructure(historicalCollapsedLookalike)).toEqual([
+      'sources used',
+    ]);
+    expect(
+      lectureStructureEditorValidation(historicalCollapsedLookalike, ['sources used']).valid,
+    ).toBe(true);
+    expect(
+      lectureStructureEditorValidation(
+        {
+          mode: 'custom',
+          sections: [{ title: '  SOURCES USED  ', coverage: 'notes-and-slides' }],
+        },
+        ['sources used'],
+      ).valid,
+    ).toBe(false);
+
+    const introduced: LectureStudioStructureTemplate = {
+      mode: 'custom',
+      sections: [{ title: 'Bibliography', coverage: 'notes-and-slides' }],
+    };
+    expect(lectureStructureEditorValidation(introduced, ['references']).valid).toBe(false);
   });
 
   it('disables every editor action while its owner is saving or generating', () => {
@@ -176,15 +260,16 @@ describe('Lecture structure editor', () => {
     expect(html).not.toContain('<fieldset class="lecture-structure-mode" disabled=""');
   });
 
-  it('collapses rows and system items without horizontal overflow at constrained widths', () => {
+  it('collapses rows and document choices without horizontal overflow at constrained widths', () => {
     const styles = readFileSync(
       new URL('../src/renderer/src/lecture-structure-editor.css', import.meta.url),
       'utf8',
     );
 
     expect(styles).toMatch(/container:\s*lecture-structure-editor \/ inline-size/u);
+    expect(styles).toMatch(/container:\s*lecture-document-features \/ inline-size/u);
     expect(styles).toMatch(
-      /@container lecture-structure-editor \(max-width: 720px\)[\s\S]*?\.lecture-structure-system-items ul\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/u,
+      /@container lecture-document-features \(max-width: 720px\)[\s\S]*?\.lecture-document-features > div\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/u,
     );
     expect(styles).toMatch(
       /@container lecture-structure-editor \(max-width: 480px\)[\s\S]*?\.lecture-structure-mode\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/u,

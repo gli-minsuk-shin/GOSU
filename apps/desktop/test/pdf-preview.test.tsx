@@ -23,12 +23,19 @@ const document: PdfPreviewDocument = {
 
 describe('neutral PDF preview', () => {
   it('renders metadata and never emits the PDF bytes into static markup', () => {
-    const html = renderToStaticMarkup(<PdfPreview document={document} workspaceHeight />);
+    const html = renderToStaticMarkup(
+      <PdfPreview
+        document={document}
+        workspaceHeight
+        headerAction={<button type="button">Focus PDF</button>}
+      />,
+    );
 
     expect(html).toContain('Lecture notes PDF');
     expect(html).toContain('Local XeLaTeX');
     expect(html).toContain('Lecture revision 3');
     expect(html).toContain('pdf-preview-workspace-height');
+    expect(html).toContain('Focus PDF');
     expect(html).not.toContain(document.pdfBase64);
   });
 

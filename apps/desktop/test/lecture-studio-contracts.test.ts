@@ -3,11 +3,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
   DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
   LECTURE_STUDIO_CANDIDATE_PAGE_MAX,
   LECTURE_STUDIO_IPC_ERROR_CODES,
   LECTURE_STUDIO_MAX_GENERATION_BRIEF_JSON,
   LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS,
+  LECTURE_STUDIO_MAX_REVISION_PATCH_JSON_LENGTH,
   LECTURE_STUDIO_MAX_STRUCTURE_SECTIONS,
   LECTURE_STUDIO_MAX_STRUCTURE_SECTION_TITLE,
   LectureSourceCandidatesSchema,
@@ -17,10 +19,13 @@ import {
   EmptyLectureStudioTrashInputSchema,
   ExportLectureStudioArtifactInputSchema,
   LectureStudioDetailSchema,
+  LectureStudioDocumentFeaturesSchema,
   LectureStudioAttemptSchema,
   LectureStudioEventSchema,
   LectureStudioGenerationBriefSchema,
   LectureStudioListSnapshotSchema,
+  LectureStudioRevisionSchema,
+  LectureStudioRevisionPatchOutputSchema,
   LectureStudioSchema,
   LectureStudioStructureTemplateSchema,
   LectureStudioSummarySchema,
@@ -109,6 +114,52 @@ describe('Lecture Studio list and detail contracts', () => {
           },
         ],
         revisions: [],
+      }),
+    ).toThrow();
+  });
+});
+
+describe('Lecture Studio revision patch contracts', () => {
+  it('accepts only bounded strict exact-edit payloads and permits an explanation-only reply', () => {
+    expect(
+      LectureStudioRevisionPatchOutputSchema.parse({
+        reply: 'Updated the requested paragraph.',
+        edits: [
+          {
+            document: 'lecture-notes',
+            find: 'Old paragraph [P1].',
+            replace: 'Revised paragraph [P1].',
+          },
+        ],
+      }).edits,
+    ).toHaveLength(1);
+    expect(
+      LectureStudioRevisionPatchOutputSchema.parse({
+        reply: 'No source change was required.',
+        edits: [],
+      }).edits,
+    ).toEqual([]);
+    expect(() =>
+      LectureStudioRevisionPatchOutputSchema.parse({
+        reply: 'Invalid.',
+        edits: [{ document: 'notes', find: 'Old', replace: 'New', offset: 10 }],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects an aggregate revision patch payload above the JSON budget', () => {
+    const replacement = 'x'.repeat(40_000);
+    expect(JSON.stringify({ reply: 'Large.', edits: [] }).length).toBeLessThan(
+      LECTURE_STUDIO_MAX_REVISION_PATCH_JSON_LENGTH,
+    );
+    expect(() =>
+      LectureStudioRevisionPatchOutputSchema.parse({
+        reply: 'Large.',
+        edits: Array.from({ length: 3 }, (_, index) => ({
+          document: 'lecture-notes',
+          find: `unique-${index}`,
+          replace: replacement,
+        })),
       }),
     ).toThrow();
   });
@@ -392,6 +443,7 @@ describe('Lecture Studio candidate pagination contracts', () => {
         slidesTargetPages: 24,
         detailLevel: 'exhaustive',
         structure: { mode: 'adaptive' },
+        documentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
         customInstructions: 'Compare assumptions and end with open questions.',
       },
     });
@@ -408,6 +460,7 @@ describe('Lecture Studio candidate pagination contracts', () => {
           slidesTargetPages: null,
           detailLevel: 'standard',
           structure: { mode: 'adaptive' },
+          documentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
           customInstructions: '\\'.repeat(6_001),
         },
       }),
@@ -420,6 +473,7 @@ describe('Lecture Studio candidate pagination contracts', () => {
           slidesTargetPages: 1,
           detailLevel: 'standard',
           structure: { mode: 'adaptive' },
+          documentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
           customInstructions: '',
         },
       }),
@@ -432,6 +486,7 @@ describe('Lecture Studio candidate pagination contracts', () => {
           slidesTargetPages: null,
           detailLevel: 'standard',
           structure: { mode: 'adaptive' },
+          documentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
           customInstructions: `unsafe${String.fromCharCode(0)}instruction`,
         },
       }),
@@ -447,6 +502,7 @@ describe('Lecture Studio candidate pagination contracts', () => {
         slidesTargetPages: 30,
         detailLevel: 'detailed' as const,
         structure: { mode: 'adaptive' as const },
+        documentFeatures: { ...DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES },
         customInstructions: 'Keep the proofs rigorous.',
       },
     };
@@ -479,6 +535,161 @@ describe('Lecture Studio candidate pagination contracts', () => {
         },
       }).success,
     ).toBe(false);
+  });
+
+  it('keeps historical briefs byte-compatible and requires exact document features for updates', () => {
+    const legacy = {
+      notesTargetPages: 8,
+      slidesTargetPages: 12,
+      detailLevel: 'standard' as const,
+      structure: { mode: 'adaptive' as const },
+      customInstructions: '',
+    };
+    const parsedLegacy = LectureStudioGenerationBriefSchema.parse(legacy);
+    expect(parsedLegacy).toEqual(legacy);
+    expect(JSON.stringify(parsedLegacy)).toBe(JSON.stringify(legacy));
+
+    for (const title of ['References', 'Bibliography', 'Sources   used']) {
+      const legacyCustom = {
+        ...legacy,
+        structure: {
+          mode: 'custom' as const,
+          sections: [{ title, coverage: 'notes-and-slides' as const }],
+        },
+      };
+      const legacyBytes = JSON.stringify(legacyCustom);
+      const legacyDigest = createHash('sha256').update(legacyBytes, 'utf8').digest('hex');
+      const parsedCustom = LectureStudioGenerationBriefSchema.parse(JSON.parse(legacyBytes));
+      expect(JSON.stringify(parsedCustom)).toBe(legacyBytes);
+      expect(createHash('sha256').update(JSON.stringify(parsedCustom), 'utf8').digest('hex')).toBe(
+        legacyDigest,
+      );
+    }
+
+    const projectId = randomUUID();
+    const studioId = randomUUID();
+    const attemptId = randomUUID();
+    const recordId = randomUUID();
+    const legacyV3Brief = {
+      ...legacy,
+      structure: {
+        mode: 'custom' as const,
+        sections: [{ title: 'References', coverage: 'notes-and-slides' as const }],
+      },
+    };
+    const legacyV3Bytes = JSON.stringify(legacyV3Brief);
+    const legacyV3 = LectureStudioRevisionSchema.parse({
+      schemaVersion: 3,
+      id: randomUUID(),
+      studioId,
+      revision: 1,
+      attemptId,
+      lectureNotesLatex: 'legacy notes',
+      slidesLatex: 'legacy slides',
+      sourceManifest: {
+        schemaVersion: 1,
+        selectedProjectIds: [projectId],
+        literature: [
+          {
+            sourceLabel: 'P1',
+            projectId,
+            projectName: 'Project',
+            recordId,
+            recordVersion: 1,
+            annotationVersion: 0,
+            title: 'Paper',
+            authors: [],
+            containerTitle: null,
+            publishedYear: null,
+            doi: null,
+            citationKey: null,
+            reviewStatus: 'included',
+            topics: [],
+            metadataSummary: '',
+            metadataOnly: true,
+          },
+        ],
+        experiments: [],
+      },
+      sourceManifestSha256: 'a'.repeat(64),
+      artifacts: [
+        {
+          kind: 'lecture-notes',
+          relativePath: 'Lecture Notes.tex',
+          contentSha256: 'b'.repeat(64),
+          savedAt: timestamp,
+        },
+        {
+          kind: 'slides',
+          relativePath: 'Slides.tex',
+          contentSha256: 'c'.repeat(64),
+          savedAt: timestamp,
+        },
+      ],
+      invocation: {
+        schemaVersion: 1,
+        invocationId: randomUUID(),
+        providerId: 'codex',
+        requestedModelId: null,
+        resolvedModelId: 'provider-default',
+        catalogVersion: 'legacy',
+        reasoningOptionId: 'high',
+        startedAt: timestamp,
+      },
+      generationBriefSnapshot: JSON.parse(legacyV3Bytes),
+      generationBriefSha256: createHash('sha256').update(legacyV3Bytes, 'utf8').digest('hex'),
+      authoringPolicyVersion: 6,
+      authoringPolicySha256: 'd'.repeat(64),
+      createdAt: timestamp,
+    });
+    if (legacyV3.schemaVersion !== 3) throw new Error('expected legacy v3 revision');
+    expect(JSON.stringify(legacyV3.generationBriefSnapshot)).toBe(legacyV3Bytes);
+    expect(legacyV3.generationBriefSha256).toBe(
+      createHash('sha256').update(legacyV3Bytes, 'utf8').digest('hex'),
+    );
+
+    expect(
+      LectureStudioDocumentFeaturesSchema.parse({
+        includeSlideTitlePage: false,
+        showInlineEvidenceLabels: false,
+        includeSourcesUsedSection: false,
+      }),
+    ).toEqual({
+      includeSlideTitlePage: false,
+      showInlineEvidenceLabels: false,
+      includeSourcesUsedSection: false,
+    });
+    expect(
+      LectureStudioDocumentFeaturesSchema.safeParse({
+        includeSlideTitlePage: true,
+        showInlineEvidenceLabels: true,
+        includeSourcesUsedSection: true,
+        eraseProvenance: true,
+      }).success,
+    ).toBe(false);
+
+    const updateStudioId = randomUUID();
+    expect(
+      UpdateLectureStudioGenerationBriefInputSchema.safeParse({
+        studioId: updateStudioId,
+        expectedVersion: 1,
+        generationBrief: legacy,
+      }).success,
+    ).toBe(false);
+    expect(
+      UpdateLectureStudioGenerationBriefInputSchema.safeParse({
+        studioId: updateStudioId,
+        expectedVersion: 1,
+        generationBrief: {
+          ...legacy,
+          slidesTargetPages: 1,
+          documentFeatures: {
+            ...DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+            includeSlideTitlePage: false,
+          },
+        },
+      }).success,
+    ).toBe(true);
   });
 
   it('normalizes legacy generation briefs to an explicit adaptive structure', () => {

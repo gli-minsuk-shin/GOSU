@@ -6,6 +6,7 @@ import {
   CodexCollaborationModeCatalogSchema,
   CodexProjectResponseSchema,
   PROJECT_CHAT_MAX_ACTION_COMMAND_SERIALIZED_LENGTH,
+  PROJECT_CHAT_MAX_POLICY_RULES,
   PROJECT_CHAT_MAX_TASK_ACTION_DESCRIPTION_LENGTH,
   PROJECT_CHAT_OUTPUT_SCHEMA,
   BranchProjectChatSessionInputSchema,
@@ -13,6 +14,7 @@ import {
   ProjectChatAttemptSchema,
   ProjectChatEventSchema,
   ProjectChatMessageSchema,
+  ProjectChatPolicyRulesSchema,
   ProjectChatPromptProvenanceSchema,
   ProjectChatProfileSchema,
   ProjectChatQueuedTurnSchema,
@@ -476,6 +478,7 @@ describe('Project chat contracts', () => {
       personality: 'auto',
       responseVerbosity: 'high',
       webSearchMode: 'cached',
+      policyRules: [],
     });
     expect(
       ProjectChatProfileSchema.parse({
@@ -563,6 +566,32 @@ describe('Project chat contracts', () => {
     ).toThrow();
   });
 
+  it('normalizes and strictly bounds project-wide policy rules', () => {
+    const normalized = ProjectChatPolicyRulesSchema.parse([
+      '  Keep cafe\u0301 benchmarks separate from production results.  ',
+      'State uncertainty explicitly.',
+    ]);
+    expect(normalized).toEqual([
+      'Keep café benchmarks separate from production results.',
+      'State uncertainty explicitly.',
+    ]);
+    expect(() =>
+      ProjectChatPolicyRulesSchema.parse(['State uncertainty.', 'state uncertainty.']),
+    ).toThrow();
+    expect(() =>
+      ProjectChatPolicyRulesSchema.parse(
+        Array.from({ length: PROJECT_CHAT_MAX_POLICY_RULES + 1 }, (_, index) => `Rule ${index}`),
+      ),
+    ).toThrow();
+    expect(() => ProjectChatPolicyRulesSchema.parse(['x'.repeat(801)])).toThrow();
+    expect(() =>
+      ProjectChatPolicyRulesSchema.parse(Array.from({ length: 11 }, () => 'x'.repeat(800))),
+    ).toThrow();
+    for (const unsafe of ['hidden\u200btext', 'bidi\u202etext', 'control\u0000text']) {
+      expect(() => ProjectChatPolicyRulesSchema.parse([unsafe])).toThrow();
+    }
+  });
+
   it('accepts future native collaboration modes without a desktop release', () => {
     const catalog = CodexCollaborationModeCatalogSchema.parse({
       catalogVersion: 'catalog-future-fixture',
@@ -590,7 +619,7 @@ describe('Project chat contracts', () => {
     ).toThrow();
   });
 
-  it('keeps v1/v2 prompt provenance readable and parses native v3 provenance', () => {
+  it('keeps v1/v2/v3 prompt provenance readable and parses policy-aware v4 provenance', () => {
     const base = {
       schemaVersion: 1 as const,
       baseInstructionId: 'gosu.project-chat.base',
@@ -644,6 +673,25 @@ describe('Project chat contracts', () => {
       assemblyVersion: 3,
       nativeCollaborationModeId: 'plan',
       nativePersonality: 'pragmatic',
+    });
+    expect(
+      ProjectChatPromptProvenanceSchema.parse({
+        ...base,
+        ...v2Fields,
+        assemblyVersion: 4,
+        requestedLegacyHarnessMode: 'planner',
+        nativeCollaborationModeId: 'plan',
+        nativeExecutionKind: 'plan',
+        nativeCollaborationCatalogSha256: '3'.repeat(64),
+        nativePersonality: 'pragmatic',
+        nativeResponseVerbosity: 'high',
+        effectiveReasoningOptionId: 'high',
+        policyRulesSha256: '4'.repeat(64),
+        policyRuleCount: 2,
+      }),
+    ).toMatchObject({
+      assemblyVersion: 4,
+      policyRuleCount: 2,
     });
   });
 });

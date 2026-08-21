@@ -49,6 +49,30 @@ GOSU는 별도 `Todo` entity나 table을 만들지 않는다. 기존 `WorkspaceT
 - Board column 표시명은 바뀔 수 있지만 내부 status ID는 chat command와 sync의 안정 식별자로 유지한다.
 - checklist와 sub-task는 이번 slice에서 새 schema를 만들지 않고 후속 versioned contract로 남긴다.
 
+## 전체 project Tasks projection
+
+Workspace의 `Tasks`는 모든 project용 task를 새 entity로 복제하지 않고 기존 `WorkspaceTask`를 모아 보여주는
+renderer-only Kanban·To-do projection이다. parent가 Active인 active task만 대상으로 하며, local navigation에서
+숨긴 Active project는 포함하되 Archived·Trash project와 Task trash는 제외한다. project badge와 project
+filter로 각 task의 소유자를 항상 드러낸다.
+
+- 전체 Kanban column은 project별 사용자 표시명이나 순서를 임의로 합치지 않고 canonical
+  `backlog`·`planned`·`in_progress`·`review`·`done`을 사용한다.
+- task 추가 시 구체적인 Active project를 반드시 선택한다. 초기 status와 완료 해제 status는 각각 선택하거나
+  소유한 project의 Board 설정을 따른다. 서로 다른 project의 WIP limit은 전체 Tasks 합계에 적용하지 않고
+  각 project Board에서만 그 project의 전체 active task를 기준으로 유지한다.
+- card drag는 같은 task의 canonical status만 바꾸며 project 간 reassignment를 의미하지 않는다. 모든 생성과
+  수정은 owning `projectId`, `taskId`, `expectedVersion`을 기존 `WorkspaceService` command에 전달하고
+  project-scoped outbox와 함께 원자적으로 저장한다.
+- 각 column은 최근 변경 순서의 bounded subset만 렌더링하고 `Show more`가 다음 bounded batch를 연다.
+  따라서 방금 생성·이동·복원한 task를 즉시 보여주면서도 전체 snapshot의 task 수만큼 DOM을 한꺼번에
+  만들지 않는다.
+- 전체 Tasks 화면은 all-project agent context가 아니다. Project Chat, `/todo`와 agent tool은 계속 현재 Active
+  project만 읽고 제안하며, global UI에서 저장한 task도 다음 project snapshot에서 같은 원본으로 보인다.
+
+이 projection은 workspace/task schema, SQLCipher table 또는 sync command type을 추가하지 않으므로 기존
+project Board와 저장된 schema-v1 snapshot의 호환성을 유지한다.
+
 ## Project Chat과 `/todo` skill
 
 Project Chat은 활성 project의 Board/To-do snapshot만 읽고, 모델이 DB를 직접 수정하지 않는다. 일반

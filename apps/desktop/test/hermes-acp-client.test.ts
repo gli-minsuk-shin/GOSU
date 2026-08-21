@@ -212,6 +212,83 @@ describe('Hermes ACP client', () => {
     expect(client.state).toBe('closed');
   });
 
+  it('preserves only validated prompt-result usage and never reinterprets context usage updates', async () => {
+    const platform = new FakePlatform();
+    const client = createClient(platform);
+    const updates: unknown[] = [];
+    client.on('sessionUpdate', (update) => updates.push(update));
+    await initialize(client, platform.process);
+    await createSession(client, platform.process);
+
+    platform.process.emitJson({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId: 'session-1',
+        update: { sessionUpdate: 'usage_update', used: 9_999, size: 10_000 },
+      },
+    });
+    expect(updates).toEqual([
+      { sessionId: 'session-1', update: { sessionUpdate: 'usage_update', usage: {} } },
+    ]);
+
+    const prompt = client.prompt('session-1', 'Count this prompt');
+    await vi.waitFor(() => expect(platform.process.request('session/prompt')).toBeDefined());
+    const request = platform.process.request('session/prompt')!;
+    platform.process.emitJson({
+      jsonrpc: '2.0',
+      id: request.id,
+      result: {
+        stopReason: 'end_turn',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+          cachedReadTokens: 40,
+          thoughtTokens: 5,
+          privateCost: 123,
+        },
+      },
+    });
+    await expect(prompt).resolves.toEqual({
+      stopReason: 'end_turn',
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        cachedReadTokens: 40,
+        cachedWriteTokens: null,
+        reasoningOutputTokens: 5,
+      },
+    });
+
+    const invalidPrompt = client.prompt('session-1', 'Reject overlapping cache totals');
+    await vi.waitFor(() =>
+      expect(
+        platform.process.frames().filter((frame) => frame.method === 'session/prompt'),
+      ).toHaveLength(2),
+    );
+    const invalidRequest = platform.process
+      .frames()
+      .filter((frame) => frame.method === 'session/prompt')[1]!;
+    platform.process.emitJson({
+      jsonrpc: '2.0',
+      id: invalidRequest.id,
+      result: {
+        stopReason: 'end_turn',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+          cachedReadTokens: 70,
+          cachedWriteTokens: 40,
+        },
+      },
+    });
+    await expect(invalidPrompt).resolves.toEqual({ stopReason: 'end_turn' });
+    await client.close();
+  });
+
   it('emits allowlisted session updates without raw tool payloads, metadata, paths, or output', async () => {
     const platform = new FakePlatform();
     const client = createClient(platform);

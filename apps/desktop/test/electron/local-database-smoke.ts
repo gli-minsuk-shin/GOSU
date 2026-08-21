@@ -44,13 +44,16 @@ import {
   type LectureStudio,
   type EmptyLectureStudioTrashInput,
   type LectureStudioAttachmentSnapshot,
+  type LectureStudioFigureAsset,
   type LectureStudioMessage,
   type LectureStudioRevision,
+  type LectureStudioRevisionV4,
 } from '../../src/shared/lecture-studio-contracts';
 import type { LectureStudioAttachmentCard } from '../../src/shared/lecture-studio-attachment-contracts';
 
 type LectureStudioRevisionV2 = Extract<LectureStudioRevision, { schemaVersion: 2 }>;
 type LectureStudioRevisionV3 = Extract<LectureStudioRevision, { schemaVersion: 3 }>;
+type LectureStudioRevisionV1 = Extract<LectureStudioRevision, { schemaVersion: 1 }>;
 import {
   EXPERIMENT_MAX_IDEAS_PER_PROJECT,
   EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
@@ -1164,6 +1167,7 @@ function verifyExperimentEvaluationPersistence(fixedTimestamp: string) {
       sessionId,
       attemptId: failedAttemptId,
       errorCode: 'fixture_generation_failed',
+      messageStatus: 'failed',
       updatedAt: at(5_000),
     });
     invariant(
@@ -1172,6 +1176,39 @@ function verifyExperimentEvaluationPersistence(fixedTimestamp: string) {
         database.getExperimentEvaluationSession(projectId, sessionId)?.acceptedProfileId ===
           profileId,
       'experiment_evaluation_failed_turn_dropped_accepted_profile',
+    );
+
+    const interruptedAttemptId = randomUUID();
+    const generatingBeforeInterrupt = database.beginExperimentEvaluationTurn({
+      projectId,
+      sessionId,
+      expectedVersion: failed.version,
+      attemptId: interruptedAttemptId,
+      userMessage: userMessage(sessionId, interruptedAttemptId, at(5_100)),
+      updatedAt: at(5_100),
+    });
+    invariant(
+      generatingBeforeInterrupt?.status === 'generating',
+      'experiment_evaluation_interrupt_fixture_did_not_begin',
+    );
+    const interrupted = database.failExperimentEvaluationTurn({
+      projectId,
+      sessionId,
+      attemptId: interruptedAttemptId,
+      errorCode: 'experiment_evaluation_interrupted',
+      messageStatus: 'interrupted',
+      updatedAt: at(5_200),
+    });
+    invariant(
+      interrupted?.status === 'failed' &&
+        interrupted.lastErrorCode === 'experiment_evaluation_interrupted' &&
+        database
+          .getExperimentEvaluationSessionDetail(projectId, sessionId)
+          ?.messages.some(
+            (message) =>
+              message.attemptId === interruptedAttemptId && message.status === 'interrupted',
+          ),
+      'experiment_evaluation_interrupted_message_was_not_persisted',
     );
 
     const reusedSessionId = randomUUID();
@@ -2434,7 +2471,7 @@ The attached derivation contributes the bounded source label [A1].`;
     reconstructionNotice: attachmentCard.reconstructionNotice!,
     capturedAt: fixedTimestamp,
   };
-  const revisionFixture = (revision: number, attemptId: string): LectureStudioRevision => ({
+  const revisionFixture = (revision: number, attemptId: string): LectureStudioRevisionV1 => ({
     schemaVersion: 1,
     id: randomUUID(),
     studioId: studio.id,
@@ -2700,12 +2737,25 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
         { title: 'Technical appendix', coverage: 'notes-only' as const },
       ],
     },
+    documentFeatures: {
+      includeSlideTitlePage: true,
+      showInlineEvidenceLabels: true,
+      includeSourcesUsedSection: true,
+    },
     customInstructions: 'Persist this revised generation policy.',
   };
   const generationUpdateStudio: LectureStudio = {
     ...studio,
     id: randomUUID(),
     title: 'Generation brief update fixture',
+    generationBrief: {
+      ...studio.generationBrief,
+      documentFeatures: {
+        includeSlideTitlePage: true,
+        showInlineEvidenceLabels: true,
+        includeSourcesUsedSection: true,
+      },
+    },
   };
   invariant(
     generationRoundTrip.createLectureStudio(generationUpdateStudio),
@@ -2746,14 +2796,32 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     'lecture_generation_brief_update_was_not_persisted_after_reopen',
   );
   const updateRaceAttemptId = randomUUID();
+  const turnBrief = {
+    ...editedBrief,
+    documentFeatures: {
+      includeSlideTitlePage: false,
+      showInlineEvidenceLabels: false,
+      includeSourcesUsedSection: false,
+    },
+    customInstructions: 'Persist the Assistant directive even if this turn fails.',
+  };
   const updateRaceGenerating = generationUpdateReopen.beginLectureStudioTurn({
     studioId: generationUpdateStudio.id,
     expectedVersion: reopenedEditedStudio.version,
     attemptId: updateRaceAttemptId,
     userMessage: null,
     updatedAt: fixedTimestamp,
+    generationBrief: turnBrief,
   });
-  invariant(updateRaceGenerating !== null, 'lecture_generation_brief_race_turn_did_not_begin');
+  invariant(
+    updateRaceGenerating !== null &&
+      isDeepStrictEqual(updateRaceGenerating.generationBrief, turnBrief) &&
+      isDeepStrictEqual(
+        generationUpdateReopen.getLectureStudio(generationUpdateStudio.id)?.generationBrief,
+        turnBrief,
+      ),
+    'lecture_generation_brief_turn_override_was_not_persisted_atomically',
+  );
   invariant(
     generationUpdateReopen.updateLectureStudioGenerationBrief(
       generationUpdateStudio.id,
@@ -2770,7 +2838,10 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
     messageStatus: 'interrupted',
     updatedAt: fixedTimestamp,
   });
-  invariant(updateRaceFailed !== null, 'lecture_generation_brief_race_turn_did_not_finish');
+  invariant(
+    updateRaceFailed !== null && isDeepStrictEqual(updateRaceFailed.generationBrief, turnBrief),
+    'lecture_generation_brief_turn_override_was_not_retained_after_failure',
+  );
   const trashedUpdateFixture = generationUpdateReopen.setLectureStudioTrashed(
     generationUpdateStudio.id,
     updateRaceFailed.version,
@@ -2888,6 +2959,37 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
       structure: { mode: 'adaptive' },
     }),
     'legacy_lecture_generation_brief_without_structure_did_not_default_to_adaptive_after_reopen',
+  );
+
+  // Historical custom section titles such as References were valid before document-level
+  // controls became configurable. Reopening must retain their exact bytes so the Main service
+  // can grandfather the existing content topic without changing provenance.
+  database.close();
+  const legacyCustomReferencesBrief = {
+    notesTargetPages: 18,
+    slidesTargetPages: 26,
+    detailLevel: 'detailed',
+    structure: {
+      mode: 'custom',
+      sections: [{ title: 'References', coverage: 'notes-and-slides' }],
+    },
+    customInstructions: 'Historical custom References topic.',
+  };
+  const legacyCustomReferencesRow = new Database(join(app.getPath('userData'), 'gosu.db'));
+  legacyCustomReferencesRow.pragma(`key="x'${legacyLectureKeyHex}'"`);
+  try {
+    legacyCustomReferencesRow
+      .prepare('update lecture_studios set generation_brief_json=? where id=?')
+      .run(JSON.stringify(legacyCustomReferencesBrief), studio.id);
+  } finally {
+    legacyCustomReferencesRow.close();
+  }
+  database = new LocalDatabase();
+  database.open();
+  invariant(
+    JSON.stringify(database.getLectureStudio(studio.id)?.generationBrief) ===
+      JSON.stringify(legacyCustomReferencesBrief),
+    'legacy_custom_references_brief_changed_after_reopen',
   );
 
   const failedAttemptId = randomUUID();
@@ -3420,6 +3522,14 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
       'Persist the complete generation brief and authoring policy provenance.',
     ),
     updatedAt: fixedTimestamp,
+    generationBrief: {
+      ...attachmentReady.generationBrief,
+      documentFeatures: {
+        includeSlideTitlePage: true,
+        showInlineEvidenceLabels: true,
+        includeSourcesUsedSection: true,
+      },
+    },
   });
   invariant(provenanceGenerating !== null, 'lecture_provenance_v3_turn_did_not_begin');
   const provenanceRevision = provenanceRevisionFixture(
@@ -3528,6 +3638,415 @@ $x \in \mathbb{R}$이면 $f(x) \geq 1$이다.
         .find((message) => message.id === atomicUser.id)?.status === 'failed',
     'lecture_attachment_cards_or_v4_source_manifest_were_not_persisted_after_reopen',
   );
+
+  const firstFigureBytes = Buffer.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9]);
+  const figureAsset = (id: string, bytes: Buffer): LectureStudioFigureAsset => ({
+    id,
+    studioId: studio.id,
+    displayName: 'SQLCipher figure.png',
+    fileName: `Figure-${id}.jpg`,
+    mediaType: 'image/jpeg',
+    sourceFormat: 'png',
+    byteSize: bytes.byteLength,
+    width: 2,
+    height: 2,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    origin: 'user',
+    createdAt: fixedTimestamp,
+  });
+  const studioBeforeFigures = persisted.getLectureStudio(studio.id);
+  invariant(studioBeforeFigures !== null, 'lecture_figure_studio_missing');
+  const detachedAsset = figureAsset(randomUUID(), firstFigureBytes);
+  const firstFigureReceipt = persisted.addLectureStudioFigures({
+    studioId: studio.id,
+    expectedVersion: studioBeforeFigures.version,
+    figures: [{ asset: detachedAsset, jpegBytes: firstFigureBytes }],
+    updatedAt: fixedTimestamp,
+  });
+  invariant(
+    firstFigureReceipt?.studio.version === studioBeforeFigures.version + 1 &&
+      firstFigureReceipt.figures.length === 1 &&
+      isDeepStrictEqual(
+        Buffer.from(persisted.getLectureStudioFigure(studio.id, detachedAsset.id)?.bytes ?? []),
+        firstFigureBytes,
+      ),
+    'lecture_figure_bytes_or_add_version_were_not_persisted',
+  );
+  const removedFigureReceipt = persisted.removeLectureStudioFigure({
+    studioId: studio.id,
+    expectedVersion: firstFigureReceipt.studio.version,
+    figureId: detachedAsset.id,
+    sha256: detachedAsset.sha256,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(
+    removedFigureReceipt?.studio.version === firstFigureReceipt.studio.version + 1 &&
+      removedFigureReceipt.figures.length === 0 &&
+      persisted.listLectureStudioFigures(studio.id).length === 0 &&
+      persisted.getLectureStudioFigure(studio.id, detachedAsset.id) === null,
+    'lecture_unreferenced_figure_blob_was_not_hard_deleted',
+  );
+
+  const activeAsset = figureAsset(randomUUID(), firstFigureBytes);
+  const activeFigureReceipt = persisted.addLectureStudioFigures({
+    studioId: studio.id,
+    expectedVersion: removedFigureReceipt.studio.version,
+    figures: [{ asset: activeAsset, jpegBytes: firstFigureBytes }],
+    updatedAt: fixedTimestamp,
+  });
+  invariant(activeFigureReceipt !== null, 'lecture_active_figure_add_failed');
+  const duplicateAsset = figureAsset(randomUUID(), firstFigureBytes);
+  const duplicateReceipt = persisted.addLectureStudioFigures({
+    studioId: studio.id,
+    expectedVersion: activeFigureReceipt.studio.version,
+    figures: [{ asset: duplicateAsset, jpegBytes: firstFigureBytes }],
+    updatedAt: fixedTimestamp,
+  });
+  invariant(
+    duplicateReceipt?.studio.version === activeFigureReceipt.studio.version &&
+      duplicateReceipt.figures.length === 1 &&
+      duplicateReceipt.figures[0]?.id === activeAsset.id,
+    'lecture_active_figure_sha_dedupe_changed_version_or_identity',
+  );
+  const staleBytes = Buffer.from([0xff, 0xd8, 0xff, 0x01, 0xff, 0xd9]);
+  invariant(
+    persisted.addLectureStudioFigures({
+      studioId: studio.id,
+      expectedVersion: activeFigureReceipt.studio.version - 1,
+      figures: [{ asset: figureAsset(randomUUID(), staleBytes), jpegBytes: staleBytes }],
+      updatedAt: fixedTimestamp,
+    }) === null,
+    'lecture_figure_stale_version_was_not_rejected',
+  );
+
+  const messagesBeforeV4 = persisted.listLectureStudioMessages(studio.id, 50).length;
+  const unusedFigureAttemptId = randomUUID();
+  const unusedFigureGenerating = persisted.beginLectureStudioTurn({
+    studioId: studio.id,
+    expectedVersion: activeFigureReceipt.studio.version,
+    attemptId: unusedFigureAttemptId,
+    userMessage: null,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(unusedFigureGenerating !== null, 'lecture_unused_figure_v3_turn_did_not_begin');
+  const unusedFigureNotes = provenanceRevision.lectureNotesLatex.replace(
+    '% GOSU-CONTENT-END',
+    '\\section{Unused library figure}\n% GOSU-CONTENT-END',
+  );
+  const unusedFigureRevision = {
+    ...provenanceRevision,
+    id: randomUUID(),
+    revision: 6,
+    attemptId: unusedFigureAttemptId,
+    lectureNotesLatex: unusedFigureNotes,
+    artifacts: [
+      {
+        kind: 'lecture-notes' as const,
+        relativePath: 'Lecture Notes & Slides/unused-figure-v3/Lecture Notes.tex',
+        contentSha256: createHash('sha256').update(unusedFigureNotes, 'utf8').digest('hex'),
+        savedAt: fixedTimestamp,
+      },
+      {
+        kind: 'slides' as const,
+        relativePath: 'Lecture Notes & Slides/unused-figure-v3/Slides.tex',
+        contentSha256: createHash('sha256')
+          .update(provenanceRevision.slidesLatex, 'utf8')
+          .digest('hex'),
+        savedAt: fixedTimestamp,
+      },
+    ],
+    invocation: { ...provenanceRevision.invocation, invocationId: randomUUID() },
+    createdAt: fixedTimestamp,
+  };
+  const unusedFigureReady = persisted.completeLectureStudioTurn({
+    studio: {
+      ...unusedFigureGenerating,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 6,
+      version: unusedFigureGenerating.version + 1,
+      lastErrorCode: null,
+      updatedAt: fixedTimestamp,
+    },
+    revision: unusedFigureRevision,
+    assistantMessage: null,
+  });
+  invariant(
+    unusedFigureReady?.currentRevision === 6 &&
+      isDeepStrictEqual(persisted.getCurrentLectureStudioRevision(studio.id), unusedFigureRevision),
+    'lecture_active_but_unused_figure_blocked_v3_completion',
+  );
+
+  const modelV4AttemptId = randomUUID();
+  const modelV4Generating = persisted.beginLectureStudioTurn({
+    studioId: studio.id,
+    expectedVersion: unusedFigureReady.version,
+    attemptId: modelV4AttemptId,
+    userMessage: null,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(modelV4Generating !== null, 'lecture_model_v4_turn_did_not_begin');
+  const modelNotes = provenanceRevision.lectureNotesLatex.replace(
+    '% GOSU-CONTENT-END',
+    '\\section{Model V4 figure snapshot}\n% GOSU-CONTENT-END',
+  );
+  const modelSlides = provenanceRevision.slidesLatex;
+  const modelV4Revision: LectureStudioRevisionV4 = {
+    ...provenanceRevision,
+    schemaVersion: 4,
+    id: randomUUID(),
+    revision: 7,
+    attemptId: modelV4AttemptId,
+    lectureNotesLatex: modelNotes,
+    slidesLatex: modelSlides,
+    authorship: { kind: 'model' },
+    figureAssets: activeFigureReceipt.figures,
+    artifacts: [
+      {
+        kind: 'lecture-notes',
+        relativePath: 'Lecture Notes & Slides/model-v4/Lecture Notes.tex',
+        contentSha256: createHash('sha256').update(modelNotes, 'utf8').digest('hex'),
+        savedAt: fixedTimestamp,
+      },
+      {
+        kind: 'slides',
+        relativePath: 'Lecture Notes & Slides/model-v4/Slides.tex',
+        contentSha256: createHash('sha256').update(modelSlides, 'utf8').digest('hex'),
+        savedAt: fixedTimestamp,
+      },
+    ],
+    invocation: { ...provenanceRevision.invocation, invocationId: randomUUID() },
+    createdAt: fixedTimestamp,
+  };
+  const modelV4Ready = persisted.completeLectureStudioTurn({
+    studio: {
+      ...modelV4Generating,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: 7,
+      version: modelV4Generating.version + 1,
+      lastErrorCode: null,
+      updatedAt: fixedTimestamp,
+    },
+    revision: modelV4Revision,
+    assistantMessage: null,
+  });
+  invariant(
+    modelV4Ready?.currentRevision === 7 &&
+      isDeepStrictEqual(persisted.getCurrentLectureStudioRevision(studio.id), modelV4Revision),
+    'lecture_model_v4_revision_was_not_persisted',
+  );
+
+  const manualNotes = modelNotes.replace(
+    '% GOSU-CONTENT-END',
+    '\\section{Manual immutable edit}\n% GOSU-CONTENT-END',
+  );
+  const manualV4Revision: LectureStudioRevisionV4 = {
+    ...modelV4Revision,
+    id: randomUUID(),
+    revision: 8,
+    attemptId: randomUUID(),
+    lectureNotesLatex: manualNotes,
+    authorship: {
+      kind: 'manual',
+      baseRevisionId: modelV4Revision.id,
+      baseRevision: 7,
+      editedKinds: ['lecture-notes'],
+    },
+    artifacts: [
+      {
+        kind: 'lecture-notes',
+        relativePath: 'Lecture Notes & Slides/manual-v4/Lecture Notes.tex',
+        contentSha256: createHash('sha256').update(manualNotes, 'utf8').digest('hex'),
+        savedAt: fixedTimestamp,
+      },
+      {
+        kind: 'slides',
+        relativePath: 'Lecture Notes & Slides/manual-v4/Slides.tex',
+        contentSha256: createHash('sha256').update(modelSlides, 'utf8').digest('hex'),
+        savedAt: fixedTimestamp,
+      },
+    ],
+    invocation: null,
+    createdAt: fixedTimestamp,
+  };
+  const manualReady = persisted.commitManualLectureStudioRevision({
+    studioId: studio.id,
+    expectedVersion: modelV4Ready.version,
+    expectedCurrentRevision: 7,
+    revision: manualV4Revision,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(
+    manualReady?.currentRevision === 8 &&
+      manualReady.version === modelV4Ready.version + 1 &&
+      persisted.listLectureStudioMessages(studio.id, 50).length === messagesBeforeV4,
+    'lecture_manual_v4_append_added_a_message_or_failed_to_advance',
+  );
+  invariant(
+    persisted.commitManualLectureStudioRevision({
+      studioId: studio.id,
+      expectedVersion: modelV4Ready.version,
+      expectedCurrentRevision: 7,
+      revision: manualV4Revision,
+      updatedAt: fixedTimestamp,
+    }) === null,
+    'lecture_manual_v4_stale_cas_was_not_rejected',
+  );
+  let referencedFigureRemovalRejected = false;
+  try {
+    persisted.removeLectureStudioFigure({
+      studioId: studio.id,
+      expectedVersion: manualReady.version,
+      figureId: activeAsset.id,
+      sha256: activeAsset.sha256,
+      updatedAt: fixedTimestamp,
+    });
+  } catch (error) {
+    referencedFigureRemovalRejected =
+      error instanceof Error && error.message === 'lecture_figure_in_use';
+  }
+  invariant(
+    referencedFigureRemovalRejected &&
+      persisted.getLectureStudio(studio.id)?.version === manualReady.version,
+    'lecture_current_revision_figure_reference_was_not_fenced',
+  );
+
+  const historicalOnlyNotes = manualNotes.replace(
+    '% GOSU-CONTENT-END',
+    '\\section{Detached historical figure}\n% GOSU-CONTENT-END',
+  );
+  const historicalOnlyRevision: LectureStudioRevisionV4 = {
+    ...manualV4Revision,
+    id: randomUUID(),
+    revision: 9,
+    attemptId: randomUUID(),
+    lectureNotesLatex: historicalOnlyNotes,
+    authorship: {
+      kind: 'manual',
+      baseRevisionId: manualV4Revision.id,
+      baseRevision: 8,
+      editedKinds: ['lecture-notes'],
+    },
+    figureAssets: [],
+    artifacts: [
+      {
+        kind: 'lecture-notes',
+        relativePath: 'Lecture Notes & Slides/historical-only-v4/Lecture Notes.tex',
+        contentSha256: createHash('sha256').update(historicalOnlyNotes, 'utf8').digest('hex'),
+        savedAt: fixedTimestamp,
+      },
+      {
+        kind: 'slides',
+        relativePath: 'Lecture Notes & Slides/historical-only-v4/Slides.tex',
+        contentSha256: createHash('sha256').update(modelSlides, 'utf8').digest('hex'),
+        savedAt: fixedTimestamp,
+      },
+    ],
+    invocation: null,
+    createdAt: fixedTimestamp,
+  };
+  const historicalOnlyReady = persisted.commitManualLectureStudioRevision({
+    studioId: studio.id,
+    expectedVersion: manualReady.version,
+    expectedCurrentRevision: 8,
+    revision: historicalOnlyRevision,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(
+    historicalOnlyReady?.currentRevision === 9,
+    'lecture_historical_figure_detach_revision_failed',
+  );
+  const historicalFigureRemoval = persisted.removeLectureStudioFigure({
+    studioId: studio.id,
+    expectedVersion: historicalOnlyReady.version,
+    figureId: activeAsset.id,
+    sha256: activeAsset.sha256,
+    updatedAt: fixedTimestamp,
+  });
+  invariant(
+    historicalFigureRemoval?.studio.version === historicalOnlyReady.version + 1 &&
+      historicalFigureRemoval.figures.length === 0 &&
+      persisted.listLectureStudioFigures(studio.id).length === 0 &&
+      isDeepStrictEqual(
+        Buffer.from(persisted.getLectureStudioFigure(studio.id, activeAsset.id)?.bytes ?? []),
+        firstFigureBytes,
+      ),
+    'lecture_historical_revision_figure_bytes_were_not_soft_deleted_and_retained',
+  );
+
+  const manualRoundTrip = new LocalDatabase();
+  manualRoundTrip.open();
+  invariant(
+    isDeepStrictEqual(
+      manualRoundTrip.getLectureStudioRevision(studio.id, 6),
+      unusedFigureRevision,
+    ) &&
+      isDeepStrictEqual(manualRoundTrip.getLectureStudioRevision(studio.id, 7), modelV4Revision) &&
+      isDeepStrictEqual(manualRoundTrip.getLectureStudioRevision(studio.id, 8), manualV4Revision) &&
+      isDeepStrictEqual(
+        manualRoundTrip.getLectureStudioRevision(studio.id, 9),
+        historicalOnlyRevision,
+      ) &&
+      isDeepStrictEqual(
+        manualRoundTrip.getCurrentLectureStudioRevision(studio.id),
+        historicalOnlyRevision,
+      ) &&
+      manualRoundTrip.getLectureStudioFigure(studio.id, detachedAsset.id) === null &&
+      isDeepStrictEqual(
+        Buffer.from(manualRoundTrip.getLectureStudioFigure(studio.id, activeAsset.id)?.bytes ?? []),
+        firstFigureBytes,
+      ),
+    'lecture_v4_model_manual_or_detached_figure_gc_changed_after_reopen',
+  );
+  manualRoundTrip.close();
+
+  const rawV4Inspection = new Database(join(app.getPath('userData'), 'gosu.db'));
+  rawV4Inspection.pragma(`key="x'${legacyLectureKeyHex}'"`);
+  try {
+    const modelRow = rawV4Inspection
+      .prepare(
+        `select invocation_json,authorship_json,figure_assets_json
+         from lecture_studio_revisions where id=?`,
+      )
+      .get(modelV4Revision.id) as
+      { invocation_json: string; authorship_json: string; figure_assets_json: string } | undefined;
+    const manualRow = rawV4Inspection
+      .prepare(
+        `select invocation_json,authorship_json,figure_assets_json
+         from lecture_studio_revisions where id=?`,
+      )
+      .get(manualV4Revision.id) as
+      { invocation_json: string; authorship_json: string; figure_assets_json: string } | undefined;
+    const detachedFigureRow = rawV4Inspection
+      .prepare(
+        `select image_bytes,deleted_at from lecture_studio_figures
+         where studio_id=? and id=?`,
+      )
+      .get(studio.id, detachedAsset.id) as
+      { image_bytes: Buffer; deleted_at: string | null } | undefined;
+    const historicalFigureRow = rawV4Inspection
+      .prepare(
+        `select image_bytes,deleted_at from lecture_studio_figures
+         where studio_id=? and id=?`,
+      )
+      .get(studio.id, activeAsset.id) as
+      { image_bytes: Buffer; deleted_at: string | null } | undefined;
+    invariant(
+      modelRow?.invocation_json !== 'null' &&
+        JSON.parse(modelRow?.authorship_json ?? '{}').kind === 'model' &&
+        manualRow?.invocation_json === 'null' &&
+        JSON.parse(manualRow?.authorship_json ?? '{}').kind === 'manual' &&
+        manualRow?.figure_assets_json === JSON.stringify(manualV4Revision.figureAssets) &&
+        detachedFigureRow === undefined &&
+        historicalFigureRow?.deleted_at === fixedTimestamp &&
+        isDeepStrictEqual(Buffer.from(historicalFigureRow.image_bytes), firstFigureBytes),
+      'lecture_v4_provenance_or_detached_blob_gc_changed_in_sqlcipher_storage',
+    );
+  } finally {
+    rawV4Inspection.close();
+  }
+
   for (let index = 1; index < LECTURE_STUDIO_MAX_STUDIOS; index += 1) {
     const capacityProjectId = randomUUID();
     invariant(
@@ -3974,6 +4493,7 @@ function verifyLectureStudioAttemptRetention(fixedTimestamp: string) {
   invariant(retainedState !== null, 'lecture_retention_success_did_not_complete');
 
   const failureAttemptIds: string[] = [];
+  let usageProtectedFailureAttemptId: string | null = null;
   for (let index = 0; index < LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS + 5; index += 1) {
     const attemptId = randomUUID();
     failureAttemptIds.push(attemptId);
@@ -3994,6 +4514,26 @@ function verifyLectureStudioAttemptRetention(fixedTimestamp: string) {
       updatedAt: fixedTimestamp,
     });
     invariant(retainedState !== null, 'lecture_retention_failure_did_not_finish');
+    if (index === 0) {
+      usageProtectedFailureAttemptId = attemptId;
+      database.recordAttributedModelInvocation(
+        'lecture-retention-usage-thread',
+        'lecture-retention-usage-turn',
+        { ...invocation, invocationId: randomUUID() },
+        {
+          workloadKind: 'lecture_generation',
+          projectId: retainedStudio.outputProjectId,
+          lectureStudioId: retainedStudio.id,
+          lectureAttemptId: attemptId,
+        },
+        {
+          connectionKey: 'codex:chatgpt',
+          connectionLabel: 'ChatGPT',
+          upstreamProviderId: null,
+        },
+        fixedTimestamp,
+      );
+    }
   }
   invariant(
     database.getLatestLectureStudioAttempt(retainedStudio.id)?.id === failureAttemptIds.at(-1) &&
@@ -4028,10 +4568,14 @@ function verifyLectureStudioAttemptRetention(fixedTimestamp: string) {
     )
     .all(retainedStudio.id) as Array<{ id: string }>;
   invariant(
-    retainedFailureRows.length === LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS &&
+    usageProtectedFailureAttemptId !== null &&
+      retainedFailureRows.length === LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS + 1 &&
       isDeepStrictEqual(
         retainedFailureRows.map((row) => row.id),
-        failureAttemptIds.slice(-LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS).reverse(),
+        [
+          ...failureAttemptIds.slice(-LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS).reverse(),
+          usageProtectedFailureAttemptId,
+        ],
       ) &&
       (
         beforeRestart
@@ -4074,6 +4618,17 @@ function verifyLectureStudioAttemptRetention(fixedTimestamp: string) {
       reopened.getLatestLectureStudioAttempt(activeStudio.id)?.status === 'interrupted',
     'lecture_retention_startup_reconciliation_changed_the_latest_attempt',
   );
+  const snapshottedActiveAttempt = reopened
+    .listStoredLectureUsageAttempts(
+      new Date(Date.parse(fixedTimestamp) - 1).toISOString(),
+      new Date(Date.parse(fixedTimestamp) + 1).toISOString(),
+      fixedTimestamp,
+    )
+    .find((attempt) => attempt.attemptId === activeAttemptId);
+  invariant(
+    snapshottedActiveAttempt?.status === 'running' && snapshottedActiveAttempt.completedAt === null,
+    'lecture_usage_snapshot_did_not_preserve_running_attempt_state',
+  );
   reopened.close();
 
   const afterRestart = new Database(join(app.getPath('userData'), 'gosu.db'));
@@ -4098,7 +4653,7 @@ function verifyLectureStudioAttemptRetention(fixedTimestamp: string) {
       )
       .get(retainedStudio.id, ...overflowAttemptIds) as { count: number };
     invariant(
-      terminalCount.count === LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS &&
+      terminalCount.count === LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS + 1 &&
         succeededCount.count === 1 &&
         staleOverflowCount.count === 0,
       'lecture_retention_startup_cleanup_was_not_bounded_or_preserved_success',
@@ -6696,7 +7251,8 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
         legacyProfile.responseVerbosity === 'high' &&
         legacyProfile.webSearchMode === 'cached' &&
         legacyProfile.localNotesVault === null &&
-        legacyProfile.customInstructions === 'Legacy profile instructions.',
+        legacyProfile.customInstructions === 'Legacy profile instructions.' &&
+        legacyProfile.policyRules.length === 0,
       'legacy_profile_v050_migration_failed',
     );
     invariant(
@@ -6724,6 +7280,7 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
         allowAgentMarkdownCreate: true,
       },
       customInstructions: 'Legacy profile instructions.',
+      policyRules: ['Preserve the migrated project rule.'],
     });
     invariant(
       updated?.version === 2 &&
@@ -6732,12 +7289,368 @@ function verifyLegacyProfileMigration(rootUserData: string, fixedTimestamp: stri
         updated.responseVerbosity === 'low' &&
         updated.webSearchMode === 'live' &&
         updated.localNotesVault?.id === 'f'.repeat(64) &&
-        updated.localNotesVault.allowAgentMarkdownCreate === true,
+        updated.localNotesVault.allowAgentMarkdownCreate === true &&
+        updated.policyRules[0] === 'Preserve the migrated project rule.',
       'legacy_profile_v050_grant_update_failed',
     );
     migrated.close();
   } finally {
     app.setPath('userData', primaryUserData);
+  }
+}
+
+function verifyModelUsagePersistence(fixedTimestamp: string) {
+  const keyHex = safeStorage
+    .decryptString(readFileSync(join(app.getPath('userData'), 'local-key.bin')))
+    .trim();
+  const before = new Database(join(app.getPath('userData'), 'gosu.db'));
+  before.pragma(`key="x'${keyHex}'"`);
+  const outboxCountBefore = (
+    before.prepare('select count(*) count from sync_outbox').get() as { count: number }
+  ).count;
+  before.close();
+  const database = new LocalDatabase();
+  database.open();
+  let rejectedInvocationId: string;
+  const projectId = randomUUID();
+  const invocation: ModelInvocation = {
+    schemaVersion: 1,
+    invocationId: randomUUID(),
+    providerId: 'codex',
+    requestedModelId: null,
+    resolvedModelId: 'usage-fixture-model',
+    catalogVersion: 'usage-fixture-catalog',
+    reasoningOptionId: 'high',
+    startedAt: fixedTimestamp,
+  };
+  try {
+    database.recordAttributedModelInvocation(
+      'usage-fixture-thread',
+      'usage-fixture-turn',
+      invocation,
+      { workloadKind: 'literature_organize', projectId },
+      {
+        connectionKey: 'codex:chatgpt',
+        connectionLabel: 'ChatGPT',
+        upstreamProviderId: null,
+      },
+      fixedTimestamp,
+    );
+    invariant(
+      database.recordCodexModelUsageTotal({
+        providerId: 'codex',
+        threadId: 'usage-fixture-thread',
+        turnId: 'usage-fixture-turn',
+        totals: {
+          inputTokens: 100,
+          outputTokens: 40,
+          totalTokens: 140,
+          cachedReadTokens: 20,
+          cachedWriteTokens: 5,
+          reasoningOutputTokens: 10,
+        },
+        observedAt: fixedTimestamp,
+      }) === 'recorded',
+      'model_usage_cumulative_total_was_not_recorded',
+    );
+    invariant(
+      database.listStoredModelUsage(
+        new Date(Date.parse(fixedTimestamp) - 1).toISOString(),
+        new Date(Date.parse(fixedTimestamp) + 1).toISOString(),
+      ).length === 0,
+      'active_model_usage_was_exposed_before_terminal_status',
+    );
+    invariant(
+      database.recordCodexModelUsageTotal({
+        providerId: 'codex',
+        threadId: 'usage-fixture-thread',
+        turnId: 'usage-fixture-turn',
+        totals: {
+          inputTokens: 100,
+          outputTokens: 40,
+          totalTokens: 140,
+          cachedReadTokens: 20,
+          cachedWriteTokens: 5,
+          reasoningOutputTokens: 10,
+        },
+        observedAt: fixedTimestamp,
+      }) === 'ignored',
+      'duplicate_model_usage_total_was_counted',
+    );
+    invariant(
+      database.recordCodexModelUsageTotal({
+        providerId: 'codex',
+        threadId: 'usage-fixture-thread',
+        turnId: 'usage-fixture-turn',
+        totals: {
+          inputTokens: 99,
+          outputTokens: 40,
+          totalTokens: 139,
+          cachedReadTokens: 20,
+          cachedWriteTokens: 5,
+          reasoningOutputTokens: 10,
+        },
+        observedAt: fixedTimestamp,
+      }) === 'regressed',
+      'regressed_model_usage_total_was_counted',
+    );
+    invariant(
+      database.listStoredModelUsage(
+        new Date(Date.parse(fixedTimestamp) - 1).toISOString(),
+        new Date(Date.parse(fixedTimestamp) + 1).toISOString(),
+      ).length === 0,
+      'regressed_active_model_usage_was_exposed_before_terminal_status',
+    );
+    database.finishModelUsageTurn({
+      providerId: 'codex',
+      threadId: 'usage-fixture-thread',
+      turnId: 'usage-fixture-turn',
+      terminalStatus: 'completed',
+      successful: true,
+      completedAt: fixedTimestamp,
+    });
+    invariant(
+      database.recordCodexModelUsageTotal({
+        providerId: 'codex',
+        threadId: 'usage-fixture-thread',
+        turnId: 'usage-fixture-turn',
+        totals: {
+          inputTokens: 150,
+          outputTokens: 45,
+          totalTokens: 195,
+          cachedReadTokens: 25,
+          cachedWriteTokens: 6,
+          reasoningOutputTokens: 11,
+        },
+        observedAt: fixedTimestamp,
+      }) === 'recorded',
+      'late_model_usage_update_was_not_recorded',
+    );
+    const rows = database.listStoredModelUsage(
+      new Date(Date.parse(fixedTimestamp) - 1).toISOString(),
+      new Date(Date.parse(fixedTimestamp) + 1).toISOString(),
+    );
+    invariant(
+      rows.length === 1 &&
+        rows[0]?.coverage === 'partial' &&
+        rows[0].totalTokens === 195 &&
+        rows[0].cachedReadTokens === 25 &&
+        rows[0].projectId === projectId,
+      'regressed_model_usage_was_incorrectly_restored_to_exact',
+    );
+    const invalidInvocation = { ...invocation, invocationId: randomUUID() };
+    rejectedInvocationId = invalidInvocation.invocationId;
+    let attributionRejected = false;
+    try {
+      database.recordAttributedModelInvocation(
+        'usage-invalid-thread',
+        'usage-invalid-turn',
+        invalidInvocation,
+        { workloadKind: 'lecture_generation', projectId },
+        {
+          connectionKey: 'codex:chatgpt',
+          connectionLabel: 'ChatGPT',
+          upstreamProviderId: null,
+        },
+      );
+    } catch {
+      attributionRejected = true;
+    }
+    invariant(attributionRejected, 'invalid_model_usage_attribution_was_accepted');
+    invariant(
+      !database
+        .listStoredModelUsage(
+          new Date(Date.parse(fixedTimestamp) - 1).toISOString(),
+          new Date(Date.parse(fixedTimestamp) + 1).toISOString(),
+        )
+        .some((row) => row.invocationId === invalidInvocation.invocationId),
+      'failed_model_usage_attribution_left_a_partial_invocation',
+    );
+  } finally {
+    database.close();
+  }
+
+  const reopened = new LocalDatabase();
+  reopened.open();
+  try {
+    const secondInvocation: ModelInvocation = {
+      ...invocation,
+      invocationId: randomUUID(),
+      startedAt: new Date(Date.parse(fixedTimestamp) + 1).toISOString(),
+    };
+    reopened.recordAttributedModelInvocation(
+      'usage-fixture-thread',
+      'usage-fixture-turn-2',
+      secondInvocation,
+      { workloadKind: 'experiment_evaluation', projectId },
+      {
+        connectionKey: 'codex:chatgpt',
+        connectionLabel: 'ChatGPT',
+        upstreamProviderId: null,
+      },
+    );
+    invariant(
+      reopened.recordCodexModelUsageTotal({
+        providerId: 'codex',
+        threadId: 'usage-fixture-thread',
+        turnId: 'usage-fixture-turn-2',
+        totals: {
+          inputTokens: 210,
+          outputTokens: 65,
+          totalTokens: 275,
+          cachedReadTokens: 35,
+          cachedWriteTokens: 8,
+          reasoningOutputTokens: 16,
+        },
+        observedAt: secondInvocation.startedAt,
+      }) === 'recorded',
+      'model_usage_restart_cursor_was_not_resumed',
+    );
+    reopened.finishModelUsageTurn({
+      providerId: 'codex',
+      threadId: 'usage-fixture-thread',
+      turnId: 'usage-fixture-turn-2',
+      terminalStatus: 'interrupted',
+      successful: false,
+      completedAt: secondInvocation.startedAt,
+    });
+    const unavailableInvocation: ModelInvocation = {
+      ...invocation,
+      invocationId: randomUUID(),
+      startedAt: new Date(Date.parse(fixedTimestamp) + 2).toISOString(),
+    };
+    reopened.recordAttributedModelInvocation(
+      'usage-unavailable-thread',
+      'usage-unavailable-turn',
+      unavailableInvocation,
+      { workloadKind: 'literature_organize', projectId },
+      {
+        connectionKey: 'codex:chatgpt',
+        connectionLabel: 'ChatGPT',
+        upstreamProviderId: null,
+      },
+    );
+    reopened.finishModelUsageTurn({
+      providerId: 'codex',
+      threadId: 'usage-unavailable-thread',
+      turnId: 'usage-unavailable-turn',
+      terminalStatus: 'failed',
+      successful: false,
+      completedAt: unavailableInvocation.startedAt,
+    });
+    const zeroInvocation: ModelInvocation = {
+      ...invocation,
+      invocationId: randomUUID(),
+      startedAt: new Date(Date.parse(fixedTimestamp) + 3).toISOString(),
+    };
+    reopened.recordAttributedModelInvocation(
+      'usage-zero-thread',
+      'usage-zero-turn',
+      zeroInvocation,
+      { workloadKind: 'literature_organize', projectId },
+      {
+        connectionKey: 'codex:chatgpt',
+        connectionLabel: 'ChatGPT',
+        upstreamProviderId: null,
+      },
+    );
+    invariant(
+      reopened.recordCodexModelUsageTotal({
+        providerId: 'codex',
+        threadId: 'usage-zero-thread',
+        turnId: 'usage-zero-turn',
+        totals: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          cachedReadTokens: 0,
+          cachedWriteTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        observedAt: zeroInvocation.startedAt,
+      }) === 'recorded',
+      'explicit_zero_model_usage_was_not_recorded',
+    );
+    invariant(
+      reopened.recordCodexModelUsageTotal({
+        providerId: 'codex',
+        threadId: 'usage-zero-thread',
+        turnId: 'usage-zero-turn',
+        totals: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          cachedReadTokens: 0,
+          cachedWriteTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        observedAt: zeroInvocation.startedAt,
+      }) === 'ignored',
+      'duplicate_zero_model_usage_was_counted',
+    );
+    reopened.finishModelUsageTurn({
+      providerId: 'codex',
+      threadId: 'usage-zero-thread',
+      turnId: 'usage-zero-turn',
+      terminalStatus: 'completed',
+      successful: true,
+      completedAt: zeroInvocation.startedAt,
+    });
+    const restartedRows = reopened.listStoredModelUsage(
+      new Date(Date.parse(fixedTimestamp) - 1).toISOString(),
+      new Date(Date.parse(fixedTimestamp) + 4).toISOString(),
+    );
+    const resumed = restartedRows.find((row) => row.invocationId === secondInvocation.invocationId);
+    invariant(
+      resumed?.coverage === 'partial' &&
+        resumed.inputTokens === 60 &&
+        resumed.outputTokens === 20 &&
+        resumed.totalTokens === 80 &&
+        resumed.cachedReadTokens === 10 &&
+        resumed.cachedWriteTokens === 2 &&
+        resumed.reasoningOutputTokens === 5,
+      'model_usage_restart_delta_was_not_exact',
+    );
+    invariant(
+      restartedRows.find((row) => row.invocationId === unavailableInvocation.invocationId)
+        ?.coverage === 'unavailable',
+      'model_usage_missing_terminal_report_was_not_unavailable',
+    );
+    const explicitZero = restartedRows.find(
+      (row) => row.invocationId === zeroInvocation.invocationId,
+    );
+    invariant(
+      explicitZero?.coverage === 'exact' &&
+        explicitZero.inputTokens === 0 &&
+        explicitZero.outputTokens === 0 &&
+        explicitZero.totalTokens === 0,
+      'explicit_zero_model_usage_was_treated_as_unreported',
+    );
+  } finally {
+    reopened.close();
+  }
+
+  const inspected = new Database(join(app.getPath('userData'), 'gosu.db'));
+  inspected.pragma(`key="x'${keyHex}'"`);
+  try {
+    const indexes = inspected.pragma('index_list(model_invocations)') as Array<{ name: string }>;
+    invariant(
+      indexes.some((index) => index.name === 'model_invocations_usage_range'),
+      'model_usage_range_index_missing',
+    );
+    const rejectedInvocation = inspected
+      .prepare('select invocation_id from model_invocations where invocation_id=?')
+      .get(rejectedInvocationId);
+    invariant(
+      rejectedInvocation === undefined,
+      'failed_model_usage_attribution_left_a_partial_invocation',
+    );
+    const outboxCountAfter = (
+      inspected.prepare('select count(*) count from sync_outbox').get() as { count: number }
+    ).count;
+    invariant(outboxCountAfter === outboxCountBefore, 'local_model_usage_was_added_to_sync_outbox');
+  } finally {
+    inspected.close();
   }
 }
 
@@ -6762,7 +7675,8 @@ void app.whenReady().then(async () => {
       database.getProjectChatProfile(chatProjectId).version === 0 &&
         database.getProjectChatProfile(chatProjectId).collaborationModeId === null &&
         database.getProjectChatProfile(chatProjectId).responseVerbosity === 'auto' &&
-        database.getProjectChatProfile(chatProjectId).webSearchMode === 'cached',
+        database.getProjectChatProfile(chatProjectId).webSearchMode === 'cached' &&
+        database.getProjectChatProfile(chatProjectId).policyRules.length === 0,
       'default_chat_profile_missing',
     );
     const chatProfile = database.updateProjectChatProfile({
@@ -6781,13 +7695,16 @@ void app.whenReady().then(async () => {
         allowAgentMarkdownCreate: true,
       },
       customInstructions: 'Prefer reproducible experiments.',
+      policyRules: ['Separate measured results from estimates.', 'State uncertainty explicitly.'],
     });
     invariant(chatProfile?.version === 1, 'chat_profile_initial_update_failed');
     invariant(
       chatProfile.collaborationModeId === 'research-orchestrator-v2' &&
         chatProfile.personality === 'pragmatic' &&
         chatProfile.responseVerbosity === 'high' &&
-        chatProfile.webSearchMode === 'live',
+        chatProfile.webSearchMode === 'live' &&
+        chatProfile.policyRules.length === 2 &&
+        chatProfile.policyRules[0] === 'Separate measured results from estimates.',
       'chat_profile_native_settings_missing',
     );
     invariant(
@@ -7907,6 +8824,8 @@ void app.whenReady().then(async () => {
         reopened.getProjectChatProfile(chatProjectId).personality === 'pragmatic' &&
         reopened.getProjectChatProfile(chatProjectId).responseVerbosity === 'high' &&
         reopened.getProjectChatProfile(chatProjectId).webSearchMode === 'live' &&
+        reopened.getProjectChatProfile(chatProjectId).policyRules.join('|') ===
+          'Separate measured results from estimates.|State uncertainty explicitly.' &&
         reopened.getProjectChatProfile(chatProjectId).localNotesVault?.id === 'a'.repeat(64) &&
         reopened.getProjectChatProfile(chatProjectId).localNotesVault?.name === 'Fixture Vault' &&
         reopened.getProjectChatProfile(chatProjectId).instructionRevision?.id ===
@@ -8360,6 +9279,7 @@ void app.whenReady().then(async () => {
     verifyLiteratureDiscoveryPersistence(fixedTimestamp);
     verifyLiteratureBoundsAndIdentity(fixedTimestamp);
     verifyExperimentEvaluationPersistence(fixedTimestamp);
+    verifyModelUsagePersistence(fixedTimestamp);
     verifyExperimentPersistence(fixedTimestamp);
     verifyLectureStudioListDetailBoundary(fixedTimestamp);
     verifyLectureStudioAttemptRetention(fixedTimestamp);

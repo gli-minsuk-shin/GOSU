@@ -84,11 +84,11 @@ export function AgentAddOnsSection({
     <article className="settings-card">
       <div className="settings-card-heading">
         <span>OPTIONAL AGENT ADD-ONS</span>
-        <h2>Connect an existing local agent</h2>
+        <h2>Use a verified agent runtime</h2>
         <p>
-          Codex stays GOSU&apos;s default provider. BYO Hermes uses the Hermes installation and
-          account already configured on this Mac; GOSU neither copies nor synchronizes its
-          credentials.
+          Codex stays GOSU&apos;s default provider. Release builds use the exact Hermes runtime
+          shipped and signed with that GOSU version. Provider credentials remain in the isolated
+          local profile and are never copied into the app bundle.
         </p>
       </div>
       <div className="agent-setting-columns">
@@ -138,10 +138,10 @@ export function AgentAddOnsSection({
                     onChange={() => onChange({ ...preferences, [descriptor.id]: 'connect-local' })}
                   />
                   <span>
-                    <strong>Connect existing Hermes (BYO)</strong>
+                    <strong>Use verified Hermes runtime</strong>
                     <small>
-                      Use its verified ACP agent as a provider, or delegate to it explicitly from
-                      Codex
+                      Prefer GOSU&apos;s pinned bundle; development builds may use a compatible
+                      local installation
                     </small>
                   </span>
                 </label>
@@ -154,22 +154,28 @@ export function AgentAddOnsSection({
                       ? 'Checking this Mac…'
                       : itemUnavailable
                         ? connectedHermes
-                          ? 'BYO Hermes connection unavailable'
+                          ? 'Hermes runtime unavailable'
                           : 'Detection unavailable'
                         : status?.connected
-                          ? 'BYO Hermes ready for Project Chat'
-                          : status?.state === 'detected_local_cli'
-                            ? 'Local CLI detected — not connected'
-                            : status?.state === 'not_detected'
-                              ? 'Local CLI not detected'
-                              : 'Detection not run'}
+                          ? status.connectionMode === 'bundled-acp-agent'
+                            ? 'Bundled Hermes ready for Project Chat'
+                            : 'Custom local Hermes ready for Project Chat'
+                          : status?.state === 'bundled_runtime'
+                            ? 'Bundled Hermes runtime verified'
+                            : status?.state === 'detected_local_cli'
+                              ? 'Local CLI detected — not connected'
+                              : status?.state === 'not_detected'
+                                ? 'Local CLI not detected'
+                                : 'Detection not run'}
                 </strong>
                 <span>
                   {status?.connected
-                    ? `${status.version ?? 'Compatible local version'} · GOSU completed a sealed ACP session check before showing Connected; credentials remain local.`
-                    : status?.state === 'detected_local_cli'
-                      ? 'The executable name was found, but its publisher, version, configuration, and identity have not been verified.'
-                      : `GOSU has not connected ${descriptor.displayName} to Project Chat.`}
+                    ? `${status.version ?? 'Compatible pinned version'} · GOSU verified the runtime manifest and completed a sealed ACP session check before showing Connected; credentials remain local.`
+                    : status?.state === 'bundled_runtime'
+                      ? `${status.version ?? 'Pinned version'} · Signed GOSU application resource`
+                      : status?.state === 'detected_local_cli'
+                        ? 'The executable name was found, but its publisher, version, configuration, and identity have not been verified.'
+                        : `GOSU has not connected ${descriptor.displayName} to Project Chat.`}
                 </span>
               </div>
               <p>
@@ -195,15 +201,16 @@ export function AgentAddOnsSection({
         </div>
       )}
       <div className="agent-safety-boundary">
-        <strong>BYO boundary</strong>
-        <span>Hermes is optional, local, and never an automatic fallback</span>
+        <strong>Runtime boundary</strong>
+        <span>Hermes is pinned, local, and never an automatic fallback</span>
         <small>
-          GOSU launches the verified local Hermes ACP agent only after an explicit selection. Its
-          native tool surface is disabled. Codex can explicitly delegate a bounded task to a fresh
-          Hermes primary ACP agent. Terminal, processes, code execution, files, web, browser
-          automation, native delegation, memory, skills, MCP, GOSU tools, and attachments are
-          disabled. Because there are no native tools, Hermes turns do not show tool approval
-          prompts. OpenClaw remains detection-only.
+          Packaged GOSU launches only its hash-verified bundled Hermes ACP agent after an explicit
+          selection; it never searches PATH or silently falls back to another version. Its native
+          tool surface is disabled. Codex can explicitly delegate a bounded task to a fresh Hermes
+          primary ACP agent. Terminal, processes, code execution, files, web, browser automation,
+          native delegation, memory, skills, MCP, GOSU tools, and attachments are disabled. Because
+          there are no native tools, Hermes turns do not show tool approval prompts. OpenClaw
+          remains detection-only.
         </small>
       </div>
     </article>

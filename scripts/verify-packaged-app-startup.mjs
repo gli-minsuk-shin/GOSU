@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { access, readdir, stat } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 
+import { verifyHermesRuntimeArchive } from './hermes-runtime-bundle.mjs';
+
 const readyMarker = 'GOSU_PACKAGED_STARTUP_READY';
 const outputLimitBytes = 64 * 1024;
 const startupTimeoutMs = 20_000;
@@ -113,5 +115,12 @@ async function verifyPackagedStartup(appPath) {
 const targetPath = process.argv[2];
 if (!targetPath) throw new Error('Usage: verify-packaged-app-startup.mjs <app-or-dist-path>');
 const appPath = await newestMacApp(targetPath);
+if (process.argv.includes('--require-hermes')) {
+  const runtimePath = join(appPath, 'Contents', 'Resources', 'hermes-runtime.zip');
+  const verified = await verifyHermesRuntimeArchive(runtimePath);
+  console.log(
+    `packaged Hermes ${verified.manifest.hermesVersion} runtime verified: ${runtimePath}`,
+  );
+}
 await verifyPackagedStartup(appPath);
 console.log(`packaged GOSU startup smoke passed: ${appPath}`);

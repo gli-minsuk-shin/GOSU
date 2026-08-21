@@ -15,6 +15,7 @@ import {
 import { VaultAccess } from '../src/main/vault';
 import type { WorkspaceService } from '../src/main/workspace-service';
 import type { LiteratureRecord } from '../src/shared/literature-contracts';
+import type { LectureStudioFigureAsset } from '../src/shared/lecture-studio-contracts';
 import type { ProjectRecord, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
@@ -22,6 +23,25 @@ const OTHER_PROJECT_ID = '22222222-2222-4222-8222-222222222222';
 const RECORD_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = new Date('2026-08-06T00:00:00.000Z');
 const temporaryDirectories: string[] = [];
+const FIGURE_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0x11, 0x22, 0xff, 0xd9]);
+
+function lectureFigure(studioId: string): LectureStudioFigureAsset {
+  const id = '77777777-7777-4777-8777-777777777777';
+  return {
+    id,
+    studioId,
+    displayName: 'Lecture plot.png',
+    fileName: `Figure-${id}.jpg`,
+    mediaType: 'image/jpeg',
+    sourceFormat: 'png',
+    byteSize: FIGURE_JPEG.byteLength,
+    width: 640,
+    height: 480,
+    sha256: createHash('sha256').update(FIGURE_JPEG).digest('hex'),
+    origin: 'user',
+    createdAt: NOW.toISOString(),
+  };
+}
 
 class MemoryResearchNotesStorage implements ResearchNotesStorage {
   readonly links = new Map<string, ResearchNotesProjectLink>();
@@ -652,6 +672,91 @@ describe('ResearchNotesService project workspaces', () => {
     await expect(
       service.resolveLectureRevisionArtifact(PROJECT_ID, artifacts[0]),
     ).resolves.toMatchObject({ fileName: 'Lecture Notes.tex', content: lectureNotesLatex });
+  });
+
+  it('persists self-contained revision JPEGs with v2 recovery metadata and resolves exact bytes', async () => {
+    const { root, service, storage, vault, literature, workspace } = await fixture();
+    await service.current({ projectId: PROJECT_ID });
+    const studioId = '33333333-3333-4333-8333-333333333333';
+    const figure = lectureFigure(studioId);
+    const input = {
+      outputProjectId: PROJECT_ID,
+      studioId,
+      studioTitle: 'Canonical figures',
+      revision: 2,
+      attemptId: '44444444-4444-4444-8444-444444444444',
+      sourceManifestSha256: 'e'.repeat(64),
+      documentFormat: 'latex' as const,
+      lectureNotesLatex:
+        '\\documentclass{article}\n\\begin{document}\n\\gosuimage{77777777-7777-4777-8777-777777777777}\n\\end{document}\n',
+      slidesLatex:
+        '\\documentclass{beamer}\n\\begin{document}\n\\begin{frame}Figure\\end{frame}\n\\end{document}\n',
+      figureAssets: [{ asset: figure, bytes: FIGURE_JPEG }],
+      createdAt: NOW.toISOString(),
+    };
+
+    const artifacts = await service.saveRevisionArtifacts(input);
+    const bundlePath = dirname(join(root, 'GOSU', 'Alpha Project', artifacts[0].relativePath));
+    await expect(readFile(join(bundlePath, figure.fileName))).resolves.toEqual(FIGURE_JPEG);
+    const journal = JSON.parse(
+      await readFile(join(bundlePath, '.gosu-pending-bundle.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    expect(journal).toMatchObject({
+      schemaVersion: 2,
+      documentFormat: 'latex',
+      figureAssets: [figure],
+      files: expect.arrayContaining([
+        {
+          name: figure.fileName,
+          contentSha256: figure.sha256,
+          byteSize: figure.byteSize,
+          encoding: 'binary',
+        },
+      ]),
+    });
+
+    const restarted = new ResearchNotesService({
+      storage,
+      literature,
+      workspace,
+      vault,
+      now: () => NOW,
+    });
+    const pending = await restarted.listPendingRevisionArtifacts();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      studioId,
+      figureAssets: [figure],
+      bundleFiles: expect.arrayContaining([
+        {
+          name: figure.fileName,
+          contentSha256: figure.sha256,
+          byteSize: figure.byteSize,
+          encoding: 'binary',
+        },
+      ]),
+    });
+    await expect(
+      restarted.resolveLectureRevisionFigure(PROJECT_ID, artifacts[0], figure),
+    ).resolves.toMatchObject({
+      relativePath: `${dirname(artifacts[0].relativePath)}/${figure.fileName}`,
+      fileName: figure.fileName,
+      bytes: FIGURE_JPEG,
+      contentSha256: figure.sha256,
+      byteSize: figure.byteSize,
+    });
+
+    await restarted.confirmPendingRevisionArtifacts(pending[0]!);
+    expect((await readdir(bundlePath)).sort()).toEqual(
+      ['Lecture Notes.tex', 'Slides.tex', figure.fileName].sort(),
+    );
+    await writeFile(
+      join(bundlePath, figure.fileName),
+      Buffer.from([0xff, 0xd8, 0xff, 0, 0xff, 0xd9]),
+    );
+    await expect(
+      restarted.resolveLectureRevisionFigure(PROJECT_ID, artifacts[0], figure),
+    ).rejects.toMatchObject({ code: 'research_notes_folder_conflict' });
   });
 
   it('never replaces a pending bundle whose immutable journal identity disagrees', async () => {

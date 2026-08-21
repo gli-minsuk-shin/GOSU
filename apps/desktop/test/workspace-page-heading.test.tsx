@@ -66,6 +66,16 @@ describe('workspace page heading', () => {
     expect(shouldShowActiveProjectPageHeading('board')).toBe(true);
   });
 
+  it('describes the workspace-wide Tasks projection without naming one project', () => {
+    const html = renderToStaticMarkup(
+      <WorkspacePageHeading activeTab="tasks" activeProject={undefined} onNewProject={null} />,
+    );
+
+    expect(html).toContain('Local workspace / Tasks');
+    expect(html).toContain('every project');
+    expect(shouldShowActiveProjectPageHeading('tasks')).toBe(true);
+  });
+
   it('keeps the Literature description available while active projects use the compact workspace', () => {
     const html = renderToStaticMarkup(
       <WorkspacePageHeading activeTab="literature" activeProject={undefined} onNewProject={null} />,
@@ -91,5 +101,16 @@ describe('workspace page heading', () => {
 
   it('lets Connections begin directly with connection controls', () => {
     expect(shouldShowActiveProjectPageHeading('connections')).toBe(false);
+  });
+
+  it('describes workspace-wide local token Usage without naming one project', () => {
+    const html = renderToStaticMarkup(
+      <WorkspacePageHeading activeTab="usage" activeProject={undefined} onNewProject={null} />,
+    );
+
+    expect(html).toContain('Local workspace / Usage');
+    expect(html).toContain('input and output tokens');
+    expect(html).toContain('Lecture generation');
+    expect(shouldShowActiveProjectPageHeading('usage')).toBe(true);
   });
 });

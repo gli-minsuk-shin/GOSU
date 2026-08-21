@@ -5,9 +5,11 @@ import type { ModelInvocation } from '@gosu/contracts';
 
 import {
   ApproveExperimentEvaluationInputSchema,
+  CancelExperimentEvaluationInputSchema,
   CreateExperimentEvaluationSessionInputSchema,
   EXPERIMENT_EVALUATION_OUTPUT_SCHEMA,
   ExperimentEvaluationApprovalReceiptSchema,
+  ExperimentEvaluationCancelReceiptSchema,
   ExperimentEvaluationDetailInputSchema,
   ExperimentEvaluationEventSchema,
   ExperimentEvaluationGenerationOutputSchema,
@@ -22,8 +24,10 @@ import {
   ReuseExperimentEvaluationProfileInputSchema,
   SendExperimentEvaluationMessageInputSchema,
   type ApproveExperimentEvaluationInput,
+  type CancelExperimentEvaluationInput,
   type CreateExperimentEvaluationSessionInput,
   type ExperimentEvaluationApprovalReceipt,
+  type ExperimentEvaluationCancelReceipt,
   type ExperimentEvaluationDetailInput,
   type ExperimentEvaluationEvent,
   type ExperimentEvaluationListSnapshot,
@@ -99,6 +103,7 @@ export interface ExperimentEvaluationStorage {
       sessionId: string;
       attemptId: string;
       errorCode: string;
+      messageStatus: 'failed' | 'interrupted';
       updatedAt: string;
     }>,
   ): MaybePromise<ExperimentEvaluationSession | null>;
@@ -144,6 +149,17 @@ export interface ExperimentEvaluationCodex {
   releaseThread(threadId: string): Promise<void>;
 }
 
+export interface ExperimentEvaluationModelUsage {
+  bindThread(
+    threadId: string,
+    attribution: Readonly<{
+      workloadKind: 'experiment_evaluation';
+      projectId: string;
+    }>,
+  ): void;
+  releaseThread(threadId: string): void;
+}
+
 export interface ExperimentEvaluationArtifactWriter {
   saveProfile(
     input: Readonly<{
@@ -179,6 +195,7 @@ export class ExperimentEvaluationServiceError extends Error {
       | 'experiment_evaluation_profile_not_found'
       | 'experiment_evaluation_version_conflict'
       | 'experiment_evaluation_busy'
+      | 'experiment_evaluation_interrupted'
       | 'experiment_evaluation_codex_unavailable'
       | 'experiment_evaluation_invalid_response'
       | 'experiment_evaluation_revision_not_found'
@@ -208,6 +225,16 @@ type BufferedTurnEvents = {
   terminal: CodexNotification | null;
 };
 
+type ActiveEvaluationTurn = {
+  projectId: string;
+  sessionId: string;
+  attemptId: string;
+  threadId: string | null;
+  turnId: string | null;
+  cancelRequested: boolean;
+  interruptIssued: boolean;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -234,6 +261,7 @@ export class ExperimentEvaluationService {
   private readonly pendingByThread = new Map<string, PendingTurn>();
   private readonly bufferedByThread = new Map<string, BufferedTurnEvents>();
   private readonly busySessions = new Set<string>();
+  private readonly activeBySession = new Map<string, ActiveEvaluationTurn>();
   private readonly listeners = new Set<(event: ExperimentEvaluationEvent) => void>();
 
   constructor(
@@ -242,6 +270,7 @@ export class ExperimentEvaluationService {
       workspace: WorkspaceService;
       experiments: ExperimentWorkspaceService;
       codex: ExperimentEvaluationCodex;
+      usage?: ExperimentEvaluationModelUsage;
       artifacts: ExperimentEvaluationArtifactWriter;
       prepareDirectory: (projectId: string) => Promise<string>;
       now?: () => Date;
@@ -347,6 +376,16 @@ export class ExperimentEvaluationService {
     }
     this.busySessions.add(session.id);
     const attemptId = randomUUID();
+    const activeTurn: ActiveEvaluationTurn = {
+      projectId: command.projectId,
+      sessionId: session.id,
+      attemptId,
+      threadId: null,
+      turnId: null,
+      cancelRequested: false,
+      interruptIssued: false,
+    };
+    this.activeBySession.set(session.id, activeTurn);
     const startedAt = this.now().toISOString();
     const userMessage = ExperimentEvaluationMessageSchema.parse({
       schemaVersion: 1,
@@ -373,16 +412,19 @@ export class ExperimentEvaluationService {
       });
     } catch (error) {
       this.busySessions.delete(session.id);
+      this.activeBySession.delete(session.id);
       throw this.normalizeStorageError(error);
     }
     if (!generating) {
       this.busySessions.delete(session.id);
+      this.activeBySession.delete(session.id);
       throw new ExperimentEvaluationServiceError('experiment_evaluation_version_conflict');
     }
     let threadId: string | null = null;
     let turnId: string | null = null;
     let completedTurn = false;
     try {
+      this.throwIfCancelled(activeTurn);
       this.publish(command.projectId, session.id, 'session', session.id, startedAt);
       const [workspaceSnapshot, experimentSnapshot, detail, cwd] = await Promise.all([
         this.dependencies.workspace.snapshot(),
@@ -409,6 +451,12 @@ export class ExperimentEvaluationService {
         webSearchMode: 'disabled',
       });
       threadId = started.threadId;
+      activeTurn.threadId = threadId;
+      this.throwIfCancelled(activeTurn);
+      this.dependencies.usage?.bindThread(threadId, {
+        workloadKind: 'experiment_evaluation',
+        projectId: command.projectId,
+      });
       const completed = new Promise<{ status: string; text: string | null }>((resolve) => {
         this.pendingByThread.set(threadId!, {
           threadId: threadId!,
@@ -439,6 +487,8 @@ export class ExperimentEvaluationService {
         outputSchema: EXPERIMENT_EVALUATION_OUTPUT_SCHEMA,
       });
       turnId = running.turnId;
+      activeTurn.turnId = turnId;
+      this.throwIfCancelled(activeTurn);
       const pending = this.pendingByThread.get(threadId);
       if (!pending) {
         throw new ExperimentEvaluationServiceError('experiment_evaluation_codex_unavailable');
@@ -471,10 +521,14 @@ export class ExperimentEvaluationService {
           void completed.finally(() => clearTimeout(timer));
         }),
       ]);
+      if (activeTurn.cancelRequested || terminal.status === 'interrupted') {
+        throw new ExperimentEvaluationServiceError('experiment_evaluation_interrupted');
+      }
       if (terminal.status !== 'completed' || !terminal.text) {
         throw new ExperimentEvaluationServiceError('experiment_evaluation_codex_unavailable');
       }
       completedTurn = true;
+      this.throwIfCancelled(activeTurn);
       let output: ReturnType<typeof ExperimentEvaluationGenerationOutputSchema.parse>;
       try {
         output = ExperimentEvaluationGenerationOutputSchema.parse(
@@ -526,6 +580,7 @@ export class ExperimentEvaluationService {
         lastErrorCode: null,
         updatedAt: completedAt,
       });
+      this.throwIfCancelled(activeTurn);
       let stored: ExperimentEvaluationSession | null;
       try {
         stored = await this.dependencies.storage.completeExperimentEvaluationTurn({
@@ -558,6 +613,8 @@ export class ExperimentEvaluationService {
             sessionId: command.sessionId,
             attemptId,
             errorCode: normalized.code,
+            messageStatus:
+              normalized.code === 'experiment_evaluation_interrupted' ? 'interrupted' : 'failed',
             updatedAt: failedAt,
           }),
         )
@@ -566,17 +623,71 @@ export class ExperimentEvaluationService {
       throw normalized;
     } finally {
       this.busySessions.delete(command.sessionId);
+      if (this.activeBySession.get(command.sessionId) === activeTurn) {
+        this.activeBySession.delete(command.sessionId);
+      }
       if (threadId) {
         const pending = this.pendingByThread.get(threadId);
         if (pending?.graceTimer) clearTimeout(pending.graceTimer);
         this.pendingByThread.delete(threadId);
         this.bufferedByThread.delete(threadId);
-        if (turnId && !completedTurn) {
+        if (turnId && !completedTurn && !activeTurn.interruptIssued) {
           await this.dependencies.codex.interruptTurn(threadId, turnId).catch(() => undefined);
         }
         await this.dependencies.codex.releaseThread(threadId).catch(() => undefined);
+        this.dependencies.usage?.releaseThread(threadId);
       }
     }
+  }
+
+  async cancel(input: CancelExperimentEvaluationInput): Promise<ExperimentEvaluationCancelReceipt> {
+    const command = CancelExperimentEvaluationInputSchema.parse(input);
+    await this.requireActiveProject(command.projectId);
+    const session = await this.requireSession(command.projectId, command.sessionId);
+    const active = this.activeBySession.get(command.sessionId);
+    if (!active || active.projectId !== command.projectId) {
+      return ExperimentEvaluationCancelReceiptSchema.parse({
+        session,
+        cancelRequested: false,
+      });
+    }
+
+    active.cancelRequested = true;
+    if (active.threadId && active.turnId) {
+      await this.dependencies.codex
+        .interruptTurn(active.threadId, active.turnId)
+        .catch(() => undefined);
+      active.interruptIssued = true;
+      const pending = this.pendingByThread.get(active.threadId);
+      if (pending && !pending.settled) {
+        pending.terminalStatus = 'interrupted';
+        this.maybeResolvePending(pending, true);
+      }
+    }
+
+    let interrupted = session;
+    if (session.status === 'generating' && session.activeAttemptId === active.attemptId) {
+      const interruptedAt = this.now().toISOString();
+      interrupted =
+        (await Promise.resolve(
+          this.dependencies.storage.failExperimentEvaluationTurn({
+            projectId: command.projectId,
+            sessionId: command.sessionId,
+            attemptId: active.attemptId,
+            errorCode: 'experiment_evaluation_interrupted',
+            messageStatus: 'interrupted',
+            updatedAt: interruptedAt,
+          }),
+        ).catch(() => null)) ?? session;
+      if (interrupted !== session) {
+        this.publish(command.projectId, interrupted.id, 'session', interrupted.id, interruptedAt);
+      }
+    }
+
+    return ExperimentEvaluationCancelReceiptSchema.parse({
+      session: interrupted,
+      cancelRequested: true,
+    });
   }
 
   async approve(
@@ -828,6 +939,12 @@ export class ExperimentEvaluationService {
       throw new ExperimentEvaluationServiceError('experiment_evaluation_project_unavailable');
     }
     return { project, snapshot };
+  }
+
+  private throwIfCancelled(active: ActiveEvaluationTurn) {
+    if (active.cancelRequested) {
+      throw new ExperimentEvaluationServiceError('experiment_evaluation_interrupted');
+    }
   }
 
   private async requireSession(projectId: string, sessionId: string) {

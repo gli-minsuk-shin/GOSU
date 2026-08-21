@@ -193,6 +193,7 @@ export function AgentSettingsSection({
           contextScope,
           localNotesVault,
           customInstructions,
+          policyRules: profile.policyRules,
         });
       }}
     >

@@ -46,6 +46,7 @@ const evaluationAdapter: ExperimentEvaluationStudioAdapter = {
   detail: vi.fn(),
   createSession: vi.fn(),
   send: vi.fn(),
+  cancel: vi.fn(),
   approve: vi.fn(),
   reuseProfile: vi.fn(),
   onEvent: vi.fn(() => () => undefined),
@@ -138,6 +139,17 @@ const verifyingRun: ExperimentRun = {
 };
 
 describe('ExperimentsView', () => {
+  it('exposes a stop action while the Experiment Assistant is responding', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/experiment-evaluation-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain("busy === 'send'");
+    expect(source).toContain("'Stop response'");
+    expect(source).toContain('adapter.cancel');
+  });
+
   it('labels local immediacy and missing Runner streaming truthfully', () => {
     const html = renderToStaticMarkup(
       <ExperimentsView

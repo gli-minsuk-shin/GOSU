@@ -1,7 +1,48 @@
+import {
+  DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+  LECTURE_STUDIO_SOURCE_LIST_SECTION_TITLES,
+  normalizeLectureStudioDocumentSectionTitle,
+  resolveLectureStudioDocumentFeatures,
+  type LectureStudioDocumentFeatures,
+} from '../shared/lecture-studio-contracts';
+
 const MAX_LECTURE_LATEX_CHARACTERS = 200_000;
-const SOURCE_MARKER = '% GOSU-LECTURE-LATEX v1';
+const LEGACY_SOURCE_MARKER = '% GOSU-LECTURE-LATEX v1';
+const SOURCE_MARKER_V2 = '% GOSU-LECTURE-LATEX v2';
+const SOURCE_MARKER = '% GOSU-LECTURE-LATEX v3';
+const DOCUMENT_FEATURES_MARKER = '% GOSU-DOCUMENT-FEATURES';
 const CONTENT_BEGIN = '% GOSU-CONTENT-BEGIN';
 const CONTENT_END = '% GOSU-CONTENT-END';
+const EVIDENCE_LABEL_PATTERN = /\[((?:P|E|M|F|A)\d+)\]/gu;
+const EVIDENCE_ANCHOR_PATTERN = /\\gosuevidence\{((?:P|E|M|F|A)\d+)\}/gu;
+const EVIDENCE_ANCHOR_COMMAND_PATTERN = /\\gosuevidence\b/gu;
+const LECTURE_FIGURE_ID_SOURCE =
+  '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const LECTURE_FIGURE_REFERENCE_PATTERN = new RegExp(
+  String.raw`\\gosuimage\{(${LECTURE_FIGURE_ID_SOURCE})\}`,
+  'gu',
+);
+const LECTURE_FIGURE_COMMAND_PATTERN = /\\gosuimage\b/gu;
+const LECTURE_STRUCTURAL_HEADING_START_PATTERN =
+  /\\(section|subsection|subsubsection|paragraph|subparagraph)\s*\*?\s*\{/gu;
+const LECTURE_STRUCTURAL_HEADING_OPTION_PATTERN =
+  /\\(section|subsection|subsubsection|paragraph|subparagraph)\s*\*?\s*\[/gu;
+const NORMALIZED_SOURCE_LIST_SECTION_TITLES = new Set(
+  LECTURE_STUDIO_SOURCE_LIST_SECTION_TITLES.map((title) =>
+    normalizeLectureStudioDocumentSectionTitle(title),
+  ),
+);
+const LECTURE_SECTION_TITLE_FORMATTING_COMMAND_SOURCE = String.raw`\\(?:textbf|textit|textsc|texttt|textrm|textsf|textmd|textup|textsl|textnormal|textsuperscript|textsubscript|text|emph|underline|overline)\s*\{`;
+const LECTURE_SECTION_TITLE_FORMATTING_COMMAND_PATTERN = new RegExp(
+  `^${LECTURE_SECTION_TITLE_FORMATTING_COMMAND_SOURCE}`,
+  'u',
+);
+const LECTURE_SECTION_TITLE_FORMATTING_COMMAND_GLOBAL_PATTERN = new RegExp(
+  LECTURE_SECTION_TITLE_FORMATTING_COMMAND_SOURCE,
+  'gu',
+);
+const LECTURE_SECTION_TITLE_FORMATTING_DECLARATION_PATTERN =
+  /\\(?:normalfont|rmfamily|sffamily|ttfamily|mdseries|bfseries|upshape|itshape|slshape|scshape|normalsize|small|footnotesize|scriptsize|tiny|Large|LARGE|huge|Huge)\b/gu;
 
 export type LectureLatexKind = 'lecture-notes' | 'slides';
 
@@ -23,6 +64,8 @@ export const LECTURE_LATEX_VALIDATION_REASON_GUIDANCE = {
     'Remove allowframebreaks; split the content into explicit single-page frame environments.',
   beamer_frame_option:
     'Remove optional frame arguments and express the title as \\begin{frame}{Title}.',
+  structural_heading_option:
+    'Remove optional short-title arguments from section, subsection, subsubsection, and paragraph headings.',
   unbalanced_braces: 'Balance every unescaped opening and closing brace.',
   malformed_environment: 'Use complete \\begin{...} and \\end{...} commands.',
   unsupported_environment: 'Replace unsupported environments with an allowed environment.',
@@ -35,9 +78,13 @@ export const LECTURE_LATEX_VALIDATION_REASON_GUIDANCE = {
   raw_subscript_or_superscript: 'Keep _ and ^ inside math, or escape them for prose.',
   raw_alignment_character: 'Use raw & only inside an alignment or table environment.',
   raw_tilde: 'Replace raw ~ with a space or \\textasciitilde{}.',
+  evidence_label_typography:
+    'Place evidence labels directly after the claim and put sentence punctuation immediately after the final label, never before it or after intervening whitespace. Separate consecutive labels with whitespace only, never punctuation or connector words, and do not wrap labels in parentheses or extra brackets.',
   missing_sources_used: 'Finish the notes with a Sources used section.',
   missing_frame: 'Return at least one complete frame in the slides body.',
   invalid_title: 'Return a valid bounded lecture title.',
+  invalid_figure_reference:
+    'Insert only a GOSU Figure-library asset with the exact \\gosuimage{asset-id} command.',
   invalid_canonical_wrapper: 'Keep the exact GOSU-owned document wrapper unchanged.',
 } as const;
 
@@ -114,6 +161,7 @@ const COMMON_ENVIRONMENTS = new Set([
   'gathered',
   'flushleft',
   'flushright',
+  'figure',
   'itemize',
   'matrix',
   'multline',
@@ -203,6 +251,7 @@ const COMMON_COMMANDS = new Set(
   textrm textsf textmd textup textsl textnormal textsuperscript textsubscript footnote label ref
   eqref pageref autoref cite top mid toprule midrule bottomrule cmidrule addlinespace hline cline multicolumn
   caption appendix tableofcontents newline linebreak raggedright raggedleft
+  gosuimage
   alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa lambda mu nu xi
   pi varpi rho sigma tau upsilon phi varphi chi psi omega Gamma Delta Theta Lambda Xi Pi Sigma
   Upsilon Phi Psi Omega varsigma varrho frac dfrac tfrac binom choose genfrac sqrt sum prod int iint iiint oint lim log ln exp sin cos
@@ -474,6 +523,28 @@ function assertCommands(value: string, kind: LectureLatexKind) {
   }
 }
 
+function assertGosuImageReferences(value: string) {
+  const exactStarts = new Set(
+    [...value.matchAll(LECTURE_FIGURE_REFERENCE_PATTERN)]
+      .map((match) => match.index)
+      .filter((index): index is number => index !== undefined),
+  );
+  LECTURE_FIGURE_REFERENCE_PATTERN.lastIndex = 0;
+  for (const match of value.matchAll(LECTURE_FIGURE_COMMAND_PATTERN)) {
+    if (match.index === undefined || !exactStarts.has(match.index)) {
+      LECTURE_FIGURE_COMMAND_PATTERN.lastIndex = 0;
+      throw new LectureLatexSourceError('invalid_figure_reference');
+    }
+  }
+  LECTURE_FIGURE_COMMAND_PATTERN.lastIndex = 0;
+}
+
+export function findLectureFigureAssetIds(value: string) {
+  const ids = [...value.matchAll(LECTURE_FIGURE_REFERENCE_PATTERN)].map((match) => match[1]!);
+  LECTURE_FIGURE_REFERENCE_PATTERN.lastIndex = 0;
+  return [...new Set(ids)];
+}
+
 function assertMathAndSpecialCharacters(value: string) {
   const events = new Map<
     number,
@@ -561,7 +632,52 @@ type LectureLatexValidationOptions = Readonly<{
   requireSourcesUsed?: boolean;
   /** Exact previously committed v1-wrapper slides may contain overlays accepted by older builds. */
   allowLegacySlidePagination?: boolean;
+  /** Exact previously committed v1 wrappers may retain older evidence-label typography. */
+  allowLegacyEvidenceTypography?: boolean;
+  /** Exact previously committed v1 wrappers may retain optional structural short titles. */
+  allowLegacyStructuralHeadingOptions?: boolean;
 }>;
+
+const EVIDENCE_LABEL_SOURCE = String.raw`\[(?:P|E|M|F|A)\d+\]`;
+const WRAPPED_EVIDENCE_LABEL_GROUP_PATTERN = new RegExp(
+  String.raw`(?:\(|\[)\s*${EVIDENCE_LABEL_SOURCE}(?:\s*${EVIDENCE_LABEL_SOURCE})*\s*(?:\)|\])`,
+  'gu',
+);
+const EVIDENCE_LABEL_CLUSTER_SEPARATOR_PATTERN =
+  /^(?:\s|[,.;:!?/&+]|\\&|\band\b|\bor\b|\bplus\b|및|와|과|또는)+$/iu;
+const PUNCTUATION_BEFORE_EVIDENCE_LABEL_PATTERN = /[,.;:!?][ \t]*\[(?:P|E|M|F|A)\d+\]/gu;
+const SPACED_PUNCTUATION_AFTER_EVIDENCE_LABEL_PATTERN = /\[(?:P|E|M|F|A)\d+\][ \t]+[,.;:!?]/gu;
+
+function assertEvidenceLabelTypography(body: string) {
+  if (PUNCTUATION_BEFORE_EVIDENCE_LABEL_PATTERN.test(body)) {
+    PUNCTUATION_BEFORE_EVIDENCE_LABEL_PATTERN.lastIndex = 0;
+    throw new LectureLatexSourceError('evidence_label_typography');
+  }
+  PUNCTUATION_BEFORE_EVIDENCE_LABEL_PATTERN.lastIndex = 0;
+  if (SPACED_PUNCTUATION_AFTER_EVIDENCE_LABEL_PATTERN.test(body)) {
+    SPACED_PUNCTUATION_AFTER_EVIDENCE_LABEL_PATTERN.lastIndex = 0;
+    throw new LectureLatexSourceError('evidence_label_typography');
+  }
+  SPACED_PUNCTUATION_AFTER_EVIDENCE_LABEL_PATTERN.lastIndex = 0;
+  for (const match of body.matchAll(WRAPPED_EVIDENCE_LABEL_GROUP_PATTERN)) {
+    const isItemOptionalLabel =
+      match[0].trimStart().startsWith('[') && /\\item\s*$/u.test(body.slice(0, match.index));
+    if (!isItemOptionalLabel) {
+      WRAPPED_EVIDENCE_LABEL_GROUP_PATTERN.lastIndex = 0;
+      throw new LectureLatexSourceError('evidence_label_typography');
+    }
+  }
+  WRAPPED_EVIDENCE_LABEL_GROUP_PATTERN.lastIndex = 0;
+  const labels = [...body.matchAll(EVIDENCE_LABEL_PATTERN)];
+  for (let index = 1; index < labels.length; index += 1) {
+    const previous = labels[index - 1]!;
+    const current = labels[index]!;
+    const separator = body.slice(previous.index! + previous[0].length, current.index);
+    if (separator.trim().length > 0 && EVIDENCE_LABEL_CLUSTER_SEPARATOR_PATTERN.test(separator)) {
+      throw new LectureLatexSourceError('evidence_label_typography');
+    }
+  }
+}
 
 export function validateLectureLatexBody(
   kind: LectureLatexKind,
@@ -590,6 +706,13 @@ export function validateLectureLatexBody(
     const frameOptionIssue = slideFrameOptionIssue(body);
     if (frameOptionIssue) throw new LectureLatexSourceError(frameOptionIssue);
   }
+  if (options.allowLegacyStructuralHeadingOptions !== true) {
+    const structuralHeadingOption = LECTURE_STRUCTURAL_HEADING_OPTION_PATTERN.exec(body);
+    LECTURE_STRUCTURAL_HEADING_OPTION_PATTERN.lastIndex = 0;
+    if (structuralHeadingOption) {
+      throw new LectureLatexSourceError('structural_heading_option');
+    }
+  }
   if (MARKDOWN_STRUCTURE_PATTERN.test(body)) {
     throw new LectureLatexSourceError('markdown_structure');
   }
@@ -605,11 +728,15 @@ export function validateLectureLatexBody(
   }
   assertBalancedBraces(body);
   assertEnvironments(body, kind);
+  assertGosuImageReferences(body);
   assertCommands(body, kind);
   assertMathAndSpecialCharacters(body);
+  if (options.allowLegacyEvidenceTypography !== true) {
+    assertEvidenceLabelTypography(body);
+  }
   if (kind === 'lecture-notes') {
-    if (options.requireSourcesUsed !== false && !findLectureSourcesUsedSection(body)) {
-      throw new LectureLatexSourceError('missing_sources_used');
+    if (options.requireSourcesUsed !== false) {
+      assertSourcesUsedConfiguration(kind, body, DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES);
     }
   } else {
     const frames = [...body.matchAll(/\\begin\s*\{\s*frame\s*\}/gu)];
@@ -618,16 +745,88 @@ export function validateLectureLatexBody(
   return body;
 }
 
-export function findLectureSourcesUsedSection(body: string) {
-  const match = /\\section\s*\*?\s*\{\s*Sources used\s*\}/iu.exec(body);
-  return match?.index === undefined
-    ? null
-    : { index: match.index, end: match.index + match[0].length };
+function readLectureLatexBraceArgument(value: string, openingBraceIndex: number) {
+  if (value[openingBraceIndex] !== '{') return null;
+  let depth = 0;
+  for (let index = openingBraceIndex; index < value.length; index += 1) {
+    if (value[index] === '{' && !isEscaped(value, index)) depth += 1;
+    if (value[index] !== '}' || isEscaped(value, index)) continue;
+    depth -= 1;
+    if (depth === 0) {
+      return {
+        content: value.slice(openingBraceIndex + 1, index),
+        end: index + 1,
+      };
+    }
+  }
+  return null;
 }
 
-function notesPrefix(title: string) {
+function normalizeLectureSourceListHeadingArgument(value: string) {
+  let candidate = value.trim();
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (candidate.startsWith('{')) {
+      const group = readLectureLatexBraceArgument(candidate, 0);
+      if (group?.end === candidate.length) {
+        candidate = group.content.trim();
+        continue;
+      }
+    }
+    const formattingCommand = LECTURE_SECTION_TITLE_FORMATTING_COMMAND_PATTERN.exec(candidate);
+    if (!formattingCommand) break;
+    const argument = readLectureLatexBraceArgument(candidate, formattingCommand[0].length - 1);
+    if (argument?.end !== candidate.length) break;
+    candidate = argument.content.trim();
+  }
+  candidate = candidate
+    .replace(LECTURE_SECTION_TITLE_FORMATTING_DECLARATION_PATTERN, ' ')
+    .replace(LECTURE_SECTION_TITLE_FORMATTING_COMMAND_GLOBAL_PATTERN, '{')
+    .replace(/[{}]/gu, '');
+  return normalizeLectureStudioDocumentSectionTitle(candidate);
+}
+
+export type LectureSourceListSection = Readonly<{
+  index: number;
+  end: number;
+  title: string;
+  isCanonical: boolean;
+  isTerminal: boolean;
+}>;
+
+export function findLectureSourceListSections(body: string): readonly LectureSourceListSection[] {
+  const structuralHeadings = [...body.matchAll(LECTURE_STRUCTURAL_HEADING_START_PATTERN)];
+  const structuralHeadingStarts = structuralHeadings
+    .map((match) => match.index)
+    .filter((index): index is number => index !== undefined);
+  const sourceListSections: LectureSourceListSection[] = [];
+  for (const match of structuralHeadings) {
+    if (match.index === undefined) continue;
+    const index = match.index;
+    const argument = readLectureLatexBraceArgument(body, index + match[0].length - 1);
+    if (!argument) continue;
+    const title = normalizeLectureSourceListHeadingArgument(argument.content);
+    if (!NORMALIZED_SOURCE_LIST_SECTION_TITLES.has(title)) continue;
+    sourceListSections.push({
+      index,
+      end: argument.end,
+      title,
+      isCanonical:
+        match[1] === 'section' &&
+        argument.content.normalize('NFC').trim().toLowerCase() === 'sources used',
+      isTerminal: !structuralHeadingStarts.some((headingIndex) => headingIndex > index),
+    });
+  }
+  return sourceListSections;
+}
+
+export function findLectureSourcesUsedSection(body: string) {
+  const match = findLectureSourceListSections(body).find((section) => section.isCanonical);
+  return match ? { index: match.index, end: match.end } : null;
+}
+
+function legacyNotesPrefix(title: string) {
   return [
-    `${SOURCE_MARKER} lecture-notes`,
+    `${LEGACY_SOURCE_MARKER} lecture-notes`,
     '\\documentclass[11pt]{article}',
     '\\usepackage{fontspec}',
     '\\usepackage{kotex}',
@@ -652,9 +851,9 @@ function notesPrefix(title: string) {
   ].join('\n');
 }
 
-function slidesPrefix(title: string) {
+function legacySlidesPrefix(title: string) {
   return [
-    `${SOURCE_MARKER} slides`,
+    `${LEGACY_SOURCE_MARKER} slides`,
     '\\documentclass[aspectratio=169]{beamer}',
     '\\usepackage{fontspec}',
     '\\usepackage{kotex}',
@@ -675,19 +874,222 @@ function slidesPrefix(title: string) {
   ].join('\n');
 }
 
-function prefix(kind: LectureLatexKind, title: string) {
-  return kind === 'lecture-notes' ? notesPrefix(title) : slidesPrefix(title);
+function legacyPrefix(kind: LectureLatexKind, title: string) {
+  return kind === 'lecture-notes' ? legacyNotesPrefix(title) : legacySlidesPrefix(title);
+}
+
+function documentFeaturesMetadata(features: LectureStudioDocumentFeatures) {
+  return `${DOCUMENT_FEATURES_MARKER} includeSlideTitlePage=${String(features.includeSlideTitlePage)} showInlineEvidenceLabels=${String(features.showInlineEvidenceLabels)} includeSourcesUsedSection=${String(features.includeSourcesUsedSection)}`;
+}
+
+function evidenceMacro(features: LectureStudioDocumentFeatures) {
+  return features.showInlineEvidenceLabels
+    ? '\\newcommand{\\gosuevidence}[1]{[#1]}'
+    : '\\newcommand{\\gosuevidence}[1]{\\ifhmode\\unskip\\fi}';
+}
+
+function imageMacro() {
+  return '\\newcommand{\\gosuimage}[1]{\\includegraphics[width=0.88\\linewidth]{Figure-#1.jpg}}';
+}
+
+function notesPrefixVersion(
+  title: string,
+  features: LectureStudioDocumentFeatures,
+  sourceMarker: string,
+  figuresEnabled: boolean,
+) {
+  return [
+    `${sourceMarker} lecture-notes`,
+    documentFeaturesMetadata(features),
+    '\\documentclass[11pt]{article}',
+    '\\usepackage{fontspec}',
+    '\\usepackage{kotex}',
+    '\\usepackage{amsmath,amssymb,mathtools}',
+    '\\usepackage{amsthm}',
+    '\\usepackage{bm}',
+    '\\usepackage{booktabs,array,longtable}',
+    ...(figuresEnabled ? ['\\usepackage{graphicx}'] : []),
+    '\\usepackage[margin=1in]{geometry}',
+    '\\usepackage[hidelinks]{hyperref}',
+    evidenceMacro(features),
+    ...(figuresEnabled ? [imageMacro()] : []),
+    '\\newtheorem{theorem}{Theorem}',
+    '\\newtheorem{proposition}{Proposition}',
+    '\\newtheorem{lemma}{Lemma}',
+    '\\newtheorem{definition}{Definition}',
+    '\\newtheorem{remark}{Remark}',
+    '\\newtheorem{example}{Example}',
+    `\\title{${escapeLatex(title)}}`,
+    '\\author{GOSU Lecture Studio}',
+    '\\date{}',
+    '\\begin{document}',
+    '\\maketitle',
+    CONTENT_BEGIN,
+  ].join('\n');
+}
+
+function slidesPrefixVersion(
+  title: string,
+  features: LectureStudioDocumentFeatures,
+  sourceMarker: string,
+  figuresEnabled: boolean,
+) {
+  return [
+    `${sourceMarker} slides`,
+    documentFeaturesMetadata(features),
+    '\\documentclass[aspectratio=169]{beamer}',
+    '\\usepackage{fontspec}',
+    '\\usepackage{kotex}',
+    '\\usepackage{amsmath,amssymb,mathtools}',
+    '\\usepackage{bm}',
+    '\\usepackage{booktabs,array}',
+    ...(figuresEnabled ? ['\\usepackage{graphicx}'] : []),
+    '\\usetheme{default}',
+    '\\setbeamertemplate{navigation symbols}{}',
+    '\\setbeamertemplate{footline}[frame number]',
+    evidenceMacro(features),
+    ...(figuresEnabled ? [imageMacro()] : []),
+    `\\title{${escapeLatex(title)}}`,
+    '\\author{GOSU Lecture Studio}',
+    '\\date{}',
+    '\\begin{document}',
+    ...(features.includeSlideTitlePage ? ['\\begin{frame}', '\\titlepage', '\\end{frame}'] : []),
+    CONTENT_BEGIN,
+  ].join('\n');
+}
+
+function notesPrefix(title: string, features: LectureStudioDocumentFeatures) {
+  return notesPrefixVersion(title, features, SOURCE_MARKER, true);
+}
+
+function slidesPrefix(title: string, features: LectureStudioDocumentFeatures) {
+  return slidesPrefixVersion(title, features, SOURCE_MARKER, true);
+}
+
+function prefixV2(kind: LectureLatexKind, title: string, features: LectureStudioDocumentFeatures) {
+  return kind === 'lecture-notes'
+    ? notesPrefixVersion(title, features, SOURCE_MARKER_V2, false)
+    : slidesPrefixVersion(title, features, SOURCE_MARKER_V2, false);
+}
+
+function prefix(kind: LectureLatexKind, title: string, features: LectureStudioDocumentFeatures) {
+  return kind === 'lecture-notes' ? notesPrefix(title, features) : slidesPrefix(title, features);
 }
 
 const SUFFIX = `${CONTENT_END}\n\\end{document}\n`;
 
-export function buildLectureLatexDocument(kind: LectureLatexKind, title: string, rawBody: string) {
+function assertSourcesUsedConfiguration(
+  kind: LectureLatexKind,
+  body: string,
+  features: LectureStudioDocumentFeatures,
+  options: Readonly<{
+    allowedContentSectionTitles?: readonly string[];
+    enforceAliases?: boolean;
+  }> = {},
+) {
+  if (kind !== 'lecture-notes') return;
+  const sourceListSections = findLectureSourceListSections(body);
+  const canonicalSections = sourceListSections.filter((section) => section.isCanonical);
+  const allowedContentSectionTitles = new Set(
+    (options.allowedContentSectionTitles ?? []).map((title) =>
+      normalizeLectureStudioDocumentSectionTitle(title),
+    ),
+  );
+  const enforcedSourceListSections =
+    options.enforceAliases === false
+      ? canonicalSections
+      : sourceListSections.filter(
+          (section) => section.isCanonical || !allowedContentSectionTitles.has(section.title),
+        );
+  if (features.includeSourcesUsedSection && canonicalSections.length === 0) {
+    throw new LectureLatexSourceError('missing_sources_used');
+  }
+  if (
+    (features.includeSourcesUsedSection &&
+      (enforcedSourceListSections.length !== 1 ||
+        canonicalSections.length !== 1 ||
+        canonicalSections[0]?.isTerminal !== true)) ||
+    (!features.includeSourcesUsedSection && enforcedSourceListSections.length > 0)
+  ) {
+    throw new LectureLatexSourceError('invalid_canonical_wrapper');
+  }
+}
+
+function anchorLectureEvidenceLabels(body: string) {
+  return body.replace(EVIDENCE_LABEL_PATTERN, (_match, label: string) => {
+    return `\\gosuevidence{${label}}`;
+  });
+}
+
+/**
+ * Converts compiler-owned canonical evidence anchors back to the bounded labels
+ * understood by the authoring model. Unknown or malformed anchors remain
+ * untouched so downstream validation continues to fail closed.
+ */
+export function rehydrateLectureEvidenceAnchors(source: string) {
+  return source.replace(EVIDENCE_ANCHOR_PATTERN, (_match, label: string) => `[${label}]`);
+}
+
+function assertCanonicalEvidenceAnchors(body: string) {
+  if (EVIDENCE_LABEL_PATTERN.test(body)) {
+    EVIDENCE_LABEL_PATTERN.lastIndex = 0;
+    throw new LectureLatexSourceError('invalid_canonical_wrapper');
+  }
+  EVIDENCE_LABEL_PATTERN.lastIndex = 0;
+  const exactStarts = new Set(
+    [...body.matchAll(EVIDENCE_ANCHOR_PATTERN)]
+      .map((match) => match.index)
+      .filter((index): index is number => index !== undefined),
+  );
+  for (const match of body.matchAll(EVIDENCE_ANCHOR_COMMAND_PATTERN)) {
+    if (match.index === undefined || !exactStarts.has(match.index)) {
+      throw new LectureLatexSourceError('invalid_canonical_wrapper');
+    }
+  }
+}
+
+export function buildLectureLatexDocument(
+  kind: LectureLatexKind,
+  title: string,
+  rawBody: string,
+  features: LectureStudioDocumentFeatures = DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+  allowedContentSectionTitles: readonly string[] = [],
+) {
   const normalizedTitle = title.trim();
   if (normalizedTitle.length < 1 || normalizedTitle.length > 256) {
     throw new LectureLatexSourceError('invalid_title');
   }
+  const resolvedFeatures = resolveLectureStudioDocumentFeatures(features);
   const body = validateLectureLatexBody(kind, rawBody, { requireSourcesUsed: false });
-  return `${prefix(kind, normalizedTitle)}\n${body}\n${SUFFIX}`;
+  assertSourcesUsedConfiguration(kind, body, resolvedFeatures, {
+    allowedContentSectionTitles,
+  });
+  const anchoredBody = anchorLectureEvidenceLabels(body);
+  if (anchoredBody.length > MAX_LECTURE_LATEX_CHARACTERS) {
+    throw new LectureLatexSourceError('body_too_large');
+  }
+  return `${prefix(kind, normalizedTitle, resolvedFeatures)}\n${anchoredBody}\n${SUFFIX}`;
+}
+
+const DOCUMENT_FEATURES_PATTERN =
+  /^% GOSU-DOCUMENT-FEATURES includeSlideTitlePage=(true|false) showInlineEvidenceLabels=(true|false) includeSourcesUsedSection=(true|false)$/u;
+
+function parseCanonicalDocumentFeatures(
+  kind: LectureLatexKind,
+  source: string,
+  sourceMarker: string,
+) {
+  const marker = `${sourceMarker} ${kind}\n`;
+  if (!source.startsWith(marker)) throw new LectureLatexSourceError('invalid_canonical_wrapper');
+  const metadataEnd = source.indexOf('\n', marker.length);
+  if (metadataEnd < 0) throw new LectureLatexSourceError('invalid_canonical_wrapper');
+  const match = DOCUMENT_FEATURES_PATTERN.exec(source.slice(marker.length, metadataEnd));
+  if (!match) throw new LectureLatexSourceError('invalid_canonical_wrapper');
+  return resolveLectureStudioDocumentFeatures({
+    includeSlideTitlePage: match[1] === 'true',
+    showInlineEvidenceLabels: match[2] === 'true',
+    includeSourcesUsedSection: match[3] === 'true',
+  });
 }
 
 export function validateCanonicalLectureLatex(
@@ -695,20 +1097,87 @@ export function validateCanonicalLectureLatex(
   title: string,
   source: string,
 ) {
-  const expectedPrefix = `${prefix(kind, title.trim())}\n`;
+  if (source.startsWith(`${LEGACY_SOURCE_MARKER} ${kind}\n`)) {
+    const expectedPrefix = `${legacyPrefix(kind, title.trim())}\n`;
+    if (!source.startsWith(expectedPrefix) || !source.endsWith(SUFFIX)) {
+      throw new LectureLatexSourceError('invalid_canonical_wrapper');
+    }
+    const body = source.slice(expectedPrefix.length, -SUFFIX.length).replace(/\n$/u, '');
+    const normalizedBody = validateLectureLatexBody(kind, body, {
+      requireSourcesUsed: false,
+      allowLegacySlidePagination: kind === 'slides',
+      allowLegacyEvidenceTypography: true,
+      allowLegacyStructuralHeadingOptions: true,
+    });
+    const normalized = `${legacyPrefix(kind, title.trim())}\n${normalizedBody}\n${SUFFIX}`;
+    if (normalized !== source) throw new LectureLatexSourceError('invalid_canonical_wrapper');
+    return source;
+  }
+
+  const sourceMarker = source.startsWith(`${SOURCE_MARKER_V2} ${kind}\n`)
+    ? SOURCE_MARKER_V2
+    : SOURCE_MARKER;
+  const features = parseCanonicalDocumentFeatures(kind, source, sourceMarker);
+  const expectedPrefix = `${
+    sourceMarker === SOURCE_MARKER_V2
+      ? prefixV2(kind, title.trim(), features)
+      : prefix(kind, title.trim(), features)
+  }\n`;
   if (!source.startsWith(expectedPrefix) || !source.endsWith(SUFFIX)) {
     throw new LectureLatexSourceError('invalid_canonical_wrapper');
   }
-  const body = source.slice(expectedPrefix.length, -SUFFIX.length).replace(/\n$/u, '');
-  const normalizedBody = validateLectureLatexBody(kind, body, {
+  const anchoredBody = source.slice(expectedPrefix.length, -SUFFIX.length).replace(/\n$/u, '');
+  assertCanonicalEvidenceAnchors(anchoredBody);
+  const rawBody = rehydrateLectureEvidenceAnchors(anchoredBody);
+  const normalizedBody = validateLectureLatexBody(kind, rawBody, {
     requireSourcesUsed: false,
-    allowLegacySlidePagination: kind === 'slides',
   });
-  const normalized = `${prefix(kind, title.trim())}\n${normalizedBody}\n${SUFFIX}`;
+  assertSourcesUsedConfiguration(kind, normalizedBody, features, { enforceAliases: false });
+  if (sourceMarker === SOURCE_MARKER_V2 && findLectureFigureAssetIds(normalizedBody).length > 0) {
+    throw new LectureLatexSourceError('invalid_figure_reference');
+  }
+  const normalizedPrefix =
+    sourceMarker === SOURCE_MARKER_V2
+      ? prefixV2(kind, title.trim(), features)
+      : prefix(kind, title.trim(), features);
+  const normalized = `${normalizedPrefix}\n${anchorLectureEvidenceLabels(normalizedBody)}\n${SUFFIX}`;
   if (normalized !== source) throw new LectureLatexSourceError('invalid_canonical_wrapper');
   return source;
 }
 
-export function countLectureSlidePages(slidesLatexBody: string) {
-  return 1 + [...slidesLatexBody.matchAll(/\\begin\s*\{\s*frame\s*\}/gu)].length;
+export function extractEditableLectureLatexBody(
+  kind: LectureLatexKind,
+  title: string,
+  source: string,
+) {
+  validateCanonicalLectureLatex(kind, title, source);
+  if (source.startsWith(`${LEGACY_SOURCE_MARKER} ${kind}\n`)) {
+    const documentPrefix = `${legacyPrefix(kind, title.trim())}\n`;
+    return {
+      body: source.slice(documentPrefix.length, -SUFFIX.length).replace(/\n$/u, ''),
+      features: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+    } as const;
+  }
+  const sourceMarker = source.startsWith(`${SOURCE_MARKER_V2} ${kind}\n`)
+    ? SOURCE_MARKER_V2
+    : SOURCE_MARKER;
+  const features = parseCanonicalDocumentFeatures(kind, source, sourceMarker);
+  const documentPrefix = `${
+    sourceMarker === SOURCE_MARKER_V2
+      ? prefixV2(kind, title.trim(), features)
+      : prefix(kind, title.trim(), features)
+  }\n`;
+  const anchoredBody = source.slice(documentPrefix.length, -SUFFIX.length).replace(/\n$/u, '');
+  return { body: rehydrateLectureEvidenceAnchors(anchoredBody), features } as const;
+}
+
+export function countLectureSlidePages(
+  slidesLatexBody: string,
+  features: LectureStudioDocumentFeatures = DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+) {
+  const resolvedFeatures = resolveLectureStudioDocumentFeatures(features);
+  return (
+    (resolvedFeatures.includeSlideTitlePage ? 1 : 0) +
+    [...slidesLatexBody.matchAll(/\\begin\s*\{\s*frame\s*\}/gu)].length
+  );
 }

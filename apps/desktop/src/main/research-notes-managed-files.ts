@@ -3,6 +3,13 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
 
+import {
+  LECTURE_STUDIO_MAX_FIGURE_BYTES,
+  LECTURE_STUDIO_MAX_FIGURES,
+  LectureStudioFigureAssetSchema,
+  type LectureStudioFigureAsset,
+} from '../shared/lecture-studio-contracts';
+
 const MARKER_FILE = '.gosu-project.json';
 const PENDING_BUNDLE_FILE = '.gosu-pending-bundle.json';
 const PENDING_BUNDLE_INDEX_DIRECTORY = '.gosu-pending-bundles';
@@ -23,8 +30,7 @@ export type ResearchNotesOwnership = Readonly<{
   projectName: string;
 }>;
 
-export type ResearchNotesPendingMarkdownBundle = Readonly<{
-  schemaVersion: 1;
+type ResearchNotesPendingBundleCommon = Readonly<{
   kind: 'lecture-revision';
   projectId: string;
   bindingId: string;
@@ -37,10 +43,33 @@ export type ResearchNotesPendingMarkdownBundle = Readonly<{
   generationBriefSha256?: string;
   authoringPolicyVersion?: number;
   authoringPolicySha256?: string;
-  /** Omitted by legacy revision journals, which always contain Markdown. */
-  documentFormat?: 'markdown' | 'latex';
-  files: readonly Readonly<{ name: string; contentSha256: string }>[];
 }>;
+
+export type ResearchNotesPendingMarkdownBundleV1 = ResearchNotesPendingBundleCommon &
+  Readonly<{
+    schemaVersion: 1;
+    /** Omitted by legacy revision journals, which always contain Markdown. */
+    documentFormat?: 'markdown' | 'latex';
+    files: readonly Readonly<{ name: string; contentSha256: string }>[];
+  }>;
+
+export type ResearchNotesPendingBundleFileV2 = Readonly<{
+  name: string;
+  contentSha256: string;
+  byteSize: number;
+  encoding: 'utf8' | 'binary';
+}>;
+
+export type ResearchNotesPendingMarkdownBundleV2 = ResearchNotesPendingBundleCommon &
+  Readonly<{
+    schemaVersion: 2;
+    documentFormat: 'latex';
+    files: readonly ResearchNotesPendingBundleFileV2[];
+    figureAssets: readonly LectureStudioFigureAsset[];
+  }>;
+
+export type ResearchNotesPendingMarkdownBundle =
+  ResearchNotesPendingMarkdownBundleV1 | ResearchNotesPendingMarkdownBundleV2;
 
 export type ResearchNotesPendingMarkdownBundleEntry = Readonly<{
   relativeBundlePath: string;
@@ -60,7 +89,7 @@ type ResearchNotesPendingMarkdownBundleScanCursor = Readonly<{
 
 export type ResearchNotesMarkdownBundleFile = Readonly<{
   name: string;
-  content: string;
+  content: string | Uint8Array;
 }>;
 
 function bundleDocumentFormat(journal: ResearchNotesPendingMarkdownBundle) {
@@ -93,7 +122,7 @@ function pathSegments(path: string) {
   return segments;
 }
 
-function bundleFileName(name: string, format: 'markdown' | 'latex') {
+function bundleTextFileName(name: string, format: 'markdown' | 'latex') {
   const extension = format === 'latex' ? '.tex' : '.md';
   if (
     name.includes('\0') ||
@@ -108,13 +137,126 @@ function bundleFileName(name: string, format: 'markdown' | 'latex') {
   return name;
 }
 
-function sha256(value: string) {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
+function bundleFigureFileName(name: string) {
+  if (
+    name.includes('\0') ||
+    name.includes('/') ||
+    name.includes('\\') ||
+    !/^Figure-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.jpg$/iu.test(
+      name,
+    )
+  ) {
+    throw new Error('research_notes_path_escape');
+  }
+  return name;
+}
+
+function sha256(value: string | Uint8Array) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function expectedBundleJournal(
+  files: readonly ResearchNotesMarkdownBundleFile[],
+  journal: ResearchNotesPendingMarkdownBundle,
+  documentFormat: 'markdown' | 'latex',
+): ResearchNotesPendingMarkdownBundle {
+  if (new Set(files.map((file) => file.name)).size !== files.length) {
+    throw new Error('research_notes_folder_conflict');
+  }
+  if (journal.schemaVersion === 1) {
+    if (
+      files.length !== 2 ||
+      files.some(
+        (file) =>
+          typeof file.content !== 'string' ||
+          Buffer.byteLength(file.content, 'utf8') > RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES,
+      )
+    ) {
+      throw new Error('research_notes_markdown_too_large');
+    }
+    for (const file of files) bundleTextFileName(file.name, documentFormat);
+    return {
+      ...journal,
+      files: files.map((file) => ({
+        name: file.name,
+        contentSha256: sha256(file.content),
+      })),
+    };
+  }
+
+  if (
+    documentFormat !== 'latex' ||
+    files.length < 2 ||
+    files.length > 2 + LECTURE_STUDIO_MAX_FIGURES
+  ) {
+    throw new Error('research_notes_folder_conflict');
+  }
+  const textFiles = files.filter(
+    (file): file is Readonly<{ name: string; content: string }> => typeof file.content === 'string',
+  );
+  const binaryFiles = files.filter(
+    (file): file is Readonly<{ name: string; content: Uint8Array }> =>
+      typeof file.content !== 'string',
+  );
+  if (
+    textFiles.length !== 2 ||
+    binaryFiles.length !== journal.figureAssets.length ||
+    journal.figureAssets.length > LECTURE_STUDIO_MAX_FIGURES ||
+    textFiles.some(
+      (file) => Buffer.byteLength(file.content, 'utf8') > RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES,
+    ) ||
+    binaryFiles.some(
+      (file) =>
+        file.content.byteLength < 5 ||
+        file.content.byteLength > LECTURE_STUDIO_MAX_FIGURE_BYTES ||
+        file.content[0] !== 0xff ||
+        file.content[1] !== 0xd8 ||
+        file.content[2] !== 0xff ||
+        file.content.at(-2) !== 0xff ||
+        file.content.at(-1) !== 0xd9,
+    )
+  ) {
+    throw new Error('research_notes_folder_conflict');
+  }
+  const figureAssets = journal.figureAssets.map((asset) =>
+    LectureStudioFigureAssetSchema.parse(structuredClone(asset)),
+  );
+  for (const file of textFiles) bundleTextFileName(file.name, 'latex');
+  for (const file of binaryFiles) bundleFigureFileName(file.name);
+  const binaryByName = new Map(binaryFiles.map((file) => [file.name, file]));
+  if (
+    figureAssets.some((asset) => {
+      const file = binaryByName.get(asset.fileName);
+      return (
+        asset.studioId !== journal.studioId ||
+        !file ||
+        file.content.byteLength !== asset.byteSize ||
+        sha256(file.content) !== asset.sha256
+      );
+    })
+  ) {
+    throw new Error('research_notes_folder_conflict');
+  }
+  return {
+    ...journal,
+    figureAssets,
+    files: files.map((file) => {
+      const byteSize =
+        typeof file.content === 'string'
+          ? Buffer.byteLength(file.content, 'utf8')
+          : file.content.byteLength;
+      return {
+        name: file.name,
+        contentSha256: sha256(file.content),
+        byteSize,
+        encoding: typeof file.content === 'string' ? ('utf8' as const) : ('binary' as const),
+      };
+    }),
+  };
 }
 
 function canonicalBundleJournal(journal: ResearchNotesPendingMarkdownBundle) {
   const documentFormat = bundleDocumentFormat(journal);
-  const expectedFileNames = bundleFileNames(documentFormat);
   const provenanceValues = [
     journal.generationBriefSha256,
     journal.authoringPolicyVersion,
@@ -122,7 +264,7 @@ function canonicalBundleJournal(journal: ResearchNotesPendingMarkdownBundle) {
   ];
   const provenanceCount = provenanceValues.filter((value) => value !== undefined).length;
   if (
-    journal.schemaVersion !== 1 ||
+    (journal.schemaVersion !== 1 && journal.schemaVersion !== 2) ||
     journal.kind !== 'lecture-revision' ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
       journal.projectId,
@@ -147,22 +289,98 @@ function canonicalBundleJournal(journal: ResearchNotesPendingMarkdownBundle) {
         journal.authoringPolicyVersion < 1)) ||
     (journal.authoringPolicySha256 !== undefined &&
       !/^[0-9a-f]{64}$/u.test(journal.authoringPolicySha256)) ||
-    (journal.documentFormat !== undefined &&
-      journal.documentFormat !== 'markdown' &&
-      journal.documentFormat !== 'latex') ||
-    journal.files.length !== 2 ||
-    new Set(journal.files.map((file) => file.name)).size !== journal.files.length ||
-    [...journal.files.map((file) => file.name)].sort().join('\0') !==
-      [...expectedFileNames].sort().join('\0') ||
-    journal.files.some(
-      (file) =>
-        bundleFileName(file.name, documentFormat) !== file.name ||
-        !/^[0-9a-f]{64}$/u.test(file.contentSha256),
-    )
+    !validBundleFiles(journal, documentFormat)
   ) {
     throw new Error('research_notes_folder_conflict');
   }
   return `${JSON.stringify(journal, null, 2)}\n`;
+}
+
+function validBundleFiles(
+  journal: ResearchNotesPendingMarkdownBundle,
+  documentFormat: 'markdown' | 'latex',
+) {
+  const expectedTextNames = bundleFileNames(documentFormat);
+  if (
+    new Set(journal.files.map((file) => file.name)).size !== journal.files.length ||
+    journal.files.some((file) => !/^[0-9a-f]{64}$/u.test(file.contentSha256))
+  ) {
+    return false;
+  }
+  if (journal.schemaVersion === 1) {
+    if (
+      (journal.documentFormat !== undefined &&
+        journal.documentFormat !== 'markdown' &&
+        journal.documentFormat !== 'latex') ||
+      journal.files.length !== 2 ||
+      [...journal.files.map((file) => file.name)].sort().join('\0') !==
+        [...expectedTextNames].sort().join('\0')
+    ) {
+      return false;
+    }
+    try {
+      return journal.files.every(
+        (file) => bundleTextFileName(file.name, documentFormat) === file.name,
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  if (
+    journal.documentFormat !== 'latex' ||
+    journal.files.length < 2 ||
+    journal.files.length > 2 + LECTURE_STUDIO_MAX_FIGURES ||
+    journal.figureAssets.length > LECTURE_STUDIO_MAX_FIGURES
+  ) {
+    return false;
+  }
+  let figures: LectureStudioFigureAsset[];
+  try {
+    figures = journal.figureAssets.map((figure) =>
+      LectureStudioFigureAssetSchema.parse(structuredClone(figure)),
+    );
+  } catch {
+    return false;
+  }
+  if (
+    new Set(figures.map((figure) => figure.id)).size !== figures.length ||
+    new Set(figures.map((figure) => figure.sha256)).size !== figures.length ||
+    figures.some((figure) => figure.studioId !== journal.studioId)
+  ) {
+    return false;
+  }
+  const textFiles = journal.files.filter((file) => file.encoding === 'utf8');
+  const binaryFiles = journal.files.filter((file) => file.encoding === 'binary');
+  if (
+    textFiles.length !== 2 ||
+    binaryFiles.length !== figures.length ||
+    [...textFiles.map((file) => file.name)].sort().join('\0') !==
+      [...bundleFileNames('latex')].sort().join('\0') ||
+    [...binaryFiles.map((file) => file.name)].sort().join('\0') !==
+      [...figures.map((figure) => figure.fileName)].sort().join('\0') ||
+    journal.files.some(
+      (file) =>
+        !Number.isSafeInteger(file.byteSize) ||
+        file.byteSize < 1 ||
+        (file.encoding === 'utf8'
+          ? file.byteSize > RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES
+          : file.byteSize > LECTURE_STUDIO_MAX_FIGURE_BYTES),
+    )
+  ) {
+    return false;
+  }
+  try {
+    for (const file of textFiles) bundleTextFileName(file.name, 'latex');
+    for (const file of binaryFiles) bundleFigureFileName(file.name);
+  } catch {
+    return false;
+  }
+  const binaryByName = new Map(binaryFiles.map((file) => [file.name, file]));
+  return figures.every((figure) => {
+    const file = binaryByName.get(figure.fileName);
+    return file?.contentSha256 === figure.sha256 && file.byteSize === figure.byteSize;
+  });
 }
 
 function parseBundleJournal(value: string): ResearchNotesPendingMarkdownBundle | null {
@@ -269,12 +487,45 @@ async function existingKind(path: string) {
   }
 }
 
+async function readExactBundleFile(path: string, maximumBytes: number) {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size < 1 || metadata.size > maximumBytes) {
+      throw new Error('research_notes_folder_conflict');
+    }
+    const bytes = Buffer.allocUnsafe(metadata.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const result = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (result.bytesRead === 0) break;
+      offset += result.bytesRead;
+    }
+    if (offset !== bytes.length) throw new Error('research_notes_folder_conflict');
+    const extra = Buffer.allocUnsafe(1);
+    if ((await handle.read(extra, 0, 1, offset)).bytesRead !== 0) {
+      throw new Error('research_notes_folder_conflict');
+    }
+    return bytes;
+  } catch (error) {
+    if (error instanceof Error && error.message === 'research_notes_folder_conflict') throw error;
+    throw new Error('research_notes_folder_conflict', { cause: error });
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 type DirectorySync = (directory: string) => Promise<void>;
 
-async function writeExclusive(path: string, content: string, directorySync: DirectorySync) {
+async function writeExclusive(
+  path: string,
+  content: string | Uint8Array,
+  directorySync: DirectorySync,
+) {
   const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
   try {
-    await handle.writeFile(content, 'utf8');
+    await handle.writeFile(typeof content === 'string' ? content : Buffer.from(content));
     await handle.sync();
   } finally {
     await handle.close();
@@ -522,21 +773,12 @@ export class ResearchNotesManagedFiles {
     journal: ResearchNotesPendingMarkdownBundle,
     ownership: ResearchNotesOwnership,
   ) {
-    if (
-      files.length !== 2 ||
-      files.some(
-        (file) => Buffer.byteLength(file.content, 'utf8') > RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES,
-      )
-    ) {
-      throw new Error('research_notes_markdown_too_large');
-    }
+    const snapshotFiles = files.map((file) => ({
+      name: file.name,
+      content: typeof file.content === 'string' ? file.content : Buffer.from(file.content),
+    })) satisfies readonly ResearchNotesMarkdownBundleFile[];
     const documentFormat = bundleDocumentFormat(journal);
-    const names = files.map((file) => bundleFileName(file.name, documentFormat));
-    if (new Set(names).size !== names.length) throw new Error('research_notes_folder_conflict');
-    const expectedJournal: ResearchNotesPendingMarkdownBundle = {
-      ...journal,
-      files: files.map((file) => ({ name: file.name, contentSha256: sha256(file.content) })),
-    };
+    const expectedJournal = expectedBundleJournal(snapshotFiles, journal, documentFormat);
     const journalContent = canonicalBundleJournal(expectedJournal);
     await this.validateRoot();
     const projectRoot = await this.requireProjectRoot(folderName);
@@ -571,7 +813,7 @@ export class ResearchNotesManagedFiles {
     let published = false;
     try {
       await mkdir(stagedPath, { mode: 0o700 });
-      for (const file of files) {
+      for (const file of snapshotFiles) {
         await writeExclusive(resolve(stagedPath, file.name), file.content, this.directorySync);
       }
       await writeExclusive(
@@ -780,6 +1022,42 @@ export class ResearchNotesManagedFiles {
     await this.validateRoot();
   }
 
+  async readUserBundleFigure(
+    folderName: string,
+    relativeBundlePath: string,
+    rawAsset: LectureStudioFigureAsset,
+    ownership: ResearchNotesOwnership,
+  ) {
+    const asset = LectureStudioFigureAssetSchema.parse(structuredClone(rawAsset));
+    bundleFigureFileName(asset.fileName);
+    await this.validateRoot();
+    const projectRoot = await this.requireProjectRoot(folderName);
+    const bundlePath = resolve(projectRoot, relativeBundlePath);
+    assertInside(projectRoot, bundlePath);
+    const bundleMetadata = await lstat(bundlePath);
+    if (bundleMetadata.isSymbolicLink() || !bundleMetadata.isDirectory()) {
+      throw new Error('research_notes_folder_conflict');
+    }
+    await this.assertProjectOwnership(folderName, ownership);
+    const path = resolve(bundlePath, asset.fileName);
+    assertInside(bundlePath, path);
+    const bytes = await readExactBundleFile(path, LECTURE_STUDIO_MAX_FIGURE_BYTES);
+    if (
+      bytes.byteLength !== asset.byteSize ||
+      sha256(bytes) !== asset.sha256 ||
+      bytes.byteLength < 5 ||
+      bytes[0] !== 0xff ||
+      bytes[1] !== 0xd8 ||
+      bytes[2] !== 0xff ||
+      bytes.at(-2) !== 0xff ||
+      bytes.at(-1) !== 0xd9
+    ) {
+      throw new Error('research_notes_folder_conflict');
+    }
+    await this.validateRoot();
+    return { absolutePath: path, bytes } as const;
+  }
+
   private async ensurePendingBundleIndex(
     projectRoot: string,
     relativeBundlePath: string,
@@ -848,14 +1126,7 @@ export class ResearchNotesManagedFiles {
 
   private async readPendingBundleIndex(indexPath: string) {
     try {
-      const metadata = await lstat(indexPath);
-      if (metadata.isSymbolicLink() || !metadata.isFile()) {
-        throw new Error('research_notes_folder_conflict');
-      }
-      const bytes = await readFile(indexPath);
-      if (bytes.length > MAX_PENDING_BUNDLE_INDEX_BYTES) {
-        throw new Error('research_notes_folder_conflict');
-      }
+      const bytes = await readExactBundleFile(indexPath, MAX_PENDING_BUNDLE_INDEX_BYTES);
       const index = parseBundleIndex(bytes.toString('utf8'));
       if (!index) throw new Error('research_notes_folder_conflict');
       return index;
@@ -872,11 +1143,11 @@ export class ResearchNotesManagedFiles {
     const kind = await existingKind(cursorPath);
     if (kind === 'missing') return null;
     if (kind !== 'file') throw new Error('research_notes_folder_conflict');
-    const metadata = await lstat(cursorPath);
-    if (metadata.isSymbolicLink() || metadata.size > MAX_PENDING_BUNDLE_SCAN_CURSOR_BYTES) {
-      throw new Error('research_notes_folder_conflict');
-    }
-    const cursor = parseBundleScanCursor(await readFile(cursorPath, 'utf8'));
+    const cursor = parseBundleScanCursor(
+      (await readExactBundleFile(cursorPath, MAX_PENDING_BUNDLE_SCAN_CURSOR_BYTES)).toString(
+        'utf8',
+      ),
+    );
     if (!cursor) throw new Error('research_notes_folder_conflict');
     return cursor;
   }
@@ -901,14 +1172,7 @@ export class ResearchNotesManagedFiles {
         throw new Error('research_notes_folder_conflict');
       }
       const journalPath = resolve(bundlePath, PENDING_BUNDLE_FILE);
-      const journalMetadata = await lstat(journalPath);
-      if (journalMetadata.isSymbolicLink() || !journalMetadata.isFile()) {
-        throw new Error('research_notes_folder_conflict');
-      }
-      const journalBytes = await readFile(journalPath);
-      if (journalBytes.length > MAX_PENDING_BUNDLE_BYTES) {
-        throw new Error('research_notes_folder_conflict');
-      }
+      const journalBytes = await readExactBundleFile(journalPath, MAX_PENDING_BUNDLE_BYTES);
       const journal = parseBundleJournal(journalBytes.toString('utf8'));
       if (!journal) throw new Error('research_notes_folder_conflict');
       return journal;
@@ -929,18 +1193,24 @@ export class ResearchNotesManagedFiles {
     if (JSON.stringify(entries) !== JSON.stringify(expected)) {
       throw new Error('research_notes_folder_conflict');
     }
+    if (journal.schemaVersion === 2) {
+      for (const file of journal.files) {
+        const path = resolve(bundlePath, file.name);
+        const maximumBytes =
+          file.encoding === 'binary'
+            ? LECTURE_STUDIO_MAX_FIGURE_BYTES
+            : RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES;
+        const bytes = await readExactBundleFile(path, maximumBytes);
+        if (bytes.byteLength !== file.byteSize || sha256(bytes) !== file.contentSha256) {
+          throw new Error('research_notes_folder_conflict');
+        }
+      }
+      return;
+    }
     for (const file of journal.files) {
       const path = resolve(bundlePath, file.name);
-      const metadata = await lstat(path);
-      if (
-        metadata.isSymbolicLink() ||
-        !metadata.isFile() ||
-        metadata.size > RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES
-      ) {
-        throw new Error('research_notes_folder_conflict');
-      }
-      const content = await readFile(path, 'utf8');
-      if (sha256(content) !== file.contentSha256) {
+      const bytes = await readExactBundleFile(path, RESEARCH_NOTES_MAX_USER_MARKDOWN_BYTES);
+      if (sha256(bytes.toString('utf8')) !== file.contentSha256) {
         throw new Error('research_notes_folder_conflict');
       }
     }
@@ -987,6 +1257,7 @@ function samePendingBundleIdentity(
   right: ResearchNotesPendingMarkdownBundle,
 ) {
   return (
+    left.schemaVersion === right.schemaVersion &&
     left.projectId === right.projectId &&
     left.bindingId === right.bindingId &&
     left.vaultId === right.vaultId &&
@@ -996,6 +1267,9 @@ function samePendingBundleIdentity(
     left.sourceManifestSha256 === right.sourceManifestSha256 &&
     left.generationBriefSha256 === right.generationBriefSha256 &&
     left.authoringPolicyVersion === right.authoringPolicyVersion &&
-    left.authoringPolicySha256 === right.authoringPolicySha256
+    left.authoringPolicySha256 === right.authoringPolicySha256 &&
+    bundleDocumentFormat(left) === bundleDocumentFormat(right) &&
+    JSON.stringify(left.schemaVersion === 2 ? left.figureAssets : []) ===
+      JSON.stringify(right.schemaVersion === 2 ? right.figureAssets : [])
   );
 }

@@ -21,7 +21,10 @@ export type ProjectWorkspaceTabId = Extract<
   | 'literature'
   | 'notes'
 >;
-export type GlobalWorkspaceTabId = Extract<WorkspaceTabId, 'connections' | 'lecture' | 'search'>;
+export type GlobalWorkspaceTabId = Extract<
+  WorkspaceTabId,
+  'connections' | 'lecture' | 'search' | 'tasks' | 'usage'
+>;
 
 const PROJECT_TABS: ReadonlyArray<{
   id: ProjectWorkspaceTabId;
@@ -43,9 +46,11 @@ const GLOBAL_TABS: ReadonlyArray<{
   label: string;
   icon: string;
 }> = [
+  { id: 'tasks', label: 'Tasks', icon: '▦' },
   { id: 'search', label: 'Search', icon: '' },
   { id: 'lecture', label: 'Lecture notes & slides', icon: '' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
+  { id: 'usage', label: 'Usage', icon: '' },
 ];
 
 function GlobalSidebarIcon({ tab }: { tab: (typeof GLOBAL_TABS)[number] }) {
@@ -73,6 +78,20 @@ function GlobalSidebarIcon({ tab }: { tab: (typeof GLOBAL_TABS)[number] }) {
           focusable="false"
         >
           <path d="m8.5 5.5 8.5 6.5-8.5 6.5Z" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (tab.id === 'usage') {
+    return (
+      <span className="sidebar-nav-icon" aria-hidden="true">
+        <svg
+          className="sidebar-nav-icon-graphic sidebar-nav-icon-usage"
+          viewBox="0 0 24 24"
+          focusable="false"
+        >
+          <path d="M5 19V11m7 8V5m7 14v-6" />
         </svg>
       </span>
     );

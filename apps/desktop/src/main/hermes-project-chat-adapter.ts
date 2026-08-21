@@ -15,6 +15,12 @@ import {
   type CodexCollaborationModeDescriptor,
 } from '../shared/project-chat-contracts';
 import { HERMES_PROVIDER_ENVIRONMENT_NAME_LIST } from './hermes-acp-profile';
+import {
+  GOSU_HERMES_SOURCE_REVISION,
+  GOSU_HERMES_VERSION,
+  materializeHermesRuntimeArchive,
+  verifyHermesRuntimeBundle,
+} from './hermes-runtime-bundle';
 import type { ProjectChatCodex } from './project-chat-service';
 
 export const HERMES_PROVIDER_ID = 'hermes';
@@ -76,7 +82,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 MAX_STDIN_BYTES = ${HERMES_MAX_PROMPT_BYTES}
 CHECK_PROTOCOL = ${HERMES_SHIM_CHECK_PROTOCOL}
-SUPPORTED_HERMES_VERSION = "0.19.1"
+SUPPORTED_HERMES_VERSION = ${JSON.stringify(GOSU_HERMES_VERSION)}
 GOSU_PROVIDER_ENVIRONMENT_NAMES = ${JSON.stringify(HERMES_PROVIDER_ENVIRONMENT_NAME_LIST)}
 ALLOWED_RUNTIME_API_MODES = {
     "chat_completions",
@@ -554,6 +560,9 @@ export type HermesInstallation = Readonly<{
   launcherPath: string;
   pythonPath: string;
   rootPath: string;
+  source: 'bundled' | 'custom-local';
+  version: typeof GOSU_HERMES_VERSION;
+  manifestSha256: string | null;
 }>;
 
 export type HermesProcessRequest = Readonly<{
@@ -595,7 +604,7 @@ export interface RefreshableHermesProjectChat extends ProjectChatCodex {
     }>
   >;
   /**
-   * Revoke the current explicit BYO connection without making the adapter unusable for a later
+   * Revoke the current explicit Hermes connection without making the adapter unusable for a later
    * reconnect. Implementations must synchronously terminate every live provider process, including
    * ephemeral delegated turns, and clear any connection-time catalog authority.
    */
@@ -696,7 +705,14 @@ export function parseHermesLauncher(
   }
   const rootPath = dirname(entryPath);
   if (resolve(rootPath, 'venv', 'bin', 'python') !== pythonPath) return null;
-  return { launcherPath, pythonPath, rootPath };
+  return {
+    launcherPath,
+    pythonPath,
+    rootPath,
+    source: 'custom-local',
+    version: GOSU_HERMES_VERSION,
+    manifestSha256: null,
+  };
 }
 
 function byteLength(value: string | Buffer) {
@@ -717,6 +733,7 @@ export function hermesSubprocessEnvironment(source: NodeJS.ProcessEnv = process.
     'LC_CTYPE',
     'NO_PROXY',
     'PATH',
+    'PYTHONDONTWRITEBYTECODE',
     'REQUESTS_CA_BUNDLE',
     'SSL_CERT_DIR',
     'SSL_CERT_FILE',
@@ -755,6 +772,9 @@ export function hermesSubprocessEnvironment(source: NodeJS.ProcessEnv = process.
   );
   environment.HERMES_SAFE_MODE = '1';
   environment.HERMES_SESSION_SOURCE = 'gosu';
+  // The hash-fenced runtime is immutable. Never create or refresh __pycache__ beside it after
+  // Main has completed its exact file-set verification.
+  environment.PYTHONDONTWRITEBYTECODE = '1';
   return environment;
 }
 
@@ -905,11 +925,63 @@ class NodeHermesRunningProcess implements HermesRunningProcess {
 export function createNodeHermesProjectChatPlatform(input?: {
   pathEnvironment?: string;
   homeDirectory?: string;
+  bundledRuntimeDirectory?: string | null;
+  bundledRuntimeArchivePath?: string | null;
+  bundledRuntimeCacheDirectory?: string | null;
+  allowCustomLocalRuntime?: boolean;
 }): HermesProjectChatPlatform {
   const pathEnvironment = input?.pathEnvironment ?? process.env.PATH;
   const homeDirectory = input?.homeDirectory ?? homedir();
+  const bundledRuntimeDirectory = input?.bundledRuntimeDirectory ?? null;
+  const bundledRuntimeArchivePath = input?.bundledRuntimeArchivePath ?? null;
+  const bundledRuntimeCacheDirectory = input?.bundledRuntimeCacheDirectory ?? null;
+  const allowCustomLocalRuntime = input?.allowCustomLocalRuntime ?? true;
   return {
     async findHermesInstallation() {
+      if (bundledRuntimeArchivePath && bundledRuntimeCacheDirectory) {
+        const bundle = await materializeHermesRuntimeArchive({
+          archivePath: bundledRuntimeArchivePath,
+          cacheDirectory: bundledRuntimeCacheDirectory,
+        }).catch((error) => {
+          const code =
+            typeof error === 'object' && error !== null && 'code' in error
+              ? String(error.code)
+              : null;
+          if (code === 'ENOENT') return null;
+          throw new Error('hermes_bundled_runtime_invalid');
+        });
+        if (bundle) {
+          return {
+            launcherPath: bundle.manifestPath,
+            pythonPath: bundle.pythonPath,
+            rootPath: bundle.rootPath,
+            source: 'bundled',
+            version: bundle.manifest.hermesVersion,
+            manifestSha256: bundle.manifestSha256,
+          };
+        }
+      }
+      if (bundledRuntimeDirectory) {
+        const bundle = await verifyHermesRuntimeBundle(bundledRuntimeDirectory).catch((error) => {
+          const code =
+            typeof error === 'object' && error !== null && 'code' in error
+              ? String(error.code)
+              : null;
+          if (code === 'ENOENT') return null;
+          throw new Error('hermes_bundled_runtime_invalid');
+        });
+        if (bundle) {
+          return {
+            launcherPath: bundle.manifestPath,
+            pythonPath: bundle.pythonPath,
+            rootPath: bundle.rootPath,
+            source: 'bundled',
+            version: bundle.manifest.hermesVersion,
+            manifestSha256: bundle.manifestSha256,
+          };
+        }
+      }
+      if (!allowCustomLocalRuntime) return null;
       for (const candidate of launcherCandidates(pathEnvironment, homeDirectory)) {
         if (!(await executableFile(candidate))) continue;
         const launcherPath = await realpath(candidate).catch(() => candidate);
@@ -970,7 +1042,13 @@ function modelCatalog(
           isDefault: false,
         })),
         metadata: {
-          runtime: 'byo-hermes-sealed-shim',
+          runtime:
+            runtime.installation.source === 'bundled'
+              ? 'gosu-bundled-hermes-sealed-shim'
+              : 'byo-hermes-sealed-shim',
+          hermesVersion: runtime.installation.version,
+          hermesSourceRevision: GOSU_HERMES_SOURCE_REVISION,
+          runtimeManifestSha256: runtime.installation.manifestSha256,
           configuredModel: true,
           configuredModelId: runtime.configuredModelId,
           configuredProviderId: runtime.configuredProviderId,
@@ -1034,7 +1112,12 @@ function parseReadyRuntime(
   const catalogVersion = createHash('sha256')
     .update(
       JSON.stringify({
-        adapter: 'gosu-byo-hermes-sealed-shim-v3',
+        adapter:
+          installation.source === 'bundled'
+            ? 'gosu-bundled-hermes-sealed-shim-v1'
+            : 'gosu-byo-hermes-sealed-shim-v3',
+        hermesVersion: installation.version,
+        runtimeManifestSha256: installation.manifestSha256,
         configuredModelId,
         configuredProviderId,
         routeFingerprint,
@@ -1177,6 +1260,7 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
         executable: runtime.installation.pythonPath,
         args: [
           '-I',
+          '-B',
           '-c',
           HERMES_SEALED_SHIM_SOURCE,
           'run',
@@ -1313,7 +1397,7 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
     if (!installation) throw new Error('hermes_installation_not_supported');
     const configuration = await this.checkedProcess({
       executable: installation.pythonPath,
-      args: ['-I', '-c', HERMES_SEALED_SHIM_SOURCE, 'check', installation.rootPath],
+      args: ['-I', '-B', '-c', HERMES_SEALED_SHIM_SOURCE, 'check', installation.rootPath],
       environment: { GOSU_HERMES_CREDENTIAL_BINDING_KEY: credentialBindingKey },
       stdin: '',
     });

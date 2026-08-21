@@ -1150,6 +1150,12 @@ button:disabled {
   stroke-width: 1.8;
 }
 
+.sidebar-nav-icon-usage {
+  width: 19px;
+  height: 19px;
+  stroke-width: 1.8;
+}
+
 .project-folder-children button.active .sidebar-nav-icon,
 .project-global-navigation > button.active .sidebar-nav-icon {
   color: var(--green);
@@ -5027,16 +5033,13 @@ button.literature-search-tag-chip.keywords[aria-pressed='true'] {
   box-shadow: 0 28px 80px light-dark(rgba(42, 58, 44, 0.1), rgba(0, 0, 0, 0.2));
 }
 
-.project-chat-shell.agent-controls-open {
+.project-chat-shell.agent-controls-open,
+.project-chat-shell.project-rules-open {
   grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
-.project-chat-shell.agent-controls-open .chat-transcript-region {
-  grid-row: 3;
-}
-
-.project-chat-shell.agent-controls-open .chat-compose-area {
-  grid-row: 4;
+.project-chat-shell.agent-controls-open.project-rules-open {
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
 }
 
 .chat-toolbar {
@@ -5152,10 +5155,22 @@ button.chat-toolbar-status {
   cursor: pointer;
 }
 
-.chat-details-toggle {
+button.chat-toolbar-status.active {
+  border-color: color-mix(in srgb, var(--green) 48%, var(--line));
+  background: color-mix(in srgb, var(--green) 9%, var(--surface));
+  color: var(--green);
+}
+
+.chat-toolbar-actions {
   grid-column: 2;
   grid-row: 1;
-  align-self: start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-details-toggle,
+.chat-toolbar-stop {
   min-height: 31px;
   padding: 5px 8px;
   white-space: nowrap;
@@ -5361,7 +5376,7 @@ button.chat-toolbar-status {
 
 .chat-model-controls {
   display: grid;
-  grid-template-columns: minmax(160px, 220px) minmax(130px, 190px) auto auto;
+  grid-template-columns: minmax(160px, 220px) minmax(130px, 190px) auto auto auto;
   align-items: end;
   gap: 7px;
 }
@@ -5420,6 +5435,174 @@ button.chat-toolbar-status {
 .chat-agent-toggle.active {
   border-color: color-mix(in srgb, var(--green) 45%, var(--line));
   color: var(--green);
+}
+
+.chat-project-rules-toggle {
+  min-height: 31px;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
+.chat-project-rules-toggle.active {
+  border-color: color-mix(in srgb, var(--green) 45%, var(--line));
+  background: color-mix(in srgb, var(--green) 8%, var(--surface));
+  color: var(--green);
+}
+
+.project-policy-rules-editor {
+  display: grid;
+  min-width: 0;
+  max-height: min(460px, 48vh);
+  gap: 10px;
+  padding: 13px 16px;
+  overflow: auto;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-raised) 86%, var(--green) 2%);
+  scrollbar-gutter: stable;
+}
+
+.project-policy-rules-editor > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.project-policy-rules-editor > header > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.project-policy-rules-editor > header span {
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.project-policy-rules-editor h2,
+.project-policy-rules-editor p {
+  margin: 0;
+}
+
+.project-policy-rules-editor h2 {
+  font-size: var(--font-section);
+}
+
+.project-policy-rules-editor > header p,
+.project-policy-rules-empty {
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.45;
+}
+
+.project-policy-rules-header-actions,
+.project-policy-rule-actions,
+.project-policy-rule-form > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.project-policy-rules-header-actions {
+  flex: 0 0 auto;
+}
+
+.project-policy-rules-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-policy-rules-list > li {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: start;
+  min-width: 0;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.project-policy-rule-number {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 10%, var(--surface-soft));
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 800;
+}
+
+.project-policy-rules-list > li > p {
+  padding: 3px 0;
+  color: var(--text);
+  font-size: var(--font-control);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.project-policy-rule-actions {
+  justify-content: flex-end;
+}
+
+.project-policy-rule-actions > span {
+  color: var(--red);
+  font-size: var(--font-caption);
+}
+
+.project-policy-rule-form {
+  display: grid;
+  grid-column: 2 / -1;
+  min-width: 0;
+  gap: 5px;
+}
+
+.project-policy-rule-add-form {
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--green) 34%, var(--line));
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.project-policy-rule-form label {
+  color: var(--text);
+  font-size: var(--font-control);
+  font-weight: 700;
+}
+
+.project-policy-rule-form textarea {
+  width: 100%;
+  min-height: 74px;
+  resize: vertical;
+}
+
+.project-policy-rule-form small {
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+
+.project-policy-rules-editor > footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  color: var(--muted);
+  font-size: var(--font-caption);
+}
+
+.project-policy-rules-editor > footer strong {
+  color: var(--red);
+  font-weight: 650;
 }
 
 .chat-agent-controls {
@@ -6400,12 +6583,65 @@ button.chat-toolbar-status {
   container: lecture-default-settings / inline-size;
 }
 
+.lecture-default-document-elements {
+  display: grid;
+  gap: 15px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.lecture-default-document-elements-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lecture-default-document-elements-heading h3,
+.lecture-default-document-elements-heading p {
+  margin: 0;
+}
+
+.lecture-default-document-elements-heading p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: var(--font-control);
+  line-height: 1.5;
+}
+
+.lecture-default-document-elements-heading label {
+  display: grid;
+  flex: 0 1 250px;
+  gap: 4px;
+  min-width: 180px;
+}
+
+.lecture-project-default-callout button {
+  justify-self: start;
+  margin-top: 6px;
+}
+
+.lecture-document-default-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .settings-form-actions {
   display: flex;
   justify-content: flex-end;
 }
 
 @container lecture-default-settings (max-width: 480px) {
+  .lecture-default-document-elements-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lecture-default-document-elements-heading label {
+    flex-basis: auto;
+    width: 100%;
+  }
+
   .settings-form-actions > button {
     width: 100%;
   }
@@ -7611,6 +7847,24 @@ button.chat-toolbar-status {
 }
 
 @media (max-width: 860px) {
+  .project-policy-rules-editor > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .project-policy-rules-header-actions {
+    width: 100%;
+  }
+
+  .project-policy-rules-list > li {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .project-policy-rule-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
   .desktop-shell {
     --sidebar-width: 0px;
     grid-template: var(--titlebar-height) auto minmax(0, 1fr) / 1fr;

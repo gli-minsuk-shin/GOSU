@@ -16,6 +16,7 @@ import {
 } from './lecture-studio-attachment-contracts';
 import { ManuscriptRecordSchema } from './manuscript-workspace-contracts';
 import { PdfPreviewDocumentSchema } from './pdf-preview-contracts';
+import { PROJECT_CHAT_MAX_NORMALIZED_IMAGE_BYTES } from './project-chat-attachment-contracts';
 
 export const LECTURE_STUDIO_DURATIONS = [10, 20, 30, 50] as const;
 export const LECTURE_STUDIO_MAX_STUDIOS = 100;
@@ -38,6 +39,9 @@ export const LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS = 100;
 export const LECTURE_STUDIO_MAX_MESSAGE_LENGTH = 32_000;
 export const LECTURE_STUDIO_MAX_MARKDOWN_LENGTH = 200_000;
 export const LECTURE_STUDIO_MAX_LATEX_LENGTH = 240_000;
+export const LECTURE_STUDIO_MAX_FIGURES = 5;
+export const LECTURE_STUDIO_MAX_FIGURE_EDGE = 2_048;
+export const LECTURE_STUDIO_MAX_FIGURE_BYTES = PROJECT_CHAT_MAX_NORMALIZED_IMAGE_BYTES;
 export const EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION = 'EMPTY LECTURE TRASH';
 export const LECTURE_STUDIO_CANDIDATE_PAGE_MAX = 100;
 export const LECTURE_STUDIO_CANDIDATE_METRIC_LIMIT_DEFAULT = 20;
@@ -71,6 +75,29 @@ export type LectureStudioDetailLevel = z.infer<typeof LectureStudioDetailLevelSc
 export const LectureStudioStructureCoverageSchema = z.enum(['notes-and-slides', 'notes-only']);
 export type LectureStudioStructureCoverage = z.infer<typeof LectureStudioStructureCoverageSchema>;
 
+export const LectureStudioDocumentFeaturesSchema = z
+  .object({
+    includeSlideTitlePage: z.boolean(),
+    showInlineEvidenceLabels: z.boolean(),
+    includeSourcesUsedSection: z.boolean(),
+  })
+  .strict();
+export type LectureStudioDocumentFeatures = z.infer<typeof LectureStudioDocumentFeaturesSchema>;
+
+export const DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES = Object.freeze({
+  includeSlideTitlePage: true,
+  showInlineEvidenceLabels: true,
+  includeSourcesUsedSection: true,
+}) satisfies LectureStudioDocumentFeatures;
+
+export function resolveLectureStudioDocumentFeatures(
+  value: LectureStudioDocumentFeatures | undefined,
+): LectureStudioDocumentFeatures {
+  return LectureStudioDocumentFeaturesSchema.parse(
+    value ?? DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+  );
+}
+
 export const DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE = {
   mode: 'adaptive',
 } as const;
@@ -86,6 +113,35 @@ export const GOSU_LECTURE_STUDIO_STRUCTURE_TEMPLATE = {
     { title: 'Summary', coverage: 'notes-and-slides' },
   ],
 } as const;
+
+export const LECTURE_STUDIO_SOURCE_LIST_SECTION_TITLES = [
+  'Sources used',
+  'Source used',
+  'Source',
+  'Sources',
+  'Source list',
+  'Sources list',
+  'Source section',
+  'Sources section',
+  'References',
+  'Reference list',
+  'References list',
+  'Reference section',
+  'References section',
+  'Bibliography',
+  'Works cited',
+  'Citations',
+  'Cited sources',
+  'Literature cited',
+  '출처 목록',
+  '출처 섹션',
+  '출처 매핑',
+  '참고 문헌',
+] as const;
+
+export function normalizeLectureStudioDocumentSectionTitle(value: string) {
+  return value.normalize('NFC').trim().replace(/\s+/gu, ' ').toLowerCase();
+}
 
 const hasUnsafeStructureCharacter = (value: string) =>
   [...value].some((character) => {
@@ -160,9 +216,12 @@ export type LectureStudioStructureTemplate = z.infer<typeof LectureStudioStructu
 
 const lectureStudioGenerationBriefShape = {
   notesTargetPages: z.number().int().min(1).max(100).nullable(),
-  slidesTargetPages: z.number().int().min(2).max(100).nullable(),
+  slidesTargetPages: z.number().int().min(1).max(100).nullable(),
   detailLevel: LectureStudioDetailLevelSchema,
   structure: LectureStudioStructureTemplateSchema,
+  // Historical v3 revision snapshots must preserve the exact JSON that was hashed before
+  // document features existed. Do not add a Zod default or transform to this field.
+  documentFeatures: LectureStudioDocumentFeaturesSchema.optional(),
   customInstructions: z
     .string()
     .trim()
@@ -176,9 +235,36 @@ const lectureStudioGenerationBriefShape = {
 const lectureStudioGenerationBriefFitsStorage = (brief: unknown) =>
   JSON.stringify(brief).length <= LECTURE_STUDIO_MAX_GENERATION_BRIEF_JSON;
 
+const validateLectureStudioGenerationBrief = (
+  brief: {
+    slidesTargetPages: number | null;
+    documentFeatures?: LectureStudioDocumentFeatures | undefined;
+  },
+  context: z.RefinementCtx,
+) => {
+  const features = resolveLectureStudioDocumentFeatures(brief.documentFeatures);
+  if (features.includeSlideTitlePage && brief.slidesTargetPages === 1) {
+    context.addIssue({
+      code: 'custom',
+      path: ['slidesTargetPages'],
+      message: 'A slide target with a title page must leave room for at least one content page',
+    });
+  }
+};
+
 export const LectureStudioGenerationBriefValueSchema = z
   .object(lectureStudioGenerationBriefShape)
   .strict()
+  .superRefine(validateLectureStudioGenerationBrief)
+  .refine(lectureStudioGenerationBriefFitsStorage, 'The complete generation options are too large');
+
+export const CurrentLectureStudioGenerationBriefValueSchema = z
+  .object({
+    ...lectureStudioGenerationBriefShape,
+    documentFeatures: LectureStudioDocumentFeaturesSchema,
+  })
+  .strict()
+  .superRefine(validateLectureStudioGenerationBrief)
   .refine(lectureStudioGenerationBriefFitsStorage, 'The complete generation options are too large');
 
 export const LectureStudioGenerationBriefSchema = z
@@ -189,9 +275,11 @@ export const LectureStudioGenerationBriefSchema = z
     structure: lectureStudioGenerationBriefShape.structure.default({
       ...DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
     }),
+    documentFeatures: lectureStudioGenerationBriefShape.documentFeatures,
     customInstructions: lectureStudioGenerationBriefShape.customInstructions.default(''),
   })
   .strict()
+  .superRefine(validateLectureStudioGenerationBrief)
   .refine(lectureStudioGenerationBriefFitsStorage, 'The complete generation options are too large')
   .default({
     notesTargetPages: null,
@@ -207,13 +295,17 @@ export type LectureStudioStatus = z.infer<typeof LectureStudioStatusSchema>;
 
 export const LECTURE_GENERATION_PROGRESS_PHASES = [
   'preparing_sources',
+  'loading_current_revision',
+  'preparing_edit_context',
   'starting_model',
   'generating_draft',
+  'revising_draft',
   'model_active',
   'validating_output',
   'correcting_output',
   'compiling_documents',
   'saving_revision',
+  'committing_revision',
 ] as const;
 
 export const LectureGenerationProgressPhaseSchema = z.enum(LECTURE_GENERATION_PROGRESS_PHASES);
@@ -258,6 +350,7 @@ export const LectureStudioAttemptLatexReasonSchema = z.enum([
   'beamer_overlay',
   'beamer_multipage_frame',
   'beamer_frame_option',
+  'structural_heading_option',
   'unbalanced_braces',
   'malformed_environment',
   'unsupported_environment',
@@ -269,8 +362,10 @@ export const LectureStudioAttemptLatexReasonSchema = z.enum([
   'raw_subscript_or_superscript',
   'raw_alignment_character',
   'raw_tilde',
+  'evidence_label_typography',
   'missing_sources_used',
   'missing_frame',
+  'invalid_figure_reference',
   'invalid_title',
   'invalid_canonical_wrapper',
 ]);
@@ -336,6 +431,7 @@ export const LectureStudioAttemptTerminalCodeSchema = z.enum([
   'lecture_usage_limit_exceeded',
   'lecture_generation_interrupted',
   'lecture_generation_failed',
+  'lecture_figure_model_unsupported',
   'lecture_invalid_response',
   'lecture_invalid_response_json',
   'lecture_invalid_response_schema',
@@ -667,6 +763,51 @@ export const LectureStudioArtifactSchema = z
   .strict();
 export type LectureStudioArtifact = z.infer<typeof LectureStudioArtifactSchema>;
 
+export const LectureStudioFigureSourceFormatSchema = z.enum([
+  'png',
+  'jpeg',
+  'gif',
+  'webp',
+  'tiff',
+  'bmp',
+  'avif',
+]);
+export type LectureStudioFigureSourceFormat = z.infer<typeof LectureStudioFigureSourceFormatSchema>;
+
+/**
+ * Content-free metadata for one normalized figure owned by a Lecture Studio. The corresponding
+ * JPEG bytes remain main-process-only and are never embedded in a Renderer snapshot.
+ */
+export const LectureStudioFigureAssetSchema = z
+  .object({
+    id: uuidSchema,
+    studioId: uuidSchema,
+    displayName: boundedText(256).refine(
+      (value) => !containsUnsafeControlCharacter(value) && !/[\\/]/u.test(value),
+      'Figure names must be path-free and must not contain unsafe control characters',
+    ),
+    fileName: boundedText(64),
+    mediaType: z.literal('image/jpeg'),
+    sourceFormat: LectureStudioFigureSourceFormatSchema,
+    byteSize: z.number().int().positive().max(LECTURE_STUDIO_MAX_FIGURE_BYTES),
+    width: z.number().int().positive().max(LECTURE_STUDIO_MAX_FIGURE_EDGE),
+    height: z.number().int().positive().max(LECTURE_STUDIO_MAX_FIGURE_EDGE),
+    sha256: sha256Schema,
+    origin: z.literal('user'),
+    createdAt: timestampSchema,
+  })
+  .strict()
+  .superRefine((figure, context) => {
+    if (figure.fileName !== `Figure-${figure.id}.jpg`) {
+      context.addIssue({
+        code: 'custom',
+        path: ['fileName'],
+        message: 'Figure file names must be derived from their opaque ID',
+      });
+    }
+  });
+export type LectureStudioFigureAsset = z.infer<typeof LectureStudioFigureAssetSchema>;
+
 export type PendingLectureRevisionArtifacts = Readonly<{
   outputProjectId: string;
   bindingId: string;
@@ -680,6 +821,14 @@ export type PendingLectureRevisionArtifacts = Readonly<{
   generationBriefSha256?: string;
   authoringPolicyVersion?: number;
   authoringPolicySha256?: string;
+  figureAssets?: readonly LectureStudioFigureAsset[];
+  /** Exact V2 recovery journal entries: two UTF-8 TeX files plus zero to five JPEG figures. */
+  bundleFiles?: readonly Readonly<{
+    name: string;
+    contentSha256: string;
+    byteSize: number;
+    encoding: 'utf8' | 'binary';
+  }>[];
   artifacts: readonly [
     Omit<LectureStudioArtifact, 'savedAt'>,
     Omit<LectureStudioArtifact, 'savedAt'>,
@@ -1085,6 +1234,28 @@ export const LectureSourceManifestSchema = z.discriminatedUnion('schemaVersion',
 ]);
 export type LectureSourceManifest = z.infer<typeof LectureSourceManifestSchema>;
 
+const LectureStudioEditedKindsSchema = z
+  .array(z.enum(['lecture-notes', 'slides']))
+  .min(1)
+  .max(2)
+  .refine(
+    (values) => new Set(values).size === values.length,
+    'Edited document kinds must be unique',
+  );
+
+export const LectureStudioRevisionAuthorshipSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('model') }).strict(),
+  z
+    .object({
+      kind: z.literal('manual'),
+      baseRevisionId: uuidSchema,
+      baseRevision: z.number().int().positive(),
+      editedKinds: LectureStudioEditedKindsSchema,
+    })
+    .strict(),
+]);
+export type LectureStudioRevisionAuthorship = z.infer<typeof LectureStudioRevisionAuthorshipSchema>;
+
 const LectureStudioRevisionBaseSchema = z.object({
   id: uuidSchema,
   studioId: uuidSchema,
@@ -1119,13 +1290,81 @@ export const LectureStudioRevisionV3Schema = LectureStudioRevisionBaseSchema.ext
   authoringPolicySha256: sha256Schema,
 }).strict();
 
+export const LectureStudioRevisionV4Schema = LectureStudioRevisionBaseSchema.extend({
+  schemaVersion: z.literal(4),
+  lectureNotesLatex: z.string().min(1).max(LECTURE_STUDIO_MAX_LATEX_LENGTH),
+  slidesLatex: z.string().min(1).max(LECTURE_STUDIO_MAX_LATEX_LENGTH),
+  generationBriefSnapshot: LectureStudioGenerationBriefValueSchema,
+  generationBriefSha256: sha256Schema,
+  authoringPolicyVersion: z.number().int().positive(),
+  authoringPolicySha256: sha256Schema,
+  invocation: ModelInvocationSchema.nullable(),
+  authorship: LectureStudioRevisionAuthorshipSchema,
+  figureAssets: z.array(LectureStudioFigureAssetSchema).max(LECTURE_STUDIO_MAX_FIGURES),
+})
+  .strict()
+  .superRefine((revision, context) => {
+    if ((revision.authorship.kind === 'model') !== (revision.invocation !== null)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['invocation'],
+        message: 'Model revisions require an invocation and manual revisions must not claim one',
+      });
+    }
+    if (
+      revision.authorship.kind === 'manual' &&
+      (revision.authorship.baseRevision >= revision.revision ||
+        revision.authorship.baseRevision + 1 !== revision.revision)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['authorship', 'baseRevision'],
+        message: 'Manual revisions must directly follow their exact base revision',
+      });
+    }
+    const figureIds = revision.figureAssets.map((figure) => figure.id);
+    const figureHashes = revision.figureAssets.map((figure) => figure.sha256);
+    if (
+      new Set(figureIds).size !== figureIds.length ||
+      new Set(figureHashes).size !== figureHashes.length
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['figureAssets'],
+        message: 'Revision figures must have unique IDs and content hashes',
+      });
+    }
+    revision.figureAssets.forEach((figure, index) => {
+      if (figure.studioId !== revision.studioId) {
+        context.addIssue({
+          code: 'custom',
+          path: ['figureAssets', index, 'studioId'],
+          message: 'Revision figures must belong to the same Lecture Studio',
+        });
+      }
+    });
+  });
+export type LectureStudioRevisionV4 = z.infer<typeof LectureStudioRevisionV4Schema>;
+
 export const LectureStudioRevisionSchema = z
   .discriminatedUnion('schemaVersion', [
     LectureStudioRevisionV1Schema,
     LectureStudioRevisionV2Schema,
     LectureStudioRevisionV3Schema,
+    LectureStudioRevisionV4Schema,
   ])
   .superRefine((revision, context) => {
+    if (
+      (revision.schemaVersion === 3 || revision.schemaVersion === 4) &&
+      revision.authoringPolicyVersion >= 7 &&
+      revision.generationBriefSnapshot.documentFeatures === undefined
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['generationBriefSnapshot', 'documentFeatures'],
+        message: 'Current authoring-policy revisions must freeze document features',
+      });
+    }
     const artifactKinds = new Set(revision.artifacts.map((artifact) => artifact.kind));
     if (!artifactKinds.has('lecture-notes') || !artifactKinds.has('slides')) {
       context.addIssue({
@@ -1527,12 +1766,180 @@ export const UpdateLectureStudioGenerationBriefInputSchema = z
   .object({
     studioId: uuidSchema,
     expectedVersion: z.number().int().positive(),
-    generationBrief: LectureStudioGenerationBriefValueSchema,
+    generationBrief: CurrentLectureStudioGenerationBriefValueSchema,
   })
   .strict();
 export type UpdateLectureStudioGenerationBriefInput = z.infer<
   typeof UpdateLectureStudioGenerationBriefInputSchema
 >;
+
+const LectureStudioManualLatexBodySchema = z
+  .string()
+  .min(1)
+  // Body validation is bounded at 200k; the larger full-LaTeX limit reserves wrapper headroom.
+  .max(LECTURE_STUDIO_MAX_MARKDOWN_LENGTH)
+  .refine(
+    (value) =>
+      !/\\(?:documentclass|begin\s*\{\s*document\s*\}|end\s*\{\s*document\s*\})/iu.test(value) &&
+      !value.includes('% GOSU-CONTENT-BEGIN') &&
+      !value.includes('% GOSU-CONTENT-END'),
+    'Manual LaTeX edits must contain a document body, not a wrapper',
+  );
+
+export const GetLectureStudioEditDraftInputSchema = z
+  .object({
+    studioId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+    baseRevisionId: uuidSchema,
+    baseRevision: z.number().int().positive(),
+  })
+  .strict();
+export type GetLectureStudioEditDraftInput = z.infer<typeof GetLectureStudioEditDraftInputSchema>;
+
+export const LectureStudioEditDraftSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    studioId: uuidSchema,
+    studioVersion: z.number().int().positive(),
+    baseRevisionId: uuidSchema,
+    baseRevision: z.number().int().positive(),
+    lectureNotesLatexBody: LectureStudioManualLatexBodySchema,
+    slidesLatexBody: LectureStudioManualLatexBodySchema,
+    figures: z.array(LectureStudioFigureAssetSchema).max(LECTURE_STUDIO_MAX_FIGURES),
+  })
+  .strict()
+  .superRefine((draft, context) => {
+    const ids = draft.figures.map((figure) => figure.id);
+    const hashes = draft.figures.map((figure) => figure.sha256);
+    if (new Set(ids).size !== ids.length || new Set(hashes).size !== hashes.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['figures'],
+        message: 'Draft figures must have unique IDs and content hashes',
+      });
+    }
+    draft.figures.forEach((figure, index) => {
+      if (figure.studioId !== draft.studioId) {
+        context.addIssue({
+          code: 'custom',
+          path: ['figures', index, 'studioId'],
+          message: 'Draft figures must belong to the same Lecture Studio',
+        });
+      }
+    });
+  });
+export type LectureStudioEditDraft = z.infer<typeof LectureStudioEditDraftSchema>;
+
+export const SaveLectureStudioManualRevisionInputSchema = z
+  .object({
+    studioId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+    baseRevisionId: uuidSchema,
+    baseRevision: z.number().int().positive(),
+    lectureNotesLatexBody: LectureStudioManualLatexBodySchema,
+    slidesLatexBody: LectureStudioManualLatexBodySchema,
+  })
+  .strict();
+export type SaveLectureStudioManualRevisionInput = z.infer<
+  typeof SaveLectureStudioManualRevisionInputSchema
+>;
+
+export const LectureStudioManualRevisionReceiptSchema = z
+  .object({
+    studio: LectureStudioSchema,
+    revision: LectureStudioRevisionV4Schema,
+  })
+  .strict()
+  .superRefine((receipt, context) => {
+    if (
+      receipt.revision.studioId !== receipt.studio.id ||
+      receipt.revision.revision !== receipt.studio.currentRevision ||
+      receipt.studio.status !== 'ready'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A manual revision receipt must identify the exact ready Studio revision',
+      });
+    }
+  });
+export type LectureStudioManualRevisionReceipt = z.infer<
+  typeof LectureStudioManualRevisionReceiptSchema
+>;
+
+export const ListLectureStudioFiguresInputSchema = z.object({ studioId: uuidSchema }).strict();
+export type ListLectureStudioFiguresInput = z.infer<typeof ListLectureStudioFiguresInputSchema>;
+
+export const ChooseLectureStudioFiguresInputSchema = z
+  .object({
+    studioId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
+export type ChooseLectureStudioFiguresInput = z.infer<typeof ChooseLectureStudioFiguresInputSchema>;
+
+export const RemoveLectureStudioFigureInputSchema = z
+  .object({
+    studioId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+    figureId: uuidSchema,
+    sha256: sha256Schema,
+  })
+  .strict();
+export type RemoveLectureStudioFigureInput = z.infer<typeof RemoveLectureStudioFigureInputSchema>;
+
+export const PreviewLectureStudioFigureInputSchema = z
+  .object({
+    studioId: uuidSchema,
+    figureId: uuidSchema,
+    sha256: sha256Schema,
+  })
+  .strict();
+export type PreviewLectureStudioFigureInput = z.infer<typeof PreviewLectureStudioFigureInputSchema>;
+
+export const LectureStudioFigureLibraryReceiptSchema = z
+  .object({
+    studio: LectureStudioSchema,
+    figures: z.array(LectureStudioFigureAssetSchema).max(LECTURE_STUDIO_MAX_FIGURES),
+  })
+  .strict()
+  .superRefine((receipt, context) => {
+    const ids = receipt.figures.map((figure) => figure.id);
+    const hashes = receipt.figures.map((figure) => figure.sha256);
+    if (new Set(ids).size !== ids.length || new Set(hashes).size !== hashes.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['figures'],
+        message: 'Figure library entries must have unique IDs and content hashes',
+      });
+    }
+    receipt.figures.forEach((figure, index) => {
+      if (figure.studioId !== receipt.studio.id) {
+        context.addIssue({
+          code: 'custom',
+          path: ['figures', index, 'studioId'],
+          message: 'Figure library entries must belong to the receipt Studio',
+        });
+      }
+    });
+  });
+export type LectureStudioFigureLibraryReceipt = z.infer<
+  typeof LectureStudioFigureLibraryReceiptSchema
+>;
+
+const LECTURE_STUDIO_MAX_FIGURE_BASE64_LENGTH = Math.ceil(LECTURE_STUDIO_MAX_FIGURE_BYTES / 3) * 4;
+
+export const LectureStudioFigurePreviewSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    figure: LectureStudioFigureAssetSchema,
+    jpegBase64: z
+      .string()
+      .min(4)
+      .max(LECTURE_STUDIO_MAX_FIGURE_BASE64_LENGTH)
+      .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u),
+  })
+  .strict();
+export type LectureStudioFigurePreview = z.infer<typeof LectureStudioFigurePreviewSchema>;
 
 export const SendLectureStudioMessageInputSchema = z
   .object({
@@ -1706,6 +2113,38 @@ export const LectureStudioGenerationOutputSchema = z
   .strict();
 export type LectureStudioGenerationOutput = z.infer<typeof LectureStudioGenerationOutputSchema>;
 
+export const LECTURE_STUDIO_MAX_REVISION_PATCH_OPERATIONS = 24;
+export const LECTURE_STUDIO_MAX_REVISION_PATCH_TEXT_LENGTH = 40_000;
+export const LECTURE_STUDIO_MAX_REVISION_PATCH_JSON_LENGTH = 100_000;
+
+export const LectureStudioRevisionPatchOperationSchema = z
+  .object({
+    document: z.enum(['lecture-notes', 'slides']),
+    find: z.string().min(1).max(LECTURE_STUDIO_MAX_REVISION_PATCH_TEXT_LENGTH),
+    replace: z.string().max(LECTURE_STUDIO_MAX_REVISION_PATCH_TEXT_LENGTH),
+  })
+  .strict();
+
+export const LectureStudioRevisionPatchOutputSchema = z
+  .object({
+    reply: boundedText(LECTURE_STUDIO_MAX_MESSAGE_LENGTH),
+    edits: z
+      .array(LectureStudioRevisionPatchOperationSchema)
+      .max(LECTURE_STUDIO_MAX_REVISION_PATCH_OPERATIONS),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (JSON.stringify(value).length > LECTURE_STUDIO_MAX_REVISION_PATCH_JSON_LENGTH) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Lecture Studio revision patch payload exceeds the bounded JSON size',
+      });
+    }
+  });
+export type LectureStudioRevisionPatchOutput = z.infer<
+  typeof LectureStudioRevisionPatchOutputSchema
+>;
+
 export const LECTURE_STUDIO_OUTPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -1727,6 +2166,40 @@ export const LECTURE_STUDIO_OUTPUT_SCHEMA = {
     },
   },
   required: ['reply', 'lectureNotesLatexBody', 'slidesLatexBody'],
+} as const;
+
+export const LECTURE_STUDIO_REVISION_PATCH_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    reply: { type: 'string', minLength: 1, maxLength: LECTURE_STUDIO_MAX_MESSAGE_LENGTH },
+    edits: {
+      type: 'array',
+      maxItems: LECTURE_STUDIO_MAX_REVISION_PATCH_OPERATIONS,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          document: { type: 'string', enum: ['lecture-notes', 'slides'] },
+          find: {
+            type: 'string',
+            minLength: 1,
+            maxLength: LECTURE_STUDIO_MAX_REVISION_PATCH_TEXT_LENGTH,
+            description:
+              'Exact unique substring copied from the current body. Include only enough surrounding text to make the match unique.',
+          },
+          replace: {
+            type: 'string',
+            maxLength: LECTURE_STUDIO_MAX_REVISION_PATCH_TEXT_LENGTH,
+            description:
+              'Bounded replacement for the exact matched substring. Use an empty string to delete it.',
+          },
+        },
+        required: ['document', 'find', 'replace'],
+      },
+    },
+  },
+  required: ['reply', 'edits'],
 } as const;
 
 export const LectureStudioTurnReceiptSchema = z
@@ -1793,6 +2266,12 @@ export const LECTURE_STUDIO_IPC_ERROR_CODES = [
   'lecture_external_source_not_found',
   'lecture_external_source_expired',
   'lecture_external_source_corrupt',
+  'lecture_figure_unavailable',
+  'lecture_figure_invalid',
+  'lecture_figure_too_large',
+  'lecture_figure_limit_reached',
+  'lecture_figure_in_use',
+  'lecture_figure_model_unsupported',
   'lecture_overleaf_source_conflict',
   'lecture_overleaf_source_not_ready',
   'overleaf_git_auth_required',

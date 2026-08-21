@@ -56,6 +56,7 @@ describe('Literature preload bridge', () => {
     await api.literature.importRecords({ projectId, format: 'bibtex' });
     await api.literature.exportRecords({ projectId, format: 'csv', recordIds: [recordId] });
     await api.literature.organize({ projectId, recordIds: [recordId] });
+    await api.literature.cancelOrganize({ projectId });
 
     expect(electron.ipcRenderer.invoke.mock.calls).toEqual([
       [LITERATURE_IPC_CHANNELS.list, { projectId }],
@@ -77,6 +78,7 @@ describe('Literature preload bridge', () => {
       [LITERATURE_IPC_CHANNELS.importRecords, { projectId, format: 'bibtex' }],
       [LITERATURE_IPC_CHANNELS.exportRecords, { projectId, format: 'csv', recordIds: [recordId] }],
       [LITERATURE_IPC_CHANNELS.organize, { projectId, recordIds: [recordId] }],
+      [LITERATURE_IPC_CHANNELS.cancelOrganize, { projectId }],
     ]);
   });
 

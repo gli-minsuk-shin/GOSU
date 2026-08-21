@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,6 +13,7 @@ import {
   lectureMarkdownToLatex,
 } from '../src/main/lecture-document-compiler';
 import { buildLectureLatexDocument } from '../src/main/lecture-latex-source';
+import type { LectureStudioFigureAsset } from '../src/shared/lecture-studio-contracts';
 
 const RUN_LOCAL_MACTEX_SMOKE =
   process.platform === 'darwin' &&
@@ -20,9 +21,30 @@ const RUN_LOCAL_MACTEX_SMOKE =
   existsSync('/Library/TeX/texbin/latexmk') &&
   existsSync('/usr/bin/sandbox-exec');
 const LOCAL_MACTEX_SMOKE_NOTES_PATH = process.env.GOSU_LECTURE_PDF_SMOKE_NOTES_PATH;
+const PDFTOTEXT_EXECUTABLE = ['/opt/homebrew/bin/pdftotext', '/usr/local/bin/pdftotext'].find(
+  existsSync,
+);
 
 function hash(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function figureAsset(bytes: Uint8Array): LectureStudioFigureAsset {
+  const id = '55555555-5555-4555-8555-555555555555';
+  return {
+    id,
+    studioId: '11111111-1111-4111-8111-111111111111',
+    displayName: 'Bounded plot.png',
+    fileName: `Figure-${id}.jpg`,
+    mediaType: 'image/jpeg',
+    sourceFormat: 'png',
+    byteSize: bytes.byteLength,
+    width: 640,
+    height: 480,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    origin: 'user',
+    createdAt: '2026-08-20T00:00:00.000Z',
+  };
 }
 
 function runLocalSmokeCommand(
@@ -247,6 +269,11 @@ describe('LectureDocumentCompiler', () => {
       'Canonical source',
       String.raw`\section{Result}
 $f'(x)=2x$ [M1].`,
+      {
+        includeSlideTitlePage: true,
+        showInlineEvidenceLabels: true,
+        includeSourcesUsedSection: false,
+      },
     );
 
     await compiler.compile({
@@ -260,6 +287,114 @@ $f'(x)=2x$ [M1].`,
     });
 
     expect(generatedSource).toBe(latex);
+  });
+
+  it('materializes only exact manifest-bound JPEG figures beside document.tex before sandboxing', async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0x11, 0x22, 0xff, 0xd9]);
+    const asset = figureAsset(jpeg);
+    let observedFigureMode = 0;
+    const run = vi.fn(
+      async (_executable: string, arguments_: readonly string[], options: { cwd: string }) => {
+        if (arguments_.at(-1) === '-v') return { stdout: 'Latexmk, Version 4.88', stderr: '' };
+        await expect(readFile(join(options.cwd, asset.fileName))).resolves.toEqual(jpeg);
+        observedFigureMode = (await lstat(join(options.cwd, asset.fileName))).mode & 0o777;
+        const output = arguments_.find((argument) => argument.startsWith('-outdir='))!.slice(8);
+        await writeFile(join(output, 'document.pdf'), Buffer.from('%PDF-1.7\nfigure\n%%EOF'));
+        return { stdout: '', stderr: '' };
+      },
+    );
+    const compiler = new LectureDocumentCompiler({
+      rootDirectory: () => join(root, 'artifacts'),
+      engineCandidates: [engine],
+      sandboxExecutable,
+      run,
+      platform: 'darwin',
+    });
+    const latex = buildLectureLatexDocument(
+      'lecture-notes',
+      'Figure source',
+      String.raw`\section{Result}
+\begin{center}
+\gosuimage{55555555-5555-4555-8555-555555555555}
+\end{center}`,
+      {
+        includeSlideTitlePage: true,
+        showInlineEvidenceLabels: true,
+        includeSourcesUsedSection: false,
+      },
+    );
+
+    await compiler.compile({
+      studioId: asset.studioId,
+      revision: 1,
+      title: 'Figure source',
+      kind: 'lecture-notes',
+      markdown: latex,
+      contentSha256: hash(latex),
+      sourceFormat: 'latex',
+      figureAssets: [{ asset, bytes: jpeg }],
+    });
+
+    expect(observedFigureMode).toBe(0o600);
+    expect(await readdir(join(root, 'artifacts'))).toEqual([]);
+  });
+
+  it('rejects missing, duplicated, cross-Studio, malformed, or hash-tampered figure assets before execution', async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0x11, 0x22, 0xff, 0xd9]);
+    const asset = figureAsset(jpeg);
+    const run = vi.fn();
+    const compiler = new LectureDocumentCompiler({
+      rootDirectory: () => join(root, 'artifacts'),
+      engineCandidates: [engine],
+      sandboxExecutable,
+      run,
+      platform: 'darwin',
+    });
+    const latex = buildLectureLatexDocument(
+      'lecture-notes',
+      'Figure source',
+      String.raw`\section{Result}
+\gosuimage{55555555-5555-4555-8555-555555555555}`,
+      {
+        includeSlideTitlePage: true,
+        showInlineEvidenceLabels: true,
+        includeSourcesUsedSection: false,
+      },
+    );
+    const base = {
+      studioId: asset.studioId,
+      revision: 1,
+      title: 'Figure source',
+      kind: 'lecture-notes' as const,
+      markdown: latex,
+      contentSha256: hash(latex),
+      sourceFormat: 'latex' as const,
+    };
+
+    const invalidInputs = [
+      { ...base, figureAssets: [] },
+      { ...base, figureAssets: [{ asset, bytes: Buffer.from(jpeg).fill(0, 3, 4) }] },
+      {
+        ...base,
+        figureAssets: [
+          { asset: { ...asset, studioId: '66666666-6666-4666-8666-666666666666' }, bytes: jpeg },
+        ],
+      },
+      { ...base, figureAssets: [{ asset, bytes: Buffer.from([0xff, 0xd8, 0xff, 0, 0]) }] },
+      {
+        ...base,
+        figureAssets: [
+          { asset, bytes: jpeg },
+          { asset, bytes: jpeg },
+        ],
+      },
+    ];
+    for (const input of invalidInputs) {
+      await expect(compiler.compile(input)).rejects.toMatchObject({
+        code: 'lecture_pdf_invalid',
+      });
+    }
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('binds compilation to the exact revision content hash and rejects active content', async () => {
@@ -462,6 +597,28 @@ $p$ & $1-p$ \\
         ? await readFile(LOCAL_MACTEX_SMOKE_NOTES_PATH, 'utf8')
         : buildLectureLatexDocument('lecture-notes', '한국어 강의', notesBody);
       const slides = buildLectureLatexDocument('slides', '한국어 슬라이드', slidesBody);
+      const hiddenFeatures = {
+        includeSlideTitlePage: false,
+        showInlineEvidenceLabels: false,
+        includeSourcesUsedSection: false,
+      } as const;
+      const hiddenNotes = buildLectureLatexDocument(
+        'lecture-notes',
+        '출처 목록 없는 강의',
+        String.raw`\section{Hidden evidence typography}
+[M1] Paragraph start stays intact.
+
+Cluster claim [M1] [M2].
+
+Mid sentence claim [M1] remains readable.`,
+        hiddenFeatures,
+      );
+      const hiddenSlides = buildLectureLatexDocument(
+        'slides',
+        '제목 슬라이드 없는 강의',
+        slidesBody,
+        hiddenFeatures,
+      );
 
       const notePdf = await compiler
         .compile({
@@ -489,17 +646,75 @@ $p$ & $1-p$ \\
         .catch((error: unknown) => {
           throw commandError ?? error;
         });
+      const hiddenNotePdf = await compiler
+        .compile({
+          studioId: '11111111-1111-4111-8111-111111111111',
+          revision: 2,
+          title: '출처 목록 없는 강의',
+          kind: 'lecture-notes',
+          markdown: hiddenNotes,
+          contentSha256: hash(hiddenNotes),
+          sourceFormat: 'latex',
+        })
+        .catch((error: unknown) => {
+          throw commandError ?? error;
+        });
+      const hiddenSlidePdf = await compiler
+        .compile({
+          studioId: '11111111-1111-4111-8111-111111111111',
+          revision: 2,
+          title: '제목 슬라이드 없는 강의',
+          kind: 'slides',
+          markdown: hiddenSlides,
+          contentSha256: hash(hiddenSlides),
+          sourceFormat: 'latex',
+        })
+        .catch((error: unknown) => {
+          throw commandError ?? error;
+        });
 
       expect(Buffer.from(notePdf.pdfBase64, 'base64').subarray(0, 5).toString()).toBe('%PDF-');
       expect(Buffer.from(slidePdf.pdfBase64, 'base64').subarray(0, 5).toString()).toBe('%PDF-');
+      expect(Buffer.from(hiddenNotePdf.pdfBase64, 'base64').subarray(0, 5).toString()).toBe(
+        '%PDF-',
+      );
+      expect(Buffer.from(hiddenSlidePdf.pdfBase64, 'base64').subarray(0, 5).toString()).toBe(
+        '%PDF-',
+      );
       expect(notePdf.sizeBytes).toBeGreaterThan(1_000);
       expect(slidePdf.sizeBytes).toBeGreaterThan(1_000);
+      expect(hiddenNotePdf.sizeBytes).toBeGreaterThan(1_000);
+      expect(hiddenSlidePdf.sizeBytes).toBeGreaterThan(1_000);
+      if (PDFTOTEXT_EXECUTABLE) {
+        const hiddenNotePath = join(root, 'hidden-evidence.pdf');
+        await writeFile(hiddenNotePath, hiddenNotePdf.pdfBase64, 'base64');
+        const extracted = await runLocalSmokeCommand(PDFTOTEXT_EXECUTABLE, [hiddenNotePath, '-'], {
+          cwd: root,
+          env: process.env,
+          timeoutMs: 10_000,
+          maxBytes: 1_000_000,
+        });
+        expect(extracted.stdout).toContain('Cluster claim.');
+        expect(extracted.stdout).not.toContain('Cluster claim .');
+        expect(extracted.stdout).toContain('Paragraph start stays intact.');
+        expect(extracted.stdout).toContain('Mid sentence claim remains readable.');
+      }
       const qaDirectory = process.env.GOSU_LECTURE_PDF_QA_DIRECTORY;
       if (qaDirectory) {
         await mkdir(qaDirectory, { recursive: true });
         await Promise.all([
           writeFile(join(qaDirectory, 'lecture-notes.pdf'), notePdf.pdfBase64, 'base64'),
           writeFile(join(qaDirectory, 'lecture-slides.pdf'), slidePdf.pdfBase64, 'base64'),
+          writeFile(
+            join(qaDirectory, 'lecture-notes-hidden-labels-no-sources.pdf'),
+            hiddenNotePdf.pdfBase64,
+            'base64',
+          ),
+          writeFile(
+            join(qaDirectory, 'lecture-slides-hidden-labels-no-title.pdf'),
+            hiddenSlidePdf.pdfBase64,
+            'base64',
+          ),
         ]);
       }
       expect(await readdir(join(root, 'artifacts'))).toEqual([]);

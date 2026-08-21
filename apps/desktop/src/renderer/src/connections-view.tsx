@@ -8,8 +8,10 @@ import type {
 } from '../../shared/ssh-contracts';
 import type {
   CreateRemoteWorkspaceGrantInput,
+  EnableTrustedRemoteWorkspaceInput,
   GrantedRemoteWorkspace,
   RemoveRemoteWorkspaceGrantInput,
+  RevokeTrustedRemoteWorkspaceInput,
   UpdateRemoteWorkspaceGrantInput,
 } from '../../shared/ssh-workspace-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
@@ -64,6 +66,8 @@ export function ConnectionsView({
   onCreateSshWorkspace,
   onUpdateSshWorkspace,
   onRemoveSshWorkspace,
+  onEnableTrustedWorkspace,
+  onRevokeTrustedWorkspace,
   sshWorkspaceSetupRequest = null,
   onSshWorkspaceSetupHandled = () => undefined,
 }: {
@@ -102,6 +106,8 @@ export function ConnectionsView({
   onCreateSshWorkspace: (input: CreateRemoteWorkspaceGrantInput) => Promise<unknown>;
   onUpdateSshWorkspace: (input: UpdateRemoteWorkspaceGrantInput) => Promise<unknown>;
   onRemoveSshWorkspace: (input: RemoveRemoteWorkspaceGrantInput) => Promise<unknown>;
+  onEnableTrustedWorkspace: (input: EnableTrustedRemoteWorkspaceInput) => Promise<unknown>;
+  onRevokeTrustedWorkspace: (input: RevokeTrustedRemoteWorkspaceInput) => Promise<unknown>;
   sshWorkspaceSetupRequest?: SshWorkspaceSetupRequest | null;
   onSshWorkspaceSetupHandled?: (requestId: number) => void;
 }) {
@@ -214,6 +220,8 @@ export function ConnectionsView({
         onCreate={onCreateSshWorkspace}
         onUpdate={onUpdateSshWorkspace}
         onRemove={onRemoveSshWorkspace}
+        onEnableTrustedWorkspace={onEnableTrustedWorkspace}
+        onRevokeTrustedWorkspace={onRevokeTrustedWorkspace}
         onTest={onTestSshConnection}
         testStatus={sshTestStatus}
         setupRequest={sshWorkspaceSetupRequest}

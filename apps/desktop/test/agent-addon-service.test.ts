@@ -37,11 +37,12 @@ describe('optional agent add-on detection boundary', () => {
     ]);
     expect(openClaw.capabilities.projectChatProvider).toBe('not_implemented');
     expect(hermes.capabilities.projectChatProvider).toBe('available');
+    expect(openClaw.capabilities.automaticInstaller).toBe('not_implemented');
+    expect(hermes.capabilities.automaticInstaller).toBe('bundled');
     for (const descriptor of AGENT_ADD_ON_DESCRIPTORS) {
       expect(descriptor.capabilities).toMatchObject({
         localInstallationDetection: 'available',
         setupGuidance: 'available',
-        automaticInstaller: 'not_implemented',
         credentialManagement: 'not_implemented',
       });
     }
@@ -231,6 +232,58 @@ describe('optional agent add-on detection boundary', () => {
       projectChatModel: null,
     });
     expect(connected).toBe(false);
+  });
+
+  it('reports a pinned bundled runtime without requiring a PATH installation', async () => {
+    const detector = new LocalCliAgentAddOnAdapter(hermes, {
+      pathEnvironment: '',
+      homeDirectory: '/Users/researcher',
+      isExecutable: vi.fn(async () => false),
+    });
+    let connected = false;
+    const adapter = new HermesAgentAddOnAdapter(hermes, detector, {
+      connectHermes: vi.fn(async () => {
+        connected = true;
+        return {
+          catalog: {
+            schemaVersion: 1 as const,
+            providerId: 'hermes',
+            catalogVersion: 'bundled-hermes-v1',
+            fetchedAt: '2026-08-21T00:00:00.000Z',
+            models: [
+              {
+                schemaVersion: 1 as const,
+                providerId: 'hermes',
+                modelId: 'hermes-configured-model',
+                displayName: 'Hermes configured model',
+                catalogVersion: 'bundled-hermes-v1',
+                isDefault: false,
+                modalities: ['text' as const],
+                reasoningOptions: [],
+                metadata: {
+                  runtime: 'gosu-bundled-hermes-sealed-shim',
+                  hermesVersion: '0.19.1',
+                },
+              },
+            ],
+          },
+          collaborationModes: { catalogVersion: 'modes-v1', modes: [] },
+        };
+      }),
+      disconnectHermes: vi.fn(async () => {
+        connected = false;
+      }),
+      isHermesConnected: () => connected,
+    });
+
+    await expect(adapter.connectLocal()).resolves.toMatchObject({
+      id: 'hermes',
+      state: 'bundled_runtime',
+      evidence: 'bundled_resource',
+      connected: true,
+      connectionMode: 'bundled-acp-agent',
+      version: '0.19.1',
+    });
   });
 
   it('validates explicit add-on connection requests', () => {

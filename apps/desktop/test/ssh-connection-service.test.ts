@@ -531,7 +531,7 @@ describe('SSH connection and Allow once service', () => {
       grantVersion: trusted.version,
       connectionId: CONNECTION_ID,
       connectionVersion: 1,
-      policyVersion: 1,
+      policyVersion: 2,
       operation: 'inspect',
       commandSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
     });
@@ -597,6 +597,45 @@ describe('SSH connection and Allow once service', () => {
     service.resolveApproval({ approvalId: request.id, decision: 'deny' });
     await expect(execution).rejects.toMatchObject({ code: 'ssh_approval_denied' });
     expect(storage.trustedWorkspaceAudit).toEqual([]);
+  });
+
+  it('expires a trusted binding created under an older safety policy', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: {
+          host: '203.0.113.10',
+          user: 'researcher',
+          localForwards: [],
+        },
+      }),
+    );
+    const { runner } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const created = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+    const trusted = await service.enableTrustedWorkspace({
+      projectId: PROJECT_ID,
+      grantId: created.id,
+      expectedVersion: created.version,
+      confirmTrustedWorkspaceRisk: true,
+      confirmNoRemoteSandbox: true,
+    });
+    storage.workspaceGrants.set(trusted.id, {
+      ...trusted,
+      trustedAccess: trusted.trustedAccess && {
+        ...trusted.trustedAccess,
+        policyVersion: 1,
+      },
+    });
+
+    await expect(service.listWorkspaceGrants(PROJECT_ID)).resolves.toMatchObject([
+      { grant: { id: trusted.id, trustedAccess: null } },
+    ]);
   });
 
   it('fails closed before transport when the trusted-operation audit cannot be stored', async () => {
@@ -808,13 +847,13 @@ describe('SSH connection and Allow once service', () => {
     ).rejects.toMatchObject({ code: 'ssh_unavailable' });
   });
 
-  it('does not permit trusted workspace mode for root SSH accounts', async () => {
+  it('requires the additional root warning before enabling project-scoped ROOT auto-run', async () => {
     const storage = new MemorySshStorage(
       connectionFixture({
         directTarget: { host: '203.0.113.10', user: 'root', localForwards: [] },
       }),
     );
-    const { runner } = runnerFixture();
+    const { runner, execute } = runnerFixture({ stdout: ' M src/model.py\n' });
     const service = new SshConnectionService(storage, runner, { now: () => NOW });
     const grant = await service.createWorkspaceGrant({
       projectId: PROJECT_ID,
@@ -830,6 +869,55 @@ describe('SSH connection and Allow once service', () => {
         expectedVersion: grant.version,
         confirmTrustedWorkspaceRisk: true,
         confirmNoRemoteSandbox: true,
+      }),
+    ).rejects.toMatchObject({ code: 'ssh_trusted_workspace_not_allowed' });
+
+    const trusted = await service.enableTrustedWorkspace({
+      projectId: PROJECT_ID,
+      grantId: grant.id,
+      expectedVersion: grant.version,
+      confirmTrustedWorkspaceRisk: true,
+      confirmNoRemoteSandbox: true,
+      confirmRootTrustedWorkspaceRisk: true,
+    });
+    await expect(
+      service.runAgentWorkspaceCommand(
+        workspaceCommandFixture(trusted, { args: ['status', '--short'] }),
+      ),
+    ).resolves.toMatchObject({ stdout: ' M src/model.py\n' });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(storage.trustedWorkspaceAudit).toHaveLength(1);
+    expect(storage.trustedWorkspaceAudit[0]).toMatchObject({
+      projectId: PROJECT_ID,
+      grantId: trusted.id,
+      policyVersion: 2,
+    });
+  });
+
+  it('does not enable auto-run when the direct SSH user is unresolved', async () => {
+    const storage = new MemorySshStorage(
+      connectionFixture({
+        directTarget: { host: '203.0.113.10', localForwards: [] },
+      }),
+    );
+    const { runner } = runnerFixture();
+    const service = new SshConnectionService(storage, runner, { now: () => NOW });
+    const grant = await service.createWorkspaceGrant({
+      projectId: PROJECT_ID,
+      connectionId: CONNECTION_ID,
+      canonicalRoot: '/workspace/research-project',
+      permissionMode: 'workspace',
+      confirmWorkspaceRisk: true,
+    });
+
+    await expect(
+      service.enableTrustedWorkspace({
+        projectId: PROJECT_ID,
+        grantId: grant.id,
+        expectedVersion: grant.version,
+        confirmTrustedWorkspaceRisk: true,
+        confirmNoRemoteSandbox: true,
+        confirmRootTrustedWorkspaceRisk: true,
       }),
     ).rejects.toMatchObject({ code: 'ssh_trusted_workspace_not_allowed' });
   });

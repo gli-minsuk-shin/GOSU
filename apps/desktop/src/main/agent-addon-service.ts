@@ -118,16 +118,32 @@ export class HermesAgentAddOnAdapter implements AgentAddOnAdapter {
   }
 
   async connectLocal(): Promise<AgentAddOnStatus> {
-    const detected = await this.detector.detectLocalInstallation();
-    if (detected.state !== 'detected_local_cli') throw new Error('hermes_not_detected');
     const { catalog } = await this.projectChat.connectHermes();
     const model = catalog.models.find((candidate) => candidate.providerId === 'hermes');
     if (!model) throw new Error('hermes_project_chat_model_missing');
+    const bundled = model.metadata?.runtime === 'gosu-bundled-hermes-sealed-shim';
+    const detected = bundled
+      ? ({
+          id: 'hermes',
+          state: 'bundled_runtime',
+          evidence: 'bundled_resource',
+          connected: false,
+          connectionMode: null,
+          version: null,
+          projectChatModel: null,
+        } as const)
+      : await this.detector.detectLocalInstallation();
+    if (!bundled && detected.state !== 'detected_local_cli') {
+      throw new Error('hermes_not_detected');
+    }
     this.connectedStatus = {
       ...detected,
       connected: true,
-      connectionMode: 'byo-local-acp-agent',
-      version: null,
+      connectionMode: bundled ? 'bundled-acp-agent' : 'byo-local-acp-agent',
+      version:
+        typeof model.metadata?.hermesVersion === 'string'
+          ? model.metadata.hermesVersion.slice(0, 64)
+          : null,
       projectChatModel: {
         providerId: model.providerId,
         modelId: model.modelId,

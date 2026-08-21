@@ -8,6 +8,7 @@
  * credentials from the tool environment, and restricts every agent to an empty native tool surface.
  */
 import { HERMES_PROVIDER_ENVIRONMENT_NAME_LIST } from './hermes-acp-profile';
+import { GOSU_HERMES_VERSION } from './hermes-runtime-bundle';
 
 export const HERMES_ACP_READ_ONLY_TOOLSET = 'gosu-acp-readonly';
 export const HERMES_ACP_DENIED_TOOLSET = 'gosu-acp-denied';
@@ -29,7 +30,7 @@ import sys
 import tomllib
 from urllib.parse import urlsplit, urlunsplit
 
-SUPPORTED_HERMES_VERSION = "0.19.1"
+SUPPORTED_HERMES_VERSION = ${JSON.stringify(GOSU_HERMES_VERSION)}
 DENIED_RUNTIME_PROVIDERS = {
     "moa",
     "copilot-acp",
@@ -555,6 +556,7 @@ export function sealedHermesAcpCommand(input: {
     executable: input.pythonPath,
     args: [
       '-I',
+      '-B',
       '-c',
       HERMES_SEALED_ACP_SOURCE,
       input.rootPath,

@@ -35,6 +35,9 @@ const INSTALLATION: HermesInstallation = {
   launcherPath: '/Users/researcher/.local/bin/hermes',
   pythonPath: '/Users/researcher/.hermes/hermes-agent/venv/bin/python',
   rootPath: '/Users/researcher/.hermes/hermes-agent',
+  source: 'custom-local',
+  version: '0.19.1',
+  manifestSha256: null,
 };
 
 const CONFIGURED_MODEL_ID = 'provider/fixture-model';
@@ -188,7 +191,7 @@ function runFakePreflight(
   apiKey: string,
   extraEnvironment: NodeJS.ProcessEnv = {},
 ) {
-  return spawnSync('python3', ['-I', '-c', HERMES_SEALED_SHIM_SOURCE, 'check', root], {
+  return spawnSync('python3', ['-I', '-B', '-c', HERMES_SEALED_SHIM_SOURCE, 'check', root], {
     encoding: 'utf8',
     env: {
       PATH: process.env.PATH,
@@ -334,7 +337,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
     expect(platform.requests).toHaveLength(1);
     expect(platform.requests[0]).toMatchObject({
       executable: INSTALLATION.pythonPath,
-      args: ['-I', '-c', HERMES_SEALED_SHIM_SOURCE, 'check', INSTALLATION.rootPath],
+      args: ['-I', '-B', '-c', HERMES_SEALED_SHIM_SOURCE, 'check', INSTALLATION.rootPath],
       stdin: '',
       maxStdoutBytes: 16 * 1_024,
       maxStderrBytes: 32 * 1_024,
@@ -498,6 +501,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
         'python3',
         [
           '-I',
+          '-B',
           '-c',
           HERMES_SEALED_ACP_SOURCE,
           root,
@@ -735,6 +739,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
       KIMI_API_KEY: 'kimi-key',
       HERMES_SAFE_MODE: '1',
       HERMES_SESSION_SOURCE: 'gosu',
+      PYTHONDONTWRITEBYTECODE: '1',
     });
     expect(environment.SSH_AUTH_SOCK).toBeUndefined();
     expect(environment.SEARXNG_URL).toBeUndefined();
@@ -795,7 +800,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
     const request = platform.requests.at(-1)!;
 
     expect(request.executable).toBe(INSTALLATION.pythonPath);
-    expect(request.args.slice(0, 3)).toEqual(['-I', '-c', HERMES_SEALED_SHIM_SOURCE]);
+    expect(request.args.slice(0, 4)).toEqual(['-I', '-B', '-c', HERMES_SEALED_SHIM_SOURCE]);
     expect(request.args).toContain('run');
     expect(request.args).toContain(CONFIGURED_MODEL_ID);
     expect(request.args).toContain(CONFIGURED_PROVIDER_ID);

@@ -36,6 +36,7 @@ import {
   type SaveResearchNoteForAgentInput,
 } from '../src/main/research-notes-service';
 import { WorkspaceService } from '../src/main/workspace-service';
+import type { ModelUsageService } from '../src/main/model-usage-service';
 import type {
   ProjectChatAction,
   ProjectChatAttempt,
@@ -731,6 +732,7 @@ class MemoryChatStorage implements ProjectChatStorage {
       contextScope: input.contextScope,
       localNotesVault: input.localNotesVault ?? null,
       customInstructions: input.customInstructions,
+      policyRules: input.policyRules ?? current.policyRules,
       instructionRevision: {
         id: randomUUID(),
         revision: nextVersion,
@@ -1269,6 +1271,7 @@ async function fixture(
   experiments?: ProjectAgentExperiments,
   hermes?: ProjectAgentHermes,
   manuscripts?: ProjectAgentManuscripts,
+  usage?: Pick<ModelUsageService, 'bindThread' | 'releaseThread'>,
 ) {
   const workspaceStorage = new MemoryWorkspaceStorage();
   const workspace = new WorkspaceService(workspaceStorage);
@@ -1351,11 +1354,24 @@ async function fixture(
     ...(experiments ? { experiments } : {}),
     ...(attachments ? { attachments } : {}),
     ...(vault ? { vault } : {}),
+    ...(usage ? { usage } : {}),
     ...(titleJobTimeoutMs === undefined ? {} : { titleJobTimeoutMs }),
     ...(queueSchedulerRetryDelaysMs === undefined ? {} : { queueSchedulerRetryDelaysMs }),
     prepareProjectDirectory: async (projectId) => `/isolated/${projectId}`,
   });
-  return { workspace, storage, codex, chat, literature, hermes, ssh, projectA, projectB, taskA };
+  return {
+    workspace,
+    storage,
+    codex,
+    chat,
+    literature,
+    hermes,
+    ssh,
+    usage,
+    projectA,
+    projectB,
+    taskA,
+  };
 }
 
 async function activeLocalNotesTurn(
@@ -2429,11 +2445,14 @@ describe('ProjectChatService', () => {
 
   it('versions a project-local profile and records the resolved prompt provenance', async () => {
     const { chat, codex, storage, projectA } = await fixture();
+    const secondSession = await chat.createSession({ projectId: projectA.id });
+    const policyRule = 'Always label simulated measurements as simulated.';
     expect((await chat.snapshot({ projectId: projectA.id })).profile).toMatchObject({
       version: 0,
       harnessMode: 'context',
       webSearchMode: 'cached',
       customInstructions: '',
+      policyRules: [],
     });
 
     const profile = await chat.updateProfile({
@@ -2444,6 +2463,7 @@ describe('ProjectChatService', () => {
       webSearchMode: 'live',
       contextScope: 'board',
       customInstructions: 'Prefer falsifiable next steps.',
+      policyRules: [policyRule],
     });
     await expect(
       chat.updateProfile({
@@ -2472,7 +2492,7 @@ describe('ProjectChatService', () => {
       profileVersion: 1,
       instructionRevisionId: profile.instructionRevision?.id,
       promptProvenance: {
-        assemblyVersion: 3,
+        assemblyVersion: 4,
         profileVersion: 1,
         instructionRevisionId: profile.instructionRevision?.id,
         requestedLegacyHarnessMode: 'planner',
@@ -2482,6 +2502,10 @@ describe('ProjectChatService', () => {
         nativePersonality: 'auto',
         nativeResponseVerbosity: 'high',
         effectiveReasoningOptionId: 'medium',
+        policyRuleCount: 1,
+        policyRulesSha256: createHash('sha256')
+          .update(JSON.stringify([policyRule]), 'utf8')
+          .digest('hex'),
       },
     });
     expect(attempt?.promptProvenance?.promptCharacters).toBe(codex.prompts[0]?.length);
@@ -2490,6 +2514,7 @@ describe('ProjectChatService', () => {
     expect(codex.developerInstructions[0]).toContain('explicitly provided GOSU tools');
     expect(codex.webSearchModes[0]).toBe('live');
     expect(codex.prompts[0]).toContain('Prefer falsifiable next steps.');
+    expect(codex.prompts[0]?.match(new RegExp(policyRule, 'g'))).toHaveLength(1);
     expect(codex.turnSettings[0]).toMatchObject({
       collaborationModeId: 'plan',
       expectedCollaborationModeCatalogVersion: 'd'.repeat(64),
@@ -2498,8 +2523,53 @@ describe('ProjectChatService', () => {
     });
     expect(codex.responseVerbosities[0]).toBe('high');
 
+    const secondReceipt = await chat.send({
+      projectId: projectA.id,
+      sessionId: secondSession.id,
+      message: 'Check the same project policy from another session.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      profileVersion: profile.version,
+    });
+    expect(codex.prompts[1]?.match(new RegExp(policyRule, 'g'))).toHaveLength(1);
+
     codex.complete(receipt.turnId, { reply: 'Plan ready', actions: [] });
+    codex.complete(secondReceipt.turnId, { reply: 'Policy retained', actions: [] });
     await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id, secondSession.id).messages).toHaveLength(2),
+    );
+  });
+
+  it('does not invalidate accepted queued turns by changing the project policy version', async () => {
+    const { chat, storage, projectA } = await fixture();
+    const [session] = await chat.listSessions({ projectId: projectA.id });
+    const now = new Date().toISOString();
+    storage.enqueueProjectChatTurn({
+      id: randomUUID(),
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Already accepted queued request',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      priority: 'normal',
+      status: 'queued',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await expect(
+      chat.updateProfile({
+        projectId: projectA.id,
+        expectedVersion: 0,
+        harnessMode: 'context',
+        responseDepth: 'standard',
+        contextScope: 'project',
+        customInstructions: '',
+        policyRules: ['Keep accepted queue inputs version-stable.'],
+      }),
+    ).rejects.toThrow('chat_busy');
+    expect(storage.getProjectChatProfile(projectA.id).policyRules).toEqual([]);
   });
 
   it('requires the currently selected Vault before saving a project Local Notes grant', async () => {
@@ -2953,7 +3023,7 @@ describe('ProjectChatService', () => {
     // discloses that the model may quote or summarize a note in the stored/synced answer.
     expect(assistant.content).toContain(content);
     expect(storage.getChatAttempt(projectA.id, receipt.attemptId)?.promptProvenance).toMatchObject({
-      assemblyVersion: 3,
+      assemblyVersion: 4,
       localNotesVaultId: vaultId,
     });
   });
@@ -3550,7 +3620,7 @@ describe('ProjectChatService', () => {
       personality: 'friendly',
       responseVerbosity: 'high',
       promptProvenance: {
-        assemblyVersion: 3,
+        assemblyVersion: 4,
         requestedLegacyHarnessMode: 'reviewer',
         nativeCollaborationModeId: null,
         nativeExecutionKind: 'legacy-reviewer',
@@ -3593,7 +3663,7 @@ describe('ProjectChatService', () => {
       personality: 'friendly',
       responseVerbosity: 'low',
       promptProvenance: {
-        assemblyVersion: 3,
+        assemblyVersion: 4,
         requestedLegacyHarnessMode: 'planner',
         nativeCollaborationModeId: 'plan',
         nativeExecutionKind: 'plan',
@@ -3641,7 +3711,7 @@ describe('ProjectChatService', () => {
       harnessMode: 'context',
       collaborationModeId: null,
       promptProvenance: {
-        assemblyVersion: 3,
+        assemblyVersion: 4,
         requestedLegacyHarnessMode: 'context',
         nativeCollaborationModeId: null,
         nativeExecutionKind: 'default',
@@ -3696,7 +3766,7 @@ describe('ProjectChatService', () => {
       harnessMode: 'context',
       collaborationModeId: 'research-focus-v2',
       promptProvenance: {
-        assemblyVersion: 3,
+        assemblyVersion: 4,
         nativeCollaborationModeId: 'research-focus-v2',
         nativeExecutionKind: 'default',
         nativeCollaborationCatalogSha256: 'e'.repeat(64),
@@ -4769,6 +4839,57 @@ describe('ProjectChatService', () => {
     expect(
       storage.snapshot(projectA.id, branch.id).messages.map((message) => message.content),
     ).toEqual(['First question', 'First answer', 'Branch-only question', 'Branch-only answer']);
+  });
+
+  it('binds primary and branch-title model turns to their exact Project Chat scopes', async () => {
+    const usage = {
+      bindThread: vi.fn<ModelUsageService['bindThread']>(),
+      releaseThread: vi.fn<ModelUsageService['releaseThread']>(),
+    };
+    const { chat, codex, storage, projectA } = await fixture(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      usage,
+    );
+    const primary = await chat.send({
+      projectId: projectA.id,
+      message: 'Create an attributed branch point.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const sourceSession = storage.snapshot(projectA.id).session!;
+    expect(usage.bindThread).toHaveBeenCalledWith(expect.any(String), {
+      workloadKind: 'project_chat',
+      projectId: projectA.id,
+      projectChatSessionId: sourceSession.id,
+      projectChatAttemptId: primary.attemptId,
+    });
+    codex.complete(primary.turnId, { reply: 'Attributed answer.', actions: [] });
+    await vi.waitFor(() => expect(usage.releaseThread).toHaveBeenCalled());
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(2));
+
+    codex.modelCatalog = branchTitleModelCatalog();
+    codex.beforeRunReturns = (_threadId, turnId) => {
+      codex.complete(turnId, JSON.stringify({ title: 'Attributed branch title' }));
+    };
+    const source = storage.snapshot(projectA.id);
+    const branch = await chat.branchSession({
+      projectId: projectA.id,
+      sourceSessionId: source.session!.id,
+      branchFromMessageId: source.messages[1]!.id,
+    });
+    await vi.waitFor(() =>
+      expect(usage.bindThread).toHaveBeenCalledWith(expect.any(String), {
+        workloadKind: 'project_chat_title',
+        projectId: projectA.id,
+        projectChatSessionId: branch.id,
+      }),
+    );
   });
 
   it('renames a durable branch with the live provider default and first advertised reasoning option', async () => {

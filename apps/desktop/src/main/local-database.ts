@@ -69,6 +69,9 @@ import {
 } from '../shared/literature-search-tags';
 import {
   LECTURE_STUDIO_MAX_MESSAGES,
+  LECTURE_STUDIO_MAX_FIGURES,
+  LECTURE_STUDIO_MAX_FIGURE_BYTES,
+  LECTURE_STUDIO_MAX_FIGURE_EDGE,
   LECTURE_STUDIO_MAX_RETAINED_FAILURE_ATTEMPTS,
   LECTURE_STUDIO_MAX_REVISIONS,
   LECTURE_STUDIO_MAX_STORED_STUDIOS,
@@ -81,10 +84,14 @@ import {
   LectureStudioAttemptValidationSchema,
   EmptyLectureStudioTrashInputSchema,
   EmptyLectureStudioTrashReceiptSchema,
+  CurrentLectureStudioGenerationBriefValueSchema,
   LectureStudioGenerationBriefSchema,
   LectureStudioGenerationBriefValueSchema,
+  LectureStudioFigureAssetSchema,
+  LectureStudioFigureLibraryReceiptSchema,
   LectureStudioMessageSchema,
   LectureStudioRevisionSchema,
+  LectureStudioRevisionV4Schema,
   LectureStudioSchema,
   LectureStudioSummarySchema,
   UpdateLectureStudioGenerationBriefInputSchema,
@@ -94,8 +101,11 @@ import {
   type LectureStudioAttemptTerminalCode,
   type LectureStudioAttemptValidation,
   type LectureStudioDetail,
+  type LectureStudioFigureAsset,
+  type LectureStudioFigureLibraryReceipt,
   type LectureStudioMessage,
   type LectureStudioRevision,
+  type LectureStudioRevisionV4,
   type LectureStudioSummary,
   type EmptyLectureStudioTrashInput,
   type EmptyLectureStudioTrashReceipt,
@@ -107,6 +117,7 @@ import {
   type OverleafGitBindingConfiguration,
   type StoredManuscriptWorkspaceConnection,
 } from '../shared/manuscript-workspace-contracts';
+import type { ModelUsageWorkloadKind } from '../shared/model-usage-contracts';
 import {
   AbandonProjectChatResearchNoteSaveInputSchema,
   ConfirmProjectChatResearchNoteSaveInputSchema,
@@ -123,6 +134,7 @@ import {
   PROJECT_CHAT_MAX_QUEUED_TURNS_PER_SESSION,
   PROJECT_CHAT_MAX_SESSIONS_PER_PROJECT,
   ProjectChatProfileSchema,
+  ProjectChatPolicyRulesSchema,
   ProjectChatQueuedTurnSchema,
   ProjectChatResearchNoteSaveReceiptSchema,
   ProjectChatResearchNoteSaveStageSchema,
@@ -205,6 +217,66 @@ const MANUSCRIPT_ARTIFACT_PURGE_BATCH_LIMIT = 512;
 const MANUSCRIPT_ARTIFACT_PURGE_PROJECT_FILTER_LIMIT = 128;
 const MANUSCRIPT_CREDENTIAL_CLEANUP_BATCH_LIMIT = 256;
 const ExperimentMetricPointDraftSchema = ExperimentMetricPointSchema.omit({ sequence: true });
+
+export type ModelUsageAttributionInput = Readonly<{
+  workloadKind: ModelUsageWorkloadKind;
+  projectId: string;
+  projectChatSessionId?: string | null;
+  projectChatAttemptId?: string | null;
+  lectureStudioId?: string | null;
+  lectureAttemptId?: string | null;
+}>;
+
+export type ModelUsageConnectionSnapshot = Readonly<{
+  connectionKey: string;
+  connectionLabel: string;
+  upstreamProviderId: string | null;
+}>;
+
+export type ModelUsageAbsoluteTotals = Readonly<{
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedReadTokens: number | null;
+  cachedWriteTokens: number | null;
+  reasoningOutputTokens: number | null;
+}>;
+
+export type StoredModelUsageRow = Readonly<{
+  invocationId: string;
+  providerId: string;
+  threadId: string;
+  turnId: string;
+  resolvedModelId: string;
+  startedAt: string;
+  coverage: 'pending' | 'exact' | 'partial' | 'unavailable';
+  terminalStatus: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedReadTokens: number | null;
+  cachedWriteTokens: number | null;
+  reasoningOutputTokens: number | null;
+  workloadKind: ModelUsageWorkloadKind;
+  projectId: string;
+  projectChatSessionId: string | null;
+  projectChatAttemptId: string | null;
+  lectureStudioId: string | null;
+  lectureAttemptId: string | null;
+  connectionKey: string;
+  connectionLabel: string;
+  upstreamProviderId: string | null;
+}>;
+
+export type StoredLectureUsageAttempt = Readonly<{
+  studioId: string;
+  studioTitle: string;
+  attemptId: string;
+  projectId: string;
+  status: 'running' | 'succeeded' | 'failed' | 'interrupted';
+  startedAt: string;
+  completedAt: string | null;
+}>;
 
 function validateOverleafGitBindingConfiguration(
   configuration: OverleafGitBindingConfiguration,
@@ -1039,9 +1111,33 @@ type LectureStudioRevisionRow = Readonly<{
   generation_brief_sha256: string | null;
   authoring_policy_version: number | null;
   authoring_policy_sha256: string | null;
+  authorship_json: string | null;
+  figure_assets_json: string | null;
   artifacts_json: string;
   invocation_json: string;
   created_at: string;
+}>;
+
+type LectureStudioFigureRow = Readonly<{
+  id: string;
+  studio_id: string;
+  display_name: string;
+  file_name: string;
+  media_type: 'image/jpeg';
+  source_format: LectureStudioFigureAsset['sourceFormat'];
+  byte_size: number;
+  width: number;
+  height: number;
+  sha256: string;
+  origin: 'user';
+  image_bytes: Buffer;
+  created_at: string;
+  deleted_at: string | null;
+}>;
+
+export type StoredLectureStudioFigure = Readonly<{
+  asset: LectureStudioFigureAsset;
+  bytes: Uint8Array;
 }>;
 
 function toExperimentIdea(row: ExperimentIdeaRow): ExperimentIdea {
@@ -1509,6 +1605,85 @@ function migrateLectureStudioRevisionGenerationBrief(database: Database.Database
   `);
 }
 
+function migrateLectureStudioRevisionV4AndFigures(database: Database.Database) {
+  const columns = database.pragma('table_info(lecture_studio_revisions)') as Array<{
+    name: string;
+  }>;
+  if (!columns.some((column) => column.name === 'authorship_json')) {
+    database.exec(
+      `alter table lecture_studio_revisions
+       add column authorship_json text
+       check (authorship_json is null or length(authorship_json) between 2 and 4096)`,
+    );
+  }
+  if (!columns.some((column) => column.name === 'figure_assets_json')) {
+    database.exec(
+      `alter table lecture_studio_revisions
+       add column figure_assets_json text
+       check (figure_assets_json is null or length(figure_assets_json) between 2 and 32768)`,
+    );
+  }
+  database.exec(`
+    create trigger if not exists lecture_studio_revisions_v4_insert
+      before insert on lecture_studio_revisions
+      when
+        (new.authorship_json is null) != (new.figure_assets_json is null)
+        or (new.authorship_json is null and new.invocation_json = 'null')
+        or (new.authorship_json is not null and (
+          json_valid(new.authorship_json) != 1
+          or json_extract(new.authorship_json,'$.kind') not in ('model','manual')
+          or ((json_extract(new.authorship_json,'$.kind') = 'manual') !=
+              (new.invocation_json = 'null'))
+        ))
+      begin
+        select raise(abort,'lecture_revision_v4_provenance_required');
+      end;
+    create table if not exists lecture_studio_figures (
+      id text primary key check (length(id) = 36),
+      studio_id text not null check (length(studio_id) = 36),
+      display_name text not null check (length(display_name) between 1 and 256),
+      file_name text not null check (length(file_name) between 1 and 64),
+      media_type text not null check (media_type = 'image/jpeg'),
+      source_format text not null check (
+        source_format in ('png','jpeg','gif','webp','tiff','bmp','avif')
+      ),
+      byte_size integer not null check (
+        byte_size between 1 and ${LECTURE_STUDIO_MAX_FIGURE_BYTES}
+      ),
+      width integer not null check (width between 1 and ${LECTURE_STUDIO_MAX_FIGURE_EDGE}),
+      height integer not null check (height between 1 and ${LECTURE_STUDIO_MAX_FIGURE_EDGE}),
+      sha256 text not null check (length(sha256) = 64),
+      origin text not null check (origin = 'user'),
+      image_bytes blob not null check (length(image_bytes) = byte_size),
+      created_at text not null,
+      deleted_at text,
+      foreign key(studio_id) references lecture_studios(id) on delete cascade
+    );
+    create index if not exists lecture_studio_figures_by_studio
+      on lecture_studio_figures(studio_id,deleted_at,created_at,id);
+    create unique index if not exists lecture_studio_active_figure_hash
+      on lecture_studio_figures(studio_id,sha256) where deleted_at is null;
+    create trigger if not exists lecture_studio_figures_active_limit_insert
+      before insert on lecture_studio_figures
+      when new.deleted_at is null and (
+        select count(*) from lecture_studio_figures
+        where studio_id=new.studio_id and deleted_at is null
+      ) >= ${LECTURE_STUDIO_MAX_FIGURES}
+      begin
+        select raise(abort,'lecture_studio_figure_limit_reached');
+      end;
+    create trigger if not exists lecture_studio_figures_active_limit_restore
+      before update of deleted_at on lecture_studio_figures
+      when old.deleted_at is not null and new.deleted_at is null and (
+        select count(*) from lecture_studio_figures
+        where studio_id=new.studio_id and deleted_at is null
+      ) >= ${LECTURE_STUDIO_MAX_FIGURES}
+      begin
+        select raise(abort,'lecture_studio_figure_limit_reached');
+      end;
+  `);
+}
+
 function migrateLectureStudioMessageAttachments(database: Database.Database) {
   const columns = database.pragma('table_info(lecture_studio_messages)') as Array<{
     name: string;
@@ -1756,10 +1931,19 @@ function pruneLectureStudioFailureAttempts(database: Database.Database, studioId
       : [{ studio_id: studioId }];
   const prune = database.prepare(
     `delete from lecture_studio_attempts
-     where studio_id=? and status in ('failed','interrupted') and rowid not in (
-       select rowid from lecture_studio_attempts
-       where studio_id=? and status in ('failed','interrupted')
-       order by started_at desc,rowid desc
+     where studio_id=? and status in ('failed','interrupted')
+       and id not in (
+         select lecture_attempt_id from model_usage_attributions
+         where lecture_attempt_id is not null
+       )
+       and rowid not in (
+       select candidate.rowid from lecture_studio_attempts candidate
+       where candidate.studio_id=? and candidate.status in ('failed','interrupted')
+         and candidate.id not in (
+           select lecture_attempt_id from model_usage_attributions
+           where lecture_attempt_id is not null
+         )
+       order by candidate.started_at desc,candidate.rowid desc
        limit ?
      )`,
   );
@@ -1798,10 +1982,24 @@ function toLectureStudioRevision(row: LectureStudioRevisionRow): LectureStudioRe
   if (provenanceCount !== 0 && provenanceCount !== provenanceValues.length) {
     throw new Error('invalid_lecture_revision_generation_brief_provenance');
   }
+  const v4Values = [row.authorship_json, row.figure_assets_json];
+  const v4Count = v4Values.filter((value) => value !== null).length;
+  if (v4Count !== 0 && v4Count !== v4Values.length) {
+    throw new Error('invalid_lecture_revision_v4_provenance');
+  }
   const schemaVersion =
-    row.lecture_notes_latex === null ? 1 : provenanceCount === provenanceValues.length ? 3 : 2;
+    row.lecture_notes_latex === null
+      ? 1
+      : v4Count === v4Values.length
+        ? 4
+        : provenanceCount === provenanceValues.length
+          ? 3
+          : 2;
+  if (schemaVersion === 4 && provenanceCount !== provenanceValues.length) {
+    throw new Error('invalid_lecture_revision_v4_generation_provenance');
+  }
   const generationBriefSnapshot =
-    schemaVersion === 3
+    schemaVersion === 3 || schemaVersion === 4
       ? LectureStudioGenerationBriefValueSchema.parse(JSON.parse(row.generation_brief_json!))
       : null;
   if (
@@ -1833,10 +2031,47 @@ function toLectureStudioRevision(row: LectureStudioRevisionRow): LectureStudioRe
           authoringPolicySha256: row.authoring_policy_sha256,
         }
       : {}),
+    ...(schemaVersion === 4
+      ? {
+          generationBriefSnapshot,
+          generationBriefSha256: row.generation_brief_sha256,
+          authoringPolicyVersion: row.authoring_policy_version,
+          authoringPolicySha256: row.authoring_policy_sha256,
+          authorship: JSON.parse(row.authorship_json!) as unknown,
+          figureAssets: JSON.parse(row.figure_assets_json!) as unknown,
+        }
+      : {}),
     artifacts: JSON.parse(row.artifacts_json) as unknown,
     invocation: JSON.parse(row.invocation_json) as unknown,
     createdAt: row.created_at,
   });
+}
+
+function toStoredLectureStudioFigure(
+  row: LectureStudioFigureRow,
+): StoredLectureStudioFigure & Readonly<{ deletedAt: string | null }> {
+  const bytes = Buffer.from(row.image_bytes);
+  if (bytes.byteLength !== row.byte_size) {
+    throw new Error('invalid_lecture_studio_figure_bytes');
+  }
+  const figure = LectureStudioFigureAssetSchema.parse({
+    id: row.id,
+    studioId: row.studio_id,
+    displayName: row.display_name,
+    fileName: row.file_name,
+    mediaType: row.media_type,
+    sourceFormat: row.source_format,
+    byteSize: row.byte_size,
+    width: row.width,
+    height: row.height,
+    sha256: row.sha256,
+    origin: row.origin,
+    createdAt: row.created_at,
+  });
+  if (createHash('sha256').update(bytes).digest('hex') !== figure.sha256) {
+    throw new Error('invalid_lecture_studio_figure_hash');
+  }
+  return { asset: figure, bytes, deletedAt: row.deleted_at };
 }
 
 function insertLectureStudioMessage(database: Database.Database, input: LectureStudioMessage) {
@@ -1872,8 +2107,9 @@ function insertLectureStudioRevision(database: Database.Database, input: Lecture
          id,schema_version,studio_id,revision,attempt_id,source_manifest_json,
          source_manifest_sha256,lecture_notes_markdown,slides_markdown,lecture_notes_latex,
          slides_latex,generation_brief_json,generation_brief_sha256,authoring_policy_version,
-         authoring_policy_sha256,artifacts_json,invocation_json,created_at
-       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         authoring_policy_sha256,authorship_json,figure_assets_json,artifacts_json,invocation_json,
+         created_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       revision.id,
@@ -1887,10 +2123,20 @@ function insertLectureStudioRevision(database: Database.Database, input: Lecture
       revision.schemaVersion === 1 ? revision.slidesMarkdown : 'GOSU_LATEX_V2',
       revision.schemaVersion === 1 ? null : revision.lectureNotesLatex,
       revision.schemaVersion === 1 ? null : revision.slidesLatex,
-      revision.schemaVersion === 3 ? JSON.stringify(revision.generationBriefSnapshot) : null,
-      revision.schemaVersion === 3 ? revision.generationBriefSha256 : null,
-      revision.schemaVersion === 3 ? revision.authoringPolicyVersion : null,
-      revision.schemaVersion === 3 ? revision.authoringPolicySha256 : null,
+      revision.schemaVersion === 3 || revision.schemaVersion === 4
+        ? JSON.stringify(revision.generationBriefSnapshot)
+        : null,
+      revision.schemaVersion === 3 || revision.schemaVersion === 4
+        ? revision.generationBriefSha256
+        : null,
+      revision.schemaVersion === 3 || revision.schemaVersion === 4
+        ? revision.authoringPolicyVersion
+        : null,
+      revision.schemaVersion === 3 || revision.schemaVersion === 4
+        ? revision.authoringPolicySha256
+        : null,
+      revision.schemaVersion === 4 ? JSON.stringify(revision.authorship) : null,
+      revision.schemaVersion === 4 ? JSON.stringify(revision.figureAssets) : null,
       JSON.stringify(revision.artifacts),
       JSON.stringify(revision.invocation),
       revision.createdAt,
@@ -1905,7 +2151,8 @@ function lectureStudioStorageQueryLimit(limit: number) {
 function throwMappedLectureStudioStorageError(error: unknown): never {
   if (
     error instanceof Error &&
-    /lecture_(?:studio|message|revision)_limit_reached/u.test(error.message)
+    (error.message.includes('lecture_studio_figure_limit_reached') ||
+      /lecture_(?:studio|message|revision)_limit_reached/u.test(error.message))
   ) {
     throw new LectureStudioStorageError('capacity_reached');
   }
@@ -3635,6 +3882,186 @@ function boundedLocalSearch(projectIds: readonly string[], query: string, reques
   } as const;
 }
 
+function migrateModelUsage(database: Database.Database) {
+  const invocationColumns = database.pragma('table_info(model_invocations)') as Array<{
+    name: string;
+  }>;
+  if (!invocationColumns.some((column) => column.name === 'provider_id')) {
+    database.exec(
+      `alter table model_invocations add column provider_id text
+       check (provider_id is null or length(provider_id) between 1 and 128)`,
+    );
+  }
+  database.exec(`
+    create unique index if not exists model_invocations_provider_turn
+      on model_invocations(provider_id,thread_id,turn_id) where provider_id is not null;
+    create index if not exists model_invocations_usage_range
+      on model_invocations(started_at,invocation_id);
+    create table if not exists model_usage_state (
+      singleton_id integer primary key check (singleton_id=1),
+      tracking_started_at text not null
+    );
+    create table if not exists model_invocation_usage (
+      invocation_id text primary key references model_invocations(invocation_id) on delete cascade,
+      source text check (source in ('codex_thread_total_delta','acp_prompt_result')),
+      coverage text not null check (coverage in ('pending','exact','partial','unavailable')),
+      anomaly_observed integer not null default 0 check (anomaly_observed in (0,1)),
+      terminal_status text check (
+        terminal_status is null or length(terminal_status) between 1 and 128
+      ),
+      input_tokens integer not null default 0 check (input_tokens between 0 and 9007199254740991),
+      output_tokens integer not null default 0 check (output_tokens between 0 and 9007199254740991),
+      total_tokens integer not null default 0 check (
+        total_tokens between 0 and 9007199254740991 and
+        total_tokens=input_tokens+output_tokens
+      ),
+      cached_read_tokens integer check (
+        cached_read_tokens is null or cached_read_tokens between 0 and input_tokens
+      ),
+      cached_write_tokens integer check (
+        cached_write_tokens is null or cached_write_tokens between 0 and input_tokens
+      ),
+      reasoning_output_tokens integer check (
+        reasoning_output_tokens is null or reasoning_output_tokens between 0 and output_tokens
+      ),
+      first_observed_at text,
+      last_observed_at text,
+      completed_at text,
+      check (
+        cached_read_tokens is null or cached_write_tokens is null or
+        cached_read_tokens+cached_write_tokens<=input_tokens
+      )
+    );
+    create table if not exists model_usage_attributions (
+      invocation_id text primary key references model_invocations(invocation_id) on delete cascade,
+      workload_kind text not null check (workload_kind in (
+        'project_chat','project_chat_title','lecture_generation','literature_organize',
+        'experiment_evaluation','hermes_delegation'
+      )),
+      project_id text not null check (length(project_id)=36),
+      project_chat_session_id text check (
+        project_chat_session_id is null or length(project_chat_session_id)=36
+      ),
+      project_chat_attempt_id text check (
+        project_chat_attempt_id is null or length(project_chat_attempt_id)=36
+      ),
+      lecture_studio_id text check (lecture_studio_id is null or length(lecture_studio_id)=36),
+      lecture_attempt_id text check (lecture_attempt_id is null or length(lecture_attempt_id)=36),
+      connection_key text not null check (length(connection_key) between 1 and 256),
+      connection_label text not null check (length(connection_label) between 1 and 256),
+      upstream_provider_id text check (
+        upstream_provider_id is null or length(upstream_provider_id) between 1 and 128
+      ),
+      bound_at text not null
+      ,check (
+        (workload_kind='project_chat' and project_chat_session_id is not null and
+          project_chat_attempt_id is not null and lecture_studio_id is null and
+          lecture_attempt_id is null) or
+        (workload_kind='project_chat_title' and project_chat_session_id is not null and
+          project_chat_attempt_id is null and lecture_studio_id is null and
+          lecture_attempt_id is null) or
+        (workload_kind='lecture_generation' and project_chat_session_id is null and
+          project_chat_attempt_id is null and lecture_studio_id is not null and
+          lecture_attempt_id is not null) or
+        (workload_kind in ('literature_organize','experiment_evaluation') and
+          project_chat_session_id is null and project_chat_attempt_id is null and
+          lecture_studio_id is null and lecture_attempt_id is null) or
+        (workload_kind='hermes_delegation' and project_chat_session_id is not null and
+          project_chat_attempt_id is not null and lecture_studio_id is null and
+          lecture_attempt_id is null)
+      )
+    );
+    create index if not exists model_usage_attributions_project
+      on model_usage_attributions(project_id,workload_kind,invocation_id);
+    create index if not exists model_usage_attributions_lecture
+      on model_usage_attributions(lecture_attempt_id,invocation_id)
+      where lecture_attempt_id is not null;
+    create table if not exists model_usage_thread_cursors (
+      provider_id text not null check (length(provider_id) between 1 and 128),
+      thread_id text not null check (length(thread_id) between 1 and 512),
+      input_tokens integer not null check (input_tokens between 0 and 9007199254740991),
+      output_tokens integer not null check (output_tokens between 0 and 9007199254740991),
+      total_tokens integer not null check (
+        total_tokens between 0 and 9007199254740991 and
+        total_tokens=input_tokens+output_tokens
+      ),
+      cached_read_tokens integer check (
+        cached_read_tokens is null or cached_read_tokens between 0 and input_tokens
+      ),
+      cached_write_tokens integer check (
+        cached_write_tokens is null or cached_write_tokens between 0 and input_tokens
+      ),
+      reasoning_output_tokens integer check (
+        reasoning_output_tokens is null or reasoning_output_tokens between 0 and output_tokens
+      ),
+      last_turn_id text not null,
+      last_observed_at text not null,
+      check (
+        cached_read_tokens is null or cached_write_tokens is null or
+        cached_read_tokens+cached_write_tokens<=input_tokens
+      ),
+      primary key(provider_id,thread_id)
+    );
+  `);
+  const usageColumns = database.pragma('table_info(model_invocation_usage)') as Array<{
+    name: string;
+  }>;
+  if (!usageColumns.some((column) => column.name === 'anomaly_observed')) {
+    database.exec(
+      `alter table model_invocation_usage add column anomaly_observed integer not null default 0
+       check (anomaly_observed in (0,1))`,
+    );
+  }
+  database
+    .prepare(
+      `insert into model_usage_state(singleton_id,tracking_started_at) values(1,?)
+       on conflict(singleton_id) do nothing`,
+    )
+    .run(new Date().toISOString());
+}
+
+function assertSafeModelUsageTotals(input: ModelUsageAbsoluteTotals) {
+  const counts = [
+    input.inputTokens,
+    input.outputTokens,
+    input.totalTokens,
+    input.cachedReadTokens,
+    input.cachedWriteTokens,
+    input.reasoningOutputTokens,
+  ];
+  if (
+    counts.some(
+      (count) =>
+        count !== null &&
+        (!Number.isSafeInteger(count) || count < 0 || count > Number.MAX_SAFE_INTEGER),
+    ) ||
+    !Number.isSafeInteger(input.inputTokens + input.outputTokens) ||
+    input.totalTokens !== input.inputTokens + input.outputTokens ||
+    (input.cachedReadTokens !== null && input.cachedReadTokens > input.inputTokens) ||
+    (input.cachedWriteTokens !== null && input.cachedWriteTokens > input.inputTokens) ||
+    (input.cachedReadTokens !== null &&
+      input.cachedWriteTokens !== null &&
+      (!Number.isSafeInteger(input.cachedReadTokens + input.cachedWriteTokens) ||
+        input.cachedReadTokens + input.cachedWriteTokens > input.inputTokens)) ||
+    (input.reasoningOutputTokens !== null && input.reasoningOutputTokens > input.outputTokens)
+  ) {
+    throw new Error('invalid_model_usage_totals');
+  }
+}
+
+function safeUsageSum(left: number, right: number) {
+  const sum = left + right;
+  if (!Number.isSafeInteger(sum) || sum < 0) throw new Error('model_usage_overflow');
+  return sum;
+}
+
+function optionalUsageDelta(current: number | null, previous: number | null, hasCursor: boolean) {
+  if (current === null) return null;
+  if (previous === null) return hasCursor ? null : current;
+  if (current < previous) throw new Error('model_usage_total_regressed');
+  return current - previous;
+}
+
 export class LocalDatabase {
   private database: Database.Database | undefined;
   private workspaceOutboxOrderingReady = false;
@@ -3729,6 +4156,7 @@ export class LocalDatabase {
       );
       create table if not exists model_invocations (
         invocation_id text primary key,
+        provider_id text check (provider_id is null or length(provider_id) between 1 and 128),
         thread_id text not null,
         turn_id text not null,
         requested_model_id text,
@@ -4543,6 +4971,12 @@ export class LocalDatabase {
         authoring_policy_sha256 text check (
           authoring_policy_sha256 is null or length(authoring_policy_sha256) = 64
         ),
+        authorship_json text check (
+          authorship_json is null or length(authorship_json) between 2 and 4096
+        ),
+        figure_assets_json text check (
+          figure_assets_json is null or length(figure_assets_json) between 2 and 32768
+        ),
         artifacts_json text not null check (length(artifacts_json) between 2 and 32768),
         invocation_json text not null check (length(invocation_json) between 2 and 8192),
         created_at text not null,
@@ -4569,6 +5003,47 @@ export class LocalDatabase {
         before delete on lecture_studio_revisions
         begin
           select raise(abort,'lecture_revision_append_only');
+        end;
+      create table if not exists lecture_studio_figures (
+        id text primary key check (length(id) = 36),
+        studio_id text not null check (length(studio_id) = 36),
+        display_name text not null check (length(display_name) between 1 and 256),
+        file_name text not null check (length(file_name) between 1 and 64),
+        media_type text not null check (media_type = 'image/jpeg'),
+        source_format text not null check (
+          source_format in ('png','jpeg','gif','webp','tiff','bmp','avif')
+        ),
+        byte_size integer not null check (byte_size between 1 and ${LECTURE_STUDIO_MAX_FIGURE_BYTES}),
+        width integer not null check (width between 1 and ${LECTURE_STUDIO_MAX_FIGURE_EDGE}),
+        height integer not null check (height between 1 and ${LECTURE_STUDIO_MAX_FIGURE_EDGE}),
+        sha256 text not null check (length(sha256) = 64),
+        origin text not null check (origin = 'user'),
+        image_bytes blob not null check (length(image_bytes) = byte_size),
+        created_at text not null,
+        deleted_at text,
+        foreign key(studio_id) references lecture_studios(id) on delete cascade
+      );
+      create index if not exists lecture_studio_figures_by_studio
+        on lecture_studio_figures(studio_id,deleted_at,created_at,id);
+      create unique index if not exists lecture_studio_active_figure_hash
+        on lecture_studio_figures(studio_id,sha256) where deleted_at is null;
+      create trigger if not exists lecture_studio_figures_active_limit_insert
+        before insert on lecture_studio_figures
+        when new.deleted_at is null and (
+          select count(*) from lecture_studio_figures
+          where studio_id=new.studio_id and deleted_at is null
+        ) >= ${LECTURE_STUDIO_MAX_FIGURES}
+        begin
+          select raise(abort,'lecture_studio_figure_limit_reached');
+        end;
+      create trigger if not exists lecture_studio_figures_active_limit_restore
+        before update of deleted_at on lecture_studio_figures
+        when old.deleted_at is not null and new.deleted_at is null and (
+          select count(*) from lecture_studio_figures
+          where studio_id=new.studio_id and deleted_at is null
+        ) >= ${LECTURE_STUDIO_MAX_FIGURES}
+        begin
+          select raise(abort,'lecture_studio_figure_limit_reached');
         end;
       create table if not exists local_schema_migrations (
         id text primary key,
@@ -4652,6 +5127,7 @@ export class LocalDatabase {
         revision integer not null check (revision > 0),
         content text not null check (length(content) <= 4000),
         content_sha256 text not null check (length(content_sha256) = 64),
+        policy_rules_json text not null default '[]' check (length(policy_rules_json) <= 20000),
         created_at text not null,
         unique(project_id,revision)
       );
@@ -4840,8 +5316,10 @@ export class LocalDatabase {
       migrateLectureStudioTrash(database);
       migrateLectureStudioRevisionLatex(database);
       migrateLectureStudioRevisionGenerationBrief(database);
+      migrateLectureStudioRevisionV4AndFigures(database);
       migrateLectureStudioMessageAttachments(database);
       migrateLectureStudioAttempts(database);
+      migrateModelUsage(database);
       migrateExperimentRunsHardening(database);
       migrateProjectChatResearchNoteAbandoned(database);
       const manuscriptWorkspaceConnectionColumns = database.pragma(
@@ -5011,6 +5489,14 @@ export class LocalDatabase {
       const profileColumns = database.pragma('table_info(project_chat_profiles)') as Array<{
         name: string;
       }>;
+      const instructionRevisionColumns = database.pragma(
+        'table_info(project_chat_instruction_revisions)',
+      ) as Array<{ name: string }>;
+      if (!instructionRevisionColumns.some((column) => column.name === 'policy_rules_json')) {
+        database.exec(
+          "alter table project_chat_instruction_revisions add column policy_rules_json text not null default '[]' check (length(policy_rules_json) <= 20000)",
+        );
+      }
       const profileNeedsNativeBackfill = [
         'collaboration_mode_id',
         'personality',
@@ -5447,28 +5933,509 @@ export class LocalDatabase {
   }
 
   recordModelInvocation(threadId: string, turnId: string, invocation: ModelInvocation) {
+    const parsed = ModelInvocationSchema.parse(structuredClone(invocation));
     const updatedAt = new Date().toISOString();
-    this.require()
+    const database = this.require();
+    database
+      .transaction(() => {
+        database
+          .prepare(
+            `insert into model_invocations(
+              invocation_id,provider_id,thread_id,turn_id,requested_model_id,resolved_model_id,
+              catalog_version,reasoning_option_id,started_at,updated_at
+            ) values(?,?,?,?,?,?,?,?,?,?) on conflict(invocation_id) do nothing`,
+          )
+          .run(
+            parsed.invocationId,
+            parsed.providerId,
+            threadId,
+            turnId,
+            parsed.requestedModelId,
+            parsed.resolvedModelId,
+            parsed.catalogVersion,
+            parsed.reasoningOptionId,
+            parsed.startedAt,
+            updatedAt,
+          );
+        const existing = database
+          .prepare(
+            `select provider_id,thread_id,turn_id,requested_model_id,catalog_version,
+                    reasoning_option_id,started_at
+             from model_invocations where invocation_id=?`,
+          )
+          .get(parsed.invocationId) as
+          | {
+              provider_id: string | null;
+              thread_id: string;
+              turn_id: string;
+              requested_model_id: string | null;
+              catalog_version: string;
+              reasoning_option_id: string | null;
+              started_at: string;
+            }
+          | undefined;
+        if (
+          !existing ||
+          (existing.provider_id !== null && existing.provider_id !== parsed.providerId) ||
+          existing.thread_id !== threadId ||
+          existing.turn_id !== turnId ||
+          existing.requested_model_id !== parsed.requestedModelId ||
+          existing.catalog_version !== parsed.catalogVersion ||
+          existing.reasoning_option_id !== parsed.reasoningOptionId ||
+          existing.started_at !== parsed.startedAt
+        ) {
+          throw new Error('model_invocation_identity_conflict');
+        }
+        database
+          .prepare(
+            `update model_invocations set provider_id=?,resolved_model_id=?,updated_at=?
+             where invocation_id=?`,
+          )
+          .run(parsed.providerId, parsed.resolvedModelId, updatedAt, parsed.invocationId);
+        database
+          .prepare(
+            `insert into model_invocation_usage(invocation_id,coverage)
+             values(?,'pending') on conflict(invocation_id) do nothing`,
+          )
+          .run(parsed.invocationId);
+      })
+      .immediate();
+  }
+
+  bindModelUsageAttribution(
+    invocationId: string,
+    input: ModelUsageAttributionInput,
+    connection: ModelUsageConnectionSnapshot,
+    boundAt = new Date().toISOString(),
+  ) {
+    const database = this.require();
+    database
       .prepare(
-        `insert into model_invocations(
-          invocation_id,thread_id,turn_id,requested_model_id,resolved_model_id,
-          catalog_version,reasoning_option_id,started_at,updated_at
-        ) values(?,?,?,?,?,?,?,?,?)
-        on conflict(invocation_id) do update set
-          resolved_model_id=excluded.resolved_model_id,
-          updated_at=excluded.updated_at`,
+        `insert into model_usage_attributions(
+          invocation_id,workload_kind,project_id,project_chat_session_id,
+          project_chat_attempt_id,lecture_studio_id,lecture_attempt_id,
+          connection_key,connection_label,upstream_provider_id,bound_at
+        ) values(?,?,?,?,?,?,?,?,?,?,?) on conflict(invocation_id) do nothing`,
       )
       .run(
-        invocation.invocationId,
-        threadId,
-        turnId,
-        invocation.requestedModelId,
-        invocation.resolvedModelId,
-        invocation.catalogVersion,
-        invocation.reasoningOptionId,
-        invocation.startedAt,
-        updatedAt,
+        invocationId,
+        input.workloadKind,
+        input.projectId,
+        input.projectChatSessionId ?? null,
+        input.projectChatAttemptId ?? null,
+        input.lectureStudioId ?? null,
+        input.lectureAttemptId ?? null,
+        connection.connectionKey,
+        connection.connectionLabel,
+        connection.upstreamProviderId,
+        boundAt,
       );
+    const row = database
+      .prepare(
+        `select workload_kind,project_id,project_chat_session_id,project_chat_attempt_id,
+                lecture_studio_id,lecture_attempt_id,connection_key,connection_label,
+                upstream_provider_id
+         from model_usage_attributions where invocation_id=?`,
+      )
+      .get(invocationId) as Record<string, unknown> | undefined;
+    if (
+      !row ||
+      row.workload_kind !== input.workloadKind ||
+      row.project_id !== input.projectId ||
+      row.project_chat_session_id !== (input.projectChatSessionId ?? null) ||
+      row.project_chat_attempt_id !== (input.projectChatAttemptId ?? null) ||
+      row.lecture_studio_id !== (input.lectureStudioId ?? null) ||
+      row.lecture_attempt_id !== (input.lectureAttemptId ?? null) ||
+      row.connection_key !== connection.connectionKey ||
+      row.connection_label !== connection.connectionLabel ||
+      row.upstream_provider_id !== connection.upstreamProviderId
+    ) {
+      throw new Error('model_usage_attribution_conflict');
+    }
+  }
+
+  recordAttributedModelInvocation(
+    threadId: string,
+    turnId: string,
+    invocation: ModelInvocation,
+    attribution: ModelUsageAttributionInput,
+    connection: ModelUsageConnectionSnapshot,
+    boundAt = new Date().toISOString(),
+  ) {
+    const database = this.require();
+    database
+      .transaction(() => {
+        // better-sqlite3 transaction wrappers nest through a savepoint, so either both the
+        // invocation and its immutable attribution become visible or the outer transaction rolls
+        // them both back on an identity/constraint failure.
+        this.recordModelInvocation(threadId, turnId, invocation);
+        this.bindModelUsageAttribution(invocation.invocationId, attribution, connection, boundAt);
+      })
+      .immediate();
+  }
+
+  recordCodexModelUsageTotal(input: {
+    providerId: string;
+    threadId: string;
+    turnId: string;
+    source?: 'codex_thread_total_delta' | 'acp_prompt_result';
+    totals: ModelUsageAbsoluteTotals;
+    observedAt: string;
+  }): 'recorded' | 'ignored' | 'regressed' {
+    assertSafeModelUsageTotals(input.totals);
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const cursor = database
+          .prepare(
+            `select input_tokens,output_tokens,total_tokens,cached_read_tokens,
+                    cached_write_tokens,reasoning_output_tokens,last_turn_id
+             from model_usage_thread_cursors where provider_id=? and thread_id=?`,
+          )
+          .get(input.providerId, input.threadId) as
+          | {
+              input_tokens: number;
+              output_tokens: number;
+              total_tokens: number;
+              cached_read_tokens: number | null;
+              cached_write_tokens: number | null;
+              reasoning_output_tokens: number | null;
+              last_turn_id: string;
+            }
+          | undefined;
+        if (
+          cursor &&
+          (input.totals.inputTokens < cursor.input_tokens ||
+            input.totals.outputTokens < cursor.output_tokens ||
+            input.totals.totalTokens < cursor.total_tokens ||
+            (input.totals.cachedReadTokens !== null &&
+              cursor.cached_read_tokens !== null &&
+              input.totals.cachedReadTokens < cursor.cached_read_tokens) ||
+            (input.totals.cachedWriteTokens !== null &&
+              cursor.cached_write_tokens !== null &&
+              input.totals.cachedWriteTokens < cursor.cached_write_tokens) ||
+            (input.totals.reasoningOutputTokens !== null &&
+              cursor.reasoning_output_tokens !== null &&
+              input.totals.reasoningOutputTokens < cursor.reasoning_output_tokens))
+        ) {
+          database
+            .prepare(
+              `update model_invocation_usage set anomaly_observed=1,
+                coverage=case
+                  when first_observed_at is null and completed_at is not null then 'unavailable'
+                  else 'partial'
+                end,
+                last_observed_at=?
+               where invocation_id=(
+                 select invocation_id from model_invocations
+                 where provider_id=? and thread_id=? and turn_id=?
+               )`,
+            )
+            .run(input.observedAt, input.providerId, input.threadId, input.turnId);
+          return 'regressed';
+        }
+        const delta: ModelUsageAbsoluteTotals = {
+          inputTokens: input.totals.inputTokens - (cursor?.input_tokens ?? 0),
+          outputTokens: input.totals.outputTokens - (cursor?.output_tokens ?? 0),
+          totalTokens: input.totals.totalTokens - (cursor?.total_tokens ?? 0),
+          cachedReadTokens: optionalUsageDelta(
+            input.totals.cachedReadTokens,
+            cursor?.cached_read_tokens ?? null,
+            cursor !== undefined,
+          ),
+          cachedWriteTokens: optionalUsageDelta(
+            input.totals.cachedWriteTokens,
+            cursor?.cached_write_tokens ?? null,
+            cursor !== undefined,
+          ),
+          reasoningOutputTokens: optionalUsageDelta(
+            input.totals.reasoningOutputTokens,
+            cursor?.reasoning_output_tokens ?? null,
+            cursor !== undefined,
+          ),
+        };
+        assertSafeModelUsageTotals(delta);
+        database
+          .prepare(
+            `insert into model_usage_thread_cursors(
+              provider_id,thread_id,input_tokens,output_tokens,total_tokens,cached_read_tokens,
+              cached_write_tokens,reasoning_output_tokens,last_turn_id,last_observed_at
+            ) values(?,?,?,?,?,?,?,?,?,?)
+            on conflict(provider_id,thread_id) do update set
+              input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,
+              total_tokens=excluded.total_tokens,cached_read_tokens=excluded.cached_read_tokens,
+              cached_write_tokens=excluded.cached_write_tokens,
+              reasoning_output_tokens=excluded.reasoning_output_tokens,
+              last_turn_id=excluded.last_turn_id,last_observed_at=excluded.last_observed_at`,
+          )
+          .run(
+            input.providerId,
+            input.threadId,
+            input.totals.inputTokens,
+            input.totals.outputTokens,
+            input.totals.totalTokens,
+            input.totals.cachedReadTokens,
+            input.totals.cachedWriteTokens,
+            input.totals.reasoningOutputTokens,
+            input.turnId,
+            input.observedAt,
+          );
+        const zeroDelta =
+          delta.totalTokens === 0 &&
+          (delta.cachedReadTokens ?? 0) === 0 &&
+          (delta.cachedWriteTokens ?? 0) === 0 &&
+          (delta.reasoningOutputTokens ?? 0) === 0;
+        const invocation = database
+          .prepare(
+            `select invocation_id from model_invocations
+             where provider_id=? and thread_id=? and turn_id=?`,
+          )
+          .get(input.providerId, input.threadId, input.turnId) as
+          { invocation_id: string } | undefined;
+        if (!invocation) return 'ignored';
+        const usage = database
+          .prepare('select * from model_invocation_usage where invocation_id=?')
+          .get(invocation.invocation_id) as
+          | {
+              input_tokens: number;
+              output_tokens: number;
+              total_tokens: number;
+              cached_read_tokens: number | null;
+              cached_write_tokens: number | null;
+              reasoning_output_tokens: number | null;
+              first_observed_at: string | null;
+            }
+          | undefined;
+        if (!usage) return 'ignored';
+        if (
+          zeroDelta &&
+          cursor?.last_turn_id === input.turnId &&
+          usage.first_observed_at !== null
+        ) {
+          return 'ignored';
+        }
+        const updated: ModelUsageAbsoluteTotals = {
+          inputTokens: safeUsageSum(usage.input_tokens, delta.inputTokens),
+          outputTokens: safeUsageSum(usage.output_tokens, delta.outputTokens),
+          totalTokens: safeUsageSum(usage.total_tokens, delta.totalTokens),
+          cachedReadTokens:
+            delta.cachedReadTokens === null
+              ? null
+              : safeUsageSum(usage.cached_read_tokens ?? 0, delta.cachedReadTokens),
+          cachedWriteTokens:
+            delta.cachedWriteTokens === null
+              ? null
+              : safeUsageSum(usage.cached_write_tokens ?? 0, delta.cachedWriteTokens),
+          reasoningOutputTokens:
+            delta.reasoningOutputTokens === null
+              ? null
+              : safeUsageSum(usage.reasoning_output_tokens ?? 0, delta.reasoningOutputTokens),
+        };
+        assertSafeModelUsageTotals(updated);
+        database
+          .prepare(
+            `update model_invocation_usage set source=?,
+              coverage=case
+                when anomaly_observed=1 then 'partial'
+                when completed_at is null then 'partial'
+                when terminal_status='completed' then 'exact'
+                else 'partial'
+              end,input_tokens=?,output_tokens=?,total_tokens=?,
+              cached_read_tokens=?,cached_write_tokens=?,reasoning_output_tokens=?,
+              first_observed_at=coalesce(first_observed_at,?),last_observed_at=?
+             where invocation_id=?`,
+          )
+          .run(
+            input.source ?? 'codex_thread_total_delta',
+            updated.inputTokens,
+            updated.outputTokens,
+            updated.totalTokens,
+            updated.cachedReadTokens,
+            updated.cachedWriteTokens,
+            updated.reasoningOutputTokens,
+            input.observedAt,
+            input.observedAt,
+            invocation.invocation_id,
+          );
+        return 'recorded';
+      })
+      .immediate();
+  }
+
+  finishModelUsageTurn(input: {
+    providerId: string;
+    threadId: string;
+    turnId: string;
+    terminalStatus: string;
+    successful: boolean;
+    completedAt: string;
+  }) {
+    const database = this.require();
+    database
+      .prepare(
+        `update model_invocation_usage set
+          coverage=case
+            when first_observed_at is null then 'unavailable'
+            when anomaly_observed=1 then 'partial'
+            when ?=1 then 'exact'
+            else 'partial'
+          end,
+          terminal_status=?,completed_at=?
+         where invocation_id=(
+           select invocation_id from model_invocations
+           where provider_id=? and thread_id=? and turn_id=?
+         ) and completed_at is null`,
+      )
+      .run(
+        input.successful ? 1 : 0,
+        input.terminalStatus,
+        input.completedAt,
+        input.providerId,
+        input.threadId,
+        input.turnId,
+      );
+  }
+
+  recordAcpModelUsage(input: {
+    providerId: string;
+    threadId: string;
+    turnId: string;
+    totals: ModelUsageAbsoluteTotals;
+    terminalStatus: string;
+    successful: boolean;
+    observedAt: string;
+  }) {
+    this.recordCodexModelUsageTotal({
+      providerId: input.providerId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+      source: 'acp_prompt_result',
+      totals: input.totals,
+      observedAt: input.observedAt,
+    });
+    this.finishModelUsageTurn({
+      providerId: input.providerId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+      terminalStatus: input.terminalStatus,
+      successful: input.successful,
+      completedAt: input.observedAt,
+    });
+  }
+
+  getModelUsageTrackingStartedAt() {
+    const row = this.require()
+      .prepare('select tracking_started_at from model_usage_state where singleton_id=1')
+      .get() as { tracking_started_at: string } | undefined;
+    if (!row) throw new Error('model_usage_state_missing');
+    return row.tracking_started_at;
+  }
+
+  listStoredModelUsage(
+    fromInclusive: string,
+    toExclusive: string,
+    snapshotAt = new Date().toISOString(),
+  ): StoredModelUsageRow[] {
+    const rows = this.require()
+      .prepare(
+        `select i.invocation_id,i.provider_id,i.thread_id,i.turn_id,i.resolved_model_id,
+                i.started_at,u.coverage,u.terminal_status,u.input_tokens,u.output_tokens,
+                u.total_tokens,u.cached_read_tokens,u.cached_write_tokens,
+                u.reasoning_output_tokens,a.workload_kind,a.project_id,
+                a.project_chat_session_id,a.project_chat_attempt_id,a.lecture_studio_id,
+                a.lecture_attempt_id,a.connection_key,a.connection_label,a.upstream_provider_id
+         from model_invocations i
+         join model_invocation_usage u on u.invocation_id=i.invocation_id
+         join model_usage_attributions a on a.invocation_id=i.invocation_id
+         where i.started_at>=? and i.started_at<? and i.provider_id is not null
+           and u.completed_at is not null
+           and julianday(u.completed_at)<=julianday(?)
+         order by i.started_at asc,i.invocation_id asc`,
+      )
+      .all(fromInclusive, toExclusive, snapshotAt) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      invocationId: row.invocation_id as string,
+      providerId: row.provider_id as string,
+      threadId: row.thread_id as string,
+      turnId: row.turn_id as string,
+      resolvedModelId: row.resolved_model_id as string,
+      startedAt: row.started_at as string,
+      coverage: row.coverage as StoredModelUsageRow['coverage'],
+      terminalStatus: row.terminal_status as string | null,
+      inputTokens: row.input_tokens as number,
+      outputTokens: row.output_tokens as number,
+      totalTokens: row.total_tokens as number,
+      cachedReadTokens: row.cached_read_tokens as number | null,
+      cachedWriteTokens: row.cached_write_tokens as number | null,
+      reasoningOutputTokens: row.reasoning_output_tokens as number | null,
+      workloadKind: row.workload_kind as ModelUsageWorkloadKind,
+      projectId: row.project_id as string,
+      projectChatSessionId: row.project_chat_session_id as string | null,
+      projectChatAttemptId: row.project_chat_attempt_id as string | null,
+      lectureStudioId: row.lecture_studio_id as string | null,
+      lectureAttemptId: row.lecture_attempt_id as string | null,
+      connectionKey: row.connection_key as string,
+      connectionLabel: row.connection_label as string,
+      upstreamProviderId: row.upstream_provider_id as string | null,
+    }));
+  }
+
+  listStoredLectureUsageAttempts(
+    fromInclusive: string,
+    toExclusive: string,
+    snapshotAt = new Date().toISOString(),
+  ): StoredLectureUsageAttempt[] {
+    const rows = this.require()
+      .prepare(
+        `select s.id studio_id,s.title studio_title,s.output_project_id project_id,
+                a.id attempt_id,
+                case
+                  when a.completed_at is null or julianday(a.completed_at)>julianday(?)
+                    then 'running'
+                  else a.status
+                end status,
+                a.started_at,
+                case
+                  when a.completed_at is null or julianday(a.completed_at)>julianday(?)
+                    then null
+                  else a.completed_at
+                end completed_at
+         from lecture_studio_attempts a join lecture_studios s on s.id=a.studio_id
+         where (
+           a.started_at>=? and a.started_at<? and julianday(a.started_at)<=julianday(?)
+         ) or exists (
+           select 1
+           from model_usage_attributions attribution
+           join model_invocations invocation
+             on invocation.invocation_id=attribution.invocation_id
+           join model_invocation_usage usage
+             on usage.invocation_id=invocation.invocation_id
+           where attribution.lecture_attempt_id=a.id
+             and invocation.started_at>=? and invocation.started_at<?
+             and usage.completed_at is not null
+             and julianday(usage.completed_at)<=julianday(?)
+         )
+         order by a.started_at desc,a.id desc`,
+      )
+      .all(
+        snapshotAt,
+        snapshotAt,
+        fromInclusive,
+        toExclusive,
+        snapshotAt,
+        fromInclusive,
+        toExclusive,
+        snapshotAt,
+      ) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      studioId: row.studio_id as string,
+      studioTitle: row.studio_title as string,
+      attemptId: row.attempt_id as string,
+      projectId: row.project_id as string,
+      status: row.status as StoredLectureUsageAttempt['status'],
+      startedAt: row.started_at as string,
+      completedAt: row.completed_at as string | null,
+    }));
   }
 
   saveMessage(input: ProjectChatMessage) {
@@ -6005,7 +6972,8 @@ export class LocalDatabase {
                 p.context_scope,
                 p.local_notes_vault_id,p.local_notes_vault_name,
                 p.local_notes_allow_agent_markdown_create,
-                p.instruction_revision_id,p.updated_at,r.content,r.content_sha256,r.created_at
+                p.instruction_revision_id,p.updated_at,r.content,r.content_sha256,
+                r.policy_rules_json,r.created_at
          from project_chat_profiles p
          join project_chat_instruction_revisions r on r.id=p.instruction_revision_id
          where p.project_id=?`,
@@ -6028,14 +6996,25 @@ export class LocalDatabase {
       database
         .transaction(() => {
           const current = database
-            .prepare('select version from project_chat_profiles where project_id=?')
-            .get(command.projectId) as { version: number } | undefined;
+            .prepare(
+              `select p.version,r.policy_rules_json
+               from project_chat_profiles p
+               join project_chat_instruction_revisions r on r.id=p.instruction_revision_id
+               where p.project_id=?`,
+            )
+            .get(command.projectId) as { version: number; policy_rules_json: string } | undefined;
           if ((current?.version ?? 0) !== command.expectedVersion) throw conflict;
+          const policyRules =
+            command.policyRules ??
+            ProjectChatPolicyRulesSchema.parse(
+              current ? (JSON.parse(current.policy_rules_json) as unknown) : [],
+            );
+          const policyRulesJson = JSON.stringify(policyRules);
           database
             .prepare(
               `insert into project_chat_instruction_revisions(
-               id,project_id,revision,content,content_sha256,created_at
-             ) values(?,?,?,?,?,?)`,
+               id,project_id,revision,content,content_sha256,policy_rules_json,created_at
+             ) values(?,?,?,?,?,?,?)`,
             )
             .run(
               instructionRevisionId,
@@ -6043,6 +7022,7 @@ export class LocalDatabase {
               nextVersion,
               command.customInstructions,
               instructionSha256,
+              policyRulesJson,
               now,
             );
           const changed = database
@@ -8016,6 +8996,7 @@ export class LocalDatabase {
       sessionId: string;
       attemptId: string;
       errorCode: string;
+      messageStatus: 'failed' | 'interrupted';
       updatedAt: string;
     }>,
   ): ExperimentEvaluationSession | null {
@@ -8040,10 +9021,10 @@ export class LocalDatabase {
         database
           .prepare(
             `update experiment_evaluation_messages
-             set status='failed',completed_at=?
+             set status=?,completed_at=?
              where session_id=? and attempt_id=? and role='user' and status='complete'`,
           )
-          .run(input.updatedAt, input.sessionId, input.attemptId);
+          .run(input.messageStatus, input.updatedAt, input.sessionId, input.attemptId);
         const row = database
           .prepare('select * from experiment_evaluation_sessions where id=?')
           .get(input.sessionId) as ExperimentEvaluationSessionRow;
@@ -8431,6 +9412,470 @@ export class LocalDatabase {
     return row ? toLectureStudioRevision(row) : null;
   }
 
+  listLectureStudioFigures(studioId: string): LectureStudioFigureAsset[] {
+    const rows = this.require()
+      .prepare(
+        `select * from lecture_studio_figures
+         where studio_id=? and deleted_at is null
+         order by created_at asc,id asc`,
+      )
+      .all(studioId) as LectureStudioFigureRow[];
+    return rows.map((row) => toStoredLectureStudioFigure(row).asset);
+  }
+
+  getLectureStudioFigure(studioId: string, figureId: string): StoredLectureStudioFigure | null {
+    const row = this.require()
+      .prepare(
+        `select * from lecture_studio_figures
+         where studio_id=? and id=?`,
+      )
+      .get(studioId, figureId) as LectureStudioFigureRow | undefined;
+    if (!row) return null;
+    const stored = toStoredLectureStudioFigure(row);
+    return { asset: stored.asset, bytes: stored.bytes };
+  }
+
+  addLectureStudioFigures(
+    input: Readonly<{
+      studioId: string;
+      expectedVersion: number;
+      figures: readonly Readonly<{
+        asset: LectureStudioFigureAsset;
+        jpegBytes: Uint8Array;
+      }>[];
+      updatedAt: string;
+    }>,
+  ): LectureStudioFigureLibraryReceipt | null {
+    if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+      throw new Error('invalid_lecture_version');
+    }
+    if (input.figures.length < 1 || input.figures.length > LECTURE_STUDIO_MAX_FIGURES) {
+      throw new Error('invalid_lecture_studio_figure_count');
+    }
+    const incoming = input.figures.map((entry) => {
+      const asset = LectureStudioFigureAssetSchema.parse(structuredClone(entry.asset));
+      const bytes = Buffer.from(entry.jpegBytes);
+      if (
+        asset.studioId !== input.studioId ||
+        bytes.byteLength !== asset.byteSize ||
+        bytes.byteLength > LECTURE_STUDIO_MAX_FIGURE_BYTES ||
+        createHash('sha256').update(bytes).digest('hex') !== asset.sha256 ||
+        bytes.byteLength < 5 ||
+        bytes[0] !== 0xff ||
+        bytes[1] !== 0xd8 ||
+        bytes[2] !== 0xff ||
+        bytes[bytes.byteLength - 2] !== 0xff ||
+        bytes[bytes.byteLength - 1] !== 0xd9
+      ) {
+        throw new Error('invalid_lecture_studio_figure_payload');
+      }
+      return { asset, bytes };
+    });
+    const incomingIds = incoming.map(({ asset }) => asset.id);
+    if (new Set(incomingIds).size !== incomingIds.length) {
+      throw new Error('duplicate_lecture_studio_figure_id');
+    }
+    const database = this.require();
+    try {
+      return database
+        .transaction(() => {
+          const studioRow = database
+            .prepare('select * from lecture_studios where id=?')
+            .get(input.studioId) as LectureStudioRow | undefined;
+          if (!studioRow) return null;
+          const studio = toLectureStudio(studioRow);
+          if (
+            studio.version !== input.expectedVersion ||
+            !['draft', 'ready', 'failed'].includes(studio.status) ||
+            studio.activeAttemptId !== null ||
+            studio.trashedAt !== undefined
+          ) {
+            return null;
+          }
+          const activeRows = database
+            .prepare(
+              `select * from lecture_studio_figures
+               where studio_id=? and deleted_at is null
+               order by created_at asc,id asc`,
+            )
+            .all(input.studioId) as LectureStudioFigureRow[];
+          const active = activeRows.map(toStoredLectureStudioFigure);
+          const activeByHash = new Map(active.map((entry) => [entry.asset.sha256, entry]));
+          const additions: typeof incoming = [];
+          const pendingHashes = new Set<string>();
+          for (const entry of incoming) {
+            if (activeByHash.has(entry.asset.sha256) || pendingHashes.has(entry.asset.sha256)) {
+              continue;
+            }
+            pendingHashes.add(entry.asset.sha256);
+            additions.push(entry);
+          }
+          if (additions.length === 0) {
+            return LectureStudioFigureLibraryReceiptSchema.parse({
+              studio,
+              figures: active.map((entry) => entry.asset),
+            });
+          }
+          if (active.length + additions.length > LECTURE_STUDIO_MAX_FIGURES) {
+            throw new LectureStudioStorageError('capacity_reached');
+          }
+          const activeBytes = active.reduce((total, entry) => total + entry.asset.byteSize, 0);
+          const addedBytes = additions.reduce((total, entry) => total + entry.asset.byteSize, 0);
+          if (
+            activeBytes + addedBytes >
+            LECTURE_STUDIO_MAX_FIGURES * LECTURE_STUDIO_MAX_FIGURE_BYTES
+          ) {
+            throw new LectureStudioStorageError('capacity_reached');
+          }
+          const changed = database
+            .prepare(
+              `update lecture_studios
+               set version=version+1,updated_at=?
+               where id=? and version=? and status in ('draft','ready','failed')
+                 and active_attempt_id is null and trashed_at is null`,
+            )
+            .run(input.updatedAt, input.studioId, input.expectedVersion);
+          if (changed.changes !== 1) return null;
+          const insert = database.prepare(
+            `insert into lecture_studio_figures(
+               id,studio_id,display_name,file_name,media_type,source_format,byte_size,
+               width,height,sha256,origin,image_bytes,created_at,deleted_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,null)`,
+          );
+          for (const { asset, bytes } of additions) {
+            insert.run(
+              asset.id,
+              asset.studioId,
+              asset.displayName,
+              asset.fileName,
+              asset.mediaType,
+              asset.sourceFormat,
+              asset.byteSize,
+              asset.width,
+              asset.height,
+              asset.sha256,
+              asset.origin,
+              bytes,
+              asset.createdAt,
+            );
+          }
+          const updatedStudio = toLectureStudio(
+            database
+              .prepare('select * from lecture_studios where id=?')
+              .get(input.studioId) as LectureStudioRow,
+          );
+          const figures = (
+            database
+              .prepare(
+                `select * from lecture_studio_figures
+                 where studio_id=? and deleted_at is null
+                 order by created_at asc,id asc`,
+              )
+              .all(input.studioId) as LectureStudioFigureRow[]
+          ).map((row) => toStoredLectureStudioFigure(row).asset);
+          return LectureStudioFigureLibraryReceiptSchema.parse({
+            studio: updatedStudio,
+            figures,
+          });
+        })
+        .immediate();
+    } catch (error) {
+      if (error instanceof LectureStudioStorageError) throw error;
+      throwMappedLectureStudioStorageError(error);
+    }
+  }
+
+  removeLectureStudioFigure(
+    input: Readonly<{
+      studioId: string;
+      expectedVersion: number;
+      figureId: string;
+      sha256: string;
+      updatedAt: string;
+    }>,
+  ): LectureStudioFigureLibraryReceipt | null {
+    if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+      throw new Error('invalid_lecture_version');
+    }
+    const parsedIdentity = z
+      .object({
+        id: z.string().uuid(),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+      })
+      .strict()
+      .parse({ id: input.figureId, sha256: input.sha256 });
+    const database = this.require();
+    try {
+      return database
+        .transaction(() => {
+          const studioRow = database
+            .prepare('select * from lecture_studios where id=?')
+            .get(input.studioId) as LectureStudioRow | undefined;
+          if (!studioRow) return null;
+          const studio = toLectureStudio(studioRow);
+          if (
+            studio.version !== input.expectedVersion ||
+            !['draft', 'ready', 'failed'].includes(studio.status) ||
+            studio.activeAttemptId !== null ||
+            studio.trashedAt !== undefined
+          ) {
+            return null;
+          }
+          const activeFigureRow = database
+            .prepare(
+              `select * from lecture_studio_figures
+               where studio_id=? and id=? and sha256=? and deleted_at is null`,
+            )
+            .get(input.studioId, parsedIdentity.id, parsedIdentity.sha256) as
+            LectureStudioFigureRow | undefined;
+          if (!activeFigureRow) return null;
+          toStoredLectureStudioFigure(activeFigureRow);
+          if (studio.currentRevision > 0) {
+            const currentRevisionRow = database
+              .prepare(
+                `select * from lecture_studio_revisions
+                 where studio_id=? and revision=?`,
+              )
+              .get(input.studioId, studio.currentRevision) as LectureStudioRevisionRow | undefined;
+            if (!currentRevisionRow) return null;
+            const currentRevision = toLectureStudioRevision(currentRevisionRow);
+            if (
+              currentRevision.schemaVersion === 4 &&
+              currentRevision.figureAssets.some(
+                (figure) =>
+                  figure.id === parsedIdentity.id && figure.sha256 === parsedIdentity.sha256,
+              )
+            ) {
+              throw new Error('lecture_figure_in_use');
+            }
+          }
+          const changedStudio = database
+            .prepare(
+              `update lecture_studios
+               set version=version+1,updated_at=?
+               where id=? and version=? and status in ('draft','ready','failed')
+                 and active_attempt_id is null and trashed_at is null`,
+            )
+            .run(input.updatedAt, input.studioId, input.expectedVersion);
+          if (changedStudio.changes !== 1) return null;
+          const historicalReference = database
+            .prepare(
+              `select 1
+               from lecture_studio_revisions as revision,
+                    json_each(revision.figure_assets_json) as figure
+               where revision.studio_id=?
+                 and revision.figure_assets_json is not null
+                 and json_extract(figure.value,'$.id')=?
+                 and json_extract(figure.value,'$.sha256')=?
+               limit 1`,
+            )
+            .get(input.studioId, parsedIdentity.id, parsedIdentity.sha256);
+          // Historical revisions recompile from the encrypted figure row, so referenced bytes
+          // remain soft-deleted. An asset that no revision ever claimed has no immutable consumer
+          // and is removed immediately instead of growing an unbounded detached-BLOB tombstone set.
+          const changedFigure = historicalReference
+            ? database
+                .prepare(
+                  `update lecture_studio_figures set deleted_at=?
+                   where studio_id=? and id=? and sha256=? and deleted_at is null`,
+                )
+                .run(input.updatedAt, input.studioId, parsedIdentity.id, parsedIdentity.sha256)
+            : database
+                .prepare(
+                  `delete from lecture_studio_figures
+                   where studio_id=? and id=? and sha256=? and deleted_at is null`,
+                )
+                .run(input.studioId, parsedIdentity.id, parsedIdentity.sha256);
+          if (changedFigure.changes !== 1) {
+            throw new Error('lecture_figure_remove_cas_failed');
+          }
+          const updatedStudio = toLectureStudio(
+            database
+              .prepare('select * from lecture_studios where id=?')
+              .get(input.studioId) as LectureStudioRow,
+          );
+          const figures = (
+            database
+              .prepare(
+                `select * from lecture_studio_figures
+                 where studio_id=? and deleted_at is null
+                 order by created_at asc,id asc`,
+              )
+              .all(input.studioId) as LectureStudioFigureRow[]
+          ).map((row) => toStoredLectureStudioFigure(row).asset);
+          return LectureStudioFigureLibraryReceiptSchema.parse({
+            studio: updatedStudio,
+            figures,
+          });
+        })
+        .immediate();
+    } catch (error) {
+      if (error instanceof LectureStudioStorageError) throw error;
+      throwMappedLectureStudioStorageError(error);
+    }
+  }
+
+  commitManualLectureStudioRevision(
+    input: Readonly<{
+      studioId: string;
+      expectedVersion: number;
+      expectedCurrentRevision: number;
+      revision: LectureStudioRevisionV4;
+      updatedAt: string;
+    }>,
+  ): LectureStudio | null {
+    if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+      throw new Error('invalid_lecture_version');
+    }
+    if (!Number.isSafeInteger(input.expectedCurrentRevision) || input.expectedCurrentRevision < 1) {
+      throw new Error('invalid_lecture_revision');
+    }
+    const revision = LectureStudioRevisionV4Schema.parse(structuredClone(input.revision));
+    const manualAuthorship = revision.authorship.kind === 'manual' ? revision.authorship : null;
+    if (
+      revision.studioId !== input.studioId ||
+      manualAuthorship === null ||
+      revision.invocation !== null ||
+      revision.revision !== input.expectedCurrentRevision + 1 ||
+      manualAuthorship.baseRevision !== input.expectedCurrentRevision
+    ) {
+      throw new Error('invalid_manual_lecture_revision');
+    }
+    const database = this.require();
+    try {
+      return database
+        .transaction(() => {
+          const studioRow = database
+            .prepare('select * from lecture_studios where id=?')
+            .get(input.studioId) as LectureStudioRow | undefined;
+          if (!studioRow) return null;
+          const studio = toLectureStudio(studioRow);
+          if (
+            studio.version !== input.expectedVersion ||
+            studio.currentRevision !== input.expectedCurrentRevision ||
+            !['ready', 'failed'].includes(studio.status) ||
+            studio.activeAttemptId !== null ||
+            studio.trashedAt !== undefined
+          ) {
+            return null;
+          }
+          const baseRow = database
+            .prepare(
+              `select * from lecture_studio_revisions
+               where studio_id=? and revision=?`,
+            )
+            .get(input.studioId, input.expectedCurrentRevision) as
+            LectureStudioRevisionRow | undefined;
+          if (!baseRow) return null;
+          const base = toLectureStudioRevision(baseRow);
+          if (
+            base.schemaVersion === 1 ||
+            manualAuthorship.baseRevisionId !== base.id ||
+            revision.sourceManifestSha256 !== base.sourceManifestSha256 ||
+            JSON.stringify(revision.sourceManifest) !== JSON.stringify(base.sourceManifest) ||
+            ((base.schemaVersion === 3 || base.schemaVersion === 4) &&
+              (revision.generationBriefSha256 !== base.generationBriefSha256 ||
+                JSON.stringify(revision.generationBriefSnapshot) !==
+                  JSON.stringify(base.generationBriefSnapshot) ||
+                revision.authoringPolicyVersion !== base.authoringPolicyVersion ||
+                revision.authoringPolicySha256 !== base.authoringPolicySha256))
+          ) {
+            return null;
+          }
+          const editedKinds = [
+            ...(revision.lectureNotesLatex === base.lectureNotesLatex
+              ? []
+              : (['lecture-notes'] as const)),
+            ...(revision.slidesLatex === base.slidesLatex ? [] : (['slides'] as const)),
+          ];
+          if (
+            editedKinds.length === 0 ||
+            editedKinds.length !== manualAuthorship.editedKinds.length ||
+            editedKinds.some((kind) => !manualAuthorship.editedKinds.includes(kind))
+          ) {
+            return null;
+          }
+          const notesArtifact = revision.artifacts.find(
+            (artifact) => artifact.kind === 'lecture-notes',
+          );
+          const slidesArtifact = revision.artifacts.find((artifact) => artifact.kind === 'slides');
+          if (
+            notesArtifact?.contentSha256 !==
+              createHash('sha256').update(revision.lectureNotesLatex, 'utf8').digest('hex') ||
+            slidesArtifact?.contentSha256 !==
+              createHash('sha256').update(revision.slidesLatex, 'utf8').digest('hex')
+          ) {
+            throw new Error('invalid_manual_lecture_artifact_hash');
+          }
+          const claimedAttemptOrMessage = database
+            .prepare(
+              `select 1
+               where exists(
+                 select 1 from lecture_studio_attempts where studio_id=? and id=?
+               ) or exists(
+                 select 1 from lecture_studio_messages where studio_id=? and attempt_id=?
+               )`,
+            )
+            .get(input.studioId, revision.attemptId, input.studioId, revision.attemptId);
+          if (claimedAttemptOrMessage) return null;
+          const activeFigures = (
+            database
+              .prepare(
+                `select * from lecture_studio_figures
+                 where studio_id=? and deleted_at is null
+                 order by created_at asc,id asc`,
+              )
+              .all(input.studioId) as LectureStudioFigureRow[]
+          ).map((row) => toStoredLectureStudioFigure(row).asset);
+          const activeFiguresById = new Map(activeFigures.map((figure) => [figure.id, figure]));
+          if (
+            revision.figureAssets.some(
+              (figure) =>
+                JSON.stringify(activeFiguresById.get(figure.id)) !== JSON.stringify(figure),
+            )
+          ) {
+            return null;
+          }
+          const capacity = database
+            .prepare(
+              `select count(*) as revision_count from lecture_studio_revisions
+               where studio_id=?`,
+            )
+            .get(input.studioId) as { revision_count: number };
+          if (capacity.revision_count >= LECTURE_STUDIO_MAX_REVISIONS) {
+            throw new LectureStudioStorageError('capacity_reached');
+          }
+          const changed = database
+            .prepare(
+              `update lecture_studios
+               set status='ready',active_attempt_id=null,current_revision=?,version=version+1,
+                   last_error_code=null,updated_at=?
+               where id=? and version=? and current_revision=?
+                 and status in ('ready','failed') and active_attempt_id is null
+                 and trashed_at is null`,
+            )
+            .run(
+              revision.revision,
+              input.updatedAt,
+              input.studioId,
+              input.expectedVersion,
+              input.expectedCurrentRevision,
+            );
+          if (changed.changes !== 1) return null;
+          insertLectureStudioRevision(database, revision);
+          return toLectureStudio(
+            database
+              .prepare('select * from lecture_studios where id=?')
+              .get(input.studioId) as LectureStudioRow,
+          );
+        })
+        .immediate();
+    } catch (error) {
+      if (error instanceof LectureStudioStorageError) throw error;
+      throwMappedLectureStudioStorageError(error);
+    }
+  }
+
   createLectureStudio(input: LectureStudio) {
     const studio = LectureStudioSchema.parse(structuredClone(input));
     if (
@@ -8522,6 +9967,7 @@ export class LocalDatabase {
       attemptId: string;
       userMessage: LectureStudioMessage | null;
       updatedAt: string;
+      generationBrief?: LectureStudio['generationBrief'];
       attempt?: LectureStudioAttempt;
     }>,
   ): LectureStudio | null {
@@ -8537,6 +9983,12 @@ export class LocalDatabase {
       input.attempt === undefined
         ? null
         : LectureStudioAttemptSchema.parse(structuredClone(input.attempt));
+    const generationBrief =
+      input.generationBrief === undefined
+        ? null
+        : CurrentLectureStudioGenerationBriefValueSchema.parse(
+            structuredClone(input.generationBrief),
+          );
     if (
       userMessage &&
       (userMessage.studioId !== input.studioId ||
@@ -8557,15 +10009,31 @@ export class LocalDatabase {
     try {
       return database
         .transaction(() => {
-          const changed = database
-            .prepare(
-              `update lecture_studios
-               set status='generating',active_attempt_id=?,last_error_code=null,
-                   version=version+1,updated_at=?
-               where id=? and version=? and status in ('draft','ready','failed')
-                 and active_attempt_id is null and trashed_at is null`,
-            )
-            .run(input.attemptId, input.updatedAt, input.studioId, input.expectedVersion);
+          const changed = generationBrief
+            ? database
+                .prepare(
+                  `update lecture_studios
+                   set generation_brief_json=?,status='generating',active_attempt_id=?,
+                       last_error_code=null,version=version+1,updated_at=?
+                   where id=? and version=? and status in ('draft','ready','failed')
+                     and active_attempt_id is null and trashed_at is null`,
+                )
+                .run(
+                  JSON.stringify(generationBrief),
+                  input.attemptId,
+                  input.updatedAt,
+                  input.studioId,
+                  input.expectedVersion,
+                )
+            : database
+                .prepare(
+                  `update lecture_studios
+                   set status='generating',active_attempt_id=?,last_error_code=null,
+                       version=version+1,updated_at=?
+                   where id=? and version=? and status in ('draft','ready','failed')
+                     and active_attempt_id is null and trashed_at is null`,
+                )
+                .run(input.attemptId, input.updatedAt, input.studioId, input.expectedVersion);
           if (changed.changes !== 1) return null;
           const capacity = database
             .prepare(
@@ -8617,6 +10085,7 @@ export class LocalDatabase {
       studio.lastErrorCode !== null ||
       revision.studioId !== studio.id ||
       revision.revision !== studio.currentRevision ||
+      (revision.schemaVersion === 4 && revision.authorship.kind !== 'model') ||
       (assistantMessage !== null &&
         (assistantMessage.studioId !== studio.id ||
           assistantMessage.role !== 'assistant' ||
@@ -8651,6 +10120,26 @@ export class LocalDatabase {
             configurationChanged
           ) {
             return null;
+          }
+          const activeFigures = (
+            database
+              .prepare(
+                `select * from lecture_studio_figures
+                 where studio_id=? and deleted_at is null
+                 order by created_at asc,id asc`,
+              )
+              .all(studio.id) as LectureStudioFigureRow[]
+          ).map((row) => toStoredLectureStudioFigure(row).asset);
+          if (revision.schemaVersion === 4) {
+            const activeFiguresById = new Map(activeFigures.map((figure) => [figure.id, figure]));
+            if (
+              revision.figureAssets.some(
+                (figure) =>
+                  JSON.stringify(activeFiguresById.get(figure.id)) !== JSON.stringify(figure),
+              )
+            ) {
+              return null;
+            }
           }
           const changed = database
             .prepare(
@@ -10255,6 +11744,7 @@ type ProjectChatProfileRow = {
   updated_at: string;
   content: string;
   content_sha256: string;
+  policy_rules_json: string;
   created_at: string;
 };
 
@@ -10375,6 +11865,7 @@ function toChatProfile(row: ProjectChatProfileRow) {
           }
         : null,
     customInstructions: row.content,
+    policyRules: ProjectChatPolicyRulesSchema.parse(JSON.parse(row.policy_rules_json) as unknown),
     instructionRevision: {
       id: row.instruction_revision_id,
       revision: row.version,

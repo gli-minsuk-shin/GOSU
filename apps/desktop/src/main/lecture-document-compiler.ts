@@ -15,11 +15,17 @@ import { dirname, isAbsolute, join } from 'node:path';
 
 import { PdfPreviewDocumentSchema, type PdfPreviewDocument } from '../shared/pdf-preview-contracts';
 import {
+  LECTURE_STUDIO_MAX_FIGURE_BYTES,
+  LECTURE_STUDIO_MAX_FIGURES,
+  LectureStudioFigureAssetSchema,
+  type LectureStudioFigureAsset,
+} from '../shared/lecture-studio-contracts';
+import {
   createManuscriptPdfCommandRunner,
   manuscriptLatexSandboxProfile,
   type ManuscriptPdfCommandRunner,
 } from './manuscript-pdf-compiler';
-import { validateCanonicalLectureLatex } from './lecture-latex-source';
+import { findLectureFigureAssetIds, validateCanonicalLectureLatex } from './lecture-latex-source';
 
 const MAX_LECTURE_SOURCE_CHARACTERS = 240_000;
 const MAX_PDF_BYTES = 32 * 1024 * 1024;
@@ -35,6 +41,11 @@ const MARKDOWN_IMAGE_PATTERN = /!\s*\[/u;
 
 export type LectureDocumentKind = 'lecture-notes' | 'slides';
 
+export type CompileLectureDocumentFigureAsset = Readonly<{
+  asset: LectureStudioFigureAsset;
+  bytes: Uint8Array;
+}>;
+
 export type CompileLectureDocumentInput = Readonly<{
   studioId: string;
   revision: number;
@@ -43,6 +54,7 @@ export type CompileLectureDocumentInput = Readonly<{
   markdown: string;
   contentSha256: string;
   sourceFormat?: 'markdown' | 'latex';
+  figureAssets?: readonly CompileLectureDocumentFigureAsset[];
 }>;
 
 export type LectureDocumentCompilerErrorCode =
@@ -83,6 +95,7 @@ function validateInput(input: CompileLectureDocumentInput) {
     ...input,
     title: input.title.trim(),
     sourceFormat: input.sourceFormat ?? 'markdown',
+    figureAssets: validateFigureAssets(input.studioId, input.figureAssets ?? []),
   } as const;
   if (normalized.sourceFormat === 'latex') {
     try {
@@ -90,10 +103,64 @@ function validateInput(input: CompileLectureDocumentInput) {
     } catch {
       throw new LectureDocumentCompilerError('lecture_pdf_invalid');
     }
+    const availableFigureIds = new Set(
+      normalized.figureAssets.map(({ asset }) => asset.id.toLocaleLowerCase()),
+    );
+    if (
+      findLectureFigureAssetIds(normalized.markdown).some(
+        (figureId) => !availableFigureIds.has(figureId.toLocaleLowerCase()),
+      )
+    ) {
+      throw new LectureDocumentCompilerError('lecture_pdf_invalid');
+    }
   } else if (RAW_HTML_PATTERN.test(normalized.markdown)) {
+    throw new LectureDocumentCompilerError('lecture_pdf_invalid');
+  } else if (normalized.figureAssets.length > 0) {
     throw new LectureDocumentCompilerError('lecture_pdf_invalid');
   }
   return normalized;
+}
+
+function validateFigureAssets(
+  studioId: string,
+  rawAssets: readonly CompileLectureDocumentFigureAsset[],
+) {
+  if (rawAssets.length > LECTURE_STUDIO_MAX_FIGURES) {
+    throw new LectureDocumentCompilerError('lecture_pdf_invalid');
+  }
+  const validated = rawAssets.map((raw) => {
+    let asset: LectureStudioFigureAsset;
+    try {
+      asset = LectureStudioFigureAssetSchema.parse(structuredClone(raw.asset));
+    } catch {
+      throw new LectureDocumentCompilerError('lecture_pdf_invalid');
+    }
+    const bytes = Buffer.from(raw.bytes);
+    if (
+      asset.studioId !== studioId ||
+      asset.mediaType !== 'image/jpeg' ||
+      bytes.byteLength !== asset.byteSize ||
+      bytes.byteLength > LECTURE_STUDIO_MAX_FIGURE_BYTES ||
+      sha256(bytes) !== asset.sha256 ||
+      bytes.byteLength < 5 ||
+      bytes[0] !== 0xff ||
+      bytes[1] !== 0xd8 ||
+      bytes[2] !== 0xff ||
+      bytes.at(-2) !== 0xff ||
+      bytes.at(-1) !== 0xd9
+    ) {
+      throw new LectureDocumentCompilerError('lecture_pdf_invalid');
+    }
+    return { asset, bytes } as const;
+  });
+  if (
+    new Set(validated.map(({ asset }) => asset.id)).size !== validated.length ||
+    new Set(validated.map(({ asset }) => asset.fileName)).size !== validated.length ||
+    new Set(validated.map(({ asset }) => asset.sha256)).size !== validated.length
+  ) {
+    throw new LectureDocumentCompilerError('lecture_pdf_invalid');
+  }
+  return validated;
 }
 
 function escapeLatex(value: string) {
@@ -797,6 +864,12 @@ export class LectureDocumentCompiler {
           : lectureMarkdownToLatex(input.kind, input.title, input.markdown),
         { encoding: 'utf8', flag: 'wx', mode: 0o600 },
       );
+      for (const figure of input.figureAssets) {
+        await writeFile(join(source, figure.asset.fileName), figure.bytes, {
+          flag: 'wx',
+          mode: 0o600,
+        });
+      }
       const environment = minimalCompilerEnvironment(dirname(engine), home, output);
       const profile = manuscriptLatexSandboxProfile(source, work);
       const version = await this.run(

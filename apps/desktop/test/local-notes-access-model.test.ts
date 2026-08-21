@@ -18,6 +18,7 @@ describe('Research Notes grant profile update', () => {
       contextScope: 'objective',
       localNotesVault: { id: 'a'.repeat(64), name: 'Previous Vault' },
       customInstructions: 'Keep evidence and project decisions traceable.',
+      policyRules: ['Never report an estimate as a measured result.'],
       instructionRevision: {
         id: '22222222-2222-4222-8222-222222222222',
         revision: 7,
@@ -46,6 +47,7 @@ describe('Research Notes grant profile update', () => {
       contextScope: 'objective',
       localNotesVault: nextGrant,
       customInstructions: 'Keep evidence and project decisions traceable.',
+      policyRules: ['Never report an estimate as a measured result.'],
     });
     expect(update).not.toHaveProperty('schemaVersion');
     expect(update).not.toHaveProperty('instructionRevision');
@@ -66,6 +68,7 @@ describe('Research Notes grant profile update', () => {
       contextScope: 'project',
       localNotesVault: { id: 'a'.repeat(64), name: 'Research Vault' },
       customInstructions: '',
+      policyRules: [],
       instructionRevision: null,
       updatedAt: null,
     };

@@ -39,8 +39,13 @@ import {
 import { registerHermesAcpApprovalIpc } from './hermes-acp-approval-ipc';
 import { HermesAcpApprovalService } from './hermes-acp-approval-service';
 import { HermesAcpProjectChatAdapter } from './hermes-acp-project-chat-adapter';
-import { HermesProjectChatAdapter } from './hermes-project-chat-adapter';
+import {
+  createNodeHermesProjectChatPlatform,
+  HermesProjectChatAdapter,
+} from './hermes-project-chat-adapter';
 import { LocalDatabase } from './local-database';
+import { registerModelUsageIpc } from './model-usage-ipc';
+import { ModelUsageService } from './model-usage-service';
 import { installProcessOutputGuards } from './process-output-guard';
 import { registerGitWorkspaceIpc } from './git-workspace-ipc';
 import { GitWorkspaceService } from './git-workspace-service';
@@ -63,6 +68,7 @@ import { registerLectureStudioIpc } from './lecture-studio-ipc';
 import { createLectureArtifactPlatform } from './lecture-artifact-platform';
 import { LectureStudioService } from './lecture-studio-service';
 import { LectureStudioAttachmentService } from './lecture-studio-attachment-service';
+import { LectureStudioFigureService } from './lecture-studio-figure-service';
 import { LectureDocumentCompiler } from './lecture-document-compiler';
 import {
   LectureExternalSourceManifestAuthenticator,
@@ -118,7 +124,22 @@ const codex = new CodexAppServer({
   clientVersion: () => app.getVersion(),
 });
 const hermesAcpApprovals = new HermesAcpApprovalService();
-const hermesRuntimeDiscovery = new HermesProjectChatAdapter();
+const hermesRuntimeDiscovery = new HermesProjectChatAdapter(
+  createNodeHermesProjectChatPlatform({
+    bundledRuntimeDirectory: app.isPackaged
+      ? null
+      : join(app.getAppPath(), '.runtime', 'hermes-runtime'),
+    bundledRuntimeArchivePath: app.isPackaged
+      ? join(process.resourcesPath, 'hermes-runtime.zip')
+      : null,
+    bundledRuntimeCacheDirectory: app.isPackaged
+      ? join(app.getPath('userData'), 'hermes-runtime-cache')
+      : null,
+    // A release build is hermetic: it never searches PATH or a user's mutable Hermes checkout.
+    // Local fallback remains available only for development while the signed bundle is prepared.
+    allowCustomLocalRuntime: !app.isPackaged,
+  }),
+);
 const hermesProjectChat = new HermesAcpProjectChatAdapter({
   runtimeDiscovery: hermesRuntimeDiscovery,
   approvals: hermesAcpApprovals,
@@ -155,6 +176,7 @@ const workspace = new WorkspaceService({
   pendingChanges: () => database.pendingWorkspaceChanges(),
   pendingSummary: () => database.pendingWorkspaceSummary(),
 });
+const modelUsage = new ModelUsageService(database, workspace);
 const experimentWorkspace = new ExperimentWorkspaceService({
   storage: database,
   workspace,
@@ -171,6 +193,7 @@ const experimentEvaluation = new ExperimentEvaluationService({
   workspace,
   experiments: experimentWorkspace,
   codex,
+  usage: modelUsage,
   artifacts: experimentEvaluationArtifacts,
   async prepareDirectory(projectId) {
     const directory = join(app.getPath('userData'), 'experiment-evaluation-workspaces', projectId);
@@ -281,6 +304,7 @@ const projectChat = new ProjectChatService({
   ssh,
   experiments: experimentWorkspace,
   attachments: projectChatAttachments,
+  usage: modelUsage,
   async prepareProjectDirectory(projectId) {
     const directory = join(app.getPath('userData'), 'project-chat-workspaces', projectId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -290,6 +314,7 @@ const projectChat = new ProjectChatService({
 const literatureAi = new LiteratureAiService({
   storage: literature,
   codex,
+  usage: modelUsage,
   async prepareDirectory(projectId) {
     const directory = join(app.getPath('userData'), 'literature-ai-workspaces', projectId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -324,15 +349,37 @@ const lectureStudioAttachments = new LectureStudioAttachmentService({
   externalSources: lectureExternalSources,
   getStudio: (studioId) => database.getLectureStudio(studioId),
 });
+const lectureStudioFigures = new LectureStudioFigureService({
+  storage: database,
+  async chooseFiles() {
+    const options: Electron.OpenDialogOptions = {
+      title: 'Add figures to Lecture Studio',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        {
+          name: 'Images',
+          extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'tif', 'tiff', 'bmp', 'avif'],
+        },
+      ],
+    };
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    return result.canceled ? [] : result.filePaths;
+  },
+  temporaryRoot: () => app.getPath('temp'),
+});
 const lectureStudio = new LectureStudioService({
   storage: database,
   sources: database,
   manuscripts: manuscriptWorkspace,
   externalSources: lectureExternalSources,
   attachments: lectureStudioAttachments,
+  figures: lectureStudioFigures,
   workspace,
   artifacts: researchNotes,
   codex,
+  usage: modelUsage,
   pdfCompiler: lectureDocumentCompiler,
   artifactPlatform: createLectureArtifactPlatform(
     () => mainWindow,
@@ -590,11 +637,16 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     lectureExternalSources,
     lectureOverleafSources,
     lectureStudioAttachments,
+    lectureStudioFigures,
     reportUnexpectedWorkspaceError,
   );
   registerAgentAddOnIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     agentAddOns,
+  );
+  registerModelUsageIpc(
+    (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
+    modelUsage,
   );
 
   handle('gosu:runtime:readiness', async () =>
@@ -609,7 +661,11 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
       syncApi: await checkSyncApiHealth(process.env.GOSU_SYNC_API_URL?.trim() || undefined),
     }),
   );
-  handle('gosu:codex:status', () => codex.status());
+  handle('gosu:codex:status', async () => {
+    const status = await codex.status();
+    modelUsage.observeCodexAccount(status);
+    return status;
+  });
   handle('gosu:codex:list-models', async () => {
     const catalog = await codex.listModelCatalog();
     return catalog.models.map((model) => ({
@@ -624,6 +680,7 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
       status = (await codex.status()) as { account?: unknown; unavailable?: boolean };
     }
     if (status.unavailable) throw new Error('codex_unavailable');
+    modelUsage.observeCodexAccount(status);
     if (status.account === null || status.account === undefined) {
       return {
         authenticated: false,
@@ -698,6 +755,39 @@ if (!primaryInstance) {
     let localData = localDataReadiness();
     try {
       database.open();
+      codex.on(
+        'invocation',
+        (event: { threadId: string; turnId: string; invocation: ModelInvocation }) =>
+          modelUsage.recordInvocation(event),
+      );
+      codex.on('notification', (notification: unknown) =>
+        modelUsage.recordCodexNotification(notification),
+      );
+      hermesProjectChat.on(
+        'invocation',
+        (event: Parameters<ModelUsageService['recordInvocation']>[0]) =>
+          modelUsage.recordInvocation(event),
+      );
+      hermesProjectChat.on(
+        'usage',
+        (event: Parameters<ModelUsageService['recordAcpPromptResult']>[0]) =>
+          modelUsage.recordAcpPromptResult(event),
+      );
+      hermesProjectChat.on(
+        'delegationInvocation',
+        (event: Parameters<ModelUsageService['recordDelegationInvocation']>[0]) =>
+          modelUsage.recordDelegationInvocation(event),
+      );
+      hermesProjectChat.on(
+        'delegationUsage',
+        (event: Parameters<ModelUsageService['recordDelegationPromptResult']>[0]) =>
+          modelUsage.recordDelegationPromptResult(event),
+      );
+      hermesProjectChat.on('notification', (notification: unknown) =>
+        modelUsage.recordAcpNotification(notification),
+      );
+      const initialCodexStatus = await codex.status().catch(() => null);
+      if (initialCodexStatus) modelUsage.observeCodexAccount(initialCodexStatus);
       const evaluationArtifactReconciliation = await experimentEvaluationArtifacts
         .reconcilePendingProfiles(
           (projectId, profileId) =>
@@ -746,12 +836,6 @@ if (!primaryInstance) {
         console.error('[GOSU] Codex authentication renderer event delivery failed.');
       }
     });
-    projectChatProvider.on(
-      'invocation',
-      (event: { threadId: string; turnId: string; invocation: ModelInvocation }) =>
-        database.isReady() &&
-        database.recordModelInvocation(event.threadId, event.turnId, event.invocation),
-    );
     projectChat.on('event', (event) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         try {
@@ -834,6 +918,7 @@ if (!primaryInstance) {
   app.on('before-quit', () => {
     manuscriptPdfCompiler.dispose();
     lectureDocumentCompiler.dispose();
+    void lectureStudioFigures.dispose();
     projectChatAttachments.disposeImmediately();
     literature.shutdown();
     ssh.shutdown();

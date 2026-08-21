@@ -121,7 +121,19 @@ export type HermesAcpInitializeResult = Readonly<{
 
 export type HermesAcpSession = Readonly<{ sessionId: string }>;
 
-export type HermesAcpPromptResult = Readonly<{ stopReason: string }>;
+export type HermesAcpPromptUsage = Readonly<{
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedReadTokens: number | null;
+  cachedWriteTokens: number | null;
+  reasoningOutputTokens: number | null;
+}>;
+
+export type HermesAcpPromptResult = Readonly<{
+  stopReason: string;
+  usage?: HermesAcpPromptUsage;
+}>;
 
 export type HermesAcpClientOptions = Readonly<{
   permissionHandler: (request: HermesAcpPermissionRequest) => Promise<HermesAcpPermissionDecision>;
@@ -178,6 +190,40 @@ function boundedString(value: unknown, maximum: number) {
     sanitized += unsafeControl ? '\ufffd' : character;
   }
   return sanitized.slice(0, maximum);
+}
+
+function sanitizePromptUsage(value: unknown): HermesAcpPromptUsage | null {
+  if (!isRecord(value)) return null;
+  const required = ['inputTokens', 'outputTokens', 'totalTokens'] as const;
+  if (required.some((key) => !Number.isSafeInteger(value[key]) || (value[key] as number) < 0)) {
+    return null;
+  }
+  const optional = (key: string) => {
+    const count = value[key];
+    return Number.isSafeInteger(count) && (count as number) >= 0 ? (count as number) : null;
+  };
+  const usage: HermesAcpPromptUsage = {
+    inputTokens: value.inputTokens as number,
+    outputTokens: value.outputTokens as number,
+    totalTokens: value.totalTokens as number,
+    cachedReadTokens: optional('cachedReadTokens'),
+    cachedWriteTokens: optional('cachedWriteTokens'),
+    reasoningOutputTokens: optional('thoughtTokens'),
+  };
+  if (
+    !Number.isSafeInteger(usage.inputTokens + usage.outputTokens) ||
+    usage.totalTokens !== usage.inputTokens + usage.outputTokens ||
+    (usage.cachedReadTokens !== null && usage.cachedReadTokens > usage.inputTokens) ||
+    (usage.cachedWriteTokens !== null && usage.cachedWriteTokens > usage.inputTokens) ||
+    (usage.cachedReadTokens !== null &&
+      usage.cachedWriteTokens !== null &&
+      (!Number.isSafeInteger(usage.cachedReadTokens + usage.cachedWriteTokens) ||
+        usage.cachedReadTokens + usage.cachedWriteTokens > usage.inputTokens)) ||
+    (usage.reasoningOutputTokens !== null && usage.reasoningOutputTokens > usage.outputTokens)
+  ) {
+    return null;
+  }
+  return usage;
 }
 
 function boundedIdentifier(value: unknown) {
@@ -663,7 +709,11 @@ export class HermesAcpClient extends EventEmitter {
       this.promptTimeoutMs,
     );
     if (!isRecord(result)) throw new HermesAcpClientError('hermes_acp_prompt_result_invalid');
-    return { stopReason: boundedIdentifier(result.stopReason) || 'unknown' };
+    const usage = sanitizePromptUsage(result.usage);
+    return {
+      stopReason: boundedIdentifier(result.stopReason) || 'unknown',
+      ...(usage ? { usage } : {}),
+    };
   }
 
   async cancel(sessionId: string) {

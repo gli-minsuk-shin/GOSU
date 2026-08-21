@@ -79,6 +79,7 @@ import {
   type ProjectAgentVault,
 } from './project-agent-tools';
 import { assembleProjectChatPrompt } from './project-chat-prompt';
+import type { ModelUsageService } from './model-usage-service';
 import { WorkspaceServiceError, type WorkspaceService } from './workspace-service';
 
 export { buildProjectChatPrompt } from './project-chat-prompt';
@@ -641,6 +642,7 @@ export class ProjectChatService extends EventEmitter {
       ssh?: ProjectAgentSsh;
       experiments?: ProjectAgentExperiments;
       attachments?: ProjectChatAttachmentClaimer;
+      usage?: Pick<ModelUsageService, 'bindThread' | 'releaseThread'>;
       titleJobTimeoutMs?: number;
       queueSchedulerRetryDelaysMs?: readonly number[];
       prepareProjectDirectory(projectId: string): Promise<string>;
@@ -671,6 +673,7 @@ export class ProjectChatService extends EventEmitter {
       for (const [threadId, session] of this.threadSessions) {
         if (session.providerId !== providerId) continue;
         this.threadSessions.delete(threadId);
+        this.dependencies.usage?.releaseThread(threadId);
         for (const transport of this.earlyNotifications.keys()) {
           if (transport.startsWith(`${threadId}\u0000`)) this.earlyNotifications.delete(transport);
         }
@@ -847,6 +850,10 @@ export class ProjectChatService extends EventEmitter {
     }
     return this.runProjectChatMutation(command.projectId, async () => {
       await this.requireActiveProject(command.projectId);
+      const queuedSessions = await this.dependencies.storage.listProjectChatQueuedSessionKeys();
+      if (queuedSessions.some((session) => session.projectId === command.projectId)) {
+        throw new ProjectChatServiceError('chat_busy');
+      }
       if (command.localNotesVault) {
         const selectedVault = this.dependencies.vault?.descriptor(command.projectId) ?? null;
         if (!selectedVault) {
@@ -1103,6 +1110,7 @@ export class ProjectChatService extends EventEmitter {
         profileVersion: profile.version,
         instructionRevisionId: profile.instructionRevision?.id ?? null,
         customInstructions: profile.customInstructions,
+        policyRules: profile.policyRules,
         toolCatalogSha256: agentTools.catalogSha256,
         localNotesVaultId:
           agentTools.localNotesAvailable && profile.localNotesVault
@@ -1186,6 +1194,7 @@ export class ProjectChatService extends EventEmitter {
         const startedThread = await this.startEphemeralThread(
           command.projectId,
           session.id,
+          startingAttempt.id,
           cwd,
           command.requestedModelId,
           assembled.developerInstructions,
@@ -1292,6 +1301,7 @@ export class ProjectChatService extends EventEmitter {
         }
         if (ephemeralThreadId) {
           this.threadSessions.delete(ephemeralThreadId);
+          this.dependencies.usage?.releaseThread(ephemeralThreadId);
           void this.dependencies.codex.releaseThread(ephemeralThreadId).catch(() => undefined);
         }
         if (ephemeralThreadId && ephemeralTurnId) {
@@ -1901,6 +1911,7 @@ export class ProjectChatService extends EventEmitter {
   private async startEphemeralThread(
     projectId: string,
     sessionId: string,
+    attemptId: string,
     cwd: string,
     modelId: string | null,
     developerInstructions: string,
@@ -1928,6 +1939,12 @@ export class ProjectChatService extends EventEmitter {
       this.dependencies.codex.revokeDynamicTools(started.threadId),
     );
     this.threadSessions.set(started.threadId, { projectId, sessionId, providerId });
+    this.dependencies.usage?.bindThread(started.threadId, {
+      workloadKind: 'project_chat',
+      projectId,
+      projectChatSessionId: sessionId,
+      projectChatAttemptId: attemptId,
+    });
     return { threadId: started.threadId, providerId };
   }
 
@@ -1993,6 +2010,11 @@ export class ProjectChatService extends EventEmitter {
         throw new Error('codex_thread_id_collision');
       }
       ownsThread = true;
+      this.dependencies.usage?.bindThread(threadId, {
+        workloadKind: 'project_chat_title',
+        projectId: session.projectId,
+        projectChatSessionId: session.id,
+      });
 
       let resolveCompletion!: (result: ProjectChatTitleJobResult) => void;
       const completion = new Promise<ProjectChatTitleJobResult>((resolve) => {
@@ -2105,6 +2127,7 @@ export class ProjectChatService extends EventEmitter {
 
   private async cleanupTitleThread(threadId: string, job: ProjectChatTitleJob) {
     if (this.titleJobsByThread.get(threadId) === job) this.titleJobsByThread.delete(threadId);
+    this.dependencies.usage?.releaseThread(threadId);
     await this.dependencies.codex.releaseThread(threadId).catch(() => undefined);
   }
 
@@ -2412,6 +2435,7 @@ export class ProjectChatService extends EventEmitter {
     const session = sessionIdentity(active.projectId, active.sessionId);
     this.activeByTransport.delete(transport);
     this.threadSessions.delete(active.threadId);
+    this.dependencies.usage?.releaseThread(active.threadId);
     if (this.activeTransportBySession.get(session) === transport) {
       this.activeTransportBySession.delete(session);
     }

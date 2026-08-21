@@ -3,6 +3,7 @@ import type { ZodType } from 'zod';
 import { EXPERIMENT_EVALUATION_IPC_CHANNELS } from '../shared/experiment-evaluation-channels';
 import {
   ApproveExperimentEvaluationInputSchema,
+  CancelExperimentEvaluationInputSchema,
   CreateExperimentEvaluationSessionInputSchema,
   ExperimentEvaluationDetailInputSchema,
   ListExperimentEvaluationsInputSchema,
@@ -51,6 +52,14 @@ export function registerExperimentEvaluationIpc(
       input,
       SendExperimentEvaluationMessageInputSchema,
       (command) => service.send(command),
+      reportUnexpected,
+    ),
+  );
+  register(EXPERIMENT_EVALUATION_IPC_CHANNELS.cancel, (input) =>
+    withInput(
+      input,
+      CancelExperimentEvaluationInputSchema,
+      (command) => service.cancel(command),
       reportUnexpected,
     ),
   );

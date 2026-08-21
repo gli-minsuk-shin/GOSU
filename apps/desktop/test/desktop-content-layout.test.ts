@@ -34,6 +34,12 @@ describe('desktop content layout routing', () => {
       desktopContentClassName({ surface: 'workspace', tab: 'board', hasActiveProject: true }),
     ).toBe('desktop-content');
     expect(
+      desktopContentClassName({ surface: 'workspace', tab: 'tasks', hasActiveProject: false }),
+    ).toBe('desktop-content desktop-content-tasks');
+    expect(
+      desktopContentClassName({ surface: 'workspace', tab: 'usage', hasActiveProject: false }),
+    ).toBe('desktop-content desktop-content-usage');
+    expect(
       desktopContentClassName({ surface: 'workspace', tab: 'manuscript', hasActiveProject: true }),
     ).toBe('desktop-content');
     expect(

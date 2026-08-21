@@ -3,8 +3,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SshConnectionProfile } from '../../shared/ssh-contracts';
 import type {
   CreateRemoteWorkspaceGrantInput,
+  EnableTrustedRemoteWorkspaceInput,
   GrantedRemoteWorkspace,
   RemoveRemoteWorkspaceGrantInput,
+  RevokeTrustedRemoteWorkspaceInput,
   UpdateRemoteWorkspaceGrantInput,
 } from '../../shared/ssh-workspace-contracts';
 import type { ProjectRecord } from '../../shared/workspace-contracts';
@@ -69,6 +71,24 @@ export function acknowledgeSshWorkspaceSetupRequest(
   return current?.requestId === handledRequestId ? null : current;
 }
 
+export function suggestedSshWorkspaceRoot(projectSlug: string | null | undefined) {
+  return `/root/${projectSlug?.trim() || 'my-research-project'}`;
+}
+
+export function shouldCompleteSshWorkspaceRootOnTab(input: {
+  key: string;
+  shiftKey: boolean;
+  isComposing: boolean;
+  currentValue: string;
+}) {
+  return (
+    input.key === 'Tab' &&
+    !input.shiftKey &&
+    !input.isComposing &&
+    input.currentValue.trim().length === 0
+  );
+}
+
 export type SshWorkspaceGrantsCardProps = Readonly<{
   project: ProjectRecord | null;
   connections: readonly SshConnectionProfile[];
@@ -78,6 +98,8 @@ export type SshWorkspaceGrantsCardProps = Readonly<{
   onCreate: (input: CreateRemoteWorkspaceGrantInput) => MaybePromise<unknown>;
   onUpdate: (input: UpdateRemoteWorkspaceGrantInput) => MaybePromise<unknown>;
   onRemove: (input: RemoveRemoteWorkspaceGrantInput) => MaybePromise<unknown>;
+  onEnableTrustedWorkspace?: (input: EnableTrustedRemoteWorkspaceInput) => MaybePromise<unknown>;
+  onRevokeTrustedWorkspace?: (input: RevokeTrustedRemoteWorkspaceInput) => MaybePromise<unknown>;
   onTest?: (connectionId: string) => MaybePromise<unknown>;
   testStatus?: Readonly<Record<string, string>>;
   setupRequest?: SshWorkspaceSetupRequest | null;
@@ -93,6 +115,8 @@ export function SshWorkspaceGrantsCard({
   onCreate,
   onUpdate,
   onRemove,
+  onEnableTrustedWorkspace,
+  onRevokeTrustedWorkspace,
   onTest,
   testStatus = {},
   setupRequest = null,
@@ -103,11 +127,13 @@ export function SshWorkspaceGrantsCard({
   const [permissionMode, setPermissionMode] = useState<'diagnostics' | 'workspace'>('diagnostics');
   const [confirmed, setConfirmed] = useState(false);
   const [editingGrantId, setEditingGrantId] = useState<string | null>(null);
+  const [trustedBusyGrantId, setTrustedBusyGrantId] = useState<string | null>(null);
   const handledSetupRequestIdRef = useRef(0);
   const cardRef = useRef<HTMLElement>(null);
   const connectionSelectRef = useRef<HTMLSelectElement>(null);
   const selectedConnection = connections.find((connection) => connection.id === connectionId);
   const editingWorkspace = workspaces.find(({ grant }) => grant.id === editingGrantId);
+  const suggestedCanonicalRoot = suggestedSshWorkspaceRoot(project?.slug);
   const grantedConnectionIds = useMemo(
     () => new Set(workspaces.map(({ grant }) => grant.connectionId)),
     [workspaces],
@@ -180,6 +206,56 @@ export function SshWorkspaceGrantsCard({
     setConfirmed(false);
   };
 
+  const enableTrustedWorkspace = async (workspace: GrantedRemoteWorkspace) => {
+    if (!project || !onEnableTrustedWorkspace || trustedBusyGrantId) return;
+    const user = workspace.connection.directTarget?.user;
+    if (workspace.grant.permissionMode !== 'workspace' || !user) return;
+    const root = user === 'root';
+    if (
+      !window.confirm(
+        `Enable Project trusted execution / Auto-run for ${workspace.connection.label} in ${project.name}?\n\nSupported operations inside ${workspace.grant.canonicalRoot} will run without repeated Allow once prompts. This setting applies only to this project and exact server grant.`,
+      )
+    ) {
+      return;
+    }
+    if (
+      !window.confirm(
+        root
+          ? `ROOT FINAL WARNING: code launched for ${project.name} may read, modify, or delete anything on the remote server, including data outside ${workspace.grant.canonicalRoot}. GOSU exposes only bounded project operations, but launched code is not sandboxed. Enable automatic ROOT execution anyway?`
+          : 'Final warning: tests, builds, and Python entrypoints run with this SSH account’s OS and network permissions. GOSU exposes no raw-shell control, but launched repository code is not sandboxed and can access anything this account permits. Enable anyway?',
+      )
+    ) {
+      return;
+    }
+    setTrustedBusyGrantId(workspace.grant.id);
+    try {
+      await onEnableTrustedWorkspace({
+        projectId: project.id,
+        grantId: workspace.grant.id,
+        expectedVersion: workspace.grant.version,
+        confirmTrustedWorkspaceRisk: true,
+        confirmNoRemoteSandbox: true,
+        ...(root ? { confirmRootTrustedWorkspaceRisk: true } : {}),
+      });
+    } finally {
+      setTrustedBusyGrantId(null);
+    }
+  };
+
+  const revokeTrustedWorkspace = async (workspace: GrantedRemoteWorkspace) => {
+    if (!project || !onRevokeTrustedWorkspace || trustedBusyGrantId) return;
+    setTrustedBusyGrantId(workspace.grant.id);
+    try {
+      await onRevokeTrustedWorkspace({
+        projectId: project.id,
+        grantId: workspace.grant.id,
+        expectedVersion: workspace.grant.version,
+      });
+    } finally {
+      setTrustedBusyGrantId(null);
+    }
+  };
+
   return (
     <article
       className="card ssh-workspace-card"
@@ -200,9 +276,9 @@ export function SshWorkspaceGrantsCard({
         workspace root to the active project, then Project Chat can request bounded text file
         listing, reading, creation, and replacement plus approved direct-argv commands. By default,
         every command and file action requires a separate Allow once decision. Project Chat can
-        explicitly enable audited Trusted workspace access for an exact non-root Workspace grant; it
-        removes repeated prompts but never adds raw shell, secrets, privileged operations,
-        outside-grant paths, or remote deletion.
+        explicitly enable audited Project trusted execution for an exact Workspace grant; it removes
+        repeated prompts but never adds raw shell, a broader project scope, direct secret access,
+        out-of-grant paths, or remote deletion. ROOT grants require an additional high-risk warning.
       </p>
       {!project ? (
         <div className="empty-card">
@@ -291,15 +367,31 @@ export function SshWorkspaceGrantsCard({
                   setCanonicalRoot(event.target.value);
                   setConfirmed(false);
                 }}
+                onKeyDown={(event) => {
+                  if (
+                    !shouldCompleteSshWorkspaceRootOnTab({
+                      key: event.key,
+                      shiftKey: event.shiftKey,
+                      isComposing: event.nativeEvent.isComposing,
+                      currentValue: canonicalRoot,
+                    })
+                  ) {
+                    return;
+                  }
+                  setCanonicalRoot(suggestedCanonicalRoot);
+                  setConfirmed(false);
+                  // Preserve the native Tab traversal after accepting the suggestion.
+                }}
                 maxLength={1024}
-                placeholder={`/root/${project.slug || 'my-research-project'}`}
+                placeholder={suggestedCanonicalRoot}
                 spellCheck={false}
                 required
                 disabled={busy}
               />
               <small>
-                Enter an existing project directory on this server. `/`, `/root`, and system
-                directories are blocked.
+                Press Tab from an empty field to use `{suggestedCanonicalRoot}` and continue. Enter
+                an existing project directory on this server. `/`, `/root`, and system directories
+                are blocked.
               </small>
             </label>
             <label>
@@ -361,72 +453,122 @@ export function SshWorkspaceGrantsCard({
                 <p>Registered servers remain unavailable to this project until you opt in here.</p>
               </div>
             ) : (
-              workspaces.map(({ grant, connection }) => (
-                <section className="connection-item" key={grant.id}>
-                  <div>
-                    <strong>{connection.label}</strong>
-                    <span>{grant.canonicalRoot}</span>
-                    <small>
-                      {grant.permissionMode === 'workspace'
-                        ? 'Workspace · inspection, approved tests/builds, and foreground Python experiments; approved text file list/read/create/replace'
-                        : 'Diagnostics · Git inspection only'}{' '}
-                      · grant v{grant.version}
-                    </small>
-                    {connection.directTarget?.user === 'root' && (
-                      <strong className="ssh-root-warning">HIGH RISK · ROOT account</strong>
-                    )}
-                    {onTest && (
-                      <small>{testStatus[connection.id] ?? 'Not tested in this session'}</small>
-                    )}
-                  </div>
-                  <div className="form-actions">
-                    {onTest && (
+              workspaces.map((workspace) => {
+                const { grant, connection } = workspace;
+                const privilegeClass = !connection.directTarget?.user
+                  ? 'unknown'
+                  : connection.directTarget.user === 'root'
+                    ? 'root'
+                    : 'standard';
+                const trusted = Boolean(grant.trustedAccess);
+                return (
+                  <section className="connection-item" key={grant.id}>
+                    <div>
+                      <strong>{connection.label}</strong>
+                      <span>{grant.canonicalRoot}</span>
+                      <small>
+                        {grant.permissionMode === 'workspace'
+                          ? 'Workspace · inspection, approved tests/builds, and foreground Python experiments; approved text file list/read/create/replace'
+                          : 'Diagnostics · Git inspection only'}{' '}
+                        · grant v{grant.version}
+                      </small>
+                      {connection.directTarget?.user === 'root' && (
+                        <strong className="ssh-root-warning">HIGH RISK · ROOT account</strong>
+                      )}
+                      {onTest && (
+                        <small>{testStatus[connection.id] ?? 'Not tested in this session'}</small>
+                      )}
+                      {onEnableTrustedWorkspace && onRevokeTrustedWorkspace && (
+                        <small>
+                          {trusted
+                            ? privilegeClass === 'root'
+                              ? 'Project trusted execution · ROOT auto-run enabled'
+                              : 'Project trusted execution · Auto-run enabled'
+                            : privilegeClass === 'unknown'
+                              ? 'Auto-run unavailable · SSH user is unresolved'
+                              : 'Allow once required · Project auto-run is off'}
+                        </small>
+                      )}
+                    </div>
+                    <div className="form-actions">
+                      {onTest && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={busy}
+                          onClick={() => {
+                            void Promise.resolve(onTest(connection.id)).catch(() => undefined);
+                          }}
+                        >
+                          Test server
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="secondary-button"
                         disabled={busy}
                         onClick={() => {
-                          void Promise.resolve(onTest(connection.id)).catch(() => undefined);
+                          setEditingGrantId(grant.id);
+                          setConnectionId(connection.id);
+                          setCanonicalRoot(grant.canonicalRoot);
+                          setPermissionMode(grant.permissionMode);
+                          setConfirmed(false);
                         }}
                       >
-                        Test server
+                        Edit
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={busy}
-                      onClick={() => {
-                        setEditingGrantId(grant.id);
-                        setConnectionId(connection.id);
-                        setCanonicalRoot(grant.canonicalRoot);
-                        setPermissionMode(grant.permissionMode);
-                        setConfirmed(false);
-                      }}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button danger"
-                      disabled={busy}
-                      onClick={() => {
-                        if (!window.confirm(`Revoke ${connection.label} from ${project.name}?`))
-                          return;
-                        void Promise.resolve(
-                          onRemove({
-                            grantId: grant.id,
-                            projectId: project.id,
-                            expectedVersion: grant.version,
-                          }),
-                        ).catch(() => undefined);
-                      }}
-                    >
-                      Revoke
-                    </button>
-                  </div>
-                </section>
-              ))
+                      {onEnableTrustedWorkspace &&
+                        onRevokeTrustedWorkspace &&
+                        (trusted ? (
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            disabled={busy || trustedBusyGrantId === grant.id}
+                            onClick={() => void revokeTrustedWorkspace(workspace)}
+                          >
+                            {trustedBusyGrantId === grant.id ? 'Disabling…' : 'Disable auto-run'}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={
+                              busy ||
+                              trustedBusyGrantId === grant.id ||
+                              grant.permissionMode !== 'workspace' ||
+                              privilegeClass === 'unknown'
+                            }
+                            onClick={() => void enableTrustedWorkspace(workspace)}
+                          >
+                            {trustedBusyGrantId === grant.id
+                              ? 'Enabling…'
+                              : privilegeClass === 'root'
+                                ? 'Enable ROOT auto-run…'
+                                : 'Enable auto-run…'}
+                          </button>
+                        ))}
+                      <button
+                        type="button"
+                        className="ghost-button danger"
+                        disabled={busy}
+                        onClick={() => {
+                          if (!window.confirm(`Revoke ${connection.label} from ${project.name}?`))
+                            return;
+                          void Promise.resolve(
+                            onRemove({
+                              grantId: grant.id,
+                              projectId: project.id,
+                              expectedVersion: grant.version,
+                            }),
+                          ).catch(() => undefined);
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  </section>
+                );
+              })
             )}
           </div>
         </>

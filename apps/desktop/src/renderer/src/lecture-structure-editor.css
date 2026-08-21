@@ -84,7 +84,7 @@
 }
 
 .lecture-structure-mode small,
-.lecture-structure-system-items small {
+.lecture-document-features small {
   color: var(--muted);
   font-size: var(--font-caption);
   font-weight: 500;
@@ -219,52 +219,67 @@
   color: var(--green);
 }
 
-.lecture-structure-system-items {
+.lecture-document-features {
+  container: lecture-document-features / inline-size;
   display: grid;
-  gap: 8px;
-  padding: 11px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--green) 3%, var(--surface-soft));
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
-.lecture-structure-system-items > strong {
+.lecture-document-features legend {
+  margin-bottom: 4px;
+  color: var(--text);
+  font-size: var(--font-section);
+  font-weight: 750;
+}
+
+.lecture-document-features > p {
+  margin: 0 0 9px;
   color: var(--muted);
   font-size: var(--font-control);
+  line-height: 1.5;
 }
 
-.lecture-structure-system-items ul {
+.lecture-document-features > div {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 7px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
-.lecture-structure-system-items li {
-  display: flex;
+.lecture-document-features label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 9px;
   min-width: 0;
-  padding: 8px 9px;
+  min-height: 44px;
+  padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
 }
 
-.lecture-structure-system-items li > span {
+.lecture-document-features label:has(input:checked) {
+  border-color: color-mix(in srgb, var(--green) 42%, var(--line));
+  background: color-mix(in srgb, var(--green) 5%, var(--surface));
+}
+
+.lecture-document-features input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--green);
+}
+
+.lecture-document-features label > span {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.lecture-structure-system-items em {
-  color: var(--green);
-  font-size: var(--font-meta);
-  font-style: normal;
-  font-weight: 750;
+.lecture-document-features:disabled label {
+  opacity: 0.66;
 }
 
 .lecture-structure-editor-actions {
@@ -282,8 +297,10 @@
     justify-content: flex-end;
     padding-bottom: 0;
   }
+}
 
-  .lecture-structure-system-items ul {
+@container lecture-document-features (max-width: 720px) {
+  .lecture-document-features > div {
     grid-template-columns: minmax(0, 1fr);
   }
 }

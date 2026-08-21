@@ -2,6 +2,7 @@ import type { ZodType } from 'zod';
 
 import { LITERATURE_IPC_CHANNELS } from '../shared/literature-channels';
 import {
+  CancelLiteratureAiInputSchema,
   DeleteLiteratureRecordInputSchema,
   ListLiteratureInputSchema,
   LiteratureExportRequestSchema,
@@ -77,6 +78,17 @@ export function registerLiteratureIpc(
       (command) => {
         if (!aiService) throw new LiteratureAiServiceError('literature_ai_unavailable');
         return aiService.organize(command);
+      },
+      reportUnexpected,
+    ),
+  );
+  register(LITERATURE_IPC_CHANNELS.cancelOrganize, (input) =>
+    withInput(
+      input,
+      CancelLiteratureAiInputSchema,
+      (command) => {
+        if (!aiService) throw new LiteratureAiServiceError('literature_ai_unavailable');
+        return aiService.cancel(command);
       },
       reportUnexpected,
     ),

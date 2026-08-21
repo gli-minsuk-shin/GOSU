@@ -2957,7 +2957,7 @@ describe('ProjectAgentToolSession', () => {
         connectionVersion: 1,
         canonicalRoot: '/workspace',
         canonicalRootHash: createHash('sha256').update('/workspace', 'utf8').digest('hex'),
-        policyVersion: 1,
+        policyVersion: 2,
         executionPolicyHash: expect.stringMatching(/^[0-9a-f]{64}$/u),
       }),
     );

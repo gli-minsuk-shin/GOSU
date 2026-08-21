@@ -20,11 +20,16 @@ import {
 import {
   activeLectureSourceProjects,
   appendLectureGenerationProgress,
+  cacheLectureManualEditSession,
+  cachedLectureManualEditSession,
   canEditLectureStudioRevision,
   currentLectureStudioRevision,
+  discardCachedLectureManualEditSession,
   formatLectureGenerationElapsed,
   isCurrentLectureGenerationProgress,
+  isSameActiveLectureStudioSelection,
   lastLectureMessageId,
+  lectureGenerationBriefDraftIsValidForEditor,
   lectureManuscriptAvailabilityLabel,
   lectureStudioAttachmentsAfterReleaseFailure,
   lectureStudioAttachmentsAfterSend,
@@ -35,17 +40,29 @@ import {
   lectureOutputProjectName,
   lectureExternalSourceCard,
   lectureGenerationAttemptSummary,
+  lectureFigureAssetView,
+  lectureFigurePreviewDataUrl,
+  lectureFigureReferenceCount,
+  lectureFigureSourceToken,
+  lectureFigureUsageInDrafts,
+  lectureManualEditCacheHasDirtySession,
   lectureOverleafSourceCard,
   lectureStudioMessages,
   lectureStudioStatusLabel,
+  lectureSourceHasFigureReferences,
+  latestCachedLectureManualEditStudioId,
   mergeLectureCandidatePages,
+  mergeLectureComposerFigureFiles,
   mergeLectureStudioAttachments,
+  resolveLectureEditDocumentFeatures,
+  slideTargetAfterDocumentFeaturesChange,
   shouldAcceptLectureAttachmentPickerResult,
   shouldDiscardLectureStudioAttachments,
   shouldClearLectureGenerationProgress,
   toggleLectureProjectSelection,
   toggleLectureSourceSelection,
   type LectureStudioViewAdapter,
+  type LectureManualEditCacheEntry,
 } from '../src/renderer/src/lecture-studio-view';
 import { VolatileLectureStudioDrafts } from '../src/renderer/src/lecture-studio-session-state';
 import type { ProjectRecord } from '../src/shared/workspace-contracts';
@@ -95,6 +112,13 @@ const adapter: LectureStudioViewAdapter = {
   releaseAttachment: vi.fn(),
   create: vi.fn(),
   updateGenerationBrief: vi.fn(),
+  editDraft: vi.fn(),
+  saveManualRevision: vi.fn(),
+  listFigures: vi.fn(),
+  chooseFigures: vi.fn(),
+  stageDroppedFigures: vi.fn(),
+  removeFigure: vi.fn(),
+  previewFigure: vi.fn(),
   generate: vi.fn(),
   send: vi.fn(),
   cancel: vi.fn(),
@@ -109,6 +133,17 @@ const adapter: LectureStudioViewAdapter = {
 };
 
 describe('LectureStudioView', () => {
+  it('keeps explicit stop controls on both Lecture generation surfaces', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('Stop generation');
+    expect(source).toContain('aria-label="Stop the current Lecture Assistant response"');
+    expect(source).toContain('Stop response');
+  });
+
   it('snapshots the Settings model default only for a missing Studio scope', () => {
     const source = readFileSync(
       new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
@@ -193,6 +228,192 @@ describe('LectureStudioView', () => {
     expect(currentLectureStudioRevision(detail, studio)).toBe(current);
     expect(lectureStudioMessages(detail, studio.id)).toEqual([selectedMessage]);
     expect(lectureStudioMessages(detail, null)).toEqual([]);
+  });
+
+  it('preserves a legacy revision with Sources used omitted during an unrelated option save', () => {
+    const legacyStudio = { generationBrief: {} } as const;
+    const omittedRevision = {
+      schemaVersion: 3,
+      lectureNotesLatex:
+        '\\documentclass{article}\n\\begin{document}\n\\section{Overview}\nBody.\n\\end{document}\n',
+      generationBriefSnapshot: {},
+    } as const;
+
+    const resolved = resolveLectureEditDocumentFeatures(legacyStudio, omittedRevision);
+    expect(resolved).toEqual({
+      includeSlideTitlePage: true,
+      showInlineEvidenceLabels: true,
+      includeSourcesUsedSection: false,
+    });
+    expect({ detailLevel: 'detailed', documentFeatures: resolved }.documentFeatures).toEqual(
+      resolved,
+    );
+
+    expect(
+      resolveLectureEditDocumentFeatures(legacyStudio, {
+        ...omittedRevision,
+        generationBriefSnapshot: {
+          documentFeatures: {
+            includeSlideTitlePage: false,
+            showInlineEvidenceLabels: false,
+            includeSourcesUsedSection: true,
+          },
+        },
+      }),
+    ).toEqual({
+      includeSlideTitlePage: false,
+      showInlineEvidenceLabels: false,
+      includeSourcesUsedSection: true,
+    });
+
+    expect(
+      resolveLectureEditDocumentFeatures(
+        {
+          generationBrief: {
+            documentFeatures: {
+              includeSlideTitlePage: true,
+              showInlineEvidenceLabels: false,
+              includeSourcesUsedSection: false,
+            },
+          },
+        },
+        {
+          ...omittedRevision,
+          generationBriefSnapshot: {
+            documentFeatures: {
+              includeSlideTitlePage: false,
+              showInlineEvidenceLabels: true,
+              includeSourcesUsedSection: true,
+            },
+          },
+        },
+      ),
+    ).toEqual({
+      includeSlideTitlePage: true,
+      showInlineEvidenceLabels: false,
+      includeSourcesUsedSection: false,
+    });
+
+    expect(
+      resolveLectureEditDocumentFeatures(legacyStudio, {
+        schemaVersion: 2,
+        lectureNotesLatex: '\\section{Overview}\nBody.\n\\section*{Sources used}\n[P1] Paper',
+      }).includeSourcesUsedSection,
+    ).toBe(true);
+    expect(
+      resolveLectureEditDocumentFeatures(legacyStudio, {
+        schemaVersion: 1,
+        lectureNotesMarkdown: '# Overview\nBody without a Sources used heading.',
+      }),
+    ).toEqual({
+      includeSlideTitlePage: true,
+      showInlineEvidenceLabels: true,
+      includeSourcesUsedSection: true,
+    });
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source.match(/resolveLectureEditDocumentFeatures\(studio, revision\)/gu)).toHaveLength(
+      2,
+    );
+    expect(source).toContain('documentFeatures,');
+    expect(source).not.toContain('MARKDOWN_SOURCES_USED_HEADING');
+  });
+
+  it('preserves one content page when a title page is enabled for a one-page slide target', () => {
+    const withoutTitle = {
+      includeSlideTitlePage: false,
+      showInlineEvidenceLabels: true,
+      includeSourcesUsedSection: true,
+    } as const;
+    const withTitle = { ...withoutTitle, includeSlideTitlePage: true } as const;
+
+    expect(slideTargetAfterDocumentFeaturesChange('1', withoutTitle, withTitle)).toBe('2');
+    expect(slideTargetAfterDocumentFeaturesChange('', withoutTitle, withTitle)).toBe('');
+    expect(slideTargetAfterDocumentFeaturesChange('2', withoutTitle, withTitle)).toBe('2');
+    expect(
+      slideTargetAfterDocumentFeaturesChange('1', withTitle, {
+        ...withTitle,
+        showInlineEvidenceLabels: false,
+      }),
+    ).toBe('1');
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source.match(/const nextDocumentFeatures =/gu)).toHaveLength(5);
+    expect(source.match(/slideTargetAfterDocumentFeaturesChange\(/gu)).toHaveLength(8);
+  });
+
+  it('blocks new source-list aliases while preserving the exact normalized alias saved by a Studio', () => {
+    const generationBrief = {
+      notesTargetPages: null,
+      slidesTargetPages: null,
+      detailLevel: 'standard',
+      structure: {
+        mode: 'custom',
+        sections: [{ title: ' References ', coverage: 'notes-and-slides' }],
+      },
+      documentFeatures: {
+        includeSlideTitlePage: true,
+        showInlineEvidenceLabels: true,
+        includeSourcesUsedSection: false,
+      },
+      customInstructions: '',
+    } as const;
+
+    expect(lectureGenerationBriefDraftIsValidForEditor(generationBrief)).toBe(false);
+    expect(lectureGenerationBriefDraftIsValidForEditor(generationBrief, ['references'])).toBe(true);
+    const historicalCollapsedLookalike = {
+      ...generationBrief,
+      structure: {
+        mode: 'custom',
+        sections: [{ title: 'Sources   used', coverage: 'notes-and-slides' }],
+      },
+    } as const;
+    expect(
+      lectureGenerationBriefDraftIsValidForEditor(historicalCollapsedLookalike, ['sources used']),
+    ).toBe(true);
+    expect(
+      lectureGenerationBriefDraftIsValidForEditor(
+        {
+          ...historicalCollapsedLookalike,
+          structure: {
+            mode: 'custom',
+            sections: [{ title: 'Sources used', coverage: 'notes-and-slides' }],
+          },
+        },
+        ['sources used'],
+      ),
+    ).toBe(false);
+    expect(
+      lectureGenerationBriefDraftIsValidForEditor(
+        {
+          ...generationBrief,
+          structure: {
+            mode: 'custom',
+            sections: [{ title: 'Bibliography', coverage: 'notes-and-slides' }],
+          },
+        },
+        ['references'],
+      ),
+    ).toBe(false);
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('lectureGenerationBriefDraftIsValidForEditor(generationBriefDraft)');
+    expect(source).toContain(
+      'sourceListSectionTitlesInLectureStructure(studio.generationBrief.structure)',
+    );
+    expect(source).toContain('allowedSourceListSectionTitles={allowedSourceListSectionTitles}');
+    expect(source).toContain(
+      'This saved default needs attention in Settings → Lecture defaults before creating a',
+    );
   });
 
   it('keeps archived output project names available without making them creation candidates', () => {
@@ -287,6 +508,47 @@ describe('LectureStudioView', () => {
     ).toBe('2m 05s');
   });
 
+  it('keeps generation logging above non-shrinking document controls', () => {
+    const css = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.css', import.meta.url),
+      'utf8',
+    );
+
+    for (const selector of [
+      '.lecture-preview-toolbar',
+      '.lecture-preview-tabs',
+      '.lecture-artifact-actions',
+    ]) {
+      const escapedSelector = selector.replaceAll('.', '\\.');
+      const rule = css.match(new RegExp(`${escapedSelector} \\{([^}]*)\\}`, 'u'));
+      expect(rule?.[1], selector).toContain('flex: 0 0 auto;');
+    }
+    expect(css).toMatch(/\.lecture-preview-document\s*\{[^}]*min-height:\s*0;/su);
+  });
+
+  it('offers a reversible PDF-only focus mode that removes surrounding Studio chrome', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    const css = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain("pdfFocusMode ? 'Exit focus' : 'Focus PDF'");
+    expect(source).toContain('aria-pressed={pdfFocusMode}');
+    expect(source).toContain("if (event.key !== 'Escape') return;");
+    expect(css).toMatch(
+      /\.lecture-studio-layout\.pdf-focused[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/su,
+    );
+    expect(css).toMatch(/\.lecture-studio-layout\.pdf-focused > \.lecture-studio-rail/su);
+    expect(css).toMatch(/\.lecture-preview\.pdf-focused > \.lecture-preview-toolbar/su);
+    expect(css).toMatch(
+      /\.lecture-preview\.pdf-focused > \.lecture-preview-document\.pdf\s*\{[^}]*padding:\s*0;/su,
+    );
+  });
+
   it('maps bounded generation validation categories to actionable messages', () => {
     expect(lectureErrorCodeMessage('lecture_invalid_response_json')).toContain(
       'after one automatic correction',
@@ -370,9 +632,9 @@ describe('LectureStudioView', () => {
       model: 'Selected model',
       reasoning: 'High',
       phases: [
-        { label: 'Preparing selected sources', occurredAt: '2026-08-15T00:00:01.000Z' },
+        { label: 'Resolving frozen project sources', occurredAt: '2026-08-15T00:00:01.000Z' },
         {
-          label: 'Correcting the draft automatically',
+          label: 'Running the one bounded automatic correction',
           occurredAt: '2026-08-15T00:01:30.000Z',
         },
       ],
@@ -704,8 +966,9 @@ describe('LectureStudioView', () => {
     expect(source).toContain('Lecture-note pages');
     expect(source).toContain('Slide pages');
     expect(source).toContain('Additional instructions');
-    expect(source).toContain('generationBrief: {');
+    expect(source).toContain('const generationBriefDraft = {');
     expect(source).toContain('detailLevel,');
+    expect(source).toContain('documentFeatures,');
     expect(source).toContain('Edit options');
     expect(source).toContain('Changes apply to the next generation, retry, and chat edit only.');
     expect(source).toContain('adapter.updateGenerationBrief');
@@ -725,12 +988,16 @@ describe('LectureStudioView', () => {
     );
 
     expect(desktopSource).toContain('defaultStructure={preferences.defaultLectureStructure}');
+    expect(desktopSource).toContain(
+      'defaultDocumentFeatures={preferences.defaultLectureDocumentFeatures}',
+    );
+    expect(desktopSource).toContain(
+      'documentFeaturesByProjectId={preferences.lectureDocumentFeaturesByProjectId}',
+    );
     expect(source).toMatch(
       /const \[structure\] = useState<LectureStudioStructureTemplate>\(\(\) =>\s*structuredClone\(defaultStructure\),?\s*\);/u,
     );
-    expect(source).toMatch(
-      /studio = await adapter\.create\(\{[\s\S]*?generationBrief:\s*\{[\s\S]*?detailLevel,[\s\S]*?structure,[\s\S]*?customInstructions,/u,
-    );
+    expect(source).toContain('generationBrief: generationBriefDraft');
     expect(source).toContain('Adaptive to the selected sources');
     expect(source).toContain('`${structure.sections.length} custom sections`');
     expect(source).toContain(
@@ -738,7 +1005,7 @@ describe('LectureStudioView', () => {
     );
   });
 
-  it('hydrates and saves a complete existing-Studio structure without changing prior revisions', () => {
+  it('hydrates and saves complete existing-Studio options without changing prior revisions', () => {
     const source = readFileSync(
       new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
       'utf8',
@@ -748,10 +1015,10 @@ describe('LectureStudioView', () => {
       /const \[structure, setStructure\] = useState<LectureStudioStructureTemplate>\(\(\) =>\s*structuredClone\(studio\.generationBrief\.structure\),?\s*\);/u,
     );
     expect(source).toContain('setStructure(structuredClone(studio.generationBrief.structure));');
-    expect(source).toContain('LectureStudioStructureTemplateSchema.safeParse(structure).success');
-    expect(source).toMatch(
-      /const succeeded = await onUpdateGenerationBrief\(\{\s*notesTargetPages: notesPages,\s*slidesTargetPages: slidesPages,\s*detailLevel,\s*structure,\s*customInstructions,\s*\}\);/u,
+    expect(source).toContain(
+      'lectureGenerationBriefDraftIsValidForEditor(\n    generationBriefDraft,\n    allowedSourceListSectionTitles,',
     );
+    expect(source).toContain('onUpdateGenerationBrief(generationBriefDraft)');
     expect(source).toContain('onReset={() => setStructure(structuredClone(defaultStructure))}');
     expect(source).toContain('resetLabel="Load Settings default"');
     expect(source).toContain(
@@ -767,6 +1034,33 @@ describe('LectureStudioView', () => {
     )?.[0];
     expect(resetHandler).toBeDefined();
     expect(resetHandler).not.toContain('adapter');
+  });
+
+  it('resolves project document defaults and preserves explicit Studio customization', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    const styles = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('resolveLectureDocumentFeaturesForProject');
+    expect(source).toContain('documentFeaturesForProject(projects[0].id)');
+    expect(source).toContain('if (!documentFeaturesCustomized)');
+    expect(source).toContain('setDocumentFeaturesCustomized(true)');
+    expect(source).toContain('Custom for this Studio');
+    expect(source).toContain('Load project defaults');
+    expect(source).toContain('Load workspace defaults');
+    expect(source).toContain(
+      'Hidden source markers still retain the revision’s frozen evidence record.',
+    );
+    expect(source).toContain('min={documentFeatures.includeSlideTitlePage ? 2 : 1}');
+    expect(source).not.toContain('<em>Locked</em>');
+    expect(styles).toMatch(
+      /@container lecture-workspace \(max-width: 620px\)[\s\S]*?\.lecture-generation-document-feature-status\s*\{[\s\S]*?flex-direction:\s*column;/u,
+    );
   });
 
   it('maps external files and Overleaf checkpoints to safe renderer cards', () => {
@@ -843,6 +1137,22 @@ describe('LectureStudioView', () => {
       open: 'Open Markdown in default app',
       reveal: 'Show Markdown in Finder',
     });
+    expect(lectureArtifactActionLabels('notes', 'latex', true)).toEqual({
+      export: 'Export LaTeX bundle',
+      open: 'Open LaTeX in default app',
+      reveal: 'Show LaTeX bundle in Finder',
+    });
+    expect(lectureArtifactActionLabels('notes-pdf', 'latex', true)).toEqual({
+      export: 'Export PDF',
+      open: 'Open PDF in default app',
+      reveal: 'Show PDF in Finder',
+    });
+    expect(
+      lectureSourceHasFigureReferences(
+        '\\section{Plot}\n\\gosuimage{aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa}',
+      ),
+    ).toBe(true);
+    expect(lectureSourceHasFigureReferences('\\section{Plot}\nNo attached figure.')).toBe(false);
 
     const source = readFileSync(
       new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
@@ -867,6 +1177,205 @@ describe('LectureStudioView', () => {
     );
   });
 
+  it('maps opaque Figure-library assets to exact source tokens and renderer-safe previews', () => {
+    const figure = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      studioId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      displayName: 'sampling distribution.png',
+      fileName: 'Figure-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jpg',
+      mediaType: 'image/jpeg',
+      sourceFormat: 'png',
+      byteSize: 2_048,
+      width: 1_200,
+      height: 800,
+      sha256: 'a'.repeat(64),
+      origin: 'user',
+      createdAt: '2026-08-20T00:00:00.000Z',
+    } as const;
+    const token = lectureFigureSourceToken(figure.id);
+    const drafts = {
+      'lecture-notes': `${token}\n${token}`,
+      slides: `\\begin{frame}{Figure}\n${token}\n\\end{frame}`,
+    } as const;
+    const preview = {
+      schemaVersion: 1,
+      figure,
+      jpegBase64: '/9j/2Q==',
+    } as const;
+
+    expect(token).toBe('\\gosuimage{aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa}');
+    expect(lectureFigureUsageInDrafts(figure.id, drafts)).toEqual(['lecture-notes', 'slides']);
+    expect(lectureFigureReferenceCount(figure.id, drafts)).toBe(3);
+    expect(lectureFigurePreviewDataUrl(preview)).toBe('data:image/jpeg;base64,/9j/2Q==');
+    expect(lectureFigureAssetView(figure, drafts, lectureFigurePreviewDataUrl(preview))).toEqual(
+      expect.objectContaining({
+        id: figure.id,
+        thumbnailDataUrl: 'data:image/jpeg;base64,/9j/2Q==',
+        usedIn: ['lecture-notes', 'slides'],
+        referenceCount: 3,
+      }),
+    );
+  });
+
+  it('keeps a dirty direct-edit session in the renderer cache and guards app close after unmount', () => {
+    const studioId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const listeners = new Map<
+      string,
+      (event: { preventDefault: () => void; returnValue: string }) => void
+    >();
+    const rendererWindow = {
+      addEventListener: vi.fn(
+        (
+          type: string,
+          listener: (event: { preventDefault: () => void; returnValue: string }) => void,
+        ) => listeners.set(type, listener),
+      ),
+      removeEventListener: vi.fn((type: string) => listeners.delete(type)),
+    };
+    vi.stubGlobal('window', rendererWindow);
+    const entry: LectureManualEditCacheEntry = {
+      session: {
+        studioVersion: 4,
+        baseRevisionId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        baseRevision: 2,
+        baseSources: { 'lecture-notes': 'notes', slides: 'slides' },
+        drafts: { 'lecture-notes': 'notes changed', slides: 'slides' },
+        figures: [],
+      },
+      activeDocument: 'slides',
+      selections: {
+        'lecture-notes': { start: 2, end: 2 },
+        slides: { start: 4, end: 4 },
+      },
+      figureDrawerOpen: true,
+    };
+
+    try {
+      discardCachedLectureManualEditSession(studioId);
+      cacheLectureManualEditSession(studioId, entry);
+      expect(lectureManualEditCacheHasDirtySession()).toBe(true);
+      expect(latestCachedLectureManualEditStudioId()).toBe(studioId);
+      expect(cachedLectureManualEditSession(studioId)).toEqual(entry);
+      expect(rendererWindow.addEventListener).toHaveBeenCalledWith(
+        'beforeunload',
+        expect.any(Function),
+      );
+
+      const preventDefault = vi.fn();
+      const unloadEvent = { preventDefault, returnValue: 'untouched' };
+      listeners.get('beforeunload')?.(unloadEvent);
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(unloadEvent.returnValue).toBe('');
+      expect(isSameActiveLectureStudioSelection(studioId, studioId, false)).toBe(true);
+      expect(isSameActiveLectureStudioSelection(studioId, studioId, true)).toBe(false);
+
+      discardCachedLectureManualEditSession(studioId);
+      expect(cachedLectureManualEditSession(studioId)).toBeNull();
+      expect(rendererWindow.removeEventListener).toHaveBeenCalledWith(
+        'beforeunload',
+        expect.any(Function),
+      );
+    } finally {
+      discardCachedLectureManualEditSession(studioId);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('caps first-revision raster files without metadata-deduping distinct Files', () => {
+    const raster = (name: string, type = 'image/png') =>
+      ({ name, type, size: 128, lastModified: 1 }) as File;
+    const sameMetadataA = raster('plot.png');
+    const sameMetadataB = raster('plot.png');
+    const merged = mergeLectureComposerFigureFiles(
+      [],
+      [
+        sameMetadataA,
+        sameMetadataB,
+        raster('two.jpg', 'image/jpeg'),
+        raster('three.webp', 'image/webp'),
+        raster('four.gif', 'image/gif'),
+        raster('over-limit.bmp', 'image/bmp'),
+        raster('not-raster.svg', 'image/svg+xml'),
+      ],
+    );
+
+    expect(merged.files).toEqual([
+      sameMetadataA,
+      sameMetadataB,
+      expect.objectContaining({ name: 'two.jpg' }),
+      expect.objectContaining({ name: 'three.webp' }),
+      expect.objectContaining({ name: 'four.gif' }),
+    ]);
+    expect(merged.rejectedCount).toBe(1);
+    expect(merged.limitCount).toBe(1);
+  });
+
+  it('stages safe composer Files before first generation and keeps failed r0 recoverable', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    const styles = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('{ studioId: studio.id, expectedVersion: studio.version }');
+    expect(source).toContain('studio = receipt.studio;');
+    expect(source).toContain('await onCreated(studio, initialModelSelection, false);');
+    expect(source).toContain('await onCreated(studio, initialModelSelection, true);');
+    expect(source).toContain(
+      'if (generateInitialRevision) await runGeneration(studio, initialSelection);',
+    );
+    expect(source).toContain('canManagePreGenerationFigures');
+    expect(source).toContain('canInsert={false}');
+    expect(source).toContain('setPreGenerationStudioVersion(receipt.studio.version)');
+    expect(source).toContain('(canManagePreGenerationFigures && figureOperationsBusy)');
+    expect(source).not.toContain('URL.createObjectURL');
+    expect(source).not.toContain('webkitRelativePath');
+    expect(source).not.toMatch(/\.path\b/u);
+    expect(styles).toMatch(/\.lecture-composer-figure-list\s*\{/u);
+    expect(styles).toMatch(/\.lecture-preview-empty\.pre-generation\s*\{/u);
+  });
+
+  it('integrates paired CAS source saves and path-free Finder drops through the Renderer bridge', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
+      'utf8',
+    );
+    const desktopSource = readFileSync(
+      new URL('../src/renderer/src/desktop-app.tsx', import.meta.url),
+      'utf8',
+    );
+    const styles = readFileSync(
+      new URL('../src/renderer/src/lecture-studio-view.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('<LectureSourceEditor');
+    expect(source).toContain('<LectureFigureLibrary');
+    expect(source).toContain('baseRevisionId: edit.baseRevisionId');
+    expect(source).toContain("lectureNotesLatexBody: edit.drafts['lecture-notes']");
+    expect(source).toContain('slidesLatexBody: edit.drafts.slides');
+    expect(source).toContain('const receipt = await adapter.stageDroppedFigures(input, files);');
+    expect(source).toContain('studioVersion: receipt.studio.version');
+    expect(source).toContain('onFigureLibraryChanged={async (receipt) =>');
+    expect(source).toContain('await onFigureLibraryChanged(receipt);');
+    expect(source).toContain('expectedVersion: edit.studioVersion');
+    expect(source).toContain('Direct source editing is active. Save or cancel it');
+    expect(source).toContain('setManualIssue({');
+    expect(source).not.toContain('className="lecture-preview-receipts"');
+    expect(styles).toMatch(
+      /\.lecture-preview\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/su,
+    );
+    expect(styles).toMatch(/\.lecture-preview-document\s*\{[^}]*flex:\s*1 1 auto;/su);
+    expect(desktopSource).toContain('window.gosu.lectureStudio.stageDroppedFigures(input, files)');
+    expect(desktopSource).not.toContain('stageDroppedFigures(input, files.map');
+    expect(styles).toMatch(
+      /@container lecture-workspace \(max-width: 1250px\)[\s\S]*?\.lecture-manual-edit-workspace\.figures-open/u,
+    );
+  });
+
   it('offers a recoverable Trash action for each lecture session', () => {
     const source = readFileSync(
       new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
@@ -878,5 +1387,8 @@ describe('LectureStudioView', () => {
       'Saved Research Notes and exported LaTeX/PDF files will stay on disk.',
     );
     expect(source).toContain('await adapter.trash({ studioId: studio.id');
+    expect(source.indexOf('await adapter.trash({ studioId: studio.id')).toBeLessThan(
+      source.indexOf('discardCachedLectureManualEditSession(studio.id)'),
+    );
   });
 });

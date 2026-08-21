@@ -22,6 +22,7 @@ import type {
 } from '../shared/lecture-studio-contracts';
 
 const MAX_SOURCE_EXPORT_BYTES = 2 * 1024 * 1024;
+const MAX_LATEX_BUNDLE_EXPORT_BYTES = 24 * 1024 * 1024;
 const MAX_PDF_EXPORT_BYTES = 32 * 1024 * 1024;
 const PDF_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const PDF_CACHE_MAX_FILES = 12;
@@ -246,7 +247,13 @@ export function createLectureArtifactPlatform(
 ): LectureArtifactPlatform {
   return {
     async exportFile(input) {
-      const maximumBytes = input.format === 'pdf' ? MAX_PDF_EXPORT_BYTES : MAX_SOURCE_EXPORT_BYTES;
+      const latexBundle = input.format === 'latex' && input.suggestedFileName.endsWith('.zip');
+      const maximumBytes =
+        input.format === 'pdf'
+          ? MAX_PDF_EXPORT_BYTES
+          : latexBundle
+            ? MAX_LATEX_BUNDLE_EXPORT_BYTES
+            : MAX_SOURCE_EXPORT_BYTES;
       if (input.bytes.byteLength < 1 || input.bytes.byteLength > maximumBytes) {
         throw new Error('lecture_export_failed');
       }
@@ -255,16 +262,20 @@ export function createLectureArtifactPlatform(
         title:
           input.format === 'pdf'
             ? 'Export lecture PDF'
-            : input.format === 'latex'
-              ? 'Export lecture LaTeX'
-              : 'Export lecture Markdown',
+            : latexBundle
+              ? 'Export lecture LaTeX bundle'
+              : input.format === 'latex'
+                ? 'Export lecture LaTeX'
+                : 'Export lecture Markdown',
         defaultPath: input.suggestedFileName,
         filters: [
           input.format === 'pdf'
             ? { name: 'PDF', extensions: ['pdf'] }
-            : input.format === 'latex'
-              ? { name: 'LaTeX', extensions: ['tex'] }
-              : { name: 'Markdown', extensions: ['md'] },
+            : latexBundle
+              ? { name: 'ZIP archive', extensions: ['zip'] }
+              : input.format === 'latex'
+                ? { name: 'LaTeX', extensions: ['tex'] }
+                : { name: 'Markdown', extensions: ['md'] },
         ],
       };
       const result = owner

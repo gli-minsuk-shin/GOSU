@@ -17,6 +17,7 @@ import type {
 } from '../../shared/workspace-contracts';
 import type { VaultSelection } from '../../shared/vault-contracts';
 import {
+  LectureStudioDocumentFeaturesSchema,
   LectureStudioStructureTemplateSchema,
   type EmptyLectureStudioTrashInput,
   type EmptyLectureStudioTrashReceipt,
@@ -32,6 +33,7 @@ import { AgentSettingsSection } from './agent-settings-section';
 import { AiDefaultSettings } from './ai-default-settings';
 import { BoardSettingsForm } from './board-settings-form';
 import {
+  LectureDocumentFeaturesEditor,
   LectureStructureEditor,
   lectureStructureEditorValidation,
 } from './lecture-structure-editor';
@@ -46,6 +48,7 @@ import {
   type AppearancePreference,
   type TextSizePreference,
   type UserPreferences,
+  resolveLectureDocumentFeaturesForProject,
 } from './user-preferences';
 
 const APPEARANCE_CHOICES: ReadonlyArray<{
@@ -153,10 +156,45 @@ export function SettingsView({
   const [lectureStructureDraft, setLectureStructureDraft] = useState(() =>
     structuredClone(preferences.defaultLectureStructure),
   );
+  const [lectureDocumentScopeProjectId, setLectureDocumentScopeProjectId] = useState<string | null>(
+    null,
+  );
+  const [lectureDocumentFeaturesDraft, setLectureDocumentFeaturesDraft] = useState(() =>
+    structuredClone(preferences.defaultLectureDocumentFeatures),
+  );
+  const [customizingInheritedLectureFeatures, setCustomizingInheritedLectureFeatures] =
+    useState(false);
   const activeCategory = category ?? localCategory;
   const lectureStructureDirty =
     JSON.stringify(lectureStructureDraft) !== JSON.stringify(preferences.defaultLectureStructure);
   const lectureStructureValid = lectureStructureEditorValidation(lectureStructureDraft).valid;
+  const activeLectureDefaultProjects = (workspaceSnapshot?.projects ?? []).filter(
+    (project) => project.archivedAt === undefined && project.trashedAt === undefined,
+  );
+  const lectureDocumentScopeProject = activeLectureDefaultProjects.find(
+    (project) => project.id === lectureDocumentScopeProjectId,
+  );
+  const savedLectureDocumentFeatures = lectureDocumentScopeProjectId
+    ? resolveLectureDocumentFeaturesForProject(preferences, lectureDocumentScopeProjectId)
+    : preferences.defaultLectureDocumentFeatures;
+  const lectureProjectHasDocumentOverride =
+    lectureDocumentScopeProjectId !== null &&
+    preferences.lectureDocumentFeaturesByProjectId[lectureDocumentScopeProjectId] !== undefined;
+  const lectureProjectUsesWorkspaceDefaults =
+    lectureDocumentScopeProjectId !== null &&
+    !lectureProjectHasDocumentOverride &&
+    !customizingInheritedLectureFeatures;
+  const lectureDocumentFeaturesDirty =
+    JSON.stringify(lectureDocumentFeaturesDraft) !== JSON.stringify(savedLectureDocumentFeatures);
+  const selectLectureDocumentScope = (projectId: string | null) => {
+    setLectureDocumentScopeProjectId(projectId);
+    setCustomizingInheritedLectureFeatures(false);
+    setLectureDocumentFeaturesDraft(
+      projectId
+        ? resolveLectureDocumentFeaturesForProject(preferences, projectId)
+        : structuredClone(preferences.defaultLectureDocumentFeatures),
+    );
+  };
   const selectCategory = (nextCategory: SettingsCategory) => {
     setLocalCategory(nextCategory);
     onCategoryChange?.(nextCategory);
@@ -345,10 +383,11 @@ export function SettingsView({
           <article className="settings-card lecture-default-structure-card">
             <div className="settings-card-heading">
               <span>LECTURE DEFAULTS</span>
-              <h2>Choose the default content flow</h2>
+              <h2>Choose default structure and document elements</h2>
               <p>
-                Arrange the sections GOSU should use for new Lecture Studios. Slides follow the same
-                order in a shorter form. Existing Studios and saved revisions do not change.
+                New Lecture Studios copy these choices. A project can override the visible document
+                elements, and each Studio can be adjusted later. Existing Studios and saved
+                revisions do not change.
               </p>
             </div>
             <LectureStructureEditor
@@ -356,7 +395,7 @@ export function SettingsView({
               onChange={setLectureStructureDraft}
               heading="Default notes & slides structure"
               idPrefix="settings-lecture-structure"
-              contextCopy="This local default is copied into each new Studio. GOSU still manages document formatting, inline citations, and the slide title page. Sources used is included by default but can be removed through an explicit Assistant request."
+              contextCopy="This workspace content flow is copied into each new Studio. Slides follow the same order in a shorter form."
               onReset={() =>
                 setLectureStructureDraft(structuredClone(preferences.defaultLectureStructure))
               }
@@ -377,6 +416,7 @@ export function SettingsView({
                 className="primary-button"
                 disabled={!lectureStructureDirty || !lectureStructureValid}
                 onClick={() => {
+                  if (!lectureStructureValid) return;
                   const normalized =
                     LectureStudioStructureTemplateSchema.safeParse(lectureStructureDraft);
                   if (!normalized.success) return;
@@ -390,6 +430,153 @@ export function SettingsView({
                 Save default structure
               </button>
             </div>
+
+            <section
+              className="lecture-default-document-elements"
+              aria-labelledby="lecture-document-defaults-heading"
+            >
+              <div className="lecture-default-document-elements-heading">
+                <div>
+                  <h3 id="lecture-document-defaults-heading">Visible document elements</h3>
+                  <p>
+                    Choose a workspace default or customize what new Studios save to one project.
+                  </p>
+                </div>
+                <label>
+                  Defaults for
+                  <select
+                    value={lectureDocumentScopeProjectId ?? ''}
+                    onChange={(event) => selectLectureDocumentScope(event.target.value || null)}
+                  >
+                    <option value="">Workspace</option>
+                    {activeLectureDefaultProjects.map((project) => (
+                      <option value={project.id} key={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              {lectureProjectUsesWorkspaceDefaults ? (
+                <div className="settings-template-callout lecture-project-default-callout">
+                  <strong>Using workspace defaults</strong>
+                  <span>
+                    New Studios saved to {lectureDocumentScopeProject?.name ?? 'this project'} use
+                    the workspace choices until you customize them.
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setCustomizingInheritedLectureFeatures(true)}
+                  >
+                    Customize for this project
+                  </button>
+                </div>
+              ) : null}
+
+              <LectureDocumentFeaturesEditor
+                value={lectureDocumentFeaturesDraft}
+                onChange={setLectureDocumentFeaturesDraft}
+                disabled={lectureProjectUsesWorkspaceDefaults}
+                idPrefix="settings-lecture-document-features"
+                heading={
+                  lectureDocumentScopeProjectId
+                    ? `${lectureDocumentScopeProject?.name ?? 'Project'} document elements`
+                    : 'Workspace document elements'
+                }
+                contextCopy={
+                  lectureDocumentScopeProjectId
+                    ? 'These choices are copied only into new Studios saved to this project.'
+                    : 'These choices are the fallback for every project without its own override.'
+                }
+              />
+
+              <div className="settings-template-callout" role="status" aria-live="polite">
+                <strong>
+                  {lectureProjectUsesWorkspaceDefaults
+                    ? 'Inherited'
+                    : lectureDocumentFeaturesDirty || customizingInheritedLectureFeatures
+                      ? 'Unsaved changes'
+                      : lectureDocumentScopeProjectId
+                        ? 'Project default'
+                        : 'Workspace default'}
+                </strong>
+                <span>
+                  {Object.values(lectureDocumentFeaturesDraft).filter(Boolean).length} of 3 visible
+                  elements enabled
+                </span>
+              </div>
+
+              {!lectureProjectUsesWorkspaceDefaults ? (
+                <div className="settings-form-actions lecture-document-default-actions">
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={!lectureDocumentFeaturesDirty && !customizingInheritedLectureFeatures}
+                    onClick={() => {
+                      setLectureDocumentFeaturesDraft(
+                        structuredClone(savedLectureDocumentFeatures),
+                      );
+                      setCustomizingInheritedLectureFeatures(false);
+                    }}
+                  >
+                    Revert changes
+                  </button>
+                  {lectureDocumentScopeProjectId && lectureProjectHasDocumentOverride ? (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => {
+                        const next = { ...preferences.lectureDocumentFeaturesByProjectId };
+                        delete next[lectureDocumentScopeProjectId];
+                        setLectureDocumentFeaturesDraft(
+                          structuredClone(preferences.defaultLectureDocumentFeatures),
+                        );
+                        setCustomizingInheritedLectureFeatures(false);
+                        onChange({
+                          ...preferences,
+                          lectureDocumentFeaturesByProjectId: next,
+                        });
+                      }}
+                    >
+                      Use workspace defaults
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={!lectureDocumentFeaturesDirty && !customizingInheritedLectureFeatures}
+                    onClick={() => {
+                      const normalized = LectureStudioDocumentFeaturesSchema.safeParse(
+                        lectureDocumentFeaturesDraft,
+                      );
+                      if (!normalized.success) return;
+                      setLectureDocumentFeaturesDraft(structuredClone(normalized.data));
+                      setCustomizingInheritedLectureFeatures(false);
+                      onChange(
+                        lectureDocumentScopeProjectId
+                          ? {
+                              ...preferences,
+                              lectureDocumentFeaturesByProjectId: {
+                                ...preferences.lectureDocumentFeaturesByProjectId,
+                                [lectureDocumentScopeProjectId]: structuredClone(normalized.data),
+                              },
+                            }
+                          : {
+                              ...preferences,
+                              defaultLectureDocumentFeatures: structuredClone(normalized.data),
+                            },
+                      );
+                    }}
+                  >
+                    {lectureDocumentScopeProjectId
+                      ? 'Save project defaults'
+                      : 'Save workspace defaults'}
+                  </button>
+                </div>
+              ) : null}
+            </section>
           </article>
         ) : activeCategory === 'projects' ? (
           <ProjectSettingsSection

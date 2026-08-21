@@ -249,7 +249,8 @@ export function SshApprovalCenter({
                 {executesWorkspaceCode &&
                   'Approval binds the executable, arguments, and working directory, not repository file contents; those files can change before launch. '}
                 Bounded output is returned to the model as untrusted data and is not saved as raw
-                SSH output.
+                SSH output. To stop repeated prompts for this project, enable Project auto-run for
+                this exact grant in Project Chat details or Connections.
               </p>
             ) : (
               <p id={warningId}>

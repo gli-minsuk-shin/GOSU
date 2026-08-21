@@ -210,22 +210,31 @@ describe('separated application Settings', () => {
     expect(html).toContain('Notes &amp; slides structure');
   });
 
-  it('shows adaptive and custom Lecture defaults with explicit save, revert, and safeguards', () => {
+  it('shows adjustable workspace and project Lecture defaults without document locks', () => {
     const adaptiveHtml = renderSettings('lecture');
     expect(adaptiveHtml).toContain('LECTURE DEFAULTS');
-    expect(adaptiveHtml).toContain('Choose the default content flow');
+    expect(adaptiveHtml).toContain('Choose default structure and document elements');
     expect(adaptiveHtml).toContain('Existing Studios and saved revisions do not change.');
     expect(adaptiveHtml).toContain('checked="" value="adaptive"');
     expect(adaptiveHtml).toContain('<strong>Current default</strong>');
     expect(adaptiveHtml).toContain('class="ghost-button" disabled="">Revert changes</button>');
     expect(adaptiveHtml).toContain('class="primary-button" disabled=""');
     expect(adaptiveHtml).toContain('>Save default structure</button>');
-    expect(adaptiveHtml).toContain('Title slide');
-    expect(adaptiveHtml).toContain('Evidence citations');
-    expect(adaptiveHtml).toContain('Sources used');
-    expect(adaptiveHtml.match(/<em>Locked<\/em>/gu)).toHaveLength(2);
-    expect(adaptiveHtml).toContain('<em>Default</em>');
-    expect(adaptiveHtml).toContain('can be removed through an explicit Assistant request');
+    expect(adaptiveHtml).toContain('Visible document elements');
+    expect(adaptiveHtml).toContain('<option value="" selected="">Workspace</option>');
+    expect(adaptiveHtml).toContain(
+      `<option value="${snapshot.projects[0]!.id}">Active study</option>`,
+    );
+    expect(adaptiveHtml).not.toContain('>Archived study</option>');
+    expect(adaptiveHtml.match(/type="checkbox"/gu)).toHaveLength(3);
+    expect(adaptiveHtml).toContain('Show a title page in slides');
+    expect(adaptiveHtml).toContain('Show source markers in notes and slides');
+    expect(adaptiveHtml).toContain('Add a Sources used list to notes');
+    expect(adaptiveHtml).toContain(
+      'Hidden markers still retain the revision&#x27;s evidence record.',
+    );
+    expect(adaptiveHtml).not.toContain('Locked');
+    expect(adaptiveHtml).toContain('>Save workspace defaults</button>');
 
     const customHtml = renderSettings(
       'lecture',
@@ -259,6 +268,41 @@ describe('separated application Settings', () => {
     expect(source).toContain('resetDisabled={!lectureStructureDirty}');
     expect(source).toContain('disabled={!lectureStructureDirty || !lectureStructureValid}');
     expect(source).toContain('defaultLectureStructure: structuredClone(normalized.data)');
+    expect(source).toContain('resolveLectureDocumentFeaturesForProject');
+    expect(source).toContain('Customize for this project');
+    expect(source).toContain('Use workspace defaults');
+    expect(source).toContain('lectureDocumentFeaturesByProjectId: {');
+    expect(source).toContain('defaultLectureDocumentFeatures: structuredClone(normalized.data)');
+  });
+
+  it('blocks source-list aliases from new workspace Lecture defaults', () => {
+    const html = renderSettings(
+      'lecture',
+      defaultProjectChatProfile(snapshot.projects[0]!.id),
+      lectureTrashSnapshot,
+      'configured',
+      {
+        ...DEFAULT_USER_PREFERENCES,
+        defaultLectureStructure: {
+          mode: 'custom',
+          sections: [{ title: 'References', coverage: 'notes-and-slides' }],
+        },
+      },
+    );
+
+    expect(html).toContain(
+      'Source lists are controlled by Document elements. Choose a content topic instead.',
+    );
+    expect(html).toContain('aria-invalid="true"');
+    expect(html).toContain(
+      '<button type="button" class="primary-button" disabled="">Save default structure</button>',
+    );
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/settings-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('if (!lectureStructureValid) return;');
   });
 
   it('keeps project lifecycle controls separate from the unified Trash manager', () => {
@@ -386,7 +430,7 @@ describe('separated application Settings', () => {
     expect(html).toContain('Raw shells, inline Python');
   });
 
-  it('keeps OpenClaw detection-only and offers an explicit BYO Hermes connection', () => {
+  it('keeps OpenClaw detection-only and offers the verified Hermes runtime', () => {
     const html = renderSettings('agent');
 
     expect(html).toContain('OPTIONAL AGENT ADD-ONS');
@@ -394,9 +438,10 @@ describe('separated application Settings', () => {
     expect(html).toContain('Hermes Agent');
     expect(html).toContain('Detect local installation');
     expect(html).toContain('without running it');
-    expect(html).toContain('Connect existing Hermes (BYO)');
-    expect(html).toContain('GOSU neither copies nor synchronizes its credentials');
-    expect(html).toContain('Hermes is optional, local, and never an automatic fallback');
+    expect(html).toContain('Use verified Hermes runtime');
+    expect(html).toContain('credentials remain in the isolated local profile');
+    expect(html).toContain('Hermes is pinned, local, and never an automatic fallback');
+    expect(html).toContain('never searches PATH or silently falls back to another version');
     expect(html).toContain('native tool surface is disabled');
     expect(html).toContain('Hermes turns do not show tool approval prompts');
     expect(html).toContain('Terminal, processes, code execution, files, web, browser automation');

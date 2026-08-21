@@ -10,8 +10,10 @@ import {
 
 import type {
   ApproveExperimentEvaluationInput,
+  CancelExperimentEvaluationInput,
   CreateExperimentEvaluationSessionInput,
   ExperimentEvaluationApprovalReceipt,
+  ExperimentEvaluationCancelReceipt,
   ExperimentEvaluationDetailInput,
   ExperimentEvaluationEvent,
   ExperimentEvaluationListSnapshot,
@@ -44,6 +46,7 @@ export interface ExperimentEvaluationStudioAdapter {
     input: CreateExperimentEvaluationSessionInput,
   ) => Promise<ExperimentEvaluationSession>;
   send: (input: SendExperimentEvaluationMessageInput) => Promise<ExperimentEvaluationTurnReceipt>;
+  cancel: (input: CancelExperimentEvaluationInput) => Promise<ExperimentEvaluationCancelReceipt>;
   approve: (
     input: ApproveExperimentEvaluationInput,
   ) => Promise<ExperimentEvaluationApprovalReceipt>;
@@ -65,8 +68,12 @@ export interface ExperimentEvaluationStudioViewProps {
 
 type RailMode = 'sessions' | 'recipes';
 
+function evaluationErrorCode(error: unknown) {
+  return error instanceof Error ? (error.message.split(':')[0] ?? '') : '';
+}
+
 function errorMessage(error: unknown) {
-  const code = error instanceof Error ? (error.message.split(':')[0] ?? '') : '';
+  const code = evaluationErrorCode(error);
   const messages: Record<string, string> = {
     invalid_experiment_evaluation_input: 'Review the evaluation request and try again.',
     experiment_evaluation_project_not_found: 'This project no longer exists.',
@@ -76,6 +83,8 @@ function errorMessage(error: unknown) {
     experiment_evaluation_version_conflict:
       'This evaluation changed in another action. GOSU did not overwrite it.',
     experiment_evaluation_busy: 'This evaluation session is already generating a draft.',
+    experiment_evaluation_interrupted:
+      'Stopped this evaluation response. No evaluation revision was created.',
     experiment_evaluation_codex_unavailable:
       'Codex could not produce this draft. Existing evaluation settings remain unchanged.',
     experiment_evaluation_invalid_response:
@@ -121,6 +130,7 @@ export function ExperimentEvaluationStudioView({
   const [message, setMessage] = useState('');
   const [profileName, setProfileName] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
   const [replaceLoggingConflicts, setReplaceLoggingConflicts] = useState(false);
@@ -294,12 +304,45 @@ export function ExperimentEvaluationStudioView({
       setNotice('Created a reviewable evaluation draft. No experiment settings were changed.');
     } catch (sendError) {
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
-      setMessage(request);
-      setError(errorMessage(sendError));
+      if (evaluationErrorCode(sendError) === 'experiment_evaluation_interrupted') {
+        setNotice('Stopped this evaluation response. No evaluation revision was created.');
+        setError(null);
+      } else {
+        setMessage(request);
+        setError(errorMessage(sendError));
+      }
       await loadList();
       await loadDetail(operationSessionId);
     } finally {
       setBusy(null);
+    }
+  };
+
+  const cancelSend = async () => {
+    if (busy !== 'send' || !detail || stopping) return;
+    const operationProjectId = projectId;
+    const operationSessionId = detail.session.id;
+    setStopping(true);
+    setNotice('Stopping this evaluation response…');
+    setError(null);
+    try {
+      const receipt = await adapter.cancel({
+        projectId,
+        sessionId: operationSessionId,
+      });
+      if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
+      await Promise.all([loadList(), loadDetail(receipt.session.id)]);
+      if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
+      setNotice(
+        receipt.cancelRequested
+          ? 'Stopped this evaluation response. No evaluation revision was created.'
+          : 'The evaluation response had already finished.',
+      );
+    } catch (cancelError) {
+      if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
+      setError(errorMessage(cancelError));
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -732,9 +775,21 @@ export function ExperimentEvaluationStudioView({
             <span className="eyebrow">EXPERIMENT ASSISTANT</span>
             <h2>Setup chat</h2>
           </div>
-          <span>
-            {requestedModelId ?? 'Auto model'} · {reasoningOptionId ?? 'default reasoning'}
-          </span>
+          <div className="evaluation-chat-header-actions">
+            <span>
+              {requestedModelId ?? 'Auto model'} · {reasoningOptionId ?? 'default reasoning'}
+            </span>
+            {busy === 'send' && (
+              <button
+                type="button"
+                className="danger-button"
+                disabled={stopping}
+                onClick={() => void cancelSend()}
+              >
+                {stopping ? 'Stopping…' : 'Stop response'}
+              </button>
+            )}
+          </div>
         </header>
         <div className="evaluation-chat-messages" aria-live="polite">
           {detail?.messages.length ? (

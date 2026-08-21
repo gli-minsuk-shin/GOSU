@@ -31,6 +31,7 @@ describe('Experiment Evaluation IPC boundary', () => {
         EXPERIMENT_EVALUATION_IPC_CHANNELS.detail,
         EXPERIMENT_EVALUATION_IPC_CHANNELS.createSession,
         EXPERIMENT_EVALUATION_IPC_CHANNELS.send,
+        EXPERIMENT_EVALUATION_IPC_CHANNELS.cancel,
         EXPERIMENT_EVALUATION_IPC_CHANNELS.approve,
         EXPERIMENT_EVALUATION_IPC_CHANNELS.reuseProfile,
       ].sort(),

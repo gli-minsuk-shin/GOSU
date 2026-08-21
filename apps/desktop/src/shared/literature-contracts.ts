@@ -429,6 +429,15 @@ export const OrganizeLiteratureInputSchema = z
     }
   });
 
+export const CancelLiteratureAiInputSchema = z.object({ projectId: uuidSchema }).strict();
+
+export const LiteratureAiCancelReceiptSchema = z
+  .object({
+    projectId: uuidSchema,
+    cancelRequested: z.boolean(),
+  })
+  .strict();
+
 export const LiteratureOrganizeReceiptSchema = z
   .object({
     projectId: uuidSchema,
@@ -455,6 +464,7 @@ export const LITERATURE_IPC_ERROR_CODES = [
   'literature_import_too_large',
   'literature_export_too_large',
   'literature_ai_busy',
+  'literature_ai_interrupted',
   'literature_ai_unavailable',
   'literature_ai_invalid_response',
   'literature_ai_conflict',
@@ -497,7 +507,9 @@ export type LiteratureExportReceipt = z.infer<typeof LiteratureExportReceiptSche
 export type LiteratureAiAnnotationUpdate = z.infer<typeof LiteratureAiAnnotationUpdateSchema>;
 export type LiteratureAiResponse = z.infer<typeof LiteratureAiResponseSchema>;
 export type OrganizeLiteratureInput = z.infer<typeof OrganizeLiteratureInputSchema>;
+export type CancelLiteratureAiInput = z.infer<typeof CancelLiteratureAiInputSchema>;
 export type LiteratureOrganizeReceipt = z.infer<typeof LiteratureOrganizeReceiptSchema>;
+export type LiteratureAiCancelReceipt = z.infer<typeof LiteratureAiCancelReceiptSchema>;
 export type LiteratureIpcErrorCode = (typeof LITERATURE_IPC_ERROR_CODES)[number];
 export type LiteratureIpcResult<T> =
   | Readonly<{ ok: true; value: T }>

@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type FormEvent,
   type KeyboardEvent,
 } from 'react';
@@ -33,17 +34,27 @@ import {
   LECTURE_STUDIO_MAX_LITERATURE_SOURCES,
   LECTURE_STUDIO_MAX_MANUSCRIPT_SOURCES,
   LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS,
+  LECTURE_STUDIO_MAX_FIGURES,
   LECTURE_STUDIO_MAX_SOURCE_PROJECTS,
   LECTURE_STUDIO_DURATIONS,
+  DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
   DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
-  LectureStudioStructureTemplateSchema,
+  CurrentLectureStudioGenerationBriefValueSchema,
+  resolveLectureStudioDocumentFeatures,
   type CancelLectureStudioInput,
   type CompileLectureStudioPdfInput,
   type CreateLectureStudioInput,
   type ExportLectureStudioArtifactInput,
   type GenerateLectureStudioInput,
+  type GetLectureStudioEditDraftInput,
+  type ChooseLectureStudioFiguresInput,
+  type LectureStudioEditDraft,
+  type LectureStudioFigureAsset,
+  type LectureStudioFigureLibraryReceipt,
+  type LectureStudioFigurePreview,
+  type LectureStudioManualRevisionReceipt,
   type LectureSourceCandidates,
-  type LectureSourceSelection,
+  type LectureSourceSelection as LectureStudioSourceSelection,
   type LectureStudio,
   type LectureStudioArtifactActionReceipt,
   type LectureStudioAttempt,
@@ -51,7 +62,7 @@ import {
   type LectureStudioAttemptValidationCategory,
   type LectureStudioDetail,
   type LectureStudioDetailLevel,
-  type LectureStudioGenerationBrief,
+  type LectureStudioDocumentFeatures,
   type LectureStudioArtifactFormat,
   type LectureStudioDetailInput,
   type LectureStudioDuration,
@@ -70,9 +81,13 @@ import {
   type EmptyLectureStudioTrashInput,
   type EmptyLectureStudioTrashReceipt,
   type ListLectureCandidatesInput,
+  type ListLectureStudioFiguresInput,
   type ListLectureStudiosInput,
   type OpenLectureStudioArtifactInput,
   type RevealLectureStudioArtifactInput,
+  type RemoveLectureStudioFigureInput,
+  type PreviewLectureStudioFigureInput,
+  type SaveLectureStudioManualRevisionInput,
   type SendLectureStudioMessageInput,
   type UpdateLectureStudioGenerationBriefInput,
 } from '../../shared/lecture-studio-contracts';
@@ -91,7 +106,13 @@ import {
 import type { LectureStudioDraftStore } from './lecture-studio-session-state';
 import type { OverleafPersonalTokenUiState } from './overleaf-personal-token-ui';
 import { MarkdownDocument } from './markdown-document';
-import { LectureStructureEditor } from './lecture-structure-editor';
+import {
+  LectureDocumentFeaturesEditor,
+  LectureStructureEditor,
+  lectureStructureEditorValidation,
+  sourceListSectionTitlesInLectureStructure,
+} from './lecture-structure-editor';
+import { resolveLectureDocumentFeaturesForProject } from './user-preferences';
 import {
   LectureExternalSourcePicker,
   type LectureExternalSourceCard,
@@ -99,6 +120,23 @@ import {
   type LectureOverleafSourceDraft,
 } from './lecture-external-source-picker';
 import { PdfPreview } from './pdf-preview';
+import {
+  LectureFigureLibrary,
+  isLectureFigureFileDrag,
+  partitionLectureFigureFiles,
+  type LectureFigureAssetView,
+} from './lecture-figure-library';
+import {
+  LectureSourceEditor,
+  insertLectureSourceAtSelection,
+  lectureSourceDirtyDocuments,
+  type LectureSourceDocumentKind,
+  type LectureSourceDrafts,
+  type LectureSourceEditorIssue,
+  type LectureSourceEditorPhase,
+  type LectureSourceFocusRequest,
+  type LectureSourceSelection as LectureEditorSelection,
+} from './lecture-source-editor';
 import { CollapseChevron } from './ui-primitives';
 import './lecture-studio-view.css';
 import './pdf-preview.css';
@@ -125,6 +163,24 @@ export interface LectureStudioViewAdapter {
   releaseAttachment: (input: ReleaseLectureStudioAttachmentInput) => Promise<{ released: true }>;
   create: (input: CreateLectureStudioInput) => Promise<LectureStudio>;
   updateGenerationBrief: (input: UpdateLectureStudioGenerationBriefInput) => Promise<LectureStudio>;
+  editDraft: (input: GetLectureStudioEditDraftInput) => Promise<LectureStudioEditDraft>;
+  saveManualRevision: (
+    input: SaveLectureStudioManualRevisionInput,
+  ) => Promise<LectureStudioManualRevisionReceipt>;
+  listFigures: (
+    input: ListLectureStudioFiguresInput,
+  ) => Promise<readonly LectureStudioFigureAsset[]>;
+  chooseFigures: (
+    input: ChooseLectureStudioFiguresInput,
+  ) => Promise<LectureStudioFigureLibraryReceipt>;
+  stageDroppedFigures: (
+    input: ChooseLectureStudioFiguresInput,
+    files: readonly File[],
+  ) => Promise<LectureStudioFigureLibraryReceipt>;
+  removeFigure: (
+    input: RemoveLectureStudioFigureInput,
+  ) => Promise<LectureStudioFigureLibraryReceipt>;
+  previewFigure: (input: PreviewLectureStudioFigureInput) => Promise<LectureStudioFigurePreview>;
   generate: (input: GenerateLectureStudioInput) => Promise<LectureStudioTurnReceipt>;
   send: (input: SendLectureStudioMessageInput) => Promise<LectureStudioTurnReceipt>;
   cancel: (input: CancelLectureStudioInput) => Promise<LectureStudio>;
@@ -247,6 +303,8 @@ export interface LectureStudioViewProps {
   modelsLoading: boolean;
   defaultModelSelection?: LectureStudioModelSelection;
   defaultStructure?: LectureStudioStructureTemplate;
+  defaultDocumentFeatures?: LectureStudioDocumentFeatures;
+  documentFeaturesByProjectId?: Readonly<Record<string, LectureStudioDocumentFeatures>>;
   codexAuthenticationRequired: boolean;
   onRefreshModels: () => void;
   onOpenCodexSignIn: () => void;
@@ -264,17 +322,24 @@ export type LectureGenerationProgressState = Readonly<{
   events: readonly LectureGenerationProgressEvent[];
 }>;
 
-const LECTURE_GENERATION_PROGRESS_EVENT_LIMIT = 12;
+const LECTURE_GENERATION_PROGRESS_EVENT_LIMIT = 20;
+const EMPTY_LECTURE_DOCUMENT_FEATURE_OVERRIDES: Readonly<
+  Record<string, LectureStudioDocumentFeatures>
+> = Object.freeze({});
 
 export const LECTURE_GENERATION_PROGRESS_LABELS = {
-  preparing_sources: 'Preparing selected sources',
+  preparing_sources: 'Resolving frozen project sources',
+  loading_current_revision: 'Loading the current revision as the edit base',
+  preparing_edit_context: 'Building the bounded model context',
   starting_model: 'Starting the selected model',
-  generating_draft: 'Drafting lecture notes and slides',
-  model_active: 'Model is working on the draft',
-  validating_output: 'Checking citations and LaTeX',
-  correcting_output: 'Correcting the draft automatically',
-  compiling_documents: 'Compiling both PDFs',
-  saving_revision: 'Saving the new revision',
+  generating_draft: 'Generating complete Notes and Slides bodies',
+  revising_draft: 'Revising the complete Notes and Slides bodies',
+  model_active: 'Receiving the model’s complete document response',
+  validating_output: 'Validating citations, figures, structure, and LaTeX',
+  correcting_output: 'Running the one bounded automatic correction',
+  compiling_documents: 'Compiling Notes PDF and Slides PDF',
+  saving_revision: 'Staging the new LaTeX revision bundle',
+  committing_revision: 'Committing the revision and frozen provenance',
 } as const satisfies Record<LectureGenerationProgressPhase, string>;
 
 export function appendLectureGenerationProgress(
@@ -346,6 +411,7 @@ const LECTURE_ATTEMPT_LATEX_REASON_LABELS: Record<LectureStudioAttemptLatexReaso
   beamer_overlay: 'Unsupported slide overlay',
   beamer_multipage_frame: 'Unsupported multi-page slide',
   beamer_frame_option: 'Unsupported slide option',
+  structural_heading_option: 'Unsupported heading option',
   unbalanced_braces: 'Unmatched braces',
   malformed_environment: 'Malformed LaTeX environment',
   unsupported_environment: 'Unsupported LaTeX environment',
@@ -357,8 +423,10 @@ const LECTURE_ATTEMPT_LATEX_REASON_LABELS: Record<LectureStudioAttemptLatexReaso
   raw_subscript_or_superscript: 'Subscript or superscript outside math',
   raw_alignment_character: 'Alignment marker outside a supported layout',
   raw_tilde: 'Unsupported tilde',
+  evidence_label_typography: 'Source marker placement or punctuation',
   missing_sources_used: 'Missing source list',
   missing_frame: 'Slides were missing a frame',
+  invalid_figure_reference: 'Unknown or unavailable figure reference',
   invalid_title: 'Invalid slide title',
   invalid_canonical_wrapper: 'Invalid saved document wrapper',
 };
@@ -420,13 +488,21 @@ function previewIsPdf(tab: PreviewTab) {
 export function lectureArtifactActionLabels(
   tab: PreviewTab,
   sourceFormat: 'markdown' | 'latex' = 'latex',
+  hasFigureReferences = false,
 ) {
   const format = previewIsPdf(tab) ? 'PDF' : sourceFormat === 'latex' ? 'LaTeX' : 'Markdown';
+  const exportsLatexBundle = !previewIsPdf(tab) && sourceFormat === 'latex' && hasFigureReferences;
   return {
-    export: `Export ${format}`,
+    export: exportsLatexBundle ? 'Export LaTeX bundle' : `Export ${format}`,
     open: `Open ${format} in default app`,
-    reveal: `Show ${format} in Finder`,
+    reveal: exportsLatexBundle ? 'Show LaTeX bundle in Finder' : `Show ${format} in Finder`,
   } as const;
+}
+
+export function lectureSourceHasFigureReferences(source: string) {
+  return /\\gosuimage\{[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\}/iu.test(
+    source,
+  );
 }
 
 function LectureArtifactActionIcon({ kind }: { kind: 'export' | 'open' | 'reveal' }) {
@@ -453,6 +529,242 @@ function revisionSource(revision: LectureStudioRevision, kind: 'lecture-notes' |
     return kind === 'lecture-notes' ? revision.lectureNotesLatex : revision.slidesLatex;
   }
   return kind === 'lecture-notes' ? revision.lectureNotesMarkdown : revision.slidesMarkdown;
+}
+
+const EMPTY_LECTURE_FIGURE_THUMBNAIL =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
+export type LectureManualEditSession = Readonly<{
+  studioVersion: number;
+  baseRevisionId: string;
+  baseRevision: number;
+  baseSources: LectureSourceDrafts;
+  drafts: LectureSourceDrafts;
+  figures: readonly LectureStudioFigureAsset[];
+}>;
+
+type LectureManualEditSummary = Readonly<{
+  studioId: string;
+  dirty: boolean;
+  busy: boolean;
+}>;
+
+export type LectureManualEditCacheEntry = Readonly<{
+  session: LectureManualEditSession;
+  activeDocument: LectureSourceDocumentKind;
+  selections: Readonly<Record<LectureSourceDocumentKind, LectureEditorSelection>>;
+  figureDrawerOpen: boolean;
+}>;
+
+const lectureManualEditSessionCache = new Map<string, LectureManualEditCacheEntry>();
+let lectureManualEditBeforeUnloadWindow: Window | null = null;
+
+function preserveCachedLectureManualEdit(event: BeforeUnloadEvent) {
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+export function lectureManualEditCacheHasDirtySession() {
+  return [...lectureManualEditSessionCache.values()].some(
+    ({ session }) => lectureSourceDirtyDocuments(session.baseSources, session.drafts).length > 0,
+  );
+}
+
+function syncLectureManualEditBeforeUnloadGuard() {
+  const rendererWindow = typeof window === 'undefined' ? null : window;
+  const shouldGuard = rendererWindow !== null && lectureManualEditCacheHasDirtySession();
+  if (
+    lectureManualEditBeforeUnloadWindow &&
+    (!shouldGuard || lectureManualEditBeforeUnloadWindow !== rendererWindow)
+  ) {
+    lectureManualEditBeforeUnloadWindow.removeEventListener(
+      'beforeunload',
+      preserveCachedLectureManualEdit,
+    );
+    lectureManualEditBeforeUnloadWindow = null;
+  }
+  if (shouldGuard && lectureManualEditBeforeUnloadWindow === null) {
+    rendererWindow.addEventListener('beforeunload', preserveCachedLectureManualEdit);
+    lectureManualEditBeforeUnloadWindow = rendererWindow;
+  }
+}
+
+function cloneLectureManualEditCacheEntry(
+  entry: LectureManualEditCacheEntry,
+): LectureManualEditCacheEntry {
+  return {
+    ...entry,
+    selections: {
+      'lecture-notes': { ...entry.selections['lecture-notes'] },
+      slides: { ...entry.selections.slides },
+    },
+  };
+}
+
+export function cacheLectureManualEditSession(
+  studioId: string,
+  entry: LectureManualEditCacheEntry,
+) {
+  lectureManualEditSessionCache.delete(studioId);
+  lectureManualEditSessionCache.set(studioId, cloneLectureManualEditCacheEntry(entry));
+  syncLectureManualEditBeforeUnloadGuard();
+}
+
+export function cachedLectureManualEditSession(studioId: string) {
+  const entry = lectureManualEditSessionCache.get(studioId);
+  return entry ? cloneLectureManualEditCacheEntry(entry) : null;
+}
+
+export function discardCachedLectureManualEditSession(studioId: string) {
+  lectureManualEditSessionCache.delete(studioId);
+  syncLectureManualEditBeforeUnloadGuard();
+}
+
+export function latestCachedLectureManualEditStudioId() {
+  return [...lectureManualEditSessionCache.keys()].at(-1) ?? null;
+}
+
+export function isSameActiveLectureStudioSelection(
+  currentStudioId: string | null,
+  nextStudioId: string,
+  composing: boolean,
+) {
+  return !composing && currentStudioId === nextStudioId;
+}
+
+function cachedLectureManualEditSummary(): LectureManualEditSummary | null {
+  const studioId = latestCachedLectureManualEditStudioId();
+  if (!studioId) return null;
+  const cached = cachedLectureManualEditSession(studioId);
+  if (!cached) return null;
+  return {
+    studioId,
+    dirty:
+      lectureSourceDirtyDocuments(cached.session.baseSources, cached.session.drafts).length > 0,
+    busy: false,
+  };
+}
+
+export function lectureFigureSourceToken(figureId: string) {
+  return `\\gosuimage{${figureId}}`;
+}
+
+export function lectureFigureUsageInDrafts(
+  figureId: string,
+  drafts: LectureSourceDrafts,
+): readonly LectureSourceDocumentKind[] {
+  const token = lectureFigureSourceToken(figureId);
+  return (['lecture-notes', 'slides'] as const).filter((document) =>
+    drafts[document].includes(token),
+  );
+}
+
+export function lectureFigureReferenceCount(figureId: string, drafts: LectureSourceDrafts) {
+  const token = lectureFigureSourceToken(figureId);
+  return (['lecture-notes', 'slides'] as const).reduce(
+    (count, document) => count + Math.max(0, drafts[document].split(token).length - 1),
+    0,
+  );
+}
+
+export function lectureFigurePreviewDataUrl(preview: LectureStudioFigurePreview) {
+  return `data:image/jpeg;base64,${preview.jpegBase64}`;
+}
+
+export function lectureFigureAssetView(
+  figure: LectureStudioFigureAsset,
+  drafts: LectureSourceDrafts,
+  previewDataUrl?: string,
+): LectureFigureAssetView {
+  return {
+    id: figure.id,
+    thumbnailDataUrl: previewDataUrl ?? EMPTY_LECTURE_FIGURE_THUMBNAIL,
+    displayName: figure.displayName,
+    width: figure.width,
+    height: figure.height,
+    origin: figure.origin,
+    usedIn: lectureFigureUsageInDrafts(figure.id, drafts),
+    referenceCount: lectureFigureReferenceCount(figure.id, drafts),
+    altText: figure.displayName,
+  };
+}
+
+type LectureEditFeatureStudio = Readonly<{
+  generationBrief: Readonly<{
+    documentFeatures?: LectureStudioDocumentFeatures | undefined;
+  }>;
+}>;
+
+type LectureEditFeatureRevision =
+  | Readonly<{ schemaVersion: 1; lectureNotesMarkdown: string }>
+  | Readonly<{ schemaVersion: 2; lectureNotesLatex: string }>
+  | Readonly<{
+      schemaVersion: 3;
+      lectureNotesLatex: string;
+      generationBriefSnapshot: Readonly<{
+        documentFeatures?: LectureStudioDocumentFeatures | undefined;
+      }>;
+    }>
+  | Readonly<{
+      schemaVersion: 4;
+      lectureNotesLatex: string;
+      generationBriefSnapshot: Readonly<{
+        documentFeatures?: LectureStudioDocumentFeatures | undefined;
+      }>;
+    }>;
+
+const LATEX_SOURCES_USED_HEADING = /\\section\s*\*?\s*\{\s*Sources used\s*\}/iu;
+
+export function resolveLectureEditDocumentFeatures(
+  studio: LectureEditFeatureStudio,
+  revision: LectureEditFeatureRevision | null,
+): LectureStudioDocumentFeatures {
+  if (studio.generationBrief.documentFeatures !== undefined) {
+    return resolveLectureStudioDocumentFeatures(studio.generationBrief.documentFeatures);
+  }
+  if (
+    (revision?.schemaVersion === 3 || revision?.schemaVersion === 4) &&
+    revision.generationBriefSnapshot.documentFeatures !== undefined
+  ) {
+    return resolveLectureStudioDocumentFeatures(revision.generationBriefSnapshot.documentFeatures);
+  }
+
+  const lectureNotes = revision?.schemaVersion === 1 ? undefined : revision?.lectureNotesLatex;
+  const includeSourcesUsedSection =
+    lectureNotes === undefined || LATEX_SOURCES_USED_HEADING.test(lectureNotes);
+  return {
+    ...DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+    includeSourcesUsedSection,
+  };
+}
+
+export function slideTargetAfterDocumentFeaturesChange(
+  currentTarget: string,
+  currentFeatures: LectureStudioDocumentFeatures,
+  nextFeatures: LectureStudioDocumentFeatures,
+) {
+  return !currentFeatures.includeSlideTitlePage &&
+    nextFeatures.includeSlideTitlePage &&
+    currentTarget !== '' &&
+    Number(currentTarget) === 1
+    ? '2'
+    : currentTarget;
+}
+
+export function lectureGenerationBriefDraftIsValidForEditor(
+  generationBrief: UpdateLectureStudioGenerationBriefInput['generationBrief'],
+  allowedSourceListSectionTitles: readonly string[] = [],
+) {
+  if (
+    !lectureStructureEditorValidation(generationBrief.structure, allowedSourceListSectionTitles)
+      .valid
+  ) {
+    return false;
+  }
+  return CurrentLectureStudioGenerationBriefValueSchema.safeParse({
+    ...generationBrief,
+    structure: DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+  }).success;
 }
 
 async function sha256Text(value: string) {
@@ -488,7 +800,7 @@ export interface LoadedLectureCandidates {
   projects: LoadedLectureCandidateProject[];
 }
 
-const EMPTY_SOURCE_SELECTION: LectureSourceSelection = {
+const EMPTY_SOURCE_SELECTION: LectureStudioSourceSelection = {
   literature: [],
   experiments: [],
   manuscripts: [],
@@ -567,7 +879,7 @@ export function lectureErrorCodeMessage(code: string) {
     invalid_lecture_input: 'Review the selected projects, sources, and presentation settings.',
     lecture_studio_not_found:
       'This lecture workspace no longer exists. Refresh and choose another.',
-    lecture_busy: 'This lecture workspace is already generating a revision.',
+    lecture_busy: 'This lecture workspace is already changing. Wait for it to finish and retry.',
     lecture_source_conflict:
       'A selected source changed after review. Refresh the source list before generating.',
     lecture_context_too_large:
@@ -590,6 +902,17 @@ export function lectureErrorCodeMessage(code: string) {
     lecture_generation_failed:
       'Codex started this generation but could not complete it. The previous revision remains unchanged.',
     lecture_version_conflict: 'This lecture changed in another action. Refresh and try again.',
+    lecture_figure_unavailable:
+      'The Figure library is unavailable or changed. Refresh this direct edit and try again.',
+    lecture_figure_invalid: 'Choose a supported, readable raster image.',
+    lecture_figure_too_large:
+      'That image is too large to normalize safely. Choose a smaller raster image.',
+    lecture_figure_limit_reached:
+      'This Lecture Studio already has the maximum number of Figure-library images.',
+    lecture_figure_in_use:
+      'This figure is still referenced by a saved revision. Remove its references before deleting it.',
+    lecture_figure_model_unsupported:
+      'The selected model cannot use this Figure library. Choose a vision-capable model or edit the source directly.',
     lecture_source_not_found: 'A selected manuscript, paper, or experiment is no longer available.',
     lecture_external_source_invalid:
       'One of the selected files could not be read safely or was already added.',
@@ -825,6 +1148,8 @@ export function LectureStudioView({
   modelsLoading,
   defaultModelSelection = AUTO_LECTURE_STUDIO_MODEL_SELECTION,
   defaultStructure = DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+  defaultDocumentFeatures = DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+  documentFeaturesByProjectId = EMPTY_LECTURE_DOCUMENT_FEATURE_OVERRIDES,
   codexAuthenticationRequired,
   onRefreshModels,
   onOpenCodexSignIn,
@@ -848,11 +1173,26 @@ export function LectureStudioView({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
   const [previewTab, setPreviewTab] = useState<PreviewTab>('notes');
+  const [pdfFocusMode, setPdfFocusMode] = useState(false);
+  const [manualEditSummary, setManualEditSummary] = useState<LectureManualEditSummary | null>(() =>
+    cachedLectureManualEditSummary(),
+  );
   const [modelSelection, setModelSelection] = useState<LectureStudioModelSelection>(
     AUTO_LECTURE_STUDIO_MODEL_SELECTION,
   );
   const loadGeneration = useRef(0);
   const activeAttemptByStudioId = useRef<Record<string, string | null>>({});
+  const documentFeaturesForProject = useCallback(
+    (projectId: string) =>
+      resolveLectureDocumentFeaturesForProject(
+        {
+          defaultLectureDocumentFeatures: defaultDocumentFeatures,
+          lectureDocumentFeaturesByProjectId: documentFeaturesByProjectId,
+        },
+        projectId,
+      ),
+    [defaultDocumentFeatures, documentFeaturesByProjectId],
+  );
 
   const loadScopedModelSelection = useCallback(
     (studioId: string) => {
@@ -875,7 +1215,10 @@ export function LectureStudioView({
           next.studios.map((studio) => [studio.id, studio.activeAttemptId]),
         );
         setListSnapshot(next);
-        const requestedStudioId = preferredStudioId ?? selectedStudioIdRef.current;
+        const requestedStudioId =
+          preferredStudioId ??
+          selectedStudioIdRef.current ??
+          latestCachedLectureManualEditStudioId();
         const nextStudioId =
           requestedStudioId && next.studios.some((studio) => studio.id === requestedStudioId)
             ? requestedStudioId
@@ -957,12 +1300,30 @@ export function LectureStudioView({
     resolveLectureStudioModelSelection(modelSelection, models).issue !== null;
 
   const selectStudio = (studioId: string) => {
+    if (isSameActiveLectureStudioSelection(selectedStudioIdRef.current, studioId, composing)) {
+      return;
+    }
+    if (manualEditSummary && manualEditSummary.studioId !== studioId) {
+      if (manualEditSummary.busy) {
+        setError('Wait for the direct source edit to finish before changing Studios.');
+        return;
+      }
+      if (
+        manualEditSummary.dirty &&
+        !window.confirm('Discard the unsaved direct LaTeX edits and open another Lecture Studio?')
+      ) {
+        return;
+      }
+      discardCachedLectureManualEditSession(manualEditSummary.studioId);
+      setManualEditSummary(null);
+    }
     selectedStudioIdRef.current = studioId;
     setSelectedStudioId(studioId);
     setModelSelection(loadScopedModelSelection(studioId));
     setDetail(null);
     setComposing(false);
     setPreviewTab('notes');
+    setPdfFocusMode(false);
     void load(true, studioId);
   };
 
@@ -979,6 +1340,10 @@ export function LectureStudioView({
     studio: LectureStudio,
     selection: LectureStudioModelSelection = modelSelection,
   ) => {
+    if (manualEditSummary?.studioId === studio.id) {
+      setError('Save or cancel the direct source edit before generating another revision.');
+      return;
+    }
     markStudioBusy(studio.id, true);
     setNotice('');
     setError(null);
@@ -1004,6 +1369,18 @@ export function LectureStudioView({
   };
 
   const moveStudioToTrash = async (studio: LectureStudioSummary) => {
+    if (manualEditSummary?.studioId === studio.id) {
+      if (manualEditSummary.busy) {
+        setError('Wait for the direct source edit to finish before moving this Studio.');
+        return;
+      }
+      if (
+        manualEditSummary.dirty &&
+        !window.confirm('Discard the unsaved direct LaTeX edits before moving this Studio?')
+      ) {
+        return;
+      }
+    }
     if (
       studio.status === 'generating' ||
       busyStudioIds.has(studio.id) ||
@@ -1018,6 +1395,10 @@ export function LectureStudioView({
     setNotice('');
     try {
       await adapter.trash({ studioId: studio.id, expectedVersion: studio.version });
+      if (manualEditSummary?.studioId === studio.id) {
+        discardCachedLectureManualEditSession(studio.id);
+        setManualEditSummary(null);
+      }
       draftStore.write(studio.id, '');
       setDraftsByStudioId((current) => {
         const next = { ...current };
@@ -1039,7 +1420,10 @@ export function LectureStudioView({
   };
 
   return (
-    <section className="lecture-studio" aria-label="Lecture notes and slides workspace">
+    <section
+      className={`lecture-studio${pdfFocusMode ? ' pdf-focus' : ''}`}
+      aria-label="Lecture notes and slides workspace"
+    >
       {error && (
         <div className="error-banner lecture-studio-banner" role="alert">
           <span>{error}</span>
@@ -1065,7 +1449,7 @@ export function LectureStudioView({
       )}
 
       <div
-        className={`lecture-studio-layout${layout.studioRailCollapsed ? ' studio-rail-collapsed' : ''}${layout.chatCollapsed ? ' chat-collapsed' : ''}`}
+        className={`lecture-studio-layout${layout.studioRailCollapsed ? ' studio-rail-collapsed' : ''}${layout.chatCollapsed ? ' chat-collapsed' : ''}${pdfFocusMode ? ' pdf-focused' : ''}`}
       >
         <StudioRail
           studios={listSnapshot?.studios ?? []}
@@ -1073,7 +1457,22 @@ export function LectureStudioView({
           loading={loading}
           composing={composing}
           onNew={() => {
+            if (manualEditSummary?.busy) {
+              setError('Wait for the direct source edit to finish before creating a new Studio.');
+              return;
+            }
+            if (
+              manualEditSummary?.dirty &&
+              !window.confirm('Discard the unsaved direct LaTeX edits and create a new Studio?')
+            ) {
+              return;
+            }
+            if (manualEditSummary) {
+              discardCachedLectureManualEditSession(manualEditSummary.studioId);
+            }
+            setManualEditSummary(null);
             setComposing(true);
+            setPdfFocusMode(false);
             onLayoutChange({ ...layout, chatCollapsed: false });
             setNotice('');
             setError(null);
@@ -1097,19 +1496,21 @@ export function LectureStudioView({
             modelsLoading={modelsLoading}
             defaultModelSelection={defaultModelSelection}
             defaultStructure={defaultStructure}
+            workspaceDocumentFeatures={defaultDocumentFeatures}
+            documentFeaturesForProject={documentFeaturesForProject}
             onRefreshModels={onRefreshModels}
             onOpenCodexSignIn={onOpenCodexSignIn}
             overleafPersonalTokenState={overleafPersonalTokenState}
             onOpenOverleafSettings={onOpenOverleafSettings}
             onCancel={listSnapshot?.studios.length ? () => setComposing(false) : undefined}
-            onCreated={async (studio, initialSelection) => {
+            onCreated={async (studio, initialSelection, generateInitialRevision) => {
               setModelSelection(initialSelection);
               saveLectureStudioModelSelection(window.localStorage, studio.id, initialSelection);
               selectedStudioIdRef.current = studio.id;
               setSelectedStudioId(studio.id);
               setComposing(false);
               await load(false, studio.id);
-              await runGeneration(studio, initialSelection);
+              if (generateInitialRevision) await runGeneration(studio, initialSelection);
             }}
             onError={(nextError) => setError(lectureErrorMessage(nextError))}
           />
@@ -1130,8 +1531,30 @@ export function LectureStudioView({
               busy={busyStudioIds.has(selectedStudio.id)}
               generationProgress={generationProgressByStudioId[selectedStudio.id]}
               codexAuthenticationRequired={codexAuthenticationRequired}
-              onTab={setPreviewTab}
+              pdfFocusMode={pdfFocusMode}
+              onPdfFocusModeChange={setPdfFocusMode}
+              onTab={(tab) => {
+                setPreviewTab(tab);
+                if (!previewIsPdf(tab)) setPdfFocusMode(false);
+              }}
               onGenerate={() => void runGeneration(selectedStudio)}
+              onManualEditStateChange={setManualEditSummary}
+              onManualEditClosed={async (studioId) => {
+                setManualEditSummary(null);
+                await load(false, studioId);
+              }}
+              onManualRevisionSaved={async (receipt) => {
+                setManualEditSummary(null);
+                await load(false, receipt.studio.id);
+                if (selectedStudioIdRef.current === receipt.studio.id) {
+                  setNotice(
+                    `Direct LaTeX edits were saved as revision ${receipt.revision.revision}.`,
+                  );
+                }
+              }}
+              onFigureLibraryChanged={async (receipt) => {
+                await load(false, receipt.studio.id);
+              }}
               onUpdateGenerationBrief={async (generationBrief) => {
                 markStudioBusy(selectedStudio.id, true);
                 setError(null);
@@ -1160,6 +1583,8 @@ export function LectureStudioView({
                 }
               }}
               defaultStructure={defaultStructure}
+              workspaceDocumentFeatures={defaultDocumentFeatures}
+              projectDocumentFeatures={documentFeaturesForProject(selectedStudio.outputProjectId)}
               onOpenCodexSignIn={onOpenCodexSignIn}
               onCancel={() => {
                 if (!selectedStudio.activeAttemptId) return;
@@ -1176,6 +1601,7 @@ export function LectureStudioView({
               studio={selectedStudio}
               messages={selectedMessages}
               busy={busyStudioIds.has(selectedStudio.id) || selectedStudio.status === 'generating'}
+              directEditing={manualEditSummary?.studioId === selectedStudio.id}
               codexAuthenticationRequired={codexAuthenticationRequired}
               onOpenCodexSignIn={onOpenCodexSignIn}
               collapsed={layout.chatCollapsed}
@@ -1378,6 +1804,169 @@ function StudioRail({
   );
 }
 
+const LECTURE_COMPOSER_FIGURE_ACCEPT =
+  '.png,.jpg,.jpeg,.webp,.gif,.tif,.tiff,.bmp,.avif,image/png,image/jpeg,image/webp,image/gif,image/tiff,image/bmp,image/avif';
+
+export type LectureComposerFigureMergeResult = Readonly<{
+  files: readonly File[];
+  rejectedCount: number;
+  limitCount: number;
+}>;
+
+export function mergeLectureComposerFigureFiles(
+  current: readonly File[],
+  incoming: readonly File[],
+): LectureComposerFigureMergeResult {
+  const partition = partitionLectureFigureFiles(incoming);
+  const files = [...current];
+  let limitCount = 0;
+  for (const file of partition.accepted) {
+    if (files.length >= LECTURE_STUDIO_MAX_FIGURES) {
+      limitCount += 1;
+      continue;
+    }
+    files.push(file);
+  }
+  return {
+    files,
+    rejectedCount: partition.rejected.length,
+    limitCount,
+  };
+}
+
+function LectureComposerFigurePicker({
+  files,
+  disabled,
+  onFilesChange,
+}: {
+  files: readonly File[];
+  disabled: boolean;
+  onFilesChange: (files: readonly File[]) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
+  const [dropActive, setDropActive] = useState(false);
+  const [selectionError, setSelectionError] = useState<string | null>(null);
+
+  const addFiles = (incoming: readonly File[]) => {
+    const merged = mergeLectureComposerFigureFiles(files, incoming);
+    onFilesChange(merged.files);
+    const skipped = merged.rejectedCount + merged.limitCount;
+    setSelectionError(
+      skipped === 0
+        ? null
+        : `${skipped} image${skipped === 1 ? '' : 's'} skipped. Use a supported non-empty raster image and keep at most ${LECTURE_STUDIO_MAX_FIGURES}.`,
+    );
+  };
+
+  const dragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isLectureFigureFileDrag(event.dataTransfer.types)) return;
+    event.preventDefault();
+    dragDepth.current += 1;
+    if (!disabled) setDropActive(true);
+  };
+
+  const dragLeave = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isLectureFigureFileDrag(event.dataTransfer.types)) return;
+    event.preventDefault();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDropActive(false);
+  };
+
+  const dragOver = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isLectureFigureFileDrag(event.dataTransfer.types)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = disabled ? 'none' : 'copy';
+  };
+
+  const drop = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isLectureFigureFileDrag(event.dataTransfer.types)) return;
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDropActive(false);
+    if (!disabled) addFiles(Array.from(event.dataTransfer.files));
+  };
+
+  return (
+    <section className="lecture-composer-figures" aria-labelledby="lecture-composer-figures-title">
+      <header>
+        <div>
+          <h3 id="lecture-composer-figures-title">Figures for the first revision</h3>
+          <p>
+            Add up to {LECTURE_STUDIO_MAX_FIGURES} raster images. GOSU can place these local Figure
+            library assets in the first notes and slides.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={disabled || files.length >= LECTURE_STUDIO_MAX_FIGURES}
+          onClick={() => input.current?.click()}
+        >
+          Add images
+        </button>
+        <input
+          ref={input}
+          type="file"
+          accept={LECTURE_COMPOSER_FIGURE_ACCEPT}
+          multiple
+          hidden
+          tabIndex={-1}
+          onChange={(event) => {
+            addFiles(Array.from(event.currentTarget.files ?? []));
+            event.currentTarget.value = '';
+          }}
+        />
+      </header>
+      <div
+        className={`lecture-composer-figure-drop${dropActive ? ' active' : ''}`}
+        onDragEnter={dragEnter}
+        onDragLeave={dragLeave}
+        onDragOver={dragOver}
+        onDrop={drop}
+      >
+        <strong>Drop images from Finder</strong>
+        <span>PNG, JPEG, WebP, GIF, TIFF, BMP, or AVIF</span>
+      </div>
+      {selectionError && (
+        <div className="lecture-composer-figure-error" role="alert">
+          {selectionError}
+        </div>
+      )}
+      {files.length > 0 && (
+        <ul className="lecture-composer-figure-list" aria-label="Figures for first revision">
+          {files.map((file, index) => {
+            return (
+              <li key={`${index}:${file.name}:${file.size}`}>
+                <span title={file.name}>{file.name}</span>
+                <small>{Math.max(1, Math.ceil(file.size / 1_024)).toLocaleString()} KB</small>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={disabled}
+                  aria-label={`Remove ${file.name} from first-revision figures`}
+                  onClick={() => {
+                    onFilesChange(
+                      files.filter((_candidate, candidateIndex) => candidateIndex !== index),
+                    );
+                    setSelectionError(null);
+                  }}
+                >
+                  Remove
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <p className="lecture-composer-figure-status" role="status" aria-live="polite">
+        {files.length} of {LECTURE_STUDIO_MAX_FIGURES} figures ready. Local file paths are never
+        shown in the Renderer.
+      </p>
+    </section>
+  );
+}
+
 function LectureComposer({
   projects,
   adapter,
@@ -1387,6 +1976,8 @@ function LectureComposer({
   modelsLoading,
   defaultModelSelection,
   defaultStructure,
+  workspaceDocumentFeatures,
+  documentFeaturesForProject,
   onRefreshModels,
   onOpenCodexSignIn,
   overleafPersonalTokenState,
@@ -1403,12 +1994,18 @@ function LectureComposer({
   modelsLoading: boolean;
   defaultModelSelection: LectureStudioModelSelection;
   defaultStructure: LectureStudioStructureTemplate;
+  workspaceDocumentFeatures: LectureStudioDocumentFeatures;
+  documentFeaturesForProject: (projectId: string) => LectureStudioDocumentFeatures;
   onRefreshModels: () => void;
   onOpenCodexSignIn: () => void;
   overleafPersonalTokenState: OverleafPersonalTokenUiState;
   onOpenOverleafSettings: () => void;
   onCancel?: (() => void) | undefined;
-  onCreated: (studio: LectureStudio, selection: LectureStudioModelSelection) => Promise<void>;
+  onCreated: (
+    studio: LectureStudio,
+    selection: LectureStudioModelSelection,
+    generateInitialRevision: boolean,
+  ) => Promise<void>;
   onError: (error: unknown) => void;
 }) {
   const [title, setTitle] = useState('');
@@ -1425,6 +2022,12 @@ function LectureComposer({
     projects[0] ? [projects[0].id] : [],
   );
   const [outputProjectId, setOutputProjectId] = useState(projects[0]?.id ?? '');
+  const [documentFeatures, setDocumentFeatures] = useState<LectureStudioDocumentFeatures>(() =>
+    projects[0]
+      ? documentFeaturesForProject(projects[0].id)
+      : structuredClone(workspaceDocumentFeatures),
+  );
+  const [documentFeaturesCustomized, setDocumentFeaturesCustomized] = useState(false);
   const [selectedLiterature, setSelectedLiterature] = useState<Set<string>>(new Set());
   const [selectedExperiments, setSelectedExperiments] = useState<Set<string>>(new Set());
   const [selectedManuscripts, setSelectedManuscripts] = useState<Set<string>>(new Set());
@@ -1436,6 +2039,7 @@ function LectureComposer({
   const [loadingSources, setLoadingSources] = useState(false);
   const [loadingMoreProjects, setLoadingMoreProjects] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
+  const [initialFigureFiles, setInitialFigureFiles] = useState<readonly File[]>([]);
   const [initialModelSelection, setInitialModelSelection] =
     useState<LectureStudioModelSelection>(defaultModelSelection);
   const [selectionError, setSelectionError] = useState<string | null>(null);
@@ -1457,6 +2061,19 @@ function LectureComposer({
   useEffect(() => {
     if (previousOutputProjectId.current === outputProjectId) return;
     previousOutputProjectId.current = outputProjectId;
+    if (!documentFeaturesCustomized) {
+      const nextDocumentFeatures = outputProjectId
+        ? documentFeaturesForProject(outputProjectId)
+        : structuredClone(workspaceDocumentFeatures);
+      setSlidesTargetPages(
+        slideTargetAfterDocumentFeaturesChange(
+          slidesTargetPages,
+          documentFeatures,
+          nextDocumentFeatures,
+        ),
+      );
+      setDocumentFeatures(nextDocumentFeatures);
+    }
     const staged = externalSourceSet;
     externalSourceSetRef.current = null;
     setExternalSourceSet(null);
@@ -1465,7 +2082,16 @@ function LectureComposer({
         .discardExternalSourceSet({ projectId: staged.projectId, sourceSetId: staged.id })
         .catch(() => undefined);
     }
-  }, [adapter, externalSourceSet, outputProjectId]);
+  }, [
+    adapter,
+    documentFeatures,
+    documentFeaturesCustomized,
+    documentFeaturesForProject,
+    externalSourceSet,
+    outputProjectId,
+    slidesTargetPages,
+    workspaceDocumentFeatures,
+  ]);
 
   const candidateKey = projectIds.slice().sort().join(':');
   useEffect(() => {
@@ -1566,7 +2192,7 @@ function LectureComposer({
     }
   };
 
-  const sourceSelection = useMemo<LectureSourceSelection>(() => {
+  const sourceSelection = useMemo<LectureStudioSourceSelection>(() => {
     const literature = [...selectedLiterature].map((key) => {
       const [projectId = '', recordId = ''] = key.split(':');
       return { projectId, recordId };
@@ -1593,6 +2219,15 @@ function LectureComposer({
     sourceSelection.experiments.length +
     sourceSelection.manuscripts.length +
     (sourceSelection.externalSources?.sourceIds.length ?? 0);
+  const generationBriefDraft = {
+    notesTargetPages: notesTargetPages === '' ? null : Number(notesTargetPages),
+    slidesTargetPages: slidesTargetPages === '' ? null : Number(slidesTargetPages),
+    detailLevel,
+    structure,
+    documentFeatures,
+    customInstructions,
+  };
+  const structureValidation = lectureStructureEditorValidation(structure);
   const canCreate =
     !busy &&
     !creating &&
@@ -1604,6 +2239,7 @@ function LectureComposer({
     sourceCount <= LECTURE_STUDIO_UI_MAX_SOURCES &&
     !codexAuthenticationRequired &&
     !modelsLoading &&
+    lectureGenerationBriefDraftIsValidForEditor(generationBriefDraft) &&
     resolveLectureStudioModelSelection(initialModelSelection, models).issue === null;
 
   const submit = async (event: FormEvent) => {
@@ -1620,18 +2256,25 @@ function LectureComposer({
         outputProjectId,
         sourceProjectIds: projectIds,
         sourceSelection,
-        generationBrief: {
-          notesTargetPages: notesTargetPages === '' ? null : Number(notesTargetPages),
-          slidesTargetPages: slidesTargetPages === '' ? null : Number(slidesTargetPages),
-          detailLevel,
-          structure,
-          customInstructions,
-        },
+        generationBrief: generationBriefDraft,
       });
       createCommittedRef.current = true;
       externalSourceSetRef.current = null;
       setExternalSourceSet(null);
-      await onCreated(studio, initialModelSelection);
+      if (initialFigureFiles.length > 0) {
+        try {
+          const receipt = await adapter.stageDroppedFigures(
+            { studioId: studio.id, expectedVersion: studio.version },
+            initialFigureFiles,
+          );
+          studio = receipt.studio;
+        } catch (figureStageError) {
+          await onCreated(studio, initialModelSelection, false);
+          onError(figureStageError);
+          return;
+        }
+      }
+      await onCreated(studio, initialModelSelection, true);
     } catch (createError) {
       // Creation and first generation are intentionally separate durable operations. Once the
       // Studio row commits, a generation failure must keep it selected/retryable and must not make
@@ -1803,7 +2446,7 @@ function LectureComposer({
             Slide pages
             <input
               type="number"
-              min={2}
+              min={documentFeatures.includeSlideTitlePage ? 2 : 1}
               max={100}
               step={1}
               inputMode="numeric"
@@ -1811,7 +2454,9 @@ function LectureComposer({
               placeholder="Auto"
               onChange={(event) => setSlidesTargetPages(event.target.value)}
             />
-            <small>Exact number of compiled PDF slide pages, including the title page.</small>
+            <small>
+              Exact compiled PDF pages. The title page counts only when it is enabled below.
+            </small>
           </label>
           <label>
             Detail
@@ -1849,6 +2494,77 @@ function LectureComposer({
               : `${structure.sections.length} custom sections`}
           </span>
           <small>Copied from Settings → Lecture defaults when this Studio is created.</small>
+          {!structureValidation.valid && (
+            <small role="alert">
+              This saved default needs attention in Settings → Lecture defaults before creating a
+              Studio. {structureValidation.messages.join(' ')}
+            </small>
+          )}
+        </div>
+        <div className="lecture-generation-document-features">
+          <LectureDocumentFeaturesEditor
+            value={documentFeatures}
+            onChange={(next) => {
+              setSlidesTargetPages(
+                slideTargetAfterDocumentFeaturesChange(slidesTargetPages, documentFeatures, next),
+              );
+              setDocumentFeatures(next);
+              setDocumentFeaturesCustomized(true);
+            }}
+            idPrefix="new-studio-document-features"
+            contextCopy="These choices belong to this Studio. Its frozen source record is retained even when source markers are hidden."
+          />
+          <div
+            className="lecture-generation-document-feature-status"
+            role="status"
+            aria-live="polite"
+          >
+            <span>
+              {documentFeaturesCustomized
+                ? 'Custom for this Studio'
+                : `${projects.find((project) => project.id === outputProjectId)?.name ?? 'Output project'} defaults`}
+            </span>
+            <div>
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={!outputProjectId || !documentFeaturesCustomized}
+                onClick={() => {
+                  if (!outputProjectId) return;
+                  const nextDocumentFeatures = documentFeaturesForProject(outputProjectId);
+                  setSlidesTargetPages(
+                    slideTargetAfterDocumentFeaturesChange(
+                      slidesTargetPages,
+                      documentFeatures,
+                      nextDocumentFeatures,
+                    ),
+                  );
+                  setDocumentFeatures(nextDocumentFeatures);
+                  setDocumentFeaturesCustomized(false);
+                }}
+              >
+                Load project defaults
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  const nextDocumentFeatures = structuredClone(workspaceDocumentFeatures);
+                  setSlidesTargetPages(
+                    slideTargetAfterDocumentFeaturesChange(
+                      slidesTargetPages,
+                      documentFeatures,
+                      nextDocumentFeatures,
+                    ),
+                  );
+                  setDocumentFeatures(nextDocumentFeatures);
+                  setDocumentFeaturesCustomized(true);
+                }}
+              >
+                Load workspace defaults
+              </button>
+            </div>
+          </div>
         </div>
       </fieldset>
 
@@ -2013,6 +2729,12 @@ function LectureComposer({
             current.filter((source) => source.manuscriptId !== manuscriptId),
           );
         }}
+      />
+
+      <LectureComposerFigurePicker
+        files={initialFigureFiles}
+        disabled={busy || creating}
+        onFilesChange={setInitialFigureFiles}
       />
 
       <section className="lecture-source-picker">
@@ -2182,7 +2904,8 @@ function LectureComposer({
         <span>
           {kind === 'talk' ? `${durationMinutes}-minute talk` : 'Lecture'} · {projectIds.length}{' '}
           project{projectIds.length === 1 ? '' : 's'} · {sourceCount} source
-          {sourceCount === 1 ? '' : 's'}
+          {sourceCount === 1 ? '' : 's'} · {initialFigureFiles.length} figure
+          {initialFigureFiles.length === 1 ? '' : 's'}
         </span>
         <div>
           {onCancel && (
@@ -2236,8 +2959,9 @@ function LectureGenerationProgressPanel({
         <time dateTime={startedAt}>{formatLectureGenerationElapsed(startedAt, nowMs)}</time>
       </div>
       <p>
-        Detailed page targets and rigorous checks can take several minutes. If a draft fails a
-        bounded check, GOSU makes one correction pass before compiling both PDFs.
+        {studio.currentRevision > 0
+          ? `Revision ${studio.currentRevision} is loaded as the edit base. Chat edits currently require the model to return complete replacement bodies for both Notes and Slides—not a small patch. GOSU then validates both documents, may run one correction, and compiles both PDFs. For a literal text change, Stop generation and use Edit source to skip the model call.`
+          : 'The model must return complete Notes and Slides bodies. GOSU then validates both documents, may run one correction, and compiles both PDFs.'}
       </p>
       {events.length > 0 && (
         <ol aria-label="Generation activity">
@@ -2344,10 +3068,18 @@ function StudioPreview({
   busy,
   generationProgress,
   codexAuthenticationRequired,
+  pdfFocusMode,
+  onPdfFocusModeChange,
   onTab,
   onGenerate,
+  onManualEditStateChange,
+  onManualEditClosed,
+  onManualRevisionSaved,
+  onFigureLibraryChanged,
   onUpdateGenerationBrief,
   defaultStructure,
+  workspaceDocumentFeatures,
+  projectDocumentFeatures,
   onCancel,
   onOpenCodexSignIn,
 }: {
@@ -2360,10 +3092,20 @@ function StudioPreview({
   busy: boolean;
   generationProgress: LectureGenerationProgressState | undefined;
   codexAuthenticationRequired: boolean;
+  pdfFocusMode: boolean;
+  onPdfFocusModeChange: (focused: boolean) => void;
   onTab: (tab: PreviewTab) => void;
   onGenerate: () => void;
-  onUpdateGenerationBrief: (generationBrief: LectureStudioGenerationBrief) => Promise<boolean>;
+  onManualEditStateChange: (summary: LectureManualEditSummary | null) => void;
+  onManualEditClosed: (studioId: string) => void | Promise<void>;
+  onManualRevisionSaved: (receipt: LectureStudioManualRevisionReceipt) => void | Promise<void>;
+  onFigureLibraryChanged: (receipt: LectureStudioFigureLibraryReceipt) => void | Promise<void>;
+  onUpdateGenerationBrief: (
+    generationBrief: UpdateLectureStudioGenerationBriefInput['generationBrief'],
+  ) => Promise<boolean>;
   defaultStructure: LectureStudioStructureTemplate;
+  workspaceDocumentFeatures: LectureStudioDocumentFeatures;
+  projectDocumentFeatures: LectureStudioDocumentFeatures;
   onCancel: () => void;
   onOpenCodexSignIn: () => void;
 }) {
@@ -2388,27 +3130,183 @@ function StudioPreview({
   const [structure, setStructure] = useState<LectureStudioStructureTemplate>(() =>
     structuredClone(studio.generationBrief.structure),
   );
+  const [documentFeatures, setDocumentFeatures] = useState<LectureStudioDocumentFeatures>(() =>
+    resolveLectureEditDocumentFeatures(studio, revision),
+  );
   const [customInstructions, setCustomInstructions] = useState(
     studio.generationBrief.customInstructions,
   );
   const [savingGenerationBrief, setSavingGenerationBrief] = useState(false);
+  const restoredManualEdit = useMemo(() => cachedLectureManualEditSession(studio.id), [studio.id]);
+  const [manualEdit, setManualEdit] = useState<LectureManualEditSession | null>(
+    restoredManualEdit?.session ?? null,
+  );
+  const [startingManualEdit, setStartingManualEdit] = useState(false);
+  const [manualActiveDocument, setManualActiveDocument] = useState<LectureSourceDocumentKind>(
+    restoredManualEdit?.activeDocument ?? 'lecture-notes',
+  );
+  const [manualPhase, setManualPhase] = useState<LectureSourceEditorPhase>('idle');
+  const [manualStatus, setManualStatus] = useState<string | null>(
+    restoredManualEdit ? 'Restored this unsaved direct-edit session.' : null,
+  );
+  const [manualIssue, setManualIssue] = useState<LectureSourceEditorIssue | null>(null);
+  const [manualLaunchError, setManualLaunchError] = useState<string | null>(null);
+  const [figureDrawerOpen, setFigureDrawerOpen] = useState(
+    restoredManualEdit?.figureDrawerOpen ?? true,
+  );
+  const [addingFigures, setAddingFigures] = useState(false);
+  const [busyFigureId, setBusyFigureId] = useState<string | null>(null);
+  const [figureStatus, setFigureStatus] = useState<string | null>(null);
+  const [figureError, setFigureError] = useState<string | null>(null);
+  const [figurePreviewDataUrls, setFigurePreviewDataUrls] = useState<Record<string, string>>({});
+  const [previewFigureId, setPreviewFigureId] = useState<string | null>(null);
+  const [preGenerationFigures, setPreGenerationFigures] = useState<
+    readonly LectureStudioFigureAsset[]
+  >([]);
+  const [preGenerationStudioVersion, setPreGenerationStudioVersion] = useState(studio.version);
+  const [loadingPreGenerationFigures, setLoadingPreGenerationFigures] = useState(false);
+  const [sourceFocusRequest, setSourceFocusRequest] = useState<LectureSourceFocusRequest | null>(
+    null,
+  );
+  const allowedSourceListSectionTitles = useMemo(
+    () => sourceListSectionTitlesInLectureStructure(studio.generationBrief.structure),
+    [studio.generationBrief.structure],
+  );
   const automaticPdfCompileKey = useRef<string | null>(null);
   const pdfCompileGeneration = useRef(0);
   const artifactActionGeneration = useRef(0);
+  const manualOperationGeneration = useRef(0);
+  const figurePreviewGeneration = useRef(0);
+  const sourceFocusSequence = useRef(0);
+  const restoredManualPresentationApplied = useRef(restoredManualEdit === null);
+  const sourceSelections = useRef<Record<LectureSourceDocumentKind, LectureEditorSelection>>(
+    restoredManualEdit
+      ? {
+          'lecture-notes': { ...restoredManualEdit.selections['lecture-notes'] },
+          slides: { ...restoredManualEdit.selections.slides },
+        }
+      : {
+          'lecture-notes': { start: 0, end: 0 },
+          slides: { start: 0, end: 0 },
+        },
+  );
+  const manualEditRef = useRef(manualEdit);
+  const manualActiveDocumentRef = useRef(manualActiveDocument);
+  const figureDrawerOpenRef = useRef(figureDrawerOpen);
+  manualEditRef.current = manualEdit;
+  manualActiveDocumentRef.current = manualActiveDocument;
+  figureDrawerOpenRef.current = figureDrawerOpen;
   const mounted = useRef(true);
   const outputProjectName = lectureOutputProjectName(projects, studio.outputProjectId);
   const documentKind = previewDocumentKind(activeTab);
   const source = revision ? revisionSource(revision, documentKind) : '';
   const pdfPreview = pdfPreviews[documentKind];
   const currentArtifact = revision?.artifacts.find((artifact) => artifact.kind === documentKind);
+  const manualDirtyDocuments = manualEdit
+    ? lectureSourceDirtyDocuments(manualEdit.baseSources, manualEdit.drafts)
+    : [];
+  const manualEditActive = manualEdit !== null;
+  const manualFigures = manualEdit?.figures ?? null;
+  const canManagePreGenerationFigures =
+    revision === null && studio.currentRevision === 0 && studio.status !== 'generating';
+  const activeFigureAssets =
+    manualFigures ?? (canManagePreGenerationFigures ? preGenerationFigures : null);
+  const manualEditDirty = manualDirtyDocuments.length > 0;
+  const manualEditBusy =
+    startingManualEdit || manualPhase !== 'idle' || addingFigures || busyFigureId !== null;
+  const manualEditStale =
+    manualEdit !== null &&
+    (revision === null ||
+      revision.id !== manualEdit.baseRevisionId ||
+      revision.revision !== manualEdit.baseRevision);
+  const figureExpectedVersion =
+    manualEdit?.studioVersion ??
+    (canManagePreGenerationFigures ? preGenerationStudioVersion : null);
+  const figureOperationsBusy =
+    addingFigures ||
+    busyFigureId !== null ||
+    loadingPreGenerationFigures ||
+    busy ||
+    (manualEdit !== null && (manualPhase !== 'idle' || manualEditStale));
+
+  const cacheManualEdit = (
+    session: LectureManualEditSession,
+    presentation: Partial<
+      Pick<LectureManualEditCacheEntry, 'activeDocument' | 'figureDrawerOpen'>
+    > = {},
+  ) => {
+    cacheLectureManualEditSession(studio.id, {
+      session,
+      activeDocument: presentation.activeDocument ?? manualActiveDocumentRef.current,
+      selections: {
+        'lecture-notes': { ...sourceSelections.current['lecture-notes'] },
+        slides: { ...sourceSelections.current.slides },
+      },
+      figureDrawerOpen: presentation.figureDrawerOpen ?? figureDrawerOpenRef.current,
+    });
+  };
+
+  const commitManualEdit = (
+    session: LectureManualEditSession,
+    presentation?: Partial<
+      Pick<LectureManualEditCacheEntry, 'activeDocument' | 'figureDrawerOpen'>
+    >,
+  ) => {
+    manualEditRef.current = session;
+    cacheManualEdit(session, presentation);
+    setManualEdit(session);
+  };
+
+  const cacheCurrentManualEditPresentation = () => {
+    const current = manualEditRef.current;
+    if (current) cacheManualEdit(current);
+  };
+
+  const cacheFigureReceiptForSession = (
+    edit: LectureManualEditSession,
+    receipt: LectureStudioFigureLibraryReceipt,
+  ) => {
+    const cached = cachedLectureManualEditSession(studio.id);
+    if (
+      !cached ||
+      cached.session.baseRevisionId !== edit.baseRevisionId ||
+      cached.session.baseRevision !== edit.baseRevision
+    ) {
+      return;
+    }
+    cacheLectureManualEditSession(studio.id, {
+      ...cached,
+      session: {
+        ...cached.session,
+        studioVersion: receipt.studio.version,
+        figures: receipt.figures,
+      },
+    });
+  };
+
+  const selectManualDocument = (document: LectureSourceDocumentKind) => {
+    manualActiveDocumentRef.current = document;
+    setManualActiveDocument(document);
+    const current = manualEditRef.current;
+    if (current) cacheManualEdit(current, { activeDocument: document });
+  };
+
+  const toggleFigureDrawer = () => {
+    const next = !figureDrawerOpenRef.current;
+    figureDrawerOpenRef.current = next;
+    setFigureDrawerOpen(next);
+    const current = manualEditRef.current;
+    if (current) cacheManualEdit(current, { figureDrawerOpen: next });
+  };
 
   const resetGenerationBriefDraft = useCallback(() => {
     setNotesTargetPages(studio.generationBrief.notesTargetPages?.toString() ?? '');
     setSlidesTargetPages(studio.generationBrief.slidesTargetPages?.toString() ?? '');
     setDetailLevel(studio.generationBrief.detailLevel);
     setStructure(structuredClone(studio.generationBrief.structure));
+    setDocumentFeatures(resolveLectureEditDocumentFeatures(studio, revision));
     setCustomInstructions(studio.generationBrief.customInstructions);
-  }, [studio.generationBrief]);
+  }, [revision, studio]);
 
   useEffect(() => {
     if (!editingGenerationBrief && !savingGenerationBrief) resetGenerationBriefDraft();
@@ -2416,27 +3314,27 @@ function StudioPreview({
 
   const notesPages = notesTargetPages === '' ? null : Number(notesTargetPages);
   const slidesPages = slidesTargetPages === '' ? null : Number(slidesTargetPages);
-  const generationBriefDraftValid =
-    (notesPages === null ||
-      (Number.isInteger(notesPages) && notesPages >= 1 && notesPages <= 100)) &&
-    (slidesPages === null ||
-      (Number.isInteger(slidesPages) && slidesPages >= 2 && slidesPages <= 100)) &&
-    LectureStudioStructureTemplateSchema.safeParse(structure).success &&
-    customInstructions.length <= LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS;
-  const generationOptionsDisabled = savingGenerationBrief || busy || studio.status === 'generating';
+  const generationBriefDraft = {
+    notesTargetPages: notesPages,
+    slidesTargetPages: slidesPages,
+    detailLevel,
+    structure,
+    documentFeatures,
+    customInstructions,
+  };
+  const generationBriefDraftValid = lectureGenerationBriefDraftIsValidForEditor(
+    generationBriefDraft,
+    allowedSourceListSectionTitles,
+  );
+  const generationOptionsDisabled =
+    savingGenerationBrief || busy || studio.status === 'generating' || manualEdit !== null;
 
   const saveGenerationBrief = async (event: FormEvent) => {
     event.preventDefault();
     if (!generationBriefDraftValid || generationOptionsDisabled) return;
     setSavingGenerationBrief(true);
     try {
-      const succeeded = await onUpdateGenerationBrief({
-        notesTargetPages: notesPages,
-        slidesTargetPages: slidesPages,
-        detailLevel,
-        structure,
-        customInstructions,
-      });
+      const succeeded = await onUpdateGenerationBrief(generationBriefDraft);
       if (succeeded) setEditingGenerationBrief(false);
     } finally {
       setSavingGenerationBrief(false);
@@ -2468,8 +3366,62 @@ function StudioPreview({
       mounted.current = false;
       pdfCompileGeneration.current += 1;
       artifactActionGeneration.current += 1;
+      manualOperationGeneration.current += 1;
+      figurePreviewGeneration.current += 1;
+      onManualEditStateChange(null);
     };
-  }, []);
+  }, [onManualEditStateChange]);
+
+  useEffect(() => {
+    onManualEditStateChange(
+      manualEditActive
+        ? {
+            studioId: studio.id,
+            dirty: manualEditDirty,
+            busy: manualEditBusy,
+          }
+        : null,
+    );
+  }, [manualEditActive, manualEditBusy, manualEditDirty, onManualEditStateChange, studio.id]);
+
+  useEffect(() => {
+    if (!manualEditActive || previewIsPdf(activeTab)) return;
+    if (!restoredManualPresentationApplied.current && restoredManualEdit) {
+      const restoredTab =
+        restoredManualEdit.activeDocument === 'lecture-notes' ? 'notes' : 'slides';
+      if (activeTab !== restoredTab) {
+        onTab(restoredTab);
+        return;
+      }
+      restoredManualPresentationApplied.current = true;
+    }
+    const document = previewDocumentKind(activeTab);
+    manualActiveDocumentRef.current = document;
+    setManualActiveDocument(document);
+    const current = manualEditRef.current;
+    if (current) {
+      cacheLectureManualEditSession(studio.id, {
+        session: current,
+        activeDocument: document,
+        selections: {
+          'lecture-notes': { ...sourceSelections.current['lecture-notes'] },
+          slides: { ...sourceSelections.current.slides },
+        },
+        figureDrawerOpen: figureDrawerOpenRef.current,
+      });
+    }
+  }, [activeTab, manualEditActive, onTab, restoredManualEdit, studio.id]);
+
+  useEffect(() => {
+    if (!manualEditStale) return;
+    setManualIssue({
+      message:
+        'A newer revision is now selected. Your paired drafts are preserved, but this stale edit cannot overwrite it.',
+    });
+    setManualStatus(
+      'Cancel this edit, reopen the latest revision, and apply the preserved changes.',
+    );
+  }, [manualEditStale]);
 
   const compilePdf = useCallback(async () => {
     if (!revision) return;
@@ -2548,6 +3500,415 @@ function StudioPreview({
     }
   };
 
+  const hydrateFigurePreviews = useCallback(
+    (figures: readonly LectureStudioFigureAsset[]) => {
+      const generation = ++figurePreviewGeneration.current;
+      for (const figure of figures) {
+        void adapter
+          .previewFigure({
+            studioId: studio.id,
+            figureId: figure.id,
+            sha256: figure.sha256,
+          })
+          .then((preview) => {
+            if (!mounted.current || generation !== figurePreviewGeneration.current) return;
+            setFigurePreviewDataUrls((current) => ({
+              ...current,
+              [figure.id]: lectureFigurePreviewDataUrl(preview),
+            }));
+          })
+          .catch(() => undefined);
+      }
+    },
+    [adapter, studio.id],
+  );
+
+  useEffect(() => {
+    if (activeFigureAssets) hydrateFigurePreviews(activeFigureAssets);
+  }, [activeFigureAssets, hydrateFigurePreviews]);
+
+  useEffect(() => {
+    if (!canManagePreGenerationFigures) return;
+    setPreGenerationStudioVersion(studio.version);
+  }, [canManagePreGenerationFigures, studio.version]);
+
+  useEffect(() => {
+    if (!canManagePreGenerationFigures) {
+      setPreGenerationFigures([]);
+      setLoadingPreGenerationFigures(false);
+      return;
+    }
+    let active = true;
+    setLoadingPreGenerationFigures(true);
+    void adapter
+      .listFigures({ studioId: studio.id })
+      .then((figures) => {
+        if (active) setPreGenerationFigures(figures);
+      })
+      .catch((loadError) => {
+        if (active) setFigureError(lectureErrorMessage(loadError));
+      })
+      .finally(() => {
+        if (active) setLoadingPreGenerationFigures(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [adapter, canManagePreGenerationFigures, studio.id]);
+
+  const beginManualEdit = async () => {
+    if (
+      !revision ||
+      revision.schemaVersion === 1 ||
+      manualEdit ||
+      startingManualEdit ||
+      busy ||
+      studio.status === 'generating'
+    ) {
+      return;
+    }
+    const generation = ++manualOperationGeneration.current;
+    setStartingManualEdit(true);
+    setManualLaunchError(null);
+    setManualIssue(null);
+    setManualStatus(null);
+    setFigureError(null);
+    setFigureStatus(null);
+    try {
+      const input: GetLectureStudioEditDraftInput = {
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        baseRevisionId: revision.id,
+        baseRevision: revision.revision,
+      };
+      const [draft, figures] = await Promise.all([
+        adapter.editDraft(input),
+        adapter.listFigures({ studioId: studio.id }),
+      ]);
+      if (!mounted.current || generation !== manualOperationGeneration.current) return;
+      if (
+        draft.studioId !== studio.id ||
+        draft.baseRevisionId !== revision.id ||
+        draft.baseRevision !== revision.revision
+      ) {
+        throw new Error('lecture_version_conflict');
+      }
+      const sources: LectureSourceDrafts = {
+        'lecture-notes': draft.lectureNotesLatexBody,
+        slides: draft.slidesLatexBody,
+      };
+      const activeDocument = previewDocumentKind(activeTab);
+      sourceSelections.current = {
+        'lecture-notes': {
+          start: sources['lecture-notes'].length,
+          end: sources['lecture-notes'].length,
+        },
+        slides: { start: sources.slides.length, end: sources.slides.length },
+      };
+      const nextEdit: LectureManualEditSession = {
+        studioVersion: draft.studioVersion,
+        baseRevisionId: draft.baseRevisionId,
+        baseRevision: draft.baseRevision,
+        baseSources: sources,
+        drafts: sources,
+        figures,
+      };
+      manualActiveDocumentRef.current = activeDocument;
+      figureDrawerOpenRef.current = true;
+      setManualActiveDocument(activeDocument);
+      commitManualEdit(nextEdit, { activeDocument, figureDrawerOpen: true });
+      setFigureDrawerOpen(true);
+      setFigurePreviewDataUrls({});
+      setPreviewFigureId(null);
+      setManualStatus('Both LaTeX bodies are paired in this edit session.');
+    } catch (editError) {
+      if (mounted.current && generation === manualOperationGeneration.current) {
+        setManualLaunchError(lectureErrorMessage(editError));
+      }
+    } finally {
+      if (mounted.current && generation === manualOperationGeneration.current) {
+        setStartingManualEdit(false);
+      }
+    }
+  };
+
+  const updateManualDraft = (document: LectureSourceDocumentKind, nextSource: string) => {
+    const current = manualEditRef.current;
+    if (!current) return;
+    commitManualEdit({
+      ...current,
+      drafts: { ...current.drafts, [document]: nextSource },
+    });
+    if (!manualEditStale) setManualIssue(null);
+    setManualStatus(null);
+  };
+
+  const cancelManualEdit = async () => {
+    if (!manualEdit || manualEditBusy) return;
+    if (
+      manualEditDirty &&
+      !window.confirm('Discard the unsaved direct edits to both LaTeX documents?')
+    ) {
+      return;
+    }
+    manualOperationGeneration.current += 1;
+    figurePreviewGeneration.current += 1;
+    discardCachedLectureManualEditSession(studio.id);
+    manualEditRef.current = null;
+    setManualEdit(null);
+    setManualIssue(null);
+    setManualStatus(null);
+    setFigureError(null);
+    setFigureStatus(null);
+    setFigurePreviewDataUrls({});
+    setPreviewFigureId(null);
+    await onManualEditClosed(studio.id);
+  };
+
+  const saveManualEdit = async () => {
+    const edit = manualEdit;
+    if (!edit || manualPhase !== 'idle' || !manualEditDirty) return;
+    if (manualEditStale) {
+      setManualIssue({
+        message:
+          'This draft is based on an older revision. It remains visible here, but GOSU will not overwrite the newer revision.',
+      });
+      return;
+    }
+    const generation = ++manualOperationGeneration.current;
+    setManualPhase('saving');
+    setManualIssue(null);
+    setManualStatus('Validating both bodies and compiling both PDFs before the atomic save…');
+    try {
+      const receipt = await adapter.saveManualRevision({
+        studioId: studio.id,
+        expectedVersion: edit.studioVersion,
+        baseRevisionId: edit.baseRevisionId,
+        baseRevision: edit.baseRevision,
+        lectureNotesLatexBody: edit.drafts['lecture-notes'],
+        slidesLatexBody: edit.drafts.slides,
+      });
+      discardCachedLectureManualEditSession(studio.id);
+      if (!mounted.current || generation !== manualOperationGeneration.current) return;
+      figurePreviewGeneration.current += 1;
+      manualEditRef.current = null;
+      setManualEdit(null);
+      setManualIssue(null);
+      setManualStatus(null);
+      setFigurePreviewDataUrls({});
+      setPreviewFigureId(null);
+      await onManualRevisionSaved(receipt);
+    } catch (saveError) {
+      if (!mounted.current || generation !== manualOperationGeneration.current) return;
+      const code = saveError instanceof Error ? saveError.message.split(':')[0] : '';
+      setManualIssue({
+        message:
+          code === 'lecture_version_conflict'
+            ? 'This Studio changed while you were editing. Your paired drafts are preserved; cancel and reopen the latest revision before applying them.'
+            : lectureErrorMessage(saveError),
+      });
+      setManualStatus('No revision or PDF was changed.');
+    } finally {
+      if (mounted.current && generation === manualOperationGeneration.current) {
+        setManualPhase('idle');
+      }
+    }
+  };
+
+  const applyFigureReceipt = async (
+    receipt: LectureStudioFigureLibraryReceipt,
+    statusMessage: string,
+  ) => {
+    const current = manualEditRef.current;
+    if (current) {
+      commitManualEdit({
+        ...current,
+        studioVersion: receipt.studio.version,
+        figures: receipt.figures,
+      });
+    } else if (canManagePreGenerationFigures) {
+      setPreGenerationStudioVersion(receipt.studio.version);
+      setPreGenerationFigures(receipt.figures);
+    } else {
+      return;
+    }
+    const figureIds = new Set(receipt.figures.map((figure) => figure.id));
+    setFigurePreviewDataUrls((current) =>
+      Object.fromEntries(Object.entries(current).filter(([figureId]) => figureIds.has(figureId))),
+    );
+    setPreviewFigureId((current) => (current && figureIds.has(current) ? current : null));
+    setFigureError(null);
+    setFigureStatus(statusMessage);
+    await onFigureLibraryChanged(receipt);
+  };
+
+  const chooseFigures = async () => {
+    const edit = manualEdit;
+    if (figureExpectedVersion === null || figureOperationsBusy) return;
+    const generation = ++manualOperationGeneration.current;
+    setAddingFigures(true);
+    setFigureError(null);
+    try {
+      const receipt = await adapter.chooseFigures({
+        studioId: studio.id,
+        expectedVersion: figureExpectedVersion,
+      });
+      if (edit) cacheFigureReceiptForSession(edit, receipt);
+      if (!mounted.current || generation !== manualOperationGeneration.current) return;
+      await applyFigureReceipt(
+        receipt,
+        'The Figure library was updated. Source drafts are unchanged.',
+      );
+    } catch (figureAddError) {
+      if (mounted.current && generation === manualOperationGeneration.current) {
+        setFigureError(lectureErrorMessage(figureAddError));
+      }
+    } finally {
+      if (mounted.current && generation === manualOperationGeneration.current) {
+        setAddingFigures(false);
+      }
+    }
+  };
+
+  const stageDroppedFigures = async (files: readonly File[]) => {
+    const edit = manualEdit;
+    if (figureExpectedVersion === null || figureOperationsBusy || files.length === 0) return;
+    const generation = ++manualOperationGeneration.current;
+    setAddingFigures(true);
+    setFigureError(null);
+    try {
+      const input: ChooseLectureStudioFiguresInput = {
+        studioId: studio.id,
+        expectedVersion: figureExpectedVersion,
+      };
+      const receipt = await adapter.stageDroppedFigures(input, files);
+      if (edit) cacheFigureReceiptForSession(edit, receipt);
+      if (!mounted.current || generation !== manualOperationGeneration.current) return;
+      await applyFigureReceipt(
+        receipt,
+        `${files.length} dropped image${files.length === 1 ? '' : 's'} added to this Studio.`,
+      );
+    } catch (figureDropError) {
+      if (mounted.current && generation === manualOperationGeneration.current) {
+        setFigureError(lectureErrorMessage(figureDropError));
+      }
+    } finally {
+      if (mounted.current && generation === manualOperationGeneration.current) {
+        setAddingFigures(false);
+      }
+    }
+  };
+
+  const removeFigure = async (figureView: LectureFigureAssetView) => {
+    const edit = manualEdit;
+    if (figureExpectedVersion === null || figureOperationsBusy) return;
+    const figure = activeFigureAssets?.find((candidate) => candidate.id === figureView.id);
+    if (!figure) return;
+    if (edit && lectureFigureReferenceCount(figure.id, edit.drafts) > 0) {
+      setFigureError(
+        `Remove every ${lectureFigureSourceToken(figure.id)} reference from both drafts before deleting this figure.`,
+      );
+      return;
+    }
+    if (!window.confirm(`Remove “${figure.displayName}” from this Lecture Studio?`)) return;
+    const generation = ++manualOperationGeneration.current;
+    setBusyFigureId(figure.id);
+    setFigureError(null);
+    try {
+      const receipt = await adapter.removeFigure({
+        studioId: studio.id,
+        expectedVersion: figureExpectedVersion,
+        figureId: figure.id,
+        sha256: figure.sha256,
+      });
+      if (edit) cacheFigureReceiptForSession(edit, receipt);
+      if (!mounted.current || generation !== manualOperationGeneration.current) return;
+      await applyFigureReceipt(receipt, `${figure.displayName} was removed from this Studio.`);
+    } catch (figureRemoveError) {
+      if (mounted.current && generation === manualOperationGeneration.current) {
+        setFigureError(lectureErrorMessage(figureRemoveError));
+      }
+    } finally {
+      if (mounted.current && generation === manualOperationGeneration.current) {
+        setBusyFigureId(null);
+      }
+    }
+  };
+
+  const previewFigure = async (figureView: LectureFigureAssetView) => {
+    if (!activeFigureAssets || figureOperationsBusy) return;
+    if (figurePreviewDataUrls[figureView.id]) {
+      setPreviewFigureId(figureView.id);
+      return;
+    }
+    const figure = activeFigureAssets.find((candidate) => candidate.id === figureView.id);
+    if (!figure) return;
+    const generation = ++figurePreviewGeneration.current;
+    setBusyFigureId(figure.id);
+    setFigureError(null);
+    try {
+      const preview = await adapter.previewFigure({
+        studioId: studio.id,
+        figureId: figure.id,
+        sha256: figure.sha256,
+      });
+      if (!mounted.current || generation !== figurePreviewGeneration.current) return;
+      setFigurePreviewDataUrls((current) => ({
+        ...current,
+        [figure.id]: lectureFigurePreviewDataUrl(preview),
+      }));
+      setPreviewFigureId(figure.id);
+    } catch (figurePreviewError) {
+      if (mounted.current && generation === figurePreviewGeneration.current) {
+        setFigureError(lectureErrorMessage(figurePreviewError));
+      }
+    } finally {
+      if (mounted.current && generation === figurePreviewGeneration.current) {
+        setBusyFigureId(null);
+      }
+    }
+  };
+
+  const insertFigure = (
+    figureView: LectureFigureAssetView,
+    document: LectureSourceDocumentKind,
+  ) => {
+    const edit = manualEdit;
+    if (!edit || manualEditBusy) return;
+    const inserted = insertLectureSourceAtSelection(
+      edit.drafts[document],
+      lectureFigureSourceToken(figureView.id),
+      sourceSelections.current[document],
+    );
+    sourceSelections.current[document] = inserted.selection;
+    commitManualEdit({
+      ...edit,
+      drafts: { ...edit.drafts, [document]: inserted.source },
+    });
+    selectManualDocument(document);
+    onTab(document === 'lecture-notes' ? 'notes' : 'slides');
+    setSourceFocusRequest({
+      key: ++sourceFocusSequence.current,
+      document,
+      selection: inserted.selection,
+    });
+    setManualIssue(null);
+    setManualStatus(`${figureView.displayName} was inserted at the cursor.`);
+  };
+
+  const figureViews = useMemo(() => {
+    const drafts: LectureSourceDrafts = manualEdit?.drafts ?? {
+      'lecture-notes': '',
+      slides: '',
+    };
+    return (
+      activeFigureAssets?.map((figure) =>
+        lectureFigureAssetView(figure, drafts, figurePreviewDataUrls[figure.id]),
+      ) ?? []
+    );
+  }, [activeFigureAssets, figurePreviewDataUrls, manualEdit?.drafts]);
+  const previewFigureView = figureViews.find((figure) => figure.id === previewFigureId) ?? null;
+
   useEffect(() => {
     if (!revision || !previewIsPdf(activeTab) || pdfPreview || compilingPdf !== null) return;
     const key = `${revision.id}:${documentKind}`;
@@ -2556,13 +3917,25 @@ function StudioPreview({
     void compilePdf();
   }, [activeTab, compilePdf, compilingPdf, documentKind, pdfPreview, revision]);
 
+  useEffect(() => {
+    if (!pdfFocusMode) return;
+    const exitOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onPdfFocusModeChange(false);
+    };
+    window.addEventListener('keydown', exitOnEscape);
+    return () => window.removeEventListener('keydown', exitOnEscape);
+  }, [onPdfFocusModeChange, pdfFocusMode]);
+
   const artifactActionLabels = lectureArtifactActionLabels(
     activeTab,
     revision?.schemaVersion === 1 ? 'markdown' : 'latex',
+    revision !== null && lectureSourceHasFigureReferences(source),
   );
 
   return (
-    <main className="lecture-preview">
+    <main className={`lecture-preview${pdfFocusMode ? ' pdf-focused' : ''}`}>
       <header className="lecture-preview-toolbar">
         <div>
           <span className={`lecture-studio-status ${studio.status}`} aria-hidden="true" />
@@ -2581,7 +3954,13 @@ function StudioPreview({
             className="ghost-button"
             aria-expanded={editingGenerationBrief}
             aria-controls={`lecture-generation-options-editor-${studio.id}`}
-            disabled={studio.status === 'generating' || busy}
+            disabled={
+              studio.status === 'generating' ||
+              busy ||
+              manualEdit !== null ||
+              startingManualEdit ||
+              (canManagePreGenerationFigures && figureOperationsBusy)
+            }
             onClick={() => {
               if (editingGenerationBrief) resetGenerationBriefDraft();
               setEditingGenerationBrief((current) => !current);
@@ -2598,7 +3977,17 @@ function StudioPreview({
               Sign in to Codex
             </button>
           ) : (
-            <button type="button" className="secondary-button" disabled={busy} onClick={onGenerate}>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={
+                busy ||
+                manualEdit !== null ||
+                startingManualEdit ||
+                (canManagePreGenerationFigures && figureOperationsBusy)
+              }
+              onClick={onGenerate}
+            >
               {studio.currentRevision === 0 && studio.status === 'failed'
                 ? 'Retry generation'
                 : 'Generate new revision'}
@@ -2633,7 +4022,7 @@ function StudioPreview({
               Slide pages
               <input
                 type="number"
-                min={2}
+                min={documentFeatures.includeSlideTitlePage ? 2 : 1}
                 max={100}
                 step={1}
                 inputMode="numeric"
@@ -2642,6 +4031,7 @@ function StudioPreview({
                 disabled={generationOptionsDisabled}
                 onChange={(event) => setSlidesTargetPages(event.target.value)}
               />
+              <small>Title page counts only when enabled.</small>
             </label>
             <label>
               Detail
@@ -2680,7 +4070,65 @@ function StudioPreview({
                 contextCopy="This Studio keeps its own structure. Saving changes affects the next generation, retry, and chat edit only."
                 onReset={() => setStructure(structuredClone(defaultStructure))}
                 resetLabel="Load Settings default"
+                allowedSourceListSectionTitles={allowedSourceListSectionTitles}
               />
+              <LectureDocumentFeaturesEditor
+                value={documentFeatures}
+                onChange={(next) => {
+                  setSlidesTargetPages(
+                    slideTargetAfterDocumentFeaturesChange(
+                      slidesTargetPages,
+                      documentFeatures,
+                      next,
+                    ),
+                  );
+                  setDocumentFeatures(next);
+                }}
+                disabled={generationOptionsDisabled}
+                idPrefix={`studio-${studio.id}-document-features`}
+                contextCopy="This Studio keeps its own choices. Hidden source markers still retain the revision’s frozen evidence record."
+              />
+              <div className="lecture-generation-document-feature-status">
+                <span>Defaults can be copied without changing earlier revisions.</span>
+                <div>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={generationOptionsDisabled}
+                    onClick={() => {
+                      const nextDocumentFeatures = structuredClone(projectDocumentFeatures);
+                      setSlidesTargetPages(
+                        slideTargetAfterDocumentFeaturesChange(
+                          slidesTargetPages,
+                          documentFeatures,
+                          nextDocumentFeatures,
+                        ),
+                      );
+                      setDocumentFeatures(nextDocumentFeatures);
+                    }}
+                  >
+                    Load {outputProjectName} defaults
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={generationOptionsDisabled}
+                    onClick={() => {
+                      const nextDocumentFeatures = structuredClone(workspaceDocumentFeatures);
+                      setSlidesTargetPages(
+                        slideTargetAfterDocumentFeaturesChange(
+                          slidesTargetPages,
+                          documentFeatures,
+                          nextDocumentFeatures,
+                        ),
+                      );
+                      setDocumentFeatures(nextDocumentFeatures);
+                    }}
+                  >
+                    Load workspace defaults
+                  </button>
+                </div>
+              </div>
             </div>
             <div className="lecture-generation-options-actions">
               <button
@@ -2735,6 +4183,19 @@ function StudioPreview({
             <strong>Document action did not complete</strong>
             <span>{artifactError}</span>
             <button type="button" className="ghost-button" onClick={() => setArtifactError(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
+        {manualLaunchError && (
+          <div className="lecture-preview-error" role="alert">
+            <strong>Direct source edit did not start</strong>
+            <span>{manualLaunchError}</span>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => setManualLaunchError(null)}
+            >
               Dismiss
             </button>
           </div>
@@ -2842,19 +4303,148 @@ function StudioPreview({
           >
             <LectureArtifactActionIcon kind="reveal" />
           </button>
+          {!previewIsPdf(activeTab) && revision.schemaVersion !== 1 && (
+            <button
+              type="button"
+              className="secondary-button lecture-edit-source-button"
+              data-lecture-artifact-action="edit-source"
+              disabled={
+                startingManualEdit ||
+                manualEdit !== null ||
+                busy ||
+                studio.status === 'generating' ||
+                editingGenerationBrief
+              }
+              onClick={() => void beginManualEdit()}
+            >
+              {startingManualEdit ? 'Opening editor…' : 'Edit source'}
+            </button>
+          )}
+          {manualEdit && !previewIsPdf(activeTab) && (
+            <button
+              type="button"
+              className="ghost-button lecture-figure-drawer-toggle"
+              aria-expanded={figureDrawerOpen}
+              aria-controls={`lecture-figure-drawer-${studio.id}`}
+              onClick={toggleFigureDrawer}
+            >
+              Figures ({manualEdit.figures.length})
+            </button>
+          )}
           {artifactAction && <span role="status">{artifactAction}</span>}
         </div>
       )}
 
       <section
-        className={`lecture-preview-document${previewIsPdf(activeTab) ? ' pdf' : ''}`}
+        className={`lecture-preview-document${previewIsPdf(activeTab) ? ' pdf' : ''}${manualEdit && !previewIsPdf(activeTab) ? ' editing' : ''}`}
         role="tabpanel"
       >
-        {studio.status === 'generating' && source.trim() === '' ? (
+        {manualEdit && !previewIsPdf(activeTab) ? (
+          <div
+            className={`lecture-manual-edit-workspace${figureDrawerOpen ? ' figures-open' : ''}`}
+          >
+            <LectureSourceEditor
+              revision={manualEdit.baseRevision}
+              baseSources={manualEdit.baseSources}
+              drafts={manualEdit.drafts}
+              activeDocument={manualActiveDocument}
+              onActiveDocumentChange={(document) => {
+                selectManualDocument(document);
+                onTab(document === 'lecture-notes' ? 'notes' : 'slides');
+              }}
+              onDraftChange={updateManualDraft}
+              onSelectionChange={(document, selection) => {
+                sourceSelections.current[document] = selection;
+                cacheCurrentManualEditPresentation();
+              }}
+              onSave={saveManualEdit}
+              onCancel={() => void cancelManualEdit()}
+              phase={manualPhase}
+              statusMessage={manualStatus}
+              issue={manualIssue}
+              idPrefix={`lecture-source-editor-${studio.id}`}
+              focusRequest={sourceFocusRequest}
+            />
+            {figureDrawerOpen && (
+              <div
+                className="lecture-manual-figure-drawer"
+                id={`lecture-figure-drawer-${studio.id}`}
+              >
+                <LectureFigureLibrary
+                  figures={figureViews}
+                  activeDocument={manualActiveDocument}
+                  onChooseFiles={chooseFigures}
+                  onDropFiles={stageDroppedFigures}
+                  onPreview={(figure) => void previewFigure(figure)}
+                  onInsert={insertFigure}
+                  onRemove={(figure) => void removeFigure(figure)}
+                  onRejectedFiles={(rejections) => {
+                    setFigureError(
+                      `${rejections.length} file${rejections.length === 1 ? '' : 's'} skipped. Choose non-empty PNG, JPEG, WebP, GIF, TIFF, BMP, or AVIF images.`,
+                    );
+                  }}
+                  disabled={
+                    manualPhase !== 'idle' ||
+                    manualEditStale ||
+                    addingFigures ||
+                    busyFigureId !== null
+                  }
+                  adding={addingFigures}
+                  busyFigureId={busyFigureId}
+                  statusMessage={
+                    figureStatus ??
+                    'Figure-library changes apply to this Studio immediately. Source references commit only when you save the revision.'
+                  }
+                  errorMessage={figureError}
+                  idPrefix={`lecture-figure-library-${studio.id}`}
+                  previewFigure={previewFigureView}
+                  onClosePreview={() => setPreviewFigureId(null)}
+                />
+              </div>
+            )}
+          </div>
+        ) : studio.status === 'generating' && source.trim() === '' ? (
           <div className="lecture-preview-empty generating">
             <i />
             <strong>Building revision {studio.currentRevision + 1}</strong>
             <span>Codex is synthesizing only the selected, frozen evidence.</span>
+          </div>
+        ) : source.trim() === '' && canManagePreGenerationFigures ? (
+          <div className="lecture-preview-empty pre-generation">
+            <div className="lecture-pre-generation-copy">
+              <strong>No generated {activeTab} yet</strong>
+              <span>
+                Add or remove figures now, then generate the first revision. Figure changes are
+                saved to this Studio immediately.
+              </span>
+            </div>
+            <div className="lecture-pre-generation-figures">
+              <LectureFigureLibrary
+                figures={figureViews}
+                activeDocument="lecture-notes"
+                canInsert={false}
+                onChooseFiles={chooseFigures}
+                onDropFiles={stageDroppedFigures}
+                onPreview={(figure) => void previewFigure(figure)}
+                onRemove={(figure) => void removeFigure(figure)}
+                onRejectedFiles={(rejections) => {
+                  setFigureError(
+                    `${rejections.length} file${rejections.length === 1 ? '' : 's'} skipped. Choose non-empty PNG, JPEG, WebP, GIF, TIFF, BMP, or AVIF images.`,
+                  );
+                }}
+                disabled={figureOperationsBusy}
+                adding={addingFigures || loadingPreGenerationFigures}
+                busyFigureId={busyFigureId}
+                statusMessage={
+                  figureStatus ??
+                  `${figureViews.length} figure${figureViews.length === 1 ? '' : 's'} ready for the first generation.`
+                }
+                errorMessage={figureError}
+                idPrefix={`lecture-pre-generation-figures-${studio.id}`}
+                previewFigure={previewFigureView}
+                onClosePreview={() => setPreviewFigureId(null)}
+              />
+            </div>
           </div>
         ) : source.trim() === '' ? (
           <div className="lecture-preview-empty">
@@ -2862,7 +4452,25 @@ function StudioPreview({
             <span>Generate the first revision to preview it here.</span>
           </div>
         ) : previewIsPdf(activeTab) && pdfPreview ? (
-          <PdfPreview document={pdfPreview} className="lecture-studio-pdf-preview" />
+          <PdfPreview
+            document={pdfPreview}
+            className="lecture-studio-pdf-preview"
+            headerAction={
+              <button
+                type="button"
+                className="secondary-button lecture-pdf-focus-button"
+                aria-pressed={pdfFocusMode}
+                title={
+                  pdfFocusMode
+                    ? 'Exit PDF focus (Esc)'
+                    : 'Hide the Studio panels and enlarge the PDF'
+                }
+                onClick={() => onPdfFocusModeChange(!pdfFocusMode)}
+              >
+                {pdfFocusMode ? 'Exit focus' : 'Focus PDF'}
+              </button>
+            }
+          />
         ) : previewIsPdf(activeTab) ? (
           <div className="lecture-preview-empty">
             <strong>Compile this revision as PDF</strong>
@@ -2890,26 +4498,6 @@ function StudioPreview({
           />
         )}
       </section>
-
-      <footer className="lecture-preview-receipts">
-        <div>
-          <span>RESEARCH NOTES</span>
-          <strong>{outputProjectName} / Lecture Notes &amp; Slides</strong>
-          <small>Updated {formatUpdatedAt(studio.updatedAt)}</small>
-        </div>
-        {!revision ? (
-          <p>Confirmed file paths will appear after generation.</p>
-        ) : (
-          <ul>
-            {revision.artifacts.map((artifact) => (
-              <li key={`${artifact.kind}:${artifact.relativePath}`}>
-                <span>{artifact.kind}</span>
-                <code title={artifact.relativePath}>{artifact.relativePath}</code>
-              </li>
-            ))}
-          </ul>
-        )}
-      </footer>
     </main>
   );
 }
@@ -2937,6 +4525,7 @@ function LectureStudioChat({
   studio,
   messages,
   busy,
+  directEditing,
   draft,
   onDraftChange,
   onSend,
@@ -2961,6 +4550,7 @@ function LectureStudioChat({
   studio: LectureStudio;
   messages: readonly LectureStudioMessage[];
   busy: boolean;
+  directEditing: boolean;
   draft: string;
   onDraftChange: (draft: string) => void;
   onSend: (message: string, attachmentIds: readonly string[]) => Promise<boolean>;
@@ -2986,7 +4576,7 @@ function LectureStudioChat({
   onOpenCodexSignIn: () => void;
 }) {
   const attachmentPrivacyDescriptionId = useId();
-  const chatEditable = canEditLectureStudioRevision(studio);
+  const chatEditable = canEditLectureStudioRevision(studio) && !directEditing;
   const [showNewMessageJump, setShowNewMessageJump] = useState(false);
   const [attachments, setAttachments] = useState<readonly LectureStudioAttachmentCard[]>([]);
   const [choosingAttachments, setChoosingAttachments] = useState(false);
@@ -3231,8 +4821,13 @@ function LectureStudioChat({
           <h2>Edit this revision</h2>
         </div>
         {busy && (
-          <button type="button" className="ghost-button" onClick={onCancel}>
-            Stop
+          <button
+            type="button"
+            className="danger-button"
+            onClick={onCancel}
+            aria-label="Stop the current Lecture Assistant response"
+          >
+            Stop response
           </button>
         )}
         <button
@@ -3253,7 +4848,7 @@ function LectureStudioChat({
           <select
             value={selectedModel ?? ''}
             onChange={(event) => onSelectedModel(event.target.value || null)}
-            disabled={busy || modelsLoading}
+            disabled={busy || directEditing || modelsLoading}
           >
             <option value="">Auto · provider recommended</option>
             {selectedModel !== null && !models.some((model) => model.modelId === selectedModel) && (
@@ -3274,7 +4869,7 @@ function LectureStudioChat({
           <select
             value={selectedReasoning ?? ''}
             onChange={(event) => onSelectedReasoning(event.target.value || null)}
-            disabled={busy || modelsLoading || reasoningOptions.length === 0}
+            disabled={busy || directEditing || modelsLoading || reasoningOptions.length === 0}
           >
             <option value="">Model default</option>
             {selectedReasoning !== null &&
@@ -3295,7 +4890,7 @@ function LectureStudioChat({
           type="button"
           className="ghost-button"
           onClick={onRefreshModels}
-          disabled={modelsLoading}
+          disabled={modelsLoading || directEditing}
         >
           Refresh
         </button>
@@ -3303,9 +4898,15 @@ function LectureStudioChat({
           <p role="alert">Choose an available model and reasoning option.</p>
         )}
       </div>
-      <p className="lecture-chat-boundary">
+      <p className="lecture-chat-boundary" role={directEditing ? 'status' : undefined}>
         This chat edits only this lecture workspace. Project chats remain separate. Showing up to
         the {LECTURE_STUDIO_RECENT_MESSAGE_WINDOW} most recent messages.
+        {directEditing && (
+          <strong>
+            Direct source editing is active. Save or cancel it before asking the Lecture Assistant
+            for another revision.
+          </strong>
+        )}
       </p>
       {codexAuthenticationRequired && (
         <div className="lecture-chat-auth-required" role="status">
@@ -3431,9 +5032,11 @@ function LectureStudioChat({
             placeholder={
               codexAuthenticationRequired
                 ? 'Sign in to Codex before editing this revision…'
-                : chatEditable
-                  ? 'Ask for a focused change to the notes or slides…'
-                  : 'Generate a revision before editing it…'
+                : directEditing
+                  ? 'Save or cancel the direct source edit first…'
+                  : chatEditable
+                    ? 'Ask for a focused change to the notes or slides…'
+                    : 'Generate a revision before editing it…'
             }
             rows={3}
             maxLength={12_000}
@@ -3470,6 +5073,6 @@ function LectureStudioChat({
   );
 }
 
-export function emptyLectureSourceSelection(): LectureSourceSelection {
+export function emptyLectureSourceSelection(): LectureStudioSourceSelection {
   return structuredClone(EMPTY_SOURCE_SELECTION);
 }

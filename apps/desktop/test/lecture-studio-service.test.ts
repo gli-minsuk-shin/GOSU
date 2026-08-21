@@ -2,10 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
 import type { ModelInvocation } from '@gosu/contracts';
+import { unzipSync } from 'fflate';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  classifyLectureEvidenceLabelDirective,
   classifyLectureSourcesUsedDirective,
+  classifyLectureTitleSlideDirective,
+  applyLectureStudioRevisionPatch,
   LectureStudioService,
   LectureStudioServiceError,
   type LectureStudioStorage,
@@ -25,7 +29,10 @@ import {
   type LectureDocumentCompiler,
 } from '../src/main/lecture-document-compiler';
 import type { LectureArtifactPlatform } from '../src/main/lecture-artifact-platform';
+import type { LectureStudioFigureService } from '../src/main/lecture-studio-figure-service';
 import { LectureStudioStorageError } from '../src/main/lecture-studio-storage-error';
+import { extractEditableLectureLatexBody } from '../src/main/lecture-latex-source';
+import type { ModelUsageService } from '../src/main/model-usage-service';
 import type {
   LectureStudio,
   LectureStudioDetail,
@@ -38,6 +45,7 @@ import type {
   EmptyLectureStudioTrashInput,
   EmptyLectureStudioTrashReceipt,
   PendingLectureRevisionArtifacts,
+  LectureStudioFigureAsset,
 } from '../src/shared/lecture-studio-contracts';
 import type { LiteratureRecord } from '../src/shared/literature-contracts';
 import type {
@@ -50,6 +58,12 @@ import type { ManuscriptWorkspaceSnapshot } from '../src/shared/manuscript-works
 function hash(value: string) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
+
+const DEFAULT_DOCUMENT_FEATURES = {
+  includeSlideTitlePage: true,
+  showInlineEvidenceLabels: true,
+  includeSourcesUsedSection: true,
+} as const;
 
 function lectureNotesBody(labels: readonly string[], title = 'Lecture notes') {
   return [
@@ -79,6 +93,95 @@ function latexResponse(labels: readonly string[], frameCount = 1, reply = 'Gener
     lectureNotesLatexBody: lectureNotesBody(labels),
     slidesLatexBody: lectureSlidesBody(labels, frameCount),
   };
+}
+
+function localizedFixtureEdit(document: 'lecture-notes' | 'slides', before: string, after: string) {
+  if (before === after) return null;
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  const originalEnd = before.length - suffix;
+  let start = prefix;
+  let end = originalEnd;
+  if (start === end) {
+    if (start > 0) start -= 1;
+    else end = Math.min(before.length, end + 1);
+  }
+  while (
+    before.indexOf(before.slice(start, end), start + Math.max(1, end - start)) >= 0 &&
+    (start > 0 || end < before.length)
+  ) {
+    if (start > 0) start -= 1;
+    if (end < before.length) end += 1;
+  }
+  return {
+    document,
+    find: before.slice(start, end),
+    replace: `${before.slice(start, prefix)}${after.slice(prefix, after.length - suffix)}${before.slice(originalEnd, end)}`,
+  } as const;
+}
+
+function legacyCanonicalLectureDocument(
+  kind: 'lecture-notes' | 'slides',
+  title: string,
+  body: string,
+) {
+  const prefix =
+    kind === 'lecture-notes'
+      ? [
+          '% GOSU-LECTURE-LATEX v1 lecture-notes',
+          '\\documentclass[11pt]{article}',
+          '\\usepackage{fontspec}',
+          '\\usepackage{kotex}',
+          '\\usepackage{amsmath,amssymb,mathtools}',
+          '\\usepackage{amsthm}',
+          '\\usepackage{bm}',
+          '\\usepackage{booktabs,array,longtable}',
+          '\\usepackage[margin=1in]{geometry}',
+          '\\usepackage[hidelinks]{hyperref}',
+          '\\newtheorem{theorem}{Theorem}',
+          '\\newtheorem{proposition}{Proposition}',
+          '\\newtheorem{lemma}{Lemma}',
+          '\\newtheorem{definition}{Definition}',
+          '\\newtheorem{remark}{Remark}',
+          '\\newtheorem{example}{Example}',
+          `\\title{${title}}`,
+          '\\author{GOSU Lecture Studio}',
+          '\\date{}',
+          '\\begin{document}',
+          '\\maketitle',
+          '% GOSU-CONTENT-BEGIN',
+        ]
+      : [
+          '% GOSU-LECTURE-LATEX v1 slides',
+          '\\documentclass[aspectratio=169]{beamer}',
+          '\\usepackage{fontspec}',
+          '\\usepackage{kotex}',
+          '\\usepackage{amsmath,amssymb,mathtools}',
+          '\\usepackage{bm}',
+          '\\usepackage{booktabs,array}',
+          '\\usetheme{default}',
+          '\\setbeamertemplate{navigation symbols}{}',
+          '\\setbeamertemplate{footline}[frame number]',
+          `\\title{${title}}`,
+          '\\author{GOSU Lecture Studio}',
+          '\\date{}',
+          '\\begin{document}',
+          '\\begin{frame}',
+          '\\titlepage',
+          '\\end{frame}',
+          '% GOSU-CONTENT-BEGIN',
+        ];
+  return [...prefix, body, '% GOSU-CONTENT-END', '\\end{document}', ''].join('\n');
 }
 
 function invocation(requestedModelId: string | null): ModelInvocation {
@@ -224,6 +327,7 @@ class MemoryStorage implements LectureStudioStorage {
   readonly messages: LectureStudioMessage[] = [];
   readonly revisions: LectureStudioRevision[] = [];
   readonly attempts: LectureStudioAttempt[] = [];
+  readonly figures: LectureStudioFigureAsset[] = [];
   readonly trashReceipts = new Map<string, EmptyLectureStudioTrashReceipt>();
 
   listLectureStudios(includeTrashed = false) {
@@ -312,6 +416,10 @@ class MemoryStorage implements LectureStudioStorage {
     );
   }
 
+  listLectureStudioFigures(studioId: string) {
+    return this.figures.filter((figure) => figure.studioId === studioId);
+  }
+
   createLectureStudio(studio: LectureStudio) {
     this.studios.push(studio);
     return true;
@@ -346,6 +454,7 @@ class MemoryStorage implements LectureStudioStorage {
     attemptId: string;
     userMessage: LectureStudioMessage | null;
     updatedAt: string;
+    generationBrief?: LectureStudio['generationBrief'];
     attempt?: LectureStudioAttempt;
   }) {
     const index = this.studios.findIndex(
@@ -356,6 +465,7 @@ class MemoryStorage implements LectureStudioStorage {
     if (current.trashedAt !== undefined) return null;
     const generating: LectureStudio = {
       ...current,
+      generationBrief: input.generationBrief ?? current.generationBrief,
       status: 'generating',
       activeAttemptId: input.attemptId,
       lastErrorCode: null,
@@ -448,20 +558,53 @@ class MemoryStorage implements LectureStudioStorage {
       (attempt) => attempt.id === input.revision.attemptId && attempt.status === 'running',
     );
     if (attemptIndex >= 0) {
+      const revisionInvocation = input.revision.invocation;
       this.attempts[attemptIndex] = {
         ...this.attempts[attemptIndex]!,
         status: 'succeeded',
-        resolvedModelId: input.revision.invocation.resolvedModelId,
-        providerId: input.revision.invocation.providerId,
-        catalogVersion: input.revision.invocation.catalogVersion,
+        resolvedModelId:
+          revisionInvocation?.resolvedModelId ?? this.attempts[attemptIndex]!.resolvedModelId,
+        providerId: revisionInvocation?.providerId ?? this.attempts[attemptIndex]!.providerId,
+        catalogVersion:
+          revisionInvocation?.catalogVersion ?? this.attempts[attemptIndex]!.catalogVersion,
         reasoningOptionId:
-          input.revision.invocation.reasoningOptionId ??
-          this.attempts[attemptIndex]!.reasoningOptionId,
+          revisionInvocation?.reasoningOptionId ?? this.attempts[attemptIndex]!.reasoningOptionId,
         terminalCode: null,
         completedAt: input.studio.updatedAt,
       };
     }
     return input.studio;
+  }
+
+  commitManualLectureStudioRevision(input: {
+    studioId: string;
+    expectedVersion: number;
+    expectedCurrentRevision: number;
+    revision: Extract<LectureStudioRevision, { schemaVersion: 4 }>;
+    updatedAt: string;
+  }) {
+    const index = this.studios.findIndex(
+      (studio) =>
+        studio.id === input.studioId &&
+        studio.version === input.expectedVersion &&
+        studio.currentRevision === input.expectedCurrentRevision &&
+        !studio.activeAttemptId &&
+        (studio.status === 'ready' || studio.status === 'failed'),
+    );
+    if (index < 0 || input.revision.revision !== input.expectedCurrentRevision + 1) return null;
+    const current = this.studios[index]!;
+    const updated: LectureStudio = {
+      ...current,
+      status: 'ready',
+      activeAttemptId: null,
+      currentRevision: input.revision.revision,
+      version: current.version + 1,
+      lastErrorCode: null,
+      updatedAt: input.updatedAt,
+    };
+    this.revisions.push(input.revision);
+    this.studios[index] = updated;
+    return updated;
   }
 
   failLectureStudioTurn(input: {
@@ -579,7 +722,7 @@ class FakeCodex extends EventEmitter {
   response: unknown = {
     reply: 'Created a cross-project synthesis.',
     lectureNotesLatexBody:
-      '\\section{Lecture notes}\nEvidence [P1] and [P2].\n\\section{Sources used}\n[P1] Paper A\n[P2] Paper B',
+      '\\section{Lecture notes}\nEvidence [P1] [P2].\n\\section{Sources used}\n[P1] Paper A\n[P2] Paper B',
     slidesLatexBody: Array.from(
       { length: 10 },
       (_, index) =>
@@ -589,6 +732,8 @@ class FakeCodex extends EventEmitter {
   startInput: Record<string, unknown> | null = null;
   prompt = '';
   prompts: string[] = [];
+  outputSchemas: Array<Readonly<Record<string, unknown>> | null> = [];
+  localImagePaths: readonly string[] = [];
   responseQueue: unknown[] = [];
   invocations: ModelInvocation[] = [];
   runTurnErrors = new Map<number, Error>();
@@ -598,10 +743,13 @@ class FakeCodex extends EventEmitter {
   interruptions: Array<{ threadId: string; turnId: string }> = [];
   terminalStatus = 'completed';
   terminalError: unknown = null;
+  terminalGosuErrorCode: string | null = null;
+  rejectNativeImageBeforeRunTurnReturn = false;
   startError: Error | null = null;
   lastThreadId: string | null = null;
   lastTurnId: string | null = null;
   turnSequence = 0;
+  revisionPatchBase: { lectureNotes: string; slides: string } | null = null;
 
   async startThread(input: Record<string, unknown>) {
     if (this.startError) throw this.startError;
@@ -609,18 +757,83 @@ class FakeCodex extends EventEmitter {
     return { threadId: 'lecture-thread' };
   }
 
-  async runTurn(input: { threadId: string; prompt: string; requestedModelId: string | null }) {
+  async runTurn(input: {
+    threadId: string;
+    prompt: string;
+    requestedModelId: string | null;
+    localImagePaths?: readonly string[];
+    outputSchema?: Readonly<Record<string, unknown>>;
+  }) {
     this.prompt = input.prompt;
     this.prompts.push(input.prompt);
+    this.outputSchemas.push(input.outputSchema ?? null);
+    this.localImagePaths = input.localImagePaths ?? [];
     this.turnSequence += 1;
     const runTurnError = this.runTurnErrors.get(this.turnSequence);
     if (runTurnError) throw runTurnError;
     const turnId = this.turnSequence === 1 ? 'lecture-turn' : `lecture-turn-${this.turnSequence}`;
-    const response = this.responseQueue.shift() ?? this.response;
+    let response = this.responseQueue.shift() ?? this.response;
+    const payloadStart = input.prompt.indexOf('\n\n');
+    if (payloadStart >= 0) {
+      try {
+        const payload = JSON.parse(input.prompt.slice(payloadStart + 2)) as {
+          currentDraft?: {
+            sourceFormat?: string;
+            lectureNotes?: string;
+            slides?: string;
+          } | null;
+        };
+        if (
+          payload.currentDraft?.sourceFormat === 'latex' &&
+          typeof payload.currentDraft.lectureNotes === 'string' &&
+          typeof payload.currentDraft.slides === 'string'
+        ) {
+          this.revisionPatchBase = {
+            lectureNotes: payload.currentDraft.lectureNotes,
+            slides: payload.currentDraft.slides,
+          };
+        }
+      } catch {
+        // Correction prompts intentionally reuse the original thread payload.
+      }
+    }
+    const outputRequired = Array.isArray(input.outputSchema?.required)
+      ? input.outputSchema.required
+      : [];
+    if (
+      outputRequired.includes('edits') &&
+      this.revisionPatchBase &&
+      response !== null &&
+      typeof response === 'object' &&
+      typeof (response as { reply?: unknown }).reply === 'string' &&
+      typeof (response as { lectureNotesLatexBody?: unknown }).lectureNotesLatexBody === 'string' &&
+      typeof (response as { slidesLatexBody?: unknown }).slidesLatexBody === 'string'
+    ) {
+      const full = response as {
+        reply: string;
+        lectureNotesLatexBody: string;
+        slidesLatexBody: string;
+      };
+      const edits = [
+        localizedFixtureEdit(
+          'lecture-notes',
+          this.revisionPatchBase.lectureNotes,
+          full.lectureNotesLatexBody,
+        ),
+        localizedFixtureEdit('slides', this.revisionPatchBase.slides, full.slidesLatexBody),
+      ].filter((edit): edit is NonNullable<typeof edit> => edit !== null);
+      response = { reply: full.reply, edits };
+    }
     const turnInvocation = invocation(input.requestedModelId);
     this.invocations.push(turnInvocation);
     this.lastThreadId = input.threadId;
     this.lastTurnId = turnId;
+    if (this.rejectNativeImageBeforeRunTurnReturn) {
+      this.emit('notification', {
+        method: 'gosu/attachment-model-modality-rejected',
+        params: { threadId: input.threadId, turnId },
+      });
+    }
     this.deferredTurnActive = this.deferCompletion || this.deferTurnNumbers.has(this.turnSequence);
     if (!this.deferredTurnActive) {
       queueMicrotask(() => {
@@ -641,6 +854,7 @@ class FakeCodex extends EventEmitter {
           params: {
             threadId: input.threadId,
             turn: { id: turnId, status: this.terminalStatus, error: this.terminalError },
+            ...(this.terminalGosuErrorCode ? { gosuErrorCode: this.terminalGosuErrorCode } : {}),
           },
         });
       });
@@ -696,6 +910,7 @@ class FakeCodex extends EventEmitter {
       params: {
         threadId: this.lastThreadId,
         turn: { id: this.lastTurnId, status, error: this.terminalError },
+        ...(this.terminalGosuErrorCode ? { gosuErrorCode: this.terminalGosuErrorCode } : {}),
       },
     });
   }
@@ -718,9 +933,14 @@ function fixture(
     pdfCompiler?: Pick<LectureDocumentCompiler, 'compile'>;
     artifactPlatform?: LectureArtifactPlatform;
     attachments?: Pick<LectureStudioAttachmentService, 'prepare'>;
+    figures?: Pick<
+      LectureStudioFigureService,
+      'list' | 'snapshotFigures' | 'snapshotRevisionFigures' | 'materializeActiveFigures'
+    >;
     prepareDirectory?: (outputProjectId: string) => Promise<string>;
     timeoutMs?: number;
     hardTimeoutMs?: number;
+    usage?: Pick<ModelUsageService, 'bindThread' | 'releaseThread'>;
   }> = {},
 ) {
   const projectA = randomUUID();
@@ -908,6 +1128,7 @@ function fixture(
       },
     },
     ...(options.attachments ? { attachments: options.attachments } : {}),
+    ...(options.figures ? { figures: options.figures } : {}),
     workspace: { snapshot: () => workspace },
     artifacts: {
       assertRevisionDestination: () => {
@@ -982,6 +1203,7 @@ function fixture(
       }),
     },
     codex,
+    ...(options.usage ? { usage: options.usage } : {}),
     pdfCompiler: options.pdfCompiler ?? {
       compile: async (input) => {
         const pdfBytes = Buffer.from('%PDF-1.7\n%%EOF\n');
@@ -1022,6 +1244,7 @@ function fixture(
     manuscriptFiles,
     externalSourceCalls,
     pendingArtifacts: options.pendingArtifacts ?? [],
+    usage: options.usage,
   };
 }
 
@@ -1074,6 +1297,9 @@ describe('LectureStudioService', () => {
     ['I did not ask to remove Sources used.', 'required'],
     ['Sources used 앞의 17만 지워줘.', null],
     ['Sources used section 을 아예 빼달라니까.', 'omitted'],
+    ['Sources used" 이부분 지워줘', 'omitted'],
+    ['Sources used를 아예 빼달라고 했잖아.', 'omitted'],
+    ['Sources used를 없애면 출처는 어떻게 확인해?', null],
     ['Sources used section 다시 넣어줘.', 'required'],
     ['Do not exclude the Sources used section.', 'required'],
     ["Don't get rid of Sources used.", 'required'],
@@ -1089,6 +1315,9 @@ describe('LectureStudioService', () => {
     ["I don't want a Sources used section.", 'omitted'],
     ["I don't need a Sources used section.", 'omitted'],
     ['Leave out Sources used.', 'omitted'],
+    ['Can you generate without Sources used?', 'omitted'],
+    ['What happens without Sources used?', null],
+    ["What happens if we don't include Sources used?", null],
     ['The phrase says “remove Sources used”; what does it mean?', null],
     ['The phrase says ‘remove Sources used’; what does it mean?', null],
     ['The phrase says `remove Sources used`; what does it mean?', null],
@@ -1102,8 +1331,172 @@ describe('LectureStudioService', () => {
       '"반드시 마지막에 Sources used 출처 매핑으로 끝나야 하므로 해당 섹션을 완전히 삭제할 수 없습니다." 이게 무슨이야기야?',
       null,
     ],
+    ['Sources used를 삭제하라는 게 무슨 뜻이야?', null],
   ] as const)('classifies a target-scoped source-list directive: %s', (request, expected) => {
     expect(classifyLectureSourcesUsedDirective(request)).toBe(expected);
+  });
+
+  it('applies ordered exact localized revision edits without regenerating either document', () => {
+    expect(
+      applyLectureStudioRevisionPatch(
+        {
+          lectureNotes: '\\section{Intro}\nKeep this.\n\\section{Sources used}\n[P1] Paper',
+          slides: '\\begin{frame}{Intro}\nKeep this. [P1]\n\\end{frame}',
+        },
+        {
+          reply: 'Removed the source list.',
+          edits: [
+            {
+              document: 'lecture-notes',
+              find: '\n\\section{Sources used}\n[P1] Paper',
+              replace: '',
+            },
+          ],
+        },
+      ),
+    ).toEqual({
+      lectureNotes: '\\section{Intro}\nKeep this.',
+      slides: '\\begin{frame}{Intro}\nKeep this. [P1]\n\\end{frame}',
+    });
+  });
+
+  it('rejects missing, ambiguous, no-op, and near-full-document revision edits', () => {
+    const base = { lectureNotes: 'Repeated. Repeated.', slides: 'x'.repeat(5_000) };
+    for (const edit of [
+      { document: 'lecture-notes' as const, find: 'Missing', replace: 'Changed' },
+      { document: 'lecture-notes' as const, find: 'Repeated.', replace: 'Changed.' },
+      {
+        document: 'lecture-notes' as const,
+        find: 'Repeated. Repeated.',
+        replace: base.lectureNotes,
+      },
+      { document: 'slides' as const, find: 'x'.repeat(4_500), replace: 'Changed' },
+    ]) {
+      expect(() =>
+        applyLectureStudioRevisionPatch(base, { reply: 'Edit.', edits: [edit] }),
+      ).toThrow();
+    }
+    expect(() =>
+      applyLectureStudioRevisionPatch(
+        {
+          lectureNotes: `${'a'.repeat(2_100)}x${'b'.repeat(2_100)}y${'c'.repeat(800)}`,
+          slides: 'Slide [P1].',
+        },
+        {
+          reply: 'Rewrite.',
+          edits: [
+            { document: 'lecture-notes', find: 'a'.repeat(2_100), replace: 'd'.repeat(2_100) },
+            { document: 'lecture-notes', find: 'b'.repeat(2_100), replace: 'e'.repeat(2_100) },
+          ],
+        },
+      ),
+    ).toThrow('lecture_revision_patch_not_localized');
+    expect(() =>
+      applyLectureStudioRevisionPatch(
+        { lectureNotes: `Target\n${'a'.repeat(4_999)}`, slides: 'Slide [P1].' },
+        {
+          reply: 'Rewrite.',
+          edits: [
+            {
+              document: 'lecture-notes',
+              find: 'Target',
+              replace: 'Replacement'.repeat(410),
+            },
+          ],
+        },
+      ),
+    ).toThrow('lecture_revision_patch_not_localized');
+  });
+
+  it('corrects a non-unique model edit against the same frozen draft without requesting full bodies', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'Localized revision correction',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (initial.revision.schemaVersion === 1) throw new Error('expected LaTeX revision');
+    codex.responseQueue = [
+      {
+        reply: 'Ambiguous edit.',
+        edits: [{ document: 'lecture-notes', find: '[P1]', replace: '[P1] revised' }],
+      },
+      {
+        reply: 'Updated only the heading.',
+        edits: [
+          {
+            document: 'lecture-notes',
+            find: '\\section{Lecture notes}',
+            replace: '\\section{Revised lecture notes}',
+          },
+        ],
+      },
+    ];
+
+    const revised = await service.send({
+      studioId: studio.id,
+      expectedVersion: initial.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: '첫 section 제목만 더 명확하게 고쳐줘.',
+    });
+
+    if (revised.revision.schemaVersion === 1) throw new Error('expected LaTeX revision');
+    expect(revised.revision.lectureNotesLatex).toContain('\\section{Revised lecture notes}');
+    expect(revised.revision.slidesLatex).toBe(initial.revision.slidesLatex);
+    expect(codex.outputSchemas.slice(-2).map((schema) => schema?.required)).toEqual([
+      ['reply', 'edits'],
+      ['reply', 'edits'],
+    ]);
+    expect(codex.prompts.at(-1)).toContain('smallest corrected edits');
+    expect(codex.prompts.at(-1)).toContain('never resend a complete body');
+    expect(storage.attempts.at(-1)?.validations).toEqual([
+      expect.objectContaining({ pass: 'initial', category: 'response_schema' }),
+    ]);
+  });
+
+  it.each([
+    ['Remove the title slide.', false],
+    ["Don't remove the title slide.", true],
+    ['제목 슬라이드를 빼줘.', false],
+    ['제목 슬라이드를 빼달라고 했는데 왜 안 돼?', false],
+    ['제목 슬라이드를 빼면 어떻게 돼?', null],
+    ['타이틀 슬라이드를 다시 넣어줘.', true],
+    ['Remove the introduction slide.', null],
+    ['Can you generate without the title slide?', false],
+    ['What would the deck look like without the title slide?', null],
+    ["What happens if I don't remove the title slide?", null],
+    ['"Remove the title slide" 이게 무슨 뜻이야?', null],
+    ['제목 슬라이드를 없애라는 게 무슨 뜻이야?', null],
+  ] as const)('classifies a target-scoped title-slide directive: %s', (request, expected) => {
+    expect(classifyLectureTitleSlideDirective(request)).toBe(expected);
+  });
+
+  it.each([
+    ['Hide the source markers.', false],
+    ["Don't hide the citation markers.", true],
+    ['Evidence citations을 숨겨줘.', false],
+    ['출처 마커를 숨겨달라고 했는데 왜 안 돼?', false],
+    ['출처 마커를 숨기면 어떤 문제가 생겨?', null],
+    ['인용 마커를 다시 표시해줘.', true],
+    ['Hide the slide numbers.', null],
+    ['"Hide the evidence citations" 이게 무슨 이야기야?', null],
+    ['출처 마커를 숨기라는 게 무슨 뜻이야?', null],
+  ] as const)('classifies a target-scoped evidence-label directive: %s', (request, expected) => {
+    expect(classifyLectureEvidenceLabelDirective(request)).toBe(expected);
   });
 
   it('uses one-turn attachments as A-labelled evidence and commits them only with the revision', async () => {
@@ -1403,11 +1796,11 @@ describe('LectureStudioService', () => {
     expect(rebindPrompt).not.toContain(oldContent);
     expect(oldAttachmentRevision.revision).toMatchObject({
       schemaVersion: 3,
-      lectureNotesLatex: expect.stringContaining('[A1] same-raw-source.md'),
+      lectureNotesLatex: expect.stringContaining('\\gosuevidence{A1} same-raw-source.md'),
     });
     expect(storage.revisions.at(-1)).toMatchObject({
       schemaVersion: 3,
-      lectureNotesLatex: expect.stringContaining('[A1] same-raw-source.md'),
+      lectureNotesLatex: expect.stringContaining('\\gosuevidence{A1} same-raw-source.md'),
     });
   });
 
@@ -1570,8 +1963,8 @@ describe('LectureStudioService', () => {
     if (receipt.revision.schemaVersion === 1) {
       throw new Error('Expected canonical LaTeX lecture documents');
     }
-    expect(receipt.revision.lectureNotesLatex).toContain('[F1]');
-    expect(receipt.revision.slidesLatex).toContain('[F1]');
+    expect(receipt.revision.lectureNotesLatex).toContain('\\gosuevidence{F1}');
+    expect(receipt.revision.slidesLatex).toContain('\\gosuevidence{F1}');
     expect(externalSourceCalls.snapshotted).toHaveLength(2);
   });
 
@@ -1592,7 +1985,7 @@ describe('LectureStudioService', () => {
       },
     });
 
-    await service.generate({
+    const generated = await service.generate({
       studioId: studio.id,
       expectedVersion: studio.version,
       requestedModelId: null,
@@ -1602,20 +1995,47 @@ describe('LectureStudioService', () => {
     const progress = events.filter((event) => event.type === 'lecture.generation.progress');
     expect(progress.map((event) => event.phase)).toEqual([
       'preparing_sources',
+      'preparing_edit_context',
       'starting_model',
       'generating_draft',
       'model_active',
       'validating_output',
       'compiling_documents',
       'saving_revision',
+      'committing_revision',
     ]);
-    expect(progress.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(progress.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(new Set(progress.map((event) => event.attemptId))).toEqual(
       new Set([progress[0]!.attemptId]),
     );
     expect(JSON.stringify(progress)).not.toContain('Private completion text');
     expect(JSON.stringify(progress)).not.toContain('/tmp/');
     expect(JSON.stringify(progress)).not.toContain('lecture-thread');
+
+    events.length = 0;
+    codex.response = latexResponse(['P1'], 1, 'Revised the current complete documents.');
+    await service.send({
+      studioId: studio.id,
+      expectedVersion: generated.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: 'Make one small wording change.',
+    });
+    const revisionProgress = events.filter((event) => event.type === 'lecture.generation.progress');
+    expect(revisionProgress.map((event) => event.phase)).toEqual([
+      'preparing_sources',
+      'loading_current_revision',
+      'preparing_edit_context',
+      'starting_model',
+      'revising_draft',
+      'model_active',
+      'validating_output',
+      'compiling_documents',
+      'saving_revision',
+      'committing_revision',
+    ]);
+    expect(codex.prompt).toContain('"mode":"revision"');
+    expect(codex.prompt).toContain('"currentDraft":{');
   });
 
   it('moves a Studio to recoverable Trash, restores it, and purges only trashed history', async () => {
@@ -2061,8 +2481,61 @@ describe('LectureStudioService', () => {
     for (let index = 0; index < 100 && !disconnected.codex.lastTurnId; index += 1) {
       await Promise.resolve();
     }
+    await vi.waitFor(() => expect(disconnected.codex.lastTurnId).not.toBeNull());
     disconnected.codex.disconnect();
     await expect(disconnectedTurn).rejects.toMatchObject({ code: 'lecture_codex_unavailable' });
+  });
+
+  it('preserves a native-image model rejection across terminal and disconnect orderings', async () => {
+    const terminal = fixture();
+    terminal.codex.terminalStatus = 'failed';
+    terminal.codex.terminalGosuErrorCode = 'attachment_model_modality_unsupported';
+    const terminalStudio = await terminal.service.create({
+      title: 'Late native-image rejection',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: terminal.projectA,
+      sourceProjectIds: [terminal.projectA],
+      sourceSelection: {
+        literature: [{ projectId: terminal.projectA, recordId: terminal.paperA.id }],
+        experiments: [],
+      },
+    });
+    await expect(
+      terminal.service.generate({
+        studioId: terminalStudio.id,
+        expectedVersion: terminalStudio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_figure_model_unsupported' });
+
+    const disconnected = fixture();
+    disconnected.codex.deferCompletion = true;
+    disconnected.codex.rejectNativeImageBeforeRunTurnReturn = true;
+    const disconnectedStudio = await disconnected.service.create({
+      title: 'Disconnected native-image rejection',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: disconnected.projectA,
+      sourceProjectIds: [disconnected.projectA],
+      sourceSelection: {
+        literature: [{ projectId: disconnected.projectA, recordId: disconnected.paperA.id }],
+        experiments: [],
+      },
+    });
+    const turn = disconnected.service.generate({
+      studioId: disconnectedStudio.id,
+      expectedVersion: disconnectedStudio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    for (let index = 0; index < 100 && !disconnected.codex.lastTurnId; index += 1) {
+      await Promise.resolve();
+    }
+    await vi.waitFor(() => expect(disconnected.codex.lastTurnId).not.toBeNull());
+    disconnected.codex.disconnect();
+    await expect(turn).rejects.toMatchObject({ code: 'lecture_figure_model_unsupported' });
   });
 
   it.each([
@@ -2504,7 +2977,7 @@ describe('LectureStudioService', () => {
       'P1',
       'P2',
     ]);
-    expect(receipt.revision.invocation.resolvedModelId).toBe('opaque-model-id');
+    expect(receipt.revision.invocation?.resolvedModelId).toBe('opaque-model-id');
     expect(receipt.assistantMessage.content).toContain(
       'Lecture Notes & Slides/Studio/Lecture Notes--r1.tex',
     );
@@ -2531,6 +3004,260 @@ describe('LectureStudioService', () => {
     expect(detail.studio.sourceSelection.literature).toHaveLength(2);
     expect(detail.messages).toEqual([receipt.assistantMessage]);
     expect(detail.revisions).toEqual([receipt.revision]);
+  });
+
+  it('saves a direct source edit as one append-only manual revision without a chat turn', async () => {
+    const { service, storage, projectA, projectB, paperA, paperB, artifactEvents } = fixture();
+    const studio = await service.create({
+      title: 'Direct source edit',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA, projectB],
+      sourceSelection: {
+        literature: [
+          { projectId: projectA, recordId: paperA.id },
+          { projectId: projectB, recordId: paperB.id },
+        ],
+        experiments: [],
+      },
+    });
+    const generated = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (generated.revision.schemaVersion === 1) throw new Error('Expected a LaTeX revision');
+    if (generated.revision.schemaVersion !== 3) throw new Error('Expected a v3 model revision');
+    const inheritedPolicySha256 = 'b'.repeat(64);
+    const { documentFeatures: _documentFeatures, ...legacyGenerationBrief } =
+      generated.revision.generationBriefSnapshot;
+    const inheritedGenerationBriefSha256 = createHash('sha256')
+      .update(JSON.stringify(legacyGenerationBrief), 'utf8')
+      .digest('hex');
+    const legacyNotesLatex = legacyCanonicalLectureDocument(
+      'lecture-notes',
+      studio.title,
+      extractEditableLectureLatexBody(
+        'lecture-notes',
+        studio.title,
+        generated.revision.lectureNotesLatex,
+      ).body,
+    );
+    const legacySlidesLatex = legacyCanonicalLectureDocument(
+      'slides',
+      studio.title,
+      extractEditableLectureLatexBody('slides', studio.title, generated.revision.slidesLatex)
+        .body.replace('\\begin{frame}{Slide 1}', '\\begin{frame}[allowframebreaks]{Slide 1}')
+        .replace('Evidence [P1]', '\\pause Evidence ([P1], [P2]).'),
+    );
+    storage.revisions[0] = {
+      ...generated.revision,
+      lectureNotesLatex: legacyNotesLatex,
+      slidesLatex: legacySlidesLatex,
+      generationBriefSnapshot: legacyGenerationBrief,
+      generationBriefSha256: inheritedGenerationBriefSha256,
+      authoringPolicyVersion: 6,
+      authoringPolicySha256: inheritedPolicySha256,
+      artifacts: generated.revision.artifacts.map((artifact) => ({
+        ...artifact,
+        contentSha256: hash(
+          artifact.kind === 'lecture-notes' ? legacyNotesLatex : legacySlidesLatex,
+        ),
+      })),
+    };
+    const originalRevision = structuredClone(storage.revisions[0]!);
+    const messageCount = storage.messages.length;
+    const draft = await service.editDraft({
+      studioId: studio.id,
+      expectedVersion: generated.studio.version,
+      baseRevisionId: generated.revision.id,
+      baseRevision: generated.revision.revision,
+    });
+    const editedNotes = draft.lectureNotesLatexBody.replace(
+      '\\section{Lecture notes}',
+      '\\section{Lecture notes edited directly}',
+    );
+
+    const receipt = await service.saveManualRevision({
+      studioId: studio.id,
+      expectedVersion: draft.studioVersion,
+      baseRevisionId: draft.baseRevisionId,
+      baseRevision: draft.baseRevision,
+      lectureNotesLatexBody: editedNotes,
+      slidesLatexBody: draft.slidesLatexBody,
+    });
+
+    expect(receipt.revision).toMatchObject({
+      schemaVersion: 4,
+      revision: 2,
+      invocation: null,
+      authorship: {
+        kind: 'manual',
+        baseRevisionId: generated.revision.id,
+        baseRevision: 1,
+        editedKinds: ['lecture-notes'],
+      },
+      figureAssets: [],
+      generationBriefSnapshot: legacyGenerationBrief,
+      generationBriefSha256: inheritedGenerationBriefSha256,
+      authoringPolicyVersion: 6,
+      authoringPolicySha256: inheritedPolicySha256,
+    });
+    expect(receipt.revision.lectureNotesLatex).toContain('Lecture notes edited directly');
+    expect(receipt.revision.slidesLatex).toBe(legacySlidesLatex);
+    expect(receipt.revision.slidesLatex).toContain('% GOSU-LECTURE-LATEX v1 slides');
+    expect(receipt.revision.slidesLatex).toContain('\\begin{frame}[allowframebreaks]');
+    expect(receipt.revision.slidesLatex).toContain('\\pause Evidence ([P1], [P2]).');
+    expect(receipt.studio.currentRevision).toBe(2);
+    expect(receipt.studio.status).toBe('ready');
+    expect(storage.messages).toHaveLength(messageCount);
+    expect(storage.revisions[0]).toEqual(originalRevision);
+    expect(artifactEvents.slice(-3)).toEqual(['preflight', 'stage', 'confirm']);
+  });
+
+  it('supplies active figures as native model inputs and freezes only referenced images', async () => {
+    const figureId = randomUUID();
+    const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9]);
+    const figureFor = (studioId: string) => ({
+      id: figureId,
+      studioId,
+      displayName: 'Estimator geometry.png',
+      fileName: `Figure-${figureId}.jpg`,
+      mediaType: 'image/jpeg' as const,
+      sourceFormat: 'png' as const,
+      byteSize: jpegBytes.byteLength,
+      width: 32,
+      height: 24,
+      sha256: createHash('sha256').update(jpegBytes).digest('hex'),
+      origin: 'user' as const,
+      createdAt: new Date().toISOString(),
+    });
+    const cleanup = vi.fn(async () => undefined);
+    const exportFile = vi.fn(
+      async (input: Parameters<LectureArtifactPlatform['exportFile']>[0]) => ({
+        status: 'exported' as const,
+        fileName: input.suggestedFileName,
+      }),
+    );
+    const artifactPlatform: LectureArtifactPlatform = {
+      exportFile,
+      openExisting: vi.fn(async () => undefined),
+      openPdf: vi.fn(async () => 'Lecture Notes.pdf'),
+      revealPdf: vi.fn(async () => 'Lecture Notes.pdf'),
+      revealExisting: vi.fn(async () => undefined),
+    };
+    const compile = vi.fn(async (input: Parameters<LectureDocumentCompiler['compile']>[0]) => {
+      const pdfBytes = Buffer.from('%PDF-1.7\n%%EOF\n');
+      return {
+        schemaVersion: 1 as const,
+        artifactId: randomUUID(),
+        title: `${input.title} PDF`,
+        fileName: input.kind === 'lecture-notes' ? 'Lecture Notes.pdf' : 'Slides.pdf',
+        compilerDisplayName: 'Fixture XeLaTeX',
+        sourceDescription: `Fixture PDF · revision ${input.revision}`,
+        pdfSha256: `sha256:${createHash('sha256').update(pdfBytes).digest('hex')}` as const,
+        sizeBytes: pdfBytes.byteLength,
+        compiledAt: new Date().toISOString(),
+        pdfBase64: pdfBytes.toString('base64'),
+      };
+    });
+    const figures = {
+      list: async ({ studioId }: { studioId: string }) => [figureFor(studioId)],
+      snapshotFigures: async (studioId: string) => [
+        { asset: figureFor(studioId), bytes: jpegBytes },
+      ],
+      snapshotRevisionFigures: async (
+        studioId: string,
+        assets: readonly LectureStudioFigureAsset[],
+      ) => assets.map((asset) => ({ asset: { ...asset, studioId }, bytes: jpegBytes })),
+      materializeActiveFigures: async (studioId: string) => ({
+        figures: [figureFor(studioId)],
+        localImagePaths: [`/private/native-input/Figure-${figureId}.jpg`],
+        cleanup,
+      }),
+    } satisfies Pick<
+      LectureStudioFigureService,
+      'list' | 'snapshotFigures' | 'snapshotRevisionFigures' | 'materializeActiveFigures'
+    >;
+    const { service, codex, projectA, paperA } = fixture({
+      figures,
+      pdfCompiler: { compile },
+      artifactPlatform,
+    });
+    const studio = await service.create({
+      title: 'Figure-aware lecture',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    codex.response = {
+      reply: 'Used the supplied figure.',
+      lectureNotesLatexBody: `\\section{Geometry}\n\\begin{figure}\n\\centering\n\\gosuimage{${figureId}}\n\\caption{Estimator geometry}\n\\end{figure}\nEvidence [P1].\n\\section{Sources used}\n[P1] Paper A`,
+      slidesLatexBody: `\\begin{frame}{Geometry}\n\\begin{center}\n\\gosuimage{${figureId}}\n\\end{center}\nEvidence [P1].\n\\end{frame}`,
+    };
+
+    const receipt = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (receipt.revision.schemaVersion !== 4) throw new Error('Expected a figure revision');
+    const promptPayload = JSON.parse(codex.prompt.slice(codex.prompt.indexOf('\n\n') + 2)) as {
+      figureAssets: Array<{ id: string }>;
+    };
+
+    expect(codex.localImagePaths).toEqual([`/private/native-input/Figure-${figureId}.jpg`]);
+    expect(promptPayload.figureAssets).toEqual([expect.objectContaining({ id: figureId })]);
+    expect(codex.prompt).not.toContain('/private/native-input');
+    expect(receipt.revision).toMatchObject({
+      schemaVersion: 4,
+      authorship: { kind: 'model' },
+      figureAssets: [expect.objectContaining({ id: figureId })],
+    });
+    expect(receipt.revision.invocation).not.toBeNull();
+    expect(compile).toHaveBeenCalledTimes(2);
+    expect(compile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        figureAssets: [
+          expect.objectContaining({ asset: expect.objectContaining({ id: figureId }) }),
+        ],
+      }),
+    );
+    expect(cleanup).toHaveBeenCalledOnce();
+    const notesArtifact = receipt.revision.artifacts.find(
+      (artifact) => artifact.kind === 'lecture-notes',
+    )!;
+    await expect(
+      service.exportArtifact({
+        studioId: studio.id,
+        revisionId: receipt.revision.id,
+        revision: receipt.revision.revision,
+        kind: 'lecture-notes',
+        artifactContentSha256: notesArtifact.contentSha256,
+        format: 'latex',
+      }),
+    ).resolves.toMatchObject({
+      status: 'exported',
+      format: 'latex',
+      fileName: 'Lecture Notes bundle.zip',
+    });
+    expect(exportFile).toHaveBeenCalledOnce();
+    const exportedBundle = unzipSync(exportFile.mock.calls[0]![0].bytes);
+    expect(Object.keys(exportedBundle).sort()).toEqual(
+      [`Figure-${figureId}.jpg`, 'Lecture Notes.tex'].sort(),
+    );
+    expect(Buffer.from(exportedBundle['Lecture Notes.tex']!)).toEqual(
+      Buffer.from(receipt.revision.lectureNotesLatex, 'utf8'),
+    );
+    expect(Buffer.from(exportedBundle[`Figure-${figureId}.jpg`]!)).toEqual(jpegBytes);
   });
 
   it('generates a frozen v2 lecture revision from one exact captured manuscript checkpoint', async () => {
@@ -2623,7 +3350,7 @@ The captured result improves the bounded baseline.
     ]);
     expect(codex.prompt).toContain('"sourceLabel":"M1"');
     expect(codex.prompt).toContain('The captured result improves the bounded baseline.');
-    expect(receipt.revision.lectureNotesLatex).toContain('[M1]');
+    expect(receipt.revision.lectureNotesLatex).toContain('\\gosuevidence{M1}');
 
     manuscriptFiles.set('main.tex', 'mutated after generation');
     const detail = await service.detail({ studioId: studio.id });
@@ -2675,6 +3402,7 @@ The captured result improves the bounded baseline.
           { title: 'Takeaways', coverage: 'notes-and-slides' as const },
         ],
       },
+      documentFeatures: DEFAULT_DOCUMENT_FEATURES,
       customInstructions: 'Keep the requested content flow.',
     };
 
@@ -2746,6 +3474,7 @@ The captured result improves the bounded baseline.
       slidesTargetPages: 18,
       detailLevel: 'detailed',
       structure: { mode: 'adaptive' },
+      documentFeatures: DEFAULT_DOCUMENT_FEATURES,
       customInstructions: 'Emphasize the theorem and ablations.',
     });
   });
@@ -2769,6 +3498,7 @@ The captured result improves the bounded baseline.
       slidesTargetPages: null,
       detailLevel: 'detailed' as const,
       structure: { mode: 'adaptive' as const },
+      documentFeatures: DEFAULT_DOCUMENT_FEATURES,
       customInstructions: 'INITIAL-UPDATED-BRIEF',
     };
     const configured = await service.updateGenerationBrief({
@@ -2807,6 +3537,7 @@ The captured result improves the bounded baseline.
           { title: 'Takeaways', coverage: 'notes-and-slides' as const },
         ],
       },
+      documentFeatures: DEFAULT_DOCUMENT_FEATURES,
       customInstructions: 'REVISION-UPDATED-BRIEF',
     };
     const reconfigured = await service.updateGenerationBrief({
@@ -2863,6 +3594,129 @@ The captured result improves the bounded baseline.
     expect(edited.revision.authoringPolicySha256).toBe(hash(LECTURE_STUDIO_DEVELOPER_INSTRUCTIONS));
   });
 
+  it('rejects new source-list aliases on create and when introduced by an update', async () => {
+    const { service, storage, projectA, paperA } = fixture();
+    const sourceSelection = {
+      literature: [{ projectId: projectA, recordId: paperA.id }],
+      experiments: [],
+    };
+    const aliasBrief = {
+      notesTargetPages: null,
+      slidesTargetPages: null,
+      detailLevel: 'standard' as const,
+      structure: {
+        mode: 'custom' as const,
+        sections: [{ title: 'References', coverage: 'notes-and-slides' as const }],
+      },
+      documentFeatures: DEFAULT_DOCUMENT_FEATURES,
+      customInstructions: '',
+    };
+    await expect(
+      service.create({
+        title: 'Rejected alias create',
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection,
+        generationBrief: aliasBrief,
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('invalid_lecture_input'));
+    await expect(
+      service.create({
+        title: 'Rejected canonical lookalike create',
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection,
+        generationBrief: {
+          ...aliasBrief,
+          structure: {
+            mode: 'custom',
+            sections: [{ title: 'Sources   used', coverage: 'notes-and-slides' }],
+          },
+        },
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('invalid_lecture_input'));
+    expect(storage.studios).toEqual([]);
+
+    const studio = await service.create({
+      title: 'Rejected alias update',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection,
+    });
+    await expect(
+      service.updateGenerationBrief({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        generationBrief: aliasBrief,
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('invalid_lecture_input'));
+    expect(storage.getLectureStudio(studio.id)?.version).toBe(studio.version);
+  });
+
+  it('permits an existing legacy source-list alias to stay unchanged or be removed only', async () => {
+    const { service, storage, projectA, paperA } = fixture();
+    const studio = await service.create({
+      title: 'Grandfathered structure edits',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const legacyBrief: LectureStudio['generationBrief'] = {
+      ...studio.generationBrief,
+      structure: {
+        mode: 'custom',
+        sections: [{ title: 'References', coverage: 'notes-and-slides' }],
+      },
+    };
+    const index = storage.studios.findIndex((candidate) => candidate.id === studio.id);
+    storage.studios[index] = { ...storage.studios[index]!, generationBrief: legacyBrief };
+
+    const retained = await service.updateGenerationBrief({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      generationBrief: {
+        ...legacyBrief,
+        customInstructions: 'Keep the historical topic.',
+        documentFeatures: DEFAULT_DOCUMENT_FEATURES,
+      },
+    });
+    await expect(
+      service.updateGenerationBrief({
+        studioId: studio.id,
+        expectedVersion: retained.version,
+        generationBrief: {
+          ...retained.generationBrief,
+          structure: {
+            mode: 'custom',
+            sections: [{ title: 'Bibliography', coverage: 'notes-and-slides' }],
+          },
+          documentFeatures: DEFAULT_DOCUMENT_FEATURES,
+        },
+      }),
+    ).rejects.toEqual(new LectureStudioServiceError('invalid_lecture_input'));
+    const removed = await service.updateGenerationBrief({
+      studioId: studio.id,
+      expectedVersion: retained.version,
+      generationBrief: {
+        ...retained.generationBrief,
+        structure: { mode: 'adaptive' },
+        documentFeatures: DEFAULT_DOCUMENT_FEATURES,
+      },
+    });
+    expect(removed.generationBrief.structure).toEqual({ mode: 'adaptive' });
+  });
+
   it('uses an updated custom structure for a failed Studio retry only', async () => {
     const { service, storage, codex, projectA, paperA } = fixture();
     const created = await service.create({
@@ -2899,6 +3753,7 @@ The captured result improves the bounded baseline.
           { title: 'Conclusion', coverage: 'notes-and-slides' as const },
         ],
       },
+      documentFeatures: DEFAULT_DOCUMENT_FEATURES,
       customInstructions: '',
     };
     const failed = storage.getLectureStudio(created.id)!;
@@ -2945,6 +3800,7 @@ The captured result improves the bounded baseline.
       slidesTargetPages: null,
       detailLevel: 'concise' as const,
       structure: { mode: 'adaptive' as const },
+      documentFeatures: DEFAULT_DOCUMENT_FEATURES,
       customInstructions: 'Guarded update.',
     };
     codex.deferCompletion = true;
@@ -3483,7 +4339,11 @@ The captured result improves the bounded baseline.
   });
 
   it('repairs one exact slide-count failure on the same thread and records the accepted invocation', async () => {
-    const { service, storage, codex, projectA, paperA } = fixture();
+    const usage = {
+      bindThread: vi.fn<ModelUsageService['bindThread']>(),
+      releaseThread: vi.fn<ModelUsageService['releaseThread']>(),
+    };
+    const { service, storage, codex, projectA, paperA } = fixture({ usage });
     const events: LectureStudioEvent[] = [];
     service.onEvent((event) => events.push(event));
     codex.responseQueue = [
@@ -3517,12 +4377,20 @@ The captured result improves the bounded baseline.
     });
 
     expect(codex.turnSequence).toBe(2);
+    expect(usage.bindThread).toHaveBeenCalledTimes(1);
+    expect(usage.bindThread).toHaveBeenCalledWith(expect.any(String), {
+      workloadKind: 'lecture_generation',
+      projectId: projectA,
+      lectureStudioId: studio.id,
+      lectureAttemptId: receipt.revision.attemptId,
+    });
+    expect(usage.releaseThread).toHaveBeenCalledWith(usage.bindThread.mock.calls[0]?.[0]);
     expect(codex.prompts[1]).toContain('bounded slide_count check');
     expect(codex.prompts[1]).toContain(
       'exactly 19 content frames; GOSU adds one title frame for exactly 20 PDF pages',
     );
     expect(codex.prompts[1]).not.toContain('PRIVATE-FIRST-CANDIDATE');
-    expect(receipt.revision.invocation.invocationId).toBe(codex.invocations[1]?.invocationId);
+    expect(receipt.revision.invocation?.invocationId).toBe(codex.invocations[1]?.invocationId);
     if (receipt.revision.schemaVersion === 1) throw new Error('Expected canonical LaTeX revision');
     expect(receipt.revision.slidesLatex.match(/\\begin\{frame\}/gu)).toHaveLength(20);
     expect(storage.revisions).toHaveLength(1);
@@ -3965,6 +4833,7 @@ Use $\1$ only as a source-native alias [P1].
       reasoningOptionId: null,
     });
     const generated = initial.revision;
+    if (!generated.invocation) throw new Error('Expected model invocation');
     const legacyNotes = '# Legacy notes\n\nSource-supported evidence [P1].';
     const legacySlides = '# Legacy slide\n\nEvidence [P1].';
     storage.revisions[0] = {
@@ -4120,6 +4989,164 @@ Use $\1$ only as a source-native alias [P1].
     expect(storage.revisions).toEqual([]);
   });
 
+  it.each([
+    {
+      name: 'punctuated evidence cluster',
+      lectureNotesLatexBody:
+        '\\section{Notes}\nSupported claim [P1], [P2].\n\\section{Sources used}\n[P1] Paper A\n[P2] Paper B',
+      slidesLatexBody: '\\begin{frame}{Evidence}\nSupported claim [P1] [P2].\n\\end{frame}',
+    },
+    {
+      name: 'parenthesized evidence label',
+      lectureNotesLatexBody:
+        '\\section{Notes}\nSupported claim [P1] [P2].\n\\section{Sources used}\n[P1] Paper A\n[P2] Paper B',
+      slidesLatexBody: '\\begin{frame}{Evidence}\nSupported claim ([P1]).\n\\end{frame}',
+    },
+    {
+      name: 'sentence punctuation before evidence',
+      lectureNotesLatexBody:
+        '\\section{Notes}\nSupported claim, [P1].\n\\section{Sources used}\n[P1] Paper A\n[P2] Paper B',
+      slidesLatexBody: '\\begin{frame}{Evidence}\nSupported claim [P1] [P2].\n\\end{frame}',
+    },
+    {
+      name: 'spaced sentence punctuation after evidence',
+      lectureNotesLatexBody:
+        '\\section{Notes}\nSupported claim [P1] .\n\\section{Sources used}\n[P1] Paper A\n[P2] Paper B',
+      slidesLatexBody: '\\begin{frame}{Evidence}\nSupported claim [P1] [P2].\n\\end{frame}',
+    },
+  ])('rejects hidden-mode $name before anchoring', async (candidate) => {
+    const { service, storage, codex, projectA, projectB, paperA, paperB } = fixture();
+    codex.response = {
+      reply: 'Generated unsafe hidden-label typography.',
+      lectureNotesLatexBody: candidate.lectureNotesLatexBody,
+      slidesLatexBody: candidate.slidesLatexBody,
+    };
+    const studio = await service.create({
+      title: 'Hidden-label typography',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA, projectB],
+      sourceSelection: {
+        literature: [
+          { projectId: projectA, recordId: paperA.id },
+          { projectId: projectB, recordId: paperB.id },
+        ],
+        experiments: [],
+      },
+      generationBrief: {
+        notesTargetPages: null,
+        slidesTargetPages: null,
+        detailLevel: 'standard',
+        structure: { mode: 'adaptive' },
+        documentFeatures: {
+          ...DEFAULT_DOCUMENT_FEATURES,
+          showInlineEvidenceLabels: false,
+        },
+        customInstructions: '',
+      },
+    });
+
+    await expect(
+      service.generate({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_latex_grammar' });
+    expect(codex.prompts.at(-1)).toContain('evidence_label_typography');
+    expect(codex.prompts.at(-1)).toContain('whitespace only');
+    expect(storage.revisions).toEqual([]);
+  });
+
+  it.each([
+    String.raw`\section{References}`,
+    String.raw`\section{Sources}`,
+    String.raw`\section{Source list}`,
+    String.raw`\section{출처 목록}`,
+    String.raw`\section{\textrm{References}}`,
+    String.raw`\section{Refer{ences}}`,
+    String.raw`\subsection{References}`,
+  ])(
+    'rejects an unconfigured renamed source list while Sources used is hidden: %s',
+    async (heading) => {
+      const { service, storage, codex, projectA, paperA } = fixture();
+      codex.response = {
+        reply: 'Renamed the hidden list.',
+        lectureNotesLatexBody: `${String.raw`\section{Notes}
+Supported claim [P1].`}
+${heading}
+[P1] Paper A`,
+        slidesLatexBody: lectureSlidesBody(['P1']),
+      };
+      const studio = await service.create({
+        title: 'Renamed hidden source list',
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection: {
+          literature: [{ projectId: projectA, recordId: paperA.id }],
+          experiments: [],
+        },
+        generationBrief: {
+          notesTargetPages: null,
+          slidesTargetPages: null,
+          detailLevel: 'standard',
+          structure: { mode: 'adaptive' },
+          documentFeatures: {
+            ...DEFAULT_DOCUMENT_FEATURES,
+            includeSourcesUsedSection: false,
+          },
+          customInstructions: '',
+        },
+      });
+
+      await expect(
+        service.generate({
+          studioId: studio.id,
+          expectedVersion: studio.version,
+          requestedModelId: null,
+          reasoningOptionId: null,
+        }),
+      ).rejects.toMatchObject({ code: 'lecture_invalid_citation_mapping' });
+      expect(storage.revisions).toEqual([]);
+    },
+  );
+
+  it('rejects a nonterminal Sources used mapping after automatic correction', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.response = {
+      reply: 'Placed more content after the source mapping.',
+      lectureNotesLatexBody: `${lectureNotesBody(['P1'])}
+${String.raw`\subsection{Later content}
+Later claim [P1].`}`,
+      slidesLatexBody: lectureSlidesBody(['P1']),
+    };
+    const studio = await service.create({
+      title: 'Terminal source mapping',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+
+    await expect(
+      service.generate({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_citation_mapping' });
+    expect(storage.revisions).toEqual([]);
+  });
+
   it('checks the Research Notes destination before starting Codex', async () => {
     const { service, storage, codex, artifactEvents, projectA, paperA } = fixture({
       artifactDestinationReady: false,
@@ -4209,7 +5236,494 @@ Use $\1$ only as a source-native alias [P1].
     expect(storage.revisions).toEqual([]);
   });
 
-  it('honors the latest explicit request to omit or restore Sources used', async () => {
+  it.each(
+    [true, false].flatMap((includeSlideTitlePage) =>
+      [true, false].flatMap((showInlineEvidenceLabels) =>
+        [true, false].map((includeSourcesUsedSection) => ({
+          includeSlideTitlePage,
+          showInlineEvidenceLabels,
+          includeSourcesUsedSection,
+        })),
+      ),
+    ),
+  )('commits the full document-feature combination %o', async (documentFeatures) => {
+    const { service, codex, projectA, paperA } = fixture();
+    codex.response = {
+      reply: 'Generated with the frozen document features.',
+      lectureNotesLatexBody: documentFeatures.includeSourcesUsedSection
+        ? lectureNotesBody(['P1'])
+        : lectureNotesBodyWithoutSources(['P1']),
+      slidesLatexBody: lectureSlidesBody(['P1'], documentFeatures.includeSlideTitlePage ? 1 : 2),
+    };
+    const studio = await service.create({
+      title: 'Document feature matrix',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+      generationBrief: {
+        notesTargetPages: null,
+        slidesTargetPages: 2,
+        detailLevel: 'standard',
+        structure: { mode: 'adaptive' },
+        documentFeatures,
+        customInstructions: '',
+      },
+    });
+
+    const result = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    expect(result.revision.schemaVersion).toBe(3);
+    if (result.revision.schemaVersion !== 3) throw new Error('expected v3 revision');
+    expect(result.revision.generationBriefSnapshot.documentFeatures).toEqual(documentFeatures);
+    expect(result.revision.slidesLatex.includes('\\titlepage')).toBe(
+      documentFeatures.includeSlideTitlePage,
+    );
+    expect(result.revision.lectureNotesLatex).toContain(
+      documentFeatures.showInlineEvidenceLabels
+        ? '\\newcommand{\\gosuevidence}[1]{[#1]}'
+        : '\\newcommand{\\gosuevidence}[1]{\\ifhmode\\unskip\\fi}',
+    );
+    expect(result.revision.lectureNotesLatex.includes('\\section{Sources used}')).toBe(
+      documentFeatures.includeSourcesUsedSection,
+    );
+    expect(result.revision.lectureNotesLatex).toContain('\\gosuevidence{P1}');
+    expect(codex.prompts[0]).toContain(JSON.stringify(documentFeatures));
+  });
+
+  it.each([
+    {
+      name: 'notes',
+      lectureNotesLatexBody:
+        '\\section{Notes}\nEvidence [P1] and unknown markers [Z1] [L1].\n\\section{Sources used}\n[P1] Paper A',
+      slidesLatexBody: '\\begin{frame}{Evidence}\nSupported result [P1].\n\\end{frame}',
+    },
+    {
+      name: 'frame',
+      lectureNotesLatexBody:
+        '\\section{Notes}\nSupported result [P1].\n\\section{Sources used}\n[P1] Paper A',
+      slidesLatexBody:
+        '\\begin{frame}{Evidence}\nSupported result [P1] and lowercase marker [p1].\n\\end{frame}',
+    },
+  ])('rejects an evidence-like unknown marker in hidden mode: $name', async (candidate) => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    codex.response = {
+      reply: 'Generated with a bogus hidden marker.',
+      lectureNotesLatexBody: candidate.lectureNotesLatexBody,
+      slidesLatexBody: candidate.slidesLatexBody,
+    };
+    const studio = await service.create({
+      title: 'Hidden marker validation',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+      generationBrief: {
+        notesTargetPages: null,
+        slidesTargetPages: null,
+        detailLevel: 'standard',
+        structure: { mode: 'adaptive' },
+        documentFeatures: {
+          ...DEFAULT_DOCUMENT_FEATURES,
+          showInlineEvidenceLabels: false,
+        },
+        customInstructions: '',
+      },
+    });
+
+    await expect(
+      service.generate({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_citation_mapping' });
+    expect(storage.revisions).toEqual([]);
+  });
+
+  it('allows ordinary bracketed prose while hiding validated evidence anchors', async () => {
+    const { service, codex, projectA, paperA } = fixture();
+    codex.response = {
+      reply: 'Generated with ordinary bracketed prose.',
+      lectureNotesLatexBody:
+        '\\section{Notes}\nEvidence [P1]; see [Table 1], cohort [2026], and index [n].\n\\section{Sources used}\n[P1] Paper A',
+      slidesLatexBody:
+        '\\begin{frame}{Evidence}\nSupported result [P1]; see [Table 1].\n\\end{frame}',
+    };
+    const studio = await service.create({
+      title: 'Ordinary bracket prose',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+      generationBrief: {
+        notesTargetPages: null,
+        slidesTargetPages: null,
+        detailLevel: 'standard',
+        structure: { mode: 'adaptive' },
+        documentFeatures: {
+          ...DEFAULT_DOCUMENT_FEATURES,
+          showInlineEvidenceLabels: false,
+        },
+        customInstructions: '',
+      },
+    });
+
+    const result = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(result.revision.schemaVersion).toBe(3);
+    if (result.revision.schemaVersion !== 3) throw new Error('expected v3 revision');
+    expect(result.revision.lectureNotesLatex).toContain('\\gosuevidence{P1}');
+    expect(result.revision.lectureNotesLatex).toContain('[Table 1]');
+    expect(result.revision.lectureNotesLatex).toContain('[2026]');
+    expect(result.revision.lectureNotesLatex).toContain('[n]');
+  });
+
+  it('persists current-message document directives without treating quoted questions as edits', async () => {
+    const { service, codex, projectA, paperA } = fixture();
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'Assistant document controls',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+    });
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    codex.response = {
+      reply: 'Removed the visible document elements.',
+      lectureNotesLatexBody: lectureNotesBodyWithoutSources(['P1']),
+      slidesLatexBody: lectureSlidesBody(['P1']),
+    };
+    const hidden = await service.send({
+      studioId: studio.id,
+      expectedVersion: initial.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: '제목 슬라이드를 빼고 출처 마커를 숨기고 Sources used section을 지워줘.',
+    });
+    const allHidden = {
+      includeSlideTitlePage: false,
+      showInlineEvidenceLabels: false,
+      includeSourcesUsedSection: false,
+    };
+    expect(hidden.studio.generationBrief.documentFeatures).toEqual(allHidden);
+    expect(hidden.revision.schemaVersion).toBe(3);
+    if (hidden.revision.schemaVersion !== 3) throw new Error('expected v3 revision');
+    expect(hidden.revision.generationBriefSnapshot.documentFeatures).toEqual(allHidden);
+    expect(hidden.revision.slidesLatex).not.toContain('\\titlepage');
+    expect(hidden.revision.lectureNotesLatex).toContain(
+      '\\newcommand{\\gosuevidence}[1]{\\ifhmode\\unskip\\fi}',
+    );
+
+    codex.response = {
+      reply: 'Kept the existing Studio options.',
+      lectureNotesLatexBody: lectureNotesBodyWithoutSources(['P1']),
+      slidesLatexBody: lectureSlidesBody(['P1']),
+    };
+    const metaQuestion = await service.send({
+      studioId: studio.id,
+      expectedVersion: hidden.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message:
+        '"제목 슬라이드를 넣고 출처 마커를 표시하고 Sources used를 넣어줘" 이게 무슨 뜻이야?',
+    });
+    expect(metaQuestion.studio.generationBrief.documentFeatures).toEqual(allHidden);
+  });
+
+  it('preserves one content frame when the Assistant explicitly enables a title page', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    const titleOffFeatures = {
+      ...DEFAULT_DOCUMENT_FEATURES,
+      includeSlideTitlePage: false,
+    };
+    codex.response = latexResponse(['P1']);
+    const studio = await service.create({
+      title: 'One-page title reconciliation',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+      generationBrief: {
+        notesTargetPages: null,
+        slidesTargetPages: 1,
+        detailLevel: 'standard',
+        structure: { mode: 'adaptive' },
+        documentFeatures: titleOffFeatures,
+        customInstructions: '',
+      },
+    });
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    codex.response = latexResponse(['P1'], 1, 'Kept the one-page title-off plan.');
+    const unrelated = await service.send({
+      studioId: studio.id,
+      expectedVersion: initial.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: 'Tighten the explanation.',
+    });
+    expect(unrelated.studio.generationBrief).toMatchObject({
+      slidesTargetPages: 1,
+      documentFeatures: titleOffFeatures,
+    });
+
+    const explicitPromptIndex = codex.prompts.length;
+    codex.response = { reply: 'Incomplete replacement.' };
+    await expect(
+      service.send({
+        studioId: studio.id,
+        expectedVersion: unrelated.studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+        message: 'Add the title slide back.',
+      }),
+    ).rejects.toMatchObject({ code: 'lecture_invalid_response_schema' });
+    const failed = storage.getLectureStudio(studio.id)!;
+    expect(failed).toMatchObject({
+      status: 'failed',
+      generationBrief: {
+        slidesTargetPages: 2,
+        documentFeatures: DEFAULT_DOCUMENT_FEATURES,
+      },
+    });
+    const explicitPayload = JSON.parse(
+      codex.prompts[explicitPromptIndex]!.slice(
+        codex.prompts[explicitPromptIndex]!.indexOf('\n\n') + 2,
+      ),
+    ) as { generationBrief: LectureStudio['generationBrief'] };
+    expect(explicitPayload.generationBrief).toMatchObject({
+      slidesTargetPages: 2,
+      documentFeatures: DEFAULT_DOCUMENT_FEATURES,
+    });
+
+    codex.response = latexResponse(['P1'], 1, 'Retried with one content frame and a title page.');
+    const retried = await service.generate({
+      studioId: studio.id,
+      expectedVersion: failed.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(retried.revision.schemaVersion).toBe(3);
+    if (retried.revision.schemaVersion !== 3) throw new Error('expected v3 revision');
+    expect(retried.revision.generationBriefSnapshot).toMatchObject({
+      slidesTargetPages: 2,
+      documentFeatures: DEFAULT_DOCUMENT_FEATURES,
+    });
+    expect(retried.revision.slidesLatex).toContain('\\titlepage');
+  });
+
+  it('infers a legacy Studio source-list preference from its latest canonical notes', async () => {
+    const { service, storage, codex, projectA, paperA } = fixture();
+    const withoutSources = {
+      ...DEFAULT_DOCUMENT_FEATURES,
+      includeSourcesUsedSection: false,
+    };
+    codex.response = {
+      reply: 'Generated without a visible source list.',
+      lectureNotesLatexBody: lectureNotesBodyWithoutSources(['P1']),
+      slidesLatexBody: lectureSlidesBody(['P1']),
+    };
+    const studio = await service.create({
+      title: 'Legacy source-list inference',
+      kind: 'lecture',
+      durationMinutes: null,
+      outputProjectId: projectA,
+      sourceProjectIds: [projectA],
+      sourceSelection: {
+        literature: [{ projectId: projectA, recordId: paperA.id }],
+        experiments: [],
+      },
+      generationBrief: {
+        notesTargetPages: null,
+        slidesTargetPages: null,
+        detailLevel: 'standard',
+        structure: { mode: 'adaptive' },
+        documentFeatures: withoutSources,
+        customInstructions: '',
+      },
+    });
+    const initial = await service.generate({
+      studioId: studio.id,
+      expectedVersion: studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (initial.revision.schemaVersion !== 3) throw new Error('expected v3 revision');
+
+    const legacyStudioBrief: LectureStudio['generationBrief'] = {
+      ...initial.studio.generationBrief,
+    };
+    delete legacyStudioBrief.documentFeatures;
+    const studioIndex = storage.studios.findIndex((candidate) => candidate.id === studio.id);
+    storage.studios[studioIndex] = {
+      ...storage.studios[studioIndex]!,
+      generationBrief: legacyStudioBrief,
+    };
+    const legacySnapshot: LectureStudio['generationBrief'] = {
+      ...initial.revision.generationBriefSnapshot,
+    };
+    delete legacySnapshot.documentFeatures;
+    const revisionIndex = storage.revisions.findIndex(
+      (candidate) => candidate.id === initial.revision.id,
+    );
+    storage.revisions[revisionIndex] = {
+      ...initial.revision,
+      generationBriefSnapshot: legacySnapshot,
+    };
+
+    const regenerated = await service.generate({
+      studioId: studio.id,
+      expectedVersion: initial.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(regenerated.studio.generationBrief.documentFeatures).toEqual(withoutSources);
+    expect(codex.prompts.at(-1)).toContain('"includeSourcesUsedSection":false');
+  });
+
+  it.each(['References', 'Sources   used'])(
+    'reopens and regenerates a legacy custom %s topic without treating it as a source list',
+    async (legacySectionTitle) => {
+      const { service, storage, codex, projectA, paperA } = fixture();
+      const withoutSources = {
+        ...DEFAULT_DOCUMENT_FEATURES,
+        includeSourcesUsedSection: false,
+      };
+      codex.response = {
+        reply: 'Generated the initial source-list-free revision.',
+        lectureNotesLatexBody: lectureNotesBodyWithoutSources(['P1']),
+        slidesLatexBody: lectureSlidesBody(['P1']),
+      };
+      const studio = await service.create({
+        title: 'Legacy References topic',
+        kind: 'lecture',
+        durationMinutes: null,
+        outputProjectId: projectA,
+        sourceProjectIds: [projectA],
+        sourceSelection: {
+          literature: [{ projectId: projectA, recordId: paperA.id }],
+          experiments: [],
+        },
+        generationBrief: {
+          notesTargetPages: null,
+          slidesTargetPages: null,
+          detailLevel: 'standard',
+          structure: { mode: 'adaptive' },
+          documentFeatures: withoutSources,
+          customInstructions: '',
+        },
+      });
+      const initial = await service.generate({
+        studioId: studio.id,
+        expectedVersion: studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      });
+      if (initial.revision.schemaVersion !== 3) throw new Error('expected v3 revision');
+
+      const legacyBrief: LectureStudio['generationBrief'] = {
+        ...initial.studio.generationBrief,
+        structure: {
+          mode: 'custom',
+          sections: [{ title: legacySectionTitle, coverage: 'notes-and-slides' }],
+        },
+      };
+      delete legacyBrief.documentFeatures;
+      const studioIndex = storage.studios.findIndex((candidate) => candidate.id === studio.id);
+      storage.studios[studioIndex] = {
+        ...storage.studios[studioIndex]!,
+        generationBrief: legacyBrief,
+      };
+      const legacySnapshot: LectureStudio['generationBrief'] = {
+        ...initial.revision.generationBriefSnapshot,
+        structure: legacyBrief.structure,
+      };
+      delete legacySnapshot.documentFeatures;
+      const revisionIndex = storage.revisions.findIndex(
+        (candidate) => candidate.id === initial.revision.id,
+      );
+      storage.revisions[revisionIndex] = {
+        ...initial.revision,
+        generationBriefSnapshot: legacySnapshot,
+        generationBriefSha256: hash(JSON.stringify(legacySnapshot)),
+        authoringPolicyVersion: 6,
+      };
+
+      codex.response = {
+        reply: 'Regenerated the historical References content topic.',
+        lectureNotesLatexBody: `\\section{${legacySectionTitle}}\nReference-estimator content remains supported [P1].`,
+        slidesLatexBody: lectureSlidesBody(['P1']),
+      };
+      const regenerated = await service.generate({
+        studioId: studio.id,
+        expectedVersion: initial.studio.version,
+        requestedModelId: null,
+        reasoningOptionId: null,
+      });
+      expect(regenerated.studio.generationBrief).toMatchObject({
+        structure: legacyBrief.structure,
+        documentFeatures: withoutSources,
+      });
+      expect(regenerated.revision.schemaVersion).toBe(3);
+      if (regenerated.revision.schemaVersion !== 3) throw new Error('expected v3 revision');
+      expect(regenerated.revision.lectureNotesLatex).toContain(`\\section{${legacySectionTitle}}`);
+      expect(regenerated.revision.lectureNotesLatex).toContain('\\gosuevidence{P1}');
+      expect(regenerated.revision.lectureNotesLatex).not.toContain('\\section{Sources used}');
+      expect(regenerated.revision.artifacts.map((artifact) => artifact.kind).sort()).toEqual([
+        'lecture-notes',
+        'slides',
+      ]);
+      await expect(service.detail({ studioId: studio.id })).resolves.toMatchObject({
+        studio: { id: studio.id, currentRevision: 2 },
+        revisions: [{ id: regenerated.revision.id }],
+      });
+    },
+  );
+
+  it('uses only the current request to change Sources used and freezes it across correction', async () => {
     const { service, storage, codex, projectA, paperA } = fixture();
     codex.response = latexResponse(['P1']);
     const studio = await service.create({
@@ -4243,34 +5757,61 @@ Use $\1$ only as a source-native alias [P1].
       createdAt: priorDirectionAt,
       completedAt: priorDirectionAt,
     });
-    codex.responseQueue = [
-      {
-        reply: 'Candidate kept the source list and used invalid LaTeX.',
-        lectureNotesLatexBody: `${lectureNotesBody(['P1'])}\n\\unsupportedSourceAlias{bad}`,
-        slidesLatexBody: lectureSlidesBody(['P1']),
-      },
-      {
-        reply: 'Removed the visible source list while preserving inline evidence labels.',
-        lectureNotesLatexBody: lectureNotesBodyWithoutSources(['P1']),
-        slidesLatexBody: lectureSlidesBody(['P1']),
-      },
-    ];
-
-    const omitted = await service.send({
+    codex.response = latexResponse(['P1'], 1, 'Kept the current Studio preference.');
+    const unchanged = await service.send({
       studioId: studio.id,
       expectedVersion: initial.studio.version,
       requestedModelId: null,
       reasoningOptionId: null,
       message: '왜 아직 남아 있어?',
     });
+    if (unchanged.revision.schemaVersion === 1) throw new Error('expected LaTeX revision');
+    expect(unchanged.revision.lectureNotesLatex).toContain('Sources used');
+    expect(unchanged.studio.generationBrief.documentFeatures).toEqual(DEFAULT_DOCUMENT_FEATURES);
+
+    const promptCountBeforeOmission = codex.prompts.length;
+    codex.response = {
+      reply: 'Removed only the requested source list.',
+      edits: [
+        {
+          document: 'lecture-notes',
+          find: '\n\\section{Sources used}\n[P1] Fixture source P1',
+          replace: '',
+        },
+      ],
+    };
+
+    const omitted = await service.send({
+      studioId: studio.id,
+      expectedVersion: unchanged.studio.version,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      message: 'Sources used" 이부분 지워줘',
+    });
 
     expect(omitted.revision.schemaVersion).toBe(3);
-    if (omitted.revision.schemaVersion !== 3) throw new Error('expected LaTeX revision');
+    if (omitted.revision.schemaVersion !== 3) throw new Error('expected model v3 revision');
+    expect(omitted.revision.invocation).not.toBeNull();
     expect(omitted.revision.lectureNotesLatex).not.toContain('Sources used');
-    expect(omitted.revision.lectureNotesLatex).toContain('[P1]');
-    expect(codex.prompts.at(-2)).toContain('"sourcesUsedMode":"omitted"');
-    expect(codex.prompts.at(-1)).toContain('bounded latex_grammar check');
-    expect(codex.prompts.at(-1)).toContain('Omit the Sources used section completely');
+    expect(omitted.revision.lectureNotesLatex).toContain('\\gosuevidence{P1}');
+    expect(omitted.studio.generationBrief.documentFeatures).toEqual({
+      ...DEFAULT_DOCUMENT_FEATURES,
+      includeSourcesUsedSection: false,
+    });
+    expect(omitted.assistantMessage.content).toContain('Removed only the requested source list.');
+    expect(codex.prompts).toHaveLength(promptCountBeforeOmission + 1);
+    const omissionPrompt = codex.prompts.at(-1)!;
+    const omissionPayload = JSON.parse(
+      omissionPrompt.slice(omissionPrompt.indexOf('\n\n') + 2),
+    ) as {
+      request: string;
+      currentDraft: { lectureNotes: string; slides: string };
+    };
+    expect(omissionPayload.request).toBe('Sources used" 이부분 지워줘');
+    expect(omissionPayload.currentDraft.lectureNotes).toContain('\\section{Sources used}');
+    expect(omissionPayload.currentDraft.lectureNotes).not.toContain('\\documentclass');
+    expect(omissionPayload.currentDraft.slides).not.toContain('\\documentclass');
+    expect(codex.outputSchemas.at(-1)?.required).toEqual(['reply', 'edits']);
 
     codex.response = latexResponse(['P1'], 1, 'Restored the visible source list.');
     const restored = await service.send({
@@ -4283,6 +5824,7 @@ Use $\1$ only as a source-native alias [P1].
     expect(restored.revision.schemaVersion).toBe(3);
     if (restored.revision.schemaVersion !== 3) throw new Error('expected LaTeX revision');
     expect(restored.revision.lectureNotesLatex).toContain('\\section{Sources used}');
+    expect(restored.studio.generationBrief.documentFeatures).toEqual(DEFAULT_DOCUMENT_FEATURES);
   });
 
   it('preserves an explicit source-list direction when a failed edit is retried', async () => {
@@ -4313,14 +5855,18 @@ Use $\1$ only as a source-native alias [P1].
         expectedVersion: initial.studio.version,
         requestedModelId: null,
         reasoningOptionId: null,
-        message: 'Sources used section을 완전히 없애줘.',
+        message: 'Sources used section을 완전히 없애고 도입부도 간결하게 고쳐줘.',
       }),
     ).rejects.toMatchObject({ code: 'lecture_invalid_response_schema' });
     const failed = storage.getLectureStudio(studio.id)!;
     expect(failed.status).toBe('failed');
+    expect(failed.generationBrief.documentFeatures).toEqual({
+      ...DEFAULT_DOCUMENT_FEATURES,
+      includeSourcesUsedSection: false,
+    });
     expect(
       storage.messages.find(
-        (message) => message.role === 'user' && message.content.includes('완전히 없애줘'),
+        (message) => message.role === 'user' && message.content.includes('도입부도 간결하게'),
       ),
     ).toMatchObject({ status: 'failed' });
 
@@ -4339,7 +5885,11 @@ Use $\1$ only as a source-native alias [P1].
     expect(retried.revision.schemaVersion).toBe(3);
     if (retried.revision.schemaVersion !== 3) throw new Error('expected LaTeX revision');
     expect(retried.revision.lectureNotesLatex).not.toContain('Sources used');
-    expect(codex.prompts.at(-1)).toContain('"sourcesUsedMode":"omitted"');
+    expect(codex.prompts.at(-1)).toContain('"includeSourcesUsedSection":false');
+    expect(retried.revision.generationBriefSnapshot.documentFeatures).toEqual({
+      ...DEFAULT_DOCUMENT_FEATURES,
+      includeSourcesUsedSection: false,
+    });
   });
 
   it('requires a complete mapping when Sources used is present and rejects unsupported syntax', async () => {

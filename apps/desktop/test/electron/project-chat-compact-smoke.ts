@@ -161,7 +161,7 @@ function fixtureMarkup(styles: string) {
                     <button class="secondary-button chat-agent-toggle">Agent controls</button>
                   </div>
                   <div class="chat-provider-boundary" role="note">
-                    <strong>BYO Hermes · ACP agent mode</strong>
+                    <strong>Hermes · verified ACP agent mode</strong>
                     <span>Uses verified Hermes ACP with no native tools. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Terminal, files, web, native delegation, MCP, GOSU tools, and attachments remain disabled at the minimum supported window width and extra-large text size.</span>
                   </div>
                   <div class="chat-ssh-setup-notice">

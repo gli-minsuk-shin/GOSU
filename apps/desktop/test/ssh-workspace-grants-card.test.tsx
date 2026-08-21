@@ -5,7 +5,9 @@ import {
   acknowledgeSshWorkspaceSetupRequest,
   resolveSshWorkspaceSetupConnectionId,
   resolveSshWorkspaceSetupTarget,
+  shouldCompleteSshWorkspaceRootOnTab,
   shouldHandleSshWorkspaceSetupRequest,
+  suggestedSshWorkspaceRoot,
   SshWorkspaceGrantsCard,
 } from '../src/renderer/src/ssh-workspace-grants-card';
 import type { GrantedRemoteWorkspace } from '../src/shared/ssh-workspace-contracts';
@@ -84,6 +86,61 @@ describe('project-scoped remote workspace settings', () => {
     expect(acknowledgeSshWorkspaceSetupRequest(request, 2)).toBeNull();
   });
 
+  it('accepts the suggested canonical root with forward Tab only when the field is empty', () => {
+    expect(suggestedSshWorkspaceRoot('generative-bootstrap-sampler')).toBe(
+      '/root/generative-bootstrap-sampler',
+    );
+    expect(suggestedSshWorkspaceRoot('')).toBe('/root/my-research-project');
+    expect(
+      shouldCompleteSshWorkspaceRootOnTab({
+        key: 'Tab',
+        shiftKey: false,
+        isComposing: false,
+        currentValue: '',
+      }),
+    ).toBe(true);
+    expect(
+      shouldCompleteSshWorkspaceRootOnTab({
+        key: 'Tab',
+        shiftKey: false,
+        isComposing: false,
+        currentValue: '   ',
+      }),
+    ).toBe(true);
+    expect(
+      shouldCompleteSshWorkspaceRootOnTab({
+        key: 'Tab',
+        shiftKey: false,
+        isComposing: false,
+        currentValue: '/workspace/custom',
+      }),
+    ).toBe(false);
+    expect(
+      shouldCompleteSshWorkspaceRootOnTab({
+        key: 'Tab',
+        shiftKey: true,
+        isComposing: false,
+        currentValue: '',
+      }),
+    ).toBe(false);
+    expect(
+      shouldCompleteSshWorkspaceRootOnTab({
+        key: 'Enter',
+        shiftKey: false,
+        isComposing: false,
+        currentValue: '',
+      }),
+    ).toBe(false);
+    expect(
+      shouldCompleteSshWorkspaceRootOnTab({
+        key: 'Tab',
+        shiftKey: false,
+        isComposing: true,
+        currentValue: '',
+      }),
+    ).toBe(false);
+  });
+
   it('shows explicit project scope, root, permission mode, and high-risk confirmation', () => {
     const html = renderToStaticMarkup(
       <SshWorkspaceGrantsCard
@@ -94,6 +151,8 @@ describe('project-scoped remote workspace settings', () => {
         onCreate={vi.fn()}
         onUpdate={vi.fn()}
         onRemove={vi.fn()}
+        onEnableTrustedWorkspace={vi.fn()}
+        onRevokeTrustedWorkspace={vi.fn()}
         onTest={vi.fn()}
         testStatus={{ [workspace.connection.id]: 'Ready' }}
       />,
@@ -109,7 +168,10 @@ describe('project-scoped remote workspace settings', () => {
     expect(html).toContain('HIGH RISK · ROOT account');
     expect(html).toContain('not a remote sandbox');
     expect(html).toContain('every command and file action requires a separate Allow once decision');
-    expect(html).toContain('Trusted workspace access');
+    expect(html).toContain('Project trusted execution');
+    expect(html).toContain('Enable ROOT auto-run…');
+    expect(html).toContain('Allow once required · Project auto-run is off');
+    expect(html).toContain('Press Tab from an empty field to use');
     expect(html).toContain('Test server');
     expect(html).toContain('Ready');
   });

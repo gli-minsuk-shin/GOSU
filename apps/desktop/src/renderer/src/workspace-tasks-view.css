@@ -1,0 +1,175 @@
+.workspace-tasks-view {
+  padding-bottom: 10px;
+}
+
+.workspace-tasks-view .workspace-task-filter-bar {
+  grid-template-columns:
+    minmax(160px, 0.9fr) minmax(230px, 1.5fr) repeat(3, minmax(125px, 0.7fr))
+    auto;
+}
+
+.workspace-tasks-view .workspace-task-toolbar {
+  align-items: flex-end;
+}
+
+.workspace-tasks-view .workspace-task-composer,
+.workspace-tasks-view .workspace-task-composer.expanded {
+  grid-template-columns: minmax(160px, 0.8fr) minmax(240px, 1.5fr) minmax(150px, 0.8fr) auto auto;
+  width: min(100%, 1180px);
+}
+
+.workspace-task-context-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.workspace-project-badge,
+.workspace-task-stage {
+  display: inline-block;
+  max-width: min(100%, 190px);
+  overflow: hidden;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--green) 28%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 8%, var(--surface-soft));
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 740;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-project-badge-button {
+  min-height: 0;
+  cursor: pointer;
+}
+
+.workspace-project-badge-button:hover,
+.workspace-project-badge-button:focus-visible {
+  border-color: color-mix(in srgb, var(--green) 60%, var(--line));
+  background: color-mix(in srgb, var(--green) 14%, var(--surface-soft));
+}
+
+.workspace-task-stage {
+  border-color: color-mix(in srgb, var(--blue) 24%, var(--line));
+  background: color-mix(in srgb, var(--blue) 7%, var(--surface-soft));
+  color: var(--blue);
+  font-weight: 650;
+}
+
+.workspace-task-owner-note {
+  min-width: 0;
+  color: var(--subtle);
+  font-size: var(--font-caption);
+}
+
+.workspace-task-card[draggable='true'] .workspace-project-badge-button {
+  cursor: pointer;
+}
+
+.workspace-todo-list {
+  width: 100%;
+  max-width: 1320px;
+}
+
+.workspace-todo-row .workspace-task-context-row {
+  margin-bottom: 1px;
+}
+
+.workspace-task-show-more {
+  width: calc(100% - 8px);
+  min-height: 32px;
+  margin: 4px;
+  padding: 6px 9px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-soft) 84%, transparent);
+  color: var(--muted);
+  font-size: var(--font-control);
+  font-weight: 680;
+}
+
+.workspace-task-show-more:hover,
+.workspace-task-show-more:focus-visible {
+  border-color: color-mix(in srgb, var(--green) 45%, var(--line));
+  color: var(--green);
+}
+
+.workspace-task-empty {
+  display: grid;
+  gap: 5px;
+  padding: 30px 18px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.workspace-task-empty strong {
+  color: var(--text);
+  font-size: var(--font-section);
+}
+
+.workspace-task-empty p {
+  margin: 0;
+}
+
+.workspace-task-trash-grid .workspace-project-badge {
+  justify-self: start;
+}
+
+@container kanban-workspace (max-width: 1080px) {
+  .workspace-tasks-view .workspace-task-filter-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .workspace-tasks-view .workspace-task-filter-bar .board-search {
+    grid-column: span 2;
+  }
+
+  .workspace-tasks-view .workspace-task-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workspace-tasks-view .workspace-task-composer,
+  .workspace-tasks-view .workspace-task-composer.expanded {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .workspace-tasks-view .workspace-task-composer .task-details-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workspace-tasks-view .workspace-task-composer .task-description-field {
+    grid-column: 1 / -1;
+  }
+}
+
+@container kanban-workspace (max-width: 680px) {
+  .workspace-tasks-view .workspace-task-filter-bar,
+  .workspace-tasks-view .workspace-task-composer,
+  .workspace-tasks-view .workspace-task-composer.expanded,
+  .workspace-tasks-view .workspace-task-composer .task-details-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-tasks-view .workspace-task-filter-bar .board-search,
+  .workspace-tasks-view .workspace-task-composer .task-description-field {
+    grid-column: auto;
+  }
+
+  .workspace-task-context-row {
+    align-items: flex-start;
+  }
+
+  .workspace-project-badge,
+  .workspace-task-stage {
+    max-width: 100%;
+  }
+}

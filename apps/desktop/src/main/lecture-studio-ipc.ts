@@ -1,4 +1,4 @@
-import type { ZodType } from 'zod';
+import { z, type ZodType } from 'zod';
 
 import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
 import {
@@ -18,6 +18,12 @@ import {
   EmptyLectureStudioTrashInputSchema,
   ExportLectureStudioArtifactInputSchema,
   GenerateLectureStudioInputSchema,
+  GetLectureStudioEditDraftInputSchema,
+  SaveLectureStudioManualRevisionInputSchema,
+  ListLectureStudioFiguresInputSchema,
+  ChooseLectureStudioFiguresInputSchema,
+  RemoveLectureStudioFigureInputSchema,
+  PreviewLectureStudioFigureInputSchema,
   ListLectureCandidatesInputSchema,
   ListLectureStudiosInputSchema,
   LectureStudioDetailInputSchema,
@@ -40,6 +46,18 @@ import {
 } from './lecture-overleaf-source-service';
 import { ManuscriptWorkspaceServiceError } from './manuscript-workspace-service';
 import type { LectureStudioAttachmentService } from './lecture-studio-attachment-service';
+import {
+  LectureStudioFigureServiceError,
+  type LectureStudioFigureService,
+} from './lecture-studio-figure-service';
+
+const StageDroppedLectureStudioFiguresInputSchema = z
+  .object({
+    studioId: z.string().uuid(),
+    expectedVersion: z.number().int().positive(),
+    paths: z.array(z.string().min(1).max(4_096)).min(1).max(5),
+  })
+  .strict();
 
 type RegisterHandler = (channel: string, listener: (...arguments_: unknown[]) => unknown) => void;
 
@@ -49,6 +67,7 @@ export function registerLectureStudioIpc(
   externalSources: LectureExternalSourceService,
   overleafSources: LectureOverleafSourceService,
   attachments: LectureStudioAttachmentService,
+  figures: LectureStudioFigureService,
   reportUnexpected: (error: unknown) => void = () => undefined,
 ) {
   register(LECTURE_STUDIO_IPC_CHANNELS.list, (input) =>
@@ -136,6 +155,62 @@ export function registerLectureStudioIpc(
       input,
       UpdateLectureStudioGenerationBriefInputSchema,
       (command) => service.updateGenerationBrief(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.editDraft, (input) =>
+    withInput(
+      input,
+      GetLectureStudioEditDraftInputSchema,
+      (command) => service.editDraft(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.saveManualRevision, (input) =>
+    withInput(
+      input,
+      SaveLectureStudioManualRevisionInputSchema,
+      (command) => service.saveManualRevision(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.listFigures, (input) =>
+    withInput(
+      input,
+      ListLectureStudioFiguresInputSchema,
+      (command) => figures.list(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.chooseFigures, (input) =>
+    withInput(
+      input,
+      ChooseLectureStudioFiguresInputSchema,
+      (command) => figures.choose(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.stageDroppedFigures, (input) =>
+    withInput(
+      input,
+      StageDroppedLectureStudioFiguresInputSchema,
+      (command) => figures.addPaths(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.removeFigure, (input) =>
+    withInput(
+      input,
+      RemoveLectureStudioFigureInputSchema,
+      (command) => figures.remove(command),
+      reportUnexpected,
+    ),
+  );
+  register(LECTURE_STUDIO_IPC_CHANNELS.previewFigure, (input) =>
+    withInput(
+      input,
+      PreviewLectureStudioFigureInputSchema,
+      (command) => figures.preview(command),
       reportUnexpected,
     ),
   );
@@ -252,6 +327,32 @@ async function safely<T>(
       error instanceof LectureOverleafSourceError
     ) {
       return { ok: false, error: { code: error.code } };
+    }
+    if (error instanceof LectureStudioFigureServiceError) {
+      const code: LectureStudioIpcErrorCode = (() => {
+        switch (error.code) {
+          case 'figure_invalid':
+          case 'figure_unsupported':
+          case 'figure_extraction_failed':
+            return 'lecture_figure_invalid';
+          case 'figure_too_large':
+          case 'figure_total_too_large':
+            return 'lecture_figure_too_large';
+          case 'figure_too_many':
+            return 'lecture_figure_limit_reached';
+          case 'figure_in_use':
+            return 'lecture_figure_in_use';
+          case 'figure_version_conflict':
+            return 'lecture_version_conflict';
+          case 'figure_studio_not_found':
+            return 'lecture_studio_not_found';
+          case 'figure_scope_unavailable':
+          case 'figure_not_found':
+          case 'figure_storage_failed':
+            return 'lecture_figure_unavailable';
+        }
+      })();
+      return { ok: false, error: { code } };
     }
     if (error instanceof ManuscriptWorkspaceServiceError) {
       const passthrough = new Set([

@@ -209,11 +209,11 @@ export function describeError(error: unknown) {
     invalid_chat_input: 'Check the chat message and model selection, then try again.',
     codex_unavailable: 'Codex is unavailable. Board and Research Notes remain usable.',
     hermes_version_unsupported_adapter_update_required:
-      'BYO Hermes currently supports Hermes 0.19.1 only. This installed version needs a reviewed GOSU update before it can be connected.',
+      'This GOSU release supports Hermes 0.19.1 only through its pinned runtime. A different runtime needs a reviewed GOSU update before it can be connected.',
     hermes_installation_not_supported:
-      'GOSU could not find a standard local Hermes installation. Install Hermes with its standard installer, then try again.',
+      'The verified Hermes runtime is unavailable. Reinstall this GOSU release; development builds may instead use a compatible Hermes 0.19.1 installation.',
     hermes_runtime_provider_not_allowed:
-      'BYO Hermes cannot use MoA or a provider that starts another agent in sealed mode. Choose a direct model provider in Hermes, then reconnect.',
+      'Hermes cannot use MoA or a provider that starts another agent in sealed mode. Choose a direct model provider in Hermes, then reconnect.',
     hermes_runtime_check_failed:
       'GOSU could not safely verify this Hermes setup. Check its model configuration and sign-in, then try again.',
     chat_unavailable: 'Project chat is unavailable. Existing local messages were not replaced.',

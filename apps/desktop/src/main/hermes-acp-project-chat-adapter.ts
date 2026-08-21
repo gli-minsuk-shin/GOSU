@@ -102,6 +102,7 @@ export type HermesAcpClientFactory = (
 export type HermesAcpDelegateInput = Readonly<{
   projectId: string;
   sessionId: string;
+  attemptId?: string;
   cwd: string;
   task: string;
   context?: string;
@@ -495,7 +496,12 @@ export class HermesAcpProjectChatAdapter
     };
     thread.activeTurn = turn;
     this.activatePermissionTurn(thread.client, thread.acpSessionId, turnId);
-    this.emit('invocation', { threadId: thread.id, turnId, invocation });
+    this.emit('invocation', {
+      threadId: thread.id,
+      turnId,
+      invocation,
+      connection: this.connectionSnapshot(thread.runtime),
+    });
     let prompt: Promise<HermesAcpPromptResult>;
     try {
       prompt = thread.client.prompt(thread.acpSessionId, blocks);
@@ -621,13 +627,91 @@ export class HermesAcpProjectChatAdapter
       const invocationId = randomUUID();
       const startedAt = new Date().toISOString();
       const delegateTurnId = `hermes:acp:delegate:${invocationId}`;
+      const delegateThreadId = `hermes:acp:delegate-session:${acpSessionId}`;
+      const delegationInvocation = ModelInvocationSchema.parse({
+        schemaVersion: 1,
+        invocationId,
+        providerId: HERMES_PROVIDER_ID,
+        requestedModelId: null,
+        resolvedModelId: runtime.configuredModelId,
+        catalogVersion: runtimeCatalogVersion(runtime),
+        reasoningOptionId: null,
+        startedAt,
+      });
+      const trackedAttemptId =
+        typeof input.attemptId === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+          input.attemptId,
+        )
+          ? input.attemptId
+          : null;
+      if (trackedAttemptId) {
+        this.emit('delegationInvocation', {
+          threadId: delegateThreadId,
+          turnId: delegateTurnId,
+          invocation: delegationInvocation,
+          connection: this.connectionSnapshot(runtime),
+          attribution: {
+            workloadKind: 'hermes_delegation',
+            projectId,
+            projectChatSessionId: sessionId,
+            projectChatAttemptId: trackedAttemptId,
+          },
+        });
+      }
       this.activatePermissionTurn(client, acpSessionId, delegateTurnId);
-      const promptResult = await Promise.race([
-        client.prompt(acpSessionId, delegatePrompt(task, context)),
-        abortPromise,
-      ]);
+      let promptResult: HermesAcpPromptResult;
+      try {
+        promptResult = await Promise.race([
+          client.prompt(acpSessionId, delegatePrompt(task, context)),
+          abortPromise,
+        ]);
+      } catch (error) {
+        if (trackedAttemptId) {
+          this.emit('delegationUsage', {
+            threadId: delegateThreadId,
+            turnId: delegateTurnId,
+            invocationId,
+            providerId: HERMES_PROVIDER_ID,
+            connection: this.connectionSnapshot(runtime),
+            usage: null,
+            stopReason: 'failed',
+            successful: false,
+          });
+        }
+        throw error;
+      }
       this.deactivatePermissionTurn(client, delegateTurnId);
-      const normalized = responseEnvelope(response);
+      let normalized: ReturnType<typeof responseEnvelope>;
+      try {
+        normalized = responseEnvelope(response);
+      } catch (error) {
+        if (trackedAttemptId) {
+          this.emit('delegationUsage', {
+            threadId: delegateThreadId,
+            turnId: delegateTurnId,
+            invocationId,
+            providerId: HERMES_PROVIDER_ID,
+            connection: this.connectionSnapshot(runtime),
+            usage: promptResult.usage ?? null,
+            stopReason: 'failed',
+            successful: false,
+          });
+        }
+        throw error;
+      }
+      if (trackedAttemptId) {
+        this.emit('delegationUsage', {
+          threadId: delegateThreadId,
+          turnId: delegateTurnId,
+          invocationId,
+          providerId: HERMES_PROVIDER_ID,
+          connection: this.connectionSnapshot(runtime),
+          usage: promptResult.usage ?? null,
+          stopReason: promptResult.stopReason,
+          successful: !/cancel|interrupt/iu.test(promptResult.stopReason),
+        });
+      }
       return {
         reply: normalized.reply,
         stopReason: promptResult.stopReason,
@@ -772,6 +856,7 @@ export class HermesAcpProjectChatAdapter
     if (!thread || !turn || turn.id !== turnId || turn.terminal) return;
     const interrupted = turn.cancelled || /cancel|interrupt/iu.test(result.stopReason);
     if (interrupted) {
+      this.emitPromptUsage(thread, turn, result, false, 'interrupted');
       this.finishTurn(threadId, turnId, 'interrupted');
       return;
     }
@@ -790,8 +875,10 @@ export class HermesAcpProjectChatAdapter
           },
         },
       });
+      this.emitPromptUsage(thread, turn, result, true, result.stopReason);
       this.finishTurn(threadId, turnId, 'completed');
     } catch {
+      this.emitPromptUsage(thread, turn, result, false, 'failed');
       this.finishTurn(threadId, turnId, 'failed');
     }
   }
@@ -873,6 +960,33 @@ export class HermesAcpProjectChatAdapter
       catalogVersion: thread.catalogVersion,
       reasoningOptionId,
       startedAt: new Date().toISOString(),
+    });
+  }
+
+  private connectionSnapshot(runtime: HermesValidatedAcpRuntime) {
+    return {
+      connectionKey: `hermes:${runtime.configuredProviderId}`,
+      connectionLabel: runtime.configuredProviderId,
+      upstreamProviderId: runtime.configuredProviderId,
+    } as const;
+  }
+
+  private emitPromptUsage(
+    thread: HermesAcpThread,
+    turn: HermesAcpTurn,
+    result: HermesAcpPromptResult,
+    successful: boolean,
+    stopReason: string,
+  ) {
+    this.emit('usage', {
+      threadId: thread.id,
+      turnId: turn.id,
+      invocationId: turn.invocation.invocationId,
+      providerId: HERMES_PROVIDER_ID,
+      usage: result.usage ?? null,
+      stopReason,
+      successful,
+      connection: this.connectionSnapshot(thread.runtime),
     });
   }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from 'pdfjs-dist/types/src/display/api';
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 
@@ -164,9 +164,15 @@ export interface PdfPreviewProps {
   document: PdfPreviewDocument;
   className?: string;
   workspaceHeight?: boolean;
+  headerAction?: ReactNode;
 }
 
-export function PdfPreview({ document, className = '', workspaceHeight = false }: PdfPreviewProps) {
+export function PdfPreview({
+  document,
+  className = '',
+  workspaceHeight = false,
+  headerAction = null,
+}: PdfPreviewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLElement>());
   const scrollFrameRef = useRef<number | null>(null);
@@ -350,6 +356,7 @@ export function PdfPreview({ document, className = '', workspaceHeight = false }
           >
             ＋
           </button>
+          {headerAction}
         </div>
       </header>
       <div

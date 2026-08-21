@@ -16,6 +16,7 @@ import {
   type ProjectChatContextScope,
   type ProjectChatHarnessMode,
   type ProjectChatPersonality,
+  type ProjectChatProfile,
   type ProjectChatQueuedTurn,
   type ProjectChatResponseDepth,
   type ProjectChatResponseVerbosity,
@@ -41,6 +42,7 @@ import { shouldSendChatMessage } from './chat-keyboard';
 import type { CodexModel } from './connections-view';
 import type { VaultRuntimeState } from './notes-view';
 import { ProjectChatMarkdown } from './project-chat-markdown';
+import { ProjectPolicyRulesEditor } from './project-policy-rules-editor';
 import { isProjectChatNearBottom, resolveProjectChatArrival } from './project-chat-scroll';
 import { ProjectChatSessionRail } from './project-chat-session-rail';
 import { PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH } from './project-chat-session-state';
@@ -74,6 +76,17 @@ export function projectChatTodoSkillSuggestions(draft: string) {
   if (!normalized.startsWith('/') || normalized.includes(' ')) return [];
   if (!'/todo'.startsWith(normalized)) return [];
   return PROJECT_CHAT_TODO_SKILL_SUGGESTIONS;
+}
+
+export function projectChatPolicyRuleSnapshotCount(
+  promptProvenance:
+    | Readonly<{ assemblyVersion: 1 | 2 | 3 }>
+    | Readonly<{ assemblyVersion: 4; policyRuleCount: number }>
+    | undefined,
+) {
+  const count =
+    promptProvenance?.assemblyVersion === 4 ? promptProvenance.policyRuleCount : undefined;
+  return typeof count === 'number' && Number.isInteger(count) && count > 0 ? count : 0;
 }
 
 export type ProjectChatTurnControls = Readonly<{
@@ -325,6 +338,7 @@ export function ProjectChatView({
   onSelectedReasoning,
   onRefreshModels,
   onOpenAgentSettings,
+  onUpdatePolicyRules = async () => false,
   onChooseAttachments = async () => [],
   onReleaseAttachment = async () => undefined,
   onAttachmentError = () => undefined,
@@ -385,6 +399,10 @@ export function ProjectChatView({
   onSelectedReasoning: (reasoningId: string | null) => void;
   onRefreshModels: () => void;
   onOpenAgentSettings: () => void;
+  onUpdatePolicyRules?: (
+    profile: ProjectChatProfile,
+    policyRules: readonly string[],
+  ) => Promise<boolean>;
   onChooseAttachments?: () => Promise<readonly ProjectChatAttachment[]>;
   onReleaseAttachment?: (attachment: ProjectChatAttachment) => Promise<void>;
   onAttachmentError?: (error: unknown) => void;
@@ -455,6 +473,7 @@ export function ProjectChatView({
   const [personality, setPersonality] = useState<ProjectChatPersonality>('auto');
   const [responseVerbosity, setResponseVerbosity] = useState<ProjectChatResponseVerbosity>('auto');
   const [contextScope, setContextScope] = useState<ProjectChatContextScope>('project');
+  const [projectRulesOpen, setProjectRulesOpen] = useState(false);
   const [attachments, setAttachments] = useState<readonly ProjectChatAttachment[]>([]);
   const [trustedWorkspaceBusyGrantId, setTrustedWorkspaceBusyGrantId] = useState<string | null>(
     null,
@@ -1001,16 +1020,18 @@ export function ProjectChatView({
     if (
       trustedWorkspaceBusyGrantId ||
       server.permissionMode !== 'workspace' ||
-      server.privilegeClass !== 'standard'
+      server.privilegeClass === 'unknown'
     ) {
       return;
     }
     const firstConfirmed = window.confirm(
-      `Enable Trusted workspace / Full access for “${server.label}” in ${project.name}?\n\nSupported file and command operations inside ${server.canonicalRoot} will run without a separate Allow once prompt. The trust is bound only to this project, server version, workspace grant, path, and GOSU safety policy.`,
+      `Enable Project trusted execution / Auto-run for “${server.label}” in ${project.name}?\n\nSupported file and command operations inside ${server.canonicalRoot} will run without a separate Allow once prompt. The trust is bound only to this project, server version, workspace grant, path, and GOSU safety policy.`,
     );
     if (!firstConfirmed) return;
     const secondConfirmed = window.confirm(
-      'Final warning: allowed Python entrypoints, tests, and builds execute with the SSH account’s OS and network permissions and can spawn subprocesses. Typed path limits and the lack of a raw-shell UI do not make this a remote sandbox. The direct GOSU tool surface rejects raw shell, sudo/privileged requests, TTY/forwarding, host mounts, out-of-grant paths, and direct destructive host commands. Those input checks do not constrain code after launch: it may read or change secrets and paths outside the grant, use the network, or start any subprocess the SSH account permits. Enable anyway?',
+      server.privilegeClass === 'root'
+        ? `ROOT FINAL WARNING: code launched for ${project.name} will run as root and may read, modify, or delete anything on the remote server, including data outside ${server.canonicalRoot}. GOSU still exposes only its bounded project operations, but launched repository code is not sandboxed and can use root OS and network permissions or spawn subprocesses. Enable automatic ROOT execution for this project anyway?`
+        : 'Final warning: allowed Python entrypoints, tests, and builds execute with the SSH account’s OS and network permissions and can spawn subprocesses. Typed path limits and the lack of a raw-shell UI do not make this a remote sandbox. The direct GOSU tool surface rejects raw shell, sudo/privileged requests, TTY/forwarding, host mounts, out-of-grant paths, and direct destructive host commands. Those input checks do not constrain code after launch: it may read or change secrets and paths outside the grant, use the network, or start any subprocess the SSH account permits. Enable anyway?',
     );
     if (!secondConfirmed) return;
     setTrustedWorkspaceBusyGrantId(server.grantId);
@@ -1021,6 +1042,7 @@ export function ProjectChatView({
         expectedVersion: server.grantVersion,
         confirmTrustedWorkspaceRisk: true,
         confirmNoRemoteSandbox: true,
+        ...(server.privilegeClass === 'root' ? { confirmRootTrustedWorkspaceRisk: true } : {}),
       });
     } finally {
       setTrustedWorkspaceBusyGrantId(null);
@@ -1063,7 +1085,7 @@ export function ProjectChatView({
         {...(onRenameSession ? { onRename: onRenameSession } : {})}
       />
       <section
-        className={`project-chat-shell ${advancedOpen && !chatDetailsCollapsed ? 'agent-controls-open' : ''} ${chatDetailsCollapsed ? 'chat-details-collapsed' : ''}`}
+        className={`project-chat-shell ${advancedOpen && !chatDetailsCollapsed ? 'agent-controls-open' : ''} ${projectRulesOpen ? 'project-rules-open' : ''} ${chatDetailsCollapsed ? 'chat-details-collapsed' : ''}`}
         aria-label={`${project.name} project chat`}
       >
         <header className={`chat-toolbar ${chatDetailsCollapsed ? 'collapsed' : ''}`}>
@@ -1087,6 +1109,15 @@ export function ProjectChatView({
                   </span>
                 )}
                 {selectionWarning && <span className="warning">Selection needs attention</span>}
+                <button
+                  type="button"
+                  className={`chat-toolbar-status ${projectRulesOpen ? 'active' : ''}`}
+                  aria-expanded={projectRulesOpen}
+                  onClick={() => setProjectRulesOpen((open) => !open)}
+                  disabled={!snapshot?.profile || projectBusy}
+                >
+                  Project rules ({snapshot?.profile?.policyRules.length ?? 0})
+                </button>
                 {sshWorkspaceSetupNeeded ? (
                   <button
                     type="button"
@@ -1190,10 +1221,19 @@ export function ProjectChatView({
                   >
                     Agent controls
                   </button>
+                  <button
+                    type="button"
+                    className={`secondary-button chat-project-rules-toggle ${projectRulesOpen ? 'active' : ''}`}
+                    aria-expanded={projectRulesOpen}
+                    onClick={() => setProjectRulesOpen((open) => !open)}
+                    disabled={!snapshot?.profile || projectBusy}
+                  >
+                    Project rules ({snapshot?.profile?.policyRules.length ?? 0})
+                  </button>
                 </div>
                 {hermesSelected && (
                   <div className="chat-provider-boundary" role="note">
-                    <strong>BYO Hermes · ACP agent mode</strong>
+                    <strong>Hermes · verified ACP agent mode</strong>
                     <span>
                       Uses the verified Hermes agent configured on this Mac with no native tools.
                       Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP
@@ -1256,7 +1296,9 @@ export function ProjectChatView({
                             <div>
                               <strong>
                                 {server.trustedAccessEnabled
-                                  ? 'Trusted workspace · Full access'
+                                  ? server.privilegeClass === 'root'
+                                    ? 'Project trusted execution · ROOT auto-run'
+                                    : 'Project trusted execution · Auto-run'
                                   : 'Allow once required'}
                               </strong>
                               <span>
@@ -1264,9 +1306,11 @@ export function ProjectChatView({
                                   ? 'Supported bounded operations are auto-approved and audited.'
                                   : server.permissionMode !== 'workspace'
                                     ? 'Switch this grant to Workspace before enabling trust.'
-                                    : server.privilegeClass !== 'standard'
-                                      ? 'Trusted mode is unavailable for root or unresolved SSH users.'
-                                      : 'Optional: remove repeated prompts for this exact project workspace.'}
+                                    : server.privilegeClass === 'unknown'
+                                      ? 'Auto-run is unavailable because the SSH user could not be verified.'
+                                      : server.privilegeClass === 'root'
+                                        ? 'Optional, high risk: auto-run supported project operations as ROOT after an additional warning.'
+                                        : 'Optional: remove repeated prompts for this exact project workspace.'}
                               </span>
                             </div>
                             {server.trustedAccessEnabled ? (
@@ -1291,12 +1335,14 @@ export function ProjectChatView({
                                   projectBusy ||
                                   trustedWorkspaceBusyGrantId === server.grantId ||
                                   server.permissionMode !== 'workspace' ||
-                                  server.privilegeClass !== 'standard'
+                                  server.privilegeClass === 'unknown'
                                 }
                               >
                                 {trustedWorkspaceBusyGrantId === server.grantId
                                   ? 'Enabling…'
-                                  : 'Enable full access…'}
+                                  : server.privilegeClass === 'root'
+                                    ? 'Enable ROOT auto-run…'
+                                    : 'Enable auto-run…'}
                               </button>
                             )}
                           </div>
@@ -1314,22 +1360,45 @@ export function ProjectChatView({
               </>
             )}
           </div>
-          <button
-            type="button"
-            className="ghost-button chat-details-toggle"
-            onClick={() => onChatDetailsCollapsedChange(!chatDetailsCollapsed)}
-            aria-controls={chatToolbarDetailsId}
-            aria-expanded={!chatDetailsCollapsed}
-            aria-label={chatDetailsCollapsed ? 'Show chat details' : 'Hide chat details'}
-            title={
-              chatDetailsCollapsed
-                ? 'Show model and server details'
-                : 'Minimize model and server details'
-            }
-          >
-            {chatDetailsCollapsed ? 'Show details' : 'Minimize'}
-          </button>
+          <div className="chat-toolbar-actions">
+            {inFlight && (
+              <button
+                type="button"
+                className="danger-button chat-toolbar-stop"
+                onClick={onCancel}
+                aria-label="Stop the current Project Chat response"
+              >
+                Stop response
+              </button>
+            )}
+            <button
+              type="button"
+              className="ghost-button chat-details-toggle"
+              onClick={() => onChatDetailsCollapsedChange(!chatDetailsCollapsed)}
+              aria-controls={chatToolbarDetailsId}
+              aria-expanded={!chatDetailsCollapsed}
+              aria-label={chatDetailsCollapsed ? 'Show chat details' : 'Hide chat details'}
+              title={
+                chatDetailsCollapsed
+                  ? 'Show model and server details'
+                  : 'Minimize model and server details'
+              }
+            >
+              {chatDetailsCollapsed ? 'Show details' : 'Minimize'}
+            </button>
+          </div>
         </header>
+
+        {projectRulesOpen && snapshot?.profile && (
+          <ProjectPolicyRulesEditor
+            projectName={project.name}
+            rules={snapshot.profile.policyRules}
+            profileVersion={snapshot.profile.version}
+            disabled={projectBusy || inFlight}
+            onSave={(policyRules) => onUpdatePolicyRules(snapshot.profile!, policyRules)}
+            onClose={() => setProjectRulesOpen(false)}
+          />
+        )}
 
         {advancedOpen && !chatDetailsCollapsed && (
           <section className="chat-agent-controls" aria-label="Advanced agent controls">
@@ -1481,7 +1550,7 @@ export function ProjectChatView({
               </span>
               <small>
                 {hermesSelected
-                  ? 'GOSU runs the pinned BYO Hermes ACP adapter through a project/session-isolated local profile with an empty native tool surface. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Terminal, processes, code execution, all file tools, web, browser automation, native delegation, memory, skills, configured MCP, GOSU tools, attachments, YOLO, duplicate persistence, and fallback are disabled. This surface has no tool approvals. Select Codex when the turn needs Board, Research Notes, Literature, SSH, or attachments.'
+                  ? 'GOSU runs its pinned, hash-verified Hermes ACP runtime through a project/session-isolated local profile with an empty native tool surface. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Terminal, processes, code execution, all file tools, web, browser automation, native delegation, memory, skills, configured MCP, GOSU tools, attachments, YOLO, duplicate persistence, and fallback are disabled. This surface has no tool approvals. Select Codex when the turn needs Board, Research Notes, Literature, SSH, or attachments.'
                   : 'Board changes require Apply. Research Notes reads stay available to legacy grants, but automatic Markdown saves run only after an explicit create-only grant and never overwrite a different existing file. Only project-granted remote workspaces are visible. Trusted workspace is an explicit, per-grant option that auto-approves and audits only the same bounded operations; it expires when the project, server, grant, path, or safety policy changes and can be revoked above. Without it, Git inspection, direct-argv tests/builds, and foreground Python experiment entrypoints show their exact target, root, arguments, and risk for a fresh one-time approval. Experiments are limited to 120 seconds. The direct GOSU tool surface does not offer raw shells, inline Python, TTY, transfer, unattended execution, secret retrieval, Settings, Trash, sudo/privileged requests, host mounts, or destructive host commands. Code launched through an approved Python, test, or build operation is not contained by those input checks and can reach anything the SSH account permits, including secrets, out-of-grant paths, the network, and subprocesses.'}
               </small>
             </div>
@@ -1567,6 +1636,9 @@ export function ProjectChatView({
                 const branchAction = resolveProjectChatBranchActionState(
                   branchingMessageId === message.id,
                 );
+                const policyRuleSnapshotCount = projectChatPolicyRuleSnapshotCount(
+                  attempt?.promptProvenance,
+                );
                 return (
                   <article
                     ref={(element) => {
@@ -1620,6 +1692,9 @@ export function ProjectChatView({
                                 : ''}
                             {attempt?.contextScope
                               ? ` · ${CONTEXT_LABELS[attempt.contextScope]}`
+                              : ''}
+                            {policyRuleSnapshotCount > 0
+                              ? ` · Project rules snapshot ${policyRuleSnapshotCount}`
                               : ''}
                           </div>
                         )}
@@ -1903,7 +1978,7 @@ export function ProjectChatView({
           )}
           {hermesSelected && (
             <span id={hermesBoundaryDescriptionId} className="sr-only">
-              BYO Hermes runs through a verified ACP agent with no native tools. Codex can
+              Hermes runs through a pinned, verified ACP agent with no native tools. Codex can
               explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Terminal,
               processes, code execution, files, web, browser automation, native delegation, memory,
               skills, MCP, GOSU tools, and attachments are disabled. This surface does not show tool
@@ -1999,7 +2074,7 @@ export function ProjectChatView({
               }
               aria-label={
                 hermesSelected
-                  ? 'Turn attachments are not yet bridged to BYO Hermes'
+                  ? 'Turn attachments are not yet bridged to Hermes'
                   : 'Attach research files'
               }
               aria-describedby={hermesSelected ? hermesBoundaryDescriptionId : undefined}

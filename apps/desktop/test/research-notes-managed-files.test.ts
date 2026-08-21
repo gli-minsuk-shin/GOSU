@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   lstat,
   mkdir,
@@ -20,7 +21,10 @@ import {
   safeResearchNotesFolderName,
   type ResearchNotesOwnership,
   type ResearchNotesPendingMarkdownBundle,
+  type ResearchNotesPendingMarkdownBundleV1,
+  type ResearchNotesPendingMarkdownBundleV2,
 } from '../src/main/research-notes-managed-files';
+import type { LectureStudioFigureAsset } from '../src/shared/lecture-studio-contracts';
 
 const temporaryDirectories: string[] = [];
 const OWNERSHIP: ResearchNotesOwnership = {
@@ -30,6 +34,66 @@ const OWNERSHIP: ResearchNotesOwnership = {
   vaultId: 'b'.repeat(64),
   projectName: 'Research Project',
 };
+const FIGURE_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0x11, 0x22, 0xff, 0xd9]);
+
+function figureAsset(): LectureStudioFigureAsset {
+  const id = '77777777-7777-4777-8777-777777777777';
+  return {
+    id,
+    studioId: '33333333-3333-4333-8333-333333333333',
+    displayName: 'Plot.png',
+    fileName: `Figure-${id}.jpg`,
+    mediaType: 'image/jpeg',
+    sourceFormat: 'png',
+    byteSize: FIGURE_JPEG.byteLength,
+    width: 640,
+    height: 480,
+    sha256: createHash('sha256').update(FIGURE_JPEG).digest('hex'),
+    origin: 'user',
+    createdAt: '2026-08-20T00:00:00.000Z',
+  };
+}
+
+function pendingFigureJournal(
+  bundleId: string,
+  attemptId: string,
+): ResearchNotesPendingMarkdownBundleV2 {
+  const figure = figureAsset();
+  return {
+    schemaVersion: 2,
+    kind: 'lecture-revision',
+    projectId: OWNERSHIP.projectId,
+    bindingId: OWNERSHIP.bindingId,
+    vaultId: OWNERSHIP.vaultId,
+    bundleId,
+    studioId: figure.studioId,
+    revision: 2,
+    attemptId,
+    sourceManifestSha256: 'c'.repeat(64),
+    documentFormat: 'latex',
+    figureAssets: [figure],
+    files: [
+      {
+        name: 'Lecture Notes.tex',
+        contentSha256: '0'.repeat(64),
+        byteSize: 1,
+        encoding: 'utf8',
+      },
+      {
+        name: 'Slides.tex',
+        contentSha256: '0'.repeat(64),
+        byteSize: 1,
+        encoding: 'utf8',
+      },
+      {
+        name: figure.fileName,
+        contentSha256: figure.sha256,
+        byteSize: figure.byteSize,
+        encoding: 'binary',
+      },
+    ],
+  };
+}
 
 async function temporaryVault() {
   const root = await mkdtemp(join(tmpdir(), 'gosu-research-notes-files-'));
@@ -37,7 +101,7 @@ async function temporaryVault() {
   return realpath(root);
 }
 
-function pendingJournal(bundleId: string, attemptId: string): ResearchNotesPendingMarkdownBundle {
+function pendingJournal(bundleId: string, attemptId: string): ResearchNotesPendingMarkdownBundleV1 {
   return {
     schemaVersion: 1,
     kind: 'lecture-revision',
@@ -253,6 +317,166 @@ describe('lecture revision bundle formats', () => {
         ),
       ).rejects.toThrow('research_notes_folder_conflict');
     }
+  });
+
+  it('publishes, reopens, confirms, and resolves a binary-safe v2 LaTeX figure bundle', async () => {
+    const { root, writer } = await pendingFixture();
+    const relativeBundlePath = 'Lecture Notes & Slides/with-figure';
+    const journal = pendingFigureJournal('3'.repeat(64), '44444444-4444-4444-8444-444444444444');
+    const figure = journal.figureAssets[0]!;
+    const notes = '\\documentclass{article}\n';
+    const slides = '\\documentclass{beamer}\n';
+
+    await expect(
+      writer.createUserMarkdownBundle(
+        'Research Project',
+        relativeBundlePath,
+        [
+          { name: 'Lecture Notes.tex', content: notes },
+          { name: 'Slides.tex', content: slides },
+          { name: figure.fileName, content: FIGURE_JPEG },
+        ],
+        journal,
+        OWNERSHIP,
+      ),
+    ).resolves.toBe(true);
+
+    const reopened = new ResearchNotesManagedFiles(root);
+    const pending = await reopened.listPendingUserMarkdownBundles(
+      'Research Project',
+      'Lecture Notes & Slides',
+      OWNERSHIP,
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.journal).toMatchObject({
+      schemaVersion: 2,
+      figureAssets: [figure],
+      files: [
+        {
+          name: 'Lecture Notes.tex',
+          contentSha256: createHash('sha256').update(notes).digest('hex'),
+          byteSize: Buffer.byteLength(notes),
+          encoding: 'utf8',
+        },
+        {
+          name: 'Slides.tex',
+          contentSha256: createHash('sha256').update(slides).digest('hex'),
+          byteSize: Buffer.byteLength(slides),
+          encoding: 'utf8',
+        },
+        {
+          name: figure.fileName,
+          contentSha256: figure.sha256,
+          byteSize: FIGURE_JPEG.byteLength,
+          encoding: 'binary',
+        },
+      ],
+    });
+    await expect(
+      reopened.readUserBundleFigure('Research Project', relativeBundlePath, figure, OWNERSHIP),
+    ).resolves.toMatchObject({ bytes: FIGURE_JPEG });
+
+    await reopened.confirmUserMarkdownBundle(
+      'Research Project',
+      relativeBundlePath,
+      pending[0]!.journal,
+      OWNERSHIP,
+    );
+    await expect(
+      readdir(join(root, 'GOSU', 'Research Project', relativeBundlePath)).then((entries) =>
+        entries.sort(),
+      ),
+    ).resolves.toEqual(['Lecture Notes.tex', 'Slides.tex', figure.fileName].sort());
+    await expect(
+      reopened.readUserBundleFigure('Research Project', relativeBundlePath, figure, OWNERSHIP),
+    ).resolves.toMatchObject({ bytes: FIGURE_JPEG });
+  });
+
+  it('rejects binary tampering and symlink replacement before confirm or rollback', async () => {
+    const { root, writer } = await pendingFixture();
+    const journal = pendingFigureJournal('4'.repeat(64), '44444444-4444-4444-8444-444444444444');
+    const figure = journal.figureAssets[0]!;
+    const relativeBundlePath = 'Lecture Notes & Slides/tamper';
+    const files = [
+      { name: 'Lecture Notes.tex', content: '\\documentclass{article}\n' },
+      { name: 'Slides.tex', content: '\\documentclass{beamer}\n' },
+      { name: figure.fileName, content: FIGURE_JPEG },
+    ] as const;
+    await writer.createUserMarkdownBundle(
+      'Research Project',
+      relativeBundlePath,
+      files,
+      journal,
+      OWNERSHIP,
+    );
+    const [pending] = await writer.listPendingUserMarkdownBundles(
+      'Research Project',
+      'Lecture Notes & Slides',
+      OWNERSHIP,
+    );
+    const figurePath = join(root, 'GOSU', 'Research Project', relativeBundlePath, figure.fileName);
+    await writeFile(figurePath, Buffer.from([0xff, 0xd8, 0xff, 0x99, 0x88, 0xff, 0xd9]));
+    await expect(
+      writer.confirmUserMarkdownBundle(
+        'Research Project',
+        relativeBundlePath,
+        pending!.journal,
+        OWNERSHIP,
+      ),
+    ).rejects.toThrow('research_notes_folder_conflict');
+
+    await rm(figurePath);
+    const outside = join(root, 'outside.jpg');
+    await writeFile(outside, FIGURE_JPEG);
+    await symlink(outside, figurePath);
+    await expect(
+      writer.rollbackUserMarkdownBundle(
+        'Research Project',
+        relativeBundlePath,
+        pending!.journal,
+        OWNERSHIP,
+      ),
+    ).rejects.toThrow('research_notes_folder_conflict');
+    await expect(
+      readFile(
+        join(root, 'GOSU', 'Research Project', relativeBundlePath, '.gosu-pending-bundle.json'),
+        'utf8',
+      ),
+    ).resolves.toContain('"schemaVersion": 2');
+  });
+
+  it('rolls back an intact v2 bundle as one directory', async () => {
+    const { root, writer } = await pendingFixture();
+    const journal = pendingFigureJournal('5'.repeat(64), '44444444-4444-4444-8444-444444444444');
+    const figure = journal.figureAssets[0]!;
+    const relativeBundlePath = 'Lecture Notes & Slides/rollback-figure';
+    await writer.createUserMarkdownBundle(
+      'Research Project',
+      relativeBundlePath,
+      [
+        { name: 'Lecture Notes.tex', content: '\\documentclass{article}\n' },
+        { name: 'Slides.tex', content: '\\documentclass{beamer}\n' },
+        { name: figure.fileName, content: FIGURE_JPEG },
+      ],
+      journal,
+      OWNERSHIP,
+    );
+    const [pending] = await writer.listPendingUserMarkdownBundles(
+      'Research Project',
+      'Lecture Notes & Slides',
+      OWNERSHIP,
+    );
+
+    await writer.rollbackUserMarkdownBundle(
+      'Research Project',
+      relativeBundlePath,
+      pending!.journal,
+      OWNERSHIP,
+    );
+
+    await expect(
+      lstat(join(root, 'GOSU', 'Research Project', relativeBundlePath)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 

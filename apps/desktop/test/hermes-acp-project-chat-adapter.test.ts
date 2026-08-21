@@ -9,6 +9,8 @@ import {
 import type {
   HermesAcpClientOptions,
   HermesAcpPermissionRequest,
+  HermesAcpPromptResult,
+  HermesAcpPromptUsage,
   HermesAcpSanitizedSessionUpdate,
 } from '../src/main/hermes-acp-client';
 import { HermesAcpApprovalService } from '../src/main/hermes-acp-approval-service';
@@ -22,6 +24,7 @@ import {
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const SESSION_ID = '22222222-2222-4222-8222-222222222222';
+const ATTEMPT_ID = '33333333-3333-4333-8333-333333333333';
 const RUNTIME: HermesValidatedAcpRuntime = {
   pythonPath: '/Users/researcher/.hermes/hermes-agent/venv/bin/python',
   rootPath: '/Users/researcher/.hermes/hermes-agent',
@@ -77,7 +80,7 @@ class FakeAcpClient extends EventEmitter implements HermesAcpProjectChatClient {
   readonly terminateImmediately = vi.fn(() => {
     this.promptReject?.(new Error('fake_acp_terminated'));
   });
-  private promptResolve: ((result: { stopReason: string }) => void) | null = null;
+  private promptResolve: ((result: HermesAcpPromptResult) => void) | null = null;
   private promptReject: ((error: Error) => void) | null = null;
 
   constructor(
@@ -100,13 +103,13 @@ class FakeAcpClient extends EventEmitter implements HermesAcpProjectChatClient {
   prompt(sessionId: string, text: string | readonly string[]) {
     const blocks = typeof text === 'string' ? [text] : text;
     this.prompts.push({ sessionId, blocks });
-    return new Promise<{ stopReason: string }>((resolve, reject) => {
+    return new Promise<HermesAcpPromptResult>((resolve, reject) => {
       this.promptResolve = resolve;
       this.promptReject = reject;
     });
   }
 
-  finish(text: string, stopReason = 'end_turn') {
+  finish(text: string, stopReason = 'end_turn', usage?: HermesAcpPromptUsage) {
     this.emitUpdate({
       sessionId: `acp-session-${this.number}`,
       update: {
@@ -114,7 +117,7 @@ class FakeAcpClient extends EventEmitter implements HermesAcpProjectChatClient {
         content: { type: 'text', text },
       },
     });
-    this.promptResolve?.({ stopReason });
+    this.promptResolve?.({ stopReason, ...(usage ? { usage } : {}) });
   }
 
   fail() {
@@ -262,6 +265,7 @@ describe('Hermes ACP Project Chat adapter', () => {
       executable: RUNTIME.pythonPath,
       args: [
         '-I',
+        '-B',
         '-c',
         expect.any(String),
         RUNTIME.rootPath,
@@ -293,6 +297,8 @@ describe('Hermes ACP Project Chat adapter', () => {
   it('runs a real ACP prompt, exposes sanitized invocation provenance, and never falls back', async () => {
     const { adapter, clients } = fixture();
     const { threadId } = await start(adapter);
+    const usageEvents: Array<Record<string, unknown>> = [];
+    adapter.on('usage', (event: Record<string, unknown>) => usageEvents.push(event));
     const itemCompleted = notification(adapter, 'item/completed');
     const turnCompleted = notification(adapter, 'turn/completed');
     const result = await adapter.runTurn({
@@ -323,6 +329,15 @@ describe('Hermes ACP Project Chat adapter', () => {
         actions: [],
         researchNote: { disposition: 'none' },
       }),
+      'end_turn',
+      {
+        inputTokens: 120,
+        outputTokens: 30,
+        totalTokens: 150,
+        cachedReadTokens: 20,
+        cachedWriteTokens: 5,
+        reasoningOutputTokens: 10,
+      },
     );
     const item = (await itemCompleted).item as { text: string };
     expect(JSON.parse(item.text)).toEqual({
@@ -331,6 +346,29 @@ describe('Hermes ACP Project Chat adapter', () => {
       researchNote: { disposition: 'none' },
     });
     expect((await turnCompleted).turn).toEqual({ id: result.turnId, status: 'completed' });
+    expect(usageEvents).toEqual([
+      {
+        threadId,
+        turnId: result.turnId,
+        invocationId: result.invocation.invocationId,
+        providerId: HERMES_PROVIDER_ID,
+        usage: {
+          inputTokens: 120,
+          outputTokens: 30,
+          totalTokens: 150,
+          cachedReadTokens: 20,
+          cachedWriteTokens: 5,
+          reasoningOutputTokens: 10,
+        },
+        stopReason: 'end_turn',
+        successful: true,
+        connection: {
+          connectionKey: 'hermes:fixture-provider',
+          connectionLabel: 'fixture-provider',
+          upstreamProviderId: 'fixture-provider',
+        },
+      },
+    ]);
   });
 
   it('fails closed on every ACP tool permission request even during an active turn', async () => {
@@ -627,9 +665,16 @@ describe('Hermes ACP Project Chat adapter', () => {
   it('offers a bounded ephemeral delegation API with provenance and process cleanup', async () => {
     const { adapter, clients, runtimeDiscovery } = fixture();
     await adapter.refreshConnectionCatalogs();
+    const invocationEvents: Array<Record<string, unknown>> = [];
+    const usageEvents: Array<Record<string, unknown>> = [];
+    adapter.on('delegationInvocation', (event: Record<string, unknown>) =>
+      invocationEvents.push(event),
+    );
+    adapter.on('delegationUsage', (event: Record<string, unknown>) => usageEvents.push(event));
     const delegated = adapter.delegate({
       projectId: PROJECT_ID,
       sessionId: SESSION_ID,
+      attemptId: ATTEMPT_ID,
       cwd: '/workspace/project',
       task: 'Synthesize the experiment findings.',
       context: 'Only use the bounded supplied evidence.',
@@ -644,7 +689,14 @@ describe('Hermes ACP Project Chat adapter', () => {
     expect(clients[0]!.prompts[0]!.blocks.join('\n')).toContain(
       'No native Hermes tools are available',
     );
-    clients[0]!.finish('A bounded synthesis.');
+    clients[0]!.finish('A bounded synthesis.', 'end_turn', {
+      inputTokens: 80,
+      outputTokens: 20,
+      totalTokens: 100,
+      cachedReadTokens: 8,
+      cachedWriteTokens: 2,
+      reasoningOutputTokens: 4,
+    });
 
     await expect(delegated).resolves.toEqual({
       reply: 'A bounded synthesis.',
@@ -663,6 +715,45 @@ describe('Hermes ACP Project Chat adapter', () => {
         startedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
       },
     });
+    expect(invocationEvents).toEqual([
+      expect.objectContaining({
+        invocation: expect.objectContaining({ providerId: HERMES_PROVIDER_ID }),
+        connection: {
+          connectionKey: 'hermes:fixture-provider',
+          connectionLabel: 'fixture-provider',
+          upstreamProviderId: 'fixture-provider',
+        },
+        attribution: {
+          workloadKind: 'hermes_delegation',
+          projectId: PROJECT_ID,
+          projectChatSessionId: SESSION_ID,
+          projectChatAttemptId: ATTEMPT_ID,
+        },
+      }),
+    ]);
+    expect(usageEvents).toEqual([
+      expect.objectContaining({
+        providerId: HERMES_PROVIDER_ID,
+        usage: {
+          inputTokens: 80,
+          outputTokens: 20,
+          totalTokens: 100,
+          cachedReadTokens: 8,
+          cachedWriteTokens: 2,
+          reasoningOutputTokens: 4,
+        },
+        stopReason: 'end_turn',
+        successful: true,
+        connection: {
+          connectionKey: 'hermes:fixture-provider',
+          connectionLabel: 'fixture-provider',
+          upstreamProviderId: 'fixture-provider',
+        },
+      }),
+    ]);
+    expect(usageEvents[0]!.invocationId).toBe(
+      (invocationEvents[0]!.invocation as Record<string, unknown>).invocationId,
+    );
     expect(clients[0]!.close).toHaveBeenCalledOnce();
   });
 

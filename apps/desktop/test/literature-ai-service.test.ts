@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
 import type { ModelInvocation } from '@gosu/contracts';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   LiteratureAiService,
@@ -99,6 +99,7 @@ class FakeCodex extends EventEmitter {
   readonly interrupted: Array<{ threadId: string; turnId: string }> = [];
   response: unknown = { updates: [] };
   early = false;
+  autoComplete = true;
   reroutedModelId: string | null = null;
   private threadCount = 0;
   private turnCount = 0;
@@ -147,8 +148,10 @@ class FakeCodex extends EventEmitter {
         params: { threadId: input.threadId, turn: { id: turnId, status: 'completed' } },
       });
     };
-    if (this.early) complete();
-    else queueMicrotask(complete);
+    if (this.autoComplete) {
+      if (this.early) complete();
+      else queueMicrotask(complete);
+    }
     return { turnId, invocation: initialInvocation };
   }
 
@@ -184,10 +187,12 @@ describe('LiteratureAiService', () => {
     const item = record(projectId);
     const storage = new MemoryStorage([item]);
     const codex = new FakeCodex();
+    const usage = { bindThread: vi.fn(), releaseThread: vi.fn() };
     codex.response = responseFor(item);
     const service = new LiteratureAiService({
       storage,
       codex,
+      usage,
       prepareDirectory: async () => '/tmp/gosu-literature-fixture',
       timeoutMs: 5_000,
     });
@@ -215,6 +220,11 @@ describe('LiteratureAiService', () => {
       inputSha256: receipt.inputSha256,
       metadataOnly: true,
     });
+    expect(usage.bindThread).toHaveBeenCalledWith('literature-thread-1', {
+      workloadKind: 'literature_organize',
+      projectId,
+    });
+    expect(usage.releaseThread).toHaveBeenCalledWith('literature-thread-1');
     expect(codex.released).toEqual(['literature-thread-1']);
   });
 
@@ -305,5 +315,35 @@ describe('LiteratureAiService', () => {
       }),
     );
     expect(codex.prompts).toEqual([]);
+  });
+
+  it('interrupts AI organization before applying any annotations', async () => {
+    const projectId = randomUUID();
+    const item = record(projectId);
+    const storage = new MemoryStorage([item]);
+    const codex = new FakeCodex();
+    codex.autoComplete = false;
+    codex.response = responseFor(item);
+    const service = new LiteratureAiService({
+      storage,
+      codex,
+      prepareDirectory: async () => '/tmp/gosu-literature-fixture',
+      timeoutMs: 5_000,
+    });
+
+    const turn = service.organize({ projectId, recordIds: [item.id] });
+    await vi.waitFor(() => expect(codex.prompts).toHaveLength(1));
+    const cancelled = await service.cancel({ projectId });
+
+    expect(cancelled).toEqual({ projectId, cancelRequested: true });
+    await expect(turn).rejects.toEqual(
+      expect.objectContaining<Partial<LiteratureAiServiceError>>({
+        code: 'literature_ai_interrupted',
+      }),
+    );
+    expect(codex.interrupted).toEqual([
+      { threadId: 'literature-thread-1', turnId: 'literature-turn-1' },
+    ]);
+    expect(storage.applied).toBeUndefined();
   });
 });

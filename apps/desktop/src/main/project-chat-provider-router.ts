@@ -54,7 +54,8 @@ function mergedCatalog(codex: ModelCatalog, hermes: ModelCatalog | null): ModelC
 
 /**
  * Routes only Project Chat traffic. Literature and Lecture continue to receive Codex directly.
- * Hermes is absent until the user explicitly connects the installed BYO runtime.
+ * Hermes is absent until the user explicitly connects the verified bundled runtime (or the
+ * development-only custom-local fallback).
  */
 export class ProjectChatProviderRouter extends EventEmitter implements ProjectChatCodex {
   private readonly threads = new Map<string, RoutedThread>();
@@ -234,6 +235,10 @@ export class ProjectChatProviderRouter extends EventEmitter implements ProjectCh
         this.emit('invocation', event);
       },
     );
+    provider.on('usage', (event: { threadId?: string; turnId?: string }) => {
+      if (!event.threadId || this.threads.get(event.threadId)?.providerId !== providerId) return;
+      this.emit('usage', event);
+    });
     provider.on('disconnected', () => {
       for (const [threadId, route] of this.threads) {
         if (route.providerId === providerId) this.threads.delete(threadId);

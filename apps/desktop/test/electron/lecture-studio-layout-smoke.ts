@@ -32,9 +32,20 @@ type ArtifactActionMetrics = Readonly<{
 
 type LayoutMetrics = Readonly<{
   initial: RectMetrics;
+  initialPdfViewport: RectMetrics;
   leftCollapsed: RectMetrics;
   bothCollapsed: RectMetrics;
   restored: RectMetrics;
+  focused: Readonly<{
+    preview: RectMetrics;
+    pdfViewport: RectMetrics;
+    counter: string;
+    scrollTop: number;
+    railDisplay: string;
+    chatDisplay: string;
+    toolbarDisplay: string;
+  }>;
+  focusRestored: RectMetrics;
   initialScrollTop: number;
   leftCollapsedScrollTop: number;
   bothCollapsedScrollTop: number;
@@ -208,6 +219,7 @@ async function exerciseLayout(window: BrowserWindow) {
         });
         await waitFor(() => pageCounter() === '2 / 3', 'lecture_studio_pdf_page_two_not_active');
         const initial = rect(preview);
+        const initialPdfViewport = rect(scroll);
         const initialArtifactActions = artifactActions();
         const initialScrollTop = scroll.scrollTop;
         const initialCounter = pageCounter();
@@ -280,6 +292,49 @@ async function exerciseLayout(window: BrowserWindow) {
           document.querySelector('.lecture-studio-layout.chat-collapsed'),
         );
 
+        const focusPdf = document.querySelector('.lecture-pdf-focus-button');
+        if (!(focusPdf instanceof HTMLButtonElement)) {
+          throw new Error('lecture_studio_pdf_focus_button_missing');
+        }
+        focusPdf.click();
+        await waitFor(
+          () => document.querySelector('.lecture-studio-layout.pdf-focused'),
+          'lecture_studio_pdf_focus_did_not_activate',
+        );
+        await settle();
+        const focusedPreview = document.querySelector('.lecture-preview.pdf-focused');
+        const focusedScroll = document.querySelector('.pdf-preview-scroll');
+        const focusedRail = document.querySelector('.lecture-studio-rail');
+        const focusedChat = document.querySelector('.lecture-chat');
+        const focusedToolbar = document.querySelector('.lecture-preview-toolbar');
+        if (!(focusedPreview instanceof HTMLElement) ||
+            !(focusedScroll instanceof HTMLElement) ||
+            !(focusedRail instanceof HTMLElement) ||
+            !(focusedChat instanceof HTMLElement) ||
+            !(focusedToolbar instanceof HTMLElement)) {
+          throw new Error('lecture_studio_pdf_focus_geometry_missing');
+        }
+        const focused = {
+          preview: rect(focusedPreview),
+          pdfViewport: rect(focusedScroll),
+          counter: pageCounter(),
+          scrollTop: focusedScroll.scrollTop,
+          railDisplay: getComputedStyle(focusedRail).display,
+          chatDisplay: getComputedStyle(focusedChat).display,
+          toolbarDisplay: getComputedStyle(focusedToolbar).display,
+        };
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await waitFor(
+          () => !document.querySelector('.lecture-studio-layout.pdf-focused'),
+          'lecture_studio_pdf_focus_escape_did_not_restore',
+        );
+        await settle();
+        const focusRestoredPreview = document.querySelector('.lecture-preview');
+        if (!(focusRestoredPreview instanceof HTMLElement)) {
+          throw new Error('lecture_studio_pdf_focus_restore_geometry_missing');
+        }
+        const focusRestored = rect(focusRestoredPreview);
+
         content.style.width = '720px';
         content.style.maxWidth = '720px';
         await settle();
@@ -341,9 +396,12 @@ async function exerciseLayout(window: BrowserWindow) {
         const narrowShowSessionsRect = rect(narrowShowSessions);
         resolve({
           initial,
+          initialPdfViewport,
           leftCollapsed,
           bothCollapsed,
           restored,
+          focused,
+          focusRestored,
           initialScrollTop,
           leftCollapsedScrollTop,
           bothCollapsedScrollTop,
@@ -488,6 +546,31 @@ async function run() {
       'lecture_studio_height_not_restored',
     );
     invariant(metrics.previewIdentityPreserved, 'lecture_studio_preview_was_remounted');
+    invariant(
+      metrics.focused.preview.width > metrics.bothCollapsed.width + 70,
+      'lecture_studio_pdf_focus_did_not_use_full_width',
+    );
+    invariant(
+      metrics.focused.pdfViewport.height > metrics.initialPdfViewport.height + 90,
+      'lecture_studio_pdf_focus_did_not_expand_viewport_height',
+    );
+    invariant(
+      metrics.focused.railDisplay === 'none' &&
+        metrics.focused.chatDisplay === 'none' &&
+        metrics.focused.toolbarDisplay === 'none',
+      'lecture_studio_pdf_focus_left_surrounding_chrome_visible',
+    );
+    invariant(metrics.focused.counter === '2 / 3', 'lecture_studio_pdf_focus_changed_page');
+    invariant(
+      Math.abs(metrics.focused.scrollTop - metrics.initialScrollTop) <= 30,
+      'lecture_studio_pdf_focus_changed_scroll',
+    );
+    invariant(
+      nearlyEqual(metrics.focusRestored.left, metrics.restored.left) &&
+        nearlyEqual(metrics.focusRestored.width, metrics.restored.width) &&
+        nearlyEqual(metrics.focusRestored.height, metrics.restored.height),
+      'lecture_studio_pdf_focus_did_not_restore_layout',
+    );
     invariant(metrics.initialCounter === '2 / 3', 'lecture_studio_initial_pdf_page_not_two');
     invariant(metrics.restoredCounter === '2 / 3', 'lecture_studio_pdf_page_changed_during_resize');
     for (const [label, scrollTop] of [

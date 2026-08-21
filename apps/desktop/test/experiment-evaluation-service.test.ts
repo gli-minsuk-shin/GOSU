@@ -209,6 +209,7 @@ class MemoryStorage implements ExperimentEvaluationStorage {
     sessionId: string;
     attemptId: string;
     errorCode: string;
+    messageStatus: 'failed' | 'interrupted';
     updatedAt: string;
   }) {
     const index = this.sessions.findIndex(
@@ -228,6 +229,19 @@ class MemoryStorage implements ExperimentEvaluationStorage {
       updatedAt: input.updatedAt,
     };
     this.sessions[index] = failed;
+    const messageIndex = this.messages.findIndex(
+      (message) =>
+        message.sessionId === input.sessionId &&
+        message.attemptId === input.attemptId &&
+        message.role === 'user',
+    );
+    if (messageIndex >= 0) {
+      this.messages[messageIndex] = {
+        ...this.messages[messageIndex]!,
+        status: input.messageStatus,
+        completedAt: input.updatedAt,
+      };
+    }
     return failed;
   }
 
@@ -285,6 +299,7 @@ class FakeCodex extends EventEmitter {
   prompt = '';
   readonly turns = new Map<string, { turnId: string; response: GenerationOutput }>();
   readonly startInputs: Record<string, unknown>[] = [];
+  readonly interrupted: Array<{ threadId: string; turnId: string }> = [];
 
   async startThread(input: Record<string, unknown>) {
     this.startInputs.push(input);
@@ -341,7 +356,9 @@ class FakeCodex extends EventEmitter {
     });
   }
 
-  async interruptTurn() {}
+  async interruptTurn(threadId: string, turnId: string) {
+    this.interrupted.push({ threadId, turnId });
+  }
   async releaseThread() {}
 }
 
@@ -396,11 +413,13 @@ function fixture() {
       runs: [],
     }),
   } as unknown as ExperimentWorkspaceService;
+  const usage = { bindThread: vi.fn(), releaseThread: vi.fn() };
   const service = new ExperimentEvaluationService({
     storage,
     workspace,
     experiments,
     codex,
+    usage,
     artifacts: { saveProfile, finalizeProfile, verifyProfile, rollbackProfile },
     prepareDirectory: async () => '/tmp/gosu-evaluation-fixture',
     now: () => new Date(now),
@@ -414,6 +433,7 @@ function fixture() {
     finalizeProfile,
     verifyProfile,
     rollbackProfile,
+    usage,
     projectId,
   };
 }
@@ -437,7 +457,7 @@ async function draftOneEvaluation() {
 
 describe('ExperimentEvaluationService', () => {
   it('creates an exploratory draft without a target and does not save artifacts before approval', async () => {
-    const { receipt, codex, saveProfile, storage } = await draftOneEvaluation();
+    const { receipt, codex, saveProfile, storage, usage, projectId } = await draftOneEvaluation();
 
     expect(receipt.session).toMatchObject({ status: 'ready', currentRevision: 1, version: 3 });
     expect(receipt.revision.draft.metrics).toEqual([
@@ -452,6 +472,11 @@ describe('ExperimentEvaluationService', () => {
     expect(codex.prompt).toContain('"objective":null');
     expect(codex.prompt).toContain('"targetOptional":true');
     expect(codex.startInputs[0]).toMatchObject({ dynamicTools: [], webSearchMode: 'disabled' });
+    expect(usage.bindThread).toHaveBeenCalledWith(expect.any(String), {
+      workloadKind: 'experiment_evaluation',
+      projectId,
+    });
+    expect(usage.releaseThread).toHaveBeenCalledWith(usage.bindThread.mock.calls[0]?.[0]);
   });
 
   it('persists code and prompt only after explicit approval and reuses the immutable recipe as a clone', async () => {
@@ -608,6 +633,44 @@ describe('ExperimentEvaluationService', () => {
     expect(secondReceipt.session.id).toBe(second.id);
     expect(firstReceipt.session.status).toBe('ready');
     expect(secondReceipt.session.status).toBe('ready');
+  });
+
+  it('interrupts only the active session turn and commits no evaluation revision', async () => {
+    const { service, codex, projectId, storage } = fixture();
+    codex.autoComplete = false;
+    const session = await service.createSession({ projectId, title: 'Cancelable evaluation' });
+
+    const turn = service.send({
+      projectId,
+      sessionId: session.id,
+      expectedVersion: session.version,
+      message: 'Draft an evaluation that I can stop.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    await vi.waitFor(() => expect(codex.turns.size).toBe(1));
+    const [threadId, running] = [...codex.turns.entries()][0]!;
+
+    const cancelled = await service.cancel({ projectId, sessionId: session.id });
+
+    expect(cancelled).toMatchObject({
+      cancelRequested: true,
+      session: {
+        id: session.id,
+        status: 'failed',
+        lastErrorCode: 'experiment_evaluation_interrupted',
+      },
+    });
+    await expect(turn).rejects.toEqual(
+      expect.objectContaining<Partial<ExperimentEvaluationServiceError>>({
+        code: 'experiment_evaluation_interrupted',
+      }),
+    );
+    expect(codex.interrupted).toContainEqual({ threadId, turnId: running.turnId });
+    expect(storage.revisions).toEqual([]);
+    expect(storage.messages).toEqual([
+      expect.objectContaining({ role: 'user', status: 'interrupted' }),
+    ]);
   });
 
   it('fails closed on unsafe generated reference code and never saves it', async () => {

@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   ProjectChatView,
+  projectChatPolicyRuleSnapshotCount,
   projectChatTodoSkillSuggestions,
   reconcileProjectChatSessionUiState,
   resolveProjectChatBranchActionState,
@@ -65,7 +66,60 @@ const linkedServerSnapshot: SshServerResourceSnapshot = {
 };
 
 describe('advanced Project Chat controls', () => {
-  it('shows the explicit BYO Hermes ACP boundary and disables unbridged attachments', () => {
+  it('shows the project-rule count frozen into an individual turn without claiming semantic use', () => {
+    expect(projectChatPolicyRuleSnapshotCount({ assemblyVersion: 4, policyRuleCount: 1 })).toBe(1);
+    expect(projectChatPolicyRuleSnapshotCount({ assemblyVersion: 3 })).toBe(0);
+    expect(projectChatPolicyRuleSnapshotCount(undefined)).toBe(0);
+
+    const source = readFileSync(
+      new URL('../src/renderer/src/project-chat-view.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('Project rules snapshot ${policyRuleSnapshotCount}');
+    expect(source).not.toContain('Project rules applied ${policyRuleSnapshotCount}');
+  });
+
+  it('surfaces the project-wide rule list from the Project Chat toolbar', () => {
+    const profile = {
+      ...defaultProjectChatProfile(project.id),
+      policyRules: ['Separate measured results from estimates.', 'State uncertainty explicitly.'],
+    };
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile,
+        }}
+        loading={false}
+        inFlight={false}
+        models={[]}
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onUpdatePolicyRules={vi.fn(async () => true)}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Project rules (2)');
+    expect(html).toContain('aria-expanded="false"');
+  });
+
+  it('shows the verified Hermes ACP boundary and disables unbridged attachments', () => {
     const html = renderToStaticMarkup(
       <ProjectChatView
         project={project}
@@ -109,7 +163,7 @@ describe('advanced Project Chat controls', () => {
 
     expect(html).toContain('Hermes configured model');
     expect(html).not.toContain('Hermes · Hermes ·');
-    expect(html).toContain('BYO Hermes · ACP agent mode');
+    expect(html).toContain('Hermes · verified ACP agent mode');
     expect(html).not.toContain('web_search');
     expect(html).not.toContain('web_extract');
     expect(html).not.toContain('delegate_task');
@@ -118,7 +172,7 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Hermes turn active');
     expect(html).toContain('선택된 Hermes ACP agent가 활용합니다');
     expect(html).toMatch(
-      /disabled=""[^>]*aria-label="Turn attachments are not yet bridged to BYO Hermes"[^>]*aria-describedby=/u,
+      /disabled=""[^>]*aria-label="Turn attachments are not yet bridged to Hermes"[^>]*aria-describedby=/u,
     );
     expect(html).toContain(
       'Turn attachments are not bridged to Hermes ACP yet; choose Codex to attach files',
@@ -171,9 +225,11 @@ describe('advanced Project Chat controls', () => {
     );
 
     expect(html).toContain('Hermes ACP · no native tools');
-    expect(html).toContain('BYO Hermes runs through a verified ACP agent with no native tools.');
+    expect(html).toContain(
+      'Hermes runs through a pinned, verified ACP agent with no native tools.',
+    );
     expect(html).toMatch(
-      /aria-label="Turn attachments are not yet bridged to BYO Hermes"[^>]*aria-describedby=/u,
+      /aria-label="Turn attachments are not yet bridged to Hermes"[^>]*aria-describedby=/u,
     );
   });
 
@@ -211,8 +267,8 @@ describe('advanced Project Chat controls', () => {
 
     expect(html).toContain('no longer in the live Project Chat catalog');
     expect(html).not.toContain('no longer in the live Codex catalog');
-    expect(html).toContain('BYO Hermes · ACP agent mode');
-    expect(html).toContain('Turn attachments are not yet bridged to BYO Hermes');
+    expect(html).toContain('Hermes · verified ACP agent mode');
+    expect(html).toContain('Turn attachments are not yet bridged to Hermes');
   });
 
   it('shows the /todo skill only while its slash command is being entered', () => {
@@ -958,7 +1014,9 @@ describe('advanced Project Chat controls', () => {
     expect(styles).toMatch(
       /\.chat-toolbar-summary-identity\s*\{[^}]*flex:\s*0 1 220px;[^}]*max-width:\s*220px;[^}]*min-width:\s*0;/su,
     );
-    expect(styles).toMatch(/\.chat-details-toggle\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;/su);
+    expect(styles).toMatch(
+      /\.chat-toolbar-actions\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;/su,
+    );
   });
 
   it('states the real remote security boundary before enabling trusted workspace access', () => {
@@ -1039,8 +1097,58 @@ describe('advanced Project Chat controls', () => {
     expect(html).not.toContain('GPU 0 utilization 81%');
     expect(html).toContain('Refresh usage');
     expect(html).toContain('Allow once required');
-    expect(html).toContain('Enable full access…');
+    expect(html).toContain('Enable auto-run…');
     expect(html).not.toContain('SSH server registered — project access is not granted yet');
+  });
+
+  it('offers project-scoped auto-run for an explicitly identified ROOT workspace', () => {
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={false}
+        models={[]}
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+        sshAccess={{ state: 'ready', registeredConnectionCount: 1, grantedWorkspaceCount: 1 }}
+        sshServers={[
+          {
+            connectionId: linkedServerSnapshot.connectionId,
+            grantId: '88888888-8888-4888-8888-888888888888',
+            grantVersion: 1,
+            label: 'ROOT GPU server',
+            canonicalRoot: '/root/agentic-study',
+            permissionMode: 'workspace',
+            trustedAccessEnabled: false,
+            privilegeClass: 'root',
+            resourceState: { phase: 'ready', snapshot: linkedServerSnapshot },
+          },
+        ]}
+        onRefreshSshResource={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Enable ROOT auto-run…');
+    expect(html).toContain('auto-run supported project operations as ROOT');
   });
 
   it('keeps the composer disabled until the default session finishes hydrating', () => {
@@ -1258,6 +1366,8 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('>Edit</button>');
     expect(html).toContain('>Remove</button>');
     expect(html).toContain('>Stop</button>');
+    expect(html).toContain('aria-label="Stop the current Project Chat response"');
+    expect(html).toContain('>Stop response</button>');
     expect(html).toContain('>Queue<span>Enter</span>');
   });
 

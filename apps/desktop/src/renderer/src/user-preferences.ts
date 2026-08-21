@@ -11,8 +11,11 @@ import {
   type AgentAddOnPreference,
 } from '../../shared/agent-addon-contracts';
 import {
+  DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
   DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+  LectureStudioDocumentFeaturesSchema,
   LectureStudioStructureTemplateSchema,
+  type LectureStudioDocumentFeatures,
   type LectureStudioStructureTemplate,
 } from '../../shared/lecture-studio-contracts';
 import {
@@ -24,6 +27,7 @@ export const APPEARANCE_OPTIONS = ['system', 'dark', 'light'] as const;
 export const TEXT_SIZE_OPTIONS = ['compact', 'default', 'large', 'extra-large'] as const;
 export const DEFAULT_AI_MODEL_ID_MAX_LENGTH = 256;
 export const DEFAULT_AI_REASONING_OPTION_ID_MAX_LENGTH = 128;
+export const MAX_PROJECT_LECTURE_DOCUMENT_FEATURE_OVERRIDES = 1_000;
 
 export type AppearancePreference = (typeof APPEARANCE_OPTIONS)[number];
 export type TextSizePreference = (typeof TEXT_SIZE_OPTIONS)[number];
@@ -45,6 +49,8 @@ export type UserPreferences = Readonly<{
   sshResourceRefreshInterval: SshResourceRefreshInterval;
   defaultBoardTemplate: WorkspaceBoardSettings;
   defaultLectureStructure: LectureStudioStructureTemplate;
+  defaultLectureDocumentFeatures: LectureStudioDocumentFeatures;
+  lectureDocumentFeaturesByProjectId: Readonly<Record<string, LectureStudioDocumentFeatures>>;
   defaultAiSelection: DefaultAiSelection;
   agentAddOns: Readonly<Record<AgentAddOnId, AgentAddOnPreference>>;
 }>;
@@ -60,6 +66,8 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   sshResourceRefreshInterval: '1m',
   defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
   defaultLectureStructure: DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+  defaultLectureDocumentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+  lectureDocumentFeaturesByProjectId: {},
   defaultAiSelection: DEFAULT_AI_SELECTION,
   agentAddOns: {
     openclaw: 'disabled',
@@ -86,6 +94,43 @@ function boundedOpaqueId(value: unknown, maximumLength: number): string | null |
     return undefined;
   }
   return value;
+}
+
+const PROJECT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+function parseLectureDocumentFeatures(value: unknown): LectureStudioDocumentFeatures {
+  const parsed = LectureStudioDocumentFeaturesSchema.safeParse(value);
+  return parsed.success ? parsed.data : { ...DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES };
+}
+
+function parseProjectLectureDocumentFeatures(
+  value: unknown,
+): Readonly<Record<string, LectureStudioDocumentFeatures>> {
+  if (!isRecord(value)) return {};
+  const entries = Object.entries(value);
+  if (entries.length > MAX_PROJECT_LECTURE_DOCUMENT_FEATURE_OVERRIDES) return {};
+
+  const parsed: Record<string, LectureStudioDocumentFeatures> = {};
+  for (const [projectId, candidate] of entries) {
+    const features = LectureStudioDocumentFeaturesSchema.safeParse(candidate);
+    if (!PROJECT_ID_PATTERN.test(projectId) || !features.success) return {};
+    parsed[projectId] = features.data;
+  }
+  return parsed;
+}
+
+export function resolveLectureDocumentFeaturesForProject(
+  preferences: Pick<
+    UserPreferences,
+    'defaultLectureDocumentFeatures' | 'lectureDocumentFeaturesByProjectId'
+  >,
+  projectId: string,
+): LectureStudioDocumentFeatures {
+  return structuredClone(
+    preferences.lectureDocumentFeaturesByProjectId[projectId] ??
+      preferences.defaultLectureDocumentFeatures,
+  );
 }
 
 export function parseDefaultAiSelection(value: unknown): DefaultAiSelection {
@@ -118,6 +163,12 @@ export function parseUserPreferences(value: unknown): UserPreferences {
   const lectureStructure = LectureStudioStructureTemplateSchema.safeParse(
     value.defaultLectureStructure,
   );
+  const defaultLectureDocumentFeatures = parseLectureDocumentFeatures(
+    value.defaultLectureDocumentFeatures,
+  );
+  const lectureDocumentFeaturesByProjectId = parseProjectLectureDocumentFeatures(
+    value.lectureDocumentFeaturesByProjectId,
+  );
   const storedAddOns = isRecord(value.agentAddOns) ? value.agentAddOns : {};
   const agentAddOns = Object.fromEntries(
     AGENT_ADD_ON_IDS.map((id) => {
@@ -138,6 +189,8 @@ export function parseUserPreferences(value: unknown): UserPreferences {
     defaultLectureStructure: lectureStructure.success
       ? lectureStructure.data
       : { ...DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE },
+    defaultLectureDocumentFeatures,
+    lectureDocumentFeaturesByProjectId,
     defaultAiSelection: parseDefaultAiSelection(value.defaultAiSelection),
     agentAddOns,
   };
@@ -159,6 +212,8 @@ function defaultUserPreferences(): UserPreferences {
     ...DEFAULT_USER_PREFERENCES,
     defaultBoardTemplate: resolveWorkspaceBoardSettings(undefined),
     defaultLectureStructure: { ...DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE },
+    defaultLectureDocumentFeatures: { ...DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES },
+    lectureDocumentFeaturesByProjectId: {},
     defaultAiSelection: { ...DEFAULT_AI_SELECTION },
     agentAddOns: { ...DEFAULT_USER_PREFERENCES.agentAddOns },
   };

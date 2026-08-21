@@ -99,6 +99,7 @@ const adapter: LiteratureViewAdapter = {
   deleteRecord: vi.fn(),
   importRecords: vi.fn(),
   exportRecords: vi.fn(),
+  cancelOrganize: vi.fn(),
 };
 
 function nodeText(node: ReactNode): string {
@@ -123,6 +124,17 @@ function findButton(node: ReactNode, label: string): ReactElement<{ onClick?: ()
 }
 
 describe('Literature workspace', () => {
+  it('exposes a stop action for the foreground AI organization turn', () => {
+    const source = readFileSync(
+      new URL('../src/renderer/src/literature-view.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain("busy === 'organize'");
+    expect(source).toContain('Stop AI');
+    expect(source).toContain('adapter.cancelOrganize');
+  });
+
   it('reports an isolated identity conflict without presenting the entire search as failed', () => {
     const completedAt = '2026-08-05T00:00:01.000Z';
     const notice = literatureSearchNotice({

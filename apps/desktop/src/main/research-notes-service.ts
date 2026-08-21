@@ -9,7 +9,13 @@ import type { ModelInvocation } from '@gosu/contracts';
 import type { LiteratureRecord } from '../shared/literature-contracts';
 import type {
   LectureStudioArtifact,
+  LectureStudioFigureAsset,
   PendingLectureRevisionArtifacts,
+} from '../shared/lecture-studio-contracts';
+import {
+  LECTURE_STUDIO_MAX_FIGURE_BYTES,
+  LECTURE_STUDIO_MAX_FIGURES,
+  LectureStudioFigureAssetSchema,
 } from '../shared/lecture-studio-contracts';
 import type { LocalNotesVaultGrant } from '../shared/project-chat-contracts';
 import {
@@ -41,6 +47,7 @@ import {
   safeResearchNotesFolderName,
   ResearchNotesManagedFiles,
   type ResearchNotesMarkdownBundleFile,
+  type ResearchNotesPendingBundleFileV2,
   type ResearchNotesPendingMarkdownBundle,
 } from './research-notes-managed-files';
 import {
@@ -224,6 +231,10 @@ export type SaveLectureRevisionArtifactsInput = Readonly<{
   invocation?: ModelInvocation;
   relatedDocuments?: readonly string[];
   relatedPapers?: readonly string[];
+  figureAssets?: readonly Readonly<{
+    asset: LectureStudioFigureAsset;
+    bytes: Uint8Array;
+  }>[];
 }>;
 
 /** Main-process-only capability for one exact, already committed Lecture artifact. */
@@ -234,6 +245,21 @@ export type ResolvedLectureRevisionArtifact = Readonly<{
   content: string;
   contentSha256: string;
 }>;
+
+export type ResolvedLectureRevisionFigure = Readonly<{
+  absolutePath: string;
+  relativePath: string;
+  fileName: string;
+  bytes: Buffer;
+  contentSha256: string;
+  byteSize: number;
+}>;
+
+type PendingLectureRevisionArtifactsWithFigures = PendingLectureRevisionArtifacts &
+  Readonly<{
+    figureAssets?: readonly LectureStudioFigureAsset[];
+    bundleFiles?: readonly ResearchNotesPendingBundleFileV2[];
+  }>;
 
 const RESEARCH_NOTES_AGENT_CATEGORY_FOLDERS = {
   literature: 'Literature',
@@ -295,8 +321,8 @@ export class ResearchNotesServiceError extends Error {
   }
 }
 
-function sha256(value: string) {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
+function sha256(value: string | Uint8Array) {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 export function prepareResearchNotesAgentMarkdown(
@@ -405,7 +431,11 @@ function safeAgentMarkdownFileStem(title: string) {
   return result || 'Research Note';
 }
 
-function lectureRevisionBundleId(input: SaveLectureRevisionArtifactsInput, bindingId: string) {
+function lectureRevisionBundleId(
+  input: SaveLectureRevisionArtifactsInput,
+  bindingId: string,
+  figures: readonly LectureStudioFigureAsset[] = [],
+) {
   const identity = [
     input.outputProjectId,
     bindingId,
@@ -420,12 +450,30 @@ function lectureRevisionBundleId(input: SaveLectureRevisionArtifactsInput, bindi
       input.authoringPolicySha256!,
     );
   }
+  if (figures.length > 0) {
+    identity.push(
+      'figure-manifest-v1',
+      sha256(
+        JSON.stringify(
+          figures.map((figure) => ({
+            id: figure.id,
+            fileName: figure.fileName,
+            sha256: figure.sha256,
+            byteSize: figure.byteSize,
+            width: figure.width,
+            height: figure.height,
+          })),
+        ),
+      ),
+    );
+  }
   return sha256(identity.join('\0'));
 }
 
 function pendingRevisionJournal(
   pending: PendingLectureRevisionArtifacts,
 ): ResearchNotesPendingMarkdownBundle {
+  const pendingWithFigures = pending as PendingLectureRevisionArtifactsWithFigures;
   const relativeBundlePath = safeProjectPath(pending.relativeBundlePath);
   const notesFileName = basename(
     pending.artifacts.find((artifact) => artifact.kind === 'lecture-notes')?.relativePath ?? '',
@@ -444,7 +492,7 @@ function pendingRevisionJournal(
   ) {
     throw new ResearchNotesServiceError('research_notes_folder_conflict');
   }
-  return {
+  const common = {
     schemaVersion: 1,
     kind: 'lecture-revision',
     projectId: pending.outputProjectId,
@@ -462,6 +510,31 @@ function pendingRevisionJournal(
           authoringPolicySha256: pending.authoringPolicySha256,
         }
       : {}),
+  } as const;
+  const figureAssets = pendingWithFigures.figureAssets ?? [];
+  if (figureAssets.length > 0) {
+    const bundleFiles = pendingWithFigures.bundleFiles;
+    if (
+      documentFormat !== 'latex' ||
+      !bundleFiles ||
+      bundleFiles.length !== 2 + figureAssets.length ||
+      bundleFiles.find((file) => file.name === fileNames.notes)?.contentSha256 !==
+        notes.contentSha256 ||
+      bundleFiles.find((file) => file.name === fileNames.slides)?.contentSha256 !==
+        slides.contentSha256
+    ) {
+      throw new ResearchNotesServiceError('research_notes_folder_conflict');
+    }
+    return {
+      ...common,
+      schemaVersion: 2,
+      documentFormat: 'latex',
+      figureAssets,
+      files: bundleFiles,
+    };
+  }
+  return {
+    ...common,
     ...(documentFormat === 'latex' ? { documentFormat } : {}),
     files: [
       { name: fileNames.notes, contentSha256: notes.contentSha256 },
@@ -875,6 +948,53 @@ export class ResearchNotesService {
     }
   }
 
+  async resolveLectureRevisionFigure(
+    outputProjectId: string,
+    artifact: LectureStudioArtifact,
+    rawAsset: LectureStudioFigureAsset,
+  ): Promise<ResolvedLectureRevisionFigure> {
+    const ready = await this.readOnlyReadyLink(outputProjectId);
+    if (!ready) {
+      throw new ResearchNotesServiceError('research_notes_folder_unavailable');
+    }
+    let asset: LectureStudioFigureAsset;
+    try {
+      asset = LectureStudioFigureAssetSchema.parse(structuredClone(rawAsset));
+    } catch {
+      throw new ResearchNotesServiceError('research_notes_folder_conflict');
+    }
+    const artifactPath = safeProjectPath(artifact.relativePath);
+    const relativeBundlePath = posix.dirname(artifactPath);
+    if (
+      relativeBundlePath === '.' ||
+      !['Lecture Notes.tex', 'Slides.tex'].includes(posix.basename(artifactPath))
+    ) {
+      throw new ResearchNotesServiceError('research_notes_folder_conflict');
+    }
+    try {
+      const selection = this.requireVault(ready.link.vaultId);
+      const resolved = await new ResearchNotesManagedFiles(selection.root).readUserBundleFigure(
+        ready.link.folderName,
+        relativeBundlePath,
+        asset,
+        this.ownership(ready.link),
+      );
+      await this.dependencies.vault.validateGrant(ready.link.vaultId);
+      await this.assertOwnership(ready.link);
+      return {
+        absolutePath: resolved.absolutePath,
+        relativePath: `${relativeBundlePath}/${asset.fileName}`,
+        fileName: asset.fileName,
+        bytes: resolved.bytes,
+        contentSha256: asset.sha256,
+        byteSize: asset.byteSize,
+      };
+    } catch (error) {
+      if (error instanceof ResearchNotesServiceError) throw error;
+      throw new ResearchNotesServiceError('research_notes_folder_conflict');
+    }
+  }
+
   async listPendingRevisionArtifacts(
     requestedLimit = RESEARCH_NOTES_MAX_PENDING_BUNDLE_SCAN,
   ): Promise<readonly PendingLectureRevisionArtifacts[]> {
@@ -915,10 +1035,14 @@ export class ResearchNotesService {
         for (const entry of entries) {
           const documentFormat = entry.journal.documentFormat ?? 'markdown';
           const fileNames = lectureFileNames(documentFormat);
-          const notes = entry.journal.files.find((file) => file.name === fileNames.notes);
-          const slides = entry.journal.files.find((file) => file.name === fileNames.slides);
+          const textFiles =
+            entry.journal.schemaVersion === 2
+              ? entry.journal.files.filter((file) => file.encoding === 'utf8')
+              : entry.journal.files;
+          const notes = textFiles.find((file) => file.name === fileNames.notes);
+          const slides = textFiles.find((file) => file.name === fileNames.slides);
           if (!notes || !slides) continue;
-          pending.push({
+          const recovered: PendingLectureRevisionArtifactsWithFigures = {
             outputProjectId: entry.journal.projectId,
             bindingId: entry.journal.bindingId,
             vaultId: entry.journal.vaultId,
@@ -947,7 +1071,10 @@ export class ResearchNotesService {
                 contentSha256: slides.contentSha256,
               },
             ],
-          });
+            figureAssets: entry.journal.schemaVersion === 2 ? entry.journal.figureAssets : [],
+            ...(entry.journal.schemaVersion === 2 ? { bundleFiles: entry.journal.files } : {}),
+          };
+          pending.push(recovered);
         }
       } catch {
         // Recovery is best effort per project; never let one unavailable folder block another.
@@ -1291,6 +1418,40 @@ export class ResearchNotesService {
     project: ProjectRecord,
     link: ResearchNotesProjectLink,
   ) {
+    const documentFormat = input.documentFormat ?? 'markdown';
+    const figureRecords = (input.figureAssets ?? []).map((record) => {
+      let asset: LectureStudioFigureAsset;
+      try {
+        asset = LectureStudioFigureAssetSchema.parse(structuredClone(record.asset));
+      } catch {
+        throw new ResearchNotesServiceError('research_notes_folder_conflict');
+      }
+      const bytes = Buffer.from(record.bytes);
+      if (
+        asset.studioId !== input.studioId ||
+        bytes.byteLength !== asset.byteSize ||
+        bytes.byteLength < 5 ||
+        bytes.byteLength > LECTURE_STUDIO_MAX_FIGURE_BYTES ||
+        sha256(bytes) !== asset.sha256 ||
+        bytes[0] !== 0xff ||
+        bytes[1] !== 0xd8 ||
+        bytes[2] !== 0xff ||
+        bytes.at(-2) !== 0xff ||
+        bytes.at(-1) !== 0xd9
+      ) {
+        throw new ResearchNotesServiceError('research_notes_folder_conflict');
+      }
+      return { asset, bytes } as const;
+    });
+    if (
+      figureRecords.length > LECTURE_STUDIO_MAX_FIGURES ||
+      new Set(figureRecords.map(({ asset }) => asset.id)).size !== figureRecords.length ||
+      new Set(figureRecords.map(({ asset }) => asset.fileName)).size !== figureRecords.length ||
+      new Set(figureRecords.map(({ asset }) => asset.sha256)).size !== figureRecords.length ||
+      (figureRecords.length > 0 && documentFormat !== 'latex')
+    ) {
+      throw new ResearchNotesServiceError('research_notes_folder_conflict');
+    }
     const generationProvenance = [
       input.generationBriefSha256,
       input.authoringPolicyVersion,
@@ -1316,7 +1477,6 @@ export class ResearchNotesService {
     ) {
       throw new ResearchNotesServiceError('research_notes_folder_conflict');
     }
-    const documentFormat = input.documentFormat ?? 'markdown';
     const fileNames = lectureFileNames(documentFormat);
     const rawNotes =
       documentFormat === 'latex' ? input.lectureNotesLatex : input.lectureNotesMarkdown;
@@ -1388,16 +1548,17 @@ export class ResearchNotesService {
       documentFormat === 'latex' ? exactLatex(rawNotes) : wrapMarkdown('lecture-notes', rawNotes);
     const slidesContent =
       documentFormat === 'latex' ? exactLatex(rawSlides) : wrapMarkdown('slides', rawSlides);
-    const bundleId = lectureRevisionBundleId(input, link.bindingId);
+    const figureAssets = figureRecords.map(({ asset }) => asset);
+    const bundleId = lectureRevisionBundleId(input, link.bindingId, figureAssets);
     const revisionLabel = String(input.revision).padStart(4, '0');
     const folderName = `${safeAgentMarkdownFileStem(input.studioTitle)}--r${revisionLabel}--${bundleId.slice(0, AGENT_MARKDOWN_ARTIFACT_ID_CHARACTERS)}`;
     const relativeBundlePath = safeProjectPath(`Lecture Notes & Slides/${folderName}`);
     const files: readonly ResearchNotesMarkdownBundleFile[] = [
       { name: fileNames.notes, content: notesContent },
       { name: fileNames.slides, content: slidesContent },
+      ...figureRecords.map(({ asset, bytes }) => ({ name: asset.fileName, content: bytes })),
     ];
-    const journal: ResearchNotesPendingMarkdownBundle = {
-      schemaVersion: 1,
+    const commonJournal = {
       kind: 'lecture-revision',
       projectId: input.outputProjectId,
       bindingId: link.bindingId,
@@ -1414,9 +1575,33 @@ export class ResearchNotesService {
             authoringPolicySha256: input.authoringPolicySha256!,
           }
         : {}),
-      ...(documentFormat === 'latex' ? { documentFormat } : {}),
-      files: files.map((file) => ({ name: file.name, contentSha256: sha256(file.content) })),
-    };
+    } as const;
+    const journal: ResearchNotesPendingMarkdownBundle =
+      figureAssets.length > 0
+        ? {
+            schemaVersion: 2,
+            ...commonJournal,
+            documentFormat: 'latex',
+            figureAssets,
+            files: files.map((file) => ({
+              name: file.name,
+              contentSha256: sha256(file.content),
+              byteSize:
+                typeof file.content === 'string'
+                  ? Buffer.byteLength(file.content, 'utf8')
+                  : file.content.byteLength,
+              encoding: typeof file.content === 'string' ? 'utf8' : 'binary',
+            })),
+          }
+        : {
+            schemaVersion: 1,
+            ...commonJournal,
+            ...(documentFormat === 'latex' ? { documentFormat } : {}),
+            files: files.map((file) => ({
+              name: file.name,
+              contentSha256: sha256(file.content),
+            })),
+          };
     const artifacts: readonly [LectureStudioArtifact, LectureStudioArtifact] = [
       {
         kind: 'lecture-notes',
@@ -1431,7 +1616,7 @@ export class ResearchNotesService {
         savedAt: input.createdAt,
       },
     ];
-    return { relativeBundlePath, files, journal, artifacts };
+    return { relativeBundlePath, files, journal, artifacts, figureAssets };
   }
 
   private async requireReadyLink(projectId: string, expectedBindingId: string) {

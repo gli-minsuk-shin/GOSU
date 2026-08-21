@@ -7,6 +7,9 @@ export const PROJECT_CHAT_MAX_MESSAGE_LENGTH = 12_000;
 export const PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH = 32_000;
 export const PROJECT_CHAT_MAX_RESEARCH_NOTE_MARKDOWN_CHARACTERS = 28_000;
 export const PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH = 4_000;
+export const PROJECT_CHAT_MAX_POLICY_RULES = 20;
+export const PROJECT_CHAT_MAX_POLICY_RULE_LENGTH = 800;
+export const PROJECT_CHAT_MAX_POLICY_RULES_TOTAL_LENGTH = 8_000;
 export const PROJECT_CHAT_MAX_SESSIONS_PER_PROJECT = 100;
 export const PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH = 120;
 export const PROJECT_CHAT_MAX_BRANCH_DEPTH = 32;
@@ -73,6 +76,54 @@ const opaqueCollaborationModeIdSchema = z
   .min(1)
   .max(128)
   .refine((value) => value.trim().length > 0, 'Collaboration mode ID cannot be blank');
+
+const unsafeProjectPolicyRuleFormatCharacterPattern =
+  /[\u200b-\u200d\u202a-\u202e\u2066-\u2069\ufeff]/u;
+const containsUnsafeProjectPolicyRuleCharacter = (value: string) =>
+  unsafeProjectPolicyRuleFormatCharacterPattern.test(value) ||
+  [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return (code < 32 && code !== 9 && code !== 10 && code !== 13) || code === 127;
+  });
+
+export const ProjectChatPolicyRuleSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(PROJECT_CHAT_MAX_POLICY_RULE_LENGTH)
+  .refine(
+    (value) => !containsUnsafeProjectPolicyRuleCharacter(value),
+    'Project policy rules cannot contain hidden or control characters',
+  )
+  .transform((value) => value.normalize('NFC'));
+
+export const ProjectChatPolicyRulesSchema = z
+  .array(ProjectChatPolicyRuleSchema)
+  .max(PROJECT_CHAT_MAX_POLICY_RULES)
+  .superRefine((rules, context) => {
+    const seen = new Set<string>();
+    let totalLength = 0;
+    for (const [index, rule] of rules.entries()) {
+      totalLength += rule.length;
+      const normalized = rule.toLocaleLowerCase('en-US');
+      if (seen.has(normalized)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Project policy rules must be unique ignoring case',
+          path: [index],
+        });
+      }
+      seen.add(normalized);
+    }
+    if (totalLength > PROJECT_CHAT_MAX_POLICY_RULES_TOTAL_LENGTH) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Project policy rules exceed the total character limit',
+      });
+    }
+  });
+
+export type ProjectChatPolicyRule = z.infer<typeof ProjectChatPolicyRuleSchema>;
 
 export const CodexCollaborationModeDescriptorSchema = z
   .object({
@@ -164,6 +215,8 @@ const ProjectChatProfileWireSchema = z
     // Optional at the wire boundary so profiles created by older desktop builds remain readable.
     localNotesVault: LocalNotesVaultGrantSchema.nullable().optional(),
     customInstructions: z.string().max(PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH),
+    // Optional so profiles written before project policy rules remain byte-compatible.
+    policyRules: ProjectChatPolicyRulesSchema.optional(),
     instructionRevision: ProjectChatInstructionRevisionSchema.nullable(),
     updatedAt: timestampSchema.nullable(),
   })
@@ -199,6 +252,7 @@ export const ProjectChatProfileSchema = ProjectChatProfileWireSchema.transform((
   responseVerbosity:
     profile.responseVerbosity ?? legacyDepthToResponseVerbosity(profile.responseDepth),
   webSearchMode: profile.webSearchMode ?? 'cached',
+  policyRules: profile.policyRules ?? [],
 }));
 
 export type ProjectChatProfile = z.infer<typeof ProjectChatProfileSchema>;
@@ -224,6 +278,7 @@ export function defaultProjectChatProfile(projectId: string): ProjectChatProfile
     contextScope: 'project',
     localNotesVault: null,
     customInstructions: '',
+    policyRules: [],
     instructionRevision: null,
     updatedAt: null,
   });
@@ -245,6 +300,8 @@ export const UpdateProjectChatProfileInputSchema = z
     // Legacy clients omitted this field and therefore retain the safe no-access default.
     localNotesVault: LocalNotesVaultGrantSchema.nullable().optional(),
     customInstructions: z.string().max(PROJECT_CHAT_MAX_CUSTOM_INSTRUCTIONS_LENGTH),
+    // Omission is accepted for older clients; storage retains the current project rules.
+    policyRules: ProjectChatPolicyRulesSchema.optional(),
   })
   .strict()
   .transform((profile) => ({
@@ -312,10 +369,21 @@ const ProjectChatPromptProvenanceV3Schema = ProjectChatPromptProvenanceV2Schema.
   })
   .strict();
 
+const ProjectChatPromptProvenanceV4Schema = ProjectChatPromptProvenanceV3Schema.omit({
+  assemblyVersion: true,
+})
+  .extend({
+    assemblyVersion: z.literal(4),
+    policyRulesSha256: sha256Schema,
+    policyRuleCount: z.number().int().min(0).max(PROJECT_CHAT_MAX_POLICY_RULES),
+  })
+  .strict();
+
 export const ProjectChatPromptProvenanceSchema = z.discriminatedUnion('assemblyVersion', [
   ProjectChatPromptProvenanceV1Schema,
   ProjectChatPromptProvenanceV2Schema,
   ProjectChatPromptProvenanceV3Schema,
+  ProjectChatPromptProvenanceV4Schema,
 ]);
 
 export type ProjectChatPromptProvenance = z.infer<typeof ProjectChatPromptProvenanceSchema>;

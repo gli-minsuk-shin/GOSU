@@ -5,7 +5,10 @@ import {
   GOSU_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
   LECTURE_STUDIO_MAX_STRUCTURE_SECTIONS,
   LECTURE_STUDIO_MAX_STRUCTURE_SECTION_TITLE,
+  LECTURE_STUDIO_SOURCE_LIST_SECTION_TITLES,
   LectureStudioStructureTemplateSchema,
+  normalizeLectureStudioDocumentSectionTitle,
+  type LectureStudioDocumentFeatures,
   type LectureStudioStructureCoverage,
   type LectureStudioStructureSection,
   type LectureStudioStructureTemplate,
@@ -22,6 +25,16 @@ type LectureStructureEditorProps = Readonly<{
   onReset?: (() => void) | undefined;
   resetDisabled?: boolean;
   resetLabel?: string;
+  allowedSourceListSectionTitles?: readonly string[];
+}>;
+
+type LectureDocumentFeaturesEditorProps = Readonly<{
+  value: LectureStudioDocumentFeatures;
+  onChange: (value: LectureStudioDocumentFeatures) => void;
+  disabled?: boolean;
+  heading?: string;
+  contextCopy?: string;
+  idPrefix?: string;
 }>;
 
 export type LectureStructureEditorValidation = Readonly<{
@@ -30,6 +43,18 @@ export type LectureStructureEditorValidation = Readonly<{
   sectionMessages: readonly (readonly string[])[];
   coverageInvalid: boolean;
 }>;
+
+const SOURCE_LIST_SECTION_TITLE_SET = new Set(
+  LECTURE_STUDIO_SOURCE_LIST_SECTION_TITLES.map((title) =>
+    normalizeLectureStudioDocumentSectionTitle(title),
+  ),
+);
+const SOURCE_LIST_SECTION_ISSUE =
+  'Source lists are controlled by Document elements. Choose a content topic instead.';
+
+function isCanonicalSourcesUsedLiteral(value: string) {
+  return value.normalize('NFC').trim().toLowerCase() === 'sources used';
+}
 
 function customTemplate(
   sections: readonly LectureStudioStructureSection[],
@@ -114,13 +139,16 @@ export function removeLectureStructureSection(
 
 function friendlySectionIssue(section: LectureStudioStructureSection | undefined) {
   const title = section?.title ?? '';
-  const normalized = title.trim().toLocaleLowerCase();
+  const normalized = normalizeLectureStudioDocumentSectionTitle(title);
   if (normalized.length === 0) return 'Enter a section name.';
   if (title.trim().length > LECTURE_STUDIO_MAX_STRUCTURE_SECTION_TITLE) {
     return `Keep section names within ${LECTURE_STUDIO_MAX_STRUCTURE_SECTION_TITLE} characters.`;
   }
-  if (['sources used', 'title', 'title slide'].includes(normalized)) {
-    return 'Title slide and Sources used are document-level items, not custom content sections.';
+  if (SOURCE_LIST_SECTION_TITLE_SET.has(normalized)) {
+    return SOURCE_LIST_SECTION_ISSUE;
+  }
+  if (['title', 'title slide'].includes(normalized)) {
+    return 'The title page is controlled by Document elements, not the custom content flow.';
   }
   return 'Use a plain-text section name without brackets, braces, or LaTeX commands.';
 }
@@ -137,31 +165,58 @@ function friendlyGlobalIssue(message: string) {
 
 export function lectureStructureEditorValidation(
   value: LectureStudioStructureTemplate,
+  allowedSourceListSectionTitles: readonly string[] = [],
 ): LectureStructureEditorValidation {
+  const allowedSourceListTitleSet = new Set(
+    allowedSourceListSectionTitles.map((title) =>
+      normalizeLectureStudioDocumentSectionTitle(title),
+    ),
+  );
   const parsed = LectureStudioStructureTemplateSchema.safeParse(value);
-  if (parsed.success) {
-    return { valid: true, messages: [], sectionMessages: [], coverageInvalid: false };
-  }
-
   const sectionMessages: string[][] = value.mode === 'custom' ? value.sections.map(() => []) : [];
   const messages: string[] = [];
-  for (const issue of parsed.error.issues) {
-    const sectionIndex = typeof issue.path[1] === 'number' ? issue.path[1] : null;
-    const message =
-      sectionIndex === null
-        ? friendlyGlobalIssue(issue.message)
-        : friendlySectionIssue(value.mode === 'custom' ? value.sections[sectionIndex] : undefined);
-    if (!messages.includes(message)) messages.push(message);
-    if (sectionIndex !== null && sectionMessages[sectionIndex]) {
-      const rowMessages = sectionMessages[sectionIndex];
-      if (!rowMessages.includes(message)) rowMessages.push(message);
+  let valid = true;
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) {
+      const sectionIndex = typeof issue.path[1] === 'number' ? issue.path[1] : null;
+      const section =
+        sectionIndex === null || value.mode !== 'custom' ? undefined : value.sections[sectionIndex];
+      const normalizedTitle = normalizeLectureStudioDocumentSectionTitle(section?.title ?? '');
+      const grandfatheredSourceListIssue =
+        sectionIndex !== null &&
+        SOURCE_LIST_SECTION_TITLE_SET.has(normalizedTitle) &&
+        allowedSourceListTitleSet.has(normalizedTitle) &&
+        !isCanonicalSourcesUsedLiteral(section?.title ?? '') &&
+        issue.message === 'Document-level items cannot be added to the custom content flow';
+      if (grandfatheredSourceListIssue) continue;
+
+      valid = false;
+      const message =
+        sectionIndex === null ? friendlyGlobalIssue(issue.message) : friendlySectionIssue(section);
+      if (!messages.includes(message)) messages.push(message);
+      if (sectionIndex !== null && sectionMessages[sectionIndex]) {
+        const rowMessages = sectionMessages[sectionIndex];
+        if (!rowMessages.includes(message)) rowMessages.push(message);
+      }
     }
   }
 
   if (value.mode === 'custom') {
     const indexesByTitle = new Map<string, number[]>();
     for (const [index, section] of value.sections.entries()) {
-      const title = section.title.trim().toLocaleLowerCase();
+      const title = normalizeLectureStudioDocumentSectionTitle(section.title);
+      if (
+        SOURCE_LIST_SECTION_TITLE_SET.has(title) &&
+        (!allowedSourceListTitleSet.has(title) || isCanonicalSourcesUsedLiteral(section.title))
+      ) {
+        valid = false;
+        if (!messages.includes(SOURCE_LIST_SECTION_ISSUE)) {
+          messages.push(SOURCE_LIST_SECTION_ISSUE);
+        }
+        if (!sectionMessages[index]?.includes(SOURCE_LIST_SECTION_ISSUE)) {
+          sectionMessages[index]?.push(SOURCE_LIST_SECTION_ISSUE);
+        }
+      }
       const indexes = indexesByTitle.get(title) ?? [];
       indexes.push(index);
       indexesByTitle.set(title, indexes);
@@ -178,13 +233,26 @@ export function lectureStructureEditorValidation(
   }
 
   return {
-    valid: false,
+    valid,
     messages,
     sectionMessages,
     coverageInvalid:
       value.mode === 'custom' &&
       !value.sections.some((section) => section.coverage === 'notes-and-slides'),
   };
+}
+
+export function sourceListSectionTitlesInLectureStructure(
+  value: LectureStudioStructureTemplate,
+): readonly string[] {
+  if (value.mode !== 'custom') return [];
+  return [
+    ...new Set(
+      value.sections
+        .map((section) => normalizeLectureStudioDocumentSectionTitle(section.title))
+        .filter((title) => SOURCE_LIST_SECTION_TITLE_SET.has(title)),
+    ),
+  ];
 }
 
 function sectionDisplayName(section: LectureStudioStructureSection, index: number) {
@@ -201,10 +269,11 @@ export function LectureStructureEditor({
   onReset,
   resetDisabled = false,
   resetLabel = 'Revert changes',
+  allowedSourceListSectionTitles = [],
 }: LectureStructureEditorProps) {
   const generatedId = useId().replaceAll(':', '');
   const fieldId = idPrefix ?? `lecture-structure-${generatedId}`;
-  const validation = lectureStructureEditorValidation(value);
+  const validation = lectureStructureEditorValidation(value, allowedSourceListSectionTitles);
   const sections = value.mode === 'custom' ? value.sections : [];
   const rowKeyCounter = useRef(0);
   const rowKeys = useRef<string[]>([]);
@@ -281,9 +350,7 @@ export function LectureStructureEditor({
       {value.mode === 'adaptive' ? (
         <div className="lecture-structure-adaptive-note">
           <strong>Source-led structure</strong>
-          <span>
-            GOSU adapts the outline to the available evidence while keeping the system items below.
-          </span>
+          <span>GOSU adapts the outline to the available evidence.</span>
         </div>
       ) : (
         <div className="lecture-structure-custom-editor">
@@ -451,33 +518,6 @@ export function LectureStructureEditor({
         </div>
       )}
 
-      <div className="lecture-structure-system-items" aria-label="Document defaults and safeguards">
-        <strong>Document defaults and safeguards</strong>
-        <ul>
-          <li>
-            <span>
-              <strong>Title slide</strong>
-              <small>Added to slides</small>
-            </span>
-            <em>Locked</em>
-          </li>
-          <li>
-            <span>
-              <strong>Evidence citations</strong>
-              <small>Kept linked across notes and slides</small>
-            </span>
-            <em>Locked</em>
-          </li>
-          <li>
-            <span>
-              <strong>Sources used</strong>
-              <small>Included by default; removable by an explicit Assistant request</small>
-            </span>
-            <em>Default</em>
-          </li>
-        </ul>
-      </div>
-
       {onReset && (
         <div className="lecture-structure-editor-actions">
           <button
@@ -491,5 +531,78 @@ export function LectureStructureEditor({
         </div>
       )}
     </section>
+  );
+}
+
+export function LectureDocumentFeaturesEditor({
+  value,
+  onChange,
+  disabled = false,
+  heading = 'Document elements',
+  contextCopy = 'Choose what appears in the generated notes and slides.',
+  idPrefix,
+}: LectureDocumentFeaturesEditorProps) {
+  const generatedId = useId().replaceAll(':', '');
+  const fieldId = idPrefix ?? `lecture-document-features-${generatedId}`;
+  const update = <Key extends keyof LectureStudioDocumentFeatures>(
+    key: Key,
+    checked: LectureStudioDocumentFeatures[Key],
+  ) => onChange({ ...value, [key]: checked });
+
+  return (
+    <fieldset
+      className="lecture-document-features"
+      disabled={disabled}
+      aria-describedby={`${fieldId}-description`}
+    >
+      <legend>{heading}</legend>
+      <p id={`${fieldId}-description`}>{contextCopy}</p>
+      <div>
+        <label htmlFor={`${fieldId}-title-page`}>
+          <input
+            id={`${fieldId}-title-page`}
+            type="checkbox"
+            checked={value.includeSlideTitlePage}
+            aria-describedby={`${fieldId}-title-page-help`}
+            onChange={(event) => update('includeSlideTitlePage', event.target.checked)}
+          />
+          <span>
+            <strong>Show a title page in slides</strong>
+            <small id={`${fieldId}-title-page-help`}>Counts toward the slide-page target.</small>
+          </span>
+        </label>
+        <label htmlFor={`${fieldId}-evidence-labels`}>
+          <input
+            id={`${fieldId}-evidence-labels`}
+            type="checkbox"
+            checked={value.showInlineEvidenceLabels}
+            aria-describedby={`${fieldId}-evidence-labels-help`}
+            onChange={(event) => update('showInlineEvidenceLabels', event.target.checked)}
+          />
+          <span>
+            <strong>Show source markers in notes and slides</strong>
+            <small id={`${fieldId}-evidence-labels-help`}>
+              Adds labels such as [P1] beside supported claims. Hidden markers still retain the
+              revision&apos;s evidence record.
+            </small>
+          </span>
+        </label>
+        <label htmlFor={`${fieldId}-sources-used`}>
+          <input
+            id={`${fieldId}-sources-used`}
+            type="checkbox"
+            checked={value.includeSourcesUsedSection}
+            aria-describedby={`${fieldId}-sources-used-help`}
+            onChange={(event) => update('includeSourcesUsedSection', event.target.checked)}
+          />
+          <span>
+            <strong>Add a Sources used list to notes</strong>
+            <small id={`${fieldId}-sources-used-help`}>
+              Adds the source list at the end of the notes.
+            </small>
+          </span>
+        </label>
+      </div>
+    </fieldset>
   );
 }

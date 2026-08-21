@@ -15,9 +15,11 @@ export type WorkspaceTabId =
   | 'objective'
   | 'experiments'
   | 'literature'
+  | 'tasks'
   | 'lecture'
   | 'search'
   | 'connections'
+  | 'usage'
   | 'notes';
 
 export type ObjectiveDraft = {
@@ -54,9 +56,11 @@ export const WORKSPACE_TABS: ReadonlyArray<{
   { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
   { id: 'experiments', label: 'Experiments', icon: '⌁' },
   { id: 'literature', label: 'Literature', icon: '▤' },
+  { id: 'tasks', label: 'Tasks', icon: '▦' },
   { id: 'lecture', label: 'Lecture notes & slides', icon: '▹' },
   { id: 'search', label: 'Search', icon: '⌕' },
   { id: 'connections', label: 'Connections', icon: '⌁' },
+  { id: 'usage', label: 'Usage', icon: '◴' },
   { id: 'notes', label: 'Research Notes', icon: '◇' },
 ];
 
@@ -107,11 +111,15 @@ export function WorkspacePageHeading({
       'Trace ideas into experiments, follow metric progress, and build a report from stored evidence.',
     literature:
       'Build a living evidence table, enrich it with AI, and move records safely between JSON, CSV, and BibTeX.',
+    tasks:
+      'Review and update the active tasks from every project in one Kanban board or To-do list.',
     lecture:
       'Combine papers and experiments across projects into editable lecture notes and timed talk slides.',
     search:
       'Search every non-trashed project locally and return to the original conversation, note, or workspace tab.',
     connections: 'Inspect real local capabilities. No connection state on this page is simulated.',
+    usage:
+      'Analyze locally recorded input and output tokens by project, Lecture generation, provider, and model.',
     notes:
       'Browse this project’s managed Obsidian research workspace. Note contents stay on this Mac.',
   };

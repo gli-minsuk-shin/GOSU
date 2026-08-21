@@ -1,18 +1,22 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
   DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+  type LectureStudioDocumentFeatures,
   type LectureStudioStructureTemplate,
 } from '../src/shared/lecture-studio-contracts';
 import { DEFAULT_WORKSPACE_BOARD_SETTINGS } from '../src/shared/workspace-contracts';
 import {
   DEFAULT_AI_SELECTION,
   DEFAULT_USER_PREFERENCES,
+  MAX_PROJECT_LECTURE_DOCUMENT_FEATURE_OVERRIDES,
   USER_PREFERENCES_STORAGE_KEY,
   applyUserPreferences,
   loadUserPreferences,
   parseDefaultAiSelection,
   parseUserPreferences,
+  resolveLectureDocumentFeaturesForProject,
   saveUserPreferences,
 } from '../src/renderer/src/user-preferences';
 
@@ -42,6 +46,14 @@ const customLectureStructure: LectureStudioStructureTemplate = {
     { title: 'Technical details', coverage: 'notes-only' },
     { title: 'Summary', coverage: 'notes-and-slides' },
   ],
+};
+
+const PROJECT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const SECOND_PROJECT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const customDocumentFeatures: LectureStudioDocumentFeatures = {
+  includeSlideTitlePage: false,
+  showInlineEvidenceLabels: false,
+  includeSourcesUsedSection: true,
 };
 
 function memoryStorage(initial?: string) {
@@ -74,6 +86,8 @@ describe('local user preferences', () => {
       sshResourceRefreshInterval: '1m',
       defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
       defaultLectureStructure: DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+      defaultLectureDocumentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+      lectureDocumentFeaturesByProjectId: {},
       defaultAiSelection: DEFAULT_AI_SELECTION,
       agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
     });
@@ -97,6 +111,8 @@ describe('local user preferences', () => {
       sshResourceRefreshInterval: '5m',
       defaultBoardTemplate: customBoardTemplate,
       defaultLectureStructure: { mode: 'adaptive' },
+      defaultLectureDocumentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+      lectureDocumentFeaturesByProjectId: {},
       defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'ultra' },
       agentAddOns: { openclaw: 'detect-local', hermes: 'connect-local' },
     });
@@ -122,6 +138,14 @@ describe('local user preferences', () => {
       sshResourceRefreshInterval: '5m',
       defaultBoardTemplate: customBoardTemplate,
       defaultLectureStructure: customLectureStructure,
+      defaultLectureDocumentFeatures: customDocumentFeatures,
+      lectureDocumentFeaturesByProjectId: {
+        [PROJECT_ID]: {
+          includeSlideTitlePage: true,
+          showInlineEvidenceLabels: false,
+          includeSourcesUsedSection: false,
+        },
+      },
       defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'ultra' },
       agentAddOns: { openclaw: 'detect-local', hermes: 'connect-local' },
     } as const;
@@ -152,6 +176,8 @@ describe('local user preferences', () => {
       sshResourceRefreshInterval: '1m',
       defaultBoardTemplate: DEFAULT_WORKSPACE_BOARD_SETTINGS,
       defaultLectureStructure: DEFAULT_LECTURE_STUDIO_STRUCTURE_TEMPLATE,
+      defaultLectureDocumentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+      lectureDocumentFeaturesByProjectId: {},
       defaultAiSelection: DEFAULT_AI_SELECTION,
       agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
     });
@@ -217,6 +243,8 @@ describe('local user preferences', () => {
       sshResourceRefreshInterval: 'manual',
       defaultBoardTemplate: customBoardTemplate,
       defaultLectureStructure: { mode: 'adaptive' },
+      defaultLectureDocumentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+      lectureDocumentFeaturesByProjectId: {},
       defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'high' },
       agentAddOns: { openclaw: 'detect-local', hermes: 'detect-local' },
     });
@@ -233,6 +261,85 @@ describe('local user preferences', () => {
     const loaded = loadUserPreferences(storage);
     expect(loaded.defaultLectureStructure).toEqual(customLectureStructure);
     expect(loaded.defaultLectureStructure).not.toBe(preferences.defaultLectureStructure);
+  });
+
+  it('keeps workspace and project Lecture document choices isolated and independently cloned', () => {
+    const parsed = parseUserPreferences({
+      ...DEFAULT_USER_PREFERENCES,
+      defaultLectureDocumentFeatures: customDocumentFeatures,
+      lectureDocumentFeaturesByProjectId: {
+        [PROJECT_ID]: {
+          includeSlideTitlePage: true,
+          showInlineEvidenceLabels: true,
+          includeSourcesUsedSection: false,
+        },
+      },
+    });
+
+    expect(resolveLectureDocumentFeaturesForProject(parsed, PROJECT_ID)).toEqual({
+      includeSlideTitlePage: true,
+      showInlineEvidenceLabels: true,
+      includeSourcesUsedSection: false,
+    });
+    expect(resolveLectureDocumentFeaturesForProject(parsed, SECOND_PROJECT_ID)).toEqual(
+      customDocumentFeatures,
+    );
+    expect(resolveLectureDocumentFeaturesForProject(parsed, SECOND_PROJECT_ID)).not.toBe(
+      parsed.defaultLectureDocumentFeatures,
+    );
+  });
+
+  it('falls back only malformed Lecture document preference fields', () => {
+    const malformedWorkspace = parseUserPreferences({
+      ...DEFAULT_USER_PREFERENCES,
+      appearance: 'dark',
+      defaultLectureDocumentFeatures: {
+        ...customDocumentFeatures,
+        unexpected: true,
+      },
+      lectureDocumentFeaturesByProjectId: {
+        [PROJECT_ID]: customDocumentFeatures,
+      },
+    });
+    expect(malformedWorkspace.appearance).toBe('dark');
+    expect(malformedWorkspace.defaultLectureDocumentFeatures).toEqual(
+      DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
+    );
+    expect(malformedWorkspace.lectureDocumentFeaturesByProjectId).toEqual({
+      [PROJECT_ID]: customDocumentFeatures,
+    });
+
+    for (const malformedOverrides of [
+      { 'not-a-project-id': customDocumentFeatures },
+      {
+        [PROJECT_ID]: {
+          includeSlideTitlePage: true,
+          showInlineEvidenceLabels: false,
+        },
+      },
+      { [PROJECT_ID]: { ...customDocumentFeatures, unexpected: true } },
+    ]) {
+      const parsed = parseUserPreferences({
+        ...DEFAULT_USER_PREFERENCES,
+        defaultLectureDocumentFeatures: customDocumentFeatures,
+        lectureDocumentFeaturesByProjectId: malformedOverrides,
+      });
+      expect(parsed.defaultLectureDocumentFeatures).toEqual(customDocumentFeatures);
+      expect(parsed.lectureDocumentFeaturesByProjectId).toEqual({});
+    }
+
+    const oversizedOverrides = Object.fromEntries(
+      Array.from({ length: MAX_PROJECT_LECTURE_DOCUMENT_FEATURE_OVERRIDES + 1 }, (_, index) => [
+        `00000000-0000-4000-8000-${index.toString().padStart(12, '0')}`,
+        customDocumentFeatures,
+      ]),
+    );
+    expect(
+      parseUserPreferences({
+        ...DEFAULT_USER_PREFERENCES,
+        lectureDocumentFeaturesByProjectId: oversizedOverrides,
+      }).lectureDocumentFeaturesByProjectId,
+    ).toEqual({});
   });
 
   it('fails closed for hidden, unknown, reserved, and TeX-like Lecture structure input', () => {

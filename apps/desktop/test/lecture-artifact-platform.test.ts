@@ -134,6 +134,31 @@ describe('Lecture artifact platform', () => {
     await expect(readFile(destination, 'utf8')).resolves.toBe('\\documentclass{article}\n');
   });
 
+  it('exports figure-bearing LaTeX as a bounded ZIP bundle', async () => {
+    const destination = join(temporaryRoot, 'Lecture Notes bundle.zip');
+    const bundle = Buffer.from('PK\u0003\u0004fixture-bundle');
+    electron.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    const platform = createLectureArtifactPlatform(
+      () => undefined,
+      () => join(temporaryRoot, 'pdf-cache'),
+    );
+
+    await expect(
+      platform.exportFile({
+        format: 'latex',
+        suggestedFileName: 'Lecture Notes bundle.zip',
+        bytes: bundle,
+      }),
+    ).resolves.toEqual({ status: 'exported', fileName: 'Lecture Notes bundle.zip' });
+
+    expect(electron.showSaveDialog).toHaveBeenCalledWith({
+      title: 'Export lecture LaTeX bundle',
+      defaultPath: 'Lecture Notes bundle.zip',
+      filters: [{ name: 'ZIP archive', extensions: ['zip'] }],
+    });
+    await expect(readFile(destination)).resolves.toEqual(bundle);
+  });
+
   it('rejects a symbolic-link export target without changing its destination', async () => {
     const victim = join(temporaryRoot, 'victim.md');
     const destination = join(temporaryRoot, 'Lecture Notes.md');

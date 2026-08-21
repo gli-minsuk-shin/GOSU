@@ -56,6 +56,7 @@ import type {
 } from '../../shared/lecture-studio-contracts';
 import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
 import { BoardView } from './board-view';
+import { WorkspaceTasksView } from './workspace-tasks-view';
 import type { HermesProjectChatConnectionUiState } from './agent-addons-section';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import { desktopContentClassName } from './desktop-content-layout';
@@ -180,6 +181,7 @@ import {
 } from './ssh-resource-summary';
 import { SshResourceRequestGuard, sshResourceProfilesKey } from './ssh-resource-request-guard';
 import { Connection, describeError } from './ui-primitives';
+import { UsageView, type UsageViewAdapter } from './usage-view';
 import {
   applyUserPreferences,
   saveUserPreferences,
@@ -209,6 +211,7 @@ const literatureAdapter: LiteratureViewAdapter = {
   importRecords: (input) => window.gosu.literature.importRecords(input),
   exportRecords: (input) => window.gosu.literature.exportRecords(input),
   organize: (input) => window.gosu.literature.organize(input),
+  cancelOrganize: (input) => window.gosu.literature.cancelOrganize(input),
   createPaperNote: (input) => window.gosu.researchNotes.createPaperNote(input),
 };
 
@@ -227,6 +230,7 @@ const experimentEvaluationAdapter: ExperimentEvaluationStudioAdapter = {
   detail: (input) => window.gosu.experimentEvaluation.detail(input),
   createSession: (input) => window.gosu.experimentEvaluation.createSession(input),
   send: (input) => window.gosu.experimentEvaluation.send(input),
+  cancel: (input) => window.gosu.experimentEvaluation.cancel(input),
   approve: (input) => window.gosu.experimentEvaluation.approve(input),
   reuseProfile: (input) => window.gosu.experimentEvaluation.reuseProfile(input),
   onEvent: (listener) => window.gosu.experimentEvaluation.onEvent(listener),
@@ -245,6 +249,14 @@ const lectureStudioAdapter: LectureStudioViewAdapter = {
   releaseAttachment: (input) => window.gosu.lectureStudio.releaseAttachment(input),
   create: (input) => window.gosu.lectureStudio.create(input),
   updateGenerationBrief: (input) => window.gosu.lectureStudio.updateGenerationBrief(input),
+  editDraft: (input) => window.gosu.lectureStudio.editDraft(input),
+  saveManualRevision: (input) => window.gosu.lectureStudio.saveManualRevision(input),
+  listFigures: (input) => window.gosu.lectureStudio.listFigures(input),
+  chooseFigures: (input) => window.gosu.lectureStudio.chooseFigures(input),
+  stageDroppedFigures: (input, files) =>
+    window.gosu.lectureStudio.stageDroppedFigures(input, files),
+  removeFigure: (input) => window.gosu.lectureStudio.removeFigure(input),
+  previewFigure: (input) => window.gosu.lectureStudio.previewFigure(input),
   generate: (input) => window.gosu.lectureStudio.generate(input),
   send: (input) => window.gosu.lectureStudio.send(input),
   cancel: (input) => window.gosu.lectureStudio.cancel(input),
@@ -260,6 +272,10 @@ const lectureStudioAdapter: LectureStudioViewAdapter = {
 
 const searchAdapter: SearchViewAdapter = {
   search: (input) => window.gosu.search.query(input),
+};
+
+const usageAdapter: UsageViewAdapter = {
+  query: (input) => window.gosu.modelUsage.query(input),
 };
 
 function createProjectCommand(
@@ -1645,7 +1661,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             reason: 'explicit-disconnect',
           }),
         );
-        setAnnouncement('Disconnected BYO Hermes. Any explicit Hermes selection was cleared.');
+        setAnnouncement('Disconnected Hermes. Any explicit Hermes selection was cleared.');
       })
       .catch((error: unknown) => {
         if (generation !== hermesProjectChatConnectionGenerationRef.current) return;
@@ -1704,7 +1720,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setWorkspaceError(null);
     try {
       await action();
-      await loadWorkspace();
+      try {
+        await loadWorkspace();
+      } catch (refreshError) {
+        setWorkspaceError(
+          `The change was saved locally, but this view could not refresh. Reopen the workspace before submitting the same change again. ${describeError(refreshError)}`,
+        );
+      }
       setAnnouncement(successMessage);
       return true;
     } catch (error) {
@@ -2328,6 +2350,18 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     setAnnouncement('Restored the project to this Mac sidebar.');
   };
 
+  const openProjectBoardFromWorkspaceTasks = (projectId: string) => {
+    const shown = showProjectLocally(projectNavigationRef.current, projectId);
+    updateProjectNavigation({
+      ...shown,
+      expandedProjectIds: [...new Set([...shown.expandedProjectIds, projectId])],
+      activeGroupExpanded: true,
+    });
+    selectProjectTab(projectId, 'board');
+    const projectName = snapshot?.projects.find((project) => project.id === projectId)?.name;
+    setAnnouncement(`Opened ${projectName ?? 'the project'} Board.`);
+  };
+
   const showAllProjects = () => {
     const next = showAllProjectsLocally(projectNavigationRef.current);
     updateProjectNavigation(next);
@@ -2783,7 +2817,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             {shouldShowActiveProjectPageHeading(activeTab) && (
               <WorkspacePageHeading
                 activeTab={activeTab}
-                activeProject={activeProject}
+                activeProject={isProjectWorkspaceTab(activeTab) ? activeProject : undefined}
                 onNewProject={() => setShowProjectForm((visible) => !visible)}
               />
             )}
@@ -2976,6 +3010,22 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   }
                 }}
                 onOpenAgentSettings={openAgentSettings}
+                onUpdatePolicyRules={(profile, policyRules) =>
+                  updateProjectChatProfile({
+                    projectId: profile.projectId,
+                    expectedVersion: profile.version,
+                    harnessMode: profile.harnessMode,
+                    responseDepth: profile.responseDepth,
+                    collaborationModeId: profile.collaborationModeId,
+                    personality: profile.personality,
+                    responseVerbosity: profile.responseVerbosity,
+                    webSearchMode: profile.webSearchMode,
+                    contextScope: profile.contextScope,
+                    localNotesVault: profile.localNotesVault ?? null,
+                    customInstructions: profile.customInstructions,
+                    policyRules: [...policyRules],
+                  })
+                }
                 onChooseAttachments={() => {
                   if (!activeProjectChatSessionId) return Promise.resolve([]);
                   return window.gosu.projectChat.chooseAttachments({
@@ -3228,6 +3278,38 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               />
             )}
 
+            {activeTab === 'tasks' && (
+              <WorkspaceTasksView
+                projects={snapshot.projects}
+                tasks={snapshot.tasks}
+                busyAction={busyAction}
+                onCreateTask={(input) =>
+                  runWorkspaceAction(
+                    'task:create',
+                    () => window.gosu.workspace.createTask(input),
+                    `Added ${input.title} to its project Board.`,
+                  )
+                }
+                onUpdateTask={(input) =>
+                  runWorkspaceAction(
+                    `task:update:${input.taskId}`,
+                    () => window.gosu.workspace.updateTask(input),
+                    'Updated the project task.',
+                  )
+                }
+                onSetTaskArchived={(input) =>
+                  runWorkspaceAction(
+                    `task:${input.archived ? 'archive' : 'restore'}:${input.taskId}`,
+                    () => window.gosu.workspace.setTaskArchived(input),
+                    input.archived
+                      ? 'Moved the project task to Task trash.'
+                      : 'Restored the task to its project Board.',
+                  )
+                }
+                onOpenProjectBoard={openProjectBoardFromWorkspaceTasks}
+              />
+            )}
+
             {activeTab === 'board' && activeProject && (
               <BoardView
                 key={activeProject.id}
@@ -3395,6 +3477,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 modelsLoading={codexBusy}
                 defaultModelSelection={preferences.defaultAiSelection}
                 defaultStructure={preferences.defaultLectureStructure}
+                defaultDocumentFeatures={preferences.defaultLectureDocumentFeatures}
+                documentFeaturesByProjectId={preferences.lectureDocumentFeaturesByProjectId}
                 codexAuthenticationRequired={codexConnectionState === 'auth-required'}
                 onRefreshModels={() => void refreshModels(true)}
                 onOpenCodexSignIn={startCodexChatGptLogin}
@@ -3403,6 +3487,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 layout={lectureStudioLayout}
                 onLayoutChange={setLectureStudioLayout}
               />
+            )}
+            {activeTab === 'usage' && (
+              <UsageView projects={snapshot.projects} adapter={usageAdapter} />
             )}
             {activeTab === 'connections' && (
               <ConnectionsView
@@ -3558,6 +3645,22 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     input.projectId,
                     () => window.gosu.ssh.removeWorkspaceGrant(input),
                     'Revoked the project remote workspace grant.',
+                  )
+                }
+                onEnableTrustedWorkspace={(input: EnableTrustedRemoteWorkspaceInput) =>
+                  runSshWorkspaceAction(
+                    `trusted-workspace-enable:${input.grantId}`,
+                    input.projectId,
+                    () => window.gosu.ssh.enableTrustedWorkspace(input),
+                    'Project auto-run enabled. Supported bounded operations no longer require Allow once.',
+                  )
+                }
+                onRevokeTrustedWorkspace={(input: RevokeTrustedRemoteWorkspaceInput) =>
+                  runSshWorkspaceAction(
+                    `trusted-workspace-revoke:${input.grantId}`,
+                    input.projectId,
+                    () => window.gosu.ssh.revokeTrustedWorkspace(input),
+                    'Project auto-run disabled. Remote operations require Allow once again.',
                   )
                 }
               />

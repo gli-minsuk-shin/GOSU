@@ -97,6 +97,12 @@ const studio = {
     notesTargetPages: 12,
     slidesTargetPages: 24,
     detailLevel: 'detailed',
+    structure: { mode: 'adaptive' },
+    documentFeatures: {
+      includeSlideTitlePage: true,
+      showInlineEvidenceLabels: true,
+      includeSourcesUsedSection: true,
+    },
     customInstructions: '',
   },
   status: 'ready',

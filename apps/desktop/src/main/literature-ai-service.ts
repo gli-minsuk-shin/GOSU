@@ -4,13 +4,17 @@ import type { EventEmitter } from 'node:events';
 import type { ModelInvocation } from '@gosu/contracts';
 
 import {
+  CancelLiteratureAiInputSchema,
   LITERATURE_AI_OUTPUT_SCHEMA,
+  LiteratureAiCancelReceiptSchema,
   LiteratureAiResponseSchema,
   LiteratureOrganizeReceiptSchema,
   type LiteratureAiAnnotationUpdate,
+  type LiteratureAiCancelReceipt,
   type LiteratureAiProvenance,
   type LiteratureOrganizeReceipt,
   type LiteratureRecord,
+  type CancelLiteratureAiInput,
   type OrganizeLiteratureInput,
 } from '../shared/literature-contracts';
 
@@ -50,10 +54,22 @@ export interface LiteratureAiCodex {
   releaseThread(threadId: string): Promise<void>;
 }
 
+export interface LiteratureAiModelUsage {
+  bindThread(
+    threadId: string,
+    attribution: Readonly<{
+      workloadKind: 'literature_organize';
+      projectId: string;
+    }>,
+  ): void;
+  releaseThread(threadId: string): void;
+}
+
 export class LiteratureAiServiceError extends Error {
   constructor(
     readonly code:
       | 'literature_ai_busy'
+      | 'literature_ai_interrupted'
       | 'literature_ai_unavailable'
       | 'literature_ai_invalid_response'
       | 'literature_ai_conflict',
@@ -71,6 +87,14 @@ type PendingTurn = {
   finalText: string | null;
   terminal: boolean;
   resolve: (value: { status: string; text: string | null }) => void;
+};
+
+type ActiveLiteratureTurn = {
+  projectId: string;
+  threadId: string | null;
+  turnId: string | null;
+  cancelRequested: boolean;
+  interruptIssued: boolean;
 };
 
 const LITERATURE_AI_INSTRUCTIONS = `You organize bibliographic metadata for a research evidence table.
@@ -155,11 +179,13 @@ export class LiteratureAiService {
   private readonly pendingByThread = new Map<string, PendingTurn>();
   private readonly bufferedByThread = new Map<string, CodexNotification[]>();
   private readonly busyProjects = new Set<string>();
+  private readonly activeByProject = new Map<string, ActiveLiteratureTurn>();
 
   constructor(
     private readonly dependencies: {
       storage: LiteratureAiStorage;
       codex: LiteratureAiCodex;
+      usage?: LiteratureAiModelUsage;
       prepareDirectory: (projectId: string) => Promise<string>;
       timeoutMs?: number;
     },
@@ -187,10 +213,19 @@ export class LiteratureAiService {
       throw new LiteratureAiServiceError('literature_ai_busy');
     }
     this.busyProjects.add(input.projectId);
+    const activeTurn: ActiveLiteratureTurn = {
+      projectId: input.projectId,
+      threadId: null,
+      turnId: null,
+      cancelRequested: false,
+      interruptIssued: false,
+    };
+    this.activeByProject.set(input.projectId, activeTurn);
     let threadId: string | null = null;
     let turnId: string | null = null;
     let turnCompleted = false;
     try {
+      this.throwIfCancelled(activeTurn);
       const records = await this.dependencies.storage.getRecordsForAi(
         input.projectId,
         input.recordIds,
@@ -209,6 +244,7 @@ export class LiteratureAiService {
         .update(JSON.stringify(canonicalInput), 'utf8')
         .digest('hex');
       const cwd = await this.dependencies.prepareDirectory(input.projectId);
+      this.throwIfCancelled(activeTurn);
       const started = await this.dependencies.codex.startThread({
         cwd,
         modelId: input.requestedModelId ?? null,
@@ -217,6 +253,12 @@ export class LiteratureAiService {
         dynamicTools: [],
       });
       threadId = started.threadId;
+      activeTurn.threadId = threadId;
+      this.throwIfCancelled(activeTurn);
+      this.dependencies.usage?.bindThread(threadId, {
+        workloadKind: 'literature_organize',
+        projectId: input.projectId,
+      });
       const completed = new Promise<{ status: string; text: string | null }>((resolve) => {
         this.pendingByThread.set(threadId!, {
           threadId: threadId!,
@@ -237,6 +279,8 @@ export class LiteratureAiService {
         outputSchema: LITERATURE_AI_OUTPUT_SCHEMA,
       });
       turnId = running.turnId;
+      activeTurn.turnId = turnId;
+      this.throwIfCancelled(activeTurn);
       const pending = this.pendingByThread.get(threadId);
       if (!pending) throw new LiteratureAiServiceError('literature_ai_unavailable');
       pending.turnId = turnId;
@@ -261,10 +305,14 @@ export class LiteratureAiService {
           void completed.finally(() => clearTimeout(timer));
         }),
       ]);
+      if (activeTurn.cancelRequested || terminal.status === 'interrupted') {
+        throw new LiteratureAiServiceError('literature_ai_interrupted');
+      }
       if (terminal.status !== 'completed') {
         throw new LiteratureAiServiceError('literature_ai_unavailable');
       }
       turnCompleted = true;
+      this.throwIfCancelled(activeTurn);
       const updates = parseCompletedResponse(terminal.text, records);
       if (!updates) throw new LiteratureAiServiceError('literature_ai_invalid_response');
       const completedAt = new Date().toISOString();
@@ -275,6 +323,7 @@ export class LiteratureAiService {
         generatedAt: completedAt,
         metadataOnly: true,
       };
+      this.throwIfCancelled(activeTurn);
       const applied = await this.dependencies.storage.applyAiAnnotations(
         input.projectId,
         updates,
@@ -300,14 +349,52 @@ export class LiteratureAiService {
       throw new LiteratureAiServiceError('literature_ai_unavailable');
     } finally {
       this.busyProjects.delete(input.projectId);
+      if (this.activeByProject.get(input.projectId) === activeTurn) {
+        this.activeByProject.delete(input.projectId);
+      }
       if (threadId) {
         this.pendingByThread.delete(threadId);
         this.bufferedByThread.delete(threadId);
-        if (turnId && !turnCompleted) {
+        if (turnId && !turnCompleted && !activeTurn.interruptIssued) {
           await this.dependencies.codex.interruptTurn(threadId, turnId).catch(() => undefined);
         }
         await this.dependencies.codex.releaseThread(threadId).catch(() => undefined);
+        this.dependencies.usage?.releaseThread(threadId);
       }
+    }
+  }
+
+  async cancel(input: CancelLiteratureAiInput): Promise<LiteratureAiCancelReceipt> {
+    const command = CancelLiteratureAiInputSchema.parse(input);
+    const active = this.activeByProject.get(command.projectId);
+    if (!active) {
+      return LiteratureAiCancelReceiptSchema.parse({
+        projectId: command.projectId,
+        cancelRequested: false,
+      });
+    }
+
+    active.cancelRequested = true;
+    if (active.threadId && active.turnId) {
+      await this.dependencies.codex
+        .interruptTurn(active.threadId, active.turnId)
+        .catch(() => undefined);
+      active.interruptIssued = true;
+      const pending = this.pendingByThread.get(active.threadId);
+      if (pending && !pending.terminal) {
+        pending.terminal = true;
+        pending.resolve({ status: 'interrupted', text: pending.finalText });
+      }
+    }
+    return LiteratureAiCancelReceiptSchema.parse({
+      projectId: command.projectId,
+      cancelRequested: true,
+    });
+  }
+
+  private throwIfCancelled(active: ActiveLiteratureTurn) {
+    if (active.cancelRequested) {
+      throw new LiteratureAiServiceError('literature_ai_interrupted');
     }
   }
 

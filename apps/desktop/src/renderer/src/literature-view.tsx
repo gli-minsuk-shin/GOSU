@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type {
+  CancelLiteratureAiInput,
   DeleteLiteratureRecordInput,
   DeleteLiteratureRecordReceipt,
   LiteratureExportReceipt,
@@ -10,6 +11,7 @@ import type {
   LiteratureImportRequest,
   LiteratureLibrary,
   LiteratureOrganizeReceipt,
+  LiteratureAiCancelReceipt,
   LiteratureRecord,
   LiteratureSearchConflict,
   LiteratureSearchInput,
@@ -68,6 +70,7 @@ export interface LiteratureViewAdapter {
   importRecords: (input: LiteratureImportRequest) => Promise<LiteratureImportReceipt>;
   exportRecords: (input: LiteratureExportRequest) => Promise<LiteratureExportReceipt>;
   organize?: (input: OrganizeLiteratureInput) => Promise<LiteratureOrganizeReceipt>;
+  cancelOrganize?: (input: CancelLiteratureAiInput) => Promise<LiteratureAiCancelReceipt>;
   createPaperNote?: (input: CreateResearchPaperNoteInput) => Promise<ResearchPaperNoteReceipt>;
 }
 
@@ -286,8 +289,12 @@ function literatureCoverageSummary(coverage: LiteratureDiscoveryCoverage | undef
   return ` Reduced signal coverage (${coverage.degradationReasons.map(formatLabel).join(', ')}); available: ${available}.`;
 }
 
+function literatureErrorCode(error: unknown) {
+  return error instanceof Error ? (error.message.split(':')[0] ?? '') : '';
+}
+
 function literatureErrorMessage(error: unknown) {
-  const code = error instanceof Error ? (error.message.split(':')[0] ?? '') : '';
+  const code = literatureErrorCode(error);
   const messages: Record<string, string> = {
     literature_provider_unavailable:
       'The literature provider is unavailable. Your saved evidence table is still available.',
@@ -306,6 +313,8 @@ function literatureErrorMessage(error: unknown) {
     literature_export_too_large:
       'This export is too large for one local operation. Filter or select fewer records.',
     literature_ai_busy: 'Another literature organization turn is already running for this project.',
+    literature_ai_interrupted:
+      'Stopped AI organization. No uncommitted literature annotations were applied.',
     literature_ai_unavailable:
       'AI organization is unavailable. Search and manual literature review remain usable.',
     literature_ai_invalid_response:
@@ -1278,9 +1287,30 @@ export function LiteratureView({
       const message = await operation();
       setNotice(message);
     } catch (reason) {
-      setError(literatureErrorMessage(reason));
+      if (literatureErrorCode(reason) === 'literature_ai_interrupted') {
+        setNotice('Stopped AI organization. No uncommitted literature annotations were applied.');
+        setError('');
+      } else {
+        setError(literatureErrorMessage(reason));
+      }
     } finally {
       setBusy('');
+    }
+  };
+
+  const cancelAiOrganization = async () => {
+    if (busy !== 'organize' || !adapter.cancelOrganize) return;
+    setNotice('Stopping AI organization…');
+    setError('');
+    try {
+      const receipt = await adapter.cancelOrganize({ projectId: project.id });
+      setNotice(
+        receipt.cancelRequested
+          ? 'Stopped AI organization. No uncommitted literature annotations were applied.'
+          : 'AI organization had already finished.',
+      );
+    } catch (reason) {
+      setError(literatureErrorMessage(reason));
     }
   };
 
@@ -1577,6 +1607,15 @@ export function LiteratureView({
                   ? `Organize next ${aiCandidates.length}`
                   : 'AI drafts complete'}
             </button>
+            {busy === 'organize' && adapter.cancelOrganize && (
+              <button
+                type="button"
+                className="danger-button"
+                onClick={() => void cancelAiOrganization()}
+              >
+                Stop AI
+              </button>
+            )}
           </div>
         </header>
         {(!adapter.organize || !aiAvailable) && (

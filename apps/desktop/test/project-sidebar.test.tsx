@@ -107,12 +107,16 @@ describe('folder-style project sidebar', () => {
       /\.sidebar-nav-icon-lecture\s*\{[^}]*width:\s*17px;[^}]*height:\s*17px;[^}]*stroke-width:\s*1\.8;/su,
     );
     expect(styles).toMatch(
+      /\.sidebar-nav-icon-usage\s*\{[^}]*width:\s*19px;[^}]*height:\s*19px;[^}]*stroke-width:\s*1\.8;/su,
+    );
+    expect(styles).toMatch(
       /\.project-folder-chevron \.collapse-chevron,[^}]*\.project-group-toggle > \.collapse-chevron\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;/su,
     );
     expect(styles).toMatch(/\.project-folder-icon\s*\{[^}]*font-size:\s*18px;/su);
     expect(html).toContain('class="sidebar-nav-icon"');
     expect(html).toContain('class="sidebar-nav-icon-graphic sidebar-nav-icon-search"');
     expect(html).toContain('class="sidebar-nav-icon-graphic sidebar-nav-icon-lecture"');
+    expect(html).toContain('class="sidebar-nav-icon-graphic sidebar-nav-icon-usage"');
     expect(html).not.toContain('⌕');
     expect(html).not.toContain('▹');
     expect(html).toContain('class="collapse-chevron"');
@@ -264,20 +268,50 @@ describe('folder-style project sidebar', () => {
     expect(html).toContain('Restore');
   });
 
-  it('keeps Lecture Studio, Connections, and Settings global while Research Notes stays project-scoped', () => {
+  it('keeps Tasks, Lecture Studio, Connections, Usage, and Settings global while Research Notes stays project-scoped', () => {
     const html = renderSidebar();
     const projectNotesPosition = html.indexOf('Research Notes');
     const workspaceNavigationPosition = html.indexOf('<small>Workspace</small>');
 
     expect(html).toContain('Workspace');
+    expect(html).toContain('Tasks');
     expect(html).toContain('Connections');
+    expect(html).toContain('Usage');
     expect(html).toContain('Lecture notes &amp; slides');
     expect(html).toContain('Research Notes');
     expect(html).toContain('Settings');
     expect(html.match(/Research Notes/gu)).toHaveLength(1);
     expect(projectNotesPosition).toBeGreaterThan(-1);
     expect(projectNotesPosition).toBeLessThan(workspaceNavigationPosition);
+    expect(html.indexOf('Tasks')).toBeGreaterThan(workspaceNavigationPosition);
+    expect(html.indexOf('Tasks')).toBeLessThan(html.indexOf('Search'));
     expect(html.indexOf('Lecture notes &amp; slides')).toBeGreaterThan(workspaceNavigationPosition);
+    expect(html.indexOf('Connections')).toBeLessThan(html.indexOf('Usage'));
+    expect(html.indexOf('Usage')).toBeLessThan(html.indexOf('Settings'));
+  });
+
+  it('marks Usage active without marking Settings active', () => {
+    const html = renderSidebar({ activeTab: 'usage' });
+    const workspaceNavigationPosition = html.indexOf('<small>Workspace</small>');
+    const workspaceHtml = html.slice(workspaceNavigationPosition);
+
+    expect(workspaceHtml).toMatch(
+      /class="active" aria-current="page"><span class="sidebar-nav-icon" aria-hidden="true"><svg class="sidebar-nav-icon-graphic sidebar-nav-icon-usage"/u,
+    );
+    expect(workspaceHtml.match(/aria-current="page"/gu)).toHaveLength(1);
+  });
+
+  it('marks the workspace Tasks destination active without selecting the project Board child', () => {
+    const html = renderSidebar({ activeTab: 'tasks' });
+    const workspaceNavigationPosition = html.indexOf('<small>Workspace</small>');
+    const workspaceHtml = html.slice(workspaceNavigationPosition);
+    const projectHtml = html.slice(0, workspaceNavigationPosition);
+
+    expect(workspaceHtml).toMatch(
+      /class="active" aria-current="page"><span class="sidebar-nav-icon" aria-hidden="true">▦<\/span>Tasks<\/button>/u,
+    );
+    expect(projectHtml).toContain('>Board</button>');
+    expect(projectHtml).not.toMatch(/class="active"[^>]*>[^<]*(?:<[^>]+>)*Board<\/button>/u);
   });
 
   it('does not render project children while the active group is minimized', () => {
