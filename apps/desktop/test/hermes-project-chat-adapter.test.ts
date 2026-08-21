@@ -46,9 +46,10 @@ const ROUTE_FINGERPRINT = 'c'.repeat(64);
 const CREDENTIAL_PROOF = 'e'.repeat(64);
 const TEST_BINDING_KEY = '12'.repeat(32);
 const CONFIGURATION = JSON.stringify({
-  protocol: 2,
+  protocol: 3,
   model: CONFIGURED_MODEL_ID,
   provider: CONFIGURED_PROVIDER_ID,
+  reasoning: 'medium',
   routeFingerprint: ROUTE_FINGERPRINT,
   credentialProof: CREDENTIAL_PROOF,
 });
@@ -220,6 +221,7 @@ function preflightFakeRoute(
     protocol: number;
     model: string;
     provider: string;
+    reasoning: string;
     routeFingerprint: string;
     credentialProof: string;
   };
@@ -344,7 +346,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
     });
     expect(platform.requests[0]!.cwd).not.toBe('/workspace/project');
     expect(catalog.providerId).toBe(HERMES_PROVIDER_ID);
-    expect(HERMES_NATIVE_REASONING_OPTION_IDS).toEqual([]);
+    expect(HERMES_NATIVE_REASONING_OPTION_IDS).toContain('xhigh');
     expect(catalog.models).toEqual([
       expect.objectContaining({
         providerId: HERMES_PROVIDER_ID,
@@ -352,11 +354,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
         displayName: `Hermes · ${CONFIGURED_MODEL_ID}`,
         isDefault: false,
         modalities: ['text'],
-        reasoningOptions: HERMES_NATIVE_REASONING_OPTION_IDS.map((id) => ({
-          id,
-          label: id,
-          isDefault: false,
-        })),
+        reasoningOptions: [{ id: 'medium', label: 'medium', isDefault: true }],
         metadata: expect.objectContaining({
           configuredModelId: CONFIGURED_MODEL_ID,
           configuredProviderId: CONFIGURED_PROVIDER_ID,
@@ -385,9 +383,10 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
       );
 
       expect(first).toMatchObject({
-        protocol: 2,
+        protocol: 3,
         model: CONFIGURED_MODEL_ID,
         provider: CONFIGURED_PROVIDER_ID,
+        reasoning: 'medium',
         routeFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
         credentialProof: expect.stringMatching(/^[a-f0-9]{64}$/u),
       });
@@ -487,6 +486,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
         environment: { HOME: root, HERMES_HOME: root },
         configuredModelId: CONFIGURED_MODEL_ID,
         configuredProviderId: CONFIGURED_PROVIDER_ID,
+        configuredReasoningOptionId: 'xhigh',
         routeFingerprint: connected.routeFingerprint,
         credentialBindingKey: TEST_BINDING_KEY,
         credentialProof: connected.credentialProof,
@@ -551,9 +551,10 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
     platform.queue(
       SUCCESS(
         `${JSON.stringify({
-          protocol: 2,
+          protocol: 3,
           model: 'provider/refreshed-model',
           provider: 'refreshed-provider',
+          reasoning: 'medium',
           routeFingerprint: 'd'.repeat(64),
           credentialProof: 'f'.repeat(64),
         })}\n`,
@@ -638,7 +639,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
     expect(HERMES_SEALED_SHIM_SOURCE).not.toContain('HERMES_ACCEPT_HOOKS');
   });
 
-  it('forces every ACP agent onto the same empty native tool surface', () => {
+  it('forces every ACP agent onto the same project-scoped read-only native tool surface', () => {
     const compiled = spawnSync(
       'python3',
       ['-c', 'import sys; compile(sys.stdin.read(), "<gosu-hermes-acp>", "exec")'],
@@ -649,7 +650,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
     );
 
     expect(compiled.status, compiled.stderr).toBe(0);
-    expect(HERMES_ACP_READ_ONLY_TOOLS).toEqual([]);
+    expect(HERMES_ACP_READ_ONLY_TOOLS).toEqual(['read_file', 'search_files']);
     expect(HERMES_SEALED_ACP_SOURCE).toContain(
       `GOSU_READ_ONLY_TOOLSET = ${JSON.stringify(HERMES_ACP_READ_ONLY_TOOLSET)}`,
     );
@@ -666,6 +667,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
       'kwargs["disabled_toolsets"] = [GOSU_DENIED_TOOLSET]',
     );
     expect(HERMES_SEALED_ACP_SOURCE).toContain('run_agent.AIAgent = GosuAIAgent');
+    expect(HERMES_SEALED_ACP_SOURCE).toContain('gosu_project_read_outside_workspace');
     expect(HERMES_SEALED_ACP_SOURCE).toContain(
       'lambda toolsets=None, mcp_server_names=None: [GOSU_READ_ONLY_TOOLSET]',
     );
@@ -675,7 +677,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
     expect(HERMES_SEALED_ACP_SOURCE).toContain(
       '"tools": sorted(known_tool_names - GOSU_READ_ONLY_TOOL_NAMES)',
     );
-    expect(HERMES_SEALED_ACP_SOURCE).toContain('_fail("hermes_native_tool_surface_not_empty")');
+    expect(HERMES_SEALED_ACP_SOURCE).toContain('_fail("hermes_native_tool_surface_mismatch")');
 
     const injection = HERMES_SEALED_ACP_SOURCE.indexOf(
       'toolsets_module.TOOLSETS[GOSU_READ_ONLY_TOOLSET] =',
@@ -688,7 +690,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
 
     const declaredSurface = HERMES_SEALED_ACP_SOURCE.match(/GOSU_READ_ONLY_TOOLS = (\[[^\n]*\])/u);
     expect(declaredSurface?.[1]).toBe(JSON.stringify(HERMES_ACP_READ_ONLY_TOOLS));
-    expect(declaredSurface?.[1]).toBe('[]');
+    expect(declaredSurface?.[1]).toBe('["read_file","search_files"]');
   });
 
   it('forwards only reviewed Hermes provider variables with a Finder-compatible PATH', () => {
@@ -791,7 +793,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
       threadId,
       prompt: 'Summarize the current objective.',
       requestedModelId: null,
-      reasoningOptionId: null,
+      reasoningOptionId: 'medium',
       cwd: '/workspace/project',
     });
     const item = (await itemCompleted).item as { text: string };
@@ -819,7 +821,7 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
     expect(result.invocation).toMatchObject({
       providerId: HERMES_PROVIDER_ID,
       resolvedModelId: CONFIGURED_MODEL_ID,
-      reasoningOptionId: null,
+      reasoningOptionId: 'medium',
     });
     expect(result.invocation.invocationId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
@@ -922,9 +924,10 @@ describe('BYO-Hermes sealed Project Chat adapter', () => {
     platform.queue(
       SUCCESS(
         `${JSON.stringify({
-          protocol: 2,
+          protocol: 3,
           model: CONFIGURED_MODEL_ID,
           provider,
+          reasoning: 'medium',
           routeFingerprint: ROUTE_FINGERPRINT,
           credentialProof: CREDENTIAL_PROOF,
         })}\n`,

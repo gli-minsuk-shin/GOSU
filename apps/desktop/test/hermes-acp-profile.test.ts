@@ -50,6 +50,7 @@ function runtime(sourceHome: string): HermesValidatedAcpRuntime {
     },
     configuredModelId: 'gpt-fixture',
     configuredProviderId: 'openai',
+    configuredReasoningOptionId: 'xhigh',
     routeFingerprint: 'c'.repeat(64),
     credentialBindingKey: 'b'.repeat(64),
     credentialProof: 'e'.repeat(64),
@@ -244,6 +245,7 @@ describe('Hermes ACP isolated profile factory', () => {
     expect(lstatSync(configPath).mode & 0o777).toBe(0o600);
     expect(config).toContain('memory_enabled: false');
     expect(config).toContain('mode: manual');
+    expect(config).toContain('reasoning_effort: "xhigh"');
     expect(config).toContain('mcp_servers: {}');
     expect(config).not.toContain('dotenv-secret');
     expect(config).not.toContain('global-history-must-not-be-used');

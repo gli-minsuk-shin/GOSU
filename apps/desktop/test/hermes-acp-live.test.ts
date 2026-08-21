@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
@@ -40,10 +40,11 @@ describe.skipIf(!runRealHermes)('real BYO Hermes ACP integration', () => {
   });
 
   it(
-    'connects the pinned runtime and returns a real fresh-agent result with no native tools or delegation persistence',
+    'connects the pinned runtime and returns a real fresh-agent result with bounded project read tools',
     async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'gosu-real-hermes-acp-cwd-'));
       temporaryPaths.push(cwd);
+      await writeFile(join(cwd, 'project-evidence.txt'), 'The bounded project value is 314159.\n');
       const runtimeCache = runtimeArchivePath
         ? await mkdtemp(join(tmpdir(), 'gosu-real-hermes-runtime-cache-'))
         : null;
@@ -99,9 +100,13 @@ describe.skipIf(!runRealHermes)('real BYO Hermes ACP integration', () => {
 
       const catalogs = await adapter.refreshConnectionCatalogs();
       expect(catalogs.catalog.models[0]?.metadata).toMatchObject({
-        agentTools: false,
+        agentTools: true,
+        nativeTools: ['read_file', 'search_files'],
         delegateTask: false,
       });
+      expect(catalogs.catalog.models[0]?.reasoningOptions).toEqual([
+        expect.objectContaining({ isDefault: true }),
+      ]);
       const rawGoalMarker = `GOSU_RAW_DELEGATION_MARKER_${Date.now()}`;
       const result = await adapter.delegate({
         projectId,
@@ -109,12 +114,12 @@ describe.skipIf(!runRealHermes)('real BYO Hermes ACP integration', () => {
         cwd,
         task: [
           rawGoalMarker,
-          'Answer this arithmetic task directly: what is 17 + 25?',
-          'Return a concise answer containing 42. Do not invoke or claim any tools.',
+          'Read project-evidence.txt from the active project with the native read tool.',
+          'Return the bounded project value from that file. Do not guess.',
         ].join(' '),
       });
 
-      expect(result.reply).toContain('42');
+      expect(result.reply).toContain('314159');
       expect(result.reply).not.toMatch(/delegation[_ -]?id|status.{0,8}dispatched|dispatched/iu);
       expect(result.provenance).toMatchObject({
         providerId: 'hermes',

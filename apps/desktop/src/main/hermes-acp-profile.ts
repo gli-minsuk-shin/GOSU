@@ -236,6 +236,8 @@ function isolatedConfig(runtime: HermesValidatedAcpRuntime) {
     'model:',
     `  default: ${yamlString(runtime.configuredModelId)}`,
     `  provider: ${yamlString(runtime.configuredProviderId)}`,
+    'agent:',
+    `  reasoning_effort: ${yamlString(runtime.configuredReasoningOptionId)}`,
     'memory:',
     '  memory_enabled: false',
     '  user_profile_enabled: false',

@@ -29,7 +29,16 @@ export const HERMES_VERSION_UNSUPPORTED_ERROR =
   'hermes_version_unsupported_adapter_update_required';
 // Hermes delegates reasoning support to its configured downstream provider/model. Until its
 // runtime exposes a verified capability catalog, GOSU must not advertise guessed effort values.
-export const HERMES_NATIVE_REASONING_OPTION_IDS = [] as const;
+export const HERMES_NATIVE_REASONING_OPTION_IDS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+] as const;
 const HERMES_DISALLOWED_RUNTIME_PROVIDER_IDS = new Set(['moa', 'copilot-acp']);
 
 const HERMES_CHECK_TIMEOUT_MS = 30_000;
@@ -41,7 +50,7 @@ const HERMES_MAX_PROMPT_BYTES = 96 * 1_024;
 const HERMES_MAX_LAUNCHER_BYTES = 8 * 1_024;
 const HERMES_KILL_GRACE_MS = 1_500;
 const HERMES_KILL_CONFIRM_MS = 2_000;
-const HERMES_SHIM_CHECK_PROTOCOL = 2;
+const HERMES_SHIM_CHECK_PROTOCOL = 3;
 
 const HERMES_COLLABORATION_MODES: readonly CodexCollaborationModeDescriptor[] = [
   {
@@ -337,6 +346,21 @@ def _model_config(cfg):
         return {"default": value}
     return value if isinstance(value, dict) else {}
 
+def _configured_reasoning(cfg, model):
+    try:
+        from hermes_constants import resolve_reasoning_config
+        value = resolve_reasoning_config(cfg, model)
+    except ModuleNotFoundError:
+        agent = cfg.get("agent") or {}
+        raw = agent.get("reasoning_effort", "medium") if isinstance(agent, dict) else "medium"
+        value = {"enabled": False} if raw is False or str(raw).strip().lower() == "none" else {"enabled": True, "effort": str(raw or "medium").strip().lower()}
+    if isinstance(value, dict) and value.get("enabled") is False:
+        return "none"
+    effort = str((value or {}).get("effort") or "medium").strip().lower()
+    if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
+        raise RuntimeError("configured_reasoning_invalid")
+    return effort
+
 def _safe_config(original, model, provider):
     original_model = _model_config(original)
     safe_model = {"default": model, "provider": provider}
@@ -446,6 +470,7 @@ def _main():
             "protocol": CHECK_PROTOCOL,
             "model": model,
             "provider": provider,
+            "reasoning": _configured_reasoning(original_config, model),
             "routeFingerprint": route_fingerprint,
             "credentialProof": credential_proof,
         }, ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -629,6 +654,7 @@ type HermesReadyRuntime = Readonly<{
   installation: HermesInstallation;
   configuredModelId: string;
   configuredProviderId: string;
+  configuredReasoningOptionId: (typeof HERMES_NATIVE_REASONING_OPTION_IDS)[number];
   routeFingerprint: string;
   credentialBindingKey: string;
   credentialProof: string;
@@ -642,6 +668,8 @@ export type HermesValidatedAcpRuntime = Readonly<{
   environment: NodeJS.ProcessEnv;
   configuredModelId: string;
   configuredProviderId: string;
+  /** Effective Hermes reasoning level, resolved from per-model override then agent default. */
+  configuredReasoningOptionId: (typeof HERMES_NATIVE_REASONING_OPTION_IDS)[number];
   /** SHA-256 over the normalized non-secret inference route and credential selection. */
   routeFingerprint: string;
   /** Per-connection random HMAC key; main-process memory only, never catalogued or persisted. */
@@ -1036,11 +1064,13 @@ function modelCatalog(
         catalogVersion: runtime.catalogVersion,
         isDefault: false,
         modalities: ['text'],
-        reasoningOptions: HERMES_NATIVE_REASONING_OPTION_IDS.map((id) => ({
-          id,
-          label: id,
-          isDefault: false,
-        })),
+        reasoningOptions: [
+          {
+            id: runtime.configuredReasoningOptionId,
+            label: runtime.configuredReasoningOptionId,
+            isDefault: true,
+          },
+        ],
         metadata: {
           runtime:
             runtime.installation.source === 'bundled'
@@ -1052,6 +1082,7 @@ function modelCatalog(
           configuredModel: true,
           configuredModelId: runtime.configuredModelId,
           configuredProviderId: runtime.configuredProviderId,
+          configuredReasoningOptionId: runtime.configuredReasoningOptionId,
         },
       },
     ],
@@ -1082,6 +1113,8 @@ function parseReadyRuntime(
   const record = value as Record<string, unknown>;
   const configuredModelId = typeof record.model === 'string' ? record.model.trim() : '';
   const configuredProviderId = typeof record.provider === 'string' ? record.provider.trim() : '';
+  const configuredReasoningOptionId =
+    typeof record.reasoning === 'string' ? record.reasoning.trim().toLowerCase() : '';
   const routeFingerprint =
     typeof record.routeFingerprint === 'string' ? record.routeFingerprint.trim().toLowerCase() : '';
   const credentialProof =
@@ -1094,13 +1127,16 @@ function parseReadyRuntime(
   if (
     record.protocol !== HERMES_SHIM_CHECK_PROTOCOL ||
     Object.keys(record).sort().join(',') !==
-      'credentialProof,model,protocol,provider,routeFingerprint' ||
+      'credentialProof,model,protocol,provider,reasoning,routeFingerprint' ||
     !configuredModelId ||
     configuredModelId.length > 256 ||
     containsControlCharacter(configuredModelId) ||
     !configuredProviderId ||
     configuredProviderId.length > 128 ||
     containsControlCharacter(configuredProviderId) ||
+    !HERMES_NATIVE_REASONING_OPTION_IDS.includes(
+      configuredReasoningOptionId as (typeof HERMES_NATIVE_REASONING_OPTION_IDS)[number],
+    ) ||
     !/^[a-f0-9]{64}$/u.test(routeFingerprint) ||
     !/^[a-f0-9]{64}$/u.test(credentialProof)
   ) {
@@ -1120,6 +1156,7 @@ function parseReadyRuntime(
         runtimeManifestSha256: installation.manifestSha256,
         configuredModelId,
         configuredProviderId,
+        configuredReasoningOptionId,
         routeFingerprint,
         reasoning: HERMES_NATIVE_REASONING_OPTION_IDS,
       }),
@@ -1129,6 +1166,8 @@ function parseReadyRuntime(
     installation,
     configuredModelId,
     configuredProviderId,
+    configuredReasoningOptionId:
+      configuredReasoningOptionId as (typeof HERMES_NATIVE_REASONING_OPTION_IDS)[number],
     routeFingerprint,
     credentialBindingKey,
     credentialProof,
@@ -1210,6 +1249,7 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
       environment: hermesSubprocessEnvironment(),
       configuredModelId: runtime.configuredModelId,
       configuredProviderId: runtime.configuredProviderId,
+      configuredReasoningOptionId: runtime.configuredReasoningOptionId,
       routeFingerprint: runtime.routeFingerprint,
       credentialBindingKey: runtime.credentialBindingKey,
       credentialProof: runtime.credentialProof,
@@ -1245,12 +1285,12 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
     }
     if (
       input.reasoningOptionId !== null &&
-      !HERMES_NATIVE_REASONING_OPTION_IDS.includes(
-        input.reasoningOptionId as (typeof HERMES_NATIVE_REASONING_OPTION_IDS)[number],
-      )
+      input.reasoningOptionId !== runtime.configuredReasoningOptionId
     ) {
       throw new Error('hermes_reasoning_option_invalid');
     }
+    const effectiveReasoningOptionId =
+      input.reasoningOptionId ?? runtime.configuredReasoningOptionId;
 
     const prompt = buildHermesPrompt(thread.developerInstructions, input.prompt);
     const isolatedCwd = await this.platform.createIsolatedWorkingDirectory();
@@ -1265,7 +1305,7 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
           HERMES_SEALED_SHIM_SOURCE,
           'run',
           runtime.installation.rootPath,
-          input.reasoningOptionId ?? '',
+          effectiveReasoningOptionId,
           runtime.configuredModelId,
           runtime.configuredProviderId,
           runtime.routeFingerprint,
@@ -1293,7 +1333,7 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
       requestedModelId: input.requestedModelId,
       resolvedModelId: runtime.configuredModelId,
       catalogVersion: runtime.catalogVersion,
-      reasoningOptionId: input.reasoningOptionId,
+      reasoningOptionId: effectiveReasoningOptionId,
       startedAt: new Date().toISOString(),
     });
     const turn: HermesTurn = {
@@ -1314,7 +1354,7 @@ export class HermesProjectChatAdapter extends EventEmitter implements Refreshabl
         HERMES_COLLABORATION_MODES.find(
           (candidate) => candidate.id === input.collaborationModeId,
         ) ?? null,
-      effectiveReasoningOptionId: input.reasoningOptionId,
+      effectiveReasoningOptionId,
       personality: input.personality ?? null,
     };
   }

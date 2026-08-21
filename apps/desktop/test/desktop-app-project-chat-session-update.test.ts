@@ -8,6 +8,7 @@ import {
   mergeProjectChatSessionCatalogUpdate,
   mergeProjectChatSessionSnapshotUpdate,
   projectChatSelectionFromDefault,
+  shouldReplaceBusyHermesTurn,
 } from '../src/renderer/src/desktop-app';
 import { projectChatSessionKey } from '../src/renderer/src/project-chat-session-state';
 import type { ProjectChatSession, ProjectChatSnapshot } from '../src/shared/project-chat-contracts';
@@ -26,6 +27,13 @@ const placeholderSession: ProjectChatSession = {
 };
 
 describe('Desktop Project Chat session updates', () => {
+  it('replaces only an active Hermes turn instead of leaving the new message queued', () => {
+    expect(shouldReplaceBusyHermesTurn('hermes', true, false)).toBe(true);
+    expect(shouldReplaceBusyHermesTurn('hermes', false, true)).toBe(true);
+    expect(shouldReplaceBusyHermesTurn('hermes', false, false)).toBe(false);
+    expect(shouldReplaceBusyHermesTurn('codex', true, true)).toBe(false);
+  });
+
   it('snapshots the Settings default into each new Codex chat scope', () => {
     expect(projectChatSelectionFromDefault({ modelId: null, reasoningOptionId: 'high' })).toEqual({
       providerId: null,

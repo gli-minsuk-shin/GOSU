@@ -5,18 +5,19 @@
  * reloads a user-controlled dotenv/config and provider plugins before its approval hooks freeze.
  * This wrapper loads only the already-prepared, project/session-isolated profile, reasserts the
  * GOSU safety flags before any tool module import, seals provider discovery, removes provider
- * credentials from the tool environment, and restricts every agent to an empty native tool surface.
+ * credentials from the tool environment, and restricts every agent to project-scoped native
+ * read/search tools.
  */
 import { HERMES_PROVIDER_ENVIRONMENT_NAME_LIST } from './hermes-acp-profile';
 import { GOSU_HERMES_VERSION } from './hermes-runtime-bundle';
 
 export const HERMES_ACP_READ_ONLY_TOOLSET = 'gosu-acp-readonly';
 export const HERMES_ACP_DENIED_TOOLSET = 'gosu-acp-denied';
-// Hermes remains useful as a selected provider and as a high-level Codex delegation target, but
-// its native tool surface is intentionally empty. This prevents Hermes' background delegation,
-// transcript/cache persistence, shell/file tools, plugins, and web backends from crossing GOSU's
-// local-only context boundary until each capability has its own reviewed bridge.
-export const HERMES_ACP_READ_ONLY_TOOLS = [] as const;
+// These are the only upstream tools enabled directly. The launcher below also replaces Hermes'
+// path resolver so absolute paths, `..`, and symlinks can never escape the exact ACP project cwd.
+// Mutating file tools, terminal/process execution, web/browser, delegation, memory, skills, MCP,
+// and code execution remain disabled until they have GOSU-owned capability bridges.
+export const HERMES_ACP_READ_ONLY_TOOLS = ['read_file', 'search_files'] as const;
 
 export const HERMES_SEALED_ACP_SOURCE = String.raw`
 import asyncio
@@ -28,6 +29,7 @@ import json
 import os
 import sys
 import tomllib
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 SUPPORTED_HERMES_VERSION = ${JSON.stringify(GOSU_HERMES_VERSION)}
@@ -265,6 +267,13 @@ def _safe_config(original, model, provider):
     context_length = original_model.get("context_length")
     if isinstance(context_length, int) and not isinstance(context_length, bool) and context_length > 0:
         model_config["context_length"] = context_length
+    original_agent = original.get("agent") or {}
+    reasoning_effort = original_agent.get("reasoning_effort", "medium") if isinstance(original_agent, dict) else "medium"
+    if reasoning_effort is False:
+        reasoning_effort = "none"
+    reasoning_effort = str(reasoning_effort or "medium").strip().lower()
+    if reasoning_effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
+        _fail("configured_reasoning_invalid")
     return {
         "model": model_config,
         "approvals": {"mode": "manual", "cron_mode": "deny", "timeout": 55},
@@ -275,6 +284,7 @@ def _safe_config(original, model, provider):
         "display": {"show_commentary": False},
         "sessions": {"auto_title": False},
         "agent": {
+            "reasoning_effort": reasoning_effort,
             "environment_probe": False,
             "tool_use_enforcement": False,
             "task_completion_guidance": False,
@@ -386,7 +396,7 @@ def _main():
 
     # Preserve only the already-validated inference route in this process. Provider/AWS values
     # are removed before run_agent (and therefore any tool module) is imported. The sealed agent
-    # has no native tools, but this scrub also protects against upstream initialization changes.
+    # has only path-confined read tools, but this scrub also protects against upstream changes.
     sealed_runtime = {
         "provider": actual_provider,
         "requested_provider": expected_provider,
@@ -441,7 +451,7 @@ def _main():
         if isinstance(toolset_definition, dict):
             known_tool_names.update(toolset_definition.get("tools") or [])
     toolsets_module.TOOLSETS[GOSU_READ_ONLY_TOOLSET] = {
-        "description": "GOSU ACP empty native tool surface",
+        "description": "GOSU ACP project-scoped read/search surface",
         "tools": list(GOSU_READ_ONLY_TOOLS),
         "includes": [],
     }
@@ -482,6 +492,7 @@ def _main():
             super().__setattr__(name, value)
 
         def __init__(self, *args, **kwargs):
+            from hermes_constants import resolve_reasoning_config
             kwargs["model"] = expected_model
             kwargs["provider"] = actual_provider
             kwargs["requested_provider"] = expected_provider
@@ -500,12 +511,18 @@ def _main():
             kwargs["skip_memory"] = True
             kwargs["fallback_model"] = None
             kwargs["checkpoints_enabled"] = False
+            kwargs["reasoning_config"] = resolve_reasoning_config(safe_config, expected_model)
             kwargs["session_db"] = None
             super().__init__(*args, **kwargs)
-            if getattr(self, "tools", None):
-                _fail("hermes_native_tool_surface_not_empty")
-            if getattr(self, "valid_tool_names", None):
-                _fail("hermes_native_tool_surface_not_empty")
+            actual_tool_names = {
+                str((tool.get("function") or {}).get("name") or "")
+                for tool in (getattr(self, "tools", None) or [])
+                if isinstance(tool, dict)
+            }
+            if actual_tool_names != GOSU_READ_ONLY_TOOL_NAMES:
+                _fail("hermes_native_tool_surface_mismatch")
+            if set(getattr(self, "valid_tool_names", None) or []) != GOSU_READ_ONLY_TOOL_NAMES:
+                _fail("hermes_native_tool_name_surface_mismatch")
             self._persist_disabled = True
             self._skip_mcp_refresh = True
 
@@ -522,6 +539,24 @@ def _main():
 
     import tools.mcp_tool as mcp_tool_module
     mcp_tool_module.register_mcp_servers = lambda *_args, **_kwargs: _fail("mcp_runtime_not_allowed")
+
+    import tools.file_tools as file_tools_module
+    original_resolve_path_for_task = file_tools_module._resolve_path_for_task
+    def gosu_resolve_project_path(filepath, task_id="default"):
+        workspace = file_tools_module._registered_task_cwd_override(task_id)
+        if not workspace or not os.path.isabs(str(workspace)):
+            raise PermissionError("gosu_project_workspace_unavailable")
+        workspace_real = os.path.realpath(str(workspace))
+        resolved = original_resolve_path_for_task(filepath, task_id)
+        resolved_real = os.path.realpath(str(resolved))
+        try:
+            inside = os.path.commonpath([workspace_real, resolved_real]) == workspace_real
+        except (ValueError, OSError):
+            inside = False
+        if not inside:
+            raise PermissionError("gosu_project_read_outside_workspace")
+        return Path(resolved_real)
+    file_tools_module._resolve_path_for_task = gosu_resolve_project_path
 
     from acp_adapter.entry import _setup_logging
     _setup_logging()

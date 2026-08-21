@@ -442,9 +442,9 @@ describe('separated application Settings', () => {
     expect(html).toContain('credentials remain in the isolated local profile');
     expect(html).toContain('Hermes is pinned, local, and never an automatic fallback');
     expect(html).toContain('never searches PATH or silently falls back to another version');
-    expect(html).toContain('native tool surface is disabled');
-    expect(html).toContain('Hermes turns do not show tool approval prompts');
-    expect(html).toContain('Terminal, processes, code execution, files, web, browser automation');
+    expect(html).toContain('only native tools are project-scoped file read and search');
+    expect(html).toContain('read-only tools do not show mutation approval prompts');
+    expect(html).toContain('File writes, terminal, processes, code execution, web');
     expect(html).toContain('OpenClaw remains detection-only');
     expect(html).not.toContain('Connected to OpenClaw');
     expect(html).not.toContain('Connected to Hermes');

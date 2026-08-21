@@ -298,6 +298,14 @@ export function projectChatSelectionFromDefault(
   };
 }
 
+export function shouldReplaceBusyHermesTurn(
+  providerId: string | null | undefined,
+  inFlight: boolean,
+  starting: boolean,
+) {
+  return providerId === 'hermes' && (inFlight || starting);
+}
+
 export function isCodexUnavailableError(error: unknown) {
   if (!(error instanceof Error)) return false;
   const codes: string[] = error.message.match(/[a-z][a-z0-9_]+/gu) ?? [];
@@ -3113,6 +3121,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                     );
                     return false;
                   }
+                  const replaceActiveHermesTurn = shouldReplaceBusyHermesTurn(
+                    selectedDescriptor.providerId,
+                    Boolean(chatInFlight[activeProjectChatSessionKey]),
+                    chatStartingSessionKeys.has(activeProjectChatSessionKey),
+                  );
                   setChatStartingSessionKeys((current) => {
                     const next = new Set(current);
                     next.add(activeProjectChatSessionKey);
@@ -3130,10 +3143,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       ...controls,
                       ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
                     });
-                    await loadProjectChat(activeProject.id, receipt.sessionId);
-                    if ('queued' in receipt) {
+                    if ('queued' in receipt && replaceActiveHermesTurn) {
+                      await window.gosu.projectChat.runQueuedTurnNow({
+                        projectId: activeProject.id,
+                        sessionId: receipt.sessionId,
+                        queueId: receipt.queueId,
+                      });
+                      setAnnouncement(
+                        'Stopped the current Hermes response and started the new message.',
+                      );
+                    } else if ('queued' in receipt) {
                       setAnnouncement('Queued this message for the selected Project Chat session.');
                     }
+                    await loadProjectChat(activeProject.id, receipt.sessionId);
                     if (selectedDescriptor.providerId !== 'hermes') {
                       setCodexConnectionState('ready');
                       setCodexErrorVisible(false);

@@ -1104,8 +1104,8 @@ export function ProjectChatView({
                 <span title={`Model: ${compactModelLabel}`}>{compactModelLabel}</span>
                 <span title={`Reasoning: ${compactReasoningLabel}`}>{compactReasoningLabel}</span>
                 {hermesSelected && (
-                  <span title="Verified Hermes ACP agent with no native tools">
-                    Hermes ACP · no native tools
+                  <span title="Verified Hermes ACP agent with project-scoped read tools">
+                    Hermes ACP · project read tools
                   </span>
                 )}
                 {selectionWarning && <span className="warning">Selection needs attention</span>}
@@ -1235,11 +1235,11 @@ export function ProjectChatView({
                   <div className="chat-provider-boundary" role="note">
                     <strong>Hermes · verified ACP agent mode</strong>
                     <span>
-                      Uses the verified Hermes agent configured on this Mac with no native tools.
-                      Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP
-                      agent. Terminal, code execution, files, web, browser automation, native
-                      delegation, memory, skills, MCP, GOSU tools, and attachments are disabled. No
-                      tool approval prompts are shown while this surface is active.
+                      Uses the verified Hermes agent configured on this Mac with project-scoped file
+                      read and search tools. Codex can explicitly delegate a bounded task to a fresh
+                      Hermes primary ACP agent. Writes, terminal, code execution, web, browser
+                      automation, native delegation, memory, skills, MCP, GOSU tools, and
+                      attachments are disabled.
                     </span>
                   </div>
                 )}
@@ -1541,7 +1541,7 @@ export function ProjectChatView({
               <strong>Project capability boundary</strong>
               <span>
                 {hermesSelected
-                  ? 'Hermes ACP · no native tools'
+                  ? 'Hermes ACP · project read tools'
                   : `Board / To-do + Objective read tools · ${localNotesStatus} · ${sshWorkspaceStatus} · ${
                       trustedWorkspaceCount > 0
                         ? `${trustedWorkspaceCount} trusted workspace${trustedWorkspaceCount === 1 ? '' : 's'}`
@@ -1550,7 +1550,7 @@ export function ProjectChatView({
               </span>
               <small>
                 {hermesSelected
-                  ? 'GOSU runs its pinned, hash-verified Hermes ACP runtime through a project/session-isolated local profile with an empty native tool surface. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Terminal, processes, code execution, all file tools, web, browser automation, native delegation, memory, skills, configured MCP, GOSU tools, attachments, YOLO, duplicate persistence, and fallback are disabled. This surface has no tool approvals. Select Codex when the turn needs Board, Research Notes, Literature, SSH, or attachments.'
+                  ? 'GOSU runs its pinned, hash-verified Hermes ACP runtime through a project/session-isolated local profile. Hermes may read or search files only inside the exact project workspace; absolute paths, parent traversal, and symlinks cannot escape it. Writes, terminal, processes, code execution, web, browser automation, native delegation, memory, skills, configured MCP, GOSU tools, attachments, YOLO, duplicate persistence, and fallback are disabled. Select Codex when the turn needs Board, Research Notes, Literature, SSH, attachments, or mutations.'
                   : 'Board changes require Apply. Research Notes reads stay available to legacy grants, but automatic Markdown saves run only after an explicit create-only grant and never overwrite a different existing file. Only project-granted remote workspaces are visible. Trusted workspace is an explicit, per-grant option that auto-approves and audits only the same bounded operations; it expires when the project, server, grant, path, or safety policy changes and can be revoked above. Without it, Git inspection, direct-argv tests/builds, and foreground Python experiment entrypoints show their exact target, root, arguments, and risk for a fresh one-time approval. Experiments are limited to 120 seconds. The direct GOSU tool surface does not offer raw shells, inline Python, TTY, transfer, unattended execution, secret retrieval, Settings, Trash, sudo/privileged requests, host mounts, or destructive host commands. Code launched through an approved Python, test, or build operation is not contained by those input checks and can reach anything the SSH account permits, including secrets, out-of-grant paths, the network, and subprocesses.'}
               </small>
             </div>
@@ -1831,7 +1831,7 @@ export function ProjectChatView({
             · {hermesSelected ? 'GOSU Research Notes bridge unavailable' : localNotesStatus}
             {' · '}
             {hermesSelected
-              ? 'Hermes provider · no native tools'
+              ? 'Hermes provider · project read tools'
               : WEB_SEARCH_LABELS[snapshot?.profile?.webSearchMode ?? 'cached']}
             {!hermesSelected && vaultState === 'ready' && !automaticMarkdownSaveAuthorized && (
               <button
@@ -1978,11 +1978,11 @@ export function ProjectChatView({
           )}
           {hermesSelected && (
             <span id={hermesBoundaryDescriptionId} className="sr-only">
-              Hermes runs through a pinned, verified ACP agent with no native tools. Codex can
-              explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Terminal,
-              processes, code execution, files, web, browser automation, native delegation, memory,
-              skills, MCP, GOSU tools, and attachments are disabled. This surface does not show tool
-              approval prompts. Choose Codex for GOSU capabilities.
+              Hermes runs through a pinned, verified ACP agent with project-scoped read and search
+              tools. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP
+              agent. Writes, terminal, processes, code execution, web, browser automation, native
+              delegation, memory, skills, MCP, GOSU tools, and attachments are disabled. Choose
+              Codex for GOSU capabilities or mutations.
             </span>
           )}
           {projectBusy && !sessionBusy && (
@@ -2123,7 +2123,11 @@ export function ProjectChatView({
                 onClick={submit}
                 disabled={loading || draft.trim().length === 0 || selectionWarning !== null}
               >
-                {sessionBusy || projectBusy ? 'Queue' : 'Send'}
+                {hermesSelected && sessionBusy
+                  ? 'Stop & send'
+                  : sessionBusy || projectBusy
+                    ? 'Queue'
+                    : 'Send'}
                 <span>Enter</span>
               </button>
             </div>

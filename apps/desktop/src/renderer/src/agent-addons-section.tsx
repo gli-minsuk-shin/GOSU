@@ -205,12 +205,12 @@ export function AgentAddOnsSection({
         <span>Hermes is pinned, local, and never an automatic fallback</span>
         <small>
           Packaged GOSU launches only its hash-verified bundled Hermes ACP agent after an explicit
-          selection; it never searches PATH or silently falls back to another version. Its native
-          tool surface is disabled. Codex can explicitly delegate a bounded task to a fresh Hermes
-          primary ACP agent. Terminal, processes, code execution, files, web, browser automation,
-          native delegation, memory, skills, MCP, GOSU tools, and attachments are disabled. Because
-          there are no native tools, Hermes turns do not show tool approval prompts. OpenClaw
-          remains detection-only.
+          selection; it never searches PATH or silently falls back to another version. Its only
+          native tools are project-scoped file read and search. Codex can explicitly delegate a
+          bounded task to a fresh Hermes primary ACP agent. File writes, terminal, processes, code
+          execution, web, browser automation, native delegation, memory, skills, MCP, GOSU tools,
+          and attachments are disabled. These read-only tools do not show mutation approval prompts.
+          OpenClaw remains detection-only.
         </small>
       </div>
     </article>

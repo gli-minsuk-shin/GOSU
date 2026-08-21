@@ -167,9 +167,10 @@ describe('advanced Project Chat controls', () => {
     expect(html).not.toContain('web_search');
     expect(html).not.toContain('web_extract');
     expect(html).not.toContain('delegate_task');
-    expect(html).toContain('No tool approval prompts are shown');
-    expect(html).toContain('Terminal, code execution, files, web, browser automation');
+    expect(html).toContain('project-scoped file read and search tools');
+    expect(html).toContain('Writes, terminal, code execution, web, browser automation');
     expect(html).toContain('Hermes turn active');
+    expect(html).toContain('Stop &amp; send');
     expect(html).toContain('선택된 Hermes ACP agent가 활용합니다');
     expect(html).toMatch(
       /disabled=""[^>]*aria-label="Turn attachments are not yet bridged to Hermes"[^>]*aria-describedby=/u,
@@ -224,9 +225,9 @@ describe('advanced Project Chat controls', () => {
       />,
     );
 
-    expect(html).toContain('Hermes ACP · no native tools');
+    expect(html).toContain('Hermes ACP · project read tools');
     expect(html).toContain(
-      'Hermes runs through a pinned, verified ACP agent with no native tools.',
+      'Hermes runs through a pinned, verified ACP agent with project-scoped read and search tools.',
     );
     expect(html).toMatch(
       /aria-label="Turn attachments are not yet bridged to Hermes"[^>]*aria-describedby=/u,

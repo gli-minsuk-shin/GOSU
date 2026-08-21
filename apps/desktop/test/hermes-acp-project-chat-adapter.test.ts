@@ -31,6 +31,7 @@ const RUNTIME: HermesValidatedAcpRuntime = {
   environment: { HOME: '/Users/researcher', OPENAI_API_KEY: 'fixture-secret' },
   configuredModelId: 'provider/hermes-model',
   configuredProviderId: 'fixture-provider',
+  configuredReasoningOptionId: 'xhigh',
   routeFingerprint: 'c'.repeat(64),
   credentialBindingKey: 'b'.repeat(64),
   credentialProof: 'e'.repeat(64),
@@ -247,9 +248,11 @@ describe('Hermes ACP Project Chat adapter', () => {
         displayName: `Hermes Agent · ${RUNTIME.configuredModelId}`,
         metadata: expect.objectContaining({
           runtime: 'byo-hermes-acp',
-          agentTools: false,
+          agentTools: true,
+          nativeTools: ['read_file', 'search_files'],
           delegateTask: false,
         }),
+        reasoningOptions: [{ id: 'xhigh', label: 'xhigh', isDefault: true }],
       }),
     ]);
     await expect(
@@ -316,10 +319,11 @@ describe('Hermes ACP Project Chat adapter', () => {
       providerId: HERMES_PROVIDER_ID,
       requestedModelId: HERMES_CONFIGURED_MODEL_ID,
       resolvedModelId: RUNTIME.configuredModelId,
+      reasoningOptionId: 'xhigh',
     });
     expect(clients[0]!.prompts[0]!.blocks.join('\n')).toContain('official Hermes ACP transport');
     expect(clients[0]!.prompts[0]!.blocks.join('\n')).toContain(
-      'No native Hermes tools are available',
+      'Hermes native read_file and search_files are available',
     );
     expect(clients[0]!.prompts[0]!.blocks.join('\n')).toContain('Analyze this project.');
 
@@ -687,7 +691,7 @@ describe('Hermes ACP Project Chat adapter', () => {
     );
     expect(clients[0]!.prompts[0]!.blocks.join('\n')).toContain('<gosu_delegated_goal>');
     expect(clients[0]!.prompts[0]!.blocks.join('\n')).toContain(
-      'No native Hermes tools are available',
+      'Only project-scoped read_file and search_files are available',
     );
     clients[0]!.finish('A bounded synthesis.', 'end_turn', {
       inputTokens: 80,
