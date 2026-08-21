@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
 import {
   lstat,
   mkdir,
@@ -39,6 +40,19 @@ import {
 import { toModelCatalog } from '../src/main/model-catalog';
 
 describe('Codex App Server process boundary', () => {
+  it('pins and installs the exact Codex App Server runtime shipped by GOSU', async () => {
+    const require = createRequire(import.meta.url);
+    const desktopPackage = JSON.parse(
+      await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { dependencies?: Record<string, string> };
+    const codexPackage = JSON.parse(
+      await readFile(require.resolve('@openai/codex/package.json'), 'utf8'),
+    ) as { version?: string };
+
+    expect(desktopPackage.dependencies?.['@openai/codex']).toBe('0.149.0');
+    expect(codexPackage.version).toBe('0.149.0');
+  });
+
   it('reduces login completion notifications to a safe success-only boundary event', () => {
     expect(
       codexAuthenticationEventFromNotification('account/login/completed', {

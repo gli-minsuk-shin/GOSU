@@ -659,7 +659,7 @@ number/table/plot을 실제 evidence로 승격하고, duplicate/out-of-order cad
 - GOSU는 Codex의 base instructions와 agent loop를 덮어쓰지 않는다. `thread/start`에는 project 권한,
   evidence 취급, Apply gate만 포함한 최소 product policy를 developer instructions로 주고,
   `turn/start.collaborationMode.settings.developer_instructions`는 `null`로 보내 Codex에 내장된 mode
-  instructions를 사용한다. pinned 0.146.0 runtime에서 thread developer instructions와 collaboration-mode
+  instructions를 사용한다. pinned 0.149.0 runtime에서 thread developer instructions와 collaboration-mode
   developer fragment는 별도 context layer로 유지되므로 native mode가 product policy를 제거하지 않는다.
   request-shape test는 두 layer가 동시에 전달되는지 고정한다. personality와 model verbosity도 Codex native
   setting으로 전달한다.
