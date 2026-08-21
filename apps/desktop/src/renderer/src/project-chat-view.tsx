@@ -13,6 +13,8 @@ import {
   defaultProjectChatProfile,
   PROJECT_CHAT_MAX_CONCURRENT_SESSION_TURNS,
   type CodexCollaborationModeDescriptor,
+  type ProjectAgentNode,
+  type ProjectAgentRun,
   type ProjectChatAction,
   type ProjectChatContextScope,
   type ProjectChatHarnessMode,
@@ -82,12 +84,107 @@ export function projectChatTodoSkillSuggestions(draft: string) {
 export function projectChatPolicyRuleSnapshotCount(
   promptProvenance:
     | Readonly<{ assemblyVersion: 1 | 2 | 3 }>
-    | Readonly<{ assemblyVersion: 4; policyRuleCount: number }>
+    | Readonly<{ assemblyVersion: 4 | 5; policyRuleCount: number }>
     | undefined,
 ) {
   const count =
-    promptProvenance?.assemblyVersion === 4 ? promptProvenance.policyRuleCount : undefined;
+    promptProvenance?.assemblyVersion === 4 || promptProvenance?.assemblyVersion === 5
+      ? promptProvenance.policyRuleCount
+      : undefined;
   return typeof count === 'number' && Number.isInteger(count) && count > 0 ? count : 0;
+}
+
+const AGENT_RUNTIME_STATUS_LABELS: Readonly<Record<ProjectAgentRun['status'], string>> = {
+  starting: 'Starting',
+  running: 'Running',
+  complete: 'Complete',
+  failed: 'Failed',
+  interrupted: 'Interrupted',
+};
+
+function agentNodeRoleLabel(node: ProjectAgentNode) {
+  return node.kind === 'coordinator' ? 'Coordinator' : 'Delegated worker';
+}
+
+function agentProviderLabel(providerId: string) {
+  if (providerId === 'codex') return 'Codex';
+  if (providerId === 'hermes') return 'Hermes';
+  if (providerId === 'provider-pending') return 'Provider pending';
+  return providerId;
+}
+
+function AgentRunVerbose({ run }: { run: ProjectAgentRun }) {
+  const plan = run.contextPlan;
+  return (
+    <div className="agent-run-verbose">
+      <div className="agent-run-context-plan">
+        <strong>Context plan</strong>
+        <span>
+          {plan.recentMessageCount} / {plan.candidateMessageCount} recent messages ·{' '}
+          {plan.omittedMessageCount} omitted · memory rev {plan.workingMemoryRevision ?? 0} (
+          {plan.memoryEntryCount} entries)
+        </span>
+        <span>
+          {plan.recentHistoryCharacters.toLocaleString()} recent chars
+          {plan.estimatedInputCharactersSaved > 0
+            ? ` · about ${plan.estimatedInputCharactersSaved.toLocaleString()} repeated chars removed`
+            : ''}
+        </span>
+      </div>
+      <ol className="agent-run-node-list" aria-label="Agent run nodes">
+        {run.nodes.map((node) => (
+          <li key={node.id}>
+            <div className="agent-run-node-heading">
+              <strong>
+                {agentNodeRoleLabel(node)} · {agentProviderLabel(node.providerId)}
+              </strong>
+              <span>{AGENT_RUNTIME_STATUS_LABELS[node.status]}</span>
+            </div>
+            <p>{node.task}</p>
+            {node.resultSummary && (
+              <p className="agent-run-node-result">Result: {node.resultSummary}</p>
+            )}
+            <small>
+              Node {node.id.slice(0, 8)}
+              {node.invocationId ? ` · invocation ${node.invocationId.slice(0, 8)}` : ''}
+              {node.parentNodeId ? ` · parent ${node.parentNodeId.slice(0, 8)}` : ''}
+            </small>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function CompletedAgentRunActivity({ run }: { run: ProjectAgentRun }) {
+  return (
+    <details className="message-agent-runtime">
+      <summary>
+        Agent process · {AGENT_RUNTIME_STATUS_LABELS[run.status]} · {run.nodes.length}{' '}
+        {run.nodes.length === 1 ? 'node' : 'nodes'} · memory rev{' '}
+        {run.contextPlan.workingMemoryRevision ?? 0}
+      </summary>
+      <AgentRunVerbose run={run} />
+    </details>
+  );
+}
+
+function LiveAgentRunActivity({ run }: { run: ProjectAgentRun }) {
+  return (
+    <section className="agent-run-live" aria-label="Live agent process" role="status">
+      <header>
+        <div>
+          <span>AGENT PROCESS</span>
+          <strong>{AGENT_RUNTIME_STATUS_LABELS[run.status]}</strong>
+        </div>
+        <small>
+          Structured activity · {run.nodes.length} {run.nodes.length === 1 ? 'node' : 'nodes'} · run{' '}
+          {run.id.slice(0, 8)}
+        </small>
+      </header>
+      <AgentRunVerbose run={run} />
+    </section>
+  );
 }
 
 export type ProjectChatTurnControls = Readonly<{
@@ -1063,6 +1160,9 @@ export function ProjectChatView({
       setTrustedWorkspaceBusyGrantId(null);
     }
   };
+  const activeAgentRun = [...(snapshot?.agentRuns ?? [])]
+    .reverse()
+    .find((run) => run.status === 'starting' || run.status === 'running');
 
   return (
     <div
@@ -1590,6 +1690,7 @@ export function ProjectChatView({
               }
             }}
           >
+            {activeAgentRun && <LiveAgentRunActivity run={activeAgentRun} />}
             {loading ? (
               <div className="chat-loading">암호화된 프로젝트 대화를 불러오는 중…</div>
             ) : !snapshot?.messages.length ? (
@@ -1620,6 +1721,11 @@ export function ProjectChatView({
               snapshot.messages.map((message, messageIndex) => {
                 const attempt = message.attemptId
                   ? snapshot.attempts?.find((candidate) => candidate.id === message.attemptId)
+                  : undefined;
+                const agentRun = message.attemptId
+                  ? snapshot.agentRuns?.find(
+                      (candidate) => candidate.attemptId === message.attemptId,
+                    )
                   : undefined;
                 const failedTurnSource =
                   message.role === 'assistant' &&
@@ -1698,6 +1804,9 @@ export function ProjectChatView({
                               ? ` · Project rules snapshot ${policyRuleSnapshotCount}`
                               : ''}
                           </div>
+                        )}
+                        {message.role === 'assistant' && agentRun && (
+                          <CompletedAgentRunActivity run={agentRun} />
                         )}
                         {message.status === 'complete' && (
                           <div

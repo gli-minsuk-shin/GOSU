@@ -12,6 +12,7 @@ import {
   PROJECT_CHAT_MAX_CONCURRENT_SESSION_TURNS,
   PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH,
   PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH,
+  ProjectAgentRunSchema,
   ProjectChatAttemptSchema,
   ProjectChatMessageSchema,
   ProjectChatProjectInputSchema,
@@ -33,6 +34,7 @@ import {
   type CodexCollaborationModeDescriptor,
   type CreateProjectChatSessionInput,
   type ProjectChatAction,
+  type ProjectAgentRun,
   type ProjectChatActionCommand,
   type ProjectChatAttempt,
   type ProjectChatEvent,
@@ -102,6 +104,19 @@ export interface ProjectChatStorage {
     attempt: ProjectChatAttempt,
     assistantMessage: ProjectChatMessage,
   ): MaybePromise<void>;
+  beginProjectAgentRun?(run: ProjectAgentRun): MaybePromise<void>;
+  markProjectAgentRunRunning?(input: {
+    attemptId: string;
+    providerId: string;
+    invocationId: string;
+    updatedAt: string;
+  }): MaybePromise<void>;
+  finishProjectAgentRun?(input: {
+    attemptId: string;
+    status: 'complete' | 'failed' | 'interrupted';
+    assistantContent: string;
+    updatedAt: string;
+  }): MaybePromise<void>;
   stageResearchNoteSave(receipt: ProjectChatResearchNoteSaveStage): MaybePromise<void>;
   markResearchNoteSaveUncertain(
     input: MarkProjectChatResearchNoteSaveUncertainInput,
@@ -1125,6 +1140,7 @@ export class ProjectChatService extends EventEmitter {
         hermesAgentStatus: projectAgentHermesConnected(this.dependencies.hermes)
           ? 'connected'
           : 'not_connected',
+        workingMemory: priorChat.agentMemory ?? null,
       });
 
       const createdAt = isoNow();
@@ -1171,6 +1187,41 @@ export class ProjectChatService extends EventEmitter {
         this.emitQueueUpdated(command.projectId, session.id);
       } else {
         await this.dependencies.storage.beginChatAttempt(startingAttempt, userMessage);
+      }
+      const agentRunId = randomUUID();
+      const agentRun = ProjectAgentRunSchema.parse({
+        schemaVersion: 1,
+        id: agentRunId,
+        projectId: command.projectId,
+        sessionId: session.id,
+        attemptId,
+        status: 'starting',
+        goal: command.message,
+        contextPlan: assembled.contextPlan,
+        nodes: [
+          {
+            id: randomUUID(),
+            runId: agentRunId,
+            kind: 'coordinator',
+            providerId: 'provider-pending',
+            status: 'starting',
+            task: command.message.slice(0, 1_200),
+            invocationId: null,
+            resultSummary: null,
+            createdAt,
+            updatedAt: createdAt,
+            completedAt: null,
+          },
+        ],
+        createdAt,
+        updatedAt: createdAt,
+        completedAt: null,
+      });
+      try {
+        await this.dependencies.storage.beginProjectAgentRun?.(agentRun);
+      } catch {
+        // Agent-runtime state is an additive execution ledger in phase one. Chat durability and
+        // provider execution remain authoritative if this optional ledger is temporarily stale.
       }
       const sshScopeRevokedDuringStartup = requestedSshSessionKey
         ? (this.sshScopeEpochBySession.get(requestedSshSessionKey) ?? 0) !==
@@ -1237,6 +1288,17 @@ export class ProjectChatService extends EventEmitter {
         };
         currentAttempt = runningAttempt;
         await this.dependencies.storage.markChatAttemptRunning(runningAttempt);
+        try {
+          await this.dependencies.storage.markProjectAgentRunRunning?.({
+            attemptId,
+            providerId: result.invocation.providerId,
+            invocationId: result.invocation.invocationId,
+            updatedAt: runningAttempt.updatedAt,
+          });
+        } catch {
+          // Keep the already-started provider turn usable; restart reconciliation fences the
+          // stale run instead of misreporting the user-visible chat as failed.
+        }
         if (connectionEpoch !== this.providerConnectionEpoch(providerId)) {
           throw new Error('codex_connection_changed_during_turn_registration');
         }
@@ -2385,7 +2447,7 @@ export class ProjectChatService extends EventEmitter {
       ...(errorCode ? { errorCode } : {}),
       updatedAt: completedAt,
     };
-    await this.dependencies.storage.finishChatAttempt(terminalAttempt, {
+    const assistantMessage: ProjectChatMessage = {
       id: messageId,
       projectId: active.projectId,
       role: 'assistant',
@@ -2397,7 +2459,19 @@ export class ProjectChatService extends EventEmitter {
       actions,
       createdAt: active.invocation.startedAt,
       completedAt,
-    });
+    };
+    await this.dependencies.storage.finishChatAttempt(terminalAttempt, assistantMessage);
+    try {
+      await this.dependencies.storage.finishProjectAgentRun?.({
+        attemptId: active.attempt.id,
+        status,
+        assistantContent: content,
+        updatedAt: completedAt,
+      });
+    } catch {
+      // The user-visible turn is already committed. Agent-runtime metadata is additive and a
+      // transient ledger failure must not turn a successful answer into a false chat failure.
+    }
   }
 
   private async finishAttemptBeforeTurn(
@@ -2406,6 +2480,19 @@ export class ProjectChatService extends EventEmitter {
     errorCode: NonNullable<ProjectChatAttempt['errorCode']>,
   ) {
     const now = isoNow();
+    const assistantMessage: ProjectChatMessage = {
+      id: randomUUID(),
+      projectId: attempt.projectId,
+      role: 'assistant',
+      content,
+      status: 'failed',
+      attemptId: attempt.id,
+      ...(attempt.turnId ? { turnId: attempt.turnId } : {}),
+      ...(attempt.model ? { model: attempt.model } : {}),
+      actions: [],
+      createdAt: now,
+      completedAt: now,
+    };
     await this.dependencies.storage.finishChatAttempt(
       {
         ...attempt,
@@ -2413,20 +2500,18 @@ export class ProjectChatService extends EventEmitter {
         errorCode,
         updatedAt: now,
       },
-      {
-        id: randomUUID(),
-        projectId: attempt.projectId,
-        role: 'assistant',
-        content,
-        status: 'failed',
-        attemptId: attempt.id,
-        ...(attempt.turnId ? { turnId: attempt.turnId } : {}),
-        ...(attempt.model ? { model: attempt.model } : {}),
-        actions: [],
-        createdAt: now,
-        completedAt: now,
-      },
+      assistantMessage,
     );
+    try {
+      await this.dependencies.storage.finishProjectAgentRun?.({
+        attemptId: attempt.id,
+        status: 'failed',
+        assistantContent: content,
+        updatedAt: now,
+      });
+    } catch {
+      // Preserve the already-committed chat failure even if additive runtime metadata is stale.
+    }
   }
 
   private clearActive(active: ActiveTurn, status: 'complete' | 'failed' | 'interrupted') {

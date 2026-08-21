@@ -146,7 +146,7 @@ flowchart LR
 | Obsidian Knowledge           | Desktop Research Notes service, bounded Vault adapter, Markdown/LaTeX reader                                     | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 Markdown metadata envelope·Literature/Papers projection·Lecture canonical LaTeX artifact·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                                                                                                         |
 | Lecture                      | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port, Manuscript·external-source port | 여러 project의 captured Manuscript/Overleaf checkpoint·reviewed Literature metadata·Experiment lineage·사용자 `.tex/.md/.pdf` snapshot 선택, canonical article/Beamer LaTeX 생성, app 내 paired source edit, Studio figure library, sandbox PDF compile, 독립 chat, append-only revision, recoverable Trash와 `.tex`/PDF export 구현; PPTX와 OCR·paper-figure ingest는 계획됨 |
 | Usage Analytics              | Desktop model usage collector·SQLCipher ledger·Usage renderer                                                    | 이 Mac에서 provider가 보고한 Codex/Hermes turn token을 project·Lecture generation·connection·model·workload별로 일/주/월 집계; 비용 추정·과거 backfill·Hosted Sync는 하지 않음                                                                                                                                                                                                |
-| AI Gateway                   | Desktop Project Chat provider router, Codex App Server와 선택형 BYO-Hermes ACP adapter                           | 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·provider별 동적 model provenance·Codex native harness/tool 경계·Hermes ACP text/reasoning-only 경계·Codex→Hermes 명시적 고수준 위임·동적 branch title·Research Notes final persistence 구현                                                                                                    |
+| AI Gateway                   | GOSU Agent Runtime, Desktop Project Chat provider router, Codex App Server와 선택형 BYO-Hermes ACP adapter       | provider-neutral durable run/node graph·bounded session working memory·context plan, 다중 chat session·session-scoped durable turn queue·최대 4개 session 병렬 turn·provider별 동적 model provenance·Codex native harness/tool 경계·Hermes ACP text/reasoning-only worker 경계·Codex→Hermes 명시적 child-node 위임·동적 branch title·Research Notes final persistence 구현    |
 | Integration Hub              | Desktop Git Workspace·승인형 SSH·Manuscript connector, `packages/integrations` registry                          | GitHub HTTPS clone·bounded Git·OpenSSH grant·provider-neutral manuscript operation registry·Overleaf Git private connector 구현; schema-driven provider onboarding, GitHub App와 native LaTeX provider는 계획됨                                                                                                                                                               |
 | Sync, Audit & Notification   | Sync memory store, PostgreSQL audit·outbox schema                                                                | 개발 relay 구현; production outbox publisher·Redis·notification은 계획됨                                                                                                                                                                                                                                                                                                      |
 
@@ -2330,6 +2330,7 @@ flowchart LR
   ChatUI["Project Chat UI\nsession rail·safe Markdown/KaTeX"]
   ChatIPC["typed Chat IPC\nproject-scoped DTO"]
   ChatService["ProjectChatService\ndurable attempt router"]
+  AgentRuntime["GOSU Agent Runtime\nrun graph·context plan·working memory"]
   ToolGateway["ProjectAgentToolSession\nproject-bound capabilities"]
   Codex["isolated Codex App Server\nstructured final response"]
   Vault["project Research Notes\nopaque IDs·bounded chunks"]
@@ -2342,7 +2343,8 @@ flowchart LR
   Approval["Apply action\nclaim→workspace command"]
   Workspace["WorkspaceService\nversion·project validation"]
 
-  ChatUI --> ChatIPC --> ChatService --> ChatDB
+  ChatUI --> ChatIPC --> ChatService --> AgentRuntime --> ChatDB
+  AgentRuntime --> ChatService
   ChatService --> Codex
   Codex -->|"item/tool/call"| ToolGateway
   ToolGateway -->|"Board·Objective"| Workspace
@@ -2363,6 +2365,31 @@ flowchart LR
   소유한다. 대화를
   `local_workspace_state` JSON이나 workspace sync outbox에 넣지 않는다. 따라서 긴 대화가
   Project·Task·Objective snapshot의 크기와 delivery 순서에 영향을 주지 않는다.
+- GOSU Agent Runtime phase 1은 Hermes runtime을 복제하거나 그 session DB를 가져오지 않는다. GOSU가
+  `project_agent_runs`, `project_agent_nodes`, `project_agent_working_memory`를 SQLCipher에서 직접 소유하고,
+  Codex와 Hermes는 provider-neutral node의 executor일 뿐이다. 모든 새 Project Chat attempt는 정확히 하나의
+  coordinator node를 가진 run으로 투영되고 `starting → running → terminal` 상태를 따른다. 명시적인
+  Codex→Hermes 위임 receipt는 같은 run의 `delegated-worker` child node로 기록한다. 앱 재시작 때 남아 있는
+  starting/running run과 node는 interrupted로 봉인하며 기존 chat attempt의 재시작 reconciliation과 별개로
+  완료된 것처럼 가장하지 않는다. legacy snapshot에는 이 필드가 없어도 계속 읽힌다.
+- phase 1 context manager는 매 turn마다 이전 40개 message·24,000자를 그대로 되풀이하지 않는다. 최근
+  complete message는 최대 12개·직렬화 10,000자로 제한하고, 더 오래된 성공 turn은 session별 최대 8개의
+  deterministic `{userRequest,outcome,attemptId}` working-memory excerpt로 보완한다. 최근 원문에 이미 포함된
+  attempt의 memory entry는 중복 주입하지 않는다. memory는 모델이 쓴 사실 DB가 아니라 untrusted conversation
+  evidence이므로 최신 원문과 충돌하면 최신 원문이 우선하고 project 사실의 증거로 승격하지 않는다. 각 run은
+  포함 segment, 최근/생략 message 수, memory revision·문자 수와 기존 24,000자 기준 대비 절감 문자를
+  `contextPlan`에 고정해 UI와 회귀 테스트에서 확인할 수 있다. 실패·중단 turn은 memory에 들어가지 않는다.
+  Project Chat은 active run을 `Agent process` live panel로 표시하고 완료 응답마다 접을 수 있는 상세 activity를
+  남긴다. 여기에는 context message/memory/절감 수치, coordinator·delegated-worker provider와 상태, bounded task,
+  결과 요약, 짧은 node/invocation/parent 식별자가 포함된다. 이는 검증 가능한 orchestration telemetry이며 provider의
+  비공개 chain-of-thought를 노출하거나 추측하지 않는다.
+- 이번 phase의 실행 graph는 coordinator와 이미 존재하는 bounded Hermes delegation을 영속화하는 기반이다.
+  autonomous planner, 병렬 worker fan-out, semantic memory curator, reusable skill promotion은 후속 phase이며,
+  이들이 들어와도 GOSU tool broker의 project scope, approval, evidence receipt와 Stop/restart 경계를 우회해서는
+  안 된다. 단순 질문은 coordinator 한 개의 fast path를 계속 사용해 불필요한 agent 호출을 만들지 않는다.
+  `pnpm test:agent-runtime`은 context 축소·memory 중복 제거·coordinator 상태 전이·Hermes child delegation·완료
+  memory의 다음 turn 재주입을 하나의 고정 regression으로 검증하며, 일반 `pnpm test`와 CI의 별도 named gate에
+  모두 포함된다. 이후 Agent Runtime 동작 변경에는 이 gate를 통과하는 회귀 test가 반드시 함께 추가되어야 한다.
 - 각 project는 정확히 하나의 durable default root session marker를 갖는다. active project 존재·Archive·
   Trash 상태를 Main에서 먼저 검증한 뒤 chat을 처음 조회할 때 default를 idempotent하게 만들므로 잘못된
   project UUID가 orphan session을 만들 수 없다. legacy `snapshot(projectId)`·send·cancel caller는 이 default로

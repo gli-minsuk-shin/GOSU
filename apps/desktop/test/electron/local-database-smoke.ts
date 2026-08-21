@@ -7966,7 +7966,54 @@ void app.whenReady().then(async () => {
       },
       status: 'running',
     };
+    const interruptedAgentRunId = randomUUID();
+    database.beginProjectAgentRun({
+      schemaVersion: 1,
+      id: interruptedAgentRunId,
+      projectId: chatProjectId,
+      sessionId: interruptedChatSession.id,
+      attemptId: interruptedAttemptId,
+      status: 'starting',
+      goal: 'Leave this turn running across a restart.',
+      contextPlan: {
+        schemaVersion: 1,
+        strategy: 'recent-history-plus-working-memory',
+        includedSegments: ['project-identity'],
+        candidateMessageCount: 0,
+        recentMessageCount: 0,
+        omittedMessageCount: 0,
+        recentHistoryCharacters: 0,
+        workingMemoryRevision: null,
+        memoryEntryCount: 0,
+        memoryCharacters: 0,
+        estimatedInputCharactersSaved: 0,
+      },
+      nodes: [
+        {
+          id: randomUUID(),
+          runId: interruptedAgentRunId,
+          kind: 'coordinator',
+          providerId: 'provider-pending',
+          status: 'starting',
+          task: 'Leave this turn running across a restart.',
+          invocationId: null,
+          resultSummary: null,
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+          completedAt: null,
+        },
+      ],
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+      completedAt: null,
+    });
     database.markChatAttemptRunning(interruptedRunning);
+    database.markProjectAgentRunRunning({
+      attemptId: interruptedAttemptId,
+      providerId: 'codex',
+      invocationId: interruptedRunning.model!.invocationId,
+      updatedAt: fixedTimestamp,
+    });
     const hermesAuditSession = database.createProjectChatSession(
       chatProjectId,
       'Hermes audit purge fixture',
@@ -7995,12 +8042,54 @@ void app.whenReady().then(async () => {
       createdAt: fixedTimestamp,
       completedAt: fixedTimestamp,
     });
+    const hermesAgentRunId = randomUUID();
+    database.beginProjectAgentRun({
+      schemaVersion: 1,
+      id: hermesAgentRunId,
+      projectId: chatProjectId,
+      sessionId: hermesAuditSession.id,
+      attemptId: hermesAuditAttemptId,
+      status: 'starting',
+      goal: 'Delegate one bounded review.',
+      contextPlan: {
+        schemaVersion: 1,
+        strategy: 'recent-history-plus-working-memory',
+        includedSegments: ['project-identity'],
+        candidateMessageCount: 0,
+        recentMessageCount: 0,
+        omittedMessageCount: 0,
+        recentHistoryCharacters: 0,
+        workingMemoryRevision: null,
+        memoryEntryCount: 0,
+        memoryCharacters: 0,
+        estimatedInputCharactersSaved: 0,
+      },
+      nodes: [
+        {
+          id: randomUUID(),
+          runId: hermesAgentRunId,
+          kind: 'coordinator',
+          providerId: 'provider-pending',
+          status: 'starting',
+          task: 'Delegate one bounded review.',
+          invocationId: null,
+          resultSummary: null,
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+          completedAt: null,
+        },
+      ],
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+      completedAt: null,
+    });
+    const hermesCoordinatorInvocationId = randomUUID();
     database.markChatAttemptRunning({
       ...hermesAuditAttempt,
       threadId: 'thread-hermes-audit-fixture',
       turnId: 'turn-hermes-audit-fixture',
       model: {
-        invocationId: randomUUID(),
+        invocationId: hermesCoordinatorInvocationId,
         providerId: 'codex',
         requestedModelId: null,
         resolvedModelId: 'fixture-model',
@@ -8008,6 +8097,12 @@ void app.whenReady().then(async () => {
         reasoningOptionId: null,
       },
       status: 'running',
+    });
+    database.markProjectAgentRunRunning({
+      attemptId: hermesAuditAttemptId,
+      providerId: 'codex',
+      invocationId: hermesCoordinatorInvocationId,
+      updatedAt: fixedTimestamp,
     });
     const hermesAuditReceipt = {
       schemaVersion: 1 as const,
@@ -8035,6 +8130,18 @@ void app.whenReady().then(async () => {
         hermesAuditAttemptId,
       ).length === 1,
       'hermes_delegation_receipt_exact_retry_was_not_idempotent',
+    );
+    invariant(
+      database
+        .snapshot(chatProjectId, hermesAuditSession.id)
+        .agentRuns?.find((run) => run.id === hermesAgentRunId)
+        ?.nodes.some(
+          (node) =>
+            node.kind === 'delegated-worker' &&
+            node.providerId === 'hermes' &&
+            node.invocationId === hermesAuditInvocationId,
+        ),
+      'hermes_delegation_was_not_recorded_as_agent_child_node',
     );
     let hermesAuditConflictRejected = false;
     try {
@@ -8160,6 +8267,48 @@ void app.whenReady().then(async () => {
       createdAt: fixedTimestamp,
       completedAt: fixedTimestamp,
     });
+    const completedAgentRunId = randomUUID();
+    const completedAgentNodeId = randomUUID();
+    database.beginProjectAgentRun({
+      schemaVersion: 1,
+      id: completedAgentRunId,
+      projectId: chatProjectId,
+      sessionId: defaultChatSession.id,
+      attemptId: completedAttemptId,
+      status: 'starting',
+      goal: 'Complete this durable attempt.',
+      contextPlan: {
+        schemaVersion: 1,
+        strategy: 'recent-history-plus-working-memory',
+        includedSegments: ['project-identity', 'recent-history'],
+        candidateMessageCount: 2,
+        recentMessageCount: 2,
+        omittedMessageCount: 0,
+        recentHistoryCharacters: 400,
+        workingMemoryRevision: null,
+        memoryEntryCount: 0,
+        memoryCharacters: 0,
+        estimatedInputCharactersSaved: 0,
+      },
+      nodes: [
+        {
+          id: completedAgentNodeId,
+          runId: completedAgentRunId,
+          kind: 'coordinator',
+          providerId: 'provider-pending',
+          status: 'starting',
+          task: 'Complete this durable attempt.',
+          invocationId: null,
+          resultSummary: null,
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+          completedAt: null,
+        },
+      ],
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+      completedAt: null,
+    });
     const completedRunning: ProjectChatAttempt = {
       ...completedAttempt,
       threadId: 'thread-completed-fixture',
@@ -8174,6 +8323,12 @@ void app.whenReady().then(async () => {
       status: 'running',
     };
     database.markChatAttemptRunning(completedRunning);
+    database.markProjectAgentRunRunning({
+      attemptId: completedAttemptId,
+      providerId: 'codex',
+      invocationId: completedRunning.model!.invocationId,
+      updatedAt: fixedTimestamp,
+    });
     const completedResearchNoteArtifactId = '3'.repeat(16);
     const completedResearchNotePath = `Experiments/Durable plan--${completedResearchNoteArtifactId}.md`;
     const completedResearchNoteSha256 = '4'.repeat(64);
@@ -8208,6 +8363,25 @@ void app.whenReady().then(async () => {
         createdAt: fixedTimestamp,
         completedAt: fixedTimestamp,
       },
+    );
+    database.finishProjectAgentRun({
+      attemptId: completedAttemptId,
+      status: 'complete',
+      assistantContent: 'This attempt completed durably.',
+      updatedAt: fixedTimestamp,
+    });
+    const completedAgentSnapshot = database.snapshot(chatProjectId, defaultChatSession.id);
+    invariant(
+      completedAgentSnapshot.agentRuns?.some(
+        (run) =>
+          run.id === completedAgentRunId &&
+          run.status === 'complete' &&
+          run.nodes[0]?.providerId === 'codex' &&
+          run.nodes[0]?.status === 'complete',
+      ) &&
+        completedAgentSnapshot.agentMemory?.revision === 1 &&
+        completedAgentSnapshot.agentMemory.entries[0]?.attemptId === completedAttemptId,
+      'project_agent_run_or_working_memory_not_persisted',
     );
     invariant(
       database.abandonResearchNoteSave({
@@ -8831,6 +9005,17 @@ void app.whenReady().then(async () => {
       'completed_chat_attempt_restore_failed',
     );
     invariant(
+      reopenedChat.agentRuns?.some(
+        (run) =>
+          run.id === completedAgentRunId &&
+          run.status === 'complete' &&
+          run.nodes[0]?.status === 'complete',
+      ) &&
+        reopenedChat.agentMemory?.revision === 1 &&
+        reopenedChat.agentMemory.entries[0]?.attemptId === completedAttemptId,
+      'project_agent_runtime_restart_restore_failed',
+    );
+    invariant(
       reopened.getProjectChatProfile(chatProjectId).version === 1 &&
         reopened.getProjectChatProfile(chatProjectId).customInstructions ===
           'Prefer reproducible experiments.' &&
@@ -8863,6 +9048,15 @@ void app.whenReady().then(async () => {
         (message) => message.attemptId === interruptedAttemptId && message.role === 'assistant',
       ).length === 1,
       'interrupted_chat_attempt_receipt_missing',
+    );
+    invariant(
+      reopenedInterruptedChat.agentRuns?.some(
+        (run) =>
+          run.id === interruptedAgentRunId &&
+          run.status === 'interrupted' &&
+          run.nodes[0]?.status === 'interrupted',
+      ),
+      'running_project_agent_run_was_not_reconciled',
     );
     const interruptedResearchNoteMessage = reopenedInterruptedChat.messages.find(
       (message) => message.attemptId === interruptedAttemptId && message.role === 'assistant',

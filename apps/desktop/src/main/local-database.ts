@@ -124,7 +124,12 @@ import {
   MarkProjectChatResearchNoteSaveUncertainInputSchema,
   PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION,
   PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION,
+  PROJECT_AGENT_MAX_MEMORY_ENTRIES,
+  PROJECT_AGENT_MAX_MEMORY_OUTCOME_CHARACTERS,
+  PROJECT_AGENT_MAX_MEMORY_USER_CHARACTERS,
   PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH,
+  ProjectAgentRunSchema,
+  ProjectAgentWorkingMemorySchema,
   ProjectChatActionSchema,
   ProjectChatAttemptSchema,
   ProjectChatHermesDelegationReceiptSchema,
@@ -143,6 +148,8 @@ import {
   UpdateProjectChatProfileInputSchema,
   defaultProjectChatProfile,
   type ProjectChatAction,
+  type ProjectAgentRun,
+  type ProjectAgentWorkingMemory,
   type ProjectChatAttempt,
   type ProjectChatHermesDelegationReceipt,
   type ProjectChatMessage,
@@ -5303,6 +5310,53 @@ export class LocalDatabase {
         on project_chat_attempts(project_id,created_at,id);
       create index if not exists project_chat_attempts_by_retry
         on project_chat_attempts(retry_of_attempt_id);
+      create table if not exists project_agent_runs (
+        id text primary key check (length(id) = 36),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null,
+        session_id text not null references project_chat_sessions(id) on delete cascade,
+        attempt_id text not null unique references project_chat_attempts(id) on delete cascade,
+        status text not null check (
+          status in ('starting','running','complete','failed','interrupted')
+        ),
+        goal text not null check (length(goal) between 1 and 12000),
+        context_plan_json text not null check (length(context_plan_json) between 2 and 4096),
+        created_at text not null,
+        updated_at text not null,
+        completed_at text
+      );
+      create index if not exists project_agent_runs_by_session
+        on project_agent_runs(project_id,session_id,created_at,id);
+      create table if not exists project_agent_nodes (
+        id text primary key check (length(id) = 36),
+        run_id text not null references project_agent_runs(id) on delete cascade,
+        parent_node_id text references project_agent_nodes(id),
+        kind text not null check (kind in ('coordinator','delegated-worker')),
+        provider_id text not null check (length(provider_id) between 1 and 128),
+        status text not null check (
+          status in ('starting','running','complete','failed','interrupted')
+        ),
+        task text not null check (length(task) between 1 and 1200),
+        invocation_id text check (invocation_id is null or length(invocation_id) = 36),
+        result_summary text check (
+          result_summary is null or length(result_summary) between 1 and 2000
+        ),
+        created_at text not null,
+        updated_at text not null,
+        completed_at text
+      );
+      create unique index if not exists project_agent_one_coordinator
+        on project_agent_nodes(run_id) where kind='coordinator';
+      create index if not exists project_agent_nodes_by_run
+        on project_agent_nodes(run_id,created_at,id);
+      create table if not exists project_agent_working_memory (
+        session_id text primary key references project_chat_sessions(id) on delete cascade,
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null,
+        revision integer not null check (revision > 0),
+        entries_json text not null check (length(entries_json) between 2 and 32768),
+        updated_at text not null
+      );
       create table if not exists project_chat_research_note_save_receipts (
         project_id text not null,
         session_id text not null references project_chat_sessions(id),
@@ -5491,6 +5545,21 @@ export class LocalDatabase {
            set status='queued',updated_at=? where status='starting'`,
         )
         .run(new Date().toISOString());
+      const interruptedAgentRuntimeAt = new Date().toISOString();
+      database
+        .prepare(
+          `update project_agent_nodes
+           set status='interrupted',updated_at=?,completed_at=?
+           where status in ('starting','running')`,
+        )
+        .run(interruptedAgentRuntimeAt, interruptedAgentRuntimeAt);
+      database
+        .prepare(
+          `update project_agent_runs
+           set status='interrupted',updated_at=?,completed_at=?
+           where status in ('starting','running')`,
+        )
+        .run(interruptedAgentRuntimeAt, interruptedAgentRuntimeAt);
       database
         .prepare(
           `update literature_search_runs
@@ -7361,6 +7430,63 @@ export class LocalDatabase {
       ) {
         throw new Error('hermes_delegation_receipt_conflict');
       }
+      const run = database
+        .prepare(`select id from project_agent_runs where attempt_id=?`)
+        .get(receipt.attemptId) as { id: string } | undefined;
+      if (run) {
+        const coordinator = database
+          .prepare(`select id from project_agent_nodes where run_id=? and kind='coordinator'`)
+          .get(run.id) as { id: string } | undefined;
+        if (!coordinator) throw new Error('project_agent_run_coordinator_missing');
+        database
+          .prepare(
+            `insert into project_agent_nodes(
+               id,run_id,parent_node_id,kind,provider_id,status,task,invocation_id,
+               result_summary,created_at,updated_at,completed_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?)
+             on conflict(id) do nothing`,
+          )
+          .run(
+            receipt.invocationId,
+            run.id,
+            coordinator.id,
+            'delegated-worker',
+            'hermes',
+            'complete',
+            'Handle a bounded delegated subtask in an isolated worker context',
+            receipt.invocationId,
+            `Hermes worker completed · ${receipt.stopReason}`,
+            receipt.startedAt,
+            receipt.recordedAt,
+            receipt.recordedAt,
+          );
+        const node = database
+          .prepare(
+            `select run_id,parent_node_id,kind,provider_id,status,invocation_id
+             from project_agent_nodes where id=?`,
+          )
+          .get(receipt.invocationId) as
+          | {
+              run_id: string;
+              parent_node_id: string | null;
+              kind: string;
+              provider_id: string;
+              status: string;
+              invocation_id: string | null;
+            }
+          | undefined;
+        if (
+          !node ||
+          node.run_id !== run.id ||
+          node.parent_node_id !== coordinator.id ||
+          node.kind !== 'delegated-worker' ||
+          node.provider_id !== 'hermes' ||
+          node.status !== 'complete' ||
+          node.invocation_id !== receipt.invocationId
+        ) {
+          throw new Error('project_agent_delegation_node_conflict');
+        }
+      }
     })();
   }
 
@@ -7750,6 +7876,224 @@ export class LocalDatabase {
     })();
   }
 
+  getProjectAgentWorkingMemory(
+    projectId: string,
+    sessionId: string,
+  ): ProjectAgentWorkingMemory | null {
+    const row = this.require()
+      .prepare(
+        `select session_id,schema_version,project_id,revision,entries_json,updated_at
+         from project_agent_working_memory where project_id=? and session_id=?`,
+      )
+      .get(projectId, sessionId) as ProjectAgentWorkingMemoryRow | undefined;
+    return row ? toProjectAgentWorkingMemory(row) : null;
+  }
+
+  beginProjectAgentRun(input: ProjectAgentRun) {
+    const run = ProjectAgentRunSchema.parse(structuredClone(input));
+    if (run.status !== 'starting' || run.nodes.length !== 1) {
+      throw new Error('project_agent_run_invalid_start');
+    }
+    const coordinator = run.nodes[0]!;
+    if (coordinator.kind !== 'coordinator' || coordinator.status !== 'starting') {
+      throw new Error('project_agent_run_invalid_start');
+    }
+    const database = this.require();
+    database
+      .transaction(() => {
+        const attempt = database
+          .prepare(`select project_id,session_id,status from project_chat_attempts where id=?`)
+          .get(run.attemptId) as
+          | { project_id: string; session_id: string; status: ProjectChatAttempt['status'] }
+          | undefined;
+        if (
+          !attempt ||
+          attempt.project_id !== run.projectId ||
+          attempt.session_id !== run.sessionId ||
+          attempt.status !== 'starting'
+        ) {
+          throw new Error('project_agent_run_attempt_conflict');
+        }
+        database
+          .prepare(
+            `insert into project_agent_runs(
+               id,schema_version,project_id,session_id,attempt_id,status,goal,
+               context_plan_json,created_at,updated_at,completed_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            run.id,
+            1,
+            run.projectId,
+            run.sessionId,
+            run.attemptId,
+            run.status,
+            run.goal,
+            JSON.stringify(run.contextPlan),
+            run.createdAt,
+            run.updatedAt,
+            run.completedAt,
+          );
+        database
+          .prepare(
+            `insert into project_agent_nodes(
+               id,run_id,parent_node_id,kind,provider_id,status,task,invocation_id,
+               result_summary,created_at,updated_at,completed_at
+             ) values(?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            coordinator.id,
+            coordinator.runId,
+            coordinator.parentNodeId ?? null,
+            coordinator.kind,
+            coordinator.providerId,
+            coordinator.status,
+            coordinator.task,
+            coordinator.invocationId,
+            coordinator.resultSummary,
+            coordinator.createdAt,
+            coordinator.updatedAt,
+            coordinator.completedAt,
+          );
+      })
+      .immediate();
+  }
+
+  markProjectAgentRunRunning(input: {
+    attemptId: string;
+    providerId: string;
+    invocationId: string;
+    updatedAt: string;
+  }) {
+    const database = this.require();
+    database
+      .transaction(() => {
+        const run = database
+          .prepare(`select id,status from project_agent_runs where attempt_id=?`)
+          .get(input.attemptId) as { id: string; status: ProjectAgentRun['status'] } | undefined;
+        if (!run) return;
+        if (run.status !== 'starting') throw new Error('project_agent_run_state_conflict');
+        const nodeChanged = database
+          .prepare(
+            `update project_agent_nodes
+             set status='running',provider_id=?,invocation_id=?,updated_at=?
+             where run_id=? and kind='coordinator' and status='starting'`,
+          )
+          .run(input.providerId, input.invocationId, input.updatedAt, run.id).changes;
+        const runChanged = database
+          .prepare(
+            `update project_agent_runs set status='running',updated_at=?
+             where id=? and status='starting'`,
+          )
+          .run(input.updatedAt, run.id).changes;
+        if (nodeChanged !== 1 || runChanged !== 1) {
+          throw new Error('project_agent_run_state_conflict');
+        }
+      })
+      .immediate();
+  }
+
+  finishProjectAgentRun(input: {
+    attemptId: string;
+    status: 'complete' | 'failed' | 'interrupted';
+    assistantContent: string;
+    updatedAt: string;
+  }) {
+    const database = this.require();
+    database
+      .transaction(() => {
+        const run = database
+          .prepare(
+            `select r.id,r.project_id,r.session_id,r.status,a.user_message_id
+             from project_agent_runs r
+             join project_chat_attempts a on a.id=r.attempt_id
+             where r.attempt_id=?`,
+          )
+          .get(input.attemptId) as
+          | {
+              id: string;
+              project_id: string;
+              session_id: string;
+              status: ProjectAgentRun['status'];
+              user_message_id: string;
+            }
+          | undefined;
+        if (!run) return;
+        if (!['starting', 'running'].includes(run.status)) {
+          if (run.status === input.status) return;
+          throw new Error('project_agent_run_state_conflict');
+        }
+        const resultSummary = input.assistantContent.trim().slice(0, 2_000) || input.status;
+        database
+          .prepare(
+            `update project_agent_nodes
+             set status=?,result_summary=?,updated_at=?,completed_at=?
+             where run_id=? and kind='coordinator' and status in ('starting','running')`,
+          )
+          .run(input.status, resultSummary, input.updatedAt, input.updatedAt, run.id);
+        const changed = database
+          .prepare(
+            `update project_agent_runs set status=?,updated_at=?,completed_at=?
+             where id=? and status in ('starting','running')`,
+          )
+          .run(input.status, input.updatedAt, input.updatedAt, run.id).changes;
+        if (changed !== 1) throw new Error('project_agent_run_state_conflict');
+        if (input.status !== 'complete') return;
+
+        const user = database
+          .prepare(`select content from project_chat_messages where id=? and role='user'`)
+          .get(run.user_message_id) as { content: string } | undefined;
+        if (!user) throw new Error('project_agent_memory_source_missing');
+        const currentRow = database
+          .prepare(
+            `select session_id,schema_version,project_id,revision,entries_json,updated_at
+             from project_agent_working_memory where session_id=? and project_id=?`,
+          )
+          .get(run.session_id, run.project_id) as ProjectAgentWorkingMemoryRow | undefined;
+        const current = currentRow ? toProjectAgentWorkingMemory(currentRow) : null;
+        const userRequest = user.content.trim().slice(0, PROJECT_AGENT_MAX_MEMORY_USER_CHARACTERS);
+        const outcome = input.assistantContent
+          .trim()
+          .slice(0, PROJECT_AGENT_MAX_MEMORY_OUTCOME_CHARACTERS);
+        if (!userRequest || !outcome) return;
+        const entries = [
+          ...(current?.entries.filter((entry) => entry.attemptId !== input.attemptId) ?? []),
+          {
+            attemptId: input.attemptId,
+            userRequest,
+            outcome,
+            completedAt: input.updatedAt,
+          },
+        ].slice(-PROJECT_AGENT_MAX_MEMORY_ENTRIES);
+        const next = ProjectAgentWorkingMemorySchema.parse({
+          schemaVersion: 1,
+          projectId: run.project_id,
+          sessionId: run.session_id,
+          revision: (current?.revision ?? 0) + 1,
+          entries,
+          updatedAt: input.updatedAt,
+        });
+        database
+          .prepare(
+            `insert into project_agent_working_memory(
+               session_id,schema_version,project_id,revision,entries_json,updated_at
+             ) values(?,?,?,?,?,?)
+             on conflict(session_id) do update set
+               revision=excluded.revision,entries_json=excluded.entries_json,
+               updated_at=excluded.updated_at`,
+          )
+          .run(
+            next.sessionId,
+            1,
+            next.projectId,
+            next.revision,
+            JSON.stringify(next.entries),
+            next.updatedAt,
+          );
+      })
+      .immediate();
+  }
+
   getChatAttempt(projectId: string, sessionId: string, attemptId?: string) {
     const resolvedAttemptId = attemptId ?? sessionId;
     const resolvedSessionId = attemptId
@@ -7809,6 +8153,37 @@ export class LocalDatabase {
          ) order by ordinal asc`,
       )
       .all(session.id, projectId) as ProjectChatAttemptRow[];
+    const agentRunRows = database
+      .prepare(
+        `with selected_attempts as (
+           select a.id,sm.ordinal
+           from project_chat_attempts a
+           join project_chat_session_messages sm on sm.message_id=a.user_message_id
+           where sm.session_id=? and a.project_id=?
+           order by sm.ordinal desc limit 500
+         )
+         select r.id,r.schema_version,r.project_id,r.session_id,r.attempt_id,r.status,r.goal,
+                r.context_plan_json,r.created_at,r.updated_at,r.completed_at
+         from selected_attempts selected
+         join project_agent_runs r on r.attempt_id=selected.id
+         where r.session_id=? and r.project_id=?
+         order by selected.ordinal asc,r.id asc`,
+      )
+      .all(session.id, projectId, session.id, projectId) as ProjectAgentRunRow[];
+    const agentNodeStatement = database.prepare(
+      `select id,run_id,parent_node_id,kind,provider_id,status,task,invocation_id,
+              result_summary,created_at,updated_at,completed_at
+       from project_agent_nodes where run_id=? order by created_at,id limit 16`,
+    );
+    const agentRuns = agentRunRows.map((run) =>
+      toProjectAgentRun(run, agentNodeStatement.all(run.id) as ProjectAgentNodeRow[]),
+    );
+    const memoryRow = database
+      .prepare(
+        `select session_id,schema_version,project_id,revision,entries_json,updated_at
+         from project_agent_working_memory where session_id=? and project_id=?`,
+      )
+      .get(session.id, projectId) as ProjectAgentWorkingMemoryRow | undefined;
     const actionStatement = database.prepare(
       `select id,message_id,project_id,command_json,status,result_entity_id,
               result_entity_version,error_code,created_at,updated_at
@@ -7824,6 +8199,8 @@ export class LocalDatabase {
       session,
       sessions,
       attempts: attempts.map(toChatAttempt),
+      agentRuns,
+      ...(memoryRow ? { agentMemory: toProjectAgentWorkingMemory(memoryRow) } : {}),
       queuedTurns: this.listProjectChatQueuedTurns(projectId, session.id),
       messages: rows.map((row) => ({
         id: row.id,
@@ -11807,6 +12184,44 @@ type ProjectChatAttemptRow = {
   updated_at: string;
 };
 
+type ProjectAgentRunRow = {
+  id: string;
+  schema_version: 1;
+  project_id: string;
+  session_id: string;
+  attempt_id: string;
+  status: ProjectAgentRun['status'];
+  goal: string;
+  context_plan_json: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
+type ProjectAgentNodeRow = {
+  id: string;
+  run_id: string;
+  parent_node_id: string | null;
+  kind: ProjectAgentRun['nodes'][number]['kind'];
+  provider_id: string;
+  status: ProjectAgentRun['nodes'][number]['status'];
+  task: string;
+  invocation_id: string | null;
+  result_summary: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
+type ProjectAgentWorkingMemoryRow = {
+  session_id: string;
+  schema_version: 1;
+  project_id: string;
+  revision: number;
+  entries_json: string;
+  updated_at: string;
+};
+
 type ProjectChatProfileRow = {
   project_id: string;
   version: number;
@@ -11886,6 +12301,47 @@ function toChatAttempt(row: ProjectChatAttemptRow) {
       ? { errorCode: row.error_code_v2 ?? row.error_code! }
       : {}),
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function toProjectAgentRun(row: ProjectAgentRunRow, nodeRows: readonly ProjectAgentNodeRow[]) {
+  return ProjectAgentRunSchema.parse({
+    schemaVersion: 1,
+    id: row.id,
+    projectId: row.project_id,
+    sessionId: row.session_id,
+    attemptId: row.attempt_id,
+    status: row.status,
+    goal: row.goal,
+    contextPlan: JSON.parse(row.context_plan_json) as unknown,
+    nodes: nodeRows.map((node) => ({
+      id: node.id,
+      runId: node.run_id,
+      ...(node.parent_node_id ? { parentNodeId: node.parent_node_id } : {}),
+      kind: node.kind,
+      providerId: node.provider_id,
+      status: node.status,
+      task: node.task,
+      invocationId: node.invocation_id,
+      resultSummary: node.result_summary,
+      createdAt: node.created_at,
+      updatedAt: node.updated_at,
+      completedAt: node.completed_at,
+    })),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at,
+  });
+}
+
+function toProjectAgentWorkingMemory(row: ProjectAgentWorkingMemoryRow) {
+  return ProjectAgentWorkingMemorySchema.parse({
+    schemaVersion: 1,
+    projectId: row.project_id,
+    sessionId: row.session_id,
+    revision: row.revision,
+    entries: JSON.parse(row.entries_json) as unknown,
     updatedAt: row.updated_at,
   });
 }

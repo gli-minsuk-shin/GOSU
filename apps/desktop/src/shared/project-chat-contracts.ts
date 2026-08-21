@@ -18,6 +18,11 @@ export const PROJECT_CHAT_MAX_QUEUED_TURNS_PER_SESSION = 50;
 export const PROJECT_CHAT_MAX_CONCURRENT_SESSION_TURNS = 4;
 export const PROJECT_CHAT_MAX_TASK_ACTION_DESCRIPTION_LENGTH = 3_200;
 export const PROJECT_CHAT_MAX_ACTION_COMMAND_SERIALIZED_LENGTH = 4_096;
+export const PROJECT_AGENT_MAX_MEMORY_ENTRIES = 8;
+export const PROJECT_AGENT_MAX_MEMORY_USER_CHARACTERS = 400;
+export const PROJECT_AGENT_MAX_MEMORY_OUTCOME_CHARACTERS = 900;
+export const PROJECT_AGENT_MAX_RUNS_PER_SNAPSHOT = 500;
+export const PROJECT_AGENT_MAX_NODES_PER_RUN = 16;
 
 export const PROJECT_CHAT_HARNESS_MODES = ['context', 'planner', 'reviewer'] as const;
 export const PROJECT_CHAT_RESPONSE_DEPTHS = ['concise', 'standard', 'deep'] as const;
@@ -380,11 +385,22 @@ const ProjectChatPromptProvenanceV4Schema = ProjectChatPromptProvenanceV3Schema.
   })
   .strict();
 
+const ProjectChatPromptProvenanceV5Schema = ProjectChatPromptProvenanceV4Schema.omit({
+  assemblyVersion: true,
+})
+  .extend({
+    assemblyVersion: z.literal(5),
+    contextPlanSha256: sha256Schema,
+    workingMemoryRevision: z.number().int().positive().nullable(),
+  })
+  .strict();
+
 export const ProjectChatPromptProvenanceSchema = z.discriminatedUnion('assemblyVersion', [
   ProjectChatPromptProvenanceV1Schema,
   ProjectChatPromptProvenanceV2Schema,
   ProjectChatPromptProvenanceV3Schema,
   ProjectChatPromptProvenanceV4Schema,
+  ProjectChatPromptProvenanceV5Schema,
 ]);
 
 export type ProjectChatPromptProvenance = z.infer<typeof ProjectChatPromptProvenanceSchema>;
@@ -558,6 +574,193 @@ export const ProjectChatAttemptSchema = z
 
 export type ProjectChatAttempt = z.infer<typeof ProjectChatAttemptSchema>;
 
+export const PROJECT_AGENT_RUN_STATUSES = [
+  'starting',
+  'running',
+  'complete',
+  'failed',
+  'interrupted',
+] as const;
+
+export const PROJECT_AGENT_NODE_STATUSES = [
+  'starting',
+  'running',
+  'complete',
+  'failed',
+  'interrupted',
+] as const;
+
+export const ProjectAgentContextPlanSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    strategy: z.literal('recent-history-plus-working-memory'),
+    includedSegments: z
+      .array(
+        z.enum([
+          'project-identity',
+          'board',
+          'objective',
+          'project-rules',
+          'recent-history',
+          'working-memory',
+          'attachments',
+        ]),
+      )
+      .min(1)
+      .max(7),
+    candidateMessageCount: z.number().int().nonnegative().max(5_000),
+    recentMessageCount: z.number().int().nonnegative().max(40),
+    omittedMessageCount: z.number().int().nonnegative().max(5_000),
+    recentHistoryCharacters: z.number().int().nonnegative().max(24_000),
+    workingMemoryRevision: z.number().int().positive().nullable(),
+    memoryEntryCount: z.number().int().nonnegative().max(PROJECT_AGENT_MAX_MEMORY_ENTRIES),
+    memoryCharacters: z.number().int().nonnegative().max(16_000),
+    estimatedInputCharactersSaved: z.number().int().nonnegative().max(1_000_000),
+  })
+  .strict()
+  .superRefine((plan, context) => {
+    if (plan.recentMessageCount + plan.omittedMessageCount !== plan.candidateMessageCount) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Context-plan message counts must reconcile',
+        path: ['candidateMessageCount'],
+      });
+    }
+    if (plan.workingMemoryRevision === null && plan.memoryEntryCount > 0) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Context-plan memory entries require a frozen memory revision',
+        path: ['workingMemoryRevision'],
+      });
+    }
+  });
+
+export type ProjectAgentContextPlan = z.infer<typeof ProjectAgentContextPlanSchema>;
+
+export const ProjectAgentMemoryEntrySchema = z
+  .object({
+    attemptId: uuidSchema,
+    userRequest: z.string().trim().min(1).max(PROJECT_AGENT_MAX_MEMORY_USER_CHARACTERS),
+    outcome: z.string().trim().min(1).max(PROJECT_AGENT_MAX_MEMORY_OUTCOME_CHARACTERS),
+    completedAt: timestampSchema,
+  })
+  .strict();
+
+export const ProjectAgentWorkingMemorySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    projectId: uuidSchema,
+    sessionId: uuidSchema,
+    revision: z.number().int().positive(),
+    entries: z.array(ProjectAgentMemoryEntrySchema).max(PROJECT_AGENT_MAX_MEMORY_ENTRIES),
+    updatedAt: timestampSchema,
+  })
+  .strict();
+
+export type ProjectAgentWorkingMemory = z.infer<typeof ProjectAgentWorkingMemorySchema>;
+
+export const ProjectAgentNodeSchema = z
+  .object({
+    id: uuidSchema,
+    runId: uuidSchema,
+    parentNodeId: uuidSchema.optional(),
+    kind: z.enum(['coordinator', 'delegated-worker']),
+    providerId: z.string().trim().min(1).max(128),
+    status: z.enum(PROJECT_AGENT_NODE_STATUSES),
+    task: z.string().trim().min(1).max(1_200),
+    invocationId: uuidSchema.nullable(),
+    resultSummary: z.string().trim().min(1).max(2_000).nullable(),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+    completedAt: timestampSchema.nullable(),
+  })
+  .strict()
+  .refine((node) => node.parentNodeId !== node.id, {
+    message: 'An agent node cannot be its own parent',
+    path: ['parentNodeId'],
+  });
+
+export type ProjectAgentNode = z.infer<typeof ProjectAgentNodeSchema>;
+
+export const ProjectAgentRunSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    id: uuidSchema,
+    projectId: uuidSchema,
+    sessionId: uuidSchema,
+    attemptId: uuidSchema,
+    status: z.enum(PROJECT_AGENT_RUN_STATUSES),
+    goal: z.string().trim().min(1).max(PROJECT_CHAT_MAX_MESSAGE_LENGTH),
+    contextPlan: ProjectAgentContextPlanSchema,
+    nodes: z.array(ProjectAgentNodeSchema).min(1).max(PROJECT_AGENT_MAX_NODES_PER_RUN),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+    completedAt: timestampSchema.nullable(),
+  })
+  .strict()
+  .superRefine((run, context) => {
+    const ids = new Set<string>();
+    let coordinatorCount = 0;
+    for (const [index, node] of run.nodes.entries()) {
+      if (node.runId !== run.id) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Agent node references another run',
+          path: ['nodes', index, 'runId'],
+        });
+      }
+      if (ids.has(node.id)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Agent node IDs must be unique',
+          path: ['nodes', index, 'id'],
+        });
+      }
+      ids.add(node.id);
+      if (node.kind === 'coordinator') coordinatorCount += 1;
+    }
+    for (const [index, node] of run.nodes.entries()) {
+      if (node.parentNodeId && !ids.has(node.parentNodeId)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Agent node parent must belong to the same run',
+          path: ['nodes', index, 'parentNodeId'],
+        });
+      }
+      if (node.kind === 'coordinator') {
+        if (node.parentNodeId) {
+          context.addIssue({
+            code: 'custom',
+            message: 'The coordinator cannot have a parent',
+            path: ['nodes', index, 'parentNodeId'],
+          });
+        }
+        if (node.status !== run.status) {
+          context.addIssue({
+            code: 'custom',
+            message: 'Coordinator status must match its agent run',
+            path: ['nodes', index, 'status'],
+          });
+        }
+      } else if (!node.parentNodeId) {
+        context.addIssue({
+          code: 'custom',
+          message: 'A delegated worker must reference a parent node',
+          path: ['nodes', index, 'parentNodeId'],
+        });
+      }
+    }
+    if (coordinatorCount !== 1) {
+      context.addIssue({
+        code: 'custom',
+        message: 'An agent run must contain exactly one coordinator',
+        path: ['nodes'],
+      });
+    }
+  });
+
+export type ProjectAgentRun = z.infer<typeof ProjectAgentRunSchema>;
+
 export const ProjectChatHermesDelegationReceiptSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -666,6 +869,10 @@ export const ProjectChatSnapshotSchema = z
     // Optional at the wire boundary so snapshots written before durable attempts remain readable.
     // Current storage always returns an array.
     attempts: z.array(ProjectChatAttemptSchema).max(500).optional(),
+    // Optional so pre-agent-runtime snapshots remain wire-compatible. Current SQLCipher storage
+    // returns the bounded run catalog and session working memory.
+    agentRuns: z.array(ProjectAgentRunSchema).max(PROJECT_AGENT_MAX_RUNS_PER_SNAPSHOT).optional(),
+    agentMemory: ProjectAgentWorkingMemorySchema.optional(),
     queuedTurns: z
       .array(ProjectChatQueuedTurnSchema)
       .max(PROJECT_CHAT_MAX_QUEUED_TURNS_PER_SESSION)
@@ -749,6 +956,40 @@ export const ProjectChatSnapshotSchema = z
           path: ['attempts', index, 'projectId'],
         });
       }
+    }
+    for (const [index, run] of (snapshot.agentRuns ?? []).entries()) {
+      if (run.projectId !== snapshot.projectId) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Agent run references another project',
+          path: ['agentRuns', index, 'projectId'],
+        });
+      }
+      if (snapshot.session && run.sessionId !== snapshot.session.id) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Agent run references another session',
+          path: ['agentRuns', index, 'sessionId'],
+        });
+      }
+      if (snapshot.attempts && !snapshot.attempts.some((attempt) => attempt.id === run.attemptId)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Agent run references an attempt outside the snapshot',
+          path: ['agentRuns', index, 'attemptId'],
+        });
+      }
+    }
+    if (
+      snapshot.agentMemory &&
+      (snapshot.agentMemory.projectId !== snapshot.projectId ||
+        (snapshot.session && snapshot.agentMemory.sessionId !== snapshot.session.id))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Agent memory references another project or session',
+        path: ['agentMemory'],
+      });
     }
     for (const [index, queued] of (snapshot.queuedTurns ?? []).entries()) {
       if (queued.projectId !== snapshot.projectId) {

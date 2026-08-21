@@ -11,6 +11,8 @@ import {
   PROJECT_CHAT_OUTPUT_SCHEMA,
   BranchProjectChatSessionInputSchema,
   CreateProjectChatSessionInputSchema,
+  ProjectAgentRunSchema,
+  ProjectAgentWorkingMemorySchema,
   ProjectChatAttemptSchema,
   ProjectChatEventSchema,
   ProjectChatMessageSchema,
@@ -28,6 +30,98 @@ import {
 } from '../src/shared/project-chat-contracts';
 
 describe('Project chat contracts', () => {
+  it('validates a provider-neutral agent run and bounded session memory', () => {
+    const now = new Date().toISOString();
+    const runId = randomUUID();
+    const projectId = randomUUID();
+    const sessionId = randomUUID();
+    const attemptId = randomUUID();
+    const run = ProjectAgentRunSchema.parse({
+      schemaVersion: 1,
+      id: runId,
+      projectId,
+      sessionId,
+      attemptId,
+      status: 'running',
+      goal: 'Evaluate the current hypothesis.',
+      contextPlan: {
+        schemaVersion: 1,
+        strategy: 'recent-history-plus-working-memory',
+        includedSegments: ['project-identity', 'recent-history'],
+        candidateMessageCount: 8,
+        recentMessageCount: 6,
+        omittedMessageCount: 2,
+        recentHistoryCharacters: 4_000,
+        workingMemoryRevision: 1,
+        memoryEntryCount: 1,
+        memoryCharacters: 500,
+        estimatedInputCharactersSaved: 2_000,
+      },
+      nodes: [
+        {
+          id: randomUUID(),
+          runId,
+          kind: 'coordinator',
+          providerId: 'codex',
+          status: 'running',
+          task: 'Coordinate the turn.',
+          invocationId: randomUUID(),
+          resultSummary: null,
+          createdAt: now,
+          updatedAt: now,
+          completedAt: null,
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+      completedAt: null,
+    });
+    expect(run.contextPlan.estimatedInputCharactersSaved).toBe(2_000);
+    expect(
+      ProjectAgentWorkingMemorySchema.parse({
+        schemaVersion: 1,
+        projectId,
+        sessionId,
+        revision: 1,
+        entries: [
+          {
+            attemptId,
+            userRequest: 'Evaluate the current hypothesis.',
+            outcome: 'Use a frozen holdout.',
+            completedAt: now,
+          },
+        ],
+        updatedAt: now,
+      }).entries,
+    ).toHaveLength(1);
+    expect(() =>
+      ProjectAgentRunSchema.parse({
+        ...run,
+        nodes: [...run.nodes, { ...run.nodes[0], id: randomUUID() }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ProjectAgentRunSchema.parse({
+        ...run,
+        nodes: [{ ...run.nodes[0], status: 'failed' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ProjectAgentRunSchema.parse({
+        ...run,
+        nodes: [
+          ...run.nodes,
+          {
+            ...run.nodes[0],
+            id: randomUUID(),
+            kind: 'delegated-worker',
+            status: 'complete',
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
   it('keeps the Codex output schema within the pinned structured-output subset', () => {
     const serialized = JSON.stringify(PROJECT_CHAT_OUTPUT_SCHEMA);
     expect(serialized).toContain('anyOf');
@@ -619,7 +713,7 @@ describe('Project chat contracts', () => {
     ).toThrow();
   });
 
-  it('keeps v1/v2/v3 prompt provenance readable and parses policy-aware v4 provenance', () => {
+  it('keeps v1-v4 prompt provenance readable and parses agent-context v5 provenance', () => {
     const base = {
       schemaVersion: 1 as const,
       baseInstructionId: 'gosu.project-chat.base',
@@ -692,6 +786,27 @@ describe('Project chat contracts', () => {
     ).toMatchObject({
       assemblyVersion: 4,
       policyRuleCount: 2,
+    });
+    expect(
+      ProjectChatPromptProvenanceSchema.parse({
+        ...base,
+        ...v2Fields,
+        assemblyVersion: 5,
+        requestedLegacyHarnessMode: 'context',
+        nativeCollaborationModeId: null,
+        nativeExecutionKind: 'default',
+        nativeCollaborationCatalogSha256: '3'.repeat(64),
+        nativePersonality: 'auto',
+        nativeResponseVerbosity: 'auto',
+        effectiveReasoningOptionId: null,
+        policyRulesSha256: '4'.repeat(64),
+        policyRuleCount: 0,
+        contextPlanSha256: '5'.repeat(64),
+        workingMemoryRevision: 3,
+      }),
+    ).toMatchObject({
+      assemblyVersion: 5,
+      workingMemoryRevision: 3,
     });
   });
 });

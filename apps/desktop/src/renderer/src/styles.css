@@ -6115,6 +6115,108 @@ button.chat-toolbar-status.active {
   overflow-wrap: anywhere;
 }
 
+.message-agent-runtime {
+  flex: 1 0 100%;
+  color: var(--subtle);
+  font-size: var(--font-caption);
+  line-height: 1.35;
+  text-align: left;
+}
+
+.message-agent-runtime > summary {
+  width: fit-content;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  list-style-position: inside;
+}
+
+.message-agent-runtime[open] {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-soft) 78%, transparent);
+}
+
+.agent-run-live {
+  display: grid;
+  gap: 10px;
+  margin: 10px 14px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--green) 8%, var(--surface));
+}
+
+.agent-run-live > header,
+.agent-run-node-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agent-run-live > header > div {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.agent-run-live > header span {
+  color: var(--green);
+  font-size: var(--font-caption);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.agent-run-live > header small {
+  color: var(--subtle);
+}
+
+.agent-run-verbose,
+.agent-run-context-plan {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-run-context-plan {
+  color: var(--muted);
+}
+
+.agent-run-context-plan strong {
+  color: var(--ink);
+}
+
+.agent-run-node-list {
+  display: grid;
+  gap: 7px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-run-node-list li {
+  min-width: 0;
+  padding: 8px 10px;
+  border-left: 3px solid color-mix(in srgb, var(--green) 45%, var(--line));
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
+.agent-run-node-list p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-run-node-result {
+  color: var(--muted);
+}
+
+.agent-run-node-list small {
+  display: block;
+  margin-top: 5px;
+  color: var(--subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 @media (pointer: coarse) {
   .chat-message-branch button {
     min-height: 44px;

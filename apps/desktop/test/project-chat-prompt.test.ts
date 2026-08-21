@@ -13,6 +13,89 @@ function hash(value: string) {
 }
 
 describe('Project chat prompt assembly', () => {
+  it('replaces older raw turns with bounded persistent working memory', () => {
+    const now = new Date().toISOString();
+    const projectId = randomUUID();
+    const sessionId = randomUUID();
+    const attemptIds = Array.from({ length: 7 }, () => randomUUID());
+    const priorMessages = Array.from({ length: 14 }, (_, index) => ({
+      id: randomUUID(),
+      projectId,
+      role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      content: `${index}:${'h'.repeat(1_000)}`,
+      status: 'complete' as const,
+      attemptId: attemptIds[Math.floor(index / 2)]!,
+      actions: [],
+      createdAt: now,
+      completedAt: now,
+    }));
+    const result = assembleProjectChatPrompt({
+      snapshot: {
+        schemaVersion: 1,
+        revision: 1,
+        projects: [
+          {
+            id: projectId,
+            name: 'Memory project',
+            slug: 'memory-project',
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        tasks: [],
+        objectives: [],
+      },
+      projectId,
+      message: 'Continue from the durable decision.',
+      priorMessages,
+      harnessMode: 'context',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      profileVersion: 0,
+      instructionRevisionId: null,
+      customInstructions: '',
+      nativeCollaborationModeId: null,
+      nativeExecutionKind: 'default',
+      nativeCollaborationCatalogSha256: hash('catalog'),
+      nativePersonality: 'auto',
+      nativeResponseVerbosity: 'auto',
+      effectiveReasoningOptionId: null,
+      workingMemory: {
+        schemaVersion: 1,
+        projectId,
+        sessionId,
+        revision: 3,
+        entries: [
+          {
+            attemptId: attemptIds[0]!,
+            userRequest: 'Choose the primary endpoint.',
+            outcome: 'Use held-out log likelihood.',
+            completedAt: now,
+          },
+        ],
+        updatedAt: now,
+      },
+    });
+
+    expect(result.contextPlan).toMatchObject({
+      strategy: 'recent-history-plus-working-memory',
+      candidateMessageCount: 14,
+      recentMessageCount: 9,
+      omittedMessageCount: 5,
+      workingMemoryRevision: 3,
+      memoryEntryCount: 1,
+    });
+    expect(result.contextPlan.estimatedInputCharactersSaved).toBeGreaterThan(0);
+    expect(result.prompt).toContain('Use held-out log likelihood.');
+    expect(result.prompt).not.toContain('"content":"0:hhhh');
+    expect(result.provenance).toMatchObject({
+      assemblyVersion: 5,
+      workingMemoryRevision: 3,
+      contextPlanSha256: hash(JSON.stringify(result.contextPlan)),
+    });
+  });
+
   it('is deterministic, bounded, project-local, and provenance-addressed', () => {
     const now = new Date().toISOString();
     const projectId = randomUUID();
@@ -91,7 +174,7 @@ describe('Project chat prompt assembly', () => {
     expect(first.prompt).not.toContain('researcher:');
     expect(first.prompt).toContain('"todoSkill":null');
     expect(first.provenance).toMatchObject({
-      assemblyVersion: 4,
+      assemblyVersion: 5,
       profileVersion: 3,
       baseInstructionVersion: 37,
       workspaceRevision: 42,
@@ -458,7 +541,7 @@ describe('Project chat prompt assembly', () => {
     expect(result.developerInstructions).toContain('Legacy reviewer compatibility is active');
     expect(result.developerInstructions).toContain('set researchNote disposition to none');
     expect(result.provenance).toMatchObject({
-      assemblyVersion: 4,
+      assemblyVersion: 5,
       requestedLegacyHarnessMode: 'reviewer',
       nativeExecutionKind: 'legacy-reviewer',
       nativeCollaborationModeId: null,

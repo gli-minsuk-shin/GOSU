@@ -68,6 +68,7 @@ const linkedServerSnapshot: SshServerResourceSnapshot = {
 describe('advanced Project Chat controls', () => {
   it('shows the project-rule count frozen into an individual turn without claiming semantic use', () => {
     expect(projectChatPolicyRuleSnapshotCount({ assemblyVersion: 4, policyRuleCount: 1 })).toBe(1);
+    expect(projectChatPolicyRuleSnapshotCount({ assemblyVersion: 5, policyRuleCount: 2 })).toBe(2);
     expect(projectChatPolicyRuleSnapshotCount({ assemblyVersion: 3 })).toBe(0);
     expect(projectChatPolicyRuleSnapshotCount(undefined)).toBe(0);
 
@@ -77,6 +78,168 @@ describe('advanced Project Chat controls', () => {
     );
     expect(source).toContain('Project rules snapshot ${policyRuleSnapshotCount}');
     expect(source).not.toContain('Project rules applied ${policyRuleSnapshotCount}');
+  });
+
+  it('shows durable agent-run, node, memory, and context-savings metadata', () => {
+    const attemptId = '22222222-2222-4222-8222-222222222222';
+    const runId = '33333333-3333-4333-8333-333333333333';
+    const sessionId = '44444444-4444-4444-8444-444444444444';
+    const liveRunId = '77777777-7777-4777-8777-777777777777';
+    const now = '2026-08-21T00:00:00.000Z';
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [
+            {
+              id: '55555555-5555-4555-8555-555555555555',
+              projectId: project.id,
+              role: 'assistant',
+              content: 'Completed from persistent context.',
+              status: 'complete',
+              attemptId,
+              actions: [],
+              createdAt: now,
+              completedAt: now,
+            },
+          ],
+          attempts: [],
+          agentRuns: [
+            {
+              schemaVersion: 1,
+              id: runId,
+              projectId: project.id,
+              sessionId,
+              attemptId,
+              status: 'complete',
+              goal: 'Continue the analysis.',
+              contextPlan: {
+                schemaVersion: 1,
+                strategy: 'recent-history-plus-working-memory',
+                includedSegments: ['project-identity', 'working-memory'],
+                candidateMessageCount: 20,
+                recentMessageCount: 8,
+                omittedMessageCount: 12,
+                recentHistoryCharacters: 8_200,
+                workingMemoryRevision: 4,
+                memoryEntryCount: 4,
+                memoryCharacters: 2_000,
+                estimatedInputCharactersSaved: 13_800,
+              },
+              nodes: [
+                {
+                  id: '66666666-6666-4666-8666-666666666666',
+                  runId,
+                  kind: 'coordinator',
+                  providerId: 'codex',
+                  status: 'complete',
+                  task: 'Continue the analysis.',
+                  invocationId: null,
+                  resultSummary: 'Done',
+                  createdAt: now,
+                  updatedAt: now,
+                  completedAt: now,
+                },
+                {
+                  id: '88888888-8888-4888-8888-888888888888',
+                  runId,
+                  parentNodeId: '66666666-6666-4666-8666-666666666666',
+                  kind: 'delegated-worker',
+                  providerId: 'hermes',
+                  status: 'complete',
+                  task: 'Review one bounded subproblem.',
+                  invocationId: '99999999-9999-4999-8999-999999999999',
+                  resultSummary: 'Worker verified the requested constraint.',
+                  createdAt: now,
+                  updatedAt: now,
+                  completedAt: now,
+                },
+              ],
+              createdAt: now,
+              updatedAt: now,
+              completedAt: now,
+            },
+            {
+              schemaVersion: 1,
+              id: liveRunId,
+              projectId: project.id,
+              sessionId,
+              attemptId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+              status: 'running',
+              goal: 'Run the next bounded analysis.',
+              contextPlan: {
+                schemaVersion: 1,
+                strategy: 'recent-history-plus-working-memory',
+                includedSegments: ['project-identity', 'recent-history', 'working-memory'],
+                candidateMessageCount: 22,
+                recentMessageCount: 10,
+                omittedMessageCount: 12,
+                recentHistoryCharacters: 9_100,
+                workingMemoryRevision: 4,
+                memoryEntryCount: 4,
+                memoryCharacters: 2_000,
+                estimatedInputCharactersSaved: 12_900,
+              },
+              nodes: [
+                {
+                  id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+                  runId: liveRunId,
+                  kind: 'coordinator',
+                  providerId: 'codex',
+                  status: 'running',
+                  task: 'Run the next bounded analysis.',
+                  invocationId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+                  resultSummary: null,
+                  createdAt: now,
+                  updatedAt: now,
+                  completedAt: null,
+                },
+              ],
+              createdAt: now,
+              updatedAt: now,
+              completedAt: null,
+            },
+          ],
+          agentMemory: {
+            schemaVersion: 1,
+            projectId: project.id,
+            sessionId,
+            revision: 4,
+            entries: [],
+            updatedAt: now,
+          },
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={false}
+        models={[]}
+        collaborationModes={[]}
+        selectedModel={null}
+        selectedReasoning={null}
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('aria-label="Live agent process"');
+    expect(html).toContain('AGENT PROCESS');
+    expect(html).toContain('Running');
+    expect(html).toContain('Agent process · Complete · 2 nodes · memory rev');
+    expect(html).toContain('8 / 20 recent messages');
+    expect(html).toContain('12 omitted');
+    expect(html).toContain('Delegated worker · Hermes');
+    expect(html).toContain('Worker verified the requested constraint.');
   });
 
   it('surfaces the project-wide rule list from the Project Chat toolbar', () => {

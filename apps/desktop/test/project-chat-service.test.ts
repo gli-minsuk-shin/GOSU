@@ -39,6 +39,8 @@ import { WorkspaceService } from '../src/main/workspace-service';
 import type { ModelUsageService } from '../src/main/model-usage-service';
 import type {
   ProjectChatAction,
+  ProjectAgentRun,
+  ProjectAgentWorkingMemory,
   ProjectChatAttempt,
   ProjectChatEvent,
   ProjectChatHermesDelegationReceipt,
@@ -57,6 +59,11 @@ import type {
 } from '../src/shared/project-chat-contracts';
 import {
   defaultProjectChatProfile,
+  PROJECT_AGENT_MAX_MEMORY_ENTRIES,
+  PROJECT_AGENT_MAX_MEMORY_OUTCOME_CHARACTERS,
+  PROJECT_AGENT_MAX_MEMORY_USER_CHARACTERS,
+  ProjectAgentRunSchema,
+  ProjectAgentWorkingMemorySchema,
   ProjectChatHermesDelegationReceiptSchema,
   PROJECT_CHAT_RESEARCH_NOTE_SAVE_ABANDONED_SECTION,
   PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION,
@@ -302,6 +309,8 @@ class MemoryChatStorage implements ProjectChatStorage {
   readonly sessionMessageIds = new Map<string, string[]>();
   readonly researchNoteReceipts = new Map<string, ProjectChatResearchNoteSaveReceipt>();
   readonly hermesDelegationReceipts = new Map<string, ProjectChatHermesDelegationReceipt>();
+  readonly agentRuns = new Map<string, ProjectAgentRun>();
+  readonly agentMemories = new Map<string, ProjectAgentWorkingMemory>();
   readonly queuedTurns = new Map<string, ProjectChatQueuedTurn>();
   readonly sessionTitleRevisions = new Map<string, number>();
   private nextQueueSequence = 1;
@@ -389,6 +398,36 @@ class MemoryChatStorage implements ProjectChatStorage {
       return;
     }
     this.hermesDelegationReceipts.set(receipt.invocationId, receipt);
+    const run = [...this.agentRuns.values()].find(
+      (candidate) => candidate.attemptId === receipt.attemptId,
+    );
+    const coordinator = run?.nodes.find((node) => node.kind === 'coordinator');
+    if (run && coordinator) {
+      this.agentRuns.set(
+        run.id,
+        ProjectAgentRunSchema.parse({
+          ...run,
+          nodes: [
+            ...run.nodes,
+            {
+              id: receipt.invocationId,
+              runId: run.id,
+              parentNodeId: coordinator.id,
+              kind: 'delegated-worker',
+              providerId: 'hermes',
+              status: 'complete',
+              task: 'Handle a bounded delegated subtask in an isolated worker context',
+              invocationId: receipt.invocationId,
+              resultSummary: `Hermes worker completed · ${receipt.stopReason}`,
+              createdAt: receipt.startedAt,
+              updatedAt: receipt.recordedAt,
+              completedAt: receipt.recordedAt,
+            },
+          ],
+          updatedAt: receipt.recordedAt,
+        }),
+      );
+    }
   }
 
   stageResearchNoteSave(receipt: ProjectChatResearchNoteSaveStage) {
@@ -533,6 +572,102 @@ class MemoryChatStorage implements ProjectChatStorage {
     this.reconcileCommittedResearchNoteSaves(attempt.updatedAt);
   }
 
+  beginProjectAgentRun(input: ProjectAgentRun) {
+    const run = ProjectAgentRunSchema.parse(structuredClone(input));
+    if (!this.attempts.has(run.attemptId)) throw new Error('agent_run_attempt_missing');
+    this.agentRuns.set(run.id, run);
+  }
+
+  markProjectAgentRunRunning(input: {
+    attemptId: string;
+    providerId: string;
+    invocationId: string;
+    updatedAt: string;
+  }) {
+    const run = [...this.agentRuns.values()].find(
+      (candidate) => candidate.attemptId === input.attemptId,
+    );
+    if (!run) return;
+    this.agentRuns.set(
+      run.id,
+      ProjectAgentRunSchema.parse({
+        ...run,
+        status: 'running',
+        nodes: run.nodes.map((node) =>
+          node.kind === 'coordinator'
+            ? {
+                ...node,
+                providerId: input.providerId,
+                invocationId: input.invocationId,
+                status: 'running',
+                updatedAt: input.updatedAt,
+              }
+            : node,
+        ),
+        updatedAt: input.updatedAt,
+      }),
+    );
+  }
+
+  finishProjectAgentRun(input: {
+    attemptId: string;
+    status: 'complete' | 'failed' | 'interrupted';
+    assistantContent: string;
+    updatedAt: string;
+  }) {
+    const run = [...this.agentRuns.values()].find(
+      (candidate) => candidate.attemptId === input.attemptId,
+    );
+    if (!run) return;
+    const completed = ProjectAgentRunSchema.parse({
+      ...run,
+      status: input.status,
+      nodes: run.nodes.map((node) =>
+        node.kind === 'coordinator'
+          ? {
+              ...node,
+              status: input.status,
+              resultSummary: input.assistantContent.trim().slice(0, 2_000) || input.status,
+              updatedAt: input.updatedAt,
+              completedAt: input.updatedAt,
+            }
+          : node,
+      ),
+      updatedAt: input.updatedAt,
+      completedAt: input.updatedAt,
+    });
+    this.agentRuns.set(run.id, completed);
+    if (input.status !== 'complete') return;
+    const attempt = this.attempts.get(input.attemptId);
+    const user = attempt
+      ? this.messages.find((message) => message.id === attempt.userMessageId)
+      : undefined;
+    if (!attempt?.sessionId || !user) return;
+    const current = this.agentMemories.get(attempt.sessionId);
+    const entries = [
+      ...(current?.entries.filter((entry) => entry.attemptId !== input.attemptId) ?? []),
+      {
+        attemptId: input.attemptId,
+        userRequest: user.content.trim().slice(0, PROJECT_AGENT_MAX_MEMORY_USER_CHARACTERS),
+        outcome: input.assistantContent
+          .trim()
+          .slice(0, PROJECT_AGENT_MAX_MEMORY_OUTCOME_CHARACTERS),
+        completedAt: input.updatedAt,
+      },
+    ].slice(-PROJECT_AGENT_MAX_MEMORY_ENTRIES);
+    this.agentMemories.set(
+      attempt.sessionId,
+      ProjectAgentWorkingMemorySchema.parse({
+        schemaVersion: 1,
+        projectId: attempt.projectId,
+        sessionId: attempt.sessionId,
+        revision: (current?.revision ?? 0) + 1,
+        entries,
+        updatedAt: input.updatedAt,
+      }),
+    );
+  }
+
   getChatAttempt(projectId: string, sessionId: string, attemptId?: string) {
     const resolvedAttemptId = attemptId ?? sessionId;
     const resolvedSessionId = attemptId ? sessionId : this.ensureDefaultSession(projectId).id;
@@ -566,6 +701,12 @@ class MemoryChatStorage implements ProjectChatStorage {
           (attempt) => attempt.projectId === projectId && visibleIds.has(attempt.userMessageId),
         )
         .map((attempt) => structuredClone(attempt)),
+      agentRuns: [...this.agentRuns.values()]
+        .filter((run) => run.projectId === projectId && run.sessionId === session.id)
+        .map((run) => structuredClone(run)),
+      ...(this.agentMemories.has(session.id)
+        ? { agentMemory: structuredClone(this.agentMemories.get(session.id)!) }
+        : {}),
       queuedTurns: this.listProjectChatQueuedTurns(projectId, session.id),
       messages: this.messages
         .filter((message) => message.projectId === projectId && visibleIds.has(message.id))
@@ -1423,6 +1564,46 @@ function waitForTurnCompleted(chat: ProjectChatService, turnId: string) {
 }
 
 describe('ProjectChatService', () => {
+  it('persists a provider-neutral agent run and bounded session working memory', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Design one bounded evaluation for the current objective.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(storage.snapshot(projectA.id, receipt.sessionId).agentRuns?.[0]).toMatchObject({
+      attemptId: receipt.attemptId,
+      status: 'running',
+      contextPlan: { strategy: 'recent-history-plus-working-memory' },
+      nodes: [{ kind: 'coordinator', status: 'running', providerId: 'codex' }],
+    });
+
+    const completed = waitForTurnCompleted(chat, receipt.turnId);
+    codex.complete(receipt.turnId, {
+      reply: 'Use a frozen holdout and one primary metric.',
+      actions: [],
+    });
+    await completed;
+
+    const snapshot = storage.snapshot(projectA.id, receipt.sessionId);
+    expect(snapshot.agentRuns?.[0]).toMatchObject({
+      attemptId: receipt.attemptId,
+      status: 'complete',
+      nodes: [{ kind: 'coordinator', status: 'complete' }],
+    });
+    expect(snapshot.agentMemory).toMatchObject({
+      revision: 1,
+      entries: [
+        {
+          attemptId: receipt.attemptId,
+          userRequest: 'Design one bounded evaluation for the current objective.',
+          outcome: 'Use a frozen holdout and one primary metric.',
+        },
+      ],
+    });
+  });
+
   it('keeps reconstructed attachment text out of durable messages/prompts and revokes a claimed capability on startup failure', async () => {
     const attachmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const privateDocumentText = 'PRIVATE_DOCUMENT_TEXT_MUST_NOT_BE_PERSISTED';
@@ -2492,7 +2673,7 @@ describe('ProjectChatService', () => {
       profileVersion: 1,
       instructionRevisionId: profile.instructionRevision?.id,
       promptProvenance: {
-        assemblyVersion: 4,
+        assemblyVersion: 5,
         profileVersion: 1,
         instructionRevisionId: profile.instructionRevision?.id,
         requestedLegacyHarnessMode: 'planner',
@@ -3023,7 +3204,7 @@ describe('ProjectChatService', () => {
     // discloses that the model may quote or summarize a note in the stored/synced answer.
     expect(assistant.content).toContain(content);
     expect(storage.getChatAttempt(projectA.id, receipt.attemptId)?.promptProvenance).toMatchObject({
-      assemblyVersion: 4,
+      assemblyVersion: 5,
       localNotesVaultId: vaultId,
     });
   });
@@ -3620,7 +3801,7 @@ describe('ProjectChatService', () => {
       personality: 'friendly',
       responseVerbosity: 'high',
       promptProvenance: {
-        assemblyVersion: 4,
+        assemblyVersion: 5,
         requestedLegacyHarnessMode: 'reviewer',
         nativeCollaborationModeId: null,
         nativeExecutionKind: 'legacy-reviewer',
@@ -3663,7 +3844,7 @@ describe('ProjectChatService', () => {
       personality: 'friendly',
       responseVerbosity: 'low',
       promptProvenance: {
-        assemblyVersion: 4,
+        assemblyVersion: 5,
         requestedLegacyHarnessMode: 'planner',
         nativeCollaborationModeId: 'plan',
         nativeExecutionKind: 'plan',
@@ -3711,7 +3892,7 @@ describe('ProjectChatService', () => {
       harnessMode: 'context',
       collaborationModeId: null,
       promptProvenance: {
-        assemblyVersion: 4,
+        assemblyVersion: 5,
         requestedLegacyHarnessMode: 'context',
         nativeCollaborationModeId: null,
         nativeExecutionKind: 'default',
@@ -3766,7 +3947,7 @@ describe('ProjectChatService', () => {
       harnessMode: 'context',
       collaborationModeId: 'research-focus-v2',
       promptProvenance: {
-        assemblyVersion: 4,
+        assemblyVersion: 5,
         nativeCollaborationModeId: 'research-focus-v2',
         nativeExecutionKind: 'default',
         nativeCollaborationCatalogSha256: 'e'.repeat(64),
@@ -5690,6 +5871,17 @@ describe('ProjectChatService', () => {
     expect(durableDelegation).not.toContain('Active project only');
     expect(durableDelegation).not.toContain('RAW_HERMES_REPLY_FOR_CODEX_ONLY');
     expect(durableDelegation).not.toContain('credentialProof');
+    expect(snapshot.agentRuns?.find((run) => run.attemptId === receipt.attemptId)?.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'coordinator', providerId: 'codex' }),
+        expect.objectContaining({
+          kind: 'delegated-worker',
+          providerId: 'hermes',
+          invocationId: '55555555-5555-4555-8555-555555555555',
+          status: 'complete',
+        }),
+      ]),
+    );
 
     const ordinary = await fixture(undefined, undefined, undefined, undefined, undefined, hermes);
     await ordinary.chat.send({
