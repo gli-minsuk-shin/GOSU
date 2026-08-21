@@ -152,6 +152,7 @@ const COLUMN_LABELS: ReadonlyArray<{
   { key: 'venue', label: 'Journal / venue' },
   { key: 'year', label: 'Year' },
   { key: 'searchTags', label: 'Search tags' },
+  { key: 'aiKeywords', label: 'AI keywords' },
   { key: 'doi', label: 'DOI' },
   { key: 'citedBy', label: 'Cited by' },
   { key: 'type', label: 'Type' },
@@ -390,6 +391,7 @@ export function literatureViewRecord(record: LiteratureRecord): LiteratureViewRe
     sourceTopics: record.sourceTopics,
     manualTopics: record.manualAnnotations.topics,
     aiTopics: record.aiAnnotations?.topics ?? [],
+    aiKeywords: record.aiAnnotations?.keywords ?? [],
     doi: record.doi ?? '',
     type: record.workType ?? '',
     citedBy: record.citationCount,
@@ -412,11 +414,18 @@ function parseYear(value: string) {
 }
 
 export function literatureSearchTagDraft(
-  search: Pick<LiteratureSearchRun, 'searchTags'>,
-): Readonly<{ topicText: string; keywordText: string }> {
+  search: Pick<LiteratureSearchRun, 'authorQuery' | 'searchTags' | 'venueQuery'>,
+): Readonly<{
+  topicText: string;
+  keywordText: string;
+  authorText: string;
+  venueText: string;
+}> {
   return {
     topicText: (search.searchTags?.topics ?? []).join(', '),
     keywordText: (search.searchTags?.keywords ?? []).join(', '),
+    authorText: search.authorQuery ?? '',
+    venueText: search.venueQuery ?? '',
   };
 }
 
@@ -742,6 +751,19 @@ export function LiteratureTable({
                   </div>
                 </td>
                 <td>
+                  <div className="literature-topic-list literature-ai-keyword-list">
+                    {(record.aiKeywords ?? []).slice(0, 6).map((keyword) => (
+                      <span className="literature-topic-chip ai-keyword" key={keyword}>
+                        {keyword}
+                      </span>
+                    ))}
+                    {(record.aiKeywords ?? []).length === 0 && '—'}
+                    {(record.aiKeywords ?? []).length > 6 && (
+                      <small>+{(record.aiKeywords ?? []).length - 6}</small>
+                    )}
+                  </div>
+                </td>
+                <td>
                   {record.doi && record.canonicalUrl ? (
                     <a
                       className="literature-doi-link canonical-link"
@@ -893,6 +915,14 @@ export function LiteratureDetail({
         </div>
       </div>
 
+      <section className="literature-abstract" aria-label="Provider abstract">
+        <div>
+          <strong>Abstract</strong>
+          <small>Provider-supplied text used for AI keyword extraction when available</small>
+        </div>
+        <p>{record.abstractText || 'No abstract was supplied by the search provider.'}</p>
+      </section>
+
       <section className="literature-tag-sources" aria-label="Search provenance tags">
         <div>
           <strong>Search tags</strong>
@@ -988,7 +1018,14 @@ export function LiteratureDetail({
       {record.aiAnnotations &&
         (record.aiAnnotations.summary || record.aiAnnotations.topics.length > 0) && (
           <section className="literature-ai-summary" aria-label="AI organization">
-            <span className="eyebrow">AI summary · metadata-only draft</span>
+            <span className="eyebrow">
+              AI summary ·{' '}
+              {record.aiAnnotations.provenance.metadataOnly
+                ? 'metadata only'
+                : record.aiAnnotations.provenance.abstractIncluded
+                  ? 'metadata + abstract'
+                  : 'metadata + partial abstract coverage'}
+            </span>
             {record.aiAnnotations.summary && <p>{record.aiAnnotations.summary}</p>}
             <dl className="literature-ai-facts">
               <div>
@@ -1007,6 +1044,18 @@ export function LiteratureDetail({
                   {record.aiAnnotations.topics.map((topic) => (
                     <span className="literature-topic-chip" key={topic}>
                       {topic}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {(record.aiAnnotations.keywords ?? []).length > 0 && (
+              <div className="literature-ai-topic-suggestions">
+                <strong>AI keywords</strong>
+                <div className="literature-topic-list literature-ai-keyword-list">
+                  {(record.aiAnnotations.keywords ?? []).map((keyword) => (
+                    <span className="literature-topic-chip ai-keyword" key={keyword}>
+                      {keyword}
                     </span>
                   ))}
                 </div>
@@ -1158,6 +1207,8 @@ export function LiteratureView({
   const [query, setQuery] = useState('');
   const [topicTagText, setTopicTagText] = useState('');
   const [keywordTagText, setKeywordTagText] = useState('');
+  const [authorQuery, setAuthorQuery] = useState('');
+  const [venueQuery, setVenueQuery] = useState('');
   const [fromYear, setFromYear] = useState('');
   const [toYear, setToYear] = useState('');
   const [textFilter, setTextFilter] = useState('');
@@ -1187,9 +1238,14 @@ export function LiteratureView({
     () => records.filter((record) => record.aiAnnotations === null).slice(0, 50),
     [records],
   );
-  const activeSearchOptionCount = [topicTagText, keywordTagText, fromYear, toYear].filter(
-    (value) => value.trim().length > 0,
-  ).length;
+  const activeSearchOptionCount = [
+    topicTagText,
+    keywordTagText,
+    authorQuery,
+    venueQuery,
+    fromYear,
+    toYear,
+  ].filter((value) => value.trim().length > 0).length;
 
   useEffect(() => {
     if (!searchTarget || loading) return;
@@ -1250,6 +1306,7 @@ export function LiteratureView({
     setSelectedId((current) =>
       current && next.records.some((record) => record.id === current) ? current : null,
     );
+    return next;
   };
 
   useEffect(() => {
@@ -1341,6 +1398,73 @@ export function LiteratureView({
     setPage(1);
   };
 
+  const handleLiteratureSearch = async () => {
+    if (busy || query.trim().length < 2) return;
+    setBusy('search');
+    setError('');
+    setNotice('');
+    try {
+      const start = parseYear(fromYear);
+      const end = parseYear(toYear);
+      if (start && end && start > end) throw new Error('invalid_literature_input');
+      const result = await adapter.search({
+        projectId: project.id,
+        query: query.trim(),
+        searchTags: {
+          topics: parseLiteratureSearchTagText(topicTagText).slice(
+            0,
+            LITERATURE_MAX_SEARCH_TOPIC_TAGS,
+          ),
+          keywords: parseLiteratureSearchTagText(keywordTagText).slice(
+            0,
+            LITERATURE_MAX_SEARCH_KEYWORD_TAGS,
+          ),
+        },
+        ...(authorQuery.trim() ? { authorQuery: authorQuery.trim() } : {}),
+        ...(venueQuery.trim() ? { venueQuery: venueQuery.trim() } : {}),
+        ...(start ? { fromYear: start } : {}),
+        ...(end ? { toYear: end } : {}),
+      });
+      const next = await refresh();
+      setPage(1);
+      let message = literatureSearchNotice(result);
+      const automaticCandidates = next.records
+        .filter((record) => record.abstractText && record.aiAnnotations === null)
+        .slice(0, 50);
+      if (adapter.organize && aiAvailable && automaticCandidates.length > 0) {
+        setBusy('organize');
+        try {
+          const organized = await adapter.organize({
+            projectId: project.id,
+            recordIds: automaticCandidates.map(({ id }) => id),
+            requestedModelId,
+            reasoningOptionId,
+          });
+          await refresh();
+          message += ` AI read ${organized.updatedCount} available abstracts and added detailed topics and keywords automatically.`;
+        } catch (reason) {
+          if (literatureErrorCode(reason) === 'literature_ai_interrupted') {
+            message +=
+              ' Automatic abstract analysis was stopped; the completed search remains saved.';
+          } else {
+            setError(
+              `Search completed, but automatic abstract analysis failed. ${literatureErrorMessage(reason)}`,
+            );
+          }
+        }
+      } else if (next.records.some((record) => record.aiAnnotations === null)) {
+        message += aiAvailable
+          ? ' No new provider abstract was available for automatic keyword extraction.'
+          : ' Connect an AI provider to extract detailed keywords from available abstracts.';
+      }
+      setNotice(message);
+    } catch (reason) {
+      setError(literatureErrorMessage(reason));
+    } finally {
+      setBusy('');
+    }
+  };
+
   return (
     <div className="literature-workspace">
       <section className="literature-search-card" aria-labelledby="literature-search-title">
@@ -1351,31 +1475,7 @@ export function LiteratureView({
           className="literature-search-form"
           onSubmit={(event) => {
             event.preventDefault();
-            if (busy || query.trim().length < 2) return;
-            void run('search', async () => {
-              const start = parseYear(fromYear);
-              const end = parseYear(toYear);
-              if (start && end && start > end) throw new Error('invalid_literature_input');
-              const result = await adapter.search({
-                projectId: project.id,
-                query: query.trim(),
-                searchTags: {
-                  topics: parseLiteratureSearchTagText(topicTagText).slice(
-                    0,
-                    LITERATURE_MAX_SEARCH_TOPIC_TAGS,
-                  ),
-                  keywords: parseLiteratureSearchTagText(keywordTagText).slice(
-                    0,
-                    LITERATURE_MAX_SEARCH_KEYWORD_TAGS,
-                  ),
-                },
-                ...(start ? { fromYear: start } : {}),
-                ...(end ? { toYear: end } : {}),
-              });
-              await refresh();
-              setPage(1);
-              return literatureSearchNotice(result);
-            });
+            void handleLiteratureSearch();
           }}
         >
           <label className="literature-search-query">
@@ -1396,14 +1496,33 @@ export function LiteratureView({
           >
             {busy === 'search' ? 'Searching…' : records.length > 0 ? 'Search again' : 'Deep search'}
           </button>
-          <details className="literature-search-options">
-            <summary>
-              Tags &amp; year filters
-              {activeSearchOptionCount > 0 && ` · ${activeSearchOptionCount} active`}
-            </summary>
+          <fieldset className="literature-search-options">
+            <legend>
+              Search options{activeSearchOptionCount > 0 && ` · ${activeSearchOptionCount} active`}
+            </legend>
             <div>
+              <label className="literature-search-author-field">
+                Author name
+                <input
+                  value={authorQuery}
+                  maxLength={500}
+                  placeholder="e.g. Judea Pearl"
+                  disabled={Boolean(busy)}
+                  onChange={(event) => setAuthorQuery(event.target.value)}
+                />
+              </label>
+              <label className="literature-search-venue-field">
+                Journal / venue
+                <input
+                  value={venueQuery}
+                  maxLength={500}
+                  placeholder="e.g. JMLR, NeurIPS"
+                  disabled={Boolean(busy)}
+                  onChange={(event) => setVenueQuery(event.target.value)}
+                />
+              </label>
               <label className="literature-search-tag-field">
-                Topic tags
+                Subject / topic
                 <input
                   value={topicTagText}
                   maxLength={1500}
@@ -1413,7 +1532,7 @@ export function LiteratureView({
                 />
               </label>
               <label className="literature-search-tag-field">
-                Keyword tags
+                Keywords
                 <input
                   value={keywordTagText}
                   maxLength={3000}
@@ -1449,7 +1568,12 @@ export function LiteratureView({
                 />
               </label>
             </div>
-          </details>
+            <p className="literature-search-tag-help">
+              Subject and keyword values refine provider discovery and are saved automatically as
+              searchable tags on every matched paper. When an abstract is available, AI also adds
+              paper-specific detailed keywords after the search.
+            </p>
+          </fieldset>
         </form>
         <div className="literature-search-secondary">
           <details className="literature-search-guidance">
@@ -1458,9 +1582,11 @@ export function LiteratureView({
             </summary>
             <div>
               <p className="literature-search-tag-help">
-                Topic and Keyword tags accumulate on matching papers across searches. Separate tags
-                with commas; leaving both fields blank uses the normalized search query as a Topic
-                tag.
+                Subject and Keyword options refine the provider query and accumulate on matching
+                papers across searches. Separate values with commas; leaving both fields blank uses
+                the normalized search query as a Topic tag. Author and venue are also applied as
+                structured filters where the provider supports them and verified against returned
+                metadata.
               </p>
               <p className="literature-search-help">
                 <strong>Fixed policy v{BALANCED_LITERATURE_POLICY_VERSION}:</strong> Core is a
@@ -1498,6 +1624,8 @@ export function LiteratureView({
                       setQuery(search.query);
                       setTopicTagText(tagDraft.topicText);
                       setKeywordTagText(tagDraft.keywordText);
+                      setAuthorQuery(tagDraft.authorText);
+                      setVenueQuery(tagDraft.venueText);
                       setFromYear(search.fromYear?.toString() ?? '');
                       setToYear(search.toYear?.toString() ?? '');
                     }}
@@ -1578,7 +1706,7 @@ export function LiteratureView({
               }
               title={
                 adapter.organize && aiAvailable && aiCandidates.length > 0
-                  ? `Organize the next ${aiCandidates.length} papers without an AI draft using the linked model`
+                  ? `Analyze the next ${aiCandidates.length} papers without an AI draft; available abstracts are included`
                   : adapter.organize && aiAvailable
                     ? 'Every loaded paper already has an AI organization draft'
                     : adapter.organize
@@ -1597,7 +1725,7 @@ export function LiteratureView({
                     reasoningOptionId,
                   });
                   await refresh();
-                  return `AI organization updated ${result.updatedCount} papers and skipped ${result.skippedCount}. Review the metadata-only drafts before using them.`;
+                  return `AI organization updated ${result.updatedCount} papers and skipped ${result.skippedCount}. Provider abstracts were used when available; review the drafts before using them.`;
                 });
               }}
             >
@@ -1627,7 +1755,7 @@ export function LiteratureView({
         {adapter.organize && aiAvailable && (
           <p
             className="literature-ai-availability"
-            title="AI drafts use metadata only and remain separate from human review notes."
+            title="AI drafts use provider metadata and available abstracts, and remain separate from human review notes."
           >
             <strong>AI organization:</strong> {requestedModelId ?? 'Auto · provider recommended'} ·{' '}
             {reasoningOptionId ?? 'model default'}

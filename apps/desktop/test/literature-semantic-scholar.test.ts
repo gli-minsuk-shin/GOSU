@@ -13,7 +13,7 @@ function jsonResponse(value: unknown) {
 }
 
 describe('Semantic Scholar literature provider', () => {
-  it('uses fixed endpoints, bounded metadata fields, year filters, and never requests abstracts', async () => {
+  it('uses fixed endpoints, bounded metadata and abstracts, and year filters', async () => {
     const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       jsonResponse({
         data: [
@@ -34,7 +34,7 @@ describe('Semantic Scholar literature provider', () => {
             publicationTypes: ['JournalArticle'],
             citationCount: 42,
             influentialCitationCount: 7,
-            abstract: 'PRIVATE FULL ABSTRACT',
+            abstract: 'A provider-supplied abstract for keyword extraction.',
           },
         ],
       }),
@@ -45,6 +45,8 @@ describe('Semantic Scholar literature provider', () => {
     });
 
     const papers = await provider.search('graph-neural networks', 500, {
+      authorQuery: 'Ada Researcher',
+      venueQuery: 'Fixture Conference',
       fromYear: 2020,
       toYear: 2026,
     });
@@ -57,7 +59,7 @@ describe('Semantic Scholar literature provider', () => {
     expect(url.searchParams.get('limit')).toBe('100');
     expect(url.searchParams.get('year')).toBe('2020-2026');
     expect(url.searchParams.get('fields')).toContain('influentialCitationCount');
-    expect(url.searchParams.get('fields')).not.toContain('abstract');
+    expect(url.searchParams.get('fields')).toContain('abstract');
     expect(new Headers(init?.headers).get('x-api-key')).toBe('fixture-api-key');
     expect(papers[0]).toMatchObject({
       candidate: {
@@ -69,11 +71,11 @@ describe('Semantic Scholar literature provider', () => {
         authors: ['Ada Researcher'],
         publishedYear: 2025,
         citationCount: 42,
+        abstractText: 'A provider-supplied abstract for keyword extraction.',
       },
       authorIds: ['author-1'],
       influentialCitationCount: 7,
     });
-    expect(JSON.stringify(papers)).not.toContain('PRIVATE FULL ABSTRACT');
   });
 
   it('normalizes only HTTPS links and falls back to a DOI URL', () => {

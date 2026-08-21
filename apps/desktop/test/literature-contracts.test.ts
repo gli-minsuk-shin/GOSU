@@ -82,6 +82,47 @@ describe('literature IPC contracts', () => {
     ).toBe(false);
   });
 
+  it('accepts bounded structured discovery filters, abstracts, and detailed AI keywords', () => {
+    expect(
+      LiteratureSearchInputSchema.parse({
+        projectId: randomUUID(),
+        query: 'causal inference',
+        authorQuery: 'Judea Pearl',
+        venueQuery: 'JMLR',
+      }),
+    ).toMatchObject({ authorQuery: 'Judea Pearl', venueQuery: 'JMLR' });
+    expect(
+      LiteratureRecordSchema.safeParse({
+        ...recordFixture(),
+        abstractText: 'A provider-supplied abstract.',
+        aiAnnotations: {
+          topics: ['causal inference'],
+          keywords: ['structural causal model', 'identifiability', 'do-calculus'],
+          summary: 'A bounded summary.',
+          relevance: 'high',
+          studyType: 'Methodology',
+          limitations: [],
+          provenance: {
+            invocation: {
+              schemaVersion: 1,
+              invocationId: randomUUID(),
+              providerId: 'codex',
+              requestedModelId: null,
+              resolvedModelId: 'fixture-model',
+              catalogVersion: 'fixture-catalog',
+              reasoningOptionId: null,
+              startedAt: new Date().toISOString(),
+            },
+            inputSha256: 'b'.repeat(64),
+            generatedAt: new Date().toISOString(),
+            metadataOnly: false,
+            abstractIncluded: true,
+          },
+        },
+      }).success,
+    ).toBe(true);
+  });
+
   it('requires both source and annotation versions for AI compare-and-swap updates', () => {
     const update = {
       recordId: randomUUID(),

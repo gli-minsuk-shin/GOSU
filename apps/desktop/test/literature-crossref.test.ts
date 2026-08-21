@@ -14,7 +14,7 @@ function crossrefResponse(items: readonly unknown[], headers?: HeadersInit) {
 }
 
 describe('Crossref literature provider', () => {
-  it('normalizes only bounded bibliographic fields and never preserves abstracts or raw bodies', () => {
+  it('normalizes bounded bibliographic fields and a plain-text provider abstract without raw bodies', () => {
     const normalized = normalizeCrossrefWork({
       DOI: 'https://doi.org/10.1000/Fixture.1',
       title: ['  A   useful paper  '],
@@ -25,7 +25,7 @@ describe('Crossref literature provider', () => {
       type: 'journal-article',
       'is-referenced-by-count': 42,
       URL: 'https://doi.org/10.1000/Fixture.1',
-      abstract: 'PRIVATE FULL ABSTRACT',
+      abstract: '<jats:p>A bounded <jats:bold>provider abstract</jats:bold>.</jats:p>',
       unexpected: { private: 'RAW PROVIDER BODY' },
     });
 
@@ -40,8 +40,9 @@ describe('Crossref literature provider', () => {
       topics: ['Machine Learning', 'Evaluation'],
       workType: 'journal-article',
       citationCount: 42,
+      abstractText: 'A bounded provider abstract.',
     });
-    expect(JSON.stringify(normalized)).not.toContain('PRIVATE');
+    expect(JSON.stringify(normalized)).not.toContain('RAW PROVIDER BODY');
     expect(normalized?.fingerprint).toMatch(/^[0-9a-f]{64}$/u);
   });
 
@@ -51,16 +52,23 @@ describe('Crossref literature provider', () => {
     );
     const provider = new CrossrefLiteratureProvider({ fetch });
 
-    await provider.search('transformers & safety', 500, { fromYear: 2020, toYear: 2026 });
+    await provider.search('transformers & safety', 500, {
+      authorQuery: 'Ada Lovelace',
+      venueQuery: 'Journal of Fixtures',
+      fromYear: 2020,
+      toYear: 2026,
+    });
 
     const [request, init] = fetch.mock.calls[0]!;
     const url = new URL(request.toString());
     expect(url.origin).toBe('https://api.crossref.org');
     expect(url.pathname).toBe('/v1/works');
     expect(url.searchParams.get('query.bibliographic')).toBe('transformers & safety');
+    expect(url.searchParams.get('query.author')).toBe('Ada Lovelace');
+    expect(url.searchParams.get('query.container-title')).toBe('Journal of Fixtures');
     expect(url.searchParams.get('rows')).toBe('50');
     expect(url.searchParams.get('select')).toContain('is-referenced-by-count');
-    expect(url.searchParams.get('select')).not.toContain('abstract');
+    expect(url.searchParams.get('select')).toContain('abstract');
     expect(url.searchParams.get('filter')).toBe('from-pub-date:2020,until-pub-date:2026');
     expect(url.searchParams.has('mailto')).toBe(false);
     expect(new Headers(init?.headers).has('user-agent')).toBe(false);

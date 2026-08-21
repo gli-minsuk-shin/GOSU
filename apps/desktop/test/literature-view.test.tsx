@@ -239,8 +239,10 @@ describe('Literature workspace', () => {
     const html = renderToStaticMarkup(<LiteratureView project={project} adapter={adapter} />);
 
     expect(html).toContain('Search literature');
-    expect(html).toContain('Topic tags');
-    expect(html).toContain('Keyword tags');
+    expect(html).toContain('Author name');
+    expect(html).toContain('Journal / venue');
+    expect(html).toContain('Subject / topic');
+    expect(html).toContain('Keywords');
     expect(html).toContain('leaving both fields blank uses the normalized search query');
     expect(html).toContain('aria-label="Search tag filter"');
     expect(html).toContain('All search tags');
@@ -424,8 +426,15 @@ describe('Literature workspace', () => {
     ).toEqual({
       topicText: 'Tabular FM, Evaluation',
       keywordText: 'TabPFN, benchmark',
+      authorText: '',
+      venueText: '',
     });
-    expect(literatureSearchTagDraft({})).toEqual({ topicText: '', keywordText: '' });
+    expect(literatureSearchTagDraft({})).toEqual({
+      topicText: '',
+      keywordText: '',
+      authorText: '',
+      venueText: '',
+    });
   });
 
   it('keeps the evidence table in a bounded, keyboard-focusable two-axis scroll region', () => {
@@ -468,7 +477,7 @@ describe('Literature workspace', () => {
       /\.literature-table-scroll::-webkit-scrollbar\s*\{(?=[^}]*\bwidth:\s*12px;)(?=[^}]*\bheight:\s*12px;)[^}]*\}/su,
     );
     expect(styles).toMatch(
-      /\.literature-table\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*1420px;)[^}]*\}/su,
+      /\.literature-table\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*1420px;)(?=[^}]*\bfont-size:\s*var\(--font-body\);)[^}]*\}/su,
     );
   });
 
@@ -589,13 +598,14 @@ describe('Literature workspace', () => {
     expect(html).toContain('Clear the table filter');
   });
 
-  it('labels AI organization as metadata-only and never presents a provider abstract', () => {
+  it('labels abstract-aware AI organization and presents the bounded provider abstract', () => {
     const source = readFileSync(
       new URL('../src/renderer/src/literature-view.tsx', import.meta.url),
       'utf8',
     );
 
-    expect(source).toContain('AI summary · metadata-only draft');
+    expect(source).toContain("'metadata + abstract'");
+    expect(source).toContain("'metadata + partial abstract coverage'");
     expect(source).toContain('Likely relevance');
     expect(source).toContain('Study type');
     expect(source).toContain('Metadata limitations');
@@ -606,8 +616,8 @@ describe('Literature workspace', () => {
     expect(source).toContain('<strong>AI organization:</strong>');
     expect(source).toContain('record.aiAnnotations === null');
     expect(source).toContain('aiCandidates.map');
-    expect(source).not.toContain('record.abstract');
-    expect(source).not.toContain('>Abstract<');
+    expect(source).toContain('record.abstractText');
+    expect(source).toContain('<strong>Abstract</strong>');
   });
 
   it('projects the latest discovery search identity and rank for query-safe table sorting', () => {

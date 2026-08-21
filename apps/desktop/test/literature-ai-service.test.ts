@@ -172,6 +172,7 @@ function responseFor(item: LiteratureRecord) {
         expectedVersion: item.version,
         expectedAnnotationVersion: item.annotationVersion,
         topics: ['evaluation', 'metadata'],
+        keywords: ['research evaluation', 'benchmark methodology', 'metadata quality'],
         summary: 'A metadata record about research evaluation.',
         relevance: 'high',
         studyType: 'Not assessable from metadata alone',
@@ -226,6 +227,36 @@ describe('LiteratureAiService', () => {
     });
     expect(usage.releaseThread).toHaveBeenCalledWith('literature-thread-1');
     expect(codex.released).toEqual(['literature-thread-1']);
+  });
+
+  it('includes provider abstracts and persists detailed AI keywords when available', async () => {
+    const projectId = randomUUID();
+    const item = record(projectId, 'Abstract-aware research');
+    item.abstractText =
+      'We evaluate retrieval-augmented generation with citation precision, answer faithfulness, and adversarial evidence ablations.';
+    const storage = new MemoryStorage([item]);
+    const codex = new FakeCodex();
+    codex.response = responseFor(item);
+    const service = new LiteratureAiService({
+      storage,
+      codex,
+      prepareDirectory: async () => '/tmp/gosu-literature-fixture',
+      timeoutMs: 5_000,
+    });
+
+    await service.organize({ projectId, recordIds: [item.id] });
+
+    expect(codex.prompts[0]).toContain(item.abstractText);
+    expect(codex.prompts[0]).toContain('detailed keywords');
+    expect(storage.applied?.updates[0]?.keywords).toEqual([
+      'research evaluation',
+      'benchmark methodology',
+      'metadata quality',
+    ]);
+    expect(storage.applied?.provenance).toMatchObject({
+      metadataOnly: false,
+      abstractIncluded: true,
+    });
   });
 
   it('buffers valid completion notifications that arrive before turn registration', async () => {

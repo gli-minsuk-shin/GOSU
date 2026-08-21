@@ -375,6 +375,45 @@ describe('LiteratureService', () => {
     expect(storage.runs[0]?.searchTags).toEqual(result.run.searchTags);
   });
 
+  it('uses subject and keyword tags for discovery and forwards structured author and venue filters', async () => {
+    const storage = new MemoryLiteratureStorage();
+    const search = vi.fn(async () => []);
+    const discoveryProvider: LiteratureDiscoveryProvider = {
+      providerId: 'crossref',
+      policyId: 'balanced-three-layer',
+      policyVersion: 3,
+      search,
+    };
+
+    await service(storage, { provider: discoveryProvider }).search({
+      projectId: PROJECT_ID,
+      query: 'causal representation learning',
+      searchTags: {
+        topics: ['identifiability'],
+        keywords: ['nonlinear ICA', 'identifiability'],
+      },
+      authorQuery: 'Aapo Hyvarinen',
+      venueQuery: 'JMLR',
+      fromYear: 2018,
+      toYear: 2026,
+    });
+
+    expect(search).toHaveBeenCalledWith(
+      'causal representation learning identifiability nonlinear ICA',
+      50,
+      expect.objectContaining({
+        authorQuery: 'Aapo Hyvarinen',
+        venueQuery: 'JMLR',
+        fromYear: 2018,
+        toYear: 2026,
+      }),
+    );
+    expect(storage.runs[0]).toMatchObject({
+      authorQuery: 'Aapo Hyvarinen',
+      venueQuery: 'JMLR',
+    });
+  });
+
   it('projects saved searches and reviewed records to Research Notes without rolling back Literature', async () => {
     const storage = new MemoryLiteratureStorage();
     const saved = record();

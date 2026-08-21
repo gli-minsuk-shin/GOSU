@@ -12,6 +12,8 @@ export const LITERATURE_MAX_SEARCH_RESULTS = 50;
 export const LITERATURE_MAX_SEARCH_CONFLICT_PREVIEW = 3;
 export const LITERATURE_MAX_AI_RECORDS = 50;
 export const LITERATURE_MAX_TRANSFER_BYTES = 8 * 1024 * 1024;
+export const LITERATURE_MAX_ABSTRACT_LENGTH = 12_000;
+export const LITERATURE_MAX_AI_KEYWORDS = 30;
 
 const uuidSchema = z.string().uuid();
 const timestampSchema = z.string().datetime({ offset: true });
@@ -80,13 +82,15 @@ export const LiteratureAiProvenanceSchema = z
     invocation: ModelInvocationSchema,
     inputSha256: sha256Schema,
     generatedAt: timestampSchema,
-    metadataOnly: z.literal(true),
+    metadataOnly: z.boolean(),
+    abstractIncluded: z.boolean().optional(),
   })
   .strict();
 
 export const LiteratureAiAnnotationsSchema = z
   .object({
     topics: z.array(topicSchema).max(12),
+    keywords: z.array(topicSchema).max(LITERATURE_MAX_AI_KEYWORDS).optional(),
     summary: z.string().trim().max(1_200),
     relevance: LiteratureAiRelevanceSchema,
     studyType: z.string().trim().max(240),
@@ -174,6 +178,7 @@ export const LiteratureRecordSchema = z
     authors: z.array(boundedText(300)).max(100),
     containerTitle: nullableText(1_000),
     publishedYear: z.number().int().min(1000).max(3000).nullable(),
+    abstractText: z.string().trim().max(LITERATURE_MAX_ABSTRACT_LENGTH).nullable().optional(),
     sourceTopics: z.array(topicSchema).max(50),
     searchTags: LiteratureSearchTagsSchema.optional(),
     workType: nullableText(120),
@@ -220,6 +225,8 @@ export const LiteratureSearchRunSchema = z
     policyVersion: z.number().int().positive().optional(),
     query: boundedText(1_000),
     searchTags: LiteratureSearchTagsSchema.optional(),
+    authorQuery: nullableText(500).optional(),
+    venueQuery: nullableText(500).optional(),
     fromYear: z.number().int().min(1000).max(3000).nullable(),
     toYear: z.number().int().min(1000).max(3000).nullable(),
     requestedLimit: z.number().int().min(1).max(LITERATURE_MAX_SEARCH_RESULTS),
@@ -247,6 +254,8 @@ export const LiteratureSearchInputSchema = z
     projectId: uuidSchema,
     query: boundedText(1_000),
     searchTags: LiteratureSearchInputTagsSchema.optional(),
+    authorQuery: boundedText(500).optional(),
+    venueQuery: boundedText(500).optional(),
     fromYear: optionalYearSchema,
     toYear: optionalYearSchema,
     limit: z.number().int().min(1).max(LITERATURE_MAX_SEARCH_RESULTS).optional(),
@@ -356,6 +365,7 @@ export const LiteratureAiAnnotationUpdateSchema = z
     expectedVersion: z.number().int().positive(),
     expectedAnnotationVersion: z.number().int().nonnegative(),
     topics: z.array(topicSchema).max(12),
+    keywords: z.array(topicSchema).max(LITERATURE_MAX_AI_KEYWORDS).optional(),
     summary: z.string().trim().max(1_200),
     relevance: LiteratureAiRelevanceSchema,
     studyType: z.string().trim().max(240),
@@ -386,6 +396,11 @@ export const LITERATURE_AI_OUTPUT_SCHEMA = {
             maxItems: 12,
             items: { type: 'string', minLength: 1, maxLength: 240 },
           },
+          keywords: {
+            type: 'array',
+            maxItems: LITERATURE_MAX_AI_KEYWORDS,
+            items: { type: 'string', minLength: 1, maxLength: 240 },
+          },
           summary: { type: 'string', maxLength: 1_200 },
           relevance: { type: 'string', enum: ['high', 'medium', 'low', 'uncertain'] },
           studyType: { type: 'string', maxLength: 240 },
@@ -400,6 +415,7 @@ export const LITERATURE_AI_OUTPUT_SCHEMA = {
           'expectedVersion',
           'expectedAnnotationVersion',
           'topics',
+          'keywords',
           'summary',
           'relevance',
           'studyType',

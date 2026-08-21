@@ -14,6 +14,7 @@ export type LiteratureSortKey =
   | 'venue'
   | 'year'
   | 'searchTags'
+  | 'aiKeywords'
   | 'doi'
   | 'type'
   | 'citedBy'
@@ -34,6 +35,7 @@ export interface LiteratureTableRecord {
   sourceTopics: readonly string[];
   manualTopics: readonly string[];
   aiTopics: readonly string[];
+  aiKeywords?: readonly string[];
   doi: string;
   type: string;
   citedBy: number | null;
@@ -123,6 +125,8 @@ function sortValue(
       return record.year ?? -1;
     case 'searchTags':
       return [...record.searchTags.topics, ...record.searchTags.keywords].join(' ');
+    case 'aiKeywords':
+      return (record.aiKeywords ?? []).join(' ');
     case 'doi':
       return record.doi;
     case 'citedBy':
@@ -150,6 +154,7 @@ function matchesText(record: LiteratureTableRecord, query: string) {
     record.sourceTopics.join(' '),
     record.manualTopics.join(' '),
     record.aiTopics.join(' '),
+    (record.aiKeywords ?? []).join(' '),
     record.doi,
     record.type,
     record.source,

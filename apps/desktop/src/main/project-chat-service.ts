@@ -9,6 +9,7 @@ import {
   CodexProjectResponseSchema,
   CreateProjectChatSessionInputSchema,
   PROJECT_CHAT_OUTPUT_SCHEMA,
+  PROJECT_CHAT_MAX_CONCURRENT_SESSION_TURNS,
   PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH,
   PROJECT_CHAT_MAX_VISIBLE_RESPONSE_LENGTH,
   ProjectChatAttemptSchema,
@@ -571,7 +572,6 @@ function transportIdentity(threadId: string, turnId: string) {
   return `${threadId}\u0000${turnId}`;
 }
 
-const PROJECT_CHAT_MAX_CONCURRENT_SESSION_TURNS = 4;
 const PROJECT_CHAT_QUEUE_SCHEDULER_RETRY_DELAYS_MS = [100, 500, 2_000, 5_000] as const;
 const PROJECT_CHAT_BRANCH_TITLE_TIMEOUT_MS = 10_000;
 const PROJECT_CHAT_BRANCH_TITLE_CONTEXT_MESSAGES = 8;

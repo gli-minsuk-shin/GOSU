@@ -11,6 +11,7 @@ import {
 import {
   allowsAgentMarkdownCreate,
   defaultProjectChatProfile,
+  PROJECT_CHAT_MAX_CONCURRENT_SESSION_TURNS,
   type CodexCollaborationModeDescriptor,
   type ProjectChatAction,
   type ProjectChatContextScope,
@@ -1862,7 +1863,10 @@ export function ProjectChatView({
             <section className="chat-turn-queue" aria-label="Queued project chat messages">
               <header>
                 <strong>Queued · {queuedTurns.length}</strong>
-                <span>Runs in order after the current turn settles</span>
+                <span>
+                  This session runs in order; up to {PROJECT_CHAT_MAX_CONCURRENT_SESSION_TURNS}{' '}
+                  different sessions run in parallel
+                </span>
               </header>
               <div className="chat-turn-queue-list">
                 {queuedTurns.map((queued: ProjectChatQueuedTurn) => {

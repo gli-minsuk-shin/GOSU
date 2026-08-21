@@ -24,6 +24,7 @@ const CROSSREF_SELECTED_FIELDS = [
   'issued',
   'created',
   'subject',
+  'abstract',
   'type',
   'is-referenced-by-count',
   'URL',
@@ -39,6 +40,7 @@ export type LiteratureProviderCandidate = Readonly<{
   authors: readonly string[];
   containerTitle?: string | undefined;
   publishedYear?: number | undefined;
+  abstractText?: string | undefined;
   topics: readonly string[];
   workType?: string | undefined;
   citationCount?: number | undefined;
@@ -73,6 +75,8 @@ export type CrossrefSearchOptions = Readonly<{
   fromYear?: number | undefined;
   toYear?: number | undefined;
   sort?: 'relevance' | 'citation' | 'published' | undefined;
+  authorQuery?: string | undefined;
+  venueQuery?: string | undefined;
 }>;
 
 export function literatureFingerprint(
@@ -157,6 +161,21 @@ function crossrefYear(item: Record<string, unknown>) {
   return undefined;
 }
 
+function plainAbstract(value: unknown) {
+  const raw = text(value, 24_000);
+  if (!raw) return undefined;
+  return raw
+    .replace(/<[^>]+>/gu, ' ')
+    .replace(/&(?:nbsp|#160);/giu, ' ')
+    .replace(/&amp;/giu, '&')
+    .replace(/&lt;/giu, '<')
+    .replace(/&gt;/giu, '>')
+    .replace(/\s+/gu, ' ')
+    .replace(/\s+([,.;:!?])/gu, '$1')
+    .trim()
+    .slice(0, 12_000);
+}
+
 export function normalizeCrossrefWork(value: unknown): LiteratureProviderCandidate | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const item = value as Record<string, unknown>;
@@ -191,6 +210,7 @@ export function normalizeCrossrefWork(value: unknown): LiteratureProviderCandida
       ? { containerTitle: firstText(item['container-title'], 1_000) }
       : {}),
     ...(publishedYear ? { publishedYear } : {}),
+    ...(plainAbstract(item.abstract) ? { abstractText: plainAbstract(item.abstract) } : {}),
     topics,
     ...(text(item.type, 120) ? { workType: text(item.type, 120) } : {}),
     ...(citationCount === undefined ? {} : { citationCount }),
@@ -308,6 +328,10 @@ export class CrossrefLiteratureProvider {
     const rows = Math.max(1, Math.min(Math.trunc(limit), 50));
     const url = new URL(CROSSREF_WORKS_ENDPOINT);
     url.searchParams.set('query.bibliographic', normalizedQuery);
+    const authorQuery = text(options.authorQuery, 500);
+    const venueQuery = text(options.venueQuery, 500);
+    if (authorQuery) url.searchParams.set('query.author', authorQuery);
+    if (venueQuery) url.searchParams.set('query.container-title', venueQuery);
     url.searchParams.set('rows', rows.toString());
     url.searchParams.set('select', CROSSREF_SELECTED_FIELDS);
     if (options.sort === 'citation') {
@@ -367,10 +391,18 @@ export class CrossrefLiteratureProvider {
       }
       const items = (message as Record<string, unknown>).items;
       if (!Array.isArray(items)) throw new LiteratureProviderError('invalid_response');
+      const authorNeedle = authorQuery?.toLocaleLowerCase();
+      const venueNeedle = venueQuery?.toLocaleLowerCase();
       return items
         .slice(0, rows)
         .map(normalizeCrossrefWork)
-        .filter((item) => item !== null);
+        .filter((item) => item !== null)
+        .filter(
+          (item) =>
+            (!authorNeedle ||
+              item.authors.some((author) => author.toLocaleLowerCase().includes(authorNeedle))) &&
+            (!venueNeedle || item.containerTitle?.toLocaleLowerCase().includes(venueNeedle)),
+        );
     } catch (error) {
       if (error instanceof LiteratureProviderError) throw error;
       if (controller.signal.aborted) {

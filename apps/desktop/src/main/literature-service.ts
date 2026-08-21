@@ -125,6 +125,16 @@ function storageFailure(error: unknown): LiteratureServiceError | null {
   );
 }
 
+export function literatureProviderQuery(
+  query: string,
+  searchTags: Readonly<{ topics: readonly string[]; keywords: readonly string[] }>,
+) {
+  const terms = [query, ...searchTags.topics, ...searchTags.keywords]
+    .map((value) => value.replace(/\s+/gu, ' ').trim())
+    .filter((value, index, all) => value.length > 0 && all.indexOf(value) === index);
+  return terms.join(' ').slice(0, 1_000).trim();
+}
+
 export interface LiteratureStorage {
   listLiteratureRecords(projectId: string): MaybePromise<readonly LiteratureRecord[]>;
   countLiteratureRecords(projectId: string): MaybePromise<number>;
@@ -263,6 +273,8 @@ export class LiteratureService {
       policyVersion: this.provider.policyVersion,
       query: command.query,
       searchTags,
+      authorQuery: command.authorQuery ?? null,
+      venueQuery: command.venueQuery ?? null,
       fromYear: command.fromYear ?? null,
       toYear: command.toYear ?? null,
       requestedLimit: command.limit ?? 50,
@@ -288,11 +300,17 @@ export class LiteratureService {
     if (externalSignal?.aborted) controller.abort(externalSignal.reason);
     this.activeSearches.add(controller);
     try {
-      const providerResult = await this.provider.search(command.query, run.requestedLimit, {
-        signal: controller.signal,
-        fromYear: command.fromYear,
-        toYear: command.toYear,
-      });
+      const providerResult = await this.provider.search(
+        literatureProviderQuery(command.query, searchTags),
+        run.requestedLimit,
+        {
+          signal: controller.signal,
+          fromYear: command.fromYear,
+          toYear: command.toYear,
+          authorQuery: command.authorQuery,
+          venueQuery: command.venueQuery,
+        },
+      );
       const discovered = Array.isArray(providerResult)
         ? {
             candidates: providerResult as readonly LiteratureProviderCandidate[],

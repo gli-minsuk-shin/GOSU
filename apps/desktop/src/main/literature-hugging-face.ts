@@ -71,6 +71,10 @@ export function normalizeHuggingFacePaper(value: unknown): HuggingFacePaperCandi
   const providerId = canonicalId.slice('arxiv:'.length);
   const authors = paperAuthors(paper.authors);
   const year = publishedYear(paper.publishedAt ?? result.publishedAt);
+  const abstractText = boundedText(
+    paper.summary ?? paper.abstract ?? result.summary ?? result.abstract,
+    12_000,
+  );
   const sourceUrl = new URL(`/papers/${encodeURIComponent(providerId)}`, HUGGING_FACE_ORIGIN);
   return {
     candidate: {
@@ -82,6 +86,7 @@ export function normalizeHuggingFacePaper(value: unknown): HuggingFacePaperCandi
       authors,
       containerTitle: 'arXiv',
       ...(year === undefined ? {} : { publishedYear: year }),
+      ...(abstractText ? { abstractText } : {}),
       topics: [],
       workType: 'preprint',
       sourceUrl: sourceUrl.toString(),
@@ -160,7 +165,16 @@ export class HuggingFaceLiteratureProvider {
         if (options.toYear !== undefined && (year === undefined || year > options.toYear)) {
           return false;
         }
-        return true;
+        const authorNeedle = boundedText(options.authorQuery, 500)?.toLocaleLowerCase();
+        const venueNeedle = boundedText(options.venueQuery, 500)?.toLocaleLowerCase();
+        return (
+          (!authorNeedle ||
+            candidate.authors.some((author) =>
+              author.toLocaleLowerCase().includes(authorNeedle),
+            )) &&
+          (!venueNeedle ||
+            (candidate.containerTitle ?? '').toLocaleLowerCase().includes(venueNeedle))
+        );
       });
   }
 

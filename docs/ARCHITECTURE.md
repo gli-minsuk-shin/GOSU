@@ -142,7 +142,7 @@ flowchart LR
 | Experiment Evaluation Studio | Desktop Evaluation service, 전용 shared contract·IPC, SQLCipher repository, protected artifact port              | step/epoch cadence·metric·policy·logging suggestion·숫자/table/plot을 독립 chat에서 proposal로 만들고 synthetic preview, human approval, immutable reusable recipe로 저장하는 local-first slice 구현; evaluator의 실제 주기 실행과 Runner result ingest는 계획됨                                                                                                              |
 | Manuscript                   | Desktop Manuscript service·SQLCipher repository, shared contracts와 adapter registry                             | project별 복수 manuscript identity, provider-neutral binding/checkpoint/anchor, Overleaf Git existing-project link·HEAD 확인·manual immutable fetch·exact checkpoint text read·MacTeX sandbox compile·PDF.js preview·local mirror 정리 구현; editor·diff/review·handoff·publish는 계획됨                                                                                      |
 | Review & Approval            | PostgreSQL approval schema와 Web UI 표현                                                                         | 기반 구현; 실제 review anchor·approval command는 계획됨                                                                                                                                                                                                                                                                                                                       |
-| Reference & Literature       | Desktop Literature workspace와 Zotero read-only connector                                                        | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, metadata-only AI 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨                                                                                                      |
+| Reference & Literature       | Desktop Literature workspace와 Zotero read-only connector                                                        | Semantic Scholar 우선·Crossref fallback/supplement·Hugging Face Papers additive source의 policy-v3 3-layer discovery, arXiv canonical identity, 누적 evidence table, JSON/CSV/BibTeX transfer, provider abstract 기반 AI topic·keyword 정리와 Project Chat search 구현; Zotero 앱 연결은 계획됨                                                                               |
 | Obsidian Knowledge           | Desktop Research Notes service, bounded Vault adapter, Markdown/LaTeX reader                                     | Vault root 복원·프로젝트별 owned folder·기본 note 구조·v2 공통 Markdown metadata envelope·Literature/Papers projection·Lecture canonical LaTeX artifact·durable 저장 receipt/reconciliation·안전한 rename·GFM/wiki-link/raster preview·읽기/자동 생성 분리 grant 구현                                                                                                         |
 | Lecture                      | Desktop Lecture Studio service, SQLCipher storage, Research Notes artifact port, Manuscript·external-source port | 여러 project의 captured Manuscript/Overleaf checkpoint·reviewed Literature metadata·Experiment lineage·사용자 `.tex/.md/.pdf` snapshot 선택, canonical article/Beamer LaTeX 생성, app 내 paired source edit, Studio figure library, sandbox PDF compile, 독립 chat, append-only revision, recoverable Trash와 `.tex`/PDF export 구현; PPTX와 OCR·paper-figure ingest는 계획됨 |
 | Usage Analytics              | Desktop model usage collector·SQLCipher ledger·Usage renderer                                                    | 이 Mac에서 provider가 보고한 Codex/Hermes turn token을 project·Lecture generation·connection·model·workload별로 일/주/월 집계; 비용 추정·과거 backfill·Hosted Sync는 하지 않음                                                                                                                                                                                                |
@@ -1729,11 +1729,17 @@ table에서 함께 보여 주며 DB tier enum에는 추가하지 않는다. impo
 `unclassified`로 남는다.
 모든 query와 mutation은 Main에서 active project 존재 여부를
 다시 검사하고 project ID를 SQL predicate에 포함한다. 앱 재시작 중 남은 `running` search는 `failed`로
-reconcile하고, 최근 검색은 query·연도·Topic·Keyword tag를 `Search again` 입력으로 복원할 수 있다.
+reconcile하고, 최근 검색은 query·author·journal/venue·연도·Topic·Keyword 조건을 `Search again` 입력으로
+복원할 수 있다. Topic과 Keyword는 검색 provenance일 뿐 아니라 normalized provider query에도 추가하며,
+author와 venue는 provider가 지원하는 structured query로 전달한 뒤 반환 metadata를 다시 확인한다.
 Evidence table은 provider·manual·AI topic을 합치지 않고 검색 provenance tag만 별도 열에 표시한다. 종류가
 적힌 chip을 누르면 정규화된 `종류 + 정확한 tag`로 filter하며 substring은 사용하지 않는다. filter는
 Topic·Keyword·Untagged를 구분하고 상세 화면도 Search tags, Manual review topics, AI topic suggestions,
-Source keywords를 서로 다른 영역으로 보여 준다. 자동 background scheduler는 아직
+AI keywords를 서로 다른 영역으로 보여 준다. provider가 준 bounded abstract는 별도 column에 저장하고
+raw provider payload나 full text로 취급하지 않는다. 검색 완료 후 연결된 AI가 있으면 아직 draft가 없는
+abstract-bearing record를 최대 50건까지 자동 정리해 broad topic과 method·model·dataset·task·domain·평가
+기준·named concept의 상세 keyword를 분리 저장한다. abstract가 없으면 metadata-only로 명시하며 추측한
+keyword를 채우지 않는다. 자동 background scheduler는 아직
 없으므로 continual review는 사용자가 같은 검색이나 새 검색을 다시 실행할 때 additive merge하는
 형태다. active evidence table은 프로젝트당 500건으로 제한하고 검색·import가 한도를 넘으면 일부만
 반영하지 않고 transaction 전체를 거절한다. normalized DOI, 같은 provider의 record ID와 canonical arXiv
@@ -1768,11 +1774,12 @@ topic·citation·URL은 null이나 빈 배열로 지우지 않는다. 반대로 
 Semantic Scholar identity와 citation metadata를 되돌리지 않는다.
 
 활성 project의 Literature route는 중복된 공통 page heading을 렌더링하지 않고 compact content padding을
-사용한다. 검색 query와 실행 action만 기본 표면에 두고 Topic·Keyword·연도 filter, 최근 검색, tag 설명과
-ranking policy 전문은 닫힌 native `details`에 둔다. reduced provider coverage는 원인을 한 줄 summary로
+사용한다. 검색 query와 실행 action뿐 아니라 author·journal/venue·subject/topic·keyword·연도 조건을 기본
+표면에 두고 최근 검색과 ranking policy 전문만 닫힌 native `details`에 둔다. reduced provider coverage는 원인을 한 줄 summary로
 유지하고 signal 상세만 펼친다. `Total / Core / Rising / Broad`는 설명 카드가 아니라 count가 있는 한 줄
 filter tab이며 설명은 title과 accessible label에 남긴다. AI provider 상태도 한 줄로 제한해 검색·분류 chrome이
-Evidence table의 초기 viewport를 밀어내지 않게 한다.
+Evidence table의 초기 viewport를 밀어내지 않게 한다. 표 본문과 keyword chip은 전역 body/control font token을
+사용해 다른 workspace보다 작아지지 않게 한다.
 
 Evidence table은 page 전체를 밀어내는 unbounded grid item이 아니라 keyboard-focusable한 bounded scroll
 region이다. workspace와 library card는 명시적인 `minmax(0, 1fr)` grid column을 사용해 1,420px table의
@@ -3372,7 +3379,8 @@ provenance의 durability, 검색별 typed tag 누적·정규화 idempotence·tag
 search run restart reconciliation, pre-canonical legacy DB의 column/index migration·HF backfill·기존 conflict
 보존을 실제 Electron ABI close/reopen으로
 검증한다. AI test는 최대 50개
-metadata-only prompt, dynamic model·reasoning provenance, manual annotation 비노출, exact record/version
+provider metadata와 bounded abstract prompt, detailed topic·keyword 분리, dynamic model·reasoning provenance,
+manual annotation 비노출, exact record/version
 response와 malformed·hallucinated·stale batch 전체 거절을 검사한다.
 Project Chat Literature tool test는 trusted top-level message의 direct subject+action authorization과
 negative command·검색 정책 meta-question denial, injected active project ID, cross-project 차단,

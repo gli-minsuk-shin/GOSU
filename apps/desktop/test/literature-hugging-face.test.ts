@@ -23,7 +23,7 @@ describe('Hugging Face Papers literature provider', () => {
             publishedAt: '2025-04-15T02:06:05.000Z',
             authors: [{ name: 'Ada Researcher' }, { name: 'Grace Scientist' }],
             upvotes: 12,
-            summary: 'This provider summary is deliberately not persisted.',
+            summary: 'This provider summary is persisted as the bounded abstract.',
             ai_keywords: ['unverified keyword'],
           },
         },
@@ -32,6 +32,8 @@ describe('Hugging Face Papers literature provider', () => {
     const provider = new HuggingFaceLiteratureProvider({ fetch });
 
     const papers = await provider.search('tabular-foundation model', 999, {
+      authorQuery: 'Ada Researcher',
+      venueQuery: 'arXiv',
       fromYear: 2024,
       toYear: 2026,
     });
@@ -53,13 +55,13 @@ describe('Hugging Face Papers literature provider', () => {
           authors: ['Ada Researcher', 'Grace Scientist'],
           containerTitle: 'arXiv',
           publishedYear: 2025,
+          abstractText: 'This provider summary is persisted as the bounded abstract.',
           topics: [],
           sourceUrl: 'https://huggingface.co/papers/2504.10808',
         }),
         upvotes: 12,
       }),
     ]);
-    expect(JSON.stringify(papers)).not.toContain('deliberately not persisted');
     expect(JSON.stringify(papers)).not.toContain('unverified keyword');
   });
 

@@ -19,6 +19,7 @@ const SEMANTIC_SCHOLAR_FIELDS = [
   'externalIds',
   'url',
   'title',
+  'abstract',
   'venue',
   'year',
   'publicationDate',
@@ -43,6 +44,8 @@ export type SemanticScholarSearchOptions = Readonly<{
   fromYear?: number | undefined;
   toYear?: number | undefined;
   sort?: 'relevance' | 'citation' | 'published' | undefined;
+  authorQuery?: string | undefined;
+  venueQuery?: string | undefined;
 }>;
 
 export type SemanticScholarCandidate = Readonly<{
@@ -139,6 +142,7 @@ export function normalizeSemanticScholarPaper(value: unknown): SemanticScholarCa
   const sourceUrl = httpsUrl(item.url) ?? (doi ? `https://doi.org/${doi}` : undefined);
   const workTypes = stringList(item.publicationTypes, 4, 120);
   const publicationDate = boundedText(item.publicationDate, 32) ?? null;
+  const abstractText = boundedText(item.abstract, 12_000);
   return {
     candidate: {
       provider: 'semantic-scholar',
@@ -150,6 +154,7 @@ export function normalizeSemanticScholarPaper(value: unknown): SemanticScholarCa
       authors: authors.names,
       ...(boundedText(item.venue, 1_000) ? { containerTitle: boundedText(item.venue, 1_000) } : {}),
       ...(publishedYear ? { publishedYear } : {}),
+      ...(abstractText ? { abstractText } : {}),
       topics: semanticScholarTopics(item),
       ...(workTypes[0] ? { workType: workTypes.join(', ').slice(0, 120) } : {}),
       ...(boundedInteger(item.citationCount) === undefined
@@ -295,7 +300,19 @@ export class SemanticScholarLiteratureProvider {
       return data
         .slice(0, rows)
         .map(normalizeSemanticScholarPaper)
-        .filter((paper): paper is SemanticScholarCandidate => paper !== null);
+        .filter((paper): paper is SemanticScholarCandidate => paper !== null)
+        .filter((paper) => {
+          const authorNeedle = boundedText(options.authorQuery, 500)?.toLocaleLowerCase();
+          const venueNeedle = boundedText(options.venueQuery, 500)?.toLocaleLowerCase();
+          return (
+            (!authorNeedle ||
+              paper.candidate.authors.some((author) =>
+                author.toLocaleLowerCase().includes(authorNeedle),
+              )) &&
+            (!venueNeedle ||
+              (paper.candidate.containerTitle ?? '').toLocaleLowerCase().includes(venueNeedle))
+          );
+        });
     }, options.signal);
   }
 

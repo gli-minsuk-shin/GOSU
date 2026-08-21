@@ -203,6 +203,7 @@ const LITERATURE_DISCOVERY_COVERAGE_MIGRATION = 'literature-discovery-coverage-v
 const LITERATURE_SEARCH_TAGS_MIGRATION = 'literature-search-tags-v1';
 const LITERATURE_HUGGING_FACE_PROVIDER_MIGRATION = 'literature-hugging-face-provider-v1';
 const LITERATURE_CANONICAL_IDENTITY_MIGRATION = 'literature-canonical-identity-v1';
+const LITERATURE_ABSTRACT_KEYWORDS_MIGRATION = 'literature-abstract-keywords-v1';
 const EXPERIMENT_RUNS_HARDENING_MIGRATION = 'experiment-runs-hardening-v1';
 const EXPERIMENT_RUN_INTENT_AUTHORITY_MIGRATION = 'experiment-run-intent-authority-v2';
 const DEFAULT_LECTURE_STUDIO_GENERATION_BRIEF_JSON = JSON.stringify(
@@ -791,6 +792,7 @@ type LiteratureRecordRow = Readonly<{
   authors_json: string;
   container_title: string | null;
   published_year: number | null;
+  abstract_text: string | null;
   topics_json: string;
   search_tags_json: string;
   work_type: string | null;
@@ -802,6 +804,7 @@ type LiteratureRecordRow = Readonly<{
   manual_summary: string | null;
   manual_relevance: string | null;
   ai_topics_json: string;
+  ai_keywords_json: string;
   ai_summary: string | null;
   ai_relevance: string | null;
   ai_study_type: string | null;
@@ -823,6 +826,8 @@ type LiteratureSearchRunRow = Readonly<{
   policy_version: number;
   query: string;
   search_tags_json: string;
+  author_query: string | null;
+  venue_query: string | null;
   requested_limit: number;
   from_year: number | null;
   to_year: number | null;
@@ -2194,6 +2199,7 @@ function toLocalLiteratureRecord(row: LiteratureRecordRow): LiteratureRecord {
     authors: stringArrayJson(row.authors_json),
     containerTitle: row.container_title,
     publishedYear: row.published_year,
+    abstractText: row.abstract_text,
     sourceTopics: stringArrayJson(row.topics_json),
     searchTags: literatureSearchTagsJson(row.search_tags_json),
     workType: row.work_type,
@@ -2209,6 +2215,7 @@ function toLocalLiteratureRecord(row: LiteratureRecordRow): LiteratureRecord {
     aiAnnotations: row.ai_model_provenance_json
       ? {
           topics: stringArrayJson(row.ai_topics_json),
+          keywords: stringArrayJson(row.ai_keywords_json),
           summary: row.ai_summary ?? '',
           relevance: row.ai_relevance,
           studyType: row.ai_study_type ?? '',
@@ -2255,6 +2262,8 @@ function toLocalLiteratureSearchRun(
     policyVersion: row.policy_version,
     query: row.query,
     searchTags: literatureSearchTagsJson(row.search_tags_json),
+    authorQuery: row.author_query,
+    venueQuery: row.venue_query,
     requestedLimit: row.requested_limit,
     fromYear: row.from_year,
     toYear: row.to_year,
@@ -2361,6 +2370,7 @@ function candidateState(candidate: LiteratureProviderCandidate) {
     authors_json: JSON.stringify(candidate.authors),
     container_title: candidate.containerTitle ?? null,
     published_year: candidate.publishedYear ?? null,
+    abstract_text: candidate.abstractText ?? null,
     topics_json: JSON.stringify(candidate.topics),
     work_type: candidate.workType ?? null,
     citation_count: candidate.citationCount ?? null,
@@ -2379,6 +2389,7 @@ function mergedProviderCandidateState(
       (state.source_provider === existing.source_provider ? existing.provider_record_id : null),
     doi: state.doi ?? existing.doi,
     canonical_id: state.canonical_id ?? existing.canonical_id,
+    abstract_text: state.abstract_text ?? existing.abstract_text,
   };
   if (candidate.provider !== 'semantic-scholar') return { ...state, ...identity };
 
@@ -2392,6 +2403,7 @@ function mergedProviderCandidateState(
     authors_json: authorsJson,
     container_title: state.container_title ?? existing.container_title,
     published_year: publishedYear,
+    abstract_text: state.abstract_text ?? existing.abstract_text,
     topics_json: candidate.topics.length > 0 ? state.topics_json : existing.topics_json,
     work_type: state.work_type ?? existing.work_type,
     citation_count: state.citation_count ?? existing.citation_count,
@@ -2562,11 +2574,11 @@ function upsertLiteratureCandidate(
       .prepare(
         `insert into literature_records(
            id,schema_version,project_id,source_provider,provider_record_id,canonical_id,doi,fingerprint,title,
-           authors_json,container_title,published_year,topics_json,search_tags_json,work_type,citation_count,
+           authors_json,container_title,published_year,abstract_text,topics_json,search_tags_json,work_type,citation_count,
            source_url,citation_key,review_status,manual_topics_json,manual_summary,manual_relevance,
-           ai_topics_json,ai_summary,ai_relevance,ai_study_type,ai_limitations_json,
+           ai_topics_json,ai_keywords_json,ai_summary,ai_relevance,ai_study_type,ai_limitations_json,
            ai_model_provenance_json,annotation_version,version,created_at,updated_at,deleted_at
-         ) values(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,null)`,
+         ) values(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,null)`,
       )
       .run(
         id,
@@ -2580,6 +2592,7 @@ function upsertLiteratureCandidate(
         state.authors_json,
         state.container_title,
         state.published_year,
+        state.abstract_text,
         state.topics_json,
         JSON.stringify(searchTags),
         state.work_type,
@@ -2590,6 +2603,7 @@ function upsertLiteratureCandidate(
         JSON.stringify(manual.topics),
         manual.summary || null,
         manual.relevance || null,
+        '[]',
         '[]',
         null,
         null,
@@ -2628,6 +2642,7 @@ function upsertLiteratureCandidate(
         authors: stringArrayJson(existing.authors_json),
         ...(existing.container_title ? { containerTitle: existing.container_title } : {}),
         ...(existing.published_year ? { publishedYear: existing.published_year } : {}),
+        ...(existing.abstract_text ? { abstractText: existing.abstract_text } : {}),
         topics: stringArrayJson(existing.topics_json),
         ...(existing.work_type ? { workType: existing.work_type } : {}),
         ...(existing.citation_count === null ? {} : { citationCount: existing.citation_count }),
@@ -2664,6 +2679,7 @@ function upsertLiteratureCandidate(
     existing.authors_json !== merged.authors_json ||
     existing.container_title !== merged.container_title ||
     existing.published_year !== merged.published_year ||
+    existing.abstract_text !== merged.abstract_text ||
     existing.topics_json !== merged.topics_json ||
     existing.work_type !== merged.work_type ||
     existing.citation_count !== merged.citation_count ||
@@ -2689,9 +2705,9 @@ function upsertLiteratureCandidate(
     .prepare(
       `update literature_records set
          source_provider=?,provider_record_id=?,canonical_id=?,doi=?,fingerprint=?,title=?,authors_json=?,container_title=?,
-         published_year=?,topics_json=?,search_tags_json=?,work_type=?,citation_count=?,source_url=?,citation_key=?,
+         published_year=?,abstract_text=?,topics_json=?,search_tags_json=?,work_type=?,citation_count=?,source_url=?,citation_key=?,
          review_status=?,manual_topics_json=?,manual_summary=?,manual_relevance=?,
-         ai_topics_json=?,ai_summary=?,ai_relevance=?,ai_study_type=?,ai_limitations_json=?,
+         ai_topics_json=?,ai_keywords_json=?,ai_summary=?,ai_relevance=?,ai_study_type=?,ai_limitations_json=?,
          ai_model_provenance_json=?,
          annotation_version=annotation_version+?,version=version+1,updated_at=?,deleted_at=null
        where project_id=? and id=?`,
@@ -2706,6 +2722,7 @@ function upsertLiteratureCandidate(
       merged.authors_json,
       merged.container_title,
       merged.published_year,
+      merged.abstract_text,
       merged.topics_json,
       searchTagsJson,
       merged.work_type,
@@ -2717,6 +2734,7 @@ function upsertLiteratureCandidate(
       manual.summary || null,
       manual.relevance || null,
       aiInvalidated ? '[]' : existing.ai_topics_json,
+      aiInvalidated ? '[]' : existing.ai_keywords_json,
       aiInvalidated ? null : existing.ai_summary,
       aiInvalidated ? null : existing.ai_relevance,
       aiInvalidated ? null : existing.ai_study_type,
@@ -3236,6 +3254,55 @@ function migrateLiteratureCanonicalIdentity(database: Database.Database) {
       database
         .prepare('insert or replace into local_schema_migrations(id,applied_at) values(?,?)')
         .run(LITERATURE_CANONICAL_IDENTITY_MIGRATION, new Date().toISOString());
+    })
+    .immediate();
+}
+
+function migrateLiteratureAbstractKeywords(database: Database.Database) {
+  const migrationApplied = database
+    .prepare('select 1 from local_schema_migrations where id=?')
+    .get(LITERATURE_ABSTRACT_KEYWORDS_MIGRATION);
+  const recordColumns = database.pragma('table_info(literature_records)') as Array<{
+    name: string;
+  }>;
+  const searchColumns = database.pragma('table_info(literature_search_runs)') as Array<{
+    name: string;
+  }>;
+  const complete =
+    recordColumns.some(({ name }) => name === 'abstract_text') &&
+    recordColumns.some(({ name }) => name === 'ai_keywords_json') &&
+    searchColumns.some(({ name }) => name === 'author_query') &&
+    searchColumns.some(({ name }) => name === 'venue_query');
+  if (migrationApplied && complete) return;
+  database
+    .transaction(() => {
+      if (!recordColumns.some(({ name }) => name === 'abstract_text')) {
+        database.exec(
+          `alter table literature_records add column abstract_text text
+           check (abstract_text is null or length(abstract_text) between 1 and 12000)`,
+        );
+      }
+      if (!recordColumns.some(({ name }) => name === 'ai_keywords_json')) {
+        database.exec(
+          `alter table literature_records add column ai_keywords_json text not null default '[]'
+           check (length(ai_keywords_json) <= 32768)`,
+        );
+      }
+      if (!searchColumns.some(({ name }) => name === 'author_query')) {
+        database.exec(
+          `alter table literature_search_runs add column author_query text
+           check (author_query is null or length(author_query) between 1 and 500)`,
+        );
+      }
+      if (!searchColumns.some(({ name }) => name === 'venue_query')) {
+        database.exec(
+          `alter table literature_search_runs add column venue_query text
+           check (venue_query is null or length(venue_query) between 1 and 500)`,
+        );
+      }
+      database
+        .prepare('insert or replace into local_schema_migrations(id,applied_at) values(?,?)')
+        .run(LITERATURE_ABSTRACT_KEYWORDS_MIGRATION, new Date().toISOString());
     })
     .immediate();
 }
@@ -4323,6 +4390,9 @@ export class LocalDatabase {
         published_year integer check (
           published_year is null or published_year between 1000 and 3000
         ),
+        abstract_text text check (
+          abstract_text is null or length(abstract_text) between 1 and 12000
+        ),
         topics_json text not null check (length(topics_json) <= 32768),
         search_tags_json text not null default '{"topics":[],"keywords":[]}' check (
           length(search_tags_json) <= 32768
@@ -4344,6 +4414,9 @@ export class LocalDatabase {
           manual_relevance is null or length(manual_relevance) between 1 and 4000
         ),
         ai_topics_json text not null default '[]' check (length(ai_topics_json) <= 32768),
+        ai_keywords_json text not null default '[]' check (
+          length(ai_keywords_json) <= 32768
+        ),
         ai_summary text check (ai_summary is null or length(ai_summary) between 1 and 8000),
         ai_relevance text check (
           ai_relevance is null or length(ai_relevance) between 1 and 64
@@ -4393,6 +4466,8 @@ export class LocalDatabase {
         search_tags_json text not null default '{"topics":[],"keywords":[]}' check (
           length(search_tags_json) <= 32768
         ),
+        author_query text check (author_query is null or length(author_query) between 1 and 500),
+        venue_query text check (venue_query is null or length(venue_query) between 1 and 500),
         requested_limit integer not null check (requested_limit between 1 and 50),
         from_year integer check (from_year is null or from_year between 1000 and 3000),
         to_year integer check (to_year is null or to_year between 1000 and 3000),
@@ -5367,6 +5442,7 @@ export class LocalDatabase {
       migrateLiteratureSearchTags(database);
       migrateLiteratureHuggingFaceProvider(database);
       migrateLiteratureCanonicalIdentity(database);
+      migrateLiteratureAbstractKeywords(database);
       migrateProjectChatQueueOrdering(database);
       const chatSessionColumns = database.pragma('table_info(project_chat_sessions)') as Array<{
         name: string;
@@ -7939,9 +8015,10 @@ export class LocalDatabase {
       'doi ' || coalesce(doi,'') || ' citation key ' || coalesce(citation_key,'') || ' ' ||
       'publication year ' || coalesce(cast(published_year as text),'') || ' ' ||
       'citation count ' || coalesce(cast(citation_count as text),'') || ' ' ||
+      coalesce(abstract_text,'') || ' ' ||
       topics_json || ' ' || search_tags_json || ' ' || manual_topics_json || ' ' ||
       coalesce(manual_summary,'') || ' ' || coalesce(manual_relevance,'') || ' ' ||
-      ai_topics_json || ' ' || coalesce(ai_summary,'') || ' ' ||
+      ai_topics_json || ' ' || ai_keywords_json || ' ' || coalesce(ai_summary,'') || ' ' ||
       coalesce(ai_study_type,'') || ' ' || ai_limitations_json
     )`;
     const tokenPredicates = tokens.map(() => `instr(${searchableText},?) > 0`).join(' and ');
@@ -10440,7 +10517,7 @@ export class LocalDatabase {
     const database = this.require();
     const rows = database
       .prepare(
-        `select id,project_id,provider,policy_id,policy_version,query,search_tags_json,requested_limit,from_year,to_year,status,
+        `select id,project_id,provider,policy_id,policy_version,query,search_tags_json,author_query,venue_query,requested_limit,from_year,to_year,status,
                 new_count,updated_count,unchanged_count,conflict_count,retrieved_count,selected_count,
                 core_count,rising_count,broad_count,discovery_coverage_json,created_at,completed_at
          from literature_search_runs where project_id=? order by created_at desc,id desc limit 20`,
@@ -10473,11 +10550,11 @@ export class LocalDatabase {
       this.require()
         .prepare(
           `insert or ignore into literature_search_runs(
-             id,schema_version,project_id,provider,policy_id,policy_version,query,search_tags_json,requested_limit,
+             id,schema_version,project_id,provider,policy_id,policy_version,query,search_tags_json,author_query,venue_query,requested_limit,
              from_year,to_year,status,new_count,updated_count,unchanged_count,conflict_count,
              retrieved_count,selected_count,core_count,rising_count,broad_count,
              discovery_coverage_json,created_at,completed_at
-           ) values(?,1,?,?,?,?,?,?,?,?,?,'running',0,0,0,0,0,0,0,0,0,null,?,null)`,
+           ) values(?,1,?,?,?,?,?,?,?,?,?,?,?,'running',0,0,0,0,0,0,0,0,0,null,?,null)`,
         )
         .run(
           input.id,
@@ -10487,6 +10564,8 @@ export class LocalDatabase {
           input.policyVersion ?? 1,
           input.query,
           JSON.stringify(input.searchTags ?? { topics: [], keywords: [] }),
+          input.authorQuery,
+          input.venueQuery,
           input.requestedLimit,
           input.fromYear,
           input.toYear,
@@ -10515,7 +10594,7 @@ export class LocalDatabase {
       .transaction(() => {
         const run = database
           .prepare(
-            `select id,project_id,provider,policy_id,policy_version,query,search_tags_json,requested_limit,from_year,to_year,status,
+            `select id,project_id,provider,policy_id,policy_version,query,search_tags_json,author_query,venue_query,requested_limit,from_year,to_year,status,
                     new_count,updated_count,unchanged_count,conflict_count,retrieved_count,selected_count,
                     core_count,rising_count,broad_count,discovery_coverage_json,created_at,completed_at
              from literature_search_runs where project_id=? and id=?`,
@@ -10790,7 +10869,7 @@ export class LocalDatabase {
             const changed = database
               .prepare(
                 `update literature_records set
-                   ai_topics_json=?,ai_summary=?,ai_relevance=?,ai_study_type=?,
+                   ai_topics_json=?,ai_keywords_json=?,ai_summary=?,ai_relevance=?,ai_study_type=?,
                    ai_limitations_json=?,ai_model_provenance_json=?,
                    annotation_version=annotation_version+1,version=version+1,updated_at=?
                  where project_id=? and id=? and deleted_at is null
@@ -10798,6 +10877,7 @@ export class LocalDatabase {
               )
               .run(
                 JSON.stringify(update.topics),
+                JSON.stringify(update.keywords ?? []),
                 update.summary || null,
                 update.relevance,
                 update.studyType || null,

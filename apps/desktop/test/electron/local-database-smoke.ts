@@ -4951,6 +4951,8 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
     projectId,
     provider: 'crossref' as const,
     query: 'bounded research systems',
+    authorQuery: 'Ada Researcher',
+    venueQuery: 'Journal of Fixtures',
     fromYear: 2020,
     toYear: 2026,
     requestedLimit: 25,
@@ -4978,6 +4980,7 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
         authors,
         containerTitle: 'Journal of Fixtures',
         publishedYear: 2026,
+        abstractText: 'A provider abstract used to derive detailed keywords.',
         topics: ['research systems'],
         workType: 'journal-article',
         citationCount: 2,
@@ -4991,7 +4994,11 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
     'literature_search_insert_failed',
   );
   const first = database.listLiteratureRecords(projectId)[0];
-  invariant(first?.doi === '10.1000/gosu.fixture', 'literature_doi_was_not_persisted');
+  invariant(
+    first?.doi === '10.1000/gosu.fixture' &&
+      first.abstractText === 'A provider abstract used to derive detailed keywords.',
+    'literature_doi_or_abstract_was_not_persisted',
+  );
   const manual = database.updateLiteratureManualAnnotations({
     projectId,
     recordId: first.id,
@@ -5030,6 +5037,7 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
         expectedVersion: manual.version,
         expectedAnnotationVersion: manual.annotationVersion,
         topics: ['metadata'],
+        keywords: ['bounded research system', 'metadata quality'],
         summary: 'Metadata-only AI summary',
         relevance: 'high',
         studyType: 'Not assessable from metadata alone',
@@ -5039,7 +5047,11 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
     ],
     fixedTimestamp,
   );
-  invariant(ai?.[0]?.aiAnnotations?.provenance.metadataOnly, 'literature_ai_update_failed');
+  invariant(
+    ai?.[0]?.aiAnnotations?.provenance.metadataOnly &&
+      ai[0].aiAnnotations.keywords?.includes('metadata quality'),
+    'literature_ai_update_failed',
+  );
 
   const secondRunId = randomUUID();
   invariant(
@@ -5439,9 +5451,12 @@ function verifyLiteraturePersistence(fixedTimestamp: string) {
 
   const reopened = new LocalDatabase();
   reopened.open();
+  const reopenedRuns = reopened.listLiteratureSearchRuns(projectId);
+  invariant(reopenedRuns.length === 3, 'literature_runs_not_reopened');
   invariant(
-    reopened.listLiteratureSearchRuns(projectId).length === 3,
-    'literature_runs_not_reopened',
+    reopenedRuns.find((run) => run.id === firstRunId)?.authorQuery === 'Ada Researcher' &&
+      reopenedRuns.find((run) => run.id === firstRunId)?.venueQuery === 'Journal of Fixtures',
+    'literature_structured_search_filters_not_reopened',
   );
   invariant(reopened.countLiteratureRecords(projectId) === 3, 'literature_records_not_reopened');
   invariant(

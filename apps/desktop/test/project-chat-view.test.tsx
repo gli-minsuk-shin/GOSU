@@ -1361,6 +1361,7 @@ describe('advanced Project Chat controls', () => {
     );
 
     expect(html).toContain('Queued · 1');
+    expect(html).toContain('up to 4 different sessions run in parallel');
     expect(html).toContain('Analyze the queued experiment');
     expect(html).toContain('Runs next');
     expect(html).toContain('Stop current &amp; run now');
