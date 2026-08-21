@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   lstatSync,
@@ -10,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -248,6 +249,28 @@ describe('Hermes ACP isolated profile factory', () => {
     expect(config).not.toContain('global-history-must-not-be-used');
     expect(existsSync(join(first.homeDirectory, '.env'))).toBe(false);
     expect(existsSync(join(first.homeDirectory, 'state.db'))).toBe(false);
+  });
+
+  it('rotates the GOSU profile schema and removes stale isolated credential caches', () => {
+    const sourceHome = temporaryDirectory();
+    const factory = createNodeHermesAcpProfileFactory();
+    const input = {
+      runtime: runtime(sourceHome),
+      projectId: PROJECT_ID,
+      sessionId: SESSION_ID,
+    } as const;
+    const prepared = factory.prepare(input);
+    writeFileSync(join(prepared.homeDirectory, 'auth.json'), '{"stale":true}', { mode: 0o600 });
+    writeFileSync(join(prepared.homeDirectory, 'auth.lock'), 'stale-lock', { mode: 0o600 });
+
+    const refreshed = factory.prepare(input);
+
+    expect(refreshed.homeDirectory).toBe(prepared.homeDirectory);
+    expect(existsSync(join(refreshed.homeDirectory, 'auth.json'))).toBe(false);
+    expect(existsSync(join(refreshed.homeDirectory, 'auth.lock'))).toBe(false);
+    expect(basename(refreshed.homeDirectory)).not.toBe(
+      `gosu-${createHash('sha256').update(`${PROJECT_ID}:${SESSION_ID}`).digest('hex').slice(0, 40)}`,
+    );
   });
 
   it('uses the official global profile root when BYO Hermes already has a selected profile', () => {

@@ -130,7 +130,16 @@ const requirementsPath = join(destination, '.requirements.txt');
 try {
   const { stdout: requirements } = await run(
     'uv',
-    ['export', '--frozen', '--no-dev', '--no-emit-project', '--format', 'requirements-txt'],
+    [
+      'export',
+      '--frozen',
+      '--no-dev',
+      '--extra',
+      'acp',
+      '--no-emit-project',
+      '--format',
+      'requirements-txt',
+    ],
     { cwd: checkout, maxBuffer: 16 * 1024 * 1024 },
   );
   await writeFile(requirementsPath, requirements, { mode: 0o600 });
@@ -153,6 +162,26 @@ try {
 } finally {
   await rm(requirementsPath, { force: true });
 }
+
+// ACP is an optional Hermes dependency, but it is the only transport GOSU launches from the
+// bundled runtime. Fail the source build here instead of shipping a signed archive that passes
+// manifest verification and then dies during the first Settings connection handshake.
+await run(
+  join(destination, 'python', 'bin', basename(managedPythonPath)),
+  [
+    '-I',
+    '-B',
+    '-c',
+    `import sys; sys.path.insert(0, ${JSON.stringify(join(destination, 'hermes-agent'))}); import acp; import acp.schema; import acp_adapter.entry; import acp_adapter.server`,
+  ],
+  {
+    cwd: join(destination, 'hermes-agent'),
+    env: {
+      ...process.env,
+      PYTHONDONTWRITEBYTECODE: '1',
+    },
+  },
+);
 
 await writeFile(
   join(destination, HERMES_RUNTIME_INPUT_NAME),

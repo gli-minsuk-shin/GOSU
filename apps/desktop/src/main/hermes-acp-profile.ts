@@ -20,6 +20,7 @@ import type { HermesValidatedAcpRuntime } from './hermes-project-chat-adapter';
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_DOTENV_BYTES = 256 * 1_024;
+const HERMES_ACP_PROFILE_SCHEMA_VERSION = 2;
 
 // Reviewed against every bundled `plugins/model-providers/*/__init__.py` in pinned Hermes 0.19.1
 // plus the pinned runtime's built-in OpenAI/custom/Vertex/Azure route resolvers. This is static on
@@ -219,7 +220,9 @@ function assertContained(parent: string, child: string) {
 }
 
 function profileName(projectId: string, sessionId: string) {
-  const digest = createHash('sha256').update(`${projectId}:${sessionId}`, 'utf8').digest('hex');
+  const digest = createHash('sha256')
+    .update(`v${HERMES_ACP_PROFILE_SCHEMA_VERSION}:${projectId}:${sessionId}`, 'utf8')
+    .digest('hex');
   return `gosu-${digest.slice(0, 40)}`;
 }
 
@@ -271,6 +274,12 @@ function assertSafeProfileEntry(profileHome: string, name: string, kind: 'file' 
   const valid =
     !metadata.isSymbolicLink() && (kind === 'file' ? metadata.isFile() : metadata.isDirectory());
   if (!valid) throw new Error('hermes_profile_entry_invalid');
+}
+
+function removeTransientCredentialFile(profileHome: string, name: string) {
+  assertSafeProfileEntry(profileHome, name, 'file');
+  const path = join(profileHome, name);
+  if (entryMetadata(path)) unlinkSync(path);
 }
 
 function writePrivateConfig(profileHome: string, value: string) {
@@ -378,6 +387,13 @@ export function createNodeHermesAcpProfileFactory(
       if (entryMetadata(join(homeDirectory, '.env'))) {
         throw new Error('hermes_profile_dotenv_forbidden');
       }
+      // Hermes may cache a refreshed provider credential in its isolated profile even though the
+      // authoritative account remains in the user's selected global Hermes profile. Reusing that
+      // cache after the account refreshes makes the sealed route proof fail on the next GOSU
+      // launch. Remove only GOSU-managed transient auth files so every connection binds to the
+      // current global account/environment again; project/session data remains isolated.
+      removeTransientCredentialFile(homeDirectory, 'auth.json');
+      removeTransientCredentialFile(homeDirectory, 'auth.lock');
       writePrivateConfig(homeDirectory, isolatedConfig(input.runtime));
 
       const environment = {

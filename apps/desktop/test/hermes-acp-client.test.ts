@@ -583,6 +583,18 @@ describe('Hermes ACP client', () => {
     }
   });
 
+  it('reports only a bounded sealed-launcher diagnostic when the process exits', async () => {
+    const platform = new FakePlatform();
+    const client = createClient(platform, async () => ({ outcome: 'cancelled' }));
+    const initializing = client.initialize();
+    platform.process.emitStderr('provider traceback with sk-secret\n');
+    platform.process.emitStderr('gosu_hermes_acp_failed:configured_runtime_changed\n');
+    platform.process.emitExit(1, null);
+    await expect(initializing).rejects.toMatchObject({
+      code: 'hermes_acp_runtime_configured_runtime_changed',
+    });
+  });
+
   it('reports an unconfirmed SIGKILL and permits a later confirmed close', async () => {
     const platform = new FakePlatform();
     platform.exitOnTerminate = false;

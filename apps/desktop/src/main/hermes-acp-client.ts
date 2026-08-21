@@ -608,6 +608,8 @@ export class HermesAcpClient extends EventEmitter {
   private initialization: HermesAcpInitializeResult | null = null;
   private stdoutBuffer = Buffer.alloc(0);
   private stderrBytes = 0;
+  private stderrDiagnosticBuffer = '';
+  private processFailureCode: string | null = null;
   private nextRequestId = 0;
   private inboundPermissionRequests = 0;
   private exited = false;
@@ -844,6 +846,18 @@ export class HermesAcpClient extends EventEmitter {
     this.stderrBytes += Buffer.byteLength(chunk);
     if (this.stderrBytes > this.maxStderrBytes) {
       this.fail('hermes_acp_stderr_limit_exceeded');
+      return;
+    }
+    // The sealed GOSU launcher emits one bounded, credential-free diagnostic sentinel before it
+    // exits. Retain only enough stderr to recognize that sentinel; never log or expose arbitrary
+    // upstream stderr, which can contain provider details or secrets.
+    this.stderrDiagnosticBuffer = `${this.stderrDiagnosticBuffer}${String(chunk)}`.slice(-512);
+    const diagnostic =
+      /(?:^|\n)gosu_hermes_acp_failed:([a-zA-Z][a-zA-Z0-9_]{0,127})(?:\r?\n|$)/u.exec(
+        this.stderrDiagnosticBuffer,
+      );
+    if (diagnostic?.[1]) {
+      this.processFailureCode = `hermes_acp_runtime_${diagnostic[1]}`;
     }
   }
 
@@ -1023,7 +1037,7 @@ export class HermesAcpClient extends EventEmitter {
       return;
     }
     if (this.currentState === 'closed') return;
-    this.fail('hermes_acp_process_exited');
+    this.fail(this.processFailureCode ?? 'hermes_acp_process_exited');
   }
 
   private waitForExit(timeoutMs: number) {

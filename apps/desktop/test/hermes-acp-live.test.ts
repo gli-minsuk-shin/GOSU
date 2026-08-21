@@ -8,9 +8,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { HermesAcpApprovalService } from '../src/main/hermes-acp-approval-service';
 import { createNodeHermesAcpProfileFactory } from '../src/main/hermes-acp-profile';
 import { HermesAcpProjectChatAdapter } from '../src/main/hermes-acp-project-chat-adapter';
-import { HermesProjectChatAdapter } from '../src/main/hermes-project-chat-adapter';
+import {
+  createNodeHermesProjectChatPlatform,
+  HermesProjectChatAdapter,
+} from '../src/main/hermes-project-chat-adapter';
 
 const runRealHermes = process.env.GOSU_RUN_REAL_HERMES_ACP === '1';
+const runtimeArchivePath = process.env.GOSU_HERMES_RUNTIME_ARCHIVE?.trim() || null;
+const useProductionProfile = process.env.GOSU_HERMES_USE_PRODUCTION_PROFILE === '1';
 
 async function regularFiles(root: string, current = root): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true });
@@ -39,6 +44,10 @@ describe.skipIf(!runRealHermes)('real BYO Hermes ACP integration', () => {
     async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'gosu-real-hermes-acp-cwd-'));
       temporaryPaths.push(cwd);
+      const runtimeCache = runtimeArchivePath
+        ? await mkdtemp(join(tmpdir(), 'gosu-real-hermes-runtime-cache-'))
+        : null;
+      if (runtimeCache) temporaryPaths.push(runtimeCache);
       const projectId = randomUUID();
       const sessionId = randomUUID();
       const preparedProfileHomes: string[] = [];
@@ -52,27 +61,39 @@ describe.skipIf(!runRealHermes)('real BYO Hermes ACP integration', () => {
         approvals.resolve(event.request.id, 'deny');
       });
       const adapter = new HermesAcpProjectChatAdapter({
-        runtimeDiscovery: new HermesProjectChatAdapter(),
+        runtimeDiscovery: new HermesProjectChatAdapter(
+          runtimeArchivePath && runtimeCache
+            ? createNodeHermesProjectChatPlatform({
+                bundledRuntimeArchivePath: runtimeArchivePath,
+                bundledRuntimeCacheDirectory: runtimeCache,
+                allowCustomLocalRuntime: false,
+              })
+            : undefined,
+        ),
         approvals,
         clientVersion: () => '0.31.0-live-test',
-        profileFactory: {
-          prepare(input) {
-            const scopeKey = `${input.projectId}:${input.sessionId}`;
-            let isolatedScope = isolatedProfileScopes.get(scopeKey);
-            if (!isolatedScope) {
-              isolatedScope = { projectId: randomUUID(), sessionId: randomUUID() };
-              isolatedProfileScopes.set(scopeKey, isolatedScope);
-            }
-            const profile = realProfileFactory.prepare({
-              ...input,
-              projectId: isolatedScope.projectId,
-              sessionId: isolatedScope.sessionId,
-            });
-            preparedProfileHomes.push(profile.homeDirectory);
-            temporaryPaths.push(profile.homeDirectory);
-            return profile;
-          },
-        },
+        ...(useProductionProfile
+          ? {}
+          : {
+              profileFactory: {
+                prepare(input) {
+                  const scopeKey = `${input.projectId}:${input.sessionId}`;
+                  let isolatedScope = isolatedProfileScopes.get(scopeKey);
+                  if (!isolatedScope) {
+                    isolatedScope = { projectId: randomUUID(), sessionId: randomUUID() };
+                    isolatedProfileScopes.set(scopeKey, isolatedScope);
+                  }
+                  const profile = realProfileFactory.prepare({
+                    ...input,
+                    projectId: isolatedScope.projectId,
+                    sessionId: isolatedScope.sessionId,
+                  });
+                  preparedProfileHomes.push(profile.homeDirectory);
+                  temporaryPaths.push(profile.homeDirectory);
+                  return profile;
+                },
+              },
+            }),
       });
       adapters.push(adapter);
 
@@ -103,6 +124,7 @@ describe.skipIf(!runRealHermes)('real BYO Hermes ACP integration', () => {
       expect(approvalRequests).toBe(0);
 
       adapter.shutdown();
+      if (useProductionProfile) return;
       expect(preparedProfileHomes.length).toBeGreaterThan(0);
       for (const profileHome of new Set(preparedProfileHomes)) {
         const files = await regularFiles(profileHome);
