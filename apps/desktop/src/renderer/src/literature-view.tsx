@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 
 import type {
   CancelLiteratureAiInput,
@@ -54,8 +63,17 @@ import type {
 import {
   buildLiteratureTablePage,
   buildLiteratureSearchTagOptions,
+  DEFAULT_LITERATURE_COLUMN_WIDTHS,
+  hasCustomLiteratureColumnWidths,
+  LITERATURE_COLUMN_RESIZE_STEP,
+  LITERATURE_COLUMN_WIDTH_DEFINITIONS,
+  LITERATURE_COLUMN_WIDTH_STORAGE_KEY,
   literaturePageForRecord,
+  literatureTableWidth,
   nextLiteratureSort,
+  parseLiteratureColumnWidths,
+  resizeLiteratureColumn,
+  type LiteratureColumnWidths,
   type LiteratureSortDirection,
   type LiteratureSortKey,
   type LiteratureTableRecord,
@@ -459,27 +477,154 @@ function LiteratureSortButton({
   column,
   activeKey,
   direction,
+  width,
+  resizing,
   onSort,
+  onResize,
+  onResizeStart,
+  onResizeEnd,
 }: {
   column: (typeof COLUMN_LABELS)[number];
   activeKey: LiteratureSortKey;
   direction: LiteratureSortDirection;
+  width: number;
+  resizing: boolean;
   onSort: (key: LiteratureSortKey) => void;
+  onResize: (key: LiteratureSortKey, width: number, persist: boolean) => void;
+  onResizeStart: (key: LiteratureSortKey) => void;
+  onResizeEnd: () => void;
 }) {
   const active = activeKey === column.key;
   const ariaSort = active ? (direction === 'ascending' ? 'ascending' : 'descending') : undefined;
+  const definition = LITERATURE_COLUMN_WIDTH_DEFINITIONS[column.key];
+  const resizeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+    latestWidth: number;
+  } | null>(null);
+
+  const finishPointerResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = resizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    onResize(column.key, resize.latestWidth, true);
+    resizeRef.current = null;
+    onResizeEnd();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const handleResizeKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? LITERATURE_COLUMN_RESIZE_STEP * 3 : LITERATURE_COLUMN_RESIZE_STEP;
+    const nextWidth =
+      event.key === 'ArrowLeft'
+        ? width - step
+        : event.key === 'ArrowRight'
+          ? width + step
+          : event.key === 'Home'
+            ? definition.minWidth
+            : event.key === 'End'
+              ? definition.maxWidth
+              : null;
+    if (nextWidth === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onResize(column.key, nextWidth, true);
+  };
+
   return (
     <th scope="col" aria-sort={ariaSort}>
-      <button
-        type="button"
-        className={`literature-sort-button${active ? ' active' : ''}`}
-        onClick={() => onSort(column.key)}
-      >
-        {column.label}
-        <span aria-hidden="true">{active ? (direction === 'ascending' ? '↑' : '↓') : '↕'}</span>
-      </button>
+      <div className="literature-column-header">
+        <button
+          type="button"
+          className={`literature-sort-button${active ? ' active' : ''}`}
+          onClick={() => onSort(column.key)}
+        >
+          {column.label}
+          <span aria-hidden="true">{active ? (direction === 'ascending' ? '↑' : '↓') : '↕'}</span>
+        </button>
+        <div
+          className={`literature-column-resizer${resizing ? ' active' : ''}`}
+          role="separator"
+          tabIndex={0}
+          aria-label={`Resize ${column.label} column`}
+          aria-orientation="vertical"
+          aria-valuemin={definition.minWidth}
+          aria-valuemax={definition.maxWidth}
+          aria-valuenow={width}
+          aria-valuetext={`${width} pixels`}
+          title={`Drag to resize ${column.label}. Double-click to reset this column.`}
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onResize(column.key, definition.defaultWidth, true);
+          }}
+          onKeyDown={handleResizeKey}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            resizeRef.current = {
+              pointerId: event.pointerId,
+              startX: event.clientX,
+              startWidth: width,
+              latestWidth: width,
+            };
+            event.currentTarget.setPointerCapture(event.pointerId);
+            onResizeStart(column.key);
+          }}
+          onPointerMove={(event) => {
+            const resize = resizeRef.current;
+            if (!resize || resize.pointerId !== event.pointerId) return;
+            const nextWidth = resize.startWidth + event.clientX - resize.startX;
+            resize.latestWidth = nextWidth;
+            onResize(column.key, nextWidth, false);
+          }}
+          onPointerUp={finishPointerResize}
+          onPointerCancel={finishPointerResize}
+          onLostPointerCapture={() => {
+            if (!resizeRef.current) return;
+            onResize(column.key, resizeRef.current.latestWidth, true);
+            resizeRef.current = null;
+            onResizeEnd();
+          }}
+        />
+      </div>
     </th>
   );
+}
+
+function loadLiteratureColumnWidths() {
+  if (typeof window === 'undefined') return DEFAULT_LITERATURE_COLUMN_WIDTHS;
+  try {
+    if (!window.localStorage) return DEFAULT_LITERATURE_COLUMN_WIDTHS;
+    return parseLiteratureColumnWidths(
+      window.localStorage.getItem(LITERATURE_COLUMN_WIDTH_STORAGE_KEY),
+    );
+  } catch {
+    return DEFAULT_LITERATURE_COLUMN_WIDTHS;
+  }
+}
+
+function saveLiteratureColumnWidths(widths: LiteratureColumnWidths) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!window.localStorage) return;
+    window.localStorage.setItem(LITERATURE_COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(widths));
+  } catch {
+    // Column sizing is a non-authoritative convenience; a blocked local store must not break review.
+  }
+}
+
+function clearLiteratureColumnWidths() {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!window.localStorage) return;
+    window.localStorage.removeItem(LITERATURE_COLUMN_WIDTH_STORAGE_KEY);
+  } catch {
+    // Keep the in-memory defaults even if the non-authoritative preference cannot be removed.
+  }
 }
 
 export function LiteratureTable({
@@ -513,6 +658,10 @@ export function LiteratureTable({
 }) {
   const scrollRegionRef = useRef<HTMLDivElement>(null);
   const [scrollAvailability, setScrollAvailability] = useState(NO_LITERATURE_TABLE_SCROLL);
+  const [columnWidths, setColumnWidths] = useState(loadLiteratureColumnWidths);
+  const columnWidthsRef = useRef(columnWidths);
+  const [resizingColumn, setResizingColumn] = useState<LiteratureSortKey | null>(null);
+  const totalTableWidth = literatureTableWidth(columnWidths);
   const result = useMemo(
     () =>
       buildLiteratureTablePage(records, {
@@ -576,11 +725,31 @@ export function LiteratureTable({
     updateScrollAvailability,
   ]);
 
+  useLayoutEffect(() => {
+    updateScrollAvailability();
+  }, [totalTableWidth, updateScrollAvailability]);
+
   const handleScrollCommand = (command: LiteratureTableScrollCommand) => {
     const element = scrollRegionRef.current;
     if (!element) return;
     moveLiteratureTable(element, command);
     updateScrollAvailability();
+  };
+
+  const handleColumnResize = useCallback(
+    (key: LiteratureSortKey, width: number, persist: boolean) => {
+      const next = resizeLiteratureColumn(columnWidthsRef.current, key, width);
+      columnWidthsRef.current = next;
+      setColumnWidths(next);
+      if (persist) saveLiteratureColumnWidths(next);
+    },
+    [],
+  );
+
+  const resetColumnWidths = () => {
+    columnWidthsRef.current = DEFAULT_LITERATURE_COLUMN_WIDTHS;
+    setColumnWidths(DEFAULT_LITERATURE_COLUMN_WIDTHS);
+    clearLiteratureColumnWidths();
   };
 
   if (result.total === 0) {
@@ -602,7 +771,8 @@ export function LiteratureTable({
     <>
       <p id="literature-table-scroll-help" className="sr-only">
         Scroll vertically for more papers and horizontally for additional evidence columns. When
-        focused, the arrow and page keys scroll this table.
+        focused, the arrow and page keys scroll this table. Drag a column divider to resize it, or
+        focus the divider and use Left and Right Arrow keys.
       </p>
       <div className="literature-table-navigation" aria-label="Evidence table scroll controls">
         <span>Scroll table</span>
@@ -647,6 +817,14 @@ export function LiteratureTable({
           >
             Bottom
           </button>
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={!hasCustomLiteratureColumnWidths(columnWidths)}
+            onClick={resetColumnWidths}
+          >
+            Reset column widths
+          </button>
         </div>
       </div>
       <div
@@ -658,7 +836,15 @@ export function LiteratureTable({
         aria-label="Literature evidence table"
         aria-describedby="literature-table-scroll-help"
       >
-        <table className="literature-table">
+        <table
+          className={`literature-table${resizingColumn ? ' resizing' : ''}`}
+          style={{ width: totalTableWidth, minWidth: totalTableWidth }}
+        >
+          <colgroup>
+            {COLUMN_LABELS.map((column) => (
+              <col key={column.key} style={{ width: columnWidths[column.key] }} />
+            ))}
+          </colgroup>
           <thead>
             <tr>
               {COLUMN_LABELS.map((column) => (
@@ -667,7 +853,12 @@ export function LiteratureTable({
                   column={column}
                   activeKey={sortKey}
                   direction={sortDirection}
+                  width={columnWidths[column.key]}
+                  resizing={resizingColumn === column.key}
                   onSort={onSort}
+                  onResize={handleColumnResize}
+                  onResizeStart={setResizingColumn}
+                  onResizeEnd={() => setResizingColumn(null)}
                 />
               ))}
             </tr>

@@ -24,6 +24,100 @@ export type LiteratureSortKey =
 
 export type LiteratureSortDirection = 'ascending' | 'descending';
 
+export const LITERATURE_COLUMN_WIDTH_STORAGE_KEY = 'gosu.literature.column-widths.v1';
+export const LITERATURE_COLUMN_RESIZE_STEP = 16;
+
+export interface LiteratureColumnWidthDefinition {
+  defaultWidth: number;
+  minWidth: number;
+  maxWidth: number;
+}
+
+export const LITERATURE_COLUMN_WIDTH_DEFINITIONS: Readonly<
+  Record<LiteratureSortKey, LiteratureColumnWidthDefinition>
+> = {
+  title: { defaultWidth: 190, minWidth: 160, maxWidth: 720 },
+  importance: { defaultWidth: 180, minWidth: 150, maxWidth: 620 },
+  authors: { defaultWidth: 150, minWidth: 120, maxWidth: 620 },
+  venue: { defaultWidth: 125, minWidth: 100, maxWidth: 520 },
+  year: { defaultWidth: 70, minWidth: 64, maxWidth: 180 },
+  searchTags: { defaultWidth: 150, minWidth: 120, maxWidth: 620 },
+  aiKeywords: { defaultWidth: 160, minWidth: 120, maxWidth: 620 },
+  doi: { defaultWidth: 135, minWidth: 110, maxWidth: 520 },
+  citedBy: { defaultWidth: 75, minWidth: 68, maxWidth: 220 },
+  type: { defaultWidth: 90, minWidth: 76, maxWidth: 320 },
+  reviewStatus: { defaultWidth: 105, minWidth: 96, maxWidth: 320 },
+  source: { defaultWidth: 90, minWidth: 76, maxWidth: 320 },
+};
+
+export type LiteratureColumnWidths = Readonly<Record<LiteratureSortKey, number>>;
+
+const LITERATURE_COLUMN_KEYS = Object.freeze(
+  Object.keys(LITERATURE_COLUMN_WIDTH_DEFINITIONS) as LiteratureSortKey[],
+);
+
+export const DEFAULT_LITERATURE_COLUMN_WIDTHS: LiteratureColumnWidths = Object.freeze(
+  Object.fromEntries(
+    LITERATURE_COLUMN_KEYS.map((key) => [
+      key,
+      LITERATURE_COLUMN_WIDTH_DEFINITIONS[key].defaultWidth,
+    ]),
+  ) as Record<LiteratureSortKey, number>,
+);
+
+export function clampLiteratureColumnWidth(key: LiteratureSortKey, width: number) {
+  const definition = LITERATURE_COLUMN_WIDTH_DEFINITIONS[key];
+  if (!Number.isFinite(width)) return definition.defaultWidth;
+  return Math.max(definition.minWidth, Math.min(definition.maxWidth, Math.round(width)));
+}
+
+export function normalizeLiteratureColumnWidths(value: unknown): LiteratureColumnWidths {
+  const candidate =
+    typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+  return Object.freeze(
+    Object.fromEntries(
+      LITERATURE_COLUMN_KEYS.map((key) => {
+        const width = candidate[key];
+        return [
+          key,
+          typeof width === 'number'
+            ? clampLiteratureColumnWidth(key, width)
+            : LITERATURE_COLUMN_WIDTH_DEFINITIONS[key].defaultWidth,
+        ];
+      }),
+    ) as Record<LiteratureSortKey, number>,
+  );
+}
+
+export function parseLiteratureColumnWidths(serialized: string | null): LiteratureColumnWidths {
+  if (!serialized) return DEFAULT_LITERATURE_COLUMN_WIDTHS;
+  try {
+    return normalizeLiteratureColumnWidths(JSON.parse(serialized));
+  } catch {
+    return DEFAULT_LITERATURE_COLUMN_WIDTHS;
+  }
+}
+
+export function resizeLiteratureColumn(
+  widths: LiteratureColumnWidths,
+  key: LiteratureSortKey,
+  nextWidth: number,
+): LiteratureColumnWidths {
+  const width = clampLiteratureColumnWidth(key, nextWidth);
+  if (widths[key] === width) return widths;
+  return Object.freeze({ ...widths, [key]: width });
+}
+
+export function literatureTableWidth(widths: LiteratureColumnWidths) {
+  return LITERATURE_COLUMN_KEYS.reduce((total, key) => total + widths[key], 0);
+}
+
+export function hasCustomLiteratureColumnWidths(widths: LiteratureColumnWidths) {
+  return LITERATURE_COLUMN_KEYS.some(
+    (key) => widths[key] !== LITERATURE_COLUMN_WIDTH_DEFINITIONS[key].defaultWidth,
+  );
+}
+
 export interface LiteratureTableRecord {
   id: string;
   title: string;

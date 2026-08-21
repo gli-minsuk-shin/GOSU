@@ -4212,11 +4212,16 @@ textarea:focus {
 }
 
 .literature-table {
-  width: 100%;
-  min-width: 1420px;
+  min-width: 0;
+  table-layout: fixed;
   border-spacing: 0;
   border-collapse: separate;
   font-size: var(--font-body);
+}
+
+.literature-table.resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .literature-table th {
@@ -4231,6 +4236,11 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.literature-column-header {
+  position: relative;
+  min-width: 0;
+}
+
 .literature-sort-button {
   display: flex;
   align-items: center;
@@ -4238,7 +4248,7 @@ textarea:focus {
   gap: 7px;
   width: 100%;
   min-height: 38px;
-  padding: 7px 10px;
+  padding: 7px 18px 7px 10px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -4253,13 +4263,63 @@ textarea:focus {
   color: var(--text);
 }
 
+.literature-column-resizer {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  right: 0;
+  width: 12px;
+  height: 100%;
+  min-height: 38px;
+  cursor: col-resize;
+  outline: 0;
+  touch-action: none;
+}
+
+.literature-column-resizer::after {
+  position: absolute;
+  top: 6px;
+  right: 0;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  content: '';
+  transition:
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.literature-column-resizer:hover::after,
+.literature-column-resizer:focus-visible::after,
+.literature-column-resizer.active::after {
+  background: var(--green);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 16%, transparent);
+}
+
+.literature-column-resizer:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+}
+
 .literature-table td {
-  max-width: 270px;
+  max-width: none;
   padding: 10px;
   border-bottom: 1px solid var(--line);
   color: var(--muted);
   vertical-align: top;
   overflow-wrap: anywhere;
+}
+
+@media (pointer: coarse) {
+  .literature-column-resizer {
+    right: 0;
+    width: 20px;
+  }
+
+  .literature-column-resizer::after {
+    right: 0;
+  }
 }
 
 .literature-table tbody tr:hover,

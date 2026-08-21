@@ -458,6 +458,11 @@ describe('Literature workspace', () => {
     expect(html).toContain('aria-label="Evidence table scroll controls"');
     expect(html).toContain('aria-label="Scroll evidence columns right"');
     expect(html).toContain('aria-label="Scroll evidence table to bottom"');
+    expect(html).toContain('Reset column widths');
+    expect(html).toContain('<colgroup>');
+    expect(html).toContain('aria-label="Resize Title column"');
+    expect(html).toContain('aria-valuenow="190"');
+    expect(html).toContain('Drag a column divider to resize it');
     expect(html).toMatch(
       /<div id="literature-evidence-scroll-region" class="literature-table-scroll" role="region" tabindex="0" aria-label="Literature evidence table" aria-describedby="literature-table-scroll-help">/u,
     );
@@ -477,7 +482,10 @@ describe('Literature workspace', () => {
       /\.literature-table-scroll::-webkit-scrollbar\s*\{(?=[^}]*\bwidth:\s*12px;)(?=[^}]*\bheight:\s*12px;)[^}]*\}/su,
     );
     expect(styles).toMatch(
-      /\.literature-table\s*\{(?=[^}]*\bwidth:\s*100%;)(?=[^}]*\bmin-width:\s*1420px;)(?=[^}]*\bfont-size:\s*var\(--font-body\);)[^}]*\}/su,
+      /\.literature-table\s*\{(?=[^}]*\bmin-width:\s*0;)(?=[^}]*\btable-layout:\s*fixed;)(?=[^}]*\bfont-size:\s*var\(--font-body\);)[^}]*\}/su,
+    );
+    expect(styles).toMatch(
+      /\.literature-column-resizer\s*\{(?=[^}]*\bposition:\s*absolute;)(?=[^}]*\bwidth:\s*12px;)(?=[^}]*\bcursor:\s*col-resize;)(?=[^}]*\btouch-action:\s*none;)[^}]*\}/su,
     );
   });
 

@@ -1782,8 +1782,12 @@ Evidence table의 초기 viewport를 밀어내지 않게 한다. 표 본문과 k
 사용해 다른 workspace보다 작아지지 않게 한다.
 
 Evidence table은 page 전체를 밀어내는 unbounded grid item이 아니라 keyboard-focusable한 bounded scroll
-region이다. workspace와 library card는 명시적인 `minmax(0, 1fr)` grid column을 사용해 1,420px table의
-min-content 폭이 implicit auto track을 넓힌 뒤 parent `overflow: hidden`에 잘리는 일을 막는다. scroll
+region이다. workspace와 library card는 명시적인 `minmax(0, 1fr)` grid column을 사용해 wide table의
+min-content 폭이 implicit auto track을 넓힌 뒤 parent `overflow: hidden`에 잘리는 일을 막는다. 각 column은
+stable semantic key별 default/min/max pixel 폭을 가지며 header 경계의 accessible separator를 pointer로
+drag하거나 keyboard의 Left/Right Arrow, Home/End로 조절할 수 있다. 조절값은 renderer-local non-secret
+preference에만 저장하고 project data·sync에는 넣지 않으며, 손상되거나 알 수 없는 key는 column별 default로
+복구한다. double-click은 해당 column을, `Reset column widths`는 전체 column을 기본 폭으로 되돌린다. scroll
 wrapper는 부모 content track 안에서 `min-width: 0`·`width: 100%`와 `contain: inline-size`로 수축하고,
 25행 page는 `clamp(520px, 68vh, 860px)`의 실제 block size 안에서 가로·세로 scroll을 모두 소유한다.
 sticky column header는 이 region에 고정된다. macOS overlay scrollbar 설정과 무관한 fallback으로 표 위에

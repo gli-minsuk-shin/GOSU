@@ -24,12 +24,12 @@ function invariant(condition: unknown, message: string): asserts condition {
 }
 
 function fixtureMarkup(styles: string) {
-  const headings = Array.from({ length: 11 }, (_, index) => `<th>Column ${index + 1}</th>`).join(
+  const headings = Array.from({ length: 12 }, (_, index) => `<th>Column ${index + 1}</th>`).join(
     '',
   );
   const rows = Array.from({ length: 25 }, (_, row) => {
     const cells = Array.from(
-      { length: 11 },
+      { length: 12 },
       (_, column) => `<td>Evidence ${row + 1}.${column + 1}</td>`,
     ).join('');
     return `<tr>${cells}</tr>`;
@@ -104,7 +104,7 @@ function fixtureMarkup(styles: string) {
               </div>
               <div class="literature-table-navigation"><span>Scroll table</span><div><button>Columns →</button></div></div>
               <div class="literature-table-scroll" role="region" tabindex="0">
-                <table class="literature-table">
+                <table class="literature-table" style="width: 1520px; min-width: 1520px">
                   <thead><tr>${headings}</tr></thead>
                   <tbody>${rows}</tbody>
                 </table>

@@ -3,10 +3,17 @@ import { describe, expect, it } from 'vitest';
 import {
   buildLiteratureSearchTagOptions,
   buildLiteratureTablePage,
+  DEFAULT_LITERATURE_COLUMN_WIDTHS,
+  hasCustomLiteratureColumnWidths,
+  LITERATURE_COLUMN_WIDTH_DEFINITIONS,
   LITERATURE_PAGE_SIZE,
+  literatureTableWidth,
   literaturePageForRecord,
   MAX_VISIBLE_LITERATURE_RECORDS,
   nextLiteratureSort,
+  normalizeLiteratureColumnWidths,
+  parseLiteratureColumnWidths,
+  resizeLiteratureColumn,
   type LiteratureTableRecord,
 } from '../src/renderer/src/literature-table-model';
 
@@ -38,6 +45,42 @@ const record = (
 });
 
 describe('literature table model', () => {
+  it('normalizes, clamps, and restores persisted column widths without trusting unknown data', () => {
+    const parsed = parseLiteratureColumnWidths(
+      JSON.stringify({
+        title: 480.4,
+        year: -100,
+        doi: Number.POSITIVE_INFINITY,
+        source: 'wide',
+        unknownColumn: 9_999,
+      }),
+    );
+
+    expect(parsed.title).toBe(480);
+    expect(parsed.year).toBe(LITERATURE_COLUMN_WIDTH_DEFINITIONS.year.minWidth);
+    expect(parsed.doi).toBe(LITERATURE_COLUMN_WIDTH_DEFINITIONS.doi.defaultWidth);
+    expect(parsed.source).toBe(LITERATURE_COLUMN_WIDTH_DEFINITIONS.source.defaultWidth);
+    expect(Object.keys(parsed)).not.toContain('unknownColumn');
+    expect(parseLiteratureColumnWidths('{not-json')).toBe(DEFAULT_LITERATURE_COLUMN_WIDTHS);
+    expect(normalizeLiteratureColumnWidths(null)).toEqual(DEFAULT_LITERATURE_COLUMN_WIDTHS);
+  });
+
+  it('resizes one stable column within its bounds and computes the fixed table width', () => {
+    const wider = resizeLiteratureColumn(DEFAULT_LITERATURE_COLUMN_WIDTHS, 'authors', 412);
+    const maximum = resizeLiteratureColumn(wider, 'year', 99_999);
+
+    expect(wider.authors).toBe(412);
+    expect(wider.title).toBe(DEFAULT_LITERATURE_COLUMN_WIDTHS.title);
+    expect(maximum.year).toBe(LITERATURE_COLUMN_WIDTH_DEFINITIONS.year.maxWidth);
+    expect(literatureTableWidth(wider)).toBe(
+      literatureTableWidth(DEFAULT_LITERATURE_COLUMN_WIDTHS) +
+        412 -
+        DEFAULT_LITERATURE_COLUMN_WIDTHS.authors,
+    );
+    expect(hasCustomLiteratureColumnWidths(DEFAULT_LITERATURE_COLUMN_WIDTHS)).toBe(false);
+    expect(hasCustomLiteratureColumnWidths(wider)).toBe(true);
+  });
+
   it('searches across evidence columns and filters review status', () => {
     const result = buildLiteratureTablePage(
       [
