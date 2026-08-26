@@ -39,6 +39,16 @@ const models = [
     isDefault: false,
     reasoningOptions: [{ id: 'high', label: 'High', isDefault: true }],
   },
+  {
+    providerId: 'claude-code',
+    modelId: 'claude-code:sonnet',
+    displayName: 'Claude Code · Sonnet (subscription)',
+    isDefault: false,
+    reasoningOptions: [
+      { id: 'high', label: 'High', isDefault: true },
+      { id: 'xhigh', label: 'Extra high', isDefault: false },
+    ],
+  },
 ] as const;
 
 function render(selection = DEFAULT_AI_SELECTION, loading = false) {
@@ -54,36 +64,61 @@ function render(selection = DEFAULT_AI_SELECTION, loading = false) {
 }
 
 describe('default AI Settings', () => {
-  it('shows Auto with the saved high reasoning and only the Codex catalog', () => {
+  it('shows Auto with the saved high reasoning and every connected provider model', () => {
     const html = render();
 
-    expect(html).toContain('Choose the default model and reasoning');
+    expect(html).toContain('Choose the default Project Chat model and reasoning');
     expect(html).toContain('Auto · provider default');
     expect(html).toContain('value="high" selected=""');
     expect(html).toContain('Codex Explicit');
-    expect(html).not.toContain('Hermes Local');
+    expect(html).toContain('Hermes Local');
+    expect(html).toContain('Claude Code · Sonnet (subscription)');
     expect(html).toContain('Refresh models');
     expect(html).toContain('Save defaults');
-    expect(html).toContain('new Project Chat sessions, new Lecture Studios, and general AI');
-    expect(html).toContain('Existing scoped choices and generated revisions remain unchanged');
+    expect(html).toContain('new Project Chat sessions');
+    expect(html).toContain('Codex-native surfaces retain their own provider-compatible defaults');
+    expect(html).toContain('Existing scoped choices remain unchanged');
     expect(html).toContain('No silent fallback');
   });
 
   it('keeps a missing saved model visible and blocks saving it', () => {
-    const selection = { modelId: 'retired-model', reasoningOptionId: 'high' } as const;
+    const selection = {
+      providerId: 'codex',
+      modelId: 'retired-model',
+      reasoningOptionId: 'high',
+    } as const;
     const html = render(selection);
     const state = defaultAiSettingsViewState(selection, models);
 
     expect(state.issue).toBe('model_unavailable');
-    expect(describeDefaultAiSelectionIssue(state)).toContain('not in the current Codex catalog');
+    expect(describeDefaultAiSelectionIssue(state)).toContain(
+      'not in the current connected-provider catalog',
+    );
     expect(html).toContain('Unavailable saved model · retired-model');
     expect(html).toContain('Saved default is unavailable');
     expect(html).toContain('aria-invalid="true"');
     expect(html).toContain('class="primary-button" disabled=""');
   });
 
+  it('allows a connected Claude Code subscription model to be the Project Chat default', () => {
+    const html = render({
+      providerId: 'claude-code',
+      modelId: 'claude-code:sonnet',
+      reasoningOptionId: 'xhigh',
+    });
+
+    expect(html).toContain('value="claude-code:sonnet" selected=""');
+    expect(html).toContain('Claude Code · Sonnet (subscription)');
+    expect(html).toContain('value="xhigh" selected=""');
+    expect(html).not.toContain('Saved default is unavailable');
+  });
+
   it('keeps a missing reasoning choice visible instead of silently downgrading it', () => {
-    const selection = { modelId: 'explicit-model', reasoningOptionId: 'maximum' } as const;
+    const selection = {
+      providerId: 'codex',
+      modelId: 'explicit-model',
+      reasoningOptionId: 'maximum',
+    } as const;
     const html = render(selection);
     const state = defaultAiSettingsViewState(selection, models);
 
@@ -95,8 +130,16 @@ describe('default AI Settings', () => {
 
   it('allows saving only a changed selection that resolves exactly in the live catalog', () => {
     const saved = DEFAULT_AI_SELECTION;
-    const validDraft = { modelId: 'explicit-model', reasoningOptionId: 'ultra' } as const;
-    const missingDraft = { modelId: 'retired-model', reasoningOptionId: 'high' } as const;
+    const validDraft = {
+      providerId: 'codex',
+      modelId: 'explicit-model',
+      reasoningOptionId: 'ultra',
+    } as const;
+    const missingDraft = {
+      providerId: 'codex',
+      modelId: 'retired-model',
+      reasoningOptionId: 'high',
+    } as const;
 
     expect(
       canSaveDefaultAiSelection(

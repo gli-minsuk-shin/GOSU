@@ -5,11 +5,13 @@ import { DEFAULT_AI_SELECTION } from '../src/renderer/src/user-preferences';
 
 const models = [
   {
+    providerId: 'codex',
     modelId: 'provider-default',
     isDefault: true,
     reasoningOptions: [{ id: 'low' }, { id: 'medium' }, { id: 'high' }],
   },
   {
+    providerId: 'codex',
     modelId: 'explicit-model',
     isDefault: false,
     reasoningOptions: [{ id: 'medium' }, { id: 'high' }],
@@ -26,13 +28,17 @@ describe('default AI selection', () => {
 
   it('preserves opaque explicit model and reasoning IDs without guessing', () => {
     expect(
-      resolveDefaultAiSelection({ modelId: 'explicit-model', reasoningOptionId: 'medium' }, models),
+      resolveDefaultAiSelection(
+        { providerId: 'codex', modelId: 'explicit-model', reasoningOptionId: 'medium' },
+        models,
+      ),
     ).toEqual({ effectiveModelId: 'explicit-model', issue: null });
   });
 
   it('fails closed when high is unavailable on either Auto or an explicit model', () => {
     const noHighDefault = [
       {
+        providerId: 'codex',
         modelId: 'provider-default',
         isDefault: true,
         reasoningOptions: [{ id: 'low' }, { id: 'medium' }],
@@ -44,7 +50,7 @@ describe('default AI selection', () => {
     });
     expect(
       resolveDefaultAiSelection(
-        { modelId: 'provider-default', reasoningOptionId: 'ultra' },
+        { providerId: 'codex', modelId: 'provider-default', reasoningOptionId: 'ultra' },
         noHighDefault,
       ),
     ).toEqual({
@@ -61,18 +67,50 @@ describe('default AI selection', () => {
     expect(
       resolveDefaultAiSelection(DEFAULT_AI_SELECTION, [
         ...models,
-        { modelId: 'second-default', isDefault: true, reasoningOptions: [{ id: 'high' }] },
+        {
+          providerId: 'codex',
+          modelId: 'second-default',
+          isDefault: true,
+          reasoningOptions: [{ id: 'high' }],
+        },
       ]),
     ).toEqual({ effectiveModelId: null, issue: 'model_unavailable' });
     expect(
-      resolveDefaultAiSelection({ modelId: 'removed-model', reasoningOptionId: 'high' }, models),
+      resolveDefaultAiSelection(
+        { providerId: 'codex', modelId: 'removed-model', reasoningOptionId: 'high' },
+        models,
+      ),
     ).toEqual({ effectiveModelId: null, issue: 'model_unavailable' });
   });
 
   it('allows an explicit provider-default reasoning choice', () => {
-    expect(resolveDefaultAiSelection({ modelId: null, reasoningOptionId: null }, models)).toEqual({
+    expect(
+      resolveDefaultAiSelection(
+        { providerId: null, modelId: null, reasoningOptionId: null },
+        models,
+      ),
+    ).toEqual({
       effectiveModelId: 'provider-default',
       issue: null,
     });
+  });
+
+  it('resolves the same opaque model ID only within its saved provider', () => {
+    const sharedModels = [
+      ...models,
+      {
+        providerId: 'claude-code',
+        modelId: 'explicit-model',
+        isDefault: false,
+        reasoningOptions: [{ id: 'high' }],
+      },
+    ];
+
+    expect(
+      resolveDefaultAiSelection(
+        { providerId: 'claude-code', modelId: 'explicit-model', reasoningOptionId: 'high' },
+        sharedModels,
+      ),
+    ).toEqual({ effectiveModelId: 'explicit-model', issue: null });
   });
 });

@@ -2276,6 +2276,30 @@ export class ProjectChatService extends EventEmitter {
       }
       return;
     }
+    if (notification.method === 'gosu/agent/progress') {
+      const stage = notification.params.stage;
+      const tool = notification.params.tool;
+      const callId = notification.params.callId;
+      const success = notification.params.success;
+      if (
+        (stage === 'tool_started' || stage === 'tool_completed') &&
+        typeof tool === 'string' &&
+        typeof callId === 'string' &&
+        (success === undefined || typeof success === 'boolean')
+      ) {
+        this.emitEvent({
+          type: 'agent.progress',
+          projectId: active.projectId,
+          sessionId: active.sessionId,
+          turnId: active.turnId,
+          stage,
+          tool: tool.slice(0, 128),
+          callId: callId.slice(0, 256),
+          ...(success === undefined ? {} : { success }),
+        });
+      }
+      return;
+    }
     if (notification.method !== 'turn/completed') return;
     const turn = notification.params.turn;
     const status = isRecord(turn) ? turn.status : undefined;

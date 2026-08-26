@@ -9,7 +9,10 @@ import {
   type AgentAddOnId,
   type AgentAddOnStatus,
 } from '../shared/agent-addon-contracts';
-import type { HermesProjectChatConnection } from './project-chat-provider-router';
+import type {
+  ClaudeCodeProjectChatConnection,
+  HermesProjectChatConnection,
+} from './project-chat-provider-router';
 
 type DetectionCandidate = Readonly<{
   path: string;
@@ -164,6 +167,68 @@ export class HermesAgentAddOnAdapter implements AgentAddOnAdapter {
   }
 }
 
+export class ClaudeCodeAgentAddOnAdapter implements AgentAddOnAdapter {
+  private connectedStatus: AgentAddOnStatus | null = null;
+
+  constructor(
+    readonly descriptor: AgentAddOnDescriptor,
+    private readonly detector: LocalCliAgentAddOnAdapter,
+    private readonly projectChat: ClaudeCodeProjectChatConnection,
+  ) {}
+
+  async detectLocalInstallation(): Promise<AgentAddOnStatus> {
+    if (this.connectedStatus && this.projectChat.isClaudeCodeConnected()) {
+      return this.connectedStatus;
+    }
+    this.connectedStatus = null;
+    return this.detector.detectLocalInstallation();
+  }
+
+  async connectLocal(): Promise<AgentAddOnStatus> {
+    const detected = await this.detector.detectLocalInstallation();
+    if (detected.state !== 'detected_local_cli') throw new Error('claude_code_not_detected');
+    const { catalog } = await this.projectChat.connectClaudeCode();
+    const models = catalog.models.filter((candidate) => candidate.providerId === 'claude-code');
+    const model = models[0];
+    if (!model || models.length < 3) throw new Error('claude_code_project_chat_model_missing');
+    const projectChatModels = models.map((candidate) => ({
+      providerId: candidate.providerId,
+      modelId: candidate.modelId,
+      displayName: candidate.displayName,
+      isDefault: false,
+      modalities: candidate.modalities,
+      reasoningOptions: candidate.reasoningOptions,
+      supportsPersonality: candidate.metadata?.supportsPersonality === true,
+    }));
+    this.connectedStatus = {
+      ...detected,
+      connected: true,
+      connectionMode: 'byo-local-subscription-cli',
+      version:
+        typeof model.metadata?.runtimeVersion === 'string'
+          ? model.metadata.runtimeVersion.slice(0, 64)
+          : null,
+      projectChatModel: {
+        providerId: model.providerId,
+        modelId: model.modelId,
+        displayName: model.displayName,
+        isDefault: false,
+        modalities: model.modalities,
+        reasoningOptions: model.reasoningOptions,
+        supportsPersonality: model.metadata?.supportsPersonality === true,
+      },
+      projectChatModels,
+    };
+    return this.connectedStatus;
+  }
+
+  async disconnectLocal(): Promise<AgentAddOnStatus> {
+    await this.projectChat.disconnectClaudeCode();
+    this.connectedStatus = null;
+    return this.detector.detectLocalInstallation();
+  }
+}
+
 export class AgentAddOnRegistry {
   private readonly adapters: ReadonlyMap<AgentAddOnId, AgentAddOnAdapter>;
 
@@ -201,7 +266,10 @@ export class AgentAddOnRegistry {
 
 export function createAgentAddOnRegistry(
   input: Partial<AgentAddOnDetectionPlatform> = {},
-  integrations: Readonly<{ hermesProjectChat?: HermesProjectChatConnection }> = {},
+  integrations: Readonly<{
+    hermesProjectChat?: HermesProjectChatConnection;
+    claudeCodeProjectChat?: ClaudeCodeProjectChatConnection;
+  }> = {},
 ): AgentAddOnRegistry {
   const platform: AgentAddOnDetectionPlatform = {
     pathEnvironment: input.pathEnvironment ?? process.env.PATH,
@@ -222,7 +290,13 @@ export function createAgentAddOnRegistry(
       const detector = new LocalCliAgentAddOnAdapter(descriptor, platform);
       return descriptor.id === 'hermes' && integrations.hermesProjectChat
         ? new HermesAgentAddOnAdapter(descriptor, detector, integrations.hermesProjectChat)
-        : detector;
+        : descriptor.id === 'claude-code' && integrations.claudeCodeProjectChat
+          ? new ClaudeCodeAgentAddOnAdapter(
+              descriptor,
+              detector,
+              integrations.claudeCodeProjectChat,
+            )
+          : detector;
     }),
   );
 }

@@ -26,6 +26,7 @@ import {
 export const APPEARANCE_OPTIONS = ['system', 'dark', 'light'] as const;
 export const TEXT_SIZE_OPTIONS = ['compact', 'default', 'large', 'extra-large'] as const;
 export const DEFAULT_AI_MODEL_ID_MAX_LENGTH = 256;
+export const DEFAULT_AI_PROVIDER_ID_MAX_LENGTH = 128;
 export const DEFAULT_AI_REASONING_OPTION_ID_MAX_LENGTH = 128;
 export const MAX_PROJECT_LECTURE_DOCUMENT_FEATURE_OVERRIDES = 1_000;
 
@@ -33,11 +34,13 @@ export type AppearancePreference = (typeof APPEARANCE_OPTIONS)[number];
 export type TextSizePreference = (typeof TEXT_SIZE_OPTIONS)[number];
 
 export type DefaultAiSelection = Readonly<{
+  providerId: string | null;
   modelId: string | null;
   reasoningOptionId: string | null;
 }>;
 
 export const DEFAULT_AI_SELECTION: DefaultAiSelection = Object.freeze({
+  providerId: null,
   modelId: null,
   reasoningOptionId: 'high',
 });
@@ -72,6 +75,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   agentAddOns: {
     openclaw: 'disabled',
     hermes: 'disabled',
+    'claude-code': 'disabled',
   },
 };
 
@@ -134,18 +138,33 @@ export function resolveLectureDocumentFeaturesForProject(
 }
 
 export function parseDefaultAiSelection(value: unknown): DefaultAiSelection {
-  if (!isRecord(value) || Object.keys(value).sort().join(',') !== 'modelId,reasoningOptionId') {
+  if (!isRecord(value)) {
+    return { ...DEFAULT_AI_SELECTION };
+  }
+  const keys = Object.keys(value).sort().join(',');
+  const legacySelection = keys === 'modelId,reasoningOptionId';
+  if (!legacySelection && keys !== 'modelId,providerId,reasoningOptionId') {
     return { ...DEFAULT_AI_SELECTION };
   }
   const modelId = boundedOpaqueId(value.modelId, DEFAULT_AI_MODEL_ID_MAX_LENGTH);
+  const providerId = legacySelection
+    ? modelId === null
+      ? null
+      : 'codex'
+    : boundedOpaqueId(value.providerId, DEFAULT_AI_PROVIDER_ID_MAX_LENGTH);
   const reasoningOptionId = boundedOpaqueId(
     value.reasoningOptionId,
     DEFAULT_AI_REASONING_OPTION_ID_MAX_LENGTH,
   );
-  if (modelId === undefined || reasoningOptionId === undefined) {
+  if (
+    modelId === undefined ||
+    providerId === undefined ||
+    reasoningOptionId === undefined ||
+    (modelId === null) !== (providerId === null)
+  ) {
     return { ...DEFAULT_AI_SELECTION };
   }
-  return { modelId, reasoningOptionId };
+  return { providerId, modelId, reasoningOptionId };
 }
 
 export function parseUserPreferences(value: unknown): UserPreferences {
@@ -174,7 +193,8 @@ export function parseUserPreferences(value: unknown): UserPreferences {
     AGENT_ADD_ON_IDS.map((id) => {
       const candidate = storedAddOns[id];
       const supported =
-        isAgentAddOnPreference(candidate) && (id === 'hermes' || candidate !== 'connect-local');
+        isAgentAddOnPreference(candidate) &&
+        (id === 'hermes' || id === 'claude-code' || candidate !== 'connect-local');
       return [id, supported ? candidate : 'disabled'];
     }),
   ) as Record<AgentAddOnId, AgentAddOnPreference>;

@@ -1,6 +1,7 @@
 import type { DefaultAiSelection } from './user-preferences';
 
 export type DefaultAiModelDescriptor = Readonly<{
+  providerId?: string;
   modelId: string;
   isDefault: boolean;
   reasoningOptions: readonly Readonly<{ id: string }>[];
@@ -21,7 +22,11 @@ export function resolveDefaultAiSelection(
   models: readonly DefaultAiModelDescriptor[],
 ): DefaultAiSelectionResolution {
   const candidates = selection.modelId
-    ? models.filter((model) => model.modelId === selection.modelId)
+    ? models.filter(
+        (model) =>
+          model.modelId === selection.modelId &&
+          (model.providerId ?? 'codex') === selection.providerId,
+      )
     : models.filter((model) => model.isDefault);
   if (candidates.length !== 1) return { effectiveModelId: null, issue: 'model_unavailable' };
   const model = candidates[0]!;

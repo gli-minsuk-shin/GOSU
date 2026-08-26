@@ -251,6 +251,35 @@ describe('ModelUsageService', () => {
     }
   });
 
+  it('attributes Claude Code subscription usage to its own provider row', () => {
+    const storage = storageFixture();
+    const service = new ModelUsageService(storage, workspaceFixture());
+
+    service.recordAcpPromptResult({
+      threadId: 'claude-code:thread:1',
+      turnId: 'claude-code:turn:1',
+      providerId: 'claude-code',
+      usage: {
+        inputTokens: 120,
+        outputTokens: 30,
+        totalTokens: 150,
+        cachedReadTokens: 80,
+        cachedWriteTokens: 20,
+        reasoningOutputTokens: null,
+      },
+      stopReason: 'success',
+      successful: true,
+    });
+
+    expect(storage.recordAcpModelUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'claude-code',
+        threadId: 'claude-code:thread:1',
+        turnId: 'claude-code:turn:1',
+      }),
+    );
+  });
+
   it('keeps unavailable lecture generations visible while aggregating only known tokens', async () => {
     const projectId = '22222222-2222-4222-8222-222222222222';
     const studioId = '55555555-5555-4555-8555-555555555555';

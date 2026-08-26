@@ -7,10 +7,6 @@ import './ai-default-settings.css';
 
 type Operation = 'refresh' | 'save' | null;
 
-function codexOnlyModels(models: readonly CodexModel[]) {
-  return models.filter((model) => model.providerId === undefined || model.providerId === 'codex');
-}
-
 function uniqueModels(models: readonly CodexModel[]) {
   const counts = new Map<string, number>();
   for (const model of models) counts.set(model.modelId, (counts.get(model.modelId) ?? 0) + 1);
@@ -31,11 +27,15 @@ export function defaultAiSettingsViewState(
   selection: DefaultAiSelection,
   models: readonly CodexModel[],
 ): DefaultAiSettingsViewState {
-  const catalog = codexOnlyModels(models);
+  const catalog = models;
   const availableModels = uniqueModels(catalog);
   const defaultModels = catalog.filter((model) => model.isDefault);
   const explicitMatches = selection.modelId
-    ? catalog.filter((model) => model.modelId === selection.modelId)
+    ? catalog.filter(
+        (model) =>
+          model.modelId === selection.modelId &&
+          (model.providerId ?? 'codex') === selection.providerId,
+      )
     : [];
   const selectedModel =
     selection.modelId === null
@@ -62,7 +62,7 @@ export function describeDefaultAiSelectionIssue(
   state: Pick<DefaultAiSettingsViewState, 'modelUnavailable' | 'reasoningUnavailable'>,
 ) {
   if (state.modelUnavailable) {
-    return 'The saved model is not in the current Codex catalog. Choose an available model or refresh the catalog before saving.';
+    return 'The saved model is not in the current connected-provider catalog. Choose an available model or refresh the catalog before saving.';
   }
   if (state.reasoningUnavailable) {
     return 'The saved reasoning level is not available for this model. Choose an available level or refresh the catalog before saving.';
@@ -79,7 +79,9 @@ export function canSaveDefaultAiSelection(
   return (
     !busy &&
     state.issue === null &&
-    (draft.modelId !== saved.modelId || draft.reasoningOptionId !== saved.reasoningOptionId)
+    (draft.providerId !== saved.providerId ||
+      draft.modelId !== saved.modelId ||
+      draft.reasoningOptionId !== saved.reasoningOptionId)
   );
 }
 
@@ -102,13 +104,15 @@ export function AiDefaultSettings({
 
   useEffect(() => {
     setDraft(selection);
-  }, [selection.modelId, selection.reasoningOptionId]);
+  }, [selection.modelId, selection.providerId, selection.reasoningOptionId]);
 
   const view = useMemo(() => defaultAiSettingsViewState(draft, models), [draft, models]);
   const issue = describeDefaultAiSelectionIssue(view);
   const displayedIssue = modelsLoading ? null : issue;
   const dirty =
-    draft.modelId !== selection.modelId || draft.reasoningOptionId !== selection.reasoningOptionId;
+    draft.providerId !== selection.providerId ||
+    draft.modelId !== selection.modelId ||
+    draft.reasoningOptionId !== selection.reasoningOptionId;
   const busy = modelsLoading || operation !== null;
   const modelOptionMissing = draft.modelId !== null && view.modelUnavailable;
   const reasoningOptions = view.selectedModel?.reasoningOptions ?? [];
@@ -157,10 +161,11 @@ export function AiDefaultSettings({
       <div className="settings-card-heading ai-default-settings-heading">
         <div>
           <span>DEFAULT AI</span>
-          <h2>Choose the default model and reasoning</h2>
+          <h2>Choose the default Project Chat model and reasoning</h2>
           <p>
-            These defaults apply to new Project Chat sessions, new Lecture Studios, and general AI
-            actions. Existing scoped choices and generated revisions remain unchanged.
+            These defaults apply to new Project Chat sessions. Lecture Studios and other
+            Codex-native surfaces retain their own provider-compatible defaults. Existing scoped
+            choices remain unchanged.
           </p>
         </div>
         <span
@@ -196,8 +201,12 @@ export function AiDefaultSettings({
               displayedIssue ? 'ai-default-selection-issue' : 'ai-default-scope-note'
             }
             onChange={(event) => {
+              const selectedModel = view.availableModels.find(
+                (model) => model.modelId === event.target.value,
+              );
               setDraft((current) => ({
                 ...current,
+                providerId: selectedModel ? (selectedModel.providerId ?? 'codex') : null,
                 modelId: event.target.value === '' ? null : event.target.value,
               }));
               setError(null);
@@ -277,8 +286,9 @@ export function AiDefaultSettings({
       <div className="ai-default-scope-note" id="ai-default-scope-note">
         <strong>No silent fallback</strong>
         <span>
-          If a saved model or reasoning level disappears from Codex, GOSU keeps the missing choice
-          visible and stops new default-based AI work until you explicitly save an available one.
+          If a saved model or reasoning level disappears from its connected provider, GOSU keeps the
+          missing choice visible and stops new Project Chat work from using that default until you
+          explicitly save an available one.
         </span>
       </div>
     </article>

@@ -12,6 +12,8 @@ import {
   type ProjectChatSnapshot,
   type UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
+
+type ProjectChatAgentProgressEvent = Extract<ProjectChatEvent, { type: 'agent.progress' }>;
 import type {
   HermesAcpApprovalDecision,
   HermesAcpApprovalEvent,
@@ -57,7 +59,10 @@ import type {
 import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
 import { BoardView } from './board-view';
 import { WorkspaceTasksView } from './workspace-tasks-view';
-import type { HermesProjectChatConnectionUiState } from './agent-addons-section';
+import type {
+  AgentProviderConnectionUiState,
+  HermesProjectChatConnectionUiState,
+} from './agent-addons-section';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import { desktopContentClassName } from './desktop-content-layout';
 import { ExperimentsView, type ExperimentsViewAdapter } from './experiments-view';
@@ -184,7 +189,9 @@ import { Connection, describeError } from './ui-primitives';
 import { UsageView, type UsageViewAdapter } from './usage-view';
 import {
   applyUserPreferences,
+  DEFAULT_AI_SELECTION,
   saveUserPreferences,
+  type DefaultAiSelection,
   type UserPreferences,
 } from './user-preferences';
 import {
@@ -292,10 +299,18 @@ export function projectChatSelectionFromDefault(
   selection: UserPreferences['defaultAiSelection'],
 ): ProjectChatModelSelection {
   return {
-    providerId: selection.modelId === null ? null : 'codex',
+    providerId: selection.providerId,
     modelId: selection.modelId,
     reasoningOptionId: selection.reasoningOptionId,
   };
+}
+
+export function codexSurfaceDefaultFromProjectChatDefault(
+  selection: UserPreferences['defaultAiSelection'],
+): DefaultAiSelection {
+  return selection.providerId === null || selection.providerId === 'codex'
+    ? selection
+    : { ...DEFAULT_AI_SELECTION };
 }
 
 export function shouldReplaceBusyHermesTurn(
@@ -543,6 +558,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const [hermesProjectChatModel, setHermesProjectChatModel] = useState<CodexModel | null>(null);
   const [hermesProjectChatConnection, setHermesProjectChatConnection] =
     useState<HermesProjectChatConnectionUiState>({ phase: 'disabled', status: null });
+  const [claudeCodeProjectChatModels, setClaudeCodeProjectChatModels] = useState<CodexModel[]>([]);
+  const [claudeCodeProjectChatConnection, setClaudeCodeProjectChatConnection] =
+    useState<AgentProviderConnectionUiState>({ phase: 'disabled', status: null });
   const [projectChatModelSelection, setProjectChatModelSelection] =
     useState<ProjectChatModelSelection>({
       providerId: null,
@@ -611,6 +629,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     () => new Set(),
   );
   const [chatInFlight, setChatInFlight] = useState<Record<string, boolean>>({});
+  const [chatAgentProgress, setChatAgentProgress] = useState<
+    Record<string, readonly ProjectChatAgentProgressEvent[]>
+  >({});
   const [chatUnreadAssistantMessageIds, setChatUnreadAssistantMessageIds] = useState<
     Record<string, string>
   >({});
@@ -622,6 +643,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const hermesProjectChatOperationQueueRef = useRef(new ProjectChatProviderOperationQueue());
   const hermesProjectChatPreferenceRef = useRef(preferences.agentAddOns.hermes);
   const previousHermesProjectChatPreferenceRef = useRef(preferences.agentAddOns.hermes);
+  const claudeCodeProjectChatConnectionGenerationRef = useRef(0);
+  const claudeCodeProjectChatOperationQueueRef = useRef(new ProjectChatProviderOperationQueue());
+  const claudeCodeProjectChatPreferenceRef = useRef(preferences.agentAddOns['claude-code']);
+  const previousClaudeCodeProjectChatPreferenceRef = useRef(preferences.agentAddOns['claude-code']);
   const researchNotesGeneration = useRef(0);
   const researchNoteReadGeneration = useRef(0);
   const [pendingSearchNavigation, setPendingSearchNavigation] =
@@ -646,6 +671,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   const hermesAcpResolvedApprovalIdsRef = useRef<ReadonlySet<string>>(new Set());
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
   hermesProjectChatPreferenceRef.current = preferences.agentAddOns.hermes;
+  claudeCodeProjectChatPreferenceRef.current = preferences.agentAddOns['claude-code'];
   hermesAcpApprovalsRef.current = hermesAcpApprovals;
 
   const activeProjects = useMemo(() => visibleProjects(snapshot?.projects ?? []), [snapshot]);
@@ -658,8 +684,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     [activeProjectId, activeProjects],
   );
   const projectChatModels = useMemo(
-    () => (hermesProjectChatModel ? [...models, hermesProjectChatModel] : models),
-    [hermesProjectChatModel, models],
+    () => [
+      ...models,
+      ...(hermesProjectChatModel ? [hermesProjectChatModel] : []),
+      ...claudeCodeProjectChatModels,
+    ],
+    [claudeCodeProjectChatModels, hermesProjectChatModel, models],
+  );
+  const codexSurfaceDefaultAiSelection = useMemo(
+    () => codexSurfaceDefaultFromProjectChatDefault(preferences.defaultAiSelection),
+    [preferences.defaultAiSelection],
   );
   const activeResearchNotesSelection = useMemo<VaultSelection | null>(() => {
     if (
@@ -827,11 +861,18 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       if (loaded.status === 'missing') {
         saveProjectChatModelSelection(window.localStorage, projectId, sessionId, saved);
       }
-      const selection =
+      const withoutHermes =
         preferences.agentAddOns.hermes === 'connect-local'
           ? saved
           : reconcileRemovedProjectChatProvider(saved, {
               removedProviderId: 'hermes',
+              reason: 'explicit-disconnect',
+            });
+      const selection =
+        preferences.agentAddOns['claude-code'] === 'connect-local'
+          ? withoutHermes
+          : reconcileRemovedProjectChatProvider(withoutHermes, {
+              removedProviderId: 'claude-code',
               reason: 'explicit-disconnect',
             });
       if (selection !== saved) {
@@ -839,7 +880,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       }
       return selection;
     },
-    [preferences.agentAddOns.hermes, preferences.defaultAiSelection],
+    [
+      preferences.agentAddOns.hermes,
+      preferences.agentAddOns['claude-code'],
+      preferences.defaultAiSelection,
+    ],
   );
 
   const activateChatSession = (projectId: string, sessionId: string) => {
@@ -1373,6 +1418,14 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         chatLoadGuard.current.observeEvent(sessionKey);
         if (event.type === 'turn.started') {
           setChatInFlight((current) => ({ ...current, [sessionKey]: true }));
+          setChatAgentProgress((current) => ({ ...current, [sessionKey]: [] }));
+          return;
+        }
+        if (event.type === 'agent.progress') {
+          setChatAgentProgress((current) => ({
+            ...current,
+            [sessionKey]: [...(current[sessionKey] ?? []), event].slice(-12),
+          }));
           return;
         }
         if (event.type === 'turn.completed') {
@@ -1382,6 +1435,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             event.turnId,
           );
           setChatInFlight((current) => ({ ...current, [sessionKey]: false }));
+          setChatAgentProgress((current) => ({ ...current, [sessionKey]: [] }));
           void Promise.all([
             loadProjectChat(event.projectId, event.sessionId),
             loadProjectChatSessions(event.projectId),
@@ -1682,6 +1736,100 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     preferences.agentAddOns.hermes,
     refreshHermesProjectChatConnection,
     removeHermesProjectChatDescriptor,
+  ]);
+
+  const applyClaudeCodeProjectChatStatus = useCallback((status: AgentAddOnStatus) => {
+    const descriptors =
+      status.projectChatModels ?? (status.projectChatModel ? [status.projectChatModel] : []);
+    if (!status.connected || descriptors.length === 0) {
+      throw new Error('claude_code_project_chat_connection_unavailable');
+    }
+    setClaudeCodeProjectChatModels(
+      descriptors.map((descriptor) => ({
+        ...descriptor,
+        reasoningOptions: [...descriptor.reasoningOptions],
+      })),
+    );
+    setClaudeCodeProjectChatConnection({ phase: 'ready', status });
+  }, []);
+
+  const removeClaudeCodeProjectChatDescriptors = useCallback(() => {
+    setClaudeCodeProjectChatModels([]);
+  }, []);
+
+  const refreshClaudeCodeProjectChatConnection = useCallback(async () => {
+    const generation = ++claudeCodeProjectChatConnectionGenerationRef.current;
+    if (claudeCodeProjectChatPreferenceRef.current !== 'connect-local') return false;
+    setClaudeCodeProjectChatConnection((current) => ({ ...current, phase: 'checking' }));
+    try {
+      const status = await claudeCodeProjectChatOperationQueueRef.current.enqueue(() =>
+        window.gosu.agentAddOns.connect('claude-code'),
+      );
+      if (
+        generation !== claudeCodeProjectChatConnectionGenerationRef.current ||
+        claudeCodeProjectChatPreferenceRef.current !== 'connect-local'
+      ) {
+        return false;
+      }
+      applyClaudeCodeProjectChatStatus(status);
+      return true;
+    } catch {
+      if (
+        generation !== claudeCodeProjectChatConnectionGenerationRef.current ||
+        claudeCodeProjectChatPreferenceRef.current !== 'connect-local'
+      ) {
+        return false;
+      }
+      removeClaudeCodeProjectChatDescriptors();
+      setClaudeCodeProjectChatConnection({ phase: 'unavailable', status: null });
+      return false;
+    }
+  }, [applyClaudeCodeProjectChatStatus, removeClaudeCodeProjectChatDescriptors]);
+
+  useEffect(() => {
+    const preference = preferences.agentAddOns['claude-code'];
+    const previousPreference = previousClaudeCodeProjectChatPreferenceRef.current;
+    previousClaudeCodeProjectChatPreferenceRef.current = preference;
+    if (preference === 'connect-local') {
+      void refreshClaudeCodeProjectChatConnection();
+      return;
+    }
+
+    const generation = ++claudeCodeProjectChatConnectionGenerationRef.current;
+    removeClaudeCodeProjectChatDescriptors();
+    setClaudeCodeProjectChatConnection({ phase: 'disabled', status: null });
+    if (previousPreference !== 'connect-local') return;
+
+    setClaudeCodeProjectChatConnection((current) => ({ ...current, phase: 'checking' }));
+    void claudeCodeProjectChatOperationQueueRef.current
+      .enqueue(() => window.gosu.agentAddOns.disconnect('claude-code'))
+      .then(() => {
+        if (
+          generation !== claudeCodeProjectChatConnectionGenerationRef.current ||
+          claudeCodeProjectChatPreferenceRef.current === 'connect-local'
+        ) {
+          return;
+        }
+        setClaudeCodeProjectChatConnection({ phase: 'disabled', status: null });
+        setProjectChatModelSelection((current) =>
+          reconcileRemovedProjectChatProvider(current, {
+            removedProviderId: 'claude-code',
+            reason: 'explicit-disconnect',
+          }),
+        );
+        setAnnouncement('Disconnected Claude Code. Any explicit Claude selection was cleared.');
+      })
+      .catch((error: unknown) => {
+        if (generation !== claudeCodeProjectChatConnectionGenerationRef.current) return;
+        setClaudeCodeProjectChatConnection({ phase: 'unavailable', status: null });
+        setWorkspaceError(
+          `Claude Code could not be disconnected safely: ${describeError(error)}. Its prior selection remains blocked.`,
+        );
+      });
+  }, [
+    preferences.agentAddOns,
+    refreshClaudeCodeProjectChatConnection,
+    removeClaudeCodeProjectChatDescriptors,
   ]);
 
   useEffect(() => {
@@ -2692,11 +2840,13 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           <SettingsView
             preferences={preferences}
             onChange={updatePreferences}
-            models={models}
+            models={projectChatModels}
             modelsLoading={codexBusy}
             onRefreshModels={() => refreshModels(true)}
             hermesConnection={hermesProjectChatConnection}
             onRefreshHermesConnection={refreshHermesProjectChatConnection}
+            claudeCodeConnection={claudeCodeProjectChatConnection}
+            onRefreshClaudeCodeConnection={refreshClaudeCodeProjectChatConnection}
             workspaceSnapshot={snapshot}
             busyAction={busyAction}
             chatBusyProjectIds={chatBusyProjectIds}
@@ -2854,6 +3004,11 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 inFlight={Boolean(
                   activeProjectChatSessionKey && chatInFlight[activeProjectChatSessionKey],
                 )}
+                agentProgress={
+                  activeProjectChatSessionKey
+                    ? (chatAgentProgress[activeProjectChatSessionKey] ?? [])
+                    : []
+                }
                 sessionBusy={Boolean(
                   activeProjectChatSessionKey &&
                   (chatInFlight[activeProjectChatSessionKey] ||
@@ -3016,6 +3171,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   if (preferences.agentAddOns.hermes === 'connect-local') {
                     void refreshHermesProjectChatConnection();
                   }
+                  if (preferences.agentAddOns['claude-code'] === 'connect-local') {
+                    void refreshClaudeCodeProjectChatConnection();
+                  }
                 }}
                 onOpenAgentSettings={openAgentSettings}
                 onUpdatePolicyRules={(profile, policyRules) =>
@@ -3156,7 +3314,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       setAnnouncement('Queued this message for the selected Project Chat session.');
                     }
                     await loadProjectChat(activeProject.id, receipt.sessionId);
-                    if (selectedDescriptor.providerId !== 'hermes') {
+                    if (selectedDescriptor.providerId === 'codex') {
                       setCodexConnectionState('ready');
                       setCodexErrorVisible(false);
                     }
@@ -3169,6 +3327,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       ++hermesProjectChatConnectionGenerationRef.current;
                       removeHermesProjectChatDescriptor();
                       setHermesProjectChatConnection({ phase: 'unavailable', status: null });
+                    } else if (selectedDescriptor.providerId === 'claude-code') {
+                      ++claudeCodeProjectChatConnectionGenerationRef.current;
+                      removeClaudeCodeProjectChatDescriptors();
+                      setClaudeCodeProjectChatConnection({ phase: 'unavailable', status: null });
                     } else if (isCodexUnavailableError(error)) {
                       setCodexConnectionState('unavailable');
                       setCodexErrorVisible(true);
@@ -3447,8 +3609,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 objective={activeObjective}
                 adapter={experimentsAdapter}
                 evaluationAdapter={experimentEvaluationAdapter}
-                requestedModelId={preferences.defaultAiSelection.modelId}
-                reasoningOptionId={preferences.defaultAiSelection.reasoningOptionId}
+                requestedModelId={codexSurfaceDefaultAiSelection.modelId}
+                reasoningOptionId={codexSurfaceDefaultAiSelection.reasoningOptionId}
                 searchTarget={
                   pendingSearchNavigation?.hit.projectId === activeProject.id &&
                   pendingSearchNavigation.hit.target.kind === 'experiment'
@@ -3468,8 +3630,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 project={activeProject}
                 adapter={literatureAdapter}
                 aiAvailable={codexConnectionState === 'ready'}
-                requestedModelId={preferences.defaultAiSelection.modelId}
-                reasoningOptionId={preferences.defaultAiSelection.reasoningOptionId}
+                requestedModelId={codexSurfaceDefaultAiSelection.modelId}
+                reasoningOptionId={codexSurfaceDefaultAiSelection.reasoningOptionId}
                 searchTarget={
                   pendingSearchNavigation?.hit.projectId === activeProject.id &&
                   pendingSearchNavigation.hit.target.kind === 'literature'
@@ -3497,7 +3659,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 draftStore={lectureStudioDraftsRef.current}
                 models={models}
                 modelsLoading={codexBusy}
-                defaultModelSelection={preferences.defaultAiSelection}
+                defaultModelSelection={codexSurfaceDefaultAiSelection}
                 defaultStructure={preferences.defaultLectureStructure}
                 defaultDocumentFeatures={preferences.defaultLectureDocumentFeatures}
                 documentFeaturesByProjectId={preferences.lectureDocumentFeaturesByProjectId}
@@ -3517,8 +3679,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               <ConnectionsView
                 runtime={runtime}
                 models={models}
-                defaultModelId={preferences.defaultAiSelection.modelId}
-                defaultReasoningOptionId={preferences.defaultAiSelection.reasoningOptionId}
+                defaultModelId={codexSurfaceDefaultAiSelection.modelId}
+                defaultReasoningOptionId={codexSurfaceDefaultAiSelection.reasoningOptionId}
                 status={codexStatus}
                 busy={codexBusy}
                 apiKeyMode={apiKeyMode}

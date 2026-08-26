@@ -1298,6 +1298,24 @@ class FakeCodex extends EventEmitter {
       params: { threadId, turn: { id: turnId, status: 'completed' } },
     });
   }
+
+  progress(
+    turnId: string,
+    input: { stage: 'tool_started' | 'tool_completed'; tool: string; success?: boolean },
+  ) {
+    const threadId = this.turnThreads.get(turnId)!;
+    this.emit('notification', {
+      method: 'gosu/agent/progress',
+      params: {
+        threadId,
+        turnId,
+        stage: input.stage,
+        tool: input.tool,
+        callId: `claude-mcp:${turnId}:${input.tool}`,
+        ...(input.success === undefined ? {} : { success: input.success }),
+      },
+    });
+  }
 }
 
 function invocation(requestedModelId: string | null, providerId = 'codex'): ModelInvocation {
@@ -2302,6 +2320,40 @@ describe('ProjectChatService', () => {
     codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
     await completed;
     expect((await chat.snapshot({ projectId: projectA.id })).activeTurnId).toBeUndefined();
+  });
+
+  it('forwards provider-neutral agent tool progress without exposing arguments or receipts', async () => {
+    const { chat, codex, projectA } = await fixture();
+    const events: ProjectChatEvent[] = [];
+    chat.on('event', (event: ProjectChatEvent) => events.push(event));
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Inspect the bounded workspace.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+
+    codex.progress(receipt.turnId, {
+      stage: 'tool_completed',
+      tool: 'read_workspace',
+      success: true,
+    });
+
+    await vi.waitFor(() =>
+      expect(events).toContainEqual({
+        type: 'agent.progress',
+        projectId: projectA.id,
+        sessionId: receipt.sessionId,
+        turnId: receipt.turnId,
+        stage: 'tool_completed',
+        tool: 'read_workspace',
+        callId: `claude-mcp:${receipt.turnId}:read_workspace`,
+        success: true,
+      }),
+    );
+    const completed = waitForTurnCompleted(chat, receipt.turnId);
+    codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
+    await completed;
   });
 
   it('releases the project reservation after a transient message storage failure', async () => {

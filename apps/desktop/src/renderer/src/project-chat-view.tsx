@@ -16,6 +16,7 @@ import {
   type ProjectAgentNode,
   type ProjectAgentRun,
   type ProjectChatAction,
+  type ProjectChatEvent,
   type ProjectChatContextScope,
   type ProjectChatHarnessMode,
   type ProjectChatPersonality,
@@ -109,6 +110,7 @@ function agentNodeRoleLabel(node: ProjectAgentNode) {
 function agentProviderLabel(providerId: string) {
   if (providerId === 'codex') return 'Codex';
   if (providerId === 'hermes') return 'Hermes';
+  if (providerId === 'claude-code') return 'Claude Code';
   if (providerId === 'provider-pending') return 'Provider pending';
   return providerId;
 }
@@ -202,6 +204,11 @@ export type ProjectChatSessionUiState = Readonly<{
   retryOfAttemptId: string | null;
   advancedOpen: boolean;
 }>;
+
+export type ProjectChatAgentProgress = Pick<
+  Extract<ProjectChatEvent, { type: 'agent.progress' }>,
+  'stage' | 'tool' | 'callId' | 'success'
+>;
 
 export type ProjectChatSshAccess = Readonly<{
   state: 'checking' | 'ready' | 'unavailable';
@@ -422,6 +429,7 @@ export function ProjectChatView({
   snapshot,
   loading,
   inFlight,
+  agentProgress = [],
   sessionBusy = inFlight,
   projectBusy = false,
   models,
@@ -483,6 +491,7 @@ export function ProjectChatView({
   snapshot: ProjectChatSnapshot | null;
   loading: boolean;
   inFlight: boolean;
+  agentProgress?: readonly ProjectChatAgentProgress[];
   sessionBusy?: boolean;
   projectBusy?: boolean;
   models: readonly CodexModel[];
@@ -720,6 +729,9 @@ export function ProjectChatView({
   const hermesSelected =
     selectedDescriptor?.providerId === 'hermes' ||
     (selectedModel !== null && selectedProviderId === 'hermes');
+  const claudeCodeSelected =
+    selectedDescriptor?.providerId === 'claude-code' ||
+    (selectedModel !== null && selectedProviderId === 'claude-code');
   const activeAttempt = [...(snapshot?.attempts ?? [])]
     .reverse()
     .find((attempt) => attempt.status === 'starting' || attempt.status === 'running');
@@ -732,7 +744,10 @@ export function ProjectChatView({
     activeAttemptProviderId === 'hermes' ||
     (activeAttemptProviderId === undefined && hermesSelected)
       ? 'Hermes'
-      : 'Codex';
+      : activeAttemptProviderId === 'claude-code' ||
+          (activeAttemptProviderId === undefined && claudeCodeSelected)
+        ? 'Claude Code'
+        : 'Codex';
   const personalityWarning =
     !hermesSelected && personality !== 'auto' && selectedDescriptor?.supportsPersonality === false
       ? 'The selected model does not support Codex personality controls. Choose Auto or another model.'
@@ -1209,6 +1224,11 @@ export function ProjectChatView({
                     Hermes ACP · project read tools
                   </span>
                 )}
+                {claudeCodeSelected && (
+                  <span title="Claude Code subscription agent with GOSU project-scoped MCP tools">
+                    Claude agent · GOSU MCP
+                  </span>
+                )}
                 {selectionWarning && <span className="warning">Selection needs attention</span>}
                 <button
                   type="button"
@@ -1602,6 +1622,17 @@ export function ProjectChatView({
                 </small>
               </div>
             )}
+            {claudeCodeSelected && (
+              <div className="chat-agent-control-group">
+                <span>Provider harness</span>
+                <strong>Claude Code subscription agent</strong>
+                <small>
+                  Claude may iterate over only this session&apos;s GOSU MCP tools. Built-in shell,
+                  writes, browser, user MCP servers, plugins, and persistent Claude sessions remain
+                  disabled.
+                </small>
+              </div>
+            )}
             <div className="chat-agent-control-group">
               <span>Context</span>
               <select
@@ -1775,7 +1806,7 @@ export function ProjectChatView({
                         {(message.model || attempt?.harnessMode || nativeAttempt) && (
                           <div className="message-provenance">
                             {message.model
-                              ? `${message.model.providerId === 'hermes' ? 'Hermes' : 'Codex'} · ${message.model.resolvedModelId}`
+                              ? `${agentProviderLabel(message.model.providerId ?? 'codex')} · ${message.model.resolvedModelId}`
                               : 'Codex'}
                             {message.model?.reasoningOptionId
                               ? ` · reasoning ${message.model.reasoningOptionId}`
@@ -1783,9 +1814,11 @@ export function ProjectChatView({
                             {nativeAttempt
                               ? message.model?.providerId === 'hermes'
                                 ? ' · Hermes ACP agent'
-                                : attempt?.collaborationModeId
-                                  ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
-                                  : ' · Codex default mode'
+                                : message.model?.providerId === 'claude-code'
+                                  ? ' · Claude Code agent'
+                                  : attempt?.collaborationModeId
+                                    ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
+                                    : ' · Codex default mode'
                               : attempt?.harnessMode
                                 ? ` · legacy ${HARNESS_LABELS[attempt.harnessMode]}`
                                 : ''}
@@ -1908,6 +1941,22 @@ export function ProjectChatView({
                       : '프로젝트 컨텍스트를 검토하고 있습니다'}
                   </span>
                 </div>
+                {agentProgress.length > 0 && (
+                  <ol className="chat-agent-progress" aria-label="Live Claude agent tool activity">
+                    {agentProgress.map((progress) => (
+                      <li key={`${progress.callId}:${progress.stage}`}>
+                        <strong>{progress.tool.replaceAll('_', ' ')}</strong>
+                        <span>
+                          {progress.stage === 'tool_started'
+                            ? 'Running'
+                            : progress.success === false
+                              ? 'Failed'
+                              : 'Receipt reviewed'}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
               </article>
             )}
           </div>
@@ -1933,16 +1982,22 @@ export function ProjectChatView({
               ? 'Legacy Reviewer'
               : hermesSelected
                 ? 'Hermes ACP agent'
-                : collaborationModeId === null
-                  ? 'Codex default mode'
-                  : (selectedCollaborationMode?.displayName ?? collaborationModeId)}{' '}
+                : claudeCodeSelected
+                  ? 'Claude Code agent'
+                  : collaborationModeId === null
+                    ? 'Codex default mode'
+                    : (selectedCollaborationMode?.displayName ?? collaborationModeId)}{' '}
             ·{' '}
-            {hermesSelected ? 'Provider-managed answer style' : VERBOSITY_LABELS[responseVerbosity]}{' '}
+            {hermesSelected || claudeCodeSelected
+              ? 'Provider-managed answer style'
+              : VERBOSITY_LABELS[responseVerbosity]}{' '}
             · {hermesSelected ? 'GOSU Research Notes bridge unavailable' : localNotesStatus}
             {' · '}
             {hermesSelected
               ? 'Hermes provider · project read tools'
-              : WEB_SEARCH_LABELS[snapshot?.profile?.webSearchMode ?? 'cached']}
+              : claudeCodeSelected
+                ? 'Claude provider · GOSU MCP · web off'
+                : WEB_SEARCH_LABELS[snapshot?.profile?.webSearchMode ?? 'cached']}
             {!hermesSelected && vaultState === 'ready' && !automaticMarkdownSaveAuthorized && (
               <button
                 type="button"

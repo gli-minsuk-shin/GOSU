@@ -486,6 +486,18 @@ describe('Project chat contracts', () => {
       }),
     ).toMatchObject({ type: 'session.updated', session: { titleModel: generated.titleModel } });
     expect(
+      ProjectChatEventSchema.parse({
+        type: 'agent.progress',
+        projectId,
+        sessionId: generated.id,
+        turnId: 'claude-code:turn:fixture',
+        stage: 'tool_completed',
+        tool: 'read_workspace',
+        callId: 'claude-mcp:fixture',
+        success: true,
+      }),
+    ).toMatchObject({ type: 'agent.progress', tool: 'read_workspace', success: true });
+    expect(
       ProjectChatSnapshotSchema.parse({
         schemaVersion: 1,
         projectId,

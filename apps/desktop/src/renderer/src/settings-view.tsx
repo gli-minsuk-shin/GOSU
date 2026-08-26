@@ -27,6 +27,7 @@ import {
 import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
 import {
   AgentAddOnsSection,
+  type AgentProviderConnectionUiState,
   type HermesProjectChatConnectionUiState,
 } from './agent-addons-section';
 import { AgentSettingsSection } from './agent-settings-section';
@@ -113,6 +114,8 @@ export function SettingsView({
   onUpdateAgentProfile,
   hermesConnection,
   onRefreshHermesConnection,
+  claudeCodeConnection,
+  onRefreshClaudeCodeConnection,
 }: {
   preferences: UserPreferences;
   onChange: (preferences: UserPreferences) => void;
@@ -151,6 +154,8 @@ export function SettingsView({
   onUpdateAgentProfile: (input: UpdateProjectChatProfileInput) => Promise<boolean>;
   hermesConnection?: HermesProjectChatConnectionUiState;
   onRefreshHermesConnection?: () => Promise<unknown>;
+  claudeCodeConnection?: AgentProviderConnectionUiState;
+  onRefreshClaudeCodeConnection?: () => Promise<unknown>;
 }) {
   const [localCategory, setLocalCategory] = useState<SettingsCategory>(initialCategory);
   const [lectureStructureDraft, setLectureStructureDraft] = useState(() =>
@@ -660,6 +665,8 @@ export function SettingsView({
               onChange={(agentAddOns) => onChange({ ...preferences, agentAddOns })}
               {...(hermesConnection ? { hermesConnection } : {})}
               {...(onRefreshHermesConnection ? { onRefreshHermesConnection } : {})}
+              {...(claudeCodeConnection ? { claudeCodeConnection } : {})}
+              {...(onRefreshClaudeCodeConnection ? { onRefreshClaudeCodeConnection } : {})}
             />
             <AgentSettingsSection
               project={agentProject}

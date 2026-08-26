@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   codexAuthenticationUiUpdate,
+  codexSurfaceDefaultFromProjectChatDefault,
   isCodexUnavailableError,
   mergeProjectChatSessionCatalogUpdate,
   mergeProjectChatSessionSnapshotUpdate,
@@ -34,25 +35,48 @@ describe('Desktop Project Chat session updates', () => {
     expect(shouldReplaceBusyHermesTurn('codex', true, true)).toBe(false);
   });
 
-  it('snapshots the Settings default into each new Codex chat scope', () => {
-    expect(projectChatSelectionFromDefault({ modelId: null, reasoningOptionId: 'high' })).toEqual({
+  it('snapshots the provider-qualified Settings default into each new Project Chat scope', () => {
+    expect(
+      projectChatSelectionFromDefault({
+        providerId: null,
+        modelId: null,
+        reasoningOptionId: 'high',
+      }),
+    ).toEqual({
       providerId: null,
       modelId: null,
       reasoningOptionId: 'high',
     });
     expect(
       projectChatSelectionFromDefault({
-        modelId: 'gpt-current',
-        reasoningOptionId: 'ultra',
+        providerId: 'claude-code',
+        modelId: 'claude-code:opus',
+        reasoningOptionId: 'high',
       }),
     ).toEqual({
-      providerId: 'codex',
-      modelId: 'gpt-current',
-      reasoningOptionId: 'ultra',
+      providerId: 'claude-code',
+      modelId: 'claude-code:opus',
+      reasoningOptionId: 'high',
     });
   });
 
-  it('routes saved defaults to every unscoped AI surface and new scoped work', () => {
+  it('keeps non-chat Codex surfaces on a compatible default', () => {
+    expect(
+      codexSurfaceDefaultFromProjectChatDefault({
+        providerId: 'claude-code',
+        modelId: 'claude-code:sonnet',
+        reasoningOptionId: 'high',
+      }),
+    ).toEqual({ providerId: null, modelId: null, reasoningOptionId: 'high' });
+    const codex = {
+      providerId: 'codex',
+      modelId: 'gpt-current',
+      reasoningOptionId: 'xhigh',
+    } as const;
+    expect(codexSurfaceDefaultFromProjectChatDefault(codex)).toBe(codex);
+  });
+
+  it('routes provider-qualified defaults to Project Chat and Codex-compatible defaults elsewhere', () => {
     const source = readFileSync(
       new URL('../src/renderer/src/desktop-app.tsx', import.meta.url),
       'utf8',
@@ -65,13 +89,16 @@ describe('Desktop Project Chat session updates', () => {
     expect(source).toContain(
       'setProjectChatModelSelection(loadScopedProjectChatModelSelection(projectId, sessionId))',
     );
+    expect(source).toContain(
+      'codexSurfaceDefaultFromProjectChatDefault(preferences.defaultAiSelection)',
+    );
     expect(
-      source.match(/requestedModelId=\{preferences\.defaultAiSelection\.modelId\}/gu),
+      source.match(/requestedModelId=\{codexSurfaceDefaultAiSelection\.modelId\}/gu),
     ).toHaveLength(2);
     expect(
-      source.match(/reasoningOptionId=\{preferences\.defaultAiSelection\.reasoningOptionId\}/gu),
+      source.match(/reasoningOptionId=\{codexSurfaceDefaultAiSelection\.reasoningOptionId\}/gu),
     ).toHaveLength(2);
-    expect(source).toContain('defaultModelSelection={preferences.defaultAiSelection}');
+    expect(source).toContain('defaultModelSelection={codexSurfaceDefaultAiSelection}');
     expect(source).toContain('requestedModelId: projectChatModelSelection.modelId');
     expect(source).toContain('reasoningOptionId: projectChatModelSelection.reasoningOptionId');
   });

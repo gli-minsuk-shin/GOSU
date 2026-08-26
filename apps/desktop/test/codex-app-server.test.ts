@@ -1528,6 +1528,8 @@ describe('Codex App Server process boundary', () => {
       };
     });
     const server = new CodexAppServer();
+    const progressNotifications: unknown[] = [];
+    server.on('notification', (notification) => progressNotifications.push(notification));
     vi.spyOn(server, 'start').mockResolvedValue();
     const request = vi.fn(async (method: string) => {
       if (method === 'thread/start') return { thread: { id: 'thread-tools' } };
@@ -1602,6 +1604,27 @@ describe('Codex App Server process boundary', () => {
     expect(firstOutcome).toBeUndefined();
     writeCallbacks[0]!();
     await expect(deliveryOutcomes[0]).resolves.toBe('delivered');
+    expect(progressNotifications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'gosu/agent/progress',
+          params: expect.objectContaining({
+            stage: 'tool_started',
+            tool: 'read_note',
+            callId: 'call-tools',
+          }),
+        }),
+        expect.objectContaining({
+          method: 'gosu/agent/progress',
+          params: expect.objectContaining({
+            stage: 'tool_completed',
+            tool: 'read_note',
+            callId: 'call-tools',
+            success: true,
+          }),
+        }),
+      ]),
+    );
 
     internal.handleLine(
       child,

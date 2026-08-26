@@ -1155,6 +1155,18 @@ export const ProjectChatEventSchema = z.discriminatedUnion('type', [
     .strict(),
   z
     .object({
+      type: z.literal('agent.progress'),
+      projectId: uuidSchema,
+      sessionId: uuidSchema,
+      turnId: z.string().trim().min(1).max(256),
+      stage: z.enum(['tool_started', 'tool_completed']),
+      tool: z.string().trim().min(1).max(128),
+      callId: z.string().trim().min(1).max(256),
+      success: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal('action.updated'),
       projectId: uuidSchema,
       sessionId: uuidSchema,

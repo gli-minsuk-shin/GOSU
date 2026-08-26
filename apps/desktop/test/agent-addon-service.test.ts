@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { registerAgentAddOnIpc } from '../src/main/agent-addon-ipc';
 import {
   AgentAddOnRegistry,
+  ClaudeCodeAgentAddOnAdapter,
   HermesAgentAddOnAdapter,
   LocalCliAgentAddOnAdapter,
   localAgentAddOnCandidates,
@@ -18,6 +19,7 @@ import {
 
 const openClaw = AGENT_ADD_ON_DESCRIPTORS.find((descriptor) => descriptor.id === 'openclaw')!;
 const hermes = AGENT_ADD_ON_DESCRIPTORS.find((descriptor) => descriptor.id === 'hermes')!;
+const claudeCode = AGENT_ADD_ON_DESCRIPTORS.find((descriptor) => descriptor.id === 'claude-code')!;
 
 describe('optional agent add-on detection boundary', () => {
   it('publishes only detection and official guidance as currently available capabilities', () => {
@@ -34,9 +36,16 @@ describe('optional agent add-on detection boundary', () => {
         officialRepositoryUrl: 'https://github.com/NousResearch/hermes-agent',
         officialSetupUrl: 'https://hermes-agent.nousresearch.com/docs/',
       }),
+      expect.objectContaining({
+        id: 'claude-code',
+        executableName: 'claude',
+        officialRepositoryUrl: 'https://github.com/anthropics/claude-code',
+        officialSetupUrl: 'https://docs.anthropic.com/en/docs/claude-code/getting-started',
+      }),
     ]);
     expect(openClaw.capabilities.projectChatProvider).toBe('not_implemented');
     expect(hermes.capabilities.projectChatProvider).toBe('available');
+    expect(claudeCode.capabilities.projectChatProvider).toBe('available');
     expect(openClaw.capabilities.automaticInstaller).toBe('not_implemented');
     expect(hermes.capabilities.automaticInstaller).toBe('bundled');
     for (const descriptor of AGENT_ADD_ON_DESCRIPTORS) {
@@ -149,13 +158,27 @@ describe('optional agent add-on detection boundary', () => {
   });
 
   it('derives a status request from only the add-ons enabled in mixed preferences', () => {
-    expect(enabledAgentAddOnIds({ openclaw: 'detect-local', hermes: 'disabled' })).toEqual([
-      'openclaw',
-    ]);
-    expect(enabledAgentAddOnIds({ openclaw: 'disabled', hermes: 'connect-local' })).toEqual([
-      'hermes',
-    ]);
-    expect(enabledAgentAddOnIds({ openclaw: 'disabled', hermes: 'disabled' })).toEqual([]);
+    expect(
+      enabledAgentAddOnIds({
+        openclaw: 'detect-local',
+        hermes: 'disabled',
+        'claude-code': 'disabled',
+      }),
+    ).toEqual(['openclaw']);
+    expect(
+      enabledAgentAddOnIds({
+        openclaw: 'disabled',
+        hermes: 'connect-local',
+        'claude-code': 'disabled',
+      }),
+    ).toEqual(['hermes']);
+    expect(
+      enabledAgentAddOnIds({
+        openclaw: 'disabled',
+        hermes: 'disabled',
+        'claude-code': 'disabled',
+      }),
+    ).toEqual([]);
   });
 
   it('validates status requests strictly and rejects unknown or duplicate add-on IDs', () => {
@@ -232,6 +255,69 @@ describe('optional agent add-on detection boundary', () => {
       projectChatModel: null,
     });
     expect(connected).toBe(false);
+  });
+
+  it('connects Claude Code only after the subscription preflight returns its model catalog', async () => {
+    const detector = new LocalCliAgentAddOnAdapter(claudeCode, {
+      pathEnvironment: '/usr/bin',
+      homeDirectory: '/Users/researcher',
+      isExecutable: vi.fn(async (path: string) => path.endsWith('/.local/bin/claude')),
+    });
+    let connected = false;
+    const adapter = new ClaudeCodeAgentAddOnAdapter(claudeCode, detector, {
+      connectClaudeCode: vi.fn(async () => {
+        connected = true;
+        const catalogVersion = 'claude-code-v1';
+        const descriptor = (modelId: string) => ({
+          schemaVersion: 1 as const,
+          providerId: 'claude-code',
+          modelId,
+          displayName: modelId,
+          catalogVersion,
+          isDefault: false,
+          modalities: ['text' as const],
+          reasoningOptions: [{ id: 'high', label: 'High', isDefault: true }],
+          metadata: {
+            runtime: 'byo-local-subscription-cli',
+            runtimeVersion: '2.1.169',
+          },
+        });
+        return {
+          catalog: {
+            schemaVersion: 1 as const,
+            providerId: 'claude-code',
+            catalogVersion,
+            fetchedAt: '2026-08-26T00:00:00.000Z',
+            models: [
+              descriptor('claude-code:sonnet'),
+              descriptor('claude-code:opus'),
+              descriptor('claude-code:opus-5'),
+            ],
+          },
+          collaborationModes: { catalogVersion: 'claude-modes-v1', modes: [] },
+        };
+      }),
+      disconnectClaudeCode: vi.fn(async () => {
+        connected = false;
+      }),
+      isClaudeCodeConnected: () => connected,
+    });
+
+    await expect(adapter.connectLocal()).resolves.toMatchObject({
+      id: 'claude-code',
+      connected: true,
+      connectionMode: 'byo-local-subscription-cli',
+      version: '2.1.169',
+      projectChatModels: [
+        { modelId: 'claude-code:sonnet' },
+        { modelId: 'claude-code:opus' },
+        { modelId: 'claude-code:opus-5' },
+      ],
+    });
+    await expect(adapter.disconnectLocal()).resolves.toMatchObject({
+      id: 'claude-code',
+      connected: false,
+    });
   });
 
   it('reports a pinned bundled runtime without requiring a PATH installation', async () => {

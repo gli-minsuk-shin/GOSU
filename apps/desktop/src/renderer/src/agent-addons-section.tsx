@@ -14,6 +14,8 @@ export type HermesProjectChatConnectionUiState = Readonly<{
   status: AgentAddOnStatus | null;
 }>;
 
+export type AgentProviderConnectionUiState = HermesProjectChatConnectionUiState;
+
 export function enabledAgentAddOnIds(preferences: AgentAddOnPreferences): readonly AgentAddOnId[] {
   return AGENT_ADD_ON_DESCRIPTORS.filter(
     (descriptor) => preferences[descriptor.id] !== 'disabled',
@@ -25,11 +27,15 @@ export function AgentAddOnsSection({
   onChange,
   hermesConnection = { phase: 'disabled', status: null },
   onRefreshHermesConnection = async () => undefined,
+  claudeCodeConnection = { phase: 'disabled', status: null },
+  onRefreshClaudeCodeConnection = async () => undefined,
 }: {
   preferences: AgentAddOnPreferences;
   onChange: (preferences: AgentAddOnPreferences) => void;
   hermesConnection?: HermesProjectChatConnectionUiState;
   onRefreshHermesConnection?: () => Promise<unknown>;
+  claudeCodeConnection?: AgentProviderConnectionUiState;
+  onRefreshClaudeCodeConnection?: () => Promise<unknown>;
 }) {
   const [statuses, setStatuses] = useState<readonly AgentAddOnStatus[]>([]);
   const [checking, setChecking] = useState(false);
@@ -71,11 +77,15 @@ export function AgentAddOnsSection({
     };
   }, [detect]);
 
-  const refreshing = checking || hermesConnection.phase === 'checking';
+  const refreshing =
+    checking || hermesConnection.phase === 'checking' || claudeCodeConnection.phase === 'checking';
   const checkAgain = () => {
     const requests: Promise<unknown>[] = [detect()];
     if (preferences.hermes === 'connect-local') {
       requests.push(onRefreshHermesConnection());
+    }
+    if (preferences['claude-code'] === 'connect-local') {
+      requests.push(onRefreshClaudeCodeConnection());
     }
     void Promise.allSettled(requests);
   };
@@ -83,24 +93,33 @@ export function AgentAddOnsSection({
   return (
     <article className="settings-card">
       <div className="settings-card-heading">
-        <span>OPTIONAL AGENT ADD-ONS</span>
-        <h2>Use a verified agent runtime</h2>
+        <span>OPTIONAL LOCAL AI PROVIDERS</span>
+        <h2>Connect a local subscription or agent runtime</h2>
         <p>
-          Codex stays GOSU&apos;s default provider. Release builds use the exact Hermes runtime
-          shipped and signed with that GOSU version. Provider credentials remain in the isolated
-          local profile and are never copied into the app bundle.
+          Codex stays GOSU&apos;s default provider. Claude Code reuses the Claude.ai subscription
+          already signed in on this Mac; GOSU does not copy its credentials. Hermes uses the
+          version-pinned runtime shipped with GOSU.
         </p>
       </div>
       <div className="agent-setting-columns">
         {AGENT_ADD_ON_DESCRIPTORS.map((descriptor) => {
           const preference = preferences[descriptor.id];
           const connectedHermes = descriptor.id === 'hermes' && preference === 'connect-local';
-          const status = connectedHermes
-            ? hermesConnection.status
+          const connectedClaudeCode =
+            descriptor.id === 'claude-code' && preference === 'connect-local';
+          const providerConnection = connectedHermes
+            ? hermesConnection
+            : connectedClaudeCode
+              ? claudeCodeConnection
+              : null;
+          const status = providerConnection
+            ? providerConnection.status
             : statuses.find((candidate) => candidate.id === descriptor.id);
-          const itemChecking = connectedHermes ? hermesConnection.phase === 'checking' : checking;
-          const itemUnavailable = connectedHermes
-            ? hermesConnection.phase === 'unavailable'
+          const itemChecking = providerConnection
+            ? providerConnection.phase === 'checking'
+            : checking;
+          const itemUnavailable = providerConnection
+            ? providerConnection.phase === 'unavailable'
             : unavailable;
           return (
             <fieldset key={descriptor.id}>
@@ -138,10 +157,15 @@ export function AgentAddOnsSection({
                     onChange={() => onChange({ ...preferences, [descriptor.id]: 'connect-local' })}
                   />
                   <span>
-                    <strong>Use verified Hermes runtime</strong>
+                    <strong>
+                      {descriptor.id === 'claude-code'
+                        ? 'Use Claude.ai subscription'
+                        : 'Use verified Hermes runtime'}
+                    </strong>
                     <small>
-                      Prefer GOSU&apos;s pinned bundle; development builds may use a compatible
-                      local installation
+                      {descriptor.id === 'claude-code'
+                        ? 'Use the existing local Claude Code login; API keys are not accepted for this connection'
+                        : "Prefer GOSU's pinned bundle; development builds may use a compatible local installation"}
                     </small>
                   </span>
                 </label>
@@ -155,11 +179,15 @@ export function AgentAddOnsSection({
                       : itemUnavailable
                         ? connectedHermes
                           ? 'Hermes runtime unavailable'
-                          : 'Detection unavailable'
+                          : connectedClaudeCode
+                            ? 'Claude Code subscription unavailable'
+                            : 'Detection unavailable'
                         : status?.connected
                           ? status.connectionMode === 'bundled-acp-agent'
                             ? 'Bundled Hermes ready for Project Chat'
-                            : 'Custom local Hermes ready for Project Chat'
+                            : status.connectionMode === 'byo-local-subscription-cli'
+                              ? 'Claude Code subscription ready for Project Chat'
+                              : 'Custom local Hermes ready for Project Chat'
                           : status?.state === 'bundled_runtime'
                             ? 'Bundled Hermes runtime verified'
                             : status?.state === 'detected_local_cli'
@@ -170,7 +198,9 @@ export function AgentAddOnsSection({
                 </strong>
                 <span>
                   {status?.connected
-                    ? `${status.version ?? 'Compatible pinned version'} · GOSU verified the runtime manifest and completed a sealed ACP session check before showing Connected; credentials remain local.`
+                    ? status.connectionMode === 'byo-local-subscription-cli'
+                      ? `${status.version ?? 'Claude Code'} · GOSU verified a local claude.ai subscription login. Credentials remain in Claude Code.`
+                      : `${status.version ?? 'Compatible pinned version'} · GOSU verified the runtime manifest and completed a sealed ACP session check before showing Connected; credentials remain local.`
                     : status?.state === 'bundled_runtime'
                       ? `${status.version ?? 'Pinned version'} · Signed GOSU application resource`
                       : status?.state === 'detected_local_cli'
@@ -202,15 +232,18 @@ export function AgentAddOnsSection({
       )}
       <div className="agent-safety-boundary">
         <strong>Runtime boundary</strong>
-        <span>Hermes is pinned, local, and never an automatic fallback</span>
+        <span>Optional providers are local, explicit selections and never automatic fallbacks</span>
         <small>
           Packaged GOSU launches only its hash-verified bundled Hermes ACP agent after an explicit
           selection; it never searches PATH or silently falls back to another version. Its only
           native tools are project-scoped file read and search. Codex can explicitly delegate a
           bounded task to a fresh Hermes primary ACP agent. File writes, terminal, processes, code
           execution, web, browser automation, native delegation, memory, skills, MCP, GOSU tools,
-          and attachments are disabled. These read-only tools do not show mutation approval prompts.
-          OpenClaw remains detection-only.
+          and attachments are disabled. Claude Code runs a bounded multi-turn agent loop with only
+          the active Project Chat session&apos;s GOSU MCP tools. Built-in shell, file writes, user
+          MCP servers, hooks, plugins, browser integration, and Claude session persistence remain
+          disabled. GOSU removes API-key routing variables so this connection uses the verified
+          Claude.ai subscription login. OpenClaw remains detection-only.
         </small>
       </div>
     </article>

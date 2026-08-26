@@ -31,6 +31,7 @@ import { SshEventSchema } from '../shared/ssh-contracts';
 import { buildMacApplicationMenuTemplate } from './application-menu';
 import { registerAgentAddOnIpc } from './agent-addon-ipc';
 import { createAgentAddOnRegistry } from './agent-addon-service';
+import { ClaudeCodeProjectChatAdapter } from './claude-code-project-chat-adapter';
 import {
   cleanupStaleGosuRuntimeDirectories,
   CodexAppServer,
@@ -145,8 +146,19 @@ const hermesProjectChat = new HermesAcpProjectChatAdapter({
   approvals: hermesAcpApprovals,
   clientVersion: () => app.getVersion(),
 });
-const projectChatProvider = new ProjectChatProviderRouter(codex, hermesProjectChat);
-const agentAddOns = createAgentAddOnRegistry({}, { hermesProjectChat: projectChatProvider });
+const claudeCodeProjectChat = new ClaudeCodeProjectChatAdapter();
+const projectChatProvider = new ProjectChatProviderRouter(
+  codex,
+  hermesProjectChat,
+  claudeCodeProjectChat,
+);
+const agentAddOns = createAgentAddOnRegistry(
+  {},
+  {
+    hermesProjectChat: projectChatProvider,
+    claudeCodeProjectChat: projectChatProvider,
+  },
+);
 const database = new LocalDatabase();
 const vault = new VaultAccess({
   loadRoot() {
@@ -785,6 +797,16 @@ if (!primaryInstance) {
       );
       hermesProjectChat.on('notification', (notification: unknown) =>
         modelUsage.recordAcpNotification(notification),
+      );
+      claudeCodeProjectChat.on(
+        'invocation',
+        (event: Parameters<ModelUsageService['recordInvocation']>[0]) =>
+          modelUsage.recordInvocation(event),
+      );
+      claudeCodeProjectChat.on(
+        'usage',
+        (event: Parameters<ModelUsageService['recordAcpPromptResult']>[0]) =>
+          modelUsage.recordAcpPromptResult(event),
       );
       const initialCodexStatus = await codex.status().catch(() => null);
       if (initialCodexStatus) modelUsage.observeCodexAccount(initialCodexStatus);

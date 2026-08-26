@@ -401,7 +401,7 @@ describe('separated application Settings', () => {
     expect(html).toContain('DEFAULT AI');
     expect(html).toContain('Auto · provider default');
     expect(html).toContain('Save defaults');
-    expect(html).toContain('Existing scoped choices and generated revisions remain unchanged');
+    expect(html).toContain('Existing scoped choices remain unchanged');
     expect(html).toContain('NATIVE CODEX HARNESS');
     expect(html).toContain('Default');
     expect(html).toContain('Plan');
@@ -430,21 +430,27 @@ describe('separated application Settings', () => {
     expect(html).toContain('Raw shells, inline Python');
   });
 
-  it('keeps OpenClaw detection-only and offers the verified Hermes runtime', () => {
+  it('keeps OpenClaw detection-only and offers explicit Hermes and Claude subscription providers', () => {
     const html = renderSettings('agent');
 
-    expect(html).toContain('OPTIONAL AGENT ADD-ONS');
+    expect(html).toContain('OPTIONAL LOCAL AI PROVIDERS');
     expect(html).toContain('OpenClaw');
     expect(html).toContain('Hermes Agent');
     expect(html).toContain('Detect local installation');
     expect(html).toContain('without running it');
     expect(html).toContain('Use verified Hermes runtime');
-    expect(html).toContain('credentials remain in the isolated local profile');
-    expect(html).toContain('Hermes is pinned, local, and never an automatic fallback');
+    expect(html).toContain('Claude Code');
+    expect(html).toContain('Use Claude.ai subscription');
+    expect(html).toContain('API keys are not accepted for this connection');
+    expect(html).toContain('GOSU does not copy its credentials');
+    expect(html).toContain('explicit selections and never automatic fallbacks');
     expect(html).toContain('never searches PATH or silently falls back to another version');
     expect(html).toContain('only native tools are project-scoped file read and search');
-    expect(html).toContain('read-only tools do not show mutation approval prompts');
     expect(html).toContain('File writes, terminal, processes, code execution, web');
+    expect(html).toContain('bounded multi-turn agent loop');
+    expect(html).toContain('active Project Chat session');
+    expect(html).toContain('Built-in shell, file writes, user MCP servers');
+    expect(html).toContain('removes API-key routing variables');
     expect(html).toContain('OpenClaw remains detection-only');
     expect(html).not.toContain('Connected to OpenClaw');
     expect(html).not.toContain('Connected to Hermes');

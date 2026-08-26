@@ -4,6 +4,13 @@ import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  CLAUDE_CODE_OPUS_MODEL_ID,
+  CLAUDE_CODE_OPUS_5_MODEL_ID,
+  CLAUDE_CODE_PROVIDER_ID,
+  CLAUDE_CODE_SONNET_MODEL_ID,
+  type RefreshableClaudeCodeProjectChat,
+} from '../src/main/claude-code-project-chat-adapter';
+import {
   HERMES_CONFIGURED_MODEL_ID,
   HERMES_PROVIDER_ID,
   type RefreshableHermesProjectChat,
@@ -65,7 +72,9 @@ class FakeProvider extends EventEmitter implements ProjectChatCodex {
       threadId:
         this.providerId === HERMES_PROVIDER_ID
           ? `hermes:thread:${this.nextThread}`
-          : `codex-thread-${this.nextThread}`,
+          : this.providerId === CLAUDE_CODE_PROVIDER_ID
+            ? `claude-code:thread:${this.nextThread}`
+            : `codex-thread-${this.nextThread}`,
     };
   }
 
@@ -114,6 +123,22 @@ class FakeHermesProvider extends FakeProvider implements RefreshableHermesProjec
   }
 }
 
+class FakeClaudeCodeProvider extends FakeProvider implements RefreshableClaudeCodeProjectChat {
+  readonly refreshes = vi.fn(async () => ({
+    catalog: await this.listModelCatalog(),
+    collaborationModes: await this.listCollaborationModeCatalog(),
+  }));
+  readonly resets = vi.fn(() => 0);
+
+  refreshConnectionCatalogs() {
+    return this.refreshes();
+  }
+
+  resetConnection() {
+    return this.resets();
+  }
+}
+
 function fixture() {
   const codex = new FakeProvider('codex', catalog('codex', 'codex-provider-default', true), {
     catalogVersion: 'c'.repeat(64),
@@ -141,8 +166,33 @@ function fixture() {
       ],
     },
   );
-  const router = new ProjectChatProviderRouter(codex, hermes);
-  return { codex, hermes, router };
+  const claudeCodeCatalog: ModelCatalog = {
+    ...catalog(CLAUDE_CODE_PROVIDER_ID, CLAUDE_CODE_SONNET_MODEL_ID, false),
+    models: [
+      ...catalog(CLAUDE_CODE_PROVIDER_ID, CLAUDE_CODE_SONNET_MODEL_ID, false).models,
+      {
+        ...catalog(CLAUDE_CODE_PROVIDER_ID, CLAUDE_CODE_OPUS_MODEL_ID, false).models[0]!,
+        catalogVersion: `${CLAUDE_CODE_PROVIDER_ID}-catalog-v1`,
+      },
+      {
+        ...catalog(CLAUDE_CODE_PROVIDER_ID, CLAUDE_CODE_OPUS_5_MODEL_ID, false).models[0]!,
+        catalogVersion: `${CLAUDE_CODE_PROVIDER_ID}-catalog-v1`,
+      },
+    ],
+  };
+  const claudeCode = new FakeClaudeCodeProvider(CLAUDE_CODE_PROVIDER_ID, claudeCodeCatalog, {
+    catalogVersion: 'a'.repeat(64),
+    modes: [
+      {
+        id: 'default',
+        displayName: 'Claude default',
+        recommendedModelId: null,
+        recommendedReasoningOptionId: 'medium',
+      },
+    ],
+  });
+  const router = new ProjectChatProviderRouter(codex, hermes, claudeCode);
+  return { codex, hermes, claudeCode, router };
 }
 
 const threadInput = {
@@ -153,6 +203,60 @@ const threadInput = {
 };
 
 describe('ProjectChatProviderRouter', () => {
+  it('adds Claude Code only after an explicit subscription connection and routes pinned models', async () => {
+    const { codex, claudeCode, router } = fixture();
+
+    await expect(
+      router.startThread({ ...threadInput, modelId: CLAUDE_CODE_SONNET_MODEL_ID }),
+    ).rejects.toThrow('claude_code_not_connected');
+    await router.connectClaudeCode();
+    expect((await router.listModelCatalog()).models.map((model) => model.modelId)).toEqual([
+      'codex-provider-default',
+      CLAUDE_CODE_SONNET_MODEL_ID,
+      CLAUDE_CODE_OPUS_MODEL_ID,
+      CLAUDE_CODE_OPUS_5_MODEL_ID,
+    ]);
+
+    const started = await router.startThread({
+      ...threadInput,
+      modelId: CLAUDE_CODE_OPUS_5_MODEL_ID,
+    });
+    await expect(
+      router.runTurn({
+        threadId: started.threadId,
+        prompt: 'Use the subscription provider.',
+        requestedModelId: CLAUDE_CODE_OPUS_5_MODEL_ID,
+        reasoningOptionId: 'medium',
+        cwd: threadInput.cwd,
+      }),
+    ).resolves.toMatchObject({ invocation: { providerId: CLAUDE_CODE_PROVIDER_ID } });
+    expect(claudeCode.runs).toHaveBeenCalledOnce();
+    expect(codex.runs).not.toHaveBeenCalled();
+
+    await router.disconnectClaudeCode();
+    expect(router.isClaudeCodeConnected()).toBe(false);
+    await expect(
+      router.startThread({ ...threadInput, modelId: CLAUDE_CODE_OPUS_5_MODEL_ID }),
+    ).rejects.toThrow('claude_code_not_connected');
+  });
+
+  it('keeps an explicitly connected Claude subscription usable while Codex is unavailable', async () => {
+    const { codex, router } = fixture();
+    await router.connectClaudeCode();
+    vi.spyOn(codex, 'listModelCatalog').mockRejectedValue(new Error('codex_unavailable'));
+
+    await expect(router.listModelCatalog()).resolves.toMatchObject({
+      models: [
+        { modelId: CLAUDE_CODE_SONNET_MODEL_ID },
+        { modelId: CLAUDE_CODE_OPUS_MODEL_ID },
+        { modelId: CLAUDE_CODE_OPUS_5_MODEL_ID },
+      ],
+    });
+    await expect(
+      router.startThread({ ...threadInput, modelId: CLAUDE_CODE_SONNET_MODEL_ID }),
+    ).resolves.toMatchObject({ providerId: CLAUDE_CODE_PROVIDER_ID });
+  });
+
   it('keeps Hermes unavailable until explicit BYO connection and keeps Codex default', async () => {
     const { codex, hermes, router } = fixture();
 

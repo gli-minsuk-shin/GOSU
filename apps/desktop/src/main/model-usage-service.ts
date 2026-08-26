@@ -307,6 +307,7 @@ export type ModelUsageInvocationEvent = Readonly<{
 export type ModelUsageAcpPromptResultEvent = Readonly<{
   threadId: string;
   turnId: string;
+  providerId?: string;
   usage: ModelUsageAbsoluteTotals | null;
   stopReason: string;
   successful: boolean;
@@ -451,7 +452,7 @@ export class ModelUsageService {
       const observedAt = new Date().toISOString();
       if (event.usage) {
         this.storage.recordAcpModelUsage({
-          providerId: 'hermes',
+          providerId: event.providerId ?? 'hermes',
           threadId: event.threadId,
           turnId: event.turnId,
           totals: event.usage,
@@ -461,7 +462,7 @@ export class ModelUsageService {
         });
       } else {
         this.storage.finishModelUsageTurn({
-          providerId: 'hermes',
+          providerId: event.providerId ?? 'hermes',
           threadId: event.threadId,
           turnId: event.turnId,
           terminalStatus: event.stopReason,

@@ -6359,6 +6359,41 @@ button.chat-toolbar-status.active {
   animation-delay: 0.28s;
 }
 
+.chat-agent-progress {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-agent-progress li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.chat-agent-progress strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: inherit;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.chat-agent-progress span {
+  flex: 0 0 auto;
+}
+
 @keyframes chat-pulse {
   0%,
   70%,

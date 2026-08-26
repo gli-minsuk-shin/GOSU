@@ -1,0 +1,665 @@
+{
+  "framework": "PyTorch",
+  "generator": "tools/generate_residual_trace.py --model residual",
+  "loss": {
+    "name": "cross_entropy"
+  },
+  "mode": "train",
+  "probeCount": 5,
+  "scenarios": {
+    "detached": {
+      "edges": {
+        "e-input-projection": {
+          "activationRms": [
+            1.0142080783843994, 1.0140546560287476, 1.0160479545593262, 0.9926626086235046,
+            1.0031418800354004
+          ],
+          "gradientRms": [
+            0.002213613362982869, 0.0021386819425970316, 0.002204744378104806,
+            0.0023131645284593105, 0.0022619671653956175
+          ],
+          "shape": [8, 128],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        },
+        "e-merge-head": {
+          "activationRms": [
+            0.4001038670539856, 0.39277517795562744, 0.41820743680000305, 0.3992515504360199,
+            0.4031946659088135
+          ],
+          "gradientRms": [
+            0.004335572477430105, 0.004214152228087187, 0.004331879783421755, 0.00437221908941865,
+            0.004224285949021578
+          ],
+          "shape": [8, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        },
+        "e-norm-residual": {
+          "activationRms": [
+            0.9999504685401917, 0.9999512434005737, 0.9999550580978394, 0.9999486804008484,
+            0.9999516010284424
+          ],
+          "gradientRms": [null, null, null, null, null],
+          "shape": [8, 256],
+          "states": ["detached", "detached", "detached", "detached", "detached"]
+        },
+        "e-projection-norm": {
+          "activationRms": [
+            0.34612321853637695, 0.3466850817203522, 0.3613191246986389, 0.345997154712677,
+            0.3495270013809204
+          ],
+          "gradientRms": [null, null, null, null, null],
+          "shape": [8, 256],
+          "states": ["detached", "detached", "detached", "detached", "detached"]
+        },
+        "e-projection-skip": {
+          "activationRms": [
+            0.34612321853637695, 0.3466850817203522, 0.3613191246986389, 0.345997154712677,
+            0.3495270013809204
+          ],
+          "gradientRms": [
+            0.004335572477430105, 0.004214152228087187, 0.004331879783421755, 0.00437221908941865,
+            0.004224285949021578
+          ],
+          "shape": [8, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        },
+        "e-residual-merge": {
+          "activationRms": [
+            0.20131994783878326, 0.1971881240606308, 0.2051587998867035, 0.20266251266002655,
+            0.20948679745197296
+          ],
+          "gradientRms": [null, null, null, null, null],
+          "shape": [8, 256],
+          "states": ["detached", "detached", "detached", "detached", "detached"]
+        },
+        "e-skip-merge": {
+          "activationRms": [
+            0.34612321853637695, 0.3466850817203522, 0.3613191246986389, 0.345997154712677,
+            0.3495270013809204
+          ],
+          "gradientRms": [
+            0.004335572477430105, 0.004214152228087187, 0.004331879783421755, 0.00437221908941865,
+            0.004224285949021578
+          ],
+          "shape": [8, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        }
+      },
+      "kind": "pytorch-observed",
+      "label": "Observed PyTorch trace with a detached residual branch",
+      "losses": [
+        2.4693918228149414, 2.262883424758911, 2.3535163402557373, 2.4266979694366455,
+        2.160649538040161
+      ],
+      "parameterCoverage": [
+        {
+          "denominator": {
+            "elements": 299018,
+            "tensors": 10
+          },
+          "detached": {
+            "elements": 263424,
+            "tensors": 6
+          },
+          "excluded": {
+            "frozenElements": 0,
+            "frozenTensors": 0,
+            "notApplicableElements": 0,
+            "notApplicableTensors": 0
+          },
+          "nonfinite": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "notObserved": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "observed": {
+            "elements": 35594,
+            "tensors": 4
+          }
+        },
+        {
+          "denominator": {
+            "elements": 299018,
+            "tensors": 10
+          },
+          "detached": {
+            "elements": 263424,
+            "tensors": 6
+          },
+          "excluded": {
+            "frozenElements": 0,
+            "frozenTensors": 0,
+            "notApplicableElements": 0,
+            "notApplicableTensors": 0
+          },
+          "nonfinite": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "notObserved": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "observed": {
+            "elements": 35594,
+            "tensors": 4
+          }
+        },
+        {
+          "denominator": {
+            "elements": 299018,
+            "tensors": 10
+          },
+          "detached": {
+            "elements": 263424,
+            "tensors": 6
+          },
+          "excluded": {
+            "frozenElements": 0,
+            "frozenTensors": 0,
+            "notApplicableElements": 0,
+            "notApplicableTensors": 0
+          },
+          "nonfinite": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "notObserved": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "observed": {
+            "elements": 35594,
+            "tensors": 4
+          }
+        },
+        {
+          "denominator": {
+            "elements": 299018,
+            "tensors": 10
+          },
+          "detached": {
+            "elements": 263424,
+            "tensors": 6
+          },
+          "excluded": {
+            "frozenElements": 0,
+            "frozenTensors": 0,
+            "notApplicableElements": 0,
+            "notApplicableTensors": 0
+          },
+          "nonfinite": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "notObserved": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "observed": {
+            "elements": 35594,
+            "tensors": 4
+          }
+        },
+        {
+          "denominator": {
+            "elements": 299018,
+            "tensors": 10
+          },
+          "detached": {
+            "elements": 263424,
+            "tensors": 6
+          },
+          "excluded": {
+            "frozenElements": 0,
+            "frozenTensors": 0,
+            "notApplicableElements": 0,
+            "notApplicableTensors": 0
+          },
+          "nonfinite": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "notObserved": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "observed": {
+            "elements": 35594,
+            "tensors": 4
+          }
+        }
+      ],
+      "parameters": {
+        "head.bias": {
+          "elementCount": 10,
+          "gradientRms": [
+            0.05888775736093521, 0.052215415984392166, 0.04738900065422058, 0.0445583201944828,
+            0.04376751929521561
+          ],
+          "shape": [10],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "head.weight": {
+          "elementCount": 2560,
+          "gradientRms": [
+            0.04129917919635773, 0.039890214800834656, 0.04242607206106186, 0.04100050777196884,
+            0.03974182903766632
+          ],
+          "shape": [10, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "pre_norm.bias": {
+          "elementCount": 256,
+          "gradientRms": [null, null, null, null, null],
+          "shape": [256],
+          "states": ["detached", "detached", "detached", "detached", "detached"],
+          "trainable": true
+        },
+        "pre_norm.weight": {
+          "elementCount": 256,
+          "gradientRms": [null, null, null, null, null],
+          "shape": [256],
+          "states": ["detached", "detached", "detached", "detached", "detached"],
+          "trainable": true
+        },
+        "projection.0.bias": {
+          "elementCount": 256,
+          "gradientRms": [
+            0.005924738012254238, 0.005345647688955069, 0.005450486205518246, 0.005383565090596676,
+            0.004963346291333437
+          ],
+          "shape": [256],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "projection.0.weight": {
+          "elementCount": 32768,
+          "gradientRms": [
+            0.007743866648525, 0.007458136882632971, 0.007787951268255711, 0.00774022052064538,
+            0.007544114254415035
+          ],
+          "shape": [256, 128],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "residual_mlp.0.bias": {
+          "elementCount": 512,
+          "gradientRms": [null, null, null, null, null],
+          "shape": [512],
+          "states": ["detached", "detached", "detached", "detached", "detached"],
+          "trainable": true
+        },
+        "residual_mlp.0.weight": {
+          "elementCount": 131072,
+          "gradientRms": [null, null, null, null, null],
+          "shape": [512, 256],
+          "states": ["detached", "detached", "detached", "detached", "detached"],
+          "trainable": true
+        },
+        "residual_mlp.2.bias": {
+          "elementCount": 256,
+          "gradientRms": [null, null, null, null, null],
+          "shape": [256],
+          "states": ["detached", "detached", "detached", "detached", "detached"],
+          "trainable": true
+        },
+        "residual_mlp.2.weight": {
+          "elementCount": 131072,
+          "gradientRms": [null, null, null, null, null],
+          "shape": [256, 512],
+          "states": ["detached", "detached", "detached", "detached", "detached"],
+          "trainable": true
+        }
+      },
+      "variant": "residual.detach()"
+    },
+    "healthy": {
+      "edges": {
+        "e-input-projection": {
+          "activationRms": [
+            1.0142080783843994, 1.0140546560287476, 1.0160479545593262, 0.9926626086235046,
+            1.0031418800354004
+          ],
+          "gradientRms": [
+            0.0026694070547819138, 0.002532240469008684, 0.002472170628607273,
+            0.0027264938689768314, 0.0026550134643912315
+          ],
+          "shape": [8, 128],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        },
+        "e-merge-head": {
+          "activationRms": [
+            0.4001038670539856, 0.39259546995162964, 0.4183084964752197, 0.3994189202785492,
+            0.40329501032829285
+          ],
+          "gradientRms": [
+            0.004335572477430105, 0.004211189225316048, 0.004336943384259939, 0.004372964147478342,
+            0.004230961203575134
+          ],
+          "shape": [8, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        },
+        "e-norm-residual": {
+          "activationRms": [
+            0.9999504685401917, 0.9999374747276306, 0.9999501705169678, 0.9999175071716309,
+            0.9998221397399902
+          ],
+          "gradientRms": [
+            0.0009128319215960801, 0.0008704449865035713, 0.0009105362696573138,
+            0.0008941497071646154, 0.000930922047700733
+          ],
+          "shape": [8, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        },
+        "e-projection-norm": {
+          "activationRms": [
+            0.34612321853637695, 0.34666579961776733, 0.3613536059856415, 0.3461153209209442,
+            0.34942948818206787
+          ],
+          "gradientRms": [
+            0.002880681771785021, 0.0027134462725371122, 0.0026925865095108747,
+            0.0028536550235003233, 0.0029005815740674734
+          ],
+          "shape": [8, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        },
+        "e-projection-skip": {
+          "activationRms": [
+            0.34612321853637695, 0.34666579961776733, 0.3613536059856415, 0.3461153209209442,
+            0.34942948818206787
+          ],
+          "gradientRms": [
+            0.004335572477430105, 0.004211189225316048, 0.004336943384259939, 0.004372964147478342,
+            0.004230961203575134
+          ],
+          "shape": [8, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        },
+        "e-residual-merge": {
+          "activationRms": [
+            0.20131994783878326, 0.19714757800102234, 0.20557545125484467, 0.20353858172893524,
+            0.21033400297164917
+          ],
+          "gradientRms": [
+            0.004335572477430105, 0.004211189225316048, 0.004336943384259939, 0.004372964147478342,
+            0.004230961203575134
+          ],
+          "shape": [8, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        },
+        "e-skip-merge": {
+          "activationRms": [
+            0.34612321853637695, 0.34666579961776733, 0.3613536059856415, 0.3461153209209442,
+            0.34942948818206787
+          ],
+          "gradientRms": [
+            0.004335572477430105, 0.004211189225316048, 0.004336943384259939, 0.004372964147478342,
+            0.004230961203575134
+          ],
+          "shape": [8, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"]
+        }
+      },
+      "kind": "pytorch-observed",
+      "label": "Observed PyTorch backward trace",
+      "losses": [
+        2.4693918228149414, 2.256998300552368, 2.367115020751953, 2.43045711517334,
+        2.170865774154663
+      ],
+      "parameterCoverage": [
+        {
+          "denominator": {
+            "elements": 299018,
+            "tensors": 10
+          },
+          "detached": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "excluded": {
+            "frozenElements": 0,
+            "frozenTensors": 0,
+            "notApplicableElements": 0,
+            "notApplicableTensors": 0
+          },
+          "nonfinite": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "notObserved": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "observed": {
+            "elements": 299018,
+            "tensors": 10
+          }
+        },
+        {
+          "denominator": {
+            "elements": 299018,
+            "tensors": 10
+          },
+          "detached": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "excluded": {
+            "frozenElements": 0,
+            "frozenTensors": 0,
+            "notApplicableElements": 0,
+            "notApplicableTensors": 0
+          },
+          "nonfinite": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "notObserved": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "observed": {
+            "elements": 299018,
+            "tensors": 10
+          }
+        },
+        {
+          "denominator": {
+            "elements": 299018,
+            "tensors": 10
+          },
+          "detached": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "excluded": {
+            "frozenElements": 0,
+            "frozenTensors": 0,
+            "notApplicableElements": 0,
+            "notApplicableTensors": 0
+          },
+          "nonfinite": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "notObserved": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "observed": {
+            "elements": 299018,
+            "tensors": 10
+          }
+        },
+        {
+          "denominator": {
+            "elements": 299018,
+            "tensors": 10
+          },
+          "detached": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "excluded": {
+            "frozenElements": 0,
+            "frozenTensors": 0,
+            "notApplicableElements": 0,
+            "notApplicableTensors": 0
+          },
+          "nonfinite": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "notObserved": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "observed": {
+            "elements": 299018,
+            "tensors": 10
+          }
+        },
+        {
+          "denominator": {
+            "elements": 299018,
+            "tensors": 10
+          },
+          "detached": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "excluded": {
+            "frozenElements": 0,
+            "frozenTensors": 0,
+            "notApplicableElements": 0,
+            "notApplicableTensors": 0
+          },
+          "nonfinite": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "notObserved": {
+            "elements": 0,
+            "tensors": 0
+          },
+          "observed": {
+            "elements": 299018,
+            "tensors": 10
+          }
+        }
+      ],
+      "parameters": {
+        "head.bias": {
+          "elementCount": 10,
+          "gradientRms": [
+            0.05888775736093521, 0.05163172259926796, 0.047574762254953384, 0.04534182325005531,
+            0.04489840567111969
+          ],
+          "shape": [10],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "head.weight": {
+          "elementCount": 2560,
+          "gradientRms": [
+            0.04129917919635773, 0.03982914984226227, 0.042514123022556305, 0.04107034206390381,
+            0.039917293936014175
+          ],
+          "shape": [10, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "pre_norm.bias": {
+          "elementCount": 256,
+          "gradientRms": [
+            0.0018455074168741703, 0.001747758244164288, 0.001834481954574585,
+            0.0018811840564012527, 0.0016984166577458382
+          ],
+          "shape": [256],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "pre_norm.weight": {
+          "elementCount": 256,
+          "gradientRms": [
+            0.0025647529400885105, 0.0024301866069436073, 0.002422511577606201, 0.00241713784635067,
+            0.002450553234666586
+          ],
+          "shape": [256],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "projection.0.bias": {
+          "elementCount": 256,
+          "gradientRms": [
+            0.00705963559448719, 0.006751015316694975, 0.006750486325472593, 0.007161686196923256,
+            0.0063293999992311
+          ],
+          "shape": [256],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "projection.0.weight": {
+          "elementCount": 32768,
+          "gradientRms": [
+            0.0092811593785882, 0.008732905611395836, 0.008932355791330338, 0.00928370002657175,
+            0.009098286740481853
+          ],
+          "shape": [256, 128],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "residual_mlp.0.bias": {
+          "elementCount": 512,
+          "gradientRms": [
+            0.0022307492326945066, 0.002173126908019185, 0.0020601004362106323,
+            0.0021286357659846544, 0.0021740461234003305
+          ],
+          "shape": [512],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "residual_mlp.0.weight": {
+          "elementCount": 131072,
+          "gradientRms": [
+            0.003069070866331458, 0.0030373763293027878, 0.003116070991382003,
+            0.0030373819172382355, 0.003131326986476779
+          ],
+          "shape": [512, 256],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "residual_mlp.2.bias": {
+          "elementCount": 256,
+          "gradientRms": [
+            0.006910964380949736, 0.006097722798585892, 0.005675853695720434, 0.005249673500657082,
+            0.004920853767544031
+          ],
+          "shape": [256],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        },
+        "residual_mlp.2.weight": {
+          "elementCount": 131072,
+          "gradientRms": [
+            0.004041179548949003, 0.003792787902057171, 0.0040947129018604755, 0.003990817815065384,
+            0.0040557971224188805
+          ],
+          "shape": [256, 512],
+          "states": ["observed", "observed", "observed", "observed", "observed"],
+          "trainable": true
+        }
+      },
+      "variant": "fully attached autograd graph"
+    }
+  },
+  "schemaVersion": 1,
+  "seed": 20260821,
+  "torchVersion": "2.12.0"
+}

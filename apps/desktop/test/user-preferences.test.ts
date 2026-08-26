@@ -89,7 +89,7 @@ describe('local user preferences', () => {
       defaultLectureDocumentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
       lectureDocumentFeaturesByProjectId: {},
       defaultAiSelection: DEFAULT_AI_SELECTION,
-      agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
+      agentAddOns: { openclaw: 'disabled', hermes: 'disabled', 'claude-code': 'disabled' },
     });
   });
 
@@ -102,7 +102,11 @@ describe('local user preferences', () => {
         sshResourceRefreshInterval: '5m',
         defaultBoardTemplate: customBoardTemplate,
         defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'ultra' },
-        agentAddOns: { openclaw: 'detect-local', hermes: 'connect-local' },
+        agentAddOns: {
+          openclaw: 'detect-local',
+          hermes: 'connect-local',
+          'claude-code': 'disabled',
+        },
       }),
     ).toEqual({
       schemaVersion: 1,
@@ -113,8 +117,16 @@ describe('local user preferences', () => {
       defaultLectureStructure: { mode: 'adaptive' },
       defaultLectureDocumentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
       lectureDocumentFeaturesByProjectId: {},
-      defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'ultra' },
-      agentAddOns: { openclaw: 'detect-local', hermes: 'connect-local' },
+      defaultAiSelection: {
+        providerId: 'codex',
+        modelId: 'gpt-current',
+        reasoningOptionId: 'ultra',
+      },
+      agentAddOns: {
+        openclaw: 'detect-local',
+        hermes: 'connect-local',
+        'claude-code': 'disabled',
+      },
     });
   });
 
@@ -146,8 +158,16 @@ describe('local user preferences', () => {
           includeSourcesUsedSection: false,
         },
       },
-      defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'ultra' },
-      agentAddOns: { openclaw: 'detect-local', hermes: 'connect-local' },
+      defaultAiSelection: {
+        providerId: 'codex',
+        modelId: 'gpt-current',
+        reasoningOptionId: 'ultra',
+      },
+      agentAddOns: {
+        openclaw: 'detect-local',
+        hermes: 'connect-local',
+        'claude-code': 'connect-local',
+      },
     } as const;
     expect(saveUserPreferences(storage, preferences)).toBe(true);
     expect(loadUserPreferences(storage)).toEqual(preferences);
@@ -179,7 +199,7 @@ describe('local user preferences', () => {
       defaultLectureDocumentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
       lectureDocumentFeaturesByProjectId: {},
       defaultAiSelection: DEFAULT_AI_SELECTION,
-      agentAddOns: { openclaw: 'disabled', hermes: 'disabled' },
+      agentAddOns: { openclaw: 'disabled', hermes: 'disabled', 'claude-code': 'disabled' },
     });
   });
 
@@ -232,8 +252,16 @@ describe('local user preferences', () => {
         mode: 'custom',
         sections: [{ title: 'Private appendix', coverage: 'notes-only' }],
       },
-      defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'high' },
-      agentAddOns: { openclaw: 'detect-local', hermes: 'detect-local' },
+      defaultAiSelection: {
+        providerId: 'codex',
+        modelId: 'gpt-current',
+        reasoningOptionId: 'high',
+      },
+      agentAddOns: {
+        openclaw: 'detect-local',
+        hermes: 'detect-local',
+        'claude-code': 'disabled',
+      },
     });
 
     expect(parsed).toEqual({
@@ -245,8 +273,16 @@ describe('local user preferences', () => {
       defaultLectureStructure: { mode: 'adaptive' },
       defaultLectureDocumentFeatures: DEFAULT_LECTURE_STUDIO_DOCUMENT_FEATURES,
       lectureDocumentFeaturesByProjectId: {},
-      defaultAiSelection: { modelId: 'gpt-current', reasoningOptionId: 'high' },
-      agentAddOns: { openclaw: 'detect-local', hermes: 'detect-local' },
+      defaultAiSelection: {
+        providerId: 'codex',
+        modelId: 'gpt-current',
+        reasoningOptionId: 'high',
+      },
+      agentAddOns: {
+        openclaw: 'detect-local',
+        hermes: 'detect-local',
+        'claude-code': 'disabled',
+      },
     });
   });
 
@@ -372,18 +408,34 @@ describe('local user preferences', () => {
     expect(
       parseUserPreferences({
         ...DEFAULT_USER_PREFERENCES,
-        agentAddOns: { openclaw: 'connect-and-run', hermes: 'detect-local' },
+        agentAddOns: {
+          openclaw: 'connect-and-run',
+          hermes: 'detect-local',
+          'claude-code': 'connect-local',
+        },
       }).agentAddOns,
-    ).toEqual({ openclaw: 'disabled', hermes: 'detect-local' });
+    ).toEqual({
+      openclaw: 'disabled',
+      hermes: 'detect-local',
+      'claude-code': 'connect-local',
+    });
   });
 
   it('rejects connection mode for an add-on that is detection-only', () => {
     expect(
       parseUserPreferences({
         ...DEFAULT_USER_PREFERENCES,
-        agentAddOns: { openclaw: 'connect-local', hermes: 'connect-local' },
+        agentAddOns: {
+          openclaw: 'connect-local',
+          hermes: 'connect-local',
+          'claude-code': 'connect-local',
+        },
       }).agentAddOns,
-    ).toEqual({ openclaw: 'disabled', hermes: 'connect-local' });
+    ).toEqual({
+      openclaw: 'disabled',
+      hermes: 'connect-local',
+      'claude-code': 'connect-local',
+    });
   });
 
   it('falls back to one-minute server monitoring for an unknown refresh interval', () => {
@@ -397,15 +449,28 @@ describe('local user preferences', () => {
 
   it('defaults new AI work to provider Auto with high reasoning and round-trips opaque IDs', () => {
     expect(DEFAULT_USER_PREFERENCES.defaultAiSelection).toEqual({
+      providerId: null,
       modelId: null,
       reasoningOptionId: 'high',
     });
     expect(
       parseDefaultAiSelection({ modelId: 'future-model', reasoningOptionId: 'future-effort' }),
-    ).toEqual({ modelId: 'future-model', reasoningOptionId: 'future-effort' });
+    ).toEqual({ providerId: 'codex', modelId: 'future-model', reasoningOptionId: 'future-effort' });
     expect(parseDefaultAiSelection({ modelId: null, reasoningOptionId: null })).toEqual({
+      providerId: null,
       modelId: null,
       reasoningOptionId: null,
+    });
+    expect(
+      parseDefaultAiSelection({
+        providerId: 'claude-code',
+        modelId: 'claude-code:opus',
+        reasoningOptionId: 'high',
+      }),
+    ).toEqual({
+      providerId: 'claude-code',
+      modelId: 'claude-code:opus',
+      reasoningOptionId: 'high',
     });
   });
 

@@ -1429,6 +1429,32 @@ export class CodexAppServer extends EventEmitter {
     registration.seenCalls.add(callKey);
     registration.callsByTurn.set(call.turnId, turnCalls + 1);
     registration.inFlight += 1;
+    this.emitBoundaryEvent('notification', {
+      method: 'gosu/agent/progress',
+      params: {
+        threadId: call.threadId,
+        turnId: call.turnId,
+        stage: 'tool_started',
+        tool: call.tool,
+        callId: call.callId,
+      },
+    });
+    let progressCompleted = false;
+    const completeProgress = (success: boolean) => {
+      if (progressCompleted) return;
+      progressCompleted = true;
+      this.emitBoundaryEvent('notification', {
+        method: 'gosu/agent/progress',
+        params: {
+          threadId: call.threadId,
+          turnId: call.turnId,
+          stage: 'tool_completed',
+          tool: call.tool,
+          callId: call.callId,
+          success,
+        },
+      });
+    };
     const delivery = createDynamicToolDelivery();
     registration.deliveries.add(delivery);
     const timeoutMs =
@@ -1491,6 +1517,7 @@ export class CodexAppServer extends EventEmitter {
       } else {
         delivery.discard();
       }
+      completeProgress(parsedResult.success && writeAcknowledged);
     } catch (error) {
       if (error === timeoutError) {
         delivery.abort(timeoutError);
@@ -1500,6 +1527,7 @@ export class CodexAppServer extends EventEmitter {
         void handlerResult.then(release, release);
       }
       delivery.discard();
+      completeProgress(false);
       if (this.dynamicToolRegistrations.get(call.threadId) !== registration) {
         this.respond(child, requestId, undefined, {
           code: -32000,
@@ -1510,6 +1538,7 @@ export class CodexAppServer extends EventEmitter {
       this.respond(child, requestId, failureDynamicToolResult('GOSU dynamic tool failed.'));
     } finally {
       if (timeout) clearTimeout(timeout);
+      completeProgress(false);
       if (!releaseAfterHandlerSettlement) release();
     }
   }

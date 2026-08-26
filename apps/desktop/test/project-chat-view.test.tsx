@@ -214,7 +214,7 @@ describe('advanced Project Chat controls', () => {
           profile: defaultProjectChatProfile(project.id),
         }}
         loading={false}
-        inFlight={false}
+        inFlight={true}
         models={[]}
         collaborationModes={[]}
         selectedModel={null}
@@ -395,6 +395,74 @@ describe('advanced Project Chat controls', () => {
     expect(html).toMatch(
       /aria-label="Turn attachments are not yet bridged to Hermes"[^>]*aria-describedby=/u,
     );
+  });
+
+  it('shows the Claude subscription agent and its GOSU MCP boundary', () => {
+    const html = renderToStaticMarkup(
+      <ProjectChatView
+        project={project}
+        tasks={[]}
+        snapshot={{
+          schemaVersion: 1,
+          projectId: project.id,
+          messages: [],
+          attempts: [],
+          profile: defaultProjectChatProfile(project.id),
+        }}
+        loading={false}
+        inFlight={true}
+        agentProgress={[
+          {
+            stage: 'tool_started',
+            tool: 'read_workspace',
+            callId: 'claude-mcp:one',
+          },
+          {
+            stage: 'tool_completed',
+            tool: 'read_workspace',
+            callId: 'claude-mcp:one',
+            success: true,
+          },
+        ]}
+        models={[
+          {
+            providerId: 'claude-code',
+            modelId: 'claude-code:opus-5',
+            displayName: 'Claude Code · Opus 5 (subscription)',
+            isDefault: false,
+            modalities: ['text'],
+            reasoningOptions: [{ id: 'high', label: 'High', isDefault: true }],
+            supportsPersonality: false,
+          },
+        ]}
+        collaborationModes={[]}
+        selectedProviderId="claude-code"
+        selectedModel="claude-code:opus-5"
+        selectedReasoning="high"
+        applyingActionId={null}
+        vault={null}
+        vaultState="ready"
+        chatDetailsCollapsed={false}
+        initialAdvancedOpen
+        onSelectedModel={vi.fn()}
+        onSelectedReasoning={vi.fn()}
+        onRefreshModels={vi.fn()}
+        onOpenAgentSettings={vi.fn()}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        onApplyAction={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('Claude Code agent');
+    expect(html).toContain('Claude provider · GOSU MCP · web off');
+    expect(html).toContain('Claude Code subscription agent');
+    expect(html).toContain('GOSU MCP tools');
+    expect(html).toContain('Built-in shell,');
+    expect(html).toContain('user MCP servers');
+    expect(html).toContain('Live Claude agent tool activity');
+    expect(html).toContain('read workspace');
+    expect(html).toContain('Receipt reviewed');
   });
 
   it('uses provider-neutral copy when an explicit model disappears from the live catalog', () => {

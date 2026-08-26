@@ -1,4 +1,4 @@
-export const AGENT_ADD_ON_IDS = ['openclaw', 'hermes'] as const;
+export const AGENT_ADD_ON_IDS = ['openclaw', 'hermes', 'claude-code'] as const;
 
 export type AgentAddOnId = (typeof AGENT_ADD_ON_IDS)[number];
 export type AgentAddOnPreference = 'disabled' | 'detect-local' | 'connect-local';
@@ -43,9 +43,10 @@ export type AgentAddOnStatus = Readonly<{
   state: AgentAddOnDetectionState;
   evidence: AgentAddOnDetectionEvidence;
   connected: boolean;
-  connectionMode: 'bundled-acp-agent' | 'byo-local-acp-agent' | null;
+  connectionMode: 'bundled-acp-agent' | 'byo-local-acp-agent' | 'byo-local-subscription-cli' | null;
   version: string | null;
   projectChatModel: AgentAddOnProjectChatModel | null;
+  projectChatModels?: readonly AgentAddOnProjectChatModel[];
 }>;
 
 export type AgentAddOnStatusRequest = Readonly<{
@@ -74,6 +75,11 @@ const HERMES_CAPABILITIES: AgentAddOnIntegrationCapabilities = {
   automaticInstaller: 'bundled',
 };
 
+const CLAUDE_CODE_CAPABILITIES: AgentAddOnIntegrationCapabilities = {
+  ...DETECTION_ONLY_CAPABILITIES,
+  projectChatProvider: 'available',
+};
+
 export const AGENT_ADD_ON_DESCRIPTORS: readonly AgentAddOnDescriptor[] = [
   {
     id: 'openclaw',
@@ -92,6 +98,15 @@ export const AGENT_ADD_ON_DESCRIPTORS: readonly AgentAddOnDescriptor[] = [
     officialRepositoryUrl: 'https://github.com/NousResearch/hermes-agent',
     officialSetupUrl: 'https://hermes-agent.nousresearch.com/docs/',
     capabilities: HERMES_CAPABILITIES,
+  },
+  {
+    id: 'claude-code',
+    displayName: 'Claude Code',
+    publisher: 'Anthropic',
+    executableName: 'claude',
+    officialRepositoryUrl: 'https://github.com/anthropics/claude-code',
+    officialSetupUrl: 'https://docs.anthropic.com/en/docs/claude-code/getting-started',
+    capabilities: CLAUDE_CODE_CAPABILITIES,
   },
 ] as const;
 
