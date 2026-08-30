@@ -8,6 +8,12 @@ import type {
   ParameterGradientCoverage,
   TensorShape,
 } from './model-lab-schema';
+import {
+  modelFormulaConsistencyFindings,
+  moduleFormulaConsistencyFindings,
+} from './model-formula-consistency';
+
+export { modelFormulaConsistencyFindings, moduleFormulaConsistencyFindings };
 
 export function formatShape(shape: TensorShape): string {
   return `[${shape.join(' × ')}]`;
@@ -177,6 +183,23 @@ function intentReview(model: ModelSpec): AgentReview {
   };
 }
 
+function formulaReview(models: readonly ModelSpec[]): AgentReview {
+  const findings = modelFormulaConsistencyFindings(models);
+  const moduleCount = models.reduce((total, model) => total + model.modules.length, 0);
+  return {
+    id: 'formula-auditor',
+    agent: 'Formula auditor',
+    specialty: 'Transform ↔ equation',
+    status: findings.length === 0 ? 'pass' : 'error',
+    summary:
+      findings.length === 0
+        ? `All ${moduleCount} module equations across ${models.length} model graph${models.length === 1 ? '' : 's'} are consistent with recognized operations in their text.`
+        : `${findings.length} transform-to-equation mismatch${findings.length === 1 ? '' : 'es'} found.`,
+    evidence:
+      findings.length === 0 ? ['No recognized operator contradiction was found.'] : findings,
+  };
+}
+
 function gradientReview(
   model: ModelSpec,
   probe: GradientProbeName,
@@ -306,10 +329,12 @@ export function runAgentReview(
   model: ModelSpec,
   probe: GradientProbeName,
   checkpointIndex: number,
+  formulaScopeModels: readonly ModelSpec[] = [model],
 ): readonly AgentReview[] {
   return [
     shapeReview(model),
     intentReview(model),
+    formulaReview(formulaScopeModels),
     gradientReview(model, probe, checkpointIndex),
     codeReview(model),
   ];

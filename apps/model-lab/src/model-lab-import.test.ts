@@ -64,6 +64,17 @@ const validImport = {
 };
 
 describe('Model Lab JSON import', () => {
+  it('accepts compact symbolic dimensions used in human architecture notes', () => {
+    const imported = structuredClone(validImport);
+    imported.intent.expectedOutput = ['B', '2d'];
+    imported.modules[1]!.outputShape = ['B', '2d'];
+    const result = parseModelImportJson(JSON.stringify(imported));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.model.intent.expectedOutput).toEqual(['B', '2d']);
+    expect(result.model.modules[1]?.outputShape).toEqual(['B', '2d']);
+  });
+
   it('imports bounded architecture JSON without inventing runtime gradient evidence', () => {
     const result = parseModelImportJson(JSON.stringify(validImport));
     expect(result.ok).toBe(true);
@@ -82,6 +93,19 @@ describe('Model Lab JSON import', () => {
     expect(gradientReview?.status).toBe('warning');
     expect(gradientReview?.summary).toContain('not observed');
     expect(gradientReview?.evidence.some((finding) => finding.includes('not-observed'))).toBe(true);
+  });
+
+  it('rejects imported models whose operation text contradicts their equation', () => {
+    const imported = structuredClone(validImport);
+    imported.modules[1]!.transform = 'H = Linear_{2d->2d}(H)';
+    imported.modules[1]!.formula = String.raw`H_3=W_2\operatorname{GELU}(W_1H+b_1)+b_2`;
+
+    const result = parseModelImportJson(JSON.stringify(imported));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain('Formula consistency failed');
+    expect(result.reason).toContain('single Linear transform is represented as a multi-layer MLP');
   });
 
   it('preserves an imported non-differentiable edge as not applicable', () => {

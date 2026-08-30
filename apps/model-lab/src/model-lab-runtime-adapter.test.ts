@@ -36,8 +36,37 @@ describe('Model Lab runtime adapter boundary', () => {
     });
 
     expect(deterministicModelLabRuntime.mode).toBe('deterministic-local');
-    expect(reviews).toHaveLength(4);
+    expect(reviews).toHaveLength(5);
     expect(reviews.every((review) => review.status === 'pass')).toBe(true);
+  });
+
+  it('audits every model supplied in the project registry, not only the selected model', async () => {
+    const inconsistentModel = {
+      ...bottleneckAutoencoder,
+      id: 'inconsistent-secondary-model',
+      modules: bottleneckAutoencoder.modules.map((module, index) =>
+        index === 1
+          ? {
+              ...module,
+              transform: 'H = Linear_{2d->2d}(H)',
+              activation: null,
+              formula: String.raw`H_3=W_2\operatorname{GELU}(W_1H+b_1)+b_2`,
+            }
+          : module,
+      ),
+    };
+    const reviews = await deterministicModelLabRuntime.review({
+      projectModels: [residualClassifier, inconsistentModel],
+      activeModelId: residualClassifier.id,
+      probe: 'healthy',
+      checkpointIndex: 4,
+    });
+    const formulaReview = reviews.find((review) => review.id === 'formula-auditor');
+
+    expect(formulaReview?.status).toBe('error');
+    expect(formulaReview?.evidence).toEqual(
+      expect.arrayContaining([expect.stringContaining('inconsistent-secondary-model')]),
+    );
   });
 
   it('fails closed when a runtime request names a model outside the project registry', async () => {
@@ -108,7 +137,11 @@ describe('Model Lab runtime adapter boundary', () => {
           content: 'Compare this note to the graph.',
         },
       ],
-      selection: { requestedModelId: 'gpt-5.6-sol', reasoningOptionId: 'high' },
+      selection: {
+        providerId: 'codex',
+        requestedModelId: 'gpt-5.6-sol',
+        reasoningOptionId: 'high',
+      },
     };
 
     const result = await runtime.answer(request);
@@ -124,6 +157,39 @@ describe('Model Lab runtime adapter boundary', () => {
       attachments: request.attachments,
       selection: request.selection,
     });
+  });
+
+  it('accepts a validated chat edit proposal without mutating the active model itself', async () => {
+    const runtime = createCodexModelLabRuntime(
+      async () =>
+        new Response(
+          JSON.stringify({
+            body: 'A reviewable two-class head proposal is ready.',
+            trace: ['Chat edit proposal validated'],
+            editProposal: {
+              model: residualClassifier,
+              instructions: 'Change the prediction head to two outputs.',
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
+
+    const answer = await runtime.answer({
+      projectModels: sampleModels,
+      activeModelId: residualClassifier.id,
+      selectedModuleId: 'head',
+      probe: 'healthy',
+      checkpointIndex: 4,
+      question: 'Change the prediction head to two outputs.',
+      purpose: 'chat',
+    });
+
+    expect(answer.editProposal).toMatchObject({
+      model: { id: residualClassifier.id },
+      instructions: 'Change the prediction head to two outputs.',
+    });
+    expect(residualClassifier.intent.expectedOutput).toEqual(['B', 10]);
   });
 
   it('streams the same provider-neutral agent progress contract for GPT and Claude', async () => {
@@ -177,7 +243,11 @@ describe('Model Lab runtime adapter boundary', () => {
         probe: 'healthy',
         checkpointIndex: 4,
         question: 'Inspect this module.',
-        selection: { requestedModelId: 'claude-code:opus-5', reasoningOptionId: 'high' },
+        selection: {
+          providerId: 'claude-code',
+          requestedModelId: 'claude-code:opus-5',
+          reasoningOptionId: 'high',
+        },
       },
       { onProgress: progress },
     );
@@ -212,7 +282,11 @@ describe('Model Lab runtime adapter boundary', () => {
         probe: 'healthy',
         checkpointIndex: 4,
         question: 'Stop this provider-neutral turn.',
-        selection: { requestedModelId: 'claude-code:opus-5', reasoningOptionId: 'high' },
+        selection: {
+          providerId: 'claude-code',
+          requestedModelId: 'claude-code:opus-5',
+          reasoningOptionId: 'high',
+        },
       },
       { signal: controller.signal },
     );
@@ -296,6 +370,7 @@ describe('Model Lab runtime adapter boundary', () => {
     });
 
     await expect(runtime.listModels?.()).resolves.toEqual(catalog);
-    expect(calls).toEqual(['/api/model-copilot/models']);
+    await expect(runtime.listModels?.({ refresh: true })).resolves.toEqual(catalog);
+    expect(calls).toEqual(['/api/model-copilot/models', '/api/model-copilot/models?refresh=1']);
   });
 });

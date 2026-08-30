@@ -9,11 +9,20 @@ import {
   composeModelSubgraphs,
   connectionSignalReading,
   findLogicalNeighborId,
+  forLoopOrderFlowDirection,
+  forLoopRowTransition,
   gradientStrokeWidth,
-  modelGraphCenterViewOptions,
+  MAX_REPEATED_DETAIL_STEPS,
+  modelFormulaAuditScope,
   modelGraphFitViewOptions,
+  modelGraphViewportKey,
   nestedModuleId,
   overviewModel,
+  parseRepeatedLinearOperation,
+  repeatedModuleStepStatements,
+  repeatedStepFormula,
+  repeatedStepName,
+  repeatedTanhSaturationScale,
   signalStripAccessibilityProps,
   signalEndpoints,
 } from './model-graph';
@@ -31,9 +40,16 @@ import {
   modelChatSessionKey,
   modelChatSessionWithAttachments,
   modelChatSessionWithDraft,
+  modelChatSessionWithMessage,
   modelGraphInstanceKey,
+  modelGraphChangeHighlightFromSummary,
+  modelImportJobAfterProgress,
+  modelImportPhaseLabel,
   modelLabShellClassName,
   modelLabWorkbenchClassName,
+  modelPythonDownloadName,
+  pseudocodeLineOffset,
+  modelViewSessionAfterRevision,
   MODEL_COPILOT_MAX_WIDTH,
   MODEL_COPILOT_MIN_WIDTH,
   MODEL_SESSION_SIDEBAR_MAX_WIDTH,
@@ -48,6 +64,7 @@ import {
   panelWidthAfterSeparatorKey,
   replaceModelPreservingOrder,
   shouldHandoffCopilotFocus,
+  toggleModelTreeExpansion,
   withoutTrashedModelSessions,
 } from './model-lab-app';
 import {
@@ -56,6 +73,8 @@ import {
   moduleRepeatPresentation,
   moduleRepeatStackLayers,
 } from './module-node';
+import { modelPseudocodeChangeSummary } from './model-pseudocode';
+import { modelFormulaConsistencyFindings } from './model-lab-domain';
 import {
   filmTransformerClassifier,
   residualClassifier,
@@ -65,6 +84,103 @@ import {
 } from './sample-models';
 
 describe('Model graph interaction contract', () => {
+  it('routes repeated-block handles by row and labels only actual row turns', () => {
+    expect(Array.from({ length: 5 }, (_, index) => forLoopOrderFlowDirection(index))).toEqual([
+      'left-to-right',
+      'left-to-right',
+      'left-to-right',
+      'left-to-right',
+      'left-to-right',
+    ]);
+    expect(forLoopOrderFlowDirection(5)).toBe('right-to-left');
+    expect(forLoopOrderFlowDirection(10)).toBe('left-to-right');
+    expect(forLoopRowTransition(3, 4)).toBeNull();
+    expect(forLoopRowTransition(4, 5)).toEqual({ fromStep: 5, toStep: 6, side: 'right' });
+    expect(forLoopRowTransition(9, 10)).toEqual({ fromStep: 10, toStep: 11, side: 'left' });
+    expect(forLoopRowTransition(4, 7)).toBeNull();
+  });
+
+  it('keeps repeated-block execution arrows forward while retaining selected signal labels', () => {
+    const graphSource = readFileSync(new URL('./model-graph.tsx', import.meta.url), 'utf8');
+    const nodeSource = readFileSync(new URL('./module-node.tsx', import.meta.url), 'utf8');
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+
+    expect(graphSource).toMatch(
+      /const endpoints = openBlock\s+\? \{ source: connection\.source, target: connection\.target \}/u,
+    );
+    expect(graphSource).toContain('STEP {data.rowTransition.fromStep} ↓ STEP');
+    expect(graphSource).toContain('Follow STEP numbers. Each NEXT ROW arrow turns down');
+    expect(nodeSource).toContain("orderFlowDirection === 'left-to-right'");
+    expect(styles).toContain('.signal-edge__row-transition {');
+  });
+
+  it('fails closed when a compound operation is not consumed by an exact step parser', () => {
+    const compound = 'H3 = GELU(H3) + b';
+    expect(repeatedStepName(compound, 6)).toBe('Custom operation · step 7');
+    expect(repeatedStepFormula(compound, 6)).toBe(
+      String.raw`\text{Equation not deterministically derived from step 7}`,
+    );
+    expect(repeatedStepFormula(compound, 6)).not.toContain('GELU');
+  });
+
+  it('shows concise, provider-qualified progress for an active LLM graph import', () => {
+    const updated = modelImportJobAfterProgress(
+      {
+        id: 'build-1',
+        name: 'model.pdf',
+        status: 'model-building',
+        phase: 'sources-prepared',
+        detail: 'Prepared PDF evidence.',
+        runLabel: 'Auto routing',
+        events: ['Prepared PDF evidence.'],
+      },
+      {
+        phase: 'selection-resolved',
+        message: 'GPT-5.6 Sol selected with high reasoning.',
+        providerId: 'codex',
+        modelId: 'gpt-5.6-sol',
+        modelLabel: 'GPT-5.6 Sol',
+        reasoning: 'high',
+      },
+    );
+    const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+
+    expect(updated).toMatchObject({
+      phase: 'selection-resolved',
+      runLabel: 'OpenAI · Codex · GPT-5.6 Sol · high',
+      detail: 'GPT-5.6 Sol selected with high reasoning.',
+    });
+    expect(updated.events).toHaveLength(2);
+    expect(modelImportPhaseLabel('llm-running')).toBe('LLM RUNNING');
+    expect(modelImportPhaseLabel('model-ir-validating')).toBe('VALIDATING MODELIR');
+    expect(appSource).toContain('aria-live="polite"');
+    expect(appSource).toContain('Graph import status');
+    expect(appSource).toContain('Local ModelIR validation · No LLM');
+  });
+
+  it('audits base models and every generated detail graph with the same formula rules', () => {
+    const scope = modelFormulaAuditScope(sampleModels);
+    const materializedModuleIds = scope.flatMap((model) =>
+      model.modules.map((module) => module.id),
+    );
+    expect(scope.length).toBeGreaterThan(sampleModels.length);
+    expect(scope.some((model) => model.id.includes('::block::'))).toBe(true);
+    expect(materializedModuleIds).toEqual(
+      expect.arrayContaining([
+        'residual-block-summary',
+        'sparkvsk-trunk-summary',
+        'tropic-candidate-summary',
+        'block:film-transformer-block',
+      ]),
+    );
+    expect(
+      materializedModuleIds.some(
+        (id) => id.startsWith('[') && id.includes('"tropic-spark-warm-path"'),
+      ),
+    ).toBe(true);
+    expect(modelFormulaConsistencyFindings(scope)).toEqual([]);
+  });
+
   it('reverses graph endpoints for backward gradients so arrows travel output to input', () => {
     const connection = residualClassifier.connections[0];
     expect(connection).toBeDefined();
@@ -183,6 +299,252 @@ describe('Model graph interaction contract', () => {
     ).toBe(true);
   });
 
+  it('expands one repeated Refinement module into an inspectable for-loop step graph', () => {
+    const refinement = {
+      ...residualClassifier.modules[1]!,
+      id: 'iterative-refinement',
+      name: 'Residual-FiLM Refinement Block',
+      inputShape: ['P', '2d'],
+      outputShape: ['P', '2d'],
+      transform: [
+        'For j in range(1, L):',
+        '  H1, H2 = split(H)',
+        "  H1 = X' (y - X H1) / N",
+        '  H3 = Linear(2d, 512) -> GELU -> Linear(512, 2d)',
+        '  H3 = FiLM(H3, log(lambda))',
+        '  H = H + H3',
+        '  H = RMSNorm(H)',
+        '  H[:,:d] *= sigmoid(H[:,d:])',
+        '  H[:,d:] = 5 * tanh(H[:,d:] / 5)',
+      ].join('\n'),
+      repeat: { count: 'L-1', label: 'refinement iterations' },
+    };
+    const model = { ...residualClassifier, modules: [refinement], connections: [] };
+    const hierarchy = composeRepeatedBlocks(model);
+    const block = hierarchy.blocks[0];
+
+    expect(repeatedModuleStepStatements(refinement)).toHaveLength(8);
+    expect(
+      repeatedModuleStepStatements({
+        transform:
+          'For each iteration: split H into H1 and H2; update H1 from the residual; apply Linear and GELU; affine-modulate with FiLM; add the residual; apply RMSNorm; gate with sigmoid; softly saturate with tanh',
+      }),
+    ).toHaveLength(8);
+    expect(
+      repeatedModuleStepStatements({
+        transform: 'head_vs MLP(Fh → 192 → 192 → 1)',
+      }),
+    ).toEqual(['head_vs MLP(Fh → 192 → 192 → 1)']);
+    expect(
+      repeatedModuleStepStatements({
+        transform: [
+          'For j in range(1, L):',
+          '  # data-consistency update',
+          "  H1_new = X' (y - X H1) / N",
+          '  # residual recombination',
+          '  H3 = concat(H1_new, H2)',
+        ].join('\n'),
+      }),
+    ).toEqual([
+      "H1_new = X' (y - X H1) / N # data-consistency update",
+      'H3 = concat(H1_new, H2) # residual recombination',
+    ]);
+    expect(block).toMatchObject({
+      id: 'repeat:iterative-refinement',
+      summaryModuleId: 'iterative-refinement',
+      selectionModuleId: 'iterative-refinement',
+      repeatCount: 'L-1',
+      detailKind: 'steps',
+    });
+    expect(block?.detailModel.modules).toHaveLength(8);
+    expect(block?.detailModel.connections).toHaveLength(7);
+    expect(block?.detailModel.modules.map((module) => module.name)).toEqual([
+      'Split hidden state',
+      'Residual / gradient update',
+      'Residual MLP',
+      'FiLM conditioning',
+      'Residual add',
+      'Normalize state',
+      'Channel gate',
+      'Soft saturation',
+    ]);
+    expect(block?.detailModel.modules.map((module) => module.formula)).toEqual([
+      String.raw`H_1=H_{:,:d},\qquad H_2=H_{:,d:}`,
+      String.raw`H_1\leftarrow X^{\top}(y-XH_1)/N`,
+      String.raw`H_3\leftarrow\operatorname{Linear}_{512\to2d}\!\left(\operatorname{GELU}\!\left(\operatorname{Linear}_{2d\to512}(H_3)\right)\right)`,
+      String.raw`H_3\leftarrow(1+\gamma^{(j)})\odot H_3+\delta^{(j)}`,
+      String.raw`H\leftarrow H+H_3`,
+      String.raw`H\leftarrow\operatorname{RMSNorm}_{2d}(H)`,
+      String.raw`H_{:,:d}\leftarrow H_{:,:d}\odot\sigma(H_{:,d:})`,
+      String.raw`H_{:,d:}\leftarrow5\tanh\!\left(H_{:,d:}/5\right)`,
+    ]);
+    expect(repeatedStepFormula('custom opaque operator', 2)).toContain(
+      'Equation not deterministically derived from step 3',
+    );
+    const thresholdSlotSlice = 'H2 = H[:, d:] # [P, d] scale / threshold slots';
+    expect(repeatedStepName(thresholdSlotSlice, 1)).toBe('Extract scale / threshold channels');
+    expect(repeatedStepFormula(thresholdSlotSlice, 1)).toBe(String.raw`H_2=H_{:,d:}`);
+    expect(renderFormulaResult(repeatedStepFormula(thresholdSlotSlice, 1))).toMatchObject({
+      valid: true,
+    });
+    expect(
+      renderFormulaResult(repeatedStepFormula('beta = soft-threshold(H, tau)', 8)),
+    ).toMatchObject({ valid: true });
+    const sliceHierarchy = composeRepeatedBlocks({
+      ...model,
+      modules: [
+        {
+          ...refinement,
+          transform: [
+            'For j in range(1, L):',
+            '  H1 = H[:, :d] # coefficient channels',
+            `  ${thresholdSlotSlice}`,
+          ].join('\n'),
+        },
+      ],
+    });
+    expect(sliceHierarchy.blocks[0]?.detailModel.modules[1]).toMatchObject({
+      name: 'Extract scale / threshold channels',
+      transform: 'H2 = H[:, d:]',
+      formula: String.raw`H_2=H_{:,d:}`,
+      explanation: expect.stringContaining(
+        'Pseudocode annotation: [P, d] scale / threshold slots.',
+      ),
+    });
+    expect(
+      block?.detailModel.connections.every(
+        (connection) => connection.gradient.states.healthy[0] === 'not-observed',
+      ),
+    ).toBe(true);
+    expect(hierarchy.model.modules).toHaveLength(1);
+  });
+
+  it('preserves a thirteenth repeated operation and its literal tanh saturation scale', () => {
+    const refinement = {
+      ...residualClassifier.modules[1]!,
+      id: 'refine-thirteen-steps',
+      inputShape: ['P', '2d'],
+      outputShape: ['P', '2d'],
+      repeat: { count: 'L-1', label: 'j = 1 .. L-1' },
+      transform: [
+        'For j in range(1, L):',
+        '  H1 = H[:, :d]',
+        '  H2 = H[:, d:]',
+        "  H1 = X' (y - X H1) / N",
+        '  H3 = concat(H1, H2)',
+        '  H3 = Linear_{2d->512}(H3)',
+        '  H3 = GELU(H3)',
+        '  H3 = Linear_{512->2d}(H3)',
+        '  [gamma_j, delta_j] = split(Linear^{(j)}_{256->128}(e_lambda), 2)',
+        '  H3 = (1 + gamma_j) * H3 + delta_j',
+        '  H = H + H3',
+        '  H = RMSNorm_{2d}(H)',
+        '  H = Linear_{2d->2d}(H)',
+        '  H[:, d:] = 7 * tanh(H[:, d:] / 7)',
+      ].join('\n'),
+    };
+    const statements = repeatedModuleStepStatements(refinement);
+    const block = composeRepeatedBlocks({
+      ...residualClassifier,
+      modules: [refinement],
+      connections: [],
+    }).blocks[0];
+
+    expect(statements).toHaveLength(13);
+    expect(statements.at(-1)).toBe('H[:, d:] = 7 * tanh(H[:, d:] / 7)');
+    expect(repeatedTanhSaturationScale(statements.at(-1)!)).toBe('7');
+    expect(repeatedStepFormula(statements.at(-1)!, 12)).toBe(
+      String.raw`H_{:,d:}\leftarrow7\tanh\!\left(H_{:,d:}/7\right)`,
+    );
+    expect(block?.detailModel.modules).toHaveLength(13);
+    expect(block?.detailModel.connections).toHaveLength(12);
+    expect(block?.omittedStepCount).toBe(0);
+    expect(block?.detailModel.modules.at(-1)).toMatchObject({
+      name: 'Soft saturation',
+      activation: 'tanh',
+      formula: String.raw`H_{:,d:}\leftarrow7\tanh\!\left(H_{:,d:}/7\right)`,
+    });
+    expect(renderFormulaResult(block!.detailModel.modules.at(-1)!.formula)).toMatchObject({
+      valid: true,
+    });
+    expect(parseRepeatedLinearOperation('H = Linear_{2d->2d}(H)')).toEqual({
+      output: 'H',
+      input: 'H',
+      inputDimension: '2d',
+      outputDimension: '2d',
+    });
+    expect(repeatedStepName('H = Linear_{2d->2d}(H)', 11)).toBe('Linear 2d → 2d');
+    const singleLinearFormula = repeatedStepFormula('H = Linear_{2d->2d}(H)', 11);
+    expect(singleLinearFormula).toBe(
+      String.raw`H\leftarrow\operatorname{Linear}_{2d\to2d}(H)=WH+b,\quad W\in\mathbb R^{2d\times 2d}`,
+    );
+    expect(singleLinearFormula).not.toContain('GELU');
+    expect(block?.detailModel.modules[8]?.formula).toBe(
+      String.raw`H_3\leftarrow(1+\gamma^{(j)})\odot H_3+\delta^{(j)}`,
+    );
+    expect(block?.detailModel.modules[11]).toMatchObject({
+      name: 'Linear 2d → 2d',
+      transform: 'H = Linear_{2d->2d}(H)',
+      activation: null,
+      formula: singleLinearFormula,
+    });
+    expect(block?.detailModel.modules[4]).toMatchObject({
+      inputShape: ['P', '2d'],
+      outputShape: ['P', 512],
+    });
+    expect(block?.detailModel.modules[5]).toMatchObject({
+      inputShape: ['P', 512],
+      outputShape: ['P', 512],
+    });
+    expect(block?.detailModel.modules[6]).toMatchObject({
+      inputShape: ['P', 512],
+      outputShape: ['P', '2d'],
+    });
+    expect(
+      block?.detailModel.modules.every(
+        (module) =>
+          module.formula.length > 0 &&
+          !module.formula.includes('No separate equation was specified'),
+      ),
+    ).toBe(true);
+    expect(
+      block?.detailModel.modules.every((module) => renderFormulaResult(module.formula).valid),
+    ).toBe(true);
+    expect(repeatedTanhSaturationScale('H[:, d:] = 5 * tanh(H[:, d:] / 5)')).toBe('5');
+    expect(repeatedTanhSaturationScale('H[:, d:] = 2.5 * tanh(H[:, d:] / 2.5)')).toBe('2.5');
+    expect(repeatedTanhSaturationScale('H[:, d:] = 7 * tanh(H[:, d:] / 5)')).toBeNull();
+    expect(repeatedStepFormula('H[:, d:] = 7 * tanh(H[:, d:] / 5)', 12)).toBe(
+      String.raw`\text{Equation not deterministically derived from step 13}`,
+    );
+  });
+
+  it('keeps long loop source lossless while visibly bounding only graph rendering', () => {
+    const operations = Array.from(
+      { length: MAX_REPEATED_DETAIL_STEPS + 1 },
+      (_, index) => `H = H + step_${index + 1}`,
+    );
+    const refinement = {
+      ...residualClassifier.modules[1]!,
+      id: 'refine-overflow',
+      repeat: { count: 'L-1', label: 'long refinement' },
+      transform: ['For j in range(1, L):', ...operations.map((line) => `  ${line}`)].join('\n'),
+    };
+    const parsed = repeatedModuleStepStatements(refinement);
+    const block = composeRepeatedBlocks({
+      ...residualClassifier,
+      modules: [refinement],
+      connections: [],
+    }).blocks[0];
+    const graphSource = readFileSync(new URL('./model-graph.tsx', import.meta.url), 'utf8');
+
+    expect(parsed).toHaveLength(MAX_REPEATED_DETAIL_STEPS + 1);
+    expect(parsed.at(-1)).toBe(`H = H + step_${MAX_REPEATED_DETAIL_STEPS + 1}`);
+    expect(block?.detailModel.modules).toHaveLength(MAX_REPEATED_DETAIL_STEPS);
+    expect(block?.omittedStepCount).toBe(1);
+    expect(graphSource).toContain('additional operation');
+    expect(graphSource).toContain('remain in the pseudocode and revision');
+  });
+
   it('renders a composite block as a click-to-drill-down card instead of internal sequence text', () => {
     const graphSource = readFileSync(new URL('./model-graph.tsx', import.meta.url), 'utf8');
     const nodeSource = readFileSync(new URL('./module-node.tsx', import.meta.url), 'utf8');
@@ -191,6 +553,8 @@ describe('Model graph interaction contract', () => {
     expect(nodeSource).toContain('module-node--composite');
     expect(nodeSource).toContain('Open block details →');
     expect(graphSource).toContain('INSIDE COMPOSITE BLOCK');
+    expect(graphSource).toContain('INSIDE REPEATED FOR-LOOP');
+    expect(graphSource).toContain("openBlock.detailKind === 'steps'");
     expect(graphSource).toContain('← Whole model');
     expect(styles).toContain('14px -14px 0 -1px var(--model-surface)');
   });
@@ -200,14 +564,28 @@ describe('Model graph interaction contract', () => {
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
     expect(graphSource).toContain('<EdgeLabelRenderer>');
-    expect(graphSource).toContain(
-      'className={`signal-edge__label signal-edge__label--${data.health}`}',
-    );
+    expect(graphSource).toContain('signal-edge__label signal-edge__label--${data.health}');
+    expect(graphSource).toContain('signal-edge__label--change-${data.changeKind}');
     expect(graphSource).toContain("type: 'signal'");
     expect(graphSource).not.toContain('labelBgPadding');
     expect(styles).toMatch(
       /\.signal-edge__label \{[\s\S]*?max-width: 136px;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/u,
     );
+  });
+
+  it('highlights changed proposal blocks and edges without applying the revision', () => {
+    const graphSource = readFileSync(new URL('./model-graph.tsx', import.meta.url), 'utf8');
+    const nodeSource = readFileSync(new URL('./module-node.tsx', import.meta.url), 'utf8');
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+
+    expect(graphSource).toContain('PROPOSAL PREVIEW · GRAPH NOT APPLIED');
+    expect(graphSource).toContain('Graph change highlight');
+    expect(graphSource).toContain('changeKind');
+    expect(nodeSource).toContain('module-node__change-badge');
+    expect(nodeSource).toContain('MODIFIED');
+    expect(styles).toContain('.module-node--change-changed {');
+    expect(styles).toContain('.module-node--change-added {');
+    expect(styles).toContain('.signal-edge__label--change-changed {');
   });
 
   it('renders graph-card formulas as bounded, untrusted KaTeX with MathML', () => {
@@ -545,28 +923,48 @@ describe('Model graph interaction contract', () => {
     expect(modelLabShellClassName(false, true)).toBe(
       'model-lab-shell model-lab-shell--sessions-collapsed',
     );
-    expect(modelGraphFitViewOptions(true).minZoom).toBeGreaterThanOrEqual(0.58);
+    expect(modelGraphFitViewOptions(true).minZoom).toBeGreaterThanOrEqual(0.64);
     expect(modelGraphFitViewOptions(false).minZoom).toBeUndefined();
   });
 
-  it('offers an always-visible action that centers every model box without manual panning', () => {
-    expect(modelGraphCenterViewOptions(false)).toEqual({
-      padding: 0.12,
-      minZoom: 0.22,
-      maxZoom: 1.05,
-      duration: 420,
-    });
-    expect(modelGraphCenterViewOptions(true)).toEqual({
-      padding: 0.06,
-      minZoom: 0.22,
-      maxZoom: 0.9,
-      duration: 420,
-    });
+  it('remounts the canonical graph layout before centering boxes that were moved off-screen', () => {
+    expect(modelGraphViewportKey('model-a', null, 0)).not.toBe(
+      modelGraphViewportKey('model-a', null, 1),
+    );
+    expect(modelGraphViewportKey('model-a', null, 1)).not.toBe(
+      modelGraphViewportKey('model-a', 'block-1', 1),
+    );
 
     const graphSource = readFileSync(new URL('./model-graph.tsx', import.meta.url), 'utf8');
     expect(graphSource).toContain('Center model boxes');
-    expect(graphSource).toContain('Center all model boxes in the graph viewport');
-    expect(graphSource).toContain('fitView(modelGraphCenterViewOptions(focusMode))');
+    expect(graphSource).toContain(
+      'Reset the canonical layout and center all model boxes in the graph viewport',
+    );
+    expect(graphSource).toContain(
+      'key={modelGraphViewportKey(graphModel.id, openBlockId, viewportResetNonce)}',
+    );
+    expect(graphSource).toContain('setViewportResetNonce((current) => current + 1)');
+    expect(graphSource).toContain('onClick={resetAndCenterVisibleGraph}');
+    expect(graphSource).not.toContain('flowInstanceRef');
+  });
+
+  it('folds prototype chrome into a compact header and gives the viewport to the graph', () => {
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+    const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+
+    expect(appSource).toContain('<details className="model-lab-about">');
+    expect(appSource).not.toContain('<section className="prototype-boundary"');
+    expect(appSource).not.toContain('<section className="workspace-bar"');
+    expect(styles).toMatch(
+      /\.model-lab-header \{[\s\S]*?grid-template-columns: auto minmax\(0, 1fr\) auto;[\s\S]*?min-height: 58px;[\s\S]*?padding: 8px 12px;/u,
+    );
+    expect(styles).toMatch(
+      /\.graph-workspace \{[\s\S]*?height: calc\(100dvh - 76px\);[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\) auto;/u,
+    );
+    expect(styles).toMatch(/\.graph-toolbar \{[\s\S]*?min-height: 46px;[\s\S]*?padding: 6px 8px;/u);
+    expect(styles).toMatch(
+      /\.model-graph__readings \{[\s\S]*?grid-template-columns: auto minmax\(0, 1fr\);[\s\S]*?padding: 6px 8px;/u,
+    );
   });
 
   it('resizes both desktop sidebars in the correct pointer and keyboard directions', () => {
@@ -676,6 +1074,130 @@ describe('Model graph interaction contract', () => {
       'question.md',
     ]);
     expect(sessions[nextRevision]?.attachments).toEqual([]);
+
+    sessions = modelChatSessionWithMessage(sessions, nextRevision, replacement, {
+      id: 'revision-comment-1',
+      modelId: replacement.id,
+      modelVersion: replacement.version,
+      createdAt: '2026-08-30T00:00:00.000Z',
+      role: 'assistant',
+      body: 'Revision 1 changes the prediction head and needs a shape check.',
+      trace: ['Automatic Model Copilot revision comment'],
+    });
+    expect(sessions[nextRevision]?.messages.at(-1)?.body).toContain('needs a shape check');
+    expect(sessions[firstRevision]?.messages).toHaveLength(1);
+  });
+
+  it('opens a committed revision on the changed block in the expanded graph', () => {
+    const changedModel = {
+      ...residualClassifier,
+      modules: residualClassifier.modules.map((module) =>
+        module.id === 'residual-mlp'
+          ? { ...module, transform: `${module.transform} + FiLM(log(lambda))` }
+          : module,
+      ),
+    };
+    expect(modelViewSessionAfterRevision(residualClassifier, changedModel)).toEqual({
+      selectedModuleId: 'residual-mlp',
+      graphDetail: 'expanded',
+      expandedSubgraphModuleIds: [],
+    });
+  });
+
+  it('maps pseudocode changes to proposal and revision graph highlights', () => {
+    const changedModel = {
+      ...residualClassifier,
+      modules: residualClassifier.modules.map((module) =>
+        module.id === 'head' ? { ...module, name: 'Updated head' } : module,
+      ),
+      connections: residualClassifier.connections.map((connection) =>
+        connection.id === 'e-merge-head'
+          ? { ...connection, tensorName: 'updated hidden state' }
+          : connection,
+      ),
+    };
+    const summary = modelPseudocodeChangeSummary(residualClassifier, changedModel);
+    expect(modelGraphChangeHighlightFromSummary(summary, 'proposal')).toEqual({
+      mode: 'proposal',
+      addedModuleIds: [],
+      changedModuleIds: ['head'],
+      removedModuleIds: [],
+      addedConnectionIds: [],
+      changedConnectionIds: ['e-merge-head'],
+      addedStepIds: [],
+      changedStepIds: [],
+      removedStepLabels: [],
+    });
+  });
+
+  it('propagates a repeated Block modification to the exact expanded step node', () => {
+    const baseRefine = {
+      ...residualClassifier.modules[1]!,
+      id: 'refine',
+      name: 'Unrolled FiLM Refinement Iteration',
+      repeat: { count: 'L-1', label: 'j = 1 .. L-1' },
+      transform: [
+        'For j in range(1, L):',
+        '  H1 = H[:, :d]',
+        '  H2 = H[:, d:]',
+        "  H1_new = X' (y - X H1) / N",
+        '  H3 = H',
+      ].join('\n'),
+    };
+    const previousModel = { ...residualClassifier, modules: [baseRefine], connections: [] };
+    const nextModel = {
+      ...previousModel,
+      modules: [
+        {
+          ...baseRefine,
+          transform: baseRefine.transform.replace('H3 = H', 'H3 = concat(H1_new, H2)'),
+        },
+      ],
+    };
+    const highlight = modelGraphChangeHighlightFromSummary(
+      modelPseudocodeChangeSummary(previousModel, nextModel),
+      'proposal',
+      previousModel,
+      nextModel,
+    );
+    expect(highlight.changedModuleIds).toEqual(['refine']);
+    expect(highlight.changedStepIds).toEqual(['repeat-step:refine:4']);
+    expect(highlight.addedStepIds).toEqual([]);
+    expect(repeatedStepName('H3 = concat(H1_new, H2)', 3)).toBe('Recombine updated hidden state');
+    expect(repeatedStepFormula('H3 = concat(H1_new, H2)', 3)).toBe(
+      String.raw`H_3=\operatorname{concat}(H_1^{\mathrm{new}},H_2)`,
+    );
+    expect(repeatedStepFormula('H3 = concat(H1, H2)', 3)).toBe(
+      String.raw`H_3=\operatorname{concat}(H_1,H_2)`,
+    );
+    expect(renderFormulaResult(repeatedStepFormula('H3 = concat(H1_new, H2)', 3))).toMatchObject({
+      valid: true,
+    });
+    expect(repeatedStepName('H3 = Linear_{2d->512}(H3)', 6)).toBe('Expand hidden channels');
+    expect(repeatedStepFormula('H3 = Linear_{2d->512}(H3)', 6)).toContain(
+      String.raw`W_1\in\mathbb R^{512\times 2d}`,
+    );
+    expect(repeatedStepName('H3 = GELU(H3)', 7)).toBe('GELU activation');
+    expect(repeatedStepFormula('H3 = GELU(H3)', 7)).toBe(
+      String.raw`H_3\leftarrow\operatorname{GELU}(H_3)`,
+    );
+    const filmParameterStep = '[gamma_j, delta_j] = split(Linear^{(j)}_{256->128}(e_lambda), 2)';
+    expect(repeatedStepName(filmParameterStep, 9)).toBe('Generate FiLM parameters');
+    expect(renderFormulaResult(repeatedStepFormula(filmParameterStep, 9))).toMatchObject({
+      valid: true,
+    });
+  });
+
+  it('uses a revision-qualified safe filename for Python artifact downloads', () => {
+    expect(modelPythonDownloadName('Single-λ LASSO / Foundation Model', 7)).toBe(
+      'single-lasso-foundation-model-r7.py',
+    );
+  });
+
+  it('maps a diff line to the matching textarea selection offset', () => {
+    expect(pseudocodeLineOffset('line one\nline two\nline three', 1)).toBe(0);
+    expect(pseudocodeLineOffset('line one\nline two\nline three', 2)).toBe(9);
+    expect(pseudocodeLineOffset('line one\nline two\nline three', 3)).toBe(18);
   });
 
   it('always imports into a separate model session instead of replacing an existing model', () => {
@@ -729,6 +1251,27 @@ describe('Model graph interaction contract', () => {
     expect(modelSessionDeleteLabel('TROPIC λ-path compiler')).toBe('Delete TROPIC λ-path compiler');
   });
 
+  it('nests module blocks under expandable model folders using the GOSU sidebar hierarchy', () => {
+    expect(toggleModelTreeExpansion(['model-a'], 'model-b')).toEqual(['model-b']);
+    expect(toggleModelTreeExpansion(['model-a'], 'model-a')).toEqual([]);
+
+    const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+    expect(appSource).toContain('className="model-session-tree"');
+    expect(appSource).toContain('className="model-tree-folder-button"');
+    expect(appSource).toContain('className="model-tree-folder-children"');
+    expect(appSource).toContain('<ModelTreeChevron expanded={expanded} />');
+    expect(appSource).toContain('aria-label={`${candidate.name} module blocks`}');
+    expect(appSource).not.toContain('id="active-model-modules"');
+    expect(styles).toMatch(
+      /\.model-tree-folder-button \{[\s\S]*?grid-template-columns: 20px 24px minmax\(0, 1fr\);/u,
+    );
+    expect(styles).toMatch(
+      /\.model-tree-folder-children \{[\s\S]*?margin: 0 7px 7px 18px;[\s\S]*?padding-left: 10px;[\s\S]*?border-left: 1px solid var\(--model-border\);/u,
+    );
+    expect(styles).toContain('.model-tree-folder.selected .model-tree-folder-button');
+  });
+
   it('keeps one active model and permanently purges only matching chat/view session keys', () => {
     expect(
       moveModelSessionToTrash(
@@ -773,6 +1316,17 @@ describe('Model graph interaction contract', () => {
     );
     expect(modelGraphInstanceKey(residualClassifier.id, 0, false, [], false, false)).not.toBe(
       modelGraphInstanceKey(residualClassifier.id, 0, false, [], false, true),
+    );
+    expect(modelGraphInstanceKey(residualClassifier.id, 0, false, [], false, false)).not.toBe(
+      modelGraphInstanceKey(
+        residualClassifier.id,
+        0,
+        false,
+        [],
+        false,
+        false,
+        'proposal-head-changed',
+      ),
     );
   });
 
@@ -885,9 +1439,8 @@ describe('Model graph interaction contract', () => {
     expect(styles).toMatch(
       /@media \(max-width: 900px\)[\s\S]*\.model-session-sidebar:not\(\.model-session-sidebar--collapsed\) > footer \{\s+display: grid;/,
     );
-    expect(appSource).toContain(
-      'Always creates a separate model session; it never attaches to or replaces the current',
-    );
+    expect(appSource).toContain('Source files use the selected LLM.');
+    expect(appSource).toContain('import creates a separate model session.');
     expect(appSource).not.toContain('aria-label="Attached model context"');
   });
 

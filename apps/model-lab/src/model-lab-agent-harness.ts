@@ -19,7 +19,7 @@ export type ModelLabAgentToolName = (typeof MODEL_LAB_AGENT_TOOL_NAMES)[number];
 export const MODEL_LAB_AGENT_STEP_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['kind', 'calls', 'answer'],
+  required: ['kind', 'calls', 'answer', 'editInstructions'],
   properties: {
     kind: { type: 'string', enum: ['tool_calls', 'final'] },
     calls: {
@@ -37,6 +37,7 @@ export const MODEL_LAB_AGENT_STEP_SCHEMA = {
       },
     },
     answer: { type: ['string', 'null'], maxLength: 24_000 },
+    editInstructions: { type: ['string', 'null'], maxLength: 8_000 },
   },
 } as const;
 
@@ -77,6 +78,7 @@ type AgentStep = Readonly<{
     argumentsJson: string;
   }>[];
   answer: string | null;
+  editInstructions: string | null;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -95,7 +97,8 @@ function parseStep(body: string): AgentStep {
     (value.kind !== 'tool_calls' && value.kind !== 'final') ||
     !Array.isArray(value.calls) ||
     value.calls.length > MODEL_LAB_AGENT_MAX_CALLS_PER_STEP ||
-    (value.answer !== null && typeof value.answer !== 'string')
+    (value.answer !== null && typeof value.answer !== 'string') ||
+    (value.editInstructions !== null && typeof value.editInstructions !== 'string')
   ) {
     throw new Error('model_lab_agent_step_invalid');
   }
@@ -118,10 +121,19 @@ function parseStep(body: string): AgentStep {
     if (calls.length !== 0 || typeof value.answer !== 'string' || !value.answer.trim()) {
       throw new Error('model_lab_agent_final_invalid');
     }
-  } else if (calls.length === 0 || value.answer !== null) {
+    if (typeof value.editInstructions === 'string' && !value.editInstructions.trim()) {
+      throw new Error('model_lab_agent_final_invalid');
+    }
+  } else if (calls.length === 0 || value.answer !== null || value.editInstructions !== null) {
     throw new Error('model_lab_agent_tool_calls_invalid');
   }
-  return { kind: value.kind, calls, answer: value.answer };
+  return {
+    kind: value.kind,
+    calls,
+    answer: value.answer,
+    editInstructions:
+      typeof value.editInstructions === 'string' ? value.editInstructions.trim() : null,
+  };
 }
 
 function parseArguments(value: string) {
@@ -324,7 +336,7 @@ const TOOL_INSTRUCTIONS = `AVAILABLE GOSU MODEL LAB TOOLS
 - inspect_gradient({"modelId":"...","moduleId":"..."})
 - compare_models({"modelId":"...","modelIds":["...","..."]})
 
-Return kind=tool_calls when more evidence is required. Encode every tool argument object as JSON in argumentsJson. Return kind=final only after checking enough evidence. Never invent a tool receipt.`;
+Return kind=tool_calls when more evidence is required. Encode every tool argument object as JSON in argumentsJson. For tool_calls, answer and editInstructions must both be null. Return kind=final only after checking enough evidence. For a normal question or revision review, set editInstructions=null. When the user explicitly asks to change the selected model architecture, pseudocode, dimensions, equations, blocks, or graph, set editInstructions to a precise bounded description of the requested architecture change and explain in answer that GOSU will prepare a reviewable proposal; never claim that the graph was already changed. Never invent a tool receipt.`;
 
 export async function runModelLabAgentHarness(input: {
   request: ModelLabQuestionRequest;
@@ -368,6 +380,7 @@ export async function runModelLabAgentHarness(input: {
       trace.push(`Agent step ${step} · final`);
       return {
         body: decision.answer!.trim(),
+        editInstructions: decision.editInstructions,
         provider: providerResult.provider,
         model: providerResult.model,
         reasoning: providerResult.reasoning,

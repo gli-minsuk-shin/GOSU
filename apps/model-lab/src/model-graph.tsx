@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Background,
   BackgroundVariant,
@@ -11,7 +11,6 @@ import {
   ReactFlow,
   type Edge,
   type EdgeProps,
-  type ReactFlowInstance,
 } from '@xyflow/react';
 import {
   classifyGradient,
@@ -34,12 +33,32 @@ import type {
   ModelConnection,
   ModelModule,
   ModelSpec,
+  TensorShape,
 } from './model-lab-schema';
 
 const nodeTypes = { module: ModuleNodeView, 'subgraph-boundary': SubgraphBoundaryNodeView };
 
+export type ModelGraphChangeKind = 'added' | 'changed';
+
+export type ModelGraphChangeHighlight = Readonly<{
+  mode: 'proposal' | 'revision';
+  addedModuleIds: readonly string[];
+  changedModuleIds: readonly string[];
+  removedModuleIds: readonly string[];
+  addedConnectionIds: readonly string[];
+  changedConnectionIds: readonly string[];
+  addedStepIds: readonly string[];
+  changedStepIds: readonly string[];
+  removedStepLabels: readonly string[];
+}>;
+
 type SignalFlowEdge = Edge<
-  Readonly<Pick<SignalReading, 'health' | 'quantity' | 'tensorName' | 'value'>>,
+  Readonly<
+    Pick<SignalReading, 'health' | 'quantity' | 'tensorName' | 'value'> & {
+      changeKind: ModelGraphChangeKind | null;
+      rowTransition: ForLoopRowTransition | null;
+    }
+  >,
   'signal'
 >;
 
@@ -66,6 +85,10 @@ export function SignalEdgeView({
     borderRadius: pathOptions?.borderRadius ?? 18,
     offset: pathOptions?.offset ?? 36,
   });
+  const renderedLabelX = data?.rowTransition
+    ? (sourceX + targetX) / 2 + (data.rowTransition.side === 'right' ? -92 : 92)
+    : labelX;
+  const renderedLabelY = data?.rowTransition ? (sourceY + targetY) / 2 : labelY;
   return (
     <>
       <BaseEdge
@@ -78,13 +101,21 @@ export function SignalEdgeView({
       {data ? (
         <EdgeLabelRenderer>
           <div
-            className={`signal-edge__label signal-edge__label--${data.health}`}
+            className={`signal-edge__label signal-edge__label--${data.health}${data.changeKind ? ` signal-edge__label--change-${data.changeKind}` : ''}`}
             style={{
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              transform: `translate(-50%, -50%) translate(${renderedLabelX}px, ${renderedLabelY}px)`,
             }}
             title={`${data.tensorName}: ${data.quantity} ${data.value}`}
             aria-label={`${data.tensorName}: ${data.quantity} ${data.value}`}
           >
+            {data.rowTransition ? (
+              <span className="signal-edge__row-transition">
+                <b>NEXT ROW</b>
+                <strong>
+                  STEP {data.rowTransition.fromStep} ↓ STEP {data.rowTransition.toStep}
+                </strong>
+              </span>
+            ) : null}
             <span>{data.quantity}</span>
             <strong>{data.value}</strong>
           </div>
@@ -164,6 +195,7 @@ type ModelGraphProps = Readonly<{
   checkpointIndex: number;
   signalMode: 'forward' | 'backward';
   focusMode: boolean;
+  changeHighlight?: ModelGraphChangeHighlight | null;
   openModuleId: string | null;
   onSelectModule: (moduleId: string) => void;
   onOpenModule: (module: ModelModule, graphModel: ModelSpec) => void;
@@ -172,18 +204,16 @@ type ModelGraphProps = Readonly<{
 
 export function modelGraphFitViewOptions(focusMode: boolean) {
   return focusMode
-    ? { padding: 0.06, minZoom: 0.58, maxZoom: 0.9 }
-    : { padding: 0.12, maxZoom: 1.05 };
+    ? { padding: 0.025, minZoom: 0.64, maxZoom: 1.1 }
+    : { padding: 0.045, maxZoom: 1.18 };
 }
 
-export function modelGraphCenterViewOptions(focusMode: boolean) {
-  const initialOptions = modelGraphFitViewOptions(focusMode);
-  return {
-    padding: initialOptions.padding,
-    minZoom: 0.22,
-    maxZoom: initialOptions.maxZoom,
-    duration: 420,
-  };
+export function modelGraphViewportKey(
+  modelId: string,
+  openBlockId: string | null,
+  resetNonce: number,
+) {
+  return JSON.stringify([modelId, openBlockId, resetNonce]);
 }
 
 function graphPosition(stage: number, lane: number) {
@@ -219,9 +249,14 @@ export type RepeatedBlockDetail = Readonly<{
   label: string;
   repeatCount: number | string;
   summaryModuleId: string;
+  selectionModuleId: string;
   memberModuleIds: readonly string[];
+  omittedStepCount: number;
+  detailKind: 'modules' | 'steps';
   detailModel: ModelSpec;
 }>;
+
+export const MAX_REPEATED_DETAIL_STEPS = 200;
 
 export type RepeatedBlockHierarchy = Readonly<{
   model: ModelSpec;
@@ -235,6 +270,458 @@ export function repeatedBlockSummaryId(blockId: string) {
 function withoutBlockMetadata(module: ModelModule, stageOffset: number): ModelModule {
   const { block: _block, repeat: _repeat, ...detailModule } = module;
   return { ...detailModule, stage: module.stage - stageOffset };
+}
+
+export function repeatedModuleStepStatements(module: Pick<ModelModule, 'transform'>) {
+  const source = module.transform.trim();
+  if (!source) return [];
+  const physicalLines = source
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  let statements: string[];
+  if (physicalLines.length > 1) {
+    const pendingAnnotations: string[] = [];
+    statements = [];
+    for (const line of physicalLines) {
+      if (/^(?:for|For)\b.*:\s*$/u.test(line)) continue;
+      if (line.startsWith('#')) {
+        const annotation = line.replace(/^#+\s*/u, '').trim();
+        if (annotation) pendingAnnotations.push(annotation);
+        continue;
+      }
+      statements.push(
+        pendingAnnotations.length > 0 ? `${line} # ${pendingAnnotations.join(' · ')}` : line,
+      );
+      pendingAnnotations.length = 0;
+    }
+  } else {
+    statements = source
+      .replace(/^for each iteration:\s*/iu, '')
+      .split(/;\s*/u)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+  return statements
+    .map((statement) => statement.replace(/^(?:[-*•]|\d+[.)])\s*/u, '').trim())
+    .filter((statement) => statement.length > 1);
+}
+
+function repeatedStepCode(statement: string) {
+  return statement.split(/\s+#/u, 1)[0]!.trim();
+}
+
+export type RepeatedLinearOperation = Readonly<{
+  output: string;
+  input: string;
+  inputDimension: string;
+  outputDimension: string;
+}>;
+
+export function parseRepeatedLinearOperation(statement: string): RepeatedLinearOperation | null {
+  const code = repeatedStepCode(statement);
+  const match = code.match(
+    /^([A-Za-z][A-Za-z0-9_]*)\s*=\s*Linear_?\{?\s*([A-Za-z0-9_]+)\s*(?:->|→)\s*([A-Za-z0-9_]+)\s*\}?\s*\(\s*([A-Za-z][A-Za-z0-9_]*)\s*\)\s*$/u,
+  );
+  if (!match) return null;
+  return {
+    output: match[1]!,
+    inputDimension: match[2]!,
+    outputDimension: match[3]!,
+    input: match[4]!,
+  };
+}
+
+function repeatedSymbolLatex(symbol: string) {
+  const known: Readonly<Record<string, string>> = {
+    H: 'H',
+    H1: 'H_1',
+    H1_new: String.raw`H_1^{\mathrm{new}}`,
+    H2: 'H_2',
+    H3: 'H_3',
+    e_lambda: String.raw`e_\lambda`,
+  };
+  return known[symbol] ?? String.raw`\mathrm{${symbol.replaceAll('_', '\\_')}}`;
+}
+
+function repeatedDimensionLatex(dimension: string) {
+  return /^[0-9]+[A-Za-z]+$/u.test(dimension)
+    ? dimension
+    : /^[0-9]+$/u.test(dimension)
+      ? dimension
+      : String.raw`\mathrm{${dimension.replaceAll('_', '\\_')}}`;
+}
+
+function repeatedLinearFormula(operation: RepeatedLinearOperation) {
+  const inputDimension = repeatedDimensionLatex(operation.inputDimension);
+  const outputDimension = repeatedDimensionLatex(operation.outputDimension);
+  const input = repeatedSymbolLatex(operation.input);
+  const output = repeatedSymbolLatex(operation.output);
+  const weight =
+    operation.inputDimension === '2d' && operation.outputDimension === '512'
+      ? 'W_1'
+      : operation.inputDimension === '512' && operation.outputDimension === '2d'
+        ? 'W_2'
+        : 'W';
+  const bias = weight === 'W_1' ? 'b_1' : weight === 'W_2' ? 'b_2' : 'b';
+  return String.raw`${output}\leftarrow\operatorname{Linear}_{${inputDimension}\to${outputDimension}}(${input})=${weight}${input}+${bias},\quad ${weight}\in\mathbb R^{${outputDimension}\times ${inputDimension}}`;
+}
+
+type RepeatedStepOperation =
+  | Readonly<{ type: 'concat'; updated: boolean }>
+  | Readonly<{ type: 'film-parameters' }>
+  | Readonly<{ type: 'coefficient-slice' }>
+  | Readonly<{ type: 'scale-slice' }>
+  | Readonly<{ type: 'split' }>
+  | Readonly<{ type: 'residual-update'; updated: boolean }>
+  | Readonly<{ type: 'gelu'; symbol: string }>
+  | Readonly<{ type: 'linear'; operation: RepeatedLinearOperation }>
+  | Readonly<{ type: 'mlp-chain' }>
+  | Readonly<{ type: 'film'; residualScale: boolean }>
+  | Readonly<{ type: 'residual-add' }>
+  | Readonly<{ type: 'rmsnorm' }>
+  | Readonly<{ type: 'channel-gate' }>
+  | Readonly<{ type: 'tanh-saturation'; scale: string }>
+  | Readonly<{ type: 'soft-threshold' }>
+  | Readonly<{ type: 'unknown' }>;
+
+function parseRepeatedStepOperation(statement: string): RepeatedStepOperation {
+  const normalized = repeatedStepCode(statement).toLocaleLowerCase();
+  const concat = normalized.match(/^h3\s*=\s*concat\s*\(\s*(h1(?:_new)?)\s*,\s*h2\s*\)\s*$/u);
+  if (concat) return { type: 'concat', updated: concat[1] === 'h1_new' };
+  if (
+    /^\[\s*gamma_j\s*,\s*delta_j\s*\]\s*=\s*split\s*\(\s*linear[\s\S]*\(\s*e_lambda\s*\)\s*,\s*2\s*\)\s*$/u.test(
+      normalized,
+    )
+  ) {
+    return { type: 'film-parameters' };
+  }
+  if (/^h1\s*=\s*h\[:,\s*:d\]\s*$/u.test(normalized)) return { type: 'coefficient-slice' };
+  if (/^h2\s*=\s*h\[:,\s*d:\s*\]\s*$/u.test(normalized)) return { type: 'scale-slice' };
+  if (/^h1\s*,\s*h2\s*=\s*split\s*\(\s*h\s*\)\s*$/u.test(normalized)) {
+    return { type: 'split' };
+  }
+  const residual = normalized.match(
+    /^(h1(?:_new)?)\s*=\s*x['’]\s*\(\s*y\s*-\s*x\s*h1\s*\)\s*\/\s*n\s*$/u,
+  );
+  if (residual) return { type: 'residual-update', updated: residual[1] === 'h1_new' };
+  const gelu = normalized.match(/^([a-z][a-z0-9_]*)\s*=\s*gelu\s*\(\s*([a-z][a-z0-9_]*)\s*\)\s*$/u);
+  if (gelu && gelu[1] === gelu[2]) return { type: 'gelu', symbol: gelu[1]! };
+  const linear = parseRepeatedLinearOperation(statement);
+  if (linear) return { type: 'linear', operation: linear };
+  if (
+    /^h3\s*=\s*linear\s*\(\s*2d\s*,\s*512\s*\)\s*(?:->|→)\s*gelu\s*(?:->|→)\s*linear\s*\(\s*512\s*,\s*2d\s*\)\s*$/u.test(
+      normalized,
+    )
+  ) {
+    return { type: 'mlp-chain' };
+  }
+  if (/^h3\s*=\s*film\s*\(\s*h3\s*,\s*log\s*\(\s*lambda\s*\)\s*\)\s*$/u.test(normalized)) {
+    return { type: 'film', residualScale: true };
+  }
+  if (/^h3\s*=\s*\(\s*1\s*\+\s*gamma_j\s*\)\s*[*·×]\s*h3\s*\+\s*delta_j\s*$/u.test(normalized)) {
+    return { type: 'film', residualScale: true };
+  }
+  if (/^h\s*=\s*h\s*\+\s*h3\s*$/u.test(normalized)) return { type: 'residual-add' };
+  if (/^h\s*=\s*rmsnorm(?:_?\{?2d\}?)?\s*\(\s*h\s*\)\s*$/u.test(normalized)) {
+    return { type: 'rmsnorm' };
+  }
+  if (/^h\[:,\s*:d\]\s*\*=\s*sigmoid\s*\(\s*h\[:,\s*d:\s*\]\s*\)\s*$/u.test(normalized)) {
+    return { type: 'channel-gate' };
+  }
+  const scale = repeatedTanhSaturationScale(statement);
+  if (scale) return { type: 'tanh-saturation', scale };
+  if (/^beta\s*=\s*soft-?threshold\s*\(\s*h\s*,\s*tau\s*\)\s*$/u.test(normalized)) {
+    return { type: 'soft-threshold' };
+  }
+  return { type: 'unknown' };
+}
+
+function repeatedStepLocalShapes(
+  statement: string,
+  parentShape: TensorShape,
+  previousStatement: string | undefined,
+): Readonly<{ inputShape: TensorShape; outputShape: TensorShape }> {
+  const operation = parseRepeatedStepOperation(statement);
+  const prefix = parentShape.slice(0, -1);
+  const dimension = (value: string) => (/^\d+$/u.test(value) ? Number(value) : value);
+  if (operation.type === 'linear') {
+    return {
+      inputShape: [...prefix, dimension(operation.operation.inputDimension)],
+      outputShape: [...prefix, dimension(operation.operation.outputDimension)],
+    };
+  }
+  if (operation.type === 'gelu' && previousStatement) {
+    const previous = parseRepeatedStepOperation(previousStatement);
+    if (previous.type === 'linear') {
+      const width = dimension(previous.operation.outputDimension);
+      return { inputShape: [...prefix, width], outputShape: [...prefix, width] };
+    }
+  }
+  if (operation.type === 'coefficient-slice' || operation.type === 'scale-slice') {
+    return { inputShape: parentShape, outputShape: [...prefix, 'd'] };
+  }
+  if (operation.type === 'residual-update') {
+    return { inputShape: [...prefix, 'd'], outputShape: [...prefix, 'd'] };
+  }
+  if (operation.type === 'concat') {
+    return { inputShape: [...prefix, 'd ⊕ d'], outputShape: parentShape };
+  }
+  return { inputShape: parentShape, outputShape: parentShape };
+}
+
+export function repeatedStepName(statement: string, index: number) {
+  const operation = parseRepeatedStepOperation(statement);
+  switch (operation.type) {
+    case 'concat':
+      return 'Recombine updated hidden state';
+    case 'film-parameters':
+      return 'Generate FiLM parameters';
+    case 'coefficient-slice':
+      return 'Extract coefficient channels';
+    case 'scale-slice':
+      return 'Extract scale / threshold channels';
+    case 'split':
+      return 'Split hidden state';
+    case 'residual-update':
+      return 'Residual / gradient update';
+    case 'gelu':
+      return 'GELU activation';
+    case 'linear': {
+      const { output, inputDimension, outputDimension } = operation.operation;
+      if (
+        output.toLocaleLowerCase() === 'h3' &&
+        inputDimension === '2d' &&
+        outputDimension === '512'
+      ) {
+        return 'Expand hidden channels';
+      }
+      if (
+        output.toLocaleLowerCase() === 'h3' &&
+        inputDimension === '512' &&
+        outputDimension === '2d'
+      ) {
+        return 'Project back to 2d';
+      }
+      return `Linear ${inputDimension} → ${outputDimension}`;
+    }
+    case 'mlp-chain':
+      return 'Residual MLP';
+    case 'film':
+      return 'FiLM conditioning';
+    case 'residual-add':
+      return 'Residual add';
+    case 'rmsnorm':
+      return 'Normalize state';
+    case 'channel-gate':
+      return 'Channel gate';
+    case 'tanh-saturation':
+      return 'Soft saturation';
+    case 'soft-threshold':
+      return 'Adaptive threshold';
+    case 'unknown':
+      return `Custom operation · step ${index + 1}`;
+  }
+}
+
+function repeatedStepKind(statement: string): ModelModule['kind'] {
+  const operation = parseRepeatedStepOperation(statement);
+  if (operation.type === 'rmsnorm') return 'normalization';
+  if (
+    operation.type === 'gelu' ||
+    operation.type === 'channel-gate' ||
+    operation.type === 'tanh-saturation' ||
+    operation.type === 'soft-threshold'
+  ) {
+    return 'activation';
+  }
+  if (
+    operation.type === 'concat' ||
+    operation.type === 'film' ||
+    operation.type === 'residual-add'
+  ) {
+    return 'merge';
+  }
+  return 'linear';
+}
+
+function repeatedStepActivation(statement: string) {
+  const operation = parseRepeatedStepOperation(statement);
+  if (operation.type === 'gelu' || operation.type === 'mlp-chain') return 'GELU';
+  if (operation.type === 'rmsnorm') return 'RMSNorm';
+  if (operation.type === 'channel-gate') return 'sigmoid';
+  if (operation.type === 'tanh-saturation') return 'tanh';
+  if (operation.type === 'soft-threshold') return 'soft-threshold';
+  return null;
+}
+
+export function repeatedTanhSaturationScale(statement: string): string | null {
+  const code = repeatedStepCode(statement);
+  const match = code.match(
+    /^h\[:,\s*d:\s*\]\s*(?:=|←|<-)\s*(\d+(?:\.\d+)?)\s*[*·×]\s*tanh\s*\(\s*h\[:,\s*d:\s*\]\s*\/\s*(\d+(?:\.\d+)?)\s*\)\s*$/iu,
+  );
+  if (!match) return null;
+  const multiplier = Number(match[1]);
+  const divisor = Number(match[2]);
+  if (!Number.isFinite(multiplier) || multiplier <= 0 || multiplier !== divisor) return null;
+  return match[1] ?? null;
+}
+
+export function repeatedStepFormula(statement: string, index: number) {
+  const operation = parseRepeatedStepOperation(statement);
+  if (operation.type === 'concat') {
+    return operation.updated
+      ? String.raw`H_3=\operatorname{concat}(H_1^{\mathrm{new}},H_2)`
+      : String.raw`H_3=\operatorname{concat}(H_1,H_2)`;
+  }
+  if (operation.type === 'film-parameters') {
+    return String.raw`[\gamma^{(j)},\delta^{(j)}]=\operatorname{split}\!\left(\operatorname{Linear}_{256\to128}(e_\lambda),2\right)`;
+  }
+  if (operation.type === 'coefficient-slice') return String.raw`H_1=H_{:,:d}`;
+  if (operation.type === 'scale-slice') return String.raw`H_2=H_{:,d:}`;
+  if (operation.type === 'split') {
+    return String.raw`H_1=H_{:,:d},\qquad H_2=H_{:,d:}`;
+  }
+  if (operation.type === 'residual-update') {
+    return operation.updated
+      ? String.raw`H_1^{\mathrm{new}}=X^{\top}(y-XH_1)/N`
+      : String.raw`H_1\leftarrow X^{\top}(y-XH_1)/N`;
+  }
+  if (operation.type === 'gelu') {
+    const symbol = repeatedSymbolLatex(operation.symbol.toLocaleUpperCase());
+    return String.raw`${symbol}\leftarrow\operatorname{GELU}(${symbol})`;
+  }
+  if (operation.type === 'linear') return repeatedLinearFormula(operation.operation);
+  if (operation.type === 'film') {
+    return String.raw`H_3\leftarrow(1+\gamma^{(j)})\odot H_3+\delta^{(j)}`;
+  }
+  if (operation.type === 'mlp-chain') {
+    return String.raw`H_3\leftarrow\operatorname{Linear}_{512\to2d}\!\left(\operatorname{GELU}\!\left(\operatorname{Linear}_{2d\to512}(H_3)\right)\right)`;
+  }
+  if (operation.type === 'residual-add') {
+    return String.raw`H\leftarrow H+H_3`;
+  }
+  if (operation.type === 'rmsnorm') {
+    return String.raw`H\leftarrow\operatorname{RMSNorm}_{2d}(H)`;
+  }
+  if (operation.type === 'channel-gate') {
+    return String.raw`H_{:,:d}\leftarrow H_{:,:d}\odot\sigma(H_{:,d:})`;
+  }
+  if (operation.type === 'tanh-saturation') {
+    const scale = operation.scale;
+    return scale
+      ? String.raw`H_{:,d:}\leftarrow${scale}\tanh\!\left(H_{:,d:}/${scale}\right)`
+      : String.raw`H_{:,d:}\leftarrow s\tanh\!\left(H_{:,d:}/s\right)`;
+  }
+  if (operation.type === 'soft-threshold') {
+    return String.raw`\beta\leftarrow\operatorname{SoftThreshold}(H,\tau)`;
+  }
+  return String.raw`\text{Equation not deterministically derived from step ${index + 1}}`;
+}
+
+function designOnlyStepGradient(): ModelConnection['gradient'] {
+  const notObserved = Array.from({ length: 5 }, (): GradientObservationState => 'not-observed');
+  const zero = [0, 0, 0, 0, 0];
+  return {
+    checkpoints: [1, 2, 3, 4, 5],
+    healthy: zero,
+    vanishing: zero,
+    detached: zero,
+    exploding: zero,
+    states: {
+      healthy: notObserved,
+      vanishing: notObserved,
+      detached: notObserved,
+      exploding: notObserved,
+    },
+    scenarioKinds: {
+      healthy: 'design-only',
+      vanishing: 'design-only',
+      detached: 'design-only',
+      exploding: 'design-only',
+    },
+    scenarioLabels: {
+      healthy: 'No runtime receipt exists for this synthesized loop step',
+      vanishing: 'No runtime receipt exists for this synthesized loop step',
+      detached: 'No runtime receipt exists for this synthesized loop step',
+      exploding: 'No runtime receipt exists for this synthesized loop step',
+    },
+  };
+}
+
+function repeatedModuleDetail(model: ModelSpec, module: ModelModule): RepeatedBlockDetail | null {
+  if (!module.repeat || module.block) return null;
+  const statements = repeatedModuleStepStatements(module);
+  if (statements.length < 2) return null;
+  const visibleStatements = statements.slice(0, MAX_REPEATED_DETAIL_STEPS);
+  const memberModuleIds = visibleStatements.map(
+    (_statement, index) => `repeat-step:${module.id}:${index + 1}`,
+  );
+  const modules: ModelModule[] = visibleStatements.map((statement, index) => {
+    const operation = repeatedStepCode(statement);
+    const localShapes = repeatedStepLocalShapes(
+      statement,
+      module.outputShape,
+      visibleStatements[index - 1],
+    );
+    const annotation = statement
+      .slice(operation.length)
+      .replace(/^\s*#\s*/u, '')
+      .trim();
+    return {
+      id: memberModuleIds[index]!,
+      name: repeatedStepName(statement, index),
+      kind: repeatedStepKind(statement),
+      group: `FOR-LOOP · step ${index + 1}`,
+      stage: index,
+      lane: 0,
+      inputShape: index === 0 ? module.inputShape : localShapes.inputShape,
+      outputShape: localShapes.outputShape,
+      transform: operation,
+      activation: repeatedStepActivation(statement),
+      formula: repeatedStepFormula(statement, index),
+      explanation: [
+        `Operation inside one ${module.repeat?.label} iteration: ${operation}.`,
+        ...(annotation ? [`Pseudocode annotation: ${annotation}.`] : []),
+      ].join(' '),
+      parameterCount: 0,
+      codeReference: module.codeReference,
+    };
+  });
+  const connections: ModelConnection[] = modules.slice(1).map((target, index) => ({
+    id: `repeat-edge:${module.id}:${index + 1}`,
+    source: modules[index]!.id,
+    target: target.id,
+    tensorName: `iteration state ${index + 1}`,
+    shape: target.inputShape,
+    activationNorm: 0,
+    gradient: designOnlyStepGradient(),
+    expectedToCarryGradient: true,
+  }));
+  return {
+    id: `repeat:${module.id}`,
+    label: module.repeat.label,
+    repeatCount: module.repeat.count,
+    summaryModuleId: module.id,
+    selectionModuleId: module.id,
+    memberModuleIds,
+    omittedStepCount: statements.length - visibleStatements.length,
+    detailKind: 'steps',
+    detailModel: {
+      ...model,
+      id: `${model.id}::repeat::${module.id}`,
+      name: `${module.name} · one loop iteration`,
+      summary: `One expanded for-loop iteration of ${module.repeat.label}, synthesized from ${statements.length} human-readable pseudocode steps and repeated ${module.repeat.count} times.`,
+      intent: {
+        ...model.intent,
+        expectedInput: module.inputShape,
+        expectedOutput: module.outputShape,
+      },
+      modules,
+      connections,
+      gradientEvidence: null,
+    },
+  };
 }
 
 export function composeRepeatedBlocks(model: ModelSpec): RepeatedBlockHierarchy {
@@ -304,7 +791,10 @@ export function composeRepeatedBlocks(model: ModelSpec): RepeatedBlockHierarchy 
       label: descriptor.label,
       repeatCount: descriptor.repeatCount,
       summaryModuleId,
+      selectionModuleId: members[0]!.id,
       memberModuleIds: members.map((module) => module.id),
+      omittedStepCount: 0,
+      detailKind: 'modules',
       detailModel,
     };
     const summary: ModelModule = {
@@ -327,6 +817,11 @@ export function composeRepeatedBlocks(model: ModelSpec): RepeatedBlockHierarchy 
     blocks.push(block);
     summaryByBlockId.set(blockId, summary);
     members.forEach((module) => blockByMemberId.set(module.id, block));
+  });
+
+  model.modules.forEach((module) => {
+    const detail = repeatedModuleDetail(model, module);
+    if (detail) blocks.push(detail);
   });
 
   if (blocks.length === 0) return { model, blocks };
@@ -368,6 +863,39 @@ export function composeRepeatedBlocks(model: ModelSpec): RepeatedBlockHierarchy 
   });
 
   return { model: { ...model, modules, connections: [...connectionByRoute.values()] }, blocks };
+}
+
+export function modelFormulaAuditScope(models: readonly ModelSpec[]): readonly ModelSpec[] {
+  const materialized = models.flatMap((model) => {
+    const hierarchy = composeRepeatedBlocks(model);
+    const expandedSubgraphIds = model.modules
+      .filter((module) => module.subgraph)
+      .map((module) => module.id);
+    const composedSubgraphs = composeModelSubgraphs(model, models, expandedSubgraphIds).model;
+    return [
+      model,
+      overviewModel(model, 'overview'),
+      hierarchy.model,
+      composedSubgraphs,
+      ...hierarchy.blocks.map((block) => block.detailModel),
+    ];
+  });
+  const seen = new Set<string>();
+  return materialized.filter((model) => {
+    const signature = JSON.stringify([
+      model.id,
+      model.modules.map((module) => [
+        module.id,
+        module.name,
+        module.transform,
+        module.activation,
+        module.formula,
+      ]),
+    ]);
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
 }
 
 export function nestedModuleId(parentModuleId: string, childModuleId: string) {
@@ -459,6 +987,33 @@ function subgraphGridPosition(index: number) {
   return {
     x: subgraphPadding + column * subgraphColumnGap,
     y: subgraphHeaderHeight + subgraphPadding + row * subgraphRowGap,
+  };
+}
+
+export type ForLoopOrderFlowDirection = 'left-to-right' | 'right-to-left';
+
+export type ForLoopRowTransition = Readonly<{
+  fromStep: number;
+  toStep: number;
+  side: 'left' | 'right';
+}>;
+
+export function forLoopOrderFlowDirection(index: number): ForLoopOrderFlowDirection {
+  return Math.floor(index / subgraphColumns) % 2 === 0 ? 'left-to-right' : 'right-to-left';
+}
+
+export function forLoopRowTransition(
+  sourceIndex: number,
+  targetIndex: number,
+): ForLoopRowTransition | null {
+  if (targetIndex !== sourceIndex + 1) return null;
+  const sourceRow = Math.floor(sourceIndex / subgraphColumns);
+  const targetRow = Math.floor(targetIndex / subgraphColumns);
+  if (sourceRow === targetRow) return null;
+  return {
+    fromStep: sourceIndex + 1,
+    toStep: targetIndex + 1,
+    side: sourceRow % 2 === 0 ? 'right' : 'left',
   };
 }
 
@@ -617,17 +1172,15 @@ export function ModelGraph({
   checkpointIndex,
   signalMode,
   focusMode,
+  changeHighlight,
   openModuleId,
   onSelectModule,
   onOpenModule,
   onToggleSubgraph,
 }: ModelGraphProps) {
-  const flowInstanceRef = useRef<ReactFlowInstance<
-    ModuleFlowNode | SubgraphBoundaryFlowNode,
-    SignalFlowEdge
-  > | null>(null);
   const hierarchy = useMemo(() => composeRepeatedBlocks(composition.model), [composition.model]);
   const [openBlockId, setOpenBlockId] = useState<string | null>(null);
+  const [viewportResetNonce, setViewportResetNonce] = useState(0);
   const openBlock = hierarchy.blocks.find((block) => block.id === openBlockId) ?? null;
   const visibleComposition = useMemo<ModelGraphComposition>(
     () =>
@@ -637,28 +1190,49 @@ export function ModelGraph({
     [composition, hierarchy.model, openBlock],
   );
   const graphModel = visibleComposition.model;
+  const addedModuleIds = useMemo(
+    () => new Set(changeHighlight?.addedModuleIds ?? []),
+    [changeHighlight?.addedModuleIds],
+  );
+  const changedModuleIds = useMemo(
+    () => new Set(changeHighlight?.changedModuleIds ?? []),
+    [changeHighlight?.changedModuleIds],
+  );
+  const changedConnectionIds = useMemo(
+    () => new Set(changeHighlight?.changedConnectionIds ?? []),
+    [changeHighlight?.changedConnectionIds],
+  );
+  const addedConnectionIds = useMemo(
+    () => new Set(changeHighlight?.addedConnectionIds ?? []),
+    [changeHighlight?.addedConnectionIds],
+  );
+  const addedStepIds = useMemo(
+    () => new Set(changeHighlight?.addedStepIds ?? []),
+    [changeHighlight?.addedStepIds],
+  );
+  const changedStepIds = useMemo(
+    () => new Set(changeHighlight?.changedStepIds ?? []),
+    [changeHighlight?.changedStepIds],
+  );
   const blockBySummaryModuleId = useMemo(
     () => new Map(hierarchy.blocks.map((block) => [block.summaryModuleId, block])),
     [hierarchy.blocks],
   );
-  const centerVisibleGraph = useCallback(() => {
-    requestAnimationFrame(() => {
-      void flowInstanceRef.current?.fitView(modelGraphCenterViewOptions(focusMode));
-    });
-  }, [focusMode]);
+  const resetAndCenterVisibleGraph = useCallback(() => {
+    setViewportResetNonce((current) => current + 1);
+  }, []);
   const openRepeatedBlock = useCallback(
     (block: RepeatedBlockDetail) => {
       setOpenBlockId(block.id);
-      const firstModuleId = block.memberModuleIds[0];
-      if (firstModuleId) onSelectModule(firstModuleId);
-      centerVisibleGraph();
+      onSelectModule(block.selectionModuleId);
+      resetAndCenterVisibleGraph();
     },
-    [centerVisibleGraph, onSelectModule],
+    [onSelectModule, resetAndCenterVisibleGraph],
   );
   const closeRepeatedBlock = useCallback(() => {
     setOpenBlockId(null);
-    centerVisibleGraph();
-  }, [centerVisibleGraph]);
+    resetAndCenterVisibleGraph();
+  }, [resetAndCenterVisibleGraph]);
   useEffect(() => {
     if (openBlockId && !hierarchy.blocks.some((block) => block.id === openBlockId)) {
       setOpenBlockId(null);
@@ -711,6 +1285,12 @@ export function ModelGraph({
       const nested = moduleExpansion.get(module.id);
       const target = visibleComposition.subgraphTargets[module.id];
       const compositeBlock = blockBySummaryModuleId.get(module.id);
+      const changeKind: ModelGraphChangeKind | null =
+        addedModuleIds.has(module.id) || addedStepIds.has(module.id)
+          ? 'added'
+          : changedModuleIds.has(module.id) || changedStepIds.has(module.id)
+            ? 'changed'
+            : null;
       return {
         id: module.id,
         type: 'module',
@@ -726,8 +1306,10 @@ export function ModelGraph({
           : moduleRepresentsSelection(module.id, selectedModuleId),
         data: {
           module,
+          changeKind,
           health: moduleGradientHealth(graphModel, module.id, probe, checkpointIndex),
           signalMode,
+          orderFlowDirection: openBlock ? forLoopOrderFlowDirection(moduleIndex) : null,
           selectionTargetId: compositeBlock?.memberModuleIds[0] ?? selectionTargetId(module.id),
           detailExpanded: openModuleId === module.id,
           detailDialogId: 'model-module-detail-dialog',
@@ -737,6 +1319,7 @@ export function ModelGraph({
                 label: compositeBlock.label,
                 repeatCount: compositeBlock.repeatCount,
                 moduleCount: compositeBlock.memberModuleIds.length,
+                detailKind: compositeBlock.detailKind,
                 onOpen: () => openRepeatedBlock(compositeBlock),
               }
             : null,
@@ -768,7 +1351,11 @@ export function ModelGraph({
     return [...boundaryNodes, ...moduleNodes];
   }, [
     checkpointIndex,
+    addedModuleIds,
+    addedStepIds,
     blockBySummaryModuleId,
+    changedModuleIds,
+    changedStepIds,
     graphModel,
     moduleExpansion,
     onOpenModule,
@@ -792,45 +1379,85 @@ export function ModelGraph({
     [checkpointIndex, graphModel.connections, probe, signalMode],
   );
 
-  const edges = useMemo<SignalFlowEdge[]>(
-    () =>
-      graphModel.connections.map((connection) => {
-        const reading = connectionSignalReading(connection, probe, checkpointIndex, signalMode);
-        const endpoints = signalEndpoints(connection, signalMode);
-        const gradient = gradientAt(connection, probe, checkpointIndex);
-        const gradientState = gradientStateAt(connection, probe, checkpointIndex);
-        return {
-          id: connection.id,
-          source: endpoints.source,
-          target: endpoints.target,
-          type: 'signal',
-          pathOptions: { borderRadius: 18, offset: 36 },
-          animated: signalMode === 'backward' && reading.health === 'healthy',
-          data: {
-            health: reading.health,
-            quantity: reading.quantity,
-            tensorName: reading.tensorName,
-            value: reading.value,
-          },
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            color:
-              signalMode === 'backward' ? healthColor[reading.health] : 'var(--model-edge-forward)',
-          },
-          ariaLabel:
-            signalMode === 'backward'
-              ? `Backward gradient for ${connection.tensorName}, from ${endpoints.source} toward ${endpoints.target}, ${reading.health}`
-              : `Forward tensor ${connection.tensorName}, from ${endpoints.source} to ${endpoints.target}`,
-          style: {
-            stroke:
-              signalMode === 'backward' ? healthColor[reading.health] : 'var(--model-edge-forward)',
-            strokeWidth:
-              signalMode === 'backward' ? gradientStrokeWidth(gradient, gradientState) : 2,
-          },
-        };
-      }),
-    [checkpointIndex, graphModel, probe, signalMode],
-  );
+  const edges = useMemo<SignalFlowEdge[]>(() => {
+    const moduleIndexById = new Map(
+      graphModel.modules.map((module, moduleIndex) => [module.id, moduleIndex] as const),
+    );
+    return graphModel.connections.map((connection) => {
+      const reading = connectionSignalReading(connection, probe, checkpointIndex, signalMode);
+      const sourceIndex = moduleIndexById.get(connection.source);
+      const targetIndex = moduleIndexById.get(connection.target);
+      const rowTransition =
+        openBlock && sourceIndex !== undefined && targetIndex !== undefined
+          ? forLoopRowTransition(sourceIndex, targetIndex)
+          : null;
+      const endpoints = openBlock
+        ? { source: connection.source, target: connection.target }
+        : signalEndpoints(connection, signalMode);
+      const gradient = gradientAt(connection, probe, checkpointIndex);
+      const gradientState = gradientStateAt(connection, probe, checkpointIndex);
+      const changeKind: ModelGraphChangeKind | null = addedConnectionIds.has(connection.id)
+        ? 'added'
+        : changedConnectionIds.has(connection.id)
+          ? 'changed'
+          : null;
+      const changeColor =
+        changeKind === 'added'
+          ? 'var(--model-change-added)'
+          : changeKind === 'changed'
+            ? 'var(--model-change-modified)'
+            : null;
+      return {
+        id: connection.id,
+        source: endpoints.source,
+        target: endpoints.target,
+        type: 'signal',
+        pathOptions: { borderRadius: 18, offset: 36 },
+        animated: signalMode === 'backward' && reading.health === 'healthy',
+        data: {
+          health: reading.health,
+          quantity: reading.quantity,
+          tensorName: reading.tensorName,
+          value: reading.value,
+          changeKind,
+          rowTransition,
+        },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color:
+            changeColor ??
+            (rowTransition ? 'var(--model-green)' : null) ??
+            (signalMode === 'backward' ? healthColor[reading.health] : 'var(--model-edge-forward)'),
+        },
+        ariaLabel:
+          signalMode === 'backward'
+            ? `Backward gradient for ${connection.tensorName}, from ${endpoints.source} toward ${endpoints.target}, ${reading.health}`
+            : `Forward tensor ${connection.tensorName}, from ${endpoints.source} to ${endpoints.target}`,
+        style: {
+          stroke:
+            changeColor ??
+            (rowTransition ? 'var(--model-green)' : null) ??
+            (signalMode === 'backward' ? healthColor[reading.health] : 'var(--model-edge-forward)'),
+          strokeWidth:
+            changeKind !== null
+              ? 4.5
+              : rowTransition
+                ? 3.5
+                : signalMode === 'backward'
+                  ? gradientStrokeWidth(gradient, gradientState)
+                  : 2,
+        },
+      };
+    });
+  }, [
+    addedConnectionIds,
+    changedConnectionIds,
+    checkpointIndex,
+    graphModel,
+    openBlock,
+    probe,
+    signalMode,
+  ]);
 
   return (
     <div
@@ -843,14 +1470,92 @@ export function ModelGraph({
             ← Whole model
           </button>
           <span>
-            <small>INSIDE COMPOSITE BLOCK</small>
+            <small>
+              {openBlock.detailKind === 'steps'
+                ? 'INSIDE REPEATED FOR-LOOP'
+                : 'INSIDE COMPOSITE BLOCK'}
+            </small>
             <strong>{openBlock.label}</strong>
             <b>
-              One iteration · {openBlock.memberModuleIds.length} modules · repeated ×
+              One iteration · {openBlock.memberModuleIds.length}
+              {openBlock.omittedStepCount > 0
+                ? ` of ${openBlock.memberModuleIds.length + openBlock.omittedStepCount}`
+                : ''}{' '}
+              {openBlock.detailKind === 'steps' ? 'steps shown' : 'modules'} · repeated ×
               {openBlock.repeatCount}
             </b>
+            {openBlock.omittedStepCount > 0 ? (
+              <em className="model-graph__block-overflow-note" role="status">
+                Graph safety limit: {openBlock.omittedStepCount} additional operation
+                {openBlock.omittedStepCount === 1 ? '' : 's'} remain in the pseudocode and revision
+                diff but are not rendered.
+              </em>
+            ) : null}
+            {changeHighlight &&
+            openBlock.memberModuleIds.some(
+              (moduleId) => addedStepIds.has(moduleId) || changedStepIds.has(moduleId),
+            ) ? (
+              <em className="model-graph__block-change-note">
+                {
+                  openBlock.memberModuleIds.filter(
+                    (moduleId) => addedStepIds.has(moduleId) || changedStepIds.has(moduleId),
+                  ).length
+                }{' '}
+                modified step
+                {openBlock.memberModuleIds.filter(
+                  (moduleId) => addedStepIds.has(moduleId) || changedStepIds.has(moduleId),
+                ).length === 1
+                  ? ''
+                  : 's'}{' '}
+                in this iteration
+              </em>
+            ) : null}
+            {changeHighlight?.removedStepLabels.length ? (
+              <em className="model-graph__block-change-note removed">
+                Removed steps: {changeHighlight.removedStepLabels.join(', ')}
+              </em>
+            ) : null}
             {signalMode === 'backward' ? <em>{backwardSignalNote(graphModel, probe)}</em> : null}
+            <em className="model-graph__order-note">
+              Follow STEP numbers. Each NEXT ROW arrow turns down on the same side, then the next
+              row runs in the opposite direction.
+            </em>
           </span>
+        </div>
+      ) : null}
+      {changeHighlight && !openBlock ? (
+        <div
+          className={`model-graph__change-banner model-graph__change-banner--${changeHighlight.mode}`}
+          role="status"
+          aria-label="Graph change highlight"
+        >
+          <span>
+            <small>
+              {changeHighlight.mode === 'proposal'
+                ? 'PROPOSAL PREVIEW · GRAPH NOT APPLIED'
+                : 'REVISION CHANGE HIGHLIGHT'}
+            </small>
+            <strong>
+              {changeHighlight.changedModuleIds.length} changed ·{' '}
+              {changeHighlight.addedModuleIds.length} added Block
+              {changeHighlight.addedModuleIds.length === 1 ? '' : 's'} ·{' '}
+              {changeHighlight.changedConnectionIds.length +
+                changeHighlight.addedConnectionIds.length}{' '}
+              changed edge
+              {changeHighlight.changedConnectionIds.length +
+                changeHighlight.addedConnectionIds.length ===
+              1
+                ? ''
+                : 's'}
+            </strong>
+          </span>
+          <span className="model-graph__change-legend">
+            <i data-kind="changed" /> modified
+            <i data-kind="added" /> added
+          </span>
+          {changeHighlight.removedModuleIds.length > 0 ? (
+            <em>Removed in proposal: {changeHighlight.removedModuleIds.join(', ')}</em>
+          ) : null}
         </div>
       ) : null}
       <div className="model-graph__canvas">
@@ -862,24 +1567,20 @@ export function ModelGraph({
         <button
           className="quiet-button model-graph__center-button"
           type="button"
-          aria-label="Center all model boxes in the graph viewport"
-          onClick={() => {
-            void flowInstanceRef.current?.fitView(modelGraphCenterViewOptions(focusMode));
-          }}
+          aria-label="Reset the canonical layout and center all model boxes in the graph viewport"
+          onClick={resetAndCenterVisibleGraph}
         >
           <span aria-hidden="true">◎</span>
           Center model boxes
         </button>
         <ReactFlow
+          key={modelGraphViewportKey(graphModel.id, openBlockId, viewportResetNonce)}
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           fitView
           fitViewOptions={modelGraphFitViewOptions(focusMode)}
-          onInit={(instance) => {
-            flowInstanceRef.current = instance;
-          }}
           minZoom={0.22}
           maxZoom={1.6}
           nodesDraggable
@@ -1039,7 +1740,7 @@ function sparkvskOverviewModel(model: ModelSpec): ModelSpec {
     outputShape: ['B', 'p', 'd'],
     transform: 'Lanczos ridge banks → coordinate/row embeddings → four gated X↔feature blocks',
     activation: 'LayerNorm + GELU + tanh gates',
-    formula: String.raw`T=U^{\top}(XX^{\top}/p)U,\quad c,r\leftarrow\operatorname{SPARKBlock}_{1:4}(c,r,X,g)`,
+    formula: String.raw`T=U^{\top}(XX^{\top}/p)U,\quad c,r\leftarrow\operatorname{SPARKBlock}^{\mathrm{LayerNorm+GELU}+\tanh\text{-gate}}_{1:4}(c,r,X,g)`,
     explanation:
       'Combines the Krylov feature extractor, learned embeddings, and repeated feature/row message passing.',
     parameterCount: 2_390_000,
@@ -1057,7 +1758,7 @@ function sparkvskOverviewModel(model: ModelSpec): ModelSpec {
     outputShape: ['B', 'Q', 'p', 'F_h'],
     transform: 'λq=rqλmax; PenEnc(ρ′)+λ features → q; broadcast q over coordinates and fuse',
     activation: 'GELU in PenaltyEncoder and q_emb',
-    formula: String.raw`q_q=\operatorname{MLP}_q([\operatorname{PenEnc}(\rho');\log r_q;\log\lambda_q;\log s_y;\log\lambda_{\max}])`,
+    formula: String.raw`q_q=\operatorname{MLP}^{\mathrm{GELU}}_q([\operatorname{PenEnc}^{\mathrm{GELU}}(\rho');\log r_q;\log\lambda_q;\log s_y;\log\lambda_{\max}])`,
     explanation:
       'Shows the conditioning branch explicitly: λ and penalty information become a learned query injected into every coordinate.',
     parameterCount: 0,
@@ -1074,7 +1775,7 @@ function sparkvskOverviewModel(model: ModelSpec): ModelSpec {
     outputShape: ['B', 'Q', 'p'],
     transform: '3-layer head_vs correction + penalty-aware LQA base → bounded log d',
     activation: 'GELU then clamp / exp',
-    formula: String.raw`\log d_{qj}=\log d^{base}_{qj}+(1-I_{quad})\operatorname{head}_{vs}(h_{qj})`,
+    formula: String.raw`\log d_{qj}=\operatorname{clamp}\!\left(\log d^{base}_{qj}+(1-I_{quad})\operatorname{head}^{\mathrm{GELU}}_{vs}(h_{qj})\right)`,
     explanation:
       'The neural path produces a stable diagonal scale for each λ-coordinate pair rather than emitting β directly.',
     parameterCount: 0,

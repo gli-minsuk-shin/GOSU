@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createModelBuilder,
+  extractRtfText,
   modelBuildArtifactKind,
   prepareModelCopilotAttachment,
   prepareModelBuildArtifact,
@@ -105,6 +107,38 @@ describe('Model Lab source builder client', () => {
     });
   });
 
+  it('extracts bounded visible model-design text from RTF without embedded destinations', async () => {
+    const rtf = String.raw`{\rtf1\ansi\uc1{\fonttbl{\f0 Helvetica;}}\f0
+Model \b architecture\b0\par
+Input [B,16] \u8594? Linear(16,8)\par
+Caf\'e9\tab Output [B,8]
+{\*\comment hidden instruction}{\pict\pngblip 89504e47}}`;
+    expect(extractRtfText(rtf)).toBe(
+      ['Model architecture', 'Input [B,16] → Linear(16,8)', 'Café\tOutput [B,8]'].join('\n'),
+    );
+
+    const file = new File([rtf], 'architecture.rtf', { type: 'application/rtf' });
+    expect(modelBuildArtifactKind(file)).toBe('text');
+    const prepared = await prepareModelBuildArtifact(file);
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    expect(prepared.artifact).toMatchObject({
+      name: 'architecture.rtf',
+      kind: 'text',
+      encoding: 'utf8',
+      content: expect.stringContaining('Input [B,16] → Linear(16,8)'),
+    });
+    expect(prepared.artifact.content).not.toContain('fonttbl');
+    expect(prepared.artifact.content).not.toContain('hidden instruction');
+    expect(prepared.artifact.content).not.toContain('89504e47');
+
+    const cocoaRtf = String.raw`{\rtf1\ansi\ansicpg1252{\fonttbl\f0\fcharset0 Helvetica;\f1\fcharset129 AppleSDGothicNeo-Regular;}
+\f0 Model \f1 \'b8\'f0\'b5\'a8\f0 \
+Input [N,P] \
+Output [N,1]}`;
+    expect(extractRtfText(cocoaRtf)).toBe('Model 모델\nInput [N,P]\nOutput [N,1]');
+  });
+
   it('treats JSON attached in Model Copilot as chat evidence rather than a ModelIR import', async () => {
     const file = new File(['{"question":"compare this config"}'], 'experiment.json', {
       type: 'application/json',
@@ -191,7 +225,11 @@ describe('Model Lab source builder client', () => {
           content: 'class Net: pass',
         },
       ],
-      { requestedModelId: 'claude-code:opus', reasoningOptionId: 'xhigh' },
+      {
+        providerId: 'claude-code',
+        requestedModelId: 'claude-code:opus',
+        reasoningOptionId: 'xhigh',
+      },
     );
 
     expect(result.model.id).toBe('python-built-model');
@@ -207,10 +245,111 @@ describe('Model Lab source builder client', () => {
     expect(request).toBeDefined();
     expect(JSON.parse(String(request!.body))).toMatchObject({
       selection: {
+        providerId: 'claude-code',
         requestedModelId: 'claude-code:opus',
         reasoningOptionId: 'xhigh',
       },
     });
+  });
+
+  it('streams truthful LLM import milestones before returning the validated model', async () => {
+    const events = [
+      {
+        type: 'progress',
+        progress: {
+          phase: 'selection-resolved',
+          message: 'GPT-5.6 Sol selected with high reasoning.',
+          providerId: 'codex',
+          modelId: 'gpt-5.6-sol',
+          modelLabel: 'GPT-5.6 Sol',
+          reasoning: 'high',
+        },
+      },
+      {
+        type: 'progress',
+        progress: {
+          phase: 'llm-running',
+          message: 'LLM is reconstructing the architecture; internal reasoning is not streamed.',
+        },
+      },
+      {
+        type: 'progress',
+        progress: {
+          phase: 'model-ir-validating',
+          message: 'Validating ModelIR and formula consistency.',
+        },
+      },
+      { type: 'result', result: { model: builtModel, trace: ['Codex CLI · gpt-5.6-sol'] } },
+    ].map((event) => `${JSON.stringify(event)}\n`);
+    const encoded = new TextEncoder().encode(events.join(''));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoded.slice(0, 37));
+        controller.enqueue(encoded.slice(37, 181));
+        controller.enqueue(encoded.slice(181));
+        controller.close();
+      },
+    });
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+        }),
+    );
+    const progress: string[] = [];
+    const result = await createModelBuilder(fetchImpl as typeof fetch).build(
+      [
+        {
+          name: 'network.py',
+          mediaType: 'text/x-python',
+          kind: 'python',
+          encoding: 'utf8',
+          content: 'class Net: pass',
+        },
+      ],
+      undefined,
+      { onProgress: (event) => progress.push(event.phase) },
+    );
+
+    expect(progress).toEqual(['selection-resolved', 'llm-running', 'model-ir-validating']);
+    expect(result.model.id).toBe('python-built-model');
+    const request = (fetchImpl.mock.calls[0] as unknown as [unknown, RequestInit] | undefined)?.[1];
+    expect(request?.headers).toMatchObject({
+      Accept: 'application/x-ndjson, application/json',
+    });
+  });
+
+  it('reports the exact streamed failure stage without emitting a false completion', async () => {
+    const body = [
+      JSON.stringify({
+        type: 'progress',
+        progress: { phase: 'llm-running', message: 'Waiting for ModelIR.' },
+      }),
+      JSON.stringify({
+        type: 'error',
+        stage: 'llm-running',
+        detail: 'The selected LLM exited before returning ModelIR.',
+      }),
+      '',
+    ].join('\n');
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+        }),
+    );
+    const progress: Array<{ phase: string; message: string }> = [];
+
+    await expect(
+      createModelBuilder(fetchImpl as typeof fetch).build([], undefined, {
+        onProgress: (event) => progress.push(event),
+      }),
+    ).rejects.toThrow('The selected LLM exited before returning ModelIR.');
+    expect(progress.map((event) => event.phase)).toEqual(['llm-running', 'failed']);
+    expect(progress.at(-1)?.message).toContain('Failed during llm-running');
+    expect(progress.some((event) => event.phase === 'model-ir-validated')).toBe(false);
   });
 
   it('rejects unsupported executable checkpoint formats instead of pretending to import them', async () => {
@@ -219,5 +358,24 @@ describe('Model Lab source builder client', () => {
     expect(prepared.ok).toBe(false);
     if (prepared.ok) return;
     expect(prepared.reason).toContain('ModelIR JSON, Python');
+  });
+
+  it('exposes a separate GOSU model and reasoning picker for source reconstruction', () => {
+    const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+
+    expect(appSource).toContain('aria-label="Model Builder LLM selection"');
+    expect(appSource).toContain('aria-label="Model Builder model"');
+    expect(appSource).toContain('aria-label="Model Builder reasoning"');
+    expect(appSource).toContain('.docx,.rtf,.py');
+    expect(appSource).toContain('PDF · DOCX · RTF · text');
+    expect(appSource).toContain('codexModelBuilder.build(sourceArtifacts, builderSelection, {');
+    expect(appSource).toContain('onProgress: (progress)');
+    expect(appSource).not.toContain('codexModelBuilder.build(sourceArtifacts, copilotSelection)');
+    expect(appSource).toContain('ModelIR JSON imports directly without an LLM');
+    expect(styles).toMatch(
+      /\.model-builder-selection \{[\s\S]*?grid-template-columns: minmax\(0, 1\.25fr\) minmax\(0, 0\.85fr\);/u,
+    );
+    expect(styles).toContain('.model-builder-selection select {');
   });
 });

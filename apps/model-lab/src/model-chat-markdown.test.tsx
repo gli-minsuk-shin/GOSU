@@ -6,6 +6,11 @@ import {
   MODEL_CHAT_MATH_LIMITS,
   safeModelChatMarkdownUrl,
 } from './model-chat-markdown';
+import {
+  formatModelChatTime,
+  modelChatScrollState,
+  modelCopilotProviderLabel,
+} from './model-lab-app';
 
 function renderChat(source: string) {
   return renderToStaticMarkup(<ModelChatMarkdown source={source} />);
@@ -98,11 +103,40 @@ $$
     expect(appSource).toContain('{messages.map((message) => (');
     expect(appSource).not.toContain('messages.slice(-4)');
     expect(styles).toMatch(
-      /\.model-chat--sidebar \{[\s\S]*?grid-template-rows: auto auto minmax\(0, 1fr\) auto;/u,
+      /\.model-chat--sidebar \{[\s\S]*?display: flex;[\s\S]*?flex-direction: column;/u,
     );
     expect(styles).toMatch(
-      /\.chat-body \{[\s\S]*?overflow-y: auto;[\s\S]*?overscroll-behavior-y: contain;[\s\S]*?scrollbar-gutter: stable;[\s\S]*?touch-action: pan-y;/u,
+      /\.model-chat--sidebar > \.model-chat__transcript-region \{[\s\S]*?flex: 1 1 0;/u,
     );
+    expect(styles).toMatch(
+      /\.chat-body \{[\s\S]*?position: relative;[\s\S]*?display: flex;[\s\S]*?flex-direction: column;[\s\S]*?height: 100%;[\s\S]*?overflow-y: scroll;[\s\S]*?overscroll-behavior-y: contain;[\s\S]*?scrollbar-gutter: stable both-edges;/u,
+    );
+    expect(styles).toMatch(/\.chat-message \{[\s\S]*?flex: 0 0 auto;/u);
+    expect(styles).toMatch(/\.chat-message--user \{[\s\S]*?align-self: flex-end;/u);
+    expect(
+      modelChatScrollState({
+        scrollTop: 0,
+        scrollHeight: 1_200,
+        clientHeight: 400,
+      }),
+    ).toEqual({ canScroll: true, atTop: true, nearBottom: false });
+    expect(
+      modelChatScrollState({
+        scrollTop: 400,
+        scrollHeight: 1_200,
+        clientHeight: 400,
+      }),
+    ).toEqual({ canScroll: true, atTop: false, nearBottom: false });
+    expect(
+      modelChatScrollState({
+        scrollTop: 800,
+        scrollHeight: 1_200,
+        clientHeight: 400,
+      }),
+    ).toEqual({ canScroll: true, atTop: false, nearBottom: true });
+    expect(appSource).toContain('Scroll to earlier Model Copilot messages');
+    expect(appSource).toContain('Jump to the latest Model Copilot message');
+    expect(styles).toContain('.model-chat__scroll-jump {');
   });
 
   it('shows provider-neutral live agent progress and a real abort control', () => {
@@ -111,11 +145,54 @@ $$
 
     expect(appSource).toContain('Live Model Copilot agent activity');
     expect(appSource).toContain("progress.tool.replaceAll('_', ' ')");
-    expect(appSource).toContain("answering ? 'Stop' : 'Ask'");
+    expect(appSource).toContain("{answering ? 'Stop' : 'Send'}");
     expect(appSource).toContain('copilotTurnAbortRef.current?.abort()');
     expect(appSource).toContain('message.usage.inputTokens.toLocaleString()');
     expect(styles).toContain('.model-chat__agent-progress {');
     expect(styles).toContain('.model-chat__stop-button {');
     expect(styles).toContain('.chat-message__usage {');
+  });
+
+  it('uses the GOSU Project Chat interaction structure in Model Copilot', () => {
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+    const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+
+    expect(appSource).toContain('className="model-chat__identity"');
+    expect(appSource).toContain("message.role === 'user' ? 'You' : 'GOSU'");
+    expect(appSource).toContain('formatModelChatTime(message.createdAt)');
+    expect(appSource).toContain('Show details');
+    expect(appSource).toContain('Agent run details');
+    expect(appSource).toContain('<span>LOCAL MODEL CONTEXT</span>');
+    expect(appSource).toContain('aria-label="Message GOSU Model Copilot"');
+    expect(appSource).toContain('Jump to the latest Model Copilot message');
+    expect(styles).toMatch(
+      /\.model-chat__composer-row \{[\s\S]*?grid-template-columns: 54px minmax\(0, 1fr\) 76px;/u,
+    );
+    expect(styles).toMatch(
+      /\.model-chat--sidebar > \.model-chat__transcript-region \{[\s\S]*?flex: 1 1 0;/u,
+    );
+    expect(styles).toMatch(/\.model-chat--sidebar > \.chat-composer \{[\s\S]*?flex: 0 0 auto;/u);
+    expect(styles).toContain('.chat-message--thinking {');
+    expect(formatModelChatTime('2026-08-27T14:05:00')).toBe('02:05 PM');
+    expect(formatModelChatTime('not-a-date')).toBe('');
+  });
+
+  it('uses the GOSU provider catalog and compact model-control design', () => {
+    const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+    const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+
+    expect(modelCopilotProviderLabel('codex')).toBe('OpenAI · Codex');
+    expect(modelCopilotProviderLabel('claude-code')).toBe('Anthropic · Claude Code');
+    expect(appSource).toContain('Auto · provider recommended');
+    expect(appSource).toContain('<optgroup');
+    expect(appSource).toContain('Unavailable model · choose again');
+    expect(appSource).toContain('Unavailable reasoning · choose again');
+    expect(appSource).toContain('gosuModelLabRuntime.listModels?.({ refresh: true })');
+    expect(appSource).toContain('providerId: descriptor?.providerId ?? null');
+    expect(styles).toMatch(
+      /\.model-chat__model-controls \{[\s\S]*?grid-template-columns: minmax\(0, 1\.15fr\) minmax\(0, 0\.75fr\) auto;/u,
+    );
+    expect(styles).toContain('.model-chat__catalog-refresh {');
+    expect(styles).toContain('.model-chat__toolbar-badges > span.warning {');
   });
 });

@@ -6,6 +6,7 @@ import type {
   TensorDimension,
   TensorShape,
 } from './model-lab-schema';
+import { modelFormulaConsistencyFindings } from './model-formula-consistency';
 
 export const MODEL_LAB_MAX_IMPORT_BYTES = 1_000_000;
 
@@ -39,6 +40,13 @@ function boundedInteger(value: unknown, field: string, minimum: number, maximum:
   return value as number;
 }
 
+function boundedFiniteNumber(value: unknown, field: string, minimum: number, maximum: number) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${field} must be a finite number between ${minimum} and ${maximum}.`);
+  }
+  return value;
+}
+
 function boundedRepeatCount(value: unknown, field: string): number | string {
   if (typeof value === 'number') return boundedInteger(value, field, 2, 128);
   const expression = boundedString(value, field, 32);
@@ -56,7 +64,10 @@ function tensorShape(value: unknown, field: string): TensorShape {
     if (typeof dimension === 'number' && Number.isInteger(dimension) && dimension > 0) {
       return dimension;
     }
-    if (typeof dimension === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,15}$/.test(dimension)) {
+    if (
+      typeof dimension === 'string' &&
+      /^(?:[1-9]\d*)?[A-Za-z][A-Za-z0-9_]{0,13}'?(?:[+-][1-9]\d*)?$/.test(dimension)
+    ) {
       return dimension;
     }
     throw new Error(`${field}[${index}] is not a bounded symbolic or positive dimension.`);
@@ -82,7 +93,7 @@ function moduleFrom(value: unknown, index: number): ModelModule {
     lane:
       value.lane === undefined
         ? 0
-        : boundedInteger(value.lane, `modules[${index}].lane`, -100, 100),
+        : boundedFiniteNumber(value.lane, `modules[${index}].lane`, -100, 100),
     inputShape: tensorShape(value.inputShape, `modules[${index}].inputShape`),
     outputShape: tensorShape(value.outputShape, `modules[${index}].outputShape`),
     transform: boundedString(value.transform, `modules[${index}].transform`),
@@ -235,32 +246,34 @@ export function parseModelImportJson(text: string): ModelImportResult {
           };
         })
       : [];
-    return {
-      ok: true,
-      model: {
-        schemaVersion: 1,
-        id: boundedString(value.id, 'id', 120),
-        name: boundedString(value.name, 'name', 160),
-        version: boundedString(value.version, 'version', 120),
-        framework: framework as ModelSpec['framework'],
-        sourceLabel: boundedString(value.sourceLabel, 'sourceLabel', 240),
-        sourceArtifacts,
-        summary: boundedString(value.summary, 'summary', 2_000),
-        intent: {
-          statement: boundedString(value.intent.statement, 'intent.statement', 2_000),
-          invariants: Array.isArray(value.intent.invariants)
-            ? value.intent.invariants.map((item, index) =>
-                boundedString(item, `intent.invariants[${index}]`, 500),
-              )
-            : [],
-          expectedInput: tensorShape(value.intent.expectedInput, 'intent.expectedInput'),
-          expectedOutput: tensorShape(value.intent.expectedOutput, 'intent.expectedOutput'),
-        },
-        modules,
-        connections,
-        gradientEvidence: null,
+    const model: ModelSpec = {
+      schemaVersion: 1,
+      id: boundedString(value.id, 'id', 120),
+      name: boundedString(value.name, 'name', 160),
+      version: boundedString(value.version, 'version', 120),
+      framework: framework as ModelSpec['framework'],
+      sourceLabel: boundedString(value.sourceLabel, 'sourceLabel', 240),
+      sourceArtifacts,
+      summary: boundedString(value.summary, 'summary', 2_000),
+      intent: {
+        statement: boundedString(value.intent.statement, 'intent.statement', 2_000),
+        invariants: Array.isArray(value.intent.invariants)
+          ? value.intent.invariants.map((item, index) =>
+              boundedString(item, `intent.invariants[${index}]`, 500),
+            )
+          : [],
+        expectedInput: tensorShape(value.intent.expectedInput, 'intent.expectedInput'),
+        expectedOutput: tensorShape(value.intent.expectedOutput, 'intent.expectedOutput'),
       },
+      modules,
+      connections,
+      gradientEvidence: null,
     };
+    const formulaFindings = modelFormulaConsistencyFindings(model);
+    if (formulaFindings.length > 0) {
+      throw new Error(`Formula consistency failed: ${formulaFindings.slice(0, 3).join(' | ')}`);
+    }
+    return { ok: true, model };
   } catch (error) {
     return {
       ok: false,

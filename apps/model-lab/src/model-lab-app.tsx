@@ -11,14 +11,49 @@ import {
 } from 'react';
 import { Formula } from './formula';
 import { ModelChatMarkdown } from './model-chat-markdown';
-import { composeModelSubgraphs, ModelGraph, overviewModel } from './model-graph';
+import {
+  composeModelSubgraphs,
+  ModelGraph,
+  modelFormulaAuditScope,
+  overviewModel,
+  repeatedModuleStepStatements,
+  type ModelGraphChangeHighlight,
+} from './model-graph';
 import {
   codexModelBuilder,
   prepareModelCopilotAttachment,
   prepareModelBuildArtifact,
   type ModelBuildArtifact,
+  type ModelBuildProgress,
+  type ModelBuildProgressPhase,
 } from './model-lab-builder';
 import { MODEL_LAB_MAX_IMPORT_BYTES, parseModelImportJson } from './model-lab-import';
+import {
+  modelPythonArtifactClient,
+  modelPythonArtifactKey,
+  type ModelPythonArtifact,
+} from './model-python-artifact';
+import {
+  appendModelPseudocodeRevision,
+  attachModelPythonArtifact,
+  classifyModelPseudocodeUpdate,
+  initialModelPseudocodeRevision,
+  initialModelPseudocodeWorkspace,
+  MODEL_PSEUDOCODE_LLM_GUIDE,
+  MODEL_PSEUDOCODE_WORKSPACE_STORAGE_KEY,
+  modelPseudocodeRevisionRows,
+  modelPseudocodeChangeSummary,
+  modelPseudocodeLineDiffHunks,
+  modelPseudocodeLineDiffSummary,
+  modelPseudocodeNarrativeReconciliationIssues,
+  modelPseudocodeNarrativeReconciliationModuleIds,
+  modelPseudocodeRevisionCommentPrompt,
+  modelPseudocodeNormalizer,
+  modelToPseudocode,
+  restoreModelPseudocodeWorkspace,
+  serializeModelPseudocodeWorkspace,
+  type ModelPseudocodeRevision,
+} from './model-pseudocode';
 import {
   formatNorm,
   formatShape,
@@ -44,6 +79,7 @@ export type ChatMessage = Readonly<{
   id: string;
   modelId: string;
   modelVersion: string;
+  createdAt: string;
   role: 'user' | 'assistant';
   body: string;
   attachmentNames?: readonly string[];
@@ -75,11 +111,30 @@ type ModuleDetailState = Readonly<{
   scopeKey: string;
 }>;
 
-type ModelImportJob = Readonly<{
+export type ModelImportPhase =
+  ModelBuildProgressPhase | 'local-validation' | 'registering-session' | 'complete';
+
+export type ModelImportJob = Readonly<{
   id: string;
   name: string;
   status: 'session-created' | 'model-building' | 'rejected';
+  phase: ModelImportPhase;
   detail: string;
+  runLabel: string;
+  events: readonly string[];
+}>;
+
+type ModelPythonArtifactState = Readonly<{
+  status: 'loading' | 'generating' | 'ready' | 'failed';
+  artifact?: ModelPythonArtifact;
+  error?: string;
+}>;
+
+type ModelPseudocodeUpdateLogEntry = Readonly<{
+  id: string;
+  createdAt: string;
+  phase: 'reading' | 'interpreting' | 'review' | 'updating' | 'complete' | 'error';
+  message: string;
 }>;
 
 const fallbackProbeLabels: Record<GradientProbeName, string> = {
@@ -95,8 +150,94 @@ const severityLabel = {
   error: 'Failed',
 } as const;
 
+export function modelCopilotProviderLabel(providerId: string) {
+  if (providerId === 'codex') return 'OpenAI · Codex';
+  if (providerId === 'claude-code') return 'Anthropic · Claude Code';
+  if (providerId === 'hermes') return 'Hermes Agent';
+  return providerId;
+}
+
+export function modelImportPhaseLabel(phase: ModelImportPhase) {
+  return {
+    'local-validation': 'LOCAL VALIDATION',
+    'request-validated': 'REQUEST ACCEPTED',
+    'selection-resolved': 'LLM SELECTED',
+    'sources-preparing': 'PREPARING SOURCES',
+    'sources-prepared': 'SOURCES READY',
+    'llm-running': 'LLM RUNNING',
+    'model-ir-validating': 'VALIDATING MODELIR',
+    'model-ir-validated': 'MODELIR VALIDATED',
+    'registering-session': 'REGISTERING',
+    complete: 'CREATED',
+    failed: 'FAILED',
+  }[phase];
+}
+
+export function modelImportJobAfterProgress(
+  job: ModelImportJob,
+  progress: ModelBuildProgress,
+): ModelImportJob {
+  const providerLabel = progress.providerId ? modelCopilotProviderLabel(progress.providerId) : null;
+  const runLabel = progress.modelLabel
+    ? [providerLabel, progress.modelLabel, progress.reasoning].filter(Boolean).join(' · ')
+    : job.runLabel;
+  return {
+    ...job,
+    phase: progress.phase,
+    detail: progress.message,
+    runLabel,
+    events: [...job.events, progress.message]
+      .filter((message, index, messages) => index === 0 || message !== messages[index - 1])
+      .slice(-4),
+  };
+}
+
 function nextId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+export function modelPythonDownloadName(modelName: string, revision: number) {
+  const slug =
+    modelName
+      .toLocaleLowerCase()
+      .replace(/[^a-z0-9]+/gu, '-')
+      .replace(/^-+|-+$/gu, '')
+      .slice(0, 64) || 'model';
+  return `${slug}-r${revision}.py`;
+}
+
+export function pseudocodeLineOffset(source: string, lineNumber: number) {
+  if (lineNumber <= 1) return 0;
+  const lines = source.replace(/\r\n?/gu, '\n').split('\n');
+  return lines
+    .slice(0, Math.min(lines.length, lineNumber - 1))
+    .reduce((offset, line) => offset + line.length + 1, 0);
+}
+
+export function formatModelChatTime(createdAt: string) {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+export function modelChatScrollState({
+  scrollTop,
+  scrollHeight,
+  clientHeight,
+}: Readonly<{
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}>) {
+  const maximum = Math.max(0, scrollHeight - clientHeight);
+  return {
+    canScroll: maximum > 1,
+    atTop: scrollTop <= 1,
+    nearBottom: maximum - scrollTop <= 32,
+  } as const;
 }
 
 export const MODEL_SESSION_SIDEBAR_MIN_WIDTH = 190;
@@ -229,6 +370,13 @@ export function modelSessionDeleteLabel(modelName: string) {
   return `Delete ${modelName}`;
 }
 
+export function toggleModelTreeExpansion(
+  expandedModelIds: readonly string[],
+  modelId: string,
+): readonly string[] {
+  return expandedModelIds.includes(modelId) ? [] : [modelId];
+}
+
 export function moveModelSessionToTrash(
   models: readonly ModelSpec[],
   trashedModelIds: readonly string[],
@@ -339,6 +487,81 @@ export function createModelViewSession(model: Pick<ModelSpec, 'modules'>): Model
   };
 }
 
+export function modelViewSessionAfterRevision(
+  previousModel: Pick<ModelSpec, 'modules'>,
+  nextModel: Pick<ModelSpec, 'modules'>,
+): ModelViewSession {
+  const previousModules = new Map(previousModel.modules.map((module) => [module.id, module]));
+  const changedModule = nextModel.modules.find((module) => {
+    const previous = previousModules.get(module.id);
+    return previous === undefined || JSON.stringify(previous) !== JSON.stringify(module);
+  });
+  return {
+    selectedModuleId: changedModule?.id ?? nextModel.modules[0]?.id ?? '',
+    graphDetail: 'expanded',
+    expandedSubgraphModuleIds: [],
+  };
+}
+
+export function modelGraphChangeHighlightFromSummary(
+  summary: ReturnType<typeof modelPseudocodeChangeSummary>,
+  mode: ModelGraphChangeHighlight['mode'],
+  previousModel?: ModelSpec,
+  nextModel?: ModelSpec,
+): ModelGraphChangeHighlight {
+  const connectionId = (change: string) => change.replace(/^(?:added|changed|removed)\s+/u, '');
+  const addedStepIds: string[] = [];
+  const changedStepIds: string[] = [];
+  const removedStepLabels: string[] = [];
+  if (previousModel && nextModel) {
+    const previousModules = new Map(previousModel.modules.map((module) => [module.id, module]));
+    const nextModules = new Map(nextModel.modules.map((module) => [module.id, module]));
+    for (const moduleId of summary.addedBlocks) {
+      const module = nextModules.get(moduleId);
+      if (!module?.repeat) continue;
+      repeatedModuleStepStatements(module).forEach((_statement, index) => {
+        addedStepIds.push(`repeat-step:${moduleId}:${index + 1}`);
+      });
+    }
+    for (const change of summary.changedBlocks) {
+      if (!change.fields.includes('transform')) continue;
+      const previous = previousModules.get(change.id);
+      const next = nextModules.get(change.id);
+      if (!previous?.repeat || !next?.repeat) continue;
+      const previousSteps = repeatedModuleStepStatements(previous);
+      const nextSteps = repeatedModuleStepStatements(next);
+      const hunks = modelPseudocodeLineDiffHunks(previousSteps.join('\n'), nextSteps.join('\n'));
+      for (const hunk of hunks) {
+        hunk.proposedLines.forEach((_line, index) => {
+          const stepId = `repeat-step:${change.id}:${hunk.proposedStart + index}`;
+          if (index < hunk.originalLines.length) changedStepIds.push(stepId);
+          else addedStepIds.push(stepId);
+        });
+        hunk.originalLines.slice(hunk.proposedLines.length).forEach((line, index) => {
+          removedStepLabels.push(
+            `${change.id} step ${hunk.originalStart + hunk.proposedLines.length + index}: ${line}`,
+          );
+        });
+      }
+    }
+  }
+  return {
+    mode,
+    addedModuleIds: summary.addedBlocks,
+    changedModuleIds: summary.changedBlocks.map((change) => change.id),
+    removedModuleIds: summary.removedBlocks,
+    addedConnectionIds: summary.connectionChanges
+      .filter((change) => change.startsWith('added '))
+      .map(connectionId),
+    changedConnectionIds: summary.connectionChanges
+      .filter((change) => change.startsWith('changed '))
+      .map(connectionId),
+    addedStepIds: [...new Set(addedStepIds)],
+    changedStepIds: [...new Set(changedStepIds)],
+    removedStepLabels: [...new Set(removedStepLabels)],
+  };
+}
+
 export function modelViewSessionWithUpdate(
   sessions: Readonly<Record<string, ModelViewSession>>,
   sessionKey: string,
@@ -361,6 +584,7 @@ export function modelGraphInstanceKey(
   expandedSubgraphModuleIds: readonly string[] = [],
   modelSessionsCollapsed = false,
   copilotCollapsed = false,
+  changeToken = '',
 ) {
   return JSON.stringify([
     modelId,
@@ -369,6 +593,7 @@ export function modelGraphInstanceKey(
     expandedSubgraphModuleIds,
     modelSessionsCollapsed,
     copilotCollapsed,
+    changeToken,
   ]);
 }
 
@@ -383,6 +608,7 @@ export function createModelChatSession(
         id: `welcome-${model.id}`,
         modelId: model.id,
         modelVersion: model.version,
+        createdAt: new Date().toISOString(),
         role: 'assistant',
         body: `Loaded ${model.name} ${model.version}. GOSU Model Copilot answers from this model's bounded ModelIR, selected module, source anchors, attached evidence, and recent per-model conversation.`,
         trace: ['Model-qualified context', 'GOSU-compatible LLM adapter · bounded evidence'],
@@ -409,6 +635,19 @@ export function modelChatSessionWithAttachments(
 ): Readonly<Record<string, ModelChatSession>> {
   const session = sessions[sessionKey] ?? createModelChatSession(model);
   return { ...sessions, [sessionKey]: { ...session, attachments } };
+}
+
+export function modelChatSessionWithMessage(
+  sessions: Readonly<Record<string, ModelChatSession>>,
+  sessionKey: string,
+  model: Pick<ModelSpec, 'id' | 'name' | 'version'>,
+  message: ChatMessage,
+): Readonly<Record<string, ModelChatSession>> {
+  const session = sessions[sessionKey] ?? createModelChatSession(model);
+  return {
+    ...sessions,
+    [sessionKey]: { ...session, messages: [...session.messages, message] },
+  };
 }
 
 function useMediaQuery(queryText: string) {
@@ -447,7 +686,7 @@ function AttachmentInput({
         className="visually-hidden"
         type="file"
         multiple
-        accept="image/png,image/jpeg,image/webp,.pdf,.docx,.py,.json,.txt,.md,.tex,.rst,.csv,.yaml,.yml"
+        accept="image/png,image/jpeg,image/webp,.pdf,.docx,.rtf,.py,.json,.txt,.md,.tex,.rst,.csv,.yaml,.yml,text/rtf,application/rtf"
         disabled={disabled}
         onChange={(event) => {
           const input = event.currentTarget;
@@ -478,7 +717,7 @@ function ModelCopilotAttachmentInput({
         className="visually-hidden"
         type="file"
         multiple
-        accept="image/png,image/jpeg,image/webp,.pdf,.docx,.py,.json,.txt,.md,.tex,.rst,.csv,.yaml,.yml"
+        accept="image/png,image/jpeg,image/webp,.pdf,.docx,.rtf,.py,.json,.txt,.md,.tex,.rst,.csv,.yaml,.yml,text/rtf,application/rtf"
         disabled={disabled}
         onChange={(event) => {
           const input = event.currentTarget;
@@ -489,6 +728,14 @@ function ModelCopilotAttachmentInput({
         aria-label="Attach files to this Model Copilot conversation"
       />
     </label>
+  );
+}
+
+function ModelTreeChevron({ expanded }: { expanded: boolean }) {
+  return (
+    <svg className="model-tree-chevron" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <path d={expanded ? 'M4.5 7.5 10 13l5.5-5.5' : 'M7.5 4.5 13 10l-5.5 5.5'} />
+    </svg>
   );
 }
 
@@ -785,15 +1032,65 @@ export function ModuleDetailDialog({
 }
 
 export function ModelLabApp() {
-  const [models, setModels] = useState<readonly ModelSpec[]>(sampleModels);
-  const [trashedModelIds, setTrashedModelIds] = useState<readonly string[]>([]);
+  const [initialPseudocodeWorkspace] = useState(() => {
+    const fallback = initialModelPseudocodeWorkspace(sampleModels);
+    if (typeof window === 'undefined') return fallback;
+    try {
+      return restoreModelPseudocodeWorkspace(
+        window.localStorage.getItem(MODEL_PSEUDOCODE_WORKSPACE_STORAGE_KEY),
+        sampleModels,
+      );
+    } catch {
+      return fallback;
+    }
+  });
+  const [models, setModels] = useState<readonly ModelSpec[]>(initialPseudocodeWorkspace.models);
+  const [trashedModelIds, setTrashedModelIds] = useState<readonly string[]>(
+    initialPseudocodeWorkspace.trashedModelIds,
+  );
   const [trashOpen, setTrashOpen] = useState(false);
   const [emptyTrashArmed, setEmptyTrashArmed] = useState(false);
   const [trashNotice, setTrashNotice] = useState('');
-  const [modelId, setModelId] = useState(sampleModels[0]?.id ?? '');
-  const [modelRevisions, setModelRevisions] = useState<Readonly<Record<string, number>>>(() =>
-    Object.fromEntries(sampleModels.map((candidate) => [candidate.id, 0])),
+  const [modelId, setModelId] = useState(initialPseudocodeWorkspace.activeModelId);
+  const [expandedModelIds, setExpandedModelIds] = useState<readonly string[]>(() =>
+    initialPseudocodeWorkspace.activeModelId ? [initialPseudocodeWorkspace.activeModelId] : [],
   );
+  const [modelRevisions, setModelRevisions] = useState<Readonly<Record<string, number>>>(
+    initialPseudocodeWorkspace.selectedRevisions,
+  );
+  const [pseudocodeHistories, setPseudocodeHistories] = useState<
+    Readonly<Record<string, readonly ModelPseudocodeRevision[]>>
+  >(initialPseudocodeWorkspace.histories);
+  const [pseudocodeDrafts, setPseudocodeDrafts] = useState<Readonly<Record<string, string>>>(() =>
+    Object.fromEntries(
+      Object.entries(initialPseudocodeWorkspace.histories).map(([lineageId, history]) => {
+        const selectedRevision = initialPseudocodeWorkspace.selectedRevisions[lineageId];
+        const revision =
+          history.find((candidate) => candidate.revision === selectedRevision) ??
+          history[history.length - 1]!;
+        return [lineageId, revision.pseudocode];
+      }),
+    ),
+  );
+  const [pseudocodePersistenceStatus, setPseudocodePersistenceStatus] = useState<
+    'saved' | 'failed'
+  >('saved');
+  const [normalizingPseudocode, setNormalizingPseudocode] = useState(false);
+  const [pseudocodeUpdateLogs, setPseudocodeUpdateLogs] = useState<
+    Readonly<Record<string, readonly ModelPseudocodeUpdateLogEntry[]>>
+  >({});
+  const [activePseudocodeDiffHunkIndex, setActivePseudocodeDiffHunkIndex] = useState(-1);
+  const [pythonArtifactStates, setPythonArtifactStates] = useState<
+    Readonly<Record<string, ModelPythonArtifactState>>
+  >({});
+  const [pseudocodeNormalizationSources, setPseudocodeNormalizationSources] = useState<
+    Readonly<Record<string, string>>
+  >({});
+  const [pseudocodeNotice, setPseudocodeNotice] = useState<Readonly<{
+    modelId: string;
+    tone: 'success' | 'error';
+    message: string;
+  }> | null>(null);
   const trashedModelIdSet = useMemo(() => new Set(trashedModelIds), [trashedModelIds]);
   const activeModels = useMemo(
     () => models.filter((candidate) => !trashedModelIdSet.has(candidate.id)),
@@ -810,8 +1107,62 @@ export function ModelLabApp() {
   if (!model) throw new Error('model_lab_sample_missing');
   const modelRevision = modelRevisions[model.id] ?? 0;
   const activeChatSessionKey = modelChatSessionKey(model, modelRevision);
+  const pseudocodeHistory = pseudocodeHistories[model.id] ?? [
+    initialModelPseudocodeRevision(model),
+  ];
+  const activePseudocodeRevision =
+    pseudocodeHistory.find((candidate) => candidate.revision === modelRevision) ??
+    pseudocodeHistory[pseudocodeHistory.length - 1]!;
+  const pseudocodeDraft = pseudocodeDrafts[model.id] ?? activePseudocodeRevision.pseudocode;
+  const pseudocodeRevisionRows = modelPseudocodeRevisionRows(pseudocodeHistory);
+  const pseudocodeDirty = pseudocodeDraft !== activePseudocodeRevision.pseudocode;
+  const pendingPseudocodeNormalizationSource = pseudocodeNormalizationSources[model.id];
+  const pseudocodeOriginalDraft = activePseudocodeRevision.originalDraft;
+  const pseudocodeNormalizationDiff = useMemo(
+    () =>
+      pendingPseudocodeNormalizationSource
+        ? modelPseudocodeLineDiffSummary(pendingPseudocodeNormalizationSource, pseudocodeDraft)
+        : null,
+    [pendingPseudocodeNormalizationSource, pseudocodeDraft],
+  );
+  const pseudocodeDiffHunks = useMemo(
+    () =>
+      pendingPseudocodeNormalizationSource
+        ? modelPseudocodeLineDiffHunks(pendingPseudocodeNormalizationSource, pseudocodeDraft)
+        : [],
+    [pendingPseudocodeNormalizationSource, pseudocodeDraft],
+  );
+  const activePseudocodeDiffHunk =
+    activePseudocodeDiffHunkIndex >= 0
+      ? pseudocodeDiffHunks[activePseudocodeDiffHunkIndex]
+      : undefined;
+  const originalPseudocodeDiffLines = useMemo(
+    () => pendingPseudocodeNormalizationSource?.replace(/\r\n?/gu, '\n').split('\n') ?? [],
+    [pendingPseudocodeNormalizationSource],
+  );
+  const proposedPseudocodeDiffLines = useMemo(
+    () => pseudocodeDraft.replace(/\r\n?/gu, '\n').split('\n'),
+    [pseudocodeDraft],
+  );
+  const pendingPseudocodeDecision = useMemo(() => {
+    if (!pendingPseudocodeNormalizationSource) return null;
+    return classifyModelPseudocodeUpdate(pseudocodeDraft, model.id);
+  }, [model, pendingPseudocodeNormalizationSource, pseudocodeDraft]);
+  const pendingPseudocodeModel =
+    pendingPseudocodeDecision?.kind === 'commit' ? pendingPseudocodeDecision.model : null;
+  const pendingPseudocodeChangeSummary = useMemo(
+    () =>
+      pendingPseudocodeModel ? modelPseudocodeChangeSummary(model, pendingPseudocodeModel) : null,
+    [model, pendingPseudocodeModel],
+  );
+  const activePythonArtifactKey = modelPythonArtifactKey(model.id, modelRevision);
+  const activePythonArtifactState = pythonArtifactStates[activePythonArtifactKey];
+  const activePseudocodeUpdateLog = pseudocodeUpdateLogs[model.id] ?? [];
 
   const [signalMode, setSignalMode] = useState<'forward' | 'backward'>('backward');
+  const [revisionGraphHighlights, setRevisionGraphHighlights] = useState<
+    Readonly<Record<string, ModelGraphChangeHighlight>>
+  >({});
   const [viewSessions, setViewSessions] = useState<Readonly<Record<string, ModelViewSession>>>(() =>
     Object.fromEntries(
       sampleModels.map((candidate) => [
@@ -824,14 +1175,42 @@ export function ModelLabApp() {
   const selectedModuleId = activeViewSession.selectedModuleId;
   const graphDetail = activeViewSession.graphDetail;
   const expandedSubgraphModuleIds = activeViewSession.expandedSubgraphModuleIds;
+  const graphDisplayModel = pendingPseudocodeModel ?? model;
+  const graphDisplayRegistry = useMemo(
+    () =>
+      activeModels.map((candidate) =>
+        candidate.id === graphDisplayModel.id ? graphDisplayModel : candidate,
+      ),
+    [activeModels, graphDisplayModel],
+  );
+  const pendingGraphHighlight = useMemo(
+    () =>
+      pendingPseudocodeChangeSummary
+        ? modelGraphChangeHighlightFromSummary(
+            pendingPseudocodeChangeSummary,
+            'proposal',
+            model,
+            pendingPseudocodeModel ?? undefined,
+          )
+        : null,
+    [model, pendingPseudocodeChangeSummary, pendingPseudocodeModel],
+  );
+  const activeGraphHighlight =
+    pendingGraphHighlight ?? revisionGraphHighlights[activeChatSessionKey] ?? null;
   const graphComposition = useMemo(
     () =>
       composeModelSubgraphs(
-        overviewModel(model, graphDetail),
-        activeModels,
+        overviewModel(graphDisplayModel, pendingPseudocodeModel ? 'expanded' : graphDetail),
+        graphDisplayRegistry,
         expandedSubgraphModuleIds,
       ),
-    [activeModels, expandedSubgraphModuleIds, graphDetail, model],
+    [
+      expandedSubgraphModuleIds,
+      graphDetail,
+      graphDisplayModel,
+      graphDisplayRegistry,
+      pendingPseudocodeModel,
+    ],
   );
   const copilotProjectModels = useMemo(
     () =>
@@ -876,9 +1255,16 @@ export function ModelLabApp() {
   const [copilotStatus, setCopilotStatus] = useState<ModelLabRuntimeStatus | null>(null);
   const [copilotCatalog, setCopilotCatalog] = useState<ModelCatalog | null>(null);
   const [copilotSelection, setCopilotSelection] = useState<ModelLabModelSelection>({
+    providerId: null,
     requestedModelId: null,
     reasoningOptionId: null,
   });
+  const [builderSelection, setBuilderSelection] = useState<ModelLabModelSelection>({
+    providerId: null,
+    requestedModelId: null,
+    reasoningOptionId: null,
+  });
+  const [copilotCatalogRefreshing, setCopilotCatalogRefreshing] = useState(false);
   const [copilotAttachmentNotice, setCopilotAttachmentNotice] = useState<string | null>(null);
   const [modelFocus, setModelFocus] = useState(false);
   const [moduleDetail, setModuleDetail] = useState<ModuleDetailState | null>(null);
@@ -889,6 +1275,10 @@ export function ModelLabApp() {
   const [copilotWidth, setCopilotWidth] = useState(MODEL_COPILOT_DEFAULT_WIDTH);
   const [resizingPanel, setResizingPanel] = useState<ResizablePanel | null>(null);
   const [copilotCollapsed, setCopilotCollapsed] = useState(false);
+  const [copilotDetailsOpen, setCopilotDetailsOpen] = useState(false);
+  const [chatNearBottom, setChatNearBottom] = useState(true);
+  const [chatAtTop, setChatAtTop] = useState(true);
+  const [chatCanScroll, setChatCanScroll] = useState(false);
   const [mobileCopilotOpen, setMobileCopilotOpen] = useState(false);
   const mobileLayout = useMobileLayout();
   const stackedSessionLayout = useMediaQuery('(max-width: 900px)');
@@ -917,7 +1307,14 @@ export function ModelLabApp() {
   const copilotCloseRef = useRef<HTMLButtonElement>(null);
   const copilotRestoreRef = useRef<HTMLButtonElement>(null);
   const copilotComposerRef = useRef<HTMLTextAreaElement>(null);
+  const pseudocodeEditorRef = useRef<HTMLTextAreaElement>(null);
+  const originalPseudocodeDiffRef = useRef<HTMLPreElement>(null);
+  const proposedPseudocodeDiffRef = useRef<HTMLPreElement>(null);
+  const pseudocodeDiffScrollSyncRef = useRef(false);
   const copilotTurnAbortRef = useRef<AbortController | null>(null);
+  const pseudocodeNormalizerAbortRef = useRef<AbortController | null>(null);
+  const pythonArtifactAbortRef = useRef(new Map<string, AbortController>());
+  const pythonArtifactLoadStartedRef = useRef(new Set<string>());
   const chatBodyRef = useRef<HTMLDivElement>(null);
   const chatPinnedToBottomRef = useRef(true);
   const previousChatSessionKeyRef = useRef(activeChatSessionKey);
@@ -1076,6 +1473,7 @@ export function ModelLabApp() {
     moduleDetailTriggerRef.current = null;
     setTrashedModelIds(transition.trashedModelIds);
     setModelId(transition.activeModelId);
+    setExpandedModelIds([transition.activeModelId]);
     setEmptyTrashArmed(false);
     setTrashOpen(true);
     setTrashNotice(`${target?.name ?? 'Model session'} moved to Trash.`);
@@ -1095,6 +1493,39 @@ export function ModelLabApp() {
     );
     setViewSessions((current) => withoutTrashedModelSessions(current, purgedIds));
     setChatSessions((current) => withoutTrashedModelSessions(current, purgedIds));
+    setPseudocodeHistories((current) =>
+      Object.fromEntries(Object.entries(current).filter(([key]) => !purged.has(key))),
+    );
+    setPseudocodeDrafts((current) =>
+      Object.fromEntries(Object.entries(current).filter(([key]) => !purged.has(key))),
+    );
+    setPseudocodeNormalizationSources((current) =>
+      Object.fromEntries(Object.entries(current).filter(([key]) => !purged.has(key))),
+    );
+    setPythonArtifactStates((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([key]) => {
+          try {
+            const [candidateModelId] = JSON.parse(key) as [string, number];
+            return !purged.has(candidateModelId);
+          } catch {
+            return false;
+          }
+        }),
+      ),
+    );
+    for (const [key, controller] of pythonArtifactAbortRef.current) {
+      try {
+        const [candidateModelId] = JSON.parse(key) as [string, number];
+        if (!purged.has(candidateModelId)) continue;
+        controller.abort();
+        pythonArtifactAbortRef.current.delete(key);
+      } catch {
+        controller.abort();
+        pythonArtifactAbortRef.current.delete(key);
+      }
+    }
+    setExpandedModelIds((current) => current.filter((candidate) => !purged.has(candidate)));
     setTrashedModelIds([]);
     setEmptyTrashArmed(false);
     setTrashNotice(
@@ -1104,6 +1535,23 @@ export function ModelLabApp() {
   useEffect(() => {
     modelRegistryRef.current = models;
   }, [models]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(
+        MODEL_PSEUDOCODE_WORKSPACE_STORAGE_KEY,
+        serializeModelPseudocodeWorkspace({
+          histories: pseudocodeHistories,
+          selectedRevisions: modelRevisions,
+          activeModelId: modelId,
+          trashedModelIds,
+        }),
+      );
+      setPseudocodePersistenceStatus('saved');
+    } catch {
+      setPseudocodePersistenceStatus('failed');
+    }
+  }, [modelId, modelRevisions, pseudocodeHistories, trashedModelIds]);
   useEffect(() => {
     setViewSessions((current) =>
       current[activeChatSessionKey]
@@ -1118,11 +1566,59 @@ export function ModelLabApp() {
   }, [activeChatSessionKey, model]);
 
   useEffect(() => {
+    const receipt = activePseudocodeRevision.pythonArtifact;
+    if (!receipt || pythonArtifactLoadStartedRef.current.has(activePythonArtifactKey)) return;
+    pythonArtifactLoadStartedRef.current.add(activePythonArtifactKey);
+    const controller = new AbortController();
+    let settled = false;
+    setPythonArtifactStates((current) => ({
+      ...current,
+      [activePythonArtifactKey]: { status: 'loading' },
+    }));
+    void modelPythonArtifactClient
+      .read(receipt, controller.signal)
+      .then((artifact) => {
+        if (controller.signal.aborted) return;
+        settled = true;
+        setPythonArtifactStates((current) => ({
+          ...current,
+          [activePythonArtifactKey]: { status: 'ready', artifact },
+        }));
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        settled = true;
+        setPythonArtifactStates((current) => ({
+          ...current,
+          [activePythonArtifactKey]: {
+            status: 'failed',
+            error: error instanceof Error ? error.message : 'Python artifact could not be read.',
+          },
+        }));
+      });
+    return () => {
+      controller.abort();
+      if (!settled) pythonArtifactLoadStartedRef.current.delete(activePythonArtifactKey);
+    };
+  }, [activePseudocodeRevision.pythonArtifact, activePythonArtifactKey]);
+
+  useEffect(() => {
+    setActivePseudocodeDiffHunkIndex(-1);
+    requestAnimationFrame(() => {
+      if (originalPseudocodeDiffRef.current) originalPseudocodeDiffRef.current.scrollTop = 0;
+      if (proposedPseudocodeDiffRef.current) proposedPseudocodeDiffRef.current.scrollTop = 0;
+    });
+  }, [pendingPseudocodeNormalizationSource, pseudocodeDraft]);
+
+  useEffect(() => {
     setModuleDetail(null);
     moduleDetailTriggerRef.current = null;
     setCopilotAttachmentNotice(null);
     copilotTurnAbortRef.current?.abort();
     copilotTurnAbortRef.current = null;
+    pseudocodeNormalizerAbortRef.current?.abort();
+    pseudocodeNormalizerAbortRef.current = null;
+    setNormalizingPseudocode(false);
     setCopilotProgress([]);
   }, [activeChatSessionKey]);
 
@@ -1132,8 +1628,12 @@ export function ModelLabApp() {
       chatPinnedToBottomRef.current = true;
     }
     const chatBody = chatBodyRef.current;
-    if (!chatBody || copilotPanelCollapsed || !chatPinnedToBottomRef.current) return;
-    chatBody.scrollTop = chatBody.scrollHeight;
+    if (!chatBody || copilotPanelCollapsed) return;
+    if (chatPinnedToBottomRef.current) chatBody.scrollTop = chatBody.scrollHeight;
+    const state = modelChatScrollState(chatBody);
+    setChatCanScroll(state.canScroll);
+    setChatAtTop(state.atTop);
+    setChatNearBottom(state.nearBottom);
   }, [activeChatSessionKey, copilotPanelCollapsed, messages.length]);
 
   useEffect(() => {
@@ -1234,14 +1734,92 @@ export function ModelLabApp() {
   const parameterTotal = model.modules.reduce((total, module) => total + module.parameterCount, 0);
   const selectedCopilotModel = copilotSelection.requestedModelId
     ? copilotCatalog?.models.find(
-        (candidate) => candidate.modelId === copilotSelection.requestedModelId,
+        (candidate) =>
+          candidate.modelId === copilotSelection.requestedModelId &&
+          (!copilotSelection.providerId || candidate.providerId === copilotSelection.providerId),
       )
     : copilotCatalog?.models.find((candidate) => candidate.isDefault);
   const copilotReasoningOptions = selectedCopilotModel?.reasoningOptions ?? [];
+  const copilotModelSelectionMissing = Boolean(
+    copilotSelection.requestedModelId && copilotCatalog && !selectedCopilotModel,
+  );
+  const copilotReasoningSelectionMissing = Boolean(
+    copilotSelection.reasoningOptionId &&
+    selectedCopilotModel &&
+    !copilotReasoningOptions.some(
+      (candidate) => candidate.id === copilotSelection.reasoningOptionId,
+    ),
+  );
+  const copilotProviderGroups = useMemo(() => {
+    const groups = new Map<string, NonNullable<typeof copilotCatalog>['models']>();
+    for (const candidate of copilotCatalog?.models ?? []) {
+      groups.set(candidate.providerId, [...(groups.get(candidate.providerId) ?? []), candidate]);
+    }
+    return [...groups.entries()];
+  }, [copilotCatalog]);
+  const selectedBuilderModel = builderSelection.requestedModelId
+    ? copilotCatalog?.models.find(
+        (candidate) =>
+          candidate.modelId === builderSelection.requestedModelId &&
+          (!builderSelection.providerId || candidate.providerId === builderSelection.providerId),
+      )
+    : copilotCatalog?.models.find((candidate) => candidate.isDefault);
+  const builderReasoningOptions = selectedBuilderModel?.reasoningOptions ?? [];
+  const builderModelSelectionMissing = Boolean(
+    builderSelection.requestedModelId && copilotCatalog && !selectedBuilderModel,
+  );
+  const builderReasoningSelectionMissing = Boolean(
+    builderSelection.reasoningOptionId &&
+    selectedBuilderModel &&
+    !builderReasoningOptions.some(
+      (candidate) => candidate.id === builderSelection.reasoningOptionId,
+    ),
+  );
+  const selectedCopilotReasoning = copilotSelection.reasoningOptionId
+    ? copilotReasoningOptions.find(
+        (candidate) => candidate.id === copilotSelection.reasoningOptionId,
+      )
+    : copilotReasoningOptions.find((candidate) => candidate.isDefault);
+  const selectedBuilderReasoning = builderSelection.reasoningOptionId
+    ? builderReasoningOptions.find(
+        (candidate) => candidate.id === builderSelection.reasoningOptionId,
+      )
+    : builderReasoningOptions.find((candidate) => candidate.isDefault);
+  const copilotModelLabel =
+    selectedCopilotModel?.displayName ??
+    (copilotModelSelectionMissing ? 'Unavailable model' : (copilotStatus?.model ?? 'Connecting…'));
+  const copilotProviderLabel =
+    selectedCopilotModel?.providerId ?? copilotStatus?.provider ?? 'GOSU LLM bridge';
+  const copilotProviderDisplayLabel = modelCopilotProviderLabel(copilotProviderLabel);
+  const copilotReasoningLabel =
+    selectedCopilotReasoning?.label ??
+    (copilotReasoningSelectionMissing
+      ? 'Unavailable reasoning'
+      : (copilotStatus?.reasoning ?? 'Model default'));
+  const refreshCopilotCatalog = async () => {
+    if (copilotCatalogRefreshing) return;
+    setCopilotCatalogRefreshing(true);
+    try {
+      const catalog = await gosuModelLabRuntime.listModels?.({ refresh: true });
+      if (catalog) {
+        setCopilotCatalog(catalog);
+        setCopilotAttachmentNotice(
+          `Refreshed ${catalog.models.length} available LLM model${catalog.models.length === 1 ? '' : 's'} from GOSU providers.`,
+        );
+      }
+    } catch {
+      setCopilotAttachmentNotice('Could not refresh the GOSU model catalog.');
+    } finally {
+      setCopilotCatalogRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     let current = true;
-    void Promise.all([gosuModelLabRuntime.status?.(), gosuModelLabRuntime.listModels?.()])
+    void Promise.all([
+      gosuModelLabRuntime.status?.(),
+      gosuModelLabRuntime.listModels?.({ refresh: false }),
+    ])
       .then(([status, catalog]) => {
         if (!current) return;
         if (status) setCopilotStatus(status);
@@ -1266,7 +1844,7 @@ export function ModelLabApp() {
     setReviewing(true);
     void deterministicModelLabRuntime
       .review({
-        projectModels: activeModels,
+        projectModels: modelFormulaAuditScope(activeModels),
         activeModelId: model.id,
         probe,
         checkpointIndex,
@@ -1282,6 +1860,490 @@ export function ModelLabApp() {
     };
   }, [activeModels, checkpointIndex, model.id, probe, reviewNonce]);
 
+  const setPseudocodeDraft = (value: string) => {
+    setPseudocodeDrafts((current) => ({ ...current, [model.id]: value }));
+    if (pseudocodeNotice?.modelId === model.id) setPseudocodeNotice(null);
+  };
+
+  const appendPseudocodeUpdateLog = (
+    targetModelId: string,
+    phase: ModelPseudocodeUpdateLogEntry['phase'],
+    message: string,
+    reset = false,
+  ) => {
+    const entry: ModelPseudocodeUpdateLogEntry = {
+      id: nextId('pseudocode-update'),
+      createdAt: new Date().toISOString(),
+      phase,
+      message,
+    };
+    setPseudocodeUpdateLogs((current) => ({
+      ...current,
+      [targetModelId]: reset ? [entry] : [...(current[targetModelId] ?? []), entry].slice(-16),
+    }));
+  };
+
+  const jumpToPseudocodeDiffHunk = () => {
+    if (pseudocodeDiffHunks.length === 0) return;
+    const nextIndex = (activePseudocodeDiffHunkIndex + 1) % pseudocodeDiffHunks.length;
+    const hunk = pseudocodeDiffHunks[nextIndex]!;
+    setActivePseudocodeDiffHunkIndex(nextIndex);
+    requestAnimationFrame(() => {
+      const scrollLineIntoPane = (pane: HTMLPreElement | null, line: number) => {
+        const target =
+          pane?.querySelector<HTMLElement>(`[data-line="${Math.max(1, line)}"]`) ??
+          pane?.querySelector<HTMLElement>('[data-line]:last-child');
+        if (!pane || !target) return;
+        pane.scrollTop = Math.max(0, target.offsetTop - pane.clientHeight * 0.28);
+      };
+      scrollLineIntoPane(originalPseudocodeDiffRef.current, hunk.originalStart);
+      scrollLineIntoPane(proposedPseudocodeDiffRef.current, hunk.proposedStart);
+      const editor = pseudocodeEditorRef.current;
+      if (editor) {
+        const offset = pseudocodeLineOffset(pseudocodeDraft, hunk.proposedStart);
+        editor.setSelectionRange(offset, offset);
+        const lineHeight = Number.parseFloat(getComputedStyle(editor).lineHeight) || 20;
+        editor.scrollTop = Math.max(
+          0,
+          (hunk.proposedStart - 1) * lineHeight - editor.clientHeight * 0.25,
+        );
+      }
+    });
+  };
+
+  const synchronizePseudocodeDiffScroll = (
+    source: HTMLPreElement,
+    target: HTMLPreElement | null,
+  ) => {
+    if (!target || pseudocodeDiffScrollSyncRef.current) return;
+    const sourceRange = source.scrollHeight - source.clientHeight;
+    const targetRange = target.scrollHeight - target.clientHeight;
+    if (sourceRange <= 0 || targetRange <= 0) return;
+    pseudocodeDiffScrollSyncRef.current = true;
+    target.scrollTop = (source.scrollTop / sourceRange) * targetRange;
+    requestAnimationFrame(() => {
+      pseudocodeDiffScrollSyncRef.current = false;
+    });
+  };
+
+  const generatePythonArtifact = async (targetModel: ModelSpec, revision: number) => {
+    const artifactKey = modelPythonArtifactKey(targetModel.id, revision);
+    pythonArtifactAbortRef.current.get(artifactKey)?.abort();
+    const controller = new AbortController();
+    pythonArtifactAbortRef.current.set(artifactKey, controller);
+    setPythonArtifactStates((current) => ({
+      ...current,
+      [artifactKey]: { status: 'generating' },
+    }));
+    try {
+      const artifact = await modelPythonArtifactClient.generate({
+        model: targetModel,
+        revision,
+        selection: builderSelection,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setPseudocodeHistories((current) => {
+        const history = current[targetModel.id];
+        if (!history) return current;
+        return {
+          ...current,
+          [targetModel.id]: attachModelPythonArtifact(history, revision, artifact.receipt),
+        };
+      });
+      setPythonArtifactStates((current) => ({
+        ...current,
+        [artifactKey]: { status: 'ready', artifact },
+      }));
+    } catch (error) {
+      setPythonArtifactStates((current) => ({
+        ...current,
+        [artifactKey]: {
+          status: 'failed',
+          error: controller.signal.aborted
+            ? 'Python generation stopped.'
+            : error instanceof Error
+              ? error.message
+              : 'Python artifact generation failed.',
+        },
+      }));
+    } finally {
+      if (pythonArtifactAbortRef.current.get(artifactKey) === controller) {
+        pythonArtifactAbortRef.current.delete(artifactKey);
+      }
+    }
+  };
+
+  const queuePseudocodeRevisionComment = (input: {
+    previousModel: ModelSpec;
+    nextModel: ModelSpec;
+    nextModels: readonly ModelSpec[];
+    fromRevision: number;
+    toRevision: number;
+  }) => {
+    const sessionKey = modelChatSessionKey(input.nextModel, input.toRevision);
+    const pendingMessageId = nextId('revision-review');
+    const createdAt = new Date().toISOString();
+    const changeSummary = modelPseudocodeChangeSummary(input.previousModel, input.nextModel);
+    const deterministicReceipt = [
+      `**Revision r${input.toRevision} update receipt**`,
+      ...changeSummary.lines.map((line) => `- ${line}`),
+    ].join('\n');
+    setChatSessions((current) =>
+      modelChatSessionWithMessage(current, sessionKey, input.nextModel, {
+        id: pendingMessageId,
+        modelId: input.nextModel.id,
+        modelVersion: input.nextModel.version,
+        createdAt,
+        role: 'assistant',
+        body: `${deterministicReceipt}\n\nModel Copilot is reviewing how the pseudocode and graph changed…`,
+        trace: [
+          'Pseudocode revision committed',
+          ...changeSummary.lines,
+          'Automatic Model Copilot review pending',
+        ],
+      }),
+    );
+    const question = modelPseudocodeRevisionCommentPrompt(input);
+    const selectedModuleId = input.nextModel.modules[0]?.id;
+    if (!selectedModuleId) return;
+    void gosuModelLabRuntime
+      .answer({
+        projectModels: input.nextModels,
+        activeModelId: input.nextModel.id,
+        selectedModuleId,
+        probe,
+        checkpointIndex,
+        question,
+        purpose: 'revision-comment',
+        selection: copilotSelection,
+      })
+      .then((answer) => {
+        setChatSessions((current) => {
+          const session = current[sessionKey];
+          if (!session) return current;
+          return {
+            ...current,
+            [sessionKey]: {
+              ...session,
+              messages: session.messages.map((message) =>
+                message.id === pendingMessageId
+                  ? {
+                      ...message,
+                      body: `${deterministicReceipt}\n\n${answer.body}`,
+                      trace: [
+                        ...answer.trace,
+                        `Automatic review · r${input.fromRevision} → r${input.toRevision}`,
+                      ],
+                      ...(answer.usage ? { usage: answer.usage } : {}),
+                    }
+                  : message,
+              ),
+            },
+          };
+        });
+      })
+      .catch(() => {
+        setChatSessions((current) => {
+          const session = current[sessionKey];
+          if (!session) return current;
+          return {
+            ...current,
+            [sessionKey]: {
+              ...session,
+              messages: session.messages.map((message) =>
+                message.id === pendingMessageId
+                  ? {
+                      ...message,
+                      body: `${deterministicReceipt}\n\nThe graph was updated. The automatic LLM comment was unavailable; no review findings were invented.`,
+                      trace: [
+                        'Pseudocode revision committed',
+                        'Automatic Model Copilot review unavailable',
+                      ],
+                    }
+                  : message,
+              ),
+            },
+          };
+        });
+      });
+  };
+
+  const commitPseudocodeRevision = (
+    nextModel: ModelSpec,
+    normalizedPseudocode: string,
+    originalDraft?: string,
+  ) => {
+    const changeSummary = modelPseudocodeChangeSummary(model, nextModel);
+    appendPseudocodeUpdateLog(
+      model.id,
+      'updating',
+      `Validated draft accepted. Updating graph from r${modelRevision}…`,
+    );
+    changeSummary.lines.forEach((line) => appendPseudocodeUpdateLog(model.id, 'review', line));
+    const nextHistory = appendModelPseudocodeRevision(pseudocodeHistory, {
+      parentRevision: modelRevision,
+      model: nextModel,
+      pseudocode: normalizedPseudocode,
+      ...(originalDraft ? { originalDraft } : {}),
+      label: originalDraft ? 'LLM-normalized pseudocode update' : 'Pseudocode update',
+    });
+    const nextRevision = nextHistory[nextHistory.length - 1]!;
+    const nextModels = replaceModelPreservingOrder(modelRegistryRef.current, nextModel);
+    modelRegistryRef.current = nextModels;
+    setModels(nextModels);
+    setModelRevisions((current) => ({
+      ...current,
+      [model.id]: nextRevision.revision,
+    }));
+    setPseudocodeHistories((current) => ({ ...current, [model.id]: nextHistory }));
+    setPseudocodeDrafts((current) => ({ ...current, [model.id]: normalizedPseudocode }));
+    setViewSessions((current) => ({
+      ...current,
+      [modelChatSessionKey(nextModel, nextRevision.revision)]: modelViewSessionAfterRevision(
+        model,
+        nextModel,
+      ),
+    }));
+    setRevisionGraphHighlights((current) => ({
+      ...current,
+      [modelChatSessionKey(nextModel, nextRevision.revision)]: modelGraphChangeHighlightFromSummary(
+        changeSummary,
+        'revision',
+        model,
+        nextModel,
+      ),
+    }));
+    setPseudocodeNormalizationSources((current) => {
+      const { [model.id]: _discarded, ...remaining } = current;
+      return remaining;
+    });
+    setPseudocodeNotice({
+      modelId: model.id,
+      tone: 'success',
+      message: `Created revision r${nextRevision.revision} from r${modelRevision}; graph updated and the changed block is focused in Expanded modules.`,
+    });
+    appendPseudocodeUpdateLog(
+      model.id,
+      'complete',
+      `Graph updated as revision r${nextRevision.revision}. Changed block focused in Expanded modules; Python artifact generation and Model Copilot review started.`,
+    );
+    queuePseudocodeRevisionComment({
+      previousModel: model,
+      nextModel,
+      nextModels,
+      fromRevision: modelRevision,
+      toRevision: nextRevision.revision,
+    });
+    void generatePythonArtifact(nextModel, nextRevision.revision);
+    setModuleDetail(null);
+    moduleDetailTriggerRef.current = null;
+  };
+
+  const updateGraphFromPseudocode = async () => {
+    if (normalizingPseudocode) {
+      pseudocodeNormalizerAbortRef.current?.abort();
+      appendPseudocodeUpdateLog(model.id, 'error', 'LLM interpretation was stopped by the user.');
+      return;
+    }
+    appendPseudocodeUpdateLog(
+      model.id,
+      'reading',
+      `Comparing the current draft with revision r${modelRevision}…`,
+      !pendingPseudocodeNormalizationSource,
+    );
+    const decision = classifyModelPseudocodeUpdate(pseudocodeDraft, model.id);
+    let interpretationReason: string;
+    let reconciliationIntendedModel: ModelSpec | null = null;
+    let reconciliationModuleIds: readonly string[] = [];
+    if (decision.kind === 'commit') {
+      const reconciliationIssues = modelPseudocodeNarrativeReconciliationIssues(
+        model,
+        decision.model,
+      );
+      if (reconciliationIssues.length === 0) {
+        appendPseudocodeUpdateLog(
+          model.id,
+          'reading',
+          'Canonical template parsed locally. No LLM interpretation was needed.',
+        );
+        commitPseudocodeRevision(
+          decision.model,
+          decision.pseudocode,
+          pendingPseudocodeNormalizationSource,
+        );
+        return;
+      }
+      interpretationReason = reconciliationIssues.join(' ');
+      reconciliationIntendedModel = decision.model;
+      reconciliationModuleIds = modelPseudocodeNarrativeReconciliationModuleIds(
+        model,
+        decision.model,
+      );
+      appendPseudocodeUpdateLog(
+        model.id,
+        'review',
+        `Narrative consistency check requested reconciliation: ${interpretationReason}`,
+      );
+    } else {
+      interpretationReason = decision.reason;
+      appendPseudocodeUpdateLog(
+        model.id,
+        'reading',
+        `Local parser could not commit this draft: ${decision.reason}`,
+      );
+    }
+
+    const targetModelId = model.id;
+    const originalDraft = pendingPseudocodeNormalizationSource ?? pseudocodeDraft;
+    const controller = new AbortController();
+    pseudocodeNormalizerAbortRef.current = controller;
+    setNormalizingPseudocode(true);
+    appendPseudocodeUpdateLog(
+      targetModelId,
+      'interpreting',
+      reconciliationIntendedModel
+        ? `${selectedBuilderModel?.displayName ?? 'Selected Model Builder LLM'} · ${selectedBuilderReasoning?.label ?? 'model-default reasoning'} is reconciling transform, formula, and explanation only for: ${reconciliationModuleIds.join(', ')}. Graph topology is locked.`
+        : `${selectedBuilderModel?.displayName ?? 'Selected Model Builder LLM'} · ${selectedBuilderReasoning?.label ?? 'model-default reasoning'} is reading the modified free-form draft and mapping Block fields, shapes, and connections.`,
+    );
+    setPseudocodeNotice({
+      modelId: targetModelId,
+      tone: 'success',
+      message:
+        'The draft is outside the standard template. Interpreting it with the selected Model Builder LLM…',
+    });
+    try {
+      const result = reconciliationIntendedModel
+        ? await modelPseudocodeNormalizer.reconcileNarrative({
+            baseModel: model,
+            intendedModel: reconciliationIntendedModel,
+            moduleIds: reconciliationModuleIds,
+            selection: builderSelection,
+            signal: controller.signal,
+          })
+        : await modelPseudocodeNormalizer.normalize({
+            baseModel: model,
+            source: pseudocodeDraft,
+            selection: builderSelection,
+            signal: controller.signal,
+          });
+      if (controller.signal.aborted) return;
+      const resultHunks = modelPseudocodeLineDiffHunks(originalDraft, result.pseudocode);
+      if (resultHunks.length === 0) {
+        setPseudocodeDrafts((current) => ({
+          ...current,
+          [targetModelId]: result.pseudocode,
+        }));
+        setPseudocodeNormalizationSources((current) => {
+          const { [targetModelId]: _discarded, ...remaining } = current;
+          return remaining;
+        });
+        setPseudocodeNotice({
+          modelId: targetModelId,
+          tone: 'error',
+          message: 'The LLM returned an identical draft. No proposal or graph update was created.',
+        });
+        appendPseudocodeUpdateLog(
+          targetModelId,
+          'error',
+          'LLM result is identical to the original draft. Diff panel suppressed; graph and revision tree unchanged.',
+        );
+        return;
+      }
+      const changeSummary = modelPseudocodeChangeSummary(model, result.model);
+      const proposalFocusModuleId =
+        changeSummary.addedBlocks[0] ??
+        changeSummary.changedBlocks[0]?.id ??
+        result.model.modules[0]?.id ??
+        '';
+      setPseudocodeDrafts((current) => ({
+        ...current,
+        [targetModelId]: result.pseudocode,
+      }));
+      setPseudocodeNormalizationSources((current) => ({
+        ...current,
+        [targetModelId]: originalDraft,
+      }));
+      setViewSessions((current) =>
+        modelViewSessionWithUpdate(current, activeChatSessionKey, model, {
+          selectedModuleId: proposalFocusModuleId,
+          graphDetail: 'expanded',
+        }),
+      );
+      setPseudocodeNotice({
+        modelId: targetModelId,
+        tone: 'success',
+        message: `Normalized with ${result.trace.slice(0, 2).join(' · ')}. Graph unchanged; review the diff, then apply it as a revision.`,
+      });
+      appendPseudocodeUpdateLog(
+        targetModelId,
+        'review',
+        `${reconciliationIntendedModel ? 'Bounded narrative reconciliation' : 'LLM interpretation'} completed (${result.trace.slice(0, 2).join(' · ')}). Graph is still unchanged.`,
+      );
+      changeSummary.lines.forEach((line) =>
+        appendPseudocodeUpdateLog(targetModelId, 'review', `LLM mapped: ${line}`),
+      );
+      appendPseudocodeUpdateLog(
+        targetModelId,
+        'review',
+        'Review the proposed text and diff. Apply as revision is the only action that updates the graph.',
+      );
+    } catch (error) {
+      const errorMessage = controller.signal.aborted
+        ? 'Pseudocode interpretation stopped.'
+        : error instanceof Error
+          ? error.message
+          : `Pseudocode interpretation failed after: ${interpretationReason}`;
+      setPseudocodeNotice({
+        modelId: targetModelId,
+        tone: 'error',
+        message: errorMessage,
+      });
+      appendPseudocodeUpdateLog(targetModelId, 'error', errorMessage);
+    } finally {
+      if (pseudocodeNormalizerAbortRef.current === controller) {
+        pseudocodeNormalizerAbortRef.current = null;
+        setNormalizingPseudocode(false);
+      }
+    }
+  };
+
+  const restoreFreeFormPseudocodeDraft = () => {
+    if (!pendingPseudocodeNormalizationSource) return;
+    setPseudocodeDrafts((current) => ({
+      ...current,
+      [model.id]: pendingPseudocodeNormalizationSource,
+    }));
+    setPseudocodeNormalizationSources((current) => {
+      const { [model.id]: _discarded, ...remaining } = current;
+      return remaining;
+    });
+    setPseudocodeNotice({
+      modelId: model.id,
+      tone: 'success',
+      message: 'Restored the original free-form draft. The graph remains unchanged.',
+    });
+  };
+
+  const selectPseudocodeRevision = (revision: ModelPseudocodeRevision) => {
+    const nextModels = replaceModelPreservingOrder(modelRegistryRef.current, revision.model);
+    modelRegistryRef.current = nextModels;
+    setModels(nextModels);
+    setModelRevisions((current) => ({ ...current, [model.id]: revision.revision }));
+    setPseudocodeDrafts((current) => ({ ...current, [model.id]: revision.pseudocode }));
+    setPseudocodeNormalizationSources((current) => {
+      const { [model.id]: _discarded, ...remaining } = current;
+      return remaining;
+    });
+    setPseudocodeNotice({
+      modelId: model.id,
+      tone: 'success',
+      message: `Viewing revision r${revision.revision}. Editing and updating will create a child branch.`,
+    });
+    setModuleDetail(null);
+    moduleDetailTriggerRef.current = null;
+  };
+
   const registerModel = (candidate: ModelSpec) => {
     const registration = createImportedModelSession(modelRegistryRef.current, candidate);
     const nextModel = registration.model;
@@ -1291,9 +2353,29 @@ export function ModelLabApp() {
       ...current,
       [nextModel.id]: 0,
     }));
+    const initialRevision = initialModelPseudocodeRevision(nextModel);
+    setPseudocodeHistories((current) => ({
+      ...current,
+      [nextModel.id]: [initialRevision],
+    }));
+    setPseudocodeDrafts((current) => ({
+      ...current,
+      [nextModel.id]: initialRevision.pseudocode,
+    }));
+    setPseudocodeNormalizationSources((current) => {
+      const { [nextModel.id]: _discarded, ...remaining } = current;
+      return remaining;
+    });
     setTrashedModelIds((current) => current.filter((candidate) => candidate !== nextModel.id));
     setTrashOpen(false);
     setModelId(nextModel.id);
+    setExpandedModelIds([nextModel.id]);
+    setPseudocodeNotice({
+      modelId: nextModel.id,
+      tone: 'success',
+      message: 'Imported model and created revision r0 with synchronized pseudocode.',
+    });
+    void generatePythonArtifact(nextModel, 0);
     return registration;
   };
 
@@ -1303,6 +2385,7 @@ export function ModelLabApp() {
     setBuildingModel(true);
     const additions: ModelImportJob[] = [];
     const sourceArtifacts: ModelBuildArtifact[] = [];
+    let activeBuildId: string | null = null;
     try {
       for (const file of files.slice(0, 8)) {
         if (file.size > MODEL_LAB_MAX_IMPORT_BYTES && file.name.toLowerCase().endsWith('.json')) {
@@ -1310,7 +2393,10 @@ export function ModelLabApp() {
             id: nextId('model-import'),
             name: file.name,
             status: 'rejected',
+            phase: 'failed',
             detail: 'ModelIR JSON exceeds the 1 MB limit.',
+            runLabel: 'Local ModelIR validation · No LLM',
+            events: ['Rejected before any LLM request was made.'],
           });
           continue;
         }
@@ -1322,16 +2408,25 @@ export function ModelLabApp() {
               id: nextId('model-import'),
               name: file.name,
               status: 'session-created',
+              phase: 'complete',
               detail: registration.identifierChanged
                 ? `Created and opened a separate session as ${registration.model.name}; the imported identifier already existed.`
                 : `Created and opened the ${registration.model.name} model session.`,
+              runLabel: 'Local ModelIR validation · No LLM',
+              events: [
+                'Validated ModelIR schema and transform ↔ equation consistency locally.',
+                'Created revision r0 and opened a separate model session.',
+              ],
             });
           } else {
             additions.push({
               id: nextId('model-import'),
               name: file.name,
               status: 'rejected',
+              phase: 'failed',
               detail: result.reason,
+              runLabel: 'Local ModelIR validation · No LLM',
+              events: ['Local validation failed; no LLM request was made.'],
             });
           }
           continue;
@@ -1343,7 +2438,10 @@ export function ModelLabApp() {
             id: nextId('model-import'),
             name: file.name,
             status: 'rejected',
+            phase: 'failed',
             detail: prepared.reason,
+            runLabel: 'Local source preparation · No LLM request sent',
+            events: ['Source preparation failed before provider invocation.'],
           });
         }
       }
@@ -1354,15 +2452,47 @@ export function ModelLabApp() {
       if (sourceArtifacts.length === 0) return;
 
       const buildId = nextId('model-build');
+      activeBuildId = buildId;
       const sourceNames = sourceArtifacts.map((artifact) => artifact.name).join(' + ');
+      const initialRunLabel = selectedBuilderModel
+        ? [
+            modelCopilotProviderLabel(selectedBuilderModel.providerId),
+            selectedBuilderModel.displayName,
+            selectedBuilderReasoning?.label ?? 'Model default reasoning',
+          ].join(' · ')
+        : 'Auto routing · actual LLM will appear after server selection';
       const buildJob: ModelImportJob = {
         id: buildId,
         name: sourceNames,
         status: 'model-building',
-        detail: 'Creating a separate model session. The currently open model will not be modified.',
+        phase: 'sources-preparing',
+        detail: `Prepared ${sourceArtifacts.length} source artifact${sourceArtifacts.length === 1 ? '' : 's'} locally.`,
+        runLabel: initialRunLabel,
+        events: [
+          `Prepared ${sourceArtifacts.map((artifact) => artifact.kind).join(' + ')} source evidence locally.`,
+        ],
       };
       setImportJobs((current) => [...current, buildJob].slice(-8));
-      const result = await codexModelBuilder.build(sourceArtifacts, copilotSelection);
+      const result = await codexModelBuilder.build(sourceArtifacts, builderSelection, {
+        onProgress: (progress) =>
+          setImportJobs((current) =>
+            current.map((job) =>
+              job.id === buildId ? modelImportJobAfterProgress(job, progress) : job,
+            ),
+          ),
+      });
+      setImportJobs((current) =>
+        current.map((job) =>
+          job.id === buildId
+            ? {
+                ...job,
+                phase: 'registering-session' as const,
+                detail: 'ModelIR passed validation. Registering a separate model session.',
+                events: [...job.events, 'Registering graph and revision r0.'].slice(-4),
+              }
+            : job,
+        ),
+      );
       const registration = registerModel(result.model);
       setImportJobs((current) =>
         current.map((job) =>
@@ -1370,7 +2500,13 @@ export function ModelLabApp() {
             ? {
                 ...job,
                 status: 'session-created' as const,
-                detail: `Created and opened ${registration.model.name}. ${result.trace.join(' · ')}`,
+                phase: 'complete' as const,
+                detail: `Created and opened ${registration.model.name}. model.py generation continues as a separate background task.`,
+                runLabel: result.trace.slice(0, 2).join(' · ') || job.runLabel,
+                events: [
+                  ...job.events,
+                  `${registration.model.modules.length} modules · ${registration.model.connections.length} connections registered.`,
+                ].slice(-4),
               }
             : job,
         ),
@@ -1378,7 +2514,9 @@ export function ModelLabApp() {
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Model reconstruction failed.';
       setImportJobs((current) => {
-        const buildingJob = current.find((job) => job.status === 'model-building');
+        const buildingJob = activeBuildId
+          ? current.find((job) => job.id === activeBuildId)
+          : undefined;
         if (!buildingJob) {
           return [
             ...current,
@@ -1386,13 +2524,24 @@ export function ModelLabApp() {
               id: nextId('model-import'),
               name: files.map((file) => file.name).join(' + '),
               status: 'rejected' as const,
+              phase: 'failed' as const,
               detail,
+              runLabel: 'Local source preparation · No LLM request confirmed',
+              events: ['Import failed before a provider run could be tracked.'],
             },
           ].slice(-8);
         }
-        return current.map((job) =>
-          job.id === buildingJob.id ? { ...job, status: 'rejected' as const, detail } : job,
-        );
+        return current.map((job) => {
+          if (job.id !== buildingJob.id) return job;
+          const failureMessage = job.phase === 'failed' ? job.detail : detail;
+          return {
+            ...job,
+            status: 'rejected' as const,
+            phase: 'failed' as const,
+            detail: failureMessage,
+            events: [...job.events, failureMessage].slice(-4),
+          };
+        });
       });
     } finally {
       modelImportInFlightRef.current = false;
@@ -1462,12 +2611,14 @@ export function ModelLabApp() {
     setAnswering(true);
     setCopilotProgress([]);
     chatPinnedToBottomRef.current = true;
+    setChatNearBottom(true);
     setMessages((current) => [
       ...current,
       {
         id: nextId('user'),
         modelId: model.id,
         modelVersion: model.version,
+        createdAt: new Date().toISOString(),
         role: 'user',
         body: submittedQuestion,
         attachmentNames: submittedAttachments.map((attachment) => attachment.artifact.name),
@@ -1501,15 +2652,66 @@ export function ModelLabApp() {
         },
       );
       if (!turnIsCurrent()) return;
+      const editProposal =
+        answer.editProposal?.model.id === turn.modelId ? answer.editProposal : undefined;
+      const editProposalSummary = editProposal
+        ? modelPseudocodeChangeSummary(model, editProposal.model)
+        : null;
+      if (editProposal) {
+        const proposedPseudocode = modelToPseudocode(editProposal.model);
+        setPseudocodeDrafts((current) => ({
+          ...current,
+          [turn.modelId]: proposedPseudocode,
+        }));
+        setPseudocodeNormalizationSources((current) => ({
+          ...current,
+          [turn.modelId]: current[turn.modelId] ?? pseudocodeDraft,
+        }));
+        setViewSessions((current) =>
+          modelViewSessionWithUpdate(current, activeChatSessionKey, model, {
+            selectedModuleId:
+              editProposalSummary?.addedBlocks[0] ??
+              editProposalSummary?.changedBlocks[0]?.id ??
+              editProposal.model.modules[0]?.id ??
+              '',
+            graphDetail: 'expanded',
+          }),
+        );
+        setPseudocodeNotice({
+          modelId: turn.modelId,
+          tone: 'success',
+          message:
+            'Model Copilot prepared a pseudocode and graph proposal. The graph is unchanged; review the diff, then apply it as a revision.',
+        });
+        appendPseudocodeUpdateLog(
+          turn.modelId,
+          'interpreting',
+          `Model Copilot interpreted the chat request with ${copilotModelLabel} · ${copilotReasoningLabel}.`,
+          true,
+        );
+        editProposalSummary?.lines.forEach((line) =>
+          appendPseudocodeUpdateLog(turn.modelId, 'review', `Chat proposal mapped: ${line}`),
+        );
+        appendPseudocodeUpdateLog(
+          turn.modelId,
+          'review',
+          'Pseudocode proposal prepared. Graph and revision tree remain unchanged until Apply as revision.',
+        );
+      }
       setMessages((current) => [
         ...current,
         {
           id: nextId('assistant'),
           modelId: turn.modelId,
           modelVersion: turn.modelVersion,
+          createdAt: new Date().toISOString(),
           role: 'assistant',
-          body: answer.body,
-          trace: answer.trace,
+          body: editProposal
+            ? `${answer.body}\n\n**Edit proposal receipt**\n${editProposalSummary?.lines.map((line) => `- ${line}`).join('\n')}\n\nGraph unchanged. Review the pseudocode diff and use **Apply as revision** to update it.`
+            : answer.body,
+          trace: editProposal
+            ? [...answer.trace, 'Chat edit proposal · graph unchanged pending review']
+            : answer.trace,
           ...(answer.usage ? { usage: answer.usage } : {}),
         },
       ]);
@@ -1521,6 +2723,7 @@ export function ModelLabApp() {
           id: nextId('assistant-error'),
           modelId: turn.modelId,
           modelVersion: turn.modelVersion,
+          createdAt: new Date().toISOString(),
           role: 'assistant',
           body: turnController.signal.aborted
             ? 'This Model Copilot agent turn was stopped.'
@@ -1538,6 +2741,19 @@ export function ModelLabApp() {
         setCopilotProgress([]);
       }
     }
+  };
+
+  const downloadActivePythonArtifact = () => {
+    const artifact = activePythonArtifactState?.artifact;
+    if (!artifact) return;
+    const url = URL.createObjectURL(new Blob([artifact.source], { type: 'text/x-python' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = modelPythonDownloadName(model.name, modelRevision);
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -1588,8 +2804,8 @@ export function ModelLabApp() {
         </button>
         <header>
           <div>
-            <span className="eyebrow">GENERATED MODELS</span>
-            <strong>Model sessions</strong>
+            <span className="eyebrow">MODEL LAB</span>
+            <strong>Models</strong>
           </div>
           <div className="model-session-header-actions">
             <span
@@ -1623,47 +2839,6 @@ export function ModelLabApp() {
             </button>
           </div>
         </header>
-        <nav className="model-session-list" aria-label="Generated model sessions">
-          {activeModels.map((candidate, index) => {
-            const candidateParameterTotal = candidate.modules.reduce(
-              (total, module) => total + module.parameterCount,
-              0,
-            );
-            const active = candidate.id === model.id;
-            return (
-              <div className="model-session-row" key={candidate.id}>
-                <button
-                  type="button"
-                  className={`model-session-select${active ? ' is-active' : ''}`}
-                  aria-current={active ? 'page' : undefined}
-                  onClick={() => {
-                    setModelId(candidate.id);
-                    setTrashOpen(false);
-                  }}
-                >
-                  <span className="model-session-symbol" aria-hidden="true">
-                    {String(index + 1).padStart(2, '0')}
-                  </span>
-                  <span>
-                    <strong>{candidate.name}</strong>
-                    <small>
-                      {candidate.version} · {candidate.modules.length} modules
-                    </small>
-                    <small>{candidateParameterTotal.toLocaleString()} parameters</small>
-                  </span>
-                </button>
-                <button
-                  className="model-session-trash-action"
-                  type="button"
-                  aria-label={modelSessionDeleteLabel(candidate.name)}
-                  onClick={() => moveModelToTrash(candidate.id)}
-                >
-                  Delete
-                </button>
-              </div>
-            );
-          })}
-        </nav>
         {trashOpen ? (
           <section className="model-trash-panel" aria-labelledby="model-trash-title">
             <header>
@@ -1740,65 +2915,168 @@ export function ModelLabApp() {
             ) : null}
           </section>
         ) : (
-          <section
-            id="active-model-modules"
-            className="model-session-modules"
-            aria-labelledby="active-model-modules-title"
-          >
-            <header>
-              <span className="eyebrow">ACTIVE MODEL</span>
-              <strong id="active-model-modules-title">{model.name} modules</strong>
-            </header>
-            <nav aria-label={`Modules in ${model.name}`}>
-              {graphComposition.model.modules.map((module, index) => {
-                const health = moduleGradientHealth(
-                  graphComposition.model,
-                  module.id,
-                  probe,
-                  checkpointIndex,
-                );
-                const nested = graphComposition.expansions.some((expansion) =>
-                  expansion.moduleIds.includes(module.id),
-                );
-                return (
-                  <button
-                    key={module.id}
-                    type="button"
-                    className={`${module.id === selectedModule.id ? 'is-active' : ''}${nested ? ' is-submodule' : ''}`}
-                    aria-current={module.id === selectedModule.id ? 'true' : undefined}
-                    onClick={() => {
-                      setSelectedModuleId(module.id);
-                      if (['pre-norm', 'residual-mlp', 'skip', 'merge'].includes(module.id)) {
-                        setGraphDetail('expanded');
-                      }
-                    }}
-                  >
-                    <span className={`index-health index-health--${health}`} aria-hidden="true" />
-                    <span>
-                      <small>
-                        {nested ? '↳ ' : ''}
-                        {String(index + 1).padStart(2, '0')} · {module.group}
-                      </small>
-                      <strong>{module.name}</strong>
-                      <code>{formatShape(module.outputShape)}</code>
-                    </span>
-                  </button>
-                );
-              })}
-            </nav>
-          </section>
+          <nav className="model-session-tree" aria-label="Generated models and module blocks">
+            {activeModels.map((candidate) => {
+              const active = candidate.id === model.id;
+              const expanded = expandedModelIds.includes(candidate.id);
+              const candidateRevision = modelRevisions[candidate.id] ?? 0;
+              const candidateSessionKey = modelChatSessionKey(candidate, candidateRevision);
+              const candidateViewSession =
+                viewSessions[candidateSessionKey] ?? createModelViewSession(candidate);
+              const treeModel = active
+                ? graphComposition.model
+                : overviewModel(candidate, candidateViewSession.graphDetail);
+              const candidateParameterTotal = candidate.modules.reduce(
+                (total, module) => total + module.parameterCount,
+                0,
+              );
+              return (
+                <section
+                  className={`model-tree-folder${active ? ' selected' : ''}`}
+                  key={candidate.id}
+                >
+                  <div className="model-tree-folder-row">
+                    <button
+                      type="button"
+                      className="model-tree-folder-button"
+                      aria-expanded={expanded}
+                      aria-current={active ? 'page' : undefined}
+                      title={candidate.name}
+                      onClick={() => {
+                        setModelId(candidate.id);
+                        setTrashOpen(false);
+                        setExpandedModelIds((current) =>
+                          toggleModelTreeExpansion(current, candidate.id),
+                        );
+                      }}
+                    >
+                      <span className="model-tree-folder-chevron" aria-hidden="true">
+                        <ModelTreeChevron expanded={expanded} />
+                      </span>
+                      <span className="model-tree-folder-icon" aria-hidden="true">
+                        {expanded ? '▰' : '▱'}
+                      </span>
+                      <span className="model-tree-folder-copy">
+                        <strong>{candidate.name}</strong>
+                        <small>
+                          {candidate.version} · {candidate.modules.length} modules ·{' '}
+                          {candidateParameterTotal.toLocaleString()} parameters
+                        </small>
+                      </span>
+                    </button>
+                    <details className="model-tree-folder-menu">
+                      <summary aria-label={`Actions for ${candidate.name}`} title="Model actions">
+                        •••
+                      </summary>
+                      <div role="menu">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label={modelSessionDeleteLabel(candidate.name)}
+                          onClick={() => moveModelToTrash(candidate.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </details>
+                  </div>
+                  {expanded ? (
+                    <div
+                      className="model-tree-folder-children"
+                      aria-label={`${candidate.name} module blocks`}
+                    >
+                      {treeModel.modules.map((module, index) => {
+                        const health = moduleGradientHealth(
+                          treeModel,
+                          module.id,
+                          probe,
+                          checkpointIndex,
+                        );
+                        const nested =
+                          active &&
+                          graphComposition.expansions.some((expansion) =>
+                            expansion.moduleIds.includes(module.id),
+                          );
+                        const moduleActive = active && module.id === selectedModule.id;
+                        return (
+                          <button
+                            key={module.id}
+                            type="button"
+                            className={`${moduleActive ? 'active' : ''}${nested ? ' is-submodule' : ''}`}
+                            aria-current={moduleActive ? 'page' : undefined}
+                            onClick={() => {
+                              const revealExpandedResidual = [
+                                'pre-norm',
+                                'residual-mlp',
+                                'skip',
+                                'merge',
+                              ].includes(module.id);
+                              setModelId(candidate.id);
+                              setTrashOpen(false);
+                              setViewSessions((current) =>
+                                modelViewSessionWithUpdate(
+                                  current,
+                                  candidateSessionKey,
+                                  candidate,
+                                  {
+                                    selectedModuleId: module.id,
+                                    ...(revealExpandedResidual
+                                      ? { graphDetail: 'expanded' as const }
+                                      : {}),
+                                  },
+                                ),
+                              );
+                            }}
+                          >
+                            <span
+                              className={`index-health index-health--${health}`}
+                              aria-hidden="true"
+                            />
+                            <span>
+                              <small>
+                                {nested ? '↳ ' : ''}
+                                {String(index + 1).padStart(2, '0')} · {module.group}
+                              </small>
+                              <strong>{module.name}</strong>
+                              <code>{formatShape(module.outputShape)}</code>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </section>
+              );
+            })}
+          </nav>
         )}
         <footer>
           {importJobs.length > 0 ? (
-            <section className="model-import-activity" aria-label="New model import activity">
-              <strong>Separate model sessions</strong>
+            <section
+              className="model-import-activity"
+              aria-label="New model import activity"
+              aria-live="polite"
+            >
+              <strong>Graph import status</strong>
               {importJobs.slice(-3).map((job) => (
                 <article
                   key={job.id}
                   className={`model-import-job model-import-job--${job.status}`}
+                  role="status"
                 >
-                  <span>{job.name}</span>
-                  <small>{job.detail}</small>
+                  <header>
+                    <span>{job.name}</span>
+                    <b>{modelImportPhaseLabel(job.phase)}</b>
+                  </header>
+                  <small className="model-import-job__run">{job.runLabel}</small>
+                  <small className="model-import-job__detail">{job.detail}</small>
+                  {job.events.length > 0 ? (
+                    <ol aria-label={`Recent import events for ${job.name}`}>
+                      {job.events.map((event, index) => (
+                        <li key={`${index}:${event}`}>{event}</li>
+                      ))}
+                    </ol>
+                  ) : null}
                   {job.status !== 'model-building' ? (
                     <button
                       type="button"
@@ -1816,14 +3094,97 @@ export function ModelLabApp() {
               ))}
             </section>
           ) : null}
+          <section className="model-builder-selection" aria-label="Model Builder LLM selection">
+            <header>
+              <span>
+                <strong>MODEL BUILDER LLM</strong>
+                <small>Python · image · PDF · DOCX · RTF · text</small>
+              </span>
+              <button
+                type="button"
+                disabled={buildingModel || copilotCatalogRefreshing}
+                onClick={() => void refreshCopilotCatalog()}
+              >
+                {copilotCatalogRefreshing ? '…' : 'Refresh'}
+              </button>
+            </header>
+            <label>
+              <span>Model</span>
+              <select
+                aria-label="Model Builder model"
+                value={builderSelection.requestedModelId ?? ''}
+                disabled={buildingModel || copilotCatalog === null || copilotCatalogRefreshing}
+                onChange={(event) => {
+                  const requestedModelId = event.target.value || null;
+                  const descriptor = requestedModelId
+                    ? copilotCatalog?.models.find(
+                        (candidate) => candidate.modelId === requestedModelId,
+                      )
+                    : undefined;
+                  setBuilderSelection({
+                    providerId: descriptor?.providerId ?? null,
+                    requestedModelId,
+                    reasoningOptionId: null,
+                  });
+                }}
+              >
+                <option value="">Auto · provider recommended</option>
+                {builderModelSelectionMissing && builderSelection.requestedModelId ? (
+                  <option value={builderSelection.requestedModelId} disabled>
+                    Unavailable model · choose again
+                  </option>
+                ) : null}
+                {copilotProviderGroups.map(([providerId, candidates]) => (
+                  <optgroup key={providerId} label={modelCopilotProviderLabel(providerId)}>
+                    {candidates.map((candidate) => (
+                      <option
+                        key={`${candidate.providerId}:${candidate.modelId}`}
+                        value={candidate.modelId}
+                      >
+                        {candidate.displayName}
+                        {candidate.isDefault ? ' · default' : ''}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Reasoning</span>
+              <select
+                aria-label="Model Builder reasoning"
+                value={builderSelection.reasoningOptionId ?? ''}
+                disabled={buildingModel || builderReasoningOptions.length === 0}
+                onChange={(event) =>
+                  setBuilderSelection((current) => ({
+                    ...current,
+                    reasoningOptionId: event.target.value || null,
+                  }))
+                }
+              >
+                <option value="">Model default</option>
+                {builderReasoningSelectionMissing && builderSelection.reasoningOptionId ? (
+                  <option value={builderSelection.reasoningOptionId} disabled>
+                    Unavailable reasoning · choose again
+                  </option>
+                ) : null}
+                {builderReasoningOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                    {option.isDefault ? ' · default' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </section>
           <AttachmentInput
             onFiles={addFiles}
             label={buildingModel ? 'Creating new session…' : '+ New / Import model'}
             disabled={buildingModel}
           />
           <small className="model-import-boundary">
-            Always creates a separate model session; it never attaches to or replaces the current
-            model.
+            Source files use the selected LLM. ModelIR JSON imports directly without an LLM. Every
+            import creates a separate model session.
           </small>
         </footer>
       </aside>
@@ -1862,53 +3223,50 @@ export function ModelLabApp() {
               M
             </div>
             <div>
-              <span className="eyebrow">GOSU MODEL LAB · STANDALONE PROTOTYPE</span>
-              <h1>Make the model inspectable, not just executable.</h1>
+              <span className="eyebrow">GOSU MODEL LAB</span>
+              <h1>Model Lab</h1>
             </div>
           </div>
-          <div className="header-actions">
-            <span className="runtime-status">
-              <span aria-hidden="true" />{' '}
-              {copilotStatus === null
-                ? 'Checking GOSU Model Copilot bridge'
-                : copilotStatus.available
-                  ? `Model Copilot · ${selectedCopilotModel?.displayName ?? copilotStatus.model}`
-                  : 'GOSU Model Copilot bridge unavailable'}
-            </span>
-          </div>
-        </header>
-
-        <section className="prototype-boundary" role="note" aria-label="Prototype boundary">
-          <strong>Live in this spike</strong>
-          <span>
-            ModelIR import plus Codex reconstruction from Python, diagrams, PDFs, Word documents,
-            Markdown, and text; interactive graph, deterministic checks, PyTorch evidence, and LLM
-            Copilot
-          </span>
-          <strong>Adapter boundary</strong>
-          <span>
-            generated architectures are static evidence until GOSU Agent Runtime attaches execution
-            and gradient receipts
-          </span>
-        </section>
-
-        <section className="workspace-bar" aria-label="Active model and review status">
-          <div className="model-summary">
+          <div className="model-summary" aria-label="Active model summary">
             <strong>{model.name}</strong>
             <span>{model.version}</span>
             <span>{model.framework}</span>
             <span>{model.modules.length} modules</span>
             <span>{parameterTotal.toLocaleString()} parameters</span>
-            <span>{activeModels.length} active project models</span>
           </div>
-          <button
-            className="primary-button"
-            type="button"
-            onClick={() => setReviewNonce((value) => value + 1)}
-          >
-            Run deterministic checks
-          </button>
-        </section>
+          <div className="header-actions">
+            <span className="runtime-status">
+              <span aria-hidden="true" />{' '}
+              {copilotStatus === null
+                ? 'Checking Copilot'
+                : copilotStatus.available
+                  ? `LLM · ${selectedCopilotModel?.displayName ?? copilotStatus.model}`
+                  : 'Copilot unavailable'}
+            </span>
+            <details className="model-lab-about">
+              <summary>About</summary>
+              <div role="note" aria-label="Prototype boundary">
+                <strong>Live in this prototype</strong>
+                <span>
+                  ModelIR and source reconstruction; interactive graph, deterministic checks,
+                  PyTorch evidence, and LLM Copilot.
+                </span>
+                <strong>Adapter boundary</strong>
+                <span>
+                  Generated architectures remain static evidence until GOSU Agent Runtime attaches
+                  execution and gradient receipts.
+                </span>
+              </div>
+            </details>
+            <button
+              className="primary-button model-lab-header__review"
+              type="button"
+              onClick={() => setReviewNonce((value) => value + 1)}
+            >
+              Run checks
+            </button>
+          </div>
+        </header>
 
         <div className={modelLabWorkbenchClassName(copilotPanelCollapsed)}>
           <div className="model-lab-primary">
@@ -2006,6 +3364,7 @@ export function ModelLabApp() {
                     expandedSubgraphModuleIds,
                     modelSessionsPanelCollapsed,
                     copilotPanelCollapsed,
+                    activeGraphHighlight ? JSON.stringify(activeGraphHighlight) : '',
                   )}
                   composition={graphComposition}
                   selectedModuleId={selectedModule.id}
@@ -2013,6 +3372,7 @@ export function ModelLabApp() {
                   checkpointIndex={checkpointIndex}
                   signalMode={signalMode}
                   focusMode={modelFocus}
+                  changeHighlight={activeGraphHighlight}
                   openModuleId={activeModuleDetail?.module.id ?? null}
                   onSelectModule={setSelectedModuleId}
                   onOpenModule={openModuleDetail}
@@ -2137,6 +3497,405 @@ export function ModelLabApp() {
               </aside>
             </div>
 
+            <section className="model-pseudocode-studio" aria-labelledby="model-pseudocode-title">
+              <header>
+                <div>
+                  <span className="eyebrow">ARCHITECTURE SOURCE · REVISION r{modelRevision}</span>
+                  <h2 id="model-pseudocode-title">Model pseudocode</h2>
+                  <p>
+                    Write freely or edit the standard template, then update an immutable graph
+                    revision.
+                  </p>
+                </div>
+                <div className="model-pseudocode-actions">
+                  <button
+                    type="button"
+                    className="quiet-button"
+                    disabled={
+                      (!pseudocodeDirty && !pendingPseudocodeNormalizationSource) ||
+                      normalizingPseudocode
+                    }
+                    onClick={() => {
+                      setPseudocodeDraft(activePseudocodeRevision.pseudocode);
+                      setPseudocodeNormalizationSources((current) => {
+                        const { [model.id]: _discarded, ...remaining } = current;
+                        return remaining;
+                      });
+                      setPseudocodeNotice({
+                        modelId: model.id,
+                        tone: 'success',
+                        message: `Draft restored to revision r${modelRevision}.`,
+                      });
+                    }}
+                  >
+                    Reset draft
+                  </button>
+                  <button
+                    type="button"
+                    className={normalizingPseudocode ? 'primary-button stopping' : 'primary-button'}
+                    disabled={
+                      !normalizingPseudocode &&
+                      !pseudocodeDirty &&
+                      !pendingPseudocodeNormalizationSource
+                    }
+                    onClick={() => void updateGraphFromPseudocode()}
+                  >
+                    {normalizingPseudocode
+                      ? 'Stop interpreting'
+                      : pendingPseudocodeNormalizationSource
+                        ? 'Apply as revision'
+                        : 'Update graph'}
+                  </button>
+                </div>
+              </header>
+              <details className="model-pseudocode-guide">
+                <summary>Template guide · shared with the LLM normalizer</summary>
+                <pre>{MODEL_PSEUDOCODE_LLM_GUIDE}</pre>
+              </details>
+              {activePseudocodeUpdateLog.length > 0 ? (
+                <section
+                  className="model-pseudocode-update-log"
+                  aria-label="Architecture update receipt"
+                  aria-live="polite"
+                >
+                  <header>
+                    <div>
+                      <strong>Architecture update receipt</strong>
+                      <span>What the parser or LLM read, and whether the graph changed.</span>
+                    </div>
+                    <code data-phase={activePseudocodeUpdateLog.at(-1)?.phase}>
+                      {activePseudocodeUpdateLog.at(-1)?.phase}
+                    </code>
+                  </header>
+                  <ol>
+                    {activePseudocodeUpdateLog.map((entry) => (
+                      <li key={entry.id} data-phase={entry.phase}>
+                        <time dateTime={entry.createdAt}>
+                          {formatModelChatTime(entry.createdAt)}
+                        </time>
+                        <strong>{entry.phase}</strong>
+                        <span>{entry.message}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              ) : null}
+              <div className="model-pseudocode-layout">
+                <aside
+                  className="model-pseudocode-revision-tree"
+                  aria-label="Model pseudocode revision tree"
+                >
+                  <header>
+                    <strong>Version tree</strong>
+                    <span>{pseudocodeHistory.length} revisions</span>
+                  </header>
+                  <ul>
+                    {pseudocodeRevisionRows.map(({ revision, depth }) => (
+                      <li
+                        key={revision.revision}
+                        style={{ '--revision-depth': depth } as CSSProperties}
+                      >
+                        <button
+                          type="button"
+                          className={revision.revision === modelRevision ? 'active' : ''}
+                          aria-current={revision.revision === modelRevision ? 'page' : undefined}
+                          onClick={() => selectPseudocodeRevision(revision)}
+                        >
+                          <span className="model-pseudocode-tree-branch" aria-hidden="true">
+                            {depth === 0 ? '◆' : '└'}
+                          </span>
+                          <span>
+                            <strong>r{revision.revision}</strong>
+                            <small>{revision.label}</small>
+                            {revision.originalDraft ? <small>original draft retained</small> : null}
+                            <small>
+                              {revision.parentRevision === null
+                                ? 'root'
+                                : `from r${revision.parentRevision}`}{' '}
+                              · {formatModelChatTime(revision.createdAt)}
+                            </small>
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  <p>Revisions are immutable. Updating an older revision creates a child branch.</p>
+                </aside>
+                <div className="model-pseudocode-editor">
+                  <textarea
+                    ref={pseudocodeEditorRef}
+                    value={pseudocodeDraft}
+                    onChange={(event) => setPseudocodeDraft(event.target.value)}
+                    aria-label="Model pseudocode editor"
+                    spellCheck={false}
+                    wrap="off"
+                  />
+                  {pendingPseudocodeNormalizationSource &&
+                  pseudocodeNormalizationDiff &&
+                  pseudocodeDiffHunks.length > 0 ? (
+                    <section
+                      className="model-pseudocode-normalization-review"
+                      aria-label="Review normalized pseudocode changes"
+                    >
+                      <header>
+                        <div>
+                          <strong>Review LLM edit proposal</strong>
+                          <span>Graph unchanged until Apply as revision.</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="model-pseudocode-diff-jump"
+                          aria-label={`Jump to changed lines. ${pseudocodeDiffHunks.length} change${pseudocodeDiffHunks.length === 1 ? '' : 's'}.`}
+                          onClick={jumpToPseudocodeDiffHunk}
+                        >
+                          +{pseudocodeNormalizationDiff.addedLines} / −
+                          {pseudocodeNormalizationDiff.removedLines} lines
+                          <small>
+                            {activePseudocodeDiffHunkIndex >= 0
+                              ? `${activePseudocodeDiffHunkIndex + 1} / ${pseudocodeDiffHunks.length}`
+                              : `${pseudocodeDiffHunks.length} change${pseudocodeDiffHunks.length === 1 ? '' : 's'}`}
+                          </small>
+                        </button>
+                      </header>
+                      {pendingPseudocodeChangeSummary ? (
+                        <ul className="model-pseudocode-change-summary">
+                          {pendingPseudocodeChangeSummary.lines.map((line) => (
+                            <li key={line}>{line}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {activePseudocodeDiffHunk ? (
+                        <p className="model-pseudocode-active-hunk" role="status">
+                          Change {activePseudocodeDiffHunkIndex + 1} of {pseudocodeDiffHunks.length}{' '}
+                          · original lines {activePseudocodeDiffHunk.originalStart}–
+                          {activePseudocodeDiffHunk.originalEnd} · proposed lines{' '}
+                          {activePseudocodeDiffHunk.proposedStart}–
+                          {activePseudocodeDiffHunk.proposedEnd}
+                        </p>
+                      ) : null}
+                      <div className="model-pseudocode-diff">
+                        <article className="removed">
+                          <header>
+                            <strong>Original free-form draft</strong>
+                            <span>{pseudocodeNormalizationDiff.originalLines} lines</span>
+                          </header>
+                          <pre
+                            ref={originalPseudocodeDiffRef}
+                            onScroll={(event) =>
+                              synchronizePseudocodeDiffScroll(
+                                event.currentTarget,
+                                proposedPseudocodeDiffRef.current,
+                              )
+                            }
+                          >
+                            {originalPseudocodeDiffLines.map((line, index) => {
+                              const lineNumber = index + 1;
+                              const active =
+                                activePseudocodeDiffHunk !== undefined &&
+                                lineNumber >= activePseudocodeDiffHunk.originalStart &&
+                                lineNumber <= activePseudocodeDiffHunk.originalEnd;
+                              return (
+                                <span
+                                  key={lineNumber}
+                                  data-line={lineNumber}
+                                  className={active ? 'is-active' : undefined}
+                                >
+                                  {line || ' '}
+                                </span>
+                              );
+                            })}
+                          </pre>
+                        </article>
+                        <article className="added">
+                          <header>
+                            <strong>Proposed v2 draft</strong>
+                            <span>{pseudocodeNormalizationDiff.normalizedLines} lines</span>
+                          </header>
+                          <pre
+                            ref={proposedPseudocodeDiffRef}
+                            onScroll={(event) =>
+                              synchronizePseudocodeDiffScroll(
+                                event.currentTarget,
+                                originalPseudocodeDiffRef.current,
+                              )
+                            }
+                          >
+                            {proposedPseudocodeDiffLines.map((line, index) => {
+                              const lineNumber = index + 1;
+                              const active =
+                                activePseudocodeDiffHunk !== undefined &&
+                                lineNumber >= activePseudocodeDiffHunk.proposedStart &&
+                                lineNumber <= activePseudocodeDiffHunk.proposedEnd;
+                              return (
+                                <span
+                                  key={lineNumber}
+                                  data-line={lineNumber}
+                                  className={active ? 'is-active' : undefined}
+                                >
+                                  {line || ' '}
+                                </span>
+                              );
+                            })}
+                          </pre>
+                        </article>
+                      </div>
+                      <footer>
+                        <span>Review or edit the proposed draft before applying it.</span>
+                        <button
+                          type="button"
+                          className="quiet-button"
+                          onClick={restoreFreeFormPseudocodeDraft}
+                        >
+                          Restore original draft
+                        </button>
+                      </footer>
+                    </section>
+                  ) : null}
+                  {pseudocodeOriginalDraft ? (
+                    <details className="model-pseudocode-original">
+                      <summary>Original free-form draft retained with this revision</summary>
+                      <pre>{pseudocodeOriginalDraft}</pre>
+                    </details>
+                  ) : null}
+                  <footer>
+                    <span className={pseudocodeDirty ? 'dirty' : ''}>
+                      {pseudocodeDirty
+                        ? 'Unsaved architecture changes'
+                        : `Graph matches r${modelRevision}`}
+                    </span>
+                    {pseudocodeNotice?.modelId === model.id ? (
+                      <strong className={pseudocodeNotice.tone}>{pseudocodeNotice.message}</strong>
+                    ) : null}
+                    <em className={pseudocodePersistenceStatus}>
+                      {pseudocodePersistenceStatus === 'saved'
+                        ? 'Revision tree saved locally'
+                        : 'Local revision save failed'}
+                    </em>
+                  </footer>
+                </div>
+              </div>
+              <footer className="model-pseudocode-future-boundary">
+                <strong>Experiment integration boundary</strong>
+                <span>
+                  Every new revision can carry a syntax-checked Python artifact. Experiment
+                  execution remains disabled until GOSU consumes the manifest and requests explicit
+                  approval.
+                </span>
+              </footer>
+            </section>
+
+            <section className="model-python-artifact" aria-labelledby="model-python-title">
+              <header>
+                <div>
+                  <span className="eyebrow">
+                    VERSIONED CODE ARTIFACT · REVISION r{modelRevision}
+                  </span>
+                  <h2 id="model-python-title">Python model</h2>
+                  <p>Generated from the validated ModelIR and stored without executing it.</p>
+                </div>
+                <div className="model-python-artifact__actions">
+                  {activePythonArtifactState?.status === 'generating' ? (
+                    <button
+                      type="button"
+                      className="quiet-button stopping"
+                      onClick={() =>
+                        pythonArtifactAbortRef.current.get(activePythonArtifactKey)?.abort()
+                      }
+                    >
+                      Stop generation
+                    </button>
+                  ) : null}
+                  {activePythonArtifactState?.artifact ? (
+                    <button
+                      type="button"
+                      className="quiet-button"
+                      onClick={downloadActivePythonArtifact}
+                    >
+                      Download .py
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={
+                      activePythonArtifactState?.status === 'generating' ||
+                      activePythonArtifactState?.status === 'loading'
+                    }
+                    onClick={() => void generatePythonArtifact(model, modelRevision)}
+                  >
+                    {activePythonArtifactState?.artifact ? 'Regenerate Python' : 'Generate Python'}
+                  </button>
+                </div>
+              </header>
+              {activePythonArtifactState?.status === 'generating' ||
+              activePythonArtifactState?.status === 'loading' ? (
+                <div className="model-python-artifact__status" role="status">
+                  <strong>
+                    {activePythonArtifactState.status === 'generating'
+                      ? 'Generating model.py…'
+                      : 'Loading stored model.py…'}
+                  </strong>
+                  <span>
+                    The graph remains usable. Generated source is never imported or executed here.
+                  </span>
+                </div>
+              ) : activePythonArtifactState?.artifact ? (
+                <div className="model-python-artifact__ready">
+                  <dl>
+                    <div>
+                      <dt>Entrypoint</dt>
+                      <dd>{activePythonArtifactState.artifact.receipt.entrypoint}</dd>
+                    </div>
+                    <div>
+                      <dt>Status</dt>
+                      <dd>{activePythonArtifactState.artifact.receipt.implementationStatus}</dd>
+                    </div>
+                    <div>
+                      <dt>Dependencies</dt>
+                      <dd>
+                        {activePythonArtifactState.artifact.receipt.dependencies.join(', ') ||
+                          'none declared'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>SHA-256</dt>
+                      <dd>
+                        {activePythonArtifactState.artifact.receipt.sourceSha256.slice(0, 16)}…
+                      </dd>
+                    </div>
+                  </dl>
+                  <p>{activePythonArtifactState.artifact.summary}</p>
+                  <code className="model-python-artifact__path">
+                    {activePythonArtifactState.artifact.receipt.absolutePath}
+                  </code>
+                  <pre aria-label="Generated Python model source">
+                    {activePythonArtifactState.artifact.source}
+                  </pre>
+                  <footer>
+                    <strong>Experiment handoff receipt ready</strong>
+                    <span>
+                      The manifest records model ID, revision, entrypoint, dependencies, source
+                      hash, and implementation status. GOSU Experiments integration is the next
+                      consumer.
+                    </span>
+                  </footer>
+                </div>
+              ) : activePythonArtifactState?.status === 'failed' ? (
+                <div className="model-python-artifact__status failed" role="alert">
+                  <strong>Python artifact was not generated.</strong>
+                  <span>{activePythonArtifactState.error}</span>
+                </div>
+              ) : (
+                <div className="model-python-artifact__status">
+                  <strong>No Python artifact is attached to this earlier revision.</strong>
+                  <span>
+                    New imports and future revisions generate one automatically; use Generate Python
+                    to backfill this revision.
+                  </span>
+                </div>
+              )}
+            </section>
+
             <div className="lower-grid">
               <ModelIntentPanel model={model} />
               <section className="agent-review" aria-labelledby="review-title">
@@ -2145,7 +3904,7 @@ export function ModelLabApp() {
                     <span className="eyebrow">
                       DETERMINISTIC REVIEW · RUN {reviewNonce} {reviewing ? '· CHECKING' : ''}
                     </span>
-                    <h2 id="review-title">Four bounded consistency checks</h2>
+                    <h2 id="review-title">Five bounded consistency checks</h2>
                   </div>
                   <span className="review-topology">No LLM reviewers in this visual spike</span>
                 </div>
@@ -2184,29 +3943,72 @@ export function ModelLabApp() {
             className={`model-chat model-chat--sidebar${copilotPanelCollapsed ? ' model-chat--collapsed' : ''}`}
             aria-labelledby="chat-title"
           >
-            <header {...copilotContentA11y}>
-              <div>
-                <span className="eyebrow">MODEL COPILOT</span>
-                <h2 id="chat-title">Ask against the selected graph evidence</h2>
+            <header className="model-chat__toolbar" {...copilotContentA11y}>
+              <div className="model-chat__identity">
+                <span className="model-chat__orbit" aria-hidden="true">
+                  G
+                </span>
+                <div>
+                  <strong id="chat-title">Model Copilot</strong>
+                  <span title={model.name}>{model.name}</span>
+                </div>
               </div>
-              <button
-                ref={copilotCloseRef}
-                className="model-chat__toggle"
-                type="button"
-                aria-label="Minimize Model Copilot"
-                aria-controls="model-copilot-panel"
-                aria-expanded={!copilotPanelCollapsed}
-                onClick={() => setCopilotPanelVisibility(true)}
+              <div className="model-chat__toolbar-actions">
+                {answering ? (
+                  <button
+                    type="button"
+                    className="model-chat__toolbar-stop"
+                    onClick={() => copilotTurnAbortRef.current?.abort()}
+                  >
+                    Stop response
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="model-chat__details-toggle"
+                  aria-expanded={copilotDetailsOpen}
+                  aria-controls="model-copilot-runtime-details"
+                  onClick={() => setCopilotDetailsOpen((current) => !current)}
+                >
+                  {copilotDetailsOpen ? 'Minimize' : 'Show details'}
+                </button>
+                <button
+                  ref={copilotCloseRef}
+                  className="model-chat__toggle"
+                  type="button"
+                  aria-label="Minimize Model Copilot"
+                  aria-controls="model-copilot-panel"
+                  aria-expanded={!copilotPanelCollapsed}
+                  onClick={() => setCopilotPanelVisibility(true)}
+                >
+                  <span aria-hidden="true">→</span>
+                </button>
+              </div>
+              <div
+                className="model-chat__toolbar-badges"
+                aria-label="Current Model Copilot configuration"
               >
-                <span aria-hidden="true">→</span>
-              </button>
+                <span title={`Provider: ${copilotProviderLabel}`}>
+                  {copilotProviderDisplayLabel}
+                </span>
+                <span title={`Model: ${copilotModelLabel}`}>{copilotModelLabel}</span>
+                <span title={`Reasoning: ${copilotReasoningLabel}`}>{copilotReasoningLabel}</span>
+                {copilotModelSelectionMissing || copilotReasoningSelectionMissing ? (
+                  <span className="warning">Selection needs attention</span>
+                ) : null}
+              </div>
             </header>
-            <div className="model-chat__runtime" {...copilotContentA11y}>
+            <div
+              id="model-copilot-runtime-details"
+              className="model-chat__runtime"
+              hidden={!copilotDetailsOpen}
+              {...copilotContentA11y}
+            >
               <p className="model-chat__scope">
                 {copilotStatus === null
                   ? 'Connecting to the GOSU-compatible LLM bridge · per-model conversation'
                   : copilotStatus.available
-                    ? `${copilotStatus.provider} · attached evidence stays turn-scoped`
+                    ? `${copilotStatus.provider} · architecture edits stage a revision diff`
                     : 'LLM bridge unavailable · deterministic fallback disabled'}
               </p>
               <div className="model-chat__model-controls">
@@ -2215,23 +4017,39 @@ export function ModelLabApp() {
                   <select
                     aria-label="Model Copilot model"
                     value={copilotSelection.requestedModelId ?? ''}
-                    disabled={answering || copilotCatalog === null}
-                    onChange={(event) =>
+                    disabled={answering || copilotCatalog === null || copilotCatalogRefreshing}
+                    onChange={(event) => {
+                      const requestedModelId = event.target.value || null;
+                      const descriptor = requestedModelId
+                        ? copilotCatalog?.models.find(
+                            (candidate) => candidate.modelId === requestedModelId,
+                          )
+                        : undefined;
                       setCopilotSelection({
-                        requestedModelId: event.target.value || null,
+                        providerId: descriptor?.providerId ?? null,
+                        requestedModelId,
                         reasoningOptionId: null,
-                      })
-                    }
+                      });
+                    }}
                   >
-                    <option value="">Auto · GOSU recommended</option>
-                    {copilotCatalog?.models.map((candidate) => (
-                      <option
-                        key={`${candidate.providerId}:${candidate.modelId}`}
-                        value={candidate.modelId}
-                      >
-                        {candidate.providerId} · {candidate.displayName}
-                        {candidate.isDefault ? ' · default' : ''}
+                    <option value="">Auto · provider recommended</option>
+                    {copilotModelSelectionMissing && copilotSelection.requestedModelId ? (
+                      <option value={copilotSelection.requestedModelId} disabled>
+                        Unavailable model · choose again
                       </option>
+                    ) : null}
+                    {copilotProviderGroups.map(([providerId, candidates]) => (
+                      <optgroup key={providerId} label={modelCopilotProviderLabel(providerId)}>
+                        {candidates.map((candidate) => (
+                          <option
+                            key={`${candidate.providerId}:${candidate.modelId}`}
+                            value={candidate.modelId}
+                          >
+                            {candidate.displayName}
+                            {candidate.isDefault ? ' · default' : ''}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
                 </label>
@@ -2249,6 +4067,11 @@ export function ModelLabApp() {
                     }
                   >
                     <option value="">Model default</option>
+                    {copilotReasoningSelectionMissing && copilotSelection.reasoningOptionId ? (
+                      <option value={copilotSelection.reasoningOptionId} disabled>
+                        Unavailable reasoning · choose again
+                      </option>
+                    ) : null}
                     {copilotReasoningOptions.map((option) => (
                       <option key={option.id} value={option.id}>
                         {option.label}
@@ -2257,78 +4080,147 @@ export function ModelLabApp() {
                     ))}
                   </select>
                 </label>
-              </div>
-              {answering && copilotProgress.length > 0 ? (
-                <ol
-                  className="model-chat__agent-progress"
-                  aria-label="Live Model Copilot agent activity"
-                  role="status"
+                <button
+                  type="button"
+                  className="model-chat__catalog-refresh"
+                  disabled={answering || copilotCatalogRefreshing}
+                  onClick={() => void refreshCopilotCatalog()}
                 >
-                  {copilotProgress.map((progress, index) => (
-                    <li
-                      key={`${progress.step}:${progress.phase}:${progress.tool ?? 'reason'}:${index}`}
-                    >
-                      <strong>
-                        Step {progress.step}
-                        {progress.tool ? ` · ${progress.tool.replaceAll('_', ' ')}` : ''}
-                      </strong>
-                      <span>
-                        {progress.phase === 'thinking'
-                          ? 'Reasoning'
-                          : progress.phase === 'tool_started'
-                            ? 'Running'
-                            : progress.phase === 'final'
-                              ? 'Finalizing'
-                              : progress.success === false
-                                ? 'Failed'
-                                : 'Receipt reviewed'}
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-              ) : null}
+                  {copilotCatalogRefreshing ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
             </div>
-            <div
-              ref={chatBodyRef}
-              className="chat-body"
-              role="log"
-              aria-label="Model Copilot conversation history"
-              aria-live="polite"
-              tabIndex={0}
-              {...copilotContentA11y}
-              onScroll={(event) => {
-                const viewport = event.currentTarget;
-                chatPinnedToBottomRef.current =
-                  viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 32;
-              }}
-            >
-              {messages.map((message) => (
-                <article key={message.id} className={`chat-message chat-message--${message.role}`}>
-                  <strong>{message.role === 'user' ? 'You' : 'Model Copilot'}</strong>
-                  <ModelChatMarkdown source={message.body} />
-                  {message.attachmentNames && message.attachmentNames.length > 0 ? (
-                    <ul
-                      className="chat-message__attachments"
-                      aria-label="Files sent with this message"
-                    >
-                      {message.attachmentNames.map((name, index) => (
-                        <li key={`${name}-${index}`}>{name}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                  <span className="chat-message__provenance">
-                    {message.modelId} · {message.modelVersion}
-                  </span>
-                  {message.trace ? <small>{message.trace.join(' → ')}</small> : null}
-                  {message.usage ? (
-                    <small className="chat-message__usage">
-                      {message.usage.inputTokens.toLocaleString()} input ·{' '}
-                      {message.usage.outputTokens.toLocaleString()} output ·{' '}
-                      {message.usage.cachedReadTokens.toLocaleString()} cached tokens
-                    </small>
-                  ) : null}
-                </article>
-              ))}
+            <div className="model-chat__transcript-region" {...copilotContentA11y}>
+              <div
+                ref={chatBodyRef}
+                className="chat-body"
+                role="log"
+                aria-label="Model Copilot conversation history"
+                aria-live="polite"
+                tabIndex={0}
+                onScroll={(event) => {
+                  const viewport = event.currentTarget;
+                  const state = modelChatScrollState(viewport);
+                  chatPinnedToBottomRef.current = state.nearBottom;
+                  setChatCanScroll(state.canScroll);
+                  setChatAtTop(state.atTop);
+                  setChatNearBottom(state.nearBottom);
+                }}
+              >
+                {messages.map((message) => (
+                  <article
+                    key={message.id}
+                    className={`chat-message chat-message--${message.role}`}
+                  >
+                    <header>
+                      <strong>{message.role === 'user' ? 'You' : 'GOSU'}</strong>
+                      <span>{formatModelChatTime(message.createdAt)}</span>
+                    </header>
+                    <ModelChatMarkdown source={message.body} />
+                    {message.attachmentNames && message.attachmentNames.length > 0 ? (
+                      <ul
+                        className="chat-message__attachments"
+                        aria-label="Files sent with this message"
+                      >
+                        {message.attachmentNames.map((name, index) => (
+                          <li key={`${name}-${index}`}>{name}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    <footer className="chat-message__meta">
+                      <span className="chat-message__provenance">
+                        Model graph · {message.modelId} · {message.modelVersion}
+                      </span>
+                      {message.trace ? (
+                        <details className="chat-message__runtime-details">
+                          <summary>Agent run details</summary>
+                          <small>{message.trace.join(' → ')}</small>
+                        </details>
+                      ) : null}
+                      {message.usage ? (
+                        <small className="chat-message__usage">
+                          {message.usage.inputTokens.toLocaleString()} input ·{' '}
+                          {message.usage.outputTokens.toLocaleString()} output ·{' '}
+                          {message.usage.cachedReadTokens.toLocaleString()} cached tokens
+                        </small>
+                      ) : null}
+                    </footer>
+                  </article>
+                ))}
+                {answering ? (
+                  <article
+                    className="chat-message chat-message--assistant chat-message--thinking"
+                    role="status"
+                  >
+                    <header>
+                      <strong>GOSU</strong>
+                      <span>Model Copilot turn active</span>
+                    </header>
+                    <div className="model-chat__thinking-line">
+                      <i />
+                      <i />
+                      <i />
+                      <span>선택한 모델 구조와 증거를 검토하고 있습니다</span>
+                    </div>
+                    {copilotProgress.length > 0 ? (
+                      <ol
+                        className="model-chat__agent-progress"
+                        aria-label="Live Model Copilot agent activity"
+                      >
+                        {copilotProgress.map((progress, index) => (
+                          <li
+                            key={`${progress.step}:${progress.phase}:${progress.tool ?? 'reason'}:${index}`}
+                          >
+                            <strong>
+                              Step {progress.step}
+                              {progress.tool ? ` · ${progress.tool.replaceAll('_', ' ')}` : ''}
+                            </strong>
+                            <span>
+                              {progress.phase === 'thinking'
+                                ? 'Reasoning'
+                                : progress.phase === 'tool_started'
+                                  ? 'Running'
+                                  : progress.phase === 'final'
+                                    ? 'Finalizing'
+                                    : progress.success === false
+                                      ? 'Failed'
+                                      : 'Receipt reviewed'}
+                            </span>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : null}
+                  </article>
+                ) : null}
+              </div>
+              {chatCanScroll ? (
+                <button
+                  type="button"
+                  className="model-chat__scroll-jump"
+                  aria-label={
+                    chatNearBottom && !chatAtTop
+                      ? 'Scroll to earlier Model Copilot messages'
+                      : 'Jump to the latest Model Copilot message'
+                  }
+                  onClick={() => {
+                    const viewport = chatBodyRef.current;
+                    if (!viewport) return;
+                    if (chatNearBottom && !chatAtTop) {
+                      viewport.scrollTo({
+                        top: Math.max(0, viewport.scrollTop - viewport.clientHeight * 0.82),
+                        behavior: 'smooth',
+                      });
+                      chatPinnedToBottomRef.current = false;
+                    } else {
+                      viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' });
+                      chatPinnedToBottomRef.current = true;
+                    }
+                  }}
+                >
+                  <span aria-hidden="true">{chatNearBottom && !chatAtTop ? '↑' : '↓'}</span>
+                  {chatNearBottom && !chatAtTop ? 'Earlier' : 'Latest'}
+                </button>
+              ) : null}
             </div>
             <div
               className="chat-composer"
@@ -2345,6 +4237,11 @@ export function ModelLabApp() {
                 void addCopilotFiles(Array.from(event.dataTransfer.files));
               }}
             >
+              <p className="model-chat__context-note">
+                <span>LOCAL MODEL CONTEXT</span>
+                {model.name} · {selectedModule.name} · {scenarioKind} ·{' '}
+                {copilotProviderDisplayLabel}
+              </p>
               {copilotAttachments.length > 0 ? (
                 <ul
                   className="model-chat__attachment-queue"
@@ -2381,26 +4278,30 @@ export function ModelLabApp() {
                   {copilotAttachmentNotice}
                 </p>
               ) : null}
-              <textarea
-                ref={copilotComposerRef}
-                value={question}
-                onChange={(event) => setQuestion(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    void submitQuestion();
-                  }
-                }}
-                placeholder="Ask about a dimension, formula, code mapping, or gradient path…"
-                aria-label="Ask Model Copilot"
-              />
-              <div className="model-chat__composer-actions">
+              <div className="model-chat__composer-row">
                 <ModelCopilotAttachmentInput
                   onFiles={addCopilotFiles}
                   disabled={answering || copilotAttachments.length >= MODEL_COPILOT_MAX_ATTACHMENTS}
                 />
+                <textarea
+                  ref={copilotComposerRef}
+                  value={question}
+                  onChange={(event) => setQuestion(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault();
+                      void submitQuestion();
+                    }
+                  }}
+                  placeholder="모델을 질문하거나 수도 코드·graph 수정을 요청하세요…"
+                  aria-label="Message GOSU Model Copilot"
+                />
                 <button
-                  className={answering ? 'model-chat__stop-button' : 'primary-button'}
+                  className={
+                    answering
+                      ? 'model-chat__send-button model-chat__stop-button'
+                      : 'model-chat__send-button primary-button'
+                  }
                   type="button"
                   onClick={() => {
                     if (answering) copilotTurnAbortRef.current?.abort();
@@ -2408,7 +4309,8 @@ export function ModelLabApp() {
                   }}
                   disabled={!answering && !question.trim() && copilotAttachments.length === 0}
                 >
-                  {answering ? 'Stop' : 'Ask'}
+                  {answering ? 'Stop' : 'Send'}
+                  <span>{answering ? 'Agent run' : 'Enter'}</span>
                 </button>
               </div>
             </div>

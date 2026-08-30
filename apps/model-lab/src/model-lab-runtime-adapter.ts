@@ -1,6 +1,7 @@
 import { answerModelQuestion, runAgentReview } from './model-lab-domain';
 import type { ModelCatalog } from '@gosu/contracts';
 import type { ModelBuildArtifact } from './model-lab-builder';
+import { parseModelImportJson } from './model-lab-import';
 import type { AgentReview, GradientProbeName, ModelSpec } from './model-lab-schema';
 import type { ModelLabAgentProgress } from './model-lab-agent-harness';
 import type { ModelLabAgentUsage } from './model-lab-agent-harness';
@@ -26,10 +27,12 @@ export type ModelLabQuestionRequest = ModelLabProjectContext &
     conversation?: readonly ModelLabConversationMessage[];
     attachments?: readonly ModelBuildArtifact[];
     selection?: ModelLabModelSelection;
+    purpose?: 'chat' | 'revision-comment';
   }>;
 
 /** Matches GOSU Project Chat's provider-opaque model selection fields. */
 export type ModelLabModelSelection = Readonly<{
+  providerId: string | null;
   requestedModelId: string | null;
   reasoningOptionId: string | null;
 }>;
@@ -38,6 +41,10 @@ export type ModelLabRuntimeAnswer = Readonly<{
   body: string;
   trace: readonly string[];
   usage?: ModelLabAgentUsage;
+  editProposal?: Readonly<{
+    model: ModelSpec;
+    instructions: string;
+  }>;
 }>;
 
 export type ModelLabTurnScope = Readonly<{
@@ -79,7 +86,7 @@ export interface ModelLabRuntimeAdapter {
   ): Promise<ModelLabRuntimeAnswer>;
   review(request: ModelLabProjectContext): Promise<readonly AgentReview[]>;
   status?(): Promise<ModelLabRuntimeStatus>;
-  listModels?(): Promise<ModelCatalog>;
+  listModels?(options?: Readonly<{ refresh?: boolean }>): Promise<ModelCatalog>;
 }
 
 function activeModel(request: ModelLabProjectContext): ModelSpec {
@@ -109,7 +116,12 @@ export const deterministicModelLabRuntime: ModelLabRuntimeAdapter = {
     };
   },
   async review(request) {
-    return runAgentReview(activeModel(request), request.probe, request.checkpointIndex);
+    return runAgentReview(
+      activeModel(request),
+      request.probe,
+      request.checkpointIndex,
+      request.projectModels,
+    );
   },
 };
 
@@ -135,11 +147,20 @@ function isRuntimeUsage(value: unknown): value is ModelLabAgentUsage {
 function isRuntimeAnswer(value: unknown): value is ModelLabRuntimeAnswer {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<ModelLabRuntimeAnswer>;
+  const editProposal = candidate.editProposal;
+  const validEditProposal =
+    editProposal === undefined ||
+    (typeof editProposal === 'object' &&
+      editProposal !== null &&
+      !Array.isArray(editProposal) &&
+      typeof editProposal.instructions === 'string' &&
+      parseModelImportJson(JSON.stringify(editProposal.model)).ok);
   return (
     typeof candidate.body === 'string' &&
     Array.isArray(candidate.trace) &&
     candidate.trace.every((entry) => typeof entry === 'string') &&
-    (candidate.usage === undefined || isRuntimeUsage(candidate.usage))
+    (candidate.usage === undefined || isRuntimeUsage(candidate.usage)) &&
+    validEditProposal
   );
 }
 
@@ -231,7 +252,12 @@ export function createGosuModelLabRuntime(fetchImpl: FetchLike = fetch): ModelLa
       return payload;
     },
     async review(request) {
-      return runAgentReview(activeModel(request), request.probe, request.checkpointIndex);
+      return runAgentReview(
+        activeModel(request),
+        request.probe,
+        request.checkpointIndex,
+        request.projectModels,
+      );
     },
     async status() {
       const response = await fetchImpl('/api/model-copilot/status', {
@@ -243,10 +269,13 @@ export function createGosuModelLabRuntime(fetchImpl: FetchLike = fetch): ModelLa
       }
       return payload;
     },
-    async listModels() {
-      const response = await fetchImpl('/api/model-copilot/models', {
-        headers: { Accept: 'application/json' },
-      });
+    async listModels(options) {
+      const response = await fetchImpl(
+        `/api/model-copilot/models${options?.refresh ? '?refresh=1' : ''}`,
+        {
+          headers: { Accept: 'application/json' },
+        },
+      );
       const payload: unknown = await response.json();
       if (!response.ok || !isModelCatalog(payload)) {
         throw new Error('model_copilot_catalog_unavailable');

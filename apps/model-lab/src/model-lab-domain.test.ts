@@ -5,6 +5,7 @@ import {
   gradientAt,
   gradientStateAt,
   moduleGradientHealth,
+  moduleFormulaConsistencyFindings,
   parameterCoverageAt,
   runAgentReview,
   shapesEqual,
@@ -57,10 +58,57 @@ describe('Model Lab domain', () => {
     expect(reviews.map((review) => review.id)).toEqual([
       'shape-auditor',
       'intent-referee',
+      'formula-auditor',
       'autograd-inspector',
       'code-mapper',
     ]);
     expect(reviews.every((review) => review.status === 'pass')).toBe(true);
+  });
+
+  it('rejects text-to-equation operator contradictions instead of passing non-empty fields', () => {
+    const singleLinearWithMlpEquation = {
+      ...residualClassifier.modules[1]!,
+      id: 'bad-linear',
+      name: 'Bad single Linear',
+      transform: 'H = Linear_{2d->2d}(H)',
+      activation: null,
+      formula: String.raw`H_3=W_2\operatorname{GELU}(W_1H+b_1)+b_2`,
+    };
+    const filmWithoutResidualOne = {
+      ...residualClassifier.modules[2]!,
+      id: 'bad-film',
+      name: 'Bad FiLM',
+      transform: 'H3 = (1 + gamma_j) * H3 + delta_j',
+      activation: null,
+      formula: String.raw`H_3\leftarrow\gamma^{(j)}\odot H_3+\delta^{(j)}`,
+    };
+    const badModel = {
+      ...residualClassifier,
+      modules: [singleLinearWithMlpEquation, filmWithoutResidualOne],
+      connections: [],
+    };
+    const directFindings = moduleFormulaConsistencyFindings(singleLinearWithMlpEquation);
+    const review = runAgentReview(badModel, 'healthy', 4).find(
+      (candidate) => candidate.id === 'formula-auditor',
+    );
+
+    expect(directFindings).toContain(
+      'Bad single Linear — bad-linear: a single Linear transform is represented as a multi-layer MLP.',
+    );
+    expect(review?.status).toBe('error');
+    expect(review?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('single Linear transform'),
+        expect.stringContaining('equation omits the residual 1'),
+      ]),
+    );
+  });
+
+  it('finds no recognized text-to-equation contradiction in any bundled module', () => {
+    const findings = sampleModels.flatMap((model) =>
+      model.modules.flatMap((module) => moduleFormulaConsistencyFindings(module)),
+    );
+    expect(findings).toEqual([]);
   });
 
   it('does not call a textual code anchor verified when its source artifact is absent', () => {

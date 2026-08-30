@@ -1,5 +1,6 @@
 import residualGradientEvidenceJson from './generated/residual-gradient-evidence.json';
 import transformerFilmGradientEvidenceJson from './generated/transformer-film-gradient-evidence.json';
+import { modelFormulaConsistencyFindings } from './model-formula-consistency';
 import type {
   GradientObservationState,
   GradientTrace,
@@ -308,7 +309,7 @@ export const sparkvskLearnedWarmPath: ModelSpec = {
       outputShape: ['B', 'p', 'd'],
       transform: 'emb_c and emb_r MLPs combine local feature banks with broadcast global features',
       activation: 'GELU',
-      formula: String.raw`c_j=\operatorname{MLP}_c([cfeat_j;g]),\qquad r_i=\operatorname{MLP}_r([rfeat_i;g])`,
+      formula: String.raw`c_j=\operatorname{MLP}^{\mathrm{GELU}}_c([cfeat_j;g]),\qquad r_i=\operatorname{MLP}^{\mathrm{GELU}}_r([rfeat_i;g])`,
       explanation:
         'Creates d=64 coordinate latents c and row latents r. The graph follows c as the primary tensor; r is the paired row-state side branch.',
       parameterCount: 0,
@@ -325,7 +326,7 @@ export const sparkvskLearnedWarmPath: ModelSpec = {
       outputShape: ['B', 'p', 'd'],
       transform: 'alternate Xᵀr/n and Xc/√p messages with gated residual MLP updates',
       activation: 'LayerNorm + GELU + tanh gate',
-      formula: String.raw`m_c=X^{\top}r/n,\ c\leftarrow c+\tanh(g_c)\operatorname{MLP}_c([\operatorname{LN}c;\operatorname{LN}m_c;\operatorname{pool}(c);g])`,
+      formula: String.raw`m_c=X^{\top}r/n,\ c\leftarrow c+\tanh(g_c)\operatorname{MLP}^{\mathrm{GELU}}_c([\operatorname{LN}c;\operatorname{LN}m_c;\operatorname{pool}(c);g])`,
       explanation:
         'The default L=4 blocks repeatedly exchange information between feature coordinates and observations. The approximate 2.39M checkpoint total is displayed here as an aggregate because its exact per-module allocation was not loaded.',
       parameterCount: 2_390_000,
@@ -344,7 +345,7 @@ export const sparkvskLearnedWarmPath: ModelSpec = {
       outputShape: ['B', 'Q', 'q_dim'],
       transform: 'PenaltyEncoder(ρ′) then q_emb over penalty code and four λ/scale features',
       activation: 'GELU',
-      formula: String.raw`\lambda_q=r_q\lambda_{\max},\quad q_q=\operatorname{MLP}_q([\operatorname{PenEnc}(\rho');\log r_q;\tfrac15\log\lambda_q;\log s_y;\tfrac15\log\lambda_{\max}])`,
+      formula: String.raw`\lambda_q=r_q\lambda_{\max},\quad q_q=\operatorname{MLP}^{\mathrm{GELU}}_q([\operatorname{PenEnc}(\rho');\log r_q;\tfrac15\log\lambda_q;\log s_y;\tfrac15\log\lambda_{\max}])`,
       explanation:
         'This is the exact answer to where λ enters SPARKVSK: each λ ratio is converted to λ, concatenated with the encoded penalty and scale terms, and embedded as a q_dim=32 conditional query.',
       parameterCount: 0,
@@ -624,7 +625,7 @@ export const tropicLambdaPathCompiler: ModelSpec = {
       transform:
         'SPARKVSK.path in Q-chunks: Krylov ridge features → bipartite message passing → penalty/query head → implicit PCG',
       activation: 'GELU inside MLPs',
-      formula: String.raw`\beta^{R}_{q}=\operatorname{SPARKVSK}\!\left(X,y,\lambda_q/\lambda_{\max},\rho'\right)`,
+      formula: String.raw`\beta^{R}_{q}=\operatorname{SPARKVSK}_{\mathrm{GELU\text{-}MLP}}\!\left(X,y,\lambda_q/\lambda_{\max},\rho'\right)`,
       explanation:
         'An aggregate view of the checkpoint-backed neural front-end. The attached README declares approximately 2.39M checkpoint parameters; the checkpoint was not deserialized for this visualization.',
       parameterCount: 2_390_000,
@@ -642,7 +643,7 @@ export const tropicLambdaPathCompiler: ModelSpec = {
       outputShape: ['K'],
       transform: 'block GK features + ISIS + warm-path amplitude + KCEP residual/novelty strata',
       activation: 'tanh message updates in KCEP',
-      formula: String.raw`C=\operatorname{KCEP}\!\left(\operatorname{cand}(X,y,\beta^{R}),\;K\le 1024\right)`,
+      formula: String.raw`C=\operatorname{KCEP}_{\tanh}\!\left(\operatorname{cand}(X,y,\beta^{R}),\;K\le 1024\right)`,
       explanation:
         'Builds a bounded coordinate set from global/coordinate features, iterative sure-independence screening, the warm path, conditional residual scores, and novelty.',
       parameterCount: 0,
@@ -1650,10 +1651,19 @@ export const bottleneckAutoencoder: ModelSpec = {
   gradientEvidence: null,
 };
 
-export const sampleModels: readonly ModelSpec[] = [
+const bundledSampleModels: readonly ModelSpec[] = [
   tropicLambdaPathCompiler,
   sparkvskLearnedWarmPath,
   filmTransformerClassifier,
   residualClassifier,
   bottleneckAutoencoder,
 ];
+
+const bundledFormulaFindings = modelFormulaConsistencyFindings(bundledSampleModels);
+if (bundledFormulaFindings.length > 0) {
+  throw new Error(
+    `Bundled model formula consistency failed: ${bundledFormulaFindings.join(' | ')}`,
+  );
+}
+
+export const sampleModels = bundledSampleModels;

@@ -6,8 +6,10 @@ import type { GradientHealth, ModelModule } from './model-lab-schema';
 
 export type ModuleNodeData = Readonly<{
   module: ModelModule;
+  changeKind: 'added' | 'changed' | null;
   health: GradientHealth;
   signalMode: 'forward' | 'backward';
+  orderFlowDirection: 'left-to-right' | 'right-to-left' | null;
   selectionTargetId: string;
   detailExpanded: boolean;
   detailDialogId: string;
@@ -16,6 +18,7 @@ export type ModuleNodeData = Readonly<{
     label: string;
     repeatCount: number | string;
     moduleCount: number;
+    detailKind: 'modules' | 'steps';
     onOpen: () => void;
   }> | null;
   subgraph: Readonly<{
@@ -79,6 +82,7 @@ const healthLabel: Record<GradientHealth, string> = {
 export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
   const {
     module,
+    changeKind,
     health,
     detailDialogId,
     detailExpanded,
@@ -88,6 +92,7 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
     onActivate,
     onNavigate,
     signalMode,
+    orderFlowDirection,
   } = data;
   const compactFormula = compactModuleFormula(module.formula);
   const repeat = moduleRepeatPresentation(module);
@@ -109,14 +114,35 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
   };
 
   const backward = signalMode === 'backward';
+  const leftHandle = orderFlowDirection
+    ? orderFlowDirection === 'left-to-right'
+      ? 'target'
+      : 'source'
+    : backward
+      ? 'source'
+      : 'target';
+  const rightHandle = orderFlowDirection
+    ? orderFlowDirection === 'left-to-right'
+      ? 'source'
+      : 'target'
+    : backward
+      ? 'target'
+      : 'source';
   return (
     <article
-      className={`module-node module-node--${health}${selected ? ' module-node--selected' : ''}${repeat ? ' module-node--stacked' : ''}${compositeBlock ? ' module-node--composite' : ''}`}
+      className={`module-node module-node--${health}${selected ? ' module-node--selected' : ''}${repeat ? ' module-node--stacked' : ''}${compositeBlock ? ' module-node--composite' : ''}${changeKind ? ` module-node--change-${changeKind}` : ''}`}
       data-model-node-id={module.id}
       data-repeat-count={repeat?.count}
+      data-change-kind={changeKind ?? undefined}
     >
-      {backward
-        ? module.kind !== 'input' && <Handle type="source" position={Position.Left} />
+      {changeKind ? (
+        <span className="module-node__change-badge">
+          {changeKind === 'added' ? 'ADDED' : 'MODIFIED'}
+        </span>
+      ) : null}
+      {leftHandle === 'source'
+        ? module.kind !== 'output' &&
+          module.kind !== 'objective' && <Handle type="source" position={Position.Left} />
         : module.kind !== 'input' && <Handle type="target" position={Position.Left} />}
       <button
         className="module-node__content"
@@ -170,7 +196,9 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
             <code>
               {formatShape(module.inputShape)} → {formatShape(module.outputShape)}
             </code>
-            <span>One iteration · {compositeBlock.moduleCount} internal modules</span>
+            <span>
+              One iteration · {compositeBlock.moduleCount} internal {compositeBlock.detailKind}
+            </span>
             <b>Open block details →</b>
           </div>
         ) : (
@@ -205,11 +233,10 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
           {subgraph.expanded ? 'Collapse' : 'Expand'} {subgraph.moduleCount} submodules
         </button>
       ) : null}
-      {backward
+      {rightHandle === 'source'
         ? module.kind !== 'output' &&
-          module.kind !== 'objective' && <Handle type="target" position={Position.Right} />
-        : module.kind !== 'output' &&
-          module.kind !== 'objective' && <Handle type="source" position={Position.Right} />}
+          module.kind !== 'objective' && <Handle type="source" position={Position.Right} />
+        : module.kind !== 'input' && <Handle type="target" position={Position.Right} />}
     </article>
   );
 }

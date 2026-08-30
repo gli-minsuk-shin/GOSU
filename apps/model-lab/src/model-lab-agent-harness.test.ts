@@ -43,6 +43,7 @@ function provider(providerName: string) {
             },
           ],
           answer: null,
+          editInstructions: null,
         }),
         provider: providerName,
         model: `${providerName}-model`,
@@ -63,6 +64,7 @@ function provider(providerName: string) {
         kind: 'final',
         calls: [],
         answer: 'Lambda enters the selected query encoder with a verified module receipt.',
+        editInstructions: null,
       }),
       provider: providerName,
       model: `${providerName}-model`,
@@ -150,12 +152,40 @@ describe('provider-neutral Model Lab agent harness', () => {
     ).toContain(tropicLambdaPathCompiler.name);
   });
 
+  it('returns a bounded architecture-edit intent separately from the explanatory answer', async () => {
+    const complete: ModelLabAgentProvider = vi.fn(async () => ({
+      body: JSON.stringify({
+        kind: 'final',
+        calls: [],
+        answer: 'I will prepare a reviewable proposal; the graph is not changed yet.',
+        editInstructions:
+          'Change the prediction head output from 10 logits to 2 logits and preserve every upstream block.',
+      }),
+      provider: 'fixture',
+      model: 'fixture-model',
+      reasoning: 'high',
+    }));
+
+    await expect(
+      runModelLabAgentHarness({
+        request: request(),
+        seedPrompt: 'Bounded model seed',
+        provider: complete,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({
+      body: expect.stringContaining('not changed yet'),
+      editInstructions: expect.stringContaining('output from 10 logits to 2 logits'),
+    });
+  });
+
   it('stops at the shared step bound instead of looping indefinitely', async () => {
     const complete: ModelLabAgentProvider = vi.fn(async () => ({
       body: JSON.stringify({
         kind: 'tool_calls',
         calls: [{ id: 'repeat', name: 'list_models', argumentsJson: '{}' }],
         answer: null,
+        editInstructions: null,
       }),
       provider: 'fixture',
       model: 'fixture',
