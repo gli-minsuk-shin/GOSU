@@ -131,6 +131,10 @@ export function describeError(error: unknown) {
     objective_not_found: 'Save an objective before using revision controls.',
     objective_locked: 'This objective is frozen. Start a new revision before editing it.',
     objective_not_locked: 'Freeze the current objective before starting a new revision.',
+    objective_identity_pending:
+      'Replace pending evaluator and dataset identities before freezing this objective.',
+    experiment_plan_activation_required:
+      'Reapply and activate this plan with current evaluator and dataset identities before comparable runs.',
     version_conflict:
       'This item changed since it was opened. The newer version was not overwritten.',
     invalid_workspace_input: 'Check the workspace fields and try again.',

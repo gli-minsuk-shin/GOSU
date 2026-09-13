@@ -1,3 +1,4 @@
+import { ProjectResearchPlanService } from './project-research-plan-service';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -302,7 +303,25 @@ const literature = new LiteratureService({
   transfer: createLiteratureTransferPlatform(() => mainWindow),
   projection: researchNotes,
 });
+const researchPlans = new ProjectResearchPlanService({
+  workspace,
+  storage: database,
+  onCommitted: (receipt) => {
+    experimentWorkspace.notifyResearchPlanCommitted(
+      receipt.projectId,
+      receipt.loggingTemplateId,
+      receipt.createdAt,
+    );
+    experimentEvaluation.notifyResearchPlanCommitted(
+      receipt.projectId,
+      receipt.evaluationSessionId,
+      receipt.evaluationRevisionId,
+      receipt.createdAt,
+    );
+  },
+});
 const projectChat = new ProjectChatService({
+  researchPlans,
   storage: database,
   workspace,
   codex: projectChatProvider,

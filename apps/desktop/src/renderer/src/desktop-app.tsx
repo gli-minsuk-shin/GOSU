@@ -1448,6 +1448,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           );
           return;
         }
+        if (event.type === 'research-plan.applied') {
+          void loadWorkspace().catch((error: unknown) => setWorkspaceError(describeError(error)));
+          return;
+        }
         setChatSnapshots((current) => {
           const sessionSnapshot = current[sessionKey];
           if (!sessionSnapshot) return current;
@@ -3575,7 +3579,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             )}
             {activeTab === 'objective' && activeProject && (
               <ObjectiveEditor
-                key={`${activeProject.id}:${activeObjective?.id ?? 'new'}:${activeObjective?.entityVersion ?? 0}`}
+                key={activeProject.id}
                 project={activeProject}
                 objective={activeObjective}
                 busy={busyAction !== null}

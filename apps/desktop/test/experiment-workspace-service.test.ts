@@ -17,6 +17,7 @@ import type {
 } from '../src/shared/experiment-workspace-contracts';
 import type { WorkspaceObjective, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 import type { WorkspaceService } from '../src/main/workspace-service';
+import type { ProjectResearchPlanReceipt } from '../src/shared/project-research-plan-contracts';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_PROJECT_ID = '22222222-2222-4222-8222-222222222222';
@@ -243,6 +244,122 @@ class MemoryExperimentStorage implements ExperimentWorkspaceStorage {
 }
 
 describe('Experiment workspace service', () => {
+  it('uses the exact plan objective and logging revision rather than newer unrelated configuration', async () => {
+    const storage = new MemoryExperimentStorage();
+    const original = objective(),
+      newer = objective({ id: randomUUID(), objectiveVersion: 3 });
+    const service = new ExperimentWorkspaceService({
+      storage,
+      workspace: workspace(workspaceSnapshot({ objectives: [original, newer] })),
+      now: () => NOW,
+    });
+    const initial = await service.list({ projectId: PROJECT_ID });
+    const idea = await service.createIdea({ projectId: PROJECT_ID, title: 'Imported plan idea' });
+    Object.assign(storage, {
+      getProjectResearchPlanForIdea: async () =>
+        ({
+          projectId: PROJECT_ID,
+          ideaId: idea.id,
+          objectiveId: original.id,
+          objectiveVersion: original.objectiveVersion,
+          objectiveEntityVersion: original.entityVersion,
+          objectiveLocked: true,
+          needsIdentity: false,
+          loggingTemplateId: initial.loggingTemplate.id,
+          loggingTemplateVersion: 1,
+        }) as ProjectResearchPlanReceipt,
+      getExperimentLoggingTemplateRevision: async (projectId: string, id: string) =>
+        storage.loggingTemplates.find((t) => t.projectId === projectId && t.id === id) ?? null,
+    });
+    await service.reviseLoggingTemplate({
+      projectId: PROJECT_ID,
+      expectedVersion: 1,
+      customFields: [],
+    });
+    const run = await service.createRun({
+      projectId: PROJECT_ID,
+      ideaId: idea.id,
+      title: 'Run saved plan',
+      mode: 'comparable',
+      serverLabel: 'Fixture',
+      trialId: 'plan-bound-trial',
+    });
+    expect(run.objectiveId).toBe(original.id);
+    expect(run.objectiveVersion).toBe(original.objectiveVersion);
+    expect(run.loggingTemplate.revisionId).toBe(initial.loggingTemplate.id);
+    expect(run.loggingTemplate.version).toBe(1);
+  });
+  it('never substitutes an old frozen goal for a pending plan, while allowing an explicit exploratory run', async () => {
+    const storage = new MemoryExperimentStorage();
+    const pending = objective({
+      id: randomUUID(),
+      objectiveVersion: 3,
+      locked: false,
+      primaryMetric: { ...objective().primaryMetric, datasetHash: 'pending:dataset:fixture' },
+    });
+    const service = new ExperimentWorkspaceService({
+      storage,
+      workspace: workspace(workspaceSnapshot({ objectives: [objective(), pending] })),
+      now: () => NOW,
+    });
+    const initial = await service.list({ projectId: PROJECT_ID }),
+      idea = await service.createIdea({ projectId: PROJECT_ID, title: 'Pending plan' });
+    Object.assign(storage, {
+      getProjectResearchPlanForIdea: async () =>
+        ({
+          projectId: PROJECT_ID,
+          ideaId: idea.id,
+          objectiveId: pending.id,
+          objectiveVersion: pending.objectiveVersion,
+          loggingTemplateId: initial.loggingTemplate.id,
+          loggingTemplateVersion: 1,
+        }) as ProjectResearchPlanReceipt,
+    });
+    const input = {
+      projectId: PROJECT_ID,
+      ideaId: idea.id,
+      title: 'Pending setup trial',
+      serverLabel: 'Fixture',
+      trialId: 'pending-plan-trial',
+    };
+    await expect(service.createRun({ ...input, mode: 'comparable' })).rejects.toMatchObject({
+      code: 'experiment_plan_activation_required',
+    });
+    expect(storage.runs).toHaveLength(0);
+    expect((await service.createRun({ ...input, mode: 'exploratory' })).objectiveId).toBeNull();
+  });
+  it('rejects foreign plan receipts and missing historical logging instead of silently switching templates', async () => {
+    const storage = new MemoryExperimentStorage(),
+      service = new ExperimentWorkspaceService({ storage, workspace: workspace(), now: () => NOW });
+    const initial = await service.list({ projectId: PROJECT_ID }),
+      idea = await service.createIdea({ projectId: PROJECT_ID, title: 'Scoped plan' });
+    const receipt = {
+      projectId: PROJECT_ID,
+      ideaId: idea.id,
+      objectiveId: objective().id,
+      objectiveVersion: 2,
+      loggingTemplateId: randomUUID(),
+      loggingTemplateVersion: 1,
+    } as ProjectResearchPlanReceipt;
+    Object.assign(storage, { getProjectResearchPlanForIdea: async () => receipt });
+    const input = {
+      projectId: PROJECT_ID,
+      ideaId: idea.id,
+      title: 'Scoped trial',
+      mode: 'exploratory' as const,
+      serverLabel: 'Fixture',
+      trialId: 'scope-trial',
+    };
+    await expect(service.createRun(input)).rejects.toMatchObject({
+      code: 'experiment_logging_template_conflict',
+    });
+    receipt.projectId = OTHER_PROJECT_ID;
+    receipt.loggingTemplateId = initial.loggingTemplate.id;
+    await expect(service.createRun(input)).rejects.toMatchObject({
+      code: 'experiment_idea_not_found',
+    });
+    expect(storage.runs).toHaveLength(0);
+  });
   it('creates a same-project idea lineage and publishes bounded change events', async () => {
     const storage = new MemoryExperimentStorage();
     const service = new ExperimentWorkspaceService({

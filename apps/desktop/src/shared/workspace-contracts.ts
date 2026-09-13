@@ -138,7 +138,8 @@ export type WorkspaceOperation = Readonly<{
     | 'task.restore'
     | 'objective.save'
     | 'objective.lock'
-    | 'objective.start-version';
+    | 'objective.start-version'
+    | 'research.plan.apply';
   baseVersion: number | null;
   createdAt: string;
   payload: Readonly<Record<string, unknown>>;
@@ -394,6 +395,7 @@ export const WorkspaceOperationSchema: z.ZodType<WorkspaceOperation> = z
       'objective.save',
       'objective.lock',
       'objective.start-version',
+      'research.plan.apply',
     ]),
     baseVersion: z.number().int().nonnegative().nullable(),
     createdAt: timestampSchema,
@@ -567,6 +569,8 @@ export const SaveObjectiveInputSchema = objectiveFieldsSchema
   .extend({
     projectId: uuidSchema,
     expectedEntityVersion: z.number().int().nonnegative(),
+    expectedObjectiveId: uuidSchema.nullable().optional(),
+    expectedObjectiveVersion: z.number().int().positive().nullable().optional(),
   })
   .strict()
   .superRefine((objective, context) => {
@@ -583,6 +587,8 @@ export const ObjectiveCommandSchema = z
   .object({
     projectId: uuidSchema,
     expectedEntityVersion: z.number().int().nonnegative(),
+    expectedObjectiveId: uuidSchema.nullable().optional(),
+    expectedObjectiveVersion: z.number().int().positive().nullable().optional(),
   })
   .strict();
 

@@ -30,7 +30,7 @@
     "lint": "eslint src electron.vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --exclude '.runtime/**' --maxWorkers=1 --passWithNoTests",
-    "test:agent-runtime": "vitest run test/project-agent-runtime.test.ts test/project-chat-view.test.tsx --maxWorkers=1"
+    "test:agent-runtime": "vitest run test/project-chat-service.test.ts test/project-chat-prompt.test.ts test/project-research-plan-service.test.ts test/project-research-plan-tools.test.ts test/project-agent-tools.test.ts test/workspace-service.test.ts test/experiment-workspace-service.test.ts test/objective-editor.test.tsx test/project-agent-runtime.test.ts test/project-chat-view.test.tsx --maxWorkers=1"
   },
   "dependencies": {
     "@gosu/contracts": "workspace:*",
@@ -54,6 +54,8 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@types/react-test-renderer": "19.1.0",
+    "react-test-renderer": "19.2.8",
     "@types/better-sqlite3": "^7.6.0",
     "@types/mdast": "4.0.4",
     "@types/node": "^24.0.0",

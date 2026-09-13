@@ -139,6 +139,8 @@ function experimentErrorMessage(error: unknown) {
       'This idea changed since it was opened. GOSU did not overwrite the newer version.',
     experiment_idea_limit_reached: 'This project has reached its local idea limit.',
     experiment_metric_limit_reached: 'This project has reached its local metric-record limit.',
+    experiment_plan_activation_required:
+      'Reapply and activate this plan with current evaluator and dataset identities before comparable runs.',
     experiment_objective_required:
       'Freeze a Goal & Metrics objective before recording comparable results.',
     experiment_logging_template_conflict:

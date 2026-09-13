@@ -967,6 +967,15 @@ export class ExperimentEvaluationService {
     return new ExperimentEvaluationServiceError('experiment_evaluation_unavailable');
   }
 
+  notifyResearchPlanCommitted(
+    projectId: string,
+    sessionId: string,
+    revisionId: string,
+    occurredAt: string,
+  ) {
+    this.publish(projectId, sessionId, 'revision', revisionId, occurredAt);
+  }
+
   private publish(
     projectId: string,
     sessionId: string,

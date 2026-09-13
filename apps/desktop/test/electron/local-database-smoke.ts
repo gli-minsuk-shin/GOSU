@@ -1,3 +1,10 @@
+import { ProjectResearchPlanService } from '../../src/main/project-research-plan-service';
+import { EXPERIMENT_LOGGING_SYSTEM_FIELDS } from '../../src/shared/experiment-workspace-contracts';
+import { ExperimentWorkspaceService } from '../../src/main/experiment-workspace-service';
+import {
+  ProjectResearchPlanSchema,
+  type ProjectResearchPlanCommit,
+} from '../../src/shared/project-research-plan-contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -889,7 +896,613 @@ function verifyManuscriptWorkspacePersistence(rootUserData: string, fixedTimesta
   }
 }
 
-function verifyExperimentEvaluationPersistence(fixedTimestamp: string) {
+async function verifyProjectResearchPlanPersistence(
+  draft: ExperimentEvaluationDraft,
+  invocation: ModelInvocation,
+  fixedTimestamp: string,
+) {
+  const originalUserData = app.getPath('userData');
+  const directory = mkdtempSync(join(originalUserData, 'research-plan-fixture-'));
+  app.setPath('userData', directory);
+  const database = new LocalDatabase();
+  try {
+    database.open();
+    const initial = fixture(1, randomUUID(), fixedTimestamp);
+    database.commitWorkspaceState(initial.state, initial.operation);
+    const projectId = initial.state.projects[0]!.id;
+    const hash = (value: unknown) =>
+      createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex');
+    const plan = ProjectResearchPlanSchema.parse({
+      title: draft.title,
+      goal: draft.purpose,
+      hypothesis: 'Pinned validation data makes comparisons reproducible.',
+      primaryMetric: {
+        key: 'validation_loss',
+        displayName: 'Validation loss',
+        direction: 'minimize',
+        unit: null,
+        aggregation: 'minimum',
+        evaluatorHash: 'sha256:fixture-evaluator',
+        datasetHash: 'sha256:fixture-dataset',
+        holdoutHash: null,
+        baseline: null,
+        target: null,
+      },
+      observedMetrics: [],
+      guardrails: [],
+      budget: {
+        maxTrials: 2,
+        maxConcurrentTrials: 1,
+        maxWallTimeSeconds: 120,
+        maxGpuHours: 0,
+        maxFailures: 1,
+      },
+      stopPolicy: {
+        stopWhenTargetReached: false,
+        guardrailAction: 'pause',
+        maxConsecutiveNoImprovement: null,
+      },
+      cadence: draft.cadence,
+      evaluationPolicy: draft.evaluationPolicy,
+      experimentRules: draft.experimentRules,
+      loggingFields: draft.loggingFields,
+      replaceLoggingKeys: [],
+      referenceCode: draft.referenceCode.content,
+      activateObjective: true,
+    });
+    const candidate = () => {
+      const current = database.loadWorkspaceState()!;
+      const sourceSession = database.createProjectChatSession(projectId, 'Plan source fixture');
+      const sourceAttemptId = randomUUID();
+      const userId = randomUUID();
+      database.beginChatAttempt(
+        {
+          id: sourceAttemptId,
+          projectId,
+          sessionId: sourceSession.id,
+          userMessageId: userId,
+          requestedModelId: null,
+          reasoningOptionId: null,
+          status: 'starting',
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+        },
+        {
+          id: userId,
+          projectId,
+          role: 'user',
+          status: 'complete',
+          actions: [],
+          content: 'Create and apply this experiment plan.',
+          createdAt: fixedTimestamp,
+          completedAt: fixedTimestamp,
+        },
+      );
+      const objective = {
+        id: randomUUID(),
+        projectId,
+        objectiveVersion: current.objectives.length + 1,
+        entityVersion: 1,
+        locked: true,
+        goal: plan.goal,
+        primaryMetric: {
+          ...plan.primaryMetric,
+          evaluatorHash: 'sha256:fixture-evaluator',
+          datasetHash: 'sha256:fixture-dataset',
+        },
+        guardrails: plan.guardrails,
+        budget: plan.budget,
+        stopPolicy: plan.stopPolicy,
+        createdAt: fixedTimestamp,
+        updatedAt: fixedTimestamp,
+      };
+      const template = database.getLatestExperimentLoggingTemplate(projectId);
+      const loggingTemplate: ExperimentLoggingTemplate = {
+        schemaVersion: 1,
+        id: randomUUID(),
+        projectId,
+        version: (template?.version ?? 0) + 1,
+        previousRevisionId: template?.id ?? null,
+        systemFields: EXPERIMENT_LOGGING_SYSTEM_FIELDS,
+        customFields: draft.loggingFields,
+        templateHash: hash(draft.loggingFields),
+        createdAt: fixedTimestamp,
+      };
+      const sessionId = randomUUID();
+      const revisionId = randomUUID();
+      const ideaId = randomUUID();
+      const bundle: ProjectResearchPlanCommit = {
+        plan,
+        receipt: {
+          schemaVersion: 1,
+          id: randomUUID(),
+          projectId,
+          sourceSessionId: sourceSession.id,
+          sourceAttemptId,
+          planHash: hash(plan),
+          objectiveId: objective.id,
+          objectiveVersion: objective.objectiveVersion,
+          objectiveEntityVersion: objective.entityVersion,
+          objectiveLocked: true,
+          needsIdentity: false,
+          loggingTemplateId: loggingTemplate.id,
+          loggingTemplateVersion: loggingTemplate.version,
+          evaluationSessionId: sessionId,
+          evaluationRevisionId: revisionId,
+          ideaId,
+          createdAt: fixedTimestamp,
+        },
+        expectedLoggingVersion: template?.version ?? 0,
+        loggingTemplate,
+        idea: {
+          schemaVersion: 1,
+          id: ideaId,
+          projectId,
+          parentIdeaId: null,
+          title: plan.title,
+          hypothesis: plan.hypothesis,
+          phase: 'plan',
+          outcome: 'planned',
+          resultSummary: '',
+          version: 1,
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+          completedAt: null,
+        },
+        evaluationSession: {
+          schemaVersion: 1,
+          id: sessionId,
+          projectId,
+          title: plan.title,
+          status: 'draft',
+          activeAttemptId: null,
+          currentRevision: 0,
+          acceptedProfileId: null,
+          version: 1,
+          lastErrorCode: null,
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+        },
+        userMessage: {
+          schemaVersion: 1,
+          id: randomUUID(),
+          sessionId,
+          role: 'user',
+          status: 'complete',
+          content: 'Create this evaluation setup.',
+          attemptId: sourceAttemptId,
+          revision: null,
+          invocation: null,
+          createdAt: fixedTimestamp,
+          completedAt: fixedTimestamp,
+        },
+        evaluationRevision: {
+          schemaVersion: 1,
+          id: revisionId,
+          sessionId,
+          revision: 1,
+          attemptId: sourceAttemptId,
+          draft,
+          contentHash: hash(draft),
+          invocation,
+          createdAt: fixedTimestamp,
+        },
+        assistantMessage: {
+          schemaVersion: 1,
+          id: randomUUID(),
+          sessionId,
+          role: 'assistant',
+          status: 'complete',
+          content: 'Saved evaluation setup; no experiment executed.',
+          attemptId: sourceAttemptId,
+          revision: 1,
+          invocation,
+          createdAt: fixedTimestamp,
+          completedAt: fixedTimestamp,
+        },
+      };
+      const state: WorkspaceSnapshot = {
+        ...current,
+        revision: current.revision + 1,
+        objectives: [...current.objectives, objective],
+      };
+      const operation: WorkspaceOperation = {
+        schemaVersion: 1,
+        workspaceRevision: state.revision,
+        id: bundle.receipt.id,
+        idempotencyKey: bundle.receipt.id,
+        scope: `workspace:${projectId}:research-plan`,
+        projectId,
+        entityType: 'objective',
+        entityId: objective.id,
+        commandType: 'research.plan.apply',
+        baseVersion: null,
+        createdAt: fixedTimestamp,
+        payload: {},
+      };
+      return { state, operation, bundle };
+    };
+    const capture = () => ({
+      state: database.loadWorkspaceState(),
+      outbox: database.pendingWorkspaceChanges(),
+      template: database.getLatestExperimentLoggingTemplate(projectId),
+      ideas: database.listExperimentIdeas(projectId),
+      sessions: database.listExperimentEvaluationSessions(projectId),
+      latest: database.getLatestProjectResearchPlan(projectId),
+    });
+    const reject = (input: ReturnType<typeof candidate>, expected: string) => {
+      const before = capture();
+      let errorCode = '';
+      try {
+        database.commitProjectResearchPlan(input.state, input.operation, input.bundle);
+      } catch (error) {
+        errorCode = error instanceof Error ? error.message : 'unknown';
+      }
+      invariant(errorCode === expected, `research_plan_expected_${expected}_received_${errorCode}`);
+      invariant(isDeepStrictEqual(capture(), before), 'research_plan_failure_was_not_atomic');
+      if (expected !== 'research_plan_replayed' && expected !== 'research_plan_conflict') {
+        invariant(
+          database.getProjectResearchPlanReceipt(
+            projectId,
+            input.bundle.receipt.sourceAttemptId,
+          ) === null,
+          'research_plan_failed_receipt_persisted',
+        );
+        invariant(
+          database.getExperimentEvaluationSessionDetail(
+            projectId,
+            input.bundle.evaluationSession.id,
+          ) === null,
+          'research_plan_failed_evaluation_persisted',
+        );
+      }
+    };
+    const first = candidate();
+    database.commitProjectResearchPlan(first.state, first.operation, first.bundle);
+    invariant(
+      isDeepStrictEqual(database.loadWorkspaceState(), first.state),
+      'research_plan_workspace_commit_failed',
+    );
+    invariant(
+      database.pendingWorkspaceChanges().some(({ id }) => id === first.operation.id),
+      'research_plan_outbox_missing',
+    );
+    invariant(
+      isDeepStrictEqual(
+        database.getProjectResearchPlanReceipt(projectId, first.bundle.receipt.sourceAttemptId),
+        first.bundle.receipt,
+      ),
+      'research_plan_receipt_missing',
+    );
+    const detail = database.getExperimentEvaluationSessionDetail(
+      projectId,
+      first.bundle.evaluationSession.id,
+    );
+    invariant(
+      detail?.session.status === 'ready' &&
+        detail.session.version === 3 &&
+        detail.messages.length === 2 &&
+        detail.currentRevision?.id === first.bundle.evaluationRevision.id,
+      'research_plan_evaluation_commit_failed',
+    );
+    reject(first, 'research_plan_replayed');
+    const changedReplay = structuredClone(first);
+    changedReplay.bundle.plan.goal += ' Changed intent.';
+    changedReplay.bundle.receipt.planHash = hash(
+      ProjectResearchPlanSchema.parse(changedReplay.bundle.plan),
+    );
+    reject(changedReplay, 'research_plan_conflict');
+    const stale = candidate();
+    stale.bundle.expectedLoggingVersion = 0;
+    reject(stale, 'experiment_logging_template_conflict');
+    // Rehash each valid plan: identity/hash checks alone cannot reject these mixed records.
+    const semanticMismatches: Array<(plan: ProjectResearchPlanCommit['plan']) => void> = [
+      (value) => {
+        value.goal += ' Revised goal.';
+      },
+      (value) => {
+        value.budget.maxTrials += 1;
+      },
+      (value) => {
+        value.guardrails.push({ metricKey: 'validation_loss', operator: 'lte', threshold: 1 });
+      },
+      (value) => {
+        value.stopPolicy.guardrailAction = 'stop';
+      },
+      (value) => {
+        value.title += ' revised';
+      },
+      (value) => {
+        value.hypothesis += ' Revised hypothesis.';
+      },
+      (value) => {
+        value.experimentRules.push('Keep an additional validation checkpoint.');
+      },
+      (value) => {
+        value.cadence.interval += 1;
+      },
+      (value) => {
+        value.evaluationPolicy += ' Revised evaluation.';
+      },
+      (value) => {
+        value.loggingFields[0]!.label = 'Changed logging label';
+      },
+      (value) => {
+        value.primaryMetric.datasetHash = 'sha256:different-dataset';
+      },
+      (value) => {
+        value.primaryMetric.evaluatorHash = null;
+      },
+    ];
+    for (const mutatePlan of semanticMismatches) {
+      const incoherent = structuredClone(candidate());
+      // Detach shared fixture subobjects so changing the plan cannot also change its records.
+      incoherent.bundle.plan = structuredClone(incoherent.bundle.plan);
+      mutatePlan(incoherent.bundle.plan);
+      incoherent.bundle.receipt.planHash = hash(
+        ProjectResearchPlanSchema.parse(incoherent.bundle.plan),
+      );
+      reject(incoherent, 'research_plan_scope_invalid');
+    }
+    for (const field of ['title', 'purpose'] as const) {
+      const mixedRevision = structuredClone(candidate());
+      mixedRevision.bundle.evaluationRevision.draft[field] += ' Mixed revision.';
+      mixedRevision.bundle.evaluationRevision.contentHash = hash(
+        mixedRevision.bundle.evaluationRevision.draft,
+      );
+      reject(mixedRevision, 'research_plan_scope_invalid');
+    }
+    const invalidCompletion = candidate();
+    invalidCompletion.bundle.evaluationRevision.contentHash = 'f'.repeat(64);
+    reject(invalidCompletion, 'invalid_experiment_evaluation_completion');
+    const originalComplete = database.completeExperimentEvaluationTurn;
+    let workspaceWritten = false;
+    const injected = candidate();
+    database.completeExperimentEvaluationTurn = () => {
+      workspaceWritten = database.loadWorkspaceState()?.revision === injected.state.revision;
+      return null;
+    };
+    try {
+      reject(injected, 'research_plan_conflict');
+    } finally {
+      database.completeExperimentEvaluationTurn = originalComplete;
+    }
+    invariant(workspaceWritten, 'research_plan_rollback_did_not_test_post_write_failure');
+    const crossProject = candidate();
+    crossProject.bundle.idea.projectId = randomUUID();
+    reject(crossProject, 'research_plan_scope_invalid');
+    const wrongSource = candidate();
+    wrongSource.bundle.receipt.sourceSessionId = database.createProjectChatSession(
+      randomUUID(),
+      'Other project',
+    ).id;
+    reject(wrongSource, 'research_plan_scope_invalid');
+    invariant(
+      database.getProjectResearchPlanReceipt(randomUUID(), first.bundle.receipt.sourceAttemptId) ===
+        null,
+      'research_plan_receipt_cross_project_leak',
+    );
+    invariant(
+      database.getLatestProjectResearchPlan(randomUUID()) === null,
+      'research_plan_latest_cross_project_leak',
+    );
+    invariant(
+      isDeepStrictEqual(
+        database.getProjectResearchPlanForIdea(projectId, first.bundle.idea.id),
+        first.bundle.receipt,
+      ),
+      'research_plan_idea_lookup_failed',
+    );
+    invariant(
+      database.getProjectResearchPlanForIdea(randomUUID(), first.bundle.idea.id) === null &&
+        database.getProjectResearchPlanForIdea(projectId, randomUUID()) === null,
+      'research_plan_idea_cross_project_leak',
+    );
+    const oldTemplate = first.bundle.loggingTemplate!;
+    const oldRun: ExperimentRun = {
+      schemaVersion: 1,
+      id: randomUUID(),
+      projectId,
+      ideaId: first.bundle.idea.id,
+      title: 'Old run snapshot',
+      status: 'queued',
+      mode: 'comparable',
+      serverLabel: 'Fixture',
+      trialId: randomUUID(),
+      objectiveId: first.bundle.receipt.objectiveId,
+      objectiveVersion: first.bundle.receipt.objectiveVersion,
+      loggingTemplate: {
+        revisionId: oldTemplate.id,
+        version: oldTemplate.version,
+        systemFields: oldTemplate.systemFields,
+        customFields: oldTemplate.customFields,
+        templateHash: oldTemplate.templateHash,
+      },
+      progressCurrent: null,
+      progressTotal: null,
+      currentStep: null,
+      latestMetric: null,
+      logReference: null,
+      processExitCode: null,
+      processDurationMs: null,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+      startedAt: null,
+      completedAt: null,
+      version: 1,
+    };
+    invariant(database.createExperimentRun(oldRun), 'research_plan_old_run_fixture_failed');
+    const second = candidate();
+    database.commitProjectResearchPlan(second.state, second.operation, second.bundle);
+    invariant(
+      isDeepStrictEqual(database.getExperimentRun(projectId, oldRun.id), oldRun),
+      'research_plan_old_run_rewritten',
+    );
+    invariant(
+      isDeepStrictEqual(
+        database.getExperimentLoggingTemplateRevision(projectId, oldTemplate.id),
+        oldTemplate,
+      ),
+      'research_plan_historical_template_lookup_failed',
+    );
+    invariant(
+      database.getExperimentLoggingTemplateRevision(randomUUID(), oldTemplate.id) === null &&
+        database.getExperimentLoggingTemplateRevision(projectId, randomUUID()) === null,
+      'research_plan_template_lookup_scope_failed',
+    );
+    invariant(
+      isDeepStrictEqual(database.loadWorkspaceState()?.objectives[0], first.state.objectives[0]),
+      'research_plan_old_objective_rewritten',
+    );
+    invariant(
+      isDeepStrictEqual(
+        database.getExperimentEvaluationSessionDetail(projectId, first.bundle.evaluationSession.id),
+        detail,
+      ),
+      'research_plan_old_evaluation_rewritten',
+    );
+    // Same timestamp: latest follows commit order, never random UUID ordering.
+    invariant(
+      database.getLatestProjectResearchPlan(projectId)?.receipt.id === second.bundle.receipt.id,
+      'research_plan_latest_order_failed',
+    );
+    const unchangedLogging = candidate();
+    unchangedLogging.bundle.loggingTemplate = null;
+    unchangedLogging.bundle.receipt.loggingTemplateId = second.bundle.receipt.loggingTemplateId;
+    unchangedLogging.bundle.receipt.loggingTemplateVersion =
+      second.bundle.receipt.loggingTemplateVersion;
+    database.commitProjectResearchPlan(
+      unchangedLogging.state,
+      unchangedLogging.operation,
+      unchangedLogging.bundle,
+    );
+    invariant(
+      database.getLatestExperimentLoggingTemplate(projectId)?.version === 2,
+      'research_plan_unchanged_logging_created_revision',
+    );
+    for (const withReferenceCode of [true, false]) {
+      const pending = structuredClone(candidate());
+      pending.bundle.plan.primaryMetric.evaluatorHash = null;
+      pending.bundle.plan.primaryMetric.datasetHash = null;
+      if (!withReferenceCode) pending.bundle.plan.referenceCode = null;
+      pending.bundle.receipt.planHash = hash(ProjectResearchPlanSchema.parse(pending.bundle.plan));
+      const metric = {
+        ...pending.bundle.plan.primaryMetric,
+        evaluatorHash: withReferenceCode
+          ? `sha256:${createHash('sha256').update(pending.bundle.plan.referenceCode!, 'utf8').digest('hex')}`
+          : `pending:evaluator:${pending.bundle.receipt.id}`,
+        datasetHash: `pending:dataset:${pending.bundle.receipt.id}`,
+      };
+      pending.bundle.receipt.needsIdentity = true;
+      pending.bundle.receipt.objectiveLocked = false;
+      pending.state = {
+        ...pending.state,
+        objectives: pending.state.objectives.map((objective) =>
+          objective.id === pending.bundle.receipt.objectiveId
+            ? { ...objective, primaryMetric: metric, locked: false }
+            : objective,
+        ),
+      };
+      database.commitProjectResearchPlan(pending.state, pending.operation, pending.bundle);
+      invariant(
+        database.getProjectResearchPlanForIdea(projectId, pending.bundle.idea.id)?.needsIdentity ===
+          true,
+        'research_plan_pending_metric_identity_failed',
+      );
+    }
+    // Exercise the actual service composition, not just a manually assembled commit bundle.
+    const bridgeCandidate = candidate();
+    const bridgeWorkspace = new WorkspaceService({
+      load: () => database.loadWorkspaceState(),
+      commit: (state, operation) => database.commitWorkspaceState(state, operation),
+      pendingChanges: () => database.pendingWorkspaceChanges(),
+      pendingSummary: () => database.pendingWorkspaceSummary(),
+    });
+    const bridge = new ProjectResearchPlanService({
+      workspace: bridgeWorkspace,
+      storage: database,
+    });
+    const bridgeInput = {
+      projectId,
+      sessionId: bridgeCandidate.bundle.receipt.sourceSessionId,
+      attemptId: bridgeCandidate.bundle.receipt.sourceAttemptId,
+      userMessage: 'Create and apply this experiment plan.',
+      invocation,
+      snapshot: await bridge.snapshot(projectId),
+      plan: bridgeCandidate.bundle.plan,
+    };
+    const bridgeApplied = await bridge.apply(bridgeInput, new AbortController().signal);
+    invariant(bridgeApplied.receipt.objectiveLocked, 'research_plan_service_did_not_activate');
+    invariant(
+      (await bridge.apply(bridgeInput, new AbortController().signal)).reused,
+      'research_plan_service_replay_failed',
+    );
+    const experimentBridge = new ExperimentWorkspaceService({
+      storage: database,
+      workspace: bridgeWorkspace,
+    });
+    const plannedRun = await experimentBridge.createRun({
+      projectId,
+      ideaId: bridgeApplied.receipt.ideaId,
+      title: 'Plan service configured trial',
+      mode: 'comparable',
+      serverLabel: 'Fixture only',
+      trialId: randomUUID(),
+    });
+    invariant(
+      plannedRun.status === 'queued' &&
+        plannedRun.objectiveId === bridgeApplied.receipt.objectiveId &&
+        plannedRun.loggingTemplate.revisionId === bridgeApplied.receipt.loggingTemplateId,
+      'research_plan_to_tracked_run_binding_failed',
+    );
+    invariant(
+      (await bridge.read(projectId, first.bundle.idea.id))?.receipt.id === first.bundle.receipt.id,
+      'research_plan_historical_read_used_latest',
+    );
+    invariant(
+      (await bridge.read(projectId, randomUUID())) === null,
+      'research_plan_unknown_idea_read_returned_latest',
+    );
+    const atCapacity = candidate();
+    while (database.listExperimentEvaluationSessions(projectId).length < 100) {
+      invariant(
+        database.createExperimentEvaluationSession({
+          ...atCapacity.bundle.evaluationSession,
+          id: randomUUID(),
+        }),
+        'research_plan_capacity_fixture_failed',
+      );
+    }
+    reject(atCapacity, 'experiment_evaluation_session_limit_reached');
+    const committed = capture();
+    database.close();
+    database.open();
+    invariant(isDeepStrictEqual(capture(), committed), 'research_plan_reopen_persistence_failed');
+    invariant(
+      isDeepStrictEqual(
+        database.getProjectResearchPlanForIdea(projectId, first.bundle.idea.id),
+        first.bundle.receipt,
+      ),
+      'research_plan_idea_lookup_reopen_failed',
+    );
+    invariant(
+      isDeepStrictEqual(database.getExperimentRun(projectId, oldRun.id), oldRun),
+      'research_plan_old_run_reopen_failed',
+    );
+    invariant(
+      isDeepStrictEqual(
+        database.getExperimentLoggingTemplateRevision(projectId, oldTemplate.id),
+        oldTemplate,
+      ),
+      'research_plan_historical_template_reopen_failed',
+    );
+    process.stdout.write('research plan atomic SQLCipher smoke passed\n');
+  } finally {
+    database.close();
+    app.setPath('userData', originalUserData);
+  }
+}
+async function verifyExperimentEvaluationPersistence(fixedTimestamp: string) {
   const database = new LocalDatabase();
   database.open();
   try {
@@ -987,6 +1600,7 @@ function verifyExperimentEvaluationPersistence(fixedTimestamp: string) {
         reportMarkdown: '# Synthetic preview\n\nNo experiment was executed.',
       },
     };
+    await verifyProjectResearchPlanPersistence(draft, invocation, fixedTimestamp);
     const contentHash = createHash('sha256').update(JSON.stringify(draft), 'utf8').digest('hex');
     const initialSession = (id: string, title: string): ExperimentEvaluationSession => ({
       schemaVersion: 1,
@@ -9487,7 +10101,7 @@ void app.whenReady().then(async () => {
     verifySparseSemanticScholarMerge(fixedTimestamp);
     verifyLiteratureDiscoveryPersistence(fixedTimestamp);
     verifyLiteratureBoundsAndIdentity(fixedTimestamp);
-    verifyExperimentEvaluationPersistence(fixedTimestamp);
+    await verifyExperimentEvaluationPersistence(fixedTimestamp);
     verifyModelUsagePersistence(fixedTimestamp);
     verifyExperimentPersistence(fixedTimestamp);
     verifyLectureStudioListDetailBoundary(fixedTimestamp);

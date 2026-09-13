@@ -1,3 +1,4 @@
+import { ProjectResearchPlanReceiptSchema } from './project-research-plan-contracts';
 import { z } from 'zod';
 
 import { ProjectChatAttachmentIdsSchema } from './project-chat-attachment-contracts';
@@ -1136,6 +1137,15 @@ export const ProjectChatTurnReceiptSchema = z.union([
 export type ProjectChatTurnReceipt = z.infer<typeof ProjectChatTurnReceiptSchema>;
 
 export const ProjectChatEventSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('research-plan.applied'),
+      projectId: uuidSchema,
+      sessionId: uuidSchema,
+      receipt: ProjectResearchPlanReceiptSchema,
+      workspaceChanged: z.literal(true),
+    })
+    .strict(),
   z
     .object({
       type: z.literal('turn.started'),

@@ -1,4 +1,6 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import type { ObjectiveCommand } from '../../shared/workspace-contracts';
+import { hasPendingObjectiveIdentity } from '../../shared/project-research-plan-contracts';
 
 import type {
   ProjectRecord,
@@ -276,10 +278,13 @@ function ProjectForm({
     </form>
   );
 }
+function researchPlanText(value: string, params: Record<string, string | number> = {}) {
+  return value.replace(/\{([^}]+)\}/g, (match, key) => String(params[key] ?? match));
+}
 
 export function ObjectiveEditor({
   project,
-  objective,
+  objective: incomingObjective,
   busy,
   onSave,
   onLock,
@@ -289,33 +294,72 @@ export function ObjectiveEditor({
   objective: WorkspaceObjective | undefined;
   busy: boolean;
   onSave: (input: SaveObjectiveInput) => Promise<boolean>;
-  onLock: (input: { projectId: string; expectedEntityVersion: number }) => Promise<boolean>;
-  onStartVersion: (input: { projectId: string; expectedEntityVersion: number }) => Promise<boolean>;
+  onLock: (input: ObjectiveCommand) => Promise<boolean>;
+  onStartVersion: (input: ObjectiveCommand) => Promise<boolean>;
 }) {
+  const [objective, setObjective] = useState(incomingObjective);
+  const [dirty, setDirty] = useState(false);
   const [draft, setDraft] = useState<ObjectiveDraft>(() => objectiveToDraft(objective));
+  const revisionChanged =
+    (incomingObjective?.id ?? null) !== (objective?.id ?? null) ||
+    (incomingObjective?.entityVersion ?? 0) !== (objective?.entityVersion ?? 0);
+  useEffect(() => {
+    if (revisionChanged && !dirty) {
+      setObjective(incomingObjective);
+      setDraft(objectiveToDraft(incomingObjective));
+    }
+  }, [revisionChanged, dirty, incomingObjective]);
   const hasTarget = draft.target.trim() !== '';
+  const pendingIdentity = objective ? hasPendingObjectiveIdentity(objective.primaryMetric) : false;
 
-  const setField = <Key extends keyof ObjectiveDraft>(key: Key, value: ObjectiveDraft[Key]) =>
+  const setField = <Key extends keyof ObjectiveDraft>(key: Key, value: ObjectiveDraft[Key]) => {
+    setDirty(true);
     setDraft((current) => ({ ...current, [key]: value }));
+  };
 
   return (
     <section className="workspace-grid">
       <article className="card">
         <CardHead
-          title="Versioned research objective"
+          title={researchPlanText('Versioned research objective')}
           detail={
             objective
-              ? `Objective v${objective.objectiveVersion} · entity v${objective.entityVersion}`
-              : 'No objective saved yet'
+              ? researchPlanText('Objective v{objectiveVersion} · entity v{entityVersion}', {
+                  objectiveVersion: objective.objectiveVersion,
+                  entityVersion: objective.entityVersion,
+                })
+              : researchPlanText('No objective saved yet')
           }
         />
+        {revisionChanged && dirty && (
+          <div className="notice" role="status">
+            <span>
+              {researchPlanText(
+                'A newer plan changed this objective. Your unsaved draft is preserved.',
+              )}
+            </span>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                setObjective(incomingObjective);
+                setDraft(objectiveToDraft(incomingObjective));
+                setDirty(false);
+              }}
+            >
+              {researchPlanText('Discard draft and load latest')}
+            </button>
+          </div>
+        )}
         <form
           className="objective-form"
           onSubmit={(event) => {
             event.preventDefault();
-            if (busy || objective?.locked) return;
+            if (busy || objective?.locked || revisionChanged) return;
             try {
-              void onSave(buildObjectiveInput(project.id, objective, draft));
+              void onSave(buildObjectiveInput(project.id, objective, draft)).then((saved) => {
+                if (saved) setDirty(false);
+              });
             } catch (error) {
               const target = event.currentTarget;
               target.setAttribute('data-error', describeError(error));
@@ -324,46 +368,48 @@ export function ObjectiveEditor({
           }}
         >
           <label className="full-width">
-            Research goal
+            {researchPlanText('Research goal')}
             <textarea
               value={draft.goal}
               onChange={(event) => setField('goal', event.target.value)}
               minLength={10}
               maxLength={4_000}
-              placeholder="State the outcome the experiment should improve and the boundary it must preserve."
+              placeholder={researchPlanText(
+                'State the outcome the experiment should improve and the boundary it must preserve.',
+              )}
               required
               disabled={busy || objective?.locked}
             />
           </label>
 
           <fieldset className="objective-section full-width">
-            <legend className="sr-only">Primary metric</legend>
-            <h3>Primary metric</h3>
+            <legend className="sr-only">{researchPlanText('Primary metric')}</legend>
+            <h3>{researchPlanText('Primary metric')}</h3>
             <div className="field-grid">
               <label>
-                Metric key
+                {researchPlanText('Metric key')}
                 <input
                   value={draft.metricKey}
                   onChange={(event) => setField('metricKey', event.target.value)}
                   maxLength={128}
-                  placeholder="validation_accuracy"
+                  placeholder={researchPlanText('validation_accuracy')}
                   required
                   disabled={busy || objective?.locked}
                 />
               </label>
               <label>
-                Display name
+                {researchPlanText('Display name')}
                 <input
                   value={draft.metricDisplayName}
                   onChange={(event) => setField('metricDisplayName', event.target.value)}
                   maxLength={256}
-                  placeholder="Validation accuracy"
+                  placeholder={researchPlanText('Validation accuracy')}
                   required
                   disabled={busy || objective?.locked}
                 />
               </label>
               <label>
-                Direction
+                {researchPlanText('Direction')}
                 <select
                   value={draft.direction}
                   onChange={(event) =>
@@ -371,12 +417,12 @@ export function ObjectiveEditor({
                   }
                   disabled={busy || objective?.locked}
                 >
-                  <option value="maximize">Maximize</option>
-                  <option value="minimize">Minimize</option>
+                  <option value="maximize">{researchPlanText('Maximize')}</option>
+                  <option value="minimize">{researchPlanText('Minimize objective')}</option>
                 </select>
               </label>
               <label>
-                Aggregation
+                {researchPlanText('Aggregation')}
                 <select
                   value={draft.aggregation}
                   onChange={(event) =>
@@ -384,42 +430,46 @@ export function ObjectiveEditor({
                   }
                   disabled={busy || objective?.locked}
                 >
-                  <option value="mean">Mean</option>
-                  <option value="median">Median</option>
-                  <option value="minimum">Minimum</option>
-                  <option value="maximum">Maximum</option>
-                  <option value="last">Last</option>
+                  <option value="mean">{researchPlanText('Mean')}</option>
+                  <option value="median">{researchPlanText('Median')}</option>
+                  <option value="minimum">{researchPlanText('Minimum')}</option>
+                  <option value="maximum">{researchPlanText('Maximum')}</option>
+                  <option value="last">{researchPlanText('Last')}</option>
                 </select>
               </label>
               <label>
-                Unit <span className="sr-only">optional</span>
+                {researchPlanText('Unit')}{' '}
+                <span className="sr-only">{researchPlanText('optional')}</span>
                 <input
                   value={draft.unit}
                   onChange={(event) => setField('unit', event.target.value)}
                   maxLength={64}
-                  placeholder="%, ms, score · optional"
+                  placeholder={researchPlanText('%, ms, score · optional')}
                   disabled={busy || objective?.locked}
                 />
               </label>
               <label>
-                Baseline <span className="sr-only">optional</span>
+                {researchPlanText('Baseline')}{' '}
+                <span className="sr-only">{researchPlanText('optional')}</span>
                 <input
                   type="number"
                   step="any"
                   value={draft.baseline}
                   onChange={(event) => setField('baseline', event.target.value)}
-                  placeholder="Optional"
+                  placeholder={researchPlanText('Optional')}
                   disabled={busy || objective?.locked}
                 />
               </label>
               <label>
-                Target <span className="sr-only">optional</span>
+                {researchPlanText('Target')}{' '}
+                <span className="sr-only">{researchPlanText('optional')}</span>
                 <input
                   type="number"
                   step="any"
                   value={draft.target}
                   onChange={(event) => {
                     const target = event.target.value;
+                    setDirty(true);
                     setDraft((current) => ({
                       ...current,
                       target,
@@ -427,7 +477,7 @@ export function ObjectiveEditor({
                         target.trim() === '' ? false : current.stopWhenTargetReached,
                     }));
                   }}
-                  placeholder="Optional"
+                  placeholder={researchPlanText('Optional')}
                   disabled={busy || objective?.locked}
                 />
               </label>
@@ -435,42 +485,47 @@ export function ObjectiveEditor({
           </fieldset>
 
           <fieldset className="objective-section full-width">
-            <legend className="sr-only">Reproducibility hashes</legend>
-            <h3>Reproducibility hashes</h3>
-            <p>Use immutable content identifiers. GOSU does not upload the underlying files.</p>
+            <legend className="sr-only">{researchPlanText('Reproducibility hashes')}</legend>
+            <h3>{researchPlanText('Reproducibility hashes')}</h3>
+            <p>
+              {researchPlanText(
+                'Use immutable content identifiers. GOSU does not upload the underlying files.',
+              )}
+            </p>
             <div className="field-grid">
               <label>
-                Evaluator hash
+                {researchPlanText('Evaluator hash')}
                 <input
                   value={draft.evaluatorHash}
                   onChange={(event) => setField('evaluatorHash', event.target.value)}
                   minLength={8}
                   maxLength={160}
-                  placeholder="sha256:… or commit hash"
+                  placeholder={researchPlanText('sha256:… or commit hash')}
                   required
                   disabled={busy || objective?.locked}
                 />
               </label>
               <label>
-                Dataset hash
+                {researchPlanText('Dataset hash')}
                 <input
                   value={draft.datasetHash}
                   onChange={(event) => setField('datasetHash', event.target.value)}
                   minLength={8}
                   maxLength={160}
-                  placeholder="sha256:…"
+                  placeholder={researchPlanText('sha256:…')}
                   required
                   disabled={busy || objective?.locked}
                 />
               </label>
               <label>
-                Holdout hash <span className="sr-only">optional</span>
+                {researchPlanText('Holdout hash')}{' '}
+                <span className="sr-only">{researchPlanText('optional')}</span>
                 <input
                   value={draft.holdoutHash}
                   onChange={(event) => setField('holdoutHash', event.target.value)}
                   minLength={8}
                   maxLength={160}
-                  placeholder="Optional"
+                  placeholder={researchPlanText('Optional')}
                   disabled={busy || objective?.locked}
                 />
               </label>
@@ -478,15 +533,16 @@ export function ObjectiveEditor({
           </fieldset>
 
           <fieldset className="objective-section">
-            <legend className="sr-only">Experiment budget</legend>
-            <h3>Campaign budget</h3>
+            <legend className="sr-only">{researchPlanText('Experiment budget')}</legend>
+            <h3>{researchPlanText('Campaign budget')}</h3>
             <p>
-              Saved with the objective. The Runner will enforce these campaign-wide limits; the
-              current Project Chat foreground path only enforces its per-run timeout.
+              {researchPlanText(
+                'Saved with the objective. The Runner will enforce these campaign-wide limits; the current Project Chat foreground path only enforces its per-run timeout.',
+              )}
             </p>
             <div className="field-grid">
               <NumberField
-                label="Max trials"
+                label={researchPlanText('Max trials')}
                 value={draft.maxTrials}
                 onChange={(value) => setField('maxTrials', value)}
                 min={1}
@@ -494,7 +550,7 @@ export function ObjectiveEditor({
                 disabled={busy || Boolean(objective?.locked)}
               />
               <NumberField
-                label="Concurrent trials"
+                label={researchPlanText('Concurrent trials')}
                 value={draft.maxConcurrentTrials}
                 onChange={(value) => setField('maxConcurrentTrials', value)}
                 min={1}
@@ -503,7 +559,7 @@ export function ObjectiveEditor({
                 disabled={busy || Boolean(objective?.locked)}
               />
               <NumberField
-                label="Wall time · seconds"
+                label={researchPlanText('Wall time · seconds')}
                 value={draft.maxWallTimeSeconds}
                 onChange={(value) => setField('maxWallTimeSeconds', value)}
                 min={1}
@@ -511,14 +567,14 @@ export function ObjectiveEditor({
                 disabled={busy || Boolean(objective?.locked)}
               />
               <NumberField
-                label="GPU hours"
+                label={researchPlanText('GPU hours')}
                 value={draft.maxGpuHours}
                 onChange={(value) => setField('maxGpuHours', value)}
                 min={0}
                 disabled={busy || Boolean(objective?.locked)}
               />
               <NumberField
-                label="Max failures"
+                label={researchPlanText('Max failures')}
                 value={draft.maxFailures}
                 onChange={(value) => setField('maxFailures', value)}
                 min={0}
@@ -529,8 +585,8 @@ export function ObjectiveEditor({
           </fieldset>
 
           <fieldset className="objective-section">
-            <legend className="sr-only">Stop policy</legend>
-            <h3>Stop policy</h3>
+            <legend className="sr-only">{researchPlanText('Stop policy')}</legend>
+            <h3>{researchPlanText('Stop policy')}</h3>
             <label className="checkbox-label">
               <input
                 id="objective-stop-when-target-reached"
@@ -540,15 +596,19 @@ export function ObjectiveEditor({
                 disabled={busy || objective?.locked || !hasTarget}
                 aria-describedby="objective-stop-when-target-reached-help"
               />
-              Stop when the target is reached
+              {researchPlanText('Stop when the target is reached')}
             </label>
             <p id="objective-stop-when-target-reached-help">
               {hasTarget
-                ? 'Optional. The Runner applies this policy when it schedules campaign trials.'
-                : 'No target is set, so exploratory and comparable runs can still proceed. Campaign budgets, guardrails, no-improvement limits, and Stop or Kill are enforced after the Runner is connected; the current Project Chat path only enforces its per-run timeout.'}
+                ? researchPlanText(
+                    'Optional. The Runner applies this policy when it schedules campaign trials.',
+                  )
+                : researchPlanText(
+                    'No target is set, so exploratory and comparable runs can still proceed. Campaign budgets, guardrails, no-improvement limits, and Stop or Kill are enforced after the Runner is connected; the current Project Chat path only enforces its per-run timeout.',
+                  )}
             </p>
             <label>
-              Guardrail action
+              {researchPlanText('Guardrail action')}
               <select
                 value={draft.guardrailAction}
                 onChange={(event) =>
@@ -559,13 +619,13 @@ export function ObjectiveEditor({
                 }
                 disabled={busy || objective?.locked}
               >
-                <option value="pause">Pause</option>
-                <option value="stop">Stop</option>
-                <option value="fail">Fail</option>
+                <option value="pause">{researchPlanText('Pause')}</option>
+                <option value="stop">{researchPlanText('Stop')}</option>
+                <option value="fail">{researchPlanText('Fail')}</option>
               </select>
             </label>
             <NumberField
-              label="No-improvement limit · optional"
+              label={researchPlanText('No-improvement limit · optional')}
               value={draft.maxConsecutiveNoImprovement}
               onChange={(value) => setField('maxConsecutiveNoImprovement', value)}
               min={1}
@@ -576,30 +636,55 @@ export function ObjectiveEditor({
           </fieldset>
 
           <div className="objective-actions">
-            <button type="submit" className="primary-button" disabled={busy || objective?.locked}>
-              {busy ? 'Saving…' : objective ? 'Save changes' : 'Save objective'}
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={busy || objective?.locked || revisionChanged}
+            >
+              {busy
+                ? researchPlanText('Saving…')
+                : objective
+                  ? researchPlanText('Save changes')
+                  : researchPlanText('Save objective')}
             </button>
-            <span className="task-version">Saved in encrypted local storage</span>
+            <span className="task-version">
+              {researchPlanText('Saved in encrypted local storage')}
+            </span>
           </div>
         </form>
       </article>
 
       <aside className="card">
-        <CardHead title="Revision control" detail="Explicit, versioned changes" />
+        <CardHead
+          title={researchPlanText('Revision control')}
+          detail={researchPlanText('Explicit, versioned changes')}
+        />
         <div className="objective-status">
           <div>
             <strong>
-              {objective ? `Objective v${objective.objectiveVersion}` : 'Not configured'}
+              {objective
+                ? researchPlanText('Objective v{objectiveVersion}', {
+                    objectiveVersion: objective.objectiveVersion,
+                  })
+                : researchPlanText('Not configured')}
             </strong>
             <p>
               {objective?.locked
-                ? 'Frozen revisions cannot be edited. Start a new revision to change the metric or budget.'
-                : 'An editable local revision. Review every field before freezing it.'}
+                ? researchPlanText(
+                    'Frozen revisions cannot be edited. Start a new revision to change the metric or budget.',
+                  )
+                : researchPlanText(
+                    'An editable local revision. Review every field before freezing it.',
+                  )}
             </p>
           </div>
           {objective && (
             <span className={objective.locked ? 'locked-label' : 'task-version'}>
-              {objective.locked ? 'FROZEN LOCALLY' : `ENTITY V${objective.entityVersion}`}
+              {objective.locked
+                ? researchPlanText('FROZEN LOCALLY')
+                : researchPlanText('ENTITY V{entityVersion}', {
+                    entityVersion: objective.entityVersion,
+                  })}
             </span>
           )}
         </div>
@@ -607,35 +692,49 @@ export function ObjectiveEditor({
           <button
             type="button"
             className="secondary-button"
-            disabled={busy || !objective || objective.locked}
+            disabled={
+              busy || !objective || objective.locked || pendingIdentity || dirty || revisionChanged
+            }
             onClick={() =>
               objective &&
               void onLock({
                 projectId: project.id,
                 expectedEntityVersion: objective.entityVersion,
+                expectedObjectiveId: objective.id,
+                expectedObjectiveVersion: objective.objectiveVersion,
               })
             }
           >
-            Freeze local revision
+            {researchPlanText('Freeze local revision')}
           </button>
+          {pendingIdentity && (
+            <small role="status">
+              {researchPlanText(
+                'Plan saved. Supply evaluator and dataset identities, then reapply and activate the plan from Project Chat before comparable runs.',
+              )}
+            </small>
+          )}
           <button
             type="button"
             className="secondary-button"
-            disabled={busy || !objective?.locked}
+            disabled={busy || !objective?.locked || dirty || revisionChanged}
             onClick={() =>
               objective &&
               void onStartVersion({
                 projectId: project.id,
                 expectedEntityVersion: objective.entityVersion,
+                expectedObjectiveId: objective.id,
+                expectedObjectiveVersion: objective.objectiveVersion,
               })
             }
           >
-            Start new revision
+            {researchPlanText('Start new revision')}
           </button>
         </div>
         <div className="boundary-note">
-          Guardrails default to an empty list in this first usable slice. Metric, hashes, budget and
-          stop policy are still persisted as one versioned objective.
+          {researchPlanText(
+            'Guardrails default to an empty list in this first usable slice. Metric, hashes, budget and stop policy are still persisted as one versioned objective.',
+          )}
         </div>
       </aside>
     </section>
@@ -722,6 +821,8 @@ export function buildObjectiveInput(
   return {
     projectId,
     expectedEntityVersion: objective?.entityVersion ?? 0,
+    expectedObjectiveId: objective?.id ?? null,
+    expectedObjectiveVersion: objective?.objectiveVersion ?? null,
     goal: draft.goal.trim(),
     primaryMetric: {
       key: draft.metricKey.trim(),

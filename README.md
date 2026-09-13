@@ -212,3 +212,7 @@ issue.
 Copyright 2026 GOSU contributors.
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+## Project Chat research plans
+
+Project Chat can save actionable plans to Goal & Metrics, experiment logging, ideas and rules sessions. See [research-plan workflow and execution boundaries](docs/PROJECT_RESEARCH_PLANS.md). Configuration saving does not launch GPU work or bypass workspace permissions.

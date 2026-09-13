@@ -677,6 +677,7 @@ export const EXPERIMENT_IPC_ERROR_CODES = [
   'experiment_idea_limit_reached',
   'experiment_metric_limit_reached',
   'experiment_objective_required',
+  'experiment_plan_activation_required',
   'experiment_logging_template_conflict',
   'experiment_logging_template_limit_reached',
   'experiment_run_not_found',

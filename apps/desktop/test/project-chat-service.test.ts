@@ -1,3 +1,5 @@
+import { planFixture } from './project-research-plan-fixture';
+import { projectResearchPlanHash } from '../src/main/project-research-plan-service';
 import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
@@ -6002,4 +6004,118 @@ describe('ProjectChatService', () => {
       ]),
     );
   });
+});
+
+it('binds automatic research-plan tools to the current user turn, actual invocation and project refresh event', async () => {
+  const templateId = randomUUID();
+  const experiments = {
+    list: vi.fn(async ({ projectId }) => ({
+      projectId,
+      ideas: [],
+      runs: [],
+      loggingTemplate: {
+        id: templateId,
+        projectId,
+        version: 1,
+        templateHash: 'a'.repeat(64),
+        systemFields: EXPERIMENT_LOGGING_SYSTEM_FIELDS,
+        customFields: [],
+      },
+    })),
+  } as unknown as ProjectAgentExperiments;
+  const f = await fixture(undefined, undefined, undefined, undefined, experiments);
+  const apply = vi.fn(async (input) => ({
+    receipt: {
+      schemaVersion: 1 as const,
+      id: randomUUID(),
+      projectId: input.projectId,
+      sourceSessionId: input.sessionId,
+      sourceAttemptId: input.attemptId,
+      planHash: projectResearchPlanHash(input.plan),
+      objectiveId: randomUUID(),
+      objectiveVersion: 1,
+      objectiveEntityVersion: 1,
+      objectiveLocked: false,
+      needsIdentity: true,
+      loggingTemplateId: templateId,
+      loggingTemplateVersion: 1,
+      evaluationSessionId: randomUUID(),
+      evaluationRevisionId: randomUUID(),
+      ideaId: randomUUID(),
+      createdAt: new Date().toISOString(),
+    },
+    reused: false,
+  }));
+  Object.assign((f.chat as unknown as { dependencies: object }).dependencies, {
+    researchPlans: {
+      snapshot: vi.fn(async () => ({ objectiveEntityVersion: 0, loggingVersion: 1 })),
+      read: vi.fn(async () => null),
+      apply,
+    },
+  });
+  const events: ProjectChatEvent[] = [];
+  f.chat.on('event', (event) => events.push(event));
+  const started = await f.chat.send({
+    projectId: f.projectA.id,
+    message: '모델 개발 실험 계획을 작성하고 반영해줘',
+    requestedModelId: null,
+    reasoningOptionId: null,
+  });
+  expect(JSON.stringify(f.codex.dynamicTools[0])).toContain('apply_research_plan');
+  const handler = f.codex.dynamicToolHandlers[0]!;
+  const base = {
+    threadId: 'thread-1',
+    turnId: started.turnId,
+    callId: randomUUID(),
+    namespace: 'gosu_project',
+  };
+  const setup = await handler(
+    { ...base, tool: 'read_experiment_setup', arguments: {} },
+    dynamicToolDelivery(),
+  );
+  const snapshotToken = JSON.parse(setup.contentItems[0]!.text).researchPlan.snapshotToken;
+  const arguments_ = { snapshotToken, plan: planFixture() };
+  const invalid = await handler(
+    { ...base, threadId: 'foreign-thread', tool: 'apply_research_plan', arguments: arguments_ },
+    dynamicToolDelivery(),
+  );
+  expect(invalid.success).toBe(false);
+  expect(apply).not.toHaveBeenCalled();
+  const saved = await handler(
+    { ...base, tool: 'apply_research_plan', arguments: arguments_ },
+    dynamicToolDelivery(),
+  );
+  expect(saved.success).toBe(true);
+  expect(apply.mock.calls[0]?.[0]).toMatchObject({
+    projectId: f.projectA.id,
+    userMessage: '모델 개발 실험 계획을 작성하고 반영해줘',
+    invocation: { providerId: 'codex', resolvedModelId: expect.any(String) },
+  });
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: 'research-plan.applied',
+      projectId: f.projectA.id,
+      workspaceChanged: true,
+    }),
+  );
+});
+
+it.each([
+  'Review my model development plan',
+  '모델 설계 계획 검토해줘',
+  'Summarize the attached paper',
+])('omits automatic plan writes for read-only Project Chat request: %s', async (message) => {
+  const experiments = { list: vi.fn() } as unknown as ProjectAgentExperiments;
+  const f = await fixture(undefined, undefined, undefined, undefined, experiments);
+  Object.assign((f.chat as unknown as { dependencies: object }).dependencies, {
+    researchPlans: { snapshot: vi.fn(), read: vi.fn(), apply: vi.fn() },
+  });
+  await f.chat.send({
+    projectId: f.projectA.id,
+    message,
+    requestedModelId: null,
+    reasoningOptionId: null,
+  });
+  expect(JSON.stringify(f.codex.dynamicTools[0])).not.toContain('"name":"apply_research_plan"');
+  expect(JSON.stringify(f.codex.dynamicTools[0])).toContain('"name":"read_research_plan"');
 });

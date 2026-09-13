@@ -176,7 +176,7 @@ describe('Project chat prompt assembly', () => {
     expect(first.provenance).toMatchObject({
       assemblyVersion: 5,
       profileVersion: 3,
-      baseInstructionVersion: 37,
+      baseInstructionVersion: 38,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -377,7 +377,7 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(37);
+    expect(first.provenance.baseInstructionVersion).toBe(38);
     expect(first.developerInstructions).toContain('first call read_experiment_setup');
     expect(first.developerInstructions).toContain('create_experiment_run');
     expect(first.developerInstructions).toContain('execute_experiment_run');

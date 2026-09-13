@@ -1,4 +1,18 @@
+import {
+  ProjectResearchPlanSchema,
+  ProjectResearchPlanReceiptSchema,
+  hasPendingObjectiveIdentity,
+  type ProjectResearchPlan,
+  type ProjectResearchPlanReceipt,
+  type ProjectResearchPlanCommit,
+} from '../shared/project-research-plan-contracts';
+import {
+  WorkspaceSnapshotSchema as ResearchPlanWorkspaceSchema,
+  WorkspaceOperationSchema as ResearchPlanOperationSchema,
+} from '../shared/workspace-contracts';
+import { EXPERIMENT_EVALUATION_MAX_SESSIONS_PER_PROJECT as RESEARCH_PLAN_SESSION_LIMIT } from '../shared/experiment-evaluation-contracts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3-multiple-ciphers';
@@ -5357,6 +5371,46 @@ export class LocalDatabase {
         entries_json text not null check (length(entries_json) between 2 and 32768),
         updated_at text not null
       );
+      create table if not exists project_research_plan_receipts (
+        id text primary key check (length(id) = 36),
+        project_id text not null check (length(project_id) = 36),
+        source_session_id text not null check (length(source_session_id) = 36),
+        source_attempt_id text not null check (length(source_attempt_id) = 36),
+        plan_hash text not null check (length(plan_hash) = 64),
+        idea_id text not null check (length(idea_id) = 36),
+        plan_json text not null check (length(plan_json) between 2 and 60000),
+        receipt_json text not null check (length(receipt_json) between 2 and 8192),
+        created_at text not null,
+        unique(project_id,source_attempt_id),
+        unique(project_id,idea_id),
+        foreign key(source_attempt_id) references project_chat_attempts(id) on delete cascade,
+        foreign key(source_session_id) references project_chat_sessions(id)
+      );
+      create index if not exists project_research_plan_receipts_by_project
+        on project_research_plan_receipts(project_id,created_at desc,id);
+      create trigger if not exists project_research_plan_receipts_project_limit
+        before insert on project_research_plan_receipts
+        when (select count(*) from project_research_plan_receipts
+              where project_id=new.project_id) >= 1000
+        begin
+          select raise(abort,'research_plan_limit_reached');
+        end;
+      create trigger if not exists project_research_plan_receipts_update_guard
+        before update on project_research_plan_receipts
+        begin
+          select raise(abort,'research_plan_receipt_immutable');
+        end;
+      create trigger if not exists project_research_plan_receipts_owner_guard
+        before insert on project_research_plan_receipts
+        when not exists (
+          select 1 from project_chat_attempts a
+          join project_chat_sessions s on s.id=a.session_id and s.project_id=a.project_id
+          where a.id=new.source_attempt_id and a.project_id=new.project_id
+            and a.session_id=new.source_session_id
+        )
+        begin
+          select raise(abort,'research_plan_scope_invalid');
+        end;
       create table if not exists project_chat_research_note_save_receipts (
         project_id text not null,
         session_id text not null references project_chat_sessions(id),
@@ -8410,6 +8464,280 @@ export class LocalDatabase {
     return rows.map(toLocalLiteratureRecord);
   }
 
+  getProjectResearchPlanReceipt(
+    projectId: string,
+    attemptId: string,
+  ): ProjectResearchPlanReceipt | null {
+    const row = this.require()
+      .prepare(
+        'select receipt_json from project_research_plan_receipts where project_id=? and source_attempt_id=?',
+      )
+      .get(projectId, attemptId) as { receipt_json: string } | undefined;
+    return row ? ProjectResearchPlanReceiptSchema.parse(JSON.parse(row.receipt_json)) : null;
+  }
+
+  getProjectResearchPlanForIdea(
+    projectId: string,
+    ideaId: string,
+  ): ProjectResearchPlanReceipt | null {
+    const row = this.require()
+      .prepare(
+        'select receipt_json from project_research_plan_receipts where project_id=? and idea_id=?',
+      )
+      .get(projectId, ideaId) as { receipt_json: string } | undefined;
+    return row ? ProjectResearchPlanReceiptSchema.parse(JSON.parse(row.receipt_json)) : null;
+  }
+
+  getLatestProjectResearchPlan(
+    projectId: string,
+  ): { receipt: ProjectResearchPlanReceipt; plan: ProjectResearchPlan } | null {
+    const row = this.require()
+      .prepare(
+        `select receipt_json,plan_json from project_research_plan_receipts
+         where project_id=? order by rowid desc limit 1`,
+      )
+      .get(projectId) as { receipt_json: string; plan_json: string } | undefined;
+    return row
+      ? {
+          receipt: ProjectResearchPlanReceiptSchema.parse(JSON.parse(row.receipt_json)),
+          plan: ProjectResearchPlanSchema.parse(JSON.parse(row.plan_json)),
+        }
+      : null;
+  }
+
+  /** Commit only local records; nested database methods use synchronous SQLite savepoints. */
+  getProjectResearchPlanContentForIdea(
+    projectId: string,
+    ideaId: string,
+  ): { receipt: ProjectResearchPlanReceipt; plan: ProjectResearchPlan } | null {
+    const row = this.require()
+      .prepare(
+        'select receipt_json,plan_json from project_research_plan_receipts where project_id=? and idea_id=?',
+      )
+      .get(projectId, ideaId) as { receipt_json: string; plan_json: string } | undefined;
+    return row
+      ? {
+          receipt: ProjectResearchPlanReceiptSchema.parse(JSON.parse(row.receipt_json)),
+          plan: ProjectResearchPlanSchema.parse(JSON.parse(row.plan_json)),
+        }
+      : null;
+  }
+
+  commitProjectResearchPlan(
+    inputState: WorkspaceSnapshot,
+    inputOperation: WorkspaceOperation,
+    inputBundle: ProjectResearchPlanCommit,
+  ): void {
+    const state = ResearchPlanWorkspaceSchema.parse(structuredClone(inputState));
+    const operation = ResearchPlanOperationSchema.parse(structuredClone(inputOperation));
+    const bundle = z
+      .object({
+        receipt: ProjectResearchPlanReceiptSchema,
+        plan: ProjectResearchPlanSchema,
+        expectedLoggingVersion: z.number().int().nonnegative(),
+        loggingTemplate: ExperimentLoggingTemplateSchema.nullable(),
+        idea: ExperimentIdeaSchema,
+        evaluationSession: ExperimentEvaluationSessionSchema,
+        userMessage: ExperimentEvaluationMessageSchema,
+        evaluationRevision: ExperimentEvaluationRevisionSchema,
+        assistantMessage: ExperimentEvaluationMessageSchema,
+      })
+      .strict()
+      .parse(structuredClone(inputBundle));
+    const {
+      receipt,
+      plan,
+      idea,
+      evaluationSession: session,
+      evaluationRevision: revision,
+    } = bundle;
+    const planJson = JSON.stringify(plan);
+    const expectedPrimaryMetric = {
+      ...plan.primaryMetric,
+      evaluatorHash:
+        plan.primaryMetric.evaluatorHash ??
+        (plan.referenceCode
+          ? `sha256:${createHash('sha256').update(plan.referenceCode, 'utf8').digest('hex')}`
+          : `pending:evaluator:${receipt.id}`),
+      datasetHash: plan.primaryMetric.datasetHash ?? `pending:dataset:${receipt.id}`,
+    };
+    const expectedEvaluationMetrics = [
+      {
+        key: plan.primaryMetric.key,
+        displayName: plan.primaryMetric.displayName,
+        direction: plan.primaryMetric.direction,
+        unit: plan.primaryMetric.unit,
+        aggregation: plan.primaryMetric.aggregation,
+        primary: true,
+      },
+      ...plan.observedMetrics,
+    ];
+    const database = this.require();
+    database
+      .transaction(() => {
+        const previous = this.getProjectResearchPlanReceipt(
+          receipt.projectId,
+          receipt.sourceAttemptId,
+        );
+        if (previous) {
+          throw new Error(
+            previous.planHash === receipt.planHash
+              ? 'research_plan_replayed'
+              : 'research_plan_conflict',
+          );
+        }
+        const project = state.projects.find(({ id }) => id === receipt.projectId);
+        const objective = state.objectives
+          .filter(({ projectId }) => projectId === receipt.projectId)
+          .sort((a, b) => b.objectiveVersion - a.objectiveVersion)[0];
+        const source = database
+          .prepare(
+            `select 1 from project_chat_attempts a
+         join project_chat_sessions s on s.id=a.session_id and s.project_id=a.project_id
+         where a.project_id=? and a.id=? and a.session_id=?`,
+          )
+          .get(receipt.projectId, receipt.sourceAttemptId, receipt.sourceSessionId);
+        if (
+          !source ||
+          !project ||
+          project.archivedAt ||
+          project.trashedAt ||
+          operation.projectId !== receipt.projectId ||
+          operation.commandType !== 'research.plan.apply' ||
+          !objective ||
+          objective.id !== receipt.objectiveId ||
+          objective.objectiveVersion !== receipt.objectiveVersion ||
+          objective.entityVersion !== receipt.objectiveEntityVersion ||
+          objective.locked !== receipt.objectiveLocked ||
+          objective.goal !== plan.goal ||
+          !isDeepStrictEqual(objective.primaryMetric, expectedPrimaryMetric) ||
+          !isDeepStrictEqual(objective.budget, plan.budget) ||
+          !isDeepStrictEqual(objective.guardrails, plan.guardrails) ||
+          !isDeepStrictEqual(objective.stopPolicy, plan.stopPolicy) ||
+          hasPendingObjectiveIdentity(objective.primaryMetric) !== receipt.needsIdentity ||
+          (receipt.needsIdentity && objective.locked) ||
+          createHash('sha256').update(planJson, 'utf8').digest('hex') !== receipt.planHash ||
+          idea.id !== receipt.ideaId ||
+          idea.projectId !== receipt.projectId ||
+          idea.title !== plan.title ||
+          idea.hypothesis !== plan.hypothesis ||
+          idea.version !== 1 ||
+          idea.outcome !== 'planned' ||
+          idea.completedAt !== null ||
+          session.id !== receipt.evaluationSessionId ||
+          session.projectId !== receipt.projectId ||
+          session.status !== 'draft' ||
+          session.version !== 1 ||
+          session.currentRevision !== 0 ||
+          session.activeAttemptId !== null ||
+          session.acceptedProfileId !== null ||
+          session.lastErrorCode !== null ||
+          revision.id !== receipt.evaluationRevisionId ||
+          revision.sessionId !== session.id ||
+          revision.revision !== 1 ||
+          revision.attemptId !== receipt.sourceAttemptId ||
+          revision.draft.title !== plan.title ||
+          revision.draft.purpose !== plan.goal ||
+          revision.draft.evaluationPolicy !== plan.evaluationPolicy ||
+          !isDeepStrictEqual(revision.draft.experimentRules, plan.experimentRules) ||
+          !isDeepStrictEqual(revision.draft.cadence, plan.cadence) ||
+          !isDeepStrictEqual(revision.draft.loggingFields, plan.loggingFields) ||
+          !isDeepStrictEqual(revision.draft.metrics, expectedEvaluationMetrics) ||
+          (plan.referenceCode !== null &&
+            revision.draft.referenceCode.content !== plan.referenceCode) ||
+          bundle.userMessage.sessionId !== session.id ||
+          bundle.userMessage.attemptId !== revision.attemptId ||
+          bundle.userMessage.role !== 'user' ||
+          bundle.userMessage.status !== 'complete' ||
+          bundle.userMessage.revision !== null ||
+          bundle.userMessage.invocation !== null ||
+          bundle.assistantMessage.sessionId !== session.id ||
+          bundle.assistantMessage.attemptId !== revision.attemptId ||
+          bundle.assistantMessage.role !== 'assistant' ||
+          bundle.assistantMessage.status !== 'complete' ||
+          bundle.assistantMessage.revision !== 1 ||
+          bundle.assistantMessage.id === bundle.userMessage.id
+        )
+          throw new Error('research_plan_scope_invalid');
+
+        const currentTemplate = this.getLatestExperimentLoggingTemplate(receipt.projectId);
+        if ((currentTemplate?.version ?? 0) !== bundle.expectedLoggingVersion)
+          throw new Error('experiment_logging_template_conflict');
+        const selectedTemplate = bundle.loggingTemplate ?? currentTemplate;
+        if (
+          !selectedTemplate ||
+          selectedTemplate.projectId !== receipt.projectId ||
+          selectedTemplate.id !== receipt.loggingTemplateId ||
+          selectedTemplate.version !== receipt.loggingTemplateVersion
+        )
+          throw new Error('research_plan_scope_invalid');
+        const evaluationCount = database
+          .prepare(
+            'select count(*) as count from experiment_evaluation_sessions where project_id=?',
+          )
+          .get(receipt.projectId) as { count: number };
+        if (evaluationCount.count >= RESEARCH_PLAN_SESSION_LIMIT)
+          throw new Error('experiment_evaluation_session_limit_reached');
+
+        this.commitWorkspaceState(state, operation);
+        if (
+          bundle.loggingTemplate &&
+          !this.appendExperimentLoggingTemplate(
+            bundle.loggingTemplate,
+            bundle.expectedLoggingVersion,
+          )
+        )
+          throw new Error('experiment_logging_template_conflict');
+        if (!this.createExperimentIdea(idea)) throw new Error('research_plan_conflict');
+        if (!this.createExperimentEvaluationSession(session))
+          throw new Error('research_plan_conflict');
+        const generating = this.beginExperimentEvaluationTurn({
+          projectId: receipt.projectId,
+          sessionId: session.id,
+          expectedVersion: 1,
+          attemptId: revision.attemptId,
+          userMessage: bundle.userMessage,
+          updatedAt: bundle.userMessage.createdAt,
+        });
+        if (!generating) throw new Error('research_plan_conflict');
+        if (
+          !this.completeExperimentEvaluationTurn({
+            session: {
+              ...generating,
+              title: revision.draft.title,
+              status: 'ready',
+              version: 3,
+              currentRevision: 1,
+              activeAttemptId: null,
+              acceptedProfileId: null,
+              lastErrorCode: null,
+              updatedAt: revision.createdAt,
+            },
+            revision,
+            assistantMessage: bundle.assistantMessage,
+          })
+        )
+          throw new Error('research_plan_conflict');
+        database
+          .prepare(
+            `insert into project_research_plan_receipts(
+          id,project_id,source_session_id,source_attempt_id,plan_hash,idea_id,plan_json,receipt_json,created_at
+        ) values(?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            receipt.id,
+            receipt.projectId,
+            receipt.sourceSessionId,
+            receipt.sourceAttemptId,
+            receipt.planHash,
+            receipt.ideaId,
+            planJson,
+            JSON.stringify(receipt),
+            receipt.createdAt,
+          );
+      })
+      .immediate();
+  }
   listExperimentIdeas(projectId: string): ExperimentIdea[] {
     const rows = this.require()
       .prepare(
@@ -8646,6 +8974,18 @@ export class LocalDatabase {
     return row ? toExperimentMetricPoint(row) : null;
   }
 
+  getExperimentLoggingTemplateRevision(
+    projectId: string,
+    revisionId: string,
+  ): ExperimentLoggingTemplate | null {
+    const row = this.require()
+      .prepare(
+        `select * from experiment_logging_template_revisions
+         where project_id=? and id=?`,
+      )
+      .get(projectId, revisionId) as ExperimentLoggingTemplateRow | undefined;
+    return row ? toExperimentLoggingTemplate(row) : null;
+  }
   getLatestExperimentLoggingTemplate(projectId: string): ExperimentLoggingTemplate | null {
     const row = this.require()
       .prepare(

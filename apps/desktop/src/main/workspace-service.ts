@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 
+import { hasPendingObjectiveIdentity } from '../shared/project-research-plan-contracts';
 import {
   CreateProjectInputSchema,
   CreateTaskInputSchema,
@@ -76,6 +78,7 @@ export class WorkspaceServiceError extends Error {
       | 'objective_not_found'
       | 'objective_locked'
       | 'objective_not_locked'
+      | 'objective_identity_pending'
       | 'version_conflict',
     readonly details: Readonly<Record<string, string | number>> = {},
   ) {
@@ -126,6 +129,26 @@ function currentObjective(state: WorkspaceSnapshot, projectId: string) {
     .sort((left, right) => right.objectiveVersion - left.objectiveVersion)[0];
 }
 
+function requireOptionalObjectiveIdentity(
+  current: WorkspaceObjective | undefined,
+  command: ObjectiveCommand,
+) {
+  const { expectedObjectiveId, expectedObjectiveVersion } = command;
+  if (expectedObjectiveId === undefined && expectedObjectiveVersion === undefined) return;
+  if (
+    expectedObjectiveId === undefined ||
+    expectedObjectiveVersion === undefined ||
+    expectedObjectiveId !== (current?.id ?? null) ||
+    expectedObjectiveVersion !== (current?.objectiveVersion ?? null)
+  ) {
+    throw conflict(
+      current?.id ?? command.projectId,
+      command.expectedEntityVersion,
+      current?.entityVersion ?? 0,
+    );
+  }
+}
+
 export class WorkspaceService {
   private state: WorkspaceSnapshot | undefined;
   private mutationTail: Promise<void> = Promise.resolve();
@@ -135,6 +158,20 @@ export class WorkspaceService {
   async snapshot(): Promise<WorkspaceSnapshot> {
     await this.mutationTail;
     return copy(await this.load());
+  }
+
+  /** Trusted recovery after confirming a durable receipt despite a lost commit acknowledgment. */
+  refreshCommittedState(): Promise<WorkspaceSnapshot> {
+    const result = this.mutationTail.then(async () => {
+      const state = WorkspaceSnapshotSchema.parse(copy(await this.storage.load()));
+      this.state = state;
+      return copy(state);
+    });
+    this.mutationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   async pendingChanges(): Promise<readonly WorkspaceOperation[]> {
@@ -675,6 +712,7 @@ export class WorkspaceService {
       const command = SaveObjectiveInputSchema.parse(input);
       this.requireActiveProject(state, command.projectId);
       const current = currentObjective(state, command.projectId);
+      requireOptionalObjectiveIdentity(current, command);
       const actualVersion = current?.entityVersion ?? 0;
       if (actualVersion !== command.expectedEntityVersion) {
         throw conflict(
@@ -687,7 +725,13 @@ export class WorkspaceService {
         throw new WorkspaceServiceError('objective_locked', { objectiveId: current.id });
       }
       const now = new Date().toISOString();
-      const { projectId, expectedEntityVersion: _expectedEntityVersion, ...fields } = command;
+      const {
+        projectId,
+        expectedEntityVersion: _expectedEntityVersion,
+        expectedObjectiveId: _expectedObjectiveId,
+        expectedObjectiveVersion: _expectedObjectiveVersion,
+        ...fields
+      } = command;
       const objective: WorkspaceObjective = current
         ? {
             ...current,
@@ -738,17 +782,105 @@ export class WorkspaceService {
     });
   }
 
+  /** The trusted callback must atomically persist the workspace and related plan records. */
+  applyResearchPlanObjective(
+    input: SaveObjectiveInput & {
+      activate: boolean;
+      expectedObjectiveId: string | null;
+      expectedObjectiveVersion: number | null;
+    },
+    commit: (
+      state: WorkspaceSnapshot,
+      operation: WorkspaceOperation,
+      objective: WorkspaceObjective,
+    ) => MaybePromise<void>,
+  ): Promise<WorkspaceObjective> {
+    return this.mutate(async (state) => {
+      const {
+        activate: requestedActivation,
+        expectedObjectiveId: requestedObjectiveId,
+        expectedObjectiveVersion: requestedObjectiveVersion,
+        ...objectiveInput
+      } = input;
+      const activate = z.boolean().parse(requestedActivation);
+      const expectedObjectiveId = z.string().uuid().nullable().parse(requestedObjectiveId);
+      const expectedObjectiveVersion = z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .parse(requestedObjectiveVersion);
+      const command = SaveObjectiveInputSchema.parse(objectiveInput);
+      this.requireActiveProject(state, command.projectId);
+      const current = currentObjective(state, command.projectId);
+      const actualVersion = current?.entityVersion ?? 0;
+      if (
+        (current?.id ?? null) !== expectedObjectiveId ||
+        (current?.objectiveVersion ?? null) !== expectedObjectiveVersion ||
+        actualVersion !== command.expectedEntityVersion
+      ) {
+        throw conflict(
+          current?.id ?? command.projectId,
+          command.expectedEntityVersion,
+          actualVersion,
+        );
+      }
+      const { projectId, expectedEntityVersion: _expectedEntityVersion, ...fields } = command;
+      const needsIdentity = hasPendingObjectiveIdentity(fields.primaryMetric);
+      const now = new Date().toISOString();
+      const objective: WorkspaceObjective = {
+        ...fields,
+        id: randomUUID(),
+        projectId,
+        objectiveVersion: (current?.objectiveVersion ?? 0) + 1,
+        entityVersion: 1,
+        locked: activate && !needsIdentity,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return {
+        state: {
+          ...state,
+          objectives: [...state.objectives, objective],
+        },
+        operation: this.operation(
+          'research.plan.apply',
+          `workspace:${projectId}:research:plan:apply`,
+          projectId,
+          'objective',
+          objective.id,
+          current?.entityVersion ?? null,
+          now,
+          {
+            ...fields,
+            objectiveVersion: objective.objectiveVersion,
+            newEntityVersion: objective.entityVersion,
+            previousObjectiveId: current?.id ?? null,
+            activationRequested: activate,
+            needsIdentity,
+            locked: objective.locked,
+          },
+        ),
+        value: objective,
+      };
+    }, commit);
+  }
+
   lockObjective(input: ObjectiveCommand): Promise<WorkspaceObjective> {
     return this.mutate(async (state) => {
       const command = ObjectiveCommandSchema.parse(input);
       this.requireActiveProject(state, command.projectId);
       const current = currentObjective(state, command.projectId);
+      requireOptionalObjectiveIdentity(current, command);
       if (!current) throw new WorkspaceServiceError('objective_not_found');
       if (current.entityVersion !== command.expectedEntityVersion) {
         throw conflict(current.id, command.expectedEntityVersion, current.entityVersion);
       }
       if (current.locked) {
         throw new WorkspaceServiceError('objective_locked', { objectiveId: current.id });
+      }
+      if (hasPendingObjectiveIdentity(current.primaryMetric)) {
+        throw new WorkspaceServiceError('objective_identity_pending', { objectiveId: current.id });
       }
       const now = new Date().toISOString();
       const objective: WorkspaceObjective = {
@@ -788,6 +920,7 @@ export class WorkspaceService {
       const command = ObjectiveCommandSchema.parse(input);
       this.requireActiveProject(state, command.projectId);
       const current = currentObjective(state, command.projectId);
+      requireOptionalObjectiveIdentity(current, command);
       if (!current) throw new WorkspaceServiceError('objective_not_found');
       if (current.entityVersion !== command.expectedEntityVersion) {
         throw conflict(current.id, command.expectedEntityVersion, current.entityVersion);
@@ -841,6 +974,11 @@ export class WorkspaceService {
       operation: WorkspaceOperationDraft;
       value: T;
     }>,
+    commit?: (
+      state: WorkspaceSnapshot,
+      operation: WorkspaceOperation,
+      value: T,
+    ) => MaybePromise<void>,
   ): Promise<T> {
     const result = this.mutationTail.then(async () => {
       const current = await this.load();
@@ -853,7 +991,11 @@ export class WorkspaceService {
         ...mutationResult.operation,
         workspaceRevision: state.revision,
       });
-      await this.storage.commit(copy(state), copy(operation));
+      if (commit) {
+        await commit(copy(state), copy(operation), copy(mutationResult.value));
+      } else {
+        await this.storage.commit(copy(state), copy(operation));
+      }
       this.state = state;
       return copy(mutationResult.value);
     });

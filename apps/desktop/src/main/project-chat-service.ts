@@ -1,3 +1,5 @@
+import { authorizesResearchPlanSync } from '../shared/project-research-plan-contracts';
+import type { ProjectResearchPlanService } from './project-research-plan-service';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
@@ -656,6 +658,7 @@ export class ProjectChatService extends EventEmitter {
       hermes?: ProjectAgentHermes;
       ssh?: ProjectAgentSsh;
       experiments?: ProjectAgentExperiments;
+      researchPlans?: ProjectResearchPlanService;
       attachments?: ProjectChatAttachmentClaimer;
       usage?: Pick<ModelUsageService, 'bindThread' | 'releaseThread'>;
       titleJobTimeoutMs?: number;
@@ -1109,6 +1112,49 @@ export class ProjectChatService extends EventEmitter {
           : {}),
         ...(this.dependencies.ssh ? { ssh: this.dependencies.ssh } : {}),
         ...(this.dependencies.experiments ? { experiments: this.dependencies.experiments } : {}),
+        ...(this.dependencies.researchPlans
+          ? {
+              researchPlans: {
+                canApply:
+                  executionKind !== 'legacy-reviewer' &&
+                  authorizesResearchPlanSync(command.message),
+                read: (ideaId?: string) =>
+                  this.dependencies.researchPlans!.read(command.projectId, ideaId),
+                apply: async (plan, snapshot, call, signal) => {
+                  const active = this.activeByTransport.get(
+                    transportIdentity(call.threadId, call.turnId),
+                  );
+                  if (
+                    !active ||
+                    active.projectId !== command.projectId ||
+                    active.sessionId !== session.id ||
+                    active.attempt.id !== attemptId
+                  )
+                    throw new Error('research_plan_turn_not_ready');
+                  const result = await this.dependencies.researchPlans!.apply(
+                    {
+                      projectId: command.projectId,
+                      sessionId: session.id,
+                      attemptId,
+                      userMessage: command.message,
+                      invocation: active.invocation,
+                      snapshot,
+                      plan,
+                    },
+                    signal,
+                  );
+                  this.emitEvent({
+                    type: 'research-plan.applied',
+                    projectId: command.projectId,
+                    sessionId: session.id,
+                    receipt: result.receipt,
+                    workspaceChanged: true,
+                  });
+                  return result;
+                },
+              },
+            }
+          : {}),
       });
       if (hermesDelegationRequested && !agentTools.hermesDelegationAvailable) {
         throw new ProjectChatServiceError('hermes_runtime_check_failed');
