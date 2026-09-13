@@ -26,7 +26,7 @@
 }
 
 .usage-command-bar h2 {
-  font-size: clamp(18px, 2vw, 24px);
+  font-size: var(--font-heading);
 }
 
 .usage-command-bar p,
@@ -200,7 +200,7 @@
 .usage-summary-card > strong {
   overflow: hidden;
   color: var(--green);
-  font-size: clamp(22px, 2.8vw, 32px);
+  font-size: var(--font-display);
   letter-spacing: -0.035em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -420,7 +420,7 @@
 
 .usage-chart-axis-label {
   fill: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-meta);
 }
 
 .usage-chart-bar.input {

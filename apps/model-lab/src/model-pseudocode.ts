@@ -1,4 +1,5 @@
 import { parseModelImportJson } from './model-lab-import';
+import { modelLabFetch } from './model-lab-environment';
 import {
   isModelPythonArtifactReceipt,
   type ModelPythonArtifactReceipt,
@@ -41,9 +42,14 @@ MODEL <stable-id> "Human name"
   output: [B, K]
 END MODEL
 
+# Every canonical architecture has at least one kind: input block and one terminal kind: output or objective block.
+
 BLOCK <stable-id> "Human-readable architectural block"
   input: [B, N, P]
   output: [B, K]
+  input_port: external | "X" | [B, N, P]
+  output_port: loop-carried | "H" | [B, K] | "residual-loop"
+  # input/output above must equal the first input_port/output_port shape respectively.
   do: |
     H = beta_base
     H -> Linear(1, 2d)
@@ -66,7 +72,7 @@ BLOCK <stable-id> "Human-readable architectural block"
   subgraph: <model-id>                       # optional expandable model reference
 END BLOCK
 
-CONNECT <stable-id> <source-block-id> -> <target-block-id> AS "<tensor>" [B, K] GRADIENT yes NORM 0
+CONNECT <stable-id> <source-block-id> -> <target-block-id> AS "<tensor>" [B, K] PORTS "<source-port>" -> "<target-port>" GRADIENT yes NORM 0
 
 BLOCK order controls the default stage. Comments begin with #. Every connection endpoint must name
 an existing BLOCK. IDs remain unchanged inside one revision tree. Preserve detailed sequential
@@ -157,6 +163,13 @@ function textBlock(name: string, value: string) {
   return [`  ${name}: |`, ...value.split(/\r?\n/).map((line) => `    ${line}`)];
 }
 
+function pseudocodePort(
+  field: 'input_port' | 'output_port',
+  port: NonNullable<ModelSpec['modules'][number]['inputPorts']>[number],
+) {
+  return `  ${field}: ${port.binding ?? 'internal'} | ${JSON.stringify(port.name)} | ${pseudocodeShape(port.shape)}${port.bindingId ? ` | ${JSON.stringify(port.bindingId)}` : ''}`;
+}
+
 export function modelToPseudocode(model: ModelSpec) {
   const lines: string[] = [
     MODEL_PSEUDOCODE_HEADER,
@@ -185,6 +198,8 @@ export function modelToPseudocode(model: ModelSpec) {
       `BLOCK ${module.id} ${JSON.stringify(module.name)}`,
       `  input: ${pseudocodeShape(module.inputShape)}`,
       `  output: ${pseudocodeShape(module.outputShape)}`,
+      ...(module.inputPorts?.map((port) => pseudocodePort('input_port', port)) ?? []),
+      ...(module.outputPorts?.map((port) => pseudocodePort('output_port', port)) ?? []),
       ...textBlock('do', module.transform),
       ...(module.formula.trim() ? textBlock('math', module.formula) : []),
       ...(module.repeat
@@ -215,7 +230,7 @@ export function modelToPseudocode(model: ModelSpec) {
   }
   for (const connection of model.connections) {
     lines.push(
-      `CONNECT ${connection.id} ${connection.source} -> ${connection.target} AS ${JSON.stringify(connection.tensorName)} ${pseudocodeShape(connection.shape)} GRADIENT ${connection.expectedToCarryGradient ? 'yes' : 'no'} NORM ${Number.isFinite(connection.activationNorm) ? connection.activationNorm : 0}`,
+      `CONNECT ${connection.id} ${connection.source} -> ${connection.target} AS ${JSON.stringify(connection.tensorName)} ${pseudocodeShape(connection.shape)}${connection.sourcePort || connection.targetPort ? ` PORTS ${connection.sourcePort ? JSON.stringify(connection.sourcePort) : 'null'} -> ${connection.targetPort ? JSON.stringify(connection.targetPort) : 'null'}` : ''} GRADIENT ${connection.expectedToCarryGradient ? 'yes' : 'no'} NORM ${Number.isFinite(connection.activationNorm) ? connection.activationNorm : 0}`,
       '',
     );
   }
@@ -336,6 +351,25 @@ function pseudocodeShapeValue(value: string, name: string) {
 
 function shapeField(fields: PseudocodeFields, name: string) {
   return pseudocodeShapeValue(requiredField(fields, name), name);
+}
+
+function portFields(fields: PseudocodeFields, name: 'input_port' | 'output_port') {
+  const values = fields.get(name) ?? [];
+  return values.map((value, index) => {
+    const match =
+      /^(internal|external|loop-carried) \| ("(?:[^"\\]|\\.)*") \| (\[[^\]]+\])(?: \| ("(?:[^"\\]|\\.)*"))?$/u.exec(
+        value.trim(),
+      );
+    if (!match) {
+      throw new Error(`${name}[${index}] must use binding | "name" | [dim, dim] syntax.`);
+    }
+    return {
+      binding: match[1] as 'internal' | 'external' | 'loop-carried',
+      name: JSON.parse(match[2]!) as string,
+      shape: pseudocodeShapeValue(match[3]!, `${name}[${index}] shape`),
+      ...(match[4] ? { bindingId: JSON.parse(match[4]) as string } : {}),
+    };
+  });
 }
 
 function positionField(fields: PseudocodeFields, defaultStage: number) {
@@ -484,6 +518,12 @@ function parseV2(lines: readonly string[], expectedModelId?: string): ModelPseud
         lane: position.lane,
         inputShape: shapeField(block.fields, 'input'),
         outputShape: shapeField(block.fields, 'output'),
+        ...(block.fields.has('input_port')
+          ? { inputPorts: portFields(block.fields, 'input_port') }
+          : {}),
+        ...(block.fields.has('output_port')
+          ? { outputPorts: portFields(block.fields, 'output_port') }
+          : {}),
         transform,
         activation: activation === 'none' ? null : activation,
         formula: aliasedField(block.fields, ['math', 'equation'], transform),
@@ -497,11 +537,11 @@ function parseV2(lines: readonly string[], expectedModelId?: string): ModelPseud
       index = block.nextIndex;
     } else if (line.startsWith('CONNECT ')) {
       const compactMatch =
-        /^CONNECT ([A-Za-z0-9_.:-]+) ([A-Za-z0-9_.:-]+) -> ([A-Za-z0-9_.:-]+) AS ("(?:[^"\\]|\\.)*") (\[[^\]]+\]) GRADIENT (yes|no)(?: NORM ([+\-\d.eE]+))?$/.exec(
+        /^CONNECT ([A-Za-z0-9_.:-]+) ([A-Za-z0-9_.:-]+) -> ([A-Za-z0-9_.:-]+) AS ("(?:[^"\\]|\\.)*") (\[[^\]]+\])(?: PORTS ((?:"(?:[^"\\]|\\.)*"|null)) -> ((?:"(?:[^"\\]|\\.)*"|null)))? GRADIENT (yes|no)(?: NORM ([+\-\d.eE]+))?$/.exec(
           line,
         );
       if (compactMatch) {
-        const activationNorm = Number(compactMatch[7] ?? 0);
+        const activationNorm = Number(compactMatch[9] ?? 0);
         if (!Number.isFinite(activationNorm) || activationNorm < 0) {
           throw new Error(`Line ${index + 1}: connection NORM must be non-negative.`);
         }
@@ -511,7 +551,13 @@ function parseV2(lines: readonly string[], expectedModelId?: string): ModelPseud
           target: compactMatch[3],
           tensorName: JSON.parse(compactMatch[4]!) as string,
           shape: pseudocodeShapeValue(compactMatch[5]!, 'connection shape'),
-          expectedToCarryGradient: compactMatch[6] === 'yes',
+          ...(compactMatch[6] && compactMatch[6] !== 'null'
+            ? { sourcePort: JSON.parse(compactMatch[6]) as string }
+            : {}),
+          ...(compactMatch[7] && compactMatch[7] !== 'null'
+            ? { targetPort: JSON.parse(compactMatch[7]) as string }
+            : {}),
+          expectedToCarryGradient: compactMatch[8] === 'yes',
           activationNorm,
         });
         index += 1;
@@ -522,10 +568,14 @@ function parseV2(lines: readonly string[], expectedModelId?: string): ModelPseud
       );
       if (!match) throw new Error(`Line ${index + 1}: malformed CONNECT header.`);
       const block = fieldsFrom(lines, index + 1, 'END CONNECT');
+      const sourcePort = optionalField(block.fields, 'source_port', 'none');
+      const targetPort = optionalField(block.fields, 'target_port', 'none');
       connections.push({
         id: match[1],
         source: match[2],
         target: match[3],
+        ...(sourcePort === 'none' ? {} : { sourcePort }),
+        ...(targetPort === 'none' ? {} : { targetPort }),
         tensorName: requiredField(block.fields, 'tensor'),
         shape: shapeField(block.fields, 'shape'),
         activationNorm: numberField(block.fields, 'activation_norm'),
@@ -574,7 +624,7 @@ export function parseModelPseudocode(
   }
 }
 
-export function createModelPseudocodeNormalizer(fetchImpl: typeof fetch = fetch) {
+export function createModelPseudocodeNormalizer(fetchImpl: typeof fetch = modelLabFetch) {
   return {
     async normalize(input: {
       baseModel: ModelSpec;
@@ -787,6 +837,8 @@ const moduleChangeFields = [
   ['lane', 'position'],
   ['inputShape', 'input shape'],
   ['outputShape', 'output shape'],
+  ['inputPorts', 'input ports'],
+  ['outputPorts', 'output ports'],
   ['transform', 'transform'],
   ['activation', 'activation'],
   ['formula', 'formula'],
@@ -1119,6 +1171,7 @@ function validStoredRevision(value: unknown): value is StoredRevision {
 export function restoreModelPseudocodeWorkspace(
   text: string | null,
   fallbackModels: readonly ModelSpec[],
+  options: Readonly<{ allowEmpty?: boolean }> = {},
 ): ModelPseudocodeWorkspace {
   const fallback = initialModelPseudocodeWorkspace(fallbackModels);
   if (!text || text.length > MODEL_PSEUDOCODE_WORKSPACE_MAX_CHARACTERS) return fallback;
@@ -1182,12 +1235,12 @@ export function restoreModelPseudocodeWorkspace(
         )
       : [];
     const activeCandidates = modelIds.filter((modelId) => !trashedModelIds.includes(modelId));
-    if (activeCandidates.length === 0) return fallback;
+    if (activeCandidates.length === 0 && !options.allowEmpty) return fallback;
     const activeModelId =
       typeof snapshot.activeModelId === 'string' &&
       activeCandidates.includes(snapshot.activeModelId)
         ? snapshot.activeModelId
-        : activeCandidates[0]!;
+        : (activeCandidates[0] ?? '');
     return { models, histories, selectedRevisions, activeModelId, trashedModelIds };
   } catch {
     return fallback;

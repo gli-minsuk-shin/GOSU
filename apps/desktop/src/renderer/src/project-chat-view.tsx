@@ -1,3 +1,12 @@
+import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+import { useChatFileDrop } from './chat-file-drop';
+import { ContextUsageMeter } from '../../../../briefing-lab/src/context-usage-meter';
+import { BriefingContextExport } from './briefing-context-export';
+import {
+  PaperSummarySaveOffer,
+  type PaperSaveReplyHandler,
+} from '../../../../briefing-lab/src/paper-summary-offer';
+
 import {
   useEffect,
   useId,
@@ -7,6 +16,7 @@ import {
   useState,
   type CSSProperties,
 } from 'react';
+import { selectCatalogModelFromList } from '@gosu/contracts';
 
 import {
   allowsAgentMarkdownCreate,
@@ -16,7 +26,6 @@ import {
   type ProjectAgentNode,
   type ProjectAgentRun,
   type ProjectChatAction,
-  type ProjectChatEvent,
   type ProjectChatContextScope,
   type ProjectChatHarnessMode,
   type ProjectChatPersonality,
@@ -49,6 +58,10 @@ import { ProjectChatMarkdown } from './project-chat-markdown';
 import { ProjectPolicyRulesEditor } from './project-policy-rules-editor';
 import { isProjectChatNearBottom, resolveProjectChatArrival } from './project-chat-scroll';
 import { ProjectChatSessionRail } from './project-chat-session-rail';
+import {
+  ProjectToolActivityView,
+  type ProjectToolActivityEvent,
+} from './project-tool-activity-view';
 import { PROJECT_CHAT_SESSION_RAIL_DEFAULT_WIDTH } from './project-chat-session-state';
 import type { SearchTargetRequest } from './search-results-model';
 import { SshResourceSummary, type SshResourceUiState } from './ssh-resource-summary';
@@ -58,6 +71,11 @@ const QUICK_PROMPTS = [
   '다음으로 할 연구 작업 3개를 제안해줘',
   '목표 metric 기준으로 가장 중요한 리스크를 찾아줘',
   '승인된 Research Notes를 검토하고 프로젝트에 활용할 근거를 정리해줘',
+] as const;
+const MODEL_REFERENCE_PROMPTS = [
+  'Explain the referenced model architecture and equations.',
+  'Find weaknesses and testable improvements in this model.',
+  'Summarize the design decisions discussed in this model’s Model Lab chat.',
 ] as const;
 
 const PROJECT_CHAT_TODO_SKILL_SUGGESTIONS = Object.freeze([
@@ -85,11 +103,14 @@ export function projectChatTodoSkillSuggestions(draft: string) {
 export function projectChatPolicyRuleSnapshotCount(
   promptProvenance:
     | Readonly<{ assemblyVersion: 1 | 2 | 3 }>
-    | Readonly<{ assemblyVersion: 4 | 5; policyRuleCount: number }>
+    | Readonly<{ assemblyVersion: 4 | 5 | 6 | 7; policyRuleCount: number }>
     | undefined,
 ) {
   const count =
-    promptProvenance?.assemblyVersion === 4 || promptProvenance?.assemblyVersion === 5
+    promptProvenance?.assemblyVersion === 4 ||
+    promptProvenance?.assemblyVersion === 5 ||
+    promptProvenance?.assemblyVersion === 6 ||
+    promptProvenance?.assemblyVersion === 7
       ? promptProvenance.policyRuleCount
       : undefined;
   return typeof count === 'number' && Number.isInteger(count) && count > 0 ? count : 0;
@@ -104,14 +125,14 @@ const AGENT_RUNTIME_STATUS_LABELS: Readonly<Record<ProjectAgentRun['status'], st
 };
 
 function agentNodeRoleLabel(node: ProjectAgentNode) {
-  return node.kind === 'coordinator' ? 'Coordinator' : 'Delegated worker';
+  return uiText(node.kind === 'coordinator' ? 'Coordinator' : 'Delegated worker');
 }
 
 function agentProviderLabel(providerId: string) {
   if (providerId === 'codex') return 'Codex';
   if (providerId === 'hermes') return 'Hermes';
   if (providerId === 'claude-code') return 'Claude Code';
-  if (providerId === 'provider-pending') return 'Provider pending';
+  if (providerId === 'provider-pending') return uiText('Provider pending');
   return providerId;
 }
 
@@ -120,36 +141,66 @@ function AgentRunVerbose({ run }: { run: ProjectAgentRun }) {
   return (
     <div className="agent-run-verbose">
       <div className="agent-run-context-plan">
-        <strong>Context plan</strong>
+        <strong>{uiText('Context plan')}</strong>
         <span>
-          {plan.recentMessageCount} / {plan.candidateMessageCount} recent messages ·{' '}
-          {plan.omittedMessageCount} omitted · memory rev {plan.workingMemoryRevision ?? 0} (
-          {plan.memoryEntryCount} entries)
+          {plan.recentMessageCount} / {plan.candidateMessageCount} {uiText('recent messages ·')}{' '}
+          {plan.omittedMessageCount} {uiText('omitted · memory rev')}{' '}
+          {plan.workingMemoryRevision ?? 0} ({plan.memoryEntryCount} {uiText('entries)')}
+          {(plan.permanentMemoryCandidateCount ?? 0) > 0
+            ? uiText(
+                ' · durable memory {value1} / {permanentMemoryCandidateCount} selected (~{value3} tokens)',
+                {
+                  value1: plan.permanentMemoryEntryCount ?? 0,
+                  permanentMemoryCandidateCount: plan.permanentMemoryCandidateCount ?? 0,
+                  value3: (plan.permanentMemoryEstimatedTokens ?? 0).toLocaleString(),
+                },
+              )
+            : ''}
         </span>
         <span>
-          {plan.recentHistoryCharacters.toLocaleString()} recent chars
+          {plan.recentHistoryCharacters.toLocaleString()} {uiText('recent chars')}
+          {plan.contextWindowTokens
+            ? uiText(
+                ' · context {value1} tokens ({value2}) · ~{value3} / {value4} input · {value5} output reserve',
+                {
+                  value1: plan.contextWindowTokens.toLocaleString(),
+                  value2: plan.contextWindowSource ?? 'fallback',
+                  value3: (plan.estimatedPromptTokens ?? 0).toLocaleString(),
+                  value4: (plan.availableInputTokens ?? 0).toLocaleString(),
+                  value5: (plan.outputReserveTokens ?? 0).toLocaleString(),
+                },
+              )
+            : ''}
           {plan.estimatedInputCharactersSaved > 0
-            ? ` · about ${plan.estimatedInputCharactersSaved.toLocaleString()} repeated chars removed`
+            ? uiText(' · about {value1} repeated chars removed', {
+                value1: plan.estimatedInputCharactersSaved.toLocaleString(),
+              })
             : ''}
         </span>
       </div>
-      <ol className="agent-run-node-list" aria-label="Agent run nodes">
+      <ol className="agent-run-node-list" aria-label={uiText('Agent run nodes')}>
         {run.nodes.map((node) => (
           <li key={node.id}>
             <div className="agent-run-node-heading">
               <strong>
                 {agentNodeRoleLabel(node)} · {agentProviderLabel(node.providerId)}
               </strong>
-              <span>{AGENT_RUNTIME_STATUS_LABELS[node.status]}</span>
+              <span>{uiText(AGENT_RUNTIME_STATUS_LABELS[node.status])}</span>
             </div>
             <p>{node.task}</p>
             {node.resultSummary && (
-              <p className="agent-run-node-result">Result: {node.resultSummary}</p>
+              <p className="agent-run-node-result">
+                {uiText('Result:')} {node.resultSummary}
+              </p>
             )}
             <small>
-              Node {node.id.slice(0, 8)}
-              {node.invocationId ? ` · invocation ${node.invocationId.slice(0, 8)}` : ''}
-              {node.parentNodeId ? ` · parent ${node.parentNodeId.slice(0, 8)}` : ''}
+              {uiText('Node')} {node.id.slice(0, 8)}
+              {node.invocationId
+                ? uiText(' · invocation {value1}', { value1: node.invocationId.slice(0, 8) })
+                : ''}
+              {node.parentNodeId
+                ? uiText(' · parent {value1}', { value1: node.parentNodeId.slice(0, 8) })
+                : ''}
             </small>
           </li>
         ))}
@@ -162,9 +213,9 @@ function CompletedAgentRunActivity({ run }: { run: ProjectAgentRun }) {
   return (
     <details className="message-agent-runtime">
       <summary>
-        Agent process · {AGENT_RUNTIME_STATUS_LABELS[run.status]} · {run.nodes.length}{' '}
-        {run.nodes.length === 1 ? 'node' : 'nodes'} · memory rev{' '}
-        {run.contextPlan.workingMemoryRevision ?? 0}
+        {uiText('Agent process ·')} {uiText(AGENT_RUNTIME_STATUS_LABELS[run.status])} ·{' '}
+        {run.nodes.length} {run.nodes.length === 1 ? uiText('node') : uiText('nodes')}{' '}
+        {uiText('· memory rev')} {run.contextPlan.workingMemoryRevision ?? 0}
       </summary>
       <AgentRunVerbose run={run} />
     </details>
@@ -173,14 +224,15 @@ function CompletedAgentRunActivity({ run }: { run: ProjectAgentRun }) {
 
 function LiveAgentRunActivity({ run }: { run: ProjectAgentRun }) {
   return (
-    <section className="agent-run-live" aria-label="Live agent process" role="status">
+    <section className="agent-run-live" aria-label={uiText('Live agent process')} role="status">
       <header>
         <div>
-          <span>AGENT PROCESS</span>
-          <strong>{AGENT_RUNTIME_STATUS_LABELS[run.status]}</strong>
+          <span>{uiText('AGENT PROCESS')}</span>
+          <strong>{uiText(AGENT_RUNTIME_STATUS_LABELS[run.status])}</strong>
         </div>
         <small>
-          Structured activity · {run.nodes.length} {run.nodes.length === 1 ? 'node' : 'nodes'} · run{' '}
+          {uiText('Structured activity ·')} {run.nodes.length}{' '}
+          {run.nodes.length === 1 ? uiText('node') : uiText('nodes')} {uiText('· run')}{' '}
           {run.id.slice(0, 8)}
         </small>
       </header>
@@ -205,10 +257,7 @@ export type ProjectChatSessionUiState = Readonly<{
   advancedOpen: boolean;
 }>;
 
-export type ProjectChatAgentProgress = Pick<
-  Extract<ProjectChatEvent, { type: 'agent.progress' }>,
-  'stage' | 'tool' | 'callId' | 'success'
->;
+export type ProjectChatAgentProgress = ProjectToolActivityEvent;
 
 export type ProjectChatSshAccess = Readonly<{
   state: 'checking' | 'ready' | 'unavailable';
@@ -409,18 +458,18 @@ export function resolveEffectiveCodexModel(
 ) {
   if (selectedModelId !== null) {
     if (selectedProviderId === null) return undefined;
-    return models.find(
-      (model) =>
-        model.modelId === selectedModelId && (model.providerId ?? 'codex') === selectedProviderId,
-    );
+    return selectCatalogModelFromList(models, {
+      requestedModelId: selectedModelId,
+      providerId: selectedProviderId,
+    });
   }
-  const codexModels = models.filter((model) => (model.providerId ?? 'codex') === 'codex');
   const recommendedModelId = collaborationModeId
     ? collaborationModes.find((mode) => mode.id === collaborationModeId)?.recommendedModelId
     : null;
-  return recommendedModelId
-    ? codexModels.find((model) => model.modelId === recommendedModelId)
-    : codexModels.find((model) => model.isDefault);
+  return selectCatalogModelFromList(models, {
+    requestedModelId: recommendedModelId ?? null,
+    providerId: 'codex',
+  });
 }
 
 export function ProjectChatView({
@@ -446,6 +495,7 @@ export function ProjectChatView({
   onOpenAgentSettings,
   onUpdatePolicyRules = async () => false,
   onChooseAttachments = async () => [],
+  onDropAttachments = async () => [],
   onReleaseAttachment = async () => undefined,
   onAttachmentError = () => undefined,
   onSend,
@@ -453,6 +503,7 @@ export function ProjectChatView({
   onUpdateQueuedTurn = async () => undefined,
   onRemoveQueuedTurn = async () => undefined,
   onRunQueuedTurnNow = async () => undefined,
+  onSteerQueuedTurn = async () => undefined,
   onEditHistoryMessage = async () => undefined,
   onApplyAction,
   sessions = snapshot?.sessions ?? [],
@@ -511,6 +562,7 @@ export function ProjectChatView({
     policyRules: readonly string[],
   ) => Promise<boolean>;
   onChooseAttachments?: () => Promise<readonly ProjectChatAttachment[]>;
+  onDropAttachments?: (files: readonly File[]) => Promise<readonly ProjectChatAttachment[]>;
   onReleaseAttachment?: (attachment: ProjectChatAttachment) => Promise<void>;
   onAttachmentError?: (error: unknown) => void;
   onSend: (
@@ -523,6 +575,7 @@ export function ProjectChatView({
   onUpdateQueuedTurn?: (queueId: string, message: string) => Promise<unknown>;
   onRemoveQueuedTurn?: (queueId: string) => Promise<unknown>;
   onRunQueuedTurnNow?: (queueId: string) => Promise<unknown>;
+  onSteerQueuedTurn?: (queueId: string, message: string) => Promise<unknown>;
   onEditHistoryMessage?: (messageId: string, content: string) => Promise<unknown>;
   onApplyAction: (action: ProjectChatAction) => Promise<void>;
   sessions?: readonly NonNullable<ProjectChatSnapshot['session']>[];
@@ -559,6 +612,12 @@ export function ProjectChatView({
   onEnableTrustedWorkspace?: (input: EnableTrustedRemoteWorkspaceInput) => Promise<boolean>;
   onRevokeTrustedWorkspace?: (input: RevokeTrustedRemoteWorkspaceInput) => Promise<boolean>;
 }) {
+  useUiText();
+  const modelReferenceInput = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!loading && snapshot?.session?.modelLabReference?.contentSha256)
+      modelReferenceInput.current?.focus();
+  }, [loading, snapshot?.session?.id, snapshot?.session?.modelLabReference?.contentSha256]);
   const chatToolbarDetailsId = useId();
   const hermesBoundaryDescriptionId = useId();
   const [sessionUi, setSessionUi] = useState<ProjectChatSessionUiState>({
@@ -626,13 +685,13 @@ export function ProjectChatView({
     });
     void onReleaseAttachment(attachment).catch(onAttachmentError);
   };
-  const chooseAttachments = async () => {
+  const chooseAttachments = async (dropped?: File[]) => {
     if (choosingAttachments || attachments.length >= PROJECT_CHAT_MAX_ATTACHMENTS) return;
     const scope = draftSessionKey;
     const generation = ++attachmentPickerGenerationRef.current;
     setChoosingAttachments(true);
     try {
-      const selected = await onChooseAttachments();
+      const selected = await (dropped ? onDropAttachments(dropped) : onChooseAttachments());
       if (
         !shouldAcceptAttachmentPickerResult(
           mountedRef.current,
@@ -648,11 +707,25 @@ export function ProjectChatView({
         return;
       }
       const currentAttachments = attachmentsRef.current;
-      const existingIds = new Set(currentAttachments.map((attachment) => attachment.id));
-      const additions = selected.filter((attachment) => !existingIds.has(attachment.id));
+      const existingHashes = new Set(currentAttachments.map((attachment) => attachment.sha256));
+      const additions = selected.filter((attachment) => {
+        if (existingHashes.has(attachment.sha256)) {
+          void onReleaseAttachment(attachment).catch(() => undefined);
+          return false;
+        }
+        existingHashes.add(attachment.sha256);
+        return true;
+      });
       const remaining = PROJECT_CHAT_MAX_ATTACHMENTS - currentAttachments.length;
       const accepted = additions.slice(0, remaining);
       const rejected = additions.slice(remaining);
+      if (
+        [...currentAttachments, ...accepted].reduce((sum, file) => sum + file.byteSize, 0) >
+        50 * 1024 * 1024
+      ) {
+        for (const file of additions) void onReleaseAttachment(file).catch(() => undefined);
+        throw new Error('첨부 파일의 합계는 50MB까지 가능합니다.');
+      }
       setAttachments((current) => {
         const next = [...current, ...accepted];
         attachmentsRef.current = next;
@@ -756,6 +829,10 @@ export function ProjectChatView({
     hermesSelected && attachments.length > 0
       ? 'Turn attachments are not bridged to Hermes ACP yet. Remove attachments or choose Codex for this turn.'
       : null;
+  const fileDrop = useChatFileDrop(
+    !hermesSelected && !choosingAttachments && attachments.length < PROJECT_CHAT_MAX_ATTACHMENTS,
+    chooseAttachments,
+  );
   const imageAttachmentWarning =
     attachments.some((attachment) => attachment.visualAvailable) &&
     selectedDescriptor?.modalities !== undefined &&
@@ -770,27 +847,26 @@ export function ProjectChatView({
     localNotesAvailable && allowsAgentMarkdownCreate(localNotesGrant);
   const localNotesStatus =
     vaultState === 'checking'
-      ? 'Research Notes access checking'
+      ? uiText('Research Notes access checking — chat remains available')
       : vaultState === 'unavailable'
-        ? 'Research Notes status unavailable'
+        ? uiText('Research Notes status unavailable — chat continues without notes')
         : localNotesAvailable
           ? automaticMarkdownSaveAuthorized
-            ? `${localNotesGrant?.name ?? 'Research Notes'} read + automatic saves authorized`
-            : `${localNotesGrant?.name ?? 'Research Notes'} read-only`
+            ? uiText('{name} read + automatic saves authorized', {
+                name: localNotesGrant?.name ?? 'Research Notes',
+              })
+            : uiText('{name} read-only', { name: localNotesGrant?.name ?? 'Research Notes' })
           : localNotesGrant
-            ? `${localNotesGrant.name} grant inactive`
-            : 'Research Notes not authorized';
-  const localNotesWarning =
-    !hermesSelected && localNotesGrant && !localNotesAvailable
-      ? 'GOSU cannot verify this project’s Research Notes binding. This turn is paused to prevent stale or cross-project note access.'
-      : null;
+            ? uiText('{name} grant inactive — chat continues without notes', {
+                name: localNotesGrant.name,
+              })
+            : uiText('Research Notes not authorized — chat continues without notes');
   const selectionWarning =
     modelSelectionWarning ??
     collaborationModeWarning ??
     personalityWarning ??
     hermesAttachmentWarning ??
-    imageAttachmentWarning ??
-    localNotesWarning;
+    imageAttachmentWarning;
   const snapshotReady = snapshot !== null;
   const queuedTurns = snapshot?.queuedTurns ?? [];
   const resolvedUnreadAssistantMessageId = resolveUnreadAssistantMessageId(
@@ -1075,9 +1151,14 @@ export function ProjectChatView({
     setContextScope(profile.contextScope);
   }, [project.id, snapshot?.profile?.version]);
 
+  const paperReply = useRef<PaperSaveReplyHandler | null>(null);
   const submit = () => {
     const message = draft.trim();
     if (!message || loading || selectionWarning) return;
+    if (!attachments.length && paperReply.current?.(message)) {
+      setDraft('');
+      return;
+    }
     const controls: ProjectChatTurnControls = hermesSelected
       ? {
           harnessMode: 'context',
@@ -1201,9 +1282,15 @@ export function ProjectChatView({
         {...(onRenameSession ? { onRename: onRenameSession } : {})}
       />
       <section
-        className={`project-chat-shell ${advancedOpen && !chatDetailsCollapsed ? 'agent-controls-open' : ''} ${projectRulesOpen ? 'project-rules-open' : ''} ${chatDetailsCollapsed ? 'chat-details-collapsed' : ''}`}
-        aria-label={`${project.name} project chat`}
+        className={`project-chat-shell chat-file-drop-target ${fileDrop.dragging ? 'is-file-dragging' : ''} ${advancedOpen && !chatDetailsCollapsed ? 'agent-controls-open' : ''} ${projectRulesOpen ? 'project-rules-open' : ''} ${chatDetailsCollapsed ? 'chat-details-collapsed' : ''}`}
+        {...fileDrop.handlers}
+        aria-label={uiText('{name} project chat', { name: project.name })}
       >
+        {fileDrop.dragging && (
+          <div className="chat-file-drop-notice" role="status">
+            파일을 놓으면 이 대화에 첨부됩니다
+          </div>
+        )}
         <header className={`chat-toolbar ${chatDetailsCollapsed ? 'collapsed' : ''}`}>
           {chatDetailsCollapsed && (
             <div className="chat-toolbar-summary">
@@ -1212,24 +1299,49 @@ export function ProjectChatView({
                   G
                 </span>
                 <div>
-                  <strong>Project Copilot</strong>
+                  <strong>
+                    {snapshot?.session?.criticalReviewMode
+                      ? `Critical Review · ${uiText(snapshot.session.criticalReviewMode === 'direction' ? 'Research direction' : 'Manuscript review')}`
+                      : uiText('Project Copilot')}
+                  </strong>
                   <span>{project.name}</span>
                 </div>
               </div>
-              <div className="chat-toolbar-summary-badges" aria-label="Current chat configuration">
-                <span title={`Model: ${compactModelLabel}`}>{compactModelLabel}</span>
-                <span title={`Reasoning: ${compactReasoningLabel}`}>{compactReasoningLabel}</span>
+              <div
+                className="chat-toolbar-summary-badges"
+                aria-label={uiText('Current chat configuration')}
+              >
+                <span
+                  title={uiText('Model: {compactModelLabel}', {
+                    compactModelLabel: compactModelLabel,
+                  })}
+                >
+                  {compactModelLabel}
+                </span>
+                <span
+                  title={uiText('Reasoning: {compactReasoningLabel}', {
+                    compactReasoningLabel: compactReasoningLabel,
+                  })}
+                >
+                  {compactReasoningLabel}
+                </span>
                 {hermesSelected && (
-                  <span title="Verified Hermes ACP agent with project-scoped read tools">
-                    Hermes ACP · project read tools
+                  <span title={uiText('Verified Hermes ACP agent with project-scoped read tools')}>
+                    {uiText('Hermes ACP · project read tools')}
                   </span>
                 )}
                 {claudeCodeSelected && (
-                  <span title="Claude Code subscription agent with GOSU project-scoped MCP tools">
-                    Claude agent · GOSU MCP
+                  <span
+                    title={uiText(
+                      'Claude Code subscription agent with GOSU project-scoped MCP tools',
+                    )}
+                  >
+                    {uiText('Claude agent · GOSU MCP')}
                   </span>
                 )}
-                {selectionWarning && <span className="warning">Selection needs attention</span>}
+                {selectionWarning && (
+                  <span className="warning">{uiText('Selection needs attention')}</span>
+                )}
                 <button
                   type="button"
                   className={`chat-toolbar-status ${projectRulesOpen ? 'active' : ''}`}
@@ -1237,7 +1349,8 @@ export function ProjectChatView({
                   onClick={() => setProjectRulesOpen((open) => !open)}
                   disabled={!snapshot?.profile || projectBusy}
                 >
-                  Project rules ({snapshot?.profile?.policyRules.length ?? 0})
+                  {uiText('Project rules (')}
+                  {snapshot?.profile?.policyRules.length ?? 0})
                 </button>
                 {sshWorkspaceSetupNeeded ? (
                   <button
@@ -1246,11 +1359,12 @@ export function ProjectChatView({
                     onClick={onOpenSshWorkspaceSetup}
                     disabled={projectBusy}
                   >
-                    SSH setup needed
+                    {uiText('SSH setup needed')}
                   </button>
                 ) : sshServers.length > 0 ? (
                   <span>
-                    {sshServers.length} linked server{sshServers.length === 1 ? '' : 's'}
+                    {sshServers.length} {uiText('linked server')}
+                    {sshServers.length === 1 ? '' : 's'}
                   </span>
                 ) : null}
               </div>
@@ -1268,42 +1382,51 @@ export function ProjectChatView({
                     G
                   </span>
                   <div>
-                    <strong>GOSU Project Copilot</strong>
+                    <strong>
+                      {snapshot?.session?.criticalReviewMode
+                        ? 'GOSU Critical Review'
+                        : uiText('GOSU Project Copilot')}
+                    </strong>
                     <span>
                       {hermesSelected
-                        ? '현재 Board와 Objective context를 선택된 Hermes ACP agent가 활용합니다'
-                        : '현재 프로젝트 Board / To-do, Objective, 승인된 Research Notes를 활용합니다'}
+                        ? uiText(
+                            '현재 Board와 Objective context를 선택된 Hermes ACP agent가 활용합니다',
+                          )
+                        : uiText(
+                            '현재 프로젝트 Board / To-do, Objective, 승인된 Research Notes를 활용합니다',
+                          )}
                     </span>
                   </div>
                 </div>
+                <BriefingContextExport project={project} snapshot={snapshot} />
                 <div className="chat-model-controls">
                   <label>
-                    Model
+                    {uiText('Model')}
                     <select
                       value={selectedModel ?? ''}
                       onChange={(event) => onSelectedModel(event.target.value || null)}
                       disabled={projectBusy}
                     >
-                      <option value="">Auto · provider recommended</option>
+                      <option value="">{uiText('Auto · provider recommended')}</option>
                       {selectedModelMissing && (
                         <option value={selectedModel} disabled>
-                          Unavailable model · choose again
+                          {uiText('Unavailable model · choose again')}
                         </option>
                       )}
                       {models.map((model) => (
                         <option value={model.modelId} key={model.modelId}>
                           {model.providerId === 'hermes' &&
                           !model.displayName.toLocaleLowerCase().startsWith('hermes')
-                            ? 'Hermes · '
+                            ? uiText('Hermes · ')
                             : ''}
                           {model.displayName}
-                          {model.isDefault ? ' · default' : ''}
+                          {model.isDefault ? uiText(' · default') : ''}
                         </option>
                       ))}
                     </select>
                   </label>
                   <label>
-                    Reasoning
+                    {uiText('Reasoning')}
                     <select
                       value={selectedReasoning ?? ''}
                       onChange={(event) => onSelectedReasoning(event.target.value || null)}
@@ -1311,16 +1434,16 @@ export function ProjectChatView({
                         projectBusy || (reasoningOptions.length === 0 && !selectedReasoningMissing)
                       }
                     >
-                      <option value="">Model default</option>
+                      <option value="">{uiText('Model default')}</option>
                       {selectedReasoningMissing && (
                         <option value={selectedReasoning} disabled>
-                          Unavailable reasoning · choose again
+                          {uiText('Unavailable reasoning · choose again')}
                         </option>
                       )}
                       {reasoningOptions.map((option) => (
                         <option value={option.id} key={option.id}>
                           {option.label}
-                          {option.isDefault ? ' · default' : ''}
+                          {option.isDefault ? uiText(' · default') : ''}
                         </option>
                       ))}
                     </select>
@@ -1331,7 +1454,7 @@ export function ProjectChatView({
                     onClick={onRefreshModels}
                     disabled={loading}
                   >
-                    Refresh
+                    {uiText('Refresh')}
                   </button>
                   <button
                     type="button"
@@ -1340,7 +1463,7 @@ export function ProjectChatView({
                     onClick={() => setAdvancedOpen((open) => !open)}
                     disabled={projectBusy}
                   >
-                    Agent controls
+                    {uiText('Agent controls')}
                   </button>
                   <button
                     type="button"
@@ -1349,28 +1472,29 @@ export function ProjectChatView({
                     onClick={() => setProjectRulesOpen((open) => !open)}
                     disabled={!snapshot?.profile || projectBusy}
                   >
-                    Project rules ({snapshot?.profile?.policyRules.length ?? 0})
+                    {uiText('Project rules (')}
+                    {snapshot?.profile?.policyRules.length ?? 0})
                   </button>
                 </div>
                 {hermesSelected && (
                   <div className="chat-provider-boundary" role="note">
-                    <strong>Hermes · verified ACP agent mode</strong>
+                    <strong>{uiText('Hermes · verified ACP agent mode')}</strong>
                     <span>
-                      Uses the verified Hermes agent configured on this Mac with project-scoped file
-                      read and search tools. Codex can explicitly delegate a bounded task to a fresh
-                      Hermes primary ACP agent. Writes, terminal, code execution, web, browser
-                      automation, native delegation, memory, skills, MCP, GOSU tools, and
-                      attachments are disabled.
+                      {uiText(
+                        'Uses the verified Hermes agent configured on this Mac with project-scoped file read and search tools. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Writes, terminal, code execution, web, browser automation, native delegation, memory, skills, MCP, GOSU tools, and attachments are disabled.',
+                      )}
                     </span>
                   </div>
                 )}
                 {sshWorkspaceSetupNeeded && (
                   <div className="chat-ssh-setup-notice" role="status">
                     <div>
-                      <strong>SSH server registered — project access is not granted yet</strong>
+                      <strong>
+                        {uiText('SSH server registered — project access is not granted yet')}
+                      </strong>
                       <span>
-                        Choose one specific remote project folder before {project.name} Project Chat
-                        can use the server.
+                        {uiText('Choose one specific remote project folder before')} {project.name}{' '}
+                        {uiText('Project Chat can use the server.')}
                       </span>
                     </div>
                     <button
@@ -1379,15 +1503,20 @@ export function ProjectChatView({
                       onClick={onOpenSshWorkspaceSetup}
                       disabled={projectBusy}
                     >
-                      Grant to {project.name}…
+                      {uiText('Grant to')} {project.name}…
                     </button>
                   </div>
                 )}
                 {sshServers.length > 0 && (
-                  <section className="chat-ssh-resources" aria-label="Linked server resources">
+                  <section
+                    className="chat-ssh-resources"
+                    aria-label={uiText('Linked server resources')}
+                  >
                     <header>
-                      <strong>Linked server resources</strong>
-                      <span>Visible only to {project.name}</span>
+                      <strong>{uiText('Linked server resources')}</strong>
+                      <span>
+                        {uiText('Visible only to')} {project.name}
+                      </span>
                     </header>
                     <div className="chat-ssh-resource-list">
                       {sshServers.map((server) => (
@@ -1397,8 +1526,8 @@ export function ProjectChatView({
                               <strong>{server.label}</strong>
                               <span>
                                 {server.permissionMode === 'workspace'
-                                  ? 'Workspace'
-                                  : 'Diagnostics'}{' '}
+                                  ? uiText('Workspace')
+                                  : uiText('Diagnostics')}{' '}
                                 · {server.canonicalRoot}
                               </span>
                             </div>
@@ -1409,8 +1538,8 @@ export function ProjectChatView({
                               disabled={projectBusy || server.resourceState.phase === 'loading'}
                             >
                               {server.resourceState.phase === 'loading'
-                                ? 'Refreshing…'
-                                : 'Refresh usage'}
+                                ? uiText('Refreshing…')
+                                : uiText('Refresh usage')}
                             </button>
                           </div>
                           <div className="chat-trusted-workspace-control">
@@ -1418,20 +1547,30 @@ export function ProjectChatView({
                               <strong>
                                 {server.trustedAccessEnabled
                                   ? server.privilegeClass === 'root'
-                                    ? 'Project trusted execution · ROOT auto-run'
-                                    : 'Project trusted execution · Auto-run'
-                                  : 'Allow once required'}
+                                    ? uiText('Project trusted execution · ROOT auto-run')
+                                    : uiText('Project trusted execution · Auto-run')
+                                  : uiText('Allow once required')}
                               </strong>
                               <span>
                                 {server.trustedAccessEnabled
-                                  ? 'Supported bounded operations are auto-approved and audited.'
+                                  ? uiText(
+                                      'Supported bounded operations are auto-approved and audited.',
+                                    )
                                   : server.permissionMode !== 'workspace'
-                                    ? 'Switch this grant to Workspace before enabling trust.'
+                                    ? uiText(
+                                        'Switch this grant to Workspace before enabling trust.',
+                                      )
                                     : server.privilegeClass === 'unknown'
-                                      ? 'Auto-run is unavailable because the SSH user could not be verified.'
+                                      ? uiText(
+                                          'Auto-run is unavailable because the SSH user could not be verified.',
+                                        )
                                       : server.privilegeClass === 'root'
-                                        ? 'Optional, high risk: auto-run supported project operations as ROOT after an additional warning.'
-                                        : 'Optional: remove repeated prompts for this exact project workspace.'}
+                                        ? uiText(
+                                            'Optional, high risk: auto-run supported project operations as ROOT after an additional warning.',
+                                          )
+                                        : uiText(
+                                            'Optional: remove repeated prompts for this exact project workspace.',
+                                          )}
                               </span>
                             </div>
                             {server.trustedAccessEnabled ? (
@@ -1444,8 +1583,8 @@ export function ProjectChatView({
                                 }
                               >
                                 {trustedWorkspaceBusyGrantId === server.grantId
-                                  ? 'Revoking…'
-                                  : 'Revoke trust'}
+                                  ? uiText('Revoking…')
+                                  : uiText('Revoke trust')}
                               </button>
                             ) : (
                               <button
@@ -1460,10 +1599,10 @@ export function ProjectChatView({
                                 }
                               >
                                 {trustedWorkspaceBusyGrantId === server.grantId
-                                  ? 'Enabling…'
+                                  ? uiText('Enabling…')
                                   : server.privilegeClass === 'root'
-                                    ? 'Enable ROOT auto-run…'
-                                    : 'Enable auto-run…'}
+                                    ? uiText('Enable ROOT auto-run…')
+                                    : uiText('Enable auto-run…')}
                               </button>
                             )}
                           </div>
@@ -1487,9 +1626,9 @@ export function ProjectChatView({
                 type="button"
                 className="danger-button chat-toolbar-stop"
                 onClick={onCancel}
-                aria-label="Stop the current Project Chat response"
+                aria-label={uiText('Stop the current Project Chat response')}
               >
-                Stop response
+                {uiText('Stop response')}
               </button>
             )}
             <button
@@ -1498,14 +1637,16 @@ export function ProjectChatView({
               onClick={() => onChatDetailsCollapsedChange(!chatDetailsCollapsed)}
               aria-controls={chatToolbarDetailsId}
               aria-expanded={!chatDetailsCollapsed}
-              aria-label={chatDetailsCollapsed ? 'Show chat details' : 'Hide chat details'}
+              aria-label={
+                chatDetailsCollapsed ? uiText('Show chat details') : uiText('Hide chat details')
+              }
               title={
                 chatDetailsCollapsed
-                  ? 'Show model and server details'
-                  : 'Minimize model and server details'
+                  ? uiText('Show model and server details')
+                  : uiText('Minimize model and server details')
               }
             >
-              {chatDetailsCollapsed ? 'Show details' : 'Minimize'}
+              {chatDetailsCollapsed ? uiText('Show details') : uiText('Minimize')}
             </button>
           </div>
         </header>
@@ -1522,11 +1663,11 @@ export function ProjectChatView({
         )}
 
         {advancedOpen && !chatDetailsCollapsed && (
-          <section className="chat-agent-controls" aria-label="Advanced agent controls">
+          <section className="chat-agent-controls" aria-label={uiText('Advanced agent controls')}>
             {!hermesSelected && (
               <>
                 <div className="chat-agent-control-group">
-                  <span>Codex mode</span>
+                  <span>{uiText('Codex mode')}</span>
                   <select
                     value={collaborationModeId ?? ''}
                     onChange={(event) => {
@@ -1534,16 +1675,16 @@ export function ProjectChatView({
                       setCollaborationModeId(event.target.value || null);
                     }}
                     disabled={projectBusy}
-                    aria-label="Codex collaboration mode"
+                    aria-label={uiText('Codex collaboration mode')}
                   >
                     <option value="">
                       {legacyReviewerCompatibility
-                        ? 'Legacy Reviewer · choose a native mode to leave'
-                        : 'Auto · Codex default'}
+                        ? uiText('Legacy Reviewer · choose a native mode to leave')
+                        : uiText('Auto · Codex default')}
                     </option>
                     {collaborationModeId !== null && !selectedCollaborationMode && (
                       <option value={collaborationModeId} disabled>
-                        Unavailable mode · choose again
+                        {uiText('Unavailable mode · choose again')}
                       </option>
                     )}
                     {collaborationModes.map((mode) => (
@@ -1556,19 +1697,20 @@ export function ProjectChatView({
                     ))}
                   </select>
                   <small>
-                    Native modes are discovered from the local Codex App Server, not recreated by
-                    GOSU.
+                    {uiText(
+                      'Native modes are discovered from the local Codex App Server, not recreated by GOSU.',
+                    )}
                   </small>
                 </div>
                 <div className="chat-agent-control-group">
-                  <span>Personality</span>
+                  <span>{uiText('Personality')}</span>
                   <select
                     value={personality}
                     onChange={(event) =>
                       setPersonality(event.target.value as ProjectChatPersonality)
                     }
                     disabled={projectBusy}
-                    aria-label="Codex personality"
+                    aria-label={uiText('Codex personality')}
                   >
                     {(Object.keys(PERSONALITY_LABELS) as ProjectChatPersonality[]).map((value) => (
                       <option
@@ -1578,87 +1720,95 @@ export function ProjectChatView({
                           value !== 'auto' && selectedDescriptor?.supportsPersonality === false
                         }
                       >
-                        {PERSONALITY_LABELS[value]}
+                        {uiText(PERSONALITY_LABELS[value])}
                       </option>
                     ))}
                   </select>
                   <small>
                     {selectedDescriptor?.supportsPersonality === false
-                      ? 'The selected model does not advertise personality support.'
-                      : 'Applied through the native Codex personality setting.'}
+                      ? uiText('The selected model does not advertise personality support.')
+                      : uiText('Applied through the native Codex personality setting.')}
                   </small>
                 </div>
                 <div className="chat-agent-control-group">
-                  <span>Answer verbosity</span>
+                  <span>{uiText('Answer verbosity')}</span>
                   <select
                     value={responseVerbosity}
                     onChange={(event) =>
                       setResponseVerbosity(event.target.value as ProjectChatResponseVerbosity)
                     }
                     disabled={projectBusy}
-                    aria-label="Codex answer verbosity"
+                    aria-label={uiText('Codex answer verbosity')}
                   >
                     {(Object.keys(VERBOSITY_LABELS) as ProjectChatResponseVerbosity[]).map(
                       (value) => (
                         <option value={value} key={value}>
-                          {VERBOSITY_LABELS[value]}
+                          {uiText(VERBOSITY_LABELS[value])}
                         </option>
                       ),
                     )}
                   </select>
                   <small>
-                    Native model verbosity; reasoning effort remains a separate control.
+                    {uiText('Native model verbosity; reasoning effort remains a separate control.')}
                   </small>
                 </div>
               </>
             )}
             {hermesSelected && (
               <div className="chat-agent-control-group">
-                <span>Provider harness</span>
-                <strong>Hermes ACP agent</strong>
+                <span>{uiText('Provider harness')}</span>
+                <strong>{uiText('Hermes ACP agent')}</strong>
                 <small>
-                  Hermes owns its native reasoning. GOSU exposes no native Hermes tools and never
-                  falls back to Codex silently.
+                  {uiText(
+                    'Hermes owns its native reasoning. GOSU exposes no native Hermes tools and never falls back to Codex silently.',
+                  )}
                 </small>
               </div>
             )}
             {claudeCodeSelected && (
               <div className="chat-agent-control-group">
-                <span>Provider harness</span>
-                <strong>Claude Code subscription agent</strong>
+                <span>{uiText('Provider harness')}</span>
+                <strong>{uiText('Claude Code subscription agent')}</strong>
                 <small>
-                  Claude may iterate over only this session&apos;s GOSU MCP tools. Built-in shell,
-                  writes, browser, user MCP servers, plugins, and persistent Claude sessions remain
-                  disabled.
+                  {uiText(
+                    "Claude may iterate over only this session's GOSU MCP tools. Built-in shell, writes, browser, user MCP servers, plugins, and persistent Claude sessions remain disabled.",
+                  )}
                 </small>
               </div>
             )}
             <div className="chat-agent-control-group">
-              <span>Context</span>
+              <span>{uiText('Context')}</span>
               <select
                 value={contextScope}
                 onChange={(event) => setContextScope(event.target.value as ProjectChatContextScope)}
                 disabled={projectBusy}
-                aria-label="Turn context scope"
+                aria-label={uiText('Turn context scope')}
               >
                 {(Object.keys(CONTEXT_LABELS) as ProjectChatContextScope[]).map((scope) => (
                   <option value={scope} key={scope}>
-                    {CONTEXT_LABELS[scope]}
+                    {uiText(CONTEXT_LABELS[scope])}
                   </option>
                 ))}
               </select>
               <small>
                 {hermesSelected
-                  ? 'Scope controls only the project snapshot included as text. Hermes cannot call Research Notes, Board, Literature, local, or SSH tools.'
-                  : 'Scope controls preloaded context. Authorized project Research Notes remain available through bounded read tools. Create-only automatic Markdown saves require a separate explicit grant in AI Agent Settings.'}
+                  ? uiText(
+                      'Scope controls only the project snapshot included as text. Hermes cannot call Research Notes, Board, Literature, local, or SSH tools.',
+                    )
+                  : uiText(
+                      'Scope controls preloaded context. Authorized project Research Notes remain available through bounded read tools. Create-only automatic Markdown saves require a separate explicit grant in AI Agent Settings.',
+                    )}
               </small>
             </div>
             <div className="chat-agent-profile-summary">
-              <span>Project prompt</span>
+              <span>{uiText('Project prompt')}</span>
               <strong>
                 {snapshot?.profile?.customInstructions
-                  ? `${snapshot.profile.customInstructions.length} characters · profile v${snapshot.profile.version}`
-                  : 'No custom instructions'}
+                  ? uiText('{length} characters · profile v{version}', {
+                      length: snapshot.profile.customInstructions.length,
+                      version: snapshot.profile.version,
+                    })
+                  : uiText('No custom instructions')}
               </strong>
               <button
                 type="button"
@@ -1666,24 +1816,34 @@ export function ProjectChatView({
                 onClick={onOpenAgentSettings}
                 disabled={projectBusy}
               >
-                Edit in Settings…
+                {uiText('Edit in Settings…')}
               </button>
             </div>
             <div className="chat-agent-boundary">
-              <strong>Project capability boundary</strong>
+              <strong>{uiText('Project capability boundary')}</strong>
               <span>
                 {hermesSelected
-                  ? 'Hermes ACP · project read tools'
-                  : `Board / To-do + Objective read tools · ${localNotesStatus} · ${sshWorkspaceStatus} · ${
-                      trustedWorkspaceCount > 0
-                        ? `${trustedWorkspaceCount} trusted workspace${trustedWorkspaceCount === 1 ? '' : 's'}`
-                        : 'SSH requires Allow once'
-                    }`}
+                  ? uiText('Hermes ACP · project read tools')
+                  : uiText(
+                      'Board / To-do + Objective read tools · {localNotesStatus} · {sshWorkspaceStatus} · {value3}',
+                      {
+                        localNotesStatus: localNotesStatus,
+                        sshWorkspaceStatus: sshWorkspaceStatus,
+                        value3:
+                          trustedWorkspaceCount > 0
+                            ? `${trustedWorkspaceCount} trusted workspace${trustedWorkspaceCount === 1 ? '' : 's'}`
+                            : 'SSH requires Allow once',
+                      },
+                    )}
               </span>
               <small>
                 {hermesSelected
-                  ? 'GOSU runs its pinned, hash-verified Hermes ACP runtime through a project/session-isolated local profile. Hermes may read or search files only inside the exact project workspace; absolute paths, parent traversal, and symlinks cannot escape it. Writes, terminal, processes, code execution, web, browser automation, native delegation, memory, skills, configured MCP, GOSU tools, attachments, YOLO, duplicate persistence, and fallback are disabled. Select Codex when the turn needs Board, Research Notes, Literature, SSH, attachments, or mutations.'
-                  : 'Board changes require Apply. Research Notes reads stay available to legacy grants, but automatic Markdown saves run only after an explicit create-only grant and never overwrite a different existing file. Only project-granted remote workspaces are visible. Trusted workspace is an explicit, per-grant option that auto-approves and audits only the same bounded operations; it expires when the project, server, grant, path, or safety policy changes and can be revoked above. Without it, Git inspection, direct-argv tests/builds, and foreground Python experiment entrypoints show their exact target, root, arguments, and risk for a fresh one-time approval. Experiments are limited to 120 seconds. The direct GOSU tool surface does not offer raw shells, inline Python, TTY, transfer, unattended execution, secret retrieval, Settings, Trash, sudo/privileged requests, host mounts, or destructive host commands. Code launched through an approved Python, test, or build operation is not contained by those input checks and can reach anything the SSH account permits, including secrets, out-of-grant paths, the network, and subprocesses.'}
+                  ? uiText(
+                      'GOSU runs its pinned, hash-verified Hermes ACP runtime through a project/session-isolated local profile. Hermes may read or search files only inside the exact project workspace; absolute paths, parent traversal, and symlinks cannot escape it. Writes, terminal, processes, code execution, web, browser automation, native delegation, memory, skills, configured MCP, GOSU tools, attachments, YOLO, duplicate persistence, and fallback are disabled. Select Codex when the turn needs Board, Research Notes, Literature, SSH, attachments, or mutations.',
+                    )
+                  : uiText(
+                      'Board changes require Apply. Research Notes reads stay available to legacy grants, but automatic Markdown saves run only after an explicit create-only grant and never overwrite a different existing file. Only project-granted remote workspaces are visible. Trusted workspace is an explicit, per-grant option that auto-approves and audits only the same bounded operations; it expires when the project, server, grant, path, or safety policy changes and can be revoked above. Without it, Git inspection, direct-argv tests/builds, and foreground Python experiment entrypoints show their exact target, root, arguments, and risk for a fresh one-time approval. Experiments are limited to 120 seconds. The direct GOSU tool surface does not offer raw shells, inline Python, TTY, transfer, unattended execution, secret retrieval, Settings, Trash, sudo/privileged requests, host mounts, or destructive host commands. Code launched through an approved Python, test, or build operation is not contained by those input checks and can reach anything the SSH account permits, including secrets, out-of-grant paths, the network, and subprocesses.',
+                    )}
               </small>
             </div>
           </section>
@@ -1723,26 +1883,30 @@ export function ProjectChatView({
           >
             {activeAgentRun && <LiveAgentRunActivity run={activeAgentRun} />}
             {loading ? (
-              <div className="chat-loading">암호화된 프로젝트 대화를 불러오는 중…</div>
+              <div className="chat-loading">{uiText('암호화된 프로젝트 대화를 불러오는 중…')}</div>
             ) : !snapshot?.messages.length ? (
               <div className="chat-welcome">
-                <span className="welcome-kicker">PROJECT CONVERSATION</span>
-                <h2>{project.name}를 대화로 진행해보세요</h2>
+                <span className="welcome-kicker">{uiText('PROJECT CONVERSATION')}</span>
+                <h2>{uiText('Discuss {name}', { name: project.name })}</h2>
                 <p>
-                  연구 방향을 논의하거나 작업 생성을 요청할 수 있습니다. Kanban 변경은 AI가
-                  제안하고, 사용자가 Apply한 뒤에만 반영됩니다.
+                  {uiText(
+                    '연구 방향을 논의하거나 작업 생성을 요청할 수 있습니다. Kanban 변경은 AI가 제안하고, 사용자가 Apply한 뒤에만 반영됩니다.',
+                  )}
                 </p>
                 <div className="quick-prompts">
-                  {QUICK_PROMPTS.map((prompt) => (
+                  {(snapshot?.session?.modelLabReference
+                    ? MODEL_REFERENCE_PROMPTS
+                    : QUICK_PROMPTS
+                  ).map((prompt) => (
                     <button
                       type="button"
                       key={prompt}
                       onClick={() => {
-                        updateDraft(prompt);
+                        updateDraft(uiText(prompt));
                         setRetryOfAttemptId(null);
                       }}
                     >
-                      {prompt}
+                      {uiText(prompt)}
                       <span>↗</span>
                     </button>
                   ))}
@@ -1792,12 +1956,32 @@ export function ProjectChatView({
                     key={message.id}
                   >
                     <header>
-                      <strong>{message.role === 'user' ? 'You' : 'GOSU'}</strong>
+                      <strong>{message.role === 'user' ? uiText('You') : uiText('GOSU')}</strong>
                       <span>{formatTime(message.completedAt)}</span>
                     </header>
                     <div className="message-copy">
                       <ProjectChatMarkdown source={message.content} />
                     </div>
+                    {message.role === 'assistant' && message.status === 'complete' && (
+                      <PaperSummarySaveOffer
+                        question={
+                          snapshot.messages
+                            .slice(0, messageIndex)
+                            .reverse()
+                            .find((m) => m.role === 'user')?.content ?? ''
+                        }
+                        answer={message.content}
+                        allowBareYes={!message.actions.some((a) => a.status === 'proposed')}
+                        onReplyReady={
+                          isLatestMessage
+                            ? (handler) => {
+                                paperReply.current = handler;
+                              }
+                            : undefined
+                        }
+                        onSave={(candidate) => window.gosu.paperSummaries.save(candidate)}
+                      />
+                    )}
                     {(message.model ||
                       attempt?.harnessMode ||
                       nativeAttempt ||
@@ -1807,34 +1991,42 @@ export function ProjectChatView({
                           <div className="message-provenance">
                             {message.model
                               ? `${agentProviderLabel(message.model.providerId ?? 'codex')} · ${message.model.resolvedModelId}`
-                              : 'Codex'}
+                              : uiText('Codex')}
                             {message.model?.reasoningOptionId
-                              ? ` · reasoning ${message.model.reasoningOptionId}`
+                              ? uiText(' · reasoning {reasoningOptionId}', {
+                                  reasoningOptionId: message.model.reasoningOptionId,
+                                })
                               : ''}
                             {nativeAttempt
                               ? message.model?.providerId === 'hermes'
-                                ? ' · Hermes ACP agent'
+                                ? uiText(' · Hermes ACP agent')
                                 : message.model?.providerId === 'claude-code'
-                                  ? ' · Claude Code agent'
+                                  ? uiText(' · Claude Code agent')
                                   : attempt?.collaborationModeId
                                     ? ` · ${collaborationModes.find((mode) => mode.id === attempt.collaborationModeId)?.displayName ?? attempt.collaborationModeId}`
-                                    : ' · Codex default mode'
+                                    : uiText(' · Codex default mode')
                               : attempt?.harnessMode
-                                ? ` · legacy ${HARNESS_LABELS[attempt.harnessMode]}`
+                                ? uiText(' · legacy {value1}', {
+                                    value1: uiText(HARNESS_LABELS[attempt.harnessMode]),
+                                  })
                                 : ''}
                             {attempt?.personality && attempt.personality !== 'auto'
-                              ? ` · ${PERSONALITY_LABELS[attempt.personality]}`
+                              ? ` · ${uiText(PERSONALITY_LABELS[attempt.personality])}`
                               : ''}
                             {attempt?.responseVerbosity
-                              ? ` · ${VERBOSITY_LABELS[attempt.responseVerbosity]}`
+                              ? ` · ${uiText(VERBOSITY_LABELS[attempt.responseVerbosity])}`
                               : attempt?.responseDepth
-                                ? ` · legacy ${DEPTH_LABELS[attempt.responseDepth]}`
+                                ? uiText(' · legacy {value1}', {
+                                    value1: uiText(DEPTH_LABELS[attempt.responseDepth]),
+                                  })
                                 : ''}
                             {attempt?.contextScope
-                              ? ` · ${CONTEXT_LABELS[attempt.contextScope]}`
+                              ? ` · ${uiText(CONTEXT_LABELS[attempt.contextScope])}`
                               : ''}
                             {policyRuleSnapshotCount > 0
-                              ? ` · Project rules snapshot ${policyRuleSnapshotCount}`
+                              ? uiText(' · Project rules snapshot {policyRuleSnapshotCount}', {
+                                  policyRuleSnapshotCount: policyRuleSnapshotCount,
+                                })
                               : ''}
                           </div>
                         )}
@@ -1845,7 +2037,7 @@ export function ProjectChatView({
                           <div
                             className="chat-message-branch"
                             role="group"
-                            aria-label="Message history actions"
+                            aria-label={uiText('Message history actions')}
                             aria-live="polite"
                           >
                             {message.role === 'user' && (
@@ -1856,10 +2048,10 @@ export function ProjectChatView({
                                 onClick={() =>
                                   void onEditHistoryMessage(message.id, message.content)
                                 }
-                                aria-label="Edit this message in a new chat branch"
-                                title="Edit this message in a new chat branch"
+                                aria-label={uiText('Edit this message in a new chat branch')}
+                                title={uiText('Edit this message in a new chat branch')}
                               >
-                                ✎ Edit &amp; branch
+                                {uiText('✎ Edit & branch')}
                               </button>
                             )}
                             <button
@@ -1869,9 +2061,9 @@ export function ProjectChatView({
                               onClick={() => void onBranchSession(message.id)}
                               aria-label={branchAction.accessibleLabel}
                               aria-busy={branchAction.busy}
-                              title="Create a new chat branch from this point"
+                              title={uiText('Create a new chat branch from this point')}
                             >
-                              {branchAction.label}
+                              {uiText(branchAction.label)}
                             </button>
                           </div>
                         )}
@@ -1879,7 +2071,9 @@ export function ProjectChatView({
                     )}
                     {retrySource && (
                       <footer className="failed-turn-recovery">
-                        <span>Saved failed attempt · the connection may now be recovered</span>
+                        <span>
+                          {uiText('Saved failed attempt · the connection may now be recovered')}
+                        </span>
                         <button
                           type="button"
                           onClick={() => {
@@ -1887,14 +2081,18 @@ export function ProjectChatView({
                             setRetryOfAttemptId(retrySource.attemptId);
                           }}
                         >
-                          {retrySource.attemptId ? 'Retry this turn' : 'Use message again'}
+                          {retrySource.attemptId
+                            ? uiText('Retry this turn')
+                            : uiText('Use message again')}
                         </button>
                       </footer>
                     )}
                     {reattachSource && (
                       <footer className="failed-turn-recovery">
                         <span>
-                          Select an image-capable model, attach the image again, and resend
+                          {uiText(
+                            'Select an image-capable model, attach the image again, and resend',
+                          )}
                         </span>
                         <button
                           type="button"
@@ -1903,7 +2101,7 @@ export function ProjectChatView({
                             setRetryOfAttemptId(null);
                           }}
                         >
-                          Use message again
+                          {uiText('Use message again')}
                         </button>
                       </footer>
                     )}
@@ -1925,11 +2123,20 @@ export function ProjectChatView({
                 );
               })
             )}
+            {!inFlight && agentProgress.length > 0 && (
+              <details className="chat-recent-tool-activity">
+                <summary>{uiText('Latest tool activity')}</summary>
+                <p>{uiText('Shown for this session until the next response starts.')}</p>
+                <ProjectToolActivityView events={agentProgress} turnInFlight={false} />
+              </details>
+            )}
             {inFlight && (
               <article className="chat-message assistant thinking" role="status">
                 <header>
-                  <strong>GOSU</strong>
-                  <span>{activeProviderLabel} turn active</span>
+                  <strong>{uiText('GOSU')}</strong>
+                  <span>
+                    {activeProviderLabel} {uiText('turn active')}
+                  </span>
                 </header>
                 <div className="thinking-line">
                   <i />
@@ -1937,26 +2144,14 @@ export function ProjectChatView({
                   <i />
                   <span>
                     {activeProviderLabel === 'Hermes'
-                      ? 'Hermes ACP agent가 프로젝트를 분석하고 있습니다'
-                      : '프로젝트 컨텍스트를 검토하고 있습니다'}
+                      ? uiText('Hermes ACP agent가 프로젝트를 분석하고 있습니다')
+                      : uiText('프로젝트 컨텍스트를 검토하고 있습니다')}
                   </span>
                 </div>
-                {agentProgress.length > 0 && (
-                  <ol className="chat-agent-progress" aria-label="Live Claude agent tool activity">
-                    {agentProgress.map((progress) => (
-                      <li key={`${progress.callId}:${progress.stage}`}>
-                        <strong>{progress.tool.replaceAll('_', ' ')}</strong>
-                        <span>
-                          {progress.stage === 'tool_started'
-                            ? 'Running'
-                            : progress.success === false
-                              ? 'Failed'
-                              : 'Receipt reviewed'}
-                        </span>
-                      </li>
-                    ))}
-                  </ol>
-                )}
+                <ProjectToolActivityView
+                  events={agentProgress}
+                  providerLabel={activeProviderLabel}
+                />
               </article>
             )}
           </div>
@@ -1965,71 +2160,103 @@ export function ProjectChatView({
               type="button"
               className="chat-jump-to-latest"
               onClick={() => jumpToLatest('bottom')}
-              aria-label="Jump to the latest message"
-              title="Jump to latest"
+              aria-label={uiText('Jump to the latest message')}
+              title={uiText('Jump to latest')}
             >
               <span aria-hidden="true">↓</span>
-              Latest
+              {uiText('Latest')}
             </button>
           )}
         </div>
 
         <div className="chat-compose-area">
+          {snapshot?.session?.modelLabReference && (
+            <div
+              className="project-model-reference-tag"
+              aria-label={uiText('Referenced Model Lab model')}
+              title={uiText(
+                'This conversation refers to the saved model revision, not an unsaved draft.',
+              )}
+            >
+              <span aria-hidden="true">▰</span> Model Lab ·{' '}
+              <strong>{snapshot.session.modelLabReference.name}</strong> · r
+              {snapshot.session.modelLabReference.revision}
+            </div>
+          )}
           <div className="chat-context-note">
-            <span>LOCAL CONTEXT</span>
-            {CONTEXT_LABELS[contextScope]} ·{' '}
-            {legacyReviewerCompatibility
-              ? 'Legacy Reviewer'
-              : hermesSelected
-                ? 'Hermes ACP agent'
-                : claudeCodeSelected
-                  ? 'Claude Code agent'
-                  : collaborationModeId === null
-                    ? 'Codex default mode'
-                    : (selectedCollaborationMode?.displayName ?? collaborationModeId)}{' '}
+            <span>{uiText('LOCAL CONTEXT')}</span>
+            {snapshot?.session?.criticalReviewMode === 'manuscript'
+              ? uiText('Submitted artifacts only')
+              : uiText(CONTEXT_LABELS[contextScope])}{' '}
+            ·{' '}
+            {snapshot?.session?.criticalReviewMode
+              ? uiText('Read-only review')
+              : legacyReviewerCompatibility
+                ? uiText('Legacy Reviewer')
+                : hermesSelected
+                  ? uiText('Hermes ACP agent')
+                  : claudeCodeSelected
+                    ? uiText('Claude Code agent')
+                    : collaborationModeId === null
+                      ? uiText('Codex default mode')
+                      : (selectedCollaborationMode?.displayName ?? collaborationModeId)}{' '}
             ·{' '}
             {hermesSelected || claudeCodeSelected
-              ? 'Provider-managed answer style'
-              : VERBOSITY_LABELS[responseVerbosity]}{' '}
-            · {hermesSelected ? 'GOSU Research Notes bridge unavailable' : localNotesStatus}
+              ? uiText('Provider-managed answer style')
+              : uiText(VERBOSITY_LABELS[responseVerbosity])}{' '}
+            ·{' '}
+            {snapshot?.session?.criticalReviewMode
+              ? uiText('Review saved in this conversation')
+              : hermesSelected
+                ? uiText('GOSU Research Notes bridge unavailable')
+                : localNotesStatus}
             {' · '}
             {hermesSelected
-              ? 'Hermes provider · project read tools'
+              ? uiText('Hermes provider · project read tools')
               : claudeCodeSelected
-                ? 'Claude provider · GOSU MCP · web off'
-                : WEB_SEARCH_LABELS[snapshot?.profile?.webSearchMode ?? 'cached']}
-            {!hermesSelected && vaultState === 'ready' && !automaticMarkdownSaveAuthorized && (
-              <button
-                type="button"
-                className="retry-context"
-                onClick={onOpenAgentSettings}
-                title={
-                  localNotesAvailable
-                    ? 'Enable create-only automatic Markdown saves'
-                    : 'Authorize this project’s Research Notes folder'
-                }
-              >
-                {localNotesAvailable ? 'Enable automatic saves…' : 'Authorize…'}
-              </button>
-            )}
+                ? uiText('Claude provider · GOSU MCP · web off')
+                : uiText(WEB_SEARCH_LABELS[snapshot?.profile?.webSearchMode ?? 'cached'])}
+            {!snapshot?.session?.criticalReviewMode &&
+              !hermesSelected &&
+              vaultState === 'ready' &&
+              !automaticMarkdownSaveAuthorized && (
+                <button
+                  type="button"
+                  className="retry-context"
+                  onClick={onOpenAgentSettings}
+                  title={
+                    localNotesAvailable
+                      ? uiText('Enable create-only automatic Markdown saves')
+                      : uiText('Authorize this project’s Research Notes folder')
+                  }
+                >
+                  {localNotesAvailable ? uiText('Enable automatic saves…') : uiText('Authorize…')}
+                </button>
+              )}
             {retryOfAttemptId && (
               <button
                 type="button"
                 className="retry-context"
                 onClick={() => setRetryOfAttemptId(null)}
-                title="Send as a new turn instead"
+                title={uiText('Send as a new turn instead')}
               >
-                Retrying saved attempt ×
+                {uiText('Retrying saved attempt ×')}
               </button>
             )}
           </div>
           {queuedTurns.length > 0 && (
-            <section className="chat-turn-queue" aria-label="Queued project chat messages">
+            <section
+              className="chat-turn-queue"
+              aria-label={uiText('Queued project chat messages')}
+            >
               <header>
-                <strong>Queued · {queuedTurns.length}</strong>
+                <strong>
+                  {uiText('Queued ·')} {queuedTurns.length}
+                </strong>
                 <span>
-                  This session runs in order; up to {PROJECT_CHAT_MAX_CONCURRENT_SESSION_TURNS}{' '}
-                  different sessions run in parallel
+                  {uiText('This session runs in order; up to')}{' '}
+                  {PROJECT_CHAT_MAX_CONCURRENT_SESSION_TURNS}{' '}
+                  {uiText('different sessions run in parallel')}
                 </span>
               </header>
               <div className="chat-turn-queue-list">
@@ -2046,7 +2273,7 @@ export function ProjectChatView({
                           <textarea
                             value={queuedTurnEdit.message}
                             maxLength={12_000}
-                            aria-label="Edit queued message"
+                            aria-label={uiText('Edit queued message')}
                             onChange={(event) =>
                               setQueuedTurnEdit({ id: queued.id, message: event.target.value })
                             }
@@ -2056,10 +2283,10 @@ export function ProjectChatView({
                         )}
                         <small>
                           {queued.status === 'starting'
-                            ? 'Starting…'
+                            ? uiText('Starting…')
                             : queued.priority === 'next'
-                              ? 'Runs next'
-                              : 'Waiting'}
+                              ? uiText('Runs next')
+                              : uiText('Waiting')}
                         </small>
                       </div>
                       <div className="chat-turn-queue-actions">
@@ -2081,7 +2308,7 @@ export function ProjectChatView({
                                   });
                               }}
                             >
-                              Save
+                              {uiText('Save')}
                             </button>
                             <button
                               type="button"
@@ -2089,7 +2316,7 @@ export function ProjectChatView({
                               disabled={mutating}
                               onClick={() => setQueuedTurnEdit(null)}
                             >
-                              Cancel
+                              {uiText('Cancel')}
                             </button>
                           </>
                         ) : (
@@ -2102,7 +2329,7 @@ export function ProjectChatView({
                                 setQueuedTurnEdit({ id: queued.id, message: queued.message })
                               }
                             >
-                              Edit
+                              {uiText('Edit')}
                             </button>
                             <button
                               type="button"
@@ -2115,7 +2342,7 @@ export function ProjectChatView({
                                   .finally(() => setQueueMutationId(null));
                               }}
                             >
-                              Remove
+                              {uiText('Remove')}
                             </button>
                             <button
                               type="button"
@@ -2128,8 +2355,25 @@ export function ProjectChatView({
                                   .finally(() => setQueueMutationId(null));
                               }}
                             >
-                              Stop current &amp; run now
+                              {uiText('Stop current & run now')}
                             </button>
+                            {activeAttemptProviderId === 'codex' &&
+                              !queued.attachmentIds?.length && (
+                                <button
+                                  type="button"
+                                  className="ghost-button"
+                                  disabled={mutating || queued.status !== 'queued'}
+                                  title="실행 중인 Codex에 텍스트 보충 · 완료된 작업은 취소하지 않음"
+                                  onClick={() => {
+                                    setQueueMutationId(queued.id);
+                                    void onSteerQueuedTurn(queued.id, queued.message)
+                                      .catch(() => undefined)
+                                      .finally(() => setQueueMutationId(null));
+                                  }}
+                                >
+                                  현재 작업에 보충
+                                </button>
+                              )}
                           </>
                         )}
                       </div>
@@ -2146,20 +2390,20 @@ export function ProjectChatView({
           )}
           {hermesSelected && (
             <span id={hermesBoundaryDescriptionId} className="sr-only">
-              Hermes runs through a pinned, verified ACP agent with project-scoped read and search
-              tools. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP
-              agent. Writes, terminal, processes, code execution, web, browser automation, native
-              delegation, memory, skills, MCP, GOSU tools, and attachments are disabled. Choose
-              Codex for GOSU capabilities or mutations.
+              {uiText(
+                'Hermes runs through a pinned, verified ACP agent with project-scoped read and search tools. Codex can explicitly delegate a bounded task to a fresh Hermes primary ACP agent. Writes, terminal, processes, code execution, web, browser automation, native delegation, memory, skills, MCP, GOSU tools, and attachments are disabled. Choose Codex for GOSU capabilities or mutations.',
+              )}
             </span>
           )}
           {projectBusy && !sessionBusy && (
             <div className="chat-selection-warning" role="status">
-              A project-wide chat update is finishing. Messages sent here will be queued safely.
+              {uiText(
+                'A project-wide chat update is finishing. Messages sent here will be queued safely.',
+              )}
             </div>
           )}
           {attachments.length > 0 && (
-            <div className="chat-attachments" aria-label="Turn attachments">
+            <div className="chat-attachments" aria-label={uiText('Turn attachments')}>
               {attachments.map((attachment) => (
                 <span className="chat-attachment-chip" key={attachment.id}>
                   <span title={attachment.displayName}>{attachment.displayName}</span>
@@ -2169,15 +2413,17 @@ export function ProjectChatView({
                       ? ` · ${attachment.imageWidth}×${attachment.imageHeight}`
                       : ` · ${attachment.unitCount} ${attachment.unitLabel}${attachment.unitCount === 1 ? '' : 's'}`}
                     {!attachment.textAvailable && !attachment.visualAvailable
-                      ? ' · no extractable content'
+                      ? uiText(' · no extractable content')
                       : ''}
-                    {attachment.visualAvailable ? ' · visual input' : ''}
-                    {attachment.truncated ? ' · excerpted' : ''}
+                    {attachment.visualAvailable ? uiText(' · visual input') : ''}
+                    {attachment.truncated ? uiText(' · excerpted') : ''}
                   </small>
                   <button
                     type="button"
                     onClick={() => releaseAttachment(attachment)}
-                    aria-label={`Remove ${attachment.displayName}`}
+                    aria-label={uiText('Remove {displayName}', {
+                      displayName: attachment.displayName,
+                    })}
                     disabled={loading}
                   >
                     ×
@@ -2185,8 +2431,9 @@ export function ProjectChatView({
                 </span>
               ))}
               <span className="chat-attachment-privacy">
-                Originals stay local. Bounded reconstructed text and normalized images are shared
-                only with the selected model for this turn.
+                {uiText(
+                  'Originals stay local. Bounded reconstructed text and normalized images are shared only with the selected model for this turn.',
+                )}
               </span>
             </div>
           )}
@@ -2198,16 +2445,16 @@ export function ProjectChatView({
                 onClick={() => jumpToLatest('new-message')}
               >
                 <span aria-hidden="true">↓</span>
-                New GOSU message
-                <small>View unread response</small>
+                {uiText('New GOSU message')}
+                <small>{uiText('View unread response')}</small>
               </button>
             </div>
           )}
           {todoSkillSuggestions.length > 0 && (
-            <section className="chat-skill-menu" aria-label="Project Chat skills">
+            <section className="chat-skill-menu" aria-label={uiText('Project Chat skills')}>
               <header>
-                <strong>/todo</strong>
-                <span>Board와 같은 Task를 읽고 변경 제안을 만듭니다</span>
+                <strong>{uiText('/todo')}</strong>
+                <span>{uiText('Board와 같은 Task를 읽고 변경 제안을 만듭니다')}</span>
               </header>
               <div>
                 {todoSkillSuggestions.map((suggestion) => (
@@ -2221,8 +2468,8 @@ export function ProjectChatView({
                   >
                     <code>{suggestion.command.trimEnd()}</code>
                     <span>
-                      <b>{suggestion.label}</b>
-                      <small>{suggestion.detail}</small>
+                      <b>{uiText(suggestion.label)}</b>
+                      <small>{uiText(suggestion.detail)}</small>
                     </span>
                   </button>
                 ))}
@@ -2230,6 +2477,9 @@ export function ProjectChatView({
             </section>
           )}
           <div className="chat-composer">
+            <div className="project-chat-context-meter">
+              <ContextUsageMeter usage={snapshot?.contextUsage} busy={sessionBusy} />
+            </div>
             <button
               type="button"
               className="chat-attach-button"
@@ -2242,18 +2492,22 @@ export function ProjectChatView({
               }
               aria-label={
                 hermesSelected
-                  ? 'Turn attachments are not yet bridged to Hermes'
-                  : 'Attach research files'
+                  ? uiText('Turn attachments are not yet bridged to Hermes')
+                  : uiText('Attach research files')
               }
               aria-describedby={hermesSelected ? hermesBoundaryDescriptionId : undefined}
               title={
                 hermesSelected
-                  ? 'Turn attachments are not bridged to Hermes ACP yet; choose Codex to attach files'
-                  : 'Attach up to 5 documents, presentations, text files, or images for this turn'
+                  ? uiText(
+                      'Turn attachments are not bridged to Hermes ACP yet; choose Codex to attach files',
+                    )
+                  : uiText(
+                      'Attach up to 5 documents, presentations, text files, or images for this turn',
+                    )
               }
             >
               {choosingAttachments ? '…' : '＋'}
-              <span>Files</span>
+              <span>{uiText('Files')}</span>
             </button>
             <textarea
               value={draft}
@@ -2274,15 +2528,22 @@ export function ProjectChatView({
                   submit();
                 }
               }}
-              placeholder="예: baseline 재현 작업을 Planned에 추가해줘 · /todo로 작업 관리"
+              placeholder={
+                snapshot?.session?.criticalReviewMode
+                  ? uiText('Share the material to critique, or ask a follow-up about this review.')
+                  : snapshot?.session?.modelLabReference
+                    ? uiText('Ask about the referenced model, equations or design decisions…')
+                    : uiText('예: baseline 재현 작업을 Planned에 추가해줘 · /todo로 작업 관리')
+              }
               maxLength={12_000}
+              ref={modelReferenceInput}
               disabled={loading}
-              aria-label="Message GOSU project copilot"
+              aria-label={uiText('Message GOSU project copilot')}
             />
             <div className="chat-send-actions">
               {inFlight && (
                 <button type="button" className="danger-button chat-stop" onClick={onCancel}>
-                  Stop
+                  {uiText('Stop')}
                 </button>
               )}
               <button
@@ -2292,11 +2553,11 @@ export function ProjectChatView({
                 disabled={loading || draft.trim().length === 0 || selectionWarning !== null}
               >
                 {hermesSelected && sessionBusy
-                  ? 'Stop & send'
+                  ? uiText('Stop & send')
                   : sessionBusy || projectBusy
-                    ? 'Queue'
-                    : 'Send'}
-                <span>Enter</span>
+                    ? uiText('Queue')
+                    : uiText('Send')}
+                <span>{uiText('Enter')}</span>
               </button>
             </div>
           </div>
@@ -2332,13 +2593,15 @@ function ChatActionCard({
       : (command.title ?? task?.title ?? `Task ${command.taskId.slice(0, 8)}`);
   const detail =
     command.type === 'task.create'
-      ? `Create in ${statusLabels[command.status]}`
-      : `Update${command.status ? ` · move to ${statusLabels[command.status]}` : ''}`;
+      ? uiText('Create in {status}', { status: statusLabels[command.status] })
+      : command.status
+        ? uiText('Update · move to {status}', { status: statusLabels[command.status] })
+        : uiText('Update');
   const metadata =
     command.type === 'task.create'
       ? [
-          command.priority ? `Priority ${command.priority}` : null,
-          command.dueDate ? `Due ${command.dueDate}` : null,
+          command.priority ? uiText('Priority {priority}', { priority: command.priority }) : null,
+          command.dueDate ? uiText('Due {date}', { date: command.dueDate }) : null,
           command.labels?.length ? command.labels.map((label) => `#${label}`).join(' ') : null,
         ].filter((value): value is string => value !== null)
       : [];
@@ -2349,7 +2612,7 @@ function ChatActionCard({
         <strong>{title}</strong>
         {command.type === 'task.create' && command.description && (
           <div className="chat-action-description">
-            <small>Proposed description</small>
+            <small>{uiText('Proposed description')}</small>
             <p>{command.description}</p>
           </div>
         )}
@@ -2357,10 +2620,10 @@ function ChatActionCard({
       </div>
       {action.status === 'proposed' ? (
         <button type="button" className="secondary-button" onClick={onApply} disabled={busy}>
-          {busy ? 'Applying…' : 'Apply'}
+          {busy ? uiText('Applying…') : uiText('Apply')}
         </button>
       ) : (
-        <b>{actionStatusLabel(action)}</b>
+        <b>{uiText(actionStatusLabel(action))}</b>
       )}
     </section>
   );
@@ -2375,7 +2638,7 @@ function actionStatusLabel(action: ProjectChatAction) {
 }
 
 function formatTime(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(uiLocale(), {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value));

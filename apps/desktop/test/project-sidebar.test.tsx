@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { renderToStaticMarkup } from 'react-dom/server';
+import { SidebarIcon } from '../src/renderer/src/sidebar-icon';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -10,6 +11,18 @@ import {
 } from '../src/renderer/src/project-sidebar';
 import { DEFAULT_PROJECT_NAVIGATION_STATE } from '../src/renderer/src/project-navigation-state';
 import type { PortfolioProjectRecord } from '../src/renderer/src/project-portfolio-model';
+
+it('keeps a closed chat bubble and three dots, adding a separate upper-right AI sparkle', () => {
+  const html = renderToStaticMarkup(<SidebarIcon name="assistant" />);
+  expect(html.match(/<circle /g)).toHaveLength(3);
+  for (const cx of [7, 10.5, 14]) expect(html).toContain(`cx="${cx}" cy="12.5"`);
+  expect(html).toContain('M6.5 7h8a3.5');
+  expect(html).toContain('data-assistant-sparkle="true"');
+  expect(html).toContain('M20 1.5l.85 2.15L23 4.5');
+  expect(html).not.toContain('<animate');
+  expect(renderToStaticMarkup(<SidebarIcon name="chat" />)).not.toContain('data-assistant-sparkle');
+  expect(html).toContain('viewBox="0 0 24 24"');
+});
 
 const baseProject: PortfolioProjectRecord = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -76,6 +89,33 @@ function renderSidebar(overrides: Partial<ProjectSidebarProps> = {}) {
 }
 
 describe('folder-style project sidebar', () => {
+  it('places search/notifications then named shared personal tools before Projects', () => {
+    const html = renderSidebar();
+    expect(html.indexOf('aria-label="Workspace shortcuts"')).toBeLessThan(
+      html.indexOf('class="project-navigation-heading"'),
+    );
+    expect(html).toContain('aria-label="Search"');
+    expect(html).toContain('aria-label="To-do list"');
+    const personal = html.slice(
+      html.indexOf('class="project-personal-tools"'),
+      html.indexOf('class="project-navigation-heading"'),
+    );
+    expect(personal.indexOf('Calendar')).toBeLessThan(personal.indexOf('To-do list'));
+    expect(personal.indexOf('To-do list')).toBeLessThan(personal.indexOf('Briefing Lab'));
+    expect(html.slice(0, html.indexOf('class="project-personal-tools"'))).not.toContain(
+      'data-sidebar-icon="tasks"',
+    );
+    expect(html).toContain('aria-label="Notifications, 0 unread"');
+    const global = html.slice(html.indexOf('class="project-global-navigation"'));
+    expect(global).not.toContain('data-sidebar-icon="search"');
+    expect(global).not.toContain('data-sidebar-icon="tasks"');
+  });
+  it('exposes one Model Lab tab in each project folder immediately below Project chat', () => {
+    const html = renderSidebar({ projects: [baseProject], activeTab: 'model-lab' });
+    expect(html.match(/>Model Lab</g)).toHaveLength(1);
+    expect(html.indexOf('>Project chat<')).toBeLessThan(html.indexOf('>Model Lab<'));
+    expect(html.indexOf('>Model Lab<')).toBeLessThan(html.indexOf('>Repository<'));
+  });
   it('keeps an accessible titlebar control available in both sidebar states', () => {
     const expanded = renderToStaticMarkup(
       <ProjectSidebarToggle collapsed={false} onToggle={vi.fn()} />,
@@ -89,7 +129,7 @@ describe('folder-style project sidebar', () => {
     expect(collapsed).toContain('aria-expanded="false"');
   });
 
-  it('uses larger fixed sidebar icons and disclosure chevrons without changing labels', () => {
+  it('uses one accessible outline SVG family for every destination and no decorative project glyph', () => {
     const styles = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8');
     const html = renderSidebar();
 
@@ -97,28 +137,49 @@ describe('folder-style project sidebar', () => {
     expect(styles).toMatch(
       /\.sidebar-toggle-button svg\s*\{[^}]*width:\s*22px;[^}]*height:\s*22px;[^}]*stroke-width:\s*1\.6;/su,
     );
+    expect(styles).toMatch(/\.sidebar-nav-icon\s*\{[^}]*width:\s*22px;[^}]*height:\s*22px;/su);
     expect(styles).toMatch(
-      /\.sidebar-nav-icon\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px;[^}]*font-size:\s*18px;/su,
-    );
-    expect(styles).toMatch(
-      /\.sidebar-nav-icon-search\s*\{[^}]*width:\s*20px;[^}]*height:\s*20px;[^}]*stroke-width:\s*1\.8;/su,
-    );
-    expect(styles).toMatch(
-      /\.sidebar-nav-icon-lecture\s*\{[^}]*width:\s*17px;[^}]*height:\s*17px;[^}]*stroke-width:\s*1\.8;/su,
-    );
-    expect(styles).toMatch(
-      /\.sidebar-nav-icon-usage\s*\{[^}]*width:\s*19px;[^}]*height:\s*19px;[^}]*stroke-width:\s*1\.8;/su,
+      /\.sidebar-nav-icon-graphic\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*fill:\s*none;[^}]*stroke:\s*currentColor;[^}]*stroke-width:\s*1\.7;[^}]*stroke-linecap:\s*round;[^}]*stroke-linejoin:\s*round;/su,
     );
     expect(styles).toMatch(
       /\.project-folder-chevron \.collapse-chevron,[^}]*\.project-group-toggle > \.collapse-chevron\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;/su,
     );
-    expect(styles).toMatch(/\.project-folder-icon\s*\{[^}]*font-size:\s*18px;/su);
-    expect(html).toContain('class="sidebar-nav-icon"');
-    expect(html).toContain('class="sidebar-nav-icon-graphic sidebar-nav-icon-search"');
-    expect(html).toContain('class="sidebar-nav-icon-graphic sidebar-nav-icon-lecture"');
-    expect(html).toContain('class="sidebar-nav-icon-graphic sidebar-nav-icon-usage"');
-    expect(html).not.toContain('⌕');
-    expect(html).not.toContain('▹');
+    const expectedIcons = [
+      'assistant',
+      'search',
+      'notifications',
+      'calendar',
+      'tasks',
+      'briefing-lab',
+      'chat',
+      'model-lab',
+      'repository',
+      'manuscript',
+      'review',
+      'board',
+      'objective',
+      'experiments',
+      'literature',
+      'notes',
+      'lecture',
+      'connections',
+      'usage',
+      'settings',
+    ];
+    const icons = [...html.matchAll(/<svg\b[^>]*data-sidebar-icon="([^"]+)"[^>]*>/gu)];
+    expect(icons.map((match) => match[1])).toEqual(expectedIcons);
+    for (const [markup, name] of icons) {
+      expect(markup).toContain(`class="sidebar-nav-icon-graphic sidebar-nav-icon-${name}"`);
+      expect(markup).toContain('viewBox="0 0 24 24"');
+      expect(markup).toContain('aria-hidden="true"');
+      expect(markup).toContain('focusable="false"');
+    }
+    expect(html.match(/class="sidebar-nav-icon"/gu)).toHaveLength(expectedIcons.length);
+    expect(html).not.toContain('project-folder-icon');
+    expect(styles).not.toContain('.project-folder-icon');
+    expect(html).not.toMatch(/[◈▰▱▦⌁▤◇⚙⌕▹]/u);
+    expect(html).toContain('Actions for Active Alpha');
+    expect(html).toContain('Codex is running');
     expect(html).toContain('class="collapse-chevron"');
     expect(html).toContain('aria-label="Active projects"');
   });
@@ -192,7 +253,7 @@ describe('folder-style project sidebar', () => {
       'utf8',
     );
 
-    expect(source).toContain('label="Resize projects sidebar"');
+    expect(source).toContain("label={uiText('Resize projects sidebar')}");
     expect(source).toContain("'--project-sidebar-width': `${projectNavigation.sidebarWidth}px`");
     expect(source).toContain('saveProjectNavigationState(window.localStorage, projectNavigation)');
     expect(styles).toMatch(
@@ -274,7 +335,7 @@ describe('folder-style project sidebar', () => {
     const workspaceNavigationPosition = html.indexOf('<small>Workspace</small>');
 
     expect(html).toContain('Workspace');
-    expect(html).toContain('Tasks');
+    expect(html).toContain('To-do list');
     expect(html).toContain('Connections');
     expect(html).toContain('Usage');
     expect(html).toContain('Lecture notes &amp; slides');
@@ -283,8 +344,10 @@ describe('folder-style project sidebar', () => {
     expect(html.match(/Research Notes/gu)).toHaveLength(1);
     expect(projectNotesPosition).toBeGreaterThan(-1);
     expect(projectNotesPosition).toBeLessThan(workspaceNavigationPosition);
-    expect(html.indexOf('Tasks')).toBeGreaterThan(workspaceNavigationPosition);
-    expect(html.indexOf('Tasks')).toBeLessThan(html.indexOf('Search'));
+    expect(html.indexOf('aria-label="To-do list"')).toBeLessThan(workspaceNavigationPosition);
+    expect(html.indexOf('aria-label="Search"')).toBeLessThan(
+      html.indexOf('aria-label="To-do list"'),
+    );
     expect(html.indexOf('Lecture notes &amp; slides')).toBeGreaterThan(workspaceNavigationPosition);
     expect(html.indexOf('Connections')).toBeLessThan(html.indexOf('Usage'));
     expect(html.indexOf('Usage')).toBeLessThan(html.indexOf('Settings'));
@@ -307,8 +370,9 @@ describe('folder-style project sidebar', () => {
     const workspaceHtml = html.slice(workspaceNavigationPosition);
     const projectHtml = html.slice(0, workspaceNavigationPosition);
 
-    expect(workspaceHtml).toMatch(
-      /class="active" aria-current="page"><span class="sidebar-nav-icon" aria-hidden="true">▦<\/span>Tasks<\/button>/u,
+    expect(workspaceHtml).not.toContain('data-sidebar-icon="tasks"');
+    expect(projectHtml).toMatch(
+      /class="project-personal-tool active" aria-current="page" aria-label="To-do list"/u,
     );
     expect(projectHtml).toContain('>Board</button>');
     expect(projectHtml).not.toMatch(/class="active"[^>]*>[^<]*(?:<[^>]+>)*Board<\/button>/u);

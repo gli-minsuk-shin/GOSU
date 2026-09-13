@@ -104,7 +104,7 @@
   border-radius: 7px;
   background: var(--surface-soft);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-caption);
   font-weight: 850;
   letter-spacing: 0.05em;
 }
@@ -175,7 +175,7 @@
   border-radius: 7px;
   background: transparent;
   color: var(--muted);
-  font-size: 21px;
+  font-size: var(--font-heading);
   line-height: 1;
 }
 

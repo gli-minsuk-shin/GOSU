@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { access, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   app,
@@ -11,8 +11,19 @@ import {
   shell,
   type IpcMainInvokeEvent,
 } from 'electron';
-import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
+import {
+  APPLICATION_LANGUAGE_CHANNELS,
+  DEFAULT_APP_LANGUAGE,
+  type ModelCatalog,
+  type ModelInvocation,
+} from '@gosu/contracts';
+import {
+  ApplicationLanguageService,
+  applicationLanguageContext,
+  configureApplicationLanguageService,
+} from './application-language-service';
 import { createManuscriptWorkspaceAdapterRegistry } from '@gosu/integrations';
+import { resolveGosuCodexHome } from '@gosu/integrations/codex-runtime-discovery';
 import { APP_NAVIGATION_CHANNELS } from '../shared/app-navigation-channels';
 import {
   CODEX_AUTH_IPC_CHANNELS,
@@ -26,9 +37,15 @@ import { HermesAcpApprovalEventSchema } from '../shared/hermes-acp-approval-cont
 import { LECTURE_STUDIO_IPC_CHANNELS } from '../shared/lecture-studio-channels';
 import { LectureStudioEventSchema } from '../shared/lecture-studio-contracts';
 import { PROJECT_CHAT_IPC_CHANNELS } from '../shared/project-chat-channels';
+import { MODEL_LAB_OPEN_CHANNEL, OpenProjectModelLabSchema } from '../shared/model-lab-contracts';
+import { ModelLabDesktopHost } from '../../../model-lab/model-lab-desktop-host';
+import { createModelCopilotMiddleware } from '../../../model-lab/model-copilot-server';
 import { SSH_IPC_CHANNELS } from '../shared/ssh-channels';
 import { SshEventSchema } from '../shared/ssh-contracts';
-import { buildMacApplicationMenuTemplate } from './application-menu';
+import {
+  buildMacApplicationMenuTemplate,
+  macApplicationMenuLabelChanges,
+} from './application-menu';
 import { registerAgentAddOnIpc } from './agent-addon-ipc';
 import { createAgentAddOnRegistry } from './agent-addon-service';
 import { ClaudeCodeProjectChatAdapter } from './claude-code-project-chat-adapter';
@@ -82,12 +99,24 @@ import { ExperimentRunLogService } from './experiment-run-log-service';
 import { LocalExperimentEvaluationArtifacts } from './experiment-evaluation-artifacts';
 import { registerExperimentEvaluationIpc } from './experiment-evaluation-ipc';
 import { ExperimentEvaluationService } from './experiment-evaluation-service';
+import { ProjectResearchPlanService } from './project-research-plan-service';
 import { registerExperimentWorkspaceIpc } from './experiment-workspace-ipc';
 import { ExperimentWorkspaceService } from './experiment-workspace-service';
 import { registerProjectChatAttachmentIpc } from './project-chat-attachment-ipc';
+import { ReserveBriefingDropSchema } from '../shared/project-chat-attachment-contracts';
+import { compactProjectConversation } from '../../../briefing-lab/briefing-compaction';
 import { createProjectChatAttachmentPicker } from './project-chat-attachment-platform';
 import { ProjectChatAttachmentService } from './project-chat-attachment-service';
 import { registerProjectChatIpc } from './project-chat-ipc';
+import { registerPaperSummaryIpc } from './paper-summary-ipc';
+import { SharedPaperSummaryLibrary } from '../../../briefing-lab/paper-summary-library';
+import { BriefingDesktopHost } from '../../../briefing-lab/briefing-desktop-host';
+import { createBriefingHostConsent } from './briefing-host-consent';
+import { createGlobalAssistantProjects } from './global-assistant-projects';
+import { ModelRoutingStore } from './model-routing-store';
+import { MODEL_ROUTING_CHANNELS } from '@gosu/contracts';
+import { briefingTodoSnapshot } from './briefing-todo-adapter';
+import { BRIEFING_LAB_OPEN_CHANNEL } from '../shared/briefing-lab-contracts';
 import { ProjectChatService } from './project-chat-service';
 import { ProjectChatProviderRouter } from './project-chat-provider-router';
 import { ApplicationSearchSource } from './application-search-source';
@@ -120,8 +149,22 @@ import { isSupervisorAlive, parseSupervisorPid } from './supervisor-liveness';
 
 installProcessOutputGuards();
 
+let refreshApplicationMenu: (() => void) | undefined;
+const applicationLanguage = new ApplicationLanguageService(
+  () => join(app.getPath('userData'), 'application-language.json'),
+  (preference) => {
+    try {
+      refreshApplicationMenu?.();
+    } finally {
+      if (mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send(APPLICATION_LANGUAGE_CHANNELS.changed, preference);
+    }
+  },
+);
+configureApplicationLanguageService(applicationLanguage);
+
 const codex = new CodexAppServer({
-  isolatedCodexHome: () => join(app.getPath('userData'), 'codex-project-chat'),
+  isolatedCodexHome: () => resolveGosuCodexHome({ userDataDirectory: app.getPath('userData') }),
   clientVersion: () => app.getVersion(),
 });
 const hermesAcpApprovals = new HermesAcpApprovalService();
@@ -155,9 +198,9 @@ const projectChatProvider = new ProjectChatProviderRouter(
 const agentAddOns = createAgentAddOnRegistry(
   {},
   {
-    hermesProjectChat: projectChatProvider,
     claudeCodeProjectChat: projectChatProvider,
   },
+  ['claude-code'],
 );
 const database = new LocalDatabase();
 const vault = new VaultAccess({
@@ -285,6 +328,13 @@ const projectChatAttachments = new ProjectChatAttachmentService({
     if (snapshot.session?.id !== sessionId) throw new Error('attachment_scope_mismatch');
   },
 });
+const briefingChatAttachments = new ProjectChatAttachmentService({
+  chooseFiles: createProjectChatAttachmentPicker(() => mainWindow),
+  async validateScope(projectId) {
+    if (projectId !== 'b13f1000-0000-4000-8000-000000000001')
+      throw new Error('attachment_scope_mismatch');
+  },
+});
 const literature = new LiteratureService({
   storage: database,
   workspace,
@@ -302,14 +352,42 @@ const literature = new LiteratureService({
   transfer: createLiteratureTransferPlatform(() => mainWindow),
   projection: researchNotes,
 });
+const researchPlans = new ProjectResearchPlanService({
+  workspace,
+  storage: database,
+  onCommitted: (receipt) => {
+    experimentWorkspace.notifyResearchPlanCommitted(
+      receipt.projectId,
+      receipt.loggingTemplateId,
+      receipt.createdAt,
+    );
+    experimentEvaluation.notifyResearchPlanCommitted(
+      receipt.projectId,
+      receipt.evaluationSessionId,
+      receipt.evaluationRevisionId,
+      receipt.createdAt,
+    );
+  },
+});
 const projectChat = new ProjectChatService({
+  modelLab: async (projectId, input) => {
+    if (!modelLabHost) throw new Error('model_lab_host_unavailable');
+    return modelLabHost.readForChat(projectId, input);
+  },
+  researchPlans,
+  compactHistory: async (model, messages, summary, signal, onUsage) => {
+    return compactProjectConversation(
+      model,
+      messages,
+      summary,
+      signal,
+      modelRoutingStore ? await modelRoutingStore.get() : undefined,
+      onUsage,
+    );
+  },
   storage: database,
   workspace,
   codex: projectChatProvider,
-  hermes: {
-    isConnected: () => projectChatProvider.isHermesConnected(),
-    delegate: (input) => hermesProjectChat.delegate(input),
-  },
   vault: researchNotes,
   literature,
   manuscripts: manuscriptWorkspace,
@@ -527,16 +605,34 @@ function toggleSidebar(trustedRenderer: TrustedRenderer) {
 
 function installApplicationMenu(trustedRenderer: TrustedRenderer) {
   if (process.platform !== 'darwin') return;
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate(
+  let installedLanguage: string | undefined;
+  refreshApplicationMenu = () => {
+    let language = DEFAULT_APP_LANGUAGE;
+    try {
+      language = applicationLanguage.get().language;
+    } catch {
+      /* Keep Settings reachable so the user can repair an invalid preference. */
+    }
+    if (installedLanguage === language) return;
+    const menu = Menu.buildFromTemplate(
       buildMacApplicationMenuTemplate({
         appName: app.getName(),
+        language,
         openSettings: () => openSettings(trustedRenderer),
         toggleSidebar: () => toggleSidebar(trustedRenderer),
       }),
-    ),
-  );
+    );
+    for (const change of macApplicationMenuLabelChanges(menu.items, language, app.getName()))
+      change.item.label = change.label;
+    Menu.setApplicationMenu(menu);
+    installedLanguage = language;
+  };
+  refreshApplicationMenu();
 }
+
+let modelLabHost: ModelLabDesktopHost | undefined;
+let briefingLabHost: BriefingDesktopHost | undefined;
+let modelRoutingStore: ModelRoutingStore | undefined;
 
 function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadiness) {
   const handle = (
@@ -554,10 +650,56 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
       ) {
         throw new Error('untrusted_ipc_sender');
       }
-      return listener(event, ...args);
+      if (
+        channel === APPLICATION_LANGUAGE_CHANNELS.get ||
+        channel === APPLICATION_LANGUAGE_CHANNELS.set
+      )
+        return listener(event, ...args);
+      return applicationLanguageContext.run(applicationLanguage.get(), () =>
+        listener(event, ...args),
+      );
     });
   };
 
+  handle(APPLICATION_LANGUAGE_CHANNELS.get, () => {
+    const preference = applicationLanguage.get();
+    refreshApplicationMenu?.();
+    return preference;
+  });
+  handle(APPLICATION_LANGUAGE_CHANNELS.set, (_event, value) => applicationLanguage.set(value));
+  handle(MODEL_LAB_OPEN_CHANNEL, async (_event, input) => {
+    const { projectId } = OpenProjectModelLabSchema.parse(input);
+    if (!modelLabHost) throw new Error('model_lab_host_unavailable');
+    return modelLabHost.open(projectId);
+  });
+  handle(BRIEFING_LAB_OPEN_CHANNEL, async () => {
+    if (!briefingLabHost) throw new Error('briefing_host_unavailable');
+    return briefingLabHost.open();
+  });
+  handle('briefing-lab:notifications', async () => {
+    if (!briefingLabHost) throw new Error('briefing_host_unavailable');
+    return briefingLabHost.notifications();
+  });
+  handle(MODEL_ROUTING_CHANNELS.get, () => {
+    if (!modelRoutingStore) throw new Error('model_routing_unavailable');
+    return modelRoutingStore.get();
+  });
+  handle(MODEL_ROUTING_CHANNELS.set, (_event, value) => {
+    if (!modelRoutingStore) throw new Error('model_routing_unavailable');
+    return modelRoutingStore.set(value);
+  });
+  handle('briefing-lab:open-privacy', async (_event, kind) => {
+    if (kind !== 'automation' && kind !== 'calendar') throw new Error('invalid_privacy_target');
+    await shell.openExternal(
+      kind === 'automation'
+        ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation'
+        : 'x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars',
+    );
+  });
+  handle('briefing-lab:reserve-drop', (_event, input) => {
+    const parsed = ReserveBriefingDropSchema.parse(input);
+    return briefingChatAttachments.reserveDrop(parsed.routineId, parsed.paths);
+  });
   registerWorkspaceIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     workspace,
@@ -570,6 +712,10 @@ function registerIpc(trustedRenderer: TrustedRenderer, localData: ComponentReadi
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
     projectChat,
     reportUnexpectedWorkspaceError,
+  );
+  registerPaperSummaryIpc(
+    (channel, listener) => handle(channel, (_event, input) => listener(input)),
+    new SharedPaperSummaryLibrary(undefined, undefined, undefined, () => modelRoutingStore!.get()),
   );
   registerProjectChatAttachmentIpc(
     (channel, listener) => handle(channel, (_event, ...arguments_) => listener(...arguments_)),
@@ -742,6 +888,9 @@ if (!primaryInstance) {
   void app.whenReady().then(async () => {
     app.setName('GOSU');
     if (packagedStartupSmoke) {
+      await access(join(__dirname, '../model-lab/index.html'));
+      await access(join(__dirname, '../briefing-lab/index.html'));
+      await access(join(process.resourcesPath, 'model-lab/python-architecture-analyzer.py'));
       process.stdout.write('GOSU_PACKAGED_STARTUP_READY\n');
       app.quit();
       return;
@@ -755,12 +904,92 @@ if (!primaryInstance) {
       isPackaged: app.isPackaged,
       productionEntryPath: join(__dirname, '../renderer/index.html'),
     });
-    const contentSecurityPolicy = rendererContentSecurityPolicy(trustedRenderer);
+    process.env.GOSU_MODEL_LAB_PYTHON_ANALYZER = app.isPackaged
+      ? join(process.resourcesPath, 'model-lab', 'python-architecture-analyzer.py')
+      : join(__dirname, 'python-architecture-analyzer.py');
+    modelLabHost = new ModelLabDesktopHost({
+      assetsDirectory: join(__dirname, '../model-lab'),
+      stateDirectory: join(app.getPath('userData'), 'model-lab', 'projects'),
+      listProjects: async () =>
+        (await workspace.snapshot()).projects
+          .filter((project) => !project.trashedAt && !project.archivedAt)
+          .map(({ id, name }) => ({ id, name })),
+      resolveProject: async (projectId) => {
+        const project = (await workspace.snapshot()).projects.find(
+          (item) => item.id === projectId && !item.trashedAt && !item.archivedAt,
+        );
+        return project ? { id: project.id, name: project.name } : null;
+      },
+      middleware: createModelCopilotMiddleware(
+        undefined,
+        undefined,
+        undefined,
+        applicationLanguage,
+        undefined,
+        async () => (modelRoutingStore ? modelRoutingStore.get() : undefined),
+      ),
+    });
+    await modelLabHost
+      .start()
+      .catch(() => console.error('[GOSU] Embedded Model Lab could not start.'));
+    modelRoutingStore = new ModelRoutingStore(
+      join(app.getPath('userData'), 'model-routing.v1.json'),
+    );
+    briefingLabHost = new BriefingDesktopHost(
+      join(__dirname, '../briefing-lab'),
+      4318,
+      undefined,
+      async () => {
+        return briefingTodoSnapshot(await workspace.snapshot());
+      },
+      () => modelRoutingStore!.get(),
+      createBriefingHostConsent(
+        () => mainWindow,
+        (window, options) => dialog.showMessageBox(window, options),
+      ),
+      createGlobalAssistantProjects({
+        modelLab: async (projectId, input) => {
+          if (!modelLabHost) throw new Error('model_lab_host_unavailable');
+          return modelLabHost.readForChat(projectId, input);
+        },
+        projects: async () => (await workspace.snapshot()).projects,
+        sessions: (projectId) => projectChat.listSessions({ projectId }),
+        read: (projectId, sessionId) => projectChat.snapshot({ projectId, sessionId }),
+        memory: (projectId) =>
+          database.getProjectAgentPermanentMemory(
+            projectId,
+            '프로젝트 전역 비서 기억 결정 상태 진행',
+            { maxTokens: 2000 },
+          ),
+        remember: (projectId, text) => database.rememberGlobalAssistantContext(projectId, text),
+        send: (projectId, sessionId, message) =>
+          projectChat.send({
+            projectId,
+            ...(sessionId ? { sessionId } : {}),
+            message,
+            requestedModelId: null,
+            reasoningOptionId: null,
+          }),
+        confirm: createBriefingHostConsent(
+          () => mainWindow,
+          (window, options) => dialog.showMessageBox(window, options),
+        ),
+      }),
+      briefingChatAttachments,
+    );
+    const contentSecurityPolicy = rendererContentSecurityPolicy(
+      trustedRenderer,
+      modelLabHost.origin || undefined,
+      briefingLabHost.origin,
+    );
     session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
       callback({
         responseHeaders: {
           ...details.responseHeaders,
-          'Content-Security-Policy': [contentSecurityPolicy],
+          ...(details.url.startsWith(`${modelLabHost?.origin}/`) ||
+          details.url.startsWith(`${briefingLabHost?.origin}/`)
+            ? {}
+            : { 'Content-Security-Policy': [contentSecurityPolicy] }),
         },
       }),
     );
@@ -938,10 +1167,13 @@ if (!primaryInstance) {
     if (process.platform !== 'darwin') app.quit();
   });
   app.on('before-quit', () => {
+    void modelLabHost?.close();
+    void briefingLabHost?.close();
     manuscriptPdfCompiler.dispose();
     lectureDocumentCompiler.dispose();
     void lectureStudioFigures.dispose();
     projectChatAttachments.disposeImmediately();
+    briefingChatAttachments.disposeImmediately();
     literature.shutdown();
     ssh.shutdown();
     hermesProjectChat.shutdown();

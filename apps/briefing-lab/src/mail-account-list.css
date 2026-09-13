@@ -1,0 +1,195 @@
+.briefing-mail-account-settings {
+  container-type: inline-size;
+  min-width: 0;
+}
+.briefing-mail-account-settings .mail-account-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.mail-account-toolbar p {
+  margin: 5px 0 0;
+  color: #738068;
+  font-size: 13px;
+}
+.mail-account-actions {
+  display: flex;
+  gap: 8px;
+}
+.mail-account-list {
+  padding: 0;
+  margin: 16px 0;
+  list-style: none;
+}
+.mail-account-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) minmax(140px, 0.65fr) 34px;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #dde4d6;
+  border-radius: 12px;
+  background: #fcfdf9;
+}
+.mail-account-row + .mail-account-row {
+  margin-top: 8px;
+}
+.mail-account-symbol {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: #eef3e7;
+  color: #607849;
+}
+.mail-account-symbol svg {
+  width: 23px;
+  height: 23px;
+}
+.mail-account-identity {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  min-width: 0;
+}
+.mail-account-identity strong {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.mail-account-status {
+  font-size: 11px;
+  border-radius: 5px;
+  padding: 3px 7px;
+  color: #66715e;
+  background: #edf0e9;
+}
+.mail-account-status.saved {
+  color: #476523;
+  background: #edf3e3;
+}
+.mail-account-status.warning {
+  color: #99612f;
+  background: #fbefdf;
+}
+.mail-account-identity small,
+.mail-account-candidate small {
+  color: #78836f;
+  font-size: 11px;
+}
+.mail-account-mailbox {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.mail-account-mailbox > span {
+  font-size: 11px;
+  color: #75816a;
+}
+.briefing-mail-account-settings select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #d6decb;
+  background: white;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13px;
+  color: #3c4932;
+  text-overflow: ellipsis;
+}
+.mail-account-remove {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: #829075;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.mail-account-remove svg {
+  width: 19px;
+  height: 19px;
+}
+.mail-account-remove:hover {
+  background: #fcf0e9;
+  color: #aa6146;
+  border-color: #efd8c9;
+}
+.mail-account-remove:focus-visible {
+  outline: 2px solid #617f41;
+  outline-offset: 3px;
+}
+.mail-account-empty {
+  margin: 16px 0;
+  padding: 20px;
+  border: 1px dashed #d4ddca;
+  border-radius: 10px;
+  color: #78826d;
+  font-size: 13px;
+}
+.mail-account-picker {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid #d4dfc7;
+  border-radius: 12px;
+  background: #f6f9f0;
+}
+.mail-account-candidate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(100px, 0.65fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid #dfe6d7;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.mail-account-candidate > div {
+  display: grid;
+  gap: 5px;
+  overflow-wrap: anywhere;
+}
+.mail-account-filters {
+  border-top: 1px solid #e1e7d9;
+  padding-top: 12px;
+}
+.mail-account-filters h4 {
+  font-size: 13px;
+  color: #536841;
+  margin: 0 0 12px;
+}
+.mail-account-filters > label {
+  display: block;
+  margin: 10px 0;
+  font-size: 13px;
+}
+@container (max-width: 620px) {
+  .mail-account-row {
+    grid-template-columns: 32px minmax(0, 1fr) 34px;
+    padding: 12px;
+    gap: 10px;
+  }
+  .mail-account-symbol {
+    width: 32px;
+    height: 32px;
+  }
+  .mail-account-mailbox {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .mail-account-remove {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .mail-account-candidate {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .mail-account-candidate > div {
+    grid-column: 1 / -1;
+  }
+}

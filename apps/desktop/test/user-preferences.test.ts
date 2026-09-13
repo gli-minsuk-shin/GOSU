@@ -123,8 +123,8 @@ describe('local user preferences', () => {
         reasoningOptionId: 'ultra',
       },
       agentAddOns: {
-        openclaw: 'detect-local',
-        hermes: 'connect-local',
+        openclaw: 'disabled',
+        hermes: 'disabled',
         'claude-code': 'disabled',
       },
     });
@@ -170,7 +170,7 @@ describe('local user preferences', () => {
       },
     } as const;
     expect(saveUserPreferences(storage, preferences)).toBe(true);
-    expect(loadUserPreferences(storage)).toEqual(preferences);
+    expect(loadUserPreferences(storage)).toEqual(parseUserPreferences(preferences));
   });
 
   it('falls back only the invalid Board template while preserving valid display settings', () => {
@@ -279,8 +279,8 @@ describe('local user preferences', () => {
         reasoningOptionId: 'high',
       },
       agentAddOns: {
-        openclaw: 'detect-local',
-        hermes: 'detect-local',
+        openclaw: 'disabled',
+        hermes: 'disabled',
         'claude-code': 'disabled',
       },
     });
@@ -416,7 +416,7 @@ describe('local user preferences', () => {
       }).agentAddOns,
     ).toEqual({
       openclaw: 'disabled',
-      hermes: 'detect-local',
+      hermes: 'disabled',
       'claude-code': 'connect-local',
     });
   });
@@ -433,7 +433,7 @@ describe('local user preferences', () => {
       }).agentAddOns,
     ).toEqual({
       openclaw: 'disabled',
-      hermes: 'connect-local',
+      hermes: 'disabled',
       'claude-code': 'connect-local',
     });
   });

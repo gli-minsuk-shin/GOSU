@@ -6,7 +6,13 @@ import type {
   TensorDimension,
   TensorShape,
 } from './model-lab-schema';
+import { renderFormulaResult } from './formula';
+import { modelShapeConsistencyFindings } from './model-lab-domain';
 import { modelFormulaConsistencyFindings } from './model-formula-consistency';
+import {
+  modelLoopOwnershipFindings,
+  modelSemanticArchitectureFindings,
+} from './model-repeat-semantics';
 
 export const MODEL_LAB_MAX_IMPORT_BYTES = 1_000_000;
 
@@ -14,6 +20,183 @@ export type ModelImportResult =
   Readonly<{ ok: true; model: ModelSpec }> | Readonly<{ ok: false; reason: string }>;
 
 type UnknownRecord = Record<string, unknown>;
+
+function sameTensorShape(left: TensorShape, right: TensorShape) {
+  return (
+    left.length === right.length && left.every((dimension, index) => dimension === right[index])
+  );
+}
+
+function connectionTensorIdentifier(value: string) {
+  return value
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[^a-z0-9_λ]+/gu, '');
+}
+
+function textUsesIdentifier(text: string, identifier: string) {
+  if (identifier === 'λ') return /λ|\\lambda/u.test(text);
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return new RegExp(`(?:^|[^A-Za-z0-9_])${escaped}(?:$|[^A-Za-z0-9_])`, 'iu').test(text);
+}
+
+export function splitIndependentLambdaSummary(model: ModelSpec): ModelSpec {
+  for (const module of model.modules) {
+    const transformLines = module.transform
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const summaryLineIndex = transformLines.findIndex((line) => /^log_lam_mean\s*=/iu.test(line));
+    if (summaryLineIndex < 0 || !/x_c\.t\s*@\s*y_c|x_c[^\n]*y_c/iu.test(module.transform)) {
+      continue;
+    }
+    const summaryOutgoing = model.connections.filter(
+      (connection) =>
+        connection.source === module.id &&
+        ['log_lam_mean', 'm_lambda', 'mλ'].includes(
+          connectionTensorIdentifier(connection.tensorName),
+        ),
+    );
+    const primaryOutgoing = model.connections.filter(
+      (connection) => connection.source === module.id && !summaryOutgoing.includes(connection),
+    );
+    const lambdaIncoming = model.connections.filter(
+      (connection) =>
+        connection.target === module.id &&
+        ['lambda', 'λ'].includes(connectionTensorIdentifier(connection.tensorName)),
+    );
+    if (
+      summaryOutgoing.length === 0 ||
+      primaryOutgoing.length === 0 ||
+      lambdaIncoming.length === 0 ||
+      !summaryOutgoing.every((connection) =>
+        sameTensorShape(connection.shape, summaryOutgoing[0]!.shape),
+      ) ||
+      !primaryOutgoing.every((connection) =>
+        sameTensorShape(connection.shape, primaryOutgoing[0]!.shape),
+      )
+    ) {
+      continue;
+    }
+    const summaryId = `${module.id}-lambda-summary`.slice(0, 120);
+    if (model.modules.some((candidate) => candidate.id === summaryId)) return model;
+    const lambdaInputPortNames = new Set(
+      lambdaIncoming.flatMap((connection) => connection.targetPort ?? []),
+    );
+    const summaryOutputPortNames = new Set(
+      summaryOutgoing.flatMap((connection) => connection.sourcePort ?? []),
+    );
+    const summaryInputPorts = module.inputPorts?.filter((port) =>
+      lambdaInputPortNames.has(port.name),
+    );
+    const summaryOutputPorts = module.outputPorts?.filter((port) =>
+      summaryOutputPortNames.has(port.name),
+    );
+    const primaryInputPorts = module.inputPorts?.filter(
+      (port) => !lambdaInputPortNames.has(port.name),
+    );
+    const primaryOutputPorts = module.outputPorts?.filter(
+      (port) => !summaryOutputPortNames.has(port.name),
+    );
+    const formulaLines = module.formula
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const summaryFormulaIndex = formulaLines.findIndex((line) =>
+      /(?:m_\\lambda|log_lam_mean)\s*=/iu.test(line),
+    );
+    if (summaryFormulaIndex < 0) continue;
+    const primaryTransformLines = transformLines.filter(
+      (_line, index) => index !== summaryLineIndex,
+    );
+    const primaryFormulaLines = formulaLines.filter(
+      (_line, index) => index !== summaryFormulaIndex,
+    );
+    const removedLambdaIdentifiers = new Set([
+      'lambda',
+      'λ',
+      ...lambdaIncoming.flatMap((connection) => [
+        connectionTensorIdentifier(connection.tensorName),
+        ...(connection.targetPort ? [connectionTensorIdentifier(connection.targetPort)] : []),
+      ]),
+      ...[
+        ...transformLines[summaryLineIndex]!.matchAll(/\blog\s*\(\s*([A-Za-z_λ][A-Za-z0-9_λ]*)/giu),
+      ].map((match) => match[1]!.toLocaleLowerCase()),
+    ]);
+    const primaryTransform = primaryTransformLines.join('\n');
+    const primaryFormula = primaryFormulaLines.join('\n');
+    if (
+      /\blog_lam_mean\b/iu.test(primaryTransform) ||
+      /(?:m_\\lambda|log_lam_mean)/iu.test(primaryFormula) ||
+      [...removedLambdaIdentifiers].some(
+        (identifier) =>
+          identifier.length > 0 &&
+          (textUsesIdentifier(primaryTransform, identifier) ||
+            textUsesIdentifier(primaryFormula, identifier)),
+      )
+    ) {
+      continue;
+    }
+    const summaryModule: ModelModule = {
+      id: summaryId,
+      name: 'Lambda Log Summary',
+      kind: 'normalization',
+      group: module.group,
+      stage: module.stage,
+      lane: module.lane + 1,
+      inputShape: lambdaIncoming[0]!.shape,
+      outputShape: summaryOutgoing[0]!.shape,
+      ...(summaryInputPorts?.length ? { inputPorts: summaryInputPorts } : {}),
+      ...(summaryOutputPorts?.length ? { outputPorts: summaryOutputPorts } : {}),
+      transform: transformLines[summaryLineIndex]!,
+      activation: null,
+      formula: formulaLines[summaryFormulaIndex]!,
+      explanation:
+        'Computes the RTF-declared scalar lambda summary as an independent design branch. It does not participate in the correlation embedding H₀; downstream threshold modules consume it separately. Because the RTF defines the negative mean and later subtracts it, this must not be described as centering without stronger source evidence.',
+      parameterCount: 0,
+      codeReference: module.codeReference,
+    };
+    const primaryInputShape = module.inputShape.filter(
+      (dimension) => typeof dimension !== 'string' || !/lambda|lam_/iu.test(dimension),
+    );
+    const primaryModule: ModelModule = {
+      ...module,
+      inputShape: primaryInputShape.length > 0 ? primaryInputShape : module.inputShape,
+      outputShape: primaryOutgoing[0]!.shape,
+      ...(primaryInputPorts?.length ? { inputPorts: primaryInputPorts } : {}),
+      ...(primaryOutputPorts?.length ? { outputPorts: primaryOutputPorts } : {}),
+      transform: primaryTransformLines.join('\n'),
+      formula: primaryFormulaLines.join('\n'),
+      explanation:
+        'Computes the feature-target correlation statistic and embeds it into H₀. The lambda summary is a separate branch and is not an input to H₀.',
+    };
+    return {
+      ...model,
+      modules: model.modules.flatMap((candidate) =>
+        candidate.id === module.id ? [summaryModule, primaryModule] : [candidate],
+      ),
+      connections: model.connections.map((connection) => ({
+        ...connection,
+        ...(lambdaIncoming.includes(connection) ? { target: summaryId } : {}),
+        ...(summaryOutgoing.includes(connection) ? { source: summaryId } : {}),
+      })),
+    };
+  }
+  return model;
+}
+
+export function modelSourceOutputContractFindings(model: ModelSpec) {
+  const modules = new Map(model.modules.map((module) => [module.id, module]));
+  return model.connections.flatMap((connection) => {
+    const source = modules.get(connection.source);
+    const boundPort = source?.outputPorts?.find((port) => port.name === connection.sourcePort);
+    const declaredShape = boundPort?.shape ?? source?.outputShape;
+    if (!source || !declaredShape || sameTensorShape(declaredShape, connection.shape)) return [];
+    return [
+      `${source.name} [${source.id}] declares output [${declaredShape.join(', ')}], but outgoing tensor “${connection.tensorName}” uses [${connection.shape.join(', ')}]. A ModelIR v1 module has one typed output; independent or differently shaped live outputs must be split into separate modules unless exact named output ports are declared.`,
+    ].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  });
+}
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -74,6 +257,43 @@ function tensorShape(value: unknown, field: string): TensorShape {
   });
 }
 
+function modulePorts(value: unknown, field: string): ModelModule['inputPorts'] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 24) {
+    throw new Error(`${field} must contain between 1 and 24 ports.`);
+  }
+  const ports = value.map((port, index) => {
+    if (!isRecord(port)) throw new Error(`${field}[${index}] must be an object.`);
+    if (
+      port.binding !== undefined &&
+      !['internal', 'external', 'loop-carried'].includes(String(port.binding))
+    ) {
+      throw new Error(`${field}[${index}].binding is unsupported.`);
+    }
+    const bindingId =
+      port.bindingId === undefined || port.bindingId === null
+        ? undefined
+        : boundedString(port.bindingId, `${field}[${index}].bindingId`, 120);
+    if (port.binding === 'loop-carried' && !bindingId) {
+      throw new Error(`${field}[${index}].bindingId is required for a loop-carried port.`);
+    }
+    if (port.binding !== 'loop-carried' && bindingId) {
+      throw new Error(`${field}[${index}].bindingId is only valid for loop-carried ports.`);
+    }
+    return {
+      name: boundedString(port.name, `${field}[${index}].name`, 120),
+      shape: tensorShape(port.shape, `${field}[${index}].shape`),
+      ...(port.binding === undefined
+        ? {}
+        : { binding: port.binding as 'internal' | 'external' | 'loop-carried' }),
+      ...(bindingId ? { bindingId } : {}),
+    };
+  });
+  const names = new Set(ports.map((port) => port.name.normalize('NFC')));
+  if (names.size !== ports.length) throw new Error(`${field} names must be unique.`);
+  return ports;
+}
+
 function moduleFrom(value: unknown, index: number): ModelModule {
   if (!isRecord(value)) throw new Error(`modules[${index}] must be an object.`);
   const kind = boundedString(value.kind, `modules[${index}].kind`, 32);
@@ -84,6 +304,8 @@ function moduleFrom(value: unknown, index: number): ModelModule {
   ) {
     throw new Error(`modules[${index}].kind is unsupported.`);
   }
+  const inputPorts = modulePorts(value.inputPorts, `modules[${index}].inputPorts`);
+  const outputPorts = modulePorts(value.outputPorts, `modules[${index}].outputPorts`);
   return {
     id: boundedString(value.id, `modules[${index}].id`, 120),
     name: boundedString(value.name, `modules[${index}].name`, 160),
@@ -96,6 +318,8 @@ function moduleFrom(value: unknown, index: number): ModelModule {
         : boundedFiniteNumber(value.lane, `modules[${index}].lane`, -100, 100),
     inputShape: tensorShape(value.inputShape, `modules[${index}].inputShape`),
     outputShape: tensorShape(value.outputShape, `modules[${index}].outputShape`),
+    ...(inputPorts === undefined ? {} : { inputPorts }),
+    ...(outputPorts === undefined ? {} : { outputPorts }),
     transform: boundedString(value.transform, `modules[${index}].transform`),
     activation:
       value.activation === null
@@ -133,7 +357,7 @@ function moduleFrom(value: unknown, index: number): ModelModule {
         : (() => {
             throw new Error(`modules[${index}].block must be an object.`);
           })()),
-    ...(value.subgraph === undefined
+    ...(value.subgraph === undefined || value.subgraph === null
       ? {}
       : isRecord(value.subgraph)
         ? {
@@ -164,10 +388,18 @@ function connectionFrom(value: unknown, index: number): ModelConnection {
   if (!isRecord(value)) throw new Error(`connections[${index}] must be an object.`);
   const expectedToCarryGradient = value.expectedToCarryGradient !== false;
   const importedStates = expectedToCarryGradient ? NOT_OBSERVED_STATES : NOT_APPLICABLE_STATES;
+  const hasSourcePort = value.sourcePort !== undefined && value.sourcePort !== null;
+  const hasTargetPort = value.targetPort !== undefined && value.targetPort !== null;
   return {
     id: boundedString(value.id, `connections[${index}].id`, 120),
     source: boundedString(value.source, `connections[${index}].source`, 120),
     target: boundedString(value.target, `connections[${index}].target`, 120),
+    ...(!hasSourcePort
+      ? {}
+      : { sourcePort: boundedString(value.sourcePort, `connections[${index}].sourcePort`, 120) }),
+    ...(!hasTargetPort
+      ? {}
+      : { targetPort: boundedString(value.targetPort, `connections[${index}].targetPort`, 120) }),
     tensorName: boundedString(value.tensorName, `connections[${index}].tensorName`, 120),
     shape: tensorShape(value.shape, `connections[${index}].shape`),
     activationNorm:
@@ -203,7 +435,14 @@ function connectionFrom(value: unknown, index: number): ModelConnection {
   };
 }
 
-export function parseModelImportJson(text: string): ModelImportResult {
+export function parseModelImportJson(
+  text: string,
+  options: Readonly<{
+    enforceSourceOutputContracts?: boolean;
+    allowSubgraphs?: boolean;
+    sourceArtifactNames?: readonly string[];
+  }> = {},
+): ModelImportResult {
   if (new TextEncoder().encode(text).byteLength > MODEL_LAB_MAX_IMPORT_BYTES) {
     return { ok: false, reason: 'The ModelIR JSON exceeds the 1 MB prototype limit.' };
   }
@@ -225,6 +464,7 @@ export function parseModelImportJson(text: string): ModelImportResult {
     }
     const modules = value.modules.map(moduleFrom);
     const moduleIds = new Set(modules.map((module) => module.id));
+    const moduleById = new Map(modules.map((module) => [module.id, module]));
     if (moduleIds.size !== modules.length) throw new Error('module ids must be unique.');
     const connections = value.connections.map(connectionFrom);
     const connectionIds = new Set(connections.map((connection) => connection.id));
@@ -233,6 +473,30 @@ export function parseModelImportJson(text: string): ModelImportResult {
     for (const connection of connections) {
       if (!moduleIds.has(connection.source) || !moduleIds.has(connection.target)) {
         throw new Error(`${connection.id} references an unknown module.`);
+      }
+      const source = moduleById.get(connection.source)!;
+      const target = moduleById.get(connection.target)!;
+      if (source.outputPorts?.length) {
+        const sourcePort = source.outputPorts.find((port) => port.name === connection.sourcePort);
+        if (!sourcePort) {
+          throw new Error(`${connection.id} references an unknown sourcePort.`);
+        }
+        if (!sameTensorShape(sourcePort.shape, connection.shape)) {
+          throw new Error(`${connection.id} shape does not match its sourcePort.`);
+        }
+      } else if (connection.sourcePort) {
+        throw new Error(`${connection.id} binds sourcePort on a module without outputPorts.`);
+      }
+      if (target.inputPorts?.length) {
+        const targetPort = target.inputPorts.find((port) => port.name === connection.targetPort);
+        if (!targetPort) {
+          throw new Error(`${connection.id} references an unknown targetPort.`);
+        }
+        if (!sameTensorShape(targetPort.shape, connection.shape)) {
+          throw new Error(`${connection.id} shape does not match its targetPort.`);
+        }
+      } else if (connection.targetPort) {
+        throw new Error(`${connection.id} binds targetPort on a module without inputPorts.`);
       }
     }
     const sourceArtifacts = Array.isArray(value.sourceArtifacts)
@@ -246,7 +510,7 @@ export function parseModelImportJson(text: string): ModelImportResult {
           };
         })
       : [];
-    const model: ModelSpec = {
+    const rawModel: ModelSpec = {
       schemaVersion: 1,
       id: boundedString(value.id, 'id', 120),
       name: boundedString(value.name, 'name', 160),
@@ -269,7 +533,114 @@ export function parseModelImportJson(text: string): ModelImportResult {
       connections,
       gradientEvidence: null,
     };
-    const formulaFindings = modelFormulaConsistencyFindings(model);
+    let model = splitIndependentLambdaSummary(rawModel);
+    const expectedSourceArtifactNames = [
+      ...new Set(
+        (options.sourceArtifactNames ?? [])
+          .map((name) => name.trim().normalize('NFC'))
+          .filter((name) => name.length > 0),
+      ),
+    ].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+    const codeReferenceUsesSource = (codeReference: string, name: string) =>
+      codeReference.normalize('NFC') === name ||
+      new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?:[:#,\\s·—-])`, 'u').test(
+        codeReference.normalize('NFC'),
+      );
+    const provenanceFindings =
+      expectedSourceArtifactNames.length === 0
+        ? []
+        : [
+            ...model.modules.flatMap((module) =>
+              expectedSourceArtifactNames.some((name) =>
+                codeReferenceUsesSource(module.codeReference, name),
+              )
+                ? []
+                : [
+                    `${module.name} [${module.id}] codeReference does not name any supplied source artifact.`,
+                  ],
+            ),
+          ];
+    if (expectedSourceArtifactNames.length > 0) {
+      model = {
+        ...model,
+        sourceArtifacts: expectedSourceArtifactNames.map((path) => ({ path, verified: true })),
+      };
+    }
+    const sourceOutputFindings = modelSourceOutputContractFindings(model);
+    const formulaFindings = [
+      ...modelFormulaConsistencyFindings(model, {
+        includeNamedValueLiveness: options.enforceSourceOutputContracts === true,
+      }),
+      ...model.modules.flatMap((module) => {
+        const rendered = renderFormulaResult(module.formula);
+        return rendered.valid
+          ? []
+          : [`${module.name} [${module.id}] formula is not renderable: ${rendered.reason}`];
+      }),
+    ];
+    const shapeFindings = modelShapeConsistencyFindings(model);
+    const loopOwnershipFindings = modelLoopOwnershipFindings(model);
+    const hasExplicitPortContract =
+      model.modules.some(
+        (module) => Boolean(module.inputPorts?.length) || Boolean(module.outputPorts?.length),
+      ) || model.connections.some((connection) => connection.sourcePort || connection.targetPort);
+    if (
+      !options.enforceSourceOutputContracts &&
+      hasExplicitPortContract &&
+      (shapeFindings.length > 0 || loopOwnershipFindings.length > 0)
+    ) {
+      throw new Error(
+        `Graph structure failed: ${[...shapeFindings, ...loopOwnershipFindings]
+          .slice(0, 5)
+          .join(' | ')}`,
+      );
+    }
+    if (options.enforceSourceOutputContracts) {
+      const semanticFindings = modelSemanticArchitectureFindings(model);
+      const strictPortFindings = [
+        ...(!model.modules.some((module) => module.kind === 'input')
+          ? ['ModelIR has no input-kind boundary module.']
+          : []),
+        ...(!model.modules.some((module) => module.kind === 'output' || module.kind === 'objective')
+          ? ['ModelIR has no output/objective terminal boundary module.']
+          : []),
+        ...model.modules.flatMap((module) => [
+          ...(!module.inputPorts?.length ? [`${module.name} has no explicit inputPorts.`] : []),
+          ...(!module.outputPorts?.length ? [`${module.name} has no explicit outputPorts.`] : []),
+          ...(options.allowSubgraphs === false && module.subgraph
+            ? [`${module.name} references unqualified subgraph ${module.subgraph.modelId}.`]
+            : []),
+        ]),
+        ...model.connections.flatMap((connection) => [
+          ...(!connection.sourcePort ? [`${connection.id} has no sourcePort binding.`] : []),
+          ...(!connection.targetPort ? [`${connection.id} has no targetPort binding.`] : []),
+        ]),
+      ];
+      const auditSections = [
+        ...(shapeFindings.length > 0 || strictPortFindings.length > 0
+          ? [
+              `Graph structure failed: ${[...strictPortFindings, ...shapeFindings]
+                .slice(0, 8)
+                .join(' | ')}`,
+            ]
+          : []),
+        ...(semanticFindings.length > 0
+          ? [`Semantic architecture quality failed: ${semanticFindings.slice(0, 5).join(' | ')}`]
+          : []),
+        ...(sourceOutputFindings.length > 0
+          ? [`Source-output contract failed: ${sourceOutputFindings.slice(0, 3).join(' | ')}`]
+          : []),
+        ...(formulaFindings.length > 0
+          ? [`Formula consistency failed: ${formulaFindings.slice(0, 5).join(' | ')}`]
+          : []),
+        ...(provenanceFindings.length > 0
+          ? [`Source provenance failed: ${provenanceFindings.slice(0, 5).join(' | ')}`]
+          : []),
+      ];
+      if (auditSections.length > 0) {
+        throw new Error(`Builder audit failed: ${auditSections.join(' || ')}`);
+      }
+    }
     if (formulaFindings.length > 0) {
       throw new Error(`Formula consistency failed: ${formulaFindings.slice(0, 3).join(' | ')}`);
     }

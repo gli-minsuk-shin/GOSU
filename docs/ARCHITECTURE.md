@@ -5,6 +5,11 @@
 "어느 코드가 무엇을 소유하며, 변경이 다른 영역으로 번지지 않게 하려면 어떻게 해야 하는가"에
 초점을 둔다.
 
+> Maintenance entrypoint: [현재 유지보수 가이드](MAINTENANCE_GUIDE.md),
+> [문서 안내](README.md), [로컬 릴리스 기록](releases/0.58.9.md).
+> 이 상세 문서에는 이전 계획과 구현 시점의 기록이 함께 남아 있다. 새 Model Lab/Briefing Lab,
+> native harness, memory, font 및 UI 동작은 기능별 최신 문서와 현재 코드를 먼저 대조한다.
+
 ## 1. 상태 표기
 
 이 문서에서는 다음 표기를 사용한다.
@@ -426,6 +431,11 @@ lease·fencing과 reconciliation을 가진 향후 `submit_experiment_trial` 계�
 실행해야 한다.
 
 ### Desktop Experiment Evaluation Studio 흐름
+
+2026-09-14 source 추가: [Project Chat 계획 연동](PROJECT_RESEARCH_PLANS.md)은 별도의 typed
+`apply_research_plan` 경로로 Goal·Logging·idea·새 Evaluation session을 한 transaction에 저장한다.
+기존 Evaluation Studio의 승인/실행 권한을 넓히지 않는다. 아래 Studio 자체의 read-only Goal
+설명과 혼동하지 않으며, 새로운 계획 bridge의 버전·receipt·실행 경계는 연결 문서를 우선한다.
 
 `Evaluation studio`는 기존 `ExperimentWorkspaceSnapshot`에 AI chat 상태를 섞지 않는 독립 모듈이다.
 Renderer는 preload의 `experimentEvaluation` facade만 사용하고 Main은 `list / detail / create-session /

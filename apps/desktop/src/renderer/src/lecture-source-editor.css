@@ -149,7 +149,7 @@
   background: color-mix(in srgb, var(--surface-soft) 54%, var(--surface));
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-control);
   line-height: 1.55;
   tab-size: 2;
   white-space: pre;

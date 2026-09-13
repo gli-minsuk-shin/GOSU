@@ -48,9 +48,16 @@ export function isTrustedRendererUrl(candidate: string, trusted: TrustedRenderer
   }
 }
 
-export function rendererContentSecurityPolicy(trusted: TrustedRenderer) {
-  const common =
-    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'self'";
+export function rendererContentSecurityPolicy(
+  trusted: TrustedRenderer,
+  modelLabOrigin?: string,
+  briefingOrigin?: string,
+) {
+  if (briefingOrigin && briefingOrigin !== 'http://127.0.0.1:4318')
+    throw new Error('invalid_briefing_origin');
+  if (modelLabOrigin && !/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(modelLabOrigin))
+    throw new Error('invalid_model_lab_origin');
+  const common = `default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; frame-src ${[modelLabOrigin, briefingOrigin].filter(Boolean).join(' ') || "'none'"}; base-uri 'none'; form-action 'self'`;
   if (trusted.mode === 'production') {
     return `${common}; script-src 'self'; connect-src 'self'`;
   }

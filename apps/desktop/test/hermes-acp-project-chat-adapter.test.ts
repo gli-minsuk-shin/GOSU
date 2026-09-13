@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { applicationLanguageContext } from '../src/main/application-language-service';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -213,6 +214,24 @@ function notification(adapter: HermesAcpProjectChatAdapter, method: string) {
 }
 
 describe('Hermes ACP Project Chat adapter', () => {
+  it('preserves the selected language in the bounded Hermes instruction block', async () => {
+    const { adapter, clients } = fixture();
+    const { threadId } = await applicationLanguageContext.run(
+      { language: 'ko', configured: true },
+      () => start(adapter),
+    );
+    await adapter.runTurn({
+      threadId,
+      prompt: 'Explain the evidence.',
+      requestedModelId: HERMES_CONFIGURED_MODEL_ID,
+      reasoningOptionId: null,
+      cwd: '/workspace/project',
+    });
+    expect(clients[0]!.prompts[0]!.blocks.join('\n')).toContain('Korean (한국어)');
+    expect(clients[0]!.prompts[0]!.blocks.join('\n')).toContain('Stay within the active project.');
+    clients[0]!.finish('완료했습니다.');
+    await adapter.releaseThread(threadId);
+  });
   it('publishes Connected only after a real sealed ACP initialize and session handshake', async () => {
     const passing = fixture();
     await expect(passing.adapter.refreshConnectionCatalogs()).resolves.toMatchObject({

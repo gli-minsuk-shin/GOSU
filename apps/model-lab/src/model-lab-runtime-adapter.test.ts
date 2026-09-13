@@ -1,11 +1,103 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createCodexModelLabRuntime,
+  createGosuModelLabRuntime,
   deterministicModelLabRuntime,
   isCurrentModelLabTurn,
   MODEL_LAB_RUNTIME_ERROR_MESSAGE,
+  modelLabRuntimeErrorCode,
+  modelLabRuntimeErrorMessage,
 } from './model-lab-runtime-adapter';
 import { bottleneckAutoencoder, residualClassifier, sampleModels } from './sample-models';
+import type { ModelSpec } from './model-lab-schema';
+it('delivers validated context accounting events independently from tool progress', async () => {
+  const report = {
+    windowTokens: 1000000,
+    windowSource: 'provider',
+    estimatedInputTokens: 1000,
+    outputReserveTokens: 120000,
+    toolReserveTokens: 128000,
+    totalMessages: 600,
+    includedMessages: 600,
+    compressedMessages: 0,
+    omittedMessages: 0,
+  };
+  const onContextUsage = vi.fn();
+  const events = [
+    { type: 'context-usage', usage: { ...report, windowTokens: -1 } },
+    { type: 'context-usage', usage: report },
+    { type: 'result', answer: { body: 'Answer', trace: [], contextUsage: report } },
+  ];
+  const runtime = createGosuModelLabRuntime(
+    async () =>
+      new Response(events.map((event) => JSON.stringify(event)).join('\n') + '\n', {
+        headers: { 'Content-Type': 'application/x-ndjson' },
+      }),
+  );
+  const answer = await runtime.answer(
+    {
+      projectModels: [residualClassifier],
+      activeModelId: residualClassifier.id,
+      selectedModuleId: 'merge',
+      question: 'Continue',
+      probe: 'healthy',
+      checkpointIndex: 0,
+    },
+    { onContextUsage },
+  );
+  expect(onContextUsage).toHaveBeenCalledOnce();
+  expect(answer.contextUsage?.totalMessages).toBe(600);
+});
+
+it('surfaces actionable native auth errors without exposing provider diagnostics', () => {
+  expect(modelLabRuntimeErrorCode('claude_code_auth_required')).toBe('claude_code_auth_required');
+  expect(modelLabRuntimeErrorMessage(new Error('claude_code_auth_required'))).toContain(
+    'Sign in again',
+  );
+  expect(modelLabRuntimeErrorMessage(new Error('private token and raw log'))).toBe(
+    MODEL_LAB_RUNTIME_ERROR_MESSAGE,
+  );
+});
+
+function withExplicitPorts(model: ModelSpec): ModelSpec {
+  return {
+    ...model,
+    modules: model.modules.map((module) => {
+      const incoming = model.connections.filter((connection) => connection.target === module.id);
+      const outgoing = model.connections.filter((connection) => connection.source === module.id);
+      return {
+        ...module,
+        inputPorts:
+          incoming.length > 0
+            ? incoming.map((connection) => ({
+                name: `input:${connection.id}`,
+                shape: connection.shape,
+                binding: 'internal' as const,
+              }))
+            : [{ name: 'external input', shape: module.inputShape, binding: 'external' as const }],
+        outputPorts:
+          outgoing.length > 0
+            ? outgoing.map((connection) => ({
+                name: `output:${connection.id}`,
+                shape: connection.shape,
+                binding: 'internal' as const,
+              }))
+            : [
+                {
+                  name: 'external output',
+                  shape: module.outputShape,
+                  binding: 'external' as const,
+                },
+              ],
+      };
+    }),
+    connections: model.connections.map((connection) => ({
+      ...connection,
+      sourcePort: `output:${connection.id}`,
+      targetPort: `input:${connection.id}`,
+    })),
+  };
+}
 
 describe('Model Lab runtime adapter boundary', () => {
   it('qualifies an answer to one immutable model, module, and gradient checkpoint', async () => {
@@ -167,7 +259,7 @@ describe('Model Lab runtime adapter boundary', () => {
             body: 'A reviewable two-class head proposal is ready.',
             trace: ['Chat edit proposal validated'],
             editProposal: {
-              model: residualClassifier,
+              model: withExplicitPorts(residualClassifier),
               instructions: 'Change the prediction head to two outputs.',
             },
           }),

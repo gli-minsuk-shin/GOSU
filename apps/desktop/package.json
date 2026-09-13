@@ -1,13 +1,13 @@
 {
   "name": "@gosu/desktop",
-  "version": "0.57.13",
+  "version": "0.58.49",
   "private": true,
   "author": "GOSU contributors",
   "description": "Local-first macOS research workspace for GOSU",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build && node ../../scripts/verify-preload-bundle.mjs",
+    "dev": "pnpm --filter @gosu/briefing-lab build && pnpm --filter @gosu/model-lab-prototype build && electron-vite dev",
+    "build": "pnpm --filter @gosu/briefing-lab build && pnpm --filter @gosu/model-lab-prototype build && electron-vite build && node ../../scripts/verify-preload-bundle.mjs",
     "preview": "electron-vite preview",
     "package:mac": "pnpm run package:mac:dev",
     "package:mac:dev": "pnpm --filter @gosu/contracts build && pnpm --filter @gosu/integrations build && pnpm build && pnpm hermes:runtime:prepare && electron-builder --mac dmg --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false && node ../../scripts/verify-packaged-app-startup.mjs dist",
@@ -25,14 +25,19 @@
     "smoke:manuscript-layout:mac": "electron-vite build --config test/electron/manuscript-layout.electron.vite.config.ts && electron out/manuscript-layout-smoke/main.cjs",
     "smoke:manuscript-pdf-preview:mac": "electron-vite build --config test/electron/manuscript-pdf-preview.electron.vite.config.ts && electron out/manuscript-pdf-preview-smoke/main.cjs",
     "smoke:project-chat-compact:mac": "electron-vite build --config test/electron/project-chat-compact.electron.vite.config.ts && electron out/project-chat-compact-smoke/main.cjs",
-    "smoke:sidebar-icons:mac": "electron-vite build --config test/electron/sidebar-icon-visual.electron.vite.config.ts && electron out/sidebar-icon-visual-smoke/main.cjs",
+    "smoke:sidebar-icons:mac": "pnpm --filter @gosu/ui build && electron-vite build --config test/electron/sidebar-icon-visual.electron.vite.config.ts && electron out/sidebar-icon-visual-smoke/main.cjs",
+    "smoke:application-language:mac": "pnpm --filter @gosu/ui build && electron-vite build --config test/electron/application-language-visual.electron.vite.config.ts && electron out/application-language-visual-smoke/main.cjs",
+    "smoke:project-tool-activity:mac": "pnpm --filter @gosu/ui build && electron-vite build --config test/electron/project-tool-activity-visual.electron.vite.config.ts && electron out/project-tool-activity-visual-smoke/main.cjs",
+    "smoke:typography:mac": "electron test/electron/typography-visual-smoke.cjs",
+    "smoke:notifications:mac": "pnpm --filter @gosu/ui build && electron-vite build --config test/electron/notification-visual.electron.vite.config.ts && electron out/notification-visual-smoke/main.cjs",
     "smoke:ssh-approval-dialog:mac": "electron-vite build --config test/electron/ssh-approval-dialog.electron.vite.config.ts && electron out/ssh-approval-dialog-smoke/main.cjs",
     "lint": "eslint src electron.vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --exclude '.runtime/**' --maxWorkers=1 --passWithNoTests",
-    "test:agent-runtime": "vitest run test/project-agent-runtime.test.ts test/project-chat-view.test.tsx --maxWorkers=1"
+    "test:agent-runtime": "vitest run test/model-reference-handoff.test.tsx test/critical-review.test.tsx test/project-research-plan-service.test.ts test/project-research-plan-tools.test.ts test/project-agent-tools.test.ts test/workspace-service.test.ts test/experiment-workspace-service.test.ts test/objective-editor.test.tsx test/project-chat-context.test.ts test/chat-file-drop.test.tsx test/project-chat-attachment-service.test.ts test/project-chat-attachment-ipc.test.ts test/project-chat-service.test.ts test/codex-context-metadata.test.ts test/codex-app-server.test.ts test/claude-code-project-chat-adapter.test.ts test/project-chat-prompt.test.ts test/provider-connections.test.tsx test/global-assistant-projects.test.ts test/project-agent-runtime.test.ts test/project-chat-view.test.tsx test/project-tool-activity.test.ts test/project-tool-activity-view.test.tsx test/project-chat-tool-activity-state.test.ts test/project-chat-notes-capability.test.ts test/project-chat-notes-optional.test.tsx test/workspace-notifications.test.ts test/personal-notifications.test.tsx test/notification-center.test.tsx test/briefing-context-export.test.tsx test/paper-summary-ipc.test.ts test/global-briefing-view.test.tsx test/briefing-todo-adapter.test.ts test/briefing-settings-integration.test.ts test/model-routing.test.tsx --maxWorkers=1"
   },
   "dependencies": {
+    "@gosu/ui": "workspace:*",
     "@gosu/contracts": "workspace:*",
     "@gosu/integrations": "workspace:*",
     "@lezer/python": "1.1.19",
@@ -54,6 +59,8 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "react-test-renderer": "19.2.8",
+    "@types/react-test-renderer": "19.1.0",
     "@types/better-sqlite3": "^7.6.0",
     "@types/mdast": "4.0.4",
     "@types/node": "^24.0.0",
@@ -83,15 +90,26 @@
       "out/main/**/*",
       "out/preload/**/*",
       "out/renderer/**/*",
+      "out/model-lab/**/*",
+      "out/briefing-lab/**/*",
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "out/main/python-architecture-analyzer.py",
+        "to": "model-lab/python-architecture-analyzer.py"
+      },
       {
         "from": ".runtime/hermes-runtime.zip",
         "to": "hermes-runtime.zip"
       }
     ],
     "mac": {
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "GOSU에서 사용자가 선택한 Apple Mail 계정과 메일함을 조회하고 승인한 메일 작업을 수행합니다.",
+        "NSCalendarsFullAccessUsageDescription": "GOSU에서 선택한 캘린더를 조회하고 사용자가 확인한 일정 변경을 수행합니다.",
+        "NSCalendarsUsageDescription": "GOSU에서 사용자가 선택한 캘린더와 승인한 일정 변경에 접근합니다."
+      },
       "category": "public.app-category.education",
       "icon": "build/icon.icns",
       "hardenedRuntime": true,

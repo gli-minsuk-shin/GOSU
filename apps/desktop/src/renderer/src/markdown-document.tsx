@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { Image, Link, PhrasingContent, Root, Text } from 'mdast';
 import rehypeKatex from 'rehype-katex';
@@ -47,6 +49,7 @@ export function MarkdownDocument({
   loadVaultImages = true,
   readAttachment,
 }: MarkdownDocumentProps) {
+  useUiText();
   const frontmatter = useMemo(() => extractFrontmatter(source), [source]);
   const components = useMemo<Components>(
     () => ({
@@ -78,7 +81,7 @@ export function MarkdownDocument({
     <div className="markdown-document">
       {frontmatter && (
         <details className="note-properties">
-          <summary>Properties</summary>
+          <summary>{uiText('Properties')}</summary>
           <pre>{frontmatter}</pre>
         </details>
       )}
@@ -150,7 +153,11 @@ function MarkdownLink({
   return (
     <span
       className={`blocked-markdown-link${destination.reason === 'missing-note' ? ' missing-note' : ''}`}
-      title={destination.reason === 'missing-note' ? 'Linked note was not found.' : 'Link blocked.'}
+      title={
+        destination.reason === 'missing-note'
+          ? uiText('Linked note was not found.')
+          : uiText('Link blocked.')
+      }
     >
       {children}
     </span>
@@ -172,6 +179,7 @@ function MarkdownImage({
   loadVaultImages: boolean;
   readAttachment?: (input: ReadVaultAttachmentInput) => Promise<VaultAttachment>;
 }) {
+  useUiText();
   const attachmentSource = decodeAttachmentSource(source);
   const [state, setState] = useState<
     | { status: 'loading' }
@@ -213,10 +221,10 @@ function MarkdownImage({
     return (
       <span className={`markdown-image-state ${state.status}`}>
         {state.status === 'loading'
-          ? `Loading image: ${label}`
+          ? uiText('Loading image: {label}', { label: label })
           : state.status === 'blocked'
-            ? `Remote or unsupported image blocked: ${label}`
-            : `Image could not be read: ${label}`}
+            ? uiText('Remote or unsupported image blocked: {label}', { label: label })
+            : uiText('Image could not be read: {label}', { label: label })}
       </span>
     );
   }

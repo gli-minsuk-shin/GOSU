@@ -1,4 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import {
+  withApplicationLanguageInstructions,
+  bindApplicationLanguageCallback,
+} from './application-language-service';
 import { createHash } from 'node:crypto';
 import { constants, rmSync } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
@@ -8,7 +12,10 @@ import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
-import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
+import type { ModelCatalog, ModelInvocation, ProviderCodexModel } from '@gosu/contracts';
+import { extendedCodexContextWindow } from '@gosu/contracts';
+import { readCodexContextMetadata } from './codex-context-metadata';
+import { resolveInstalledCodexExecutable } from '@gosu/integrations/codex-runtime-discovery';
 
 import {
   CodexCollaborationModeCatalogSchema,
@@ -21,20 +28,13 @@ import {
 } from '../shared/project-chat-contracts';
 import type { CodexAvailability } from '../shared/runtime-contracts';
 import { createInvocation, recordModelReroute, toModelCatalog } from './model-catalog';
+import {
+  projectToolStartedActivity,
+  projectToolCompletedActivity,
+  projectToolProgressTiming,
+} from './project-tool-activity';
 
-export type CodexModel = {
-  id: string;
-  model: string;
-  displayName: string;
-  description?: string;
-  hidden: boolean;
-  isDefault: boolean;
-  defaultReasoningEffort?: string;
-  supportedReasoningEfforts?: Array<{ reasoningEffort: string; description: string }>;
-  inputModalities?: string[];
-  supportsPersonality?: boolean;
-  upgrade?: string | null;
-};
+export type CodexModel = ProviderCodexModel;
 
 export type CodexPersonality = Exclude<ProjectChatPersonality, 'auto'>;
 export type CodexResponseVerbosity = Exclude<ProjectChatResponseVerbosity, 'auto'>;
@@ -213,8 +213,6 @@ export const SAFE_CODEX_PROCESS_DISABLED_FEATURES = [
   'browser_use',
   'browser_use_external',
   'browser_use_full_cdp_access',
-  'code_mode',
-  'code_mode_host',
   'computer_use',
   'enable_mcp_apps',
   'goals',
@@ -250,6 +248,12 @@ export function buildCodexAppServerArguments(prefixArguments: readonly string[])
     'app-server',
     '--strict-config',
     ...SAFE_CODEX_PROCESS_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
+    // New Codex models route typed dynamic tool calls through the native orchestration host.
+    // This enables that dispatcher only; actual capabilities remain thread-scoped below.
+    '--enable',
+    'code_mode',
+    '--enable',
+    'code_mode_host',
     ...SAFE_CODEX_PROCESS_CONFIG_OVERRIDES.flatMap((override) => ['--config', override]),
     '--listen',
     'stdio://',
@@ -613,6 +617,8 @@ export function buildCodexThreadParameters(input: {
   dynamicTools?: readonly CodexDynamicToolSpec[];
   responseVerbosity?: CodexResponseVerbosity | null;
   webSearchMode?: CodexWebSearchMode;
+  nativeContextWindowTokens?: number;
+  effectiveContextWindowTokens?: number;
 }) {
   if (input.responseVerbosity && !CODEX_RESPONSE_VERBOSITIES.has(input.responseVerbosity)) {
     throw new Error('codex_response_verbosity_invalid');
@@ -621,6 +627,22 @@ export function buildCodexThreadParameters(input: {
     throw new Error('codex_web_search_mode_invalid');
   }
   const webSearchMode = input.webSearchMode ?? 'disabled';
+  const hasDynamicTools = (input.dynamicTools?.length ?? 0) > 0;
+  if (
+    input.nativeContextWindowTokens !== undefined &&
+    (!Number.isSafeInteger(input.nativeContextWindowTokens) ||
+      input.nativeContextWindowTokens <= 0 ||
+      input.nativeContextWindowTokens > 2_000_000)
+  )
+    throw new Error('codex_context_window_invalid');
+  const requestedWindow = extendedCodexContextWindow(input.modelId)
+    ? Math.max(extendedCodexContextWindow(input.modelId)!, input.nativeContextWindowTokens ?? 0)
+    : input.nativeContextWindowTokens;
+  if (
+    requestedWindow !== undefined &&
+    (!Number.isSafeInteger(requestedWindow) || requestedWindow <= 0 || requestedWindow > 2_000_000)
+  )
+    throw new Error('codex_context_window_invalid');
   return {
     cwd: input.cwd,
     serviceName: 'gosu_desktop',
@@ -628,7 +650,21 @@ export function buildCodexThreadParameters(input: {
     sandbox: 'read-only',
     config: {
       ...SAFE_PROJECT_CONFIG,
+      features: {
+        ...SAFE_PROJECT_CONFIG.features,
+        code_mode: { enabled: hasDynamicTools },
+        code_mode_host: hasDynamicTools,
+      },
       web_search: webSearchMode,
+      ...(requestedWindow
+        ? {
+            model_context_window: requestedWindow,
+            model_auto_compact_token_limit: Math.floor(
+              Math.min(input.effectiveContextWindowTokens ?? requestedWindow, requestedWindow) *
+                0.85,
+            ),
+          }
+        : {}),
       ...(input.responseVerbosity ? { model_verbosity: input.responseVerbosity } : {}),
     },
     ephemeral: true,
@@ -667,7 +703,7 @@ export function buildCodexTurnParameters(input: {
   }
   const localImagePaths = input.localImagePaths ?? [];
   if (
-    localImagePaths.length > 5 ||
+    localImagePaths.length > 20 ||
     new Set(localImagePaths).size !== localImagePaths.length ||
     localImagePaths.some(
       (path) => !isAbsolute(path) || path.length > 1_024 || path.includes('\u0000'),
@@ -790,16 +826,34 @@ export async function prepareIsolatedCodexHome(isolatedCodexHome: string) {
   return isolatedCodexHome;
 }
 
-function codexCommand() {
+/** Model Lab can reuse CLI-owned state/auth without reindexing its entire session archive. */
+export async function prepareCodexRuntimeStateHome(
+  stateStorage: 'temporary' | 'provider' = 'temporary',
+): Promise<string | undefined> {
+  if (stateStorage === 'provider') return undefined;
+  const directory = await mkdtemp(join(tmpdir(), 'gosu-codex-runtime-'));
+  await chmod(directory, 0o700);
+  return directory;
+}
+
+export async function resolveCodexCommand() {
   const override = process.env.GOSU_CODEX_BIN?.trim();
   if (override) return { executable: override, prefixArgs: [] as string[], runAsNode: false };
 
   const packagePath = resolveUnpackedAsarPath(require.resolve('@openai/codex/package.json'));
-  return {
+  const bundled = {
     executable: process.execPath,
     prefixArgs: [join(dirname(packagePath), 'bin', 'codex.js')],
     runAsNode: true,
   };
+  const executable = await resolveInstalledCodexExecutable({
+    fallbackExecutable: bundled.executable,
+    fallbackArgs: bundled.prefixArgs,
+    fallbackEnvironment: buildCodexChildEnvironment(process.env, true),
+  });
+  return executable === bundled.executable
+    ? bundled
+    : { executable, prefixArgs: [] as string[], runAsNode: false };
 }
 
 async function executableIsAvailable(executable: string, pathEnvironment = '') {
@@ -823,6 +877,7 @@ async function executableIsAvailable(executable: string, pathEnvironment = '') {
 
 export class CodexAppServer extends EventEmitter {
   private process: ChildProcessWithoutNullStreams | undefined;
+  private command: Awaited<ReturnType<typeof resolveCodexCommand>> | undefined;
   private nextId = 1;
   private readonly pending = new Map<
     string | number,
@@ -833,6 +888,7 @@ export class CodexAppServer extends EventEmitter {
     private readonly options: {
       isolatedCodexHome?: () => string;
       clientVersion?: () => string;
+      stateStorage?: 'temporary' | 'provider';
     } = {},
   ) {
     super();
@@ -840,7 +896,7 @@ export class CodexAppServer extends EventEmitter {
 
   async availability(): Promise<CodexAvailability> {
     try {
-      const command = codexCommand();
+      const command = this.command ?? (await resolveCodexCommand());
       const executableReady = await executableIsAvailable(command.executable, process.env.PATH);
       const entryReady =
         command.prefixArgs.length === 0 ||
@@ -931,7 +987,26 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async listModelCatalog() {
-    this.catalog = toModelCatalog(await this.listModels());
+    const models = await this.listModels();
+    const metadata = await readCodexContextMetadata(this.options.isolatedCodexHome?.());
+    this.catalog = toModelCatalog(
+      models.map((model) => {
+        const info =
+          metadata.find((m) => m.slug === model.id) ?? metadata.find((m) => m.slug === model.model);
+        return {
+          ...model,
+          ...(info?.max_context_window && !model.nativeMaxContextWindowTokens
+            ? { nativeMaxContextWindowTokens: info.max_context_window }
+            : {}),
+          ...(info?.effective_context_window_percent
+            ? { nativeEffectiveContextPercent: info.effective_context_window_percent }
+            : {}),
+          ...(info?.context_window
+            ? { nativeDefaultContextWindowTokens: info.context_window }
+            : {}),
+        };
+      }),
+    );
     this.emitBoundaryEvent('catalog', this.catalog);
     return this.catalog;
   }
@@ -955,6 +1030,13 @@ export class CodexAppServer extends EventEmitter {
     responseVerbosity?: CodexResponseVerbosity | null;
     webSearchMode?: CodexWebSearchMode;
   }) {
+    input = {
+      ...input,
+      developerInstructions: withApplicationLanguageInstructions(input.developerInstructions ?? ''),
+      ...(input.dynamicToolHandler
+        ? { dynamicToolHandler: bindApplicationLanguageCallback(input.dynamicToolHandler) }
+        : {}),
+    };
     await this.start();
     const dynamicTools = input.dynamicTools ?? [];
     const registration = prepareDynamicToolRegistration(
@@ -962,9 +1044,30 @@ export class CodexAppServer extends EventEmitter {
       input.dynamicToolHandler,
       input.dynamicToolTimeouts,
     );
+    const contextModel = this.catalog?.models.find((m) =>
+      input.modelId ? m.modelId === input.modelId : m.isDefault,
+    );
+    const nativeWindow =
+      contextModel?.metadata?.requestedContextWindowTokens ??
+      contextModel?.metadata?.nativeContextWindowTokens;
     const result = await this.request(
       'thread/start',
-      buildCodexThreadParameters({ ...input, dynamicTools }),
+      buildCodexThreadParameters({
+        ...input,
+        modelId:
+          input.modelId ?? this.catalog?.models.find((model) => model.isDefault)?.modelId ?? null,
+        dynamicTools,
+        ...(typeof nativeWindow === 'number' ? { nativeContextWindowTokens: nativeWindow } : {}),
+        ...(typeof contextModel?.metadata?.requestedEffectiveContextWindowTokens === 'number'
+          ? {
+              effectiveContextWindowTokens: Math.min(
+                contextModel.metadata.requestedEffectiveContextWindowTokens,
+                contextModel.contextWindowTokens ??
+                  contextModel.metadata.requestedEffectiveContextWindowTokens,
+              ),
+            }
+          : {}),
+      }),
     );
     const started = parseCodexThreadStartResponse(result);
     if (this.ownedThreadIds.has(started.threadId)) {
@@ -1101,6 +1204,18 @@ export class CodexAppServer extends EventEmitter {
     await this.request('turn/interrupt', { threadId, turnId });
   }
 
+  async steerTurn(threadId: string, turnId: string, message: string) {
+    if (!this.ownedThreadIds.has(threadId) || !turnId || !message.trim() || message.length > 12000)
+      throw new Error('steer_invalid');
+    const result = await this.request('turn/steer', {
+      threadId,
+      expectedTurnId: turnId,
+      input: [{ type: 'text', text: message }],
+    });
+    if (!isRecord(result) || result.turnId !== turnId)
+      throw new Error('steer_acknowledgment_unconfirmed');
+  }
+
   private async interruptImageModalityViolation(threadId: string, turnId: string) {
     // Once an image turn leaves the catalog snapshot that authorized its inputs, no tool call or
     // later completion is trusted. Interrupt first; if that cannot be confirmed, terminate the
@@ -1166,12 +1281,11 @@ export class CodexAppServer extends EventEmitter {
   }
 
   private async startInternal() {
-    const command = codexCommand();
+    const command = await resolveCodexCommand();
     const isolatedCodexHome = this.options.isolatedCodexHome
       ? await prepareIsolatedCodexHome(this.options.isolatedCodexHome())
       : undefined;
-    const volatileSqliteHome = await mkdtemp(join(tmpdir(), 'gosu-codex-runtime-'));
-    await chmod(volatileSqliteHome, 0o700);
+    const volatileSqliteHome = await prepareCodexRuntimeStateHome(this.options.stateStorage);
     const child = spawn(command.executable, buildCodexAppServerArguments(command.prefixArgs), {
       env: buildCodexChildEnvironment(
         process.env,
@@ -1182,8 +1296,9 @@ export class CodexAppServer extends EventEmitter {
       ),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    this.volatileStateHomes.set(child, volatileSqliteHome);
+    if (volatileSqliteHome) this.volatileStateHomes.set(child, volatileSqliteHome);
     this.process = child;
+    this.command = command;
     child.once('error', (error) =>
       this.disconnect(child, new Error(`Unable to start Codex: ${error.message}`)),
     );
@@ -1429,6 +1544,7 @@ export class CodexAppServer extends EventEmitter {
     registration.seenCalls.add(callKey);
     registration.callsByTurn.set(call.turnId, turnCalls + 1);
     registration.inFlight += 1;
+    const progressStartedAt = Date.now();
     this.emitBoundaryEvent('notification', {
       method: 'gosu/agent/progress',
       params: {
@@ -1437,12 +1553,20 @@ export class CodexAppServer extends EventEmitter {
         stage: 'tool_started',
         tool: call.tool,
         callId: call.callId,
+        activity: projectToolStartedActivity(call.tool, call.arguments),
+        occurredAt: new Date(progressStartedAt).toISOString(),
       },
     });
     let progressCompleted = false;
-    const completeProgress = (success: boolean) => {
+    const completeProgress = (result?: CodexDynamicToolResult, failureCode?: string) => {
       if (progressCompleted) return;
       progressCompleted = true;
+      const completed = projectToolCompletedActivity(
+        call.tool,
+        call.arguments,
+        result,
+        failureCode,
+      );
       this.emitBoundaryEvent('notification', {
         method: 'gosu/agent/progress',
         params: {
@@ -1451,7 +1575,8 @@ export class CodexAppServer extends EventEmitter {
           stage: 'tool_completed',
           tool: call.tool,
           callId: call.callId,
-          success,
+          ...completed,
+          ...projectToolProgressTiming(progressStartedAt),
         },
       });
     };
@@ -1495,6 +1620,7 @@ export class CodexAppServer extends EventEmitter {
       const parsedResult = parseDynamicToolResult(result);
       if (!parsedResult) {
         delivery.discard();
+        completeProgress(undefined, 'tool_result_invalid');
         this.respond(
           child,
           requestId,
@@ -1517,7 +1643,7 @@ export class CodexAppServer extends EventEmitter {
       } else {
         delivery.discard();
       }
-      completeProgress(parsedResult.success && writeAcknowledged);
+      completeProgress(parsedResult, writeAcknowledged ? undefined : 'tool_delivery_failed');
     } catch (error) {
       if (error === timeoutError) {
         delivery.abort(timeoutError);
@@ -1527,7 +1653,10 @@ export class CodexAppServer extends EventEmitter {
         void handlerResult.then(release, release);
       }
       delivery.discard();
-      completeProgress(false);
+      completeProgress(
+        undefined,
+        error === timeoutError ? 'tool_timeout' : 'tool_execution_failed',
+      );
       if (this.dynamicToolRegistrations.get(call.threadId) !== registration) {
         this.respond(child, requestId, undefined, {
           code: -32000,
@@ -1538,7 +1667,7 @@ export class CodexAppServer extends EventEmitter {
       this.respond(child, requestId, failureDynamicToolResult('GOSU dynamic tool failed.'));
     } finally {
       if (timeout) clearTimeout(timeout);
-      completeProgress(false);
+      completeProgress(undefined, 'tool_cancelled');
       if (!releaseAfterHandlerSettlement) release();
     }
   }
@@ -1641,6 +1770,7 @@ export class CodexAppServer extends EventEmitter {
   ) {
     if (this.process !== child) return;
     this.process = undefined;
+    this.command = undefined;
     this.connectionEpoch += 1;
     if (terminate && child.exitCode === null && !child.killed) child.kill('SIGTERM');
     for (const entry of this.pending.values()) {

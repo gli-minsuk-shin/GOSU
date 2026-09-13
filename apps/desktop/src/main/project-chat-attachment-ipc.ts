@@ -1,5 +1,6 @@
 import {
   ChooseProjectChatAttachmentsInputSchema,
+  StageDroppedChatAttachmentsSchema,
   ReleaseProjectChatAttachmentInputSchema,
 } from '../shared/project-chat-attachment-contracts';
 import { PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS } from '../shared/project-chat-attachment-channels';
@@ -16,6 +17,19 @@ export function registerProjectChatAttachmentIpc(
   service: ProjectChatAttachmentService,
   reportUnexpected: (error: unknown) => void = () => undefined,
 ) {
+  register(PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.drop, (input) => {
+    const parsed = StageDroppedChatAttachmentsSchema.safeParse(input);
+    return parsed.success
+      ? safely(
+          () =>
+            service.stageDropped(
+              { projectId: parsed.data.projectId, sessionId: parsed.data.sessionId },
+              parsed.data.paths,
+            ),
+          reportUnexpected,
+        )
+      : invalidInput();
+  });
   register(PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.choose, (input) => {
     const parsed = ChooseProjectChatAttachmentsInputSchema.safeParse(input);
     return parsed.success

@@ -8,11 +8,11 @@ body,
 
 .sidebar-icon-visual-shell {
   display: grid;
-  grid-template: 46px minmax(0, 1fr) / 332px minmax(0, 1fr);
+  grid-template: 46px minmax(0, 1fr) / var(--visual-sidebar-width, 332px) minmax(0, 1fr);
   width: 100%;
   height: 100dvh;
   overflow: hidden;
-  background: var(--background);
+  background: var(--bg);
 }
 
 .sidebar-icon-visual-titlebar {
@@ -34,11 +34,33 @@ body,
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 14px;
+  padding: 32px;
   color: var(--muted);
 }
 
 .sidebar-icon-visual-note strong {
   color: var(--text);
-  font-size: var(--font-title);
+  font-size: 30px;
+  letter-spacing: -0.025em;
+}
+
+.sidebar-icon-visual-eyebrow {
+  color: var(--green);
+  font-size: var(--font-meta);
+  font-weight: 750;
+  letter-spacing: 0.15em;
+}
+
+.sidebar-icon-visual-note output {
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.sidebar-icon-visual-spec {
+  margin-top: 12px;
+  font-size: var(--font-control);
 }

@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 
 import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
@@ -25,6 +27,7 @@ export function OverleafPersonalTokenDialog({
   onRemove: () => Promise<void>;
   onClose: () => void;
 }) {
+  useUiText();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const [operationPending, setOperationPending] = useState(false);
@@ -82,16 +85,18 @@ export function OverleafPersonalTokenDialog({
       >
         <header>
           <div>
-            <span>OVERLEAF SETTINGS</span>
-            <h2 id="overleaf-token-dialog-title">Personal Git token</h2>
-            <p>Your current Manuscript or Lecture draft stays open behind this window.</p>
+            <span>{uiText('OVERLEAF SETTINGS')}</span>
+            <h2 id="overleaf-token-dialog-title">{uiText('Personal Git token')}</h2>
+            <p>
+              {uiText('Your current Manuscript or Lecture draft stays open behind this window.')}
+            </p>
           </div>
           <button
             ref={closeButtonRef}
             type="button"
             className="icon-button"
-            aria-label="Close Overleaf Settings"
-            title="Close"
+            aria-label={uiText('Close Overleaf Settings')}
+            title={uiText('Close')}
             disabled={operationPending}
             onClick={onClose}
           >

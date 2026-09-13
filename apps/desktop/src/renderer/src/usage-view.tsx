@@ -1,3 +1,5 @@
+import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+
 import {
   useEffect,
   useId,
@@ -169,7 +171,7 @@ export function usageModelDisplayName(modelId: string) {
 }
 
 function workloadLabel(kind: ModelUsageWorkloadKind) {
-  return WORKLOAD_LABELS[kind];
+  return uiText(WORKLOAD_LABELS[kind]);
 }
 
 function shortIdentifier(id: string) {
@@ -181,8 +183,8 @@ function projectRowLabel(row: ModelUsageProjectRow) {
 }
 
 function formatDateTime(value: string | null, timeZone: string) {
-  if (value === null) return 'In progress';
-  return new Intl.DateTimeFormat(undefined, {
+  if (value === null) return uiText('In progress');
+  return new Intl.DateTimeFormat(uiLocale(), {
     timeZone,
     month: 'short',
     day: 'numeric',
@@ -297,6 +299,7 @@ export function UsageView({
   initialReport = null,
   initialBreakdown = 'projects',
 }: UsageViewProps) {
+  useUiText();
   const timeZone = useMemo(resolvedTimeZone, []);
   const [period, setPeriod] = useState<UsagePeriod>('day');
   const [anchorDate, setAnchorDate] = useState(() => localCalendarDate(new Date(), timeZone));
@@ -339,16 +342,17 @@ export function UsageView({
   return (
     <section
       className="usage-dashboard"
-      aria-label="Local model token usage"
+      aria-label={uiText('Local model token usage')}
       aria-busy={phase !== 'ready'}
     >
       <header className="usage-command-bar">
         <div>
-          <span className="eyebrow">LOCAL PROVIDER-REPORTED USAGE</span>
-          <h2>Token overview</h2>
+          <span className="eyebrow">{uiText('LOCAL PROVIDER-REPORTED USAGE')}</span>
+          <h2>{uiText('Token overview')}</h2>
           <p>
-            Known tokens come only from local provider receipts. Missing usage is never estimated or
-            displayed as zero.
+            {uiText(
+              'Known tokens come only from local provider receipts. Missing usage is never estimated or displayed as zero.',
+            )}
           </p>
         </div>
         <button
@@ -361,7 +365,7 @@ export function UsageView({
             setRefreshVersion((version) => version + 1);
           }}
         >
-          {phase === 'refreshing' ? 'Refreshing…' : 'Refresh'}
+          {phase === 'refreshing' ? uiText('Refreshing…') : uiText('Refresh')}
         </button>
       </header>
 
@@ -403,22 +407,24 @@ export function UsageView({
         <div className="notice error usage-error" role="alert">
           <span>
             {report
-              ? `${error} Showing the last locally loaded report.`
-              : 'GOSU could not read the local usage report.'}
+              ? uiText('{error} Showing the last locally loaded report.', { error: error })
+              : uiText('GOSU could not read the local usage report.')}
           </span>
           <button
             type="button"
             className="ghost-button"
             onClick={() => setRefreshVersion((version) => version + 1)}
           >
-            Retry
+            {uiText('Retry')}
           </button>
         </div>
       )}
 
       {!report ? (
         <div className="usage-loading" role="status">
-          {error ? 'No usage report is available.' : 'Reading locally recorded token usage…'}
+          {error
+            ? uiText('No usage report is available.')
+            : uiText('Reading locally recorded token usage…')}
         </div>
       ) : (
         <UsageReport
@@ -467,6 +473,7 @@ function UsageFilters({
   onWorkload: (kind: ModelUsageWorkloadKind | null) => void;
   onClear: () => void;
 }>) {
+  useUiText();
   const projectOptions = useMemo(
     () => buildProjectOptions(projects, optionsReport?.byProject ?? []),
     [optionsReport?.byProject, projects],
@@ -478,8 +485,8 @@ function UsageFilters({
   );
 
   return (
-    <section className="usage-filter-bar" aria-label="Filter token usage">
-      <div className="usage-period-control" role="group" aria-label="Usage period">
+    <section className="usage-filter-bar" aria-label={uiText('Filter token usage')}>
+      <div className="usage-period-control" role="group" aria-label={uiText('Usage period')}>
         {USAGE_PERIODS.map((option) => (
           <button
             type="button"
@@ -493,9 +500,9 @@ function UsageFilters({
         ))}
       </div>
       <label>
-        Project owner
+        {uiText('Project owner')}
         <select value={projectId ?? ''} onChange={(event) => onProject(event.target.value || null)}>
-          <option value="">All project owners</option>
+          <option value="">{uiText('All project owners')}</option>
           {projectOptions.map((option) => (
             <option key={option.id} value={option.id}>
               {option.label}
@@ -504,14 +511,14 @@ function UsageFilters({
         </select>
       </label>
       <label>
-        Workload
+        {uiText('Workload')}
         <select
           value={workloadKind ?? ''}
           onChange={(event) =>
             onWorkload((event.target.value || null) as ModelUsageWorkloadKind | null)
           }
         >
-          <option value="">All workloads</option>
+          <option value="">{uiText('All workloads')}</option>
           {MODEL_USAGE_WORKLOAD_KINDS.filter((kind) => observedWorkloads.has(kind)).map((kind) => (
             <option key={kind} value={kind}>
               {workloadLabel(kind)}
@@ -520,24 +527,26 @@ function UsageFilters({
         </select>
       </label>
       <label>
-        Connection / provider
+        {uiText('Connection / provider')}
         <select
           value={connectionKey ?? ''}
           onChange={(event) => onConnection(event.target.value || null)}
         >
-          <option value="">All observed connections</option>
+          <option value="">{uiText('All observed connections')}</option>
           {connections.map((row) => (
             <option key={row.connectionKey} value={row.connectionKey}>
               {row.connectionLabel} · {providerIdentity(row)}
             </option>
           ))}
           {connectionKey && !connections.some((row) => row.connectionKey === connectionKey) && (
-            <option value={connectionKey}>{connectionKey} · no usage in base range</option>
+            <option value={connectionKey}>
+              {connectionKey} {uiText('· no usage in base range')}
+            </option>
           )}
         </select>
       </label>
       <label>
-        Model
+        {uiText('Model')}
         <select
           value={modelId && connectionKey ? qualifiedModelOptionValue(connectionKey, modelId) : ''}
           onChange={(event) => {
@@ -545,7 +554,7 @@ function UsageFilters({
             onModel(option ? { connectionKey: option.connectionKey, modelId: option.id } : null);
           }}
         >
-          <option value="">All observed models</option>
+          <option value="">{uiText('All observed models')}</option>
           {models.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
@@ -557,13 +566,13 @@ function UsageFilters({
               (option) => option.id === modelId && option.connectionKey === connectionKey,
             ) && (
               <option value={qualifiedModelOptionValue(connectionKey, modelId)}>
-                {modelId} · selected connection has no usage in base range
+                {modelId} {uiText('· selected connection has no usage in base range')}
               </option>
             )}
         </select>
       </label>
       <button type="button" className="ghost-button" disabled={!filtersActive} onClick={onClear}>
-        Clear filters
+        {uiText('Clear filters')}
       </button>
     </section>
   );
@@ -646,41 +655,51 @@ function UsageReport({
             )}
           </strong>
           <span>
-            Updated {formatDateTime(report.generatedAt, report.range.timeZone)} · Tracked since{' '}
-            {formatDateTime(report.trackingStartedAt, report.range.timeZone)} · Local only
+            {uiText('Updated')} {formatDateTime(report.generatedAt, report.range.timeZone)}{' '}
+            {uiText('· Tracked since')}{' '}
+            {formatDateTime(report.trackingStartedAt, report.range.timeZone)}{' '}
+            {uiText('· Local only')}
           </span>
         </div>
         <small>
-          Project totals use the recorded output owner. Linked Lecture source projects are not
-          duplicated.
+          {uiText(
+            'Project totals use the recorded output owner. Linked Lecture source projects are not duplicated.',
+          )}
         </small>
       </div>
 
       {report.rangeCoverage === 'partial' && (
         <div className="usage-coverage-notice" role="status">
-          <strong>Partial history</strong>
+          <strong>{uiText('Partial history')}</strong>
           <span>
-            Tracking started inside this range. Earlier turns are not estimated or counted as zero.
+            {uiText(
+              'Tracking started inside this range. Earlier turns are not estimated or counted as zero.',
+            )}
           </span>
         </div>
       )}
       {report.rangeCoverage === 'not_tracked' && (
         <div className="usage-coverage-notice" role="status">
-          <strong>Not tracked in this range</strong>
+          <strong>{uiText('Not tracked in this range')}</strong>
           <span>
-            This entire range predates local usage tracking. GOSU does not estimate earlier turns or
-            substitute zero.
+            {uiText(
+              'This entire range predates local usage tracking. GOSU does not estimate earlier turns or substitute zero.',
+            )}
           </span>
         </div>
       )}
       {(noReportedTokens || lowerBoundReporting) && (
         <div className="usage-coverage-notice" role="status">
           <strong>
-            {noReportedTokens ? 'Token counts not reported' : 'Known totals are a lower bound'}
+            {noReportedTokens
+              ? uiText('Token counts not reported')
+              : uiText('Known totals are a lower bound')}
           </strong>
           <span>
-            {describeAggregateCoverage(report.totals)}. Partial reports may be lower bounds;
-            unavailable turns remain visible in coverage and are excluded from token totals.
+            {describeAggregateCoverage(report.totals)}
+            {uiText(
+              '. Partial reports may be lower bounds; unavailable turns remain visible in coverage and are excluded from token totals.',
+            )}
           </span>
         </div>
       )}
@@ -693,28 +712,34 @@ function UsageReport({
         <div className="usage-empty">
           <strong>
             {report.rangeCoverage === 'not_tracked'
-              ? 'Usage was not tracked in this range'
+              ? uiText('Usage was not tracked in this range')
               : filtersActive
-                ? 'No usage matches these filters'
-                : 'No recorded usage in this range'}
+                ? uiText('No usage matches these filters')
+                : uiText('No recorded usage in this range')}
           </strong>
           <span>
             {report.rangeCoverage === 'not_tracked'
-              ? 'Choose a current range to review locally reported token usage.'
+              ? uiText('Choose a current range to review locally reported token usage.')
               : filtersActive
-                ? 'Change or clear a project, workload, connection, or model filter.'
-                : 'A finalized model turn will appear here when its local usage receipt is recorded.'}
+                ? uiText('Change or clear a project, workload, connection, or model filter.')
+                : uiText(
+                    'A finalized model turn will appear here when its local usage receipt is recorded.',
+                  )}
           </span>
         </div>
       ) : reportedTurns === 0 ? (
         <div className="usage-empty">
-          <strong>Turns were recorded, but token counts were not reported</strong>
-          <span>GOSU keeps these turns in coverage and does not substitute estimated values.</span>
+          <strong>{uiText('Turns were recorded, but token counts were not reported')}</strong>
+          <span>
+            {uiText('GOSU keeps these turns in coverage and does not substitute estimated values.')}
+          </span>
         </div>
       ) : report.series.length === 0 ? (
         <div className="usage-empty">
-          <strong>Known totals are available, but trend buckets are unavailable</strong>
-          <span>The breakdown tables still show the locally reported totals for this range.</span>
+          <strong>{uiText('Known totals are available, but trend buckets are unavailable')}</strong>
+          <span>
+            {uiText('The breakdown tables still show the locally reported totals for this range.')}
+          </span>
         </div>
       ) : (
         <UsageTokenChart report={report} />
@@ -733,24 +758,24 @@ function UsageReport({
 function UsageSummary({ aggregate }: { aggregate: ModelUsageAggregate }) {
   const reported = reportedUsageTurnCount(aggregate);
   return (
-    <section className="usage-summary-grid" aria-label="Usage summary">
+    <section className="usage-summary-grid" aria-label={uiText('Usage summary')}>
       <UsageSummaryCard
-        label="Known input tokens"
+        label={uiText('Known input tokens')}
         value={aggregateTokenValue(aggregate, 'inputTokens')}
-        detail="Provider-reported input only"
+        detail={uiText('Provider-reported input only')}
       />
       <UsageSummaryCard
-        label="Known output tokens"
+        label={uiText('Known output tokens')}
         value={aggregateTokenValue(aggregate, 'outputTokens')}
-        detail="Provider-reported output only"
+        detail={uiText('Provider-reported output only')}
       />
       <UsageSummaryCard
-        label="Known total tokens"
+        label={uiText('Known total tokens')}
         value={aggregateTokenValue(aggregate, 'totalTokens')}
-        detail="Known input + output"
+        detail={uiText('Known input + output')}
       />
       <article className="usage-summary-card coverage">
-        <span>Reporting coverage</span>
+        <span>{uiText('Reporting coverage')}</span>
         <strong>
           {reported.toLocaleString()} / {aggregate.turnCount.toLocaleString()}
         </strong>
@@ -770,28 +795,32 @@ function UsageSummaryCard({
       <span>{label}</span>
       <strong
         aria-label={
-          value === null ? `${label}: Not reported` : `${label}: ${formatTokenCount(value)} tokens`
+          value === null
+            ? uiText('{label}: Not reported', { label: label })
+            : uiText('{label}: {value2} tokens', { label: label, value2: formatTokenCount(value) })
         }
       >
         {formatCompactTokenCount(value)}
       </strong>
-      <small>{value === null ? 'Not reported' : detail}</small>
+      <small>{value === null ? uiText('Not reported') : detail}</small>
     </article>
   );
 }
 
 function UsageModelSummary({ rows }: { rows: readonly ModelUsageModelRow[] }) {
+  useUiText();
   const [expanded, setExpanded] = useState(false);
   const visibleRows = expanded ? rows : rows.slice(0, 8);
   return (
     <section className="usage-model-summary" aria-labelledby="usage-model-summary-heading">
       <header>
         <div>
-          <span className="eyebrow">MODEL MIX</span>
-          <h3 id="usage-model-summary-heading">Usage by model</h3>
+          <span className="eyebrow">{uiText('MODEL MIX')}</span>
+          <h3 id="usage-model-summary-heading">{uiText('Usage by model')}</h3>
           <p>
-            Each resolved model is counted separately. The connection remains visible so usage from
-            different accounts or providers is not silently merged.
+            {uiText(
+              'Each resolved model is counted separately. The connection remains visible so usage from different accounts or providers is not silently merged.',
+            )}
           </p>
         </div>
         {rows.length > 8 && (
@@ -801,13 +830,15 @@ function UsageModelSummary({ rows }: { rows: readonly ModelUsageModelRow[] }) {
             aria-expanded={expanded}
             onClick={() => setExpanded((current) => !current)}
           >
-            {expanded ? 'Show top 8' : `Show all ${rows.length.toLocaleString()} models`}
+            {expanded
+              ? uiText('Show top 8')
+              : uiText('Show all {value1} models', { value1: rows.length.toLocaleString() })}
           </button>
         )}
       </header>
       {rows.length === 0 ? (
         <div className="usage-model-summary-empty">
-          No finalized turn in this report included a resolved model identity.
+          {uiText('No finalized turn in this report included a resolved model identity.')}
         </div>
       ) : (
         <div className="usage-model-card-grid">
@@ -824,9 +855,18 @@ function UsageModelSummary({ rows }: { rows: readonly ModelUsageModelRow[] }) {
                 <span>{row.connectionLabel}</span>
               </header>
               <dl>
-                <ModelTokenMetric label="Input" value={aggregateTokenValue(row, 'inputTokens')} />
-                <ModelTokenMetric label="Output" value={aggregateTokenValue(row, 'outputTokens')} />
-                <ModelTokenMetric label="Total" value={aggregateTokenValue(row, 'totalTokens')} />
+                <ModelTokenMetric
+                  label={uiText('Input')}
+                  value={aggregateTokenValue(row, 'inputTokens')}
+                />
+                <ModelTokenMetric
+                  label={uiText('Output')}
+                  value={aggregateTokenValue(row, 'outputTokens')}
+                />
+                <ModelTokenMetric
+                  label={uiText('Total')}
+                  value={aggregateTokenValue(row, 'totalTokens')}
+                />
               </dl>
               <footer>
                 <span>{providerIdentity(row)}</span>
@@ -854,6 +894,7 @@ function ModelTokenMetric({ label, value }: { label: string; value: number | nul
 }
 
 function UsageTokenChart({ report }: { report: ModelUsageAnalyticsReport }) {
+  useUiText();
   const generatedId = useId().replaceAll(':', '');
   const titleId = `usage-chart-title-${generatedId}`;
   const descriptionId = `usage-chart-description-${generatedId}`;
@@ -871,22 +912,26 @@ function UsageTokenChart({ report }: { report: ModelUsageAnalyticsReport }) {
     <article className="usage-chart-card">
       <header>
         <div>
-          <span className="eyebrow">KNOWN TOKENS OVER TIME</span>
-          <h3>Input and output trend</h3>
-          <p>Hatched bars include partial or unavailable turns and are known lower bounds.</p>
+          <span className="eyebrow">{uiText('KNOWN TOKENS OVER TIME')}</span>
+          <h3>{uiText('Input and output trend')}</h3>
+          <p>
+            {uiText(
+              'Hatched bars include partial or unavailable turns and are known lower bounds.',
+            )}
+          </p>
         </div>
-        <div className="usage-chart-legend" aria-label="Chart legend">
+        <div className="usage-chart-legend" aria-label={uiText('Chart legend')}>
           <span className="input">
             <i />
-            Input
+            {uiText('Input')}
           </span>
           <span className="output">
             <i />
-            Output
+            {uiText('Output')}
           </span>
           <span className="incomplete">
             <i />
-            Lower bound
+            {uiText('Lower bound')}
           </span>
         </div>
       </header>
@@ -896,10 +941,12 @@ function UsageTokenChart({ report }: { report: ModelUsageAnalyticsReport }) {
           role="img"
           aria-labelledby={`${titleId} ${descriptionId}`}
         >
-          <title id={titleId}>Known input and output tokens over time</title>
+          <title id={titleId}>{uiText('Known input and output tokens over time')}</title>
           <desc id={descriptionId}>
-            Provider-reported input and output tokens for {report.series.length} calendar buckets.
-            The accompanying data table contains the same values and reporting coverage.
+            {uiText('Provider-reported input and output tokens for')} {report.series.length}{' '}
+            {uiText(
+              'calendar buckets. The accompanying data table contains the same values and reporting coverage.',
+            )}
           </desc>
           <defs>
             <pattern
@@ -977,29 +1024,29 @@ function UsageTokenChart({ report }: { report: ModelUsageAnalyticsReport }) {
           ))}
         </svg>
         <figcaption>
-          Known totals exclude turns whose provider did not report token counts.
+          {uiText('Known totals exclude turns whose provider did not report token counts.')}
         </figcaption>
       </figure>
       <details className="usage-data-disclosure">
-        <summary>View token data table</summary>
+        <summary>{uiText('View token data table')}</summary>
         <p id={helpId} className="sr-only">
-          This table scrolls horizontally when all columns do not fit.
+          {uiText('This table scrolls horizontally when all columns do not fit.')}
         </p>
         <div
           className="usage-table-scroll"
           tabIndex={0}
-          aria-label="Token trend data"
+          aria-label={uiText('Token trend data')}
           aria-describedby={helpId}
         >
           <table>
             <thead>
               <tr>
-                <th scope="col">Date</th>
-                <th scope="col">Turns</th>
-                <th scope="col">Coverage</th>
-                <th scope="col">Known input</th>
-                <th scope="col">Known output</th>
-                <th scope="col">Known total</th>
+                <th scope="col">{uiText('Date')}</th>
+                <th scope="col">{uiText('Turns')}</th>
+                <th scope="col">{uiText('Coverage')}</th>
+                <th scope="col">{uiText('Known input')}</th>
+                <th scope="col">{uiText('Known output')}</th>
+                <th scope="col">{uiText('Known total')}</th>
               </tr>
             </thead>
             <tbody>
@@ -1032,6 +1079,7 @@ function UsageBreakdownTabs({
   onActive: (breakdown: UsageBreakdown) => void;
   onLectureOffset: (offset: number) => void;
 }>) {
+  useUiText();
   const generatedId = useId().replaceAll(':', '');
   const tabListRef = useRef<HTMLDivElement>(null);
   const selectFromKeyboard = (event: KeyboardEvent<HTMLButtonElement>, current: UsageBreakdown) => {
@@ -1055,12 +1103,12 @@ function UsageBreakdownTabs({
   const panelId = `usage-panel-${generatedId}`;
 
   return (
-    <section className="usage-breakdown-card" aria-label="Usage breakdown">
+    <section className="usage-breakdown-card" aria-label={uiText('Usage breakdown')}>
       <div
         ref={tabListRef}
         className="usage-breakdown-tabs"
         role="tablist"
-        aria-label="Usage breakdown views"
+        aria-label={uiText('Usage breakdown views')}
       >
         {USAGE_BREAKDOWNS.map((option) => (
           <button
@@ -1092,18 +1140,18 @@ function UsageBreakdownTabs({
 
 function ProjectUsageTable({ rows }: { rows: readonly ModelUsageProjectRow[] }) {
   if (rows.length === 0)
-    return <BreakdownEmpty>No project-owned usage matches this report.</BreakdownEmpty>;
+    return <BreakdownEmpty>{uiText('No project-owned usage matches this report.')}</BreakdownEmpty>;
   return (
-    <UsageTable label="Usage by output project owner">
+    <UsageTable label={uiText('Usage by output project owner')}>
       <table>
         <thead>
           <tr>
-            <th scope="col">Output project owner</th>
-            <th scope="col">Turns</th>
-            <th scope="col">Coverage</th>
-            <th scope="col">Known input</th>
-            <th scope="col">Known output</th>
-            <th scope="col">Known total</th>
+            <th scope="col">{uiText('Output project owner')}</th>
+            <th scope="col">{uiText('Turns')}</th>
+            <th scope="col">{uiText('Coverage')}</th>
+            <th scope="col">{uiText('Known input')}</th>
+            <th scope="col">{uiText('Known output')}</th>
+            <th scope="col">{uiText('Known total')}</th>
           </tr>
         </thead>
         <tbody>
@@ -1135,24 +1183,24 @@ function LectureUsageTable({
 }) {
   const page = report.lectureGenerations;
   if (page.total === 0)
-    return <BreakdownEmpty>No Lecture generations match this report.</BreakdownEmpty>;
+    return <BreakdownEmpty>{uiText('No Lecture generations match this report.')}</BreakdownEmpty>;
   const first = page.offset + 1;
   const last = Math.min(page.total, page.offset + page.items.length);
   return (
     <>
-      <UsageTable label="Usage by Lecture generation">
+      <UsageTable label={uiText('Usage by Lecture generation')}>
         <table>
           <thead>
             <tr>
-              <th scope="col">Lecture generation</th>
-              <th scope="col">Output project owner</th>
-              <th scope="col">Status</th>
-              <th scope="col">Connection / model</th>
-              <th scope="col">Turns</th>
-              <th scope="col">Coverage</th>
-              <th scope="col">Known input</th>
-              <th scope="col">Known output</th>
-              <th scope="col">Known total</th>
+              <th scope="col">{uiText('Lecture generation')}</th>
+              <th scope="col">{uiText('Output project owner')}</th>
+              <th scope="col">{uiText('Status')}</th>
+              <th scope="col">{uiText('Connection / model')}</th>
+              <th scope="col">{uiText('Turns')}</th>
+              <th scope="col">{uiText('Coverage')}</th>
+              <th scope="col">{uiText('Known input')}</th>
+              <th scope="col">{uiText('Known output')}</th>
+              <th scope="col">{uiText('Known total')}</th>
             </tr>
           </thead>
           <tbody>
@@ -1164,8 +1212,8 @@ function LectureUsageTable({
       </UsageTable>
       <footer className="usage-pagination">
         <span>
-          {first.toLocaleString()}–{last.toLocaleString()} of {page.total.toLocaleString()}{' '}
-          generations
+          {first.toLocaleString()}–{last.toLocaleString()} {uiText('of')}{' '}
+          {page.total.toLocaleString()} {uiText('generations')}
         </span>
         <div>
           <button
@@ -1174,7 +1222,7 @@ function LectureUsageTable({
             disabled={page.offset === 0}
             onClick={() => onOffset(Math.max(0, page.offset - page.limit))}
           >
-            Previous
+            {uiText('Previous')}
           </button>
           <button
             type="button"
@@ -1182,7 +1230,7 @@ function LectureUsageTable({
             disabled={page.offset + page.items.length >= page.total}
             onClick={() => onOffset(page.offset + page.limit)}
           >
-            Next
+            {uiText('Next')}
           </button>
         </div>
       </footer>
@@ -1208,7 +1256,8 @@ function LectureUsageRow({
       </td>
       <td>
         <strong>
-          {row.projectName ?? `Unavailable project · ${shortIdentifier(row.projectId)}`}
+          {row.projectName ??
+            uiText('Unavailable project · {value1}', { value1: shortIdentifier(row.projectId) })}
         </strong>
       </td>
       <td>
@@ -1217,7 +1266,7 @@ function LectureUsageRow({
       <td>
         <div className="usage-connection-list">
           {row.byConnection.length === 0 ? (
-            <span>— Not recorded</span>
+            <span>{uiText('— Not recorded')}</span>
           ) : (
             row.byConnection.map((connection) => (
               <span key={`${connection.connectionKey}:${connection.resolvedModelId ?? 'unknown'}`}>
@@ -1226,7 +1275,7 @@ function LectureUsageRow({
                   {providerIdentity(connection)} ·{' '}
                   {connection.resolvedModelId
                     ? usageModelDisplayName(connection.resolvedModelId)
-                    : 'Model not reported'}
+                    : uiText('Model not reported')}
                 </small>
               </span>
             ))
@@ -1258,28 +1307,34 @@ function ProviderUsageTables({
   models: readonly ModelUsageModelRow[];
 }) {
   if (connections.length === 0 && models.length === 0)
-    return <BreakdownEmpty>No provider or model usage matches this report.</BreakdownEmpty>;
+    return (
+      <BreakdownEmpty>{uiText('No provider or model usage matches this report.')}</BreakdownEmpty>
+    );
   return (
     <div className="usage-provider-sections">
       <section>
         <header>
-          <h3>Observed connections</h3>
-          <p>Connection labels and provider identity are preserved from local turn receipts.</p>
+          <h3>{uiText('Observed connections')}</h3>
+          <p>
+            {uiText(
+              'Connection labels and provider identity are preserved from local turn receipts.',
+            )}
+          </p>
         </header>
         {connections.length === 0 ? (
-          <BreakdownEmpty>No observed connections match.</BreakdownEmpty>
+          <BreakdownEmpty>{uiText('No observed connections match.')}</BreakdownEmpty>
         ) : (
-          <UsageTable label="Usage by observed connection">
+          <UsageTable label={uiText('Usage by observed connection')}>
             <table>
               <thead>
                 <tr>
-                  <th scope="col">Connection</th>
-                  <th scope="col">Provider</th>
-                  <th scope="col">Turns</th>
-                  <th scope="col">Coverage</th>
-                  <th scope="col">Known input</th>
-                  <th scope="col">Known output</th>
-                  <th scope="col">Known total</th>
+                  <th scope="col">{uiText('Connection')}</th>
+                  <th scope="col">{uiText('Provider')}</th>
+                  <th scope="col">{uiText('Turns')}</th>
+                  <th scope="col">{uiText('Coverage')}</th>
+                  <th scope="col">{uiText('Known input')}</th>
+                  <th scope="col">{uiText('Known output')}</th>
+                  <th scope="col">{uiText('Known total')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1304,23 +1359,25 @@ function ProviderUsageTables({
       </section>
       <section>
         <header>
-          <h3>Observed models</h3>
-          <p>Models stay qualified by the connection and provider that reported them.</p>
+          <h3>{uiText('Observed models')}</h3>
+          <p>
+            {uiText('Models stay qualified by the connection and provider that reported them.')}
+          </p>
         </header>
         {models.length === 0 ? (
-          <BreakdownEmpty>No observed models match.</BreakdownEmpty>
+          <BreakdownEmpty>{uiText('No observed models match.')}</BreakdownEmpty>
         ) : (
-          <UsageTable label="Usage by observed model">
+          <UsageTable label={uiText('Usage by observed model')}>
             <table>
               <thead>
                 <tr>
-                  <th scope="col">Model</th>
-                  <th scope="col">Connection / provider</th>
-                  <th scope="col">Turns</th>
-                  <th scope="col">Coverage</th>
-                  <th scope="col">Known input</th>
-                  <th scope="col">Known output</th>
-                  <th scope="col">Known total</th>
+                  <th scope="col">{uiText('Model')}</th>
+                  <th scope="col">{uiText('Connection / provider')}</th>
+                  <th scope="col">{uiText('Turns')}</th>
+                  <th scope="col">{uiText('Coverage')}</th>
+                  <th scope="col">{uiText('Known input')}</th>
+                  <th scope="col">{uiText('Known output')}</th>
+                  <th scope="col">{uiText('Known total')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1351,11 +1408,12 @@ function ProviderUsageTables({
 }
 
 function UsageTable({ label, children }: { label: string; children: ReactNode }) {
+  useUiText();
   const helpId = `usage-table-help-${useId().replaceAll(':', '')}`;
   return (
     <>
       <p id={helpId} className="sr-only">
-        This table scrolls horizontally when all columns do not fit.
+        {uiText('This table scrolls horizontally when all columns do not fit.')}
       </p>
       <div className="usage-table-scroll" tabIndex={0} aria-label={label} aria-describedby={helpId}>
         {children}
@@ -1387,7 +1445,7 @@ function LectureTokenCell({
 function TokenCell({ value }: { value: number | null }) {
   return value === null ? (
     <td className="usage-token-unavailable">
-      — <small>Not reported</small>
+      — <small>{uiText('Not reported')}</small>
     </td>
   ) : (
     <td>{formatTokenCount(value)}</td>

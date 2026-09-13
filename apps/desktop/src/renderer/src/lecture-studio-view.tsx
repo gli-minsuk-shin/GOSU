@@ -1,3 +1,5 @@
+import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+
 import {
   useCallback,
   useEffect,
@@ -451,26 +453,26 @@ const LECTURE_ATTEMPT_STATUS_LABELS: Record<LectureStudioAttempt['status'], stri
 
 export function lectureGenerationAttemptSummary(attempt: LectureStudioAttempt) {
   return {
-    outcome: LECTURE_ATTEMPT_STATUS_LABELS[attempt.status],
+    outcome: uiText(LECTURE_ATTEMPT_STATUS_LABELS[attempt.status]),
     elapsed: attempt.completedAt
       ? formatLectureGenerationElapsed(attempt.startedAt, Date.parse(attempt.completedAt))
-      : 'Not recorded',
-    model: attempt.requestedModelId === null ? 'Automatic selection' : 'Selected model',
+      : uiText('Not recorded'),
+    model: uiText(attempt.requestedModelId === null ? 'Automatic selection' : 'Selected model'),
     reasoning:
       attempt.reasoningOptionId === null
-        ? 'Provider default'
-        : (LECTURE_ATTEMPT_REASONING_LABELS[attempt.reasoningOptionId] ?? 'Selected setting'),
+        ? uiText('Provider default')
+        : uiText(LECTURE_ATTEMPT_REASONING_LABELS[attempt.reasoningOptionId] ?? 'Selected setting'),
     terminal: attempt.terminalCode ? lectureErrorCodeMessage(attempt.terminalCode) : null,
     phases: attempt.phases.map((phase) => ({
-      label: LECTURE_GENERATION_PROGRESS_LABELS[phase.phase],
+      label: uiText(LECTURE_GENERATION_PROGRESS_LABELS[phase.phase]),
       occurredAt: phase.occurredAt,
     })),
     validations: attempt.validations.map((validation) => ({
-      pass: validation.pass === 'initial' ? 'Initial check' : 'Correction check',
-      category: LECTURE_ATTEMPT_VALIDATION_CATEGORY_LABELS[validation.category],
+      pass: uiText(validation.pass === 'initial' ? 'Initial check' : 'Correction check'),
+      category: uiText(LECTURE_ATTEMPT_VALIDATION_CATEGORY_LABELS[validation.category]),
       diagnostics: validation.diagnostics.map((diagnostic) => ({
-        document: diagnostic.document === 'lecture-notes' ? 'Notes' : 'Slides',
-        reason: LECTURE_ATTEMPT_LATEX_REASON_LABELS[diagnostic.reason],
+        document: uiText(diagnostic.document === 'lecture-notes' ? 'Notes' : 'Slides'),
+        reason: uiText(LECTURE_ATTEMPT_LATEX_REASON_LABELS[diagnostic.reason]),
         tokenCount: diagnostic.tokenCount,
       })),
     })),
@@ -493,9 +495,13 @@ export function lectureArtifactActionLabels(
   const format = previewIsPdf(tab) ? 'PDF' : sourceFormat === 'latex' ? 'LaTeX' : 'Markdown';
   const exportsLatexBundle = !previewIsPdf(tab) && sourceFormat === 'latex' && hasFigureReferences;
   return {
-    export: exportsLatexBundle ? 'Export LaTeX bundle' : `Export ${format}`,
-    open: `Open ${format} in default app`,
-    reveal: exportsLatexBundle ? 'Show LaTeX bundle in Finder' : `Show ${format} in Finder`,
+    export: exportsLatexBundle
+      ? uiText('Export LaTeX bundle')
+      : uiText('Export {format}', { format }),
+    open: uiText('Open {format} in default app', { format }),
+    reveal: exportsLatexBundle
+      ? uiText('Show LaTeX bundle in Finder')
+      : uiText('Show {format} in Finder', { format }),
   } as const;
 }
 
@@ -869,7 +875,7 @@ export function lectureManuscriptAvailabilityLabel(
     capture_required: 'Capture a checkpoint in Manuscript first',
     unconnected: 'Connect this manuscript before using it',
   } as const;
-  return labels[availability];
+  return uiText(labels[availability]);
 }
 
 export function lectureErrorCodeMessage(code: string) {
@@ -978,7 +984,7 @@ export function lectureErrorCodeMessage(code: string) {
     lecture_export_failed: 'GOSU could not safely export this lecture file.',
     lecture_open_failed: 'The file could not be opened in the system default app.',
   };
-  return messages[code] ?? 'The lecture operation could not be completed.';
+  return uiText(messages[code] ?? 'The lecture operation could not be completed.');
 }
 
 function lectureErrorMessage(error: unknown) {
@@ -1126,7 +1132,7 @@ export function lectureStudioStatusLabel(status: LectureStudioSummary['status'])
     ready: 'Ready',
     failed: 'Failed',
   };
-  return labels[status];
+  return uiText(labels[status]);
 }
 
 export function lectureOutputProjectName(
@@ -1158,6 +1164,7 @@ export function LectureStudioView({
   layout,
   onLayoutChange,
 }: LectureStudioViewProps) {
+  useUiText();
   const activeProjects = useMemo(() => activeLectureSourceProjects(projects), [projects]);
   const [listSnapshot, setListSnapshot] = useState<LectureStudioListSnapshot | null>(null);
   const [detail, setDetail] = useState<LectureStudioDetail | null>(null);
@@ -1305,12 +1312,14 @@ export function LectureStudioView({
     }
     if (manualEditSummary && manualEditSummary.studioId !== studioId) {
       if (manualEditSummary.busy) {
-        setError('Wait for the direct source edit to finish before changing Studios.');
+        setError(uiText('Wait for the direct source edit to finish before changing Studios.'));
         return;
       }
       if (
         manualEditSummary.dirty &&
-        !window.confirm('Discard the unsaved direct LaTeX edits and open another Lecture Studio?')
+        !window.confirm(
+          uiText('Discard the unsaved direct LaTeX edits and open another Lecture Studio?'),
+        )
       ) {
         return;
       }
@@ -1341,7 +1350,7 @@ export function LectureStudioView({
     selection: LectureStudioModelSelection = modelSelection,
   ) => {
     if (manualEditSummary?.studioId === studio.id) {
-      setError('Save or cancel the direct source edit before generating another revision.');
+      setError(uiText('Save or cancel the direct source edit before generating another revision.'));
       return;
     }
     markStudioBusy(studio.id, true);
@@ -1355,7 +1364,7 @@ export function LectureStudioView({
         reasoningOptionId: selection.reasoningOptionId,
       });
       if (selectedStudioIdRef.current === studio.id) {
-        setNotice('Lecture notes and slides were saved as a new Research Notes revision.');
+        setNotice(uiText('Lecture notes and slides were saved as a new Research Notes revision.'));
       }
       await load(false);
     } catch (generationError) {
@@ -1371,12 +1380,12 @@ export function LectureStudioView({
   const moveStudioToTrash = async (studio: LectureStudioSummary) => {
     if (manualEditSummary?.studioId === studio.id) {
       if (manualEditSummary.busy) {
-        setError('Wait for the direct source edit to finish before moving this Studio.');
+        setError(uiText('Wait for the direct source edit to finish before moving this Studio.'));
         return;
       }
       if (
         manualEditSummary.dirty &&
-        !window.confirm('Discard the unsaved direct LaTeX edits before moving this Studio?')
+        !window.confirm(uiText('Discard the unsaved direct LaTeX edits before moving this Studio?'))
       ) {
         return;
       }
@@ -1385,7 +1394,10 @@ export function LectureStudioView({
       studio.status === 'generating' ||
       busyStudioIds.has(studio.id) ||
       !window.confirm(
-        `Move “${studio.title}” to Trash?\n\nThe Studio session and its chat history can be restored from Settings. Saved Research Notes and exported LaTeX/PDF files will stay on disk.`,
+        uiText(
+          'Move “{title}” to Trash?\n\nThe Studio session and its chat history can be restored from Settings. Saved Research Notes and exported LaTeX/PDF files will stay on disk.',
+          { title: studio.title },
+        ),
       )
     ) {
       return;
@@ -1411,7 +1423,9 @@ export function LectureStudioView({
         setDetail(null);
       }
       await load(false, null);
-      setNotice('Moved the Lecture Studio to recoverable Trash. Saved files were preserved.');
+      setNotice(
+        uiText('Moved the Lecture Studio to recoverable Trash. Saved files were preserved.'),
+      );
     } catch (trashError) {
       setError(lectureErrorMessage(trashError));
     } finally {
@@ -1422,7 +1436,7 @@ export function LectureStudioView({
   return (
     <section
       className={`lecture-studio${pdfFocusMode ? ' pdf-focus' : ''}`}
-      aria-label="Lecture notes and slides workspace"
+      aria-label={uiText('Lecture notes and slides workspace')}
     >
       {error && (
         <div className="error-banner lecture-studio-banner" role="alert">
@@ -1430,11 +1444,11 @@ export function LectureStudioView({
           <div className="lecture-studio-banner-actions">
             {selectedStudio?.lastErrorCode === 'lecture_auth_required' && (
               <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
-                Sign in to Codex
+                {uiText('Sign in to Codex')}
               </button>
             )}
             <button type="button" className="ghost-button" onClick={() => setError(null)}>
-              Dismiss
+              {uiText('Dismiss')}
             </button>
           </div>
         </div>
@@ -1443,7 +1457,7 @@ export function LectureStudioView({
         <div className="success-banner lecture-studio-banner" role="status">
           {notice}
           <button type="button" className="ghost-button" onClick={() => setNotice('')}>
-            Dismiss
+            {uiText('Dismiss')}
           </button>
         </div>
       )}
@@ -1458,12 +1472,16 @@ export function LectureStudioView({
           composing={composing}
           onNew={() => {
             if (manualEditSummary?.busy) {
-              setError('Wait for the direct source edit to finish before creating a new Studio.');
+              setError(
+                uiText('Wait for the direct source edit to finish before creating a new Studio.'),
+              );
               return;
             }
             if (
               manualEditSummary?.dirty &&
-              !window.confirm('Discard the unsaved direct LaTeX edits and create a new Studio?')
+              !window.confirm(
+                uiText('Discard the unsaved direct LaTeX edits and create a new Studio?'),
+              )
             ) {
               return;
             }
@@ -1516,7 +1534,7 @@ export function LectureStudioView({
           />
         ) : loading ? (
           <div className="lecture-studio-loading" role="status">
-            Loading lecture workspace…
+            {uiText('Loading lecture workspace…')}
           </div>
         ) : selectedStudio ? (
           <>
@@ -1548,7 +1566,9 @@ export function LectureStudioView({
                 await load(false, receipt.studio.id);
                 if (selectedStudioIdRef.current === receipt.studio.id) {
                   setNotice(
-                    `Direct LaTeX edits were saved as revision ${receipt.revision.revision}.`,
+                    uiText('Direct LaTeX edits were saved as revision {revision}.', {
+                      revision: receipt.revision.revision,
+                    }),
                   );
                 }
               }}
@@ -1568,7 +1588,7 @@ export function LectureStudioView({
                   await load(false, selectedStudio.id);
                   if (selectedStudioIdRef.current === selectedStudio.id) {
                     setNotice(
-                      'Generation options updated. Existing revisions were left unchanged.',
+                      uiText('Generation options updated. Existing revisions were left unchanged.'),
                     );
                   }
                   return true;
@@ -1652,7 +1672,9 @@ export function LectureStudioView({
                     ...(attachmentIds.length > 0 ? { attachmentIds: [...attachmentIds] } : {}),
                   });
                   if (selectedStudioIdRef.current === selectedStudio.id) {
-                    setNotice('The requested edit was saved as a new Research Notes revision.');
+                    setNotice(
+                      uiText('The requested edit was saved as a new Research Notes revision.'),
+                    );
                   }
                   await load(false);
                   return true;
@@ -1709,12 +1731,15 @@ function StudioRail({
 }) {
   if (collapsed) {
     return (
-      <aside className="lecture-studio-rail collapsed" aria-label="Lecture sessions collapsed">
+      <aside
+        className="lecture-studio-rail collapsed"
+        aria-label={uiText('Lecture sessions collapsed')}
+      >
         <button
           type="button"
           className="lecture-pane-toggle"
-          aria-label="Show lecture sessions"
-          title="Show lecture sessions"
+          aria-label={uiText('Show lecture sessions')}
+          title={uiText('Show lecture sessions')}
           aria-expanded="false"
           aria-controls="lecture-studio-sessions"
           onClick={() => onCollapsedChange(false)}
@@ -1724,8 +1749,8 @@ function StudioRail({
         <button
           type="button"
           className="lecture-rail-new-button"
-          aria-label="New lecture"
-          title="New lecture"
+          aria-label={uiText('New lecture')}
+          title={uiText('New lecture')}
           onClick={onNew}
         >
           ＋
@@ -1738,17 +1763,17 @@ function StudioRail({
     <aside className="lecture-studio-rail" id="lecture-studio-sessions">
       <header>
         <div>
-          <span>STUDIOS</span>
+          <span>{uiText('STUDIOS')}</span>
           <strong>{studios.length}</strong>
         </div>
         <button type="button" className="ghost-button" onClick={onNew}>
-          ＋ New
+          {uiText('＋ New')}
         </button>
         <button
           type="button"
           className="lecture-pane-toggle"
-          aria-label="Hide lecture sessions"
-          title="Hide lecture sessions"
+          aria-label={uiText('Hide lecture sessions')}
+          title={uiText('Hide lecture sessions')}
           aria-expanded="true"
           aria-controls="lecture-studio-sessions"
           onClick={() => onCollapsedChange(true)}
@@ -1758,11 +1783,11 @@ function StudioRail({
       </header>
       <div className="lecture-studio-list">
         {loading && studios.length === 0 ? (
-          <p>Loading…</p>
+          <p>{uiText('Loading…')}</p>
         ) : studios.length === 0 ? (
           <div className="lecture-studio-rail-empty">
-            <strong>No lecture yet</strong>
-            <span>Select research from one or more projects to begin.</span>
+            <strong>{uiText('No lecture yet')}</strong>
+            <span>{uiText('Select research from one or more projects to begin.')}</span>
           </div>
         ) : (
           studios.map((studio) => (
@@ -1777,18 +1802,24 @@ function StudioRail({
                 onClick={() => onSelect(studio.id)}
               >
                 <span className={`lecture-studio-status ${studio.status}`} aria-hidden="true" />
-                <span className="sr-only">Status: {lectureStudioStatusLabel(studio.status)}. </span>
+                <span className="sr-only">
+                  {uiText('Status:')} {lectureStudioStatusLabel(studio.status)}.{' '}
+                </span>
                 <strong>{studio.title}</strong>
                 <small>
-                  {studio.kind === 'talk' ? `${studio.durationMinutes}-minute talk` : 'Lecture'} · r
-                  {studio.currentRevision}
+                  {studio.kind === 'talk'
+                    ? uiText('{durationMinutes}-minute talk', {
+                        durationMinutes: String(studio.durationMinutes),
+                      })
+                    : uiText('Lecture')}{' '}
+                  · r{studio.currentRevision}
                 </small>
               </button>
               <button
                 type="button"
                 className="lecture-studio-trash-button"
-                aria-label={`Move ${studio.title} to Trash`}
-                title="Move to Trash"
+                aria-label={uiText('Move {title} to Trash', { title: studio.title })}
+                title={uiText('Move to Trash')}
                 disabled={studio.status === 'generating' || busyStudioIds.has(studio.id)}
                 onClick={() => onTrash(studio)}
               >
@@ -1843,6 +1874,7 @@ function LectureComposerFigurePicker({
   disabled: boolean;
   onFilesChange: (files: readonly File[]) => void;
 }) {
+  useUiText();
   const input = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
   const [dropActive, setDropActive] = useState(false);
@@ -1891,10 +1923,12 @@ function LectureComposerFigurePicker({
     <section className="lecture-composer-figures" aria-labelledby="lecture-composer-figures-title">
       <header>
         <div>
-          <h3 id="lecture-composer-figures-title">Figures for the first revision</h3>
+          <h3 id="lecture-composer-figures-title">{uiText('Figures for the first revision')}</h3>
           <p>
-            Add up to {LECTURE_STUDIO_MAX_FIGURES} raster images. GOSU can place these local Figure
-            library assets in the first notes and slides.
+            {uiText('Add up to')} {LECTURE_STUDIO_MAX_FIGURES}{' '}
+            {uiText(
+              'raster images. GOSU can place these local Figure library assets in the first notes and slides.',
+            )}
           </p>
         </div>
         <button
@@ -1903,7 +1937,7 @@ function LectureComposerFigurePicker({
           disabled={disabled || files.length >= LECTURE_STUDIO_MAX_FIGURES}
           onClick={() => input.current?.click()}
         >
-          Add images
+          {uiText('Add images')}
         </button>
         <input
           ref={input}
@@ -1925,8 +1959,8 @@ function LectureComposerFigurePicker({
         onDragOver={dragOver}
         onDrop={drop}
       >
-        <strong>Drop images from Finder</strong>
-        <span>PNG, JPEG, WebP, GIF, TIFF, BMP, or AVIF</span>
+        <strong>{uiText('Drop images from Finder')}</strong>
+        <span>{uiText('PNG, JPEG, WebP, GIF, TIFF, BMP, or AVIF')}</span>
       </div>
       {selectionError && (
         <div className="lecture-composer-figure-error" role="alert">
@@ -1934,17 +1968,24 @@ function LectureComposerFigurePicker({
         </div>
       )}
       {files.length > 0 && (
-        <ul className="lecture-composer-figure-list" aria-label="Figures for first revision">
+        <ul
+          className="lecture-composer-figure-list"
+          aria-label={uiText('Figures for first revision')}
+        >
           {files.map((file, index) => {
             return (
               <li key={`${index}:${file.name}:${file.size}`}>
                 <span title={file.name}>{file.name}</span>
-                <small>{Math.max(1, Math.ceil(file.size / 1_024)).toLocaleString()} KB</small>
+                <small>
+                  {Math.max(1, Math.ceil(file.size / 1_024)).toLocaleString()} {uiText('KB')}
+                </small>
                 <button
                   type="button"
                   className="ghost-button"
                   disabled={disabled}
-                  aria-label={`Remove ${file.name} from first-revision figures`}
+                  aria-label={uiText('Remove {name} from first-revision figures', {
+                    name: file.name,
+                  })}
                   onClick={() => {
                     onFilesChange(
                       files.filter((_candidate, candidateIndex) => candidateIndex !== index),
@@ -1952,7 +1993,7 @@ function LectureComposerFigurePicker({
                     setSelectionError(null);
                   }}
                 >
-                  Remove
+                  {uiText('Remove')}
                 </button>
               </li>
             );
@@ -1960,8 +2001,8 @@ function LectureComposerFigurePicker({
         </ul>
       )}
       <p className="lecture-composer-figure-status" role="status" aria-live="polite">
-        {files.length} of {LECTURE_STUDIO_MAX_FIGURES} figures ready. Local file paths are never
-        shown in the Renderer.
+        {files.length} {uiText('of')} {LECTURE_STUDIO_MAX_FIGURES}{' '}
+        {uiText('figures ready. Local file paths are never shown in the Renderer.')}
       </p>
     </section>
   );
@@ -2008,6 +2049,7 @@ function LectureComposer({
   ) => Promise<void>;
   onError: (error: unknown) => void;
 }) {
+  useUiText();
   const [title, setTitle] = useState('');
   const [kind, setKind] = useState<LectureStudioKind>('lecture');
   const [durationMinutes, setDurationMinutes] = useState<LectureStudioDuration>(20);
@@ -2289,30 +2331,30 @@ function LectureComposer({
   return (
     <form className="lecture-composer" onSubmit={(event) => void submit(event)}>
       <header>
-        <span className="eyebrow">New synthesis</span>
-        <h2>Build across projects</h2>
+        <span className="eyebrow">{uiText('New synthesis')}</span>
+        <h2>{uiText('Build across projects')}</h2>
         <p>
-          Select captured manuscripts, reviewed paper metadata, experiment evidence, or add local
-          TeX, Markdown, PDF, and Overleaf Git sources. GOSU freezes the exact source set for each
-          generated revision.
+          {uiText(
+            'Select captured manuscripts, reviewed paper metadata, experiment evidence, or add local TeX, Markdown, PDF, and Overleaf Git sources. GOSU freezes the exact source set for each generated revision.',
+          )}
         </p>
       </header>
 
       <div className="lecture-composer-basics">
         <label>
-          Title
+          {uiText('Title')}
           <input
             value={title}
             minLength={2}
             maxLength={160}
-            placeholder="e.g. Foundation models for tabular learning"
+            placeholder={uiText('e.g. Foundation models for tabular learning')}
             onChange={(event) => setTitle(event.target.value)}
             autoFocus
             required
           />
         </label>
         <fieldset>
-          <legend>Output</legend>
+          <legend>{uiText('Output')}</legend>
           <div className="lecture-segmented-control">
             <button
               type="button"
@@ -2320,7 +2362,7 @@ function LectureComposer({
               aria-pressed={kind === 'lecture'}
               onClick={() => setKind('lecture')}
             >
-              Lecture notes + slides
+              {uiText('Lecture notes + slides')}
             </button>
             <button
               type="button"
@@ -2328,22 +2370,22 @@ function LectureComposer({
               aria-pressed={kind === 'talk'}
               onClick={() => setKind('talk')}
             >
-              Timed talk slides
+              {uiText('Timed talk slides')}
             </button>
           </div>
         </fieldset>
       </div>
 
       <fieldset className="lecture-generation-model">
-        <legend>Generation model</legend>
+        <legend>{uiText('Generation model')}</legend>
         <div>
           {codexAuthenticationRequired && (
             <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
-              Sign in to Codex
+              {uiText('Sign in to Codex')}
             </button>
           )}
           <label>
-            Model
+            {uiText('Model')}
             <select
               value={initialModelSelection.modelId ?? ''}
               onChange={(event) =>
@@ -2353,17 +2395,17 @@ function LectureComposer({
               }
               disabled={creating || modelsLoading}
             >
-              <option value="">Auto · provider recommended</option>
+              <option value="">{uiText('Auto · provider recommended')}</option>
               {models.map((model) => (
                 <option value={model.modelId} key={model.modelId}>
                   {model.displayName}
-                  {model.isDefault ? ' · default' : ''}
+                  {model.isDefault ? uiText(' · default') : ''}
                 </option>
               ))}
             </select>
           </label>
           <label>
-            Reasoning
+            {uiText('Reasoning')}
             <select
               value={initialModelSelection.reasoningOptionId ?? ''}
               onChange={(event) =>
@@ -2373,14 +2415,14 @@ function LectureComposer({
               }
               disabled={creating || modelsLoading}
             >
-              <option value="">Model default</option>
+              <option value="">{uiText('Model default')}</option>
               {(initialModelSelection.modelId
                 ? models.find((model) => model.modelId === initialModelSelection.modelId)
                 : models.find((model) => model.isDefault)
               )?.reasoningOptions.map((option) => (
                 <option value={option.id} key={option.id}>
                   {option.label}
-                  {option.isDefault ? ' · default' : ''}
+                  {option.isDefault ? uiText(' · default') : ''}
                 </option>
               ))}
             </select>
@@ -2391,19 +2433,23 @@ function LectureComposer({
             onClick={onRefreshModels}
             disabled={modelsLoading}
           >
-            Refresh models
+            {uiText('Refresh models')}
           </button>
         </div>
-        <small>Model names come from the live provider catalog and are never hardcoded.</small>
+        <small>
+          {uiText('Model names come from the live provider catalog and are never hardcoded.')}
+        </small>
         {!modelsLoading &&
           resolveLectureStudioModelSelection(initialModelSelection, models).issue !== null && (
-            <small role="alert">Refresh the model catalog or choose an available model.</small>
+            <small role="alert">
+              {uiText('Refresh the model catalog or choose an available model.')}
+            </small>
           )}
       </fieldset>
 
       {kind === 'talk' && (
         <fieldset className="lecture-duration-picker">
-          <legend>Talk duration</legend>
+          <legend>{uiText('Talk duration')}</legend>
           <div>
             {LECTURE_STUDIO_DURATIONS.map((minutes) => (
               <button
@@ -2414,7 +2460,7 @@ function LectureComposer({
                 onClick={() => setDurationMinutes(minutes)}
               >
                 <strong>{minutes}</strong>
-                <span>min</span>
+                <span>{uiText('min')}</span>
               </button>
             ))}
           </div>
@@ -2422,14 +2468,15 @@ function LectureComposer({
       )}
 
       <fieldset className="lecture-generation-brief">
-        <legend>Length &amp; detail</legend>
+        <legend>{uiText('Length & detail')}</legend>
         <p>
-          Set optional length targets and guidance before generation. You can continue refining the
-          result in the dedicated Lecture Studio chat.
+          {uiText(
+            'Set optional length targets and guidance before generation. You can continue refining the result in the dedicated Lecture Studio chat.',
+          )}
         </p>
         <div className="lecture-generation-brief-grid">
           <label>
-            Lecture-note pages
+            {uiText('Lecture-note pages')}
             <input
               type="number"
               min={1}
@@ -2437,13 +2484,13 @@ function LectureComposer({
               step={1}
               inputMode="numeric"
               value={notesTargetPages}
-              placeholder="Auto"
+              placeholder={uiText('Auto')}
               onChange={(event) => setNotesTargetPages(event.target.value)}
             />
-            <small>Approximate PDF page target.</small>
+            <small>{uiText('Approximate PDF page target.')}</small>
           </label>
           <label>
-            Slide pages
+            {uiText('Slide pages')}
             <input
               type="number"
               min={documentFeatures.includeSlideTitlePage ? 2 : 1}
@@ -2451,53 +2498,61 @@ function LectureComposer({
               step={1}
               inputMode="numeric"
               value={slidesTargetPages}
-              placeholder="Auto"
+              placeholder={uiText('Auto')}
               onChange={(event) => setSlidesTargetPages(event.target.value)}
             />
             <small>
-              Exact compiled PDF pages. The title page counts only when it is enabled below.
+              {uiText(
+                'Exact compiled PDF pages. The title page counts only when it is enabled below.',
+              )}
             </small>
           </label>
           <label>
-            Detail
+            {uiText('Detail')}
             <select
               value={detailLevel}
               onChange={(event) => setDetailLevel(event.target.value as LectureStudioDetailLevel)}
             >
-              <option value="concise">Concise</option>
-              <option value="standard">Standard</option>
-              <option value="detailed">Detailed</option>
-              <option value="exhaustive">Exhaustive</option>
+              <option value="concise">{uiText('Concise')}</option>
+              <option value="standard">{uiText('Standard')}</option>
+              <option value="detailed">{uiText('Detailed')}</option>
+              <option value="exhaustive">{uiText('Exhaustive')}</option>
             </select>
-            <small>Controls explanation depth, not evidence quality.</small>
+            <small>{uiText('Controls explanation depth, not evidence quality.')}</small>
           </label>
         </div>
         <label className="lecture-generation-instructions">
-          Additional instructions
+          {uiText('Additional instructions')}
           <textarea
             rows={4}
             maxLength={LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS}
             value={customInstructions}
-            placeholder="e.g. Focus on methodology, compare assumptions, and end with open questions."
+            placeholder={uiText(
+              'e.g. Focus on methodology, compare assumptions, and end with open questions.',
+            )}
             onChange={(event) => setCustomInstructions(event.target.value)}
           />
           <small>
             {customInstructions.length.toLocaleString()} /{' '}
-            {LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS.toLocaleString()} characters
+            {LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS.toLocaleString()} {uiText('characters')}
           </small>
         </label>
         <div className="lecture-generation-structure-summary">
-          <strong>Structure</strong>
+          <strong>{uiText('Structure')}</strong>
           <span>
             {structure.mode === 'adaptive'
-              ? 'Adaptive to the selected sources'
-              : `${structure.sections.length} custom sections`}
+              ? uiText('Adaptive to the selected sources')
+              : uiText('{length} custom sections', { length: structure.sections.length })}
           </span>
-          <small>Copied from Settings → Lecture defaults when this Studio is created.</small>
+          <small>
+            {uiText('Copied from Settings → Lecture defaults when this Studio is created.')}
+          </small>
           {!structureValidation.valid && (
             <small role="alert">
-              This saved default needs attention in Settings → Lecture defaults before creating a
-              Studio. {structureValidation.messages.join(' ')}
+              {uiText(
+                'This saved default needs attention in Settings → Lecture defaults before creating a Studio.',
+              )}{' '}
+              {structureValidation.messages.join(' ')}
             </small>
           )}
         </div>
@@ -2521,8 +2576,12 @@ function LectureComposer({
           >
             <span>
               {documentFeaturesCustomized
-                ? 'Custom for this Studio'
-                : `${projects.find((project) => project.id === outputProjectId)?.name ?? 'Output project'} defaults`}
+                ? uiText('Custom for this Studio')
+                : uiText('{value1} defaults', {
+                    value1:
+                      projects.find((project) => project.id === outputProjectId)?.name ??
+                      'Output project',
+                  })}
             </span>
             <div>
               <button
@@ -2543,7 +2602,7 @@ function LectureComposer({
                   setDocumentFeaturesCustomized(false);
                 }}
               >
-                Load project defaults
+                {uiText('Load project defaults')}
               </button>
               <button
                 type="button"
@@ -2561,7 +2620,7 @@ function LectureComposer({
                   setDocumentFeaturesCustomized(true);
                 }}
               >
-                Load workspace defaults
+                {uiText('Load workspace defaults')}
               </button>
             </div>
           </div>
@@ -2569,10 +2628,11 @@ function LectureComposer({
       </fieldset>
 
       <fieldset className="lecture-project-picker">
-        <legend>Source projects</legend>
+        <legend>{uiText('Source projects')}</legend>
         <p>
-          Choose up to {LECTURE_STUDIO_MAX_SOURCE_PROJECTS} active projects ({projectIds.length}{' '}
-          selected).
+          {uiText('Choose up to')} {LECTURE_STUDIO_MAX_SOURCE_PROJECTS}{' '}
+          {uiText('active projects (')}
+          {projectIds.length} {uiText('selected).')}
         </p>
         <div>
           {projects.map((project) => (
@@ -2592,13 +2652,13 @@ function LectureComposer({
         <div className="error-banner" role="alert">
           {selectionError}
           <button type="button" className="ghost-button" onClick={() => setSelectionError(null)}>
-            Dismiss
+            {uiText('Dismiss')}
           </button>
         </div>
       )}
 
       <label className="lecture-output-project">
-        Save generated LaTeX to
+        {uiText('Save generated LaTeX to')}
         <select
           value={outputProjectId}
           onChange={(event) => setOutputProjectId(event.target.value)}
@@ -2609,13 +2669,15 @@ function LectureComposer({
             const project = projects.find(({ id }) => id === projectId);
             return (
               <option value={projectId} key={projectId}>
-                {project?.name ?? projectId} / Lecture Notes &amp; Slides
+                {project?.name ?? projectId} {uiText('/ Lecture Notes & Slides')}
               </option>
             );
           })}
         </select>
         <small>
-          Every revision is saved as new immutable LaTeX files in this project’s Research Notes.
+          {uiText(
+            'Every revision is saved as new immutable LaTeX files in this project’s Research Notes.',
+          )}
         </small>
       </label>
 
@@ -2740,22 +2802,24 @@ function LectureComposer({
       <section className="lecture-source-picker">
         <header>
           <div>
-            <h3>Evidence sources</h3>
+            <h3>{uiText('Evidence sources')}</h3>
             <p>
-              Select up to {LECTURE_STUDIO_UI_MAX_SOURCES} exact records in total. Reviewed paper
-              metadata stays labeled as metadata-only until full text is verified. GOSU stops before
-              generation if verbose source metadata cannot fit in the model context; it never
-              silently drops selected evidence.
+              {uiText('Select up to')} {LECTURE_STUDIO_UI_MAX_SOURCES}{' '}
+              {uiText(
+                'exact records in total. Reviewed paper metadata stays labeled as metadata-only until full text is verified. GOSU stops before generation if verbose source metadata cannot fit in the model context; it never silently drops selected evidence.',
+              )}
             </p>
           </div>
-          <strong>{sourceCount} selected</strong>
+          <strong>
+            {sourceCount} {uiText('selected')}
+          </strong>
         </header>
         {loadingSources ? (
           <div className="lecture-source-empty" role="status">
-            Reading project evidence…
+            {uiText('Reading project evidence…')}
           </div>
         ) : projectIds.length === 0 ? (
-          <div className="lecture-source-empty">Select at least one project.</div>
+          <div className="lecture-source-empty">{uiText('Select at least one project.')}</div>
         ) : (
           <div className="lecture-source-projects">
             {(candidates?.projects ?? []).map((project) => (
@@ -2763,18 +2827,18 @@ function LectureComposer({
                 <header>
                   <strong>{project.projectName}</strong>
                   <span>
-                    {project.manuscripts.length} manuscript
+                    {project.manuscripts.length} {uiText('manuscript')}
                     {project.manuscripts.length === 1 ? '' : 's'} ·{' '}
-                    {project.literatureRecords.length} of {project.literaturePage.total} reviewed
-                    paper metadata records · {project.experiments.length} of{' '}
-                    {project.experimentPage.total} experiments
+                    {project.literatureRecords.length} {uiText('of')} {project.literaturePage.total}{' '}
+                    {uiText('reviewed paper metadata records ·')} {project.experiments.length}{' '}
+                    {uiText('of')} {project.experimentPage.total} {uiText('experiments')}
                   </span>
                 </header>
                 <div className="lecture-source-columns">
                   <div>
-                    <h4>Reviewed paper metadata</h4>
+                    <h4>{uiText('Reviewed paper metadata')}</h4>
                     {project.literatureRecords.length === 0 ? (
-                      <p>No saved papers</p>
+                      <p>{uiText('No saved papers')}</p>
                     ) : (
                       project.literatureRecords.map((record) => {
                         const key = sourceKey(project.projectId, record.id);
@@ -2788,28 +2852,31 @@ function LectureComposer({
                             <span>
                               <strong>{record.title}</strong>
                               <small>
-                                {formatAuthors(record)} · {record.publishedYear ?? 'Year unknown'}
+                                {formatAuthors(record)} ·{' '}
+                                {record.publishedYear ?? uiText('Year unknown')}
                               </small>
                               {(record.manualAnnotations.topics.length > 0 ||
                                 record.sourceTopics.length > 0) && (
                                 <small>
-                                  Topics:{' '}
+                                  {uiText('Topics:')}{' '}
                                   {[...record.manualAnnotations.topics, ...record.sourceTopics]
                                     .slice(0, 4)
                                     .join(', ')}
                                 </small>
                               )}
                             </span>
-                            <em>{record.reviewStatus} · Metadata only</em>
+                            <em>
+                              {record.reviewStatus} {uiText('· Metadata only')}
+                            </em>
                           </label>
                         );
                       })
                     )}
                   </div>
                   <div>
-                    <h4>Experiments</h4>
+                    <h4>{uiText('Experiments')}</h4>
                     {project.experiments.length === 0 ? (
-                      <p>No experiment ideas</p>
+                      <p>{uiText('No experiment ideas')}</p>
                     ) : (
                       project.experiments.map(
                         ({ idea, metricPoints, metricPointTotal, metricsTruncated }) => {
@@ -2826,7 +2893,8 @@ function LectureComposer({
                                 <small>{metricSummary(metricPoints, idea.id)}</small>
                                 {metricsTruncated && (
                                   <small>
-                                    Latest {metricPoints.length} of {metricPointTotal} metric points
+                                    {uiText('Latest')} {metricPoints.length} {uiText('of')}{' '}
+                                    {metricPointTotal} {uiText('metric points')}
                                   </small>
                                 )}
                               </span>
@@ -2838,9 +2906,9 @@ function LectureComposer({
                     )}
                   </div>
                   <div>
-                    <h4>Captured manuscripts</h4>
+                    <h4>{uiText('Captured manuscripts')}</h4>
                     {project.manuscripts.length === 0 ? (
-                      <p>No manuscripts in this project</p>
+                      <p>{uiText('No manuscripts in this project')}</p>
                     ) : (
                       project.manuscripts.map((candidate) => {
                         const key = sourceKey(project.projectId, candidate.manuscript.id);
@@ -2862,11 +2930,12 @@ function LectureComposer({
                                 {candidate.manuscript.title}
                               </strong>
                               <small title={candidate.manuscript.rootDocument}>
-                                Root: {candidate.manuscript.rootDocument}
+                                {uiText('Root:')} {candidate.manuscript.rootDocument}
                               </small>
                               {candidate.observedAt && (
                                 <small>
-                                  Captured checkpoint · {formatUpdatedAt(candidate.observedAt)}
+                                  {uiText('Captured checkpoint ·')}{' '}
+                                  {formatUpdatedAt(candidate.observedAt)}
                                 </small>
                               )}
                               {!ready && (
@@ -2875,7 +2944,7 @@ function LectureComposer({
                                 </small>
                               )}
                             </span>
-                            <em>{ready ? 'Ready' : 'Not ready'}</em>
+                            <em>{ready ? uiText('Ready') : uiText('Not ready')}</em>
                           </label>
                         );
                       })
@@ -2890,8 +2959,10 @@ function LectureComposer({
                     onClick={() => void loadMoreSources(project.projectId)}
                   >
                     {loadingMoreProjects.has(project.projectId)
-                      ? 'Loading more evidence…'
-                      : `Load more from ${project.projectName}`}
+                      ? uiText('Loading more evidence…')
+                      : uiText('Load more from {projectName}', {
+                          projectName: project.projectName,
+                        })}
                   </button>
                 )}
               </section>
@@ -2902,9 +2973,12 @@ function LectureComposer({
 
       <footer>
         <span>
-          {kind === 'talk' ? `${durationMinutes}-minute talk` : 'Lecture'} · {projectIds.length}{' '}
-          project{projectIds.length === 1 ? '' : 's'} · {sourceCount} source
-          {sourceCount === 1 ? '' : 's'} · {initialFigureFiles.length} figure
+          {kind === 'talk'
+            ? uiText('{durationMinutes}-minute talk', { durationMinutes: durationMinutes })
+            : uiText('Lecture')}{' '}
+          · {projectIds.length} {uiText('project')}
+          {projectIds.length === 1 ? '' : 's'} · {sourceCount} {uiText('source')}
+          {sourceCount === 1 ? '' : 's'} · {initialFigureFiles.length} {uiText('figure')}
           {initialFigureFiles.length === 1 ? '' : 's'}
         </span>
         <div>
@@ -2915,11 +2989,15 @@ function LectureComposer({
               onClick={onCancel}
               disabled={busy || creating}
             >
-              Cancel
+              {uiText('Cancel')}
             </button>
           )}
           <button type="submit" className="primary-button" disabled={!canCreate}>
-            {creating ? 'Creating…' : busy ? 'Generating…' : 'Create & generate'}
+            {creating
+              ? uiText('Creating…')
+              : busy
+                ? uiText('Generating…')
+                : uiText('Create & generate')}
           </button>
         </div>
       </footer>
@@ -2934,6 +3012,7 @@ function LectureGenerationProgressPanel({
   studio: LectureStudio;
   progress: LectureGenerationProgressState | undefined;
 }) {
+  useUiText();
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -2946,7 +3025,7 @@ function LectureGenerationProgressPanel({
   const events = progress?.events ?? [];
   const latest = events.at(-1);
   const currentLabel = latest
-    ? LECTURE_GENERATION_PROGRESS_LABELS[latest.phase]
+    ? uiText(LECTURE_GENERATION_PROGRESS_LABELS[latest.phase])
     : 'Waiting for the next progress update';
 
   return (
@@ -2960,21 +3039,26 @@ function LectureGenerationProgressPanel({
       </div>
       <p>
         {studio.currentRevision > 0
-          ? `Revision ${studio.currentRevision} is loaded as the edit base. Chat edits currently require the model to return complete replacement bodies for both Notes and Slides—not a small patch. GOSU then validates both documents, may run one correction, and compiles both PDFs. For a literal text change, Stop generation and use Edit source to skip the model call.`
-          : 'The model must return complete Notes and Slides bodies. GOSU then validates both documents, may run one correction, and compiles both PDFs.'}
+          ? uiText(
+              'Revision {currentRevision} is loaded as the edit base. Chat edits currently require the model to return complete replacement bodies for both Notes and Slides—not a small patch. GOSU then validates both documents, may run one correction, and compiles both PDFs. For a literal text change, Stop generation and use Edit source to skip the model call.',
+              { currentRevision: studio.currentRevision },
+            )
+          : uiText(
+              'The model must return complete Notes and Slides bodies. GOSU then validates both documents, may run one correction, and compiles both PDFs.',
+            )}
       </p>
       {events.length > 0 && (
-        <ol aria-label="Generation activity">
+        <ol aria-label={uiText('Generation activity')}>
           {events.map((event) => (
             <li key={`${event.attemptId}:${event.sequence}`}>
               <time dateTime={event.occurredAt}>
-                {new Date(event.occurredAt).toLocaleTimeString([], {
+                {new Date(event.occurredAt).toLocaleTimeString(uiLocale(), {
                   hour: '2-digit',
                   minute: '2-digit',
                   second: '2-digit',
                 })}
               </time>
-              <span>{LECTURE_GENERATION_PROGRESS_LABELS[event.phase]}</span>
+              <span>{uiText(LECTURE_GENERATION_PROGRESS_LABELS[event.phase])}</span>
             </li>
           ))}
         </ol>
@@ -2988,23 +3072,23 @@ export function LectureGenerationAttemptDetails({ attempt }: { attempt: LectureS
 
   return (
     <details className="lecture-generation-details">
-      <summary>Generation details</summary>
+      <summary>{uiText('Generation details')}</summary>
       <div className="lecture-generation-details-body">
         <dl>
           <div>
-            <dt>Outcome</dt>
+            <dt>{uiText('Outcome')}</dt>
             <dd>{summary.outcome}</dd>
           </div>
           <div>
-            <dt>Elapsed</dt>
+            <dt>{uiText('Elapsed')}</dt>
             <dd>{summary.elapsed}</dd>
           </div>
           <div>
-            <dt>Model</dt>
+            <dt>{uiText('Model')}</dt>
             <dd>{summary.model}</dd>
           </div>
           <div>
-            <dt>Reasoning</dt>
+            <dt>{uiText('Reasoning')}</dt>
             <dd>{summary.reasoning}</dd>
           </div>
         </dl>
@@ -3012,11 +3096,14 @@ export function LectureGenerationAttemptDetails({ attempt }: { attempt: LectureS
           <p className="lecture-generation-details-terminal">{summary.terminal}</p>
         )}
         {summary.phases.length > 0 && (
-          <ol className="lecture-generation-details-phases" aria-label="Generation activity">
+          <ol
+            className="lecture-generation-details-phases"
+            aria-label={uiText('Generation activity')}
+          >
             {summary.phases.map((phase) => (
               <li key={`${phase.occurredAt}:${phase.label}`}>
                 <time dateTime={phase.occurredAt} title={formatUpdatedAt(phase.occurredAt)}>
-                  {new Date(phase.occurredAt).toLocaleTimeString([], {
+                  {new Date(phase.occurredAt).toLocaleTimeString(uiLocale(), {
                     hour: '2-digit',
                     minute: '2-digit',
                     second: '2-digit',
@@ -3028,7 +3115,10 @@ export function LectureGenerationAttemptDetails({ attempt }: { attempt: LectureS
           </ol>
         )}
         {summary.validations.length > 0 && (
-          <ol className="lecture-generation-details-validations" aria-label="Validation checks">
+          <ol
+            className="lecture-generation-details-validations"
+            aria-label={uiText('Validation checks')}
+          >
             {summary.validations.map((validation) => (
               <li key={validation.pass}>
                 <div>
@@ -3042,7 +3132,7 @@ export function LectureGenerationAttemptDetails({ attempt }: { attempt: LectureS
                         <strong>{diagnostic.document}</strong>
                         <span>{diagnostic.reason}</span>
                         <span>
-                          {diagnostic.tokenCount} flagged item
+                          {diagnostic.tokenCount} {uiText('flagged item')}
                           {diagnostic.tokenCount === 1 ? '' : 's'}
                         </span>
                       </li>
@@ -3109,6 +3199,7 @@ function StudioPreview({
   onCancel: () => void;
   onOpenCodexSignIn: () => void;
 }) {
+  useUiText();
   const [pdfPreviews, setPdfPreviews] = useState<
     Partial<Record<'lecture-notes' | 'slides', LectureStudioPdfPreview>>
   >({});
@@ -3647,7 +3738,7 @@ function StudioPreview({
     if (!manualEdit || manualEditBusy) return;
     if (
       manualEditDirty &&
-      !window.confirm('Discard the unsaved direct edits to both LaTeX documents?')
+      !window.confirm(uiText('Discard the unsaved direct edits to both LaTeX documents?'))
     ) {
       return;
     }
@@ -3810,7 +3901,14 @@ function StudioPreview({
       );
       return;
     }
-    if (!window.confirm(`Remove “${figure.displayName}” from this Lecture Studio?`)) return;
+    if (
+      !window.confirm(
+        uiText('Remove “{displayName}” from this Lecture Studio?', {
+          displayName: figure.displayName,
+        }),
+      )
+    )
+      return;
     const generation = ++manualOperationGeneration.current;
     setBusyFigureId(figure.id);
     setFigureError(null);
@@ -3939,12 +4037,19 @@ function StudioPreview({
       <header className="lecture-preview-toolbar">
         <div>
           <span className={`lecture-studio-status ${studio.status}`} aria-hidden="true" />
-          <span className="sr-only">Status: {lectureStudioStatusLabel(studio.status)}. </span>
+          <span className="sr-only">
+            {uiText('Status:')} {lectureStudioStatusLabel(studio.status)}.{' '}
+          </span>
           <div>
             <h2>{studio.title}</h2>
             <p>
-              {studio.kind === 'talk' ? `${studio.durationMinutes}-minute talk` : 'Lecture'} ·{' '}
-              {studio.sourceProjectIds.length} projects · revision {studio.currentRevision}
+              {studio.kind === 'talk'
+                ? uiText('{durationMinutes}-minute talk', {
+                    durationMinutes: String(studio.durationMinutes),
+                  })
+                : uiText('Lecture')}{' '}
+              · {studio.sourceProjectIds.length} {uiText('projects · revision')}{' '}
+              {studio.currentRevision}
             </p>
           </div>
         </div>
@@ -3966,15 +4071,15 @@ function StudioPreview({
               setEditingGenerationBrief((current) => !current);
             }}
           >
-            Edit options
+            {uiText('Edit options')}
           </button>
           {studio.status === 'generating' ? (
             <button type="button" className="danger-button" onClick={onCancel}>
-              Stop generation
+              {uiText('Stop generation')}
             </button>
           ) : codexAuthenticationRequired ? (
             <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
-              Sign in to Codex
+              {uiText('Sign in to Codex')}
             </button>
           ) : (
             <button
@@ -3989,8 +4094,8 @@ function StudioPreview({
               onClick={onGenerate}
             >
               {studio.currentRevision === 0 && studio.status === 'failed'
-                ? 'Retry generation'
-                : 'Generate new revision'}
+                ? uiText('Retry generation')
+                : uiText('Generate new revision')}
             </button>
           )}
         </div>
@@ -4001,11 +4106,13 @@ function StudioPreview({
             onSubmit={(event) => void saveGenerationBrief(event)}
           >
             <div>
-              <strong>Generation options</strong>
-              <span>Changes apply to the next generation, retry, and chat edit only.</span>
+              <strong>{uiText('Generation options')}</strong>
+              <span>
+                {uiText('Changes apply to the next generation, retry, and chat edit only.')}
+              </span>
             </div>
             <label>
-              Lecture-note pages
+              {uiText('Lecture-note pages')}
               <input
                 type="number"
                 min={1}
@@ -4013,13 +4120,13 @@ function StudioPreview({
                 step={1}
                 inputMode="numeric"
                 value={notesTargetPages}
-                placeholder="Auto"
+                placeholder={uiText('Auto')}
                 disabled={generationOptionsDisabled}
                 onChange={(event) => setNotesTargetPages(event.target.value)}
               />
             </label>
             <label>
-              Slide pages
+              {uiText('Slide pages')}
               <input
                 type="number"
                 min={documentFeatures.includeSlideTitlePage ? 2 : 1}
@@ -4027,27 +4134,27 @@ function StudioPreview({
                 step={1}
                 inputMode="numeric"
                 value={slidesTargetPages}
-                placeholder="Auto"
+                placeholder={uiText('Auto')}
                 disabled={generationOptionsDisabled}
                 onChange={(event) => setSlidesTargetPages(event.target.value)}
               />
-              <small>Title page counts only when enabled.</small>
+              <small>{uiText('Title page counts only when enabled.')}</small>
             </label>
             <label>
-              Detail
+              {uiText('Detail')}
               <select
                 value={detailLevel}
                 disabled={generationOptionsDisabled}
                 onChange={(event) => setDetailLevel(event.target.value as LectureStudioDetailLevel)}
               >
-                <option value="concise">Concise</option>
-                <option value="standard">Standard</option>
-                <option value="detailed">Detailed</option>
-                <option value="exhaustive">Exhaustive</option>
+                <option value="concise">{uiText('Concise')}</option>
+                <option value="standard">{uiText('Standard')}</option>
+                <option value="detailed">{uiText('Detailed')}</option>
+                <option value="exhaustive">{uiText('Exhaustive')}</option>
               </select>
             </label>
             <label className="lecture-generation-options-instructions">
-              Additional instructions
+              {uiText('Additional instructions')}
               <textarea
                 rows={3}
                 maxLength={LECTURE_STUDIO_MAX_GENERATION_INSTRUCTIONS}
@@ -4065,7 +4172,7 @@ function StudioPreview({
                 value={structure}
                 onChange={setStructure}
                 disabled={generationOptionsDisabled}
-                heading="Notes & slides structure"
+                heading={uiText('Notes & slides structure')}
                 idPrefix={`studio-${studio.id}-lecture-structure`}
                 contextCopy="This Studio keeps its own structure. Saving changes affects the next generation, retry, and chat edit only."
                 onReset={() => setStructure(structuredClone(defaultStructure))}
@@ -4089,7 +4196,7 @@ function StudioPreview({
                 contextCopy="This Studio keeps its own choices. Hidden source markers still retain the revision’s frozen evidence record."
               />
               <div className="lecture-generation-document-feature-status">
-                <span>Defaults can be copied without changing earlier revisions.</span>
+                <span>{uiText('Defaults can be copied without changing earlier revisions.')}</span>
                 <div>
                   <button
                     type="button"
@@ -4107,7 +4214,7 @@ function StudioPreview({
                       setDocumentFeatures(nextDocumentFeatures);
                     }}
                   >
-                    Load {outputProjectName} defaults
+                    {uiText('Load')} {outputProjectName} {uiText('defaults')}
                   </button>
                   <button
                     type="button"
@@ -4125,7 +4232,7 @@ function StudioPreview({
                       setDocumentFeatures(nextDocumentFeatures);
                     }}
                   >
-                    Load workspace defaults
+                    {uiText('Load workspace defaults')}
                   </button>
                 </div>
               </div>
@@ -4140,14 +4247,14 @@ function StudioPreview({
                   setEditingGenerationBrief(false);
                 }}
               >
-                Cancel
+                {uiText('Cancel')}
               </button>
               <button
                 type="submit"
                 className="primary-button"
                 disabled={!generationBriefDraftValid || generationOptionsDisabled}
               >
-                {savingGenerationBrief ? 'Saving…' : 'Save options'}
+                {savingGenerationBrief ? uiText('Saving…') : uiText('Save options')}
               </button>
             </div>
           </form>
@@ -4157,11 +4264,11 @@ function StudioPreview({
         )}
         {studio.lastErrorCode && studio.status === 'failed' && (
           <div className="lecture-preview-error" role="status">
-            <strong>Last generation did not commit</strong>
+            <strong>{uiText('Last generation did not commit')}</strong>
             <span>{lectureErrorCodeMessage(studio.lastErrorCode)}</span>
             {studio.lastErrorCode === 'lecture_auth_required' || codexAuthenticationRequired ? (
               <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
-                Sign in to Codex
+                {uiText('Sign in to Codex')}
               </button>
             ) : (
               !lastAttempt && <code>{studio.lastErrorCode}</code>
@@ -4171,38 +4278,42 @@ function StudioPreview({
         )}
         {pdfError && (
           <div className="lecture-preview-error" role="alert">
-            <strong>PDF preview was not created</strong>
+            <strong>{uiText('PDF preview was not created')}</strong>
             <span>{pdfError}</span>
             <button type="button" className="ghost-button" onClick={() => setPdfError(null)}>
-              Dismiss
+              {uiText('Dismiss')}
             </button>
           </div>
         )}
         {artifactError && (
           <div className="lecture-preview-error" role="alert">
-            <strong>Document action did not complete</strong>
+            <strong>{uiText('Document action did not complete')}</strong>
             <span>{artifactError}</span>
             <button type="button" className="ghost-button" onClick={() => setArtifactError(null)}>
-              Dismiss
+              {uiText('Dismiss')}
             </button>
           </div>
         )}
         {manualLaunchError && (
           <div className="lecture-preview-error" role="alert">
-            <strong>Direct source edit did not start</strong>
+            <strong>{uiText('Direct source edit did not start')}</strong>
             <span>{manualLaunchError}</span>
             <button
               type="button"
               className="ghost-button"
               onClick={() => setManualLaunchError(null)}
             >
-              Dismiss
+              {uiText('Dismiss')}
             </button>
           </div>
         )}
       </header>
 
-      <div className="lecture-preview-tabs" role="tablist" aria-label="Generated documents">
+      <div
+        className="lecture-preview-tabs"
+        role="tablist"
+        aria-label={uiText('Generated documents')}
+      >
         <button
           type="button"
           role="tab"
@@ -4210,7 +4321,7 @@ function StudioPreview({
           className={activeTab === 'notes' ? 'active' : ''}
           onClick={() => onTab('notes')}
         >
-          Lecture notes
+          {uiText('Lecture notes')}
         </button>
         <button
           type="button"
@@ -4219,7 +4330,7 @@ function StudioPreview({
           className={activeTab === 'slides' ? 'active' : ''}
           onClick={() => onTab('slides')}
         >
-          {studio.kind === 'talk' ? 'Talk slides' : 'Lecture slides'}
+          {studio.kind === 'talk' ? uiText('Talk slides') : uiText('Lecture slides')}
         </button>
         <button
           type="button"
@@ -4228,7 +4339,7 @@ function StudioPreview({
           className={activeTab === 'notes-pdf' ? 'active' : ''}
           onClick={() => onTab('notes-pdf')}
         >
-          Notes PDF
+          {uiText('Notes PDF')}
         </button>
         <button
           type="button"
@@ -4237,12 +4348,12 @@ function StudioPreview({
           className={activeTab === 'slides-pdf' ? 'active' : ''}
           onClick={() => onTab('slides-pdf')}
         >
-          Slides PDF
+          {uiText('Slides PDF')}
         </button>
       </div>
 
       {revision && currentArtifact && (
-        <div className="lecture-artifact-actions" aria-label="Lecture document actions">
+        <div className="lecture-artifact-actions" aria-label={uiText('Lecture document actions')}>
           <button
             type="button"
             className="ghost-button lecture-artifact-action-button"
@@ -4317,7 +4428,7 @@ function StudioPreview({
               }
               onClick={() => void beginManualEdit()}
             >
-              {startingManualEdit ? 'Opening editor…' : 'Edit source'}
+              {startingManualEdit ? uiText('Opening editor…') : uiText('Edit source')}
             </button>
           )}
           {manualEdit && !previewIsPdf(activeTab) && (
@@ -4328,7 +4439,8 @@ function StudioPreview({
               aria-controls={`lecture-figure-drawer-${studio.id}`}
               onClick={toggleFigureDrawer}
             >
-              Figures ({manualEdit.figures.length})
+              {uiText('Figures (')}
+              {manualEdit.figures.length})
             </button>
           )}
           {artifactAction && <span role="status">{artifactAction}</span>}
@@ -4406,16 +4518,21 @@ function StudioPreview({
         ) : studio.status === 'generating' && source.trim() === '' ? (
           <div className="lecture-preview-empty generating">
             <i />
-            <strong>Building revision {studio.currentRevision + 1}</strong>
-            <span>Codex is synthesizing only the selected, frozen evidence.</span>
+            <strong>
+              {uiText('Building revision')} {studio.currentRevision + 1}
+            </strong>
+            <span>{uiText('Codex is synthesizing only the selected, frozen evidence.')}</span>
           </div>
         ) : source.trim() === '' && canManagePreGenerationFigures ? (
           <div className="lecture-preview-empty pre-generation">
             <div className="lecture-pre-generation-copy">
-              <strong>No generated {activeTab} yet</strong>
+              <strong>
+                {uiText('No generated')} {activeTab} {uiText('yet')}
+              </strong>
               <span>
-                Add or remove figures now, then generate the first revision. Figure changes are
-                saved to this Studio immediately.
+                {uiText(
+                  'Add or remove figures now, then generate the first revision. Figure changes are saved to this Studio immediately.',
+                )}
               </span>
             </div>
             <div className="lecture-pre-generation-figures">
@@ -4448,8 +4565,10 @@ function StudioPreview({
           </div>
         ) : source.trim() === '' ? (
           <div className="lecture-preview-empty">
-            <strong>No generated {activeTab} yet</strong>
-            <span>Generate the first revision to preview it here.</span>
+            <strong>
+              {uiText('No generated')} {activeTab} {uiText('yet')}
+            </strong>
+            <span>{uiText('Generate the first revision to preview it here.')}</span>
           </div>
         ) : previewIsPdf(activeTab) && pdfPreview ? (
           <PdfPreview
@@ -4462,30 +4581,34 @@ function StudioPreview({
                 aria-pressed={pdfFocusMode}
                 title={
                   pdfFocusMode
-                    ? 'Exit PDF focus (Esc)'
-                    : 'Hide the Studio panels and enlarge the PDF'
+                    ? uiText('Exit PDF focus (Esc)')
+                    : uiText('Hide the Studio panels and enlarge the PDF')
                 }
                 onClick={() => onPdfFocusModeChange(!pdfFocusMode)}
               >
-                {pdfFocusMode ? 'Exit focus' : 'Focus PDF'}
+                {pdfFocusMode ? uiText('Exit focus') : uiText('Focus PDF')}
               </button>
             }
           />
         ) : previewIsPdf(activeTab) ? (
           <div className="lecture-preview-empty">
-            <strong>Compile this revision as PDF</strong>
-            <span>GOSU compiles the exact saved LaTeX locally with network access disabled.</span>
+            <strong>{uiText('Compile this revision as PDF')}</strong>
+            <span>
+              {uiText('GOSU compiles the exact saved LaTeX locally with network access disabled.')}
+            </span>
             <button
               type="button"
               className="primary-button"
               disabled={compilingPdf !== null}
               onClick={() => void compilePdf()}
             >
-              {compilingPdf === documentKind ? 'Compiling PDF…' : 'Compile & preview PDF'}
+              {compilingPdf === documentKind
+                ? uiText('Compiling PDF…')
+                : uiText('Compile & preview PDF')}
             </button>
           </div>
         ) : revision?.schemaVersion !== 1 ? (
-          <pre className="lecture-latex-source" aria-label="Generated LaTeX source">
+          <pre className="lecture-latex-source" aria-label={uiText('Generated LaTeX source')}>
             <code>{source}</code>
           </pre>
         ) : (
@@ -4575,6 +4698,7 @@ function LectureStudioChat({
   codexAuthenticationRequired: boolean;
   onOpenCodexSignIn: () => void;
 }) {
+  useUiText();
   const attachmentPrivacyDescriptionId = useId();
   const chatEditable = canEditLectureStudioRevision(studio) && !directEditing;
   const [showNewMessageJump, setShowNewMessageJump] = useState(false);
@@ -4754,19 +4878,19 @@ function LectureStudioChat({
 
   if (collapsed) {
     return (
-      <aside className="lecture-chat collapsed" aria-label="Lecture assistant collapsed">
+      <aside className="lecture-chat collapsed" aria-label={uiText('Lecture assistant collapsed')}>
         <button
           type="button"
           className="lecture-pane-toggle"
-          aria-label="Show lecture assistant"
-          title="Show lecture assistant"
+          aria-label={uiText('Show lecture assistant')}
+          title={uiText('Show lecture assistant')}
           aria-expanded="false"
           aria-controls="lecture-studio-assistant"
           onClick={() => onCollapsedChange(false)}
         >
           <CollapseChevron direction="left" />
         </button>
-        <span>AI</span>
+        <span>{uiText('AI')}</span>
       </aside>
     );
   }
@@ -4817,24 +4941,24 @@ function LectureStudioChat({
     <aside className="lecture-chat" id="lecture-studio-assistant">
       <header>
         <div>
-          <span className="eyebrow">Lecture assistant</span>
-          <h2>Edit this revision</h2>
+          <span className="eyebrow">{uiText('Lecture assistant')}</span>
+          <h2>{uiText('Edit this revision')}</h2>
         </div>
         {busy && (
           <button
             type="button"
             className="danger-button"
             onClick={onCancel}
-            aria-label="Stop the current Lecture Assistant response"
+            aria-label={uiText('Stop the current Lecture Assistant response')}
           >
-            Stop response
+            {uiText('Stop response')}
           </button>
         )}
         <button
           type="button"
           className="lecture-pane-toggle"
-          aria-label="Hide lecture assistant"
-          title="Hide lecture assistant"
+          aria-label={uiText('Hide lecture assistant')}
+          title={uiText('Hide lecture assistant')}
           aria-expanded="true"
           aria-controls="lecture-studio-assistant"
           onClick={() => onCollapsedChange(true)}
@@ -4844,44 +4968,44 @@ function LectureStudioChat({
       </header>
       <div className="lecture-chat-models">
         <label>
-          Model
+          {uiText('Model')}
           <select
             value={selectedModel ?? ''}
             onChange={(event) => onSelectedModel(event.target.value || null)}
             disabled={busy || directEditing || modelsLoading}
           >
-            <option value="">Auto · provider recommended</option>
+            <option value="">{uiText('Auto · provider recommended')}</option>
             {selectedModel !== null && !models.some((model) => model.modelId === selectedModel) && (
               <option value={selectedModel} disabled>
-                Unavailable model · choose again
+                {uiText('Unavailable model · choose again')}
               </option>
             )}
             {models.map((model) => (
               <option value={model.modelId} key={model.modelId}>
                 {model.displayName}
-                {model.isDefault ? ' · default' : ''}
+                {model.isDefault ? uiText(' · default') : ''}
               </option>
             ))}
           </select>
         </label>
         <label>
-          Reasoning
+          {uiText('Reasoning')}
           <select
             value={selectedReasoning ?? ''}
             onChange={(event) => onSelectedReasoning(event.target.value || null)}
             disabled={busy || directEditing || modelsLoading || reasoningOptions.length === 0}
           >
-            <option value="">Model default</option>
+            <option value="">{uiText('Model default')}</option>
             {selectedReasoning !== null &&
               !reasoningOptions.some((option) => option.id === selectedReasoning) && (
                 <option value={selectedReasoning} disabled>
-                  Unavailable reasoning · choose again
+                  {uiText('Unavailable reasoning · choose again')}
                 </option>
               )}
             {reasoningOptions.map((option) => (
               <option value={option.id} key={option.id}>
                 {option.label}
-                {option.isDefault ? ' · default' : ''}
+                {option.isDefault ? uiText(' · default') : ''}
               </option>
             ))}
           </select>
@@ -4892,27 +5016,30 @@ function LectureStudioChat({
           onClick={onRefreshModels}
           disabled={modelsLoading || directEditing}
         >
-          Refresh
+          {uiText('Refresh')}
         </button>
         {selectionUnavailable && (
-          <p role="alert">Choose an available model and reasoning option.</p>
+          <p role="alert">{uiText('Choose an available model and reasoning option.')}</p>
         )}
       </div>
       <p className="lecture-chat-boundary" role={directEditing ? 'status' : undefined}>
-        This chat edits only this lecture workspace. Project chats remain separate. Showing up to
-        the {LECTURE_STUDIO_RECENT_MESSAGE_WINDOW} most recent messages.
+        {uiText(
+          'This chat edits only this lecture workspace. Project chats remain separate. Showing up to the',
+        )}{' '}
+        {LECTURE_STUDIO_RECENT_MESSAGE_WINDOW} {uiText('most recent messages.')}
         {directEditing && (
           <strong>
-            Direct source editing is active. Save or cancel it before asking the Lecture Assistant
-            for another revision.
+            {uiText(
+              'Direct source editing is active. Save or cancel it before asking the Lecture Assistant for another revision.',
+            )}
           </strong>
         )}
       </p>
       {codexAuthenticationRequired && (
         <div className="lecture-chat-auth-required" role="status">
-          <span>Sign in to Codex before editing this revision.</span>
+          <span>{uiText('Sign in to Codex before editing this revision.')}</span>
           <button type="button" className="secondary-button" onClick={onOpenCodexSignIn}>
-            Sign in to Codex
+            {uiText('Sign in to Codex')}
           </button>
         </div>
       )}
@@ -4930,19 +5057,20 @@ function LectureStudioChat({
         >
           {messages.length === 0 ? (
             <div className="lecture-chat-empty">
-              <strong>Refine the generated material here</strong>
+              <strong>{uiText('Refine the generated material here')}</strong>
               <span>
-                Try “shorten section 2,” “add an equation slide,” or “make the conclusion fit one
-                minute.”
+                {uiText(
+                  'Try “shorten section 2,” “add an equation slide,” or “make the conclusion fit one minute.”',
+                )}
               </span>
             </div>
           ) : (
             messages.map((message) => (
               <article className={message.role} key={message.id}>
                 <header>
-                  <strong>{message.role === 'user' ? 'You' : 'GOSU'}</strong>
+                  <strong>{message.role === 'user' ? uiText('You') : uiText('GOSU')}</strong>
                   <time dateTime={message.createdAt}>
-                    {new Date(message.createdAt).toLocaleTimeString([], {
+                    {new Date(message.createdAt).toLocaleTimeString(uiLocale(), {
                       hour: '2-digit',
                       minute: '2-digit',
                     })}
@@ -4956,7 +5084,10 @@ function LectureStudioChat({
                   loadVaultImages={false}
                 />
                 {(message.attachments?.length ?? 0) > 0 && (
-                  <ul className="lecture-chat-message-attachments" aria-label="Attached references">
+                  <ul
+                    className="lecture-chat-message-attachments"
+                    aria-label={uiText('Attached references')}
+                  >
                     {message.attachments?.map((attachment) => (
                       <li key={attachment.id} title={attachment.reconstructionNotice}>
                         <span>{attachment.displayName}</span>
@@ -4971,26 +5102,28 @@ function LectureStudioChat({
         </div>
         {showNewMessageJump && (
           <button type="button" className="lecture-chat-jump" onClick={() => jumpToLatest()}>
-            New message ↓
+            {uiText('New message ↓')}
           </button>
         )}
       </div>
       <footer>
         {attachments.length > 0 && (
-          <div className="lecture-chat-attachments" aria-label="Lecture edit attachments">
+          <div className="lecture-chat-attachments" aria-label={uiText('Lecture edit attachments')}>
             {attachments.map((attachment) => (
               <span className="lecture-chat-attachment-card" key={attachment.id}>
                 <span title={attachment.displayName}>{attachment.displayName}</span>
                 <small title={attachment.reconstructionNotice}>
                   {attachment.format.toUpperCase()} · {attachment.unitCount} {attachment.unitLabel}
                   {attachment.unitCount === 1 ? '' : 's'}
-                  {attachment.truncated ? ' · excerpted' : ''}
+                  {attachment.truncated ? uiText(' · excerpted') : ''}
                 </small>
                 <button
                   type="button"
                   onClick={() => releaseAttachment(attachment)}
-                  aria-label={`Remove ${attachment.displayName}`}
-                  title={`Remove ${attachment.displayName}`}
+                  aria-label={uiText('Remove {displayName}', {
+                    displayName: attachment.displayName,
+                  })}
+                  title={uiText('Remove {displayName}', { displayName: attachment.displayName })}
                   disabled={busy || submitting}
                 >
                   ×
@@ -4998,9 +5131,9 @@ function LectureStudioChat({
               </span>
             ))}
             <span className="lecture-chat-attachment-privacy" id={attachmentPrivacyDescriptionId}>
-              Original files and local paths stay on this Mac. A bounded text snapshot is sent to
-              the selected model for this edit and retained with the successful revision’s source
-              provenance.
+              {uiText(
+                'Original files and local paths stay on this Mac. A bounded text snapshot is sent to the selected model for this edit and retained with the successful revision’s source provenance.',
+              )}
             </span>
           </div>
         )}
@@ -5018,12 +5151,12 @@ function LectureStudioChat({
               selectionUnavailable ||
               attachments.length >= LECTURE_STUDIO_MAX_ATTACHMENTS
             }
-            aria-label="Attach lecture reference files"
+            aria-label={uiText('Attach lecture reference files')}
             aria-describedby={attachments.length > 0 ? attachmentPrivacyDescriptionId : undefined}
-            title="Attach up to 5 LaTeX, Markdown, or PDF files to this edit"
+            title={uiText('Attach up to 5 LaTeX, Markdown, or PDF files to this edit')}
           >
             {choosingAttachments ? <span aria-hidden="true">…</span> : <LectureAttachmentIcon />}
-            <small>Files</small>
+            <small>{uiText('Files')}</small>
           </button>
           <textarea
             value={draft}
@@ -5031,12 +5164,12 @@ function LectureStudioChat({
             onKeyDown={keyDown}
             placeholder={
               codexAuthenticationRequired
-                ? 'Sign in to Codex before editing this revision…'
+                ? uiText('Sign in to Codex before editing this revision…')
                 : directEditing
-                  ? 'Save or cancel the direct source edit first…'
+                  ? uiText('Save or cancel the direct source edit first…')
                   : chatEditable
-                    ? 'Ask for a focused change to the notes or slides…'
-                    : 'Generate a revision before editing it…'
+                    ? uiText('Ask for a focused change to the notes or slides…')
+                    : uiText('Generate a revision before editing it…')
             }
             rows={3}
             maxLength={12_000}
@@ -5047,7 +5180,7 @@ function LectureStudioChat({
               !chatEditable ||
               selectionUnavailable
             }
-            aria-label="Message the Lecture Assistant"
+            aria-label={uiText('Message the Lecture Assistant')}
           />
           <button
             type="button"
@@ -5063,11 +5196,11 @@ function LectureStudioChat({
             }
             onClick={() => void send()}
           >
-            {busy || submitting ? 'Working…' : 'Send'}
-            <small>Enter</small>
+            {busy || submitting ? uiText('Working…') : uiText('Send')}
+            <small>{uiText('Enter')}</small>
           </button>
         </div>
-        <p>Shift + Enter for a new line. Each accepted edit creates new LaTeX files.</p>
+        <p>{uiText('Shift + Enter for a new line. Each accepted edit creates new LaTeX files.')}</p>
       </footer>
     </aside>
   );

@@ -3,6 +3,15 @@
 **Goal-Oriented Science, Unified** — a local-first workspace for planning experiments,
 writing and reviewing papers, and coordinating research teams.
 
+## Development and maintenance memory
+
+Start with the [documentation index](docs/README.md), [maintenance guide](docs/MAINTENANCE_GUIDE.md),
+and [local release / app replacement runbook](docs/RELEASE_RUNBOOK.md).
+The [0.58.10 local release record](docs/releases/0.58.10.md) distinguishes the installed app,
+source working tree, standalone prototypes, verified behavior and remaining limitations.
+These focused documents update the older bootstrap overview below; code and current test receipts
+remain authoritative. Markdown changes are mirrored byte-for-byte into the GOSU Obsidian docs tree.
+
 > [!IMPORTANT]
 > GOSU is in early development. The repository currently contains the operational MVP
 > foundation and interactive vertical slices, not a production deployment. Do not use it yet
@@ -30,16 +39,19 @@ The initial desktop target is macOS. Experiment workloads run in isolated Linux 
 GOSU is a modular monorepo. Modules exchange versioned commands and events instead of reading
 one another's persistence directly.
 
-| Area                    | Responsibility                                                 |
-| ----------------------- | -------------------------------------------------------------- |
-| `apps/desktop`          | Local-first Electron application and privileged local adapters |
-| `apps/web`              | Owner and lab administration web experience                    |
-| `apps/sync-api`         | Collaboration API, authorization, audit, and event relay       |
-| `apps/runner`           | Outbound-only Linux experiment runner                          |
-| `packages/contracts`    | Authored TypeScript schemas and generated JSON Schema          |
-| `packages/domain`       | Pure domain rules and state transitions                        |
-| `packages/ui`           | Shared presentational components and design tokens             |
-| `packages/integrations` | Provider and connector ports plus implementations              |
+| Area                     | Responsibility                                                 |
+| ------------------------ | -------------------------------------------------------------- |
+| `apps/desktop`           | Local-first Electron application and privileged local adapters |
+| `apps/model-lab`         | Shared standalone/embedded model design, graph and Copilot UI  |
+| `apps/briefing-lab`      | Standalone routine-design LLM and fixture briefing prototype   |
+| `apps/web`               | Owner and lab administration web experience                    |
+| `apps/sync-api`          | Collaboration API, authorization, audit, and event relay       |
+| `apps/runner`            | Outbound-only Linux experiment runner                          |
+| `packages/contracts`     | Authored TypeScript schemas and generated JSON Schema          |
+| `packages/domain`        | Pure domain rules and state transitions                        |
+| `packages/briefing-core` | Pure briefing schedule, ranking, grouping and validation rules |
+| `packages/ui`            | Shared presentational components and design tokens             |
+| `packages/integrations`  | Provider and connector ports plus implementations              |
 
 The hosted service stores collaboration state, not research payloads. In the current manuscript
 slice, GitHub and the GOSU-managed worktree remain draft authority; an Overleaf revision is fetched

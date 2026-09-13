@@ -85,6 +85,32 @@ const callbacks = () => ({
 });
 
 describe('workspace all-project Tasks view', () => {
+  it('opens the exact Briefing task above filters and reports unavailable targets without title guessing', () => {
+    const selected = task(alpha, { title: 'Exact target' });
+    const actions = callbacks();
+    const html = renderToStaticMarkup(
+      <WorkspaceTasksView
+        projects={[alpha]}
+        tasks={[selected]}
+        busyAction={null}
+        {...actions}
+        briefingTarget={{ id: selected.id, requestId: 1 }}
+      />,
+    );
+    expect(html).toContain('브리핑에서 선택한 할 일');
+    expect(html).toContain('value="Exact target"');
+    const missing = renderToStaticMarkup(
+      <WorkspaceTasksView
+        projects={[alpha]}
+        tasks={[selected]}
+        busyAction={null}
+        {...actions}
+        briefingTarget={{ id: 'missing', requestId: 2 }}
+      />,
+    );
+    expect(missing).toContain('삭제·보관되었거나');
+    expect(actions.onUpdateTask).not.toHaveBeenCalled();
+  });
   it('shows canonical Kanban columns and project-aware duplicate cards for every active project', () => {
     const html = renderToStaticMarkup(
       <WorkspaceTasksView

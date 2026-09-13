@@ -1,3 +1,5 @@
+import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+
 import {
   useEffect,
   useLayoutEffect,
@@ -19,6 +21,7 @@ import {
   type WorkspaceTaskStatus,
 } from '../../shared/workspace-contracts';
 import { BoardSettingsForm } from './board-settings-form';
+import { boardColumnDisplayLabel, boardTitleDisplayLabel } from './domain-ui-labels';
 import type { SearchTargetRequest } from './search-results-model';
 import {
   EMPTY_KANBAN_FILTERS,
@@ -65,6 +68,7 @@ export function BoardView({
   searchTarget = null,
   onSearchTargetHandled = () => undefined,
 }: BoardViewProps) {
+  useUiText();
   const columns = useMemo(() => resolveKanbanColumns(project), [project]);
   const board = useMemo(() => resolveWorkspaceBoardSettings(project.board), [project.board]);
   const [filters, setFilters] = useState<KanbanFilters>(EMPTY_KANBAN_FILTERS);
@@ -108,17 +112,21 @@ export function BoardView({
   }, [filteredTasks, onSearchTargetHandled, pendingSearchFocus]);
 
   return (
-    <section className="kanban-workspace" aria-label={`${board.title} task workspace`}>
+    <section
+      className="kanban-workspace"
+      aria-label={uiText('{title} task workspace', { title: board.title })}
+    >
       <header className="kanban-command-bar">
         <div className="kanban-title-block">
-          <span>PROJECT BOARD</span>
-          <h2>{board.title}</h2>
+          <span>{uiText('PROJECT BOARD')}</span>
+          <h2>{boardTitleDisplayLabel(board.title)}</h2>
           <p>
-            {tasks.filter((task) => task.archivedAt === undefined).length} active research tasks
+            {tasks.filter((task) => task.archivedAt === undefined).length}{' '}
+            {uiText('active research tasks')}
           </p>
         </div>
         <div className="kanban-view-actions">
-          <div className="board-layout-switch" role="group" aria-label="Task layout">
+          <div className="board-layout-switch" role="group" aria-label={uiText('Task layout')}>
             <button
               type="button"
               className={viewMode === 'kanban' ? 'active' : ''}
@@ -128,7 +136,7 @@ export function BoardView({
                 setFilters((current) => ({ ...current, mode: 'active' }));
               }}
             >
-              Kanban
+              {uiText('Kanban')}
             </button>
             <button
               type="button"
@@ -139,7 +147,7 @@ export function BoardView({
                 setFilters((current) => ({ ...current, mode: 'active' }));
               }}
             >
-              To-do
+              {uiText('To-do')}
             </button>
           </div>
           <button
@@ -152,7 +160,9 @@ export function BoardView({
               }))
             }
           >
-            {filters.mode === 'active' ? `Task trash (${trashedTaskCount})` : 'Back to tasks'}
+            {filters.mode === 'active'
+              ? uiText('Task trash ({trashedTaskCount})', { trashedTaskCount: trashedTaskCount })
+              : uiText('Back to tasks')}
           </button>
           <button
             type="button"
@@ -162,7 +172,7 @@ export function BoardView({
               setShowSettings((current) => !current);
             }}
           >
-            {showSettings ? 'Close settings' : 'Rename columns & settings'}
+            {showSettings ? uiText('Close settings') : uiText('Rename columns & settings')}
           </button>
         </div>
       </header>
@@ -238,7 +248,10 @@ export function BoardView({
               onDelete={(task) => {
                 if (
                   !window.confirm(
-                    `Delete “${task.title}” from project tasks? It will move to Task trash and can be restored later.`,
+                    uiText(
+                      'Delete “{title}” from project tasks? It will move to Task trash and can be restored later.',
+                      { title: task.title },
+                    ),
                   )
                 ) {
                   return;
@@ -261,7 +274,9 @@ export function BoardView({
               className="kanban-board"
               role="region"
               tabIndex={0}
-              aria-label={`${board.title} columns. Scroll horizontally when needed.`}
+              aria-label={uiText('{title} columns. Scroll horizontally when needed.', {
+                title: board.title,
+              })}
             >
               {columns.map((column, columnIndex) => {
                 const progress = kanbanColumnProgress(tasks, column.status, column.wipLimit);
@@ -315,7 +330,9 @@ export function BoardView({
                     <header>
                       <div>
                         <div className="column-title-row">
-                          <strong id={`column-${column.status}`}>{column.label}</strong>
+                          <strong id={`column-${column.status}`}>
+                            {boardColumnDisplayLabel(column.status, column.label)}
+                          </strong>
                           <button
                             type="button"
                             className="column-rename-button"
@@ -324,19 +341,21 @@ export function BoardView({
                               setShowSettings(true);
                             }}
                             disabled={busy}
-                            aria-label={`Rename ${column.label} column`}
-                            title={`Rename ${column.label}`}
+                            aria-label={uiText('Rename {label} column', { label: column.label })}
+                            title={uiText('Rename {label}', { label: column.label })}
                           >
-                            Rename
+                            {uiText('Rename')}
                           </button>
                         </div>
                         {column.wipLimit !== null && (
                           <small className={exceeded ? 'wip-warning' : ''}>
-                            WIP {allColumnTasks.length}/{column.wipLimit}
+                            {uiText('WIP')} {allColumnTasks.length}/{column.wipLimit}
                           </small>
                         )}
                       </div>
-                      <span aria-label={`${allColumnTasks.length} tasks`}>
+                      <span
+                        aria-label={uiText('{length} tasks', { length: allColumnTasks.length })}
+                      >
                         {filterCount > 0
                           ? `${visibleColumnTasks.length}/${allColumnTasks.length}`
                           : allColumnTasks.length}
@@ -344,7 +363,9 @@ export function BoardView({
                     </header>
                     {visibleColumnTasks.length === 0 && (
                       <p className="column-empty">
-                        {allColumnTasks.length > 0 ? 'No matching tasks' : 'Drop or add a task'}
+                        {allColumnTasks.length > 0
+                          ? uiText('No matching tasks')
+                          : uiText('Drop or add a task')}
                       </p>
                     )}
                     {visibleColumnTasks.map((task) => (
@@ -374,7 +395,10 @@ export function BoardView({
                         onDelete={() => {
                           if (
                             !window.confirm(
-                              `Delete “${task.title}” from project tasks? It will move to Task trash and can be restored later.`,
+                              uiText(
+                                'Delete “{title}” from project tasks? It will move to Task trash and can be restored later.',
+                                { title: task.title },
+                              ),
                             )
                           ) {
                             return;
@@ -416,40 +440,40 @@ function BoardFilters({
   onChange: (filters: KanbanFilters) => void;
 }) {
   return (
-    <section className="board-filter-bar" aria-label="Filter project tasks">
+    <section className="board-filter-bar" aria-label={uiText('Filter project tasks')}>
       <label className="board-search">
-        Search
+        {uiText('Search')}
         <input
           type="search"
           value={filters.query}
           onChange={(event) => onChange({ ...filters, query: event.target.value })}
-          placeholder="Title or description"
+          placeholder={uiText('Title or description')}
         />
       </label>
       <label>
-        Priority
+        {uiText('Priority')}
         <select
           value={filters.priority}
           onChange={(event) =>
             onChange({ ...filters, priority: event.target.value as KanbanFilters['priority'] })
           }
         >
-          <option value="all">All priorities</option>
-          <option value="none">No priority</option>
+          <option value="all">{uiText('All priorities')}</option>
+          <option value="none">{uiText('No priority')}</option>
           {PRIORITIES.map((priority) => (
             <option value={priority.value} key={priority.value}>
-              {priority.label}
+              {uiText(priority.label)}
             </option>
           ))}
         </select>
       </label>
       <label>
-        Label
+        {uiText('Label')}
         <select
           value={filters.label}
           onChange={(event) => onChange({ ...filters, label: event.target.value })}
         >
-          <option value="">All labels</option>
+          <option value="">{uiText('All labels')}</option>
           {labels.map((label) => (
             <option value={label} key={label}>
               {label}
@@ -458,18 +482,18 @@ function BoardFilters({
         </select>
       </label>
       <label>
-        Due
+        {uiText('Due')}
         <select
           value={filters.due}
           onChange={(event) =>
             onChange({ ...filters, due: event.target.value as KanbanFilters['due'] })
           }
         >
-          <option value="all">Any date</option>
-          <option value="overdue">Overdue</option>
-          <option value="today">Today</option>
-          <option value="this_week">This week</option>
-          <option value="no_due_date">No due date</option>
+          <option value="all">{uiText('Any date')}</option>
+          <option value="overdue">{uiText('Overdue')}</option>
+          <option value="today">{uiText('Today')}</option>
+          <option value="this_week">{uiText('This week')}</option>
+          <option value="no_due_date">{uiText('No due date')}</option>
         </select>
       </label>
       <button
@@ -478,7 +502,8 @@ function BoardFilters({
         disabled={activeCount === 0}
         onClick={() => onChange({ ...EMPTY_KANBAN_FILTERS, mode: filters.mode })}
       >
-        Clear all{activeCount > 0 ? ` (${activeCount})` : ''}
+        {uiText('Clear all')}
+        {activeCount > 0 ? ` (${activeCount})` : ''}
       </button>
     </section>
   );
@@ -513,23 +538,27 @@ export function TodoTaskList({
   const reopenLabel = columns.find((column) => column.status === reopenStatus)?.label ?? 'Backlog';
 
   return (
-    <section className="todo-task-list" aria-label="To-do list">
+    <section className="todo-task-list" aria-label={uiText('To-do list')}>
       <header className="todo-list-summary">
         <div>
-          <span>TO-DO VIEW</span>
-          <h3>Tasks by workflow stage</h3>
+          <span>{uiText('TO-DO VIEW')}</span>
+          <h3>{uiText('Tasks by workflow stage')}</h3>
         </div>
-        <p>{tasks.length} matching tasks · changes also appear on Kanban</p>
+        <p>
+          {tasks.length} {uiText('matching tasks · changes also appear on Kanban')}
+        </p>
       </header>
       <div className="todo-status-groups">
         {groups.map((group) => (
           <section className="todo-status-group" key={group.status}>
             <header>
-              <strong>{group.label}</strong>
-              <span aria-label={`${group.tasks.length} tasks`}>{group.tasks.length}</span>
+              <strong>{boardColumnDisplayLabel(group.status, group.label)}</strong>
+              <span aria-label={uiText('{length} tasks', { length: group.tasks.length })}>
+                {group.tasks.length}
+              </span>
             </header>
             {group.tasks.length === 0 ? (
-              <p className="todo-group-empty">No matching tasks</p>
+              <p className="todo-group-empty">{uiText('No matching tasks')}</p>
             ) : (
               <div className="todo-group-items">
                 {group.tasks.map((task) =>
@@ -623,14 +652,20 @@ export function TodoTaskRow({
           <h4>{task.title}</h4>
           <span className="todo-status-badge">{statusLabel}</span>
           {task.priority && (
-            <span className={`priority-badge ${task.priority}`}>{task.priority}</span>
+            <span className={`priority-badge ${uiText(task.priority)}`}>
+              {uiText(task.priority)}
+            </span>
           )}
         </div>
         {task.description && <p className="todo-task-description">{task.description}</p>}
         <div className="todo-task-metadata">
           {task.dueDate && (
             <time className={`task-due ${dueState}`} dateTime={task.dueDate}>
-              {dueState === 'overdue' ? 'Overdue · ' : dueState === 'today' ? 'Today · ' : 'Due · '}
+              {dueState === 'overdue'
+                ? uiText('Overdue · ')
+                : dueState === 'today'
+                  ? uiText('Today · ')
+                  : uiText('Due · ')}
               {task.dueDate}
             </time>
           )}
@@ -644,18 +679,23 @@ export function TodoTaskRow({
         </div>
       </div>
       <div className="todo-task-actions">
-        <button type="button" onClick={onEdit} disabled={busy} aria-label={`Edit ${task.title}`}>
-          Edit
+        <button
+          type="button"
+          onClick={onEdit}
+          disabled={busy}
+          aria-label={uiText('Edit {title}', { title: task.title })}
+        >
+          {uiText('Edit')}
         </button>
         <button
           type="button"
           className="task-delete-button"
           onClick={onDelete}
           disabled={busy}
-          aria-label={`Delete ${task.title}`}
-          title="Delete task; restorable from Task trash"
+          aria-label={uiText('Delete {title}', { title: task.title })}
+          title={uiText('Delete task; restorable from Task trash')}
         >
-          Delete
+          {uiText('Delete')}
         </button>
       </div>
     </article>
@@ -675,6 +715,7 @@ function TaskComposer({
   busyAction: string | null;
   onCreate: (input: CreateTaskInput) => Promise<boolean>;
 }) {
+  useUiText();
   const [title, setTitle] = useState('');
   const [status, setStatus] = useState<WorkspaceTaskStatus>(columns[0]?.status ?? 'backlog');
   const [showDetails, setShowDetails] = useState(false);
@@ -685,7 +726,7 @@ function TaskComposer({
   const busy = busyAction !== null;
 
   return (
-    <section className="board-toolbar" aria-label="Add task">
+    <section className="board-toolbar" aria-label={uiText('Add task')}>
       <form
         className={`task-composer${showDetails ? ' expanded' : ''}`}
         onSubmit={(event) => {
@@ -710,19 +751,19 @@ function TaskComposer({
         }}
       >
         <label>
-          Task title
+          {uiText('Task title')}
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             minLength={2}
             maxLength={240}
-            placeholder="Add a concrete research task"
+            placeholder={uiText('Add a concrete research task')}
             required
             disabled={busy}
           />
         </label>
         <label>
-          Initial column
+          {uiText('Initial column')}
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value as WorkspaceTaskStatus)}
@@ -730,30 +771,30 @@ function TaskComposer({
           >
             {columns.map((column) => (
               <option value={column.status} key={column.status}>
-                {column.label}
+                {boardColumnDisplayLabel(column.status, column.label)}
               </option>
             ))}
           </select>
         </label>
         <button type="submit" className="primary-button" disabled={busy || title.trim().length < 2}>
-          {busyAction === 'task:create' ? 'Adding…' : 'Add task'}
+          {busyAction === 'task:create' ? uiText('Adding…') : uiText('Add task')}
         </button>
         <button
           type="button"
           className="ghost-button task-details-toggle"
           onClick={() => setShowDetails((current) => !current)}
         >
-          {showDetails ? 'Fewer details' : 'More details'}
+          {showDetails ? uiText('Fewer details') : uiText('More details')}
         </button>
         {showDetails && (
           <div className="task-details-grid">
             <label className="task-description-field">
-              Description
+              {uiText('Description')}
               <textarea
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
                 maxLength={4_000}
-                placeholder="Method, acceptance criteria, or research context"
+                placeholder={uiText('Method, acceptance criteria, or research context')}
                 disabled={busy}
               />
             </label>
@@ -771,8 +812,8 @@ function TaskComposer({
       </form>
       <p className="board-help">
         {viewMode === 'kanban'
-          ? 'Drag cards between columns or use the move controls.'
-          : 'Check a task to complete it; uncheck a completed task to reopen it.'}
+          ? uiText('Drag cards between columns or use the move controls.')
+          : uiText('Check a task to complete it; uncheck a completed task to reopen it.')}
       </p>
     </section>
   );
@@ -832,7 +873,7 @@ function TaskCard({
     >
       <div className="task-card-heading">
         {task.priority && (
-          <span className={`priority-badge ${task.priority}`}>{task.priority}</span>
+          <span className={`priority-badge ${uiText(task.priority)}`}>{uiText(task.priority)}</span>
         )}
         <h3>{task.title}</h3>
       </div>
@@ -846,7 +887,11 @@ function TaskCard({
       )}
       {task.dueDate && (
         <time className={`task-due ${dueState}`} dateTime={task.dueDate}>
-          {dueState === 'overdue' ? 'Overdue · ' : dueState === 'today' ? 'Today · ' : 'Due · '}
+          {dueState === 'overdue'
+            ? uiText('Overdue · ')
+            : dueState === 'today'
+              ? uiText('Today · ')
+              : uiText('Due · ')}
           {task.dueDate}
         </time>
       )}
@@ -867,13 +912,22 @@ function TaskCard({
               })
             }
             disabled={busy || !previous}
-            aria-label={`Move ${task.title} left`}
-            title={previous ? `Move to ${previous.label}` : 'Already in the first column'}
+            aria-label={uiText('Move {title} left', { title: task.title })}
+            title={
+              previous
+                ? uiText('Move to {label}', { label: previous.label })
+                : uiText('Already in the first column')
+            }
           >
             ←
           </button>
-          <button type="button" onClick={onEdit} disabled={busy} aria-label={`Edit ${task.title}`}>
-            Edit
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={busy}
+            aria-label={uiText('Edit {title}', { title: task.title })}
+          >
+            {uiText('Edit')}
           </button>
           <button
             type="button"
@@ -887,8 +941,12 @@ function TaskCard({
               })
             }
             disabled={busy || !next}
-            aria-label={`Move ${task.title} right`}
-            title={next ? `Move to ${next.label}` : 'Already in the final column'}
+            aria-label={uiText('Move {title} right', { title: task.title })}
+            title={
+              next
+                ? uiText('Move to {label}', { label: next.label })
+                : uiText('Already in the final column')
+            }
           >
             →
           </button>
@@ -897,10 +955,10 @@ function TaskCard({
             className="task-delete-button"
             onClick={onDelete}
             disabled={busy}
-            aria-label={`Delete ${task.title}`}
-            title="Delete task; restorable from Task trash"
+            aria-label={uiText('Delete {title}', { title: task.title })}
+            title={uiText('Delete task; restorable from Task trash')}
           >
-            Delete
+            {uiText('Delete')}
           </button>
         </div>
       </footer>
@@ -921,6 +979,7 @@ function TaskEditForm({
   onCancel: () => void;
   onUpdate: (input: UpdateTaskInput) => Promise<boolean>;
 }) {
+  useUiText();
   const [title, setTitle] = useState(task.title);
   const [status, setStatus] = useState(task.status);
   const [description, setDescription] = useState(task.description ?? '');
@@ -961,7 +1020,7 @@ function TaskEditForm({
         }}
       >
         <label>
-          Task title
+          {uiText('Task title')}
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
@@ -973,7 +1032,7 @@ function TaskEditForm({
           />
         </label>
         <label>
-          Column
+          {uiText('Column')}
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value as WorkspaceTaskStatus)}
@@ -981,13 +1040,13 @@ function TaskEditForm({
           >
             {columns.map((column) => (
               <option value={column.status} key={column.status}>
-                {column.label}
+                {boardColumnDisplayLabel(column.status, column.label)}
               </option>
             ))}
           </select>
         </label>
         <label>
-          Description
+          {uiText('Description')}
           <textarea
             value={description}
             onChange={(event) => setDescription(event.target.value)}
@@ -1010,10 +1069,10 @@ function TaskEditForm({
             className="primary-button"
             disabled={busy || title.trim().length < 2}
           >
-            Save
+            {uiText('Save')}
           </button>
           <button type="button" className="ghost-button" onClick={onCancel} disabled={busy}>
-            Cancel
+            {uiText('Cancel')}
           </button>
         </div>
       </form>
@@ -1041,22 +1100,22 @@ function TaskMetadataFields({
   return (
     <>
       <label>
-        Priority
+        {uiText('Priority')}
         <select
           value={priority}
           onChange={(event) => onPriority(event.target.value as WorkspaceTaskPriority | '')}
           disabled={busy}
         >
-          <option value="">No priority</option>
+          <option value="">{uiText('No priority')}</option>
           {PRIORITIES.map((option) => (
             <option value={option.value} key={option.value}>
-              {option.label}
+              {uiText(option.label)}
             </option>
           ))}
         </select>
       </label>
       <label>
-        Due date
+        {uiText('Due date')}
         <input
           type="date"
           value={dueDate}
@@ -1065,11 +1124,11 @@ function TaskMetadataFields({
         />
       </label>
       <label>
-        Labels
+        {uiText('Labels')}
         <input
           value={labels}
           onChange={(event) => onLabels(event.target.value)}
-          placeholder="baseline, paper, ablation"
+          placeholder={uiText('baseline, paper, ablation')}
           maxLength={271}
           disabled={busy}
         />
@@ -1094,13 +1153,15 @@ function BoardSettingsPanel({
   const initial = resolveWorkspaceBoardSettings(project.board);
 
   return (
-    <section className="board-settings-panel" aria-label="Board settings">
+    <section className="board-settings-panel" aria-label={uiText('Board settings')}>
       <header>
         <div>
-          <span>WORKFLOW DISPLAY</span>
-          <h3>Customize this project board</h3>
+          <span>{uiText('WORKFLOW DISPLAY')}</span>
+          <h3>{uiText('Customize this project board')}</h3>
         </div>
-        <p>Canonical status IDs remain stable for experiments, chat actions, and sync.</p>
+        <p>
+          {uiText('Canonical status IDs remain stable for experiments, chat actions, and sync.')}
+        </p>
       </header>
       <BoardSettingsForm
         initial={initial}
@@ -1134,16 +1195,18 @@ export function TaskTrash({
   onTaskElement?: (taskId: string, element: HTMLElement | null) => void;
 }) {
   return (
-    <section className="archived-task-view" aria-label="Task trash">
+    <section className="archived-task-view" aria-label={uiText('Task trash')}>
       <header>
         <div>
-          <span>RESTORABLE DELETIONS</span>
-          <h3>Task trash</h3>
+          <span>{uiText('RESTORABLE DELETIONS')}</span>
+          <h3>{uiText('Task trash')}</h3>
         </div>
-        <p>{tasks.length} matching deleted tasks</p>
+        <p>
+          {tasks.length} {uiText('matching deleted tasks')}
+        </p>
       </header>
       {tasks.length === 0 ? (
-        <p className="archive-empty">No deleted tasks match the current filters.</p>
+        <p className="archive-empty">{uiText('No deleted tasks match the current filters.')}</p>
       ) : (
         <div className="archived-task-grid">
           {tasks.map((task) => (
@@ -1157,16 +1220,16 @@ export function TaskTrash({
               {task.description && <p className="task-description">{task.description}</p>}
               <footer>
                 <span className="task-version">
-                  Deleted {task.archivedAt ? formatUpdated(task.archivedAt) : ''}
+                  {uiText('Deleted')} {task.archivedAt ? formatUpdated(task.archivedAt) : ''}
                 </span>
                 <button
                   type="button"
                   className="secondary-button"
                   onClick={() => void onRestore(task)}
                   disabled={busy}
-                  aria-label={`Restore ${task.title}`}
+                  aria-label={uiText('Restore {title}', { title: task.title })}
                 >
-                  Restore
+                  {uiText('Restore')}
                 </button>
               </footer>
             </article>
@@ -1178,7 +1241,7 @@ export function TaskTrash({
 }
 
 function formatUpdated(value: string) {
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(
+  return new Intl.DateTimeFormat(uiLocale(), { month: 'short', day: 'numeric' }).format(
     new Date(value),
   );
 }

@@ -1,0 +1,54 @@
+.briefing-history-summary .briefing-summary-narrative {
+  color: #344139;
+}
+.briefing-history-summary .briefing-summary-narrative > summary {
+  padding-block: 6px;
+  font-weight: 600;
+  font-size: inherit;
+}
+.briefing-summary-narrative[open] > summary {
+  margin-bottom: 8px;
+}
+.briefing-narrative-body {
+  font-family:
+    'Pretendard Variable',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Apple SD Gothic Neo',
+    sans-serif;
+  font-weight: 430;
+  line-height: 1.78;
+  letter-spacing: -0.012em;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+.briefing-narrative-entry + .briefing-narrative-entry {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #dfe5da;
+}
+.briefing-narrative-entry p {
+  margin: 0 0 0.65em;
+}
+.briefing-narrative-entry > :last-child {
+  margin-bottom: 0;
+}
+.briefing-narrative-entry strong {
+  font-weight: 730;
+  color: #243b20;
+}
+.briefing-narrative-entry :is(ul, ol) {
+  margin-block: 0.65em;
+  padding-left: 1.4em;
+}
+.briefing-narrative-entry li + li {
+  margin-top: 0.3em;
+}
+.briefing-narrative-entry :is(pre, .katex-display) {
+  overflow-x: auto;
+}
+.briefing-narrative-entry :is(code, .katex) {
+  letter-spacing: normal;
+}

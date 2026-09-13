@@ -69,6 +69,7 @@ describe('advanced Project Chat controls', () => {
   it('shows the project-rule count frozen into an individual turn without claiming semantic use', () => {
     expect(projectChatPolicyRuleSnapshotCount({ assemblyVersion: 4, policyRuleCount: 1 })).toBe(1);
     expect(projectChatPolicyRuleSnapshotCount({ assemblyVersion: 5, policyRuleCount: 2 })).toBe(2);
+    expect(projectChatPolicyRuleSnapshotCount({ assemblyVersion: 6, policyRuleCount: 3 })).toBe(3);
     expect(projectChatPolicyRuleSnapshotCount({ assemblyVersion: 3 })).toBe(0);
     expect(projectChatPolicyRuleSnapshotCount(undefined)).toBe(0);
 
@@ -76,8 +77,8 @@ describe('advanced Project Chat controls', () => {
       new URL('../src/renderer/src/project-chat-view.tsx', import.meta.url),
       'utf8',
     );
-    expect(source).toContain('Project rules snapshot ${policyRuleSnapshotCount}');
-    expect(source).not.toContain('Project rules applied ${policyRuleSnapshotCount}');
+    expect(source).toContain('Project rules snapshot {policyRuleSnapshotCount}');
+    expect(source).not.toContain('Project rules applied {policyRuleSnapshotCount}');
   });
 
   it('shows durable agent-run, node, memory, and context-savings metadata', () => {
@@ -93,6 +94,26 @@ describe('advanced Project Chat controls', () => {
         snapshot={{
           schemaVersion: 1,
           projectId: project.id,
+          contextUsage: {
+            windowTokens: 1000000,
+            windowSource: 'provider',
+            estimatedInputTokens: 42000,
+            outputReserveTokens: 64000,
+            toolReserveTokens: 48000,
+            totalMessages: 20,
+            includedMessages: 8,
+            compressedMessages: 12,
+            omittedMessages: 0,
+            native: {
+              inputTokens: 12000,
+              outputTokens: 300,
+              cachedInputTokens: 8000,
+              reasoningTokens: 100,
+              totalTokens: 12300,
+              contextTokens: 9100,
+              contextWindowTokens: 828400,
+            },
+          },
           messages: [
             {
               id: '55555555-5555-4555-8555-555555555555',
@@ -127,6 +148,15 @@ describe('advanced Project Chat controls', () => {
                 workingMemoryRevision: 4,
                 memoryEntryCount: 4,
                 memoryCharacters: 2_000,
+                permanentMemoryCandidateCount: 9,
+                permanentMemoryEntryCount: 3,
+                permanentMemoryCharacters: 1_200,
+                permanentMemoryEstimatedTokens: 340,
+                contextWindowTokens: 1_000_000,
+                contextWindowSource: 'provider',
+                outputReserveTokens: 80_000,
+                availableInputTokens: 822_000,
+                estimatedPromptTokens: 42_000,
                 estimatedInputCharactersSaved: 13_800,
               },
               nodes: [
@@ -238,8 +268,17 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Agent process · Complete · 2 nodes · memory rev');
     expect(html).toContain('8 / 20 recent messages');
     expect(html).toContain('12 omitted');
+    expect(html).toContain('durable memory 3 / 9 selected (~340 tokens)');
+    expect(html).toContain('context 1,000,000 tokens (provider)');
+    expect(html).toContain('~42,000 / 822,000 input');
     expect(html).toContain('Delegated worker · Hermes');
     expect(html).toContain('Worker verified the requested constraint.');
+    expect(html).toContain('project-chat-context-meter');
+    expect(html).toContain('현재 요청');
+    expect(html).toContain('9,100');
+    expect(html).toContain('828,400');
+    expect(html).toContain('캐시 입력 / 추론 출력');
+    expect(html).toContain('<details class="briefing-context-meter">');
   });
 
   it('surfaces the project-wide rule list from the Project Chat toolbar', () => {
@@ -334,7 +373,9 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('Writes, terminal, code execution, web, browser automation');
     expect(html).toContain('Hermes turn active');
     expect(html).toContain('Stop &amp; send');
-    expect(html).toContain('선택된 Hermes ACP agent가 활용합니다');
+    expect(html).toContain(
+      'The selected Hermes ACP agent uses the current Board and Objective context.',
+    );
     expect(html).toMatch(
       /disabled=""[^>]*aria-label="Turn attachments are not yet bridged to Hermes"[^>]*aria-describedby=/u,
     );
@@ -416,12 +457,17 @@ describe('advanced Project Chat controls', () => {
             stage: 'tool_started',
             tool: 'read_workspace',
             callId: 'claude-mcp:one',
+            occurredAt: '2026-09-08T10:00:00.000Z',
+            activity: { section: 'board' },
           },
           {
             stage: 'tool_completed',
             tool: 'read_workspace',
             callId: 'claude-mcp:one',
             success: true,
+            occurredAt: '2026-09-08T10:00:00.125Z',
+            elapsedMs: 125,
+            activity: { counts: [{ kind: 'tasks', value: 4 }] },
           },
         ]}
         models={[
@@ -460,9 +506,12 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('GOSU MCP tools');
     expect(html).toContain('Built-in shell,');
     expect(html).toContain('user MCP servers');
-    expect(html).toContain('Live Claude agent tool activity');
-    expect(html).toContain('read workspace');
-    expect(html).toContain('Receipt reviewed');
+    expect(html).toContain('Tool activity for Claude Code');
+    expect(html).toContain('Read project Board');
+    expect(html).toContain('4 tasks');
+    expect(html).toContain('Completed');
+    expect(html.match(/data-call-id="claude-mcp:one"/gu)).toHaveLength(1);
+    expect(html).not.toContain('Receipt reviewed');
   });
 
   it('uses provider-neutral copy when an explicit model disappears from the live catalog', () => {
@@ -1073,6 +1122,37 @@ describe('advanced Project Chat controls', () => {
     expect(resolveEffectiveCodexModel(models, [], 'future-provider', 'shared-id', null)).toBe(
       undefined,
     );
+    expect(resolveEffectiveCodexModel(models, [], null, 'shared-id', null)).toBeUndefined();
+  });
+
+  it('updates Auto for newly discovered defaults without replacing explicit or native mode choices', () => {
+    const models = [
+      { modelId: 'old-default', displayName: 'Previous', isDefault: false, reasoningOptions: [] },
+      { modelId: 'new-default', displayName: 'New release', isDefault: true, reasoningOptions: [] },
+    ];
+    const modes = [
+      {
+        id: 'native-mode',
+        displayName: 'Native mode',
+        recommendedModelId: 'old-default',
+        recommendedReasoningOptionId: null,
+      },
+    ];
+    expect(resolveEffectiveCodexModel(models, modes, null, null, null)?.modelId).toBe(
+      'new-default',
+    );
+    expect(resolveEffectiveCodexModel(models, modes, 'codex', 'old-default', null)?.modelId).toBe(
+      'old-default',
+    );
+    expect(resolveEffectiveCodexModel(models, modes, null, null, 'native-mode')?.modelId).toBe(
+      'old-default',
+    );
+    expect(
+      resolveEffectiveCodexModel(models.slice(1), modes, null, null, 'native-mode'),
+    ).toBeUndefined();
+    expect(
+      resolveEffectiveCodexModel([...models, models[1]!], [], null, null, null),
+    ).toBeUndefined();
   });
 
   it('exposes dynamic reasoning separately from the bounded project harness', () => {
@@ -1408,7 +1488,7 @@ describe('advanced Project Chat controls', () => {
       />,
     );
 
-    expect(html).toContain('암호화된 프로젝트 대화를 불러오는 중…');
+    expect(html).toContain('Loading the encrypted project conversation…');
     expect(html).toMatch(/<textarea[^>]*disabled=""/u);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Send/u);
   });
@@ -1604,7 +1684,7 @@ describe('advanced Project Chat controls', () => {
     expect(html).toContain('>Queue<span>Enter</span>');
   });
 
-  it('pauses a saved Research Notes grant while Main-process capability status is unavailable', () => {
+  it('keeps chat available without notes while Main-process capability status is unavailable', () => {
     const profile = {
       ...defaultProjectChatProfile(project.id),
       localNotesVault: { id: 'a'.repeat(64), name: 'Research Vault' },
@@ -1627,6 +1707,7 @@ describe('advanced Project Chat controls', () => {
         selectedModel={null}
         selectedReasoning={null}
         applyingActionId={null}
+        initialDraft="Continue with the project discussion"
         vault={null}
         vaultState="unavailable"
         onSelectedModel={vi.fn()}
@@ -1640,11 +1721,13 @@ describe('advanced Project Chat controls', () => {
     );
 
     expect(html).toContain('Research Notes status unavailable');
-    expect(html).toContain('This turn is paused to prevent stale or cross-project note access.');
+    expect(html).toContain('chat continues without notes');
+    expect(html).not.toContain('This turn is paused');
+    expect(html).not.toMatch(/<button[^>]*class="primary-button chat-send"[^>]*disabled=""/u);
     expect(html).not.toContain('Authorize…');
   });
 
-  it('pauses a saved Research Notes grant when another project binding is active', () => {
+  it('keeps chat available without notes when another project binding is active', () => {
     const profile = {
       ...defaultProjectChatProfile(project.id),
       localNotesVault: { id: 'a'.repeat(64), name: 'Previous Research Notes' },
@@ -1667,6 +1750,7 @@ describe('advanced Project Chat controls', () => {
         selectedModel={null}
         selectedReasoning={null}
         applyingActionId={null}
+        initialDraft="Continue with the project discussion"
         vault={{
           id: 'b'.repeat(64),
           name: 'Current project Research Notes',
@@ -1685,8 +1769,9 @@ describe('advanced Project Chat controls', () => {
     );
 
     expect(html).toContain('Previous Research Notes grant inactive');
-    expect(html).toContain('This turn is paused to prevent stale or cross-project note access.');
-    expect(html).toMatch(/<button[^>]*class="primary-button chat-send"[^>]*disabled=""/u);
+    expect(html).toContain('chat continues without notes');
+    expect(html).not.toContain('This turn is paused');
+    expect(html).not.toMatch(/<button[^>]*class="primary-button chat-send"[^>]*disabled=""/u);
     expect(html).toContain('Authorize…');
   });
 });

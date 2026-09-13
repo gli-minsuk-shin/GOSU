@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useState } from 'react';
 
 import {
@@ -27,6 +29,7 @@ export function BoardSettingsForm({
   onSave,
   onCancel,
 }: BoardSettingsFormProps) {
+  useUiText();
   const [title, setTitle] = useState(initial.title);
   const [columnLabels, setColumnLabels] = useState({ ...initial.columnLabels });
   const [columnOrder, setColumnOrder] = useState([...initial.columnOrder]);
@@ -61,7 +64,7 @@ export function BoardSettingsForm({
       }}
     >
       <label className="board-title-field">
-        Board title
+        {uiText('Board title')}
         <input
           value={title}
           onChange={(event) => setTitle(event.target.value)}
@@ -76,7 +79,10 @@ export function BoardSettingsForm({
             <span>{index + 1}</span>
             <label>
               <span className="column-setting-label">
-                Column name <small>Canonical: {status}</small>
+                {uiText('Column name')}{' '}
+                <small>
+                  {uiText('Canonical:')} {status}
+                </small>
               </span>
               <input
                 value={columnLabels[status]}
@@ -90,7 +96,7 @@ export function BoardSettingsForm({
               />
             </label>
             <label>
-              WIP limit
+              {uiText('WIP limit')}
               <input
                 type="number"
                 value={wipLimits[status]}
@@ -99,16 +105,19 @@ export function BoardSettingsForm({
                 }
                 min={1}
                 max={999}
-                placeholder="None"
+                placeholder={uiText('None')}
                 disabled={busy}
               />
             </label>
-            <div className="column-order-actions" aria-label={`Move ${columnLabels[status]}`}>
+            <div
+              className="column-order-actions"
+              aria-label={uiText('Move {value1}', { value1: columnLabels[status] })}
+            >
               <button
                 type="button"
                 onClick={() => setColumnOrder((current) => moveItem(current, index, index - 1))}
                 disabled={busy || index === 0}
-                title="Move column left"
+                title={uiText('Move column left')}
               >
                 ←
               </button>
@@ -116,7 +125,7 @@ export function BoardSettingsForm({
                 type="button"
                 onClick={() => setColumnOrder((current) => moveItem(current, index, index + 1))}
                 disabled={busy || index === columnOrder.length - 1}
-                title="Move column right"
+                title={uiText('Move column right')}
               >
                 →
               </button>
@@ -124,14 +133,18 @@ export function BoardSettingsForm({
           </div>
         ))}
       </div>
-      {!valid && <p className="settings-validation">Use unique names and WIP limits from 1–999.</p>}
+      {!valid && (
+        <p className="settings-validation">
+          {uiText('Use unique names and WIP limits from 1–999.')}
+        </p>
+      )}
       <div className="form-actions">
         <button type="submit" className="primary-button" disabled={busy || !valid}>
           {busy ? busyLabel : saveLabel}
         </button>
         {onCancel && (
           <button type="button" className="ghost-button" onClick={onCancel} disabled={busy}>
-            Cancel
+            {uiText('Cancel')}
           </button>
         )}
         <button
@@ -140,7 +153,7 @@ export function BoardSettingsForm({
           onClick={() => loadSettings(structuredClone(DEFAULT_WORKSPACE_BOARD_SETTINGS))}
           disabled={busy}
         >
-          Load GOSU defaults
+          {uiText('Load GOSU defaults')}
         </button>
       </div>
     </form>

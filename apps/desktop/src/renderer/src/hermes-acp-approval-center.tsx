@@ -1,3 +1,5 @@
+import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import type {
@@ -32,6 +34,7 @@ function resolveWithoutUnhandledRejection(operation: () => MaybePromise<unknown>
 }
 
 function HermesAcpApprovalExpiry({ expiresAt, id }: Readonly<{ expiresAt: string; id: string }>) {
+  useUiText();
   const [remainingSeconds, setRemainingSeconds] = useState(() =>
     remainingApprovalSeconds(expiresAt),
   );
@@ -47,12 +50,12 @@ function HermesAcpApprovalExpiry({ expiresAt, id }: Readonly<{ expiresAt: string
     <p id={id} className="ssh-approval-expiry hermes-acp-approval-expiry">
       <strong role="timer">
         {remainingSeconds > 0
-          ? `Expires in ${formatRemainingTime(remainingSeconds)}`
-          : 'Expiring now'}
+          ? uiText('Expires in {value1}', { value1: formatRemainingTime(remainingSeconds) })
+          : uiText('Expiring now')}
       </strong>
       <span>
-        Deadline · {new Date(expiresAt).toLocaleTimeString()}. If this request expires, Hermes will
-        not receive approval from GOSU.
+        {uiText('Deadline ·')} {new Date(expiresAt).toLocaleTimeString(uiLocale())}
+        {uiText('. If this request expires, Hermes will not receive approval from GOSU.')}
       </span>
     </p>
   );
@@ -71,6 +74,7 @@ export function HermesAcpApprovalCenter({
   describeScope,
   onResolve,
 }: HermesAcpApprovalCenterProps) {
+  useUiText();
   const backdropRef = useRef<HTMLDivElement>(null);
   const denyButtonRef = useRef<HTMLButtonElement>(null);
   const request = requests.at(0);
@@ -173,45 +177,59 @@ export function HermesAcpApprovalCenter({
         <header className="ssh-approval-dialog-header hermes-acp-approval-dialog-header">
           <div>
             <span className="ssh-approval-kicker hermes-acp-approval-kicker">
-              HERMES AGENT APPROVAL
+              {uiText('HERMES AGENT APPROVAL')}
             </span>
-            <h2 id={titleId}>Hermes permission required</h2>
+            <h2 id={titleId}>{uiText('Hermes permission required')}</h2>
           </div>
           <strong className="ssh-approval-queue-count hermes-acp-approval-queue-count">
-            {requests.length === 1 ? '1 pending' : `Reviewing 1 of ${requests.length}`}
+            {requests.length === 1
+              ? uiText('1 pending')
+              : uiText('Reviewing 1 of {length}', { length: requests.length })}
           </strong>
         </header>
 
         <div className="ssh-approval-dialog-body hermes-acp-approval-dialog-body">
           <article className="ssh-approval-card hermes-acp-approval-card">
             <div>
-              <span>REQUEST</span>
+              <span>{uiText('REQUEST')}</span>
               <strong>{request.title}</strong>
-              <small>Kind · {request.kind}</small>
+              <small>
+                {uiText('Kind ·')} {request.kind}
+              </small>
               <small>
                 {describeScope?.(request) ??
-                  `Project ${request.projectId} · Chat ${request.sessionId}`}
+                  uiText('Project {projectId} · Chat {sessionId}', {
+                    projectId: request.projectId,
+                    sessionId: request.sessionId,
+                  })}
               </small>
             </div>
 
             <p dir="auto">{request.safeSummary.text}</p>
             {request.safeSummary.commandPreview && (
-              <pre dir="ltr" aria-label="Reviewed Hermes command summary">
+              <pre dir="ltr" aria-label={uiText('Reviewed Hermes command summary')}>
                 {request.safeSummary.commandPreview}
               </pre>
             )}
             {request.editPreview && (
-              <section className="hermes-acp-edit-preview" aria-label="Proposed file edit">
-                <strong>File · {request.editPreview.path}</strong>
+              <section
+                className="hermes-acp-edit-preview"
+                aria-label={uiText('Proposed file edit')}
+              >
+                <strong>
+                  {uiText('File ·')} {request.editPreview.path}
+                </strong>
                 <div>
                   <span>
-                    Before{request.editPreview.oldTextTruncated ? ' · preview truncated' : ''}
+                    {uiText('Before')}
+                    {request.editPreview.oldTextTruncated ? uiText(' · preview truncated') : ''}
                   </span>
-                  <pre dir="auto">{request.editPreview.oldText ?? '[New file]'}</pre>
+                  <pre dir="auto">{request.editPreview.oldText ?? uiText('[New file]')}</pre>
                 </div>
                 <div>
                   <span>
-                    After{request.editPreview.newTextTruncated ? ' · preview truncated' : ''}
+                    {uiText('After')}
+                    {request.editPreview.newTextTruncated ? uiText(' · preview truncated') : ''}
                   </span>
                   <pre dir="auto">{request.editPreview.newText}</pre>
                 </div>
@@ -219,11 +237,9 @@ export function HermesAcpApprovalCenter({
             )}
 
             <p id={warningId}>
-              Review this bounded preview carefully. GOSU does not persist the structured raw Hermes
-              tool payload or tool output, but this preview is derived from the request and may
-              contain sensitive command arguments. Allow once applies to this request only. Allow
-              for session applies only to matching requests in this active Hermes session and ends
-              when that session closes.
+              {uiText(
+                'Review this bounded preview carefully. GOSU does not persist the structured raw Hermes tool payload or tool output, but this preview is derived from the request and may contain sensitive command arguments. Allow once applies to this request only. Allow for session applies only to matching requests in this active Hermes session and ends when that session closes.',
+              )}
             </p>
           </article>
         </div>

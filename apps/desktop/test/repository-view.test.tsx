@@ -5,6 +5,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GitChange, GitWorkspaceSnapshot } from '../src/shared/git-workspace-contracts';
 import type { ProjectRecord } from '../src/shared/workspace-contracts';
 
+vi.mock('@gosu/ui/language', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@gosu/ui/language')>();
+  // This test invokes the component directly with a deterministic hook harness.
+  return { ...actual, useUiText: () => actual.uiText };
+});
+
 const hookState = vi.hoisted(() => ({
   index: 0,
   snapshot: null as unknown,

@@ -1,3 +1,5 @@
+import { uiText } from '@gosu/ui/language';
+
 import type { OverleafPersonalTokenUiState } from './overleaf-personal-token-ui';
 
 export function OverleafPersonalTokenNotice({
@@ -11,8 +13,8 @@ export function OverleafPersonalTokenNotice({
     return (
       <div className="overleaf-token-required" role="status">
         <div>
-          <strong>Checking the saved Overleaf token…</strong>
-          <span>This takes place locally on this Mac.</span>
+          <strong>{uiText('Checking the saved Overleaf token…')}</strong>
+          <span>{uiText('This takes place locally on this Mac.')}</span>
         </div>
       </div>
     );
@@ -23,17 +25,19 @@ export function OverleafPersonalTokenNotice({
       <div>
         <strong>
           {state === 'not_configured'
-            ? 'Save an Overleaf token before linking'
-            : 'The saved Overleaf token could not be checked'}
+            ? uiText('Save an Overleaf token before linking')
+            : uiText('The saved Overleaf token could not be checked')}
         </strong>
         <span>
           {state === 'not_configured'
-            ? 'GOSU uses one saved token automatically for every new Manuscript and Lecture link.'
-            : 'Open Overleaf Settings and retry the secure-storage check.'}
+            ? uiText(
+                'GOSU uses one saved token automatically for every new Manuscript and Lecture link.',
+              )
+            : uiText('Open Overleaf Settings and retry the secure-storage check.')}
         </span>
       </div>
       <button type="button" className="secondary-button" onClick={onOpenSettings}>
-        Open Overleaf Settings
+        {uiText('Open Overleaf Settings')}
       </button>
     </div>
   );

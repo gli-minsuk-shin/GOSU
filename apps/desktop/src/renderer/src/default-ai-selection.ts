@@ -1,3 +1,5 @@
+import { selectCatalogModelFromList } from '@gosu/contracts';
+
 import type { DefaultAiSelection } from './user-preferences';
 
 export type DefaultAiModelDescriptor = Readonly<{
@@ -21,15 +23,14 @@ export function resolveDefaultAiSelection(
   selection: DefaultAiSelection,
   models: readonly DefaultAiModelDescriptor[],
 ): DefaultAiSelectionResolution {
-  const candidates = selection.modelId
-    ? models.filter(
-        (model) =>
-          model.modelId === selection.modelId &&
-          (model.providerId ?? 'codex') === selection.providerId,
-      )
-    : models.filter((model) => model.isDefault);
-  if (candidates.length !== 1) return { effectiveModelId: null, issue: 'model_unavailable' };
-  const model = candidates[0]!;
+  if (selection.modelId !== null && selection.providerId === null) {
+    return { effectiveModelId: null, issue: 'model_unavailable' };
+  }
+  const model = selectCatalogModelFromList(models, {
+    requestedModelId: selection.modelId,
+    providerId: selection.modelId === null ? null : selection.providerId,
+  });
+  if (!model) return { effectiveModelId: null, issue: 'model_unavailable' };
   if (
     selection.reasoningOptionId !== null &&
     !model.reasoningOptions.some((option) => option.id === selection.reasoningOptionId)

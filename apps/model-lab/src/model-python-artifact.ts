@@ -1,4 +1,5 @@
 import type { ModelLabModelSelection } from './model-lab-runtime-adapter';
+import { modelLabFetch } from './model-lab-environment';
 import type { ModelSpec } from './model-lab-schema';
 
 export const MODEL_PYTHON_ARTIFACT_ENDPOINT = '/api/model-python-artifact';
@@ -75,7 +76,7 @@ function parsedArtifact(value: unknown): ModelPythonArtifact {
   return artifact as ModelPythonArtifact;
 }
 
-export function createModelPythonArtifactClient(fetchImpl: typeof fetch = fetch) {
+export function createModelPythonArtifactClient(fetchImpl: typeof fetch = modelLabFetch) {
   return {
     async generate(input: {
       model: ModelSpec;

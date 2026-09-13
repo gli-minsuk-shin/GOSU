@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en" data-appearance="light" data-text-size="compact">
+  <head>
+    <meta charset="utf-8" />
+    <title>GOSU notification fixture</title>
+    <style>
+      .fixture-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 30px;
+      }
+      #outside-fixture {
+        position: absolute;
+        right: 30px;
+        bottom: 30px;
+      }
+      output {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./notification-visual-smoke-renderer.tsx"></script>
+  </body>
+</html>

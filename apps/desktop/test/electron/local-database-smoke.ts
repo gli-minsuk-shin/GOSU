@@ -16,6 +16,14 @@ import {
 
 import { EXPERIMENT_EVALUATION_CODE_POLICY_HASH } from '../../src/main/experiment-evaluation-code-policy';
 import { LocalDatabase } from '../../src/main/local-database';
+import { ProjectResearchPlanService } from '../../src/main/project-research-plan-service';
+import { ExperimentWorkspaceService } from '../../src/main/experiment-workspace-service';
+import {
+  ProjectResearchPlanSchema,
+  type ProjectResearchPlanCommit,
+} from '../../src/shared/project-research-plan-contracts';
+import { conversationDigest } from '../../../briefing-lab/briefing-context';
+import { projectTranscript, projectContextScope } from '../../src/main/project-chat-context';
 import { ExperimentWorkspaceStorageError } from '../../src/main/experiment-workspace-storage-error';
 import { buildLectureLatexDocument } from '../../src/main/lecture-latex-source';
 import {
@@ -57,6 +65,7 @@ type LectureStudioRevisionV1 = Extract<LectureStudioRevision, { schemaVersion: 1
 import {
   EXPERIMENT_MAX_IDEAS_PER_PROJECT,
   EXPERIMENT_MAX_METRIC_POINTS_PER_PROJECT,
+  EXPERIMENT_LOGGING_SYSTEM_FIELDS,
   type ExperimentIdea,
   type ExperimentLoggingTemplate,
   type ExperimentMetricPoint,
@@ -228,6 +237,47 @@ async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: s
       }),
     );
     database.cache('research-notes-project', purgedProject.id, { projectId: purgedProject.id });
+    const purgedChatSession = database.ensureDefaultProjectChatSession(purgedProject.id);
+    const purgedMemoryAttemptId = randomUUID();
+    const purgedMemoryUserMessageId = randomUUID();
+    const purgedMemoryAttempt: ProjectChatAttempt = {
+      id: purgedMemoryAttemptId,
+      projectId: purgedProject.id,
+      sessionId: purgedChatSession.id,
+      userMessageId: purgedMemoryUserMessageId,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      status: 'starting',
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+    };
+    database.beginChatAttempt(purgedMemoryAttempt, {
+      id: purgedMemoryUserMessageId,
+      projectId: purgedProject.id,
+      role: 'user',
+      content: 'Remember this purge-only project decision.',
+      status: 'complete',
+      actions: [],
+      createdAt: fixedTimestamp,
+      completedAt: fixedTimestamp,
+    });
+    database.finishChatAttempt(
+      { ...purgedMemoryAttempt, status: 'complete' },
+      {
+        id: randomUUID(),
+        projectId: purgedProject.id,
+        role: 'assistant',
+        content: 'PURGE_ONLY_PERMANENT_MEMORY',
+        status: 'complete',
+        actions: [],
+        createdAt: fixedTimestamp,
+        completedAt: fixedTimestamp,
+      },
+    );
+    invariant(
+      database.getProjectAgentPermanentMemory(purgedProject.id, 'purge-only').candidateCount === 1,
+      'trash_purge_permanent_memory_fixture_failed',
+    );
     const connectionId = randomUUID();
     invariant(
       database.createSshConnection({
@@ -404,6 +454,10 @@ async function verifyWorkspaceTrashPurge(rootUserData: string, fixedTimestamp: s
     invariant(
       database.listSshWorkspaceGrants(purgedProject.id).length === 0,
       'trash_purge_ssh_grant_not_detached',
+    );
+    invariant(
+      database.getProjectAgentPermanentMemory(purgedProject.id, 'purge-only').candidateCount === 0,
+      'trash_purge_permanent_memory_not_removed',
     );
     invariant(
       database.listExperimentIdeas(purgedProject.id).some(({ id }) => id === preservedIdea.id) &&
@@ -889,7 +943,614 @@ function verifyManuscriptWorkspacePersistence(rootUserData: string, fixedTimesta
   }
 }
 
-function verifyExperimentEvaluationPersistence(fixedTimestamp: string) {
+async function verifyProjectResearchPlanPersistence(
+  draft: ExperimentEvaluationDraft,
+  invocation: ModelInvocation,
+  fixedTimestamp: string,
+) {
+  const originalUserData = app.getPath('userData');
+  const directory = mkdtempSync(join(originalUserData, 'research-plan-fixture-'));
+  app.setPath('userData', directory);
+  const database = new LocalDatabase();
+  try {
+    database.open();
+    const initial = fixture(1, randomUUID(), fixedTimestamp);
+    database.commitWorkspaceState(initial.state, initial.operation);
+    const projectId = initial.state.projects[0]!.id;
+    const hash = (value: unknown) =>
+      createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex');
+    const plan = ProjectResearchPlanSchema.parse({
+      title: draft.title,
+      goal: draft.purpose,
+      hypothesis: 'Pinned validation data makes comparisons reproducible.',
+      primaryMetric: {
+        key: 'validation_loss',
+        displayName: 'Validation loss',
+        direction: 'minimize',
+        unit: null,
+        aggregation: 'minimum',
+        evaluatorHash: 'sha256:fixture-evaluator',
+        datasetHash: 'sha256:fixture-dataset',
+        holdoutHash: null,
+        baseline: null,
+        target: null,
+      },
+      observedMetrics: [],
+      guardrails: [],
+      budget: {
+        maxTrials: 2,
+        maxConcurrentTrials: 1,
+        maxWallTimeSeconds: 120,
+        maxGpuHours: 0,
+        maxFailures: 1,
+      },
+      stopPolicy: {
+        stopWhenTargetReached: false,
+        guardrailAction: 'pause',
+        maxConsecutiveNoImprovement: null,
+      },
+      cadence: draft.cadence,
+      evaluationPolicy: draft.evaluationPolicy,
+      experimentRules: draft.experimentRules,
+      loggingFields: draft.loggingFields,
+      replaceLoggingKeys: [],
+      referenceCode: draft.referenceCode.content,
+      activateObjective: true,
+    });
+    const candidate = () => {
+      const current = database.loadWorkspaceState()!;
+      const sourceSession = database.createProjectChatSession(projectId, 'Plan source fixture');
+      const sourceAttemptId = randomUUID();
+      const userId = randomUUID();
+      database.beginChatAttempt(
+        {
+          id: sourceAttemptId,
+          projectId,
+          sessionId: sourceSession.id,
+          userMessageId: userId,
+          requestedModelId: null,
+          reasoningOptionId: null,
+          status: 'starting',
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+        },
+        {
+          id: userId,
+          projectId,
+          role: 'user',
+          status: 'complete',
+          actions: [],
+          content: 'Create and apply this experiment plan.',
+          createdAt: fixedTimestamp,
+          completedAt: fixedTimestamp,
+        },
+      );
+      const objective = {
+        id: randomUUID(),
+        projectId,
+        objectiveVersion: current.objectives.length + 1,
+        entityVersion: 1,
+        locked: true,
+        goal: plan.goal,
+        primaryMetric: {
+          ...plan.primaryMetric,
+          evaluatorHash: 'sha256:fixture-evaluator',
+          datasetHash: 'sha256:fixture-dataset',
+        },
+        guardrails: plan.guardrails,
+        budget: plan.budget,
+        stopPolicy: plan.stopPolicy,
+        createdAt: fixedTimestamp,
+        updatedAt: fixedTimestamp,
+      };
+      const template = database.getLatestExperimentLoggingTemplate(projectId);
+      const loggingTemplate: ExperimentLoggingTemplate = {
+        schemaVersion: 1,
+        id: randomUUID(),
+        projectId,
+        version: (template?.version ?? 0) + 1,
+        previousRevisionId: template?.id ?? null,
+        systemFields: EXPERIMENT_LOGGING_SYSTEM_FIELDS,
+        customFields: draft.loggingFields,
+        templateHash: hash(draft.loggingFields),
+        createdAt: fixedTimestamp,
+      };
+      const sessionId = randomUUID();
+      const revisionId = randomUUID();
+      const ideaId = randomUUID();
+      const bundle: ProjectResearchPlanCommit = {
+        plan,
+        receipt: {
+          schemaVersion: 1,
+          id: randomUUID(),
+          projectId,
+          sourceSessionId: sourceSession.id,
+          sourceAttemptId,
+          planHash: hash(plan),
+          objectiveId: objective.id,
+          objectiveVersion: objective.objectiveVersion,
+          objectiveEntityVersion: objective.entityVersion,
+          objectiveLocked: true,
+          needsIdentity: false,
+          loggingTemplateId: loggingTemplate.id,
+          loggingTemplateVersion: loggingTemplate.version,
+          evaluationSessionId: sessionId,
+          evaluationRevisionId: revisionId,
+          ideaId,
+          createdAt: fixedTimestamp,
+        },
+        expectedLoggingVersion: template?.version ?? 0,
+        loggingTemplate,
+        idea: {
+          schemaVersion: 1,
+          id: ideaId,
+          projectId,
+          parentIdeaId: null,
+          title: plan.title,
+          hypothesis: plan.hypothesis,
+          phase: 'plan',
+          outcome: 'planned',
+          resultSummary: '',
+          version: 1,
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+          completedAt: null,
+        },
+        evaluationSession: {
+          schemaVersion: 1,
+          id: sessionId,
+          projectId,
+          title: plan.title,
+          status: 'draft',
+          activeAttemptId: null,
+          currentRevision: 0,
+          acceptedProfileId: null,
+          version: 1,
+          lastErrorCode: null,
+          createdAt: fixedTimestamp,
+          updatedAt: fixedTimestamp,
+        },
+        userMessage: {
+          schemaVersion: 1,
+          id: randomUUID(),
+          sessionId,
+          role: 'user',
+          status: 'complete',
+          content: 'Create this evaluation setup.',
+          attemptId: sourceAttemptId,
+          revision: null,
+          invocation: null,
+          createdAt: fixedTimestamp,
+          completedAt: fixedTimestamp,
+        },
+        evaluationRevision: {
+          schemaVersion: 1,
+          id: revisionId,
+          sessionId,
+          revision: 1,
+          attemptId: sourceAttemptId,
+          draft,
+          contentHash: hash(draft),
+          invocation,
+          createdAt: fixedTimestamp,
+        },
+        assistantMessage: {
+          schemaVersion: 1,
+          id: randomUUID(),
+          sessionId,
+          role: 'assistant',
+          status: 'complete',
+          content: 'Saved evaluation setup; no experiment executed.',
+          attemptId: sourceAttemptId,
+          revision: 1,
+          invocation,
+          createdAt: fixedTimestamp,
+          completedAt: fixedTimestamp,
+        },
+      };
+      const state: WorkspaceSnapshot = {
+        ...current,
+        revision: current.revision + 1,
+        objectives: [...current.objectives, objective],
+      };
+      const operation: WorkspaceOperation = {
+        schemaVersion: 1,
+        workspaceRevision: state.revision,
+        id: bundle.receipt.id,
+        idempotencyKey: bundle.receipt.id,
+        scope: `workspace:${projectId}:research-plan`,
+        projectId,
+        entityType: 'objective',
+        entityId: objective.id,
+        commandType: 'research.plan.apply',
+        baseVersion: null,
+        createdAt: fixedTimestamp,
+        payload: {},
+      };
+      return { state, operation, bundle };
+    };
+    const capture = () => ({
+      state: database.loadWorkspaceState(),
+      outbox: database.pendingWorkspaceChanges(),
+      template: database.getLatestExperimentLoggingTemplate(projectId),
+      ideas: database.listExperimentIdeas(projectId),
+      sessions: database.listExperimentEvaluationSessions(projectId),
+      latest: database.getLatestProjectResearchPlan(projectId),
+    });
+    const reject = (input: ReturnType<typeof candidate>, expected: string) => {
+      const before = capture();
+      let errorCode = '';
+      try {
+        database.commitProjectResearchPlan(input.state, input.operation, input.bundle);
+      } catch (error) {
+        errorCode = error instanceof Error ? error.message : 'unknown';
+      }
+      invariant(errorCode === expected, `research_plan_expected_${expected}_received_${errorCode}`);
+      invariant(isDeepStrictEqual(capture(), before), 'research_plan_failure_was_not_atomic');
+      if (expected !== 'research_plan_replayed' && expected !== 'research_plan_conflict') {
+        invariant(
+          database.getProjectResearchPlanReceipt(
+            projectId,
+            input.bundle.receipt.sourceAttemptId,
+          ) === null,
+          'research_plan_failed_receipt_persisted',
+        );
+        invariant(
+          database.getExperimentEvaluationSessionDetail(
+            projectId,
+            input.bundle.evaluationSession.id,
+          ) === null,
+          'research_plan_failed_evaluation_persisted',
+        );
+      }
+    };
+    const first = candidate();
+    database.commitProjectResearchPlan(first.state, first.operation, first.bundle);
+    invariant(
+      isDeepStrictEqual(database.loadWorkspaceState(), first.state),
+      'research_plan_workspace_commit_failed',
+    );
+    invariant(
+      database.pendingWorkspaceChanges().some(({ id }) => id === first.operation.id),
+      'research_plan_outbox_missing',
+    );
+    invariant(
+      isDeepStrictEqual(
+        database.getProjectResearchPlanReceipt(projectId, first.bundle.receipt.sourceAttemptId),
+        first.bundle.receipt,
+      ),
+      'research_plan_receipt_missing',
+    );
+    const detail = database.getExperimentEvaluationSessionDetail(
+      projectId,
+      first.bundle.evaluationSession.id,
+    );
+    invariant(
+      detail?.session.status === 'ready' &&
+        detail.session.version === 3 &&
+        detail.messages.length === 2 &&
+        detail.currentRevision?.id === first.bundle.evaluationRevision.id,
+      'research_plan_evaluation_commit_failed',
+    );
+    reject(first, 'research_plan_replayed');
+    const changedReplay = structuredClone(first);
+    changedReplay.bundle.plan.goal += ' Changed intent.';
+    changedReplay.bundle.receipt.planHash = hash(
+      ProjectResearchPlanSchema.parse(changedReplay.bundle.plan),
+    );
+    reject(changedReplay, 'research_plan_conflict');
+    const stale = candidate();
+    stale.bundle.expectedLoggingVersion = 0;
+    reject(stale, 'experiment_logging_template_conflict');
+    // Rehash each valid plan: identity/hash checks alone cannot reject these mixed records.
+    const semanticMismatches: Array<(plan: ProjectResearchPlanCommit['plan']) => void> = [
+      (value) => {
+        value.goal += ' Revised goal.';
+      },
+      (value) => {
+        value.budget.maxTrials += 1;
+      },
+      (value) => {
+        value.guardrails.push({ metricKey: 'validation_loss', operator: 'lte', threshold: 1 });
+      },
+      (value) => {
+        value.stopPolicy.guardrailAction = 'stop';
+      },
+      (value) => {
+        value.title += ' revised';
+      },
+      (value) => {
+        value.hypothesis += ' Revised hypothesis.';
+      },
+      (value) => {
+        value.experimentRules.push('Keep an additional validation checkpoint.');
+      },
+      (value) => {
+        value.cadence.interval += 1;
+      },
+      (value) => {
+        value.evaluationPolicy += ' Revised evaluation.';
+      },
+      (value) => {
+        value.loggingFields[0]!.label = 'Changed logging label';
+      },
+      (value) => {
+        value.primaryMetric.datasetHash = 'sha256:different-dataset';
+      },
+      (value) => {
+        value.primaryMetric.evaluatorHash = null;
+      },
+    ];
+    for (const mutatePlan of semanticMismatches) {
+      const incoherent = structuredClone(candidate());
+      // Detach shared fixture subobjects so changing the plan cannot also change its records.
+      incoherent.bundle.plan = structuredClone(incoherent.bundle.plan);
+      mutatePlan(incoherent.bundle.plan);
+      incoherent.bundle.receipt.planHash = hash(
+        ProjectResearchPlanSchema.parse(incoherent.bundle.plan),
+      );
+      reject(incoherent, 'research_plan_scope_invalid');
+    }
+    for (const field of ['title', 'purpose'] as const) {
+      const mixedRevision = structuredClone(candidate());
+      mixedRevision.bundle.evaluationRevision.draft[field] += ' Mixed revision.';
+      mixedRevision.bundle.evaluationRevision.contentHash = hash(
+        mixedRevision.bundle.evaluationRevision.draft,
+      );
+      reject(mixedRevision, 'research_plan_scope_invalid');
+    }
+    const invalidCompletion = candidate();
+    invalidCompletion.bundle.evaluationRevision.contentHash = 'f'.repeat(64);
+    reject(invalidCompletion, 'invalid_experiment_evaluation_completion');
+    const originalComplete = database.completeExperimentEvaluationTurn;
+    let workspaceWritten = false;
+    const injected = candidate();
+    database.completeExperimentEvaluationTurn = () => {
+      workspaceWritten = database.loadWorkspaceState()?.revision === injected.state.revision;
+      return null;
+    };
+    try {
+      reject(injected, 'research_plan_conflict');
+    } finally {
+      database.completeExperimentEvaluationTurn = originalComplete;
+    }
+    invariant(workspaceWritten, 'research_plan_rollback_did_not_test_post_write_failure');
+    const crossProject = candidate();
+    crossProject.bundle.idea.projectId = randomUUID();
+    reject(crossProject, 'research_plan_scope_invalid');
+    const wrongSource = candidate();
+    wrongSource.bundle.receipt.sourceSessionId = database.createProjectChatSession(
+      randomUUID(),
+      'Other project',
+    ).id;
+    reject(wrongSource, 'research_plan_scope_invalid');
+    invariant(
+      database.getProjectResearchPlanReceipt(randomUUID(), first.bundle.receipt.sourceAttemptId) ===
+        null,
+      'research_plan_receipt_cross_project_leak',
+    );
+    invariant(
+      database.getLatestProjectResearchPlan(randomUUID()) === null,
+      'research_plan_latest_cross_project_leak',
+    );
+    invariant(
+      isDeepStrictEqual(
+        database.getProjectResearchPlanForIdea(projectId, first.bundle.idea.id),
+        first.bundle.receipt,
+      ),
+      'research_plan_idea_lookup_failed',
+    );
+    invariant(
+      database.getProjectResearchPlanForIdea(randomUUID(), first.bundle.idea.id) === null &&
+        database.getProjectResearchPlanForIdea(projectId, randomUUID()) === null,
+      'research_plan_idea_cross_project_leak',
+    );
+    const oldTemplate = first.bundle.loggingTemplate!;
+    const oldRun: ExperimentRun = {
+      schemaVersion: 1,
+      id: randomUUID(),
+      projectId,
+      ideaId: first.bundle.idea.id,
+      title: 'Old run snapshot',
+      status: 'queued',
+      mode: 'comparable',
+      serverLabel: 'Fixture',
+      trialId: randomUUID(),
+      objectiveId: first.bundle.receipt.objectiveId,
+      objectiveVersion: first.bundle.receipt.objectiveVersion,
+      loggingTemplate: {
+        revisionId: oldTemplate.id,
+        version: oldTemplate.version,
+        systemFields: oldTemplate.systemFields,
+        customFields: oldTemplate.customFields,
+        templateHash: oldTemplate.templateHash,
+      },
+      progressCurrent: null,
+      progressTotal: null,
+      currentStep: null,
+      latestMetric: null,
+      logReference: null,
+      processExitCode: null,
+      processDurationMs: null,
+      createdAt: fixedTimestamp,
+      updatedAt: fixedTimestamp,
+      startedAt: null,
+      completedAt: null,
+      version: 1,
+    };
+    invariant(database.createExperimentRun(oldRun), 'research_plan_old_run_fixture_failed');
+    const second = candidate();
+    database.commitProjectResearchPlan(second.state, second.operation, second.bundle);
+    invariant(
+      isDeepStrictEqual(database.getExperimentRun(projectId, oldRun.id), oldRun),
+      'research_plan_old_run_rewritten',
+    );
+    invariant(
+      isDeepStrictEqual(
+        database.getExperimentLoggingTemplateRevision(projectId, oldTemplate.id),
+        oldTemplate,
+      ),
+      'research_plan_historical_template_lookup_failed',
+    );
+    invariant(
+      database.getExperimentLoggingTemplateRevision(randomUUID(), oldTemplate.id) === null &&
+        database.getExperimentLoggingTemplateRevision(projectId, randomUUID()) === null,
+      'research_plan_template_lookup_scope_failed',
+    );
+    invariant(
+      isDeepStrictEqual(database.loadWorkspaceState()?.objectives[0], first.state.objectives[0]),
+      'research_plan_old_objective_rewritten',
+    );
+    invariant(
+      isDeepStrictEqual(
+        database.getExperimentEvaluationSessionDetail(projectId, first.bundle.evaluationSession.id),
+        detail,
+      ),
+      'research_plan_old_evaluation_rewritten',
+    );
+    // Same timestamp: latest follows commit order, never random UUID ordering.
+    invariant(
+      database.getLatestProjectResearchPlan(projectId)?.receipt.id === second.bundle.receipt.id,
+      'research_plan_latest_order_failed',
+    );
+    const unchangedLogging = candidate();
+    unchangedLogging.bundle.loggingTemplate = null;
+    unchangedLogging.bundle.receipt.loggingTemplateId = second.bundle.receipt.loggingTemplateId;
+    unchangedLogging.bundle.receipt.loggingTemplateVersion =
+      second.bundle.receipt.loggingTemplateVersion;
+    database.commitProjectResearchPlan(
+      unchangedLogging.state,
+      unchangedLogging.operation,
+      unchangedLogging.bundle,
+    );
+    invariant(
+      database.getLatestExperimentLoggingTemplate(projectId)?.version === 2,
+      'research_plan_unchanged_logging_created_revision',
+    );
+    for (const withReferenceCode of [true, false]) {
+      const pending = structuredClone(candidate());
+      pending.bundle.plan.primaryMetric.evaluatorHash = null;
+      pending.bundle.plan.primaryMetric.datasetHash = null;
+      if (!withReferenceCode) pending.bundle.plan.referenceCode = null;
+      pending.bundle.receipt.planHash = hash(ProjectResearchPlanSchema.parse(pending.bundle.plan));
+      const metric = {
+        ...pending.bundle.plan.primaryMetric,
+        evaluatorHash: withReferenceCode
+          ? `sha256:${createHash('sha256').update(pending.bundle.plan.referenceCode!, 'utf8').digest('hex')}`
+          : `pending:evaluator:${pending.bundle.receipt.id}`,
+        datasetHash: `pending:dataset:${pending.bundle.receipt.id}`,
+      };
+      pending.bundle.receipt.needsIdentity = true;
+      pending.bundle.receipt.objectiveLocked = false;
+      pending.state = {
+        ...pending.state,
+        objectives: pending.state.objectives.map((objective) =>
+          objective.id === pending.bundle.receipt.objectiveId
+            ? { ...objective, primaryMetric: metric, locked: false }
+            : objective,
+        ),
+      };
+      database.commitProjectResearchPlan(pending.state, pending.operation, pending.bundle);
+      invariant(
+        database.getProjectResearchPlanForIdea(projectId, pending.bundle.idea.id)?.needsIdentity ===
+          true,
+        'research_plan_pending_metric_identity_failed',
+      );
+    }
+    // Exercise the actual service composition, not just a manually assembled commit bundle.
+    const bridgeCandidate = candidate();
+    const bridgeWorkspace = new WorkspaceService({
+      load: () => database.loadWorkspaceState(),
+      commit: (state, operation) => database.commitWorkspaceState(state, operation),
+      pendingChanges: () => database.pendingWorkspaceChanges(),
+      pendingSummary: () => database.pendingWorkspaceSummary(),
+    });
+    const bridge = new ProjectResearchPlanService({
+      workspace: bridgeWorkspace,
+      storage: database,
+    });
+    const bridgeInput = {
+      projectId,
+      sessionId: bridgeCandidate.bundle.receipt.sourceSessionId,
+      attemptId: bridgeCandidate.bundle.receipt.sourceAttemptId,
+      userMessage: 'Create and apply this experiment plan.',
+      invocation,
+      snapshot: await bridge.snapshot(projectId),
+      plan: bridgeCandidate.bundle.plan,
+    };
+    const bridgeApplied = await bridge.apply(bridgeInput, new AbortController().signal);
+    invariant(bridgeApplied.receipt.objectiveLocked, 'research_plan_service_did_not_activate');
+    invariant(
+      (await bridge.apply(bridgeInput, new AbortController().signal)).reused,
+      'research_plan_service_replay_failed',
+    );
+    const experimentBridge = new ExperimentWorkspaceService({
+      storage: database,
+      workspace: bridgeWorkspace,
+    });
+    const plannedRun = await experimentBridge.createRun({
+      projectId,
+      ideaId: bridgeApplied.receipt.ideaId,
+      title: 'Plan service configured trial',
+      mode: 'comparable',
+      serverLabel: 'Fixture only',
+      trialId: randomUUID(),
+    });
+    invariant(
+      plannedRun.status === 'queued' &&
+        plannedRun.objectiveId === bridgeApplied.receipt.objectiveId &&
+        plannedRun.loggingTemplate.revisionId === bridgeApplied.receipt.loggingTemplateId,
+      'research_plan_to_tracked_run_binding_failed',
+    );
+    invariant(
+      (await bridge.read(projectId, first.bundle.idea.id))?.receipt.id === first.bundle.receipt.id,
+      'research_plan_historical_read_used_latest',
+    );
+    invariant(
+      (await bridge.read(projectId, randomUUID())) === null,
+      'research_plan_unknown_idea_read_returned_latest',
+    );
+    const atCapacity = candidate();
+    while (database.listExperimentEvaluationSessions(projectId).length < 100) {
+      invariant(
+        database.createExperimentEvaluationSession({
+          ...atCapacity.bundle.evaluationSession,
+          id: randomUUID(),
+        }),
+        'research_plan_capacity_fixture_failed',
+      );
+    }
+    reject(atCapacity, 'experiment_evaluation_session_limit_reached');
+    const committed = capture();
+    database.close();
+    database.open();
+    invariant(isDeepStrictEqual(capture(), committed), 'research_plan_reopen_persistence_failed');
+    invariant(
+      isDeepStrictEqual(
+        database.getProjectResearchPlanForIdea(projectId, first.bundle.idea.id),
+        first.bundle.receipt,
+      ),
+      'research_plan_idea_lookup_reopen_failed',
+    );
+    invariant(
+      isDeepStrictEqual(database.getExperimentRun(projectId, oldRun.id), oldRun),
+      'research_plan_old_run_reopen_failed',
+    );
+    invariant(
+      isDeepStrictEqual(
+        database.getExperimentLoggingTemplateRevision(projectId, oldTemplate.id),
+        oldTemplate,
+      ),
+      'research_plan_historical_template_reopen_failed',
+    );
+    process.stdout.write('research plan atomic SQLCipher smoke passed\n');
+  } finally {
+    database.close();
+    app.setPath('userData', originalUserData);
+  }
+}
+
+async function verifyExperimentEvaluationPersistence(fixedTimestamp: string) {
   const database = new LocalDatabase();
   database.open();
   try {
@@ -987,6 +1648,7 @@ function verifyExperimentEvaluationPersistence(fixedTimestamp: string) {
         reportMarkdown: '# Synthetic preview\n\nNo experiment was executed.',
       },
     };
+    await verifyProjectResearchPlanPersistence(draft, invocation, fixedTimestamp);
     const contentHash = createHash('sha256').update(JSON.stringify(draft), 'utf8').digest('hex');
     const initialSession = (id: string, title: string): ExperimentEvaluationSession => ({
       schemaVersion: 1,
@@ -7672,6 +8334,313 @@ function verifyModelUsagePersistence(fixedTimestamp: string) {
 const temporaryUserData = mkdtempSync(join(tmpdir(), 'gosu-local-db-smoke-'));
 app.setPath('userData', temporaryUserData);
 
+function verifyLongChatContext(projectId: string, now: string) {
+  const db = new LocalDatabase();
+  db.open();
+  let sessionId = '',
+    lastAttempt = '';
+  let referencedModelSessionId = '';
+  try {
+    const session = db.createProjectChatSession(projectId, 'Long context regression', 'manuscript');
+    const reference = {
+      modelId: 'fixture-model',
+      revision: 2,
+      name: 'Fixture Model',
+      version: 'v1',
+      contentSha256: 'a'.repeat(64),
+    };
+    referencedModelSessionId = db.createProjectChatSession(
+      projectId,
+      'Model reference',
+      undefined,
+      reference,
+    ).id;
+    invariant(
+      db.getProjectChatSession(projectId, referencedModelSessionId)?.modelLabReference
+        ?.contentSha256 === reference.contentSha256,
+      'model_reference_not_saved',
+    );
+    invariant(session.criticalReviewMode === 'manuscript', 'critical_review_mode_not_created');
+    invariant(
+      db.getProjectChatSession(randomUUID(), session.id) === null,
+      'critical_review_cross_project_read',
+    );
+    sessionId = session.id;
+    for (let i = 0; i < 155; i++) {
+      const userId = randomUUID();
+      lastAttempt = randomUUID();
+      const attempt: ProjectChatAttempt = {
+        id: lastAttempt,
+        projectId,
+        sessionId,
+        userMessageId: userId,
+        requestedModelId: null,
+        reasoningOptionId: null,
+        status: 'starting',
+        createdAt: now,
+        updatedAt: now,
+      };
+      db.beginChatAttempt(attempt, {
+        id: userId,
+        projectId,
+        role: 'user',
+        content: `original-fact-${i}`,
+        status: 'complete',
+        actions: [],
+        createdAt: now,
+        completedAt: now,
+      });
+      db.finishChatAttempt(
+        { ...attempt, status: 'complete' },
+        {
+          id: randomUUID(),
+          projectId,
+          role: 'assistant',
+          content: `original-reply-${i}`,
+          status: 'complete',
+          actions: [],
+          createdAt: now,
+          completedAt: now,
+        },
+      );
+    }
+    const messages = db.readProjectChatContextHistory(projectId, sessionId);
+    invariant(
+      messages.length === 310 && messages[0]?.content === 'original-fact-0',
+      'full_context_reader_truncated_to_ui_limit',
+    );
+    invariant(
+      db.snapshot(projectId, sessionId).messages.length === 250,
+      'long_context_expanded_ui_payload',
+    );
+    const checkpoint = {
+      scope: projectContextScope(projectId, sessionId, 'codex', 0),
+      through: 100,
+      digest: conversationDigest(projectTranscript(messages.slice(0, 100))),
+      summary: 'Synthetic historical reference',
+      createdAt: now,
+    };
+    db.saveProjectChatCheckpoint(projectId, sessionId, checkpoint);
+    let staleRejected = false;
+    try {
+      db.saveProjectChatCheckpoint(projectId, sessionId, { ...checkpoint, digest: '0'.repeat(64) });
+    } catch {
+      staleRejected = true;
+    }
+    invariant(staleRejected, 'stale_context_checkpoint_accepted');
+    db.saveProjectChatContextUsage(projectId, sessionId, lastAttempt, 'fixture-model', {
+      windowTokens: 828400,
+      windowSource: 'provider',
+      estimatedInputTokens: 1200,
+      outputReserveTokens: 64000,
+      toolReserveTokens: 48000,
+      totalMessages: 310,
+      includedMessages: 210,
+      compressedMessages: 100,
+      omittedMessages: 0,
+    });
+    invariant(
+      db.searchProjectChatConversation(projectId, sessionId, 'original-fact-0').messages[0]
+        ?.text === 'original-fact-0',
+      'old_original_chat_not_searchable',
+    );
+    const firstPage = db.searchProjectChatConversation(projectId, sessionId, 'original');
+    const nextPage = db.searchProjectChatConversation(
+      projectId,
+      sessionId,
+      'original',
+      undefined,
+      0,
+      firstPage.nextBeforeMessageId!,
+    );
+    invariant(
+      nextPage.messages.length > 0 &&
+        nextPage.messages.every((m) => !firstPage.messages.some((first) => first.id === m.id)),
+      'conversation_search_paging_repeated_records',
+    );
+    const other = db.createProjectChatSession(projectId, 'Separate context');
+    invariant(
+      db.searchProjectChatConversation(projectId, other.id, 'original-fact-0').messages.length ===
+        0,
+      'conversation_search_crossed_session',
+    );
+  } finally {
+    db.close();
+  }
+  const restarted = new LocalDatabase();
+  restarted.open();
+  try {
+    invariant(
+      restarted.getProjectChatSession(projectId, referencedModelSessionId)?.modelLabReference
+        ?.modelId === 'fixture-model',
+      'model_reference_not_restored',
+    );
+    invariant(
+      restarted.getProjectChatSession(projectId, sessionId)?.criticalReviewMode === 'manuscript',
+      'critical_review_mode_not_restored',
+    );
+    invariant(
+      restarted.listProjectChatSessions(projectId).find((s) => s.id === sessionId)
+        ?.criticalReviewMode === 'manuscript',
+      'critical_review_history_mode_missing',
+    );
+    const state = restarted.getProjectChatContextState(projectId, sessionId);
+    invariant(
+      state.checkpoint?.through === 100 && state.usage?.windowTokens === 828400,
+      'context_checkpoint_or_usage_not_durable',
+    );
+    invariant(
+      restarted.snapshot(projectId, sessionId).contextUsage?.compressedMessages === 100,
+      'context_meter_not_restored',
+    );
+  } finally {
+    restarted.close();
+  }
+}
+
+function verifyQueuedSteerPersistence(projectId: string, now: string) {
+  const db = new LocalDatabase();
+  db.open();
+  try {
+    const session = db.createProjectChatSession(projectId, 'Steer regression');
+    const seedUser = randomUUID();
+    const seedAttempt: ProjectChatAttempt = {
+      id: randomUUID(),
+      projectId,
+      sessionId: session.id,
+      userMessageId: seedUser,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      status: 'starting',
+      createdAt: now,
+      updatedAt: now,
+    };
+    db.beginChatAttempt(seedAttempt, {
+      id: seedUser,
+      projectId,
+      role: 'user',
+      content: 'Shared earlier history',
+      status: 'complete',
+      actions: [],
+      createdAt: now,
+      completedAt: now,
+    });
+    db.finishChatAttempt(
+      { ...seedAttempt, status: 'complete' },
+      {
+        id: randomUUID(),
+        projectId,
+        role: 'assistant',
+        content: 'Earlier reply',
+        status: 'complete',
+        actions: [],
+        createdAt: now,
+        completedAt: now,
+      },
+    );
+    const branch = db.branchProjectChatSession({
+      projectId,
+      sourceSessionId: session.id,
+      branchFromMessageId: seedUser,
+      title: 'Unchanged branch',
+    });
+    const userId = randomUUID(),
+      attemptId = randomUUID(),
+      queueId = randomUUID();
+    const attempt: ProjectChatAttempt = {
+      id: attemptId,
+      projectId,
+      sessionId: session.id,
+      userMessageId: userId,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      status: 'starting',
+      createdAt: now,
+      updatedAt: now,
+    };
+    db.beginChatAttempt(attempt, {
+      id: userId,
+      projectId,
+      role: 'user',
+      content: 'Original immutable input',
+      status: 'complete',
+      actions: [],
+      createdAt: now,
+      completedAt: now,
+    });
+    db.markChatAttemptRunning({
+      ...attempt,
+      status: 'running',
+      threadId: 'steer-thread',
+      turnId: 'steer-turn',
+      model: {
+        invocationId: randomUUID(),
+        requestedModelId: null,
+        resolvedModelId: 'fixture-model',
+        catalogVersion: 'fixture',
+        reasoningOptionId: null,
+      },
+    });
+    db.enqueueProjectChatTurn({
+      id: queueId,
+      projectId,
+      sessionId: session.id,
+      message: 'Supplement',
+      requestedModelId: null,
+      reasoningOptionId: null,
+      priority: 'normal',
+      status: 'queued',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const input = {
+      projectId,
+      sessionId: session.id,
+      queueId,
+      message: 'Supplement',
+      attemptId,
+      turnId: 'steer-turn',
+      createdAt: now,
+    };
+    invariant(
+      db.takeQueuedSteer({ ...input, message: 'stale text' }) === null,
+      'stale_steer_consumed_queue',
+    );
+    const receipt = db.takeQueuedSteer(input);
+    invariant(!!receipt, 'steer_audit_missing');
+    invariant(db.takeQueuedSteer(input) === null, 'steer_replayed_queue');
+    db.confirmQueuedSteer(receipt!, true);
+    invariant(
+      db.snapshot(projectId, session.id).messages.some((m) => m.content.includes('전달 완료')),
+      'steer_receipt_not_persisted',
+    );
+    invariant(
+      db.snapshot(projectId, branch.id).messages.every((m) => !m.content.includes('Supplement')),
+      'steer_leaked_into_branch',
+    );
+    invariant(
+      db.snapshot(projectId, session.id).messages.find((m) => m.id === userId)?.content ===
+        'Original immutable input',
+      'steer_rewrote_original_question',
+    );
+    db.finishChatAttempt(
+      { ...attempt, status: 'complete' },
+      {
+        id: randomUUID(),
+        projectId,
+        role: 'assistant',
+        content: 'Done',
+        status: 'complete',
+        actions: [],
+        createdAt: now,
+        completedAt: now,
+      },
+    );
+  } finally {
+    db.close();
+  }
+}
+
 void app.whenReady().then(async () => {
   const operationId = randomUUID();
   const secondOperationId = randomUUID();
@@ -8214,6 +9183,11 @@ void app.whenReady().then(async () => {
 
     const completedAttemptId = randomUUID();
     const completedUserMessageId = randomUUID();
+    const permanentDecisionRequest =
+      'Remember this decision across project sessions: use the frozen held-out likelihood metric.';
+    const permanentDecisionOutcome =
+      'PERMANENT_DB_MEMORY: the frozen evaluation metric is held-out log likelihood.';
+    const permanentDecisionAssistantContent = `${permanentDecisionOutcome}\n\n---\n${PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION}`;
     const completedAttempt: ProjectChatAttempt = {
       id: completedAttemptId,
       projectId: chatProjectId,
@@ -8261,7 +9235,7 @@ void app.whenReady().then(async () => {
       id: completedUserMessageId,
       projectId: chatProjectId,
       role: 'user',
-      content: 'Complete this durable attempt.',
+      content: permanentDecisionRequest,
       status: 'complete',
       actions: [],
       createdAt: fixedTimestamp,
@@ -8357,20 +9331,53 @@ void app.whenReady().then(async () => {
         id: completedAssistantMessageId,
         projectId: chatProjectId,
         role: 'assistant',
-        content: `This attempt completed durably.\n\n---\n${PROJECT_CHAT_RESEARCH_NOTE_SAVE_PENDING_SECTION}`,
+        content: permanentDecisionAssistantContent,
         status: 'complete',
         actions: [],
         createdAt: fixedTimestamp,
         completedAt: fixedTimestamp,
       },
     );
+    const projectPermanentMemoryBeforeAgentLedgerFinish = database.getProjectAgentPermanentMemory(
+      chatProjectId,
+      'Which frozen held-out likelihood metric did we decide to use?',
+    );
+    invariant(
+      projectPermanentMemoryBeforeAgentLedgerFinish.candidateCount === 1 &&
+        projectPermanentMemoryBeforeAgentLedgerFinish.entries.length === 1,
+      'project_permanent_memory_was_not_atomic_with_assistant_commit',
+    );
+    invariant(
+      projectPermanentMemoryBeforeAgentLedgerFinish.entries[0]?.scopeId === chatProjectId,
+      'project_permanent_memory_scope_changed',
+    );
+    invariant(
+      projectPermanentMemoryBeforeAgentLedgerFinish.entries[0]?.sourceId === completedAttemptId,
+      'project_permanent_memory_source_changed',
+    );
+    invariant(
+      projectPermanentMemoryBeforeAgentLedgerFinish.entries[0]?.outcome ===
+        permanentDecisionOutcome,
+      'project_permanent_memory_outcome_changed',
+    );
+    invariant(
+      database.getProjectAgentPermanentMemory(
+        queueFailureProjectId,
+        'Which frozen held-out likelihood metric did we decide to use?',
+      ).candidateCount === 0,
+      'project_permanent_memory_crossed_project_boundary',
+    );
     database.finishProjectAgentRun({
       attemptId: completedAttemptId,
       status: 'complete',
-      assistantContent: 'This attempt completed durably.',
+      assistantContent: permanentDecisionOutcome,
       updatedAt: fixedTimestamp,
     });
     const completedAgentSnapshot = database.snapshot(chatProjectId, defaultChatSession.id);
+    const projectPermanentMemory = database.getProjectAgentPermanentMemory(
+      chatProjectId,
+      'Which frozen held-out likelihood metric did we decide to use?',
+    );
     invariant(
       completedAgentSnapshot.agentRuns?.some(
         (run) =>
@@ -8382,6 +9389,14 @@ void app.whenReady().then(async () => {
         completedAgentSnapshot.agentMemory?.revision === 1 &&
         completedAgentSnapshot.agentMemory.entries[0]?.attemptId === completedAttemptId,
       'project_agent_run_or_working_memory_not_persisted',
+    );
+    invariant(
+      database.getProjectAgentWorkingMemory(chatProjectId, independentChatSession.id) === null,
+      'independent_chat_session_unexpectedly_inherited_working_memory',
+    );
+    invariant(
+      projectPermanentMemory.candidateCount === 1 && projectPermanentMemory.entries.length === 1,
+      'project_permanent_memory_was_not_retrieved_cross_session',
     );
     invariant(
       database.abandonResearchNoteSave({
@@ -9015,6 +10030,20 @@ void app.whenReady().then(async () => {
         reopenedChat.agentMemory.entries[0]?.attemptId === completedAttemptId,
       'project_agent_runtime_restart_restore_failed',
     );
+    const reopenedPermanentMemory = reopened.getProjectAgentPermanentMemory(
+      chatProjectId,
+      'Which frozen held-out likelihood metric did we decide to use?',
+    );
+    invariant(
+      reopenedPermanentMemory.candidateCount === 1 &&
+        reopenedPermanentMemory.entries[0]?.sourceId === completedAttemptId &&
+        reopenedPermanentMemory.entries[0]?.outcome === permanentDecisionOutcome &&
+        reopened.getProjectAgentPermanentMemory(
+          queueFailureProjectId,
+          'Which frozen held-out likelihood metric did we decide to use?',
+        ).candidateCount === 0,
+      'project_permanent_memory_restart_or_isolation_failed',
+    );
     invariant(
       reopened.getProjectChatProfile(chatProjectId).version === 1 &&
         reopened.getProjectChatProfile(chatProjectId).customInstructions ===
@@ -9478,6 +10507,8 @@ void app.whenReady().then(async () => {
     invariant(ambiguousSummaryRejected, 'ambiguous_outbox_was_silently_renumbered');
     recoveryRequired.close();
 
+    verifyLongChatContext(chatProjectId, fixedTimestamp);
+    verifyQueuedSteerPersistence(chatProjectId, fixedTimestamp);
     verifyLegacyChatMigration(temporaryUserData, fixedTimestamp);
     verifyLegacySshMigration(temporaryUserData, fixedTimestamp);
     verifyLegacyProfileMigration(temporaryUserData, fixedTimestamp);
@@ -9487,7 +10518,7 @@ void app.whenReady().then(async () => {
     verifySparseSemanticScholarMerge(fixedTimestamp);
     verifyLiteratureDiscoveryPersistence(fixedTimestamp);
     verifyLiteratureBoundsAndIdentity(fixedTimestamp);
-    verifyExperimentEvaluationPersistence(fixedTimestamp);
+    await verifyExperimentEvaluationPersistence(fixedTimestamp);
     verifyModelUsagePersistence(fixedTimestamp);
     verifyExperimentPersistence(fixedTimestamp);
     verifyLectureStudioListDetailBoundary(fixedTimestamp);

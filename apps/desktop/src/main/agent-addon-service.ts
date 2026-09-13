@@ -270,6 +270,7 @@ export function createAgentAddOnRegistry(
     hermesProjectChat?: HermesProjectChatConnection;
     claudeCodeProjectChat?: ClaudeCodeProjectChatConnection;
   }> = {},
+  activeIds: readonly AgentAddOnId[] = ['claude-code'],
 ): AgentAddOnRegistry {
   const platform: AgentAddOnDetectionPlatform = {
     pathEnvironment: input.pathEnvironment ?? process.env.PATH,
@@ -286,17 +287,19 @@ export function createAgentAddOnRegistry(
       }),
   };
   return new AgentAddOnRegistry(
-    AGENT_ADD_ON_DESCRIPTORS.map((descriptor) => {
-      const detector = new LocalCliAgentAddOnAdapter(descriptor, platform);
-      return descriptor.id === 'hermes' && integrations.hermesProjectChat
-        ? new HermesAgentAddOnAdapter(descriptor, detector, integrations.hermesProjectChat)
-        : descriptor.id === 'claude-code' && integrations.claudeCodeProjectChat
-          ? new ClaudeCodeAgentAddOnAdapter(
-              descriptor,
-              detector,
-              integrations.claudeCodeProjectChat,
-            )
-          : detector;
-    }),
+    AGENT_ADD_ON_DESCRIPTORS.filter((descriptor) => activeIds.includes(descriptor.id)).map(
+      (descriptor) => {
+        const detector = new LocalCliAgentAddOnAdapter(descriptor, platform);
+        return descriptor.id === 'hermes' && integrations.hermesProjectChat
+          ? new HermesAgentAddOnAdapter(descriptor, detector, integrations.hermesProjectChat)
+          : descriptor.id === 'claude-code' && integrations.claudeCodeProjectChat
+            ? new ClaudeCodeAgentAddOnAdapter(
+                descriptor,
+                detector,
+                integrations.claudeCodeProjectChat,
+              )
+            : detector;
+      },
+    ),
   );
 }

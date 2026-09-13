@@ -820,5 +820,29 @@ describe('Project chat contracts', () => {
       assemblyVersion: 5,
       workingMemoryRevision: 3,
     });
+    expect(
+      ProjectChatPromptProvenanceSchema.parse({
+        ...base,
+        ...v2Fields,
+        assemblyVersion: 6,
+        requestedLegacyHarnessMode: 'context',
+        nativeCollaborationModeId: null,
+        nativeExecutionKind: 'default',
+        nativeCollaborationCatalogSha256: '3'.repeat(64),
+        nativePersonality: 'auto',
+        nativeResponseVerbosity: 'auto',
+        effectiveReasoningOptionId: null,
+        policyRulesSha256: '4'.repeat(64),
+        policyRuleCount: 0,
+        contextPlanSha256: '5'.repeat(64),
+        workingMemoryRevision: 3,
+        permanentMemorySha256: '6'.repeat(64),
+        permanentMemoryEntryCount: 2,
+      }),
+    ).toMatchObject({
+      assemblyVersion: 6,
+      workingMemoryRevision: 3,
+      permanentMemoryEntryCount: 2,
+    });
   });
 });

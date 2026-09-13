@@ -39,6 +39,25 @@ describe('Project Chat attachment IPC', () => {
         attachmentId: 'not-an-opaque-id',
       }),
     ).resolves.toEqual({ ok: false, error: { code: 'invalid_chat_input' } });
+    const stage = vi.spyOn(service, 'stageDropped').mockResolvedValue([]);
+    await expect(
+      handlers.get(PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.drop)?.({
+        projectId: PROJECT_ID,
+        sessionId: SESSION_ID,
+        paths: ['/native/drop.txt'],
+      }),
+    ).resolves.toEqual({ ok: true, value: [] });
+    expect(stage).toHaveBeenCalledWith({ projectId: PROJECT_ID, sessionId: SESSION_ID }, [
+      '/native/drop.txt',
+    ]);
+    await expect(
+      handlers.get(PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.drop)?.({
+        projectId: PROJECT_ID,
+        sessionId: SESSION_ID,
+        paths: ['/native/drop.txt'],
+        unrelated: true,
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: 'invalid_chat_input' } });
     await service.dispose();
   });
 

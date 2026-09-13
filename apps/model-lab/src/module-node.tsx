@@ -1,6 +1,7 @@
+import { uiText, useUiText } from '@gosu/ui/language';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
-import { Formula } from './formula';
-import { formatShape } from './model-lab-domain';
+import { Formula, formulaDisplayRows } from './formula';
+import { formatModuleInputContract, formatModuleOutputContract } from './model-lab-domain';
 import type { GraphNavigationKey } from './model-graph';
 import type { GradientHealth, ModelModule } from './model-lab-schema';
 
@@ -18,7 +19,7 @@ export type ModuleNodeData = Readonly<{
     label: string;
     repeatCount: number | string;
     moduleCount: number;
-    detailKind: 'modules' | 'steps';
+    detailKind: 'modules' | 'steps' | 'semantic blocks';
     onOpen: () => void;
   }> | null;
   subgraph: Readonly<{
@@ -70,6 +71,24 @@ export function moduleRepeatStackLayers(repeat: ModuleRepeatPresentation): reado
   return Array.from({ length: visibleCount }, (_, index) => index + 1);
 }
 
+export function moduleHandlePorts(
+  module: Pick<ModelModule, 'inputPorts' | 'outputPorts'>,
+  signalMode: 'forward' | 'backward',
+  orderFlowDirection: 'left-to-right' | 'right-to-left' | null,
+  handleType: 'source' | 'target',
+) {
+  const reversePorts = signalMode === 'backward' && orderFlowDirection === null;
+  const ports =
+    handleType === 'source'
+      ? reversePorts
+        ? module.inputPorts
+        : module.outputPorts
+      : reversePorts
+        ? module.outputPorts
+        : module.inputPorts;
+  return ports?.filter((port) => !port.binding || port.binding === 'internal');
+}
+
 const healthLabel: Record<GradientHealth, string> = {
   healthy: 'Gradient healthy',
   low: 'Gradient very small',
@@ -80,6 +99,7 @@ const healthLabel: Record<GradientHealth, string> = {
 };
 
 export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
+  useUiText();
   const {
     module,
     changeKind,
@@ -94,7 +114,8 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
     signalMode,
     orderFlowDirection,
   } = data;
-  const compactFormula = compactModuleFormula(module.formula);
+  const formulaRows = formulaDisplayRows(module.formula);
+  const formulaAccessibilityLabel = moduleFormulaAccessibilityLabel(formulaRows);
   const repeat = moduleRepeatPresentation(module);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
@@ -128,6 +149,25 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
     : backward
       ? 'target'
       : 'source';
+  const renderHandles = (
+    handleType: 'source' | 'target',
+    position: Position,
+    legacyAllowed: boolean,
+  ) => {
+    const ports = moduleHandlePorts(module, signalMode, orderFlowDirection, handleType);
+    if (ports) {
+      return ports.map((port, index) => (
+        <Handle
+          id={port.name}
+          key={`${handleType}:${port.name}`}
+          type={handleType}
+          position={position}
+          style={{ top: `${((index + 1) / (ports.length + 1)) * 100}%` }}
+        />
+      ));
+    }
+    return legacyAllowed ? <Handle type={handleType} position={position} /> : null;
+  };
   return (
     <article
       className={`module-node module-node--${health}${selected ? ' module-node--selected' : ''}${repeat ? ' module-node--stacked' : ''}${compositeBlock ? ' module-node--composite' : ''}${changeKind ? ` module-node--change-${changeKind}` : ''}`}
@@ -137,13 +177,16 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
     >
       {changeKind ? (
         <span className="module-node__change-badge">
-          {changeKind === 'added' ? 'ADDED' : 'MODIFIED'}
+          {changeKind === 'added' ? uiText('ADDED') : uiText('MODIFIED')}
         </span>
       ) : null}
       {leftHandle === 'source'
-        ? module.kind !== 'output' &&
-          module.kind !== 'objective' && <Handle type="source" position={Position.Left} />
-        : module.kind !== 'input' && <Handle type="target" position={Position.Left} />}
+        ? renderHandles(
+            'source',
+            Position.Left,
+            module.kind !== 'output' && module.kind !== 'objective',
+          )
+        : renderHandles('target', Position.Left, module.kind !== 'input')}
       <button
         className="module-node__content"
         type="button"
@@ -152,7 +195,7 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
         aria-expanded={compositeBlock ? undefined : detailExpanded}
         aria-controls={compositeBlock ? undefined : detailDialogId}
         aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Enter Space"
-        aria-label={`${module.name}. ${repeat ? `Repeated stack of ${repeat.count} ${repeat.label}. ` : ''}${healthLabel[health]}. ${module.transform}. Formula ${compactFormula}`}
+        aria-label={`${module.name}. ${repeat ? `Repeated stack of ${repeat.count} ${repeat.label}. ` : ''}${healthLabel[health]}. ${module.transform}. ${formulaAccessibilityLabel}`}
         onClick={(event) => {
           event.stopPropagation();
           if (compositeBlock) compositeBlock.onOpen();
@@ -162,30 +205,33 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
       >
         <div className="module-node__topline">
           <span>{module.group}</span>
-          <span className="module-node__health" aria-label={healthLabel[health]}>
+          <span className="module-node__health" aria-label={uiText(healthLabel[health])}>
             <span aria-hidden="true" />
             {health === 'healthy'
-              ? 'flowing'
+              ? uiText('flowing')
               : health === 'not-applicable'
-                ? 'not applicable'
-                : health}
+                ? uiText('not applicable')
+                : uiText(health)}
           </span>
         </div>
         {repeat ? (
           <div
             className="module-node__repeat"
-            aria-label={`${repeat.count} repeated ${repeat.label}`}
+            aria-label={uiText('{value0} repeated {value1}', {
+              value0: repeat.count,
+              value1: repeat.label,
+            })}
           >
             <span className="module-node__repeat-layers" aria-hidden="true">
               {moduleRepeatStackLayers(repeat).map((layer) => (
                 <i key={layer} data-repeat-layer={layer}>
-                  <span>BLOCK</span>
+                  <span>{uiText('BLOCK')}</span>
                 </i>
               ))}
             </span>
             <span className="module-node__repeat-copy">
               <strong>{repeat.label}</strong>
-              <small>same block composed</small>
+              <small>{uiText('same block composed')}</small>
             </span>
             <strong className="module-node__repeat-count">×{repeat.count}</strong>
           </div>
@@ -194,27 +240,41 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
           <div className="module-node__composite-summary">
             <strong>{compositeBlock.label}</strong>
             <code>
-              {formatShape(module.inputShape)} → {formatShape(module.outputShape)}
+              {formatModuleInputContract(module)} → {formatModuleOutputContract(module)}
             </code>
             <span>
-              One iteration · {compositeBlock.moduleCount} internal {compositeBlock.detailKind}
+              {uiText('One iteration · ')}
+              {compositeBlock.moduleCount}
+              {uiText(' internal ')}
+              {compositeBlock.detailKind}
             </span>
-            <b>Open block details →</b>
+            <b>{uiText('Open block details →')}</b>
           </div>
         ) : (
           <>
             <strong>{module.name}</strong>
             <code>
-              {formatShape(module.inputShape)} → {formatShape(module.outputShape)}
+              {formatModuleInputContract(module)} → {formatModuleOutputContract(module)}
             </code>
             <div className="module-node__operation">{module.transform}</div>
-            <div className="module-node__activation">{module.activation ?? 'No activation'}</div>
+            <div className="module-node__activation">
+              {module.activation ?? uiText('No activation')}
+            </div>
             <div
               className="module-node__formula"
               title={module.formula}
-              aria-label={`Formula ${compactFormula}`}
+              aria-label={formulaAccessibilityLabel}
             >
-              <Formula latex={module.formula} displayMode={false} />
+              <div className="module-node__formula-list">
+                {formulaRows.map((row, index) => (
+                  <div
+                    className={`module-node__formula-row nowheel nodrag${row.length > 110 ? ' module-node__formula-row--very-long' : row.length > 72 ? ' module-node__formula-row--long' : ''}`}
+                    key={`${index}:${row}`}
+                  >
+                    <Formula latex={row} displayMode={row.includes('\\begin{')} />
+                  </div>
+                ))}
+              </div>
             </div>
           </>
         )}
@@ -230,27 +290,37 @@ export function ModuleNodeView({ data, selected }: NodeProps<ModuleFlowNode>) {
           }}
         >
           <span aria-hidden="true">{subgraph.expanded ? '−' : '+'}</span>
-          {subgraph.expanded ? 'Collapse' : 'Expand'} {subgraph.moduleCount} submodules
+          {subgraph.expanded ? uiText('Collapse') : uiText('Expand')} {subgraph.moduleCount}
+          {uiText(' submodules')}
         </button>
       ) : null}
       {rightHandle === 'source'
-        ? module.kind !== 'output' &&
-          module.kind !== 'objective' && <Handle type="source" position={Position.Right} />
-        : module.kind !== 'input' && <Handle type="target" position={Position.Right} />}
+        ? renderHandles(
+            'source',
+            Position.Right,
+            module.kind !== 'output' && module.kind !== 'objective',
+          )
+        : renderHandles('target', Position.Right, module.kind !== 'input')}
     </article>
   );
 }
 
 export function SubgraphBoundaryNodeView({ data }: NodeProps<SubgraphBoundaryFlowNode>) {
+  useUiText();
   return (
-    <section className="subgraph-boundary" aria-label={`${data.modelName} expanded submodules`}>
+    <section
+      className="subgraph-boundary"
+      aria-label={uiText('{value0} expanded submodules', { value0: data.modelName })}
+    >
       <header>
         <span>
-          INSIDE {data.parentModuleName} · {data.moduleCount} SUBMODULES
+          {uiText('INSIDE ')}
+          {data.parentModuleName} · {data.moduleCount}
+          {uiText(' SUBMODULES')}
         </span>
         <strong>{data.modelName}</strong>
         <button className="nodrag" type="button" onClick={data.onCollapse}>
-          Collapse
+          {uiText('Collapse')}
         </button>
       </header>
     </section>
@@ -268,6 +338,12 @@ export function compactModuleFormula(formula: string, maxLength = 52) {
     .replace(/\s+/g, ' ')
     .trim();
   return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
+}
+
+export function moduleFormulaAccessibilityLabel(rows: readonly string[]) {
+  const count = rows.length;
+  const summaries = rows.map((row) => compactModuleFormula(row, 120)).join('; ');
+  return `${count} ${count === 1 ? 'equation' : 'equations'}${summaries ? `: ${summaries}` : ''}`;
 }
 
 function isGraphNavigationKey(key: string): key is GraphNavigationKey {

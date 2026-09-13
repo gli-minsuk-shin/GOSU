@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 
 import type {
@@ -43,6 +45,7 @@ export function SearchView({
   compact?: boolean;
   onOpen: (hit: SearchHit) => void;
 }) {
+  useUiText();
   const searchInputId = useId();
   const [query, setQuery] = useState(initialQuery);
   const [response, setResponse] = useState<SearchResponse | null>(null);
@@ -114,10 +117,15 @@ export function SearchView({
 
   const groups = visibleSearchGroups(response, activeCategory);
   return (
-    <section className={`search-view${compact ? ' compact' : ''}`} aria-label="Workspace search">
+    <section
+      className={`search-view${compact ? ' compact' : ''}`}
+      aria-label={uiText('Workspace search')}
+    >
       <form className="search-form" role="search" onSubmit={(event) => void runSearch(event)}>
         <label htmlFor={searchInputId}>
-          {compact ? 'Search Research Notes' : `Search ${scopeLabel}`}
+          {compact
+            ? uiText('Search Research Notes')
+            : uiText('Search {scopeLabel}', { scopeLabel: scopeLabel })}
         </label>
         <div className="search-form-controls">
           <input
@@ -126,26 +134,28 @@ export function SearchView({
             value={query}
             autoComplete="off"
             placeholder={
-              compact ? 'Title, path, content, or tag' : 'Keyword, paper, metric, task, or file'
+              compact
+                ? uiText('Title, path, content, or tag')
+                : uiText('Keyword, paper, metric, task, or file')
             }
             onChange={(event) => setQuery(event.target.value)}
           />
           <button type="submit" className="primary-button" disabled={busy || !query.trim()}>
-            {busy ? 'Searching…' : 'Search'}
+            {busy ? uiText('Searching…') : uiText('Search')}
           </button>
         </div>
       </form>
       {error && <div className="notice error">{error}</div>}
       {response && (
         <>
-          <nav className="search-category-tabs" aria-label="Search result categories">
+          <nav className="search-category-tabs" aria-label={uiText('Search result categories')}>
             <button
               type="button"
               className={activeCategory === 'all' ? 'active' : ''}
               aria-pressed={activeCategory === 'all'}
               onClick={() => setActiveCategory('all')}
             >
-              All <span>{searchResultCount(response)}</span>
+              {uiText('All')} <span>{searchResultCount(response)}</span>
             </button>
             {response.groups.map((group) => (
               <button
@@ -155,19 +165,22 @@ export function SearchView({
                 aria-pressed={activeCategory === group.category}
                 onClick={() => setActiveCategory(group.category)}
               >
-                {SEARCH_CATEGORY_LABELS[group.category]}{' '}
+                {uiText(SEARCH_CATEGORY_LABELS[group.category])}{' '}
                 <span>{searchCategoryCount(response, group.category)}</span>
               </button>
             ))}
           </nav>
           <div className="search-results" aria-live="polite">
             {searchResultCount(response) === 0 && (
-              <p className="search-empty">No local results for “{response.query}”.</p>
+              <p className="search-empty">
+                {uiText('No local results for “')}
+                {response.query}”.
+              </p>
             )}
             {groups.map((group) => (
               <section className="search-result-group" key={group.category}>
                 <header>
-                  <h2>{SEARCH_CATEGORY_LABELS[group.category]}</h2>
+                  <h2>{uiText(SEARCH_CATEGORY_LABELS[group.category])}</h2>
                   <span>
                     {group.items.length}
                     {group.truncated ? '+' : ''}
@@ -176,7 +189,9 @@ export function SearchView({
                 {(group.unavailableReason || group.incomplete) && (
                   <p className="search-source-warning">
                     {group.unavailableReason ??
-                      'Some local results could not be validated. Available matches are still shown.'}
+                      uiText(
+                        'Some local results could not be validated. Available matches are still shown.',
+                      )}
                   </p>
                 )}
                 {group.items.map((hit) => (
@@ -201,7 +216,9 @@ export function SearchView({
         </>
       )}
       {!response && !busy && !compact && (
-        <p className="search-empty">Enter a keyword to search every non-trashed project.</p>
+        <p className="search-empty">
+          {uiText('Enter a keyword to search every non-trashed project.')}
+        </p>
       )}
     </section>
   );

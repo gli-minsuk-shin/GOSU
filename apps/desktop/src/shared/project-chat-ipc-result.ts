@@ -10,6 +10,7 @@ export const PROJECT_CHAT_IPC_ERROR_CODES = [
   'chat_attempt_not_retryable',
   'chat_profile_conflict',
   'chat_session_not_found',
+  'model_lab_reference_unavailable',
   'chat_branch_message_not_found',
   'chat_branch_point_invalid',
   'chat_branch_lineage_invalid',

@@ -99,8 +99,8 @@ $$
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
     const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
 
-    expect(appSource).toContain('aria-label="Model Copilot conversation history"');
-    expect(appSource).toContain('{messages.map((message) => (');
+    expect(appSource).toContain("aria-label={uiText('Model Copilot conversation history')}");
+    expect(appSource).toMatch(/\{messages\.map\(\(message(?:,\s*messageIndex)?\) => \(/);
     expect(appSource).not.toContain('messages.slice(-4)');
     expect(styles).toMatch(
       /\.model-chat--sidebar \{[\s\S]*?display: flex;[\s\S]*?flex-direction: column;/u,
@@ -145,7 +145,12 @@ $$
 
     expect(appSource).toContain('Live Model Copilot agent activity');
     expect(appSource).toContain("progress.tool.replaceAll('_', ' ')");
-    expect(appSource).toContain("{answering ? 'Stop' : 'Send'}");
+    const composerSource = readFileSync(
+      new URL('./model-chat-composer.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(appSource).toContain('busy={answering}');
+    expect(composerSource).toContain("{busy ? uiText('Stop') : uiText('Send')}");
     expect(appSource).toContain('copilotTurnAbortRef.current?.abort()');
     expect(appSource).toContain('message.usage.inputTokens.toLocaleString()');
     expect(styles).toContain('.model-chat__agent-progress {');
@@ -158,12 +163,17 @@ $$
     const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
 
     expect(appSource).toContain('className="model-chat__identity"');
-    expect(appSource).toContain("message.role === 'user' ? 'You' : 'GOSU'");
+    expect(appSource).toContain("message.role === 'user' ? uiText('You') : uiText('GOSU')");
     expect(appSource).toContain('formatModelChatTime(message.createdAt)');
     expect(appSource).toContain('Show details');
     expect(appSource).toContain('Agent run details');
-    expect(appSource).toContain('<span>LOCAL MODEL CONTEXT</span>');
-    expect(appSource).toContain('aria-label="Message GOSU Model Copilot"');
+    expect(appSource).toContain("<span>{uiText('LOCAL MODEL CONTEXT')}</span>");
+    const composerSource = readFileSync(
+      new URL('./model-chat-composer.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(appSource).toContain('<ModelChatComposer');
+    expect(composerSource).toContain("aria-label={uiText('Message GOSU Model Copilot')}");
     expect(appSource).toContain('Jump to the latest Model Copilot message');
     expect(styles).toMatch(
       /\.model-chat__composer-row \{[\s\S]*?grid-template-columns: 54px minmax\(0, 1fr\) 76px;/u,

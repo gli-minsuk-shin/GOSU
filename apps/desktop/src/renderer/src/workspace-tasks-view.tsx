@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState, type DragEventHandler } from 'react';
+import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+
+import { useEffect, useMemo, useRef, useState, type DragEventHandler } from 'react';
 
 import {
   resolveWorkspaceBoardSettings,
@@ -35,6 +37,7 @@ import {
   type WorkspaceGlobalBoardVisibleLimits,
 } from './workspace-global-board-model';
 import './workspace-tasks-view.css';
+import { boardColumnDisplayLabel } from './domain-ui-labels';
 
 const PRIORITIES: ReadonlyArray<{ value: WorkspaceTaskPriority; label: string }> = [
   { value: 'low', label: 'Low' },
@@ -52,6 +55,7 @@ type DraggedWorkspaceTask = Readonly<{
 }>;
 
 export type WorkspaceTasksViewProps = {
+  briefingTarget?: { id: string; requestId: number } | null;
   projects: readonly ProjectRecord[];
   tasks: readonly WorkspaceGlobalBoardTask['task'][];
   busyAction: string | null;
@@ -137,6 +141,7 @@ export function workspaceGlobalProjectLabels(projects: readonly ProjectRecord[])
 }
 
 export function WorkspaceTasksView({
+  briefingTarget,
   projects,
   tasks,
   busyAction,
@@ -146,6 +151,7 @@ export function WorkspaceTasksView({
   onOpenProjectBoard,
   initialViewMode = 'kanban',
 }: WorkspaceTasksViewProps) {
+  useUiText();
   const activeProjects = useMemo(() => activeWorkspaceGlobalProjects(projects), [projects]);
   const joinedTasks = useMemo(
     () => joinWorkspaceGlobalBoardTasks(activeProjects, tasks),
@@ -162,6 +168,14 @@ export function WorkspaceTasksView({
   const [visibleLimits, setVisibleLimits] = useState<WorkspaceGlobalBoardVisibleLimits>({});
   const [trashVisibleLimit, setTrashVisibleLimit] = useState<number | undefined>();
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [dismissedTarget, setDismissedTarget] = useState<number | null>(null);
+  const destination = useRef<HTMLDivElement>(null);
+  const linkedTask =
+    briefingTarget &&
+    joinedTasks.find((item) => item.task.id === briefingTarget.id && !item.task.archivedAt);
+  useEffect(() => {
+    if (briefingTarget) destination.current?.focus();
+  }, [briefingTarget?.requestId]);
   const [draggedTask, setDraggedTask] = useState<DraggedWorkspaceTask | null>(null);
   const [dropStatus, setDropStatus] = useState<WorkspaceTaskStatus | null>(null);
   const filteredTasks = useMemo(
@@ -223,7 +237,10 @@ export function WorkspaceTasksView({
     const projectLabel = projectLabels.get(item.project.id) ?? item.project.name;
     if (
       !window.confirm(
-        `Delete “${item.task.title}” from ${projectLabel}? It will move to Task trash and can be restored later.`,
+        uiText(
+          'Delete “{title}” from {projectLabel}? It will move to Task trash and can be restored later.',
+          { title: item.task.title, projectLabel: projectLabel },
+        ),
       )
     ) {
       return;
@@ -240,19 +257,45 @@ export function WorkspaceTasksView({
   return (
     <section
       className="kanban-workspace workspace-tasks-view"
-      aria-label="All-project task workspace"
+      aria-label={uiText('All-project task workspace')}
     >
+      {briefingTarget && dismissedTarget !== briefingTarget.requestId && (
+        <div
+          ref={destination}
+          tabIndex={-1}
+          className="briefing-task-destination"
+          aria-label="브리핑에서 선택한 할 일"
+        >
+          {linkedTask ? (
+            <WorkspaceTaskEditForm
+              item={linkedTask}
+              projectLabel={projectLabels.get(linkedTask.project.id) ?? linkedTask.project.name}
+              busy={busy}
+              onCancel={() => setDismissedTarget(briefingTarget.requestId)}
+              onUpdate={async (input) => {
+                const saved = await onUpdateTask(input);
+                if (saved) setDismissedTarget(briefingTarget.requestId);
+                return saved;
+              }}
+            />
+          ) : (
+            <p role="status">이 할 일은 삭제·보관되었거나 현재 접근할 수 없습니다.</p>
+          )}
+        </div>
+      )}
       <header className="kanban-command-bar">
         <div className="kanban-title-block">
-          <span>WORKSPACE TASKS</span>
-          <h2>All project tasks</h2>
+          <span>{uiText('WORKSPACE TASKS')}</span>
+          <h2>{uiText('All project tasks')}</h2>
           <p>
-            {activeTaskCount} active {activeTaskCount === 1 ? 'task' : 'tasks'} across{' '}
-            {activeProjects.length} active {activeProjects.length === 1 ? 'project' : 'projects'}
+            {activeTaskCount} {uiText('active')}{' '}
+            {activeTaskCount === 1 ? uiText('task') : uiText('tasks')} {uiText('across')}{' '}
+            {activeProjects.length} {uiText('active')}{' '}
+            {activeProjects.length === 1 ? uiText('project') : uiText('projects')}
           </p>
         </div>
         <div className="kanban-view-actions">
-          <div className="board-layout-switch" role="group" aria-label="Task layout">
+          <div className="board-layout-switch" role="group" aria-label={uiText('Task layout')}>
             <button
               type="button"
               className={viewMode === 'kanban' ? 'active' : ''}
@@ -262,7 +305,7 @@ export function WorkspaceTasksView({
                 setFilters((current) => ({ ...current, mode: 'active' }));
               }}
             >
-              Kanban
+              {uiText('Kanban')}
             </button>
             <button
               type="button"
@@ -273,7 +316,7 @@ export function WorkspaceTasksView({
                 setFilters((current) => ({ ...current, mode: 'active' }));
               }}
             >
-              To-do
+              {uiText('To-do')}
             </button>
           </div>
           <button
@@ -287,8 +330,8 @@ export function WorkspaceTasksView({
             }
           >
             {filters.mode === 'active'
-              ? `Task trash (${scopedTrashCount})`
-              : 'Back to active tasks'}
+              ? uiText('Task trash ({scopedTrashCount})', { scopedTrashCount: scopedTrashCount })
+              : uiText('Back to active tasks')}
           </button>
         </div>
       </header>
@@ -329,9 +372,13 @@ export function WorkspaceTasksView({
           />
 
           {activeProjects.length === 0 ? (
-            <section className="workspace-task-empty" aria-label="No active projects">
-              <strong>Create or restore an active project first</strong>
-              <p>Every task belongs to one project, so GOSU never creates an unassigned task.</p>
+            <section className="workspace-task-empty" aria-label={uiText('No active projects')}>
+              <strong>{uiText('Create or restore an active project first')}</strong>
+              <p>
+                {uiText(
+                  'Every task belongs to one project, so GOSU never creates an unassigned task.',
+                )}
+              </p>
             </section>
           ) : viewMode === 'todo' ? (
             <WorkspaceTodoList
@@ -359,7 +406,7 @@ export function WorkspaceTasksView({
               className="kanban-board"
               role="region"
               tabIndex={0}
-              aria-label="All-project task columns. Scroll horizontally when needed."
+              aria-label={uiText('All-project task columns. Scroll horizontally when needed.')}
             >
               {columns.map((column, columnIndex) => {
                 const draggedItem = draggedTask
@@ -405,12 +452,14 @@ export function WorkspaceTasksView({
                       <div>
                         <div className="column-title-row">
                           <strong id={`workspace-task-column-${column.status}`}>
-                            {column.label}
+                            {boardColumnDisplayLabel(column.status, column.label)}
                           </strong>
                         </div>
-                        <small>Across active projects</small>
+                        <small>{uiText('Across active projects')}</small>
                       </div>
-                      <span aria-label={`${column.totalCount} tasks`}>
+                      <span
+                        aria-label={uiText('{totalCount} tasks', { totalCount: column.totalCount })}
+                      >
                         {activeFilterCount > 0
                           ? `${column.visibleCount}/${column.totalCount}`
                           : column.totalCount}
@@ -418,7 +467,9 @@ export function WorkspaceTasksView({
                     </header>
                     {column.totalCount === 0 && (
                       <p className="column-empty">
-                        {activeFilterCount > 0 ? 'No matching tasks' : 'Drop or add a task'}
+                        {activeFilterCount > 0
+                          ? uiText('No matching tasks')
+                          : uiText('Drop or add a task')}
                       </p>
                     )}
                     {column.tasks.map((item) =>
@@ -501,15 +552,15 @@ function WorkspaceTaskFilters({
   return (
     <section
       className="board-filter-bar workspace-task-filter-bar"
-      aria-label="Filter tasks across projects"
+      aria-label={uiText('Filter tasks across projects')}
     >
       <label>
-        Project
+        {uiText('Project')}
         <select
           value={filters.projectId ?? ''}
           onChange={(event) => onChange({ ...filters, projectId: event.target.value || null })}
         >
-          <option value="">All active projects</option>
+          <option value="">{uiText('All active projects')}</option>
           {projects.map((project) => (
             <option value={project.id} key={project.id}>
               {projectLabels.get(project.id) ?? project.name}
@@ -518,16 +569,16 @@ function WorkspaceTaskFilters({
         </select>
       </label>
       <label className="board-search">
-        Search
+        {uiText('Search')}
         <input
           type="search"
           value={filters.query}
           onChange={(event) => onChange({ ...filters, query: event.target.value })}
-          placeholder="Title or description"
+          placeholder={uiText('Title or description')}
         />
       </label>
       <label>
-        Priority
+        {uiText('Priority')}
         <select
           value={filters.priority}
           onChange={(event) =>
@@ -537,22 +588,22 @@ function WorkspaceTaskFilters({
             })
           }
         >
-          <option value="all">All priorities</option>
-          <option value="none">No priority</option>
+          <option value="all">{uiText('All priorities')}</option>
+          <option value="none">{uiText('No priority')}</option>
           {PRIORITIES.map((priority) => (
             <option value={priority.value} key={priority.value}>
-              {priority.label}
+              {uiText(priority.label)}
             </option>
           ))}
         </select>
       </label>
       <label>
-        Label
+        {uiText('Label')}
         <select
           value={filters.label}
           onChange={(event) => onChange({ ...filters, label: event.target.value })}
         >
-          <option value="">All labels</option>
+          <option value="">{uiText('All labels')}</option>
           {labels.map((label) => (
             <option value={label} key={label}>
               {label}
@@ -561,18 +612,18 @@ function WorkspaceTaskFilters({
         </select>
       </label>
       <label>
-        Due
+        {uiText('Due')}
         <select
           value={filters.due}
           onChange={(event) =>
             onChange({ ...filters, due: event.target.value as WorkspaceGlobalBoardFilters['due'] })
           }
         >
-          <option value="all">Any date</option>
-          <option value="overdue">Overdue</option>
-          <option value="today">Today</option>
-          <option value="this_week">This week</option>
-          <option value="no_due_date">No due date</option>
+          <option value="all">{uiText('Any date')}</option>
+          <option value="overdue">{uiText('Overdue')}</option>
+          <option value="today">{uiText('Today')}</option>
+          <option value="this_week">{uiText('This week')}</option>
+          <option value="no_due_date">{uiText('No due date')}</option>
         </select>
       </label>
       <button
@@ -587,7 +638,8 @@ function WorkspaceTaskFilters({
           })
         }
       >
-        Clear all{activeCount > 0 ? ` (${activeCount})` : ''}
+        {uiText('Clear all')}
+        {activeCount > 0 ? ` (${activeCount})` : ''}
       </button>
     </section>
   );
@@ -604,6 +656,7 @@ export function WorkspaceTaskComposer({
   busyAction: string | null;
   onCreate: (input: CreateTaskInput) => Promise<boolean>;
 }) {
+  useUiText();
   const initialProjectId =
     scopedProjectId && projects.some((project) => project.id === scopedProjectId)
       ? scopedProjectId
@@ -639,7 +692,10 @@ export function WorkspaceTaskComposer({
   }, [projectId, projects, scopedProjectId]);
 
   return (
-    <section className="board-toolbar workspace-task-toolbar" aria-label="Add task to a project">
+    <section
+      className="board-toolbar workspace-task-toolbar"
+      aria-label={uiText('Add task to a project')}
+    >
       <form
         className={`task-composer workspace-task-composer${showDetails ? ' expanded' : ''}`}
         onSubmit={(event) => {
@@ -666,7 +722,7 @@ export function WorkspaceTaskComposer({
         }}
       >
         <label>
-          Project
+          {uiText('Project')}
           <select
             value={projectId}
             required
@@ -678,7 +734,7 @@ export function WorkspaceTaskComposer({
               setStatus(project ? resolveWorkspaceGlobalInitialStatus(project) : 'backlog');
             }}
           >
-            <option value="">Choose a project</option>
+            <option value="">{uiText('Choose a project')}</option>
             {projects.map((project) => (
               <option value={project.id} key={project.id}>
                 {projectLabels.get(project.id) ?? project.name}
@@ -687,19 +743,19 @@ export function WorkspaceTaskComposer({
           </select>
         </label>
         <label>
-          Task title
+          {uiText('Task title')}
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             minLength={2}
             maxLength={240}
-            placeholder="Add a concrete research task"
+            placeholder={uiText('Add a concrete research task')}
             required
             disabled={busy}
           />
         </label>
         <label>
-          Initial stage
+          {uiText('Initial stage')}
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value as WorkspaceTaskStatus)}
@@ -712,7 +768,7 @@ export function WorkspaceTaskComposer({
                 </option>
               ))
             ) : (
-              <option value="backlog">Choose a project first</option>
+              <option value="backlog">{uiText('Choose a project first')}</option>
             )}
           </select>
         </label>
@@ -721,7 +777,7 @@ export function WorkspaceTaskComposer({
           className="primary-button"
           disabled={busy || !selectedProject || title.trim().length < 2}
         >
-          {busyAction === 'task:create' ? 'Adding…' : 'Add task'}
+          {busyAction === 'task:create' ? uiText('Adding…') : uiText('Add task')}
         </button>
         <button
           type="button"
@@ -729,17 +785,17 @@ export function WorkspaceTaskComposer({
           onClick={() => setShowDetails((current) => !current)}
           disabled={busy}
         >
-          {showDetails ? 'Fewer details' : 'More details'}
+          {showDetails ? uiText('Fewer details') : uiText('More details')}
         </button>
         {showDetails && (
           <div className="task-details-grid">
             <label className="task-description-field">
-              Description
+              {uiText('Description')}
               <textarea
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
                 maxLength={4_000}
-                placeholder="Method, acceptance criteria, or research context"
+                placeholder={uiText('Method, acceptance criteria, or research context')}
                 disabled={busy}
               />
             </label>
@@ -756,7 +812,7 @@ export function WorkspaceTaskComposer({
         )}
       </form>
       <p className="board-help">
-        Choose the owning project explicitly. Global tasks never become unassigned.
+        {uiText('Choose the owning project explicitly. Global tasks never become unassigned.')}
       </p>
     </section>
   );
@@ -804,11 +860,15 @@ function WorkspaceTaskCard({
           label={projectLabel}
           onOpenProjectBoard={onOpenProjectBoard}
         />
-        <span className="workspace-task-stage">{item.statusLabel}</span>
+        <span className="workspace-task-stage">
+          {boardColumnDisplayLabel(item.task.status, item.statusLabel)}
+        </span>
       </div>
       <div className="task-card-heading">
         {item.task.priority && (
-          <span className={`priority-badge ${item.task.priority}`}>{item.task.priority}</span>
+          <span className={`priority-badge ${uiText(item.task.priority)}`}>
+            {uiText(item.task.priority)}
+          </span>
         )}
         <h3>{item.task.title}</h3>
       </div>
@@ -816,7 +876,11 @@ function WorkspaceTaskCard({
       <WorkspaceTaskLabels labels={item.task.labels} />
       {item.task.dueDate && (
         <time className={`task-due ${dueState}`} dateTime={item.task.dueDate}>
-          {dueState === 'overdue' ? 'Overdue · ' : dueState === 'today' ? 'Today · ' : 'Due · '}
+          {dueState === 'overdue'
+            ? uiText('Overdue · ')
+            : dueState === 'today'
+              ? uiText('Today · ')
+              : uiText('Due · ')}
           {item.task.dueDate}
         </time>
       )}
@@ -831,13 +895,22 @@ function WorkspaceTaskCard({
               previous && void onUpdate(workspaceGlobalTaskStatusUpdate(item, previous.status))
             }
             disabled={busy || !previous}
-            aria-label={`Move ${context} left`}
-            title={previous ? `Move to ${previous.label}` : 'Already in the first column'}
+            aria-label={uiText('Move {context} left', { context: context })}
+            title={
+              previous
+                ? uiText('Move to {label}', { label: previous.label })
+                : uiText('Already in the first column')
+            }
           >
             ←
           </button>
-          <button type="button" onClick={onEdit} disabled={busy} aria-label={`Edit ${context}`}>
-            Edit
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={busy}
+            aria-label={uiText('Edit {context}', { context: context })}
+          >
+            {uiText('Edit')}
           </button>
           <button
             type="button"
@@ -845,8 +918,12 @@ function WorkspaceTaskCard({
               next && void onUpdate(workspaceGlobalTaskStatusUpdate(item, next.status))
             }
             disabled={busy || !next}
-            aria-label={`Move ${context} right`}
-            title={next ? `Move to ${next.label}` : 'Already in the final column'}
+            aria-label={uiText('Move {context} right', { context: context })}
+            title={
+              next
+                ? uiText('Move to {label}', { label: next.label })
+                : uiText('Already in the final column')
+            }
           >
             →
           </button>
@@ -855,10 +932,10 @@ function WorkspaceTaskCard({
             className="task-delete-button"
             onClick={onDelete}
             disabled={busy}
-            aria-label={`Delete ${context}`}
-            title="Delete task; restorable from Task trash"
+            aria-label={uiText('Delete {context}', { context: context })}
+            title={uiText('Delete task; restorable from Task trash')}
           >
-            Delete
+            {uiText('Delete')}
           </button>
         </div>
       </footer>
@@ -891,23 +968,30 @@ function WorkspaceTodoList({
 }) {
   const matchingCount = columns.reduce((total, column) => total + column.totalCount, 0);
   return (
-    <section className="todo-task-list workspace-todo-list" aria-label="All-project To-do list">
+    <section
+      className="todo-task-list workspace-todo-list"
+      aria-label={uiText('All-project To-do list')}
+    >
       <header className="todo-list-summary">
         <div>
-          <span>TO-DO VIEW</span>
-          <h3>Tasks by workflow stage</h3>
+          <span>{uiText('TO-DO VIEW')}</span>
+          <h3>{uiText('Tasks by workflow stage')}</h3>
         </div>
-        <p>{matchingCount} matching tasks · project ownership stays unchanged</p>
+        <p>
+          {matchingCount} {uiText('matching tasks · project ownership stays unchanged')}
+        </p>
       </header>
       <div className="todo-status-groups">
         {columns.map((column) => (
           <section className="todo-status-group" key={column.status}>
             <header>
-              <strong>{column.label}</strong>
-              <span aria-label={`${column.totalCount} tasks`}>{column.totalCount}</span>
+              <strong>{boardColumnDisplayLabel(column.status, column.label)}</strong>
+              <span aria-label={uiText('{totalCount} tasks', { totalCount: column.totalCount })}>
+                {column.totalCount}
+              </span>
             </header>
             {column.totalCount === 0 ? (
-              <p className="todo-group-empty">No matching tasks</p>
+              <p className="todo-group-empty">{uiText('No matching tasks')}</p>
             ) : (
               <div className="todo-group-items">
                 {column.tasks.map((item) =>
@@ -995,9 +1079,13 @@ function WorkspaceTodoRow({
             label={projectLabel}
             onOpenProjectBoard={onOpenProjectBoard}
           />
-          <span className="todo-status-badge">{item.statusLabel}</span>
+          <span className="todo-status-badge">
+            {boardColumnDisplayLabel(item.task.status, item.statusLabel)}
+          </span>
           {item.task.priority && (
-            <span className={`priority-badge ${item.task.priority}`}>{item.task.priority}</span>
+            <span className={`priority-badge ${uiText(item.task.priority)}`}>
+              {uiText(item.task.priority)}
+            </span>
           )}
         </div>
         <div className="todo-task-heading">
@@ -1007,7 +1095,11 @@ function WorkspaceTodoRow({
         <div className="todo-task-metadata">
           {item.task.dueDate && (
             <time className={`task-due ${dueState}`} dateTime={item.task.dueDate}>
-              {dueState === 'overdue' ? 'Overdue · ' : dueState === 'today' ? 'Today · ' : 'Due · '}
+              {dueState === 'overdue'
+                ? uiText('Overdue · ')
+                : dueState === 'today'
+                  ? uiText('Today · ')
+                  : uiText('Due · ')}
               {item.task.dueDate}
             </time>
           )}
@@ -1015,18 +1107,23 @@ function WorkspaceTodoRow({
         </div>
       </div>
       <div className="todo-task-actions">
-        <button type="button" onClick={onEdit} disabled={busy} aria-label={`Edit ${context}`}>
-          Edit
+        <button
+          type="button"
+          onClick={onEdit}
+          disabled={busy}
+          aria-label={uiText('Edit {context}', { context: context })}
+        >
+          {uiText('Edit')}
         </button>
         <button
           type="button"
           className="task-delete-button"
           onClick={onDelete}
           disabled={busy}
-          aria-label={`Delete ${context}`}
-          title="Delete task; restorable from Task trash"
+          aria-label={uiText('Delete {context}', { context: context })}
+          title={uiText('Delete task; restorable from Task trash')}
         >
-          Delete
+          {uiText('Delete')}
         </button>
       </div>
     </article>
@@ -1046,6 +1143,7 @@ function WorkspaceTaskEditForm({
   onCancel: () => void;
   onUpdate: (input: UpdateTaskInput) => Promise<boolean>;
 }) {
+  useUiText();
   const [title, setTitle] = useState(item.task.title);
   const [status, setStatus] = useState(item.task.status);
   const [description, setDescription] = useState(item.task.description ?? '');
@@ -1057,11 +1155,16 @@ function WorkspaceTaskEditForm({
   return (
     <article
       className="task-card editing workspace-task-card"
-      aria-label={`Edit ${item.task.title} in ${projectLabel}`}
+      aria-label={uiText('Edit {title} in {projectLabel}', {
+        title: item.task.title,
+        projectLabel: projectLabel,
+      })}
     >
       <div className="workspace-task-context-row">
         <WorkspaceProjectBadge project={item.project} label={projectLabel} />
-        <span className="workspace-task-owner-note">Project ownership stays unchanged</span>
+        <span className="workspace-task-owner-note">
+          {uiText('Project ownership stays unchanged')}
+        </span>
       </div>
       <form
         className="task-edit-form"
@@ -1095,7 +1198,7 @@ function WorkspaceTaskEditForm({
         }}
       >
         <label>
-          Task title
+          {uiText('Task title')}
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
@@ -1107,7 +1210,7 @@ function WorkspaceTaskEditForm({
           />
         </label>
         <label>
-          Stage in {projectLabel}
+          {uiText('Stage in')} {projectLabel}
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value as WorkspaceTaskStatus)}
@@ -1121,7 +1224,7 @@ function WorkspaceTaskEditForm({
           </select>
         </label>
         <label>
-          Description
+          {uiText('Description')}
           <textarea
             value={description}
             onChange={(event) => setDescription(event.target.value)}
@@ -1144,10 +1247,10 @@ function WorkspaceTaskEditForm({
             className="primary-button"
             disabled={busy || title.trim().length < 2}
           >
-            Save
+            {uiText('Save')}
           </button>
           <button type="button" className="ghost-button" onClick={onCancel} disabled={busy}>
-            Cancel
+            {uiText('Cancel')}
           </button>
         </div>
       </form>
@@ -1176,16 +1279,18 @@ export function WorkspaceTaskTrash({
   const projectLabels =
     providedProjectLabels ?? workspaceGlobalProjectLabels(items.map(({ project }) => project));
   return (
-    <section className="archived-task-view" aria-label="All-project Task trash">
+    <section className="archived-task-view" aria-label={uiText('All-project Task trash')}>
       <header>
         <div>
-          <span>RESTORABLE DELETIONS</span>
-          <h3>Task trash across projects</h3>
+          <span>{uiText('RESTORABLE DELETIONS')}</span>
+          <h3>{uiText('Task trash across projects')}</h3>
         </div>
-        <p>{window.totalCount} matching deleted tasks</p>
+        <p>
+          {window.totalCount} {uiText('matching deleted tasks')}
+        </p>
       </header>
       {window.totalCount === 0 ? (
-        <p className="archive-empty">No deleted tasks match the current filters.</p>
+        <p className="archive-empty">{uiText('No deleted tasks match the current filters.')}</p>
       ) : (
         <div className="archived-task-grid workspace-task-trash-grid">
           {window.items.map((item) => {
@@ -1208,16 +1313,17 @@ export function WorkspaceTaskTrash({
                 )}
                 <footer>
                   <span className="task-version">
-                    Deleted {item.task.archivedAt ? formatUpdated(item.task.archivedAt) : ''}
+                    {uiText('Deleted')}{' '}
+                    {item.task.archivedAt ? formatUpdated(item.task.archivedAt) : ''}
                   </span>
                   <button
                     type="button"
                     className="secondary-button"
                     onClick={() => void onRestore(item)}
                     disabled={busy}
-                    aria-label={`Restore ${context}`}
+                    aria-label={uiText('Restore {context}', { context: context })}
                   >
-                    Restore
+                    {uiText('Restore')}
                   </button>
                 </footer>
               </article>
@@ -1255,8 +1361,8 @@ function WorkspaceProjectBadge({
     <button
       type="button"
       className="workspace-project-badge workspace-project-badge-button"
-      title={`Open ${label} Board`}
-      aria-label={`Open ${label} Board`}
+      title={uiText('Open {label} Board', { label: label })}
+      aria-label={uiText('Open {label} Board', { label: label })}
       onClick={() => onOpenProjectBoard(project.id)}
     >
       {label}
@@ -1295,22 +1401,22 @@ function WorkspaceTaskMetadataFields({
   return (
     <>
       <label>
-        Priority
+        {uiText('Priority')}
         <select
           value={priority}
           onChange={(event) => onPriority(event.target.value as WorkspaceTaskPriority | '')}
           disabled={busy}
         >
-          <option value="">No priority</option>
+          <option value="">{uiText('No priority')}</option>
           {PRIORITIES.map((option) => (
             <option value={option.value} key={option.value}>
-              {option.label}
+              {uiText(option.label)}
             </option>
           ))}
         </select>
       </label>
       <label>
-        Due date
+        {uiText('Due date')}
         <input
           type="date"
           value={dueDate}
@@ -1319,11 +1425,11 @@ function WorkspaceTaskMetadataFields({
         />
       </label>
       <label>
-        Labels
+        {uiText('Labels')}
         <input
           value={labels}
           onChange={(event) => onLabels(event.target.value)}
-          placeholder="baseline, paper, ablation"
+          placeholder={uiText('baseline, paper, ablation')}
           maxLength={271}
           disabled={busy}
         />
@@ -1341,14 +1447,18 @@ function WorkspaceShowMore({
 }) {
   return (
     <button type="button" className="workspace-task-show-more" onClick={onClick}>
-      Show {Math.min(remainingCount, WORKSPACE_GLOBAL_BOARD_SHOW_MORE_STEP)} more
-      <span className="sr-only"> of {remainingCount} remaining tasks</span>
+      {uiText('Show')} {Math.min(remainingCount, WORKSPACE_GLOBAL_BOARD_SHOW_MORE_STEP)}{' '}
+      {uiText('more')}
+      <span className="sr-only">
+        {' '}
+        {uiText('of')} {remainingCount} {uiText('remaining tasks')}
+      </span>
     </button>
   );
 }
 
 function formatUpdated(value: string) {
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(
+  return new Intl.DateTimeFormat(uiLocale(), { month: 'short', day: 'numeric' }).format(
     new Date(value),
   );
 }

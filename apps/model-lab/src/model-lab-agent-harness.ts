@@ -1,9 +1,12 @@
+import { estimateAgentContextTokens, planAgentContextBudget } from '@gosu/contracts';
 import type { ModelLabQuestionRequest } from './model-lab-runtime-adapter';
 import type { ModelConnection, ModelModule, ModelSpec } from './model-lab-schema';
 
 export const MODEL_LAB_AGENT_MAX_STEPS = 6;
 export const MODEL_LAB_AGENT_MAX_CALLS_PER_STEP = 3;
 const MODEL_LAB_AGENT_MAX_RECEIPT_CHARACTERS = 60_000;
+export const MODEL_LAB_AGENT_MAX_TRANSCRIPT_CHARACTERS = 480_000;
+const MODEL_LAB_AGENT_ABSOLUTE_MAX_TRANSCRIPT_CHARACTERS = 1_500_000;
 
 export const MODEL_LAB_AGENT_TOOL_NAMES = [
   'list_models',
@@ -44,7 +47,7 @@ export const MODEL_LAB_AGENT_STEP_SCHEMA = {
 export type ModelLabAgentProgress = Readonly<{
   step: number;
   phase: 'thinking' | 'tool_started' | 'tool_completed' | 'final';
-  tool?: ModelLabAgentToolName;
+  tool?: ModelLabAgentToolName | 'search_conversation';
   success?: boolean;
 }>;
 
@@ -158,6 +161,48 @@ function boundedReceipt(value: unknown) {
       });
 }
 
+function boundedHeadTail(value: string, maxCharacters: number) {
+  if (value.length <= maxCharacters) return value;
+  const head = Math.floor(maxCharacters * 0.75);
+  const tail = maxCharacters - head;
+  return `${value.slice(0, head)}\n\n[... bounded context omitted ...]\n\n${value.slice(-tail)}`;
+}
+
+function boundedAgentContext(value: string, maxCharacters: number, maxTokens: number) {
+  let bounded = boundedHeadTail(value, maxCharacters);
+  if (estimateAgentContextTokens(bounded) <= maxTokens) return bounded;
+  let lower = 0;
+  let upper = Math.min(value.length, maxCharacters);
+  while (lower < upper) {
+    const middle = Math.ceil((lower + upper) / 2);
+    const candidate = boundedHeadTail(value, middle);
+    if (estimateAgentContextTokens(candidate) <= maxTokens) lower = middle;
+    else upper = middle - 1;
+  }
+  bounded = boundedHeadTail(value, lower);
+  return bounded;
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalJson(child)]),
+    );
+  }
+  return value;
+}
+
+function canonicalToolArguments(value: string) {
+  try {
+    return JSON.stringify(canonicalJson(JSON.parse(value) as unknown));
+  } catch {
+    return value.trim();
+  }
+}
+
 function stringArgument(arguments_: Record<string, unknown>, name: string, fallback?: string) {
   const value = arguments_[name];
   if (value === undefined && fallback !== undefined) return fallback;
@@ -194,6 +239,8 @@ function connectionReceipt(connection: ModelConnection, request: ModelLabQuestio
     id: connection.id,
     source: connection.source,
     target: connection.target,
+    sourcePort: connection.sourcePort ?? null,
+    targetPort: connection.targetPort ?? null,
     tensorName: connection.tensorName,
     shape: connection.shape,
     expectedToCarryGradient: connection.expectedToCarryGradient,
@@ -343,10 +390,63 @@ export async function runModelLabAgentHarness(input: {
   seedPrompt: string;
   provider: ModelLabAgentProvider;
   signal: AbortSignal;
+  contextWindowTokens?: number;
   onProgress?: (progress: ModelLabAgentProgress) => void;
 }) {
-  let transcript = `${input.seedPrompt}\n\n${TOOL_INSTRUCTIONS}`;
-  const trace: string[] = [];
+  const contextBudget = planAgentContextBudget(
+    input.contextWindowTokens === undefined
+      ? {}
+      : { contextWindowTokens: input.contextWindowTokens },
+  );
+  const maxTranscriptCharacters =
+    input.contextWindowTokens === undefined
+      ? MODEL_LAB_AGENT_MAX_TRANSCRIPT_CHARACTERS
+      : Math.min(
+          MODEL_LAB_AGENT_ABSOLUTE_MAX_TRANSCRIPT_CHARACTERS,
+          Math.max(160_000, contextBudget.availableInputTokens * 2),
+        );
+  const latestEventReserve = Math.min(
+    525_000,
+    Math.max(80_000, Math.floor(maxTranscriptCharacters * 0.35)),
+  );
+  const latestEventTokenReserve = Math.min(
+    120_000,
+    Math.max(8_000, Math.floor(contextBudget.availableInputTokens * 0.25)),
+  );
+  const seedTokenBudget = Math.max(4_000, contextBudget.availableInputTokens - 2_000);
+  const maxSeedCharacters = Math.max(
+    60_000,
+    maxTranscriptCharacters - TOOL_INSTRUCTIONS.length - 2_000,
+  );
+  const seedTranscript = `${boundedAgentContext(
+    input.seedPrompt,
+    maxSeedCharacters,
+    seedTokenBudget,
+  )}\n\n${TOOL_INSTRUCTIONS}`;
+  const compactedSeedTranscript = boundedAgentContext(
+    seedTranscript,
+    Math.max(60_000, maxTranscriptCharacters - latestEventReserve),
+    Math.max(4_000, contextBudget.availableInputTokens - latestEventTokenReserve),
+  );
+  const transcriptEvents: string[] = [];
+  const currentTranscript = () => {
+    const selected = [...transcriptEvents];
+    const selectedSeed = selected.length > 0 ? compactedSeedTranscript : seedTranscript;
+    while (
+      selected.length > 1 &&
+      `${selectedSeed}\n\n${selected.join('\n\n')}`.length > maxTranscriptCharacters
+    ) {
+      selected.shift();
+    }
+    return boundedAgentContext(
+      `${selectedSeed}${selected.length > 0 ? `\n\n${selected.join('\n\n')}` : ''}`,
+      maxTranscriptCharacters,
+      contextBudget.availableInputTokens,
+    );
+  };
+  const trace: string[] = [
+    `Context budget · ${contextBudget.contextWindowSource} ${contextBudget.contextWindowTokens} window · ${contextBudget.availableInputTokens} input · ${contextBudget.outputReserveTokens} output reserve`,
+  ];
   let usage: ModelLabAgentUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -354,13 +454,19 @@ export async function runModelLabAgentHarness(input: {
     cachedWriteTokens: 0,
     totalTokens: 0,
   };
-  const receiptCache = new Map<string, string>();
+  const receiptCache = new Map<string, Readonly<{ id: string; receipt: string }>>();
+  let receiptSequence = 0;
   let lastProvider: ModelLabAgentProviderResult | null = null;
   for (let step = 1; step <= MODEL_LAB_AGENT_MAX_STEPS; step += 1) {
     if (input.signal.aborted) throw new Error('model_copilot_aborted');
     input.onProgress?.({ step, phase: 'thinking' });
+    const nextActionInstruction = 'Choose the next bounded action or provide the final answer.';
     const providerResult = await input.provider(
-      `${transcript}\n\nChoose the next bounded action or provide the final answer.`,
+      boundedAgentContext(
+        `${currentTranscript()}\n\n${nextActionInstruction}`,
+        maxTranscriptCharacters,
+        contextBudget.availableInputTokens,
+      ),
       input.signal,
       MODEL_LAB_AGENT_STEP_SCHEMA,
     );
@@ -392,30 +498,61 @@ export async function runModelLabAgentHarness(input: {
       id: string;
       name: ModelLabAgentToolName;
       success: boolean;
+      cached: boolean;
+      receiptId: string;
       receipt: string;
     }[] = [];
+    const perReceiptTokenBudget = Math.max(
+      1_000,
+      Math.floor(latestEventTokenReserve / Math.max(1, decision.calls.length * 3)),
+    );
+    const perReceiptCharacterBudget = Math.max(
+      4_000,
+      Math.floor(latestEventReserve / Math.max(1, decision.calls.length * 2)),
+    );
     for (const call of decision.calls) {
       if (input.signal.aborted) throw new Error('model_copilot_aborted');
       input.onProgress?.({ step, phase: 'tool_started', tool: call.name });
-      const cacheKey = `${call.name}\u0000${call.argumentsJson}`;
+      const cacheKey = `${call.name}\u0000${canonicalToolArguments(call.argumentsJson)}`;
       let success = true;
-      let receipt = receiptCache.get(cacheKey);
-      if (!receipt) {
+      const cached = receiptCache.get(cacheKey);
+      let receiptId = cached?.id ?? '';
+      let receipt: string;
+      if (cached) {
+        receipt = cached.receipt;
+      } else {
         try {
           receipt = executeModelLabAgentTool(input.request, call.name, call.argumentsJson);
-          receiptCache.set(cacheKey, receipt);
+          receiptSequence += 1;
+          receiptId = `receipt-${receiptSequence}`;
+          receiptCache.set(cacheKey, { id: receiptId, receipt });
         } catch (error) {
           success = false;
+          receiptId = `failed-${call.id}`;
           receipt = JSON.stringify({
             error: error instanceof Error ? error.message : 'model_lab_tool_failed',
           });
         }
       }
+      receipt = boundedAgentContext(receipt, perReceiptCharacterBudget, perReceiptTokenBudget);
       input.onProgress?.({ step, phase: 'tool_completed', tool: call.name, success });
       trace.push(`Agent step ${step} · ${call.name} · ${success ? 'receipt' : 'failed'}`);
-      receipts.push({ id: call.id, name: call.name, success, receipt });
+      receipts.push({
+        id: call.id,
+        name: call.name,
+        success,
+        cached: cached !== undefined,
+        receiptId,
+        receipt,
+      });
     }
-    transcript = `${transcript}\n\nAGENT TOOL REQUESTS\n${JSON.stringify(decision.calls)}\n\nGOSU TOOL RECEIPTS\n${JSON.stringify(receipts)}`;
+    transcriptEvents.push(
+      boundedAgentContext(
+        `AGENT TOOL REQUESTS\n${JSON.stringify(decision.calls)}\n\nGOSU TOOL RECEIPTS\n${JSON.stringify(receipts)}`,
+        latestEventReserve,
+        latestEventTokenReserve,
+      ),
+    );
   }
   if (lastProvider) throw new Error('model_copilot_agent_step_limit');
   throw new Error('model_copilot_agent_unavailable');

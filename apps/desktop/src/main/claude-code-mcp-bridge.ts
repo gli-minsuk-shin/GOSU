@@ -2,6 +2,12 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { chmod, mkdtemp, rmdir, unlink } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
+import type { ProjectToolActivity } from '../shared/project-tool-activity';
+import {
+  projectToolStartedActivity,
+  projectToolCompletedActivity,
+  projectToolProgressTiming,
+} from './project-tool-activity';
 
 import type {
   CodexDynamicToolCall,
@@ -82,6 +88,9 @@ export type ClaudeCodeMcpToolEvent = Readonly<{
   callId: string;
   tool: string;
   success?: boolean;
+  activity?: ProjectToolActivity | undefined;
+  occurredAt?: string;
+  elapsedMs?: number;
 }>;
 
 export type ClaudeCodeMcpBridgeOptions = Readonly<{
@@ -369,7 +378,11 @@ export class ClaudeCodeMcpBridge {
     const controller = new AbortController();
     const abort = () => controller.abort();
     turn.signal.addEventListener('abort', abort, { once: true });
-    const timeout = setTimeout(() => controller.abort(), this.timeoutFor(tool));
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.timeoutFor(tool));
     this.activeCalls.set(callId, controller);
     const delivery = deferredDelivery();
     const call: CodexDynamicToolCall = {
@@ -380,12 +393,22 @@ export class ClaudeCodeMcpBridge {
       tool: tool.name,
       arguments: (params.arguments ?? {}) as CodexJsonValue,
     };
-    this.options.onToolEvent?.({
+    const startedAt = Date.now();
+    const notify = (event: ClaudeCodeMcpToolEvent) => {
+      try {
+        this.options.onToolEvent?.(event);
+      } catch {
+        /* Telemetry cannot alter tool execution. */
+      }
+    };
+    notify({
       phase: 'started',
       threadId: call.threadId,
       turnId: call.turnId,
       callId,
       tool: tool.name,
+      activity: projectToolStartedActivity(tool.name, call.arguments),
+      occurredAt: new Date(startedAt).toISOString(),
     });
     try {
       const result = await this.options.dynamicToolHandler(call, {
@@ -400,13 +423,25 @@ export class ClaudeCodeMcpBridge {
         }),
       );
       delivery.resolve(sent ? 'delivered' : 'uncertain');
-      this.options.onToolEvent?.({
+      notify({
         phase: 'completed',
         threadId: call.threadId,
         turnId: call.turnId,
         callId,
         tool: tool.name,
-        success: result.success,
+        ...projectToolCompletedActivity(
+          tool.name,
+          call.arguments,
+          result,
+          timedOut
+            ? 'tool_timeout'
+            : controller.signal.aborted
+              ? 'tool_cancelled'
+              : sent
+                ? undefined
+                : 'tool_delivery_failed',
+        ),
+        ...projectToolProgressTiming(startedAt),
       });
     } catch {
       const sent = this.send(
@@ -417,13 +452,23 @@ export class ClaudeCodeMcpBridge {
         }),
       );
       delivery.resolve(sent ? 'delivered' : 'uncertain');
-      this.options.onToolEvent?.({
+      notify({
         phase: 'completed',
         threadId: call.threadId,
         turnId: call.turnId,
         callId,
         tool: tool.name,
-        success: false,
+        ...projectToolCompletedActivity(
+          tool.name,
+          call.arguments,
+          undefined,
+          timedOut
+            ? 'tool_timeout'
+            : controller.signal.aborted
+              ? 'tool_cancelled'
+              : 'tool_execution_failed',
+        ),
+        ...projectToolProgressTiming(startedAt),
       });
     } finally {
       clearTimeout(timeout);

@@ -6,6 +6,7 @@ import { basename, extname, join } from 'node:path';
 
 import {
   ChooseProjectChatAttachmentsInputSchema,
+  DroppedAttachmentPathsSchema,
   PROJECT_CHAT_MAX_ATTACHMENTS,
   PROJECT_CHAT_MAX_ATTACHMENT_BYTES,
   PROJECT_CHAT_MAX_ATTACHMENT_EXTRACTED_CHARACTERS,
@@ -388,6 +389,7 @@ function isImageFormat(format: ProjectChatAttachmentFormat): format is ProjectCh
 }
 
 export class ProjectChatAttachmentService {
+  private readonly drops = new Map<string, { scope: string; paths: string[]; expiresAt: number }>();
   private readonly staged = new Map<string, StagedAttachment>();
   private readonly ephemeralImageDirectories = new Set<string>();
   private claimedAttachmentCount = 0;
@@ -422,6 +424,42 @@ export class ProjectChatAttachmentService {
     }
     const paths = await this.dependencies.chooseFiles();
     if (paths.length === 0) return [];
+    return this.stageDropped(command, paths);
+  }
+
+  reserveDrop(scope: string, rawPaths: unknown) {
+    const paths = DroppedAttachmentPathsSchema.parse(rawPaths);
+    const now = this.dependencies.now?.() ?? Date.now();
+    for (const [ticket, grant] of this.drops) if (grant.expiresAt <= now) this.drops.delete(ticket);
+    if (this.drops.size >= 20)
+      throw new ProjectChatAttachmentError('attachment_capacity_exhausted');
+    const ticket = randomUUID();
+    this.drops.set(ticket, { scope, paths, expiresAt: now + 60000 });
+    return { ticket };
+  }
+
+  async redeemDrop(input: ChooseProjectChatAttachmentsInput, scope: string, ticket: string) {
+    const grant = this.drops.get(ticket);
+    if (
+      !grant ||
+      grant.scope !== scope ||
+      grant.expiresAt <= (this.dependencies.now?.() ?? Date.now())
+    )
+      throw new ProjectChatAttachmentError('attachment_expired');
+    this.drops.delete(ticket);
+    return this.stageDropped(input, grant.paths);
+  }
+
+  async stageDropped(input: ChooseProjectChatAttachmentsInput, rawPaths: readonly string[]) {
+    const command = ChooseProjectChatAttachmentsInputSchema.parse(input);
+    if (rawPaths.length > PROJECT_CHAT_MAX_ATTACHMENTS)
+      throw new ProjectChatAttachmentError('attachment_too_many');
+    const paths = DroppedAttachmentPathsSchema.parse(rawPaths);
+    try {
+      await this.dependencies.validateScope?.(command.projectId, command.sessionId);
+    } catch {
+      throw new ProjectChatAttachmentError('attachment_scope_mismatch');
+    }
     if (paths.length > PROJECT_CHAT_MAX_ATTACHMENTS) {
       throw new ProjectChatAttachmentError('attachment_too_many');
     }
@@ -572,6 +610,18 @@ export class ProjectChatAttachmentService {
         }
         throw new ProjectChatAttachmentError('attachment_extraction_failed');
       }
+      try {
+        await this.dependencies.validateScope?.(command.projectId, command.sessionId);
+      } catch {
+        await Promise.all(
+          prepared.map((item) =>
+            item.ephemeralImage
+              ? this.cleanupEphemeralImage(item.ephemeralImage).catch(() => undefined)
+              : Promise.resolve(),
+          ),
+        );
+        throw new ProjectChatAttachmentError('attachment_scope_mismatch');
+      }
       for (const item of prepared) {
         const timer = setTimeout(() => {
           const current = this.staged.get(item.descriptor.id);
@@ -659,6 +709,7 @@ export class ProjectChatAttachmentService {
   }
 
   async dispose() {
+    this.drops.clear();
     for (const record of this.staged.values()) {
       clearTimeout(record.timer);
     }
@@ -672,6 +723,7 @@ export class ProjectChatAttachmentService {
   }
 
   disposeImmediately() {
+    this.drops.clear();
     for (const record of this.staged.values()) clearTimeout(record.timer);
     this.staged.clear();
     for (const directory of this.ephemeralImageDirectories) {

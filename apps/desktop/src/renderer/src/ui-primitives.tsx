@@ -1,3 +1,5 @@
+import { uiText } from '@gosu/ui/language';
+
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
 
 const COLLAPSE_CHEVRON_PATHS = {
@@ -22,40 +24,40 @@ export function RuntimeCard({ runtime }: { runtime: RuntimeReadiness | null }) {
       <div className="runtime-summary">
         <i />
         <div>
-          <span>LOCAL RUNTIME</span>
+          <span>{uiText('LOCAL RUNTIME')}</span>
           <strong>
             {state === 'checking'
-              ? 'Checking this Mac…'
+              ? uiText('Checking this Mac…')
               : state === 'ready'
-                ? 'Local runtime ready'
-                : 'Local workspace ready with limited connections'}
+                ? uiText('Local runtime ready')
+                : uiText('Local workspace ready with limited connections')}
           </strong>
         </div>
-        <b>{state.toUpperCase()}</b>
+        <b>{uiText(state.toUpperCase())}</b>
       </div>
       <div className="runtime-checks">
         <RuntimeCheck
-          label="App"
+          label={uiText('App')}
           value={
             runtime
-              ? `v${runtime.app.version} · ${runtime.app.platform === 'darwin' ? 'macOS' : runtime.app.platform} · ${runtime.app.packaged ? 'Installed' : 'Development'}`
-              : 'Checking'
+              ? `v${runtime.app.version} · ${runtime.app.platform === 'darwin' ? 'macOS' : runtime.app.platform} · ${uiText(runtime.app.packaged ? 'Installed' : 'Development')}`
+              : uiText('Checking')
           }
           ready={Boolean(runtime)}
         />
         <RuntimeCheck
-          label="Local data"
-          value={runtime?.localData.ready ? 'Encrypted store ready' : 'Unavailable'}
+          label={uiText('Local data')}
+          value={uiText(runtime?.localData.ready ? 'Encrypted store ready' : 'Unavailable')}
           ready={Boolean(runtime?.localData.ready)}
         />
         <RuntimeCheck
-          label="Codex"
-          value={runtime?.codex.ready ? 'Available' : 'Unavailable'}
+          label={uiText('Codex')}
+          value={uiText(runtime?.codex.ready ? 'Available' : 'Unavailable')}
           ready={Boolean(runtime?.codex.ready)}
         />
         <RuntimeCheck
-          label="Sync API"
-          value={runtime?.syncApi.ready ? 'Reachable' : 'Offline'}
+          label={uiText('Sync API')}
+          value={uiText(runtime?.syncApi.ready ? 'Reachable' : 'Offline')}
           ready={Boolean(runtime?.syncApi.ready)}
         />
       </div>
@@ -103,14 +105,14 @@ export function Connection({
 export function Boundary({ yes = false, text }: { yes?: boolean; text: string }) {
   return (
     <div className="boundary">
-      <span className={yes ? 'yes' : ''}>{yes ? 'FUTURE SYNC' : 'LOCAL'}</span>
+      <span className={yes ? 'yes' : ''}>{yes ? uiText('FUTURE SYNC') : uiText('LOCAL')}</span>
       <b>{text}</b>
     </div>
   );
 }
 
 export function describeError(error: unknown) {
-  if (!(error instanceof Error)) return 'The operation could not be completed.';
+  if (!(error instanceof Error)) return uiText('The operation could not be completed.');
   const messages: Record<string, string> = {
     project_not_found: 'This project no longer exists. Reload the workspace and try again.',
     project_archived: 'This project is archived. Restore it to active before making changes.',
@@ -131,6 +133,8 @@ export function describeError(error: unknown) {
     objective_not_found: 'Save an objective before using revision controls.',
     objective_locked: 'This objective is frozen. Start a new revision before editing it.',
     objective_not_locked: 'Freeze the current objective before starting a new revision.',
+    objective_identity_pending:
+      'Replace pending evaluator and dataset identities before freezing this objective.',
     version_conflict:
       'This item changed since it was opened. The newer version was not overwritten.',
     invalid_workspace_input: 'Check the workspace fields and try again.',
@@ -148,6 +152,8 @@ export function describeError(error: unknown) {
     chat_attempt_not_retryable: 'Only failed or interrupted Codex turns can be retried.',
     chat_profile_conflict:
       'This project agent profile changed since it was opened. GOSU reloaded the current version.',
+    model_lab_reference_unavailable:
+      'The saved model revision could not be verified. Check the save status in Model Lab and try again.',
     chat_session_not_found:
       'This chat session no longer exists in the selected project. Choose another session.',
     chat_branch_message_not_found: 'That branch point is not part of the selected chat session.',
@@ -233,6 +239,8 @@ export function describeError(error: unknown) {
       'This project has reached its local experiment-metric history limit.',
     experiment_objective_required:
       'Freeze the latest Goal & Metrics revision before recording experiment evidence.',
+    experiment_plan_activation_required:
+      'Reapply and activate this plan with current evaluator and dataset identities before comparable runs.',
     experiment_unavailable:
       'The local experiment workspace is unavailable. Existing experiment evidence was not replaced.',
     manuscript_not_found:
@@ -331,5 +339,5 @@ export function describeError(error: unknown) {
   const code = Object.keys(messages)
     .sort((left, right) => right.length - left.length)
     .find((candidate) => error.message.includes(candidate));
-  return code ? messages[code]! : 'The operation could not be completed.';
+  return uiText(code ? messages[code]! : 'The operation could not be completed.');
 }

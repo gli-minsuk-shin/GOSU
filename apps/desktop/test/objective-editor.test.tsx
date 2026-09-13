@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import {
   buildObjectiveInput,
@@ -16,6 +17,126 @@ const project: ProjectRecord = {
   createdAt: '2026-08-11T00:00:00.000Z',
   updatedAt: '2026-08-11T00:00:00.000Z',
 };
+it('treats target-only edits as dirty, blocking freeze and preserving them on plan replacement', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  let ui!: ReactTestRenderer;
+  const props = { project, busy: false, onSave: vi.fn(), onLock: vi.fn(), onStartVersion: vi.fn() };
+  try {
+    await act(() => {
+      ui = create(<ObjectiveEditor {...props} objective={objective(0.5, true)} />);
+    });
+    const target = () =>
+      ui.root
+        .findAllByType('input')
+        .find((n) => n.props.type === 'number' && n.props.value === '0.5')!;
+    await act(() => target().props.onChange({ target: { value: '0.6' } }));
+    expect(
+      ui.root.findAllByType('button').find((b) => b.children.join('') === 'Freeze local revision')!
+        .props.disabled,
+    ).toBe(true);
+    await act(() =>
+      ui.update(
+        <ObjectiveEditor
+          {...props}
+          objective={{ ...objective(0.7, true), id: '44444444-4444-4444-8444-444444444444' }}
+        />,
+      ),
+    );
+    expect(ui.root.findAllByType('input').some((n) => n.props.value === '0.6')).toBe(true);
+    expect(JSON.stringify(ui.toJSON())).toContain('Your unsaved draft is preserved');
+  } finally {
+    await act(() => ui?.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+it('preserves an unsaved goal when a plan arrives, blocks stale writes and reloads only on an explicit discard', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  let ui!: ReactTestRenderer;
+  const onSave = vi.fn(async () => true),
+    onLock = vi.fn(async () => true),
+    onStartVersion = vi.fn(async () => true);
+  const first = objective(null, false),
+    incoming = {
+      ...objective(null, false),
+      id: '33333333-3333-4333-8333-333333333333',
+      objectiveVersion: 2,
+      goal: 'The new plan goal from Project Chat is safely stored.',
+    };
+  const props = { project, busy: false, onSave, onLock, onStartVersion };
+  try {
+    await act(() => {
+      ui = create(<ObjectiveEditor {...props} objective={first} />);
+    });
+    await act(() =>
+      ui.root
+        .findByType('textarea')
+        .props.onChange({ target: { value: 'My unsaved manual goal is not disposable.' } }),
+    );
+    await act(() => ui.update(<ObjectiveEditor {...props} objective={incoming} />));
+    expect(ui.root.findByType('textarea').props.value).toBe(
+      'My unsaved manual goal is not disposable.',
+    );
+    expect(JSON.stringify(ui.toJSON())).toContain('Your unsaved draft is preserved');
+    expect(ui.root.findByProps({ type: 'submit' }).props.disabled).toBe(true);
+    await act(() => ui.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }));
+    expect(onSave).not.toHaveBeenCalled();
+    await act(() =>
+      ui.root
+        .findAllByType('button')
+        .find((b) => b.children.join('') === 'Discard draft and load latest')!
+        .props.onClick(),
+    );
+    expect(ui.root.findByType('textarea').props.value).toBe(incoming.goal);
+    await act(() => ui.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }));
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedObjectiveId: incoming.id,
+        expectedObjectiveVersion: 2,
+        expectedEntityVersion: 1,
+      }),
+    );
+    expect(onLock).not.toHaveBeenCalled();
+  } finally {
+    await act(() => ui?.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+it('automatically displays a new plan when the goal editor has no unsaved changes', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  let ui!: ReactTestRenderer;
+  const props = { project, busy: false, onSave: vi.fn(), onLock: vi.fn(), onStartVersion: vi.fn() };
+  try {
+    await act(() => {
+      ui = create(<ObjectiveEditor {...props} objective={undefined} />);
+    });
+    const incoming = objective(null, false);
+    await act(() => ui.update(<ObjectiveEditor {...props} objective={incoming} />));
+    expect(ui.root.findByType('textarea').props.value).toBe(incoming.goal);
+  } finally {
+    await act(() => ui?.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+it('shows a saved pending plan and disables Freeze until evaluator/data identities are supplied', () => {
+  const base = objective(null, false);
+  const pending = {
+    ...base,
+    primaryMetric: { ...base.primaryMetric, datasetHash: 'pending:dataset:fixture' },
+  };
+  const html = renderToStaticMarkup(
+    <ObjectiveEditor
+      project={project}
+      objective={pending}
+      busy={false}
+      onSave={vi.fn()}
+      onLock={vi.fn()}
+      onStartVersion={vi.fn()}
+    />,
+  );
+  expect(html).toContain('pending:dataset:fixture');
+  expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Freeze local revision<\/button>/);
+  expect(html).toContain('Plan saved. Supply evaluator and dataset identities');
+});
 
 function objective(target: number | null, stopWhenTargetReached: boolean): WorkspaceObjective {
   return {

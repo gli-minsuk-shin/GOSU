@@ -1,0 +1,66 @@
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+.tool-activity-visual-shell {
+  min-width: 0;
+  min-height: 100dvh;
+  padding: 20px;
+  background: var(--bg);
+}
+
+.tool-activity-visual-pane {
+  width: 100%;
+  min-width: 0;
+}
+
+.tool-activity-visual-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.tool-activity-visual-heading h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.tool-activity-visual-heading span,
+.tool-activity-visual-note {
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
+
+.tool-activity-visual-pane .chat-message {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 16px;
+}
+
+.tool-activity-visual-note {
+  margin: 12px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-activity-visual-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.tool-activity-visual-controls button {
+  font-size: 12px;
+}

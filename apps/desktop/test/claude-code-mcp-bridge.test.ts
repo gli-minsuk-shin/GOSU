@@ -157,11 +157,83 @@ describe('ClaudeCodeMcpBridge', () => {
       expect.objectContaining({ abortSignal: expect.any(AbortSignal) }),
     );
     expect(onToolEvent).toHaveBeenCalledTimes(2);
+    expect(onToolEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        phase: 'started',
+        activity: { section: 'summary' },
+        occurredAt: expect.any(String),
+      }),
+    );
+    expect(onToolEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        phase: 'completed',
+        success: true,
+        activity: { section: 'summary' },
+        occurredAt: expect.any(String),
+        elapsedMs: expect.any(Number),
+      }),
+    );
+    socket.destroy();
+  });
+
+  it('reports broker failure and bounded timing without changing the MCP result', async () => {
+    const onToolEvent = vi.fn();
+    const payload = JSON.stringify({
+      ok: false,
+      error: 'ssh_cancelled',
+      content: '/Users/private/body',
+    });
+    const bridge = await ClaudeCodeMcpBridge.create({
+      threadId: 'thread-broker',
+      dynamicTools: [
+        {
+          type: 'namespace',
+          name: 'gosu_project',
+          description: 'Project',
+          tools: [
+            {
+              type: 'function',
+              name: 'read_workspace',
+              description: 'Read',
+              inputSchema: { type: 'object' },
+            },
+          ],
+        },
+      ],
+      dynamicToolHandler: async () => ({
+        success: true,
+        contentItems: [{ type: 'inputText', text: payload }],
+      }),
+      onToolEvent,
+    });
+    bridges.push(bridge);
+    bridge.beginTurn('turn-broker', new AbortController().signal);
+    const { socket, nextLine } = await connect(bridge);
+    socket.write(
+      `${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'read_workspace', arguments: { section: 'board' } } })}\n`,
+    );
+    await expect(nextLine()).resolves.toEqual({
+      jsonrpc: '2.0',
+      id: 3,
+      result: { content: [{ type: 'text', text: payload }], isError: false },
+    });
+    expect(onToolEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        phase: 'completed',
+        success: false,
+        activity: { section: 'board', errorCode: 'ssh_cancelled' },
+        elapsedMs: expect.any(Number),
+      }),
+    );
+    expect(JSON.stringify(onToolEvent.mock.calls)).not.toContain('/Users/private');
     socket.destroy();
   });
 
   it('revokes the transport and aborts active tool work', async () => {
     let toolSignal: AbortSignal | undefined;
+    const onToolEvent = vi.fn();
     const handler = vi.fn(
       async (_call, delivery) =>
         await new Promise<{ contentItems: []; success: false }>((resolve) => {
@@ -175,6 +247,7 @@ describe('ClaudeCodeMcpBridge', () => {
     );
     const bridge = await ClaudeCodeMcpBridge.create({
       threadId: 'claude-code:thread:revoke',
+      onToolEvent,
       dynamicTools: [
         {
           type: 'namespace',
@@ -209,5 +282,13 @@ describe('ClaudeCodeMcpBridge', () => {
 
     expect(toolSignal?.aborted).toBe(true);
     await vi.waitFor(() => expect(socket.destroyed).toBe(true));
+    expect(onToolEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        phase: 'completed',
+        success: false,
+        activity: { section: 'summary', errorCode: 'tool_cancelled' },
+        elapsedMs: expect.any(Number),
+      }),
+    );
   });
 });

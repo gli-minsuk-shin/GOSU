@@ -1,0 +1,52 @@
+.model-reference-actions {
+  display: inline-flex;
+  gap: 3px;
+  flex: 0 0 auto;
+  align-items: center;
+}
+.model-reference-actions button {
+  display: inline-grid;
+  place-items: center;
+  width: 29px;
+  height: 29px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #5d7939;
+  cursor: pointer;
+}
+.model-reference-actions button:hover {
+  background: #edf3e6;
+  border-color: #cbd8bc;
+}
+.model-reference-actions button:disabled {
+  opacity: 0.4;
+  cursor: wait;
+}
+.model-reference-actions svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.model-reference-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 4px 9px;
+  border: 1px solid #cedbbc;
+  border-radius: 7px;
+  background: #f0f5e9;
+  color: #466127;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.model-chat__context-note .model-reference-tag {
+  text-transform: none;
+  letter-spacing: normal;
+}

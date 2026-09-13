@@ -28,6 +28,7 @@ describe('dynamic Codex model catalog', () => {
     const catalog = toModelCatalog([...fixtureModels, futureModel], '2026-08-03T00:00:00Z');
 
     expect(catalog.models.map((model) => model.modelId)).toContain('future-provider-model');
+    expect(catalog.models.every((model) => model.contextWindowTokens === 128_000)).toBe(true);
   });
 
   it('uses exact native reasoning IDs as compact labels without an app-owned enum', () => {

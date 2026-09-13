@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { applicationLanguageContext } from '../src/main/application-language-service';
 import { createRequire } from 'node:module';
 import {
   lstat,
@@ -16,6 +17,28 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+it('applies explicit language to native Codex developer instructions before provider startup', async () => {
+  const server = new CodexAppServer();
+  vi.spyOn(server, 'start').mockResolvedValue();
+  const request = vi.fn(async (method: string) => {
+    if (method === 'thread/start') return { thread: { id: 'language-thread' } };
+    if (method === 'mcpServerStatus/list') return { data: [] };
+    throw new Error('unexpected_request');
+  });
+  (server as unknown as { request: typeof request }).request = request;
+  await applicationLanguageContext.run({ language: 'ko', configured: true }, () =>
+    server.startThread({
+      cwd: '/isolated/project',
+      modelId: null,
+      developerInstructions: 'Read only bounded evidence.',
+    }),
+  );
+  expect(request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.objectContaining({ developerInstructions: expect.stringContaining('Korean (한국어)') }),
+  );
+});
+
 import {
   buildCodexChildEnvironment,
   buildCodexInitializeParameters,
@@ -32,14 +55,97 @@ import {
   parseCodexCollaborationModeCatalog,
   parseCodexThreadStartResponse,
   prepareIsolatedCodexHome,
+  prepareCodexRuntimeStateHome,
   resolveUnpackedAsarPath,
   toCodexCollaborationModeCatalog,
   type CodexDynamicToolHandler,
   type CodexDynamicToolSpec,
 } from '../src/main/codex-app-server';
 import { toModelCatalog } from '../src/main/model-catalog';
+it('requests Astra expansion without moving auto-compaction beyond the detected transport window', async () => {
+  const server = new CodexAppServer();
+  vi.spyOn(server, 'start').mockResolvedValue();
+  const request = vi.fn(async (method: string) => {
+    if (method === 'thread/start') return { thread: { id: 'extended' } };
+    if (method === 'mcpServerStatus/list') return { data: [] };
+    throw Error('unexpected_request');
+  });
+  Object.assign(server, {
+    request,
+    catalog: toModelCatalog([
+      {
+        id: 'gpt-6-astra',
+        model: 'gpt-6-astra',
+        displayName: 'Astra',
+        isDefault: true,
+        nativeMaxContextWindowTokens: 872000,
+        nativeEffectiveContextPercent: 95,
+      },
+    ]),
+  });
+  await server.startThread({ cwd: '/isolated/project', modelId: 'gpt-6-astra' });
+  expect(request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.objectContaining({
+      config: expect.objectContaining({
+        model_context_window: 1050000,
+        model_auto_compact_token_limit: 704140,
+      }),
+    }),
+  );
+});
 
 describe('Codex App Server process boundary', () => {
+  it('steers only owned threads with an exact active-turn acknowledgment and no policy overrides', async () => {
+    const server = new CodexAppServer();
+    const request = vi.fn().mockResolvedValue({ turnId: 'active' });
+    const internal = server as unknown as { request: typeof request; ownedThreadIds: Set<string> };
+    internal.request = request;
+    await expect(server.steerTurn('other', 'active', 'supplement')).rejects.toThrow(
+      'steer_invalid',
+    );
+    internal.ownedThreadIds.add('owned');
+    await server.steerTurn('owned', 'active', 'supplement');
+    expect(request).toHaveBeenCalledExactlyOnceWith('turn/steer', {
+      threadId: 'owned',
+      expectedTurnId: 'active',
+      input: [{ type: 'text', text: 'supplement' }],
+    });
+    request.mockResolvedValueOnce({ turnId: 'wrong' });
+    await expect(server.steerTurn('owned', 'active', 'next')).rejects.toThrow(
+      'steer_acknowledgment_unconfirmed',
+    );
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+  it('requests the verified Astra extended window without widening capabilities or unknown models', () => {
+    const astra = buildCodexThreadParameters({ cwd: '/isolated/project', modelId: 'gpt-6-astra' });
+    expect(astra.config).toMatchObject({
+      model_context_window: 1050000,
+      model_auto_compact_token_limit: 892500,
+    });
+    expect(astra).toMatchObject({
+      approvalPolicy: 'never',
+      sandbox: 'read-only',
+      dynamicTools: [],
+    });
+    expect(
+      buildCodexThreadParameters({
+        cwd: '/isolated/project',
+        modelId: 'gpt-6-astra',
+        nativeContextWindowTokens: 872000,
+      }).config.model_context_window,
+    ).toBe(1050000);
+    expect(
+      buildCodexThreadParameters({
+        cwd: '/isolated/project',
+        modelId: 'small',
+        nativeContextWindowTokens: 128000,
+      }).config.model_context_window,
+    ).toBe(128000);
+    expect(
+      buildCodexThreadParameters({ cwd: '/isolated/project', modelId: 'unknown' }).config,
+    ).not.toHaveProperty('model_context_window');
+  });
   it('pins and installs the exact Codex App Server runtime shipped by GOSU', async () => {
     const require = createRequire(import.meta.url);
     const desktopPackage = JSON.parse(
@@ -220,6 +326,52 @@ describe('Codex App Server process boundary', () => {
       CODEX_HOME: '/private/gosu/codex-auth-home',
       CODEX_SQLITE_HOME: '/private/tmp/gosu-codex-runtime',
     });
+  });
+
+  it('reuses provider state for native Model Lab sessions without overriding or owning CLI state', async () => {
+    const providerState = await prepareCodexRuntimeStateHome('provider');
+    expect(providerState).toBeUndefined();
+    const environment = buildCodexChildEnvironment(
+      { HOME: '/Users/researcher', CODEX_SQLITE_HOME: '/untrusted-override' },
+      false,
+      undefined,
+      undefined,
+      providerState,
+    );
+    expect(environment.HOME).toBe('/Users/researcher');
+    expect(environment).not.toHaveProperty('CODEX_HOME');
+    expect(environment).not.toHaveProperty('CODEX_SQLITE_HOME');
+    const temporaryState = await prepareCodexRuntimeStateHome();
+    expect(temporaryState).toContain('gosu-codex-runtime-');
+    try {
+      expect((await stat(temporaryState!)).mode & 0o777).toBe(0o700);
+    } finally {
+      await rm(temporaryState!, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps every rendered PDF page in native image input within the shared twenty-image bound', () => {
+    const localImagePaths = Array.from(
+      { length: 20 },
+      (_, index) => `/private/tmp/gosu-model-native/page-${index}.png`,
+    );
+    const input = {
+      threadId: 'model-lab-pdf',
+      prompt: 'Inspect all supplied diagram pages.',
+      localImagePaths,
+      requestedModelId: null,
+      reasoningOptionId: null,
+      cwd: '/private/tmp/gosu-model-native',
+    };
+    expect(buildCodexTurnParameters(input).input.slice(1)).toEqual(
+      localImagePaths.map((path) => ({ type: 'localImage', path })),
+    );
+    expect(() =>
+      buildCodexTurnParameters({
+        ...input,
+        localImagePaths: [...localImagePaths, '/private/tmp/gosu-model-native/page-21.png'],
+      }),
+    ).toThrow('codex_local_image_input_invalid');
   });
 
   it('launches packaged Codex from the real unpacked dependency path', () => {
@@ -1490,6 +1642,117 @@ describe('Codex App Server process boundary', () => {
     });
   });
 
+  it.each([
+    {
+      body: { board: { tasks: [{ title: 'private task' }], truncated: true } },
+      success: true,
+      activity: { section: 'board', counts: [{ kind: 'tasks', value: 1 }], truncated: true },
+    },
+    {
+      body: { ok: false, error: 'ssh_cancelled' },
+      success: false,
+      activity: { section: 'board', errorCode: 'ssh_cancelled' },
+    },
+  ])(
+    'emits bounded workspace activity from broker result without changing tool delivery $success',
+    async ({ body, success, activity }) => {
+      const server = new CodexAppServer();
+      const notifications: unknown[] = [];
+      server.on('notification', (event) => notifications.push(event));
+      vi.spyOn(server, 'start').mockResolvedValue();
+      const request = vi.fn(async (method: string) => {
+        if (method === 'thread/start') return { thread: { id: 'thread-activity' } };
+        if (method === 'mcpServerStatus/list') return { data: [] };
+        throw new Error('unexpected_request');
+      });
+      const internal = server as unknown as {
+        request: typeof request;
+        process: unknown;
+        handleLine: (child: unknown, line: string) => void;
+      };
+      internal.request = request;
+      const toolResult = {
+        success: true,
+        contentItems: [{ type: 'inputText' as const, text: JSON.stringify(body) }],
+      };
+      await server.startThread({
+        cwd: '/isolated/project',
+        modelId: null,
+        dynamicTools: [
+          {
+            type: 'namespace',
+            name: 'gosu_project',
+            description: 'Project',
+            tools: [
+              {
+                type: 'function',
+                name: 'read_workspace',
+                description: 'Workspace',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          },
+        ],
+        dynamicToolHandler: async () => toolResult,
+      });
+      const writes: string[] = [];
+      const callbacks: Array<(error?: Error | null) => void> = [];
+      const child = {
+        stdin: {
+          write(payload: string, callback?: (error?: Error | null) => void) {
+            writes.push(payload);
+            if (callback) callbacks.push(callback);
+            return true;
+          },
+        },
+      };
+      internal.process = child;
+      internal.handleLine(
+        child,
+        JSON.stringify({
+          id: 91,
+          method: 'item/tool/call',
+          params: {
+            threadId: 'thread-activity',
+            turnId: 'turn-activity',
+            callId: 'call-activity',
+            namespace: 'gosu_project',
+            tool: 'read_workspace',
+            arguments: { section: 'board' },
+          },
+        }),
+      );
+      await vi.waitFor(() => expect(writes).toHaveLength(1));
+      expect(JSON.parse(writes[0]!)).toEqual({ id: 91, result: toolResult });
+      callbacks[0]!();
+      await vi.waitFor(() =>
+        expect(notifications).toContainEqual(
+          expect.objectContaining({
+            method: 'gosu/agent/progress',
+            params: expect.objectContaining({
+              stage: 'tool_completed',
+              success,
+              activity,
+              occurredAt: expect.any(String),
+              elapsedMs: expect.any(Number),
+            }),
+          }),
+        ),
+      );
+      expect(notifications).toContainEqual(
+        expect.objectContaining({
+          method: 'gosu/agent/progress',
+          params: expect.objectContaining({
+            stage: 'tool_started',
+            activity: { section: 'board' },
+            occurredAt: expect.any(String),
+          }),
+        }),
+      );
+      expect(JSON.stringify(notifications)).not.toContain('private task');
+    },
+  );
+
   it('routes only declared dynamic tools to the handler registered for that thread', async () => {
     const dynamicTools: readonly CodexDynamicToolSpec[] = [
       {
@@ -1612,6 +1875,7 @@ describe('Codex App Server process boundary', () => {
             stage: 'tool_started',
             tool: 'read_note',
             callId: 'call-tools',
+            occurredAt: expect.any(String),
           }),
         }),
         expect.objectContaining({
@@ -1621,6 +1885,8 @@ describe('Codex App Server process boundary', () => {
             tool: 'read_note',
             callId: 'call-tools',
             success: true,
+            occurredAt: expect.any(String),
+            elapsedMs: expect.any(Number),
           }),
         }),
       ]),
@@ -1953,6 +2219,8 @@ describe('Codex App Server process boundary', () => {
       },
     ];
     const server = new CodexAppServer();
+    const progress: unknown[] = [];
+    server.on('notification', (event) => progress.push(event));
     vi.spyOn(server, 'start').mockResolvedValue();
     const request = vi.fn(async (method: string) => {
       if (method === 'thread/start') return { thread: { id: 'thread-timeout' } };
@@ -2027,6 +2295,16 @@ describe('Codex App Server process boundary', () => {
       expect(registration).toMatchObject({ inFlight: 1 });
       expect(registration?.deliveries.size).toBe(1);
       await expect(deliveryOutcome).resolves.toBe('discarded');
+      expect(progress).toHaveLength(2);
+      expect(progress[1]).toMatchObject({
+        method: 'gosu/agent/progress',
+        params: {
+          stage: 'tool_completed',
+          success: false,
+          activity: { errorCode: 'tool_timeout' },
+          elapsedMs: 10_000,
+        },
+      });
       resolveLateResult({
         contentItems: [{ type: 'inputText', text: '{"late":true}' }],
         success: true,
@@ -2036,6 +2314,7 @@ describe('Codex App Server process boundary', () => {
       expect(writes).toHaveLength(1);
       expect(registration).toMatchObject({ inFlight: 0 });
       expect(registration?.deliveries.size).toBe(0);
+      expect(progress).toHaveLength(2);
     } finally {
       vi.useRealTimers();
     }
@@ -2218,7 +2497,25 @@ describe('Codex App Server process boundary', () => {
     releaseInventory();
     await expect(firstStart).resolves.toEqual({ threadId: 'thread-collision' });
 
-    expect(internal.dynamicToolRegistrations.get('thread-collision')?.handler).toBe(firstHandler);
+    const ownedHandler = internal.dynamicToolRegistrations.get('thread-collision')?.handler;
+    expect(ownedHandler).toBeTypeOf('function');
+    const delivery = {
+      outcome: Promise.resolve('delivered' as const),
+      abortSignal: new AbortController().signal,
+    };
+    await ownedHandler!(
+      {
+        threadId: 'thread-collision',
+        turnId: 'turn-1',
+        callId: 'call-1',
+        namespace: null,
+        tool: 'read_note',
+        arguments: {},
+      },
+      delivery,
+    );
+    expect(firstHandler).toHaveBeenCalledOnce();
+    expect(secondHandler).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalledWith('thread/unsubscribe', {
       threadId: 'thread-collision',
     });
@@ -2382,6 +2679,43 @@ describe('Codex App Server process boundary', () => {
     }
     expect(arguments_).toContain('history.persistence="none"');
     expect(arguments_).toContain('analytics.enabled=false');
+  });
+
+  it('enables the native code-mode dispatcher only for declared dynamic tools without widening capabilities', () => {
+    const arguments_ = buildCodexAppServerArguments([]);
+    for (const feature of ['code_mode', 'code_mode_host']) {
+      expect(arguments_[arguments_.indexOf(feature) - 1]).toBe('--enable');
+    }
+    const input = { cwd: '/isolated/project', modelId: 'provider-model' };
+    const withoutTools = buildCodexThreadParameters(input);
+    expect(withoutTools.config.features.code_mode).toEqual({ enabled: false });
+    expect(withoutTools.config.features.code_mode_host).toBe(false);
+
+    const tools: readonly CodexDynamicToolSpec[] = [
+      {
+        type: 'function',
+        name: 'inspect_module',
+        description: 'Read only the supplied graph module.',
+        inputSchema: { type: 'object', properties: {} },
+      },
+    ];
+    const withTools = buildCodexThreadParameters({ ...input, dynamicTools: tools });
+    expect(withTools.config.features.code_mode).toEqual({ enabled: true });
+    expect(withTools.config.features.code_mode_host).toBe(true);
+    expect(withTools.dynamicTools).toEqual(tools);
+    expect(withTools.config.features).toMatchObject({
+      shell_tool: false,
+      unified_exec: false,
+      browser_use: false,
+      computer_use: false,
+      network_proxy: false,
+      apps: false,
+      plugins: false,
+      hooks: false,
+    });
+    expect(withTools.sandbox).toBe('read-only');
+    expect(withTools.config.mcp_servers).toEqual({});
+    expect(withTools.runtimeWorkspaceRoots).toEqual([]);
   });
 
   it('parses the generated thread/start response shape without reading a model from Thread', () => {

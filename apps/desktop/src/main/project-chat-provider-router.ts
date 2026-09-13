@@ -271,6 +271,11 @@ export class ProjectChatProviderRouter extends EventEmitter implements ProjectCh
   interruptTurn(threadId: string, turnId: string) {
     return this.provider(this.threadProvider(threadId)).interruptTurn(threadId, turnId);
   }
+  async steerTurn(threadId: string, turnId: string, message: string) {
+    const provider = this.provider(this.threadProvider(threadId));
+    if (!provider.steerTurn) throw new Error('steer_provider_unsupported');
+    await provider.steerTurn(threadId, turnId, message);
+  }
 
   revokeDynamicTools(threadId: string) {
     this.provider(this.threadProvider(threadId)).revokeDynamicTools(threadId);

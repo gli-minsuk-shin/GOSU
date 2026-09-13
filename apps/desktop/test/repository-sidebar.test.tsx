@@ -47,7 +47,10 @@ describe('repository project navigation', () => {
     const html = renderSidebar();
 
     expect(html).toContain('Git Workspace sections');
-    expect(html).toMatch(/class="active" aria-current="page"[^>]*><span[^>]*>⌘<\/span>Repository/);
+    expect(html).toMatch(
+      /class="active" aria-current="page"[^>]*><span[^>]*><svg[^>]*data-sidebar-icon="repository"[^>]*>[\s\S]*?<\/svg><\/span>Repository<\/button>/u,
+    );
+    expect(html).not.toContain('>⌘</span>Repository');
   });
 
   it('does not expose project-local repository navigation while its folder is collapsed', () => {

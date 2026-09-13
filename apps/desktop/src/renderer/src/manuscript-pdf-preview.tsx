@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from 'pdfjs-dist/types/src/display/api';
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
@@ -20,9 +22,9 @@ export type ManuscriptPdfArtifactActions = Readonly<{
 
 export function manuscriptPdfArtifactActionLabels() {
   return {
-    export: 'Export PDF',
-    open: 'Open PDF in default app',
-    reveal: 'Show in Finder',
+    export: uiText('Export PDF'),
+    open: uiText('Open PDF in default app'),
+    reveal: uiText('Show in Finder'),
   } as const;
 }
 
@@ -132,6 +134,7 @@ function ManuscriptPdfPageCanvas({
   scale: number;
   onDimensions(pageNumber: number, dimensions: ManuscriptPdfPageDimensions): void;
 }>) {
+  useUiText();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
 
@@ -191,9 +194,21 @@ function ManuscriptPdfPageCanvas({
 
   return (
     <>
-      {state === 'loading' && <span>Rendering page {pageNumber}…</span>}
-      {state === 'error' && <span role="alert">Page {pageNumber} could not be rendered.</span>}
-      <canvas ref={canvasRef} hidden={state !== 'ready'} aria-label={`PDF page ${pageNumber}`} />
+      {state === 'loading' && (
+        <span>
+          {uiText('Rendering page')} {pageNumber}…
+        </span>
+      )}
+      {state === 'error' && (
+        <span role="alert">
+          {uiText('Page')} {pageNumber} {uiText('could not be rendered.')}
+        </span>
+      )}
+      <canvas
+        ref={canvasRef}
+        hidden={state !== 'ready'}
+        aria-label={uiText('PDF page {pageNumber}', { pageNumber: pageNumber })}
+      />
     </>
   );
 }
@@ -205,6 +220,7 @@ export function ManuscriptPdfPreview({
   preview: ManuscriptPdfPreviewValue;
   artifactActions?: ManuscriptPdfArtifactActions;
 }) {
+  useUiText();
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLElement>());
   const scrollFrameRef = useRef<number | null>(null);
@@ -255,7 +271,7 @@ export function ManuscriptPdfPreview({
       .catch(() => {
         if (!cancelled) {
           setLoading(false);
-          setError('The locally compiled PDF could not be rendered safely.');
+          setError(uiText('The locally compiled PDF could not be rendered safely.'));
         }
       });
     return () => {
@@ -343,20 +359,24 @@ export function ManuscriptPdfPreview({
   return (
     <section
       className="manuscript-pdf-preview"
-      aria-label="Compiled manuscript PDF preview"
+      aria-label={uiText('Compiled manuscript PDF preview')}
       data-current-page={pageNumber}
     >
       <header>
         <div>
-          <strong>Compiled PDF</strong>
+          <strong>{uiText('Compiled PDF')}</strong>
           <span>
-            Local {preview.compiler.engineDisplayName} via {preview.compiler.displayName} ·{' '}
-            {preview.rootDocument} · revision {preview.providerRevision.slice(0, 12)}
+            {uiText('Local')} {preview.compiler.engineDisplayName} {uiText('via')}{' '}
+            {preview.compiler.displayName} · {preview.rootDocument} {uiText('· revision')}{' '}
+            {preview.providerRevision.slice(0, 12)}
           </span>
         </div>
-        {preview.providerAhead && <b>Overleaf has a newer observed revision</b>}
+        {preview.providerAhead && <b>{uiText('Overleaf has a newer observed revision')}</b>}
         {artifactActions && (
-          <div className="manuscript-pdf-artifact-actions" aria-label="Manuscript PDF actions">
+          <div
+            className="manuscript-pdf-artifact-actions"
+            aria-label={uiText('Manuscript PDF actions')}
+          >
             <button
               type="button"
               className="ghost-button manuscript-pdf-artifact-action-button"
@@ -394,23 +414,23 @@ export function ManuscriptPdfPreview({
           <button
             type="button"
             className="ghost-button"
-            aria-label="Previous PDF page"
+            aria-label={uiText('Previous PDF page')}
             disabled={!pdfDocument || pageNumber <= 1}
             onClick={() => goToPage(pageNumber - 1)}
           >
-            Previous
+            {uiText('Previous')}
           </button>
           <span className="manuscript-pdf-page-counter" aria-live="polite">
-            {pdfDocument ? `${pageNumber} / ${pdfDocument.numPages}` : 'Loading'}
+            {pdfDocument ? `${pageNumber} / ${pdfDocument.numPages}` : uiText('Loading')}
           </span>
           <button
             type="button"
             className="ghost-button"
-            aria-label="Next PDF page"
+            aria-label={uiText('Next PDF page')}
             disabled={!pdfDocument || pageNumber >= pdfDocument.numPages}
             onClick={() => goToPage(pageNumber + 1)}
           >
-            Next
+            {uiText('Next')}
           </button>
           <button
             type="button"
@@ -438,7 +458,9 @@ export function ManuscriptPdfPreview({
         onScroll={updateCurrentPageFromScroll}
       >
         {loading && (
-          <span className="manuscript-pdf-document-status">Rendering the compiled PDF…</span>
+          <span className="manuscript-pdf-document-status">
+            {uiText('Rendering the compiled PDF…')}
+          </span>
         )}
         {error && (
           <span className="manuscript-pdf-document-status" role="alert">
@@ -464,7 +486,10 @@ export function ManuscriptPdfPreview({
                   }}
                   className="manuscript-pdf-page"
                   data-page-number={nextPageNumber}
-                  aria-label={`Page ${nextPageNumber} of ${pdfDocument.numPages}`}
+                  aria-label={uiText('Page {nextPageNumber} of {numPages}', {
+                    nextPageNumber: nextPageNumber,
+                    numPages: pdfDocument.numPages,
+                  })}
                   style={{ width: dimensions.cssWidth, height: dimensions.cssHeight }}
                 >
                   {shouldRender ? (
@@ -476,7 +501,9 @@ export function ManuscriptPdfPreview({
                       onDimensions={rememberPageDimensions}
                     />
                   ) : (
-                    <span>Page {nextPageNumber}</span>
+                    <span>
+                      {uiText('Page')} {nextPageNumber}
+                    </span>
                   )}
                 </article>
               );

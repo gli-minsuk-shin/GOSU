@@ -146,6 +146,18 @@ export const ChooseProjectChatAttachmentsInputSchema = z
   .object({ projectId: uuidSchema, sessionId: uuidSchema })
   .strict();
 
+// Main-only paths obtained by preload from native File objects, never renderer strings.
+export const DroppedAttachmentPathsSchema = z
+  .array(z.string().min(1).max(4096))
+  .min(1)
+  .max(PROJECT_CHAT_MAX_ATTACHMENTS);
+export const StageDroppedChatAttachmentsSchema = ChooseProjectChatAttachmentsInputSchema.extend({
+  paths: DroppedAttachmentPathsSchema,
+});
+export const ReserveBriefingDropSchema = z
+  .object({ routineId: z.string().min(1).max(128), paths: DroppedAttachmentPathsSchema })
+  .strict();
+
 export const ReleaseProjectChatAttachmentInputSchema = z
   .object({ projectId: uuidSchema, sessionId: uuidSchema, attachmentId: uuidSchema })
   .strict();

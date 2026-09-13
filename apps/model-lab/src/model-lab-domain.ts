@@ -19,6 +19,18 @@ export function formatShape(shape: TensorShape): string {
   return `[${shape.join(' × ')}]`;
 }
 
+export function formatModuleInputContract(module: ModelSpec['modules'][number]) {
+  return module.inputPorts?.length
+    ? module.inputPorts.map((port) => `${port.name} ${formatShape(port.shape)}`).join(' + ')
+    : formatShape(module.inputShape);
+}
+
+export function formatModuleOutputContract(module: ModelSpec['modules'][number]) {
+  return module.outputPorts?.length
+    ? module.outputPorts.map((port) => `${port.name} ${formatShape(port.shape)}`).join(' + ')
+    : formatShape(module.outputShape);
+}
+
 export function shapesEqual(left: TensorShape, right: TensorShape): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
@@ -115,8 +127,10 @@ export function moduleGradientHealth(
   return 'healthy';
 }
 
-function shapeReview(model: ModelSpec): AgentReview {
+export function modelShapeConsistencyFindings(model: ModelSpec): readonly string[] {
   const modules = new Map(model.modules.map((module) => [module.id, module]));
+  const incomingPortBindings = new Map<string, Map<string, number>>();
+  const outgoingPortBindings = new Map<string, Map<string, number>>();
   const mismatches = model.connections.flatMap((connection) => {
     const source = modules.get(connection.source);
     const target = modules.get(connection.target);
@@ -124,18 +138,180 @@ function shapeReview(model: ModelSpec): AgentReview {
       return [`${connection.id}: missing endpoint`];
     }
     const evidence: string[] = [];
-    if (!shapesEqual(source.outputShape, connection.shape)) {
+    if (source.outputPorts?.length) {
+      const sourcePort = source.outputPorts.find((port) => port.name === connection.sourcePort);
+      if (!connection.sourcePort || !sourcePort) {
+        evidence.push(
+          `${connection.id}: source port “${connection.sourcePort ?? '(missing)'}” is not declared by ${source.name}`,
+        );
+      } else if (!shapesEqual(sourcePort.shape, connection.shape)) {
+        evidence.push(
+          `${source.name}.${sourcePort.name} emits ${formatShape(sourcePort.shape)}, edge declares ${formatShape(connection.shape)}`,
+        );
+      } else {
+        const moduleBindings = outgoingPortBindings.get(source.id) ?? new Map<string, number>();
+        moduleBindings.set(sourcePort.name, (moduleBindings.get(sourcePort.name) ?? 0) + 1);
+        outgoingPortBindings.set(source.id, moduleBindings);
+      }
+    } else if (!shapesEqual(source.outputShape, connection.shape)) {
       evidence.push(
         `${source.name} emits ${formatShape(source.outputShape)}, edge declares ${formatShape(connection.shape)}`,
       );
     }
-    if (!shapesEqual(connection.shape, target.inputShape)) {
+    if (target.inputPorts?.length) {
+      const targetPort = target.inputPorts.find((port) => port.name === connection.targetPort);
+      if (!connection.targetPort || !targetPort) {
+        evidence.push(
+          `${connection.id}: target port “${connection.targetPort ?? '(missing)'}” is not declared by ${target.name}`,
+        );
+      } else {
+        if (!shapesEqual(connection.shape, targetPort.shape)) {
+          evidence.push(
+            `${target.name}.${targetPort.name} expects ${formatShape(targetPort.shape)}, edge carries ${formatShape(connection.shape)}`,
+          );
+        }
+        const moduleBindings = incomingPortBindings.get(target.id) ?? new Map<string, number>();
+        moduleBindings.set(targetPort.name, (moduleBindings.get(targetPort.name) ?? 0) + 1);
+        incomingPortBindings.set(target.id, moduleBindings);
+      }
+    } else if (!shapesEqual(connection.shape, target.inputShape)) {
       evidence.push(
         `${target.name} expects ${formatShape(target.inputShape)}, edge carries ${formatShape(connection.shape)}`,
       );
     }
     return evidence;
   });
+  for (const module of model.modules) {
+    const incomingBindings = incomingPortBindings.get(module.id);
+    const inputPortNames = module.inputPorts?.map((port) => port.name.normalize('NFC')) ?? [];
+    if (new Set(inputPortNames).size !== inputPortNames.length) {
+      mismatches.push(`${module.name} declares duplicate input port names.`);
+    }
+    if (module.inputPorts?.[0] && !shapesEqual(module.inputShape, module.inputPorts[0].shape)) {
+      mismatches.push(
+        `${module.name} inputShape ${formatShape(module.inputShape)} does not match its first canonical input port ${module.inputPorts[0].name} ${formatShape(module.inputPorts[0].shape)}.`,
+      );
+    }
+    if (
+      module.kind === 'input' &&
+      module.inputPorts?.some((port) => !port.binding || port.binding === 'internal')
+    ) {
+      mismatches.push(`${module.name} is an input module but declares a non-external input port.`);
+    }
+    for (const port of module.inputPorts ?? []) {
+      const count = incomingBindings?.get(port.name) ?? 0;
+      if (port.binding === 'external' || port.binding === 'loop-carried') {
+        if (count > 0) {
+          mismatches.push(
+            `${module.name}.${port.name} is a boundary input but has an internal edge.`,
+          );
+        }
+        continue;
+      }
+      if (count === 0) {
+        mismatches.push(`${module.name}.${port.name} has no incoming edge.`);
+      } else if (count > 1) {
+        mismatches.push(`${module.name}.${port.name} has ${count} incoming edges; expected one.`);
+      }
+    }
+    const outgoingBindings = outgoingPortBindings.get(module.id);
+    const outputPortNames = module.outputPorts?.map((port) => port.name.normalize('NFC')) ?? [];
+    if (new Set(outputPortNames).size !== outputPortNames.length) {
+      mismatches.push(`${module.name} declares duplicate output port names.`);
+    }
+    if (module.outputPorts?.[0] && !shapesEqual(module.outputShape, module.outputPorts[0].shape)) {
+      mismatches.push(
+        `${module.name} outputShape ${formatShape(module.outputShape)} does not match its first canonical output port ${module.outputPorts[0].name} ${formatShape(module.outputPorts[0].shape)}.`,
+      );
+    }
+    if (
+      (module.kind === 'output' || module.kind === 'objective') &&
+      module.outputPorts?.some((port) => !port.binding || port.binding === 'internal')
+    ) {
+      mismatches.push(
+        `${module.name} is an ${module.kind} module but declares a non-external output port.`,
+      );
+    }
+    for (const port of module.outputPorts ?? []) {
+      const count = outgoingBindings?.get(port.name) ?? 0;
+      if (port.binding === 'external' || port.binding === 'loop-carried') {
+        if (count > 0) {
+          mismatches.push(
+            `${module.name}.${port.name} is a boundary output but has an internal edge.`,
+          );
+        }
+        continue;
+      }
+      if (count === 0) {
+        mismatches.push(`${module.name}.${port.name} has no outgoing edge.`);
+      }
+    }
+  }
+  const loopBindings = new Map<string, { inputs: TensorShape[]; outputs: TensorShape[] }>();
+  for (const module of model.modules) {
+    for (const port of module.inputPorts ?? []) {
+      if (port.binding !== 'loop-carried') continue;
+      if (!port.bindingId) {
+        mismatches.push(`${module.name}.${port.name} is loop-carried but has no bindingId.`);
+        continue;
+      }
+      const binding = loopBindings.get(port.bindingId) ?? { inputs: [], outputs: [] };
+      binding.inputs.push(port.shape);
+      loopBindings.set(port.bindingId, binding);
+    }
+    for (const port of module.outputPorts ?? []) {
+      if (port.binding !== 'loop-carried') continue;
+      if (!port.bindingId) {
+        mismatches.push(`${module.name}.${port.name} is loop-carried but has no bindingId.`);
+        continue;
+      }
+      const binding = loopBindings.get(port.bindingId) ?? { inputs: [], outputs: [] };
+      binding.outputs.push(port.shape);
+      loopBindings.set(port.bindingId, binding);
+    }
+  }
+  for (const [bindingId, binding] of loopBindings) {
+    if (
+      binding.inputs.length !== 1 ||
+      binding.outputs.length !== 1 ||
+      !shapesEqual(binding.inputs[0] ?? [], binding.outputs[0] ?? [])
+    ) {
+      mismatches.push(
+        `Loop-carried binding “${bindingId}” must pair one input and one output shape.`,
+      );
+    }
+  }
+  const orderedModules = [...model.modules].sort(
+    (left, right) => left.stage - right.stage || left.lane - right.lane,
+  );
+  const externalInputs = orderedModules
+    .flatMap((module) => module.inputPorts ?? [])
+    .filter((port) => port.binding === 'external');
+  const externalOutputs = [...orderedModules]
+    .reverse()
+    .flatMap((module) => module.outputPorts ?? [])
+    .filter((port) => port.binding === 'external');
+  if (
+    externalInputs.length === 1 &&
+    !shapesEqual(model.intent.expectedInput, externalInputs[0]!.shape)
+  ) {
+    mismatches.push(
+      `Model intent input ${formatShape(model.intent.expectedInput)} does not match the sole external input ${externalInputs[0]!.name} ${formatShape(externalInputs[0]!.shape)}.`,
+    );
+  }
+  if (
+    externalOutputs.length === 1 &&
+    !shapesEqual(model.intent.expectedOutput, externalOutputs[0]!.shape)
+  ) {
+    mismatches.push(
+      `Model intent output ${formatShape(model.intent.expectedOutput)} does not match the sole external output ${externalOutputs[0]!.name} ${formatShape(externalOutputs[0]!.shape)}.`,
+    );
+  }
+  return mismatches;
+}
+
+function shapeReview(model: ModelSpec): AgentReview {
+  const mismatches = modelShapeConsistencyFindings(model);
   return {
     id: 'shape-auditor',
     agent: 'Shape auditor',
@@ -147,7 +323,7 @@ function shapeReview(model: ModelSpec): AgentReview {
         : `${mismatches.length} tensor interface mismatch${mismatches.length === 1 ? '' : 'es'} found.`,
     evidence:
       mismatches.length === 0
-        ? ['Every edge matches its source output and target input.']
+        ? ['Every edge is bound to an exact source and target port with a matching shape.']
         : mismatches,
   };
 }

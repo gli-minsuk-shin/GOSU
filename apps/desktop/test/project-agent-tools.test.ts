@@ -970,6 +970,113 @@ function authorizedSession(
 }
 
 describe('ProjectAgentToolSession', () => {
+  it('reads models with the active project and server-pinned revision/hash, rejecting caller project overrides', async () => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const reference = {
+      modelId: 'Model-A',
+      revision: 3,
+      name: 'Model A',
+      version: 'v1',
+      contentSha256: 'a'.repeat(64),
+    };
+    const modelLab = vi.fn(async (projectId: string) => ({
+      projectId,
+      section: 'model',
+      reference,
+      text: 'Saved graph',
+      note: 'Evidence only',
+    }));
+    const session = new ProjectAgentToolSession({
+      projectId: projectAlpha.id,
+      workspace,
+      vault: new FakeProjectVault(),
+      localNotesVault: null,
+      modelLab,
+      modelLabReference: reference,
+    });
+    const result = await invokeTool(
+      session,
+      toolCall('read_model_lab', {
+        section: 'model',
+        modelId: reference.modelId,
+        expectedSha256: 'b'.repeat(64),
+      }),
+    );
+    expect(result.success).toBe(true);
+    expect(modelLab).toHaveBeenCalledWith(projectAlpha.id, {
+      section: 'model',
+      modelId: reference.modelId,
+      revision: reference.revision,
+      expectedSha256: reference.contentSha256,
+      offset: 0,
+    });
+    expect(
+      (
+        await invokeTool(
+          session,
+          toolCall('read_model_lab', { section: 'catalog', projectId: 'other' }),
+        )
+      ).success,
+    ).toBe(false);
+    modelLab.mockRejectedValueOnce(new Error('model_lab_reference_changed'));
+    expect(
+      JSON.stringify(
+        await invokeTool(
+          session,
+          toolCall('read_model_lab', { section: 'model', modelId: reference.modelId }),
+        ),
+      ),
+    ).toContain('model_lab_reference_changed');
+  });
+  it.each([
+    'read_workspace',
+    'list_local_notes',
+    'read_local_note',
+    'read_experiment_setup',
+    'list_experiment_runs',
+    'read_research_plan',
+  ])('keeps private background tool %s out of manuscript review', async (tool) => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const session = new ProjectAgentToolSession({
+      criticalReview: 'manuscript',
+      projectId: projectAlpha.id,
+      workspace,
+      vault: new FakeProjectVault(),
+      localNotesVault: { id: ACTIVE_VAULT_ID, name: 'Notes', allowAgentMarkdownCreate: true },
+    });
+    expect(session.localNotesAvailable).toBe(false);
+    expect((await invokeTool(session, toolCall(tool, {}))).success).toBe(false);
+    expect(JSON.stringify(session.dynamicTools)).not.toContain(`"name":"${tool}"`);
+  });
+  it.each([
+    'write_ssh_workspace_file',
+    'run_ssh_workspace_command',
+    'create_experiment_run',
+    'execute_experiment_run',
+    'apply_research_plan',
+    'search_literature',
+    'delegate_to_hermes_agent',
+  ])('rejects forced %s callbacks in Critical Review', async (tool) => {
+    const { workspace, projectAlpha } = await workspaceFixture();
+    const ssh = new FakeProjectSsh();
+    const vault = new FakeProjectVault();
+    const session = new ProjectAgentToolSession({
+      criticalReview: 'direction',
+      projectId: projectAlpha.id,
+      workspace,
+      ssh,
+      vault,
+      localNotesVault: { id: ACTIVE_VAULT_ID, name: 'Notes', allowAgentMarkdownCreate: true },
+    });
+    expect(session.researchNotesMarkdownCreateAvailable).toBe(false);
+    const result = await invokeTool(session, toolCall(tool, {}));
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result)).toContain('tool_not_allowed');
+    expect(JSON.stringify(session.dynamicTools)).not.toContain(`"name":"${tool}"`);
+    const read = await invokeTool(session, toolCall('read_workspace', { section: 'objective' }));
+    expect(read.success).toBe(true);
+  });
+
   it('binds Board and Objective reads to the active project', async () => {
     const { workspace, projectAlpha } = await workspaceFixture();
     const { session } = authorizedSession(workspace, projectAlpha.id);

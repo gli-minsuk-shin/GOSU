@@ -1,3 +1,5 @@
+import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+
 import {
   useCallback,
   useEffect,
@@ -141,6 +143,8 @@ function experimentErrorMessage(error: unknown) {
     experiment_metric_limit_reached: 'This project has reached its local metric-record limit.',
     experiment_objective_required:
       'Freeze a Goal & Metrics objective before recording comparable results.',
+    experiment_plan_activation_required:
+      'Reapply and activate this plan with current evaluator and dataset identities before comparable runs.',
     experiment_logging_template_conflict:
       'The logging template changed while you were editing. GOSU did not overwrite the newer version.',
     experiment_logging_template_limit_reached:
@@ -159,7 +163,7 @@ function experimentErrorMessage(error: unknown) {
     experiment_run_log_unavailable:
       'The referenced server log is unavailable. The saved run summary remains unchanged.',
   };
-  return messages[code] ?? 'The experiment operation could not be completed.';
+  return uiText(messages[code] ?? 'The experiment operation could not be completed.');
 }
 
 function outcomeLabel(outcome: ExperimentIdeaOutcome) {
@@ -285,6 +289,7 @@ export function ExperimentsView({
   searchTarget = null,
   onSearchTargetHandled = () => undefined,
 }: ExperimentsViewProps) {
+  useUiText();
   const [snapshot, setSnapshot] = useState<ExperimentWorkspaceSnapshot | null>(null);
   const [activeTab, setActiveTab] = useState<ExperimentTab>('overview');
   const [loading, setLoading] = useState(true);
@@ -373,7 +378,9 @@ export function ExperimentsView({
     if (!searchTarget || !snapshot) return;
     if (!ideas.some(({ id }) => id === searchTarget.targetId)) {
       setError(
-        'The searched experiment idea is no longer available. Refresh Search and try again.',
+        uiText(
+          'The searched experiment idea is no longer available. Refresh Search and try again.',
+        ),
       );
       onSearchTargetHandled(searchTarget.requestId);
       return;
@@ -417,8 +424,8 @@ export function ExperimentsView({
       setIdeaComposer(null);
       setNotice(
         draft.parentIdeaId
-          ? `Created a child idea: ${created.title}.`
-          : `Created ${created.title}.`,
+          ? uiText('Created a child idea: {title}.', { title: created.title })
+          : uiText('Created {title}.', { title: created.title }),
       );
       return true;
     } catch (createError) {
@@ -437,7 +444,7 @@ export function ExperimentsView({
       const updated = await adapter.updateIdea(input);
       await load();
       setSelectedIdeaId(updated.id);
-      setNotice(`Updated ${updated.title}.`);
+      setNotice(uiText('Updated {title}.', { title: updated.title }));
       return true;
     } catch (updateError) {
       setError(experimentErrorMessage(updateError));
@@ -462,7 +469,12 @@ export function ExperimentsView({
       await load();
       setSelectedMetricPointId(point.id);
       setSelectedSeriesKey(groupExperimentMetricSeries([point])[0]?.key ?? selectedSeriesKey);
-      setNotice(`Recorded ${point.metricDisplayName} for ${selectedIdea.title}.`);
+      setNotice(
+        uiText('Recorded {metricDisplayName} for {title}.', {
+          metricDisplayName: point.metricDisplayName,
+          title: selectedIdea.title,
+        }),
+      );
       return true;
     } catch (recordError) {
       setError(experimentErrorMessage(recordError));
@@ -483,7 +495,7 @@ export function ExperimentsView({
         customFields: [...customFields],
       });
       await load();
-      setNotice(`Saved logging template version ${revised.version}.`);
+      setNotice(uiText('Saved logging template version {version}.', { version: revised.version }));
       return true;
     } catch (revisionError) {
       setError(experimentErrorMessage(revisionError));
@@ -518,37 +530,50 @@ export function ExperimentsView({
   const runSummary = summarizeExperimentRuns(runs);
 
   return (
-    <section className="experiments-shell" aria-label={`${project.name} experiments`}>
+    <section
+      className="experiments-shell"
+      aria-label={uiText('{name} experiments', { name: project.name })}
+    >
       <header className="experiments-runtime-card">
         <div className="experiments-runtime-copy">
-          <span className="eyebrow">LOCAL EXPERIMENT WORKSPACE</span>
-          <h2>Experiment workspace</h2>
+          <span className="eyebrow">{uiText('LOCAL EXPERIMENT WORKSPACE')}</span>
+          <h2>{uiText('Experiment workspace')}</h2>
         </div>
-        <div className="experiments-runtime-status" aria-label="Experiment connection status">
+        <div
+          className="experiments-runtime-status"
+          aria-label={uiText('Experiment connection status')}
+        >
           <span className="experiment-status-pill local">
             <i />
-            Local live
+            {uiText('Local live')}
           </span>
           <span className="experiment-status-pill runner">
             <i />
-            Runner not connected
+            {uiText('Runner not connected')}
           </span>
           <span className="experiment-status-pill">
-            {runSummary.active} active · {runSummary.queued} queued
+            {runSummary.active} {uiText('active ·')} {runSummary.queued} {uiText('queued')}
           </span>
           {objective?.locked && (
             <span
               className="experiment-status-pill"
               title={
                 objective.primaryMetric.target === null
-                  ? 'A target threshold is optional. Saved campaign budgets and stop policies are enforced after the Runner is connected.'
+                  ? uiText(
+                      'A target threshold is optional. Saved campaign budgets and stop policies are enforced after the Runner is connected.',
+                    )
                   : undefined
               }
             >
               {objective.primaryMetric.displayName} ·{' '}
               {objective.primaryMetric.target === null
-                ? 'No target'
-                : `Target ${formatExperimentMetric(objective.primaryMetric.target, objective.primaryMetric.unit)}`}
+                ? uiText('No target')
+                : uiText('Target {value1}', {
+                    value1: formatExperimentMetric(
+                      objective.primaryMetric.target,
+                      objective.primaryMetric.unit,
+                    ),
+                  })}
             </span>
           )}
           <button
@@ -557,7 +582,7 @@ export function ExperimentsView({
             disabled={loading}
             onClick={() => void load(true)}
           >
-            Refresh
+            {uiText('Refresh')}
           </button>
         </div>
       </header>
@@ -567,17 +592,17 @@ export function ExperimentsView({
           <div>
             <strong>
               {objective
-                ? 'Objective not frozen — comparable runs unavailable'
-                : 'No objective — exploratory runs remain available'}
+                ? uiText('Objective not frozen — comparable runs unavailable')
+                : uiText('No objective — exploratory runs remain available')}
             </strong>
             <span>
-              A numeric target value is optional, and exploratory runs do not need a frozen
-              objective. Comparable results still require a frozen primary metric, evaluator,
-              dataset, and holdout snapshot.
+              {uiText(
+                'A numeric target value is optional, and exploratory runs do not need a frozen objective. Comparable results still require a frozen primary metric, evaluator, dataset, and holdout snapshot.',
+              )}
             </span>
           </div>
           <button type="button" className="secondary-button" onClick={onOpenObjective}>
-            Open Goal & Metrics
+            {uiText('Open Goal & Metrics')}
           </button>
         </div>
       )}
@@ -586,7 +611,7 @@ export function ExperimentsView({
         <div className="notice error experiments-error" role="alert">
           <span>{error}</span>
           <button type="button" className="ghost-button" onClick={() => setError(null)}>
-            Dismiss
+            {uiText('Dismiss')}
           </button>
         </div>
       )}
@@ -598,7 +623,7 @@ export function ExperimentsView({
         ref={tabListRef}
         className="experiment-tabs"
         role="tablist"
-        aria-label="Experiment views"
+        aria-label={uiText('Experiment views')}
       >
         {EXPERIMENT_TABS.map((tab) => (
           <button
@@ -620,7 +645,7 @@ export function ExperimentsView({
 
       {loading && !snapshot ? (
         <div className="experiments-loading" role="status">
-          Opening local experiment records…
+          {uiText('Opening local experiment records…')}
         </div>
       ) : (
         <>
@@ -709,15 +734,16 @@ function SeriesPicker({
   if (series.length === 0) return null;
   return (
     <label className="experiment-series-picker">
-      Comparable series
+      {uiText('Comparable series')}
       <select
         value={selectedKey ?? series[0]!.key}
         onChange={(event) => onSelect(event.target.value)}
       >
         {series.map((item) => (
           <option key={item.key} value={item.key}>
-            {item.metricDisplayName} · Objective v{item.objectiveVersion} · {item.aggregation} ·{' '}
-            {new Date(item.latestRecordedAt).toLocaleDateString()}
+            {item.metricDisplayName} {uiText('· Objective v')}
+            {item.objectiveVersion} · {item.aggregation} ·{' '}
+            {new Date(item.latestRecordedAt).toLocaleDateString(uiLocale())}
           </option>
         ))}
       </select>
@@ -760,6 +786,7 @@ function TrajectoryPanel({
   onOpenObjective: () => void;
   onOpenRuns: () => void;
 }) {
+  useUiText();
   const chart = useMemo(() => buildExperimentTrajectory(selectedSeries), [selectedSeries]);
   const ideaById = useMemo(() => new Map(ideas.map((idea) => [idea.id, idea])), [ideas]);
   const selectedPoint =
@@ -775,15 +802,16 @@ function TrajectoryPanel({
       <article className="experiment-card experiment-chart-card">
         <header className="experiment-card-head">
           <div>
-            <span className="eyebrow">PRIMARY METRIC OVER TIME</span>
+            <span className="eyebrow">{uiText('PRIMARY METRIC OVER TIME')}</span>
             <h2>
               {selectedSeries?.metricDisplayName ??
                 objective?.primaryMetric.displayName ??
-                'No recorded metric'}
+                uiText('No recorded metric')}
             </h2>
             <p>
-              Solid line: recorded result · dashed line: direction-aware best so far. Select a point
-              for its idea and provenance.
+              {uiText(
+                'Solid line: recorded result · dashed line: direction-aware best so far. Select a point for its idea and provenance.',
+              )}
             </p>
           </div>
           <SeriesPicker series={series} selectedKey={selectedSeriesKey} onSelect={onSelectSeries} />
@@ -802,26 +830,27 @@ function TrajectoryPanel({
           />
         ) : (
           <div className="experiment-chart-empty">
-            <strong>No comparable results yet</strong>
+            <strong>{uiText('No comparable results yet')}</strong>
             <span>
-              Create an idea, freeze Goal & Metrics, then record a result. GOSU does not insert
-              demonstration values into a real project.
+              {uiText(
+                'Create an idea, freeze Goal & Metrics, then record a result. GOSU does not insert demonstration values into a real project.',
+              )}
             </span>
           </div>
         )}
 
         {selectedSeries && (
           <details className="experiment-data-disclosure">
-            <summary>View metric data table</summary>
+            <summary>{uiText('View metric data table')}</summary>
             <div className="experiment-table-scroll">
               <table>
                 <thead>
                   <tr>
-                    <th scope="col">Time</th>
-                    <th scope="col">Idea</th>
-                    <th scope="col">Result</th>
-                    <th scope="col">Source</th>
-                    <th scope="col">Trial</th>
+                    <th scope="col">{uiText('Time')}</th>
+                    <th scope="col">{uiText('Idea')}</th>
+                    <th scope="col">{uiText('Result')}</th>
+                    <th scope="col">{uiText('Source')}</th>
+                    <th scope="col">{uiText('Trial')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -832,8 +861,8 @@ function TrajectoryPanel({
                       <td>{formatExperimentMetric(point.value, point.unit)}</td>
                       <td>
                         {point.source === 'manual'
-                          ? 'Manual local entry'
-                          : 'Verified tracked-run summary'}
+                          ? uiText('Manual local entry')
+                          : uiText('Verified tracked-run summary')}
                       </td>
                       <td>{point.trialId ?? '—'}</td>
                     </tr>
@@ -859,29 +888,29 @@ function TrajectoryPanel({
         />
         {selectedPoint && (
           <article className="experiment-card experiment-selection-card">
-            <span className="eyebrow">SELECTED RESULT</span>
+            <span className="eyebrow">{uiText('SELECTED RESULT')}</span>
             <h3>{ideaTitle(ideas, selectedPoint.ideaId)}</h3>
             <strong>{formatExperimentMetric(selectedPoint.value, selectedPoint.unit)}</strong>
             <dl>
               <div>
-                <dt>Recorded</dt>
+                <dt>{uiText('Recorded')}</dt>
                 <dd>{formatDateTime(selectedPoint.recordedAt)}</dd>
               </div>
               <div>
-                <dt>Source</dt>
+                <dt>{uiText('Source')}</dt>
                 <dd>
                   {selectedPoint.source === 'manual'
-                    ? 'Manual local entry'
-                    : 'Verified tracked-run summary'}
+                    ? uiText('Manual local entry')
+                    : uiText('Verified tracked-run summary')}
                 </dd>
               </div>
               <div>
-                <dt>Objective</dt>
+                <dt>{uiText('Objective')}</dt>
                 <dd>v{selectedPoint.objectiveVersion}</dd>
               </div>
               <div>
-                <dt>Trial</dt>
-                <dd>{selectedPoint.trialId ?? 'Not linked'}</dd>
+                <dt>{uiText('Trial')}</dt>
+                <dd>{selectedPoint.trialId ?? uiText('Not linked')}</dd>
               </div>
             </dl>
           </article>
@@ -923,16 +952,18 @@ function ExperimentRunStack({
     <article className="experiment-card experiment-run-stack">
       <header>
         <div>
-          <span className="eyebrow">ACTIVE &amp; RECENT</span>
-          <h3>Tracked runs</h3>
+          <span className="eyebrow">{uiText('ACTIVE & RECENT')}</span>
+          <h3>{uiText('Tracked runs')}</h3>
         </div>
         <button type="button" className="ghost-button" onClick={onOpenRuns}>
-          View all
+          {uiText('View all')}
         </button>
       </header>
       {recentRuns.length === 0 ? (
         <p className="experiment-inline-empty">
-          No tracked runs yet. Runs created by Project Chat or a connected Runner will appear here.
+          {uiText(
+            'No tracked runs yet. Runs created by Project Chat or a connected Runner will appear here.',
+          )}
         </p>
       ) : (
         <ol>
@@ -995,6 +1026,7 @@ export function ExperimentRunsPanel({
   runs: readonly ExperimentRun[];
   readRunLog?: ExperimentsViewAdapter['readRunLog'];
 }) {
+  useUiText();
   const summary = summarizeExperimentRuns(runs);
   const orderedRuns = [...runs].sort((left, right) =>
     right.updatedAt.localeCompare(left.updatedAt),
@@ -1091,21 +1123,21 @@ export function ExperimentRunsPanel({
       aria-labelledby="experiment-tab-runs"
       className="experiment-panel experiment-runs-panel"
     >
-      <section className="experiment-run-summary" aria-label="Run status summary">
+      <section className="experiment-run-summary" aria-label={uiText('Run status summary')}>
         <div>
-          <span>Active</span>
+          <span>{uiText('Active')}</span>
           <strong>{summary.active}</strong>
         </div>
         <div>
-          <span>Queued</span>
+          <span>{uiText('Queued')}</span>
           <strong>{summary.queued}</strong>
         </div>
         <div>
-          <span>Completed</span>
+          <span>{uiText('Completed')}</span>
           <strong>{summary.completed}</strong>
         </div>
         <div className={summary.needsAttention > 0 ? 'attention' : ''}>
-          <span>Needs attention</span>
+          <span>{uiText('Needs attention')}</span>
           <strong>{summary.needsAttention}</strong>
         </div>
       </section>
@@ -1113,42 +1145,45 @@ export function ExperimentRunsPanel({
       <article className="experiment-card experiment-runs-card">
         <header className="experiment-card-head">
           <div>
-            <span className="eyebrow">MLOPS RUN TRACKING</span>
-            <h2>Runs and logging health</h2>
+            <span className="eyebrow">{uiText('MLOPS RUN TRACKING')}</span>
+            <h2>{uiText('Runs and logging health')}</h2>
             <p>
-              Project Chat and the Runner create these records. The current Project Chat foreground
-              path records start and verified final-log state; live per-step streaming begins when a
-              Runner is connected. This table never invents missing progress or a total.
+              {uiText(
+                'Project Chat and the Runner create these records. The current Project Chat foreground path records start and verified final-log state; live per-step streaming begins when a Runner is connected. This table never invents missing progress or a total.',
+              )}
             </p>
           </div>
         </header>
 
         {orderedRuns.length === 0 ? (
           <div className="experiment-run-empty">
-            <strong>No tracked runs</strong>
+            <strong>{uiText('No tracked runs')}</strong>
             <span>
-              Design an exploratory or comparable experiment in Project Chat. Its server, step,
-              metric summary, and validated log reference will appear here.
+              {uiText(
+                'Design an exploratory or comparable experiment in Project Chat. Its server, step, metric summary, and validated log reference will appear here.',
+              )}
             </span>
           </div>
         ) : (
           <div className="experiment-runs-table-scroll" tabIndex={0}>
             <table>
               <caption className="sr-only">
-                Runs for this project with status, progress, metric, and logging validation
+                {uiText(
+                  'Runs for this project with status, progress, metric, and logging validation',
+                )}
               </caption>
               <thead>
                 <tr>
-                  <th scope="col">Status</th>
-                  <th scope="col">Run / trial</th>
-                  <th scope="col">Idea</th>
-                  <th scope="col">Server</th>
-                  <th scope="col">Progress</th>
-                  <th scope="col">Current step</th>
-                  <th scope="col">Latest metric</th>
-                  <th scope="col">Started / updated</th>
-                  <th scope="col">Logging validation</th>
-                  <th scope="col">Log</th>
+                  <th scope="col">{uiText('Status')}</th>
+                  <th scope="col">{uiText('Run / trial')}</th>
+                  <th scope="col">{uiText('Idea')}</th>
+                  <th scope="col">{uiText('Server')}</th>
+                  <th scope="col">{uiText('Progress')}</th>
+                  <th scope="col">{uiText('Current step')}</th>
+                  <th scope="col">{uiText('Latest metric')}</th>
+                  <th scope="col">{uiText('Started / updated')}</th>
+                  <th scope="col">{uiText('Logging validation')}</th>
+                  <th scope="col">{uiText('Log')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1178,7 +1213,7 @@ export function ExperimentRunsPanel({
                       <td>{runIdeaTitle(ideas, run.ideaId)}</td>
                       <td>{run.serverLabel}</td>
                       <td>{formatExperimentRunProgress(run)}</td>
-                      <td>{run.currentStep ?? 'Not reported'}</td>
+                      <td>{run.currentStep ?? uiText('Not reported')}</td>
                       <td>
                         {run.latestMetric ? (
                           <>
@@ -1191,20 +1226,31 @@ export function ExperimentRunsPanel({
                             </span>
                           </>
                         ) : (
-                          'Not reported'
+                          uiText('Not reported')
                         )}
                       </td>
                       <td>
-                        <span>{run.startedAt ? formatDateTime(run.startedAt) : 'Not started'}</span>
+                        <span>
+                          {run.startedAt ? formatDateTime(run.startedAt) : uiText('Not started')}
+                        </span>
                         {processReceipt && <small>{processReceipt}</small>}
-                        <small>Updated {formatDateTime(run.updatedAt)}</small>
+                        <small>
+                          {uiText('Updated')} {formatDateTime(run.updatedAt)}
+                        </small>
                       </td>
                       <td>
                         <span>{runLogValidation(run)}</span>
                         <small>
                           {run.logReference
-                            ? `${run.logReference.displayName} · ${formatLogSize(run.logReference.sizeBytes)} · ${shortHash(run.logReference.contentHash)} · template v${run.loggingTemplate.version}`
-                            : `Template v${run.loggingTemplate.version}`}
+                            ? uiText('{displayName} · {value2} · {value3} · template v{version}', {
+                                displayName: run.logReference.displayName,
+                                value2: formatLogSize(run.logReference.sizeBytes),
+                                value3: shortHash(run.logReference.contentHash),
+                                version: run.loggingTemplate.version,
+                              })
+                            : uiText('Template v{version}', {
+                                version: run.loggingTemplate.version,
+                              })}
                         </small>
                       </td>
                       <td>
@@ -1215,18 +1261,20 @@ export function ExperimentRunsPanel({
                           aria-describedby={logHelpId}
                           title={
                             !run.logReference
-                              ? 'No validated log reference is linked to this run.'
+                              ? uiText('No validated log reference is linked to this run.')
                               : run.logReference.validationState === 'pending'
-                                ? 'The process receipt is saved, but log verification has not finished.'
+                                ? uiText(
+                                    'The process receipt is saved, but log verification has not finished.',
+                                  )
                                 : !readRunLog
-                                  ? 'Opening raw logs is not connected in this build.'
+                                  ? uiText('Opening raw logs is not connected in this build.')
                                   : undefined
                           }
                           onClick={() => {
                             void loadRunLog(run, false);
                           }}
                         >
-                          {logViewer?.runId === run.id ? 'Refresh log' : 'Open log'}
+                          {logViewer?.runId === run.id ? uiText('Refresh log') : uiText('Open log')}
                         </button>
                       </td>
                     </tr>
@@ -1237,26 +1285,30 @@ export function ExperimentRunsPanel({
           </div>
         )}
         <p id={logHelpId} className="experiment-log-boundary">
-          Raw JSONL stays on the linked server. GOSU reads it into this view only on demand and
-          refuses content whose full-file hash differs from the validated run reference.
-          {!readRunLog && ' Raw log opening is not connected in this build.'}
+          {uiText(
+            'Raw JSONL stays on the linked server. GOSU reads it into this view only on demand and refuses content whose full-file hash differs from the validated run reference.',
+          )}
+          {!readRunLog && uiText(' Raw log opening is not connected in this build.')}
         </p>
 
         {logViewer && (
           <section className="experiment-log-viewer" aria-labelledby="experiment-log-viewer-title">
             <header>
               <div>
-                <span className="eyebrow">SERVER JSONL · ON-DEMAND</span>
+                <span className="eyebrow">{uiText('SERVER JSONL · ON-DEMAND')}</span>
                 <h3 id="experiment-log-viewer-title">{logViewer.displayName}</h3>
                 <p>
                   {logViewer.validationState === 'valid'
-                    ? 'Validated against the run template'
+                    ? uiText('Validated against the run template')
                     : logViewer.validationState === 'incomplete'
-                      ? `Incomplete · missing ${logViewer.missingFields.join(', ')}`
+                      ? uiText('Incomplete · missing {value1}', {
+                          value1: logViewer.missingFields.join(', '),
+                        })
                       : logViewer.validationState === 'invalid'
-                        ? 'Invalid experiment log'
-                        : 'Validation pending'}
-                  {' · '}hash {shortHash(logViewer.contentHash)}
+                        ? uiText('Invalid experiment log')
+                        : uiText('Validation pending')}
+                  {' · '}
+                  {uiText('hash')} {shortHash(logViewer.contentHash)}
                 </p>
               </div>
               <div className="experiment-log-viewer-actions">
@@ -1269,7 +1321,7 @@ export function ExperimentRunsPanel({
                     if (run) void loadRunLog(run, false);
                   }}
                 >
-                  Refresh
+                  {uiText('Refresh')}
                 </button>
                 <button
                   type="button"
@@ -1279,7 +1331,7 @@ export function ExperimentRunsPanel({
                     setLogViewer(null);
                   }}
                 >
-                  Close
+                  {uiText('Close')}
                 </button>
               </div>
             </header>
@@ -1290,7 +1342,7 @@ export function ExperimentRunsPanel({
             )}
             {logViewer.loading && logViewer.content === '' ? (
               <p className="experiment-inline-empty" role="status">
-                Reading the verified server log…
+                {uiText('Reading the verified server log…')}
               </p>
             ) : (
               <pre tabIndex={0} role="log" aria-live="off">
@@ -1300,10 +1352,12 @@ export function ExperimentRunsPanel({
             <footer>
               <span>
                 {logViewer.loadedAt
-                  ? `Loaded ${formatDateTime(logViewer.loadedAt)} · ${[
-                      ...logViewer.content,
-                    ].length.toLocaleString()} / ${logViewer.totalCharacters.toLocaleString()} characters`
-                  : 'No raw content was retained locally.'}
+                  ? uiText('Loaded {value1} · {value2} / {value3} characters', {
+                      value1: formatDateTime(logViewer.loadedAt),
+                      value2: [...logViewer.content].length.toLocaleString(),
+                      value3: logViewer.totalCharacters.toLocaleString(),
+                    })
+                  : uiText('No raw content was retained locally.')}
               </span>
               {logViewer.nextOffset !== null && (
                 <button
@@ -1315,7 +1369,7 @@ export function ExperimentRunsPanel({
                     if (run) void loadRunLog(run, true);
                   }}
                 >
-                  {logViewer.loading ? 'Loading…' : 'Load more'}
+                  {logViewer.loading ? uiText('Loading…') : uiText('Load more')}
                 </button>
               )}
             </footer>
@@ -1346,6 +1400,7 @@ export function ExperimentLoggingPanel({
   busy: boolean;
   onSave: (fields: readonly ExperimentLoggingCustomField[]) => Promise<boolean>;
 }) {
+  useUiText();
   const [fields, setFields] = useState<ExperimentLoggingCustomField[]>(() =>
     copyLoggingFields(template.customFields),
   );
@@ -1396,28 +1451,37 @@ export function ExperimentLoggingPanel({
       <article className="experiment-card experiment-logging-editor">
         <header className="experiment-card-head">
           <div>
-            <span className="eyebrow">REQUIRED LOGGING TEMPLATE</span>
-            <h2>Template version {template.version}</h2>
+            <span className="eyebrow">{uiText('REQUIRED LOGGING TEMPLATE')}</span>
+            <h2>
+              {uiText('Template version')} {template.version}
+            </h2>
             <p>
-              Project Chat must include these fields when it designs and launches experiments. Save
-              changes as a new immutable version; existing runs keep their original snapshot.
+              {uiText(
+                'Project Chat must include these fields when it designs and launches experiments. Save changes as a new immutable version; existing runs keep their original snapshot.',
+              )}
             </p>
           </div>
           <button
             type="button"
             className="secondary-button"
             disabled={atLimit}
-            title={atLimit ? `Maximum ${EXPERIMENT_MAX_LOGGING_FIELDS} custom fields` : undefined}
+            title={
+              atLimit
+                ? uiText('Maximum {EXPERIMENT_MAX_LOGGING_FIELDS} custom fields', {
+                    EXPERIMENT_MAX_LOGGING_FIELDS: EXPERIMENT_MAX_LOGGING_FIELDS,
+                  })
+                : undefined
+            }
             onClick={addField}
           >
-            ＋ Add field
+            {uiText('＋ Add field')}
           </button>
         </header>
 
         <section className="experiment-system-fields" aria-labelledby="system-logging-fields">
           <div>
-            <h3 id="system-logging-fields">System fields</h3>
-            <span>Always present and locked</span>
+            <h3 id="system-logging-fields">{uiText('System fields')}</h3>
+            <span>{uiText('Always present and locked')}</span>
           </div>
           <ul>
             {EXPERIMENT_LOGGING_SYSTEM_FIELDS.map((field) => (
@@ -1431,7 +1495,7 @@ export function ExperimentLoggingPanel({
         <section className="experiment-custom-fields" aria-labelledby="custom-logging-fields">
           <div className="experiment-custom-fields-heading">
             <div>
-              <h3 id="custom-logging-fields">Custom required fields</h3>
+              <h3 id="custom-logging-fields">{uiText('Custom required fields')}</h3>
               <span>
                 {fields.length} / {EXPERIMENT_MAX_LOGGING_FIELDS}
               </span>
@@ -1440,7 +1504,7 @@ export function ExperimentLoggingPanel({
 
           {fields.length === 0 ? (
             <p className="experiment-inline-empty">
-              No custom fields. System provenance is still required for every run event.
+              {uiText('No custom fields. System provenance is still required for every run event.')}
             </p>
           ) : (
             <ol className="experiment-logging-field-list">
@@ -1448,7 +1512,7 @@ export function ExperimentLoggingPanel({
                 <li key={`${template.id}:${index}`} className="experiment-logging-field-row">
                   <div className="experiment-logging-field-basics">
                     <label>
-                      Key
+                      {uiText('Key')}
                       <input
                         value={field.key}
                         spellCheck={false}
@@ -1459,7 +1523,7 @@ export function ExperimentLoggingPanel({
                       />
                     </label>
                     <label>
-                      Label
+                      {uiText('Label')}
                       <input
                         value={field.label}
                         maxLength={80}
@@ -1469,7 +1533,7 @@ export function ExperimentLoggingPanel({
                       />
                     </label>
                     <label>
-                      Type
+                      {uiText('Type')}
                       <select
                         value={field.type}
                         onChange={(event) =>
@@ -1487,7 +1551,7 @@ export function ExperimentLoggingPanel({
                       </select>
                     </label>
                     <label>
-                      Category
+                      {uiText('Category')}
                       <select
                         value={field.category}
                         onChange={(event) =>
@@ -1505,11 +1569,11 @@ export function ExperimentLoggingPanel({
                       </select>
                     </label>
                     <label>
-                      Unit <small>optional</small>
+                      {uiText('Unit')} <small>{uiText('optional')}</small>
                       <input
                         value={field.unit ?? ''}
                         maxLength={32}
-                        placeholder="e.g. %, sec"
+                        placeholder={uiText('e.g. %, sec')}
                         onChange={(event) =>
                           replaceField(index, {
                             ...field,
@@ -1520,7 +1584,7 @@ export function ExperimentLoggingPanel({
                     </label>
                   </div>
                   <fieldset>
-                    <legend>Required at</legend>
+                    <legend>{uiText('Required at')}</legend>
                     {LOGGING_REQUIRED_AT.map((stage) => (
                       <label key={stage}>
                         <input
@@ -1540,12 +1604,14 @@ export function ExperimentLoggingPanel({
                   <button
                     type="button"
                     className="ghost-button experiment-delete-logging-field"
-                    aria-label={`Delete ${field.label || field.key || `field ${index + 1}`}`}
+                    aria-label={uiText('Delete {value1}', {
+                      value1: field.label || field.key || `field ${index + 1}`,
+                    })}
                     onClick={() =>
                       setFields((current) => current.filter((_, itemIndex) => itemIndex !== index))
                     }
                   >
-                    Delete
+                    {uiText('Delete')}
                   </button>
                 </li>
               ))}
@@ -1555,7 +1621,7 @@ export function ExperimentLoggingPanel({
 
         {issues.length > 0 && (
           <div className="experiment-logging-errors" role="alert">
-            <strong>Fix the template before saving</strong>
+            <strong>{uiText('Fix the template before saving')}</strong>
             <ul>
               {issues.map((issue) => (
                 <li key={issue}>{issue}</li>
@@ -1566,7 +1632,9 @@ export function ExperimentLoggingPanel({
 
         <footer className="experiment-logging-actions">
           <span>
-            {dirty ? 'Unsaved template changes' : `Version ${template.version} is current`}
+            {dirty
+              ? uiText('Unsaved template changes')
+              : uiText('Version {version} is current', { version: template.version })}
           </span>
           <button
             type="button"
@@ -1574,40 +1642,46 @@ export function ExperimentLoggingPanel({
             disabled={busy || !dirty || issues.length > 0}
             onClick={() => void save()}
           >
-            {busy ? 'Saving…' : `Save as version ${template.version + 1}`}
+            {busy
+              ? uiText('Saving…')
+              : uiText('Save as version {value1}', { value1: template.version + 1 })}
           </button>
         </footer>
       </article>
 
       <aside className="experiment-logging-preview">
         <article className="experiment-card">
-          <span className="eyebrow">CURRENT TEMPLATE · VERSION {template.version}</span>
-          <h2>JSONL example</h2>
-          <p className="experiment-example-warning">Example only — not an actual run</p>
+          <span className="eyebrow">
+            {uiText('CURRENT TEMPLATE · VERSION')} {template.version}
+          </span>
+          <h2>{uiText('JSONL example')}</h2>
+          <p className="experiment-example-warning">{uiText('Example only — not an actual run')}</p>
           <pre
             tabIndex={0}
-            aria-label={`Logging template version ${template.version} JSONL example`}
+            aria-label={uiText('Logging template version {version} JSONL example', {
+              version: template.version,
+            })}
           >
             <code>{buildExperimentLoggingExample(template)}</code>
           </pre>
           <dl>
             <div>
-              <dt>Template hash</dt>
+              <dt>{uiText('Template hash')}</dt>
               <dd title={template.templateHash}>{shortHash(template.templateHash)}</dd>
             </div>
             <div>
-              <dt>Created</dt>
+              <dt>{uiText('Created')}</dt>
               <dd>{formatDateTime(template.createdAt)}</dd>
             </div>
           </dl>
         </article>
         <article className="experiment-card experiment-log-policy-card">
-          <span className="eyebrow">LOG STORAGE BOUNDARY</span>
-          <h3>References, not raw logs</h3>
+          <span className="eyebrow">{uiText('LOG STORAGE BOUNDARY')}</span>
+          <h3>{uiText('References, not raw logs')}</h3>
           <p>
-            Run records keep validation state, missing required fields, size, and content hash. Raw
-            logs remain at their approved server or Runner source. The Runs tab reads a verified
-            copy into memory only when you choose Open log.
+            {uiText(
+              'Run records keep validation state, missing required fields, size, and content hash. Raw logs remain at their approved server or Runner source. The Runs tab reads a verified copy into memory only when you choose Open log.',
+            )}
           </p>
         </article>
       </aside>
@@ -1635,10 +1709,13 @@ function TrajectorySvg({
         role="img"
         aria-labelledby="experiment-chart-title experiment-chart-description"
       >
-        <title id="experiment-chart-title">{series.metricDisplayName} progress trajectory</title>
+        <title id="experiment-chart-title">
+          {series.metricDisplayName} {uiText('progress trajectory')}
+        </title>
         <desc id="experiment-chart-description">
-          {series.points.length} saved results for objective version {series.objectiveVersion}. The
-          accompanying data table contains the same values.
+          {series.points.length} {uiText('saved results for objective version')}{' '}
+          {series.objectiveVersion}
+          {uiText('. The accompanying data table contains the same values.')}
         </desc>
         {chart.valueTicks.map((tick) => (
           <g key={tick.value}>
@@ -1687,7 +1764,7 @@ function TrajectorySvg({
               y={chart.baselineY - 7}
               textAnchor="end"
             >
-              Baseline
+              {uiText('Baseline')}
             </text>
           </g>
         )}
@@ -1706,7 +1783,7 @@ function TrajectorySvg({
               y={chart.targetY - 7}
               textAnchor="end"
             >
-              Target
+              {uiText('Target')}
             </text>
           </g>
         )}
@@ -1766,6 +1843,7 @@ function MetricRecorder({
   onRecord: (value: number, trialId: string) => Promise<boolean>;
   onOpenObjective: () => void;
 }) {
+  useUiText();
   const [value, setValue] = useState('');
   const [trialId, setTrialId] = useState('');
   const canRecord = Boolean(objective?.locked && selectedIdeaId && ideas.length > 0);
@@ -1783,29 +1861,30 @@ function MetricRecorder({
 
   return (
     <article className="experiment-card experiment-recorder-card">
-      <span className="eyebrow">LOCAL RESULT ENTRY</span>
-      <h3>Record a comparable result</h3>
+      <span className="eyebrow">{uiText('LOCAL RESULT ENTRY')}</span>
+      <h3>{uiText('Record a comparable result')}</h3>
       <p>
-        This form records a manual local summary. It does not claim that a Runner executed the
-        experiment.
+        {uiText(
+          'This form records a manual local summary. It does not claim that a Runner executed the experiment.',
+        )}
       </p>
       {ideas.length === 0 ? (
-        <div className="experiment-inline-empty">Create an idea in Idea map first.</div>
+        <div className="experiment-inline-empty">{uiText('Create an idea in Idea map first.')}</div>
       ) : !objective?.locked ? (
         <button type="button" className="secondary-button" onClick={onOpenObjective}>
-          Freeze Goal & Metrics
+          {uiText('Freeze Goal & Metrics')}
         </button>
       ) : (
         <form className="experiment-stack-form" onSubmit={submit}>
           <label>
-            Idea
+            {uiText('Idea')}
             <select
               value={selectedIdeaId ?? ''}
               onChange={(event) => onSelectIdea(event.target.value)}
               required
             >
               <option value="" disabled>
-                Select an idea
+                {uiText('Select an idea')}
               </option>
               {ideas.map((idea) => (
                 <option key={idea.id} value={idea.id}>
@@ -1823,19 +1902,19 @@ function MetricRecorder({
               onChange={(event) => setValue(event.target.value)}
               placeholder={
                 objective.primaryMetric.unit
-                  ? `Value in ${objective.primaryMetric.unit}`
-                  : 'Numeric value'
+                  ? uiText('Value in {unit}', { unit: objective.primaryMetric.unit })
+                  : uiText('Numeric value')
               }
               required
             />
           </label>
           <label>
-            Trial ID <small>Optional provenance label</small>
+            {uiText('Trial ID')} <small>{uiText('Optional provenance label')}</small>
             <input
               value={trialId}
               onChange={(event) => setTrialId(event.target.value)}
               maxLength={128}
-              placeholder="trial-08"
+              placeholder={uiText('trial-08')}
             />
           </label>
           <button
@@ -1843,11 +1922,13 @@ function MetricRecorder({
             className="primary-button"
             disabled={busy || !canRecord || value.trim() === '' || !Number.isFinite(Number(value))}
           >
-            {busy ? 'Saving…' : 'Record local result'}
+            {busy ? uiText('Saving…') : uiText('Record local result')}
           </button>
         </form>
       )}
-      <small className="experiment-project-scope">Stored only in {project.name}.</small>
+      <small className="experiment-project-scope">
+        {uiText('Stored only in')} {project.name}.
+      </small>
     </article>
   );
 }
@@ -1878,6 +1959,7 @@ function IdeaMapPanel({
   }) => Promise<boolean>;
   onUpdateIdea: (input: UpdateExperimentIdeaInput) => Promise<boolean>;
 }) {
+  useUiText();
   const layout = useMemo(() => layoutIdeaLineage(ideas), [ideas]);
   const labels = useMemo(() => buildIdeaLineageLabels(ideas), [ideas]);
   const [outcomeFilter, setOutcomeFilter] = useState<ExperimentIdeaOutcome | 'all'>('all');
@@ -1897,20 +1979,20 @@ function IdeaMapPanel({
       <article className="experiment-card experiment-graph-card">
         <header className="experiment-card-head experiment-graph-toolbar">
           <div>
-            <span className="eyebrow">IDEA LINEAGE</span>
-            <h2>How each hypothesis developed</h2>
-            <p>Select a node to review its hypothesis, outcome, and next branch.</p>
+            <span className="eyebrow">{uiText('IDEA LINEAGE')}</span>
+            <h2>{uiText('How each hypothesis developed')}</h2>
+            <p>{uiText('Select a node to review its hypothesis, outcome, and next branch.')}</p>
           </div>
           <div className="experiment-graph-actions">
             <label>
-              Outcome
+              {uiText('Outcome')}
               <select
                 value={outcomeFilter}
                 onChange={(event) =>
                   setOutcomeFilter(event.target.value as ExperimentIdeaOutcome | 'all')
                 }
               >
-                <option value="all">All outcomes</option>
+                <option value="all">{uiText('All outcomes')}</option>
                 {EXPERIMENT_IDEA_OUTCOMES.map((outcome) => (
                   <option key={outcome} value={outcome}>
                     {outcomeLabel(outcome)}
@@ -1923,7 +2005,7 @@ function IdeaMapPanel({
               className="secondary-button"
               onClick={() => onComposer({ kind: 'root', parent: null })}
             >
-              ＋ New idea
+              {uiText('＋ New idea')}
             </button>
             <button
               type="button"
@@ -1931,7 +2013,7 @@ function IdeaMapPanel({
               disabled={!selectedIdea}
               onClick={() => selectedIdea && onComposer({ kind: 'child', parent: selectedIdea })}
             >
-              Branch selected
+              {uiText('Branch selected')}
             </button>
           </div>
         </header>
@@ -1947,24 +2029,26 @@ function IdeaMapPanel({
 
         {layout.issues.length > 0 && (
           <div className="experiments-integrity-warning" role="alert">
-            Some lineage links are incomplete or cyclic. The list remains available; no record was
-            silently reassigned.
+            {uiText(
+              'Some lineage links are incomplete or cyclic. The list remains available; no record was silently reassigned.',
+            )}
           </div>
         )}
 
         {ideas.length === 0 ? (
           <div className="experiment-graph-empty">
-            <strong>No ideas yet</strong>
+            <strong>{uiText('No ideas yet')}</strong>
             <span>
-              Create the first falsifiable hypothesis. Results are never generated automatically in
-              this local view.
+              {uiText(
+                'Create the first falsifiable hypothesis. Results are never generated automatically in this local view.',
+              )}
             </span>
             <button
               type="button"
               className="primary-button"
               onClick={() => onComposer({ kind: 'root', parent: null })}
             >
-              Create first idea
+              {uiText('Create first idea')}
             </button>
           </div>
         ) : (
@@ -1972,14 +2056,16 @@ function IdeaMapPanel({
             <div
               className="experiment-graph-scroll"
               tabIndex={0}
-              aria-label="Scrollable idea lineage graph"
+              aria-label={uiText('Scrollable idea lineage graph')}
             >
               <svg
                 width={layout.width}
                 height={layout.height}
                 viewBox={`0 0 ${layout.width} ${layout.height}`}
                 role="group"
-                aria-label={`${ideas.length} experiment ideas connected by parent relationships`}
+                aria-label={uiText('{length} experiment ideas connected by parent relationships', {
+                  length: ideas.length,
+                })}
               >
                 {layout.edges.map((edge) => (
                   <path
@@ -2025,7 +2111,7 @@ function IdeaMapPanel({
               </svg>
             </div>
             <details className="experiment-data-disclosure experiment-idea-list-disclosure">
-              <summary>View accessible idea list</summary>
+              <summary>{uiText('View accessible idea list')}</summary>
               <ul className="experiment-accessible-idea-list">
                 {ideas.map((idea) => (
                   <li key={idea.id}>
@@ -2067,7 +2153,7 @@ function IdeaMapPanel({
           />
         ) : (
           <article className="experiment-card experiment-inline-empty">
-            Select an idea to inspect and edit it.
+            {uiText('Select an idea to inspect and edit it.')}
           </article>
         )}
       </aside>
@@ -2091,6 +2177,7 @@ function IdeaComposer({
     phase: string;
   }) => Promise<boolean>;
 }) {
+  useUiText();
   const [title, setTitle] = useState('');
   const [hypothesis, setHypothesis] = useState('');
   const [phase, setPhase] = useState(parent?.phase ?? '');
@@ -2109,16 +2196,22 @@ function IdeaComposer({
     <form className="experiment-idea-composer" onSubmit={submit}>
       <header>
         <div>
-          <strong>{parent ? `Develop a child of “${parent.title}”` : 'Create a root idea'}</strong>
-          <span>Describe a falsifiable change; the outcome remains planned until reviewed.</span>
+          <strong>
+            {parent
+              ? uiText('Develop a child of “{title}”', { title: parent.title })
+              : uiText('Create a root idea')}
+          </strong>
+          <span>
+            {uiText('Describe a falsifiable change; the outcome remains planned until reviewed.')}
+          </span>
         </div>
         <button type="button" className="ghost-button" onClick={onCancel} disabled={busy}>
-          Cancel
+          {uiText('Cancel')}
         </button>
       </header>
       <div className="experiment-idea-form-grid">
         <label>
-          Idea title
+          {uiText('Idea title')}
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
@@ -2129,26 +2222,26 @@ function IdeaComposer({
           />
         </label>
         <label>
-          Phase
+          {uiText('Phase')}
           <input
             value={phase}
             onChange={(event) => setPhase(event.target.value)}
             maxLength={80}
-            placeholder="Phase 1 · Reproduce"
+            placeholder={uiText('Phase 1 · Reproduce')}
           />
         </label>
         <label className="full-width">
-          Hypothesis
+          {uiText('Hypothesis')}
           <textarea
             value={hypothesis}
             onChange={(event) => setHypothesis(event.target.value)}
             maxLength={4_000}
-            placeholder="If we change…, then the frozen metric should… because…"
+            placeholder={uiText('If we change…, then the frozen metric should… because…')}
           />
         </label>
       </div>
       <button type="submit" className="primary-button" disabled={busy || title.trim() === ''}>
-        {busy ? 'Saving…' : parent ? 'Create child idea' : 'Create idea'}
+        {busy ? uiText('Saving…') : parent ? uiText('Create child idea') : uiText('Create idea')}
       </button>
     </form>
   );
@@ -2169,6 +2262,7 @@ function IdeaInspector({
   onUpdate: (input: UpdateExperimentIdeaInput) => Promise<boolean>;
   onBranch: () => void;
 }) {
+  useUiText();
   const [title, setTitle] = useState(idea.title);
   const [hypothesis, setHypothesis] = useState(idea.hypothesis);
   const [phase, setPhase] = useState(idea.phase);
@@ -2197,9 +2291,15 @@ function IdeaInspector({
     >
       <header>
         <div>
-          <span className="eyebrow">SELECTED IDEA {label}</span>
+          <span className="eyebrow">
+            {uiText('SELECTED IDEA')} {label}
+          </span>
           <h2>{idea.title}</h2>
-          <p>{parent ? `Developed from ${parent.title}` : 'Root idea'}</p>
+          <p>
+            {parent
+              ? uiText('Developed from {title}', { title: parent.title })
+              : uiText('Root idea')}
+          </p>
         </div>
         <span className={`experiment-outcome-badge ${outcomeClass(idea.outcome)}`}>
           {OUTCOME_PRESENTATION[idea.outcome].symbol} {outcomeLabel(idea.outcome)}
@@ -2207,7 +2307,7 @@ function IdeaInspector({
       </header>
       <form className="experiment-stack-form" onSubmit={submit}>
         <label>
-          Title
+          {uiText('Title')}
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
@@ -2216,11 +2316,11 @@ function IdeaInspector({
           />
         </label>
         <label>
-          Phase
+          {uiText('Phase')}
           <input value={phase} onChange={(event) => setPhase(event.target.value)} maxLength={80} />
         </label>
         <label>
-          Hypothesis
+          {uiText('Hypothesis')}
           <textarea
             value={hypothesis}
             onChange={(event) => setHypothesis(event.target.value)}
@@ -2228,7 +2328,7 @@ function IdeaInspector({
           />
         </label>
         <label>
-          Reviewed outcome
+          {uiText('Reviewed outcome')}
           <select
             value={outcome}
             onChange={(event) => setOutcome(event.target.value as ExperimentIdeaOutcome)}
@@ -2241,25 +2341,27 @@ function IdeaInspector({
           </select>
         </label>
         <label>
-          Result summary
+          {uiText('Result summary')}
           <textarea
             value={resultSummary}
             onChange={(event) => setResultSummary(event.target.value)}
             maxLength={4_000}
-            placeholder="State evidence, uncertainty, guardrail result, and what should happen next."
+            placeholder={uiText(
+              'State evidence, uncertainty, guardrail result, and what should happen next.',
+            )}
           />
         </label>
         <div className="experiment-form-actions">
           <button type="submit" className="primary-button" disabled={busy || title.trim() === ''}>
-            {busy ? 'Saving…' : 'Save reviewed state'}
+            {busy ? uiText('Saving…') : uiText('Save reviewed state')}
           </button>
           <button type="button" className="secondary-button" onClick={onBranch} disabled={busy}>
-            Develop child
+            {uiText('Develop child')}
           </button>
         </div>
       </form>
       <small>
-        Version {idea.version} · Updated {formatDateTime(idea.updatedAt)}
+        {uiText('Version')} {idea.version} {uiText('· Updated')} {formatDateTime(idea.updatedAt)}
       </small>
     </article>
   );
@@ -2274,6 +2376,7 @@ function ExperimentReportPanel({
   series: readonly ExperimentMetricSeries[];
   selectedSeries: ExperimentMetricSeries | null;
 }) {
+  useUiText();
   const [reportSeriesKey, setReportSeriesKey] = useState<string | null>(
     selectedSeries?.key ?? null,
   );
@@ -2299,17 +2402,30 @@ function ExperimentReportPanel({
     >
       <header className="experiment-report-hero">
         <div>
-          <span className="eyebrow">LOCAL EVIDENCE REPORT · LIVE DRAFT</span>
+          <span className="eyebrow">{uiText('LOCAL EVIDENCE REPORT · LIVE DRAFT')}</span>
           <h2>
             {report.bestPoint && reportSeries
-              ? `Best result: ${reportSeries.metricDisplayName} ${formatExperimentMetric(report.bestPoint.value, report.bestPoint.unit)}`
-              : 'No metric result has been recorded yet'}
+              ? uiText('Best result: {metricDisplayName} {value2}', {
+                  metricDisplayName: reportSeries.metricDisplayName,
+                  value2: formatExperimentMetric(report.bestPoint.value, report.bestPoint.unit),
+                })
+              : uiText('No metric result has been recorded yet')}
           </h2>
           <p>
             {report.improvementFromBaseline === null
-              ? `${report.ideaCount} saved ideas and ${report.resultCount} comparable results.`
-              : `${formatExperimentMetric(report.improvementFromBaseline, reportSeries?.unit ?? null)} improvement in the objective direction versus baseline.`}{' '}
-            This report contains saved facts only and is not a final scientific conclusion.
+              ? uiText('{ideaCount} saved ideas and {resultCount} comparable results.', {
+                  ideaCount: report.ideaCount,
+                  resultCount: report.resultCount,
+                })
+              : uiText('{value1} improvement in the objective direction versus baseline.', {
+                  value1: formatExperimentMetric(
+                    report.improvementFromBaseline,
+                    reportSeries?.unit ?? null,
+                  ),
+                })}{' '}
+            {uiText(
+              'This report contains saved facts only and is not a final scientific conclusion.',
+            )}
           </p>
         </div>
         <div className="experiment-report-actions">
@@ -2319,7 +2435,7 @@ function ExperimentReportPanel({
             onSelect={setReportSeriesKey}
           />
           <button type="button" className="secondary-button" onClick={() => window.print()}>
-            Print / Save PDF
+            {uiText('Print / Save PDF')}
           </button>
         </div>
       </header>
@@ -2327,18 +2443,20 @@ function ExperimentReportPanel({
       <div className="experiment-report-stats">
         <ReportStat
           value={formatExperimentElapsed(report.elapsedMilliseconds)}
-          label="Elapsed local record span"
+          label={uiText('Elapsed local record span')}
         />
-        <ReportStat value={String(report.ideaCount)} label="Ideas developed" />
-        <ReportStat value={String(report.resultCount)} label="Metric results" />
-        <ReportStat value={String(report.trialCount)} label="Linked trial IDs" />
+        <ReportStat value={String(report.ideaCount)} label={uiText('Ideas developed')} />
+        <ReportStat value={String(report.resultCount)} label={uiText('Metric results')} />
+        <ReportStat value={String(report.trialCount)} label={uiText('Linked trial IDs')} />
       </div>
 
       <section className="experiment-report-section">
         <div className="experiment-report-section-heading">
-          <span className="eyebrow">OUTCOME</span>
+          <span className="eyebrow">{uiText('OUTCOME')}</span>
           <h3>
-            {bestIdea ? `Best recorded idea: ${bestIdea.title}` : 'Awaiting a comparable result'}
+            {bestIdea
+              ? uiText('Best recorded idea: {title}', { title: bestIdea.title })
+              : uiText('Awaiting a comparable result')}
           </h3>
         </div>
         <div className="experiment-report-outcomes">
@@ -2352,7 +2470,7 @@ function ExperimentReportPanel({
         </div>
         {report.bestIdeaPath.length > 0 && (
           <div className="experiment-best-path">
-            <strong>Best recorded lineage</strong>
+            <strong>{uiText('Best recorded lineage')}</strong>
             <ol>
               {report.bestIdeaPath.map((idea) => (
                 <li key={idea.id}>
@@ -2369,22 +2487,22 @@ function ExperimentReportPanel({
 
       <section className="experiment-report-section">
         <div className="experiment-report-section-heading">
-          <span className="eyebrow">PHASES</span>
-          <h3>Exploration by recorded phase</h3>
+          <span className="eyebrow">{uiText('PHASES')}</span>
+          <h3>{uiText('Exploration by recorded phase')}</h3>
         </div>
         {report.phases.length === 0 ? (
-          <p className="experiment-inline-empty">No phase names have been recorded.</p>
+          <p className="experiment-inline-empty">{uiText('No phase names have been recorded.')}</p>
         ) : (
           <div className="experiment-phase-list">
             {report.phases.map((phase) => (
               <div key={phase.phase}>
                 <strong>{phase.phase}</strong>
                 <span>
-                  {phase.ideaCount} ideas · {phase.resultCount} results
+                  {phase.ideaCount} {uiText('ideas ·')} {phase.resultCount} {uiText('results')}
                 </span>
                 <b>
                   {phase.bestValue === null
-                    ? 'No metric'
+                    ? uiText('No metric')
                     : formatExperimentMetric(phase.bestValue, reportSeries?.unit ?? null)}
                 </b>
               </div>
@@ -2396,40 +2514,40 @@ function ExperimentReportPanel({
       {reportSeries && (
         <section className="experiment-report-section experiment-provenance-receipt">
           <div className="experiment-report-section-heading">
-            <span className="eyebrow">REPRODUCIBILITY RECEIPT</span>
-            <h3>Comparable metric boundary</h3>
+            <span className="eyebrow">{uiText('REPRODUCIBILITY RECEIPT')}</span>
+            <h3>{uiText('Comparable metric boundary')}</h3>
           </div>
           <dl>
             <div>
-              <dt>Objective</dt>
+              <dt>{uiText('Objective')}</dt>
               <dd>v{reportSeries.objectiveVersion}</dd>
             </div>
             <div>
-              <dt>Metric</dt>
+              <dt>{uiText('Metric')}</dt>
               <dd>
                 {reportSeries.metricDisplayName} · {reportSeries.aggregation} ·{' '}
                 {reportSeries.direction}
               </dd>
             </div>
             <div>
-              <dt>Evaluator</dt>
+              <dt>{uiText('Evaluator')}</dt>
               <dd title={reportSeries.evaluatorHash}>{shortHash(reportSeries.evaluatorHash)}</dd>
             </div>
             <div>
-              <dt>Dataset</dt>
+              <dt>{uiText('Dataset')}</dt>
               <dd title={reportSeries.datasetHash}>{shortHash(reportSeries.datasetHash)}</dd>
             </div>
             <div>
-              <dt>Holdout</dt>
+              <dt>{uiText('Holdout')}</dt>
               <dd title={reportSeries.holdoutHash ?? undefined}>
                 {shortHash(reportSeries.holdoutHash)}
               </dd>
             </div>
             <div>
-              <dt>Target</dt>
+              <dt>{uiText('Target')}</dt>
               <dd>
                 {reportSeries.target === null
-                  ? 'Not set'
+                  ? uiText('Not set')
                   : formatExperimentMetric(reportSeries.target, reportSeries.unit)}
               </dd>
             </div>

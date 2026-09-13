@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useEffect, useId, useRef } from 'react';
 
 import {
@@ -271,6 +273,7 @@ export function LectureStructureEditor({
   resetLabel = 'Revert changes',
   allowedSourceListSectionTitles = [],
 }: LectureStructureEditorProps) {
+  useUiText();
   const generatedId = useId().replaceAll(':', '');
   const fieldId = idPrefix ?? `lecture-structure-${generatedId}`;
   const validation = lectureStructureEditorValidation(value, allowedSourceListSectionTitles);
@@ -312,13 +315,15 @@ export function LectureStructureEditor({
         </div>
         <span className="lecture-structure-editor-status" role="status" aria-live="polite">
           {value.mode === 'adaptive'
-            ? 'Adaptive'
-            : `${sections.length} section${sections.length === 1 ? '' : 's'}`}
+            ? uiText('Adaptive')
+            : uiText(sections.length === 1 ? '{length} section' : '{length} sections', {
+                length: sections.length,
+              })}
         </span>
       </header>
 
       <fieldset className="lecture-structure-mode" disabled={disabled}>
-        <legend>Structure mode</legend>
+        <legend>{uiText('Structure mode')}</legend>
         <label className={value.mode === 'adaptive' ? 'selected' : ''}>
           <input
             type="radio"
@@ -328,8 +333,10 @@ export function LectureStructureEditor({
             onChange={() => selectMode('adaptive')}
           />
           <span>
-            <strong>Adaptive</strong>
-            <small>Let GOSU choose section names and order from the selected sources.</small>
+            <strong>{uiText('Adaptive')}</strong>
+            <small>
+              {uiText('Let GOSU choose section names and order from the selected sources.')}
+            </small>
           </span>
         </label>
         <label className={value.mode === 'custom' ? 'selected' : ''}>
@@ -341,22 +348,24 @@ export function LectureStructureEditor({
             onChange={() => selectMode('custom')}
           />
           <span>
-            <strong>Custom outline</strong>
-            <small>Choose the section order and whether each section also appears in slides.</small>
+            <strong>{uiText('Custom outline')}</strong>
+            <small>
+              {uiText('Choose the section order and whether each section also appears in slides.')}
+            </small>
           </span>
         </label>
       </fieldset>
 
       {value.mode === 'adaptive' ? (
         <div className="lecture-structure-adaptive-note">
-          <strong>Source-led structure</strong>
-          <span>GOSU adapts the outline to the available evidence.</span>
+          <strong>{uiText('Source-led structure')}</strong>
+          <span>{uiText('GOSU adapts the outline to the available evidence.')}</span>
         </div>
       ) : (
         <div className="lecture-structure-custom-editor">
           <div className="lecture-structure-custom-toolbar">
             <div>
-              <strong>Custom sections</strong>
+              <strong>{uiText('Custom sections')}</strong>
               <span>
                 {sections.length} / {LECTURE_STUDIO_MAX_STRUCTURE_SECTIONS}
               </span>
@@ -371,13 +380,13 @@ export function LectureStructureEditor({
                 onChange(gosuLectureStructureTemplate());
               }}
             >
-              Load GOSU outline
+              {uiText('Load GOSU outline')}
             </button>
           </div>
 
           {!validation.valid && (
             <div className="lecture-structure-validation" id={`${fieldId}-validation`} role="alert">
-              <strong>Check the content flow</strong>
+              <strong>{uiText('Check the content flow')}</strong>
               <ul>
                 {validation.messages.map((message) => (
                   <li key={message}>{message}</li>
@@ -398,7 +407,7 @@ export function LectureStructureEditor({
                     {index + 1}
                   </span>
                   <label htmlFor={`${sectionId}-title`}>
-                    Section name
+                    {uiText('Section name')}
                     <input
                       id={`${sectionId}-title`}
                       value={section.title}
@@ -423,7 +432,7 @@ export function LectureStructureEditor({
                     )}
                   </label>
                   <label htmlFor={`${sectionId}-coverage`}>
-                    Cover in
+                    {uiText('Cover in')}
                     <select
                       id={`${sectionId}-coverage`}
                       value={section.coverage}
@@ -440,20 +449,20 @@ export function LectureStructureEditor({
                         )
                       }
                     >
-                      <option value="notes-and-slides">Notes &amp; slides</option>
-                      <option value="notes-only">Notes only</option>
+                      <option value="notes-and-slides">{uiText('Notes & slides')}</option>
+                      <option value="notes-only">{uiText('Notes only')}</option>
                     </select>
                   </label>
                   <div
                     className="lecture-structure-section-actions"
                     role="group"
-                    aria-label={`Actions for ${displayName}`}
+                    aria-label={uiText('Actions for {displayName}', { displayName: displayName })}
                   >
                     <button
                       type="button"
                       disabled={disabled || index === 0}
-                      aria-label={`Move ${displayName} up`}
-                      title="Move section up"
+                      aria-label={uiText('Move {displayName} up', { displayName: displayName })}
+                      title={uiText('Move section up')}
                       onClick={() => {
                         const nextKeys = [...rowKeys.current];
                         const [movedKey] = nextKeys.splice(index, 1);
@@ -467,8 +476,8 @@ export function LectureStructureEditor({
                     <button
                       type="button"
                       disabled={disabled || index === sections.length - 1}
-                      aria-label={`Move ${displayName} down`}
-                      title="Move section down"
+                      aria-label={uiText('Move {displayName} down', { displayName: displayName })}
+                      title={uiText('Move section down')}
                       onClick={() => {
                         const nextKeys = [...rowKeys.current];
                         const [movedKey] = nextKeys.splice(index, 1);
@@ -483,8 +492,8 @@ export function LectureStructureEditor({
                       type="button"
                       className="lecture-structure-remove-section"
                       disabled={disabled || sections.length <= 1}
-                      aria-label={`Remove ${displayName}`}
-                      title="Remove section"
+                      aria-label={uiText('Remove {displayName}', { displayName: displayName })}
+                      title={uiText('Remove section')}
                       onClick={() => {
                         const nextKeys = [...rowKeys.current];
                         nextKeys.splice(index, 1);
@@ -513,7 +522,7 @@ export function LectureStructureEditor({
               onChange(addLectureStructureSection(value));
             }}
           >
-            ＋ Add section
+            {uiText('＋ Add section')}
           </button>
         </div>
       )}
@@ -542,6 +551,7 @@ export function LectureDocumentFeaturesEditor({
   contextCopy = 'Choose what appears in the generated notes and slides.',
   idPrefix,
 }: LectureDocumentFeaturesEditorProps) {
+  useUiText();
   const generatedId = useId().replaceAll(':', '');
   const fieldId = idPrefix ?? `lecture-document-features-${generatedId}`;
   const update = <Key extends keyof LectureStudioDocumentFeatures>(
@@ -567,8 +577,10 @@ export function LectureDocumentFeaturesEditor({
             onChange={(event) => update('includeSlideTitlePage', event.target.checked)}
           />
           <span>
-            <strong>Show a title page in slides</strong>
-            <small id={`${fieldId}-title-page-help`}>Counts toward the slide-page target.</small>
+            <strong>{uiText('Show a title page in slides')}</strong>
+            <small id={`${fieldId}-title-page-help`}>
+              {uiText('Counts toward the slide-page target.')}
+            </small>
           </span>
         </label>
         <label htmlFor={`${fieldId}-evidence-labels`}>
@@ -580,10 +592,11 @@ export function LectureDocumentFeaturesEditor({
             onChange={(event) => update('showInlineEvidenceLabels', event.target.checked)}
           />
           <span>
-            <strong>Show source markers in notes and slides</strong>
+            <strong>{uiText('Show source markers in notes and slides')}</strong>
             <small id={`${fieldId}-evidence-labels-help`}>
-              Adds labels such as [P1] beside supported claims. Hidden markers still retain the
-              revision&apos;s evidence record.
+              {uiText(
+                "Adds labels such as [P1] beside supported claims. Hidden markers still retain the revision's evidence record.",
+              )}
             </small>
           </span>
         </label>
@@ -596,9 +609,9 @@ export function LectureDocumentFeaturesEditor({
             onChange={(event) => update('includeSourcesUsedSection', event.target.checked)}
           />
           <span>
-            <strong>Add a Sources used list to notes</strong>
+            <strong>{uiText('Add a Sources used list to notes')}</strong>
             <small id={`${fieldId}-sources-used-help`}>
-              Adds the source list at the end of the notes.
+              {uiText('Adds the source list at the end of the notes.')}
             </small>
           </span>
         </label>

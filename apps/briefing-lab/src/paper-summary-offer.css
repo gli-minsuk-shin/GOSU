@@ -1,0 +1,88 @@
+.gosu-paper-save-offer {
+  margin: 12px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid #cad8bc;
+  border-radius: 8px;
+  background: #f4f8ef;
+  color: #35462b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.gosu-paper-save-offer > strong {
+  display: block;
+  font-size: 13px;
+}
+.gosu-paper-save-offer > p {
+  margin: 5px 0 9px;
+  color: #637057;
+}
+.gosu-paper-save-offer > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.gosu-paper-save-offer button {
+  padding: 6px 11px;
+  border: 1px solid #9dbb7c;
+  border-radius: 6px;
+  background: white;
+  color: #405f25;
+  font: inherit;
+  cursor: pointer;
+}
+.gosu-paper-save-offer button:first-child {
+  background: #527b2f;
+  color: white;
+}
+.gosu-paper-save-offer button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.gosu-paper-save-offer button:focus-visible {
+  outline: 2px solid #527b2f;
+  outline-offset: 2px;
+}
+.gosu-paper-save-offer > small {
+  display: block;
+  margin-top: 6px;
+}
+.briefing-paper-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-block: 8px;
+}
+.briefing-paper-selection button {
+  border: 1px solid #d5dec9;
+  border-radius: 8px;
+  background: #f8faf5;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: #536c39;
+  cursor: pointer;
+}
+.briefing-paper-selection button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.briefing-paper-row-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-inline: 12px;
+}
+.briefing-paper-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 10px;
+  font-size: 12px;
+}
+.briefing-paper-select input {
+  accent-color: #537f08;
+  width: 15px;
+  height: 15px;
+}

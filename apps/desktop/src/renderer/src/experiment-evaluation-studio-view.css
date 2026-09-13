@@ -456,7 +456,7 @@
 
 .evaluation-preview-chart svg text {
   fill: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-meta);
 }
 
 .evaluation-preview-grid {

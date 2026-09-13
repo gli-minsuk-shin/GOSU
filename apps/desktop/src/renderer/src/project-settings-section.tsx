@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useState } from 'react';
 
 import {
@@ -24,6 +26,7 @@ export function ProjectSettingsSection({
   onSetProjectArchived: (input: SetProjectArchivedInput) => Promise<boolean>;
   onTrashProject: ProjectMutation;
 }) {
+  useUiText();
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [trashCandidateId, setTrashCandidateId] = useState<string | null>(null);
@@ -33,10 +36,12 @@ export function ProjectSettingsSection({
     return (
       <article className="settings-card">
         <div className="settings-card-heading">
-          <span>PROJECTS</span>
-          <h2>Local workspace unavailable</h2>
+          <span>{uiText('PROJECTS')}</span>
+          <h2>{uiText('Local workspace unavailable')}</h2>
           <p>
-            Appearance and Board defaults still work. Retry the workspace before managing projects.
+            {uiText(
+              'Appearance and Board defaults still work. Retry the workspace before managing projects.',
+            )}
           </p>
         </div>
       </article>
@@ -68,16 +73,17 @@ export function ProjectSettingsSection({
     <div className="settings-layout project-settings-layout">
       <article className="settings-card">
         <div className="settings-card-heading">
-          <span>ACTIVE PROJECTS</span>
-          <h2>Rename, archive, or move a project to Trash</h2>
+          <span>{uiText('ACTIVE PROJECTS')}</span>
+          <h2>{uiText('Rename, archive, or move a project to Trash')}</h2>
           <p>
-            Archive pauses normal work while keeping the project easy to restore. Trash is a
-            separate, recoverable step with two warnings. Renaming keeps the stable project slug.
+            {uiText(
+              'Archive pauses normal work while keeping the project easy to restore. Trash is a separate, recoverable step with two warnings. Renaming keeps the stable project slug.',
+            )}
           </p>
         </div>
         {activeProjects.length === 0 ? (
           <div className="settings-empty-row">
-            No active projects. Create one or restore it from Trash.
+            {uiText('No active projects. Create one or restore it from Trash.')}
           </div>
         ) : (
           <div className="project-settings-list">
@@ -90,8 +96,8 @@ export function ProjectSettingsSection({
                   <div className="project-settings-summary">
                     <strong>{project.name}</strong>
                     <span>
-                      {counts.tasks} tasks · {counts.objectiveVersions} objective revisions · stable
-                      slug {project.slug}
+                      {counts.tasks} {uiText('tasks ·')} {counts.objectiveVersions}{' '}
+                      {uiText('objective revisions · stable slug')} {project.slug}
                     </span>
                   </div>
                   {isRenaming ? (
@@ -115,7 +121,7 @@ export function ProjectSettingsSection({
                         onChange={(event) => setRenameDraft(event.target.value)}
                         minLength={2}
                         maxLength={120}
-                        aria-label={`New name for ${project.name}`}
+                        aria-label={uiText('New name for {name}', { name: project.name })}
                         autoFocus
                         required
                         disabled={busyAction !== null}
@@ -125,7 +131,7 @@ export function ProjectSettingsSection({
                         className="primary-button"
                         disabled={busyAction !== null || renameDraft.trim().length < 2}
                       >
-                        Save name
+                        {uiText('Save name')}
                       </button>
                       <button
                         type="button"
@@ -133,7 +139,7 @@ export function ProjectSettingsSection({
                         onClick={() => setRenamingProjectId(null)}
                         disabled={busyAction !== null}
                       >
-                        Cancel
+                        {uiText('Cancel')}
                       </button>
                     </form>
                   ) : (
@@ -148,7 +154,7 @@ export function ProjectSettingsSection({
                         }}
                         disabled={busyAction !== null}
                       >
-                        Rename
+                        {uiText('Rename')}
                       </button>
                       <button
                         type="button"
@@ -162,10 +168,12 @@ export function ProjectSettingsSection({
                         }
                         disabled={busyAction !== null || chatBusy}
                         title={
-                          chatBusy ? 'Stop or wait for the active Codex turn first' : undefined
+                          chatBusy
+                            ? uiText('Stop or wait for the active Codex turn first')
+                            : undefined
                         }
                       >
-                        Archive
+                        {uiText('Archive')}
                       </button>
                       <button
                         type="button"
@@ -177,17 +185,20 @@ export function ProjectSettingsSection({
                         }}
                         disabled={busyAction !== null || chatBusy}
                         title={
-                          chatBusy ? 'Stop or wait for the active Codex turn first' : undefined
+                          chatBusy
+                            ? uiText('Stop or wait for the active Codex turn first')
+                            : undefined
                         }
                       >
-                        Move to Trash
+                        {uiText('Move to Trash')}
                       </button>
                     </div>
                   )}
                   {chatBusy && (
                     <p className="project-settings-warning">
-                      Stop or wait for this project's active Codex turn before archiving it or
-                      moving it to Trash.
+                      {uiText(
+                        "Stop or wait for this project's active Codex turn before archiving it or moving it to Trash.",
+                      )}
                     </p>
                   )}
                 </section>
@@ -200,15 +211,20 @@ export function ProjectSettingsSection({
       {trashCandidate && (
         <article className="settings-card project-trash-confirmation" role="alertdialog">
           <div className="settings-card-heading">
-            <span>WARNING 1 OF 2</span>
-            <h2>Move “{trashCandidate.name}” to Trash?</h2>
+            <span>{uiText('WARNING 1 OF 2')}</span>
+            <h2>
+              {uiText('Move “')}
+              {trashCandidate.name}
+              {uiText('” to Trash?')}
+            </h2>
             <p>
-              The project will disappear from the switcher, but its tasks, objectives, Board,
-              project chat, and action provenance stay locally preserved. You can restore it below.
+              {uiText(
+                'The project will disappear from the switcher, but its tasks, objectives, Board, project chat, and action provenance stay locally preserved. You can restore it below.',
+              )}
             </p>
           </div>
           <label>
-            Type the exact project name to continue
+            {uiText('Type the exact project name to continue')}
             <input
               value={trashName}
               onChange={(event) => setTrashName(event.target.value)}
@@ -225,7 +241,9 @@ export function ProjectSettingsSection({
               onClick={() => {
                 if (trashName !== trashCandidate.name) return;
                 const confirmed = window.confirm(
-                  `Final warning (2 of 2): move “${trashCandidate.name}” to recoverable Trash?`,
+                  uiText('Final warning (2 of 2): move “{name}” to recoverable Trash?', {
+                    name: trashCandidate.name,
+                  }),
                 );
                 if (!confirmed) return;
                 void onTrashProject({
@@ -236,7 +254,7 @@ export function ProjectSettingsSection({
                 });
               }}
             >
-              Continue to final warning
+              {uiText('Continue to final warning')}
             </button>
             <button
               type="button"
@@ -244,7 +262,7 @@ export function ProjectSettingsSection({
               onClick={closeTrashConfirmation}
               disabled={busyAction !== null}
             >
-              Cancel
+              {uiText('Cancel')}
             </button>
           </div>
         </article>
@@ -252,15 +270,16 @@ export function ProjectSettingsSection({
 
       <article className="settings-card">
         <div className="settings-card-heading">
-          <span>ARCHIVED</span>
-          <h2>Paused projects</h2>
+          <span>{uiText('ARCHIVED')}</span>
+          <h2>{uiText('Paused projects')}</h2>
           <p>
-            Archived projects keep their Board, goals, notes, and chat history. Restore one to
-            active before changing it or asking its AI agent to work.
+            {uiText(
+              'Archived projects keep their Board, goals, notes, and chat history. Restore one to active before changing it or asking its AI agent to work.',
+            )}
           </p>
         </div>
         {archivedProjects.length === 0 ? (
-          <div className="settings-empty-row">No archived projects.</div>
+          <div className="settings-empty-row">{uiText('No archived projects.')}</div>
         ) : (
           <div className="project-settings-list">
             {archivedProjects.map((project) => {
@@ -270,12 +289,12 @@ export function ProjectSettingsSection({
                   <div className="project-settings-summary">
                     <strong>{project.name}</strong>
                     <span>
-                      Archived{' '}
+                      {uiText('Archived')}{' '}
                       {project.archivedAt
                         ? new Date(project.archivedAt).toLocaleString()
-                        : 'locally'}{' '}
-                      · {counts.tasks} tasks · {counts.objectiveVersions} objective revisions
-                      preserved
+                        : uiText('locally')}{' '}
+                      · {counts.tasks} {uiText('tasks ·')} {counts.objectiveVersions}{' '}
+                      {uiText('objective revisions preserved')}
                     </span>
                   </div>
                   <div className="project-settings-actions">
@@ -291,7 +310,7 @@ export function ProjectSettingsSection({
                         })
                       }
                     >
-                      Restore to active
+                      {uiText('Restore to active')}
                     </button>
                     <button
                       type="button"
@@ -303,7 +322,7 @@ export function ProjectSettingsSection({
                         setRenamingProjectId(null);
                       }}
                     >
-                      Move to Trash
+                      {uiText('Move to Trash')}
                     </button>
                   </div>
                 </section>

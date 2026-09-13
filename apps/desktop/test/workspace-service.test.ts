@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   WorkspaceService,
@@ -9,6 +9,7 @@ import {
   DEFAULT_WORKSPACE_BOARD_SETTINGS,
   resolveWorkspaceBoardSettings,
   type EmptyProjectTrashReceipt,
+  type WorkspaceObjective,
   type WorkspaceOperation,
   type WorkspaceSnapshot,
 } from '../src/shared/workspace-contracts';
@@ -832,6 +833,593 @@ describe('WorkspaceService', () => {
     expect(objectives[0]).toEqual(locked);
     expect(objectives[1]).toEqual(next);
   });
+
+  it('rejects stale manual save, freeze and revision requests after plan identity replacement', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const project = await service.createProject({ name: 'Manual objective identity guard' });
+    const first = await service.saveObjective({
+      ...objectiveFields,
+      projectId: project.id,
+      expectedEntityVersion: 0,
+      expectedObjectiveId: null,
+      expectedObjectiveVersion: null,
+    });
+    const stale = {
+      projectId: project.id,
+      expectedEntityVersion: first.entityVersion,
+      expectedObjectiveId: first.id,
+      expectedObjectiveVersion: first.objectiveVersion,
+    };
+    const replacement = await service.applyResearchPlanObjective(
+      {
+        ...objectiveFields,
+        ...stale,
+        activate: false,
+        goal: 'Preserve the newly requested plan against an older editor draft',
+      },
+      (state, operation) => storage.commit(state, operation),
+    );
+    expect(replacement.entityVersion).toBe(first.entityVersion);
+    const before = await service.snapshot();
+    const operations = structuredClone(storage.operations);
+    await expect(service.saveObjective({ ...objectiveFields, ...stale })).rejects.toMatchObject({
+      code: 'version_conflict',
+    });
+    await expect(service.lockObjective(stale)).rejects.toMatchObject({ code: 'version_conflict' });
+    await expect(service.startObjectiveVersion(stale)).rejects.toMatchObject({
+      code: 'version_conflict',
+    });
+    expect(await service.snapshot()).toEqual(before);
+    expect(storage.operations).toEqual(operations);
+
+    const revised = await service.saveObjective({
+      ...objectiveFields,
+      projectId: project.id,
+      expectedEntityVersion: replacement.entityVersion,
+      expectedObjectiveId: replacement.id,
+      expectedObjectiveVersion: replacement.objectiveVersion,
+    });
+    expect(revised.id).toBe(replacement.id);
+    expect(revised).not.toHaveProperty('expectedObjectiveId');
+    expect(revised).not.toHaveProperty('expectedObjectiveVersion');
+    const frozen = await service.lockObjective({
+      projectId: project.id,
+      expectedEntityVersion: revised.entityVersion,
+      expectedObjectiveId: revised.id,
+      expectedObjectiveVersion: revised.objectiveVersion,
+    });
+    const next = await service.startObjectiveVersion({
+      projectId: project.id,
+      expectedEntityVersion: frozen.entityVersion,
+      expectedObjectiveId: frozen.id,
+      expectedObjectiveVersion: frozen.objectiveVersion,
+    });
+    expect(next).toMatchObject({ objectiveVersion: 3, entityVersion: 1, locked: false });
+    expect((await service.snapshot()).objectives).toEqual([first, frozen, next]);
+  });
+
+  it.each(['id-only', 'version-only', 'wrong-version'] as const)(
+    'rejects incomplete or mismatched manual objective identity: %s',
+    async (kind) => {
+      const storage = new MemoryWorkspaceStorage();
+      const service = new WorkspaceService(storage);
+      const project = await service.createProject({ name: 'Paired objective identity guard' });
+      const objective = await service.saveObjective({
+        ...objectiveFields,
+        projectId: project.id,
+        expectedEntityVersion: 0,
+      });
+      const command = {
+        projectId: project.id,
+        expectedEntityVersion: objective.entityVersion,
+        ...(kind === 'id-only'
+          ? { expectedObjectiveId: objective.id }
+          : kind === 'version-only'
+            ? { expectedObjectiveVersion: objective.objectiveVersion }
+            : {
+                expectedObjectiveId: objective.id,
+                expectedObjectiveVersion: objective.objectiveVersion + 1,
+              }),
+      };
+      const before = await service.snapshot();
+      await expect(service.saveObjective({ ...objectiveFields, ...command })).rejects.toMatchObject(
+        { code: 'version_conflict' },
+      );
+      await expect(service.lockObjective(command)).rejects.toMatchObject({
+        code: 'version_conflict',
+      });
+      await expect(service.startObjectiveVersion(command)).rejects.toMatchObject({
+        code: 'version_conflict',
+      });
+      expect(await service.snapshot()).toEqual(before);
+      expect(storage.operations).toHaveLength(2);
+    },
+  );
+
+  describe('applyResearchPlanObjective', () => {
+    async function fixture() {
+      const storage = new MemoryWorkspaceStorage();
+      const service = new WorkspaceService(storage);
+      const project = await service.createProject({ name: 'Research Plan Project' });
+      const commit = vi.fn(
+        (
+          state: WorkspaceSnapshot,
+          operation: WorkspaceOperation,
+          objective: WorkspaceObjective,
+        ) => {
+          expect(state.objectives).toContainEqual(objective);
+          expect(operation.entityId).toBe(objective.id);
+          expect(operation.workspaceRevision).toBe(state.revision);
+          storage.commit(state, operation);
+        },
+      );
+      const input = {
+        ...objectiveFields,
+        projectId: project.id,
+        expectedEntityVersion: 0,
+        expectedObjectiveId: null,
+        expectedObjectiveVersion: null,
+        activate: false,
+      };
+      return { storage, service, project, commit, input };
+    }
+
+    it.each([false, true])(
+      'creates a first objective with activate=%s and commits exactly once',
+      async (activate) => {
+        const { service, storage, commit, input } = await fixture();
+        const objective = await service.applyResearchPlanObjective({ ...input, activate }, commit);
+        expect(objective).toMatchObject({
+          ...objectiveFields,
+          objectiveVersion: 1,
+          entityVersion: 1,
+          locked: activate,
+        });
+        expect(commit).toHaveBeenCalledTimes(1);
+        expect(storage.operations).toHaveLength(2);
+        expect(storage.operations[1]).toMatchObject({
+          commandType: 'research.plan.apply',
+          baseVersion: null,
+          workspaceRevision: 2,
+          payload: {
+            ...objectiveFields,
+            objectiveVersion: 1,
+            newEntityVersion: 1,
+            previousObjectiveId: null,
+            activationRequested: activate,
+            locked: activate,
+            needsIdentity: false,
+          },
+        });
+        expect((await service.snapshot()).objectives).toEqual([objective]);
+        expect(await new WorkspaceService(storage).snapshot()).toEqual(await service.snapshot());
+      },
+    );
+
+    it('preserves a draft and activates a separate reviewed replacement objective', async () => {
+      const { service, commit, input } = await fixture();
+      const draft = await service.applyResearchPlanObjective(input, commit);
+      commit.mockClear();
+      const replacement = {
+        ...input,
+        expectedEntityVersion: draft.entityVersion,
+        expectedObjectiveId: draft.id,
+        expectedObjectiveVersion: draft.objectiveVersion,
+        activate: true,
+        goal: 'Compare the revised model under stricter compute limits',
+        budget: { ...input.budget, maxTrials: 4 },
+        guardrails: [],
+      };
+      const activated = await service.applyResearchPlanObjective(replacement, commit);
+      expect(activated).toMatchObject({
+        objectiveVersion: 2,
+        entityVersion: 1,
+        locked: true,
+        goal: replacement.goal,
+        budget: replacement.budget,
+        guardrails: [],
+      });
+      expect(activated.id).not.toBe(draft.id);
+      expect((await service.snapshot()).objectives).toEqual([draft, activated]);
+      expect(commit).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['evaluatorHash', 'datasetHash', 'holdoutHash'] as const)(
+      'keeps pending %s editable and rejects manual freeze until resolved',
+      async (identity) => {
+        const { service, storage, commit, input } = await fixture();
+        const draft = await service.applyResearchPlanObjective(
+          {
+            ...input,
+            activate: true,
+            primaryMetric: { ...input.primaryMetric, [identity]: 'pending:research-plan' },
+          },
+          commit,
+        );
+        expect(draft.locked).toBe(false);
+        expect(storage.operations.at(-1)?.payload).toMatchObject({
+          activationRequested: true,
+          needsIdentity: true,
+          locked: false,
+        });
+        const before = await service.snapshot();
+        await expect(
+          service.lockObjective({
+            projectId: input.projectId,
+            expectedEntityVersion: draft.entityVersion,
+          }),
+        ).rejects.toMatchObject({ code: 'objective_identity_pending' });
+        expect(await service.snapshot()).toEqual(before);
+        expect(commit).toHaveBeenCalledTimes(1);
+        const resolved = await service.saveObjective({
+          ...objectiveFields,
+          projectId: input.projectId,
+          expectedEntityVersion: draft.entityVersion,
+        });
+        expect(
+          (
+            await service.lockObjective({
+              projectId: input.projectId,
+              expectedEntityVersion: resolved.entityVersion,
+            })
+          ).locked,
+        ).toBe(true);
+      },
+    );
+
+    it.each([false, true])(
+      'preserves frozen history when creating a successor with activate=%s',
+      async (activate) => {
+        const { service, storage, commit, input } = await fixture();
+        const frozen = await service.applyResearchPlanObjective(
+          { ...input, activate: true },
+          commit,
+        );
+        commit.mockClear();
+        const next = await service.applyResearchPlanObjective(
+          {
+            ...input,
+            expectedEntityVersion: frozen.entityVersion,
+            expectedObjectiveId: frozen.id,
+            expectedObjectiveVersion: frozen.objectiveVersion,
+            activate,
+            goal: 'Evaluate a different model under the same fixed metric lineage',
+          },
+          commit,
+        );
+        expect(next).toMatchObject({ objectiveVersion: 2, entityVersion: 1, locked: activate });
+        expect(next.id).not.toBe(frozen.id);
+        expect((await service.snapshot()).objectives).toEqual([frozen, next]);
+        expect(storage.operations.at(-1)?.payload).toMatchObject({
+          previousObjectiveId: frozen.id,
+          newEntityVersion: 1,
+        });
+        expect(commit).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('rejects a stale v1/e1 identity after v2/e1 replaced the current objective', async () => {
+      const { service, storage, commit, input } = await fixture();
+      const first = await service.applyResearchPlanObjective({ ...input, activate: true }, commit);
+      const nextInput = {
+        ...input,
+        expectedObjectiveId: first.id,
+        expectedObjectiveVersion: first.objectiveVersion,
+        expectedEntityVersion: first.entityVersion,
+        activate: true,
+      };
+      const second = await service.applyResearchPlanObjective(nextInput, commit);
+      expect(first.entityVersion).toBe(1);
+      expect(second).toMatchObject({ objectiveVersion: 2, entityVersion: 1 });
+      const before = await service.snapshot();
+      commit.mockClear();
+      await expect(service.applyResearchPlanObjective(nextInput, commit)).rejects.toMatchObject({
+        code: 'version_conflict',
+      });
+      expect(commit).not.toHaveBeenCalled();
+      expect(await service.snapshot()).toEqual(before);
+      expect(storage.state).toEqual(before);
+    });
+
+    it.each(['id', 'objectiveVersion', 'entityVersion'] as const)(
+      'rejects an independently stale %s before committing',
+      async (field) => {
+        const { service, commit, input } = await fixture();
+        const current = await service.applyResearchPlanObjective(input, commit);
+        const nextInput = {
+          ...input,
+          expectedObjectiveId: current.id as string | null,
+          expectedObjectiveVersion: current.objectiveVersion,
+          expectedEntityVersion: current.entityVersion,
+        };
+        if (field === 'id') nextInput.expectedObjectiveId = null;
+        if (field === 'objectiveVersion') nextInput.expectedObjectiveVersion += 1;
+        if (field === 'entityVersion') nextInput.expectedEntityVersion += 1;
+        const before = await service.snapshot();
+        commit.mockClear();
+        await expect(service.applyResearchPlanObjective(nextInput, commit)).rejects.toMatchObject({
+          code: 'version_conflict',
+        });
+        expect(commit).not.toHaveBeenCalled();
+        expect(await service.snapshot()).toEqual(before);
+      },
+    );
+
+    it.each([
+      { expectedObjectiveId: '11111111-1111-4111-8111-111111111111' },
+      { expectedObjectiveVersion: 1 },
+    ])('requires null objective identity before the first plan: %j', async (identity) => {
+      const { service, commit, input } = await fixture();
+      const before = await service.snapshot();
+      await expect(
+        service.applyResearchPlanObjective({ ...input, ...identity }, commit),
+      ).rejects.toMatchObject({ code: 'version_conflict' });
+      expect(commit).not.toHaveBeenCalled();
+      expect(await service.snapshot()).toEqual(before);
+    });
+
+    it('preserves both pending plan snapshots when a new activated plan resolves the latest one', async () => {
+      const { service, storage, commit, input } = await fixture();
+      const first = await service.applyResearchPlanObjective(
+        {
+          ...input,
+          activate: true,
+          primaryMetric: { ...input.primaryMetric, datasetHash: 'pending:dataset:first' },
+        },
+        commit,
+      );
+      const second = await service.applyResearchPlanObjective(
+        {
+          ...input,
+          expectedObjectiveId: first.id,
+          expectedObjectiveVersion: first.objectiveVersion,
+          expectedEntityVersion: first.entityVersion,
+          activate: true,
+          goal: 'Compare an independent model with a separate unresolved dataset',
+          primaryMetric: { ...input.primaryMetric, datasetHash: 'pending:dataset:second' },
+          budget: { ...input.budget, maxTrials: 3 },
+        },
+        commit,
+      );
+      expect(first.locked).toBe(false);
+      expect(second).toMatchObject({ locked: false, objectiveVersion: 2, entityVersion: 1 });
+      expect(second.id).not.toBe(first.id);
+      expect((await service.snapshot()).objectives).toEqual([first, second]);
+      const activated = await service.applyResearchPlanObjective(
+        {
+          ...input,
+          goal: second.goal,
+          budget: second.budget,
+          expectedObjectiveId: second.id,
+          expectedObjectiveVersion: second.objectiveVersion,
+          expectedEntityVersion: second.entityVersion,
+          activate: true,
+        },
+        commit,
+      );
+      expect(activated).toMatchObject({ locked: true, objectiveVersion: 3, entityVersion: 1 });
+      expect(new Set([first.id, second.id, activated.id]).size).toBe(3);
+      expect((await service.snapshot()).objectives).toEqual([first, second, activated]);
+      expect((await new WorkspaceService(storage).snapshot()).objectives).toEqual([
+        first,
+        second,
+        activated,
+      ]);
+      expect(storage.operations.at(-1)?.payload).toMatchObject({
+        previousObjectiveId: second.id,
+        needsIdentity: false,
+      });
+      expect(commit).toHaveBeenCalledTimes(3);
+    });
+
+    it('serializes competing plan writes and rejects stale CAS before the callback', async () => {
+      const { service, storage, commit, input } = await fixture();
+      const results = await Promise.allSettled([
+        service.applyResearchPlanObjective(input, commit),
+        service.applyResearchPlanObjective(input, commit),
+      ]);
+      expect(results[0].status).toBe('fulfilled');
+      expect(results[1]).toMatchObject({
+        status: 'rejected',
+        reason: { code: 'version_conflict', details: { expectedVersion: 0, currentVersion: 1 } },
+      });
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(storage.operations).toHaveLength(2);
+      expect((await service.snapshot()).objectives).toHaveLength(1);
+    });
+
+    it('rolls back a failed callback without leaking its edits and recovers the queued mutation', async () => {
+      const { service, storage, commit, input } = await fixture();
+      const draft = await service.applyResearchPlanObjective(input, commit);
+      const before = await service.snapshot();
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const failedCommit = vi.fn(
+        async (
+          state: WorkspaceSnapshot,
+          _operation: WorkspaceOperation,
+          objective: WorkspaceObjective,
+        ) => {
+          expect(storage.state).toEqual(before);
+          Object.assign(state.projects[0]!, { name: 'Must not leak' });
+          Object.assign(objective, { goal: 'Must not leak callback edits' });
+          entered();
+          await gate;
+          throw new Error('research_plan_commit_failed');
+        },
+      );
+      const failed = service.applyResearchPlanObjective(
+        {
+          ...input,
+          expectedEntityVersion: draft.entityVersion,
+          expectedObjectiveId: draft.id,
+          expectedObjectiveVersion: draft.objectiveVersion,
+          activate: true,
+        },
+        failedCommit,
+      );
+      const rejected = expect(failed).rejects.toThrow('research_plan_commit_failed');
+      await started;
+      const afterFailure = service.snapshot();
+      const recovery = service.createTask({
+        projectId: input.projectId,
+        title: 'Continue after failed plan',
+      });
+      expect(storage.state).toEqual(before);
+      release();
+      await rejected;
+      expect(await afterFailure).toEqual(before);
+      const task = await recovery;
+      expect(failedCommit).toHaveBeenCalledTimes(1);
+      const after = await service.snapshot();
+      expect(after.objectives).toEqual(before.objectives);
+      expect(after.projects).toEqual(before.projects);
+      expect(after.tasks).toEqual([task]);
+      expect(after.revision).toBe(before.revision + 1);
+      expect(storage.operations.map((operation) => operation.commandType)).toEqual([
+        'project.create',
+        'research.plan.apply',
+        'task.create',
+      ]);
+    });
+
+    it.each(['archived', 'trashed'] as const)(
+      'rejects %s projects without invoking the callback',
+      async (status) => {
+        const { service, project, commit, input } = await fixture();
+        if (status === 'archived') {
+          await service.setProjectArchived({
+            projectId: project.id,
+            expectedVersion: project.version,
+            archived: true,
+          });
+        } else {
+          await service.trashProject({ projectId: project.id, expectedVersion: project.version });
+        }
+        const before = await service.snapshot();
+        await expect(service.applyResearchPlanObjective(input, commit)).rejects.toMatchObject({
+          code: `project_${status}`,
+        });
+        expect(commit).not.toHaveBeenCalled();
+        expect(await service.snapshot()).toEqual(before);
+      },
+    );
+
+    it.each([
+      { activate: 'true' },
+      { activate: undefined },
+      { expectedObjectiveId: undefined },
+      { expectedObjectiveId: 'invalid-id' },
+      { expectedObjectiveVersion: undefined },
+      { expectedObjectiveVersion: 0 },
+      { unexpected: true },
+      { budget: { ...objectiveFields.budget, maxTrials: 0 } },
+    ])('rejects invalid input %j without committing', async (invalid) => {
+      const { service, commit, input } = await fixture();
+      const before = await service.snapshot();
+      await expect(
+        service.applyResearchPlanObjective(
+          { ...input, ...invalid } as Parameters<WorkspaceService['applyResearchPlanObjective']>[0],
+          commit,
+        ),
+      ).rejects.toThrow();
+      expect(commit).not.toHaveBeenCalled();
+      expect(await service.snapshot()).toEqual(before);
+    });
+  });
+
+  it('refreshes a committed plan after a lost acknowledgment without dropping queued work', async () => {
+    const storage = new MemoryWorkspaceStorage();
+    const service = new WorkspaceService(storage);
+    const project = await service.createProject({ name: 'Lost acknowledgment recovery' });
+    const before = await service.snapshot();
+    await expect(
+      service.applyResearchPlanObjective(
+        {
+          ...objectiveFields,
+          projectId: project.id,
+          expectedEntityVersion: 0,
+          expectedObjectiveId: null,
+          expectedObjectiveVersion: null,
+          activate: true,
+        },
+        (state, operation) => {
+          storage.commit(state, operation);
+          throw new Error('acknowledgment_lost');
+        },
+      ),
+    ).rejects.toThrow('acknowledgment_lost');
+    expect(await service.snapshot()).toEqual(before);
+    const committed = storage.load()!;
+    const operationsBeforeRefresh = structuredClone(storage.operations);
+    const reload = vi.spyOn(storage, 'load');
+    const refreshed = await service.refreshCommittedState();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(refreshed).toEqual(committed);
+    expect(storage.operations).toEqual(operationsBeforeRefresh);
+    expect(storage.state).toEqual(committed);
+    Object.assign(refreshed.projects[0]!, { name: 'Caller cannot edit cache' });
+    expect(await service.snapshot()).toEqual(committed);
+
+    const first = service.createTask({ projectId: project.id, title: 'Queued before refresh' });
+    const refreshBetween = service.refreshCommittedState();
+    const second = service.createTask({ projectId: project.id, title: 'Queued after refresh' });
+    const [firstTask, intermediate, secondTask] = await Promise.all([
+      first,
+      refreshBetween,
+      second,
+    ]);
+    expect(intermediate.tasks).toEqual([firstTask]);
+    expect(intermediate.revision).toBe(committed.revision + 1);
+    const final = await service.snapshot();
+    expect(final.objectives).toEqual(committed.objectives);
+    expect(final.tasks).toEqual([firstTask, secondTask]);
+    expect(final.revision).toBe(committed.revision + 2);
+    expect(
+      storage.operations
+        .slice(operationsBeforeRefresh.length)
+        .map((operation) => operation.commandType),
+    ).toEqual(['task.create', 'task.create']);
+  });
+
+  it.each(['read-error', 'invalid-snapshot', 'missing-snapshot'] as const)(
+    'preserves the previous cache after refresh %s and recovers its queue',
+    async (failure) => {
+      const storage = new MemoryWorkspaceStorage();
+      const service = new WorkspaceService(storage);
+      const project = await service.createProject({ name: 'Refresh failure recovery' });
+      const before = await service.snapshot();
+      const operations = structuredClone(storage.operations);
+      const reload = vi.spyOn(storage, 'load').mockImplementationOnce(() => {
+        if (failure === 'read-error') throw new Error('storage_read_failed');
+        if (failure === 'missing-snapshot') return null;
+        return { ...before, revision: -1 };
+      });
+      const refresh = service.refreshCommittedState();
+      const rejection = expect(refresh).rejects.toThrow();
+      const preserved = service.snapshot();
+      const recovery = service.createTask({
+        projectId: project.id,
+        title: 'Queue survives refresh error',
+      });
+      await rejection;
+      expect(await preserved).toEqual(before);
+      expect(reload).toHaveBeenCalledTimes(1);
+      const task = await recovery;
+      expect((await service.snapshot()).tasks).toEqual([task]);
+      expect((await service.snapshot()).revision).toBe(before.revision + 1);
+      expect(storage.operations.slice(0, operations.length)).toEqual(operations);
+      expect(storage.operations).toHaveLength(operations.length + 1);
+      expect(storage.operations.at(-1)?.commandType).toBe('task.create');
+    },
+  );
 
   it('reloads durable state and exposes one pending operation per committed mutation', async () => {
     const storage = new MemoryWorkspaceStorage();

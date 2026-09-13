@@ -1,3 +1,5 @@
+import { uiText } from '@gosu/ui/language';
+
 import type { ReactNode } from 'react';
 import rehypeKatex from 'rehype-katex';
 import rehypeSanitize, {
@@ -28,7 +30,8 @@ const PROJECT_CHAT_MARKDOWN_COMPONENTS: Components = {
   a: ({ children, href }) => <ProjectChatLink href={href}>{children}</ProjectChatLink>,
   img: ({ alt }) => (
     <span className="project-chat-markdown-image-blocked">
-      Remote image blocked{alt?.trim() ? `: ${alt.trim()}` : ''}
+      {uiText('Remote image blocked')}
+      {alt?.trim() ? `: ${alt.trim()}` : ''}
     </span>
   ),
 };

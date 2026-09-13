@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./codex-runtime-discovery": {
+      "types": "./dist/codex-runtime-discovery.d.ts",
+      "default": "./dist/codex-runtime-discovery.js"
     }
   },
   "scripts": {

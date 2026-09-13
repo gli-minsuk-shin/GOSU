@@ -21,6 +21,13 @@ export type ModelModuleBlock = Readonly<{
   repeatCount: number | string;
 }>;
 
+export type ModelModulePort = Readonly<{
+  name: string;
+  shape: TensorShape;
+  binding?: 'internal' | 'external' | 'loop-carried';
+  bindingId?: string;
+}>;
+
 export type ModelModule = Readonly<{
   id: string;
   name: string;
@@ -30,6 +37,8 @@ export type ModelModule = Readonly<{
   lane: number;
   inputShape: TensorShape;
   outputShape: TensorShape;
+  inputPorts?: readonly ModelModulePort[];
+  outputPorts?: readonly ModelModulePort[];
   transform: string;
   activation: string | null;
   formula: string;
@@ -122,6 +131,8 @@ export type ModelConnection = Readonly<{
   id: string;
   source: string;
   target: string;
+  sourcePort?: string;
+  targetPort?: string;
   tensorName: string;
   shape: TensorShape;
   activationNorm: number;

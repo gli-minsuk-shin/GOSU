@@ -5,6 +5,8 @@ import {
   gradientAt,
   gradientStateAt,
   moduleGradientHealth,
+  modelShapeConsistencyFindings,
+  modelFormulaConsistencyFindings,
   moduleFormulaConsistencyFindings,
   parameterCoverageAt,
   runAgentReview,
@@ -26,6 +28,56 @@ describe('Model Lab domain', () => {
     expect(shapesEqual(['B', 256], ['B', 256])).toBe(true);
     expect(shapesEqual(['B', 256], ['B', 128])).toBe(false);
     expect(shapesEqual(['B', 'T', 64], ['B', 64, 'T'])).toBe(false);
+  });
+
+  it('keeps canonical module shapes and sole external intent boundaries aligned with ports', () => {
+    const edge = residualClassifier.connections[0]!;
+    const source = residualClassifier.modules.find((module) => module.id === edge.source)!;
+    const target = residualClassifier.modules.find((module) => module.id === edge.target)!;
+    const model = {
+      ...residualClassifier,
+      intent: {
+        ...residualClassifier.intent,
+        expectedInput: source.inputShape,
+        expectedOutput: target.outputShape,
+      },
+      modules: [
+        {
+          ...source,
+          inputPorts: [
+            { name: 'features', shape: source.inputShape, binding: 'external' as const },
+          ],
+          outputPorts: [{ name: 'hidden', shape: edge.shape, binding: 'internal' as const }],
+        },
+        {
+          ...target,
+          inputPorts: [{ name: 'hidden', shape: edge.shape, binding: 'internal' as const }],
+          outputPorts: [
+            { name: 'result', shape: target.outputShape, binding: 'external' as const },
+          ],
+        },
+      ],
+      connections: [{ ...edge, sourcePort: 'hidden', targetPort: 'hidden' }],
+    };
+    expect(modelShapeConsistencyFindings(model)).toEqual([]);
+
+    const staleShape = {
+      ...model,
+      modules: model.modules.map((module, index) =>
+        index === 1 ? { ...module, outputShape: ['WRONG'] } : module,
+      ),
+    };
+    expect(modelShapeConsistencyFindings(staleShape)).toEqual(
+      expect.arrayContaining([expect.stringContaining('first canonical output port')]),
+    );
+
+    const staleIntent = {
+      ...model,
+      intent: { ...model.intent, expectedOutput: ['WRONG'] },
+    };
+    expect(modelShapeConsistencyFindings(staleIntent)).toEqual(
+      expect.arrayContaining([expect.stringContaining('sole external output')]),
+    );
   });
 
   it('classifies observed gradient signals and never calls a broken path healthy', () => {
@@ -104,11 +156,178 @@ describe('Model Lab domain', () => {
     );
   });
 
+  it('rejects collapsed equality chains while accepting separated equations and tuple assignments', () => {
+    const base = {
+      ...residualClassifier.modules[1]!,
+      id: 'assignment-formula',
+      name: 'Assignment formula fixture',
+      activation: null,
+      parameterCount: 0,
+    };
+    const transform = ['a = slice(v)', 'gate = sigmoid(a)', 'h = concat(v * gate, u)'].join('\n');
+    const invalid = moduleFormulaConsistencyFindings({
+      ...base,
+      transform,
+      formula: String.raw`a=\operatorname{slice}(v)=gate=\sigma(a)=h=\operatorname{concat}(v\odot gate,u)`,
+    });
+    const separated = moduleFormulaConsistencyFindings({
+      ...base,
+      transform,
+      formula: String.raw`a=\operatorname{slice}(v),\quad gate=\sigma(a),\quad h=\operatorname{concat}(v\odot gate,u)`,
+    });
+    const aligned = moduleFormulaConsistencyFindings({
+      ...base,
+      transform,
+      formula: String.raw`\begin{aligned}a&=\operatorname{slice}(v)\\gate&=\sigma(a)\\h&=\operatorname{concat}(v\odot gate,u)\end{aligned}`,
+    });
+    const tuple = moduleFormulaConsistencyFindings({
+      ...base,
+      transform: 'gamma, delta = chunk(Linear(q)); h = (1 + gamma) * h + delta',
+      formula: String.raw`[\gamma,\delta]=\operatorname{chunk}_2(Wq+b),\quad h=(1+\gamma)\odot h+\delta`,
+    });
+    const legitimateIdentity = moduleFormulaConsistencyFindings({
+      ...base,
+      transform: 'variance = second_moment(x)',
+      formula: String.raw`\operatorname{Var}(x)=\mathbb E[x^2]-\mathbb E[x]^2=\sigma^2`,
+    });
+
+    expect(invalid).toContain(
+      'Assignment formula fixture — assignment-formula: independent transform assignments were collapsed into one LaTeX equality chain.',
+    );
+    expect(separated).toEqual([]);
+    expect(aligned).toEqual([]);
+    expect(tuple).toEqual([]);
+    expect(legitimateIdentity).toEqual([]);
+  });
+
+  it('uses exact output port identities for named-value liveness instead of display labels', () => {
+    const source = {
+      ...residualClassifier.modules[1]!,
+      id: 'statistics',
+      name: 'Statistics',
+      transform: 'mean = reduce_mean(x)\nmaxv = reduce_max(x)',
+      activation: null,
+      formula: [
+        String.raw`mean=\operatorname{mean}(x)`,
+        String.raw`maxv=\operatorname{max}(x)`,
+      ].join('\n'),
+      outputPorts: [
+        { name: 'mean', shape: ['B', 1], binding: 'internal' as const },
+        { name: 'maxv', shape: ['B', 1], binding: 'internal' as const },
+      ],
+    };
+    const edge = residualClassifier.connections[0]!;
+    const model = {
+      ...residualClassifier,
+      modules: [source],
+      connections: [
+        {
+          ...edge,
+          id: 'mean-edge',
+          source: source.id,
+          target: 'mean-consumer',
+          sourcePort: 'mean',
+          tensorName: 'channel mean',
+        },
+        {
+          ...edge,
+          id: 'max-edge',
+          source: source.id,
+          target: 'max-consumer',
+          sourcePort: 'maxv',
+          tensorName: 'channel maximum',
+        },
+      ],
+    };
+
+    expect(modelFormulaConsistencyFindings(model, { includeNamedValueLiveness: true })).toEqual([]);
+  });
+
+  it('rejects high-confidence dead named values without flagging consumed or implicit outputs', () => {
+    const producer = {
+      ...residualClassifier.modules[1]!,
+      id: 'producer',
+      name: 'Producer',
+      transform: 'a = slice(v); gate = sigmoid(a); h = concat(v, u)',
+      activation: null,
+      formula:
+        'a=\\operatorname{slice}(v),\\quad gate=\\sigma(a),\\quad h=\\operatorname{concat}(v,u)',
+    };
+    const target = {
+      ...residualClassifier.modules[2]!,
+      id: 'target',
+      name: 'Target',
+      inputShape: producer.outputShape,
+      outputShape: producer.outputShape,
+      transform: 'z = Linear(h)',
+      activation: null,
+      formula: 'z=Wh+b',
+    };
+    const connection = {
+      ...residualClassifier.connections[0]!,
+      id: 'producer-target',
+      source: producer.id,
+      target: target.id,
+      tensorName: 'h',
+      shape: producer.outputShape,
+    };
+    const deadModel = {
+      ...residualClassifier,
+      modules: [producer, target],
+      connections: [connection],
+    };
+    const usedModel = {
+      ...deadModel,
+      modules: [
+        {
+          ...producer,
+          transform: 'a = slice(v); gate = sigmoid(a); h = concat(v * gate, u)',
+          formula:
+            'a=\\operatorname{slice}(v),\\quad gate=\\sigma(a),\\quad h=\\operatorname{concat}(v\\odot gate,u)',
+        },
+        target,
+      ],
+    };
+    const inPlaceModel = {
+      ...deadModel,
+      modules: [
+        {
+          ...producer,
+          transform: 'h = project(v); h = h + residual(h)',
+          formula: 'h_0=P(v),\\quad h=h_0+R(h_0)',
+        },
+        target,
+      ],
+    };
+
+    expect(modelFormulaConsistencyFindings(deadModel, { includeNamedValueLiveness: true })).toEqual(
+      expect.arrayContaining([expect.stringContaining('computed named value gate')]),
+    );
+    expect(
+      modelFormulaConsistencyFindings(usedModel, { includeNamedValueLiveness: true }),
+    ).not.toEqual(expect.arrayContaining([expect.stringContaining('computed named value gate')]));
+    expect(
+      modelFormulaConsistencyFindings(inPlaceModel, { includeNamedValueLiveness: true }),
+    ).not.toEqual(expect.arrayContaining([expect.stringContaining('computed named value h')]));
+  });
+
   it('finds no recognized text-to-equation contradiction in any bundled module', () => {
     const findings = sampleModels.flatMap((model) =>
       model.modules.flatMap((module) => moduleFormulaConsistencyFindings(module)),
     );
     expect(findings).toEqual([]);
+  });
+
+  it('treats max and soft-threshold equations as semantic ReLU positive-part equivalents', () => {
+    expect(
+      moduleFormulaConsistencyFindings({
+        id: 'threshold-head',
+        name: 'Threshold head',
+        transform: 'beta = sign(v) * ReLU(abs(v) - tau)',
+        activation: 'soft threshold',
+        formula: String.raw`\beta=\operatorname{sign}(v)\max\{|v|-\tau,0\}`,
+      }),
+    ).toEqual([]);
   });
 
   it('does not call a textual code anchor verified when its source artifact is absent', () => {

@@ -34,7 +34,7 @@
 
 .pdf-preview > header span {
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: var(--font-control);
 }
 
 .pdf-preview-controls .ghost-button {

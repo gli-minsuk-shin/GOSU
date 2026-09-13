@@ -275,7 +275,7 @@
 
 .experiment-chart-marker text {
   fill: currentColor;
-  font-size: 9px;
+  font-size: var(--font-caption);
   font-weight: 900;
   pointer-events: none;
 }
@@ -413,7 +413,7 @@
   display: block;
   margin: 10px 0 12px;
   color: var(--green);
-  font-size: clamp(24px, 3vw, 34px);
+  font-size: var(--font-display);
   letter-spacing: -0.04em;
 }
 
@@ -724,7 +724,7 @@
 
 .experiment-report-hero h2 {
   max-width: 980px;
-  font-size: clamp(22px, 3vw, 36px);
+  font-size: var(--font-display);
 }
 
 .experiment-report-hero p {
@@ -760,7 +760,7 @@
 
 .experiment-report-stats strong {
   color: var(--green);
-  font-size: clamp(22px, 3vw, 32px);
+  font-size: var(--font-display);
   letter-spacing: -0.04em;
 }
 
@@ -788,7 +788,7 @@
 
 .experiment-report-section-heading h3 {
   margin: 0;
-  font-size: clamp(18px, 2.4vw, 24px);
+  font-size: var(--font-heading);
 }
 
 .experiment-report-outcomes {

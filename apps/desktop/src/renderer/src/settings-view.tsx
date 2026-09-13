@@ -1,4 +1,8 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+import { UI_TEXT_SIZE_BASE_PX } from '@gosu/ui/typography';
+
 import { useState } from 'react';
+import { ApplicationLanguageSettings } from './application-language-ui';
 
 import type {
   CodexCollaborationModeDescriptor,
@@ -28,10 +32,12 @@ import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-perso
 import {
   AgentAddOnsSection,
   type AgentProviderConnectionUiState,
+  type CodexConnectionControls,
   type HermesProjectChatConnectionUiState,
 } from './agent-addons-section';
 import { AgentSettingsSection } from './agent-settings-section';
 import { AiDefaultSettings } from './ai-default-settings';
+import { ModelRoutingSettings, type useModelRouting } from './model-routing-settings';
 import { BoardSettingsForm } from './board-settings-form';
 import {
   LectureDocumentFeaturesEditor,
@@ -69,14 +75,42 @@ const TEXT_SIZE_CHOICES: ReadonlyArray<{
   description: string;
   sample: string;
 }> = [
-  { id: 'compact', label: 'Compact', description: '12 px base', sample: 'Aa' },
-  { id: 'default', label: 'Default', description: '14 px base', sample: 'Aa' },
-  { id: 'large', label: 'Large', description: '16 px base', sample: 'Aa' },
-  { id: 'extra-large', label: 'Extra large', description: '18 px base', sample: 'Aa' },
+  {
+    id: 'compact',
+    label: 'Compact',
+    description: `${UI_TEXT_SIZE_BASE_PX.compact} px base`,
+    sample: 'Aa',
+  },
+  {
+    id: 'default',
+    label: 'Default',
+    description: `${UI_TEXT_SIZE_BASE_PX.default} px base`,
+    sample: 'Aa',
+  },
+  {
+    id: 'large',
+    label: 'Large',
+    description: `${UI_TEXT_SIZE_BASE_PX.large} px base`,
+    sample: 'Aa',
+  },
+  {
+    id: 'extra-large',
+    label: 'Extra large',
+    description: `${UI_TEXT_SIZE_BASE_PX['extra-large']} px base`,
+    sample: 'Aa',
+  },
 ];
 
 export type SettingsCategory =
-  'appearance' | 'board' | 'lecture' | 'projects' | 'trash' | 'overleaf' | 'servers' | 'agent';
+  | 'appearance'
+  | 'board'
+  | 'lecture'
+  | 'projects'
+  | 'trash'
+  | 'overleaf'
+  | 'servers'
+  | 'agent'
+  | 'briefing';
 
 export function SettingsView({
   preferences,
@@ -100,6 +134,7 @@ export function SettingsView({
   onSaveOverleafPersonalToken,
   onRemoveOverleafPersonalToken,
   models,
+  modelRouting,
   modelsLoading,
   onRefreshModels,
   initialCategory = 'appearance',
@@ -116,8 +151,10 @@ export function SettingsView({
   onRefreshHermesConnection,
   claudeCodeConnection,
   onRefreshClaudeCodeConnection,
+  codexConnection,
 }: {
   preferences: UserPreferences;
+  codexConnection?: CodexConnectionControls | undefined;
   onChange: (preferences: UserPreferences) => void;
   workspaceSnapshot: WorkspaceSnapshot | null;
   busyAction: string | null;
@@ -140,6 +177,7 @@ export function SettingsView({
   onSaveOverleafPersonalToken: (input: SaveOverleafPersonalTokenInput) => Promise<void>;
   onRemoveOverleafPersonalToken: () => Promise<void>;
   models: readonly CodexModel[];
+  modelRouting?: ReturnType<typeof useModelRouting>;
   modelsLoading: boolean;
   onRefreshModels: () => void | Promise<void>;
   initialCategory?: SettingsCategory;
@@ -157,6 +195,7 @@ export function SettingsView({
   claudeCodeConnection?: AgentProviderConnectionUiState;
   onRefreshClaudeCodeConnection?: () => Promise<unknown>;
 }) {
+  useUiText();
   const [localCategory, setLocalCategory] = useState<SettingsCategory>(initialCategory);
   const [lectureStructureDraft, setLectureStructureDraft] = useState(() =>
     structuredClone(preferences.defaultLectureStructure),
@@ -206,8 +245,18 @@ export function SettingsView({
   };
 
   return (
-    <section className="settings-shell" aria-label="Application settings">
-      <nav className="settings-category-nav" aria-label="Settings categories">
+    <section className="settings-shell" aria-label={uiText('Application settings')}>
+      <nav className="settings-category-nav" aria-label={uiText('Settings categories')}>
+        <button
+          type="button"
+          className={activeCategory === 'briefing' ? 'active' : ''}
+          aria-current={activeCategory === 'briefing' ? 'page' : undefined}
+          onClick={() => selectCategory('briefing')}
+        >
+          <i aria-hidden="true">▤</i>
+          <strong>Briefing Lab</strong>
+          <span>메일·Calendar·할 일·AI 설정</span>
+        </button>
         <button
           type="button"
           className={activeCategory === 'appearance' ? 'active' : ''}
@@ -215,8 +264,8 @@ export function SettingsView({
           onClick={() => selectCategory('appearance')}
         >
           <i aria-hidden="true">◐</i>
-          <strong>Appearance</strong>
-          <span>Theme and font size</span>
+          <strong>{uiText('Appearance')}</strong>
+          <span>{uiText('Theme and font size')}</span>
         </button>
         <button
           type="button"
@@ -225,8 +274,8 @@ export function SettingsView({
           onClick={() => selectCategory('board')}
         >
           <i aria-hidden="true">▦</i>
-          <strong>Board defaults</strong>
-          <span>New project template</span>
+          <strong>{uiText('Board defaults')}</strong>
+          <span>{uiText('New project template')}</span>
         </button>
         <button
           type="button"
@@ -235,8 +284,8 @@ export function SettingsView({
           onClick={() => selectCategory('lecture')}
         >
           <i aria-hidden="true">▤</i>
-          <strong>Lecture defaults</strong>
-          <span>Notes &amp; slides structure</span>
+          <strong>{uiText('Lecture defaults')}</strong>
+          <span>{uiText('Notes & slides structure')}</span>
         </button>
         <button
           type="button"
@@ -245,8 +294,8 @@ export function SettingsView({
           onClick={() => selectCategory('projects')}
         >
           <i aria-hidden="true">◇</i>
-          <strong>Projects</strong>
-          <span>Rename, archive, move to Trash</span>
+          <strong>{uiText('Projects')}</strong>
+          <span>{uiText('Rename, archive, move to Trash')}</span>
         </button>
         <button
           type="button"
@@ -255,8 +304,8 @@ export function SettingsView({
           onClick={() => selectCategory('trash')}
         >
           <i aria-hidden="true">♲</i>
-          <strong>Trash</strong>
-          <span>Restore or permanently remove</span>
+          <strong>{uiText('Trash')}</strong>
+          <span>{uiText('Restore or permanently remove')}</span>
         </button>
         <button
           type="button"
@@ -264,9 +313,9 @@ export function SettingsView({
           aria-current={activeCategory === 'overleaf' ? 'page' : undefined}
           onClick={() => selectCategory('overleaf')}
         >
-          <i aria-hidden="true">OL</i>
-          <strong>Overleaf</strong>
-          <span>Personal Git token</span>
+          <i aria-hidden="true">{uiText('OL')}</i>
+          <strong>{uiText('Overleaf')}</strong>
+          <span>{uiText('Personal Git token')}</span>
         </button>
         <button
           type="button"
@@ -275,8 +324,8 @@ export function SettingsView({
           onClick={() => selectCategory('servers')}
         >
           <i aria-hidden="true">⌁</i>
-          <strong>Servers</strong>
-          <span>Status refresh interval</span>
+          <strong>{uiText('Servers')}</strong>
+          <span>{uiText('Status refresh interval')}</span>
         </button>
         <button
           type="button"
@@ -285,24 +334,27 @@ export function SettingsView({
           onClick={() => selectCategory('agent')}
         >
           <i aria-hidden="true">✦</i>
-          <strong>AI Agent</strong>
-          <span>Defaults, native mode, project prompt</span>
+          <strong>{uiText('AI Agent')}</strong>
+          <span>{uiText('Defaults, native mode, project prompt')}</span>
         </button>
       </nav>
 
       <div className="settings-category-content">
-        {activeCategory === 'appearance' ? (
+        {activeCategory === 'briefing' ? (
+          <div aria-label="Briefing Lab 설정">공용 Briefing Lab 설정</div>
+        ) : activeCategory === 'appearance' ? (
           <div className="settings-layout">
+            <ApplicationLanguageSettings />
             <article className="settings-card">
               <div className="settings-card-heading">
-                <span>APPEARANCE</span>
-                <h2>Choose how GOSU looks</h2>
-                <p>System follows the light or dark appearance selected in macOS.</p>
+                <span>{uiText('APPEARANCE')}</span>
+                <h2>{uiText('Choose how GOSU looks')}</h2>
+                <p>{uiText('System follows the light or dark appearance selected in macOS.')}</p>
               </div>
               <div
                 className="preference-options appearance-options"
                 role="group"
-                aria-label="Appearance"
+                aria-label={uiText('Appearance')}
               >
                 {APPEARANCE_CHOICES.map((choice) => (
                   <button
@@ -313,8 +365,8 @@ export function SettingsView({
                     onClick={() => onChange({ ...preferences, appearance: choice.id })}
                   >
                     <i aria-hidden="true">{choice.icon}</i>
-                    <strong>{choice.label}</strong>
-                    <span>{choice.description}</span>
+                    <strong>{uiText(choice.label)}</strong>
+                    <span>{uiText(choice.description)}</span>
                   </button>
                 ))}
               </div>
@@ -322,17 +374,18 @@ export function SettingsView({
 
             <article className="settings-card">
               <div className="settings-card-heading">
-                <span>FONT SIZE</span>
-                <h2>Make every workspace comfortable to read</h2>
+                <span>{uiText('FONT SIZE')}</span>
+                <h2>{uiText('Make every workspace comfortable to read')}</h2>
                 <p>
-                  The change applies immediately across chat, Board, forms, rendered notes, and
-                  navigation.
+                  {uiText(
+                    'The change applies immediately across chat, Board, forms, rendered notes, and navigation.',
+                  )}
                 </p>
               </div>
               <div
                 className="preference-options text-size-options"
                 role="group"
-                aria-label="Font size"
+                aria-label={uiText('Font size')}
               >
                 {TEXT_SIZE_CHOICES.map((choice) => (
                   <button
@@ -342,18 +395,21 @@ export function SettingsView({
                     key={choice.id}
                     onClick={() => onChange({ ...preferences, textSize: choice.id })}
                   >
-                    <i aria-hidden="true">{choice.sample}</i>
-                    <strong>{choice.label}</strong>
-                    <span>{choice.description}</span>
+                    <i aria-hidden="true" style={{ fontSize: UI_TEXT_SIZE_BASE_PX[choice.id] }}>
+                      {choice.sample}
+                    </i>
+                    <strong>{uiText(choice.label)}</strong>
+                    <span>{uiText(choice.description)}</span>
                   </button>
                 ))}
               </div>
               <div className="settings-preview">
-                <span>LIVE PREVIEW</span>
-                <h3>Readable research starts with comfortable text.</h3>
+                <span>{uiText('LIVE PREVIEW')}</span>
+                <h3>{uiText('Readable research starts with comfortable text.')}</h3>
                 <p>
-                  GOSU keeps this preference on this Mac. It is not sent to Hosted Sync or included
-                  in a project repository.
+                  {uiText(
+                    'GOSU keeps this preference on this Mac. It is not sent to Hosted Sync or included in a project repository.',
+                  )}
                 </p>
               </div>
             </article>
@@ -361,16 +417,16 @@ export function SettingsView({
         ) : activeCategory === 'board' ? (
           <article className="settings-card default-board-template-card">
             <div className="settings-card-heading">
-              <span>DEFAULT BOARD TEMPLATE</span>
-              <h2>Choose the workflow for new projects</h2>
+              <span>{uiText('DEFAULT BOARD TEMPLATE')}</span>
+              <h2>{uiText('Choose the workflow for new projects')}</h2>
               <p>
-                Rename Backlog and the other columns, reorder them, or set WIP limits. Saving this
-                template affects only projects created afterward; existing project Boards stay
-                unchanged.
+                {uiText(
+                  'Rename Backlog and the other columns, reorder them, or set WIP limits. Saving this template affects only projects created afterward; existing project Boards stay unchanged.',
+                )}
               </p>
             </div>
             <div className="settings-template-callout">
-              <strong>New project default</strong>
+              <strong>{uiText('New project default')}</strong>
               <span>
                 {preferences.defaultBoardTemplate.columnOrder
                   .map((status) => preferences.defaultBoardTemplate.columnLabels[status])
@@ -387,18 +443,18 @@ export function SettingsView({
         ) : activeCategory === 'lecture' ? (
           <article className="settings-card lecture-default-structure-card">
             <div className="settings-card-heading">
-              <span>LECTURE DEFAULTS</span>
-              <h2>Choose default structure and document elements</h2>
+              <span>{uiText('LECTURE DEFAULTS')}</span>
+              <h2>{uiText('Choose default structure and document elements')}</h2>
               <p>
-                New Lecture Studios copy these choices. A project can override the visible document
-                elements, and each Studio can be adjusted later. Existing Studios and saved
-                revisions do not change.
+                {uiText(
+                  'New Lecture Studios copy these choices. A project can override the visible document elements, and each Studio can be adjusted later. Existing Studios and saved revisions do not change.',
+                )}
               </p>
             </div>
             <LectureStructureEditor
               value={lectureStructureDraft}
               onChange={setLectureStructureDraft}
-              heading="Default notes & slides structure"
+              heading={uiText('Default notes & slides structure')}
               idPrefix="settings-lecture-structure"
               contextCopy="This workspace content flow is copied into each new Studio. Slides follow the same order in a shorter form."
               onReset={() =>
@@ -408,11 +464,15 @@ export function SettingsView({
               resetLabel="Revert changes"
             />
             <div className="settings-template-callout" role="status" aria-live="polite">
-              <strong>{lectureStructureDirty ? 'Unsaved changes' : 'Current default'}</strong>
+              <strong>
+                {lectureStructureDirty ? uiText('Unsaved changes') : uiText('Current default')}
+              </strong>
               <span>
                 {lectureStructureDraft.mode === 'adaptive'
-                  ? 'Adaptive to each Studio’s selected sources'
-                  : `${lectureStructureDraft.sections.length} custom sections`}
+                  ? uiText('Adaptive to each Studio’s selected sources')
+                  : uiText('{length} custom sections', {
+                      length: lectureStructureDraft.sections.length,
+                    })}
               </span>
             </div>
             <div className="settings-form-actions">
@@ -432,7 +492,7 @@ export function SettingsView({
                   });
                 }}
               >
-                Save default structure
+                {uiText('Save default structure')}
               </button>
             </div>
 
@@ -442,18 +502,22 @@ export function SettingsView({
             >
               <div className="lecture-default-document-elements-heading">
                 <div>
-                  <h3 id="lecture-document-defaults-heading">Visible document elements</h3>
+                  <h3 id="lecture-document-defaults-heading">
+                    {uiText('Visible document elements')}
+                  </h3>
                   <p>
-                    Choose a workspace default or customize what new Studios save to one project.
+                    {uiText(
+                      'Choose a workspace default or customize what new Studios save to one project.',
+                    )}
                   </p>
                 </div>
                 <label>
-                  Defaults for
+                  {uiText('Defaults for')}
                   <select
                     value={lectureDocumentScopeProjectId ?? ''}
                     onChange={(event) => selectLectureDocumentScope(event.target.value || null)}
                   >
-                    <option value="">Workspace</option>
+                    <option value="">{uiText('Workspace')}</option>
                     {activeLectureDefaultProjects.map((project) => (
                       <option value={project.id} key={project.id}>
                         {project.name}
@@ -465,17 +529,18 @@ export function SettingsView({
 
               {lectureProjectUsesWorkspaceDefaults ? (
                 <div className="settings-template-callout lecture-project-default-callout">
-                  <strong>Using workspace defaults</strong>
+                  <strong>{uiText('Using workspace defaults')}</strong>
                   <span>
-                    New Studios saved to {lectureDocumentScopeProject?.name ?? 'this project'} use
-                    the workspace choices until you customize them.
+                    {uiText('New Studios saved to')}{' '}
+                    {lectureDocumentScopeProject?.name ?? uiText('this project')}{' '}
+                    {uiText('use the workspace choices until you customize them.')}
                   </span>
                   <button
                     type="button"
                     className="secondary-button"
                     onClick={() => setCustomizingInheritedLectureFeatures(true)}
                   >
-                    Customize for this project
+                    {uiText('Customize for this project')}
                   </button>
                 </div>
               ) : null}
@@ -487,8 +552,10 @@ export function SettingsView({
                 idPrefix="settings-lecture-document-features"
                 heading={
                   lectureDocumentScopeProjectId
-                    ? `${lectureDocumentScopeProject?.name ?? 'Project'} document elements`
-                    : 'Workspace document elements'
+                    ? uiText('{value1} document elements', {
+                        value1: lectureDocumentScopeProject?.name ?? 'Project',
+                      })
+                    : uiText('Workspace document elements')
                 }
                 contextCopy={
                   lectureDocumentScopeProjectId
@@ -500,16 +567,16 @@ export function SettingsView({
               <div className="settings-template-callout" role="status" aria-live="polite">
                 <strong>
                   {lectureProjectUsesWorkspaceDefaults
-                    ? 'Inherited'
+                    ? uiText('Inherited')
                     : lectureDocumentFeaturesDirty || customizingInheritedLectureFeatures
-                      ? 'Unsaved changes'
+                      ? uiText('Unsaved changes')
                       : lectureDocumentScopeProjectId
-                        ? 'Project default'
-                        : 'Workspace default'}
+                        ? uiText('Project default')
+                        : uiText('Workspace default')}
                 </strong>
                 <span>
-                  {Object.values(lectureDocumentFeaturesDraft).filter(Boolean).length} of 3 visible
-                  elements enabled
+                  {Object.values(lectureDocumentFeaturesDraft).filter(Boolean).length}{' '}
+                  {uiText('of 3 visible elements enabled')}
                 </span>
               </div>
 
@@ -526,7 +593,7 @@ export function SettingsView({
                       setCustomizingInheritedLectureFeatures(false);
                     }}
                   >
-                    Revert changes
+                    {uiText('Revert changes')}
                   </button>
                   {lectureDocumentScopeProjectId && lectureProjectHasDocumentOverride ? (
                     <button
@@ -545,7 +612,7 @@ export function SettingsView({
                         });
                       }}
                     >
-                      Use workspace defaults
+                      {uiText('Use workspace defaults')}
                     </button>
                   ) : null}
                   <button
@@ -576,8 +643,8 @@ export function SettingsView({
                     }}
                   >
                     {lectureDocumentScopeProjectId
-                      ? 'Save project defaults'
-                      : 'Save workspace defaults'}
+                      ? uiText('Save project defaults')
+                      : uiText('Save workspace defaults')}
                   </button>
                 </div>
               ) : null}
@@ -615,17 +682,18 @@ export function SettingsView({
         ) : activeCategory === 'servers' ? (
           <article className="settings-card server-monitoring-settings-card">
             <div className="settings-card-heading">
-              <span>SERVER MONITORING</span>
-              <h2>Choose how often server status refreshes</h2>
+              <span>{uiText('SERVER MONITORING')}</span>
+              <h2>{uiText('Choose how often server status refreshes')}</h2>
               <p>
-                GOSU refreshes CPU, memory, and GPU usage only while Connections or Project Chat is
-                visible. Manual refresh remains available beside every server.
+                {uiText(
+                  'GOSU refreshes CPU, memory, and GPU usage only while Connections or Project Chat is visible. Manual refresh remains available beside every server.',
+                )}
               </p>
             </div>
             <div
               className="preference-options server-refresh-options"
               role="group"
-              aria-label="Server status refresh interval"
+              aria-label={uiText('Server status refresh interval')}
             >
               {SSH_RESOURCE_REFRESH_INTERVAL_OPTIONS.map((choice) => (
                 <button
@@ -638,22 +706,34 @@ export function SettingsView({
                   }
                 >
                   <i aria-hidden="true">{choice.id === 'manual' ? '↻' : '◷'}</i>
-                  <strong>{choice.label}</strong>
-                  <span>{choice.description}</span>
+                  <strong>{uiText(choice.label)}</strong>
+                  <span>{uiText(choice.description)}</span>
                 </button>
               ))}
             </div>
             <div className="settings-preview server-refresh-preview">
-              <span>LOCAL-ONLY PREFERENCE</span>
+              <span>{uiText('LOCAL-ONLY PREFERENCE')}</span>
               <p>
-                The selected schedule applies when you return to Connections or Project Chat. It
-                does not alter the remote server or send monitoring data to Hosted Sync.
+                {uiText(
+                  'The selected schedule applies when you return to Connections or Project Chat. It does not alter the remote server or send monitoring data to Hosted Sync.',
+                )}
               </p>
             </div>
           </article>
         ) : (
           <>
+            {modelRouting && (
+              <ModelRoutingSettings
+                policy={modelRouting.policy}
+                models={models}
+                loading={modelsLoading || (!modelRouting.ready && !modelRouting.error)}
+                error={modelRouting.error}
+                onSave={modelRouting.save}
+                onRefresh={onRefreshModels}
+              />
+            )}
             <AiDefaultSettings
+              fallbackOnly={Boolean(modelRouting)}
               selection={preferences.defaultAiSelection}
               models={models}
               modelsLoading={modelsLoading}
@@ -661,6 +741,7 @@ export function SettingsView({
               onSave={(defaultAiSelection) => onChange({ ...preferences, defaultAiSelection })}
             />
             <AgentAddOnsSection
+              codexConnection={codexConnection}
               preferences={preferences.agentAddOns}
               onChange={(agentAddOns) => onChange({ ...preferences, agentAddOns })}
               {...(hermesConnection ? { hermesConnection } : {})}

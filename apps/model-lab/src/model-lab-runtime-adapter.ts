@@ -1,16 +1,19 @@
 import { answerModelQuestion, runAgentReview } from './model-lab-domain';
-import type { ModelCatalog } from '@gosu/contracts';
+import { modelLabFetch } from './model-lab-environment';
+import type { AgentPermanentMemoryEntry, ModelCatalog } from '@gosu/contracts';
 import type { ModelBuildArtifact } from './model-lab-builder';
 import { parseModelImportJson } from './model-lab-import';
 import type { AgentReview, GradientProbeName, ModelSpec } from './model-lab-schema';
 import type { ModelLabAgentProgress } from './model-lab-agent-harness';
 import type { ModelLabAgentUsage } from './model-lab-agent-harness';
+import { ContextUsageSchema, type ContextUsage } from '../../briefing-lab/src/context-usage';
 
 export type ModelLabRuntimeMode = 'deterministic-local' | 'codex-llm' | 'gosu-agent-runtime';
 
 export type ModelLabConversationMessage = Readonly<{
   role: 'user' | 'assistant';
   body: string;
+  createdAt?: string;
 }>;
 
 export type ModelLabProjectContext = Readonly<{
@@ -18,6 +21,7 @@ export type ModelLabProjectContext = Readonly<{
   activeModelId: string;
   probe: GradientProbeName;
   checkpointIndex: number;
+  persistentMemory?: readonly AgentPermanentMemoryEntry[];
 }>;
 
 export type ModelLabQuestionRequest = ModelLabProjectContext &
@@ -28,6 +32,8 @@ export type ModelLabQuestionRequest = ModelLabProjectContext &
     attachments?: readonly ModelBuildArtifact[];
     selection?: ModelLabModelSelection;
     purpose?: 'chat' | 'revision-comment';
+    conversationRevision?: number;
+    conversationWorkspaceId?: string | undefined;
   }>;
 
 /** Matches GOSU Project Chat's provider-opaque model selection fields. */
@@ -41,6 +47,7 @@ export type ModelLabRuntimeAnswer = Readonly<{
   body: string;
   trace: readonly string[];
   usage?: ModelLabAgentUsage;
+  contextUsage?: ContextUsage;
   editProposal?: Readonly<{
     model: ModelSpec;
     instructions: string;
@@ -55,6 +62,47 @@ export type ModelLabTurnScope = Readonly<{
 
 export const MODEL_LAB_RUNTIME_ERROR_MESSAGE =
   'GOSU Model Copilot is unavailable, so no answer was generated. No deterministic substitute was used. Check the selected LLM connection and retry.';
+
+const MODEL_LAB_KNOWN_RUNTIME_ERRORS: Readonly<Record<string, string>> = {
+  model_chat_context_busy:
+    'This model revision already has an active context update. Wait for that request to finish; your saved conversation is unchanged.',
+  model_chat_context_invalid:
+    'The saved Model Lab conversation could not be validated. It was not reset or overwritten.',
+  model_chat_context_limit:
+    'The Model Lab conversation archive reached its safety limit. Existing messages were preserved; this request was not saved.',
+  assistant_context_too_large:
+    'The current model context cannot fit this request safely, even after history preparation. Existing messages are preserved.',
+  assistant_compaction_invalid:
+    'Conversation compaction did not return a valid summary. Original messages are preserved.',
+  claude_code_auth_required:
+    'Claude Code authentication expired. Sign in again with Claude Code, then retry this turn.',
+  claude_code_timeout:
+    'Claude Code did not finish within five minutes. Retry this turn or choose a faster reasoning level.',
+  codex_auth_required:
+    'GOSU Codex authentication is required. Reconnect Codex in GOSU, then retry this turn.',
+  codex_usage_limit_exceeded:
+    'Codex usage is currently limited. Retry after the provider limit resets.',
+  codex_context_too_large:
+    'The request exceeds the selected Codex context. Reduce attached context or select a larger-context model.',
+  model_copilot_context_too_large:
+    'This turn exceeds the available model context. Reduce the attached context or select a larger-context model.',
+  model_lab_native_timeout:
+    'The native agent did not finish within five minutes. Retry this turn or choose a faster reasoning level.',
+};
+
+export function modelLabRuntimeErrorCode(value: unknown) {
+  return typeof value === 'string' && Object.hasOwn(MODEL_LAB_KNOWN_RUNTIME_ERRORS, value)
+    ? value
+    : 'model_copilot_llm_unavailable';
+}
+
+export function modelLabRuntimeErrorMessage(error: unknown) {
+  const code =
+    error instanceof Error
+      ? modelLabRuntimeErrorCode(error.message)
+      : modelLabRuntimeErrorCode(error);
+  return MODEL_LAB_KNOWN_RUNTIME_ERRORS[code] ?? MODEL_LAB_RUNTIME_ERROR_MESSAGE;
+}
 
 export type ModelLabRuntimeStatus = Readonly<{
   available: boolean;
@@ -82,6 +130,7 @@ export interface ModelLabRuntimeAdapter {
     options?: Readonly<{
       signal?: AbortSignal;
       onProgress?: (progress: ModelLabAgentProgress) => void;
+      onContextUsage?: (usage: ContextUsage) => void;
     }>,
   ): Promise<ModelLabRuntimeAnswer>;
   review(request: ModelLabProjectContext): Promise<readonly AgentReview[]>;
@@ -154,12 +203,16 @@ function isRuntimeAnswer(value: unknown): value is ModelLabRuntimeAnswer {
       editProposal !== null &&
       !Array.isArray(editProposal) &&
       typeof editProposal.instructions === 'string' &&
-      parseModelImportJson(JSON.stringify(editProposal.model)).ok);
+      parseModelImportJson(JSON.stringify(editProposal.model), {
+        enforceSourceOutputContracts: true,
+      }).ok);
   return (
     typeof candidate.body === 'string' &&
     Array.isArray(candidate.trace) &&
     candidate.trace.every((entry) => typeof entry === 'string') &&
     (candidate.usage === undefined || isRuntimeUsage(candidate.usage)) &&
+    (candidate.contextUsage === undefined ||
+      ContextUsageSchema.safeParse(candidate.contextUsage).success) &&
     validEditProposal
   );
 }
@@ -197,7 +250,9 @@ function isModelCatalog(value: unknown): value is ModelCatalog {
   );
 }
 
-export function createGosuModelLabRuntime(fetchImpl: FetchLike = fetch): ModelLabRuntimeAdapter {
+export function createGosuModelLabRuntime(
+  fetchImpl: FetchLike = modelLabFetch,
+): ModelLabRuntimeAdapter {
   return {
     mode: 'gosu-agent-runtime',
     async answer(request, options) {
@@ -234,10 +289,13 @@ export function createGosuModelLabRuntime(fetchImpl: FetchLike = fetch): ModelLa
               typeof record.progress === 'object'
             ) {
               options?.onProgress?.(record.progress as ModelLabAgentProgress);
+            } else if (record.type === 'context-usage') {
+              const usage = ContextUsageSchema.safeParse(record.usage);
+              if (usage.success) options?.onContextUsage?.(usage.data);
             } else if (record.type === 'result' && isRuntimeAnswer(record.answer)) {
               answer = record.answer;
             } else if (record.type === 'error') {
-              throw new Error('model_copilot_llm_unavailable');
+              throw new Error(modelLabRuntimeErrorCode(record.detail));
             }
           }
           if (chunk.done) break;
@@ -247,7 +305,13 @@ export function createGosuModelLabRuntime(fetchImpl: FetchLike = fetch): ModelLa
       }
       const payload: unknown = await response.json();
       if (!response.ok || !isRuntimeAnswer(payload)) {
-        throw new Error('model_copilot_llm_unavailable');
+        throw new Error(
+          modelLabRuntimeErrorCode(
+            payload && typeof payload === 'object' && 'detail' in payload
+              ? payload.detail
+              : undefined,
+          ),
+        );
       }
       return payload;
     },

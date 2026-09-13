@@ -1,7 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { setUiLanguage } from '@gosu/ui/language';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 
-import { CollapseChevron, describeError } from '../src/renderer/src/ui-primitives';
+import { CollapseChevron, describeError, RuntimeCard } from '../src/renderer/src/ui-primitives';
+
+afterEach(() => setUiLanguage('en'));
 
 describe('CollapseChevron', () => {
   it('renders every panel direction with the shared accessible presentation boundary', () => {
@@ -21,6 +26,51 @@ describe('CollapseChevron', () => {
 });
 
 describe('describeError', () => {
+  it('translates every known application error into Korean without leaking raw details', () => {
+    const source = ts.createSourceFile(
+      'ui-primitives.tsx',
+      readFileSync(new URL('../src/renderer/src/ui-primitives.tsx', import.meta.url), 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const codes: string[] = [];
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.name.getText(source) === 'messages' &&
+        node.initializer &&
+        ts.isObjectLiteralExpression(node.initializer)
+      ) {
+        for (const property of node.initializer.properties)
+          if (ts.isPropertyAssignment(property)) codes.push(property.name.getText(source));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(codes.length).toBeGreaterThan(100);
+    for (const code of codes) {
+      setUiLanguage('en');
+      const english = describeError(new Error(code));
+      setUiLanguage('ko');
+      const korean = describeError(new Error(`${code}:private-provider-output`));
+      expect(korean, code).toMatch(/[가-힣]/);
+      expect(korean, code).not.toBe(english);
+      expect(korean).not.toContain('private-provider-output');
+    }
+    expect(describeError(new Error('unknown:private-token'))).toBe('작업을 완료하지 못했습니다.');
+    expect(describeError(null)).toBe('작업을 완료하지 못했습니다.');
+  });
+
+  it('renders runtime checks in the selected language and keeps platform names intact', () => {
+    setUiLanguage('ko');
+    const korean = renderToStaticMarkup(<RuntimeCard runtime={null} />);
+    expect(korean).toContain('확인 중');
+    expect(korean).not.toContain('>Checking<');
+    expect(korean).toContain('Codex');
+    setUiLanguage('en');
+    expect(renderToStaticMarkup(<RuntimeCard runtime={null} />)).toContain('Checking this Mac');
+  });
   it('explains verified Hermes runtime failures without exposing technical output', () => {
     expect(describeError(new Error('hermes_installation_not_supported:/Users/private'))).toBe(
       'The verified Hermes runtime is unavailable. Reinstall this GOSU release; development builds may instead use a compatible Hermes 0.19.1 installation.',

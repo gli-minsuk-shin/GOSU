@@ -1,6 +1,14 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalDependencies": [".env.example", "tsconfig.base.json"],
+  "globalDependencies": [
+    ".env.example",
+    "tsconfig.base.json",
+    "apps/briefing-lab/src/paper-summary-contract.ts",
+    "apps/briefing-lab/src/paper-summary-offer.tsx",
+    "apps/briefing-lab/src/paper-summary-offer.css",
+    "apps/briefing-lab/paper-summary-library.ts",
+    "apps/briefing-lab/briefing-system-key.ts"
+  ],
   "globalEnv": ["CI", "NODE_ENV"],
   "tasks": {
     "build": {

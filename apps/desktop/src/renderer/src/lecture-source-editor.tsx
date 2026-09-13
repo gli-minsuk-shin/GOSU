@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import {
   useEffect,
   useId,
@@ -73,7 +75,7 @@ const SOURCE_EDITOR_PHASE_LABELS: Record<Exclude<LectureSourceEditorPhase, 'idle
 const DEFAULT_MAX_SOURCE_LENGTH = 200_000;
 
 export function lectureSourceDocumentLabel(document: LectureSourceDocumentKind) {
-  return SOURCE_DOCUMENT_LABELS[document];
+  return uiText(SOURCE_DOCUMENT_LABELS[document]);
 }
 
 export function lectureSourceDirtyDocuments(
@@ -149,6 +151,7 @@ export function LectureSourceEditor({
   maxLength = DEFAULT_MAX_SOURCE_LENGTH,
   focusRequest = null,
 }: LectureSourceEditorProps) {
+  useUiText();
   const generatedId = useId();
   const prefix = idPrefix ?? `lecture-source-${generatedId.replaceAll(':', '')}`;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -257,16 +260,21 @@ export function LectureSourceEditor({
     >
       <header className="lecture-source-editor-header">
         <div>
-          <span className="eyebrow">Direct LaTeX edit</span>
-          <h3 id={`${prefix}-heading`}>Edit revision {revision}</h3>
-          <p>Saving creates revision {revision + 1}. Earlier revisions stay unchanged.</p>
+          <span className="eyebrow">{uiText('Direct LaTeX edit')}</span>
+          <h3 id={`${prefix}-heading`}>
+            {uiText('Edit revision')} {revision}
+          </h3>
+          <p>
+            {uiText('Saving creates revision')} {revision + 1}
+            {uiText('. Earlier revisions stay unchanged.')}
+          </p>
         </div>
         <div className="lecture-source-editor-actions">
           <span className="lecture-source-editor-pdf-note">
-            PDFs are validated and compiled on save.
+            {uiText('PDFs are validated and compiled on save.')}
           </span>
           <button type="button" className="ghost-button" disabled={busy} onClick={onCancel}>
-            Cancel
+            {uiText('Cancel')}
           </button>
           <button
             type="button"
@@ -274,12 +282,18 @@ export function LectureSourceEditor({
             disabled={!canSave}
             onClick={() => void onSave()}
           >
-            {busy ? 'Saving…' : `Save as revision ${revision + 1}`}
+            {busy
+              ? uiText('Saving…')
+              : uiText('Save as revision {value1}', { value1: revision + 1 })}
           </button>
         </div>
       </header>
 
-      <div className="lecture-source-editor-tabs" role="tablist" aria-label="LaTeX documents">
+      <div
+        className="lecture-source-editor-tabs"
+        role="tablist"
+        aria-label={uiText('LaTeX documents')}
+      >
         {SOURCE_DOCUMENTS.map((document) => {
           const label = lectureSourceDocumentLabel(document);
           const documentDirty = dirtyDocuments.includes(document);
@@ -317,19 +331,19 @@ export function LectureSourceEditor({
           ref={issueRef}
         >
           <div>
-            <strong>Review this LaTeX</strong>
+            <strong>{uiText('Review this LaTeX')}</strong>
             <span>{issue.message}</span>
             {issue.line && (
               <small>
-                {issue.document ? `${lectureSourceDocumentLabel(issue.document)} · ` : ''}line{' '}
-                {issue.line}
-                {issue.column ? `, column ${issue.column}` : ''}
+                {issue.document ? `${lectureSourceDocumentLabel(issue.document)} · ` : ''}
+                {uiText('line')} {issue.line}
+                {issue.column ? uiText(', column {column}', { column: issue.column }) : ''}
               </small>
             )}
           </div>
           {issue.line && (
             <button type="button" className="ghost-button" onClick={goToIssue}>
-              Go to line
+              {uiText('Go to line')}
             </button>
           )}
         </div>
@@ -342,7 +356,7 @@ export function LectureSourceEditor({
         aria-labelledby={activeTabId}
       >
         <label className="sr-only" htmlFor={`${prefix}-textarea`}>
-          {activeLabel} LaTeX for revision {revision}
+          {activeLabel} {uiText('LaTeX for revision')} {revision}
         </label>
         <textarea
           id={`${prefix}-textarea`}
@@ -369,13 +383,13 @@ export function LectureSourceEditor({
 
       <footer className="lecture-source-editor-footer">
         <span>
-          {sourceLineCount(source).toLocaleString()} lines · {source.length.toLocaleString()} /{' '}
-          {maxLength.toLocaleString()} characters
+          {sourceLineCount(source).toLocaleString()} {uiText('lines ·')}{' '}
+          {source.length.toLocaleString()} / {maxLength.toLocaleString()} {uiText('characters')}
         </span>
         <span id={statusId} role="status" aria-live="polite" aria-atomic="true">
           {status}
         </span>
-        <span>⌘S or Ctrl+S saves a new revision. Tab moves focus.</span>
+        <span>{uiText('⌘S or Ctrl+S saves a new revision. Tab moves focus.')}</span>
       </footer>
     </section>
   );

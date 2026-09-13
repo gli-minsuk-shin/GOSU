@@ -192,9 +192,7 @@ export function parseUserPreferences(value: unknown): UserPreferences {
   const agentAddOns = Object.fromEntries(
     AGENT_ADD_ON_IDS.map((id) => {
       const candidate = storedAddOns[id];
-      const supported =
-        isAgentAddOnPreference(candidate) &&
-        (id === 'hermes' || id === 'claude-code' || candidate !== 'connect-local');
+      const supported = id === 'claude-code' && isAgentAddOnPreference(candidate);
       return [id, supported ? candidate : 'disabled'];
     }),
   ) as Record<AgentAddOnId, AgentAddOnPreference>;

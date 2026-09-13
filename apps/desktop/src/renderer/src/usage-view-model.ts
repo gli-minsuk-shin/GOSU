@@ -1,3 +1,5 @@
+import { uiLocale, uiText } from '@gosu/ui/language';
+
 import type {
   ModelUsageAggregate,
   ModelUsagePeriod,
@@ -144,30 +146,38 @@ function safeKnownTokenSum(inputTokens: number | null, outputTokens: number | nu
 }
 
 export function formatTokenCount(value: number | null) {
-  return value === null ? '—' : new Intl.NumberFormat().format(value);
+  return value === null ? '—' : new Intl.NumberFormat(uiLocale()).format(value);
 }
 
 export function formatCompactTokenCount(value: number | null) {
   if (value === null) return '—';
-  return new Intl.NumberFormat(undefined, {
+  return new Intl.NumberFormat(uiLocale(), {
     notation: 'compact',
     maximumFractionDigits: value >= 1_000 ? 1 : 0,
   }).format(value);
 }
 
 export function formatUsageCoverage(reported: number, total: number) {
-  if (total === 0) return 'No finalized turns';
-  return `${reported.toLocaleString()} of ${total.toLocaleString()} turns`;
+  if (total === 0) return uiText('No finalized turns');
+  return uiText('{reported} of {total} turns', {
+    reported: formatTokenCount(reported),
+    total: formatTokenCount(total),
+  });
 }
 
 export function describeAggregateCoverage(aggregate: ModelUsageAggregate) {
   const reported = reportedUsageTurnCount(aggregate);
-  if (aggregate.turnCount === 0) return 'No finalized turns';
-  if (reported === 0) return `0 of ${aggregate.turnCount.toLocaleString()} turns reported`;
+  if (aggregate.turnCount === 0) return uiText('No finalized turns');
+  if (reported === 0)
+    return uiText('0 of {total} turns reported', {
+      total: formatTokenCount(aggregate.turnCount),
+    });
   const partial = aggregate.partialTurnCount;
-  return `${reported.toLocaleString()} of ${aggregate.turnCount.toLocaleString()} turns reported${
-    partial > 0 ? ` · ${partial.toLocaleString()} partial` : ''
-  }`;
+  return uiText('{reported} of {total} turns reported{partial}', {
+    reported: formatTokenCount(reported),
+    total: formatTokenCount(aggregate.turnCount),
+    partial: partial > 0 ? uiText(' · {count} partial', { count: formatTokenCount(partial) }) : '',
+  });
 }
 
 function paddedMaximum(maximum: number) {
@@ -257,7 +267,7 @@ export function formatUsageRange(
 ) {
   const start = new Date(startAt);
   const exclusiveEnd = new Date(Math.max(start.getTime(), new Date(endAt).getTime() - 1));
-  const formatter = new Intl.DateTimeFormat(locale, {
+  const formatter = new Intl.DateTimeFormat(locale ?? uiLocale(), {
     timeZone,
     year: 'numeric',
     month: 'short',
@@ -280,13 +290,13 @@ export function localCalendarDate(date: Date, timeZone: string) {
 }
 
 export function usagePeriodLabel(period: UsagePeriod) {
-  if (period === 'day') return 'Today';
-  if (period === 'week') return 'This week';
-  return 'This month';
+  if (period === 'day') return uiText('Today');
+  if (period === 'week') return uiText('This week');
+  return uiText('This month');
 }
 
 export function usageBreakdownLabel(breakdown: UsageBreakdown) {
-  if (breakdown === 'projects') return 'Projects';
-  if (breakdown === 'lectures') return 'Lecture generations';
-  return 'Providers & models';
+  if (breakdown === 'projects') return uiText('Projects');
+  if (breakdown === 'lectures') return uiText('Lecture generations');
+  return uiText('Providers & models');
 }

@@ -1,7 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { ModelLabReader } from '../../model-lab/model-reference-contracts';
 import { EventEmitter } from 'node:events';
+import {
+  applicationLanguageContext,
+  applicationLanguageSnapshot,
+} from '../src/main/application-language-service';
 
 import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
+import { createCodexModelCatalog } from '@gosu/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -74,6 +80,8 @@ import type {
 } from '../src/shared/literature-contracts';
 import type { ManuscriptWorkspaceSnapshot } from '../src/shared/manuscript-workspace-contracts';
 import { EXPERIMENT_LOGGING_SYSTEM_FIELDS } from '../src/shared/experiment-workspace-contracts';
+import { planFixture } from './project-research-plan-fixture';
+import { projectResearchPlanHash } from '../src/main/project-research-plan-service';
 import type { SshServerResourceSnapshot } from '../src/shared/ssh-contracts';
 import type { WorkspaceOperation, WorkspaceSnapshot } from '../src/shared/workspace-contracts';
 
@@ -724,13 +732,20 @@ class MemoryChatStorage implements ProjectChatStorage {
     return structuredClone(this.sessions.get(projectId)!);
   }
 
-  createProjectChatSession(projectId: string, title?: string) {
+  createProjectChatSession(
+    projectId: string,
+    title?: string,
+    criticalReviewMode?: ProjectChatSession['criticalReviewMode'],
+    modelLabReference?: ProjectChatSession['modelLabReference'],
+  ) {
     const existing = this.listProjectChatSessions(projectId);
     const now = new Date().toISOString();
     const session: ProjectChatSession = {
       id: randomUUID(),
       projectId,
       title: title ?? `New chat${existing.length > 1 ? ` ${existing.length}` : ''}`,
+      ...(criticalReviewMode ? { criticalReviewMode } : {}),
+      ...(modelLabReference ? { modelLabReference } : {}),
       isDefault: false,
       createdAt: now,
       updatedAt: now,
@@ -1301,7 +1316,14 @@ class FakeCodex extends EventEmitter {
 
   progress(
     turnId: string,
-    input: { stage: 'tool_started' | 'tool_completed'; tool: string; success?: boolean },
+    input: {
+      stage: 'tool_started' | 'tool_completed';
+      tool: string;
+      success?: boolean;
+      activity?: unknown;
+      occurredAt?: unknown;
+      elapsedMs?: unknown;
+    },
   ) {
     const threadId = this.turnThreads.get(turnId)!;
     this.emit('notification', {
@@ -1313,6 +1335,9 @@ class FakeCodex extends EventEmitter {
         tool: input.tool,
         callId: `claude-mcp:${turnId}:${input.tool}`,
         ...(input.success === undefined ? {} : { success: input.success }),
+        ...(input.activity === undefined ? {} : { activity: input.activity }),
+        ...(input.occurredAt === undefined ? {} : { occurredAt: input.occurredAt }),
+        ...(input.elapsedMs === undefined ? {} : { elapsedMs: input.elapsedMs }),
       },
     });
   }
@@ -1431,6 +1456,7 @@ async function fixture(
   hermes?: ProjectAgentHermes,
   manuscripts?: ProjectAgentManuscripts,
   usage?: Pick<ModelUsageService, 'bindThread' | 'releaseThread'>,
+  modelLab?: ModelLabReader,
 ) {
   const workspaceStorage = new MemoryWorkspaceStorage();
   const workspace = new WorkspaceService(workspaceStorage);
@@ -1503,6 +1529,7 @@ async function fixture(
     })),
   };
   const chat = new ProjectChatService({
+    ...(modelLab ? { modelLab } : {}),
     storage,
     workspace,
     codex,
@@ -1580,6 +1607,118 @@ function waitForTurnCompleted(chat: ProjectChatService, turnId: string) {
     chat.on('event', listener);
   });
 }
+it('binds automatic research-plan tools to the current user turn, actual invocation and project refresh event', async () => {
+  const templateId = randomUUID();
+  const experiments = {
+    list: vi.fn(async ({ projectId }) => ({
+      projectId,
+      ideas: [],
+      runs: [],
+      loggingTemplate: {
+        id: templateId,
+        projectId,
+        version: 1,
+        templateHash: 'a'.repeat(64),
+        systemFields: EXPERIMENT_LOGGING_SYSTEM_FIELDS,
+        customFields: [],
+      },
+    })),
+  } as unknown as ProjectAgentExperiments;
+  const f = await fixture(undefined, undefined, undefined, undefined, experiments);
+  const apply = vi.fn(async (input) => ({
+    receipt: {
+      schemaVersion: 1 as const,
+      id: randomUUID(),
+      projectId: input.projectId,
+      sourceSessionId: input.sessionId,
+      sourceAttemptId: input.attemptId,
+      planHash: projectResearchPlanHash(input.plan),
+      objectiveId: randomUUID(),
+      objectiveVersion: 1,
+      objectiveEntityVersion: 1,
+      objectiveLocked: false,
+      needsIdentity: true,
+      loggingTemplateId: templateId,
+      loggingTemplateVersion: 1,
+      evaluationSessionId: randomUUID(),
+      evaluationRevisionId: randomUUID(),
+      ideaId: randomUUID(),
+      createdAt: new Date().toISOString(),
+    },
+    reused: false,
+  }));
+  Object.assign((f.chat as unknown as { dependencies: object }).dependencies, {
+    researchPlans: {
+      snapshot: vi.fn(async () => ({ objectiveEntityVersion: 0, loggingVersion: 1 })),
+      read: vi.fn(async () => null),
+      apply,
+    },
+  });
+  const events: ProjectChatEvent[] = [];
+  f.chat.on('event', (event) => events.push(event));
+  const started = await f.chat.send({
+    projectId: f.projectA.id,
+    message: '모델 개발 실험 계획을 작성하고 반영해줘',
+    requestedModelId: null,
+    reasoningOptionId: null,
+  });
+  expect(JSON.stringify(f.codex.dynamicTools[0])).toContain('apply_research_plan');
+  const handler = f.codex.dynamicToolHandlers[0]!;
+  const base = {
+    threadId: 'thread-1',
+    turnId: started.turnId,
+    callId: randomUUID(),
+    namespace: 'gosu_project',
+  };
+  const setup = await handler(
+    { ...base, tool: 'read_experiment_setup', arguments: {} },
+    dynamicToolDelivery(),
+  );
+  const snapshotToken = JSON.parse(setup.contentItems[0]!.text).researchPlan.snapshotToken;
+  const arguments_ = { snapshotToken, plan: planFixture() };
+  const invalid = await handler(
+    { ...base, threadId: 'foreign-thread', tool: 'apply_research_plan', arguments: arguments_ },
+    dynamicToolDelivery(),
+  );
+  expect(invalid.success).toBe(false);
+  expect(apply).not.toHaveBeenCalled();
+  const saved = await handler(
+    { ...base, tool: 'apply_research_plan', arguments: arguments_ },
+    dynamicToolDelivery(),
+  );
+  expect(saved.success).toBe(true);
+  expect(apply.mock.calls[0]?.[0]).toMatchObject({
+    projectId: f.projectA.id,
+    userMessage: '모델 개발 실험 계획을 작성하고 반영해줘',
+    invocation: { providerId: 'codex', resolvedModelId: expect.any(String) },
+  });
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: 'research-plan.applied',
+      projectId: f.projectA.id,
+      workspaceChanged: true,
+    }),
+  );
+});
+it.each([
+  'Review my model development plan',
+  '모델 설계 계획 검토해줘',
+  'Summarize the attached paper',
+])('omits automatic plan writes for read-only Project Chat request: %s', async (message) => {
+  const experiments = { list: vi.fn() } as unknown as ProjectAgentExperiments;
+  const f = await fixture(undefined, undefined, undefined, undefined, experiments);
+  Object.assign((f.chat as unknown as { dependencies: object }).dependencies, {
+    researchPlans: { snapshot: vi.fn(), read: vi.fn(), apply: vi.fn() },
+  });
+  await f.chat.send({
+    projectId: f.projectA.id,
+    message,
+    requestedModelId: null,
+    reasoningOptionId: null,
+  });
+  expect(JSON.stringify(f.codex.dynamicTools[0])).not.toContain('"name":"apply_research_plan"');
+  expect(JSON.stringify(f.codex.dynamicTools[0])).toContain('"name":"read_research_plan"');
+});
 
 describe('ProjectChatService', () => {
   it('persists a provider-neutral agent run and bounded session working memory', async () => {
@@ -1593,7 +1732,7 @@ describe('ProjectChatService', () => {
     expect(storage.snapshot(projectA.id, receipt.sessionId).agentRuns?.[0]).toMatchObject({
       attemptId: receipt.attemptId,
       status: 'running',
-      contextPlan: { strategy: 'recent-history-plus-working-memory' },
+      contextPlan: { strategy: 'layered-project-memory' },
       nodes: [{ kind: 'coordinator', status: 'running', providerId: 'codex' }],
     });
 
@@ -2356,6 +2495,68 @@ describe('ProjectChatService', () => {
     await completed;
   });
 
+  it('routes safe detailed activity to its active project and drops malformed private metadata', async () => {
+    const { chat, codex, projectA } = await fixture();
+    const events: ProjectChatEvent[] = [];
+    chat.on('event', (event: ProjectChatEvent) => events.push(event));
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      message: 'Read workspace',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    codex.progress(receipt.turnId, {
+      stage: 'tool_completed',
+      tool: 'read_workspace',
+      success: true,
+      activity: { section: 'board', counts: [{ kind: 'tasks', value: 7 }], truncated: true },
+      occurredAt: '2026-09-08T10:00:00.000Z',
+      elapsedMs: 23,
+    });
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'agent.progress',
+          projectId: projectA.id,
+          sessionId: receipt.sessionId,
+          turnId: receipt.turnId,
+          activity: { section: 'board', counts: [{ kind: 'tasks', value: 7 }], truncated: true },
+          occurredAt: '2026-09-08T10:00:00.000Z',
+          elapsedMs: 23,
+        }),
+      ),
+    );
+    codex.progress(receipt.turnId, {
+      stage: 'tool_started',
+      tool: 'read_local_note',
+      activity: { target: '/Users/private/secret.md', query: 'password=private' },
+    });
+    codex.progress(receipt.turnId, {
+      stage: 'tool_started',
+      tool: 'invalid_metadata',
+      activity: { rawBody: 'private text' },
+      elapsedMs: -1,
+    });
+    await vi.waitFor(() =>
+      expect(events.filter((event) => event.type === 'agent.progress')).toHaveLength(3),
+    );
+    expect(JSON.stringify(events)).not.toContain('/Users/private');
+    expect(JSON.stringify(events)).not.toContain('password=private');
+    expect(JSON.stringify(events)).not.toContain('private text');
+    const completed = waitForTurnCompleted(chat, receipt.turnId);
+    codex.complete(receipt.turnId, { reply: 'Done', actions: [] });
+    await completed;
+    const countBeforeLate = events.length;
+    codex.progress(receipt.turnId, {
+      stage: 'tool_completed',
+      tool: 'read_workspace',
+      success: true,
+      activity: { section: 'summary' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(events).toHaveLength(countBeforeLate);
+  });
+
   it('releases the project reservation after a transient message storage failure', async () => {
     const { chat, codex, storage, projectA } = await fixture();
     storage.failNextSave = true;
@@ -2725,7 +2926,7 @@ describe('ProjectChatService', () => {
       profileVersion: 1,
       instructionRevisionId: profile.instructionRevision?.id,
       promptProvenance: {
-        assemblyVersion: 5,
+        assemblyVersion: 7,
         profileVersion: 1,
         instructionRevisionId: profile.instructionRevision?.id,
         requestedLegacyHarnessMode: 'planner',
@@ -3176,6 +3377,195 @@ describe('ProjectChatService', () => {
     });
   });
 
+  it.each([
+    'no-grant',
+    'no-vault',
+    'mismatch',
+    'validation-failed',
+    'changed-during-validation',
+  ] as const)(
+    'continues a complete turn without optional notes when %s, without regranting or writing',
+    async (scenario) => {
+      const local = localNotesVaultFixture();
+      let bound = scenario !== 'mismatch';
+      const list = vi.fn(local.vault.listForAgent);
+      const read = vi.fn(local.vault.readForAgent);
+      const save = vi.fn(local.vault.saveMarkdownForAgent);
+      const vault: ProjectAgentVault = {
+        ...local.vault,
+        matchesGrant: () => bound,
+        validateGrant: async () => {
+          if (scenario === 'validation-failed') throw new Error('vault_root_changed');
+          if (scenario === 'changed-during-validation') bound = false;
+        },
+        listForAgent: list,
+        readForAgent: read,
+        saveMarkdownForAgent: save,
+      };
+      const { chat, codex, storage, projectA } = await fixture(
+        scenario === 'no-vault' ? undefined : vault,
+      );
+      if (scenario !== 'no-grant') {
+        // Restore a previously authorized profile; no new authorization is being requested.
+        storage.updateProjectChatProfile({
+          projectId: projectA.id,
+          expectedVersion: 0,
+          harnessMode: 'context',
+          responseDepth: 'standard',
+          contextScope: 'project',
+          customInstructions: '',
+          localNotesVault: {
+            id: local.vaultId,
+            name: 'Research Notes',
+            allowAgentMarkdownCreate: true,
+          },
+        });
+      }
+      const savedProfile = structuredClone(storage.getProjectChatProfile(projectA.id));
+      const receipt = await chat.send({
+        projectId: projectA.id,
+        message: 'Continue without notes.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      });
+      expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_workspace');
+      expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('list_local_notes');
+      expect(JSON.stringify(codex.dynamicTools[0])).not.toContain('read_local_note');
+      expect(codex.developerInstructions[0]).toContain(
+        'GOSU runtime Research Notes capability: unavailable.',
+      );
+      expect(codex.prompts[0]).not.toContain('PRIVATE_NOTE_BODY');
+      expect(
+        storage.getChatAttempt(projectA.id, receipt.attemptId)?.promptProvenance,
+      ).toMatchObject({
+        localNotesVaultId: null,
+      });
+      await expect(
+        codex.dynamicToolHandlers[0]!(
+          {
+            threadId: 'thread-1',
+            turnId: receipt.turnId,
+            callId: 'denied-note',
+            namespace: 'gosu_project',
+            tool: 'read_local_note',
+            arguments: { noteId: local.noteId },
+          },
+          dynamicToolDelivery(),
+        ),
+      ).resolves.toMatchObject({ success: false });
+      // Even a provider that disregards the no-save instruction cannot write through Main.
+      codex.complete(receipt.turnId, {
+        reply: 'Chat continues using the available project context.',
+        actions: [],
+        researchNote: {
+          disposition: 'save',
+          category: 'project-progress',
+          title: 'Unauthorized note',
+          content: '# Must not be written\n',
+        },
+      });
+      await vi.waitFor(() =>
+        expect(storage.getChatAttempt(projectA.id, receipt.attemptId)?.status).toBe('complete'),
+      );
+      expect(storage.snapshot(projectA.id).messages.at(-1)?.content).toContain('Chat continues');
+      expect(storage.getProjectChatProfile(projectA.id)).toEqual(savedProfile);
+      expect(list).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps an authorized empty notes folder optional and revalidates queued turns without rewriting the grant', async () => {
+    const local = localNotesVaultFixture();
+    let available = true;
+    const list = vi.fn(async () => ({ notes: [], truncated: false }));
+    const vault = {
+      ...local.vault,
+      listForAgent: list,
+      validateGrant: async () => {
+        if (!available) throw new Error('vault_root_changed');
+      },
+    };
+    const { chat, codex, storage, projectA } = await fixture(vault);
+    const profile = await chat.updateProfile({
+      projectId: projectA.id,
+      expectedVersion: 0,
+      harnessMode: 'context',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      customInstructions: '',
+      localNotesVault: {
+        id: local.vaultId,
+        name: 'Research Notes',
+        allowAgentMarkdownCreate: false,
+      },
+    });
+    const first = await chat.send({
+      projectId: projectA.id,
+      message: 'Continue with the empty notes folder.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(codex.developerInstructions[0]).toContain(
+      'GOSU runtime Research Notes capability: read-only.',
+    );
+    await expect(
+      codex.dynamicToolHandlers[0]!(
+        {
+          threadId: 'thread-1',
+          turnId: first.turnId,
+          callId: 'empty-list',
+          namespace: 'gosu_project',
+          tool: 'list_local_notes',
+          arguments: {},
+        },
+        dynamicToolDelivery(),
+      ),
+    ).resolves.toMatchObject({ success: true });
+    expect(list).toHaveBeenCalledOnce();
+    await chat.send({
+      projectId: projectA.id,
+      message: 'Queued continuation.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    available = false;
+    codex.complete(first.turnId, { reply: 'No note evidence is needed.', actions: [] });
+    await vi.waitFor(() => expect(codex.prompts).toHaveLength(2));
+    expect(codex.developerInstructions[1]).toContain(
+      'GOSU runtime Research Notes capability: unavailable.',
+    );
+    expect(JSON.stringify(codex.dynamicTools[1])).not.toContain('read_local_note');
+    const second = storage.snapshot(projectA.id).attempts!.at(-1)!;
+    await vi.waitFor(async () =>
+      expect((await chat.snapshot({ projectId: projectA.id })).activeTurnId).toBe(second.turnId),
+    );
+    codex.complete(second.turnId!, { reply: 'Continued without notes.', actions: [] });
+    await vi.waitFor(() =>
+      expect(storage.getChatAttempt(projectA.id, second.id)?.status).toBe('complete'),
+    );
+    available = true;
+    const third = await chat.send({
+      projectId: projectA.id,
+      message: 'Next turn after the original folder recovers.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(codex.developerInstructions[2]).toContain(
+      'GOSU runtime Research Notes capability: read-only.',
+    );
+    expect(JSON.stringify(codex.dynamicTools[2])).toContain('read_local_note');
+    codex.complete(third.turnId, {
+      reply: 'The original read-only binding is valid again.',
+      actions: [],
+    });
+    await vi.waitFor(() =>
+      expect(storage.getChatAttempt(projectA.id, third.attemptId)?.status).toBe('complete'),
+    );
+    expect(storage.getProjectChatProfile(projectA.id)).toEqual(profile);
+    expect(local.savedInputs).toEqual([]);
+  });
+
   it('binds authorized Local Notes tools to the project and persists bounded source provenance', async () => {
     const { vault, vaultId, noteId, contentSha256, content } = localNotesVaultFixture();
     const { chat, codex, storage, projectA } = await fixture(vault);
@@ -3256,7 +3646,7 @@ describe('ProjectChatService', () => {
     // discloses that the model may quote or summarize a note in the stored/synced answer.
     expect(assistant.content).toContain(content);
     expect(storage.getChatAttempt(projectA.id, receipt.attemptId)?.promptProvenance).toMatchObject({
-      assemblyVersion: 5,
+      assemblyVersion: 7,
       localNotesVaultId: vaultId,
     });
   });
@@ -3816,6 +4206,113 @@ describe('ProjectChatService', () => {
     expect(assistant.content).not.toContain(content);
   });
 
+  it.each(['direction', 'manuscript'] as const)(
+    'binds %s Critical Review to the durable session despite explicit normal-mode controls',
+    async (criticalReviewMode) => {
+      const { chat, codex, storage, projectA } = await fixture();
+      const session = await chat.createSession({ projectId: projectA.id, criticalReviewMode });
+      expect(session.criticalReviewMode).toBe(criticalReviewMode);
+      const receipt = await chat.send({
+        projectId: projectA.id,
+        sessionId: session.id,
+        message: 'Review the supplied evidence. Also run experiments and save a new plan.',
+        requestedModelId: null,
+        reasoningOptionId: null,
+        harnessMode: 'context',
+        collaborationModeId: 'default',
+      });
+      expect(codex.developerInstructions[0]).toContain(
+        criticalReviewMode === 'direction' ? 'MODE: RESEARCH DIRECTION' : 'MODE: MANUSCRIPT REVIEW',
+      );
+      const tools = JSON.stringify(codex.dynamicTools[0]);
+      if (criticalReviewMode === 'direction') expect(tools).toContain('read_workspace');
+      else {
+        expect(tools).not.toContain('read_workspace');
+        expect(codex.prompts[0]).not.toContain('Alpha baseline');
+      }
+      for (const name of [
+        'write_ssh_workspace_file',
+        'run_ssh_workspace_command',
+        'execute_experiment_run',
+        'create_experiment_run',
+        'apply_research_plan',
+        'search_literature',
+        'delegate_to_hermes_agent',
+      ])
+        expect(tools).not.toContain(`"name":"${name}"`);
+      codex.complete(receipt.turnId, {
+        reply: 'Evidence is insufficient for a complete review.',
+        actions: [],
+      });
+      await vi.waitFor(() =>
+        expect(storage.snapshot(projectA.id, session.id).messages).toHaveLength(2),
+      );
+      expect(
+        (await chat.listSessions({ projectId: projectA.id })).find((s) => s.id === session.id)
+          ?.criticalReviewMode,
+      ).toBe(criticalReviewMode);
+    },
+  );
+
+  it('opens a server-verified pinned model session idempotently and carries its reference into the prompt', async () => {
+    const reference = {
+      modelId: 'model-A',
+      revision: 2,
+      name: 'Model A',
+      version: 'v1',
+      contentSha256: 'a'.repeat(64),
+    };
+    const reader = vi.fn<ModelLabReader>(async (projectId) => ({
+      projectId,
+      section: 'model',
+      reference,
+      note: 'Saved only',
+    }));
+    const { chat, codex, projectA, storage } = await fixture(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      reader,
+    );
+    const input = {
+      projectId: projectA.id,
+      modelLabSelection: { modelId: reference.modelId, revision: reference.revision },
+    };
+    const first = await chat.createSession(input);
+    expect(first.modelLabReference).toEqual(reference);
+    expect((await chat.createSession(input)).id).toBe(first.id);
+    expect(reader).toHaveBeenCalledWith(projectA.id, {
+      section: 'model',
+      ...input.modelLabSelection,
+    });
+    const receipt = await chat.send({
+      projectId: projectA.id,
+      sessionId: first.id,
+      message: 'Explain this model.',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(codex.prompts[0]).toContain('modelLabReference');
+    expect(codex.prompts[0]).toContain(reference.contentSha256);
+    expect(JSON.stringify(codex.dynamicTools[0])).toContain('read_model_lab');
+    codex.complete(receipt.turnId, { reply: 'I need to inspect the saved model.', actions: [] });
+    await vi.waitFor(() =>
+      expect(storage.snapshot(projectA.id, first.id).messages).toHaveLength(2),
+    );
+    reader.mockRejectedValueOnce(new Error('model_lab_revision_unavailable'));
+    await expect(chat.createSession(input)).rejects.toMatchObject({
+      code: 'model_lab_reference_unavailable',
+    });
+    await expect(
+      chat.createSession({ ...input, criticalReviewMode: 'manuscript' }),
+    ).rejects.toMatchObject({ code: 'model_lab_reference_unavailable' });
+  });
+
   it('preserves migrated reviewer when new controls omit an explicit native mode', async () => {
     const { chat, codex, storage, projectA } = await fixture();
     const profile = await chat.updateProfile({
@@ -3853,7 +4350,7 @@ describe('ProjectChatService', () => {
       personality: 'friendly',
       responseVerbosity: 'high',
       promptProvenance: {
-        assemblyVersion: 5,
+        assemblyVersion: 7,
         requestedLegacyHarnessMode: 'reviewer',
         nativeCollaborationModeId: null,
         nativeExecutionKind: 'legacy-reviewer',
@@ -3896,7 +4393,7 @@ describe('ProjectChatService', () => {
       personality: 'friendly',
       responseVerbosity: 'low',
       promptProvenance: {
-        assemblyVersion: 5,
+        assemblyVersion: 7,
         requestedLegacyHarnessMode: 'planner',
         nativeCollaborationModeId: 'plan',
         nativeExecutionKind: 'plan',
@@ -3944,7 +4441,7 @@ describe('ProjectChatService', () => {
       harnessMode: 'context',
       collaborationModeId: null,
       promptProvenance: {
-        assemblyVersion: 5,
+        assemblyVersion: 7,
         requestedLegacyHarnessMode: 'context',
         nativeCollaborationModeId: null,
         nativeExecutionKind: 'default',
@@ -3999,7 +4496,7 @@ describe('ProjectChatService', () => {
       harnessMode: 'context',
       collaborationModeId: 'research-focus-v2',
       promptProvenance: {
-        assemblyVersion: 5,
+        assemblyVersion: 7,
         nativeCollaborationModeId: 'research-focus-v2',
         nativeExecutionKind: 'default',
         nativeCollaborationCatalogSha256: 'e'.repeat(64),
@@ -4285,6 +4782,44 @@ describe('ProjectChatService', () => {
     expect(
       storage.snapshot(projectA.id, secondSession.id).messages.map((message) => message.content),
     ).toEqual(['Run this independent session concurrently', 'Independent answer']);
+  });
+
+  it('persists queued language at enqueue and restores it when another language releases capacity', async () => {
+    const { chat, codex, storage, projectA } = await fixture();
+    const languages: string[] = [];
+    const start = codex.startThread.bind(codex);
+    vi.spyOn(codex, 'startThread').mockImplementation(async (input) => {
+      languages.push(applicationLanguageSnapshot().language);
+      return start(input);
+    });
+    const first = await applicationLanguageContext.run({ language: 'en', configured: true }, () =>
+      chat.send({
+        projectId: projectA.id,
+        message: 'First',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    );
+    const queued = await applicationLanguageContext.run({ language: 'ko', configured: true }, () =>
+      chat.send({
+        projectId: projectA.id,
+        message: '한국어 후속 질문',
+        requestedModelId: null,
+        reasoningOptionId: null,
+      }),
+    );
+    expect(queued).toMatchObject({ queued: true });
+    expect(storage.snapshot(projectA.id).queuedTurns?.[0]?.applicationLanguage).toEqual({
+      language: 'ko',
+      configured: true,
+    });
+    applicationLanguageContext.run({ language: 'en', configured: true }, () =>
+      codex.complete(first.turnId, { reply: 'Done', actions: [] }),
+    );
+    await vi.waitFor(() => expect(codex.prompts).toHaveLength(2));
+    expect(languages).toEqual(['en', 'ko']);
+    codex.complete('turn-2', { reply: '답변', actions: [] });
+    await vi.waitFor(() => expect(storage.snapshot(projectA.id).messages).toHaveLength(4));
   });
 
   it('turns an expired queued attachment into a visible failure and continues later work', async () => {
@@ -4644,6 +5179,228 @@ describe('ProjectChatService', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('steers a durably taken text queue row into the same active Codex turn without interruption', async () => {
+    const { chat, storage, codex, projectA } = await fixture();
+    const [session] = await chat.listSessions({ projectId: projectA.id });
+    await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Current',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const queued = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Supplement',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (!('queueId' in queued)) throw new Error('queue expected');
+    const order: string[] = [];
+    const take = vi.fn(async () => {
+      order.push('persist');
+      return randomUUID();
+    });
+    const confirm = vi.fn();
+    const steer = vi.fn(async () => {
+      order.push('steer');
+    });
+    Object.assign(storage, { takeQueuedSteer: take, confirmQueuedSteer: confirm });
+    Object.assign(codex, { steerTurn: steer });
+    await chat.steerQueuedTurn({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      queueId: queued.queueId,
+      message: 'Supplement',
+    });
+    expect(order).toEqual(['persist', 'steer']);
+    expect(steer).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'Supplement');
+    expect(confirm).toHaveBeenCalledWith(expect.any(String), true);
+    expect(codex.interrupted).toEqual([]);
+    steer.mockRejectedValueOnce(new Error('uncertain'));
+    await expect(
+      chat.steerQueuedTurn({
+        projectId: projectA.id,
+        sessionId: session!.id,
+        queueId: queued.queueId,
+        message: 'Supplement',
+      }),
+    ).rejects.toThrow('uncertain');
+    expect(confirm).toHaveBeenLastCalledWith(expect.any(String), false);
+    expect(steer).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads the backend transcript beyond the UI snapshot and prepares it without unnecessary compaction', async () => {
+    const { chat, storage, codex, projectA } = await fixture();
+    const [session] = await chat.listSessions({ projectId: projectA.id });
+    codex.modelCatalog = createCodexModelCatalog([
+      { id: 'fixture-model', model: 'fixture-model', displayName: 'Fixture', isDefault: true },
+    ]);
+    codex.modelCatalog.models[0]!.contextWindowTokens = 272000;
+    codex.modelCatalog.models[0]!.metadata = {
+      ...codex.modelCatalog.models[0]!.metadata,
+      contextWindowSource: 'fallback',
+    };
+    const records = Array.from({ length: 600 }, (_, i) => ({
+      id: randomUUID(),
+      projectId: projectA.id,
+      role: i % 2 ? 'assistant' : 'user',
+      content: `full-transcript-fact-${i}`,
+      status: 'complete',
+      actions: [],
+      createdAt: '2026-09-13T00:00:00Z',
+      completedAt: '2026-09-13T00:00:00Z',
+    }));
+    Object.assign(storage, {
+      readProjectChatContextHistory: vi.fn(async () => records),
+      getProjectChatContextState: vi.fn(async () => ({
+        modelId: 'fixture-model',
+        usage: {
+          contextConfigurationKey: codex.modelCatalog!.models[0]!.metadata?.contextConfigurationKey,
+          native: { contextWindowTokens: 828400 },
+        },
+      })),
+      saveProjectChatCheckpoint: vi.fn(),
+    });
+    const compactHistory = vi.fn();
+    Object.assign((chat as unknown as { dependencies: object }).dependencies, { compactHistory });
+    await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Recall first exact fact',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    expect(codex.prompts.at(-1)).toContain('full-transcript-fact-0');
+    expect(codex.prompts.at(-1)).toContain('full-transcript-fact-599');
+    expect(compactHistory).not.toHaveBeenCalled();
+    expect(
+      (await chat.snapshot({ projectId: projectA.id, sessionId: session!.id })).contextUsage,
+    ).toMatchObject({
+      windowTokens: 828400,
+      windowSource: 'provider',
+      includedMessages: 600,
+      compressedMessages: 0,
+      omittedMessages: 0,
+    });
+  });
+
+  it('can cancel old-history compaction before any answer turn is started', async () => {
+    const { chat, storage, codex, projectA } = await fixture();
+    const [session] = await chat.listSessions({ projectId: projectA.id });
+    codex.modelCatalog = createCodexModelCatalog([
+      { id: 'fixture-model', model: 'fixture-model', displayName: 'Fixture', isDefault: true },
+    ]);
+    codex.modelCatalog.models[0]!.contextWindowTokens = 32000;
+    codex.modelCatalog.models[0]!.metadata = {
+      ...codex.modelCatalog.models[0]!.metadata,
+      contextWindowSource: 'provider',
+    };
+    const records = Array.from({ length: 100 }, (_, i) => ({
+      id: randomUUID(),
+      projectId: projectA.id,
+      role: i % 2 ? 'assistant' : 'user',
+      content: 'historical reference '.repeat(400),
+      status: 'complete',
+      actions: [],
+      createdAt: '2026-09-13T00:00:00Z',
+      completedAt: '2026-09-13T00:00:00Z',
+    }));
+    Object.assign(storage, {
+      readProjectChatContextHistory: vi.fn(async () => records),
+      getProjectChatContextState: vi.fn(async () => ({})),
+      saveProjectChatCheckpoint: vi.fn(),
+    });
+    const compactHistory = vi.fn(
+      (_model, _messages, _summary, signal: AbortSignal) =>
+        new Promise<string>((_resolve, reject) =>
+          signal.addEventListener('abort', () => reject(new Error('source_cancelled')), {
+            once: true,
+          }),
+        ),
+    );
+    Object.assign((chat as unknown as { dependencies: object }).dependencies, { compactHistory });
+    const pending = chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Long context',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    const settled = pending.catch((e: unknown) => e);
+    await vi.waitFor(() => expect(compactHistory).toHaveBeenCalledOnce());
+    await chat.cancel({ projectId: projectA.id, sessionId: session!.id });
+    expect(await settled).toBeInstanceOf(Error);
+    expect(codex.prompts).toHaveLength(0);
+  });
+
+  it('streams exact native context usage, invalidates compacted occupancy and persists it on completion', async () => {
+    const { chat, storage, codex, projectA } = await fixture();
+    const saved = vi.fn();
+    Object.assign(storage, { saveProjectChatContextUsage: saved });
+    const [session] = await chat.listSessions({ projectId: projectA.id });
+    const result = await chat.send({
+      projectId: projectA.id,
+      sessionId: session!.id,
+      message: 'Measure context',
+      requestedModelId: null,
+      reasoningOptionId: null,
+    });
+    if (!('turnId' in result)) throw new Error('active expected');
+    const threadId = codex.turnThreads.get(result.turnId)!;
+    const params = {
+      threadId,
+      turnId: result.turnId,
+      tokenUsage: {
+        total: {
+          inputTokens: 12000,
+          outputTokens: 300,
+          cachedInputTokens: 8000,
+          totalTokens: 12300,
+        },
+        last: { totalTokens: 9100 },
+        modelContextWindow: 828400,
+      },
+    };
+    codex.emit('notification', {
+      method: 'thread/tokenUsage/updated',
+      params: { ...params, threadId: 'foreign' },
+    });
+    expect(
+      (await chat.snapshot({ projectId: projectA.id, sessionId: session!.id })).contextUsage
+        ?.native,
+    ).toBeUndefined();
+    codex.emit('notification', { method: 'thread/tokenUsage/updated', params });
+    expect(
+      (await chat.snapshot({ projectId: projectA.id, sessionId: session!.id })).contextUsage
+        ?.native,
+    ).toMatchObject({
+      contextTokens: 9100,
+      contextWindowTokens: 828400,
+      inputTokens: 12000,
+      cachedInputTokens: 8000,
+    });
+    codex.emit('notification', { method: 'thread/compacted', params: { threadId } });
+    expect(
+      (await chat.snapshot({ projectId: projectA.id, sessionId: session!.id })).contextUsage
+        ?.native,
+    ).toMatchObject({ contextTokens: null, contextStale: true });
+    codex.emit('notification', { method: 'thread/tokenUsage/updated', params });
+    codex.emit('notification', {
+      method: 'turn/completed',
+      params: { threadId, turn: { id: result.turnId, status: 'interrupted' } },
+    });
+    await vi.waitFor(() => expect(saved).toHaveBeenCalled());
+    expect(saved).toHaveBeenCalledWith(
+      projectA.id,
+      session!.id,
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({ native: expect.objectContaining({ contextTokens: 9100 }) }),
+    );
   });
 
   it('edits and removes only pending queue rows without changing visible provenance', async () => {
@@ -5265,8 +6022,11 @@ describe('ProjectChatService', () => {
     await vi.waitFor(() => expect(codex.released).toContain('thread-1'));
     const source = storage.snapshot(projectA.id);
     codex.modelCatalog = branchTitleModelCatalog();
+    const catalogRequestsBeforeBranches = codex.modelCatalogRequestCount;
     codex.beforeListModelCatalogReturns = (requestNumber) =>
-      requestNumber === 1 ? new Promise<void>(() => undefined) : undefined;
+      requestNumber === catalogRequestsBeforeBranches + 1
+        ? new Promise<void>(() => undefined)
+        : undefined;
     codex.beforeRunReturns = (_threadId, turnId) => {
       codex.complete(turnId, JSON.stringify({ title: 'Independent provider title' }));
     };
@@ -5282,7 +6042,9 @@ describe('ProjectChatService', () => {
       branchFromMessageId: source.messages[1]!.id,
     });
 
-    await vi.waitFor(() => expect(codex.modelCatalogRequestCount).toBe(2));
+    await vi.waitFor(() =>
+      expect(codex.modelCatalogRequestCount).toBe(catalogRequestsBeforeBranches + 2),
+    );
     await vi.waitFor(() =>
       expect(storage.snapshot(projectA.id, independentBranch.id).session?.title).toBe(
         'Independent provider title',

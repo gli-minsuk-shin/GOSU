@@ -184,8 +184,14 @@ describe('separated application Settings', () => {
     expect(html).toContain('aria-label="Settings categories"');
     expect(html).toContain('aria-current="page"');
     expect(html).toContain('FONT SIZE');
+    expect(html).toContain('10 px base');
     expect(html).toContain('12 px base');
-    expect(html).toContain('18 px base');
+    expect(html).toContain('14 px base');
+    expect(html).toContain('16 px base');
+    expect(html).not.toContain('18 px base');
+    expect(html).not.toContain('20 px base');
+    for (const pixels of [10, 12, 14, 16])
+      expect(html).toContain(`<i aria-hidden="true" style="font-size:${pixels}px">Aa</i>`);
   });
 
   it('adds one dedicated Lecture defaults category without changing the existing categories', () => {
@@ -261,7 +267,9 @@ describe('separated application Settings', () => {
     expect(source).toContain(
       'JSON.stringify(lectureStructureDraft) !== JSON.stringify(preferences.defaultLectureStructure)',
     );
-    expect(source).toContain("lectureStructureDirty ? 'Unsaved changes' : 'Current default'");
+    expect(source).toContain(
+      "lectureStructureDirty ? uiText('Unsaved changes') : uiText('Current default')",
+    );
     expect(source).toContain(
       'setLectureStructureDraft(structuredClone(preferences.defaultLectureStructure))',
     );
@@ -429,31 +437,16 @@ describe('separated application Settings', () => {
     expect(html).toContain('experiments are limited to 120 seconds');
     expect(html).toContain('Raw shells, inline Python');
   });
-
-  it('keeps OpenClaw detection-only and offers explicit Hermes and Claude subscription providers', () => {
+  it('replaces optional providers with consistent Codex and Claude connection cards', () => {
     const html = renderSettings('agent');
-
-    expect(html).toContain('OPTIONAL LOCAL AI PROVIDERS');
-    expect(html).toContain('OpenClaw');
-    expect(html).toContain('Hermes Agent');
-    expect(html).toContain('Detect local installation');
-    expect(html).toContain('without running it');
-    expect(html).toContain('Use verified Hermes runtime');
-    expect(html).toContain('Claude Code');
-    expect(html).toContain('Use Claude.ai subscription');
-    expect(html).toContain('API keys are not accepted for this connection');
-    expect(html).toContain('GOSU does not copy its credentials');
-    expect(html).toContain('explicit selections and never automatic fallbacks');
-    expect(html).toContain('never searches PATH or silently falls back to another version');
-    expect(html).toContain('only native tools are project-scoped file read and search');
-    expect(html).toContain('File writes, terminal, processes, code execution, web');
-    expect(html).toContain('bounded multi-turn agent loop');
-    expect(html).toContain('active Project Chat session');
-    expect(html).toContain('Built-in shell, file writes, user MCP servers');
-    expect(html).toContain('removes API-key routing variables');
-    expect(html).toContain('OpenClaw remains detection-only');
-    expect(html).not.toContain('Connected to OpenClaw');
-    expect(html).not.toContain('Connected to Hermes');
+    expect(html).toContain('AI CONNECTIONS');
+    expect(html).toContain('aria-label="Codex 연결"');
+    expect(html).toContain('aria-label="Claude 연결"');
+    expect(html).toContain('모델 새로고침');
+    expect(html).not.toContain('OPTIONAL LOCAL AI PROVIDERS');
+    expect(html).not.toContain('OpenClaw');
+    expect(html).not.toContain('Hermes Agent');
+    expect(html).not.toContain('Detect local installation');
   });
 
   it('offers persisted manual through ten-minute server refresh choices', () => {

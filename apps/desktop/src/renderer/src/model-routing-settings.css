@@ -1,0 +1,74 @@
+.model-routing-card {
+  display: grid;
+  gap: 14px;
+}
+.model-routing-card h2,
+.model-routing-card p {
+  margin: 0;
+}
+.model-routing-card header {
+  display: grid;
+  gap: 6px;
+}
+.model-routing-card p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+.model-routing-profiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.model-routing-profiles fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+}
+.model-routing-profiles legend {
+  font-weight: 700;
+  padding: 0 4px;
+}
+.model-routing-profiles label {
+  display: grid;
+  gap: 5px;
+}
+.model-routing-card select {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  font: inherit;
+}
+.model-routing-usages {
+  display: grid;
+  gap: 0;
+}
+.model-routing-usages label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 160px);
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.model-routing-note {
+  font-size: var(--font-meta);
+}
+.model-routing-card footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+@media (max-width: 600px) {
+  .model-routing-profiles {
+    grid-template-columns: 1fr;
+  }
+  .model-routing-usages label {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+}

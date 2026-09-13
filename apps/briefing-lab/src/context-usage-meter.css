@@ -1,0 +1,43 @@
+.briefing-context-empty {
+  display: block;
+  color: #849078;
+  font-size: 11px;
+  padding: 3px 0;
+}
+.briefing-context-meter {
+  color: #5b6c50;
+  font-size: 11px;
+  margin: 3px 0 8px;
+}
+.briefing-context-meter summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  padding: 5px 0;
+}
+.briefing-context-meter progress {
+  width: 100%;
+  height: 4px;
+  accent-color: #537f08;
+}
+.briefing-context-meter dl {
+  margin: 8px 0;
+}
+.briefing-context-meter dl > div {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 3px 0;
+}
+.briefing-context-meter dd {
+  margin: 0;
+  text-align: right;
+}
+.briefing-context-meter small {
+  display: block;
+  line-height: 1.5;
+  color: #849078;
+}

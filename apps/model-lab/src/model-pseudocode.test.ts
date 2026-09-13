@@ -48,6 +48,99 @@ describe('GOSU Model Pseudocode', () => {
     }
   });
 
+  it('round-trips named multi-port contracts and exact connection bindings', () => {
+    const edge = residualClassifier.connections[0]!;
+    const sourceModule = residualClassifier.modules.find((module) => module.id === edge.source)!;
+    const targetModule = residualClassifier.modules.find((module) => module.id === edge.target)!;
+    const portedModel = {
+      ...residualClassifier,
+      intent: {
+        ...residualClassifier.intent,
+        expectedInput: sourceModule.inputShape,
+        expectedOutput: targetModule.outputShape,
+      },
+      modules: [
+        {
+          ...sourceModule,
+          block: {
+            id: 'roundtrip-loop',
+            label: 'Round-trip loop',
+            repeatCount: 'L-1',
+          },
+          inputPorts: [
+            {
+              name: 'external input',
+              shape: sourceModule.inputShape,
+              binding: 'external' as const,
+            },
+            {
+              name: 'carry in',
+              shape: edge.shape,
+              binding: 'loop-carried' as const,
+              bindingId: 'roundtrip-loop',
+            },
+          ],
+          outputPorts: [
+            { name: 'projected state', shape: edge.shape, binding: 'internal' as const },
+          ],
+        },
+        {
+          ...targetModule,
+          block: {
+            id: 'roundtrip-loop',
+            label: 'Round-trip loop',
+            repeatCount: 'L-1',
+          },
+          inputPorts: [
+            { name: 'projected state', shape: edge.shape, binding: 'internal' as const },
+          ],
+          outputPorts: [
+            {
+              name: 'external output',
+              shape: targetModule.outputShape,
+              binding: 'external' as const,
+            },
+            {
+              name: 'carry out',
+              shape: edge.shape,
+              binding: 'loop-carried' as const,
+              bindingId: 'roundtrip-loop',
+            },
+          ],
+        },
+      ],
+      connections: [
+        {
+          ...edge,
+          sourcePort: 'projected state',
+          targetPort: 'projected state',
+        },
+      ],
+    };
+
+    const source = modelToPseudocode(portedModel);
+    expect(source).toContain('output_port: internal | "projected state"');
+    expect(source).toContain('input_port: loop-carried | "carry in"');
+    expect(source).toContain('| "roundtrip-loop"');
+    expect(source).toContain('PORTS "projected state" -> "projected state"');
+    const parsed = parseModelPseudocode(source, portedModel.id);
+    expect(parsed.ok, parsed.ok ? undefined : parsed.reason).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.model.modules[0]?.outputPorts).toEqual(portedModel.modules[0]?.outputPorts);
+    expect(parsed.model.connections[0]).toMatchObject({
+      sourcePort: 'projected state',
+      targetPort: 'projected state',
+    });
+    expect(parsed.normalized).toBe(source);
+
+    const disconnected = parseModelPseudocode(
+      modelToPseudocode({ ...portedModel, connections: [] }),
+      portedModel.id,
+    );
+    expect(disconnected).toMatchObject({ ok: false });
+    if (!disconnected.ok) expect(disconnected.reason).toContain('Graph structure failed');
+  });
+
   it('updates module pseudocode deterministically and rejects broken graph references', () => {
     const source = modelToPseudocode(residualClassifier);
     const updated = source.replace(
@@ -102,7 +195,7 @@ describe('GOSU Model Pseudocode', () => {
             'H -> Linear(1, 2d)',
             'for j in range(1, L):',
             '  H1, H2 = split(H)',
-            '  H3 = MLP(H) + FiLM(log(lambda))',
+            '  H3 = MLP(concat(H1, H2)) + FiLM(log(lambda))',
             '  H = RMSNorm(H + H3)',
           ].join('\n'),
           formula:
@@ -118,7 +211,7 @@ describe('GOSU Model Pseudocode', () => {
     const source = modelToPseudocode(compactModel);
     expect(source.match(/^BLOCK /gmu)).toHaveLength(1);
     expect(source).toContain('for j in range(1, L):');
-    expect(source).toContain('H3 = MLP(H) + FiLM(log(lambda))');
+    expect(source).toContain('H3 = MLP(concat(H1, H2)) + FiLM(log(lambda))');
     expect(source).toContain('  repeat: "L-1" | conditional residual layers');
     expect(source).not.toContain('  stage:');
     expect(source).not.toContain('  lane:');
@@ -439,7 +532,7 @@ END MODULE
   it('exposes the editor, update action, revision tree, and future experiment boundary', () => {
     const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
-    expect(appSource).toContain('aria-label="Model pseudocode editor"');
+    expect(appSource).toContain("aria-label={uiText('Model pseudocode editor')}");
     expect(appSource).toContain('Update graph');
     expect(appSource).not.toContain('Interpret & normalize');
     expect(appSource).toContain('Apply as revision');
@@ -460,7 +553,7 @@ END MODULE
     expect(appSource).toContain('Template guide · shared with the LLM normalizer');
     expect(appSource).toContain('Original free-form draft retained with this revision');
     expect(appSource).toContain('modelPseudocodeNormalizer.normalize');
-    expect(appSource).toContain('aria-label="Model pseudocode revision tree"');
+    expect(appSource).toContain("aria-label={uiText('Model pseudocode revision tree')}");
     expect(appSource).toContain('VERSIONED CODE ARTIFACT · REVISION');
     expect(appSource).toContain('Generated Python model source');
     expect(appSource).toContain('Experiment handoff receipt ready');

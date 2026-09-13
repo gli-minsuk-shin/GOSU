@@ -1,0 +1,22 @@
+.chat-file-drop-target {
+  position: relative;
+}
+.chat-file-drop-target.is-file-dragging {
+  outline: 2px solid #658c37;
+  outline-offset: -3px;
+}
+.chat-file-drop-notice {
+  position: absolute;
+  inset: 8px;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed #83a357;
+  border-radius: 12px;
+  background: #f4f8eefa;
+  color: #4c701d;
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+}

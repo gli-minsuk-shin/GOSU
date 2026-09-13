@@ -1,5 +1,10 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+import type { CriticalReviewMode } from '../../shared/critical-review';
+import { CriticalReviewHeader } from './critical-review-header';
+
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
+import { useSessionHistory } from './use-session-history';
 import {
   allowsAgentMarkdownCreate,
   type CodexCollaborationModeCatalog,
@@ -13,7 +18,10 @@ import {
   type UpdateProjectChatProfileInput,
 } from '../../shared/project-chat-contracts';
 
-type ProjectChatAgentProgressEvent = Extract<ProjectChatEvent, { type: 'agent.progress' }>;
+import {
+  reduceProjectChatToolActivity,
+  type ProjectChatToolActivityState,
+} from './project-chat-tool-activity-state';
 import type {
   HermesAcpApprovalDecision,
   HermesAcpApprovalEvent,
@@ -58,6 +66,18 @@ import type {
 } from '../../shared/lecture-studio-contracts';
 import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
 import { BoardView } from './board-view';
+import { ProjectModelLabWorkspaces } from './project-model-lab-view';
+import { GlobalBriefingView } from './global-briefing-view';
+import { useNotificationInbox } from './use-notification-inbox';
+import { usePersonalNotifications } from './use-personal-notifications';
+import type { BriefingNotificationTarget } from '../../../../briefing-lab/src/briefing-notifications';
+import {
+  buildWorkspaceNotifications,
+  readChatNotificationOnArrival,
+  taskNotificationSearchHit,
+  type WorkspaceNoticeIssue,
+  type WorkspaceNotification,
+} from './workspace-notifications';
 import { WorkspaceTasksView } from './workspace-tasks-view';
 import type {
   AgentProviderConnectionUiState,
@@ -65,6 +85,7 @@ import type {
 } from './agent-addons-section';
 import { ConnectionsView, type CodexModel } from './connections-view';
 import { desktopContentClassName } from './desktop-content-layout';
+import { startDesktopModelCatalogRefresh } from './desktop-model-catalog-refresh';
 import { ExperimentsView, type ExperimentsViewAdapter } from './experiments-view';
 import type { ExperimentEvaluationStudioAdapter } from './experiment-evaluation-studio-view';
 import { HermesAcpApprovalCenter } from './hermes-acp-approval-center';
@@ -170,6 +191,9 @@ import {
 } from './project-sidebar';
 import { ResizeHandle } from './resize-handle';
 import { SettingsView, type SettingsCategory } from './settings-view';
+import { useModelRouting } from './model-routing-settings';
+import { routedModel } from '@gosu/contracts';
+import { useApplicationLanguageSync } from './application-language-ui';
 import { SshApprovalCenter } from './ssh-approval-center';
 import { startSshResourceRefreshScheduler } from './ssh-resource-refresh-policy';
 import {
@@ -506,6 +530,8 @@ export function mergeProjectChatSessionSnapshotUpdate(
 function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabId {
   return (
     tab === 'chat' ||
+    tab === 'review' ||
+    tab === 'model-lab' ||
     tab === 'repository' ||
     tab === 'manuscript' ||
     tab === 'board' ||
@@ -517,15 +543,53 @@ function isProjectWorkspaceTab(tab: WorkspaceTabId): tab is ProjectWorkspaceTabI
 }
 
 export function DesktopApp({ initialPreferences }: { initialPreferences: UserPreferences }) {
+  const notificationText = useUiText();
+  useApplicationLanguageSync();
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [pendingSummary, setPendingSummary] = useState<WorkspacePendingSummary | null>(null);
   const [activeProjectId, setActiveProjectId] = useState('');
   const [activeTab, setActiveTab] = useState<WorkspaceTabId>('chat');
+  const [criticalReviewMode, setCriticalReviewMode] = useState<CriticalReviewMode>('direction');
+  const [personalNavigationRevision, setPersonalNavigationRevision] = useState(0);
+  const [calendarTarget, setCalendarTarget] = useState<{
+    routineId?: string;
+    id: string;
+    start: string;
+    requestId: number;
+  } | null>(null);
+  const [taskTarget, setTaskTarget] = useState<{ id: string; requestId: number } | null>(null);
+  const [briefingTarget, setBriefingTarget] = useState<BriefingNotificationTarget>();
+  const [briefingView, setBriefingView] = useState<'history' | 'papers' | 'manage' | 'assistant'>(
+    'history',
+  );
   const [activeSurface, setActiveSurface] = useState<AppSurface>('workspace');
+  const modelHandoffViewRef = useRef('');
+  const modelHandoffBusyRef = useRef(false);
+  modelHandoffViewRef.current = `${activeSurface}:${activeTab}:${activeProjectId}`;
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>('appearance');
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const {
+    inbox: notificationInbox,
+    mark: markNotificationItems,
+    recordTurn: recordNotificationTurn,
+    storageError: notificationStorageError,
+  } = useNotificationInbox();
+  const [notificationNow, setNotificationNow] = useState(() => new Date());
+  const personalNotifications = usePersonalNotifications();
+  const notificationVisibleChat = useRef<string | null>(null);
+  useEffect(() => {
+    const refresh = () => setNotificationNow(new Date());
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, []);
   const [sshRefreshWarning, setSshRefreshWarning] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const [showProjectForm, setShowProjectForm] = useState(false);
@@ -629,14 +693,20 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     () => new Set(),
   );
   const [chatInFlight, setChatInFlight] = useState<Record<string, boolean>>({});
-  const [chatAgentProgress, setChatAgentProgress] = useState<
-    Record<string, readonly ProjectChatAgentProgressEvent[]>
-  >({});
+  const [chatAgentProgress, setChatAgentProgress] = useState<ProjectChatToolActivityState>({});
   const [chatUnreadAssistantMessageIds, setChatUnreadAssistantMessageIds] = useState<
     Record<string, string>
   >({});
   const [applyingChatActionId, setApplyingChatActionId] = useState<string | null>(null);
   const [preferences, setPreferences] = useState(initialPreferences);
+  const modelRouting = useModelRouting();
+  const routedProjectDefault = useMemo(
+    () =>
+      modelRouting.ready
+        ? (routedModel(modelRouting.policy, 'projectChat') ?? preferences.defaultAiSelection)
+        : { providerId: 'codex', modelId: 'model_routing_loading', reasoningOptionId: null },
+    [modelRouting.ready, modelRouting.policy, preferences.defaultAiSelection],
+  );
   const chatLoadGuard = useRef(new ProjectChatLoadGuard());
   const codexBootstrapStarted = useRef(false);
   const hermesProjectChatConnectionGenerationRef = useRef(0);
@@ -692,8 +762,12 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     [claudeCodeProjectChatModels, hermesProjectChatModel, models],
   );
   const codexSurfaceDefaultAiSelection = useMemo(
-    () => codexSurfaceDefaultFromProjectChatDefault(preferences.defaultAiSelection),
-    [preferences.defaultAiSelection],
+    () =>
+      modelRouting.ready
+        ? (routedModel(modelRouting.policy, 'lecture') ??
+          codexSurfaceDefaultFromProjectChatDefault(preferences.defaultAiSelection))
+        : { providerId: 'codex', modelId: 'model_routing_loading', reasoningOptionId: null },
+    [preferences.defaultAiSelection, modelRouting.ready, modelRouting.policy],
   );
   const activeResearchNotesSelection = useMemo<VaultSelection | null>(() => {
     if (
@@ -856,9 +930,9 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       const loaded = loadProjectChatModelSelectionState(window.localStorage, projectId, sessionId);
       const saved =
         loaded.status === 'missing'
-          ? projectChatSelectionFromDefault(preferences.defaultAiSelection)
+          ? projectChatSelectionFromDefault(routedProjectDefault)
           : loaded.selection;
-      if (loaded.status === 'missing') {
+      if (loaded.status === 'missing' && modelRouting.ready) {
         saveProjectChatModelSelection(window.localStorage, projectId, sessionId, saved);
       }
       const withoutHermes =
@@ -884,6 +958,8 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       preferences.agentAddOns.hermes,
       preferences.agentAddOns['claude-code'],
       preferences.defaultAiSelection,
+      routedProjectDefault,
+      modelRouting.ready,
     ],
   );
 
@@ -1416,26 +1492,49 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           return;
         }
         chatLoadGuard.current.observeEvent(sessionKey);
+        if (event.type === 'context.updated') {
+          setChatSnapshots((current) => {
+            const snapshot = current[sessionKey];
+            return snapshot
+              ? {
+                  ...current,
+                  [sessionKey]: {
+                    ...snapshot,
+                    contextUsage: event.usage,
+                    contextUsageModelId: event.modelId,
+                  },
+                }
+              : current;
+          });
+          return;
+        }
         if (event.type === 'turn.started') {
           setChatInFlight((current) => ({ ...current, [sessionKey]: true }));
-          setChatAgentProgress((current) => ({ ...current, [sessionKey]: [] }));
+          setChatAgentProgress((current) => reduceProjectChatToolActivity(current, event));
           return;
         }
         if (event.type === 'agent.progress') {
-          setChatAgentProgress((current) => ({
-            ...current,
-            [sessionKey]: [...(current[sessionKey] ?? []), event].slice(-12),
-          }));
+          setChatAgentProgress((current) => reduceProjectChatToolActivity(current, event));
           return;
         }
         if (event.type === 'turn.completed') {
+          recordNotificationTurn(
+            event,
+            readChatNotificationOnArrival(
+              sessionKey,
+              notificationVisibleChat.current,
+              document.hasFocus(),
+              event.status,
+            ),
+          );
+          setNotificationNow(new Date());
           chatUnreadAssistantMessagesRef.current.noteCompletedTurn(
             event.projectId,
             event.sessionId,
             event.turnId,
           );
           setChatInFlight((current) => ({ ...current, [sessionKey]: false }));
-          setChatAgentProgress((current) => ({ ...current, [sessionKey]: [] }));
+          setChatAgentProgress((current) => reduceProjectChatToolActivity(current, event));
           void Promise.all([
             loadProjectChat(event.projectId, event.sessionId),
             loadProjectChatSessions(event.projectId),
@@ -1446,6 +1545,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           void loadProjectChat(event.projectId, event.sessionId).catch((error: unknown) =>
             setWorkspaceError(describeError(error)),
           );
+          return;
+        }
+        if (event.type === 'research-plan.applied') {
+          void loadWorkspace().catch((error: unknown) => setWorkspaceError(describeError(error)));
           return;
         }
         setChatSnapshots((current) => {
@@ -1626,6 +1729,19 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   };
   refreshModelsRef.current = refreshModels;
 
+  const signOutCodex = () => {
+    if (codexBusy) return;
+    setCodexBusy(true);
+    void window.gosu.codex
+      .logout()
+      .then(() => {
+        setModels([]);
+        setCodexConnectionState('auth-required');
+        setCodexStatus('Signed out from local Codex.');
+      })
+      .catch((error: unknown) => setCodexStatus(describeError(error)))
+      .finally(() => setCodexBusy(false));
+  };
   const startCodexChatGptLogin = () => {
     if (codexBusy) return;
     setActiveSurface('workspace');
@@ -1837,6 +1953,16 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     codexBootstrapStarted.current = true;
     void refreshModels();
   }, []);
+
+  useEffect(
+    () =>
+      startDesktopModelCatalogRefresh({
+        listModels: async () => (await window.gosu.codex.listModels()) as CodexModel[],
+        publishModels: setModels,
+        isReconnecting: () => codexRefreshInProgress.current,
+      }),
+    [],
+  );
 
   const chooseResearchNotesVault = async (projectId: string) => {
     if (noteLoading) return;
@@ -2282,10 +2408,66 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   };
 
   const selectGlobalTab = (tab: GlobalWorkspaceTabId) => {
+    setBriefingTarget(undefined);
+    setPersonalNavigationRevision((n) => n + 1);
     setPendingSearchNavigation(null);
     setActiveSurface('workspace');
     setActiveTab(tab);
     setShowProjectForm(false);
+  };
+
+  const openWorkspaceNotification = (notification: WorkspaceNotification) => {
+    const target = notification.target;
+    if (target.kind === 'task') {
+      const hit = taskNotificationSearchHit(
+        target,
+        snapshot?.projects ?? [],
+        snapshot?.tasks ?? [],
+      );
+      if (hit) {
+        setTaskTarget({ id: target.taskId, requestId: Date.now() });
+        selectGlobalTab('tasks');
+      } else setAnnouncement(uiText('This task no longer needs attention.'));
+    } else if (target.kind === 'calendar') {
+      setCalendarTarget({
+        id: target.eventId,
+        start: target.start,
+        requestId: Date.now(),
+        routineId: target.routineId,
+      });
+      selectGlobalTab('calendar');
+    } else if (target.kind === 'briefing') {
+      setBriefingView('history');
+      selectGlobalTab('briefing-lab');
+      setBriefingTarget({
+        routineId: target.routineId,
+        runId: target.runId,
+        requestId: Date.now(),
+      });
+    } else if (target.kind === 'chat') {
+      const project = snapshot?.projects.find(
+        (project) => project.id === target.projectId && !project.archivedAt && !project.trashedAt,
+      );
+      if (!project) {
+        setAnnouncement(uiText('This notification’s project is no longer available.'));
+        return;
+      }
+      selectProjectTab(project.id, 'chat');
+      activateChatSession(project.id, target.sessionId);
+      void loadProjectChat(project.id, target.sessionId).catch((error) =>
+        setWorkspaceError(describeError(error)),
+      );
+    } else if (target.kind === 'briefing-settings') {
+      setSettingsCategory('briefing');
+      setActiveSurface('settings');
+    } else if (target.kind === 'connections') selectGlobalTab('connections');
+    else if (target.kind === 'notes') selectProjectTab(target.projectId, 'notes');
+    else {
+      setAnnouncement(uiText('Review the workspace warning.'));
+      document
+        .querySelector<HTMLElement>('.desktop-content .notice.error')
+        ?.scrollIntoView({ block: 'center' });
+    }
   };
 
   const openSearchHit = (hit: SearchHit) => {
@@ -2379,12 +2561,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     );
   };
 
-  const createChatSession = async (projectId: string) => {
+  const createChatSession = async (projectId: string, reviewMode?: CriticalReviewMode) => {
     if (chatSessionMutation) return;
     setChatSessionMutation({ projectId, kind: 'create' });
     setWorkspaceError(null);
     try {
-      const session = await window.gosu.projectChat.createSession({ projectId });
+      const session = await window.gosu.projectChat.createSession({
+        projectId,
+        ...(reviewMode ? { criticalReviewMode: reviewMode } : {}),
+      });
       activateChatSession(projectId, session.id);
       await loadProjectChat(projectId, session.id);
       setAnnouncement(`Created ${session.title}.`);
@@ -2392,6 +2577,28 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       setWorkspaceError(describeError(error));
     } finally {
       setChatSessionMutation(null);
+    }
+  };
+
+  const openModelProjectChat = async (
+    projectId: string,
+    modelLabSelection: { modelId: string; revision: number },
+  ) => {
+    const expectedView = `workspace:model-lab:${projectId}`;
+    if (modelHandoffViewRef.current !== expectedView || modelHandoffBusyRef.current) return;
+    modelHandoffBusyRef.current = true;
+    try {
+      const session = await window.gosu.projectChat.createSession({ projectId, modelLabSelection });
+      if (modelHandoffViewRef.current !== expectedView) return;
+      activateChatSession(projectId, session.id);
+      await loadProjectChat(projectId, session.id);
+      if (modelHandoffViewRef.current !== expectedView) return;
+      setActiveTab('chat');
+      setWorkspaceError(null);
+    } catch (error) {
+      if (modelHandoffViewRef.current === expectedView) setWorkspaceError(describeError(error));
+    } finally {
+      modelHandoffBusyRef.current = false;
     }
   };
 
@@ -2526,6 +2733,28 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
   };
 
   const activeProjectSessions = activeProject ? (projectChatSessions[activeProject.id] ?? []) : [];
+  const sessionHistory = useSessionHistory(
+    {
+      activeSurface,
+      activeTab,
+      activeProjectId,
+      settingsCategory,
+      briefingView,
+      chatSessionId: activeTab === 'chat' ? (activeChatSessionIds[activeProjectId] ?? null) : null,
+    },
+    (target) => {
+      setPendingSearchNavigation(null);
+      setCalendarTarget(null);
+      setTaskTarget(null);
+      setActiveSurface(target.activeSurface);
+      setActiveTab(target.activeTab);
+      setActiveProjectId(target.activeProjectId);
+      setSettingsCategory(target.settingsCategory);
+      setBriefingView(target.briefingView);
+      if (target.chatSessionId) activateChatSession(target.activeProjectId, target.chatSessionId);
+      setPersonalNavigationRevision((n) => n + 1);
+    },
+  );
   const activeProjectChatSessionId = activeProject
     ? resolveProjectChatSessionId(activeProjectSessions, activeChatSessionIds[activeProject.id])
     : null;
@@ -2619,6 +2848,112 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
     (firstSshApproval === undefined ||
       firstHermesAcpApproval.createdAt <= firstSshApproval.requestedAt);
 
+  notificationVisibleChat.current =
+    activeSurface === 'workspace' && activeTab === 'chat' ? activeProjectChatSessionKey : null;
+  const notificationItems = useMemo(() => {
+    const notificationIssues: WorkspaceNoticeIssue[] = [];
+    if (
+      personalNotifications.error ||
+      personalNotifications.snapshot?.calendarState === 'unavailable' ||
+      personalNotifications.snapshot?.calendarState === 'confirmation-required'
+    )
+      notificationIssues.push({
+        key: 'personal-notification-source',
+        title: 'Calendar and briefing notifications need attention',
+        detail: notificationText(
+          'Check Briefing settings and existing calendar access. No new permissions were granted.',
+        ),
+        target: { kind: 'briefing-settings' },
+        severity: 'warning',
+      });
+    if (workspaceError)
+      notificationIssues.push({
+        key: 'workspace-error',
+        revision: workspaceError,
+        title: 'Workspace action needs attention',
+        detail: uiText(workspaceError),
+        target: { kind: 'workspace' },
+        severity: 'error',
+      });
+    if (sshRefreshWarning)
+      notificationIssues.push({
+        key: 'ssh-warning',
+        revision: sshRefreshWarning,
+        title: 'Server connection needs attention',
+        detail: uiText(sshRefreshWarning),
+        target: { kind: 'connections' },
+        severity: 'warning',
+      });
+    if (
+      codexErrorVisible &&
+      (codexConnectionState === 'unavailable' || codexConnectionState === 'auth-required')
+    )
+      notificationIssues.push({
+        key: 'codex-connection',
+        revision: codexConnectionState,
+        title: 'Codex connection needs attention',
+        detail: uiText('Open Connections to check the provider.'),
+        target: { kind: 'connections' },
+        severity: 'warning',
+      });
+    if (researchNotesWorkspace?.status === 'rename-pending' && activeProjectId)
+      notificationIssues.push({
+        key: `notes:${activeProjectId}`,
+        revision: researchNotesWorkspace.status,
+        title: 'Research Notes folder needs attention',
+        detail: uiText('Review the project’s Research Notes folder binding.'),
+        target: { kind: 'notes', projectId: activeProjectId },
+        severity: 'warning',
+      });
+    for (const request of sshApprovals)
+      if (Date.parse(request.expiresAt) > notificationNow.getTime())
+        notificationIssues.push({
+          key: `ssh-approval:${request.id}`,
+          revision: request.id,
+          title: 'SSH approval required',
+          detail: uiText(
+            'Review the existing approval dialog. Reading a notification never grants access.',
+          ),
+          target: { kind: 'connections' },
+          severity: 'warning',
+        });
+    for (const request of hermesAcpApprovals)
+      if (Date.parse(request.expiresAt) > notificationNow.getTime())
+        notificationIssues.push({
+          key: `hermes-approval:${request.id}`,
+          revision: request.id,
+          title: 'Hermes approval required',
+          detail: uiText(
+            'Review the existing approval dialog. Reading a notification never grants access.',
+          ),
+          target: { kind: 'connections' },
+          severity: 'warning',
+        });
+    return buildWorkspaceNotifications({
+      projects: snapshot?.projects ?? [],
+      tasks: snapshot?.tasks ?? [],
+      inbox: notificationInbox,
+      issues: notificationIssues,
+      now: notificationNow,
+      personal: personalNotifications.snapshot,
+    });
+  }, [
+    snapshot,
+    notificationInbox,
+    notificationNow,
+    personalNotifications.snapshot,
+    personalNotifications.error,
+    workspaceError,
+    sshRefreshWarning,
+    codexErrorVisible,
+    codexConnectionState,
+    researchNotesWorkspace,
+    activeProjectId,
+    sshApprovals,
+    hermesAcpApprovals,
+    notificationText,
+  ]);
+
   return (
     <main
       className={`desktop-shell${projectNavigation.sidebarCollapsed ? ' sidebar-collapsed' : ''}${sidebarResizing ? ' sidebar-resizing' : ''}`}
@@ -2629,14 +2964,26 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       }
     >
       <header className="titlebar">
+        <button
+          className="session-back-button"
+          aria-label="이전 세션으로 돌아가기"
+          title="뒤로가기"
+          disabled={!sessionHistory.canGoBack}
+          onClick={sessionHistory.back}
+        >
+          ←
+        </button>
         <ProjectSidebarToggle
           collapsed={projectNavigation.sidebarCollapsed}
           onToggle={toggleProjectSidebarVisibility}
           buttonRef={sidebarToggleRef}
         />
         <div className="logo">G</div>
-        <strong>GOSU</strong>
-        <span>Local Research Workspace{runtime ? ` · v${runtime.app.version}` : ''}</span>
+        <strong>{uiText('GOSU')}</strong>
+        <span>
+          {uiText('Local Research Workspace')}
+          {runtime ? ` · v${runtime.app.version}` : ''}
+        </span>
         <i className="titlebar-spacer" />
         <span
           className={`sync-pill ${pendingCount > 0 ? 'pending' : snapshot && pendingSummary === null ? 'offline' : runtime?.syncApi.ready ? 'ready' : 'offline'}`}
@@ -2644,23 +2991,49 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
         >
           <i />
           {pendingCount > 0
-            ? `Local · queued for future sync (${pendingCount})`
+            ? uiText('Local · queued for future sync ({pendingCount})', {
+                pendingCount: pendingCount,
+              })
             : snapshot && pendingSummary === null
-              ? 'Local · queue status unavailable'
+              ? uiText('Local · queue status unavailable')
               : runtime?.syncApi.ready
-                ? 'Sync API reachable · delivery off'
-                : 'Local only'}
+                ? uiText('Sync API reachable · delivery off')
+                : uiText('Local only')}
         </span>
       </header>
 
       <aside
         id="workspace-sidebar"
         className="desktop-nav"
-        aria-label="Workspace navigation"
+        aria-label={uiText('Workspace navigation')}
         aria-hidden={projectNavigation.sidebarCollapsed}
         inert={projectNavigation.sidebarCollapsed ? true : undefined}
       >
         <ProjectSidebar
+          briefingView={briefingView}
+          onOpenAssistant={() => {
+            setBriefingView('assistant');
+            selectGlobalTab('briefing-lab');
+          }}
+          onSelectBriefingView={(view) => {
+            setBriefingView(view);
+            selectGlobalTab('briefing-lab');
+          }}
+          notifications={{
+            items: notificationItems,
+            inbox: notificationInbox,
+            onMark: markNotificationItems,
+            onOpen: openWorkspaceNotification,
+            onRefresh: () => {
+              setNotificationNow(new Date());
+              void personalNotifications.refresh();
+            },
+            loading: workspaceLoading && snapshot === null,
+            storageError: notificationStorageError,
+            suppressed:
+              projectNavigation.sidebarCollapsed ||
+              Boolean(firstSshApproval || firstHermesAcpApproval),
+          }}
           projects={snapshot?.projects ?? []}
           activeProjectId={activeProjectId}
           activeTab={activeTab}
@@ -2719,7 +3092,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           }}
         />
         <div className="nav-spacer" />
-        <small>Local connections</small>
+        <small>{uiText('Local connections')}</small>
         <Connection
           name="Codex"
           state={
@@ -2771,7 +3144,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       {!projectNavigation.sidebarCollapsed && (
         <ResizeHandle
           className="project-sidebar-resize-handle"
-          label="Resize projects sidebar"
+          label={uiText('Resize projects sidebar')}
           value={projectNavigation.sidebarWidth}
           min={PROJECT_SIDEBAR_MIN_WIDTH}
           max={PROJECT_SIDEBAR_MAX_WIDTH}
@@ -2785,15 +3158,65 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
       )}
 
       <section
-        className={desktopContentClassName({
-          surface: activeSurface,
-          tab: activeTab,
-          hasActiveProject: Boolean(activeProject),
-        })}
+        className={
+          desktopContentClassName({
+            surface: activeSurface,
+            tab: activeTab,
+            hasActiveProject: Boolean(activeProject),
+          }) +
+          (activeSurface === 'workspace' &&
+          activeTab === 'briefing-lab' &&
+          briefingView === 'assistant'
+            ? ' desktop-content-assistant'
+            : '') +
+          (activeSurface === 'settings' && settingsCategory === 'briefing'
+            ? ' desktop-content-briefing-settings'
+            : '')
+        }
       >
         <p className="sr-only" aria-live="polite">
           {announcement}
         </p>
+        <GlobalBriefingView
+          briefingTarget={briefingTarget}
+          calendarTarget={calendarTarget}
+          onOpenItem={(target) => {
+            const requestId = Date.now();
+            if (target.kind === 'calendar') {
+              setCalendarTarget({ id: target.id, start: target.start, requestId });
+              selectGlobalTab('calendar');
+            } else {
+              setTaskTarget({ id: target.id, requestId });
+              selectGlobalTab('tasks');
+            }
+          }}
+          onSettings={() => {
+            setSettingsCategory('briefing');
+            setActiveSurface('settings');
+          }}
+          navigationRevision={personalNavigationRevision}
+          view={
+            activeSurface === 'settings' && settingsCategory === 'briefing'
+              ? 'settings'
+              : activeSurface === 'workspace'
+                ? activeTab === 'calendar'
+                  ? 'calendar'
+                  : activeTab === 'briefing-lab'
+                    ? briefingView
+                    : null
+                : null
+          }
+        />
+        <ProjectModelLabWorkspaces
+          onReferenceModel={(projectId, model) => void openModelProjectChat(projectId, model)}
+          textSize={preferences.textSize}
+          projects={(snapshot?.projects ?? []).filter((project) => !project.trashedAt)}
+          activeProjectId={
+            activeSurface === 'workspace' && activeTab === 'model-lab'
+              ? (activeProject?.id ?? null)
+              : null
+          }
+        />
         {sshRefreshWarning && (
           <div className="notice" role="status">
             <span>{sshRefreshWarning}</span>
@@ -2803,14 +3226,14 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 className="ghost-button"
                 onClick={() => setSshRefreshWarning(null)}
               >
-                Dismiss
+                {uiText('Dismiss')}
               </button>
             </div>
           </div>
         )}
         {workspaceError && (
           <div className="notice error" role="alert">
-            <span>{workspaceError}</span>
+            <span>{uiText(workspaceError)}</span>
             <div className="notice-actions">
               {codexErrorVisible && (
                 <button
@@ -2819,7 +3242,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   onClick={() => void refreshModels(true)}
                   disabled={codexBusy}
                 >
-                  {codexBusy ? 'Reconnecting…' : 'Reconnect Codex'}
+                  {codexBusy ? uiText('Reconnecting…') : uiText('Reconnect Codex')}
                 </button>
               )}
               <button
@@ -2830,7 +3253,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                   setCodexErrorVisible(false);
                 }}
               >
-                Dismiss
+                {uiText('Dismiss')}
               </button>
             </div>
           </div>
@@ -2838,6 +3261,15 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
 
         {activeSurface === 'settings' ? (
           <SettingsView
+            codexConnection={{
+              status: codexStatus,
+              busy: codexBusy,
+              onConnect: () => void refreshModels(true),
+              onRefresh: () => void refreshModels(),
+              onLogin: startCodexChatGptLogin,
+              onDisconnect: signOutCodex,
+            }}
+            modelRouting={modelRouting}
             preferences={preferences}
             onChange={updatePreferences}
             models={projectChatModels}
@@ -2914,7 +3346,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
           />
         ) : workspaceLoading ? (
           <div className="loading-state" role="status">
-            Opening the encrypted local workspace…
+            {uiText('Opening the encrypted local workspace…')}
           </div>
         ) : !snapshot ? (
           <WorkspaceUnavailable onRetry={() => void retryWorkspace()} />
@@ -2941,17 +3373,21 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 <div className="empty-mark">▱</div>
                 <h1>
                   {activeProjects.length > 0
-                    ? 'All active projects are hidden on this Mac'
-                    : 'Your projects are archived'}
+                    ? uiText('All active projects are hidden on this Mac')
+                    : uiText('Your projects are archived')}
                 </h1>
                 <p>
                   {activeProjects.length > 0
-                    ? 'Show all projects, or open Hidden projects in the sidebar to restore just one. Hiding never changes project data.'
-                    : 'Open Archived in the sidebar and restore a project to resume Board, Goal, and AI work with its history intact.'}
+                    ? uiText(
+                        'Show all projects, or open Hidden projects in the sidebar to restore just one. Hiding never changes project data.',
+                      )
+                    : uiText(
+                        'Open Archived in the sidebar and restore a project to resume Board, Goal, and AI work with its history intact.',
+                      )}
                 </p>
                 {activeProjects.length > 0 ? (
                   <button type="button" className="secondary-button" onClick={showAllProjects}>
-                    Show all active projects
+                    {uiText('Show all active projects')}
                   </button>
                 ) : (
                   <button
@@ -2964,7 +3400,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       })
                     }
                   >
-                    Show archived projects
+                    {uiText('Show archived projects')}
                   </button>
                 )}
               </div>
@@ -2987,483 +3423,530 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
               />
             )}
 
-            {activeTab === 'chat' && activeProject && (
-              <ProjectChatView
-                key={`${activeProject.id}:${activeProjectChatSessionId ?? 'default'}`}
-                project={activeProject}
-                tasks={activeTasks}
-                snapshot={activeProjectChatSnapshot ?? null}
-                loading={
-                  activeProjectChatSessionId === null ||
-                  Boolean(
-                    activeProjectChatSessionKey &&
-                    chatLoadingSessionKeys.has(activeProjectChatSessionKey) &&
-                    activeProjectChatSnapshot === undefined,
-                  )
-                }
-                inFlight={Boolean(
-                  activeProjectChatSessionKey && chatInFlight[activeProjectChatSessionKey],
-                )}
-                agentProgress={
-                  activeProjectChatSessionKey
-                    ? (chatAgentProgress[activeProjectChatSessionKey] ?? [])
-                    : []
-                }
-                sessionBusy={Boolean(
-                  activeProjectChatSessionKey &&
-                  (chatInFlight[activeProjectChatSessionKey] ||
-                    chatStartingSessionKeys.has(activeProjectChatSessionKey)),
-                )}
-                projectBusy={Boolean(
-                  chatSessionMutation?.projectId === activeProject.id &&
-                  chatSessionMutation.kind !== 'rename',
-                )}
-                models={projectChatModels}
-                collaborationModes={collaborationModes}
-                selectedProviderId={projectChatModelSelection.providerId}
-                selectedModel={projectChatModelSelection.modelId}
-                selectedReasoning={projectChatModelSelection.reasoningOptionId}
-                applyingActionId={applyingChatActionId}
-                vault={activeResearchNotesSelection}
-                vaultState={researchNotesState}
+            {activeTab === 'review' && activeProject && (
+              <CriticalReviewHeader
+                mode={criticalReviewMode}
                 sessions={activeProjectSessions}
-                sessionRailWidth={projectChatLayout.sessionRailWidth}
-                onSessionRailWidthChange={(sessionRailWidth) =>
-                  setProjectChatLayout((current) => ({ ...current, sessionRailWidth }))
-                }
-                sessionRailCollapsed={projectChatLayout.sessionRailCollapsed}
-                onSessionRailCollapsedChange={(sessionRailCollapsed) =>
-                  setProjectChatLayout((current) => ({ ...current, sessionRailCollapsed }))
-                }
-                chatDetailsCollapsed={projectChatLayout.chatDetailsCollapsed}
-                onChatDetailsCollapsedChange={(chatDetailsCollapsed) =>
-                  setProjectChatLayout((current) => ({ ...current, chatDetailsCollapsed }))
-                }
                 selectedSessionId={activeProjectChatSessionId}
-                initialDraft={chatDraftsRef.current.read(
-                  activeProject.id,
-                  activeProjectChatSessionId,
-                )}
-                onDraftChange={(value) =>
-                  chatDraftsRef.current.write(activeProject.id, activeProjectChatSessionId, value)
-                }
-                initialScrollTop={chatScrollPositionsRef.current.read(
-                  activeProject.id,
-                  activeProjectChatSessionId,
-                )}
-                unreadAssistantMessageId={
-                  activeProjectChatSessionKey
-                    ? (chatUnreadAssistantMessageIds[activeProjectChatSessionKey] ?? null)
-                    : null
-                }
-                searchTarget={
-                  pendingSearchNavigation?.hit.projectId === activeProject.id &&
-                  pendingSearchNavigation.hit.target.kind === 'project-chat' &&
-                  pendingSearchNavigation.hit.target.sessionId === activeProjectChatSessionId
-                    ? {
-                        requestId: pendingSearchNavigation.requestId,
-                        targetId: pendingSearchNavigation.hit.target.messageId,
-                      }
-                    : null
-                }
-                onSearchTargetHandled={completeSearchNavigation}
-                onUnreadAssistantMessageSeen={(assistantMessageId) => {
-                  if (!activeProjectChatSessionId || !activeProjectChatSessionKey) return;
-                  updateUnreadAssistantMessage(
-                    activeProjectChatSessionKey,
-                    chatUnreadAssistantMessagesRef.current.acknowledge(
-                      activeProject.id,
-                      activeProjectChatSessionId,
-                      assistantMessageId,
-                    ),
+                busy={chatSessionMutation !== null}
+                onMode={(mode) => {
+                  setCriticalReviewMode(mode);
+                  const latest = activeProjectSessions.find(
+                    (session) => session.criticalReviewMode === mode,
                   );
+                  if (latest) selectChatSession(activeProject.id, latest.id);
                 }}
-                onScrollTopChange={(scrollTop) =>
-                  chatScrollPositionsRef.current.write(
-                    activeProject.id,
-                    activeProjectChatSessionId,
-                    scrollTop,
-                  )
-                }
-                sshAccess={{
-                  state: activeProjectSshWorkspaceState,
-                  registeredConnectionCount: sshConnections.length,
-                  grantedWorkspaceCount: activeProjectSshWorkspaces.length,
-                }}
-                sshServers={activeProjectSshServers}
-                onOpenSshWorkspaceSetup={() => openSshWorkspaceSetup()}
-                onRefreshSshResource={(connectionId) =>
-                  refreshProjectSshResource(activeProject.id, connectionId, true)
-                }
-                onEnableTrustedWorkspace={(input: EnableTrustedRemoteWorkspaceInput) =>
-                  runSshWorkspaceAction(
-                    `trusted-workspace-enable:${input.grantId}`,
-                    input.projectId,
-                    () => window.gosu.ssh.enableTrustedWorkspace(input),
-                    'Trusted workspace enabled. Supported bounded operations will no longer ask Allow once.',
-                  )
-                }
-                onRevokeTrustedWorkspace={(input: RevokeTrustedRemoteWorkspaceInput) =>
-                  runSshWorkspaceAction(
-                    `trusted-workspace-revoke:${input.grantId}`,
-                    input.projectId,
-                    () => window.gosu.ssh.revokeTrustedWorkspace(input),
-                    'Trusted workspace revoked. Remote operations require Allow once again.',
-                  )
-                }
-                activeSessionIds={activeSessionIdsForProject(
-                  activeProject.id,
-                  activeChatSessionKeys,
-                  activeProjectSessions,
-                )}
-                creatingSession={
-                  chatSessionMutation?.projectId === activeProject.id &&
-                  chatSessionMutation.kind === 'create'
-                }
-                branchingMessageId={
-                  chatSessionMutation?.projectId === activeProject.id &&
-                  chatSessionMutation.kind === 'branch'
-                    ? (chatSessionMutation.messageId ?? null)
-                    : null
-                }
-                onSelectSession={(sessionId) => selectChatSession(activeProject.id, sessionId)}
-                onCreateSession={() => void createChatSession(activeProject.id)}
-                onRenameSession={renameChatSession}
-                onBranchSession={(messageId) => branchChatSession(activeProject.id, messageId)}
-                onSelectedModel={(modelId) =>
-                  setProjectChatModelSelection((current) => {
-                    const nextProviderId =
-                      modelId === null
-                        ? null
-                        : (projectChatModels.find((model) => model.modelId === modelId)
-                            ?.providerId ?? null);
-                    const selection = selectProjectChatModel(current, {
-                      providerId: nextProviderId,
-                      modelId,
-                    });
-                    if (activeProjectChatSessionId) {
-                      saveProjectChatModelSelection(
-                        window.localStorage,
-                        activeProject.id,
-                        activeProjectChatSessionId,
-                        selection,
-                      );
-                    }
-                    return selection;
-                  })
-                }
-                onSelectedReasoning={(reasoningOptionId) =>
-                  setProjectChatModelSelection((current) => {
-                    const selection = selectProjectChatReasoning(current, reasoningOptionId);
-                    if (activeProjectChatSessionId) {
-                      saveProjectChatModelSelection(
-                        window.localStorage,
-                        activeProject.id,
-                        activeProjectChatSessionId,
-                        selection,
-                      );
-                    }
-                    return selection;
-                  })
-                }
-                onRefreshModels={() => {
-                  void refreshModels();
-                  if (preferences.agentAddOns.hermes === 'connect-local') {
-                    void refreshHermesProjectChatConnection();
-                  }
-                  if (preferences.agentAddOns['claude-code'] === 'connect-local') {
-                    void refreshClaudeCodeProjectChatConnection();
-                  }
-                }}
-                onOpenAgentSettings={openAgentSettings}
-                onUpdatePolicyRules={(profile, policyRules) =>
-                  updateProjectChatProfile({
-                    projectId: profile.projectId,
-                    expectedVersion: profile.version,
-                    harnessMode: profile.harnessMode,
-                    responseDepth: profile.responseDepth,
-                    collaborationModeId: profile.collaborationModeId,
-                    personality: profile.personality,
-                    responseVerbosity: profile.responseVerbosity,
-                    webSearchMode: profile.webSearchMode,
-                    contextScope: profile.contextScope,
-                    localNotesVault: profile.localNotesVault ?? null,
-                    customInstructions: profile.customInstructions,
-                    policyRules: [...policyRules],
-                  })
-                }
-                onChooseAttachments={() => {
-                  if (!activeProjectChatSessionId) return Promise.resolve([]);
-                  return window.gosu.projectChat.chooseAttachments({
-                    projectId: activeProject.id,
-                    sessionId: activeProjectChatSessionId,
-                  });
-                }}
-                onReleaseAttachment={(attachment) =>
-                  window.gosu.projectChat
-                    .releaseAttachment({
-                      projectId: attachment.projectId,
-                      sessionId: attachment.sessionId,
-                      attachmentId: attachment.id,
-                    })
-                    .then(() => undefined)
-                }
-                onAttachmentError={(error) => setWorkspaceError(describeError(error))}
-                onSend={async (message, retryOfAttemptId, controls, attachmentIds) => {
-                  if (!activeProjectChatSessionId || !activeProjectChatSessionKey) {
-                    return false;
-                  }
-                  const selectedDescriptor = resolveEffectiveCodexModel(
-                    projectChatModels,
-                    collaborationModes,
-                    projectChatModelSelection.providerId,
-                    projectChatModelSelection.modelId,
-                    controls.collaborationModeId ?? null,
-                  );
-                  const selectedCollaborationMode = controls.collaborationModeId
-                    ? collaborationModes.find((mode) => mode.id === controls.collaborationModeId)
-                    : undefined;
-                  const effectiveReasoningOptionId =
-                    projectChatModelSelection.reasoningOptionId ??
-                    selectedCollaborationMode?.recommendedReasoningOptionId ??
-                    null;
-                  if (controls.collaborationModeId && !selectedCollaborationMode) {
-                    setWorkspaceError(
-                      'The selected Codex collaboration mode is no longer available. Choose a current mode and try again.',
-                    );
-                    return false;
-                  }
-                  if (!selectedDescriptor) {
-                    setWorkspaceError(
-                      projectChatModelSelection.modelId !== null
-                        ? 'The selected Project Chat model is no longer available. Choose a current model and try again.'
-                        : 'The effective default or mode-recommended Project Chat model is unavailable. Choose a current model or mode and try again.',
-                    );
-                    return false;
-                  }
-                  const savedLocalNotesGrant = activeProjectChatSnapshot?.profile?.localNotesVault;
-                  if (
-                    selectedDescriptor.providerId !== 'hermes' &&
-                    savedLocalNotesGrant &&
-                    (researchNotesState !== 'ready' ||
-                      activeResearchNotesSelection?.id !== savedLocalNotesGrant.id)
-                  ) {
-                    setWorkspaceError(
-                      'Research Notes access cannot be verified for this project. GOSU paused this turn so a stale or hidden grant cannot be used. Open Research Notes and review the project folder.',
-                    );
-                    return false;
-                  }
-                  if (selectedDescriptor.providerId === 'hermes' && attachmentIds.length > 0) {
-                    setWorkspaceError(
-                      'Turn attachments are not bridged to Hermes ACP yet. Remove attachments or choose Codex for this turn.',
-                    );
-                    return false;
-                  }
-                  if (
-                    effectiveReasoningOptionId !== null &&
-                    !selectedDescriptor?.reasoningOptions.some(
-                      (option) => option.id === effectiveReasoningOptionId,
-                    )
-                  ) {
-                    setWorkspaceError(
-                      'The selected or mode-recommended reasoning option is unavailable for the effective model. Choose a current option and try again.',
-                    );
-                    return false;
-                  }
-                  if (
-                    controls.personality !== 'auto' &&
-                    selectedDescriptor?.supportsPersonality === false
-                  ) {
-                    setWorkspaceError(
-                      'The effective Codex model does not support personality controls. Choose Auto personality or another model/mode.',
-                    );
-                    return false;
-                  }
-                  const replaceActiveHermesTurn = shouldReplaceBusyHermesTurn(
-                    selectedDescriptor.providerId,
-                    Boolean(chatInFlight[activeProjectChatSessionKey]),
-                    chatStartingSessionKeys.has(activeProjectChatSessionKey),
-                  );
-                  setChatStartingSessionKeys((current) => {
-                    const next = new Set(current);
-                    next.add(activeProjectChatSessionKey);
-                    return next;
-                  });
-                  setWorkspaceError(null);
-                  try {
-                    const receipt = await window.gosu.projectChat.send({
-                      projectId: activeProject.id,
-                      sessionId: activeProjectChatSessionId,
-                      message,
-                      requestedModelId: projectChatModelSelection.modelId,
-                      reasoningOptionId: projectChatModelSelection.reasoningOptionId,
-                      ...(attachmentIds.length > 0 ? { attachmentIds: [...attachmentIds] } : {}),
-                      ...controls,
-                      ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
-                    });
-                    if ('queued' in receipt && replaceActiveHermesTurn) {
-                      await window.gosu.projectChat.runQueuedTurnNow({
-                        projectId: activeProject.id,
-                        sessionId: receipt.sessionId,
-                        queueId: receipt.queueId,
-                      });
-                      setAnnouncement(
-                        'Stopped the current Hermes response and started the new message.',
-                      );
-                    } else if ('queued' in receipt) {
-                      setAnnouncement('Queued this message for the selected Project Chat session.');
-                    }
-                    await loadProjectChat(activeProject.id, receipt.sessionId);
-                    if (selectedDescriptor.providerId === 'codex') {
-                      setCodexConnectionState('ready');
-                      setCodexErrorVisible(false);
-                    }
-                    return true;
-                  } catch (error) {
-                    setWorkspaceError(describeError(error));
-                    if (
-                      isSelectedHermesProviderFailure(selectedDescriptor.providerId ?? null, error)
-                    ) {
-                      ++hermesProjectChatConnectionGenerationRef.current;
-                      removeHermesProjectChatDescriptor();
-                      setHermesProjectChatConnection({ phase: 'unavailable', status: null });
-                    } else if (selectedDescriptor.providerId === 'claude-code') {
-                      ++claudeCodeProjectChatConnectionGenerationRef.current;
-                      removeClaudeCodeProjectChatDescriptors();
-                      setClaudeCodeProjectChatConnection({ phase: 'unavailable', status: null });
-                    } else if (isCodexUnavailableError(error)) {
-                      setCodexConnectionState('unavailable');
-                      setCodexErrorVisible(true);
-                    }
-                    await loadProjectChat(activeProject.id, activeProjectChatSessionId).catch(
-                      () => undefined,
-                    );
-                    return false;
-                  } finally {
-                    setChatStartingSessionKeys((current) => {
-                      const next = new Set(current);
-                      next.delete(activeProjectChatSessionKey);
-                      return next;
-                    });
-                  }
-                }}
-                onCancel={() => {
-                  if (!activeProjectChatSessionId) return;
-                  void window.gosu.projectChat
-                    .cancel(activeProject.id, activeProjectChatSessionId)
-                    .catch((error: unknown) => setWorkspaceError(describeError(error)));
-                }}
-                onUpdateQueuedTurn={async (queueId, message) => {
-                  if (!activeProjectChatSessionId) return;
-                  try {
-                    await window.gosu.projectChat.updateQueuedTurn({
-                      projectId: activeProject.id,
-                      sessionId: activeProjectChatSessionId,
-                      queueId,
-                      message,
-                    });
-                    await loadProjectChat(activeProject.id, activeProjectChatSessionId);
-                  } catch (error) {
-                    setWorkspaceError(describeError(error));
-                    throw error;
-                  }
-                }}
-                onRemoveQueuedTurn={async (queueId) => {
-                  if (!activeProjectChatSessionId) return;
-                  try {
-                    await window.gosu.projectChat.removeQueuedTurn({
-                      projectId: activeProject.id,
-                      sessionId: activeProjectChatSessionId,
-                      queueId,
-                    });
-                    await loadProjectChat(activeProject.id, activeProjectChatSessionId);
-                  } catch (error) {
-                    setWorkspaceError(describeError(error));
-                    throw error;
-                  }
-                }}
-                onRunQueuedTurnNow={async (queueId) => {
-                  if (!activeProjectChatSessionId) return;
-                  try {
-                    await window.gosu.projectChat.runQueuedTurnNow({
-                      projectId: activeProject.id,
-                      sessionId: activeProjectChatSessionId,
-                      queueId,
-                    });
-                    await loadProjectChat(activeProject.id, activeProjectChatSessionId);
-                  } catch (error) {
-                    setWorkspaceError(describeError(error));
-                    throw error;
-                  }
-                }}
-                onEditHistoryMessage={async (messageId, content) => {
-                  if (!activeProjectChatSessionId || !activeProjectChatSnapshot) return;
-                  const branchPointId = resolveEditedMessageBranchPoint(
-                    activeProjectChatSnapshot.messages,
-                    messageId,
-                  );
-                  if (branchPointId === undefined) return;
-                  try {
-                    const editedSession = branchPointId
-                      ? await window.gosu.projectChat.branchSession({
-                          projectId: activeProject.id,
-                          sourceSessionId: activeProjectChatSessionId,
-                          branchFromMessageId: branchPointId,
-                          title:
-                            `Edit · ${activeProjectChatSnapshot.session?.title ?? 'Project chat'}`.slice(
-                              0,
-                              120,
-                            ),
-                        })
-                      : await window.gosu.projectChat.createSession({
-                          projectId: activeProject.id,
-                          title:
-                            `Edit · ${activeProjectChatSnapshot.session?.title ?? 'Project chat'}`.slice(
-                              0,
-                              120,
-                            ),
-                        });
-                    await loadProjectChatSessions(activeProject.id);
-                    activateChatSession(activeProject.id, editedSession.id);
-                    chatDraftsRef.current.write(activeProject.id, editedSession.id, content);
-                    await loadProjectChat(activeProject.id, editedSession.id);
-                    setAnnouncement(
-                      'Created a new session branch for the edited message. Original history is unchanged.',
-                    );
-                  } catch (error) {
-                    setWorkspaceError(describeError(error));
-                  }
-                }}
-                onApplyAction={async (action: ProjectChatAction) => {
-                  if (applyingChatActionId !== null || !activeProjectChatSessionId) return;
-                  setApplyingChatActionId(action.id);
-                  setWorkspaceError(null);
-                  try {
-                    const updated = await window.gosu.projectChat.applyAction({
-                      projectId: activeProject.id,
-                      sessionId: activeProjectChatSessionId,
-                      actionId: action.id,
-                    });
-                    await Promise.all([
-                      loadProjectChat(activeProject.id, activeProjectChatSessionId),
-                      loadWorkspace(),
-                    ]);
-                    setAnnouncement(
-                      updated.status === 'applied'
-                        ? 'Applied the reviewed chat action to the Board.'
-                        : 'The chat action was not applied. Its receipt explains why.',
-                    );
-                  } catch (error) {
-                    setWorkspaceError(describeError(error));
-                  } finally {
-                    setApplyingChatActionId(null);
-                  }
-                }}
+                onSession={(id) => selectChatSession(activeProject.id, id)}
+                onCreate={() => void createChatSession(activeProject.id, criticalReviewMode)}
               />
             )}
+            {(activeTab === 'chat' ||
+              (activeTab === 'review' &&
+                activeProjectChatSnapshot?.session?.criticalReviewMode === criticalReviewMode)) &&
+              activeProject && (
+                <ProjectChatView
+                  key={`${activeProject.id}:${activeProjectChatSessionId ?? 'default'}`}
+                  project={activeProject}
+                  tasks={activeTasks}
+                  snapshot={activeProjectChatSnapshot ?? null}
+                  loading={
+                    activeProjectChatSessionId === null ||
+                    Boolean(
+                      activeProjectChatSessionKey &&
+                      chatLoadingSessionKeys.has(activeProjectChatSessionKey) &&
+                      activeProjectChatSnapshot === undefined,
+                    )
+                  }
+                  inFlight={Boolean(
+                    activeProjectChatSessionKey && chatInFlight[activeProjectChatSessionKey],
+                  )}
+                  agentProgress={
+                    activeProjectChatSessionKey
+                      ? (chatAgentProgress[activeProjectChatSessionKey]?.events ?? [])
+                      : []
+                  }
+                  sessionBusy={Boolean(
+                    activeProjectChatSessionKey &&
+                    (chatInFlight[activeProjectChatSessionKey] ||
+                      chatStartingSessionKeys.has(activeProjectChatSessionKey)),
+                  )}
+                  projectBusy={Boolean(
+                    chatSessionMutation?.projectId === activeProject.id &&
+                    chatSessionMutation.kind !== 'rename',
+                  )}
+                  models={projectChatModels}
+                  collaborationModes={collaborationModes}
+                  selectedProviderId={projectChatModelSelection.providerId}
+                  selectedModel={projectChatModelSelection.modelId}
+                  selectedReasoning={projectChatModelSelection.reasoningOptionId}
+                  applyingActionId={applyingChatActionId}
+                  vault={activeResearchNotesSelection}
+                  vaultState={researchNotesState}
+                  sessions={
+                    activeTab === 'review'
+                      ? activeProjectSessions.filter(
+                          (session) => session.criticalReviewMode === criticalReviewMode,
+                        )
+                      : activeProjectSessions
+                  }
+                  sessionRailWidth={projectChatLayout.sessionRailWidth}
+                  onSessionRailWidthChange={(sessionRailWidth) =>
+                    setProjectChatLayout((current) => ({ ...current, sessionRailWidth }))
+                  }
+                  sessionRailCollapsed={projectChatLayout.sessionRailCollapsed}
+                  onSessionRailCollapsedChange={(sessionRailCollapsed) =>
+                    setProjectChatLayout((current) => ({ ...current, sessionRailCollapsed }))
+                  }
+                  chatDetailsCollapsed={projectChatLayout.chatDetailsCollapsed}
+                  onChatDetailsCollapsedChange={(chatDetailsCollapsed) =>
+                    setProjectChatLayout((current) => ({ ...current, chatDetailsCollapsed }))
+                  }
+                  selectedSessionId={activeProjectChatSessionId}
+                  initialDraft={chatDraftsRef.current.read(
+                    activeProject.id,
+                    activeProjectChatSessionId,
+                  )}
+                  onDraftChange={(value) =>
+                    chatDraftsRef.current.write(activeProject.id, activeProjectChatSessionId, value)
+                  }
+                  initialScrollTop={chatScrollPositionsRef.current.read(
+                    activeProject.id,
+                    activeProjectChatSessionId,
+                  )}
+                  unreadAssistantMessageId={
+                    activeProjectChatSessionKey
+                      ? (chatUnreadAssistantMessageIds[activeProjectChatSessionKey] ?? null)
+                      : null
+                  }
+                  searchTarget={
+                    pendingSearchNavigation?.hit.projectId === activeProject.id &&
+                    pendingSearchNavigation.hit.target.kind === 'project-chat' &&
+                    pendingSearchNavigation.hit.target.sessionId === activeProjectChatSessionId
+                      ? {
+                          requestId: pendingSearchNavigation.requestId,
+                          targetId: pendingSearchNavigation.hit.target.messageId,
+                        }
+                      : null
+                  }
+                  onSearchTargetHandled={completeSearchNavigation}
+                  onUnreadAssistantMessageSeen={(assistantMessageId) => {
+                    if (!activeProjectChatSessionId || !activeProjectChatSessionKey) return;
+                    updateUnreadAssistantMessage(
+                      activeProjectChatSessionKey,
+                      chatUnreadAssistantMessagesRef.current.acknowledge(
+                        activeProject.id,
+                        activeProjectChatSessionId,
+                        assistantMessageId,
+                      ),
+                    );
+                  }}
+                  onScrollTopChange={(scrollTop) =>
+                    chatScrollPositionsRef.current.write(
+                      activeProject.id,
+                      activeProjectChatSessionId,
+                      scrollTop,
+                    )
+                  }
+                  sshAccess={{
+                    state: activeProjectSshWorkspaceState,
+                    registeredConnectionCount: sshConnections.length,
+                    grantedWorkspaceCount: activeProjectSshWorkspaces.length,
+                  }}
+                  sshServers={activeProjectSshServers}
+                  onOpenSshWorkspaceSetup={() => openSshWorkspaceSetup()}
+                  onRefreshSshResource={(connectionId) =>
+                    refreshProjectSshResource(activeProject.id, connectionId, true)
+                  }
+                  onEnableTrustedWorkspace={(input: EnableTrustedRemoteWorkspaceInput) =>
+                    runSshWorkspaceAction(
+                      `trusted-workspace-enable:${input.grantId}`,
+                      input.projectId,
+                      () => window.gosu.ssh.enableTrustedWorkspace(input),
+                      'Trusted workspace enabled. Supported bounded operations will no longer ask Allow once.',
+                    )
+                  }
+                  onRevokeTrustedWorkspace={(input: RevokeTrustedRemoteWorkspaceInput) =>
+                    runSshWorkspaceAction(
+                      `trusted-workspace-revoke:${input.grantId}`,
+                      input.projectId,
+                      () => window.gosu.ssh.revokeTrustedWorkspace(input),
+                      'Trusted workspace revoked. Remote operations require Allow once again.',
+                    )
+                  }
+                  activeSessionIds={activeSessionIdsForProject(
+                    activeProject.id,
+                    activeChatSessionKeys,
+                    activeProjectSessions,
+                  )}
+                  creatingSession={
+                    chatSessionMutation?.projectId === activeProject.id &&
+                    chatSessionMutation.kind === 'create'
+                  }
+                  branchingMessageId={
+                    chatSessionMutation?.projectId === activeProject.id &&
+                    chatSessionMutation.kind === 'branch'
+                      ? (chatSessionMutation.messageId ?? null)
+                      : null
+                  }
+                  onSelectSession={(sessionId) => selectChatSession(activeProject.id, sessionId)}
+                  onCreateSession={() =>
+                    void createChatSession(
+                      activeProject.id,
+                      activeTab === 'review' ? criticalReviewMode : undefined,
+                    )
+                  }
+                  onRenameSession={renameChatSession}
+                  onBranchSession={(messageId) => branchChatSession(activeProject.id, messageId)}
+                  onSelectedModel={(modelId) =>
+                    setProjectChatModelSelection((current) => {
+                      const nextProviderId =
+                        modelId === null
+                          ? null
+                          : (projectChatModels.find((model) => model.modelId === modelId)
+                              ?.providerId ?? null);
+                      const selection = selectProjectChatModel(current, {
+                        providerId: nextProviderId,
+                        modelId,
+                      });
+                      if (activeProjectChatSessionId) {
+                        saveProjectChatModelSelection(
+                          window.localStorage,
+                          activeProject.id,
+                          activeProjectChatSessionId,
+                          selection,
+                        );
+                      }
+                      return selection;
+                    })
+                  }
+                  onSelectedReasoning={(reasoningOptionId) =>
+                    setProjectChatModelSelection((current) => {
+                      const selection = selectProjectChatReasoning(current, reasoningOptionId);
+                      if (activeProjectChatSessionId) {
+                        saveProjectChatModelSelection(
+                          window.localStorage,
+                          activeProject.id,
+                          activeProjectChatSessionId,
+                          selection,
+                        );
+                      }
+                      return selection;
+                    })
+                  }
+                  onRefreshModels={() => {
+                    void refreshModels();
+                    if (preferences.agentAddOns.hermes === 'connect-local') {
+                      void refreshHermesProjectChatConnection();
+                    }
+                    if (preferences.agentAddOns['claude-code'] === 'connect-local') {
+                      void refreshClaudeCodeProjectChatConnection();
+                    }
+                  }}
+                  onOpenAgentSettings={openAgentSettings}
+                  onUpdatePolicyRules={(profile, policyRules) =>
+                    updateProjectChatProfile({
+                      projectId: profile.projectId,
+                      expectedVersion: profile.version,
+                      harnessMode: profile.harnessMode,
+                      responseDepth: profile.responseDepth,
+                      collaborationModeId: profile.collaborationModeId,
+                      personality: profile.personality,
+                      responseVerbosity: profile.responseVerbosity,
+                      webSearchMode: profile.webSearchMode,
+                      contextScope: profile.contextScope,
+                      localNotesVault: profile.localNotesVault ?? null,
+                      customInstructions: profile.customInstructions,
+                      policyRules: [...policyRules],
+                    })
+                  }
+                  onChooseAttachments={() => {
+                    if (!activeProjectChatSessionId) return Promise.resolve([]);
+                    return window.gosu.projectChat.chooseAttachments({
+                      projectId: activeProject.id,
+                      sessionId: activeProjectChatSessionId,
+                    });
+                  }}
+                  onDropAttachments={(files) => {
+                    if (!activeProjectChatSessionId) return Promise.resolve([]);
+                    return window.gosu.projectChat.stageDroppedAttachments(
+                      { projectId: activeProject.id, sessionId: activeProjectChatSessionId },
+                      files,
+                    );
+                  }}
+                  onReleaseAttachment={(attachment) =>
+                    window.gosu.projectChat
+                      .releaseAttachment({
+                        projectId: attachment.projectId,
+                        sessionId: attachment.sessionId,
+                        attachmentId: attachment.id,
+                      })
+                      .then(() => undefined)
+                  }
+                  onAttachmentError={(error) => setWorkspaceError(describeError(error))}
+                  onSend={async (message, retryOfAttemptId, controls, attachmentIds) => {
+                    if (!activeProjectChatSessionId || !activeProjectChatSessionKey) {
+                      return false;
+                    }
+                    const selectedDescriptor = resolveEffectiveCodexModel(
+                      projectChatModels,
+                      collaborationModes,
+                      projectChatModelSelection.providerId,
+                      projectChatModelSelection.modelId,
+                      controls.collaborationModeId ?? null,
+                    );
+                    const selectedCollaborationMode = controls.collaborationModeId
+                      ? collaborationModes.find((mode) => mode.id === controls.collaborationModeId)
+                      : undefined;
+                    const effectiveReasoningOptionId =
+                      projectChatModelSelection.reasoningOptionId ??
+                      selectedCollaborationMode?.recommendedReasoningOptionId ??
+                      null;
+                    if (controls.collaborationModeId && !selectedCollaborationMode) {
+                      setWorkspaceError(
+                        'The selected Codex collaboration mode is no longer available. Choose a current mode and try again.',
+                      );
+                      return false;
+                    }
+                    if (!selectedDescriptor) {
+                      setWorkspaceError(
+                        projectChatModelSelection.modelId !== null
+                          ? 'The selected Project Chat model is no longer available. Choose a current model and try again.'
+                          : 'The effective default or mode-recommended Project Chat model is unavailable. Choose a current model or mode and try again.',
+                      );
+                      return false;
+                    }
+                    if (selectedDescriptor.providerId === 'hermes' && attachmentIds.length > 0) {
+                      setWorkspaceError(
+                        'Turn attachments are not bridged to Hermes ACP yet. Remove attachments or choose Codex for this turn.',
+                      );
+                      return false;
+                    }
+                    if (
+                      effectiveReasoningOptionId !== null &&
+                      !selectedDescriptor?.reasoningOptions.some(
+                        (option) => option.id === effectiveReasoningOptionId,
+                      )
+                    ) {
+                      setWorkspaceError(
+                        'The selected or mode-recommended reasoning option is unavailable for the effective model. Choose a current option and try again.',
+                      );
+                      return false;
+                    }
+                    if (
+                      controls.personality !== 'auto' &&
+                      selectedDescriptor?.supportsPersonality === false
+                    ) {
+                      setWorkspaceError(
+                        'The effective Codex model does not support personality controls. Choose Auto personality or another model/mode.',
+                      );
+                      return false;
+                    }
+                    const replaceActiveHermesTurn = shouldReplaceBusyHermesTurn(
+                      selectedDescriptor.providerId,
+                      Boolean(chatInFlight[activeProjectChatSessionKey]),
+                      chatStartingSessionKeys.has(activeProjectChatSessionKey),
+                    );
+                    setChatStartingSessionKeys((current) => {
+                      const next = new Set(current);
+                      next.add(activeProjectChatSessionKey);
+                      return next;
+                    });
+                    setWorkspaceError(null);
+                    try {
+                      const receipt = await window.gosu.projectChat.send({
+                        projectId: activeProject.id,
+                        sessionId: activeProjectChatSessionId,
+                        message,
+                        requestedModelId: projectChatModelSelection.modelId,
+                        reasoningOptionId: projectChatModelSelection.reasoningOptionId,
+                        ...(attachmentIds.length > 0 ? { attachmentIds: [...attachmentIds] } : {}),
+                        ...controls,
+                        ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
+                      });
+                      if ('queued' in receipt && replaceActiveHermesTurn) {
+                        await window.gosu.projectChat.runQueuedTurnNow({
+                          projectId: activeProject.id,
+                          sessionId: receipt.sessionId,
+                          queueId: receipt.queueId,
+                        });
+                        setAnnouncement(
+                          'Stopped the current Hermes response and started the new message.',
+                        );
+                      } else if ('queued' in receipt) {
+                        setAnnouncement(
+                          'Queued this message for the selected Project Chat session.',
+                        );
+                      }
+                      await loadProjectChat(activeProject.id, receipt.sessionId);
+                      if (selectedDescriptor.providerId === 'codex') {
+                        setCodexConnectionState('ready');
+                        setCodexErrorVisible(false);
+                      }
+                      return true;
+                    } catch (error) {
+                      setWorkspaceError(describeError(error));
+                      if (
+                        isSelectedHermesProviderFailure(
+                          selectedDescriptor.providerId ?? null,
+                          error,
+                        )
+                      ) {
+                        ++hermesProjectChatConnectionGenerationRef.current;
+                        removeHermesProjectChatDescriptor();
+                        setHermesProjectChatConnection({ phase: 'unavailable', status: null });
+                      } else if (selectedDescriptor.providerId === 'claude-code') {
+                        ++claudeCodeProjectChatConnectionGenerationRef.current;
+                        removeClaudeCodeProjectChatDescriptors();
+                        setClaudeCodeProjectChatConnection({ phase: 'unavailable', status: null });
+                      } else if (isCodexUnavailableError(error)) {
+                        setCodexConnectionState('unavailable');
+                        setCodexErrorVisible(true);
+                      }
+                      await loadProjectChat(activeProject.id, activeProjectChatSessionId).catch(
+                        () => undefined,
+                      );
+                      return false;
+                    } finally {
+                      setChatStartingSessionKeys((current) => {
+                        const next = new Set(current);
+                        next.delete(activeProjectChatSessionKey);
+                        return next;
+                      });
+                    }
+                  }}
+                  onCancel={() => {
+                    if (!activeProjectChatSessionId) return;
+                    void window.gosu.projectChat
+                      .cancel(activeProject.id, activeProjectChatSessionId)
+                      .catch((error: unknown) => setWorkspaceError(describeError(error)));
+                  }}
+                  onUpdateQueuedTurn={async (queueId, message) => {
+                    if (!activeProjectChatSessionId) return;
+                    try {
+                      await window.gosu.projectChat.updateQueuedTurn({
+                        projectId: activeProject.id,
+                        sessionId: activeProjectChatSessionId,
+                        queueId,
+                        message,
+                      });
+                      await loadProjectChat(activeProject.id, activeProjectChatSessionId);
+                    } catch (error) {
+                      setWorkspaceError(describeError(error));
+                      throw error;
+                    }
+                  }}
+                  onRemoveQueuedTurn={async (queueId) => {
+                    if (!activeProjectChatSessionId) return;
+                    try {
+                      await window.gosu.projectChat.removeQueuedTurn({
+                        projectId: activeProject.id,
+                        sessionId: activeProjectChatSessionId,
+                        queueId,
+                      });
+                      await loadProjectChat(activeProject.id, activeProjectChatSessionId);
+                    } catch (error) {
+                      setWorkspaceError(describeError(error));
+                      throw error;
+                    }
+                  }}
+                  onRunQueuedTurnNow={async (queueId) => {
+                    if (!activeProjectChatSessionId) return;
+                    try {
+                      await window.gosu.projectChat.runQueuedTurnNow({
+                        projectId: activeProject.id,
+                        sessionId: activeProjectChatSessionId,
+                        queueId,
+                      });
+                      await loadProjectChat(activeProject.id, activeProjectChatSessionId);
+                    } catch (error) {
+                      setWorkspaceError(describeError(error));
+                      throw error;
+                    }
+                  }}
+                  onSteerQueuedTurn={async (queueId, message) => {
+                    if (!activeProjectChatSessionId) return;
+                    try {
+                      await window.gosu.projectChat.steerQueuedTurn({
+                        projectId: activeProject.id,
+                        sessionId: activeProjectChatSessionId,
+                        queueId,
+                        message,
+                      });
+                      await loadProjectChat(activeProject.id, activeProjectChatSessionId);
+                    } catch (error) {
+                      setWorkspaceError(describeError(error));
+                      throw error;
+                    }
+                  }}
+                  onEditHistoryMessage={async (messageId, content) => {
+                    if (!activeProjectChatSessionId || !activeProjectChatSnapshot) return;
+                    const branchPointId = resolveEditedMessageBranchPoint(
+                      activeProjectChatSnapshot.messages,
+                      messageId,
+                    );
+                    if (branchPointId === undefined) return;
+                    try {
+                      const editedSession = branchPointId
+                        ? await window.gosu.projectChat.branchSession({
+                            projectId: activeProject.id,
+                            sourceSessionId: activeProjectChatSessionId,
+                            branchFromMessageId: branchPointId,
+                            title:
+                              `Edit · ${activeProjectChatSnapshot.session?.title ?? 'Project chat'}`.slice(
+                                0,
+                                120,
+                              ),
+                          })
+                        : await window.gosu.projectChat.createSession({
+                            projectId: activeProject.id,
+                            title:
+                              `Edit · ${activeProjectChatSnapshot.session?.title ?? 'Project chat'}`.slice(
+                                0,
+                                120,
+                              ),
+                          });
+                      await loadProjectChatSessions(activeProject.id);
+                      activateChatSession(activeProject.id, editedSession.id);
+                      chatDraftsRef.current.write(activeProject.id, editedSession.id, content);
+                      await loadProjectChat(activeProject.id, editedSession.id);
+                      setAnnouncement(
+                        'Created a new session branch for the edited message. Original history is unchanged.',
+                      );
+                    } catch (error) {
+                      setWorkspaceError(describeError(error));
+                    }
+                  }}
+                  onApplyAction={async (action: ProjectChatAction) => {
+                    if (applyingChatActionId !== null || !activeProjectChatSessionId) return;
+                    setApplyingChatActionId(action.id);
+                    setWorkspaceError(null);
+                    try {
+                      const updated = await window.gosu.projectChat.applyAction({
+                        projectId: activeProject.id,
+                        sessionId: activeProjectChatSessionId,
+                        actionId: action.id,
+                      });
+                      await Promise.all([
+                        loadProjectChat(activeProject.id, activeProjectChatSessionId),
+                        loadWorkspace(),
+                      ]);
+                      setAnnouncement(
+                        updated.status === 'applied'
+                          ? 'Applied the reviewed chat action to the Board.'
+                          : 'The chat action was not applied. Its receipt explains why.',
+                      );
+                    } catch (error) {
+                      setWorkspaceError(describeError(error));
+                    } finally {
+                      setApplyingChatActionId(null);
+                    }
+                  }}
+                />
+              )}
 
             {activeTab === 'tasks' && (
               <WorkspaceTasksView
+                briefingTarget={taskTarget}
                 projects={snapshot.projects}
                 tasks={snapshot.tasks}
                 busyAction={busyAction}
@@ -3575,7 +4058,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
             )}
             {activeTab === 'objective' && activeProject && (
               <ObjectiveEditor
-                key={`${activeProject.id}:${activeObjective?.id ?? 'new'}:${activeObjective?.entityVersion ?? 0}`}
+                key={activeProject.id}
                 project={activeProject}
                 objective={activeObjective}
                 busy={busyAction !== null}
@@ -3652,7 +4135,10 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                 onOpen={openSearchHit}
               />
             )}
-            {activeTab === 'lecture' && (
+            {activeTab === 'lecture' && !modelRouting.ready && (
+              <p role="status">{modelRouting.error ?? '모델 사용 설정을 불러오는 중…'}</p>
+            )}
+            {activeTab === 'lecture' && modelRouting.ready && (
               <LectureStudioView
                 projects={snapshot.projects}
                 adapter={lectureStudioAdapter}
@@ -3703,19 +4189,7 @@ export function DesktopApp({ initialPreferences }: { initialPreferences: UserPre
                       setCodexBusy(false);
                     });
                 }}
-                onLogout={() => {
-                  if (codexBusy) return;
-                  setCodexBusy(true);
-                  void window.gosu.codex
-                    .logout()
-                    .then(() => {
-                      setModels([]);
-                      setCodexConnectionState('auth-required');
-                      setCodexStatus('Signed out from local Codex.');
-                    })
-                    .catch((error: unknown) => setCodexStatus(describeError(error)))
-                    .finally(() => setCodexBusy(false));
-                }}
+                onLogout={signOutCodex}
                 sshConnections={sshConnections}
                 sshBusy={sshConnectionBusy !== null}
                 sshTestStatus={sshTestStatus}

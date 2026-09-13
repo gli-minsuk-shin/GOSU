@@ -1,3 +1,5 @@
+import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type {
@@ -59,9 +61,9 @@ function gitErrorMessage(error: unknown) {
     git_output_too_large: 'The requested Git output is too large for the safe preview limit.',
     invalid_git_workspace_input: 'The Git request was invalid. Refresh and try again.',
   };
-  return (
+  return uiText(
     messages[code] ??
-    'The Git operation could not be completed. Your repository was not reset or cleaned.'
+      'The Git operation could not be completed. Your repository was not reset or cleaned.',
   );
 }
 
@@ -69,13 +71,13 @@ function formatDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.valueOf())
     ? value
-    : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+    : new Intl.DateTimeFormat(uiLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
 function changeLabel(change: GitChange, staged: boolean) {
   const code =
     (staged ? change.indexStatus : change.indexStatus === '?' ? '?' : change.worktreeStatus) ?? '';
-  return (
+  return uiText(
     {
       M: 'Modified',
       A: 'Added',
@@ -84,7 +86,7 @@ function changeLabel(change: GitChange, staged: boolean) {
       C: 'Copied',
       U: 'Conflict',
       '?': 'Untracked',
-    }[code] ?? 'Changed'
+    }[code] ?? 'Changed',
   );
 }
 
@@ -109,6 +111,7 @@ export function RepositoryView({
   searchTarget?: SearchTargetRequest | null;
   onSearchTargetHandled?: (requestId: number) => void;
 }) {
+  useUiText();
   const [snapshot, setSnapshot] = useState<GitWorkspaceSnapshot | null>(null);
   const [tab, setTab] = useState<RepositoryTab>('files');
   const [busy, setBusy] = useState('');
@@ -232,7 +235,9 @@ export function RepositoryView({
     );
     if (!file) {
       setError(
-        'The searched repository file is no longer available. Refresh Search and try again.',
+        uiText(
+          'The searched repository file is no longer available. Refresh Search and try again.',
+        ),
       );
       onSearchTargetHandled(searchTarget.requestId);
       return;
@@ -289,14 +294,14 @@ export function RepositoryView({
   };
 
   if (!snapshot && !error) {
-    return <div className="loading-state">Reading the project repository…</div>;
+    return <div className="loading-state">{uiText('Reading the project repository…')}</div>;
   }
 
   if (!snapshot) {
     return (
       <section className="repository-onboarding card">
-        <span className="eyebrow">REPOSITORY UNAVAILABLE</span>
-        <h2>GOSU stopped before opening this working copy</h2>
+        <span className="eyebrow">{uiText('REPOSITORY UNAVAILABLE')}</span>
+        <h2>{uiText('GOSU stopped before opening this working copy')}</h2>
         <div className="notice error" role="alert">
           {error}
         </div>
@@ -308,7 +313,7 @@ export function RepositoryView({
             void load().catch((reason: unknown) => setError(gitErrorMessage(reason)));
           }}
         >
-          Retry safely
+          {uiText('Retry safely')}
         </button>
       </section>
     );
@@ -317,11 +322,12 @@ export function RepositoryView({
   if (!snapshot.repository) {
     return (
       <section className="repository-onboarding card">
-        <span className="eyebrow">GITHUB REPOSITORY</span>
-        <h2>Connect this project to its code and manuscript files</h2>
+        <span className="eyebrow">{uiText('GITHUB REPOSITORY')}</span>
+        <h2>{uiText('Connect this project to its code and manuscript files')}</h2>
         <p>
-          Enter only an owner/repository identifier. Tokens, SSH addresses, and repository contents
-          never enter Hosted Sync.
+          {uiText(
+            'Enter only an owner/repository identifier. Tokens, SSH addresses, and repository contents never enter Hosted Sync.',
+          )}
         </p>
         {error && <div className="notice error">{error}</div>}
         <form
@@ -337,24 +343,24 @@ export function RepositoryView({
               repository,
             })
               .then((succeeded) => {
-                if (succeeded) setNotice('Saved the GitHub repository for this project.');
+                if (succeeded) setNotice(uiText('Saved the GitHub repository for this project.'));
               })
               .finally(() => setBusy(''));
           }}
         >
           <label>
-            GitHub repository
+            {uiText('GitHub repository')}
             <input
               value={repositoryDraft}
               onChange={(event) => setRepositoryDraft(event.target.value)}
-              placeholder="owner/repository"
+              placeholder={uiText('owner/repository')}
               pattern="[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}"
               required
               disabled={Boolean(busy)}
             />
           </label>
           <button type="submit" className="primary-button" disabled={Boolean(busy)}>
-            Save connection
+            {uiText('Save connection')}
           </button>
         </form>
       </section>
@@ -365,10 +371,11 @@ export function RepositoryView({
     return (
       <section className="repository-onboarding card">
         <span className="eyebrow">{snapshot.repository}</span>
-        <h2>Clone a protected local working copy</h2>
+        <h2>{uiText('Clone a protected local working copy')}</h2>
         <p>
-          GOSU keeps this clone on your Mac, separate from Project Chat scratch space. GitHub
-          credentials remain with your Mac Git credential helper.
+          {uiText(
+            'GOSU keeps this clone on your Mac, separate from Project Chat scratch space. GitHub credentials remain with your Mac Git credential helper.',
+          )}
         </p>
         {error && <div className="notice error">{error}</div>}
         {notice && <div className="notice success">{notice}</div>}
@@ -385,7 +392,7 @@ export function RepositoryView({
               )
             }
           >
-            {busy === 'clone' ? 'Cloning…' : 'Clone from GitHub'}
+            {busy === 'clone' ? uiText('Cloning…') : uiText('Clone from GitHub')}
           </button>
           <button
             type="button"
@@ -394,11 +401,11 @@ export function RepositoryView({
               void window.gosu.openExternal(`https://github.com/${snapshot.repository}`)
             }
           >
-            Open on GitHub
+            {uiText('Open on GitHub')}
           </button>
         </div>
         <details className="repository-change-connection">
-          <summary>Change repository before cloning</summary>
+          <summary>{uiText('Change repository before cloning')}</summary>
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -414,11 +421,11 @@ export function RepositoryView({
             }}
           >
             <label>
-              GitHub repository
+              {uiText('GitHub repository')}
               <input
                 value={repositoryDraft}
                 onChange={(event) => setRepositoryDraft(event.target.value)}
-                placeholder="owner/repository"
+                placeholder={uiText('owner/repository')}
                 pattern="[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}"
                 required
                 disabled={Boolean(busy)}
@@ -433,7 +440,7 @@ export function RepositoryView({
                 repositoryDraft.trim() === snapshot.repository
               }
             >
-              Update connection
+              {uiText('Update connection')}
             </button>
           </form>
         </details>
@@ -457,9 +464,9 @@ export function RepositoryView({
       <header className="repository-toolbar card">
         <div className="repository-identity">
           <span className="eyebrow">{state.repository}</span>
-          <strong>{state.currentBranch ?? 'Detached HEAD'}</strong>
-          <code>{state.headSha?.slice(0, 8) ?? 'No commits'}</code>
-          {state.dirty && <span className="repository-dirty">Uncommitted changes</span>}
+          <strong>{state.currentBranch ?? uiText('Detached HEAD')}</strong>
+          <code>{state.headSha?.slice(0, 8) ?? uiText('No commits')}</code>
+          {state.dirty && <span className="repository-dirty">{uiText('Uncommitted changes')}</span>}
           <span>↑ {state.ahead}</span>
           <span>↓ {state.behind}</span>
         </div>
@@ -472,7 +479,7 @@ export function RepositoryView({
               void load().catch((reason: unknown) => setError(gitErrorMessage(reason)))
             }
           >
-            Refresh
+            {uiText('Refresh')}
           </button>
           <button
             type="button"
@@ -486,7 +493,7 @@ export function RepositoryView({
               )
             }
           >
-            {busy === 'fetch' ? 'Fetching…' : 'Fetch'}
+            {busy === 'fetch' ? uiText('Fetching…') : uiText('Fetch')}
           </button>
           <button
             type="button"
@@ -495,7 +502,10 @@ export function RepositoryView({
             onClick={() => {
               if (
                 !window.confirm(
-                  `Pull fast-forward updates into ${state.currentBranch}? GOSU will not merge or rebase.`,
+                  uiText(
+                    'Pull fast-forward updates into {currentBranch}? GOSU will not merge or rebase.',
+                    { currentBranch: String(state.currentBranch) },
+                  ),
                 )
               )
                 return;
@@ -506,7 +516,7 @@ export function RepositoryView({
               );
             }}
           >
-            {busy === 'pull' ? 'Pulling…' : 'Pull'}
+            {busy === 'pull' ? uiText('Pulling…') : uiText('Pull')}
           </button>
           <button
             type="button"
@@ -514,7 +524,11 @@ export function RepositoryView({
             disabled={Boolean(busy) || state.detachedHead || state.headSha === null}
             onClick={() => {
               if (
-                !window.confirm(`Push ${state.currentBranch} to origin? Force push is never used.`)
+                !window.confirm(
+                  uiText('Push {currentBranch} to origin? Force push is never used.', {
+                    currentBranch: String(state.currentBranch),
+                  }),
+                )
               )
                 return;
               void run(
@@ -524,21 +538,21 @@ export function RepositoryView({
               );
             }}
           >
-            {busy === 'push' ? 'Pushing…' : 'Push'}
+            {busy === 'push' ? uiText('Pushing…') : uiText('Push')}
           </button>
           <button
             type="button"
             className="ghost-button"
             onClick={() => void window.gosu.gitWorkspace.reveal(project.id)}
           >
-            Finder
+            {uiText('Finder')}
           </button>
           <button
             type="button"
             className="ghost-button"
             onClick={() => void window.gosu.openExternal(state.githubUrl)}
           >
-            GitHub ↗
+            {uiText('GitHub ↗')}
           </button>
         </div>
       </header>
@@ -549,7 +563,7 @@ export function RepositoryView({
         </div>
       )}
 
-      <nav className="repository-tabs" aria-label="Repository views">
+      <nav className="repository-tabs" aria-label={uiText('Repository views')}>
         {REPOSITORY_TABS.map((item) => (
           <button
             type="button"
@@ -570,8 +584,8 @@ export function RepositoryView({
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search files"
-              aria-label="Search repository files"
+              placeholder={uiText('Search files')}
+              aria-label={uiText('Search repository files')}
             />
             <div className="repository-tree" role="tree">
               {rows.map((row) => {
@@ -617,22 +631,24 @@ export function RepositoryView({
                 );
               })}
             </div>
-            {state.filesTruncated && <small>Showing the first 5,000 files.</small>}
+            {state.filesTruncated && <small>{uiText('Showing the first 5,000 files.')}</small>}
           </aside>
           <article className="repository-preview">
             {!selectedFile ? (
               <div className="repository-placeholder">
-                Choose a text or Markdown file to preview it.
+                {uiText('Choose a text or Markdown file to preview it.')}
               </div>
             ) : !filePreview ? (
-              <div className="repository-placeholder">Opening {selectedFile}…</div>
+              <div className="repository-placeholder">
+                {uiText('Opening')} {selectedFile}…
+              </div>
             ) : (
               <>
                 <header>
                   <strong>{filePreview.path}</strong>
                   <span>
-                    {filePreview.sizeBytes.toLocaleString()} bytes
-                    {filePreview.truncated ? ' · preview truncated' : ''}
+                    {filePreview.sizeBytes.toLocaleString()} {uiText('bytes')}
+                    {filePreview.truncated ? uiText(' · preview truncated') : ''}
                   </span>
                 </header>
                 {filePreview.renderMode === 'markdown' ? (
@@ -658,7 +674,7 @@ export function RepositoryView({
         <div className="repository-change-layout">
           <aside className="card repository-change-list">
             <ChangeGroup
-              title="Staged changes"
+              title={uiText('Staged changes')}
               changes={stagedChanges}
               staged
               onSelect={selectChange}
@@ -672,7 +688,7 @@ export function RepositoryView({
               busy={Boolean(busy)}
             />
             <ChangeGroup
-              title="Unstaged changes"
+              title={uiText('Unstaged changes')}
               changes={unstagedChanges}
               staged={false}
               onSelect={selectChange}
@@ -713,17 +729,17 @@ export function RepositoryView({
               }}
             >
               <label>
-                Commit summary
+                {uiText('Commit summary')}
                 <input
                   value={commitSummary}
                   onChange={(event) => setCommitSummary(event.target.value)}
                   maxLength={120}
-                  placeholder="Describe this research change"
+                  placeholder={uiText('Describe this research change')}
                   disabled={Boolean(busy)}
                 />
               </label>
               <label>
-                Description <span>optional</span>
+                {uiText('Description')} <span>{uiText('optional')}</span>
                 <textarea
                   value={commitDescription}
                   onChange={(event) => setCommitDescription(event.target.value)}
@@ -742,30 +758,36 @@ export function RepositoryView({
                   !commitSummary.trim()
                 }
               >
-                {busy === 'commit' ? 'Committing…' : `Commit to ${state.currentBranch ?? 'HEAD'}`}
+                {busy === 'commit'
+                  ? uiText('Committing…')
+                  : uiText('Commit to {value1}', { value1: state.currentBranch ?? 'HEAD' })}
               </button>
               {!stagedPatchReviewed && stagedChanges.length > 0 && (
                 <small>
-                  Open every staged file above to review the exact patch before committing.
+                  {uiText(
+                    'Open every staged file above to review the exact patch before committing.',
+                  )}
                 </small>
               )}
             </form>
           </aside>
           <article className="card repository-diff-preview">
             <header>
-              <strong>{selectedChange?.label ?? 'Change preview'}</strong>
+              <strong>{selectedChange?.label ?? uiText('Change preview')}</strong>
               <span>
                 {selectedChange
                   ? selectedChange.staged
-                    ? 'Staged'
-                    : 'Working tree'
-                  : 'Select a changed file'}
+                    ? uiText('Staged')
+                    : uiText('Working tree')
+                  : uiText('Select a changed file')}
               </span>
             </header>
             <pre>
               {diffPreview?.content ||
                 (selectedChange
-                  ? 'No textual diff is available. Open the file from Files for its current contents.'
+                  ? uiText(
+                      'No textual diff is available. Open the file from Files for its current contents.',
+                    )
                   : '')}
             </pre>
           </article>
@@ -789,14 +811,14 @@ export function RepositoryView({
                 <code>{commit.shortSha}</code>
               </button>
             ))}
-            {state.historyTruncated && <small>Showing the latest 100 commits.</small>}
+            {state.historyTruncated && <small>{uiText('Showing the latest 100 commits.')}</small>}
           </aside>
           <article className="repository-preview repository-commit-preview">
             <pre>
               {commitPreview?.content ||
                 (selectedCommit
-                  ? 'Loading commit…'
-                  : 'Choose a commit to inspect its metadata, files, and patch.')}
+                  ? uiText('Loading commit…')
+                  : uiText('Choose a commit to inspect its metadata, files, and patch.'))}
             </pre>
           </article>
         </div>
@@ -817,13 +839,13 @@ export function RepositoryView({
               ).then((succeeded) => succeeded && setBranchDraft(''));
             }}
           >
-            <span className="eyebrow">NEW LOCAL BRANCH</span>
+            <span className="eyebrow">{uiText('NEW LOCAL BRANCH')}</span>
             <label>
-              Branch name
+              {uiText('Branch name')}
               <input
                 value={branchDraft}
                 onChange={(event) => setBranchDraft(event.target.value)}
-                placeholder="experiment/baseline"
+                placeholder={uiText('experiment/baseline')}
                 maxLength={200}
                 disabled={Boolean(busy)}
               />
@@ -833,7 +855,7 @@ export function RepositoryView({
               className="primary-button"
               disabled={Boolean(busy) || !branchDraft.trim() || state.headSha === null}
             >
-              Create branch
+              {uiText('Create branch')}
             </button>
           </form>
           <div className="card repository-branch-list">
@@ -841,9 +863,10 @@ export function RepositoryView({
               <section key={branch.name} className={branch.current ? 'current' : ''}>
                 <div>
                   <strong>{branch.name}</strong>
-                  {branch.current && <em>Current</em>}
+                  {branch.current && <em>{uiText('Current')}</em>}
                   <span>
-                    {branch.upstream ?? 'Not published'} · ↑ {branch.ahead} ↓ {branch.behind}
+                    {branch.upstream ?? uiText('Not published')} · ↑ {branch.ahead} ↓{' '}
+                    {branch.behind}
                   </span>
                   <small>
                     {branch.lastCommitSubject} · {formatDate(branch.lastCommitAt)}
@@ -855,7 +878,11 @@ export function RepositoryView({
                     className="secondary-button"
                     disabled={Boolean(busy) || state.dirty}
                     onClick={() => {
-                      if (!window.confirm(`Switch the clean working tree to ${branch.name}?`))
+                      if (
+                        !window.confirm(
+                          uiText('Switch the clean working tree to {name}?', { name: branch.name }),
+                        )
+                      )
                         return;
                       void run(
                         'switch-branch',
@@ -868,7 +895,7 @@ export function RepositoryView({
                       );
                     }}
                   >
-                    Switch
+                    {uiText('Switch')}
                   </button>
                 )}
               </section>
@@ -907,12 +934,12 @@ function ChangeGroup({
             disabled={busy}
             onClick={() => onMove(changes.map((change) => change.path))}
           >
-            {staged ? 'Unstage all' : 'Stage all'}
+            {staged ? uiText('Unstage all') : uiText('Stage all')}
           </button>
         )}
       </header>
       {changes.length === 0 ? (
-        <p>No files</p>
+        <p>{uiText('No files')}</p>
       ) : (
         changes.map((change) => (
           <div key={`${staged ? 'staged' : 'working'}:${change.path}`}>
@@ -930,7 +957,7 @@ function ChangeGroup({
               disabled={busy}
               onClick={() => onMove([change.path])}
             >
-              {staged ? 'Unstage' : 'Stage'}
+              {staged ? uiText('Unstage') : uiText('Stage')}
             </button>
           </div>
         ))

@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import {
+  hasPendingObjectiveIdentity,
+  type ProjectResearchPlanReceipt,
+} from '../shared/project-research-plan-contracts';
 
 import {
   CreateExperimentIdeaInputSchema,
@@ -93,6 +97,14 @@ export const ExperimentRunExecutionIntentSchema = z
 export type ExperimentRunExecutionIntent = z.infer<typeof ExperimentRunExecutionIntentSchema>;
 
 export interface ExperimentWorkspaceStorage {
+  getExperimentLoggingTemplateRevision?(
+    projectId: string,
+    revisionId: string,
+  ): MaybePromise<ExperimentLoggingTemplate | null>;
+  getProjectResearchPlanForIdea?(
+    projectId: string,
+    ideaId: string,
+  ): MaybePromise<ProjectResearchPlanReceipt | null>;
   listExperimentIdeas(projectId: string): MaybePromise<readonly ExperimentIdea[]>;
   listExperimentMetricPoints(projectId: string): MaybePromise<readonly ExperimentMetricPoint[]>;
   getExperimentIdea(projectId: string, ideaId: string): MaybePromise<ExperimentIdea | null>;
@@ -234,7 +246,7 @@ const requiredAtOrder = new Map([
   ['summary', 3],
 ]);
 
-function canonicalLoggingFields(fields: readonly ExperimentLoggingCustomField[]) {
+export function canonicalLoggingFields(fields: readonly ExperimentLoggingCustomField[]) {
   return fields.map((field) => ({
     ...field,
     requiredAt: [...field.requiredAt].sort(
@@ -243,7 +255,7 @@ function canonicalLoggingFields(fields: readonly ExperimentLoggingCustomField[])
   }));
 }
 
-function loggingTemplateHash(fields: readonly ExperimentLoggingCustomField[]) {
+export function loggingTemplateHash(fields: readonly ExperimentLoggingCustomField[]) {
   return createHash('sha256')
     .update(
       JSON.stringify({
@@ -375,14 +387,54 @@ export class ExperimentWorkspaceService {
       const idea = await this.storage.getExperimentIdea(command.projectId, command.ideaId);
       if (!idea) throw new ExperimentWorkspaceServiceError('experiment_idea_not_found');
     }
+    const researchPlan = command.ideaId
+      ? await this.storage.getProjectResearchPlanForIdea?.(command.projectId, command.ideaId)
+      : null;
+    if (
+      researchPlan &&
+      (researchPlan.projectId !== command.projectId || researchPlan.ideaId !== command.ideaId)
+    )
+      throw new ExperimentWorkspaceServiceError('experiment_idea_not_found');
     const objective =
       command.mode === 'comparable'
-        ? this.latestLockedObjective(snapshot.objectives, command.projectId)
+        ? researchPlan
+          ? (snapshot.objectives.find(
+              (o) =>
+                researchPlan.objectiveLocked &&
+                !researchPlan.needsIdentity &&
+                researchPlan.projectId === command.projectId &&
+                researchPlan.ideaId === command.ideaId &&
+                o.projectId === command.projectId &&
+                o.id === researchPlan.objectiveId &&
+                o.objectiveVersion === researchPlan.objectiveVersion &&
+                o.entityVersion === researchPlan.objectiveEntityVersion &&
+                o.locked &&
+                !hasPendingObjectiveIdentity(o.primaryMetric),
+            ) ?? null)
+          : this.latestLockedObjective(snapshot.objectives, command.projectId)
         : null;
     if (command.mode === 'comparable' && !objective) {
-      throw new ExperimentWorkspaceServiceError('experiment_objective_required');
+      throw new ExperimentWorkspaceServiceError(
+        researchPlan ? 'experiment_plan_activation_required' : 'experiment_objective_required',
+      );
     }
-    const template = await this.ensureLoggingTemplate(command.projectId);
+    const template = researchPlan
+      ? this.storage.getExperimentLoggingTemplateRevision
+        ? await this.storage.getExperimentLoggingTemplateRevision(
+            command.projectId,
+            researchPlan.loggingTemplateId,
+          )
+        : await this.storage.getLatestExperimentLoggingTemplate(command.projectId)
+      : await this.ensureLoggingTemplate(command.projectId);
+    if (
+      !template ||
+      (researchPlan &&
+        (template.projectId !== command.projectId ||
+          template.id !== researchPlan.loggingTemplateId ||
+          template.version !== researchPlan.loggingTemplateVersion ||
+          template.templateHash !== loggingTemplateHash(template.customFields)))
+    )
+      throw new ExperimentWorkspaceServiceError('experiment_logging_template_conflict');
     const timestamp = this.now().toISOString();
     const run = ExperimentRunSchema.parse({
       schemaVersion: 1,
@@ -936,6 +988,24 @@ export class ExperimentWorkspaceService {
     }
     this.publish(stored.projectId, 'metric-point', stored.id, recordedAt);
     return ExperimentMetricPointSchema.parse(stored);
+  }
+
+  notifyResearchPlanCommitted(projectId: string, entityId: string, occurredAt: string) {
+    const event = ExperimentWorkspaceEventSchema.parse({
+      schemaVersion: 1,
+      type: 'experiment.workspace.changed',
+      projectId,
+      entityType: 'logging-template',
+      entityId,
+      occurredAt,
+    });
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        /* Commit already succeeded. */
+      }
+    }
   }
 
   private publish(

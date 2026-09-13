@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { packageCalendarBridge } from './package-calendar-bridge.mjs';
 
 const run = promisify(execFile);
 const PLUTIL = '/usr/bin/plutil';
@@ -57,6 +58,10 @@ export async function afterPack(context) {
   const productName = context.packager.appInfo.productFilename;
   const infoPlist = join(context.appOutDir, `${productName}.app`, 'Contents', 'Info.plist');
   await hardenMacInfoPlist(infoPlist);
+  await packageCalendarBridge(
+    join(context.appOutDir, `${productName}.app`),
+    context.arch === 3 ? 'arm64' : context.arch === 1 ? 'x64' : 'unsupported',
+  );
 }
 
 export default afterPack;

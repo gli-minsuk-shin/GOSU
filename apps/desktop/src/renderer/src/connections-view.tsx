@@ -1,3 +1,5 @@
+import { uiText } from '@gosu/ui/language';
+
 import type { RuntimeReadiness } from '../../shared/runtime-contracts';
 import type {
   CreateSshConnectionInput,
@@ -112,7 +114,7 @@ export function ConnectionsView({
   onSshWorkspaceSetupHandled?: (requestId: number) => void;
 }) {
   return (
-    <section className="connection-grid" aria-label="Connections">
+    <section className="connection-grid" aria-label={uiText('Connections')}>
       <SshConnectionsCard
         connections={sshConnections}
         busy={sshBusy}
@@ -132,29 +134,29 @@ export function ConnectionsView({
       />
       <RuntimeCard runtime={runtime} />
       <article className="card codex-card">
-        <CardHead title="Local Codex" detail={status} />
+        <CardHead title={uiText('Local Codex')} detail={status} />
         <div className="settings-preview codex-default-summary">
-          <span>DEFAULT FOR NEW AI WORK</span>
+          <span>{uiText('DEFAULT FOR NEW AI WORK')}</span>
           <strong>
             {defaultModelId === null
-              ? 'Auto · provider recommended'
+              ? uiText('Auto · provider recommended')
               : (models.find((model) => model.modelId === defaultModelId)?.displayName ??
-                `${defaultModelId} · unavailable`)}
+                uiText('{defaultModelId} · unavailable', { defaultModelId: defaultModelId }))}
           </strong>
           <p>
-            Reasoning:{' '}
-            {defaultReasoningOptionId === null ? 'Model default' : defaultReasoningOptionId}
+            {uiText('Reasoning:')}{' '}
+            {defaultReasoningOptionId === null ? uiText('Model default') : defaultReasoningOptionId}
           </p>
           <button type="button" className="secondary-button" onClick={onOpenAiDefaults}>
-            Open AI defaults
+            {uiText('Open AI defaults')}
           </button>
         </div>
         <div className="codex-actions">
           <button className="secondary-button" type="button" onClick={onReconnect} disabled={busy}>
-            Reconnect Codex
+            {uiText('Reconnect Codex')}
           </button>
           <button className="secondary-button" type="button" onClick={onRefresh} disabled={busy}>
-            Refresh catalog
+            {uiText('Refresh catalog')}
           </button>
           <button
             className="secondary-button"
@@ -162,7 +164,7 @@ export function ConnectionsView({
             onClick={onLoginChatGpt}
             disabled={busy}
           >
-            Sign in with ChatGPT
+            {uiText('Sign in with ChatGPT')}
           </button>
           <button
             className="secondary-button"
@@ -170,10 +172,10 @@ export function ConnectionsView({
             onClick={onToggleApiKey}
             disabled={busy}
           >
-            Use API key
+            {uiText('Use API key')}
           </button>
           <button className="ghost-button" type="button" onClick={onLogout} disabled={busy}>
-            Sign out
+            {uiText('Sign out')}
           </button>
         </div>
         {apiKeyMode && (
@@ -185,13 +187,13 @@ export function ConnectionsView({
             }}
           >
             <label>
-              OpenAI API key
+              {uiText('OpenAI API key')}
               <input
                 type="password"
                 autoComplete="off"
                 value={apiKey}
                 onChange={(event) => onApiKey(event.target.value)}
-                placeholder="Stored by Codex, not GOSU Sync"
+                placeholder={uiText('Stored by Codex, not GOSU Sync')}
                 required
                 disabled={busy}
               />
@@ -201,14 +203,14 @@ export function ConnectionsView({
               className="primary-button"
               disabled={busy || apiKey.trim() === ''}
             >
-              Connect
+              {uiText('Connect')}
             </button>
           </form>
         )}
         <div className="privacy">
-          Authentication and the live model catalog are handled by the local Codex App Server. The
-          Settings defaults seed new AI work; Project Chat and Lecture can keep their own scoped
-          choices. Every turn records the resolved model locally.
+          {uiText(
+            'Authentication and the live model catalog are handled by the local Codex App Server. The Settings defaults seed new AI work; Project Chat and Lecture can keep their own scoped choices. Every turn records the resolved model locally.',
+          )}
         </div>
       </article>
       <SshWorkspaceGrantsCard
@@ -228,7 +230,10 @@ export function ConnectionsView({
         onSetupRequestHandled={onSshWorkspaceSetupHandled}
       />
       <article className="card">
-        <CardHead title="Local-first boundary" detail="Eligibility policy · delivery is off" />
+        <CardHead
+          title={uiText('Local-first boundary')}
+          detail={uiText('Eligibility policy · delivery is off')}
+        />
         <div className="boundary-list">
           <Boundary yes text="Project and Kanban collaboration metadata" />
           <Boundary yes text="Objective drafts and local freeze state" />

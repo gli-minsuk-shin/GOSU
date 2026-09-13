@@ -1,5 +1,5 @@
 import type { Root, RootContent } from 'mdast';
-import type { ReactNode } from 'react';
+import { memo, type ReactNode } from 'react';
 import rehypeKatex from 'rehype-katex';
 import rehypeSanitize, {
   defaultSchema,
@@ -87,7 +87,7 @@ const MODEL_CHAT_COMPONENTS: Components = {
   ),
 };
 
-export function ModelChatMarkdown({ source }: { source: string }) {
+export const ModelChatMarkdown = memo(function ModelChatMarkdown({ source }: { source: string }) {
   return (
     <div className="model-chat-markdown">
       <Markdown
@@ -108,7 +108,7 @@ export function ModelChatMarkdown({ source }: { source: string }) {
       </Markdown>
     </div>
   );
-}
+});
 
 function ModelChatLink({ href, children }: { href: string | undefined; children: ReactNode }) {
   if (!href || !isHttpsUrl(href)) {

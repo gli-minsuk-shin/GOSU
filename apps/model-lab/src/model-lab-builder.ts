@@ -1,4 +1,5 @@
 import { parseModelImportJson } from './model-lab-import';
+import { modelLabFetch } from './model-lab-environment';
 import type { ModelLabModelSelection } from './model-lab-runtime-adapter';
 import type { ModelSpec } from './model-lab-schema';
 
@@ -22,12 +23,16 @@ export type ModelBuildResult = Readonly<{
 }>;
 
 export type ModelBuildProgressPhase =
+  | 'cache-checking'
+  | 'cache-hit'
+  | 'cache-miss'
   | 'request-validated'
   | 'selection-resolved'
   | 'sources-preparing'
   | 'sources-prepared'
   | 'llm-running'
   | 'model-ir-validating'
+  | 'model-ir-repairing'
   | 'model-ir-validated'
   | 'failed';
 
@@ -281,7 +286,10 @@ export function modelBuildArtifactKind(file: Pick<File, 'name' | 'type'>) {
   ) {
     return 'docx' as const;
   }
-  if (file.type.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp'].includes(suffix)) {
+  if (
+    ['image/png', 'image/jpeg', 'image/webp'].includes(file.type) ||
+    ['png', 'jpg', 'jpeg', 'webp'].includes(suffix)
+  ) {
     return 'image' as const;
   }
   if (
@@ -350,7 +358,9 @@ export async function prepareModelBuildArtifact(file: File): Promise<PreparedMod
             ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             : extension(file.name) === 'png'
               ? 'image/png'
-              : 'image/jpeg'),
+              : extension(file.name) === 'webp'
+                ? 'image/webp'
+                : 'image/jpeg'),
       kind,
       encoding: 'base64',
       content: base64From(new Uint8Array(await file.arrayBuffer())),
@@ -395,12 +405,16 @@ function isModelBuildProgress(value: unknown): value is ModelBuildProgress {
   return (
     typeof progress.phase === 'string' &&
     [
+      'cache-checking',
+      'cache-hit',
+      'cache-miss',
       'request-validated',
       'selection-resolved',
       'sources-preparing',
       'sources-prepared',
       'llm-running',
       'model-ir-validating',
+      'model-ir-repairing',
       'model-ir-validated',
       'failed',
     ].includes(progress.phase) &&
@@ -408,18 +422,25 @@ function isModelBuildProgress(value: unknown): value is ModelBuildProgress {
   );
 }
 
-function validatedModelBuildResult(value: unknown): ModelBuildResult {
+function validatedModelBuildResult(
+  value: unknown,
+  sourceArtifactNames: readonly string[],
+): ModelBuildResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Model builder result was invalid.');
   }
   const candidate = value as { model?: unknown; trace?: unknown };
-  const parsed = parseModelImportJson(JSON.stringify(candidate.model));
+  const parsed = parseModelImportJson(JSON.stringify(candidate.model), {
+    enforceSourceOutputContracts: true,
+    allowSubgraphs: false,
+    sourceArtifactNames,
+  });
   if (!parsed.ok) throw new Error(`Generated ModelIR was invalid: ${parsed.reason}`);
   if (!stringArray(candidate.trace)) throw new Error('Model builder trace was invalid.');
   return { model: parsed.model, trace: candidate.trace };
 }
 
-export function createModelBuilder(fetchImpl: FetchLike = fetch) {
+export function createModelBuilder(fetchImpl: FetchLike = modelLabFetch) {
   return {
     async build(
       artifacts: readonly ModelBuildArtifact[],
@@ -455,7 +476,10 @@ export function createModelBuilder(fetchImpl: FetchLike = fetch) {
             if (record.type === 'progress' && isModelBuildProgress(record.progress)) {
               options?.onProgress?.(record.progress);
             } else if (record.type === 'result') {
-              result = validatedModelBuildResult(record.result);
+              result = validatedModelBuildResult(
+                record.result,
+                artifacts.map((artifact) => artifact.name),
+              );
             } else if (record.type === 'error') {
               const stage = typeof record.stage === 'string' ? record.stage : 'unknown stage';
               const detail =
@@ -480,7 +504,10 @@ export function createModelBuilder(fetchImpl: FetchLike = fetch) {
             : 'model_builder_unavailable';
         throw new Error(detail);
       }
-      return validatedModelBuildResult(payload);
+      return validatedModelBuildResult(
+        payload,
+        artifacts.map((artifact) => artifact.name),
+      );
     },
   };
 }

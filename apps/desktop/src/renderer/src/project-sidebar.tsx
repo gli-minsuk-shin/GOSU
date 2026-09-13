@@ -1,4 +1,6 @@
-import type { Ref } from 'react';
+import { uiText } from '@gosu/ui/language';
+
+import { useState, type Ref } from 'react';
 
 import type { WorkspaceTabId } from './workspace-views';
 import { FUTURE_MODULES } from './workspace-views';
@@ -9,10 +11,18 @@ import {
   type PortfolioProjectRecord,
 } from './project-portfolio-model';
 import { CollapseChevron } from './ui-primitives';
+import { SidebarIcon } from './sidebar-icon';
+import {
+  EMPTY_NOTIFICATION_CENTER,
+  NotificationCenter,
+  type NotificationCenterProps,
+} from './notification-center';
 
 export type ProjectWorkspaceTabId = Extract<
   WorkspaceTabId,
   | 'chat'
+  | 'review'
+  | 'model-lab'
   | 'repository'
   | 'manuscript'
   | 'board'
@@ -23,88 +33,39 @@ export type ProjectWorkspaceTabId = Extract<
 >;
 export type GlobalWorkspaceTabId = Extract<
   WorkspaceTabId,
-  'connections' | 'lecture' | 'search' | 'tasks' | 'usage'
+  'connections' | 'lecture' | 'search' | 'tasks' | 'usage' | 'calendar' | 'briefing-lab'
 >;
 
 const PROJECT_TABS: ReadonlyArray<{
   id: ProjectWorkspaceTabId;
   label: string;
-  icon: string;
 }> = [
-  { id: 'chat', label: 'Project chat', icon: '◈' },
-  { id: 'repository', label: 'Repository', icon: '⌘' },
-  { id: 'manuscript', label: 'Manuscript', icon: '¶' },
-  { id: 'board', label: 'Board', icon: '▦' },
-  { id: 'objective', label: 'Goal & Metrics', icon: '◎' },
-  { id: 'experiments', label: 'Experiments', icon: '⌁' },
-  { id: 'literature', label: 'Literature', icon: '▤' },
-  { id: 'notes', label: 'Research Notes', icon: '◇' },
+  { id: 'chat', label: 'Project chat' },
+  { id: 'model-lab', label: 'Model Lab' },
+  { id: 'repository', label: 'Repository' },
+  { id: 'manuscript', label: 'Manuscript' },
+  { id: 'review', label: 'Critical Review' },
+  { id: 'board', label: 'Board' },
+  { id: 'objective', label: 'Goal & Metrics' },
+  { id: 'experiments', label: 'Experiments' },
+  { id: 'literature', label: 'Literature' },
+  { id: 'notes', label: 'Research Notes' },
 ];
 
 const GLOBAL_TABS: ReadonlyArray<{
   id: GlobalWorkspaceTabId;
   label: string;
-  icon: string;
 }> = [
-  { id: 'tasks', label: 'Tasks', icon: '▦' },
-  { id: 'search', label: 'Search', icon: '' },
-  { id: 'lecture', label: 'Lecture notes & slides', icon: '' },
-  { id: 'connections', label: 'Connections', icon: '⌁' },
-  { id: 'usage', label: 'Usage', icon: '' },
+  { id: 'lecture', label: 'Lecture notes & slides' },
+  { id: 'connections', label: 'Connections' },
+  { id: 'usage', label: 'Usage' },
 ];
 
-function GlobalSidebarIcon({ tab }: { tab: (typeof GLOBAL_TABS)[number] }) {
-  if (tab.id === 'search') {
-    return (
-      <span className="sidebar-nav-icon" aria-hidden="true">
-        <svg
-          className="sidebar-nav-icon-graphic sidebar-nav-icon-search"
-          viewBox="0 0 24 24"
-          focusable="false"
-        >
-          <circle cx="10.5" cy="10.5" r="5.5" />
-          <path d="m14.6 14.6 4.4 4.4" />
-        </svg>
-      </span>
-    );
-  }
-
-  if (tab.id === 'lecture') {
-    return (
-      <span className="sidebar-nav-icon" aria-hidden="true">
-        <svg
-          className="sidebar-nav-icon-graphic sidebar-nav-icon-lecture"
-          viewBox="0 0 24 24"
-          focusable="false"
-        >
-          <path d="m8.5 5.5 8.5 6.5-8.5 6.5Z" />
-        </svg>
-      </span>
-    );
-  }
-
-  if (tab.id === 'usage') {
-    return (
-      <span className="sidebar-nav-icon" aria-hidden="true">
-        <svg
-          className="sidebar-nav-icon-graphic sidebar-nav-icon-usage"
-          viewBox="0 0 24 24"
-          focusable="false"
-        >
-          <path d="M5 19V11m7 8V5m7 14v-6" />
-        </svg>
-      </span>
-    );
-  }
-
-  return (
-    <span className="sidebar-nav-icon" aria-hidden="true">
-      {tab.icon}
-    </span>
-  );
-}
-
 export interface ProjectSidebarProps {
+  briefingView?: 'history' | 'papers' | 'manage' | 'assistant';
+  onOpenAssistant?: () => void;
+  onSelectBriefingView?: (view: 'history' | 'papers' | 'manage') => void;
+  notifications?: NotificationCenterProps;
   projects: readonly PortfolioProjectRecord[];
   activeProjectId: string;
   activeTab: WorkspaceTabId;
@@ -135,7 +96,7 @@ export function ProjectSidebarToggle({
   onToggle: () => void;
   buttonRef?: Ref<HTMLButtonElement>;
 }) {
-  const label = collapsed ? 'Show project sidebar' : 'Hide project sidebar';
+  const label = uiText(collapsed ? 'Show project sidebar' : 'Hide project sidebar');
   return (
     <button
       ref={buttonRef}
@@ -156,6 +117,10 @@ export function ProjectSidebarToggle({
 }
 
 export function ProjectSidebar({
+  briefingView = 'history',
+  onSelectBriefingView,
+  onOpenAssistant,
+  notifications = EMPTY_NOTIFICATION_CENTER,
   projects,
   activeProjectId,
   activeTab,
@@ -176,6 +141,7 @@ export function ProjectSidebar({
   onOpenSettings,
   onNewProject,
 }: ProjectSidebarProps) {
+  const [briefingExpanded, setBriefingExpanded] = useState(false);
   const hiddenIds = new Set(navigationState.hiddenProjectIds);
   const working = activeProjects(projects);
   const visible = working.filter((project) => !hiddenIds.has(project.id));
@@ -188,24 +154,104 @@ export function ProjectSidebar({
   ) => onNavigationStateChange({ ...navigationState, [key]: expanded });
 
   return (
-    <nav className="project-navigation" aria-label="Projects and workspace navigation">
+    <nav className="project-navigation" aria-label={uiText('Projects and workspace navigation')}>
+      <div
+        className="project-quick-actions"
+        role="group"
+        aria-label={uiText('Workspace shortcuts')}
+      >
+        <button
+          type="button"
+          className={`project-quick-action${!settingsActive && activeTab === 'briefing-lab' && briefingView === 'assistant' ? ' active' : ''}`}
+          aria-label="AI 비서"
+          title="AI 비서 · 일정, 메일, 논문, 프로젝트"
+          onClick={onOpenAssistant}
+        >
+          <SidebarIcon name="assistant" />
+        </button>
+        {(['search'] as const).map((tab) => (
+          <button
+            type="button"
+            key={tab}
+            className={`project-quick-action${!settingsActive && activeTab === tab ? ' active' : ''}`}
+            aria-current={!settingsActive && activeTab === tab ? 'page' : undefined}
+            aria-label={uiText(tab === 'search' ? 'Search' : 'Tasks')}
+            title={uiText(tab === 'search' ? 'Search' : 'Tasks')}
+            onClick={() => onSelectGlobalTab(tab)}
+          >
+            <SidebarIcon name={tab} />
+          </button>
+        ))}
+        <NotificationCenter {...notifications} />
+      </div>
+      <div className="project-personal-tools" role="group" aria-label="Personal workspace">
+        {(
+          [
+            { id: 'calendar', label: 'Calendar' },
+            { id: 'tasks', label: 'To-do list' },
+            { id: 'briefing-lab', label: 'Briefing Lab' },
+          ] as const
+        ).map(({ id, label }) => (
+          <button
+            key={id}
+            type="button"
+            className={`project-personal-tool${!settingsActive && activeTab === id ? ' active' : ''}`}
+            aria-current={!settingsActive && activeTab === id ? 'page' : undefined}
+            aria-label={label}
+            aria-expanded={id === 'briefing-lab' ? briefingExpanded : undefined}
+            onClick={() => {
+              if (id === 'briefing-lab') setBriefingExpanded((value) => !value);
+              onSelectGlobalTab(id);
+            }}
+          >
+            <SidebarIcon name={id} />
+            <span>{label}</span>
+            {id === 'briefing-lab' && (
+              <CollapseChevron direction={briefingExpanded ? 'down' : 'right'} />
+            )}
+          </button>
+        ))}
+        {briefingExpanded && (
+          <div className="briefing-subnavigation" role="group" aria-label="Briefing Lab 하위 세션">
+            {(
+              [
+                { view: 'history', label: '개인 연구 브리핑' },
+                { view: 'papers', label: '논문 요약' },
+                { view: 'manage', label: '루틴 관리' },
+              ] as const
+            ).map(({ view, label }) => (
+              <button
+                key={view}
+                aria-current={
+                  !settingsActive && activeTab === 'briefing-lab' && briefingView === view
+                    ? 'page'
+                    : undefined
+                }
+                onClick={() => onSelectBriefingView?.(view)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="project-navigation-heading">
         <button
           type="button"
           className="project-group-toggle"
-          aria-label="Active projects"
+          aria-label={uiText('Active projects')}
           aria-expanded={navigationState.activeGroupExpanded}
           onClick={() => updateGroup('activeGroupExpanded', !navigationState.activeGroupExpanded)}
         >
           <CollapseChevron direction={navigationState.activeGroupExpanded ? 'down' : 'right'} />
-          <strong>Projects</strong>
+          <strong>{uiText('Projects')}</strong>
           <em>{working.length}</em>
         </button>
         <button
           type="button"
           className="project-add-button"
-          aria-label="Create a new project"
-          title="New project"
+          aria-label={uiText('Create a new project')}
+          title={uiText('New project')}
           onClick={onNewProject}
           disabled={disabled}
         >
@@ -217,7 +263,9 @@ export function ProjectSidebar({
         <div className="project-folder-list">
           {visible.length === 0 ? (
             <p className="project-navigation-empty">
-              {working.length === 0 ? 'No active projects' : 'All active projects are hidden'}
+              {working.length === 0
+                ? uiText('No active projects')
+                : uiText('All active projects are hidden')}
             </p>
           ) : (
             visible.map((project) => {
@@ -245,14 +293,19 @@ export function ProjectSidebar({
                       <span className="project-folder-chevron" aria-hidden="true">
                         <CollapseChevron direction={expanded ? 'down' : 'right'} />
                       </span>
-                      <span className="project-folder-icon" aria-hidden="true">
-                        {expanded ? '▰' : '▱'}
-                      </span>
                       <strong>{project.name}</strong>
-                      {busy && <i className="project-running-indicator" title="Codex is running" />}
+                      {busy && (
+                        <i
+                          className="project-running-indicator"
+                          title={uiText('Codex is running')}
+                        />
+                      )}
                     </button>
                     <details className="project-folder-menu">
-                      <summary aria-label={`Actions for ${project.name}`} title="Project actions">
+                      <summary
+                        aria-label={uiText('Actions for {name}', { name: project.name })}
+                        title={uiText('Project actions')}
+                      >
                         •••
                       </summary>
                       <div role="menu">
@@ -262,28 +315,34 @@ export function ProjectSidebar({
                           disabled={disabled || busy}
                           title={
                             busy
-                              ? 'Stop or wait for the active Codex turn before hiding this project'
+                              ? uiText(
+                                  'Stop or wait for the active Codex turn before hiding this project',
+                                )
                               : undefined
                           }
                           onClick={() => onHideProject(project.id)}
                         >
-                          Hide locally
+                          {uiText('Hide locally')}
                         </button>
                         <button
                           type="button"
                           role="menuitem"
                           disabled={disabled || busy}
-                          title={busy ? 'Stop or wait for the active Codex turn first' : undefined}
+                          title={
+                            busy
+                              ? uiText('Stop or wait for the active Codex turn first')
+                              : undefined
+                          }
                           onClick={() => onArchiveProject(project)}
                         >
-                          Archive
+                          {uiText('Archive')}
                         </button>
                         <button
                           type="button"
                           role="menuitem"
                           onClick={() => onOpenProjectSettings(project.id)}
                         >
-                          Project settings
+                          {uiText('Project settings')}
                         </button>
                       </div>
                     </details>
@@ -292,7 +351,7 @@ export function ProjectSidebar({
                   {expanded && (
                     <div
                       className="project-folder-children"
-                      aria-label={`${project.name} sections`}
+                      aria-label={uiText('{name} sections', { name: project.name })}
                     >
                       {PROJECT_TABS.map((tab) => (
                         <button
@@ -307,25 +366,21 @@ export function ProjectSidebar({
                           disabled={disabled}
                           onClick={() => onSelectProjectTab(project.id, tab.id)}
                         >
-                          <span className="sidebar-nav-icon" aria-hidden="true">
-                            {tab.icon}
-                          </span>
-                          {tab.label}
+                          <SidebarIcon name={tab.id} />
+                          {uiText(tab.label)}
                         </button>
                       ))}
-                      {FUTURE_MODULES.map(([label, icon]) => (
+                      {FUTURE_MODULES.map(([label]) => (
                         <button
                           type="button"
                           className="coming-soon"
                           key={label}
                           disabled
-                          title={`${label} is not implemented yet`}
+                          title={uiText('{name} is not implemented yet', { name: uiText(label) })}
                         >
-                          <span className="sidebar-nav-icon" aria-hidden="true">
-                            {icon}
-                          </span>
-                          {label}
-                          <em>Later</em>
+                          <SidebarIcon name="review" />
+                          {uiText(label)}
+                          <em>{uiText('Later')}</em>
                         </button>
                       ))}
                     </div>
@@ -346,7 +401,7 @@ export function ProjectSidebar({
             onClick={() => updateGroup('hiddenGroupExpanded', !navigationState.hiddenGroupExpanded)}
           >
             <CollapseChevron direction={navigationState.hiddenGroupExpanded ? 'down' : 'right'} />
-            <strong>Hidden projects</strong>
+            <strong>{uiText('Hidden projects')}</strong>
             <em>{hidden.length}</em>
           </button>
           {navigationState.hiddenGroupExpanded && (
@@ -355,12 +410,12 @@ export function ProjectSidebar({
                 <div key={project.id}>
                   <span title={project.name}>{project.name}</span>
                   <button type="button" onClick={() => onShowProject(project.id)}>
-                    Show
+                    {uiText('Show')}
                   </button>
                 </div>
               ))}
               <button type="button" className="project-show-all" onClick={onShowAllProjects}>
-                Show all
+                {uiText('Show all')}
               </button>
             </div>
           )}
@@ -378,7 +433,7 @@ export function ProjectSidebar({
             }
           >
             <CollapseChevron direction={navigationState.archivedGroupExpanded ? 'down' : 'right'} />
-            <strong>Archived</strong>
+            <strong>{uiText('Archived')}</strong>
             <em>{archived.length}</em>
           </button>
           {navigationState.archivedGroupExpanded && (
@@ -391,7 +446,7 @@ export function ProjectSidebar({
                     disabled={disabled}
                     onClick={() => onRestoreProject(project)}
                   >
-                    Restore
+                    {uiText('Restore')}
                   </button>
                 </div>
               ))}
@@ -401,7 +456,7 @@ export function ProjectSidebar({
       )}
 
       <div className="project-global-navigation">
-        <small>Workspace</small>
+        <small>{uiText('Workspace')}</small>
         {GLOBAL_TABS.map((tab) => (
           <button
             type="button"
@@ -410,8 +465,8 @@ export function ProjectSidebar({
             aria-current={!settingsActive && activeTab === tab.id ? 'page' : undefined}
             onClick={() => onSelectGlobalTab(tab.id)}
           >
-            <GlobalSidebarIcon tab={tab} />
-            {tab.label}
+            <SidebarIcon name={tab.id} />
+            {uiText(tab.label)}
           </button>
         ))}
         <button
@@ -420,10 +475,8 @@ export function ProjectSidebar({
           aria-current={settingsActive ? 'page' : undefined}
           onClick={onOpenSettings}
         >
-          <span className="sidebar-nav-icon" aria-hidden="true">
-            ⚙
-          </span>
-          Settings
+          <SidebarIcon name="settings" />
+          {uiText('Settings')}
           <em>⌘,</em>
         </button>
       </div>

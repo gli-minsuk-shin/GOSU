@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { ManuscriptRootDocumentSchema } from '@gosu/contracts';
 import { useState, type FormEvent } from 'react';
 
@@ -47,7 +49,7 @@ export function lectureExternalSourceStatus(source: LectureExternalSourceCard) {
 function LectureSourceTypeIcon({ kind }: { kind: LectureExternalSourceCard['kind'] }) {
   return (
     <span className={`lecture-external-source-type ${kind}`} aria-hidden="true">
-      {kind === 'latex' ? 'TEX' : kind === 'markdown' ? 'MD' : 'PDF'}
+      {kind === 'latex' ? uiText('TEX') : kind === 'markdown' ? uiText('MD') : uiText('PDF')}
     </span>
   );
 }
@@ -75,6 +77,7 @@ export function LectureExternalSourcePicker({
   onImportOverleaf: (draft: LectureOverleafSourceDraft) => Promise<boolean>;
   onRemoveOverleaf: (manuscriptId: string) => void;
 }) {
+  useUiText();
   const [overleafOpen, setOverleafOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [rootDocument, setRootDocument] = useState('main.tex');
@@ -126,10 +129,11 @@ export function LectureExternalSourcePicker({
     <section className="lecture-external-source-picker" aria-labelledby="lecture-add-sources-title">
       <header>
         <div>
-          <h3 id="lecture-add-sources-title">Add your own sources</h3>
+          <h3 id="lecture-add-sources-title">{uiText('Add your own sources')}</h3>
           <p>
-            Add LaTeX (.tex), Markdown (.md), or PDF (.pdf), or capture an exact Overleaf Git
-            checkpoint.
+            {uiText(
+              'Add LaTeX (.tex), Markdown (.md), or PDF (.pdf), or capture an exact Overleaf Git checkpoint.',
+            )}
           </p>
         </div>
         <div className="lecture-external-source-actions">
@@ -139,7 +143,7 @@ export function LectureExternalSourcePicker({
             disabled={busy || addingFiles}
             onClick={() => void chooseFiles()}
           >
-            <span aria-hidden="true">＋</span> {addingFiles ? 'Adding…' : 'Files'}
+            <span aria-hidden="true">＋</span> {addingFiles ? uiText('Adding…') : uiText('Files')}
           </button>
           <button
             type="button"
@@ -154,7 +158,7 @@ export function LectureExternalSourcePicker({
               })
             }
           >
-            <span aria-hidden="true">↗</span> Overleaf Git
+            <span aria-hidden="true">↗</span> {uiText('Overleaf Git')}
           </button>
         </div>
       </header>
@@ -176,21 +180,21 @@ export function LectureExternalSourcePicker({
         >
           <div className="lecture-overleaf-source-grid">
             <label>
-              Source name
+              {uiText('Source name')}
               <input
                 value={title}
                 maxLength={160}
-                placeholder="Overleaf manuscript"
+                placeholder={uiText('Overleaf manuscript')}
                 disabled={busy || addingOverleaf}
                 onChange={(event) => setTitle(event.target.value)}
               />
             </label>
             <label>
-              Root TeX file
+              {uiText('Root TeX file')}
               <input
                 value={rootDocument}
                 maxLength={512}
-                placeholder="main.tex"
+                placeholder={uiText('main.tex')}
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
@@ -200,12 +204,12 @@ export function LectureExternalSourcePicker({
               />
             </label>
             <label className="lecture-overleaf-url-field">
-              Overleaf Git URL
+              {uiText('Overleaf Git URL')}
               <input
                 data-overleaf-token-focus-fallback
                 value={remoteUrl}
                 maxLength={2_048}
-                placeholder="https://git.overleaf.com/PROJECT_ID"
+                placeholder={uiText('https://git.overleaf.com/PROJECT_ID')}
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
@@ -217,7 +221,9 @@ export function LectureExternalSourcePicker({
           </div>
           <footer>
             <small>
-              Uses the token saved in Overleaf Settings. GOSU captures one exact Git checkpoint for{' '}
+              {uiText(
+                'Uses the token saved in Overleaf Settings. GOSU captures one exact Git checkpoint for',
+              )}{' '}
               {outputProjectName}.
             </small>
             <button
@@ -231,14 +237,14 @@ export function LectureExternalSourcePicker({
                 !rootDocumentValid
               }
             >
-              {addingOverleaf ? 'Capturing…' : 'Capture source'}
+              {addingOverleaf ? uiText('Capturing…') : uiText('Capture source')}
             </button>
           </footer>
         </form>
       )}
 
       {hasSources ? (
-        <div className="lecture-external-source-cards" aria-label="Added sources">
+        <div className="lecture-external-source-cards" aria-label={uiText('Added sources')}>
           {fileSources.map((source) => (
             <article className="lecture-external-source-card" key={source.id}>
               <LectureSourceTypeIcon kind={source.kind} />
@@ -248,7 +254,7 @@ export function LectureExternalSourcePicker({
                   {formatLectureSourceBytes(source.byteSize)} · {source.unitCount}{' '}
                   {source.unitLabel}
                   {source.unitCount === 1 ? '' : 's'} ·{' '}
-                  {source.extractedCharacters.toLocaleString()} readable characters
+                  {source.extractedCharacters.toLocaleString()} {uiText('readable characters')}
                 </small>
                 <small title={source.reconstructionNotice}>{source.reconstructionNotice}</small>
               </div>
@@ -260,8 +266,8 @@ export function LectureExternalSourcePicker({
               <button
                 type="button"
                 className="lecture-external-source-remove"
-                aria-label={`Remove ${source.displayName}`}
-                title="Remove from this lecture"
+                aria-label={uiText('Remove {displayName}', { displayName: source.displayName })}
+                title={uiText('Remove from this lecture')}
                 disabled={busy}
                 onClick={() => void onRemoveFile(source.id)}
               >
@@ -272,19 +278,23 @@ export function LectureExternalSourcePicker({
           {overleafSources.map((source) => (
             <article className="lecture-external-source-card" key={source.manuscriptId}>
               <span className="lecture-external-source-type overleaf" aria-hidden="true">
-                OL
+                {uiText('OL')}
               </span>
               <div>
                 <strong title={source.title}>{source.title}</strong>
-                <small title={source.rootDocument}>Root: {source.rootDocument}</small>
-                <small>Exact Git checkpoint · {new Date(source.observedAt).toLocaleString()}</small>
+                <small title={source.rootDocument}>
+                  {uiText('Root:')} {source.rootDocument}
+                </small>
+                <small>
+                  {uiText('Exact Git checkpoint ·')} {new Date(source.observedAt).toLocaleString()}
+                </small>
               </div>
-              <span className="lecture-external-source-status ready">Ready</span>
+              <span className="lecture-external-source-status ready">{uiText('Ready')}</span>
               <button
                 type="button"
                 className="lecture-external-source-remove"
-                aria-label={`Remove ${source.title}`}
-                title="Remove from this lecture"
+                aria-label={uiText('Remove {title}', { title: source.title })}
+                title={uiText('Remove from this lecture')}
                 disabled={busy}
                 onClick={() => onRemoveOverleaf(source.manuscriptId)}
               >
@@ -295,7 +305,7 @@ export function LectureExternalSourcePicker({
         </div>
       ) : (
         <p className="lecture-external-source-empty">
-          Optional · added sources are frozen for this lecture and remain local.
+          {uiText('Optional · added sources are frozen for this lecture and remain local.')}
         </p>
       )}
     </section>

@@ -33,12 +33,17 @@ const builtModel = {
       lane: 0,
       inputShape: ['B', 4],
       outputShape: ['B', 4],
+      inputPorts: [{ name: 'features', shape: ['B', 4], binding: 'external', bindingId: null }],
+      outputPorts: [{ name: 'h_0', shape: ['B', 4], binding: 'internal', bindingId: null }],
       transform: 'identity',
       activation: null,
       formula: 'h_0=x',
       explanation: 'Feature input.',
       parameterCount: 0,
       codeReference: 'network.py:8',
+      repeat: null,
+      block: null,
+      subgraph: null,
     },
     {
       id: 'head',
@@ -49,12 +54,17 @@ const builtModel = {
       lane: 0,
       inputShape: ['B', 4],
       outputShape: ['B', 2],
+      inputPorts: [{ name: 'h_0', shape: ['B', 4], binding: 'internal', bindingId: null }],
+      outputPorts: [{ name: 'logits', shape: ['B', 2], binding: 'external', bindingId: null }],
       transform: 'Linear(4, 2)',
       activation: null,
       formula: 'z=h_0W+b',
       explanation: 'Classifier projection.',
       parameterCount: 10,
       codeReference: 'network.py:5,9',
+      repeat: null,
+      block: null,
+      subgraph: null,
     },
   ],
   connections: [
@@ -62,6 +72,8 @@ const builtModel = {
       id: 'input-to-head',
       source: 'input',
       target: 'head',
+      sourcePort: 'h_0',
+      targetPort: 'h_0',
       tensorName: 'h_0',
       shape: ['B', 4],
       activationNorm: 0,
@@ -168,6 +180,13 @@ Output [N,1]}`;
     expect(prepared.artifact.kind).toBe('image');
     expect(prepared.artifact.encoding).toBe('base64');
     expect(prepared.artifact.content).toBe('iVBORw==');
+    expect(modelBuildArtifactKind({ name: 'diagram', type: 'image/png' })).toBe('image');
+    expect(modelBuildArtifactKind({ name: 'diagram.gif', type: 'image/gif' })).toBeNull();
+    const webp = await prepareModelBuildArtifact(
+      new File([new Uint8Array([82, 73, 70, 70])], 'diagram.webp', { type: '' }),
+    );
+    expect(webp.ok).toBe(true);
+    if (webp.ok) expect(webp.artifact.mediaType).toBe('image/webp');
   });
 
   it('encodes a PDF so the server can extract its bounded architecture text', async () => {
@@ -364,9 +383,9 @@ Output [N,1]}`;
     const appSource = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
     const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
-    expect(appSource).toContain('aria-label="Model Builder LLM selection"');
-    expect(appSource).toContain('aria-label="Model Builder model"');
-    expect(appSource).toContain('aria-label="Model Builder reasoning"');
+    expect(appSource).toContain("aria-label={uiText('Model Builder LLM selection')}");
+    expect(appSource).toContain("aria-label={uiText('Model Builder model')}");
+    expect(appSource).toContain("aria-label={uiText('Model Builder reasoning')}");
     expect(appSource).toContain('.docx,.rtf,.py');
     expect(appSource).toContain('PDF · DOCX · RTF · text');
     expect(appSource).toContain('codexModelBuilder.build(sourceArtifacts, builderSelection, {');

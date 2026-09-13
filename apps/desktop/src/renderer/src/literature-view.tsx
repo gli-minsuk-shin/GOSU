@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import {
   useCallback,
   useEffect,
@@ -251,7 +253,7 @@ export function literatureLayerCounts(
 }
 
 function discoveryLayerTitle(tier: LiteratureDiscoveryTier | 'unclassified') {
-  return DISCOVERY_LAYERS.find(({ id }) => id === tier)?.title ?? 'Imported / unclassified';
+  return uiText(DISCOVERY_LAYERS.find(({ id }) => id === tier)?.title ?? 'Imported / unclassified');
 }
 
 export function literatureCoreGateSummary(record: LiteratureRecord) {
@@ -344,9 +346,9 @@ function literatureErrorMessage(error: unknown) {
     literature_unavailable:
       'The local literature library is unavailable. Board, Notes, and existing project work remain usable.',
   };
-  return (
+  return uiText(
     messages[code] ??
-    'The literature operation could not be completed. Saved records were not removed.'
+      'The literature operation could not be completed. Saved records were not removed.',
   );
 }
 
@@ -391,10 +393,12 @@ function literatureConflictIdentifier(conflict: LiteratureSearchConflict) {
 }
 
 function formatLabel(value: string) {
-  return value
-    .replaceAll('-', ' ')
-    .replaceAll('_', ' ')
-    .replace(/\b\w/gu, (letter) => letter.toLocaleUpperCase());
+  return uiText(
+    value
+      .replaceAll('-', ' ')
+      .replaceAll('_', ' ')
+      .replace(/\b\w/gu, (letter) => letter.toLocaleUpperCase()),
+  );
 }
 
 export function literatureViewRecord(record: LiteratureRecord): LiteratureViewRecord {
@@ -470,7 +474,7 @@ function visibleLiteratureSearchTags(
 }
 
 function searchTagKindLabel(kind: LiteratureSearchTagKind) {
-  return kind === 'topics' ? 'Topic' : 'Keyword';
+  return uiText(kind === 'topics' ? 'Topic' : 'Keyword');
 }
 
 function LiteratureSortButton({
@@ -541,20 +545,22 @@ function LiteratureSortButton({
           className={`literature-sort-button${active ? ' active' : ''}`}
           onClick={() => onSort(column.key)}
         >
-          {column.label}
+          {uiText(column.label)}
           <span aria-hidden="true">{active ? (direction === 'ascending' ? '↑' : '↓') : '↕'}</span>
         </button>
         <div
           className={`literature-column-resizer${resizing ? ' active' : ''}`}
           role="separator"
           tabIndex={0}
-          aria-label={`Resize ${column.label} column`}
+          aria-label={uiText('Resize {label} column', { label: column.label })}
           aria-orientation="vertical"
           aria-valuemin={definition.minWidth}
           aria-valuemax={definition.maxWidth}
           aria-valuenow={width}
-          aria-valuetext={`${width} pixels`}
-          title={`Drag to resize ${column.label}. Double-click to reset this column.`}
+          aria-valuetext={uiText('{width} pixels', { width: width })}
+          title={uiText('Drag to resize {label}. Double-click to reset this column.', {
+            label: column.label,
+          })}
           onDoubleClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -656,6 +662,7 @@ export function LiteratureTable({
   onPage: (page: number) => void;
   onSearchTagFilter?: (filter: string) => void;
 }) {
+  useUiText();
   const scrollRegionRef = useRef<HTMLDivElement>(null);
   const [scrollAvailability, setScrollAvailability] = useState(NO_LITERATURE_TABLE_SCROLL);
   const [columnWidths, setColumnWidths] = useState(loadLiteratureColumnWidths);
@@ -756,11 +763,13 @@ export function LiteratureTable({
     return (
       <div className="literature-empty">
         <div>
-          <h2>{records.length === 0 ? 'No papers yet' : 'No matching papers'}</h2>
+          <h2>{records.length === 0 ? uiText('No papers yet') : uiText('No matching papers')}</h2>
           <p>
             {records.length === 0
-              ? 'Run a search or import an existing review. New searches merge into this project library.'
-              : 'Clear the table filter or choose another review status.'}
+              ? uiText(
+                  'Run a search or import an existing review. New searches merge into this project library.',
+                )
+              : uiText('Clear the table filter or choose another review status.')}
           </p>
         </div>
       </div>
@@ -770,52 +779,55 @@ export function LiteratureTable({
   return (
     <>
       <p id="literature-table-scroll-help" className="sr-only">
-        Scroll vertically for more papers and horizontally for additional evidence columns. When
-        focused, the arrow and page keys scroll this table. Drag a column divider to resize it, or
-        focus the divider and use Left and Right Arrow keys.
+        {uiText(
+          'Scroll vertically for more papers and horizontally for additional evidence columns. When focused, the arrow and page keys scroll this table. Drag a column divider to resize it, or focus the divider and use Left and Right Arrow keys.',
+        )}
       </p>
-      <div className="literature-table-navigation" aria-label="Evidence table scroll controls">
-        <span>Scroll table</span>
+      <div
+        className="literature-table-navigation"
+        aria-label={uiText('Evidence table scroll controls')}
+      >
+        <span>{uiText('Scroll table')}</span>
         <div>
           <button
             type="button"
             className="ghost-button"
-            aria-label="Scroll evidence columns left"
+            aria-label={uiText('Scroll evidence columns left')}
             aria-controls="literature-evidence-scroll-region"
             disabled={!scrollAvailability.left}
             onClick={() => handleScrollCommand('left')}
           >
-            ← Columns
+            {uiText('← Columns')}
           </button>
           <button
             type="button"
             className="ghost-button"
-            aria-label="Scroll evidence columns right"
+            aria-label={uiText('Scroll evidence columns right')}
             aria-controls="literature-evidence-scroll-region"
             disabled={!scrollAvailability.right}
             onClick={() => handleScrollCommand('right')}
           >
-            Columns →
+            {uiText('Columns →')}
           </button>
           <button
             type="button"
             className="ghost-button"
-            aria-label="Scroll evidence table to top"
+            aria-label={uiText('Scroll evidence table to top')}
             aria-controls="literature-evidence-scroll-region"
             disabled={!scrollAvailability.top}
             onClick={() => handleScrollCommand('top')}
           >
-            Top
+            {uiText('Top')}
           </button>
           <button
             type="button"
             className="ghost-button"
-            aria-label="Scroll evidence table to bottom"
+            aria-label={uiText('Scroll evidence table to bottom')}
             aria-controls="literature-evidence-scroll-region"
             disabled={!scrollAvailability.bottom}
             onClick={() => handleScrollCommand('bottom')}
           >
-            Bottom
+            {uiText('Bottom')}
           </button>
           <button
             type="button"
@@ -823,7 +835,7 @@ export function LiteratureTable({
             disabled={!hasCustomLiteratureColumnWidths(columnWidths)}
             onClick={resetColumnWidths}
           >
-            Reset column widths
+            {uiText('Reset column widths')}
           </button>
         </div>
       </div>
@@ -833,7 +845,7 @@ export function LiteratureTable({
         className="literature-table-scroll"
         role="region"
         tabIndex={0}
-        aria-label="Literature evidence table"
+        aria-label={uiText('Literature evidence table')}
         aria-describedby="literature-table-scroll-help"
       >
         <table
@@ -876,7 +888,9 @@ export function LiteratureTable({
                     <a
                       className="literature-table-title canonical-link"
                       href={record.canonicalUrl}
-                      aria-label={`Open canonical source for ${record.title}`}
+                      aria-label={uiText('Open canonical source for {title}', {
+                        title: record.title,
+                      })}
                       onClick={(event) => {
                         event.preventDefault();
                         onSelect(record.id);
@@ -884,7 +898,7 @@ export function LiteratureTable({
                       }}
                     >
                       <span>{record.title}</span>
-                      <small>Canonical source ↗</small>
+                      <small>{uiText('Canonical source ↗')}</small>
                     </a>
                   ) : (
                     <button
@@ -904,7 +918,7 @@ export function LiteratureTable({
                     </span>
                     {record.importanceScore !== null && (
                       <small>
-                        {Math.round(record.importanceScore * 100)} / 100 · within search
+                        {Math.round(record.importanceScore * 100)} {uiText('/ 100 · within search')}
                       </small>
                     )}
                     {record.record.discovery && (
@@ -912,7 +926,7 @@ export function LiteratureTable({
                     )}
                   </div>
                 </td>
-                <td>{record.authors.join(', ') || 'Unknown'}</td>
+                <td>{record.authors.join(', ') || uiText('Unknown')}</td>
                 <td>{record.venue || '—'}</td>
                 <td>{record.year ?? '—'}</td>
                 <td>
@@ -922,7 +936,10 @@ export function LiteratureTable({
                         type="button"
                         className={`literature-search-tag-chip ${tag.kind}`}
                         key={tag.key}
-                        aria-label={`Filter by ${searchTagKindLabel(tag.kind).toLocaleLowerCase()} tag ${tag.label}`}
+                        aria-label={uiText('Filter by {value1} tag {label}', {
+                          value1: searchTagKindLabel(tag.kind).toLocaleLowerCase(),
+                          label: tag.label,
+                        })}
                         aria-pressed={searchTagFilter === tag.key}
                         onClick={() =>
                           onSearchTagFilter(searchTagFilter === tag.key ? 'all' : tag.key)
@@ -959,7 +976,7 @@ export function LiteratureTable({
                     <a
                       className="literature-doi-link canonical-link"
                       href={record.canonicalUrl}
-                      aria-label={`Open DOI ${record.doi}`}
+                      aria-label={uiText('Open DOI {doi}', { doi: record.doi })}
                       onClick={(event) => {
                         event.preventDefault();
                         onSelect(record.id);
@@ -987,7 +1004,8 @@ export function LiteratureTable({
       </div>
       <footer className="literature-pagination">
         <span>
-          {result.total.toLocaleString()} matching · page {result.page} of {result.pageCount}
+          {result.total.toLocaleString()} {uiText('matching · page')} {result.page} {uiText('of')}{' '}
+          {result.pageCount}
         </span>
         <div>
           <button
@@ -996,7 +1014,7 @@ export function LiteratureTable({
             disabled={result.page <= 1}
             onClick={() => onPage(result.page - 1)}
           >
-            Previous
+            {uiText('Previous')}
           </button>
           <button
             type="button"
@@ -1004,7 +1022,7 @@ export function LiteratureTable({
             disabled={result.page >= result.pageCount}
             onClick={() => onPage(result.page + 1)}
           >
-            Next
+            {uiText('Next')}
           </button>
         </div>
       </footer>
@@ -1031,6 +1049,7 @@ export function LiteratureDetail({
   onDelete: (record: LiteratureRecord) => Promise<void>;
   onCreatePaperNote?: (record: LiteratureRecord) => Promise<void>;
 }) {
+  useUiText();
   const [topics, setTopics] = useState(record.manualAnnotations.topics.join(', '));
   const [summary, setSummary] = useState(record.manualAnnotations.summary);
   const [relevance, setRelevance] = useState(record.manualAnnotations.relevance);
@@ -1049,9 +1068,9 @@ export function LiteratureDetail({
     <section className="literature-detail-card" aria-labelledby="literature-detail-title">
       <header className="literature-detail-heading">
         <div>
-          <span className="eyebrow">Selected paper</span>
+          <span className="eyebrow">{uiText('Selected paper')}</span>
           <h2 id="literature-detail-title">{record.title}</h2>
-          <p>{record.authors.join(', ') || 'Unknown authors'}</p>
+          <p>{record.authors.join(', ') || uiText('Unknown authors')}</p>
         </div>
         <div className="literature-detail-heading-actions">
           {onCreatePaperNote && (
@@ -1069,7 +1088,7 @@ export function LiteratureDetail({
                 void window.gosu.openExternal(canonicalUrl);
               }}
             >
-              Open canonical source ↗
+              {uiText('Open canonical source ↗')}
             </button>
           )}
         </div>
@@ -1077,72 +1096,78 @@ export function LiteratureDetail({
 
       <div className="literature-detail-grid">
         <div>
-          <small>Journal / venue</small>
-          <strong>{record.containerTitle || 'Not provided'}</strong>
+          <small>{uiText('Journal / venue')}</small>
+          <strong>{record.containerTitle || uiText('Not provided')}</strong>
         </div>
         <div>
-          <small>Published</small>
-          <strong>{record.publishedYear ?? 'Unknown'}</strong>
+          <small>{uiText('Published')}</small>
+          <strong>{record.publishedYear ?? uiText('Unknown')}</strong>
         </div>
         <div>
-          <small>DOI</small>
-          <strong>{record.doi || 'Not provided'}</strong>
+          <small>{uiText('DOI')}</small>
+          <strong>{record.doi || uiText('Not provided')}</strong>
         </div>
         <div>
-          <small>BibTeX key</small>
-          <strong>{record.citationKey || 'Assigned on export'}</strong>
+          <small>{uiText('BibTeX key')}</small>
+          <strong>{record.citationKey || uiText('Assigned on export')}</strong>
         </div>
         <div>
-          <small>Type</small>
-          <strong>{record.workType ? formatLabel(record.workType) : 'Not provided'}</strong>
+          <small>{uiText('Type')}</small>
+          <strong>{record.workType ? formatLabel(record.workType) : uiText('Not provided')}</strong>
         </div>
         <div>
-          <small>Cited by</small>
-          <strong>{record.citationCount ?? 'Not provided'}</strong>
+          <small>{uiText('Cited by')}</small>
+          <strong>{record.citationCount ?? uiText('Not provided')}</strong>
         </div>
         <div>
-          <small>Source</small>
+          <small>{uiText('Source')}</small>
           <strong>{formatLabel(record.provider)}</strong>
         </div>
       </div>
 
-      <section className="literature-abstract" aria-label="Provider abstract">
+      <section className="literature-abstract" aria-label={uiText('Provider abstract')}>
         <div>
-          <strong>Abstract</strong>
-          <small>Provider-supplied text used for AI keyword extraction when available</small>
+          <strong>{uiText('Abstract')}</strong>
+          <small>
+            {uiText('Provider-supplied text used for AI keyword extraction when available')}
+          </small>
         </div>
-        <p>{record.abstractText || 'No abstract was supplied by the search provider.'}</p>
+        <p>{record.abstractText || uiText('No abstract was supplied by the search provider.')}</p>
       </section>
 
-      <section className="literature-tag-sources" aria-label="Search provenance tags">
+      <section className="literature-tag-sources" aria-label={uiText('Search provenance tags')}>
         <div>
-          <strong>Search tags</strong>
-          <small>Accumulated from the searches that found this paper</small>
+          <strong>{uiText('Search tags')}</strong>
+          <small>{uiText('Accumulated from the searches that found this paper')}</small>
         </div>
         {(record.searchTags?.topics.length ?? 0) + (record.searchTags?.keywords.length ?? 0) > 0 ? (
           <div className="literature-topic-list literature-search-tag-list">
             {(record.searchTags?.topics ?? []).map((label) => (
               <span className="literature-search-tag-chip topics" key={`topic:${label}`}>
-                <span>Topic</span>
+                <span>{uiText('Topic')}</span>
                 {label}
               </span>
             ))}
             {(record.searchTags?.keywords ?? []).map((label) => (
               <span className="literature-search-tag-chip keywords" key={`keyword:${label}`}>
-                <span>Keyword</span>
+                <span>{uiText('Keyword')}</span>
                 {label}
               </span>
             ))}
           </div>
         ) : (
-          <p>No search tags yet. Imported papers remain available under the Untagged filter.</p>
+          <p>
+            {uiText(
+              'No search tags yet. Imported papers remain available under the Untagged filter.',
+            )}
+          </p>
         )}
       </section>
 
-      <section className="literature-tag-sources" aria-label="Source keywords">
+      <section className="literature-tag-sources" aria-label={uiText('Source keywords')}>
         <div>
-          <strong>Source keywords</strong>
-          <small>Provider metadata; never used as a GOSU search tag</small>
+          <strong>{uiText('Source keywords')}</strong>
+          <small>{uiText('Provider metadata; never used as a GOSU search tag')}</small>
         </div>
         {record.sourceTopics.length > 0 ? (
           <div className="literature-topic-list">
@@ -1153,84 +1178,91 @@ export function LiteratureDetail({
             ))}
           </div>
         ) : (
-          <p>No source keywords provided.</p>
+          <p>{uiText('No source keywords provided.')}</p>
         )}
       </section>
 
       {record.discovery && (
-        <section className="literature-discovery-summary" aria-label="Discovery ranking">
+        <section className="literature-discovery-summary" aria-label={uiText('Discovery ranking')}>
           <div>
             <span className={`literature-layer-chip ${record.discovery.tier}`}>
               {discoveryLayerTitle(record.discovery.tier)}
             </span>
-            <strong>{Math.round(record.discovery.overallScore * 100)} / 100 · within search</strong>
+            <strong>
+              {Math.round(record.discovery.overallScore * 100)} {uiText('/ 100 · within search')}
+            </strong>
           </div>
           <p>
-            {record.discovery.reasons.map(formatLabel).join(' · ')}. This score is only comparable
-            with papers from the same search; it is a discovery ranking, not verified evidence
-            quality.
+            {record.discovery.reasons.map(formatLabel).join(' · ')}
+            {uiText(
+              '. This score is only comparable with papers from the same search; it is a discovery ranking, not verified evidence quality.',
+            )}
           </p>
           <dl className="literature-ai-facts">
             <div>
-              <dt>Relevance-lane rank (within search)</dt>
+              <dt>{uiText('Relevance-lane rank (within search)')}</dt>
               <dd>{Math.round(record.discovery.relevanceScore * 100)}</dd>
             </div>
             <div>
-              <dt>Citation authority</dt>
+              <dt>{uiText('Citation authority')}</dt>
               <dd>{Math.round(record.discovery.authorityScore * 100)}</dd>
             </div>
             <div>
-              <dt>Estimated momentum</dt>
+              <dt>{uiText('Estimated momentum')}</dt>
               <dd>{Math.round(record.discovery.momentumScore * 100)}</dd>
             </div>
             <div>
-              <dt>Influential citations</dt>
-              <dd>{record.discovery.influentialCitationCount ?? 'Unavailable'}</dd>
+              <dt>{uiText('Influential citations')}</dt>
+              <dd>{record.discovery.influentialCitationCount ?? uiText('Unavailable')}</dd>
             </div>
             <div>
-              <dt>Core gate</dt>
+              <dt>{uiText('Core gate')}</dt>
               <dd>{literatureCoreGateSummary(record)}</dd>
             </div>
             <div>
-              <dt>Highest author h-index signal</dt>
-              <dd>{record.discovery.maxAuthorHIndex ?? 'Unavailable'}</dd>
+              <dt>{uiText('Highest author h-index signal')}</dt>
+              <dd>{record.discovery.maxAuthorHIndex ?? uiText('Unavailable')}</dd>
             </div>
           </dl>
           <small>
-            Latest matching search “{record.discovery.query}” · classified{' '}
-            {new Date(record.discovery.classifiedAt).toLocaleString()} · policy{' '}
-            {record.discovery.policyId} v{record.discovery.policyVersion} · metadata from{' '}
-            {record.discovery.signalSources.map(formatLabel).join(' + ')} · author prominence is
-            only a capped supporting signal.
+            {uiText('Latest matching search “')}
+            {record.discovery.query}
+            {uiText('” · classified')} {new Date(record.discovery.classifiedAt).toLocaleString()}{' '}
+            {uiText('· policy')} {record.discovery.policyId} v{record.discovery.policyVersion}{' '}
+            {uiText('· metadata from')}{' '}
+            {record.discovery.signalSources.map(formatLabel).join(' + ')}{' '}
+            {uiText('· author prominence is only a capped supporting signal.')}
           </small>
         </section>
       )}
 
       {record.aiAnnotations &&
         (record.aiAnnotations.summary || record.aiAnnotations.topics.length > 0) && (
-          <section className="literature-ai-summary" aria-label="AI organization">
+          <section className="literature-ai-summary" aria-label={uiText('AI organization')}>
             <span className="eyebrow">
-              AI summary ·{' '}
+              {uiText('AI summary ·')}{' '}
               {record.aiAnnotations.provenance.metadataOnly
-                ? 'metadata only'
+                ? uiText('metadata only')
                 : record.aiAnnotations.provenance.abstractIncluded
-                  ? 'metadata + abstract'
-                  : 'metadata + partial abstract coverage'}
+                  ? uiText('metadata + abstract')
+                  : uiText('metadata + partial abstract coverage')}
             </span>
             {record.aiAnnotations.summary && <p>{record.aiAnnotations.summary}</p>}
             <dl className="literature-ai-facts">
               <div>
-                <dt>Likely relevance</dt>
+                <dt>{uiText('Likely relevance')}</dt>
                 <dd>{formatLabel(record.aiAnnotations.relevance)}</dd>
               </div>
               <div>
-                <dt>Study type</dt>
-                <dd>{record.aiAnnotations.studyType || 'Not assessable from metadata alone'}</dd>
+                <dt>{uiText('Study type')}</dt>
+                <dd>
+                  {record.aiAnnotations.studyType || uiText('Not assessable from metadata alone')}
+                </dd>
               </div>
             </dl>
             {record.aiAnnotations.topics.length > 0 && (
               <div className="literature-ai-topic-suggestions">
-                <strong>AI topic suggestions</strong>
+                <strong>{uiText('AI topic suggestions')}</strong>
                 <div className="literature-topic-list">
                   {record.aiAnnotations.topics.map((topic) => (
                     <span className="literature-topic-chip" key={topic}>
@@ -1242,7 +1274,7 @@ export function LiteratureDetail({
             )}
             {(record.aiAnnotations.keywords ?? []).length > 0 && (
               <div className="literature-ai-topic-suggestions">
-                <strong>AI keywords</strong>
+                <strong>{uiText('AI keywords')}</strong>
                 <div className="literature-topic-list literature-ai-keyword-list">
                   {(record.aiAnnotations.keywords ?? []).map((keyword) => (
                     <span className="literature-topic-chip ai-keyword" key={keyword}>
@@ -1254,7 +1286,7 @@ export function LiteratureDetail({
             )}
             {record.aiAnnotations.limitations.length > 0 && (
               <div className="literature-ai-limitations">
-                <strong>Metadata limitations</strong>
+                <strong>{uiText('Metadata limitations')}</strong>
                 <ul>
                   {record.aiAnnotations.limitations.map((limitation) => (
                     <li key={limitation}>{limitation}</li>
@@ -1283,17 +1315,17 @@ export function LiteratureDetail({
         }}
       >
         <label>
-          Manual review topics
+          {uiText('Manual review topics')}
           <input
             value={topics}
             maxLength={1000}
-            placeholder="retrieval, evaluation, robustness"
+            placeholder={uiText('retrieval, evaluation, robustness')}
             disabled={busy}
             onChange={(event) => setTopics(event.target.value)}
           />
         </label>
         <label>
-          Review status
+          {uiText('Review status')}
           <select
             value={reviewStatus}
             disabled={busy}
@@ -1309,28 +1341,28 @@ export function LiteratureDetail({
           </select>
         </label>
         <label className="full-width">
-          Manual summary
+          {uiText('Manual summary')}
           <textarea
             value={summary}
             maxLength={8000}
-            placeholder="Summarize the evidence you verified in this paper."
+            placeholder={uiText('Summarize the evidence you verified in this paper.')}
             disabled={busy}
             onChange={(event) => setSummary(event.target.value)}
           />
         </label>
         <label className="full-width">
-          Relevance to this project
+          {uiText('Relevance to this project')}
           <textarea
             value={relevance}
             maxLength={4000}
-            placeholder="Explain why this paper matters for the project objective."
+            placeholder={uiText('Explain why this paper matters for the project objective.')}
             disabled={busy}
             onChange={(event) => setRelevance(event.target.value)}
           />
         </label>
         <div className="literature-detail-actions">
           <button type="submit" className="primary-button" disabled={busy}>
-            {busy ? 'Saving…' : 'Save review notes'}
+            {busy ? uiText('Saving…') : uiText('Save review notes')}
           </button>
           <button
             type="button"
@@ -1338,10 +1370,10 @@ export function LiteratureDetail({
             disabled={busy}
             onClick={() => void onDelete(record)}
           >
-            Delete paper
+            {uiText('Delete paper')}
           </button>
           <span className="literature-ai-availability">
-            Manual review notes are kept separate from AI-generated organization.
+            {uiText('Manual review notes are kept separate from AI-generated organization.')}
           </span>
         </div>
       </form>
@@ -1363,10 +1395,12 @@ export function LiteraturePaperNoteAction({
       type="button"
       className="secondary-button"
       disabled={busy}
-      title="Create a metadata-only Markdown review template in this project's Obsidian Papers folder"
+      title={uiText(
+        "Create a metadata-only Markdown review template in this project's Obsidian Papers folder",
+      )}
       onClick={() => void onCreatePaperNote(record)}
     >
-      Create Obsidian paper note
+      {uiText('Create Obsidian paper note')}
     </button>
   );
 }
@@ -1388,6 +1422,7 @@ export function LiteratureView({
   searchTarget?: SearchTargetRequest | null;
   onSearchTargetHandled?: (requestId: number) => void;
 }) {
+  useUiText();
   const [records, setRecords] = useState<readonly LiteratureRecord[]>([]);
   const [totalRecords, setTotalRecords] = useState(0);
   const [recentSearches, setRecentSearches] = useState<readonly LiteratureSearchRun[]>([]);
@@ -1442,7 +1477,9 @@ export function LiteratureView({
     if (!searchTarget || loading) return;
     if (!records.some(({ id }) => id === searchTarget.targetId)) {
       setError(
-        'The searched literature record is no longer available. Refresh Search and try again.',
+        uiText(
+          'The searched literature record is no longer available. Refresh Search and try again.',
+        ),
       );
       onSearchTargetHandled(searchTarget.requestId);
       return;
@@ -1456,7 +1493,7 @@ export function LiteratureView({
       sortDirection,
     });
     if (targetPage === null) {
-      setError('The searched paper is outside the current bounded evidence table view.');
+      setError(uiText('The searched paper is outside the current bounded evidence table view.'));
       onSearchTargetHandled(searchTarget.requestId);
       return;
     }
@@ -1536,7 +1573,9 @@ export function LiteratureView({
       setNotice(message);
     } catch (reason) {
       if (literatureErrorCode(reason) === 'literature_ai_interrupted') {
-        setNotice('Stopped AI organization. No uncommitted literature annotations were applied.');
+        setNotice(
+          uiText('Stopped AI organization. No uncommitted literature annotations were applied.'),
+        );
         setError('');
       } else {
         setError(literatureErrorMessage(reason));
@@ -1548,14 +1587,14 @@ export function LiteratureView({
 
   const cancelAiOrganization = async () => {
     if (busy !== 'organize' || !adapter.cancelOrganize) return;
-    setNotice('Stopping AI organization…');
+    setNotice(uiText('Stopping AI organization…'));
     setError('');
     try {
       const receipt = await adapter.cancelOrganize({ projectId: project.id });
       setNotice(
         receipt.cancelRequested
-          ? 'Stopped AI organization. No uncommitted literature annotations were applied.'
-          : 'AI organization had already finished.',
+          ? uiText('Stopped AI organization. No uncommitted literature annotations were applied.')
+          : uiText('AI organization had already finished.'),
       );
     } catch (reason) {
       setError(literatureErrorMessage(reason));
@@ -1639,7 +1678,9 @@ export function LiteratureView({
               ' Automatic abstract analysis was stopped; the completed search remains saved.';
           } else {
             setError(
-              `Search completed, but automatic abstract analysis failed. ${literatureErrorMessage(reason)}`,
+              uiText('Search completed, but automatic abstract analysis failed. {value1}', {
+                value1: literatureErrorMessage(reason),
+              }),
             );
           }
         }
@@ -1660,7 +1701,7 @@ export function LiteratureView({
     <div className="literature-workspace">
       <section className="literature-search-card" aria-labelledby="literature-search-title">
         <header className="literature-library-heading">
-          <strong id="literature-search-title">Search literature</strong>
+          <strong id="literature-search-title">{uiText('Search literature')}</strong>
         </header>
         <form
           className="literature-search-form"
@@ -1670,12 +1711,12 @@ export function LiteratureView({
           }}
         >
           <label className="literature-search-query">
-            Research question or keywords
+            {uiText('Research question or keywords')}
             <input
               value={query}
               minLength={2}
               maxLength={500}
-              placeholder="e.g. retrieval augmented generation evaluation"
+              placeholder={uiText('e.g. retrieval augmented generation evaluation')}
               disabled={Boolean(busy)}
               onChange={(event) => setQuery(event.target.value)}
             />
@@ -1685,131 +1726,152 @@ export function LiteratureView({
             className="primary-button"
             disabled={Boolean(busy) || query.trim().length < 2}
           >
-            {busy === 'search' ? 'Searching…' : records.length > 0 ? 'Search again' : 'Deep search'}
+            {busy === 'search'
+              ? uiText('Searching…')
+              : records.length > 0
+                ? uiText('Search again')
+                : uiText('Deep search')}
           </button>
           <fieldset className="literature-search-options">
             <legend>
-              Search options{activeSearchOptionCount > 0 && ` · ${activeSearchOptionCount} active`}
+              {uiText('Search options')}
+              {activeSearchOptionCount > 0 &&
+                uiText(' · {activeSearchOptionCount} active', {
+                  activeSearchOptionCount: activeSearchOptionCount,
+                })}
             </legend>
             <div>
               <label className="literature-search-author-field">
-                Author name
+                {uiText('Author name')}
                 <input
                   value={authorQuery}
                   maxLength={500}
-                  placeholder="e.g. Judea Pearl"
+                  placeholder={uiText('e.g. Judea Pearl')}
                   disabled={Boolean(busy)}
                   onChange={(event) => setAuthorQuery(event.target.value)}
                 />
               </label>
               <label className="literature-search-venue-field">
-                Journal / venue
+                {uiText('Journal / venue')}
                 <input
                   value={venueQuery}
                   maxLength={500}
-                  placeholder="e.g. JMLR, NeurIPS"
+                  placeholder={uiText('e.g. JMLR, NeurIPS')}
                   disabled={Boolean(busy)}
                   onChange={(event) => setVenueQuery(event.target.value)}
                 />
               </label>
               <label className="literature-search-tag-field">
-                Subject / topic
+                {uiText('Subject / topic')}
                 <input
                   value={topicTagText}
                   maxLength={1500}
-                  placeholder="e.g. tabular foundation models, evaluation"
+                  placeholder={uiText('e.g. tabular foundation models, evaluation')}
                   disabled={Boolean(busy)}
                   onChange={(event) => setTopicTagText(event.target.value)}
                 />
               </label>
               <label className="literature-search-tag-field">
-                Keywords
+                {uiText('Keywords')}
                 <input
                   value={keywordTagText}
                   maxLength={3000}
-                  placeholder="e.g. TabPFN, few-shot, benchmark"
+                  placeholder={uiText('e.g. TabPFN, few-shot, benchmark')}
                   disabled={Boolean(busy)}
                   onChange={(event) => setKeywordTagText(event.target.value)}
                 />
               </label>
               <label className="literature-search-year">
-                From year
+                {uiText('From year')}
                 <input
                   type="number"
                   inputMode="numeric"
                   min="1000"
                   max="3000"
                   value={fromYear}
-                  placeholder="Any"
+                  placeholder={uiText('Any')}
                   disabled={Boolean(busy)}
                   onChange={(event) => setFromYear(event.target.value)}
                 />
               </label>
               <label className="literature-search-year">
-                To year
+                {uiText('To year')}
                 <input
                   type="number"
                   inputMode="numeric"
                   min="1000"
                   max="3000"
                   value={toYear}
-                  placeholder="Any"
+                  placeholder={uiText('Any')}
                   disabled={Boolean(busy)}
                   onChange={(event) => setToYear(event.target.value)}
                 />
               </label>
             </div>
             <p className="literature-search-tag-help">
-              Subject and keyword values refine provider discovery and are saved automatically as
-              searchable tags on every matched paper. When an abstract is available, AI also adds
-              paper-specific detailed keywords after the search.
+              {uiText(
+                'Subject and keyword values refine provider discovery and are saved automatically as searchable tags on every matched paper. When an abstract is available, AI also adds paper-specific detailed keywords after the search.',
+              )}
             </p>
           </fieldset>
         </form>
         <div className="literature-search-secondary">
           <details className="literature-search-guidance">
             <summary>
-              Search guidance · ranking policy v{BALANCED_LITERATURE_POLICY_VERSION}
+              {uiText('Search guidance · ranking policy v')}
+              {BALANCED_LITERATURE_POLICY_VERSION}
             </summary>
             <div>
               <p className="literature-search-tag-help">
-                Subject and Keyword options refine the provider query and accumulate on matching
-                papers across searches. Separate values with commas; leaving both fields blank uses
-                the normalized search query as a Topic tag. Author and venue are also applied as
-                structured filters where the provider supports them and verified against returned
-                metadata.
+                {uiText(
+                  'Subject and Keyword options refine the provider query and accumulate on matching papers across searches. Separate values with commas; leaving both fields blank uses the normalized search query as a Topic tag. Author and venue are also applied as structured filters where the provider supports them and verified against returned metadata.',
+                )}
               </p>
               <p className="literature-search-help">
-                <strong>Fixed policy v{BALANCED_LITERATURE_POLICY_VERSION}:</strong> Core is a
-                maximum, never a quota. Search combines Semantic Scholar, Hugging Face Papers, and a
-                resilient Crossref fallback; Hugging Face index presence never promotes a paper by
-                itself. High-impact relevant papers must appear in the relevance lane with a
-                within-search normalized rank score of at least{' '}
-                {Math.round(LITERATURE_CORE_MIN_RELEVANCE_SCORE * 100)} and at least{' '}
-                {LITERATURE_CORE_MIN_CITATIONS} citations or{' '}
-                {LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS} influential citations. A limited
-                canonical route uses the same impact floor, a citation lane, and age of at least{' '}
-                {LITERATURE_CANONICAL_MIN_AGE_YEARS} years. Rising needs relevance of at least{' '}
-                {Math.round(LITERATURE_RISING_MIN_RELEVANCE_SCORE * 100)}, publication within the
-                latest {LITERATURE_RISING_MAX_AGE_YEARS + 1} calendar years, and at least{' '}
-                {LITERATURE_RISING_MIN_CITATIONS_PER_YEAR} citations/year or{' '}
-                {LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS} influential citation. Others remain
-                Broad for screening. Venue metadata and author h-index never promote a paper by
-                themselves. Existing v1 labels remain historical until that search is run again.
-                Each search is additive; scores are only comparable within the same search.
+                <strong>
+                  {uiText('Fixed policy v')}
+                  {BALANCED_LITERATURE_POLICY_VERSION}:
+                </strong>{' '}
+                {uiText(
+                  'Core is a maximum, never a quota. Search combines Semantic Scholar, Hugging Face Papers, and a resilient Crossref fallback; Hugging Face index presence never promotes a paper by itself. High-impact relevant papers must appear in the relevance lane with a within-search normalized rank score of at least',
+                )}{' '}
+                {Math.round(LITERATURE_CORE_MIN_RELEVANCE_SCORE * 100)} {uiText('and at least')}{' '}
+                {LITERATURE_CORE_MIN_CITATIONS} {uiText('citations or')}{' '}
+                {LITERATURE_CORE_MIN_INFLUENTIAL_CITATIONS}{' '}
+                {uiText(
+                  'influential citations. A limited canonical route uses the same impact floor, a citation lane, and age of at least',
+                )}{' '}
+                {LITERATURE_CANONICAL_MIN_AGE_YEARS}{' '}
+                {uiText('years. Rising needs relevance of at least')}{' '}
+                {Math.round(LITERATURE_RISING_MIN_RELEVANCE_SCORE * 100)}
+                {uiText(', publication within the latest')} {LITERATURE_RISING_MAX_AGE_YEARS + 1}{' '}
+                {uiText('calendar years, and at least')} {LITERATURE_RISING_MIN_CITATIONS_PER_YEAR}{' '}
+                {uiText('citations/year or')} {LITERATURE_RISING_MIN_INFLUENTIAL_CITATIONS}{' '}
+                {uiText(
+                  'influential citation. Others remain Broad for screening. Venue metadata and author h-index never promote a paper by themselves. Existing v1 labels remain historical until that search is run again. Each search is additive; scores are only comparable within the same search.',
+                )}
               </p>
             </div>
           </details>
           {recentSearches.length > 0 && (
             <details className="literature-recent-searches">
-              <summary>Recent searches</summary>
-              <div aria-label="Recent literature searches">
+              <summary>{uiText('Recent searches')}</summary>
+              <div aria-label={uiText('Recent literature searches')}>
                 {recentSearches.slice(0, 6).map((search) => (
                   <button
                     type="button"
                     key={search.id}
                     disabled={Boolean(busy)}
-                    title={`Reuse “${search.query}”${search.fromYear ? ` from ${search.fromYear}` : ''}${search.toYear ? ` through ${search.toYear}` : ''}${search.conflicts.length > 0 ? `; skipped ${literatureConflictSummary(search.conflicts, search.conflictCount)}` : ''}${literatureCoverageSummary(search.coverage)}`}
+                    title={uiText('Reuse “{query}”{value2}{value3}{value4}{value5}', {
+                      query: search.query,
+                      value2: search.fromYear ? ` from ${search.fromYear}` : '',
+                      value3: search.toYear ? ` through ${search.toYear}` : '',
+                      value4:
+                        search.conflicts.length > 0
+                          ? `; skipped ${literatureConflictSummary(search.conflicts, search.conflictCount)}`
+                          : '',
+                      value5: literatureCoverageSummary(search.coverage),
+                    })}
                     onClick={() => {
                       const tagDraft = literatureSearchTagDraft(search);
                       setQuery(search.query);
@@ -1822,7 +1884,11 @@ export function LiteratureView({
                     }}
                   >
                     {search.query}
-                    {search.conflictCount > 0 ? ` · ${search.conflictCount} skipped` : ''}
+                    {search.conflictCount > 0
+                      ? uiText(' · {conflictCount} skipped', {
+                          conflictCount: search.conflictCount,
+                        })
+                      : ''}
                   </button>
                 ))}
               </div>
@@ -1831,12 +1897,13 @@ export function LiteratureView({
           {latestSearchCoverage && latestSearchCoverage.degradationReasons.length > 0 && (
             <details className="literature-coverage-warning" role="status">
               <summary>
-                <strong>Reduced search coverage:</strong>{' '}
+                <strong>{uiText('Reduced search coverage:')}</strong>{' '}
                 {latestSearchCoverage.degradationReasons.map(formatLabel).join(', ')}
               </summary>
               <p>
-                Available: {latestSearchCoverage.availableSignals.map(formatLabel).join(', ')}.
-                Saved papers and manual review remain available.
+                {uiText('Available:')}{' '}
+                {latestSearchCoverage.availableSignals.map(formatLabel).join(', ')}
+                {uiText('. Saved papers and manual review remain available.')}
               </p>
             </details>
           )}
@@ -1847,7 +1914,7 @@ export function LiteratureView({
         <div className="notice error" role="alert">
           <span>{error}</span>
           <button type="button" className="ghost-button" onClick={() => setError('')}>
-            Dismiss
+            {uiText('Dismiss')}
           </button>
         </div>
       )}
@@ -1855,7 +1922,7 @@ export function LiteratureView({
         <div className="notice" role="status">
           <span>{notice}</span>
           <button type="button" className="ghost-button" onClick={() => setNotice('')}>
-            Dismiss
+            {uiText('Dismiss')}
           </button>
         </div>
       )}
@@ -1863,10 +1930,12 @@ export function LiteratureView({
       <section className="literature-library-card" aria-labelledby="literature-library-title">
         <header className="literature-library-toolbar">
           <div className="literature-library-heading">
-            <strong id="literature-library-title">Evidence table</strong>
+            <strong id="literature-library-title">{uiText('Evidence table')}</strong>
             <span>
-              {totalRecords.toLocaleString()} saved in this project
-              {totalRecords > records.length ? ` · ${records.length} loaded` : ''}
+              {totalRecords.toLocaleString()} {uiText('saved in this project')}
+              {totalRecords > records.length
+                ? uiText(' · {length} loaded', { length: records.length })
+                : ''}
             </span>
           </div>
           <div className="literature-library-actions">
@@ -1876,7 +1945,7 @@ export function LiteratureView({
               disabled={Boolean(busy)}
               onClick={() => void handleImport()}
             >
-              Import
+              {uiText('Import')}
             </button>
             {(['json', 'csv', 'bibtex'] as const).map((format) => (
               <button
@@ -1886,7 +1955,8 @@ export function LiteratureView({
                 disabled={Boolean(busy) || records.length === 0}
                 onClick={() => void handleExport(format)}
               >
-                Export {format === 'bibtex' ? 'BibTeX' : format.toLocaleUpperCase()}
+                {uiText('Export')}{' '}
+                {format === 'bibtex' ? uiText('BibTeX') : format.toLocaleUpperCase()}
               </button>
             ))}
             <button
@@ -1897,12 +1967,17 @@ export function LiteratureView({
               }
               title={
                 adapter.organize && aiAvailable && aiCandidates.length > 0
-                  ? `Analyze the next ${aiCandidates.length} papers without an AI draft; available abstracts are included`
+                  ? uiText(
+                      'Analyze the next {length} papers without an AI draft; available abstracts are included',
+                      { length: aiCandidates.length },
+                    )
                   : adapter.organize && aiAvailable
-                    ? 'Every loaded paper already has an AI organization draft'
+                    ? uiText('Every loaded paper already has an AI organization draft')
                     : adapter.organize
-                      ? 'Connect and sign in to Codex before organizing literature'
-                      : 'AI organization is not available until a typed local provider is connected'
+                      ? uiText('Connect and sign in to Codex before organizing literature')
+                      : uiText(
+                          'AI organization is not available until a typed local provider is connected',
+                        )
               }
               onClick={() => {
                 const organize = adapter.organize;
@@ -1921,10 +1996,10 @@ export function LiteratureView({
               }}
             >
               {busy === 'organize'
-                ? 'Organizing…'
+                ? uiText('Organizing…')
                 : aiCandidates.length > 0
-                  ? `Organize next ${aiCandidates.length}`
-                  : 'AI drafts complete'}
+                  ? uiText('Organize next {length}', { length: aiCandidates.length })
+                  : uiText('AI drafts complete')}
             </button>
             {busy === 'organize' && adapter.cancelOrganize && (
               <button
@@ -1932,27 +2007,36 @@ export function LiteratureView({
                 className="danger-button"
                 onClick={() => void cancelAiOrganization()}
               >
-                Stop AI
+                {uiText('Stop AI')}
               </button>
             )}
           </div>
         </header>
         {(!adapter.organize || !aiAvailable) && (
           <p className="literature-ai-availability">
-            <strong>AI organization:</strong>{' '}
-            {adapter.organize ? 'Connect Codex to enable drafts.' : 'Unavailable in this build.'}
+            <strong>{uiText('AI organization:')}</strong>{' '}
+            {adapter.organize
+              ? uiText('Connect Codex to enable drafts.')
+              : uiText('Unavailable in this build.')}
           </p>
         )}
         {adapter.organize && aiAvailable && (
           <p
             className="literature-ai-availability"
-            title="AI drafts use provider metadata and available abstracts, and remain separate from human review notes."
+            title={uiText(
+              'AI drafts use provider metadata and available abstracts, and remain separate from human review notes.',
+            )}
           >
-            <strong>AI organization:</strong> {requestedModelId ?? 'Auto · provider recommended'} ·{' '}
-            {reasoningOptionId ?? 'model default'}
+            <strong>{uiText('AI organization:')}</strong>{' '}
+            {requestedModelId ?? uiText('Auto · provider recommended')} ·{' '}
+            {reasoningOptionId ?? uiText('model default')}
           </p>
         )}
-        <div className="literature-layer-grid" role="group" aria-label="Discovery layer view">
+        <div
+          className="literature-layer-grid"
+          role="group"
+          aria-label={uiText('Discovery layer view')}
+        >
           {DISCOVERY_LAYER_FILTERS.map((layer) => (
             <button
               type="button"
@@ -1960,25 +2044,32 @@ export function LiteratureView({
               className={`literature-layer-card ${layer.id}${tierFilter === layer.id ? ' active' : ''}`}
               aria-pressed={tierFilter === layer.id}
               aria-controls="literature-evidence-table-panel"
-              aria-label={`${layer.title}, ${layerCounts[layer.id]} saved papers${layer.id === 'core' && corePolicyCounts.historicalOrOther > 0 ? `, ${corePolicyCounts.current} current v${BALANCED_LITERATURE_POLICY_VERSION} and ${corePolicyCounts.historicalOrOther} historical or other policy` : ''}`}
-              title={layer.description}
+              aria-label={uiText('{title}, {value2} saved papers{value3}', {
+                title: layer.title,
+                value2: layerCounts[layer.id],
+                value3:
+                  layer.id === 'core' && corePolicyCounts.historicalOrOther > 0
+                    ? `, ${corePolicyCounts.current} current v${BALANCED_LITERATURE_POLICY_VERSION} and ${corePolicyCounts.historicalOrOther} historical or other policy`
+                    : '',
+              })}
+              title={uiText(layer.description)}
               onClick={() => {
                 setTierFilter(layer.id);
                 setPage(1);
               }}
             >
-              <span>{layer.title}</span>
+              <span>{uiText(layer.title)}</span>
               <strong>{layerCounts[layer.id]}</strong>
             </button>
           ))}
         </div>
         <div className="literature-filter-bar">
           <label>
-            <span>Filter evidence table</span>
+            <span>{uiText('Filter evidence table')}</span>
             <input
               type="search"
               value={textFilter}
-              placeholder="Filter title, author, tags, venue, or DOI"
+              placeholder={uiText('Filter title, author, tags, venue, or DOI')}
               onChange={(event) => {
                 setTextFilter(event.target.value);
                 setPage(1);
@@ -1986,18 +2077,18 @@ export function LiteratureView({
             />
           </label>
           <label>
-            <span>Search tag</span>
+            <span>{uiText('Search tag')}</span>
             <select
-              aria-label="Search tag filter"
+              aria-label={uiText('Search tag filter')}
               value={searchTagFilter}
               onChange={(event) => {
                 setSearchTagFilter(event.target.value);
                 setPage(1);
               }}
             >
-              <option value="all">All search tags</option>
+              <option value="all">{uiText('All search tags')}</option>
               {topicTagOptions.length > 0 && (
-                <optgroup label="Topics">
+                <optgroup label={uiText('Topics')}>
                   {topicTagOptions.map((option) => (
                     <option key={option.key} value={option.key}>
                       {option.label} ({option.count})
@@ -2006,7 +2097,7 @@ export function LiteratureView({
                 </optgroup>
               )}
               {keywordTagOptions.length > 0 && (
-                <optgroup label="Keywords">
+                <optgroup label={uiText('Keywords')}>
                   {keywordTagOptions.map((option) => (
                     <option key={option.key} value={option.key}>
                       {option.label} ({option.count})
@@ -2014,43 +2105,49 @@ export function LiteratureView({
                   ))}
                 </optgroup>
               )}
-              {untaggedCount > 0 && <option value="untagged">Untagged ({untaggedCount})</option>}
+              {untaggedCount > 0 && (
+                <option value="untagged">
+                  {uiText('Untagged (')}
+                  {untaggedCount})
+                </option>
+              )}
             </select>
           </label>
           <label>
-            <span>Discovery layer</span>
+            <span>{uiText('Discovery layer')}</span>
             <select
-              aria-label="Discovery layer filter"
+              aria-label={uiText('Discovery layer filter')}
               value={tierFilter}
               onChange={(event) => {
                 setTierFilter(event.target.value);
                 setPage(1);
               }}
             >
-              <option value="all">All discovery layers</option>
+              <option value="all">{uiText('All discovery layers')}</option>
               {DISCOVERY_LAYERS.map((layer) => (
                 <option key={layer.id} value={layer.id}>
-                  {layer.title} ({layerCounts[layer.id]})
+                  {uiText(layer.title)} ({layerCounts[layer.id]})
                 </option>
               ))}
               {layerCounts.unclassified > 0 && (
                 <option value="unclassified">
-                  Imported / unclassified ({layerCounts.unclassified})
+                  {uiText('Imported / unclassified (')}
+                  {layerCounts.unclassified})
                 </option>
               )}
             </select>
           </label>
           <label>
-            <span>Review status</span>
+            <span>{uiText('Review status')}</span>
             <select
-              aria-label="Review status filter"
+              aria-label={uiText('Review status filter')}
               value={statusFilter}
               onChange={(event) => {
                 setStatusFilter(event.target.value);
                 setPage(1);
               }}
             >
-              <option value="all">All review statuses</option>
+              <option value="all">{uiText('All review statuses')}</option>
               {REVIEW_STATUSES.map((status) => (
                 <option key={status} value={status}>
                   {formatLabel(status)}
@@ -2063,7 +2160,7 @@ export function LiteratureView({
         <div id="literature-evidence-table-panel" className="literature-evidence-table-panel">
           {loading ? (
             <div className="literature-loading" role="status">
-              Opening this project’s literature library…
+              {uiText('Opening this project’s literature library…')}
             </div>
           ) : (
             <LiteratureTable
@@ -2114,7 +2211,10 @@ export function LiteratureView({
           onDelete={async (record) => {
             if (
               !window.confirm(
-                `Delete “${record.title}” from this project's Literature table? This does not delete the source paper or repository files.`,
+                uiText(
+                  "Delete “{title}” from this project's Literature table? This does not delete the source paper or repository files.",
+                  { title: record.title },
+                ),
               )
             ) {
               return;

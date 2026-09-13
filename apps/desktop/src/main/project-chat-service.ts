@@ -1,7 +1,39 @@
 import { randomUUID } from 'node:crypto';
+import {
+  ModelLabReferenceSchema,
+  type ModelLabReader,
+} from '../../../model-lab/model-reference-contracts';
+import {
+  prepareProjectContext,
+  projectContextScope,
+  type ProjectContextCheckpoint,
+} from './project-chat-context';
+import { historyPlan } from '../../../briefing-lab/briefing-context';
+import { projectTranscript } from './project-chat-context';
+import { codexTokenUsage, claudeTokenUsage } from '../../../briefing-lab/briefing-token-usage';
+import type { ContextUsage, NativeTokenUsage } from '../../../briefing-lab/src/context-usage';
+import {
+  contextCapacityMetadata,
+  contextConfigurationMatches,
+} from '../../../briefing-lab/src/context-usage';
+import type { ConversationMessage } from '../../../briefing-lab/src/briefing-conversation';
+import {
+  applicationLanguageContext,
+  applicationLanguageSnapshot,
+} from './application-language-service';
 import { EventEmitter } from 'node:events';
+import { authorizesResearchPlanSync } from '../shared/project-research-plan-contracts';
+import type { ProjectResearchPlanService } from './project-research-plan-service';
+import { ProjectToolProgressMetadataSchema } from '../shared/project-tool-activity';
+import { sanitizeProjectToolActivity } from './project-tool-activity';
 
-import type { ModelCatalog, ModelInvocation } from '@gosu/contracts';
+import {
+  planAgentContextBudget,
+  type AgentPermanentMemoryEntry,
+  type ModelCatalog,
+  type ModelDescriptor,
+  type ModelInvocation,
+} from '@gosu/contracts';
 
 import {
   ApplyProjectChatActionInputSchema,
@@ -82,6 +114,8 @@ import {
   type ProjectAgentVault,
 } from './project-agent-tools';
 import { assembleProjectChatPrompt } from './project-chat-prompt';
+import { resolveProjectChatNotesGrant } from './project-chat-notes-capability';
+import { CODEX_CONTEXT_WINDOW_TOKENS } from './model-catalog';
 import type { ModelUsageService } from './model-usage-service';
 import { WorkspaceServiceError, type WorkspaceService } from './workspace-service';
 
@@ -90,6 +124,48 @@ export { buildProjectChatPrompt } from './project-chat-prompt';
 type MaybePromise<T> = T | Promise<T>;
 
 export interface ProjectChatStorage {
+  readProjectChatContextHistory?(
+    projectId: string,
+    sessionId: string,
+  ): MaybePromise<ProjectChatMessage[]>;
+  getProjectChatContextState?(
+    projectId: string,
+    sessionId: string,
+  ): MaybePromise<{
+    checkpoint?: ProjectContextCheckpoint;
+    usage?: ContextUsage;
+    modelId?: string;
+  }>;
+  saveProjectChatCheckpoint?(
+    projectId: string,
+    sessionId: string,
+    checkpoint: ProjectContextCheckpoint,
+  ): MaybePromise<void>;
+  saveProjectChatContextUsage?(
+    projectId: string,
+    sessionId: string,
+    attemptId: string,
+    modelId: string,
+    usage: ContextUsage,
+  ): MaybePromise<void>;
+  searchProjectChatConversation?(
+    projectId: string,
+    sessionId: string,
+    query: string,
+    messageId?: string,
+    offset?: number,
+    beforeMessageId?: string,
+  ): MaybePromise<unknown>;
+  takeQueuedSteer?(input: {
+    projectId: string;
+    sessionId: string;
+    queueId: string;
+    message: string;
+    attemptId: string;
+    turnId: string;
+    createdAt: string;
+  }): MaybePromise<string | null>;
+  confirmQueuedSteer?(messageId: string, accepted: boolean): MaybePromise<void>;
   beginChatAttempt(
     attempt: ProjectChatAttempt,
     userMessage: ProjectChatMessage,
@@ -117,6 +193,17 @@ export interface ProjectChatStorage {
     assistantContent: string;
     updatedAt: string;
   }): MaybePromise<void>;
+  getProjectAgentPermanentMemory?(
+    projectId: string,
+    query: string,
+    options?: Readonly<{ maxTokens?: number }>,
+  ): MaybePromise<{
+    entries: readonly AgentPermanentMemoryEntry[];
+    candidateCount: number;
+    omittedCount: number;
+    serializedCharacters: number;
+    estimatedTokens: number;
+  }>;
   stageResearchNoteSave(receipt: ProjectChatResearchNoteSaveStage): MaybePromise<void>;
   markResearchNoteSaveUncertain(
     input: MarkProjectChatResearchNoteSaveUncertainInput,
@@ -133,7 +220,12 @@ export interface ProjectChatStorage {
   ): MaybePromise<ProjectChatAttempt | null>;
   snapshot(projectId: string, sessionId?: string): MaybePromise<ProjectChatSnapshot>;
   listProjectChatSessions(projectId: string): MaybePromise<ProjectChatSession[]>;
-  createProjectChatSession(projectId: string, title?: string): MaybePromise<ProjectChatSession>;
+  createProjectChatSession(
+    projectId: string,
+    title?: string,
+    criticalReviewMode?: ProjectChatSession['criticalReviewMode'],
+    modelLabReference?: ProjectChatSession['modelLabReference'],
+  ): MaybePromise<ProjectChatSession>;
   branchProjectChatSession(input: BranchProjectChatSessionInput): MaybePromise<ProjectChatSession>;
   renameProjectChatSession(
     projectId: string,
@@ -243,6 +335,7 @@ export interface ProjectChatCodex {
     personality?: CodexPersonality | null;
   }>;
   interruptTurn(threadId: string, turnId: string): Promise<void>;
+  steerTurn?(threadId: string, turnId: string, message: string): Promise<void>;
   revokeDynamicTools(threadId: string): void;
   releaseThread(threadId: string): Promise<void>;
 }
@@ -261,6 +354,7 @@ export class ProjectChatServiceError extends Error {
       | 'chat_attempt_not_retryable'
       | 'chat_profile_conflict'
       | 'chat_session_not_found'
+      | 'model_lab_reference_unavailable'
       | 'chat_branch_message_not_found'
       | 'chat_branch_point_invalid'
       | 'chat_branch_lineage_invalid'
@@ -309,6 +403,7 @@ type ProjectChatTitleJobResult = Readonly<{
 }>;
 
 type ActiveTurn = {
+  contextUsage?: ContextUsage;
   runtimeProviderId: string;
   projectId: string;
   sessionId: string;
@@ -626,6 +721,11 @@ export class ProjectChatService extends EventEmitter {
     { projectId: string; sessionId: string; providerId: string }
   >();
   private readonly startingSessions = new Set<string>();
+  private readonly contextControllers = new Map<
+    string,
+    { controller: AbortController; providerId: string }
+  >();
+  private readonly contextReports = new Map<string, { usage: ContextUsage; modelId: string }>();
   private readonly liveAgentToolsBySession = new Map<string, ProjectAgentToolSession>();
   private readonly sshScopeEpochBySession = new Map<string, number>();
   private readonly sshScopeEpochByProject = new Map<string, number>();
@@ -656,9 +756,18 @@ export class ProjectChatService extends EventEmitter {
       hermes?: ProjectAgentHermes;
       ssh?: ProjectAgentSsh;
       experiments?: ProjectAgentExperiments;
+      researchPlans?: ProjectResearchPlanService;
+      modelLab?: ModelLabReader;
       attachments?: ProjectChatAttachmentClaimer;
       usage?: Pick<ModelUsageService, 'bindThread' | 'releaseThread'>;
       titleJobTimeoutMs?: number;
+      compactHistory?: (
+        model: ModelDescriptor,
+        messages: readonly ConversationMessage[],
+        summary: string,
+        signal: AbortSignal,
+        onUsage: (usage: NativeTokenUsage | undefined) => void,
+      ) => Promise<string>;
       queueSchedulerRetryDelaysMs?: readonly number[];
       prepareProjectDirectory(projectId: string): Promise<string>;
     },
@@ -667,6 +776,10 @@ export class ProjectChatService extends EventEmitter {
     dependencies.codex.on('notification', (notification: CodexNotification) =>
       this.routeNotification(notification),
     );
+    dependencies.codex.on('usage', (event: unknown) => {
+      if (isRecord(event) && event.providerId === 'claude-code')
+        this.routeNotification({ method: 'gosu/claudeUsage', params: event });
+    });
     dependencies.codex.on(
       'invocation',
       (event: { threadId?: string; turnId?: string; invocation?: ModelInvocation }) => {
@@ -685,6 +798,8 @@ export class ProjectChatService extends EventEmitter {
     dependencies.codex.on('disconnected', (event?: { providerId?: unknown }) => {
       const providerId = event && typeof event.providerId === 'string' ? event.providerId : 'codex';
       this.providerConnectionEpochs.set(providerId, this.providerConnectionEpoch(providerId) + 1);
+      for (const preparing of this.contextControllers.values())
+        if (preparing.providerId === providerId) preparing.controller.abort();
       for (const [threadId, session] of this.threadSessions) {
         if (session.providerId !== providerId) continue;
         this.threadSessions.delete(threadId);
@@ -799,6 +914,17 @@ export class ProjectChatService extends EventEmitter {
     const result = ProjectChatSnapshotSchema.parse({
       ...stored,
       profile,
+      ...(selectedSessionId &&
+      this.contextReports.has(sessionIdentity(command.projectId, selectedSessionId))
+        ? {
+            contextUsage: this.contextReports.get(
+              sessionIdentity(command.projectId, selectedSessionId),
+            )!.usage,
+            contextUsageModelId: this.contextReports.get(
+              sessionIdentity(command.projectId, selectedSessionId),
+            )!.modelId,
+          }
+        : {}),
       ...(active ? { activeTurnId: active.turnId } : {}),
     });
     // Merely opening a session must not create a busy state. A bounded scheduler independently
@@ -817,10 +943,46 @@ export class ProjectChatService extends EventEmitter {
     const command = CreateProjectChatSessionInputSchema.parse(input);
     return this.runProjectChatMutation(command.projectId, async () => {
       await this.requireActiveProject(command.projectId);
+      let reference: ProjectChatSession['modelLabReference'];
+      if (command.modelLabSelection) {
+        if (command.criticalReviewMode || !this.dependencies.modelLab)
+          throw new ProjectChatServiceError('model_lab_reference_unavailable');
+        try {
+          reference = ModelLabReferenceSchema.parse(
+            (
+              await this.dependencies.modelLab(command.projectId, {
+                section: 'model',
+                ...command.modelLabSelection,
+              })
+            ).reference,
+          );
+          if (
+            reference.modelId !== command.modelLabSelection.modelId ||
+            reference.revision !== command.modelLabSelection.revision
+          )
+            throw new Error('model_lab_reference_mismatch');
+          await this.requireActiveProject(command.projectId);
+        } catch {
+          throw new ProjectChatServiceError('model_lab_reference_unavailable');
+        }
+        const existing = (
+          await this.dependencies.storage.listProjectChatSessions(command.projectId)
+        ).find(
+          (s) =>
+            !s.criticalReviewMode &&
+            s.modelLabReference?.modelId === reference!.modelId &&
+            s.modelLabReference?.revision === reference!.revision &&
+            s.modelLabReference?.contentSha256 === reference!.contentSha256,
+        );
+        if (existing) return existing;
+      }
       try {
         return await this.dependencies.storage.createProjectChatSession(
           command.projectId,
-          command.title,
+          command.title ??
+            (reference ? `${reference.name} · r${reference.revision}`.slice(0, 120) : undefined),
+          command.criticalReviewMode,
+          reference,
         );
       } catch (error) {
         throw mapSessionStorageError(error);
@@ -1016,8 +1178,9 @@ export class ProjectChatService extends EventEmitter {
       }
 
       const legacyReviewerCompatibility =
-        !hasExplicitNativeModeSelection &&
-        (profile.harnessMode === 'reviewer' || command.harnessMode === 'reviewer');
+        Boolean(session.criticalReviewMode) ||
+        (!hasExplicitNativeModeSelection &&
+          (profile.harnessMode === 'reviewer' || command.harnessMode === 'reviewer'));
       const requestedHarnessMode = legacyReviewerCompatibility
         ? 'reviewer'
         : (command.harnessMode ?? profile.harnessMode);
@@ -1026,9 +1189,11 @@ export class ProjectChatService extends EventEmitter {
         : command.harnessMode !== undefined
           ? legacyHarnessToCollaborationModeId(command.harnessMode)
           : profile.collaborationModeId;
-      const harnessMode = hasExplicitNativeModeSelection
-        ? legacyHarnessForNativeMode(collaborationModeId)
-        : requestedHarnessMode;
+      const harnessMode = session.criticalReviewMode
+        ? 'reviewer'
+        : hasExplicitNativeModeSelection
+          ? legacyHarnessForNativeMode(collaborationModeId)
+          : requestedHarnessMode;
       const resolvedCollaborationModeId = legacyReviewerCompatibility ? null : collaborationModeId;
       const responseDepth = command.responseDepth ?? profile.responseDepth;
       const personality = command.personality ?? profile.personality;
@@ -1046,6 +1211,15 @@ export class ProjectChatService extends EventEmitter {
       } catch {
         throw new ProjectChatServiceError('codex_unavailable');
       }
+      let modelCatalog: ModelCatalog | null = null;
+      {
+        try {
+          modelCatalog = await this.dependencies.codex.listModelCatalog();
+        } catch {
+          // Context-window metadata is an optimization. The safe fallback budget must not make an
+          // otherwise available provider fail a user turn.
+        }
+      }
       const collaborationMode = resolvedCollaborationModeId
         ? (collaborationModeCatalog.modes.find(
             (candidate) => candidate.id === resolvedCollaborationModeId,
@@ -1057,6 +1231,32 @@ export class ProjectChatService extends EventEmitter {
       }
       const effectiveReasoningOptionId =
         command.reasoningOptionId ?? collaborationMode?.recommendedReasoningOptionId ?? null;
+      const contextModel = command.requestedModelId
+        ? modelCatalog?.models.find((candidate) => candidate.modelId === command.requestedModelId)
+        : modelCatalog?.models.find((candidate) => candidate.isDefault);
+      const contextState = await this.dependencies.storage.getProjectChatContextState?.(
+        command.projectId,
+        session.id,
+      );
+      const observedWindow =
+        contextState?.modelId === contextModel?.modelId &&
+        contextConfigurationMatches(contextModel, contextState?.usage)
+          ? contextState?.usage?.native?.contextWindowTokens
+          : null;
+      const contextWindowTokens = Math.min(
+        observedWindow ?? contextModel?.contextWindowTokens ?? CODEX_CONTEXT_WINDOW_TOKENS ?? 32000,
+        2_000_000,
+      );
+      const contextWindowSource = observedWindow
+        ? ('provider' as const)
+        : contextModel?.metadata?.contextWindowSource === 'configured'
+          ? ('configured' as const)
+          : contextModel?.metadata?.contextWindowSource === 'fallback' || !contextModel
+            ? ('fallback' as const)
+            : ('provider' as const);
+      const contextBudget = planAgentContextBudget(
+        contextWindowTokens === undefined ? {} : { contextWindowTokens },
+      );
       const executionKind = nativeExecutionKind(
         resolvedCollaborationModeId,
         legacyReviewerCompatibility,
@@ -1089,14 +1289,42 @@ export class ProjectChatService extends EventEmitter {
       let projectCwdPromise: Promise<string> | undefined;
       const resolveProjectCwd = () =>
         (projectCwdPromise ??= this.dependencies.prepareProjectDirectory(command.projectId));
+      // Notes are optional context, never a prerequisite for an otherwise valid chat turn.
+      // Keep the saved grant untouched; only this turn's capability is reduced on failure.
+      const effectiveNotesGrant = await resolveProjectChatNotesGrant(
+        this.dependencies.vault,
+        command.projectId,
+        profile.localNotesVault,
+      );
       const agentTools = new ProjectAgentToolSession({
+        ...(this.dependencies.modelLab ? { modelLab: this.dependencies.modelLab } : {}),
+        ...(session.modelLabReference ? { modelLabReference: session.modelLabReference } : {}),
+        ...(session.criticalReviewMode ? { criticalReview: session.criticalReviewMode } : {}),
         projectId: command.projectId,
         sessionId: session.id,
         attemptId,
         workspace: this.dependencies.workspace,
         vault: this.dependencies.vault ?? UNAVAILABLE_AGENT_VAULT,
-        localNotesVault: profile.localNotesVault ?? null,
+        localNotesVault: effectiveNotesGrant,
         researchNoteReceipts: this.dependencies.storage,
+        ...(this.dependencies.storage.searchProjectChatConversation
+          ? {
+              searchConversation: async (
+                query: string,
+                messageId?: string,
+                offset?: number,
+                beforeMessageId?: string,
+              ) =>
+                this.dependencies.storage.searchProjectChatConversation!(
+                  command.projectId,
+                  session.id,
+                  query,
+                  messageId,
+                  offset,
+                  beforeMessageId,
+                ),
+            }
+          : {}),
         ...(attachments ? { attachments } : {}),
         ...(executionKind !== 'legacy-reviewer' &&
         this.dependencies.literature &&
@@ -1109,16 +1337,85 @@ export class ProjectChatService extends EventEmitter {
           : {}),
         ...(this.dependencies.ssh ? { ssh: this.dependencies.ssh } : {}),
         ...(this.dependencies.experiments ? { experiments: this.dependencies.experiments } : {}),
+        ...(this.dependencies.researchPlans
+          ? {
+              researchPlans: {
+                canApply:
+                  executionKind !== 'legacy-reviewer' &&
+                  authorizesResearchPlanSync(command.message),
+                read: (ideaId?: string) =>
+                  this.dependencies.researchPlans!.read(command.projectId, ideaId),
+                apply: async (plan, snapshot, call, signal) => {
+                  const active = this.activeByTransport.get(
+                    transportIdentity(call.threadId, call.turnId),
+                  );
+                  if (
+                    !active ||
+                    active.projectId !== command.projectId ||
+                    active.sessionId !== session.id ||
+                    active.attempt.id !== attemptId
+                  )
+                    throw new Error('research_plan_turn_not_ready');
+                  const result = await this.dependencies.researchPlans!.apply(
+                    {
+                      projectId: command.projectId,
+                      sessionId: session.id,
+                      attemptId,
+                      userMessage: command.message,
+                      invocation: active.invocation,
+                      snapshot,
+                      plan,
+                    },
+                    signal,
+                  );
+                  this.emitEvent({
+                    type: 'research-plan.applied',
+                    projectId: command.projectId,
+                    sessionId: session.id,
+                    receipt: result.receipt,
+                    workspaceChanged: true,
+                  });
+                  return result;
+                },
+              },
+            }
+          : {}),
       });
       if (hermesDelegationRequested && !agentTools.hermesDelegationAvailable) {
         throw new ProjectChatServiceError('hermes_runtime_check_failed');
       }
       createdAgentTools = agentTools;
-      const assembled = assembleProjectChatPrompt({
-        snapshot,
+      const permanentMemory =
+        session.criticalReviewMode !== 'manuscript' &&
+        this.dependencies.storage.getProjectAgentPermanentMemory
+          ? await this.dependencies.storage.getProjectAgentPermanentMemory(
+              command.projectId,
+              command.message,
+              { maxTokens: contextBudget.permanentMemoryBudgetTokens },
+            )
+          : {
+              entries: [],
+              candidateCount: 0,
+              omittedCount: 0,
+              serializedCharacters: 0,
+              estimatedTokens: 0,
+            };
+      const contextHistory = this.dependencies.storage.readProjectChatContextHistory
+        ? await this.dependencies.storage.readProjectChatContextHistory(
+            command.projectId,
+            session.id,
+          )
+        : completedAttemptHistory(priorChat);
+      let promptInput: Parameters<typeof assembleProjectChatPrompt>[0] = {
+        ...(session.modelLabReference ? { modelLabReference: session.modelLabReference } : {}),
+        ...(session.criticalReviewMode ? { criticalReviewMode: session.criticalReviewMode } : {}),
+        snapshot:
+          session.criticalReviewMode === 'manuscript'
+            ? { ...snapshot, tasks: [], objectives: [] }
+            : snapshot,
         projectId: command.projectId,
         message: command.message,
-        priorMessages: completedAttemptHistory(priorChat),
+        priorMessages: contextHistory,
         harnessMode,
         responseDepth,
         contextScope,
@@ -1128,9 +1425,12 @@ export class ProjectChatService extends EventEmitter {
         policyRules: profile.policyRules,
         toolCatalogSha256: agentTools.catalogSha256,
         localNotesVaultId:
-          agentTools.localNotesAvailable && profile.localNotesVault
-            ? profile.localNotesVault.id
-            : null,
+          agentTools.localNotesAvailable && effectiveNotesGrant ? effectiveNotesGrant.id : null,
+        researchNotesCapability: agentTools.localNotesAvailable
+          ? agentTools.researchNotesMarkdownCreateAvailable
+            ? 'create'
+            : 'read-only'
+          : 'unavailable',
         nativeCollaborationModeId: resolvedCollaborationModeId,
         nativeExecutionKind: executionKind,
         nativeCollaborationCatalogSha256: collaborationModeCatalog.catalogVersion,
@@ -1141,7 +1441,150 @@ export class ProjectChatService extends EventEmitter {
           ? 'connected'
           : 'not_connected',
         workingMemory: priorChat.agentMemory ?? null,
-      });
+        permanentMemory,
+        ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+        contextWindowSource,
+      };
+      let contextUsage: ContextUsage | undefined;
+      if (
+        contextModel &&
+        contextWindowSource !== 'fallback' &&
+        this.dependencies.compactHistory &&
+        this.dependencies.storage.saveProjectChatCheckpoint
+      ) {
+        const model = {
+          ...contextModel,
+          contextWindowTokens,
+          metadata: { ...contextModel.metadata, contextWindowSource },
+        };
+        const fixed = assembleProjectChatPrompt({ ...promptInput, priorMessages: [] });
+        const fixedText = fixed.developerInstructions + fixed.prompt;
+        const scope = projectContextScope(
+          command.projectId,
+          session.id,
+          model.providerId,
+          profile.version,
+        );
+        const checkpoint =
+          contextState?.checkpoint?.scope === scope ? contextState.checkpoint : undefined;
+        contextUsage = historyPlan(
+          model,
+          projectTranscript(contextHistory),
+          fixedText,
+          checkpoint,
+        ).report;
+        this.publishContext(command.projectId, session.id, attemptId, model.modelId, contextUsage);
+        const contextController = new AbortController();
+        this.contextControllers.set(startingSessionKey, {
+          controller: contextController,
+          providerId: model.providerId,
+        });
+        const maintenance = {
+          calls: 0,
+          inputTokens: 0 as number | null,
+          outputTokens: 0 as number | null,
+        };
+        try {
+          const prepared = await prepareProjectContext({
+            projectId: command.projectId,
+            model,
+            messages: contextHistory,
+            fixedText,
+            scope,
+            ...(checkpoint ? { checkpoint } : {}),
+            compact: (messages, summary) =>
+              this.dependencies.compactHistory!(
+                model,
+                messages,
+                summary,
+                contextController.signal,
+                (usage) => {
+                  maintenance.calls++;
+                  maintenance.inputTokens =
+                    maintenance.inputTokens === null || usage?.inputTokens == null
+                      ? null
+                      : maintenance.inputTokens + usage.inputTokens;
+                  maintenance.outputTokens =
+                    maintenance.outputTokens === null || usage?.outputTokens == null
+                      ? null
+                      : maintenance.outputTokens + usage.outputTokens;
+                  this.publishContext(command.projectId, session.id, attemptId, model.modelId, {
+                    ...contextUsage!,
+                    maintenance,
+                  });
+                },
+              ),
+            save: async (next) => {
+              if (
+                contextController.signal.aborted ||
+                (await this.dependencies.storage.getProjectChatProfile(command.projectId))
+                  .version !== profile.version
+              )
+                throw new Error('project_chat_context_changed');
+              await this.requireActiveProject(command.projectId);
+              await this.dependencies.storage.saveProjectChatCheckpoint!(
+                command.projectId,
+                session.id,
+                next,
+              );
+            },
+          });
+          if (contextController.signal.aborted) throw new Error('project_chat_context_cancelled');
+          promptInput = { ...promptInput, priorMessages: prepared.messages };
+          contextUsage = { ...prepared.report, ...(maintenance.calls ? { maintenance } : {}) };
+        } catch (error) {
+          if (contextController.signal.aborted && queueContext) {
+            await this.dependencies.storage.finishProjectChatQueuedTurn(
+              command.projectId,
+              session.id,
+              queueContext.queueId,
+            );
+            queuedTurnFinished = true;
+            this.emitQueueUpdated(command.projectId, session.id);
+          }
+          throw error;
+        } finally {
+          this.contextControllers.delete(startingSessionKey);
+        }
+      }
+      const assembled = assembleProjectChatPrompt(promptInput);
+      if (
+        contextUsage &&
+        (assembled.provenance.historyTruncated ||
+          assembled.contextPlan.recentMessageCount !== promptInput.priorMessages?.length)
+      )
+        throw new Error('project_chat_prepared_context_exceeded_budget');
+      contextUsage ??= {
+        ...contextCapacityMetadata(contextModel),
+        windowTokens: contextWindowTokens,
+        windowSource: contextWindowSource,
+        estimatedInputTokens:
+          (assembled.contextPlan.estimatedPromptTokens ?? 0) +
+          (assembled.contextPlan.developerInstructionTokens ?? 0),
+        outputReserveTokens: assembled.contextPlan.outputReserveTokens ?? 0,
+        toolReserveTokens: assembled.contextPlan.runtimeReserveTokens ?? 0,
+        totalMessages: contextHistory.length,
+        includedMessages: assembled.contextPlan.recentMessageCount,
+        compressedMessages: 0,
+        omittedMessages: assembled.contextPlan.omittedMessageCount,
+      };
+      contextUsage.estimatedInputTokens =
+        (assembled.contextPlan.estimatedPromptTokens ?? 0) +
+        (assembled.contextPlan.developerInstructionTokens ?? 0);
+      if (contextUsage.compressedMessages)
+        Object.assign(assembled.contextPlan, {
+          candidateMessageCount: contextUsage.totalMessages,
+          recentMessageCount: contextUsage.includedMessages,
+          compressedMessageCount: contextUsage.compressedMessages,
+          omittedMessageCount: contextUsage.omittedMessages,
+        });
+      this.publishContext(
+        command.projectId,
+        session.id,
+        attemptId,
+        contextModel?.modelId ?? command.requestedModelId ?? 'default',
+        contextUsage,
+      );
 
       const createdAt = isoNow();
       const userMessage: ProjectChatMessage = {
@@ -1303,6 +1746,7 @@ export class ProjectChatService extends EventEmitter {
           throw new Error('codex_connection_changed_during_turn_registration');
         }
         const active: ActiveTurn = {
+          contextUsage,
           runtimeProviderId: providerId,
           projectId: command.projectId,
           sessionId: session.id,
@@ -1520,6 +1964,43 @@ export class ProjectChatService extends EventEmitter {
     return { accepted: true } as const;
   }
 
+  async steerQueuedTurn(input: UpdateProjectChatQueuedTurnInput) {
+    const command = UpdateProjectChatQueuedTurnInputSchema.parse(input);
+    await this.requireActiveProject(command.projectId);
+    const transport = this.activeTransportBySession.get(
+      sessionIdentity(command.projectId, command.sessionId),
+    );
+    const active = transport ? this.activeByTransport.get(transport) : undefined;
+    const { storage, codex } = this.dependencies;
+    if (
+      !active ||
+      active.terminal ||
+      active.runtimeProviderId !== 'codex' ||
+      !codex.steerTurn ||
+      !storage.takeQueuedSteer
+    )
+      throw new Error('현재 Codex 작업이 실행 중일 때만 보충할 수 있습니다.');
+    const messageId = await storage.takeQueuedSteer({
+      ...command,
+      attemptId: active.attempt.id,
+      turnId: active.turnId,
+      createdAt: isoNow(),
+    });
+    if (!messageId)
+      throw new Error('대기 질문이 변경됐거나 첨부 파일이 있습니다. 목록을 확인해주세요.');
+    this.emitQueueUpdated(command.projectId, command.sessionId);
+    let accepted = false;
+    try {
+      if (active.terminal) throw new Error('현재 작업이 이미 종료됐습니다.');
+      await codex.steerTurn(active.threadId, active.turnId, command.message);
+      accepted = true;
+      return { accepted: true } as const;
+    } finally {
+      await storage.confirmQueuedSteer?.(messageId, accepted);
+      this.emitQueueUpdated(command.projectId, command.sessionId);
+    }
+  }
+
   private async enqueueTurn(
     command: SendProjectChatMessageInput,
     resolvedSession?: ProjectChatSession,
@@ -1539,6 +2020,7 @@ export class ProjectChatService extends EventEmitter {
     const now = isoNow();
     const queued = ProjectChatQueuedTurnSchema.parse({
       ...command,
+      applicationLanguage: applicationLanguageSnapshot(),
       id: randomUUID(),
       sessionId: session.id,
       priority: 'normal',
@@ -1706,16 +2188,21 @@ export class ProjectChatService extends EventEmitter {
             status: _status,
             createdAt: _createdAt,
             updatedAt: _updatedAt,
+            applicationLanguage: queuedLanguage,
             ...turn
           } = queued;
           try {
-            await this.send(
-              {
-                ...turn,
-                projectId: queuedProjectId,
-                sessionId: queuedSessionId,
-              },
-              { queueId: queued.id },
+            await applicationLanguageContext.run(
+              queuedLanguage ?? applicationLanguageSnapshot(),
+              () =>
+                this.send(
+                  {
+                    ...turn,
+                    projectId: queuedProjectId,
+                    sessionId: queuedSessionId,
+                  },
+                  { queueId: queued.id },
+                ),
             );
             return 'started';
           } catch (error) {
@@ -1765,6 +2252,11 @@ export class ProjectChatService extends EventEmitter {
     }
     const sessionId = snapshot.session?.id;
     if (!sessionId) throw new ProjectChatServiceError('chat_session_not_found');
+    const preparing = this.contextControllers.get(sessionIdentity(command.projectId, sessionId));
+    if (preparing) {
+      preparing.controller.abort();
+      return { accepted: true } as const;
+    }
     const activeTransport = this.activeTransportBySession.get(
       sessionIdentity(command.projectId, sessionId),
     );
@@ -2235,7 +2727,19 @@ export class ProjectChatService extends EventEmitter {
   }
 
   private routeNotification(notification: CodexNotification) {
-    const identity = notificationIdentity(notification);
+    let identity = notificationIdentity(notification);
+    if (
+      !identity &&
+      isRecord(notification.params) &&
+      typeof notification.params.threadId === 'string' &&
+      ['thread/tokenUsage/updated', 'thread/compacted'].includes(notification.method ?? '')
+    ) {
+      const threadId = notification.params.threadId;
+      const active = [...this.activeByTransport.values()].find(
+        (turn) => !turn.terminal && turn.threadId === threadId,
+      );
+      if (active) identity = { threadId: active.threadId, turnId: active.turnId };
+    }
     if (!identity) return;
     if (this.routeTitleNotification(notification, identity)) return;
     const session = this.threadSessions.get(identity.threadId);
@@ -2257,8 +2761,47 @@ export class ProjectChatService extends EventEmitter {
     }
   }
 
+  private publishContext(
+    projectId: string,
+    sessionId: string,
+    attemptId: string,
+    modelId: string,
+    usage: ContextUsage,
+  ) {
+    this.contextReports.set(sessionIdentity(projectId, sessionId), { usage, modelId });
+    this.emitEvent({ type: 'context.updated', projectId, sessionId, attemptId, modelId, usage });
+  }
+
   private processNotification(active: ActiveTurn, notification: CodexNotification) {
     if (active.terminal || !isRecord(notification.params)) return;
+    const params = notification.params;
+    const usage =
+      notification.method === 'thread/tokenUsage/updated'
+        ? codexTokenUsage(params.tokenUsage)
+        : notification.method === 'gosu/claudeUsage'
+          ? claudeTokenUsage(params.usage, params.contextWindowTokens)
+          : undefined;
+    const compacted =
+      notification.method === 'thread/compacted' ||
+      (notification.method === 'item/completed' &&
+        isRecord(params.item) &&
+        params.item.type === 'contextCompaction');
+    if (active.contextUsage && (usage || compacted)) {
+      if (usage) active.contextUsage = { ...active.contextUsage, native: usage };
+      else if (active.contextUsage.native)
+        active.contextUsage = {
+          ...active.contextUsage,
+          native: { ...active.contextUsage.native, contextTokens: null, contextStale: true },
+        };
+      this.publishContext(
+        active.projectId,
+        active.sessionId,
+        active.attempt.id,
+        active.invocation.resolvedModelId,
+        active.contextUsage,
+      );
+      return;
+    }
     if (notification.method === 'gosu/attachment-model-modality-rejected') {
       active.terminalErrorCode = 'attachment_model_modality_unsupported';
       active.agentTools.rejectNativeImageDelivery();
@@ -2281,6 +2824,14 @@ export class ProjectChatService extends EventEmitter {
       const tool = notification.params.tool;
       const callId = notification.params.callId;
       const success = notification.params.success;
+      const metadata = ProjectToolProgressMetadataSchema.safeParse({
+        activity: notification.params.activity,
+        occurredAt: notification.params.occurredAt,
+        elapsedMs: notification.params.elapsedMs,
+      });
+      const activity = metadata.success
+        ? sanitizeProjectToolActivity(metadata.data.activity)
+        : undefined;
       if (
         (stage === 'tool_started' || stage === 'tool_completed') &&
         typeof tool === 'string' &&
@@ -2296,6 +2847,13 @@ export class ProjectChatService extends EventEmitter {
           tool: tool.slice(0, 128),
           callId: callId.slice(0, 256),
           ...(success === undefined ? {} : { success }),
+          ...(metadata.success && metadata.data.occurredAt
+            ? { occurredAt: metadata.data.occurredAt }
+            : {}),
+          ...(metadata.success && metadata.data.elapsedMs !== undefined
+            ? { elapsedMs: metadata.data.elapsedMs }
+            : {}),
+          ...(activity ? { activity } : {}),
         });
       }
       return;
@@ -2485,6 +3043,16 @@ export class ProjectChatService extends EventEmitter {
       completedAt,
     };
     await this.dependencies.storage.finishChatAttempt(terminalAttempt, assistantMessage);
+    if (active.contextUsage)
+      await Promise.resolve(
+        this.dependencies.storage.saveProjectChatContextUsage?.(
+          active.projectId,
+          active.sessionId,
+          active.attempt.id,
+          active.invocation.resolvedModelId,
+          active.contextUsage,
+        ),
+      ).catch(() => undefined);
     try {
       await this.dependencies.storage.finishProjectAgentRun?.({
         attemptId: active.attempt.id,

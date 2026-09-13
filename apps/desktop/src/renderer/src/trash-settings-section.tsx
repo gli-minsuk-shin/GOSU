@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useState } from 'react';
 
 import {
@@ -46,6 +48,7 @@ export function TrashSettingsSection({
   ) => Promise<EmptyLectureStudioTrashReceipt | null>;
   onRestoreTask: (input: SetTaskArchivedInput) => Promise<boolean>;
 }) {
+  useUiText();
   const [projectPhrase, setProjectPhrase] = useState('');
   const [projectReceipt, setProjectReceipt] = useState<EmptyProjectTrashReceipt | null>(null);
   const [lecturePhrase, setLecturePhrase] = useState('');
@@ -67,42 +70,51 @@ export function TrashSettingsSection({
     <div className="settings-layout project-settings-layout">
       <article className="settings-card">
         <div className="settings-card-heading">
-          <span>TRASH</span>
-          <h2>Recoverable items</h2>
+          <span>{uiText('TRASH')}</span>
+          <h2>{uiText('Recoverable items')}</h2>
           <p>
-            Restore projects, Lecture Studios, and Board tasks from one place. Permanent removal
-            remains separated by item type so each existing safety confirmation stays explicit.
+            {uiText(
+              'Restore projects, Lecture Studios, and Board tasks from one place. Permanent removal remains separated by item type so each existing safety confirmation stays explicit.',
+            )}
           </p>
         </div>
         <div className="settings-template-callout" role="status">
           <strong>
-            {countLabel(totalItems, 'item')} {allSnapshotsLoaded ? 'in Trash' : 'currently shown'}
+            {countLabel(totalItems, 'item')}{' '}
+            {allSnapshotsLoaded ? uiText('in Trash') : uiText('currently shown')}
           </strong>
           <span>
-            {workspaceSnapshot ? countLabel(projects.length, 'project') : 'Projects loading'} ·{' '}
+            {workspaceSnapshot
+              ? countLabel(projects.length, 'project')
+              : uiText('Projects loading')}{' '}
+            ·{' '}
             {lectureState === 'ready'
               ? countLabel(lectures.length, 'Lecture Studio')
               : lectureState === 'error'
-                ? 'Lecture Studios unavailable'
-                : 'Lecture Studios loading'}{' '}
-            · {workspaceSnapshot ? countLabel(tasks.length, 'Board task') : 'Board tasks loading'}
+                ? uiText('Lecture Studios unavailable')
+                : uiText('Lecture Studios loading')}{' '}
+            ·{' '}
+            {workspaceSnapshot
+              ? countLabel(tasks.length, 'Board task')
+              : uiText('Board tasks loading')}
           </span>
         </div>
       </article>
 
       <article className="settings-card">
         <div className="settings-card-heading">
-          <span>PROJECTS</span>
-          <h2>Projects in Trash</h2>
+          <span>{uiText('PROJECTS')}</span>
+          <h2>{uiText('Projects in Trash')}</h2>
           <p>
-            Restoring keeps the same project ID, Board, goals, and local history. Active and
-            archived projects are never included when this section is emptied.
+            {uiText(
+              'Restoring keeps the same project ID, Board, goals, and local history. Active and archived projects are never included when this section is emptied.',
+            )}
           </p>
         </div>
         {!workspaceSnapshot ? (
-          <div className="settings-empty-row">Loading projects…</div>
+          <div className="settings-empty-row">{uiText('Loading projects…')}</div>
         ) : projects.length === 0 ? (
-          <div className="settings-empty-row">No projects in Trash.</div>
+          <div className="settings-empty-row">{uiText('No projects in Trash.')}</div>
         ) : (
           <div className="project-settings-list">
             {projects.map((project) => {
@@ -117,8 +129,9 @@ export function TrashSettingsSection({
                   <div className="project-settings-summary">
                     <strong>{project.name}</strong>
                     <span>
-                      Trashed {new Date(project.trashedAt!).toLocaleString()} · {taskCount} tasks ·{' '}
-                      {objectiveCount} objective revisions preserved
+                      {uiText('Trashed')} {new Date(project.trashedAt!).toLocaleString()} ·{' '}
+                      {taskCount} {uiText('tasks ·')} {objectiveCount}{' '}
+                      {uiText('objective revisions preserved')}
                     </span>
                   </div>
                   <div className="project-settings-actions">
@@ -133,7 +146,7 @@ export function TrashSettingsSection({
                         })
                       }
                     >
-                      Restore
+                      {uiText('Restore')}
                     </button>
                   </div>
                 </section>
@@ -142,20 +155,26 @@ export function TrashSettingsSection({
           </div>
         )}
         {workspaceSnapshot && projects.length > 0 && (
-          <section className="project-empty-trash" aria-label="Permanently remove trashed projects">
+          <section
+            className="project-empty-trash"
+            aria-label={uiText('Permanently remove trashed projects')}
+          >
             <div className="settings-template-callout">
-              <strong>External research data is preserved</strong>
+              <strong>{uiText('External research data is preserved')}</strong>
               <span>
-                GitHub repositories, local worktrees, Research Notes files, and remote server data
-                are not deleted. Project links are detached and cannot be restored in GOSU.
+                {uiText(
+                  'GitHub repositories, local worktrees, Research Notes files, and remote server data are not deleted. Project links are detached and cannot be restored in GOSU.',
+                )}
               </span>
               <span>
-                If a Lecture Studio still references one of these projects, permanently remove that
-                Studio in the section below first, or restore the project instead.
+                {uiText(
+                  'If a Lecture Studio still references one of these projects, permanently remove that Studio in the section below first, or restore the project instead.',
+                )}
               </span>
             </div>
             <label>
-              Type {EMPTY_PROJECT_TRASH_CONFIRMATION} to permanently remove all projects shown here
+              {uiText('Type')} {EMPTY_PROJECT_TRASH_CONFIRMATION}{' '}
+              {uiText('to permanently remove all projects shown here')}
               <input
                 value={projectPhrase}
                 onChange={(event) => setProjectPhrase(event.target.value)}
@@ -171,7 +190,12 @@ export function TrashSettingsSection({
                 if (projectPhrase !== EMPTY_PROJECT_TRASH_CONFIRMATION) return;
                 if (
                   !window.confirm(
-                    `Final warning (2 of 2): permanently remove ${projects.length} project${projects.length === 1 ? '' : 's'} from GOSU? External repositories, Research Notes files, and remote server data will be preserved. This cannot be undone in GOSU.`,
+                    uiText(
+                      projects.length === 1
+                        ? 'Final warning (2 of 2): permanently remove {length} project from GOSU? External repositories, Research Notes files, and remote server data will be preserved. This cannot be undone in GOSU.'
+                        : 'Final warning (2 of 2): permanently remove {length} projects from GOSU? External repositories, Research Notes files, and remote server data will be preserved. This cannot be undone in GOSU.',
+                      { length: projects.length },
+                    ),
                   )
                 ) {
                   return;
@@ -187,18 +211,18 @@ export function TrashSettingsSection({
                 });
               }}
             >
-              Permanently remove trashed projects
+              {uiText('Permanently remove trashed projects')}
             </button>
           </section>
         )}
         {projectReceipt && (
           <section className="settings-template-callout project-trash-receipt" role="status">
             <strong>
-              Removed {projectReceipt.removedProjects.length} project
-              {projectReceipt.removedProjects.length === 1 ? '' : 's'} from GOSU
+              {uiText('Removed')} {projectReceipt.removedProjects.length} {uiText('project')}
+              {projectReceipt.removedProjects.length === 1 ? '' : 's'} {uiText('from GOSU')}
             </strong>
             <span>
-              External research data and immutable provenance were preserved. Completed{' '}
+              {uiText('External research data and immutable provenance were preserved. Completed')}{' '}
               {new Date(projectReceipt.completedAt).toLocaleString()}.
             </span>
           </section>
@@ -207,17 +231,20 @@ export function TrashSettingsSection({
 
       <article className="settings-card">
         <div className="settings-card-heading">
-          <span>LECTURE STUDIOS</span>
-          <h2>Lecture Studios in Trash</h2>
+          <span>{uiText('LECTURE STUDIOS')}</span>
+          <h2>{uiText('Lecture Studios in Trash')}</h2>
           <p>
-            Restore a Studio with the same ID, chat, source manifest, and revision history. Research
-            Notes and generated files remain on disk.
+            {uiText(
+              'Restore a Studio with the same ID, chat, source manifest, and revision history. Research Notes and generated files remain on disk.',
+            )}
           </p>
         </div>
         {lectureState === 'error' ? (
           <div className="settings-empty-row trash-load-error" role="alert">
             <span>
-              Lecture Studios could not be loaded. Projects and Board tasks remain usable.
+              {uiText(
+                'Lecture Studios could not be loaded. Projects and Board tasks remain usable.',
+              )}
             </span>
             <button
               type="button"
@@ -225,13 +252,13 @@ export function TrashSettingsSection({
               disabled={busy}
               onClick={onRetryLectureTrash}
             >
-              Retry
+              {uiText('Retry')}
             </button>
           </div>
         ) : lectureState !== 'ready' || !lectureSnapshot ? (
-          <div className="settings-empty-row">Loading Lecture Studios…</div>
+          <div className="settings-empty-row">{uiText('Loading Lecture Studios…')}</div>
         ) : lectures.length === 0 ? (
-          <div className="settings-empty-row">No Lecture Studios in Trash.</div>
+          <div className="settings-empty-row">{uiText('No Lecture Studios in Trash.')}</div>
         ) : (
           <div className="project-settings-list">
             {lectures.map((studio) => (
@@ -239,8 +266,9 @@ export function TrashSettingsSection({
                 <div className="project-settings-summary">
                   <strong>{studio.title}</strong>
                   <span>
-                    Trashed {new Date(studio.trashedAt!).toLocaleString()} · revision{' '}
-                    {studio.currentRevision} · {studio.kind === 'talk' ? 'talk slides' : 'lecture'}
+                    {uiText('Trashed')} {new Date(studio.trashedAt!).toLocaleString()}{' '}
+                    {uiText('· revision')} {studio.currentRevision} ·{' '}
+                    {studio.kind === 'talk' ? uiText('talk slides') : uiText('lecture')}
                   </span>
                 </div>
                 <div className="project-settings-actions">
@@ -255,7 +283,7 @@ export function TrashSettingsSection({
                       })
                     }
                   >
-                    Restore
+                    {uiText('Restore')}
                   </button>
                 </div>
               </section>
@@ -265,14 +293,15 @@ export function TrashSettingsSection({
         {lectureState === 'ready' && lectureSnapshot && lectures.length > 0 && (
           <section
             className="project-empty-trash"
-            aria-label="Permanently remove trashed Lecture Studios"
+            aria-label={uiText('Permanently remove trashed Lecture Studios')}
           >
             <p>
-              Permanent removal applies only to the Lecture Studios shown here; it does not empty
-              project or Board task items.
+              {uiText(
+                'Permanent removal applies only to the Lecture Studios shown here; it does not empty project or Board task items.',
+              )}
             </p>
             <label>
-              Type {EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION} to continue
+              {uiText('Type')} {EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION} {uiText('to continue')}
               <input
                 value={lecturePhrase}
                 onChange={(event) => setLecturePhrase(event.target.value)}
@@ -288,7 +317,12 @@ export function TrashSettingsSection({
                 if (lecturePhrase !== EMPTY_LECTURE_STUDIO_TRASH_CONFIRMATION) return;
                 if (
                   !window.confirm(
-                    `Final warning (2 of 2): permanently remove ${lectures.length} Lecture Studio${lectures.length === 1 ? '' : 's'} from GOSU? Research Notes and exported files remain on disk. This cannot be undone in GOSU.`,
+                    uiText(
+                      lectures.length === 1
+                        ? 'Final warning (2 of 2): permanently remove {length} Lecture Studio from GOSU? Research Notes and exported files remain on disk. This cannot be undone in GOSU.'
+                        : 'Final warning (2 of 2): permanently remove {length} Lecture Studios from GOSU? Research Notes and exported files remain on disk. This cannot be undone in GOSU.',
+                      { length: lectures.length },
+                    ),
                   )
                 ) {
                   return;
@@ -304,18 +338,18 @@ export function TrashSettingsSection({
                 });
               }}
             >
-              Permanently remove trashed Lecture Studios
+              {uiText('Permanently remove trashed Lecture Studios')}
             </button>
           </section>
         )}
         {lectureReceipt && (
           <section className="settings-template-callout project-trash-receipt" role="status">
             <strong>
-              Removed {lectureReceipt.removedStudios.length} Lecture Studio
-              {lectureReceipt.removedStudios.length === 1 ? '' : 's'} from GOSU
+              {uiText('Removed')} {lectureReceipt.removedStudios.length} {uiText('Lecture Studio')}
+              {lectureReceipt.removedStudios.length === 1 ? '' : 's'} {uiText('from GOSU')}
             </strong>
             <span>
-              Research Notes and exported files were preserved. Completed{' '}
+              {uiText('Research Notes and exported files were preserved. Completed')}{' '}
               {new Date(lectureReceipt.completedAt).toLocaleString()}.
             </span>
           </section>
@@ -324,18 +358,18 @@ export function TrashSettingsSection({
 
       <article className="settings-card">
         <div className="settings-card-heading">
-          <span>BOARD TASKS</span>
-          <h2>Deleted Board tasks</h2>
+          <span>{uiText('BOARD TASKS')}</span>
+          <h2>{uiText('Deleted Board tasks')}</h2>
           <p>
-            Board tasks can be restored here. GOSU does not currently permanently purge individual
-            tasks. A task is removed from the workspace only when its trashed parent project is
-            permanently removed above; its immutable project provenance remains preserved.
+            {uiText(
+              'Board tasks can be restored here. GOSU does not currently permanently purge individual tasks. A task is removed from the workspace only when its trashed parent project is permanently removed above; its immutable project provenance remains preserved.',
+            )}
           </p>
         </div>
         {!workspaceSnapshot ? (
-          <div className="settings-empty-row">Loading Board tasks…</div>
+          <div className="settings-empty-row">{uiText('Loading Board tasks…')}</div>
         ) : tasks.length === 0 ? (
-          <div className="settings-empty-row">No deleted Board tasks.</div>
+          <div className="settings-empty-row">{uiText('No deleted Board tasks.')}</div>
         ) : (
           <div className="project-settings-list">
             {tasks.map((task) => {
@@ -346,14 +380,15 @@ export function TrashSettingsSection({
                   <div className="project-settings-summary">
                     <strong>{task.title}</strong>
                     <span>
-                      {project?.name ?? 'Unavailable project'} · deleted{' '}
+                      {project?.name ?? uiText('Unavailable project')} {uiText('· deleted')}{' '}
                       {new Date(task.archivedAt!).toLocaleString()}
-                      {!projectIsActive && ' · restore the parent project to Active first'}
+                      {!projectIsActive && uiText(' · restore the parent project to Active first')}
                     </span>
                     {!projectIsActive && (
                       <span id={`trash-task-help-${task.id}`} className="settings-inline-help">
-                        Parent project is archived. Restore it to Active in Projects before
-                        restoring this task.
+                        {uiText(
+                          'Parent project is archived. Restore it to Active in Projects before restoring this task.',
+                        )}
                       </span>
                     )}
                   </div>
@@ -366,7 +401,7 @@ export function TrashSettingsSection({
                       title={
                         projectIsActive
                           ? undefined
-                          : 'Restore the parent project to active projects first'
+                          : uiText('Restore the parent project to active projects first')
                       }
                       onClick={() =>
                         void onRestoreTask({
@@ -377,7 +412,7 @@ export function TrashSettingsSection({
                         })
                       }
                     >
-                      Restore
+                      {uiText('Restore')}
                     </button>
                   </div>
                 </section>

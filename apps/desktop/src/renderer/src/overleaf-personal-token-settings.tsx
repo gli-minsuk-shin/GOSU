@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useEffect, useState, type FormEvent } from 'react';
 
 import type { SaveOverleafPersonalTokenInput } from '../../shared/overleaf-personal-token-contracts';
@@ -21,6 +23,7 @@ export function OverleafPersonalTokenSettings({
   onRemove: () => Promise<void>;
   onOperationPendingChange?: (pending: boolean) => void;
 }) {
+  useUiText();
   const [accessToken, setAccessToken] = useState('');
   const [operation, setOperation] = useState<'refresh' | 'save' | 'remove' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +43,7 @@ export function OverleafPersonalTokenSettings({
     try {
       await onRefresh();
     } catch (refreshError) {
-      setError(describeOverleafPersonalTokenError(refreshError));
+      setError(uiText(describeOverleafPersonalTokenError(refreshError)));
     } finally {
       setOperation(null);
     }
@@ -56,21 +59,22 @@ export function OverleafPersonalTokenSettings({
     try {
       await onSave({ accessToken: token });
     } catch (saveError) {
-      setError(describeOverleafPersonalTokenError(saveError));
+      setError(uiText(describeOverleafPersonalTokenError(saveError)));
     } finally {
       setOperation(null);
     }
   };
 
   const remove = async () => {
-    if (busy || !canClear || !window.confirm(OVERLEAF_PERSONAL_TOKEN_CLEAR_CONFIRMATION)) return;
+    if (busy || !canClear || !window.confirm(uiText(OVERLEAF_PERSONAL_TOKEN_CLEAR_CONFIRMATION)))
+      return;
     setAccessToken('');
     setOperation('remove');
     setError(null);
     try {
       await onRemove();
     } catch (removeError) {
-      setError(describeOverleafPersonalTokenError(removeError));
+      setError(uiText(describeOverleafPersonalTokenError(removeError)));
     } finally {
       setOperation(null);
     }
@@ -80,16 +84,17 @@ export function OverleafPersonalTokenSettings({
     <article className="settings-card overleaf-token-settings-card">
       <div className="settings-card-heading overleaf-token-settings-heading">
         <div>
-          <span>OVERLEAF</span>
-          <h2>Use one token for every new Overleaf link</h2>
+          <span>{uiText('OVERLEAF')}</span>
+          <h2>{uiText('Use one token for every new Overleaf link')}</h2>
           <p>
-            Save it once, then Manuscript and Lecture Studio use it automatically when you link a
-            new Overleaf project.
+            {uiText(
+              'Save it once, then Manuscript and Lecture Studio use it automatically when you link a new Overleaf project.',
+            )}
           </p>
         </div>
         <span className={`overleaf-token-status state-${state}`} role="status">
           <i aria-hidden="true" />
-          {overleafPersonalTokenStatusLabel(state)}
+          {uiText(overleafPersonalTokenStatusLabel(state))}
         </span>
       </div>
 
@@ -102,24 +107,26 @@ export function OverleafPersonalTokenSettings({
       {unavailable && (
         <div className="overleaf-token-unavailable">
           <div>
-            <strong>GOSU could not read the saved token</strong>
-            <span>Retry the check, or replace or clear the saved data to recover.</span>
+            <strong>{uiText('GOSU could not read the saved token')}</strong>
+            <span>{uiText('Retry the check, or replace or clear the saved data to recover.')}</span>
           </div>
           <button type="button" className="secondary-button" onClick={() => void refresh()}>
-            {operation === 'refresh' ? 'Checking…' : 'Retry'}
+            {operation === 'refresh' ? uiText('Checking…') : uiText('Retry')}
           </button>
         </div>
       )}
 
       <form className="overleaf-token-form" onSubmit={(event) => void save(event)}>
         <label>
-          Personal Git token
+          {uiText('Personal Git token')}
           <input
             type="password"
             value={accessToken}
             maxLength={2_048}
             placeholder={
-              configured || unavailable ? 'Enter a new token to replace it' : 'Enter your token'
+              configured || unavailable
+                ? uiText('Enter a new token to replace it')
+                : uiText('Enter your token')
             }
             autoComplete="new-password"
             autoCapitalize="none"
@@ -134,24 +141,30 @@ export function OverleafPersonalTokenSettings({
           className="primary-button"
           disabled={busy || accessToken.length === 0}
         >
-          {operation === 'save' ? 'Saving…' : configured || unavailable ? 'Replace' : 'Save'}
+          {operation === 'save'
+            ? uiText('Saving…')
+            : configured || unavailable
+              ? uiText('Replace')
+              : uiText('Save')}
         </button>
       </form>
 
       <div className="overleaf-token-privacy-note">
-        <strong>The token is never shown again.</strong>
+        <strong>{uiText('The token is never shown again.')}</strong>
         <span>
-          GOSU encrypts it on this Mac using operating-system secure storage. Each new link receives
-          its own encrypted, workspace-bound copy.
+          {uiText(
+            'GOSU encrypts it on this Mac using operating-system secure storage. Each new link receives its own encrypted, workspace-bound copy.',
+          )}
         </span>
       </div>
 
       <div className="overleaf-token-clear-row">
         <div>
-          <strong>Future links only</strong>
+          <strong>{uiText('Future links only')}</strong>
           <span>
-            Existing linked manuscripts keep working when this token is replaced or cleared. Clear
-            removes GOSU’s saved copy; it does not revoke the token in Overleaf.
+            {uiText(
+              'Existing linked manuscripts keep working when this token is replaced or cleared. Clear removes GOSU’s saved copy; it does not revoke the token in Overleaf.',
+            )}
           </span>
         </div>
         <button
@@ -160,7 +173,7 @@ export function OverleafPersonalTokenSettings({
           disabled={busy || !canClear}
           onClick={() => void remove()}
         >
-          {operation === 'remove' ? 'Clearing…' : 'Clear'}
+          {operation === 'remove' ? uiText('Clearing…') : uiText('Clear')}
         </button>
       </div>
     </article>

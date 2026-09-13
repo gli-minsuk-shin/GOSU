@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { estimateAgentContextTokens, planAgentContextBudget } from '@gosu/contracts';
 
 import {
   executeModelLabAgentTool,
   MODEL_LAB_AGENT_MAX_STEPS,
+  MODEL_LAB_AGENT_MAX_TRANSCRIPT_CHARACTERS,
   MODEL_LAB_AGENT_STEP_SCHEMA,
   runModelLabAgentHarness,
   type ModelLabAgentProvider,
@@ -99,7 +101,11 @@ describe('provider-neutral Model Lab agent harness', () => {
       expect(result).toMatchObject({
         provider: providerName,
         body: expect.stringContaining('verified module receipt'),
-        trace: ['Agent step 1 · inspect_module · receipt', 'Agent step 2 · final'],
+        trace: expect.arrayContaining([
+          expect.stringContaining('Context budget · fallback 32000 window'),
+          'Agent step 1 · inspect_module · receipt',
+          'Agent step 2 · final',
+        ]),
         usage: {
           inputTokens: 160,
           outputTokens: 18,
@@ -201,5 +207,181 @@ describe('provider-neutral Model Lab agent harness', () => {
       }),
     ).rejects.toThrow('model_copilot_agent_step_limit');
     expect(complete).toHaveBeenCalledTimes(MODEL_LAB_AGENT_MAX_STEPS);
+  });
+
+  it('deduplicates semantically identical tool calls with canonical argument ordering', async () => {
+    const prompts: string[] = [];
+    let step = 0;
+    const complete: ModelLabAgentProvider = async (prompt) => {
+      prompts.push(prompt);
+      step += 1;
+      if (step === 3) {
+        return {
+          body: JSON.stringify({
+            kind: 'final',
+            calls: [],
+            answer: 'The repeated inspection reused the bounded receipt cache.',
+            editInstructions: null,
+          }),
+          provider: 'fixture',
+          model: 'fixture-model',
+          reasoning: 'high',
+        };
+      }
+      return {
+        body: JSON.stringify({
+          kind: 'tool_calls',
+          calls: [
+            {
+              id: `call-${step}`,
+              name: 'inspect_module',
+              argumentsJson:
+                step === 1
+                  ? JSON.stringify({
+                      modelId: sparkvskLearnedWarmPath.id,
+                      moduleId: 'sparkvsk-lambda-query',
+                    })
+                  : JSON.stringify({
+                      moduleId: 'sparkvsk-lambda-query',
+                      modelId: sparkvskLearnedWarmPath.id,
+                    }),
+            },
+          ],
+          answer: null,
+          editInstructions: null,
+        }),
+        provider: 'fixture',
+        model: 'fixture-model',
+        reasoning: 'high',
+      };
+    };
+
+    await runModelLabAgentHarness({
+      request: request(),
+      seedPrompt: 'Bounded model seed',
+      provider: complete,
+      signal: new AbortController().signal,
+    });
+
+    expect(prompts.at(-1)).toContain('"cached":true');
+    expect(prompts.at(-1)).toContain('receipt-1');
+    expect(prompts.at(-1)).toContain('model_spark_vs.py:29-37, 167-176');
+  });
+
+  it.each([
+    ['ASCII', 's'.repeat(1_000_000)],
+    ['CJK', '한'.repeat(700_000)],
+  ])(
+    'uses a provider 1M context budget without exceeding it for %s evidence',
+    async (_label, seedPrompt) => {
+      let receivedPrompt = '';
+      const complete: ModelLabAgentProvider = async (prompt) => {
+        receivedPrompt = prompt;
+        return {
+          body: JSON.stringify({
+            kind: 'final',
+            calls: [],
+            answer: 'The model-aware context was bounded.',
+            editInstructions: null,
+          }),
+          provider: 'fixture',
+          model: 'fixture-model',
+          reasoning: 'high',
+        };
+      };
+
+      await runModelLabAgentHarness({
+        request: request(),
+        seedPrompt,
+        provider: complete,
+        signal: new AbortController().signal,
+        contextWindowTokens: 1_000_000,
+      });
+
+      const budget = planAgentContextBudget({ contextWindowTokens: 1_000_000 });
+      expect(estimateAgentContextTokens(receivedPrompt)).toBeLessThanOrEqual(
+        budget.availableInputTokens,
+      );
+      if (_label === 'ASCII') {
+        expect(receivedPrompt.length).toBeGreaterThan(MODEL_LAB_AGENT_MAX_TRANSCRIPT_CHARACTERS);
+      }
+    },
+  );
+
+  it('bounds the accumulated tool transcript while retaining the newest receipt batch', async () => {
+    const oversizedModules = Array.from({ length: 20 }, (_, index) => ({
+      ...sparkvskLearnedWarmPath.modules[0]!,
+      id: `oversized-module-${index}`,
+      name: `Oversized module ${index}`,
+      transform: `transform-${index}-${'t'.repeat(2_000)}`,
+      formula: `formula-${index}-${'f'.repeat(2_000)}`,
+      explanation: `explanation-${index}-${'e'.repeat(2_000)}`,
+    }));
+    const oversizedModel = {
+      ...sparkvskLearnedWarmPath,
+      modules: oversizedModules,
+      connections: [],
+    };
+    const oversizedRequest: ModelLabQuestionRequest = {
+      ...request(),
+      projectModels: [oversizedModel],
+      activeModelId: oversizedModel.id,
+      selectedModuleId: oversizedModules[0]!.id,
+    };
+    const prompts: string[] = [];
+    let step = 0;
+    const complete: ModelLabAgentProvider = async (prompt) => {
+      prompts.push(prompt);
+      step += 1;
+      return {
+        body: JSON.stringify(
+          step === MODEL_LAB_AGENT_MAX_STEPS
+            ? {
+                kind: 'final',
+                calls: [],
+                answer: 'The bounded transcript retained enough recent evidence.',
+                editInstructions: null,
+              }
+            : {
+                kind: 'tool_calls',
+                calls: Array.from({ length: 3 }, (_, index) => ({
+                  id: `step-${step}-call-${index}`,
+                  name: 'inspect_model',
+                  argumentsJson: JSON.stringify({ modelId: oversizedModel.id }),
+                })),
+                answer: null,
+                editInstructions: null,
+              },
+        ),
+        provider: 'fixture',
+        model: 'fixture-model',
+        reasoning: 'high',
+      };
+    };
+
+    await expect(
+      runModelLabAgentHarness({
+        request: oversizedRequest,
+        seedPrompt: 's'.repeat(MODEL_LAB_AGENT_MAX_TRANSCRIPT_CHARACTERS),
+        provider: complete,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({
+      body: 'The bounded transcript retained enough recent evidence.',
+    });
+
+    const actionSuffix = '\n\nChoose the next bounded action or provide the final answer.';
+    expect(prompts).toHaveLength(MODEL_LAB_AGENT_MAX_STEPS);
+    for (const prompt of prompts) {
+      expect(prompt.length).toBeLessThanOrEqual(MODEL_LAB_AGENT_MAX_TRANSCRIPT_CHARACTERS);
+      expect(prompt.endsWith(actionSuffix)).toBe(true);
+      expect(prompt.slice(0, -actionSuffix.length).length).toBeLessThanOrEqual(
+        MODEL_LAB_AGENT_MAX_TRANSCRIPT_CHARACTERS,
+      );
+    }
+    expect(prompts.at(-1)).toContain(`step-${MODEL_LAB_AGENT_MAX_STEPS - 1}-call-0`);
+    expect(prompts.at(-1)).toContain(`step-${MODEL_LAB_AGENT_MAX_STEPS - 1}-call-1`);
+    expect(prompts.at(-1)).toContain(`step-${MODEL_LAB_AGENT_MAX_STEPS - 1}-call-2`);
+    expect(prompts.at(-1)).toContain(oversizedModel.id);
   });
 });

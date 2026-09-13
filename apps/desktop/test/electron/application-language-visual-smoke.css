@@ -1,0 +1,54 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+.language-visual-shell {
+  display: grid;
+  grid-template: 46px minmax(0, 1fr) / var(--visual-sidebar-width, 332px) minmax(0, 1fr);
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.language-visual-titlebar {
+  position: static;
+  grid-row: 1;
+  grid-column: 1 / -1;
+}
+
+.language-visual-nav {
+  position: static;
+  grid-row: 2;
+  grid-column: 1;
+}
+
+.language-visual-content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+  overflow: auto;
+  padding: 28px;
+}
+
+.language-visual-content > .settings-card {
+  width: 100%;
+  max-width: 900px;
+  flex: 0 0 auto;
+}
+
+.language-visual-preserved textarea {
+  min-height: 84px;
+  width: 100%;
+  margin-top: 16px;
+  font-family: var(--font-mono);
+}
+
+.language-visual-preserved .markdown-document {
+  margin-top: 18px;
+}

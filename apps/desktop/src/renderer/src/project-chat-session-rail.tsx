@@ -1,3 +1,5 @@
+import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 
 import {
@@ -81,6 +83,7 @@ export function ProjectChatSessionRail({
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
 }) {
+  useUiText();
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -214,12 +217,12 @@ export function ProjectChatSessionRail({
   return (
     <aside
       className={`project-chat-session-rail ${collapsed ? 'collapsed' : ''}`}
-      aria-label="Project chat sessions"
+      aria-label={uiText('Project chat sessions')}
     >
       <header>
         <div className="project-chat-session-heading">
           <div className="project-chat-session-heading-copy">
-            <span>SESSIONS</span>
+            <span>{uiText('SESSIONS')}</span>
             <strong>{sessions.length}</strong>
           </div>
           <button
@@ -228,13 +231,19 @@ export function ProjectChatSessionRail({
             onClick={() => onCollapsedChange(!collapsed)}
             aria-controls={sessionListId}
             aria-expanded={!collapsed}
-            aria-label={collapsed ? 'Show project chat sessions' : 'Hide project chat sessions'}
-            title={collapsed ? 'Show chat sessions' : 'Minimize chat sessions'}
+            aria-label={
+              collapsed
+                ? uiText('Show project chat sessions')
+                : uiText('Hide project chat sessions')
+            }
+            title={collapsed ? uiText('Show chat sessions') : uiText('Minimize chat sessions')}
           >
             <CollapseChevron direction={collapsed ? 'right' : 'left'} />
           </button>
           {collapsed && selectedSession && (
-            <span className="sr-only">Selected session: {selectedSession.title}</span>
+            <span className="sr-only">
+              {uiText('Selected session:')} {selectedSession.title}
+            </span>
           )}
         </div>
         {!collapsed && (
@@ -251,23 +260,23 @@ export function ProjectChatSessionRail({
                 !selectedSession ||
                 !onRename
               }
-              aria-label="Rename selected project chat session"
+              aria-label={uiText('Rename selected project chat session')}
               title={
                 selectedSession
                   ? (renameBlockedMessage(selectedSession.id) ?? undefined)
                   : undefined
               }
             >
-              Rename
+              {uiText('Rename')}
             </button>
             <button
               type="button"
               className="secondary-button"
               onClick={onCreate}
               disabled={disabled || creating || renamingSessionId !== null}
-              aria-label="Create a new project chat session"
+              aria-label={uiText('Create a new project chat session')}
             >
-              {creating ? 'Creating…' : '＋ New chat'}
+              {creating ? uiText('Creating…') : uiText('＋ New chat')}
             </button>
           </div>
         )}
@@ -288,12 +297,14 @@ export function ProjectChatSessionRail({
                 {renaming ? (
                   <form
                     className="project-chat-session-rename-form"
-                    aria-label={`Rename ${session.title}`}
+                    aria-label={uiText('Rename {title}', { title: session.title })}
                     aria-busy={savingRename}
                     noValidate
                     onSubmit={(event) => submitRename(event, session)}
                   >
-                    <label htmlFor={`project-chat-session-name-${session.id}`}>Session name</label>
+                    <label htmlFor={`project-chat-session-name-${session.id}`}>
+                      {uiText('Session name')}
+                    </label>
                     <input
                       ref={renameInputRef}
                       id={`project-chat-session-name-${session.id}`}
@@ -319,7 +330,7 @@ export function ProjectChatSessionRail({
                         className="secondary-button"
                         disabled={savingRename || disabled || sessionRenameBlocked || creating}
                       >
-                        {savingRename ? 'Saving…' : 'Save'}
+                        {savingRename ? uiText('Saving…') : uiText('Save')}
                       </button>
                       <button
                         type="button"
@@ -327,16 +338,16 @@ export function ProjectChatSessionRail({
                         onClick={cancelRename}
                         disabled={savingRename}
                       >
-                        Cancel
+                        {uiText('Cancel')}
                       </button>
                     </div>
                     {renameError && (
                       <small id={`project-chat-session-error-${session.id}`} role="alert">
-                        {renameError}
+                        {uiText(renameError)}
                       </small>
                     )}
                     {!renameError && sessionRenameBlockedMessage && (
-                      <small>{sessionRenameBlockedMessage}</small>
+                      <small>{uiText(sessionRenameBlockedMessage)}</small>
                     )}
                   </form>
                 ) : (
@@ -355,13 +366,18 @@ export function ProjectChatSessionRail({
                       <span className="project-chat-session-title">
                         <i aria-hidden="true">{session.parentSessionId ? '⑂' : '◇'}</i>
                         <strong title={session.title}>{session.title}</strong>
-                        {activeSessionIds.has(session.id) && <b aria-label="Turn active">●</b>}
+                        {activeSessionIds.has(session.id) && (
+                          <b aria-label={uiText('Turn active')}>●</b>
+                        )}
                       </span>
                       <small>
                         {session.parentSessionId
-                          ? `Branched from ${parent?.title ?? 'another session'} · ${formatSessionUpdate(session.createdAt)}`
+                          ? uiText('Branched from {value1} · {value2}', {
+                              value1: parent?.title ?? 'another session',
+                              value2: formatSessionUpdate(session.createdAt),
+                            })
                           : session.isDefault
-                            ? 'Default session'
+                            ? uiText('Default session')
                             : formatSessionUpdate(session.updatedAt)}
                       </small>
                     </button>
@@ -373,8 +389,8 @@ export function ProjectChatSessionRail({
                         disabled={
                           disabled || sessionRenameBlocked || creating || renamingSessionId !== null
                         }
-                        aria-label={`Rename ${session.title}`}
-                        title={sessionRenameBlockedMessage ?? 'Rename session'}
+                        aria-label={uiText('Rename {title}', { title: session.title })}
+                        title={sessionRenameBlockedMessage ?? uiText('Rename session')}
                       >
                         ✎
                       </button>
@@ -388,7 +404,7 @@ export function ProjectChatSessionRail({
       {!collapsed && (
         <ResizeHandle
           className="project-chat-session-resize-handle"
-          label="Resize project chat sessions sidebar"
+          label={uiText('Resize project chat sessions sidebar')}
           value={width}
           min={PROJECT_CHAT_SESSION_RAIL_MIN_WIDTH}
           max={PROJECT_CHAT_SESSION_RAIL_MAX_WIDTH}
@@ -402,7 +418,7 @@ export function ProjectChatSessionRail({
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
 
 function formatSessionUpdate(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(uiLocale(), {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',

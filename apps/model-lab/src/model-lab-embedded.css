@@ -1,0 +1,34 @@
+/* GOSU already has a project sidebar. Keep Copilot beside the graph at ordinary
+   desktop window sizes; preserve the standalone and small-screen layouts. */
+@media (min-width: 901px) and (max-width: 1200px) {
+  .model-lab-shell[data-project-id]:not(.model-lab-shell--focus) .model-lab-workbench {
+    grid-template-columns: minmax(0, 1fr) 7px var(--model-copilot-width, 340px);
+  }
+  .model-lab-shell[data-project-id]:not(.model-lab-shell--focus)
+    .model-lab-workbench--copilot-collapsed {
+    grid-template-columns: minmax(0, 1fr) 0 64px;
+  }
+  .model-lab-shell[data-project-id]:not(.model-lab-shell--focus)
+    .panel-resizer--copilot:not([hidden]) {
+    display: block;
+  }
+  .model-lab-shell[data-project-id]:not(.model-lab-shell--focus) .model-chat--sidebar {
+    position: sticky;
+    top: 10px;
+    width: 100%;
+    height: calc(100dvh - 20px);
+    max-height: calc(100dvh - 20px);
+    border-top: 0;
+  }
+  .model-lab-shell[data-project-id]:not(.model-lab-shell--focus) .model-chat--collapsed {
+    width: 64px;
+  }
+  .model-lab-shell[data-project-id]:not(.model-lab-shell--focus)
+    .model-chat--collapsed
+    .model-chat__restore {
+    width: 64px;
+    height: 100%;
+    writing-mode: vertical-rl;
+    flex-direction: column;
+  }
+}

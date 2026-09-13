@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { isAbsolute } from 'node:path';
+import { withApplicationLanguageInstructions } from './application-language-service';
 
 import { ModelCatalogSchema, ModelInvocationSchema, type ModelInvocation } from '@gosu/contracts';
 
@@ -406,6 +407,10 @@ export class HermesAcpProjectChatAdapter
   }
 
   async startThread(input: HermesAcpStartThreadInput) {
+    input = {
+      ...input,
+      developerInstructions: withApplicationLanguageInstructions(input.developerInstructions ?? ''),
+    };
     this.assertRunning();
     this.assertModel(input.modelId);
     const projectId = requireUuid(input.projectId, 'hermes_approval_project_scope_required');

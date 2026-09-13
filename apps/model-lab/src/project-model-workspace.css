@@ -1,0 +1,60 @@
+.model-lab-empty {
+  align-self: start;
+  padding: 48px 32px;
+  min-width: 0;
+  color: var(--model-text);
+}
+.model-lab-empty p {
+  max-width: 620px;
+  line-height: 1.6;
+}
+.project-model-copy-dialog {
+  width: min(560px, calc(100vw - 48px));
+  border: 1px solid var(--model-border);
+  border-radius: 18px;
+  padding: 28px;
+  background: var(--model-surface, white);
+  color: var(--model-text);
+}
+.project-model-copy-dialog::backdrop {
+  background: #18201966;
+}
+.project-model-copy-dialog label {
+  display: grid;
+  gap: 8px;
+}
+.project-model-copy-dialog select {
+  width: 100%;
+  padding: 10px;
+}
+.project-model-copy-dialog p {
+  line-height: 1.5;
+}
+.project-model-copy-dialog footer {
+  display: flex;
+  justify-content: end;
+  gap: 12px;
+}
+.project-model-copy-dialog button:not(.primary-button) {
+  border: 1px solid var(--model-border);
+  border-radius: 12px;
+  padding: 10px 16px;
+  background: var(--model-surface, white);
+  color: inherit;
+}
+.model-lab-copy-notice {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  max-width: min(700px, 85vw);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--model-border);
+  border-radius: 12px;
+  background: var(--model-surface, white);
+  box-shadow: 0 4px 18px #18201922;
+}

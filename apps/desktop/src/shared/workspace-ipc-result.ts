@@ -12,6 +12,7 @@ export const WORKSPACE_IPC_ERROR_CODES = [
   'objective_not_found',
   'objective_locked',
   'objective_not_locked',
+  'objective_identity_pending',
   'version_conflict',
   'invalid_workspace_input',
   'workspace_data_requires_recovery',

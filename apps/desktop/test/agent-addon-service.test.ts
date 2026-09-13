@@ -164,14 +164,14 @@ describe('optional agent add-on detection boundary', () => {
         hermes: 'disabled',
         'claude-code': 'disabled',
       }),
-    ).toEqual(['openclaw']);
+    ).toEqual([]);
     expect(
       enabledAgentAddOnIds({
         openclaw: 'disabled',
         hermes: 'connect-local',
         'claude-code': 'disabled',
       }),
-    ).toEqual(['hermes']);
+    ).toEqual([]);
     expect(
       enabledAgentAddOnIds({
         openclaw: 'disabled',

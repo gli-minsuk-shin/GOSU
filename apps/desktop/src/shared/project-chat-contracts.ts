@@ -1,6 +1,15 @@
 import { z } from 'zod';
+import { CriticalReviewModeSchema } from './critical-review';
+import {
+  ModelLabReferenceSchema,
+  ModelLabSelectionSchema,
+} from '../../../model-lab/model-reference-contracts';
+import { ProjectResearchPlanReceiptSchema } from './project-research-plan-contracts';
+import { ContextUsageSchema } from '../../../briefing-lab/src/context-usage';
+import { ApplicationLanguagePreferenceSchema } from '@gosu/contracts';
 
 import { ProjectChatAttachmentIdsSchema } from './project-chat-attachment-contracts';
+import { ProjectToolProgressMetadataSchema } from './project-tool-activity';
 import { WORKSPACE_TASK_PRIORITIES, WORKSPACE_TASK_STATUSES } from './workspace-contracts';
 
 export const PROJECT_CHAT_MAX_MESSAGE_LENGTH = 12_000;
@@ -395,12 +404,27 @@ const ProjectChatPromptProvenanceV5Schema = ProjectChatPromptProvenanceV4Schema.
   })
   .strict();
 
+const ProjectChatPromptProvenanceV6Schema = ProjectChatPromptProvenanceV5Schema.omit({
+  assemblyVersion: true,
+})
+  .extend({
+    assemblyVersion: z.literal(6),
+    permanentMemorySha256: sha256Schema,
+    permanentMemoryEntryCount: z.number().int().nonnegative().max(64),
+  })
+  .strict();
+
+const ProjectChatPromptProvenanceV7Schema = ProjectChatPromptProvenanceV6Schema.extend({
+  assemblyVersion: z.literal(7),
+});
 export const ProjectChatPromptProvenanceSchema = z.discriminatedUnion('assemblyVersion', [
   ProjectChatPromptProvenanceV1Schema,
   ProjectChatPromptProvenanceV2Schema,
   ProjectChatPromptProvenanceV3Schema,
   ProjectChatPromptProvenanceV4Schema,
   ProjectChatPromptProvenanceV5Schema,
+  ProjectChatPromptProvenanceV6Schema,
+  ProjectChatPromptProvenanceV7Schema,
 ]);
 
 export type ProjectChatPromptProvenance = z.infer<typeof ProjectChatPromptProvenanceSchema>;
@@ -492,6 +516,8 @@ export const ProjectChatSessionSchema = z
     projectId: uuidSchema,
     title: z.string().trim().min(1).max(PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH),
     isDefault: z.boolean(),
+    criticalReviewMode: CriticalReviewModeSchema.optional(),
+    modelLabReference: ModelLabReferenceSchema.optional(),
     parentSessionId: uuidSchema.optional(),
     branchedFromMessageId: uuidSchema.optional(),
     // Present only when an automatic title was committed with exact model provenance. Manual
@@ -593,7 +619,7 @@ export const PROJECT_AGENT_NODE_STATUSES = [
 export const ProjectAgentContextPlanSchema = z
   .object({
     schemaVersion: z.literal(1),
-    strategy: z.literal('recent-history-plus-working-memory'),
+    strategy: z.enum(['recent-history-plus-working-memory', 'layered-project-memory']),
     includedSegments: z
       .array(
         z.enum([
@@ -603,23 +629,40 @@ export const ProjectAgentContextPlanSchema = z
           'project-rules',
           'recent-history',
           'working-memory',
+          'permanent-memory',
           'attachments',
         ]),
       )
       .min(1)
-      .max(7),
+      .max(8),
     candidateMessageCount: z.number().int().nonnegative().max(5_000),
-    recentMessageCount: z.number().int().nonnegative().max(40),
+    recentMessageCount: z.number().int().nonnegative().max(5_000),
+    compressedMessageCount: z.number().int().nonnegative().max(5_000).optional(),
     omittedMessageCount: z.number().int().nonnegative().max(5_000),
-    recentHistoryCharacters: z.number().int().nonnegative().max(24_000),
+    recentHistoryCharacters: z.number().int().nonnegative().max(8_000_000),
     workingMemoryRevision: z.number().int().positive().nullable(),
     memoryEntryCount: z.number().int().nonnegative().max(PROJECT_AGENT_MAX_MEMORY_ENTRIES),
     memoryCharacters: z.number().int().nonnegative().max(16_000),
+    permanentMemoryCandidateCount: z.number().int().nonnegative().max(10_000).optional(),
+    permanentMemoryEntryCount: z.number().int().nonnegative().max(64).optional(),
+    permanentMemoryCharacters: z.number().int().nonnegative().max(64_000).optional(),
+    permanentMemoryEstimatedTokens: z.number().int().nonnegative().max(64_000).optional(),
+    contextWindowTokens: z.number().int().positive().max(2_000_000).optional(),
+    contextWindowSource: z.enum(['provider', 'configured', 'fallback']).optional(),
+    outputReserveTokens: z.number().int().nonnegative().max(128_000).optional(),
+    safetyMarginTokens: z.number().int().nonnegative().max(128_000).optional(),
+    runtimeReserveTokens: z.number().int().nonnegative().max(128_000).optional(),
+    developerInstructionTokens: z.number().int().nonnegative().max(256_000).optional(),
+    availableInputTokens: z.number().int().positive().max(2_000_000).optional(),
+    estimatedPromptTokens: z.number().int().nonnegative().max(2_000_000).optional(),
     estimatedInputCharactersSaved: z.number().int().nonnegative().max(1_000_000),
   })
   .strict()
   .superRefine((plan, context) => {
-    if (plan.recentMessageCount + plan.omittedMessageCount !== plan.candidateMessageCount) {
+    if (
+      plan.recentMessageCount + plan.omittedMessageCount + (plan.compressedMessageCount ?? 0) !==
+      plan.candidateMessageCount
+    ) {
       context.addIssue({
         code: 'custom',
         message: 'Context-plan message counts must reconcile',
@@ -823,6 +866,7 @@ export type ProjectChatMessage = z.infer<typeof ProjectChatMessageSchema>;
 
 export const ProjectChatQueuedTurnSchema = z
   .object({
+    applicationLanguage: ApplicationLanguagePreferenceSchema.optional(),
     id: uuidSchema,
     projectId: uuidSchema,
     sessionId: uuidSchema,
@@ -854,6 +898,8 @@ export const ProjectChatSnapshotSchema = z
   .object({
     schemaVersion: z.literal(1),
     projectId: uuidSchema,
+    contextUsage: ContextUsageSchema.optional(),
+    contextUsageModelId: z.string().max(256).optional(),
     // Optional at the wire boundary for compatibility with snapshots produced before sessions.
     session: ProjectChatSessionSchema.optional(),
     sessions: z
@@ -1040,6 +1086,8 @@ export const ProjectChatSnapshotInputSchema = z
 export const CreateProjectChatSessionInputSchema = z
   .object({
     projectId: uuidSchema,
+    criticalReviewMode: CriticalReviewModeSchema.optional(),
+    modelLabSelection: ModelLabSelectionSchema.optional(),
     title: z.string().trim().min(1).max(PROJECT_CHAT_MAX_SESSION_TITLE_LENGTH).optional(),
   })
   .strict();
@@ -1138,6 +1186,25 @@ export type ProjectChatTurnReceipt = z.infer<typeof ProjectChatTurnReceiptSchema
 export const ProjectChatEventSchema = z.discriminatedUnion('type', [
   z
     .object({
+      type: z.literal('research-plan.applied'),
+      projectId: uuidSchema,
+      sessionId: uuidSchema,
+      receipt: ProjectResearchPlanReceiptSchema,
+      workspaceChanged: z.literal(true),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('context.updated'),
+      projectId: uuidSchema,
+      sessionId: uuidSchema,
+      attemptId: uuidSchema,
+      usage: ContextUsageSchema,
+      modelId: z.string().max(256),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal('turn.started'),
       projectId: uuidSchema,
       sessionId: uuidSchema,
@@ -1163,6 +1230,7 @@ export const ProjectChatEventSchema = z.discriminatedUnion('type', [
       tool: z.string().trim().min(1).max(128),
       callId: z.string().trim().min(1).max(256),
       success: z.boolean().optional(),
+      ...ProjectToolProgressMetadataSchema.shape,
     })
     .strict(),
   z

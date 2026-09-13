@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { SshConnectionProfile } from '../../shared/ssh-contracts';
@@ -122,6 +124,7 @@ export function SshWorkspaceGrantsCard({
   setupRequest = null,
   onSetupRequestHandled = () => undefined,
 }: SshWorkspaceGrantsCardProps) {
+  useUiText();
   const [connectionId, setConnectionId] = useState('');
   const [canonicalRoot, setCanonicalRoot] = useState('');
   const [permissionMode, setPermissionMode] = useState<'diagnostics' | 'workspace'>('diagnostics');
@@ -213,7 +216,14 @@ export function SshWorkspaceGrantsCard({
     const root = user === 'root';
     if (
       !window.confirm(
-        `Enable Project trusted execution / Auto-run for ${workspace.connection.label} in ${project.name}?\n\nSupported operations inside ${workspace.grant.canonicalRoot} will run without repeated Allow once prompts. This setting applies only to this project and exact server grant.`,
+        uiText(
+          'Enable Project trusted execution / Auto-run for {label} in {name}?\n\nSupported operations inside {canonicalRoot} will run without repeated Allow once prompts. This setting applies only to this project and exact server grant.',
+          {
+            label: workspace.connection.label,
+            name: project.name,
+            canonicalRoot: workspace.grant.canonicalRoot,
+          },
+        ),
       )
     ) {
       return;
@@ -221,8 +231,13 @@ export function SshWorkspaceGrantsCard({
     if (
       !window.confirm(
         root
-          ? `ROOT FINAL WARNING: code launched for ${project.name} may read, modify, or delete anything on the remote server, including data outside ${workspace.grant.canonicalRoot}. GOSU exposes only bounded project operations, but launched code is not sandboxed. Enable automatic ROOT execution anyway?`
-          : 'Final warning: tests, builds, and Python entrypoints run with this SSH account’s OS and network permissions. GOSU exposes no raw-shell control, but launched repository code is not sandboxed and can access anything this account permits. Enable anyway?',
+          ? uiText(
+              'ROOT FINAL WARNING: code launched for {name} may read, modify, or delete anything on the remote server, including data outside {canonicalRoot}. GOSU exposes only bounded project operations, but launched code is not sandboxed. Enable automatic ROOT execution anyway?',
+              { name: project.name, canonicalRoot: workspace.grant.canonicalRoot },
+            )
+          : uiText(
+              'Final warning: tests, builds, and Python entrypoints run with this SSH account’s OS and network permissions. GOSU exposes no raw-shell control, but launched repository code is not sandboxed and can access anything this account permits. Enable anyway?',
+            ),
       )
     ) {
       return;
@@ -264,26 +279,27 @@ export function SshWorkspaceGrantsCard({
     >
       <header className="card-head">
         <div>
-          <span>PROJECT-SCOPED SSH</span>
-          <h2 id="ssh-workspace-heading">Remote workspace access</h2>
+          <span>{uiText('PROJECT-SCOPED SSH')}</span>
+          <h2 id="ssh-workspace-heading">{uiText('Remote workspace access')}</h2>
         </div>
         <small>
-          {project ? `${workspaces.length} granted to ${project.name}` : 'Select a project'}
+          {project
+            ? uiText('{length} granted to {name}', {
+                length: workspaces.length,
+                name: project.name,
+              })
+            : uiText('Select a project')}
         </small>
       </header>
       <p className="privacy">
-        A registered server is not automatically available to every project. Grant one canonical
-        workspace root to the active project, then Project Chat can request bounded text file
-        listing, reading, creation, and replacement plus approved direct-argv commands. By default,
-        every command and file action requires a separate Allow once decision. Project Chat can
-        explicitly enable audited Project trusted execution for an exact Workspace grant; it removes
-        repeated prompts but never adds raw shell, a broader project scope, direct secret access,
-        out-of-grant paths, or remote deletion. ROOT grants require an additional high-risk warning.
+        {uiText(
+          'A registered server is not automatically available to every project. Grant one canonical workspace root to the active project, then Project Chat can request bounded text file listing, reading, creation, and replacement plus approved direct-argv commands. By default, every command and file action requires a separate Allow once decision. Project Chat can explicitly enable audited Project trusted execution for an exact Workspace grant; it removes repeated prompts but never adds raw shell, a broader project scope, direct secret access, out-of-grant paths, or remote deletion. ROOT grants require an additional high-risk warning.',
+        )}
       </p>
       {!project ? (
         <div className="empty-card">
-          <strong>No active project</strong>
-          <p>Open a project, then return here to grant its remote workspace.</p>
+          <strong>{uiText('No active project')}</strong>
+          <p>{uiText('Open a project, then return here to grant its remote workspace.')}</p>
         </div>
       ) : (
         <>
@@ -317,7 +333,7 @@ export function SshWorkspaceGrantsCard({
             }}
           >
             <label>
-              Registered server
+              {uiText('Registered server')}
               <select
                 ref={connectionSelectRef}
                 value={connectionId}
@@ -335,18 +351,20 @@ export function SshWorkspaceGrantsCard({
                 disabled={busy || Boolean(editingWorkspace)}
                 required
               >
-                <option value="">Choose a server</option>
+                <option value="">{uiText('Choose a server')}</option>
                 {availableConnections.map((connection) => (
                   <option value={connection.id} key={connection.id}>
                     {connection.label}
-                    {connection.directTarget?.user === 'root' ? ' · ROOT' : ''}
+                    {connection.directTarget?.user === 'root' ? uiText(' · ROOT') : ''}
                   </option>
                 ))}
               </select>
             </label>
             {selectedConnection && onTest && (
               <div className="ssh-workspace-connection-check">
-                <span>{testStatus[selectedConnection.id] ?? 'Not tested in this session'}</span>
+                <span>
+                  {testStatus[selectedConnection.id] ?? uiText('Not tested in this session')}
+                </span>
                 <button
                   type="button"
                   className="secondary-button"
@@ -355,12 +373,12 @@ export function SshWorkspaceGrantsCard({
                     void Promise.resolve(onTest(selectedConnection.id)).catch(() => undefined);
                   }}
                 >
-                  Test selected server
+                  {uiText('Test selected server')}
                 </button>
               </div>
             )}
             <label>
-              Canonical remote workspace root
+              {uiText('Canonical remote workspace root')}
               <input
                 value={canonicalRoot}
                 onChange={(event) => {
@@ -389,13 +407,15 @@ export function SshWorkspaceGrantsCard({
                 disabled={busy}
               />
               <small>
-                Press Tab from an empty field to use `{suggestedCanonicalRoot}` and continue. Enter
-                an existing project directory on this server. `/`, `/root`, and system directories
-                are blocked.
+                {uiText('Press Tab from an empty field to use `')}
+                {suggestedCanonicalRoot}
+                {uiText(
+                  '` and continue. Enter an existing project directory on this server. `/`, `/root`, and system directories are blocked.',
+                )}
               </small>
             </label>
             <label>
-              Permission mode
+              {uiText('Permission mode')}
               <select
                 value={permissionMode}
                 onChange={(event) => {
@@ -404,10 +424,14 @@ export function SshWorkspaceGrantsCard({
                 }}
                 disabled={busy}
               >
-                <option value="diagnostics">Diagnostics · Git inspection only</option>
+                <option value="diagnostics">{uiText('Diagnostics · Git inspection only')}</option>
                 <option value="workspace" disabled={!selectedConnection?.directTarget}>
-                  Workspace · approved text files, tests/builds, and foreground Python experiments
-                  {!selectedConnection?.directTarget ? ' · paste a direct SSH command first' : ''}
+                  {uiText(
+                    'Workspace · approved text files, tests/builds, and foreground Python experiments',
+                  )}
+                  {!selectedConnection?.directTarget
+                    ? uiText(' · paste a direct SSH command first')
+                    : ''}
                 </option>
               </select>
             </label>
@@ -419,15 +443,13 @@ export function SshWorkspaceGrantsCard({
                 disabled={busy}
               />
               <span>
-                I understand this is an advisory policy boundary, not a remote sandbox. Tests,
-                builds, and foreground Python experiments may execute repository code with the SSH
-                account’s privileges and may access or change anything that account can reach.
-                Approved typed text file creates and replacements change the workspace; the typed
-                file broker does not provide remote deletion.
+                {uiText(
+                  'I understand this is an advisory policy boundary, not a remote sandbox. Tests, builds, and foreground Python experiments may execute repository code with the SSH account’s privileges and may access or change anything that account can reach. Approved typed text file creates and replacements change the workspace; the typed file broker does not provide remote deletion.',
+                )}
                 {selectedConnection?.directTarget?.user === 'root'
-                  ? ' HIGH RISK: this selected account is root.'
+                  ? uiText(' HIGH RISK: this selected account is root.')
                   : !selectedConnection?.directTarget?.user
-                    ? ' HIGH RISK: the effective account privilege is unknown.'
+                    ? uiText(' HIGH RISK: the effective account privilege is unknown.')
                     : ''}
               </span>
             </label>
@@ -437,11 +459,11 @@ export function SshWorkspaceGrantsCard({
                 className="primary-button"
                 disabled={busy || !connectionId || !canonicalRoot.trim() || !confirmed}
               >
-                {editingWorkspace ? 'Update project grant' : 'Grant project access'}
+                {editingWorkspace ? uiText('Update project grant') : uiText('Grant project access')}
               </button>
               {editingWorkspace && (
                 <button type="button" className="ghost-button" onClick={reset} disabled={busy}>
-                  Cancel
+                  {uiText('Cancel')}
                 </button>
               )}
             </div>
@@ -449,8 +471,12 @@ export function SshWorkspaceGrantsCard({
           <div className="connection-list">
             {workspaces.length === 0 ? (
               <div className="empty-card">
-                <strong>No remote workspace granted</strong>
-                <p>Registered servers remain unavailable to this project until you opt in here.</p>
+                <strong>{uiText('No remote workspace granted')}</strong>
+                <p>
+                  {uiText(
+                    'Registered servers remain unavailable to this project until you opt in here.',
+                  )}
+                </p>
               </div>
             ) : (
               workspaces.map((workspace) => {
@@ -468,25 +494,32 @@ export function SshWorkspaceGrantsCard({
                       <span>{grant.canonicalRoot}</span>
                       <small>
                         {grant.permissionMode === 'workspace'
-                          ? 'Workspace · inspection, approved tests/builds, and foreground Python experiments; approved text file list/read/create/replace'
-                          : 'Diagnostics · Git inspection only'}{' '}
-                        · grant v{grant.version}
+                          ? uiText(
+                              'Workspace · inspection, approved tests/builds, and foreground Python experiments; approved text file list/read/create/replace',
+                            )
+                          : uiText('Diagnostics · Git inspection only')}{' '}
+                        {uiText('· grant v')}
+                        {grant.version}
                       </small>
                       {connection.directTarget?.user === 'root' && (
-                        <strong className="ssh-root-warning">HIGH RISK · ROOT account</strong>
+                        <strong className="ssh-root-warning">
+                          {uiText('HIGH RISK · ROOT account')}
+                        </strong>
                       )}
                       {onTest && (
-                        <small>{testStatus[connection.id] ?? 'Not tested in this session'}</small>
+                        <small>
+                          {testStatus[connection.id] ?? uiText('Not tested in this session')}
+                        </small>
                       )}
                       {onEnableTrustedWorkspace && onRevokeTrustedWorkspace && (
                         <small>
                           {trusted
                             ? privilegeClass === 'root'
-                              ? 'Project trusted execution · ROOT auto-run enabled'
-                              : 'Project trusted execution · Auto-run enabled'
+                              ? uiText('Project trusted execution · ROOT auto-run enabled')
+                              : uiText('Project trusted execution · Auto-run enabled')
                             : privilegeClass === 'unknown'
-                              ? 'Auto-run unavailable · SSH user is unresolved'
-                              : 'Allow once required · Project auto-run is off'}
+                              ? uiText('Auto-run unavailable · SSH user is unresolved')
+                              : uiText('Allow once required · Project auto-run is off')}
                         </small>
                       )}
                     </div>
@@ -500,7 +533,7 @@ export function SshWorkspaceGrantsCard({
                             void Promise.resolve(onTest(connection.id)).catch(() => undefined);
                           }}
                         >
-                          Test server
+                          {uiText('Test server')}
                         </button>
                       )}
                       <button
@@ -515,7 +548,7 @@ export function SshWorkspaceGrantsCard({
                           setConfirmed(false);
                         }}
                       >
-                        Edit
+                        {uiText('Edit')}
                       </button>
                       {onEnableTrustedWorkspace &&
                         onRevokeTrustedWorkspace &&
@@ -526,7 +559,9 @@ export function SshWorkspaceGrantsCard({
                             disabled={busy || trustedBusyGrantId === grant.id}
                             onClick={() => void revokeTrustedWorkspace(workspace)}
                           >
-                            {trustedBusyGrantId === grant.id ? 'Disabling…' : 'Disable auto-run'}
+                            {trustedBusyGrantId === grant.id
+                              ? uiText('Disabling…')
+                              : uiText('Disable auto-run')}
                           </button>
                         ) : (
                           <button
@@ -541,10 +576,10 @@ export function SshWorkspaceGrantsCard({
                             onClick={() => void enableTrustedWorkspace(workspace)}
                           >
                             {trustedBusyGrantId === grant.id
-                              ? 'Enabling…'
+                              ? uiText('Enabling…')
                               : privilegeClass === 'root'
-                                ? 'Enable ROOT auto-run…'
-                                : 'Enable auto-run…'}
+                                ? uiText('Enable ROOT auto-run…')
+                                : uiText('Enable auto-run…')}
                           </button>
                         ))}
                       <button
@@ -552,7 +587,14 @@ export function SshWorkspaceGrantsCard({
                         className="ghost-button danger"
                         disabled={busy}
                         onClick={() => {
-                          if (!window.confirm(`Revoke ${connection.label} from ${project.name}?`))
+                          if (
+                            !window.confirm(
+                              uiText('Revoke {label} from {name}?', {
+                                label: connection.label,
+                                name: project.name,
+                              }),
+                            )
+                          )
                             return;
                           void Promise.resolve(
                             onRemove({
@@ -563,7 +605,7 @@ export function SshWorkspaceGrantsCard({
                           ).catch(() => undefined);
                         }}
                       >
-                        Revoke
+                        {uiText('Revoke')}
                       </button>
                     </div>
                   </section>

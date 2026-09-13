@@ -1,0 +1,207 @@
+/* Global chat has its own canvas; never inherit the narrow Briefing overlay's geometry. */
+.briefing-app.is-global-assistant {
+  height: 100dvh;
+  min-height: 0;
+  width: 100%;
+  background: #f5f7f3;
+}
+.briefing-app.is-global-assistant .briefing-workspace {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  padding: 10px 12px;
+}
+.briefing-app.is-global-assistant .briefing-workspace > :not(.briefing-details) {
+  display: none;
+}
+.briefing-app.is-global-assistant .briefing-workspace > .briefing-details {
+  position: relative;
+  inset: auto;
+  flex: 1 1 0;
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid #dce3d7;
+  border-radius: 16px;
+  background: #fbfcfa;
+  box-shadow: none;
+}
+.briefing-app.is-global-assistant .briefing-details > header {
+  flex: 0 0 auto;
+  min-height: 54px;
+  padding: 10px 22px;
+  background: #fff;
+}
+.briefing-app.is-global-assistant .briefing-details > header > .briefing-section-caption {
+  font-size: 14px;
+  letter-spacing: 0.03em;
+}
+.briefing-app.is-global-assistant .briefing-details > header > .briefing-icon-button,
+.briefing-app.is-global-assistant .briefing-chat-context {
+  display: none;
+}
+.briefing-app.is-global-assistant .briefing-chat {
+  font-size: 13px;
+}
+.briefing-app.is-global-assistant .briefing-chat-log {
+  width: 100%;
+  max-width: 1040px;
+  align-self: center;
+  padding: 20px 24px;
+}
+.briefing-app.is-global-assistant .briefing-chat-message {
+  padding: 17px 20px;
+  margin-bottom: 20px;
+  border-radius: 18px;
+  border-color: #e0e6db;
+}
+.briefing-app.is-global-assistant .briefing-chat-message.user {
+  width: fit-content;
+  max-width: 82%;
+  margin-left: auto;
+  background: #edf3e7;
+  border-color: #dce7d1;
+  border-bottom-right-radius: 5px;
+}
+.briefing-app.is-global-assistant .briefing-chat-message.assistant {
+  margin-right: auto;
+  border-bottom-left-radius: 5px;
+  background: #fff;
+}
+.briefing-app.is-global-assistant .briefing-chat-message-copy {
+  line-height: 1.7;
+}
+.briefing-app.is-global-assistant .briefing-chat-welcome {
+  width: min(100%, 920px);
+  max-height: min(340px, 45vh);
+  align-self: center;
+  padding: 20px 24px 12px;
+  border: 0;
+  background: transparent;
+}
+.briefing-app.is-global-assistant .briefing-chat-welcome-heading {
+  position: relative;
+  top: auto;
+  justify-content: center;
+  background: transparent;
+  text-align: center;
+}
+.briefing-app.is-global-assistant .briefing-chat-intro {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+.briefing-app.is-global-assistant .briefing-chat-avatar {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: #537d0b;
+  color: #fff;
+  font-size: 24px;
+  font-weight: 750;
+}
+.briefing-app.is-global-assistant .briefing-chat-welcome h3 {
+  margin: 4px 0;
+  font-size: 18px;
+}
+.briefing-app.is-global-assistant .briefing-chat-welcome > p {
+  text-align: center;
+  margin: 6px 0 14px;
+}
+.briefing-app.is-global-assistant .briefing-chat-dismiss {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+.briefing-app.is-global-assistant .briefing-chat-suggestions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.briefing-app.is-global-assistant .briefing-chat-suggestions button {
+  margin: 0;
+  min-height: 42px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: #fff;
+  line-height: 1.5;
+}
+.briefing-app.is-global-assistant .briefing-chat-composer {
+  width: 100%;
+  max-width: 1040px;
+  align-self: center;
+  padding: 12px 24px 18px;
+  border: 0;
+  background: #fbfcfa;
+}
+.briefing-app.is-global-assistant .briefing-chat-input-box {
+  border: 1px solid #ccd8c4;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 4px 20px #263a1510;
+  overflow: hidden;
+}
+.briefing-app.is-global-assistant .briefing-chat-input-box:focus-within {
+  outline: 2px solid #829b65;
+  outline-offset: 2px;
+}
+.briefing-app.is-global-assistant .briefing-chat-input-box textarea {
+  min-height: 128px;
+  max-height: 240px;
+  padding: 16px 18px 48px;
+  border: 0;
+  outline: none;
+  border-radius: 0;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.briefing-app.is-global-assistant .briefing-chat-input-shortcuts {
+  left: 12px;
+  bottom: 10px;
+}
+.briefing-app.is-global-assistant .briefing-chat-composer > div:last-child {
+  justify-content: flex-end;
+}
+.briefing-app.is-global-assistant .briefing-chat-composer > div:last-child > small {
+  margin-right: auto;
+}
+.briefing-app.is-global-assistant .briefing-chat-status:empty {
+  display: none;
+}
+.briefing-app.is-global-assistant .briefing-chat-status {
+  align-self: center;
+  width: min(100%, 1040px);
+  padding-inline: 24px;
+}
+@media (max-width: 600px) {
+  .briefing-app.is-global-assistant .briefing-workspace {
+    padding: 4px;
+  }
+  .briefing-app.is-global-assistant .briefing-chat-log,
+  .briefing-app.is-global-assistant .briefing-chat-composer {
+    padding-inline: 12px;
+  }
+  .briefing-app.is-global-assistant .briefing-chat-welcome {
+    padding: 12px;
+    max-height: min(340px, 45vh);
+  }
+  .briefing-app.is-global-assistant .briefing-chat-welcome h3 {
+    font-size: 17px;
+  }
+  .briefing-app.is-global-assistant .briefing-chat-message.user {
+    max-width: 94%;
+  }
+}
+@media (max-height: 650px) {
+  .briefing-app.is-global-assistant .briefing-chat-avatar {
+    display: none;
+  }
+  .briefing-app.is-global-assistant .briefing-chat-welcome {
+    padding-block: 10px;
+  }
+}

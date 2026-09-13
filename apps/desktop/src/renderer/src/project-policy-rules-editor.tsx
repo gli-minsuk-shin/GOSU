@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useEffect, useId, useState } from 'react';
 
 import {
@@ -28,6 +30,7 @@ export function ProjectPolicyRulesEditor({
   onSave: (rules: readonly string[]) => Promise<boolean>;
   onClose: () => void;
 }) {
+  useUiText();
   const prefix = useId();
   const [adding, setAdding] = useState(false);
   const [addText, setAddText] = useState('');
@@ -51,7 +54,7 @@ export function ProjectPolicyRulesEditor({
   const persist = async (nextRules: readonly string[], successMessage: string) => {
     const parsed = ProjectChatPolicyRulesSchema.safeParse(nextRules);
     if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message ?? 'Review the project rule and try again.');
+      setError(parsed.error.issues[0]?.message ?? uiText('Review the project rule and try again.'));
       return false;
     }
     setSaving(true);
@@ -60,14 +63,16 @@ export function ProjectPolicyRulesEditor({
     try {
       const saved = await onSave(parsed.data);
       if (!saved) {
-        setError('Project rules could not be saved. The latest project profile was reloaded.');
+        setError(
+          uiText('Project rules could not be saved. The latest project profile was reloaded.'),
+        );
         setStatus(null);
         return false;
       }
       setStatus(successMessage);
       return true;
     } catch {
-      setError('Project rules could not be saved. Nothing was changed.');
+      setError(uiText('Project rules could not be saved. Nothing was changed.'));
       setStatus(null);
       return false;
     } finally {
@@ -79,11 +84,14 @@ export function ProjectPolicyRulesEditor({
     <section className="project-policy-rules-editor" aria-labelledby={`${prefix}-heading`}>
       <header>
         <div>
-          <span>PROJECT-WIDE POLICY</span>
-          <h2 id={`${prefix}-heading`}>Rules for {projectName}</h2>
+          <span>{uiText('PROJECT-WIDE POLICY')}</span>
+          <h2 id={`${prefix}-heading`}>
+            {uiText('Rules for')} {projectName}
+          </h2>
           <p>
-            Applied to every existing and new chat session in this project. Rules cannot grant
-            tools, permissions, or access to another project.
+            {uiText(
+              'Applied to every existing and new chat session in this project. Rules cannot grant tools, permissions, or access to another project.',
+            )}
           </p>
         </div>
         <div className="project-policy-rules-header-actions">
@@ -99,18 +107,19 @@ export function ProjectPolicyRulesEditor({
               setError(null);
             }}
           >
-            Add rule
+            {uiText('Add rule')}
           </button>
           <button type="button" className="ghost-button" disabled={saving} onClick={onClose}>
-            Close
+            {uiText('Close')}
           </button>
         </div>
       </header>
 
       {rules.length === 0 && !adding ? (
         <p className="project-policy-rules-empty">
-          No project rules yet. Add one concise rule for conventions the assistant must keep across
-          sessions.
+          {uiText(
+            'No project rules yet. Add one concise rule for conventions the assistant must keep across sessions.',
+          )}
         </p>
       ) : (
         <ol className="project-policy-rules-list">
@@ -135,7 +144,9 @@ export function ProjectPolicyRulesEditor({
                     });
                   }}
                 >
-                  <label htmlFor={`${prefix}-edit-${index}`}>Edit rule {index + 1}</label>
+                  <label htmlFor={`${prefix}-edit-${index}`}>
+                    {uiText('Edit rule')} {index + 1}
+                  </label>
                   <textarea
                     id={`${prefix}-edit-${index}`}
                     value={editText}
@@ -151,7 +162,7 @@ export function ProjectPolicyRulesEditor({
                   </small>
                   <div>
                     <button type="submit" className="primary-button" disabled={controlsDisabled}>
-                      {saving ? 'Saving…' : 'Save rule'}
+                      {saving ? uiText('Saving…') : uiText('Save rule')}
                     </button>
                     <button
                       type="button"
@@ -163,7 +174,7 @@ export function ProjectPolicyRulesEditor({
                         setError(null);
                       }}
                     >
-                      Cancel
+                      {uiText('Cancel')}
                     </button>
                   </div>
                 </form>
@@ -173,7 +184,7 @@ export function ProjectPolicyRulesEditor({
                   <div className="project-policy-rule-actions">
                     {removingIndex === index ? (
                       <>
-                        <span>Remove this rule?</span>
+                        <span>{uiText('Remove this rule?')}</span>
                         <button
                           type="button"
                           className="danger-button"
@@ -189,7 +200,7 @@ export function ProjectPolicyRulesEditor({
                             );
                           }}
                         >
-                          {saving ? 'Removing…' : 'Remove'}
+                          {saving ? uiText('Removing…') : uiText('Remove')}
                         </button>
                         <button
                           type="button"
@@ -197,7 +208,7 @@ export function ProjectPolicyRulesEditor({
                           disabled={saving}
                           onClick={() => setRemovingIndex(null)}
                         >
-                          Cancel
+                          {uiText('Cancel')}
                         </button>
                       </>
                     ) : (
@@ -214,7 +225,7 @@ export function ProjectPolicyRulesEditor({
                             setError(null);
                           }}
                         >
-                          Edit
+                          {uiText('Edit')}
                         </button>
                         <button
                           type="button"
@@ -227,7 +238,7 @@ export function ProjectPolicyRulesEditor({
                             setError(null);
                           }}
                         >
-                          Remove
+                          {uiText('Remove')}
                         </button>
                       </>
                     )}
@@ -252,7 +263,7 @@ export function ProjectPolicyRulesEditor({
             });
           }}
         >
-          <label htmlFor={`${prefix}-add`}>New project rule</label>
+          <label htmlFor={`${prefix}-add`}>{uiText('New project rule')}</label>
           <textarea
             id={`${prefix}-add`}
             value={addText}
@@ -260,7 +271,9 @@ export function ProjectPolicyRulesEditor({
             rows={3}
             autoFocus
             disabled={controlsDisabled}
-            placeholder="Example: Always separate verified evidence from hypotheses and state uncertainty explicitly."
+            placeholder={uiText(
+              'Example: Always separate verified evidence from hypotheses and state uncertainty explicitly.',
+            )}
             onChange={(event) => setAddText(event.target.value)}
           />
           <small>
@@ -269,7 +282,7 @@ export function ProjectPolicyRulesEditor({
           </small>
           <div>
             <button type="submit" className="primary-button" disabled={controlsDisabled}>
-              {saving ? 'Saving…' : 'Add rule'}
+              {saving ? uiText('Saving…') : uiText('Add rule')}
             </button>
             <button
               type="button"
@@ -281,7 +294,7 @@ export function ProjectPolicyRulesEditor({
                 setError(null);
               }}
             >
-              Cancel
+              {uiText('Cancel')}
             </button>
           </div>
         </form>
@@ -289,7 +302,8 @@ export function ProjectPolicyRulesEditor({
 
       <footer>
         <span>
-          {rules.length} / {PROJECT_CHAT_MAX_POLICY_RULES} rules · project profile v{profileVersion}
+          {rules.length} / {PROJECT_CHAT_MAX_POLICY_RULES} {uiText('rules · project profile v')}
+          {profileVersion}
         </span>
         {error && <strong role="alert">{error}</strong>}
         {status && (

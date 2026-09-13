@@ -99,6 +99,14 @@ export function registerProjectChatIpc(
       reportUnexpected,
     ),
   );
+  register(PROJECT_CHAT_IPC_CHANNELS.steerQueuedTurn, (input) =>
+    withInput(
+      input,
+      UpdateProjectChatQueuedTurnInputSchema,
+      (command) => chat.steerQueuedTurn(command),
+      reportUnexpected,
+    ),
+  );
   register(PROJECT_CHAT_IPC_CHANNELS.updateProfile, (input) =>
     withInput(
       input,

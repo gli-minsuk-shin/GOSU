@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import {
   useCallback,
   useEffect,
@@ -97,7 +99,7 @@ function errorMessage(error: unknown) {
     experiment_evaluation_artifact_failed:
       'GOSU could not safely save the evaluator code and prompt. No recipe was activated.',
   };
-  return messages[code] ?? 'Evaluation Studio is temporarily unavailable.';
+  return uiText(messages[code] ?? 'Evaluation Studio is temporarily unavailable.');
 }
 
 function formatUpdatedAt(value: string) {
@@ -123,6 +125,7 @@ export function ExperimentEvaluationStudioView({
   onApplyLoggingFields,
   onOpenObjective,
 }: ExperimentEvaluationStudioViewProps) {
+  useUiText();
   const [loadedSnapshot, setSnapshot] = useState<ExperimentEvaluationListSnapshot | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [loadedDetail, setDetail] = useState<ExperimentEvaluationSessionDetail | null>(null);
@@ -270,7 +273,7 @@ export function ExperimentEvaluationStudioView({
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
       setSelectedSessionId(session.id);
       setRailMode('sessions');
-      setNotice('Created a new evaluation session.');
+      setNotice(uiText('Created a new evaluation session.'));
     } catch (createError) {
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
       setError(errorMessage(createError));
@@ -301,11 +304,13 @@ export function ExperimentEvaluationStudioView({
       setSelectedSessionId(receipt.session.id);
       await Promise.all([loadList(), loadDetail(receipt.session.id)]);
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
-      setNotice('Created a reviewable evaluation draft. No experiment settings were changed.');
+      setNotice(
+        uiText('Created a reviewable evaluation draft. No experiment settings were changed.'),
+      );
     } catch (sendError) {
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
       if (evaluationErrorCode(sendError) === 'experiment_evaluation_interrupted') {
-        setNotice('Stopped this evaluation response. No evaluation revision was created.');
+        setNotice(uiText('Stopped this evaluation response. No evaluation revision was created.'));
         setError(null);
       } else {
         setMessage(request);
@@ -323,7 +328,7 @@ export function ExperimentEvaluationStudioView({
     const operationProjectId = projectId;
     const operationSessionId = detail.session.id;
     setStopping(true);
-    setNotice('Stopping this evaluation response…');
+    setNotice(uiText('Stopping this evaluation response…'));
     setError(null);
     try {
       const receipt = await adapter.cancel({
@@ -335,8 +340,8 @@ export function ExperimentEvaluationStudioView({
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
       setNotice(
         receipt.cancelRequested
-          ? 'Stopped this evaluation response. No evaluation revision was created.'
-          : 'The evaluation response had already finished.',
+          ? uiText('Stopped this evaluation response. No evaluation revision was created.')
+          : uiText('The evaluation response had already finished.'),
       );
     } catch (cancelError) {
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
@@ -365,7 +370,9 @@ export function ExperimentEvaluationStudioView({
       await Promise.all([loadList(), loadDetail(receipt.session.id)]);
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
       setNotice(
-        `Saved “${receipt.profile.name}” with evaluator code and prompt in protected local storage.`,
+        uiText('Saved “{name}” with evaluator code and prompt in protected local storage.', {
+          name: receipt.profile.name,
+        }),
       );
     } catch (approvalError) {
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
@@ -390,7 +397,7 @@ export function ExperimentEvaluationStudioView({
       setSelectedSessionId(reused.session.id);
       setDetail(reused);
       setRailMode('sessions');
-      setNotice(`Loaded “${profile.name}” into a new editable session.`);
+      setNotice(uiText('Loaded “{name}” into a new editable session.', { name: profile.name }));
     } catch (reuseError) {
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
       setError(errorMessage(reuseError));
@@ -423,12 +430,19 @@ export function ExperimentEvaluationStudioView({
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
       if (applied) {
         setNotice(
-          `Saved a new immutable logging-template revision with ${loggingChangeCount} reviewed change${loggingChangeCount === 1 ? '' : 's'}.`,
+          uiText(
+            loggingChangeCount === 1
+              ? 'Saved a new immutable logging-template revision with {loggingChangeCount} reviewed change.'
+              : 'Saved a new immutable logging-template revision with {loggingChangeCount} reviewed changes.',
+            { loggingChangeCount },
+          ),
         );
       }
     } catch {
       if (!isCurrentEvaluationOperation(activeProjectIdRef.current, operationProjectId)) return;
-      setError('GOSU could not save the reviewed logging changes. The current template is intact.');
+      setError(
+        uiText('GOSU could not save the reviewed logging changes. The current template is intact.'),
+      );
     } finally {
       setBusy(null);
     }
@@ -450,7 +464,7 @@ export function ExperimentEvaluationStudioView({
         <div className="notice error evaluation-studio-error" role="alert">
           <span>{error}</span>
           <button type="button" className="ghost-button" onClick={() => setError(null)}>
-            Dismiss
+            {uiText('Dismiss')}
           </button>
         </div>
       )}
@@ -461,8 +475,8 @@ export function ExperimentEvaluationStudioView({
       <aside className="evaluation-studio-rail">
         <header>
           <div>
-            <span className="eyebrow">EVALUATION STUDIO</span>
-            <h2>Sessions &amp; recipes</h2>
+            <span className="eyebrow">{uiText('EVALUATION STUDIO')}</span>
+            <h2>{uiText('Sessions & recipes')}</h2>
           </div>
           <button
             type="button"
@@ -470,10 +484,14 @@ export function ExperimentEvaluationStudioView({
             disabled={Boolean(busy)}
             onClick={() => void createSession()}
           >
-            ＋ New
+            {uiText('＋ New')}
           </button>
         </header>
-        <div className="evaluation-rail-tabs" role="tablist" aria-label="Evaluation history">
+        <div
+          className="evaluation-rail-tabs"
+          role="tablist"
+          aria-label={uiText('Evaluation history')}
+        >
           <button
             type="button"
             role="tab"
@@ -481,7 +499,7 @@ export function ExperimentEvaluationStudioView({
             className={railMode === 'sessions' ? 'active' : ''}
             onClick={() => setRailMode('sessions')}
           >
-            Sessions <span>{snapshot?.sessions.length ?? 0}</span>
+            {uiText('Sessions')} <span>{snapshot?.sessions.length ?? 0}</span>
           </button>
           <button
             type="button"
@@ -490,7 +508,7 @@ export function ExperimentEvaluationStudioView({
             className={railMode === 'recipes' ? 'active' : ''}
             onClick={() => setRailMode('recipes')}
           >
-            Saved <span>{snapshot?.profiles.length ?? 0}</span>
+            {uiText('Saved')} <span>{snapshot?.profiles.length ?? 0}</span>
           </button>
         </div>
         <div className="evaluation-rail-list">
@@ -515,15 +533,15 @@ export function ExperimentEvaluationStudioView({
                 </button>
               ))
             ) : (
-              <p>No sessions yet. Describe an evaluation in a new session.</p>
+              <p>{uiText('No sessions yet. Describe an evaluation in a new session.')}</p>
             )
           ) : snapshot?.profiles.length ? (
             snapshot.profiles.map((profile) => (
               <article key={profile.id}>
                 <strong>{profile.name}</strong>
                 <span>
-                  {profile.draft.cadence.interval} {profile.draft.cadence.unit} cadence · used{' '}
-                  {profile.useCount}×
+                  {profile.draft.cadence.interval} {profile.draft.cadence.unit}{' '}
+                  {uiText('cadence · used')} {profile.useCount}×
                 </span>
                 <small>{formatUpdatedAt(profile.lastUsedAt)}</small>
                 <button
@@ -532,30 +550,32 @@ export function ExperimentEvaluationStudioView({
                   disabled={Boolean(busy)}
                   onClick={() => void reuse(profile)}
                 >
-                  Use again
+                  {uiText('Use again')}
                 </button>
               </article>
             ))
           ) : (
-            <p>Approved recipes appear here for one-click reuse.</p>
+            <p>{uiText('Approved recipes appear here for one-click reuse.')}</p>
           )}
         </div>
       </aside>
 
       <main className="evaluation-studio-workbench">
         <div className="evaluation-recipe-mode-banner" role="note">
-          <strong>Recipe mode</strong>
+          <strong>{uiText('Recipe mode')}</strong>
           <span>
-            Previews use synthetic test data. Periodic Runner scheduling and live result ingest are
-            not connected yet.
+            {uiText(
+              'Previews use synthetic test data. Periodic Runner scheduling and live result ingest are not connected yet.',
+            )}
           </span>
         </div>
         {!detail ? (
           <div className="evaluation-studio-empty">
-            <strong>Design evaluations by conversation</strong>
+            <strong>{uiText('Design evaluations by conversation')}</strong>
             <span>
-              Create a session, then describe metrics, cadence, outputs, and experiment rules in
-              plain language.
+              {uiText(
+                'Create a session, then describe metrics, cadence, outputs, and experiment rules in plain language.',
+              )}
             </span>
             <button
               type="button"
@@ -563,21 +583,22 @@ export function ExperimentEvaluationStudioView({
               disabled={Boolean(busy)}
               onClick={() => void createSession()}
             >
-              New evaluation session
+              {uiText('New evaluation session')}
             </button>
           </div>
         ) : !draft ? (
           <section className="evaluation-studio-start">
             <span className="eyebrow">{detail.session.title}</span>
-            <h2>What should this experiment evaluate?</h2>
+            <h2>{uiText('What should this experiment evaluate?')}</h2>
             <p>
-              Example: “Every 500 steps, evaluate holdout macro-F1, show per-class results as a
-              table and a learning curve, and stop after three consecutive failures.”
+              {uiText(
+                'Example: “Every 500 steps, evaluate holdout macro-F1, show per-class results as a table and a learning curve, and stop after three consecutive failures.”',
+              )}
             </p>
             <div className="evaluation-start-facts">
-              <span>Target metric optional</span>
-              <span>Draft before apply</span>
-              <span>Code is never run in Electron</span>
+              <span>{uiText('Target metric optional')}</span>
+              <span>{uiText('Draft before apply')}</span>
+              <span>{uiText('Code is never run in Electron')}</span>
             </div>
           </section>
         ) : (
@@ -585,7 +606,7 @@ export function ExperimentEvaluationStudioView({
             <header className="evaluation-draft-head">
               <div>
                 <span className="eyebrow">
-                  REVIEWABLE DRAFT · REVISION {detail.currentRevision?.revision}
+                  {uiText('REVIEWABLE DRAFT · REVISION')} {detail.currentRevision?.revision}
                 </span>
                 <h2>{draft.title}</h2>
                 <p>{draft.purpose}</p>
@@ -597,40 +618,43 @@ export function ExperimentEvaluationStudioView({
                     : 'evaluation-state'
                 }
               >
-                {detail.session.acceptedProfileId ? 'Approved recipe' : 'Awaiting approval'}
+                {detail.session.acceptedProfileId
+                  ? uiText('Approved recipe')
+                  : uiText('Awaiting approval')}
               </span>
             </header>
 
             <section className="evaluation-setup-grid">
               <article>
-                <span>Cadence</span>
+                <span>{uiText('Cadence')}</span>
                 <strong>{cadenceSentence(detail)}</strong>
                 <small>
                   {draft.cadence.stopAfter === null
-                    ? 'No automatic stop boundary'
-                    : `Stop after ${draft.cadence.stopAfter}`}
+                    ? uiText('No automatic stop boundary')
+                    : uiText('Stop after {stopAfter}', { stopAfter: draft.cadence.stopAfter })}
                 </small>
               </article>
               <article>
-                <span>Metrics</span>
+                <span>{uiText('Metrics')}</span>
                 <strong>{draft.metrics.map((metric) => metric.displayName).join(', ')}</strong>
                 <small>
                   {draft.metrics.some((metric) => metric.primary)
-                    ? 'Includes a proposed primary metric'
-                    : 'Observational evaluation'}
+                    ? uiText('Includes a proposed primary metric')
+                    : uiText('Observational evaluation')}
                 </small>
               </article>
               <article>
-                <span>Outputs</span>
+                <span>{uiText('Outputs')}</span>
                 <strong>{draft.outputs.map((output) => output.kind).join(' · ')}</strong>
                 <small>
-                  {draft.outputs.length} structured output{draft.outputs.length === 1 ? '' : 's'}
+                  {draft.outputs.length} {uiText('structured output')}
+                  {draft.outputs.length === 1 ? '' : 's'}
                 </small>
               </article>
             </section>
 
             <details className="evaluation-policy" open>
-              <summary>Evaluation policy and experiment rules</summary>
+              <summary>{uiText('Evaluation policy and experiment rules')}</summary>
               <p>{draft.evaluationPolicy}</p>
               {draft.experimentRules.length > 0 && (
                 <ul>
@@ -644,13 +668,13 @@ export function ExperimentEvaluationStudioView({
             <ExperimentEvaluationPreview preview={draft.preview} />
 
             <details className="evaluation-code-prompt">
-              <summary>Reference code &amp; reusable prompt</summary>
+              <summary>{uiText('Reference code & reusable prompt')}</summary>
               <div>
                 <h4>{draft.referenceCode.fileName}</h4>
                 <pre>
                   <code>{draft.referenceCode.content}</code>
                 </pre>
-                <h4>Prompt template</h4>
+                <h4>{uiText('Prompt template')}</h4>
                 <pre>{draft.promptTemplate}</pre>
               </div>
             </details>
@@ -659,38 +683,51 @@ export function ExperimentEvaluationStudioView({
               <section className="evaluation-logging-review" aria-labelledby="logging-review-title">
                 <header>
                   <div>
-                    <span className="eyebrow">REVIEW BEFORE APPLY</span>
-                    <h3 id="logging-review-title">Logging field changes</h3>
+                    <span className="eyebrow">{uiText('REVIEW BEFORE APPLY')}</span>
+                    <h3 id="logging-review-title">{uiText('Logging field changes')}</h3>
                   </div>
-                  <div className="evaluation-logging-counts" aria-label="Logging change summary">
-                    <span className="added">{loggingDiff.added.length} add</span>
-                    <span className="unchanged">{loggingDiff.unchanged.length} unchanged</span>
-                    <span className="conflict">{loggingDiff.conflicts.length} conflict</span>
+                  <div
+                    className="evaluation-logging-counts"
+                    aria-label={uiText('Logging change summary')}
+                  >
+                    <span className="added">
+                      {loggingDiff.added.length} {uiText('add')}
+                    </span>
+                    <span className="unchanged">
+                      {loggingDiff.unchanged.length} {uiText('unchanged')}
+                    </span>
+                    <span className="conflict">
+                      {loggingDiff.conflicts.length} {uiText('conflict')}
+                    </span>
                   </div>
                 </header>
                 <div className="evaluation-logging-diff">
                   {loggingDiff.added.map((field) => (
                     <article key={`added:${field.key}`}>
                       <strong>{field.key}</strong>
-                      <span className="evaluation-logging-status added">Add</span>
+                      <span className="evaluation-logging-status added">{uiText('Add')}</span>
                       <p>{loggingFieldSummary(field)}</p>
                     </article>
                   ))}
                   {loggingDiff.unchanged.map((field) => (
                     <article key={`unchanged:${field.key}`}>
                       <strong>{field.key}</strong>
-                      <span className="evaluation-logging-status unchanged">No change</span>
+                      <span className="evaluation-logging-status unchanged">
+                        {uiText('No change')}
+                      </span>
                       <p>{loggingFieldSummary(field)}</p>
                     </article>
                   ))}
                   {loggingDiff.conflicts.map(({ current, suggested }) => (
                     <article key={`conflict:${suggested.key}`} className="conflict">
                       <strong>{suggested.key}</strong>
-                      <span className="evaluation-logging-status conflict">Conflict</span>
+                      <span className="evaluation-logging-status conflict">
+                        {uiText('Conflict')}
+                      </span>
                       <p>
-                        <small>Current</small> {loggingFieldSummary(current)}
+                        <small>{uiText('Current')}</small> {loggingFieldSummary(current)}
                         <br />
-                        <small>Proposed</small> {loggingFieldSummary(suggested)}
+                        <small>{uiText('Proposed')}</small> {loggingFieldSummary(suggested)}
                       </p>
                     </article>
                   ))}
@@ -703,13 +740,16 @@ export function ExperimentEvaluationStudioView({
                       disabled={Boolean(busy)}
                       onChange={(event) => setReplaceLoggingConflicts(event.target.checked)}
                     />
-                    Replace {loggingDiff.conflicts.length} existing field definition
-                    {loggingDiff.conflicts.length === 1 ? '' : 's'} in the next immutable revision
+                    {uiText('Replace')} {loggingDiff.conflicts.length}{' '}
+                    {uiText('existing field definition')}
+                    {loggingDiff.conflicts.length === 1 ? '' : 's'}{' '}
+                    {uiText('in the next immutable revision')}
                   </label>
                 )}
                 <p>
-                  Unchecked conflicts are skipped. Nothing changes until you save the reviewed
-                  logging revision below.
+                  {uiText(
+                    'Unchecked conflicts are skipped. Nothing changes until you save the reviewed logging revision below.',
+                  )}
                 </p>
               </section>
             )}
@@ -717,7 +757,7 @@ export function ExperimentEvaluationStudioView({
             <section className="evaluation-apply-panel">
               <div>
                 <label>
-                  Saved recipe name
+                  {uiText('Saved recipe name')}
                   <input
                     value={profileName}
                     maxLength={160}
@@ -725,19 +765,21 @@ export function ExperimentEvaluationStudioView({
                   />
                 </label>
                 <p>
-                  Approval saves an immutable recipe plus{' '}
-                  <code>{draft.referenceCode.fileName}</code> and a prompt file. It does not execute
-                  the evaluator or rewrite Goal &amp; Metrics.
+                  {uiText('Approval saves an immutable recipe plus')}{' '}
+                  <code>{draft.referenceCode.fileName}</code>{' '}
+                  {uiText(
+                    'and a prompt file. It does not execute the evaluator or rewrite Goal & Metrics.',
+                  )}
                 </p>
                 {activeProfile && (
                   <p className="evaluation-artifact-paths">
-                    Saved locally: {activeProfile.codePath} · {activeProfile.promptPath}
+                    {uiText('Saved locally:')} {activeProfile.codePath} · {activeProfile.promptPath}
                   </p>
                 )}
               </div>
               <div>
                 <button type="button" className="secondary-button" onClick={onOpenObjective}>
-                  Review Goal &amp; Metrics
+                  {uiText('Review Goal & Metrics')}
                 </button>
                 {suggestedLoggingFields.length > 0 && (
                   <button
@@ -747,8 +789,10 @@ export function ExperimentEvaluationStudioView({
                     onClick={() => void applyLogging()}
                   >
                     {loggingChangeCount === 0
-                      ? 'Logging already matches'
-                      : `Save logging revision (${loggingChangeCount})`}
+                      ? uiText('Logging already matches')
+                      : uiText('Save logging revision ({loggingChangeCount})', {
+                          loggingChangeCount: loggingChangeCount,
+                        })}
                   </button>
                 )}
                 <button
@@ -761,7 +805,9 @@ export function ExperimentEvaluationStudioView({
                   }
                   onClick={() => void approve()}
                 >
-                  {detail.session.acceptedProfileId ? 'Recipe saved' : 'Approve & save recipe'}
+                  {detail.session.acceptedProfileId
+                    ? uiText('Recipe saved')
+                    : uiText('Approve & save recipe')}
                 </button>
               </div>
             </section>
@@ -772,12 +818,13 @@ export function ExperimentEvaluationStudioView({
       <aside className="evaluation-studio-chat">
         <header>
           <div>
-            <span className="eyebrow">EXPERIMENT ASSISTANT</span>
-            <h2>Setup chat</h2>
+            <span className="eyebrow">{uiText('EXPERIMENT ASSISTANT')}</span>
+            <h2>{uiText('Setup chat')}</h2>
           </div>
           <div className="evaluation-chat-header-actions">
             <span>
-              {requestedModelId ?? 'Auto model'} · {reasoningOptionId ?? 'default reasoning'}
+              {requestedModelId ?? uiText('Auto model')} ·{' '}
+              {reasoningOptionId ?? uiText('default reasoning')}
             </span>
             {busy === 'send' && (
               <button
@@ -786,7 +833,7 @@ export function ExperimentEvaluationStudioView({
                 disabled={stopping}
                 onClick={() => void cancelSend()}
               >
-                {stopping ? 'Stopping…' : 'Stop response'}
+                {stopping ? uiText('Stopping…') : uiText('Stop response')}
               </button>
             )}
           </div>
@@ -795,21 +842,22 @@ export function ExperimentEvaluationStudioView({
           {detail?.messages.length ? (
             detail.messages.map((item) => (
               <article key={item.id} className={item.role}>
-                <strong>{item.role === 'user' ? 'You' : 'GOSU'}</strong>
+                <strong>{item.role === 'user' ? uiText('You') : uiText('GOSU')}</strong>
                 <p>{item.content}</p>
                 <small>{formatUpdatedAt(item.completedAt)}</small>
               </article>
             ))
           ) : (
             <p className="evaluation-chat-empty">
-              This chat drafts evaluation, metric, logging, and run rules. Every change waits for
-              your approval.
+              {uiText(
+                'This chat drafts evaluation, metric, logging, and run rules. Every change waits for your approval.',
+              )}
             </p>
           )}
           {busy === 'send' && (
             <article className="assistant pending">
-              <strong>GOSU</strong>
-              <p>Designing a bounded evaluation draft…</p>
+              <strong>{uiText('GOSU')}</strong>
+              <p>{uiText('Designing a bounded evaluation draft…')}</p>
             </article>
           )}
         </div>
@@ -818,7 +866,9 @@ export function ExperimentEvaluationStudioView({
             value={message}
             disabled={!detail || Boolean(busy)}
             rows={3}
-            placeholder="예: 500 step마다 holdout macro-F1을 평가하고 class table과 learning curve를 보여줘"
+            placeholder={uiText(
+              '예: 500 step마다 holdout macro-F1을 평가하고 class table과 learning curve를 보여줘',
+            )}
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
               if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
@@ -831,9 +881,9 @@ export function ExperimentEvaluationStudioView({
             className="primary-button"
             disabled={!detail || Boolean(busy) || message.trim() === ''}
           >
-            Send
+            {uiText('Send')}
           </button>
-          <small>Enter to send · Shift+Enter for a new line</small>
+          <small>{uiText('Enter to send · Shift+Enter for a new line')}</small>
         </form>
       </aside>
     </div>

@@ -1,3 +1,5 @@
+import { uiText, useUiText, uiLocale } from '@gosu/ui/language';
+
 import { useState } from 'react';
 
 import type {
@@ -75,24 +77,24 @@ export function sshResourceErrorReason(error: unknown): SshResourceUiErrorReason
 }
 
 export function sshResourceErrorLabel(reason: SshResourceUiErrorReason) {
-  return ERROR_REASON_LABELS[reason];
+  return uiText(ERROR_REASON_LABELS[reason]);
 }
 
 export function sshConnectionTestStatus(result: SshConnectionTestResult) {
-  if (result.reachable) return 'Ready · non-interactive authentication verified';
+  if (result.reachable) return uiText('Ready · non-interactive authentication verified');
   switch (result.code) {
     case 'unknown_host_key':
-      return 'Host key not trusted · verify its fingerprint and connect once in Terminal';
+      return uiText('Host key not trusted · verify its fingerprint and connect once in Terminal');
     case 'authentication_failed':
-      return 'Authentication failed · check ssh-agent, Keychain, or the SSH alias';
+      return uiText('Authentication failed · check ssh-agent, Keychain, or the SSH alias');
     case 'timed_out':
-      return 'Connection timed out · check the server and network';
+      return uiText('Connection timed out · check the server and network');
     case 'connection_failed':
-      return 'Connection failed · check the registered host, port, and network';
+      return uiText('Connection failed · check the registered host, port, and network');
     case 'ready':
-      return 'Ready · non-interactive authentication verified';
+      return uiText('Ready · non-interactive authentication verified');
     case undefined:
-      return 'Connection failed · run Test again after checking the server';
+      return uiText('Connection failed · run Test again after checking the server');
   }
 }
 
@@ -132,9 +134,17 @@ function ResourceMeter({
         <strong>{formatted}</strong>
       </div>
       {bounded === null ? (
-        <span className="ssh-resource-meter-unavailable">Utilization unavailable</span>
+        <span className="ssh-resource-meter-unavailable">{uiText('Utilization unavailable')}</span>
       ) : (
-        <meter min={0} max={100} value={bounded} aria-label={`${label} utilization ${formatted}`} />
+        <meter
+          min={0}
+          max={100}
+          value={bounded}
+          aria-label={uiText('{label} utilization {formatted}', {
+            label: label,
+            formatted: formatted,
+          })}
+        />
       )}
       {detail && <small>{detail}</small>}
     </div>
@@ -242,7 +252,7 @@ function CompactResourceValues({
           {metric.qualifier && <small>{metric.qualifier}</small>}
         </span>
       ))}
-      {stale && <span className="ssh-resource-summary-stale">Stale</span>}
+      {stale && <span className="ssh-resource-summary-stale">{uiText('Stale')}</span>}
     </span>
   );
 }
@@ -258,6 +268,7 @@ export function SshResourceSummary({
   compact?: boolean;
   defaultCollapsed?: boolean;
 }>) {
+  useUiText();
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const snapshot = state.phase === 'idle' ? undefined : state.snapshot;
   const stateIssue =
@@ -266,26 +277,27 @@ export function SshResourceSummary({
     return (
       <section
         className={`ssh-resource-summary ${compact ? 'compact' : ''} ${collapsed ? 'collapsed' : ''}`}
-        aria-label={`${serverLabel} resource usage`}
+        aria-label={uiText('{serverLabel} resource usage', { serverLabel: serverLabel })}
       >
         <div className="ssh-resource-summary-status">
           <div>
-            <strong>Server usage</strong>
+            <strong>{uiText('Server usage')}</strong>
             {collapsed && <CompactResourceValues state={state} snapshot={snapshot} />}
             <span>
               {state.phase === 'loading'
-                ? 'Reading usage…'
+                ? uiText('Reading usage…')
                 : state.phase === 'idle'
-                  ? 'Usage not loaded'
-                  : 'Usage unavailable'}
+                  ? uiText('Usage not loaded')
+                  : uiText('Usage unavailable')}
             </span>
           </div>
         </div>
         {stateIssue && <small className="ssh-resource-issues">{stateIssue}</small>}
         {state.phase === 'error' && (
           <small className="ssh-resource-probe-boundary">
-            Usage probes do not wait for Allow once. Remote files and commands are separate: they
-            need a project grant and may show an Allow once request.
+            {uiText(
+              'Usage probes do not wait for Allow once. Remote files and commands are separate: they need a project grant and may show an Allow once request.',
+            )}
           </small>
         )}
       </section>
@@ -294,23 +306,23 @@ export function SshResourceSummary({
 
   const availableGpuDevices = snapshot.gpu.state === 'available' ? snapshot.gpu.devices : [];
   const issueLabels = [
-    ...snapshot.issues.map((issue) => ISSUE_LABELS[issue]),
+    ...snapshot.issues.map((issue) => uiText(ISSUE_LABELS[issue])),
     ...(stateIssue ? [stateIssue] : []),
   ];
 
   return (
     <section
       className={`ssh-resource-summary ${compact ? 'compact' : ''} ${collapsed ? 'collapsed' : ''}`}
-      aria-label={`${serverLabel} resource usage`}
+      aria-label={uiText('{serverLabel} resource usage', { serverLabel: serverLabel })}
     >
       <div className="ssh-resource-summary-status">
         <div>
-          <strong>Server usage</strong>
+          <strong>{uiText('Server usage')}</strong>
           {collapsed && <CompactResourceValues state={state} snapshot={snapshot} />}
           <span>
             {snapshotStatus(state, snapshot)} ·{' '}
             <time dateTime={snapshot.capturedAt}>
-              Last updated {formatSampleTime(snapshot.capturedAt)}
+              {uiText('Last updated')} {formatSampleTime(snapshot.capturedAt)}
             </time>
           </span>
         </div>
@@ -318,47 +330,59 @@ export function SshResourceSummary({
           type="button"
           className="ssh-resource-summary-toggle"
           aria-expanded={!collapsed}
-          aria-label={`${collapsed ? 'Show' : 'Minimize'} resource details for ${serverLabel}`}
+          aria-label={uiText('{value1} resource details for {serverLabel}', {
+            value1: collapsed ? 'Show' : 'Minimize',
+            serverLabel: serverLabel,
+          })}
           onClick={() => setCollapsed((current) => !current)}
         >
           <CollapseChevron direction={collapsed ? 'down' : 'up'} />
-          {collapsed ? 'Show details' : 'Minimize'}
+          {collapsed ? uiText('Show details') : uiText('Minimize')}
         </button>
       </div>
       {!collapsed && (
         <div className="ssh-resource-meters">
           {snapshot.cpu.state === 'available' ? (
             <ResourceMeter
-              label="CPU"
+              label={uiText('CPU')}
               value={snapshot.cpu.utilizationPercent}
-              detail={`${snapshot.cpu.logicalProcessorCount} logical processors`}
+              detail={uiText('{logicalProcessorCount} logical processors', {
+                logicalProcessorCount: snapshot.cpu.logicalProcessorCount,
+              })}
             />
           ) : (
-            <UnavailableMetric label="CPU" />
+            <UnavailableMetric label={uiText('CPU')} />
           )}
           {snapshot.memory.state === 'available' ? (
             <ResourceMeter
-              label="Memory"
+              label={uiText('Memory')}
               value={snapshot.memory.utilizationPercent}
               detail={`${formatSshResourceBytes(snapshot.memory.usedBytes)} / ${formatSshResourceBytes(snapshot.memory.totalBytes)}`}
             />
           ) : (
-            <UnavailableMetric label="Memory" />
+            <UnavailableMetric label={uiText('Memory')} />
           )}
           {snapshot.gpu.state === 'available' ? (
             availableGpuDevices.map((gpu) => (
               <div className="ssh-resource-gpu" key={gpu.index}>
                 <ResourceMeter
-                  label={`GPU ${gpu.index}`}
+                  label={uiText('GPU {index}', { index: gpu.index })}
                   value={gpu.utilizationPercent}
-                  detail={`${gpu.name} · ${formatSshResourceBytes(gpu.memoryUsedBytes)} / ${formatSshResourceBytes(gpu.memoryTotalBytes)} VRAM${gpu.temperatureC === null ? '' : ` · ${gpu.temperatureC} °C`}`}
+                  detail={uiText('{name} · {value2} / {value3} VRAM{value4}', {
+                    name: gpu.name,
+                    value2: formatSshResourceBytes(gpu.memoryUsedBytes),
+                    value3: formatSshResourceBytes(gpu.memoryTotalBytes),
+                    value4: gpu.temperatureC === null ? '' : ` · ${gpu.temperatureC} °C`,
+                  })}
                 />
               </div>
             ))
           ) : (
             <UnavailableMetric
-              label="GPU"
-              detail={snapshot.gpu.state === 'not_detected' ? 'No NVIDIA GPU detected' : undefined}
+              label={uiText('GPU')}
+              detail={
+                snapshot.gpu.state === 'not_detected' ? uiText('No NVIDIA GPU detected') : undefined
+              }
             />
           )}
         </div>
@@ -368,8 +392,9 @@ export function SshResourceSummary({
       )}
       {(snapshot.status !== 'ready' || state.phase === 'error') && (
         <small className="ssh-resource-probe-boundary">
-          Usage probes do not wait for Allow once. Remote files and commands are separate: they need
-          a project grant and may show an Allow once request.
+          {uiText(
+            'Usage probes do not wait for Allow once. Remote files and commands are separate: they need a project grant and may show an Allow once request.',
+          )}
         </small>
       )}
     </section>
@@ -386,7 +411,7 @@ function UnavailableMetric({
         <span>{label}</span>
         <strong>—</strong>
       </div>
-      <small>{detail ?? 'Unavailable'}</small>
+      <small>{detail ?? uiText('Unavailable')}</small>
     </div>
   );
 }
@@ -394,5 +419,5 @@ function UnavailableMetric({
 function formatSampleTime(value: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return 'unknown';
-  return parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return parsed.toLocaleTimeString(uiLocale(), { hour: '2-digit', minute: '2-digit' });
 }

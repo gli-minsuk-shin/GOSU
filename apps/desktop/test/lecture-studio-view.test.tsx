@@ -140,7 +140,7 @@ describe('LectureStudioView', () => {
     );
 
     expect(source).toContain('Stop generation');
-    expect(source).toContain('aria-label="Stop the current Lecture Assistant response"');
+    expect(source).toContain("aria-label={uiText('Stop the current Lecture Assistant response')}");
     expect(source).toContain('Stop response');
   });
 
@@ -439,8 +439,8 @@ describe('LectureStudioView', () => {
       new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
       'utf8',
     );
-    expect(source).toContain(
-      '<span className="sr-only">Status: {lectureStudioStatusLabel(studio.status)}. </span>',
+    expect(source.replace(/\s+/gu, ' ')).toContain(
+      `<span className="sr-only"> {uiText('Status:')} {lectureStudioStatusLabel(studio.status)}.`,
     );
   });
 
@@ -536,7 +536,7 @@ describe('LectureStudioView', () => {
       'utf8',
     );
 
-    expect(source).toContain("pdfFocusMode ? 'Exit focus' : 'Focus PDF'");
+    expect(source).toContain("pdfFocusMode ? uiText('Exit focus') : uiText('Focus PDF')");
     expect(source).toContain('aria-pressed={pdfFocusMode}');
     expect(source).toContain("if (event.key !== 'Escape') return;");
     expect(css).toMatch(
@@ -705,7 +705,7 @@ describe('LectureStudioView', () => {
       'utf8',
     );
     expect(source).toContain('lastAttempt={detail?.lastAttempt ?? null}');
-    expect(source).toContain('<summary>Generation details</summary>');
+    expect(source).toContain("<summary>{uiText('Generation details')}</summary>");
     expect(source).toContain('!lastAttempt && <code>{studio.lastErrorCode}</code>');
   });
 
@@ -848,10 +848,11 @@ describe('LectureStudioView', () => {
       new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
       'utf8',
     );
-    expect(source).toContain('aria-label="Attach lecture reference files"');
+    expect(source).toContain("aria-label={uiText('Attach lecture reference files')}");
     expect(source).toContain('Attach up to 5 LaTeX, Markdown, or PDF files to this edit');
-    expect(source).toContain('aria-label={`Remove ${attachment.displayName}`}');
-    expect(source).toContain('aria-label="Attached references"');
+    expect(source).toContain("aria-label={uiText('Remove {displayName}', {");
+    expect(source).toContain('displayName: attachment.displayName');
+    expect(source).toContain("aria-label={uiText('Attached references')}");
     expect(source).toContain('retained with the successful revision’s source');
     expect(source).toContain('const succeeded = await onSend(message, [...sentAttachmentIds]);');
     expect(source).toContain('if (succeeded) {');
@@ -927,7 +928,7 @@ describe('LectureStudioView', () => {
       new URL('../src/renderer/src/lecture-studio-view.tsx', import.meta.url),
       'utf8',
     );
-    expect(source).toContain('<h4>Captured manuscripts</h4>');
+    expect(source).toContain("<h4>{uiText('Captured manuscripts')}</h4>");
     expect(source).toContain('disabled={!ready}');
     expect(source).toContain("toggleSource('manuscript', key)");
   });
@@ -938,7 +939,8 @@ describe('LectureStudioView', () => {
       'utf8',
     );
 
-    expect(source).toContain('the {LECTURE_STUDIO_RECENT_MESSAGE_WINDOW} most recent messages');
+    expect(source).toContain('{LECTURE_STUDIO_RECENT_MESSAGE_WINDOW}');
+    expect(source).toContain("uiText('most recent messages.')");
     expect(source).toContain('Reviewed paper metadata');
     expect(source).toContain('full text is verified');
   });
@@ -951,7 +953,7 @@ describe('LectureStudioView', () => {
 
     expect(source).toContain('codexAuthenticationRequired={codexAuthenticationRequired}');
     expect(source).toContain('Sign in to Codex before editing this revision.');
-    expect(source).toContain("? 'Sign in to Codex before editing this revision…'");
+    expect(source).toContain("? uiText('Sign in to Codex before editing this revision…')");
     expect(source).toContain('!chatEditable');
     expect(source).toContain('codexAuthenticationRequired ||');
     expect(source).toContain('selectionUnavailable');
@@ -999,7 +1001,9 @@ describe('LectureStudioView', () => {
     );
     expect(source).toContain('generationBrief: generationBriefDraft');
     expect(source).toContain('Adaptive to the selected sources');
-    expect(source).toContain('`${structure.sections.length} custom sections`');
+    expect(source).toContain(
+      "uiText('{length} custom sections', { length: structure.sections.length })",
+    );
     expect(source).toContain(
       'Copied from Settings → Lecture defaults when this Studio is created.',
     );

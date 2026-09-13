@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import type { CodexModel } from './connections-view';
@@ -86,18 +88,21 @@ export function canSaveDefaultAiSelection(
 }
 
 export function AiDefaultSettings({
+  fallbackOnly = false,
   selection,
   models,
   modelsLoading,
   onRefreshModels,
   onSave,
 }: {
+  fallbackOnly?: boolean;
   selection: DefaultAiSelection;
   models: readonly CodexModel[];
   modelsLoading: boolean;
   onRefreshModels: () => void | Promise<void>;
   onSave: (selection: DefaultAiSelection) => void | Promise<void>;
 }) {
+  useUiText();
   const [draft, setDraft] = useState<DefaultAiSelection>(selection);
   const [operation, setOperation] = useState<Operation>(null);
   const [error, setError] = useState<string | null>(null);
@@ -142,7 +147,7 @@ export function AiDefaultSettings({
     try {
       await onSave(draft);
     } catch {
-      setError('The default AI selection could not be saved. Try again.');
+      setError(uiText('The default AI selection could not be saved. Try again.'));
     } finally {
       setOperation(null);
     }
@@ -160,12 +165,18 @@ export function AiDefaultSettings({
     <article className="settings-card ai-default-settings-card">
       <div className="settings-card-heading ai-default-settings-heading">
         <div>
-          <span>DEFAULT AI</span>
-          <h2>Choose the default Project Chat model and reasoning</h2>
+          <span>{uiText('DEFAULT AI')}</span>
+          <h2>
+            {fallbackOnly
+              ? '역할 미지정 시 기본 모델'
+              : uiText('Choose the default Project Chat model and reasoning')}
+          </h2>
           <p>
-            These defaults apply to new Project Chat sessions. Lecture Studios and other
-            Codex-native surfaces retain their own provider-compatible defaults. Existing scoped
-            choices remain unchanged.
+            {fallbackOnly
+              ? '위의 역할별 모델을 지정하지 않았거나 사용처에서 기존 설정을 선택했을 때 사용합니다. 기존 대화의 선택은 바꾸지 않습니다.'
+              : uiText(
+                  'These defaults apply to new Project Chat sessions. Lecture Studios and other Codex-native surfaces retain their own provider-compatible defaults. Existing scoped choices remain unchanged.',
+                )}
           </p>
         </div>
         <span
@@ -173,7 +184,7 @@ export function AiDefaultSettings({
           role="status"
           aria-live="polite"
         >
-          {status}
+          {uiText(status)}
         </span>
       </div>
 
@@ -184,14 +195,14 @@ export function AiDefaultSettings({
       )}
       {displayedIssue && (
         <div className="ai-default-unavailable" id="ai-default-selection-issue" role="alert">
-          <strong>Saved default is unavailable</strong>
-          <span>{displayedIssue}</span>
+          <strong>{uiText('Saved default is unavailable')}</strong>
+          <span>{uiText(displayedIssue)}</span>
         </div>
       )}
 
       <form className="ai-default-form" onSubmit={(event) => void save(event)}>
         <label htmlFor="ai-default-model">
-          Model
+          {uiText('Model')}
           <select
             id="ai-default-model"
             value={draft.modelId ?? ''}
@@ -214,28 +225,30 @@ export function AiDefaultSettings({
           >
             {modelOptionMissing && (
               <option value={draft.modelId!}>
-                {modelsLoading ? 'Saved model (checking)' : 'Unavailable saved model'} ·{' '}
-                {draft.modelId}
+                {modelsLoading
+                  ? uiText('Saved model (checking)')
+                  : uiText('Unavailable saved model')}{' '}
+                · {draft.modelId}
               </option>
             )}
             <option value="" disabled={!view.autoAvailable}>
               {modelsLoading
-                ? 'Auto · checking provider default…'
+                ? uiText('Auto · checking provider default…')
                 : view.autoAvailable
-                  ? 'Auto · provider default'
-                  : 'Auto · provider default unavailable'}
+                  ? uiText('Auto · provider default')
+                  : uiText('Auto · provider default unavailable')}
             </option>
             {view.availableModels.map((model) => (
               <option key={model.modelId} value={model.modelId}>
                 {model.displayName}
-                {model.isDefault ? ' · provider default' : ''}
+                {model.isDefault ? uiText(' · provider default') : ''}
               </option>
             ))}
           </select>
         </label>
 
         <label htmlFor="ai-default-reasoning">
-          Reasoning
+          {uiText('Reasoning')}
           <select
             id="ai-default-reasoning"
             value={draft.reasoningOptionId ?? ''}
@@ -254,15 +267,17 @@ export function AiDefaultSettings({
           >
             {reasoningOptionMissing && (
               <option value={draft.reasoningOptionId!}>
-                {modelsLoading ? 'Saved reasoning (checking)' : 'Unavailable saved reasoning'} ·{' '}
-                {draft.reasoningOptionId}
+                {modelsLoading
+                  ? uiText('Saved reasoning (checking)')
+                  : uiText('Unavailable saved reasoning')}{' '}
+                · {draft.reasoningOptionId}
               </option>
             )}
-            <option value="">Model default</option>
+            <option value="">{uiText('Model default')}</option>
             {reasoningOptions.map((option) => (
               <option key={option.id} value={option.id}>
-                {option.label}
-                {option.isDefault ? ' · model default' : ''}
+                {uiText(option.label)}
+                {option.isDefault ? uiText(' · model default') : ''}
               </option>
             ))}
           </select>
@@ -275,20 +290,22 @@ export function AiDefaultSettings({
             disabled={busy}
             onClick={() => void refresh()}
           >
-            {operation === 'refresh' || modelsLoading ? 'Refreshing…' : 'Refresh models'}
+            {operation === 'refresh' || modelsLoading
+              ? uiText('Refreshing…')
+              : uiText('Refresh models')}
           </button>
           <button type="submit" className="primary-button" disabled={!canSave}>
-            {operation === 'save' ? 'Saving…' : 'Save defaults'}
+            {operation === 'save' ? uiText('Saving…') : uiText('Save defaults')}
           </button>
         </div>
       </form>
 
       <div className="ai-default-scope-note" id="ai-default-scope-note">
-        <strong>No silent fallback</strong>
+        <strong>{uiText('No silent fallback')}</strong>
         <span>
-          If a saved model or reasoning level disappears from its connected provider, GOSU keeps the
-          missing choice visible and stops new Project Chat work from using that default until you
-          explicitly save an available one.
+          {uiText(
+            'If a saved model or reasoning level disappears from its connected provider, GOSU keeps the missing choice visible and stops new Project Chat work from using that default until you explicitly save an available one.',
+          )}
         </span>
       </div>
     </article>

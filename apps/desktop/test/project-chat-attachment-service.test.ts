@@ -31,6 +31,62 @@ const MISSING_ATTACHMENT_ID = '44444444-4444-4444-8444-444444444444';
 
 const directories: string[] = [];
 
+it('stages a dropped local file without opening the picker and uses single-use routine-bound tickets', async () => {
+  const root = await fixtureDirectory(),
+    path = join(root, 'dropped.txt');
+  await writeFile(path, 'Dropped evidence');
+  const chooseFiles = vi.fn(async () => []),
+    service = new ProjectChatAttachmentService({ chooseFiles });
+  try {
+    const scope = { projectId: PROJECT_ID, sessionId: SESSION_ID };
+    const selected = await service.stageDropped(scope, [path]);
+    expect(selected[0]?.displayName).toBe('dropped.txt');
+    expect(chooseFiles).not.toHaveBeenCalled();
+    const ticket = service.reserveDrop('routine-a', [path]);
+    expect(JSON.stringify(ticket)).not.toContain(path);
+    await expect(service.redeemDrop(scope, 'routine-b', ticket.ticket)).rejects.toThrow(
+      'attachment_expired',
+    );
+    const redeemed = await service.redeemDrop(scope, 'routine-a', ticket.ticket);
+    expect(redeemed[0]?.sha256).toBe(selected[0]?.sha256);
+    await expect(service.redeemDrop(scope, 'routine-a', ticket.ticket)).rejects.toThrow(
+      'attachment_expired',
+    );
+    const claimed = service.claim(PROJECT_ID, SESSION_ID, [redeemed[0]!.id]);
+    expect(claimed.read(redeemed[0]!.id, 1, 1, 1000)?.content).toContain('Dropped evidence');
+    await claimed.revoke();
+  } finally {
+    await service.dispose();
+  }
+});
+it('expires unredeemed drops and rejects scope changes during extraction', async () => {
+  let now = 0;
+  const root = await fixtureDirectory(),
+    path = join(root, 'dropped.txt');
+  await writeFile(path, 'Evidence');
+  const validateScope = vi
+    .fn()
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error('changed'));
+  const service = new ProjectChatAttachmentService({
+    chooseFiles: async () => [],
+    validateScope,
+    now: () => now,
+  });
+  try {
+    const ticket = service.reserveDrop('r', [path]);
+    now = 60001;
+    await expect(
+      service.redeemDrop({ projectId: PROJECT_ID, sessionId: SESSION_ID }, 'r', ticket.ticket),
+    ).rejects.toThrow('attachment_expired');
+    await expect(
+      service.stageDropped({ projectId: PROJECT_ID, sessionId: SESSION_ID }, [path]),
+    ).rejects.toThrow('attachment_scope_mismatch');
+  } finally {
+    await service.dispose();
+  }
+});
+
 afterEach(async () => {
   await Promise.all(
     directories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
@@ -107,7 +163,8 @@ describe('ProjectChatAttachmentService', () => {
 
     const descriptors = await service.choose({ projectId: PROJECT_ID, sessionId: SESSION_ID });
     const [document, image] = descriptors;
-    expect(validateScope).toHaveBeenCalledExactlyOnceWith(PROJECT_ID, SESSION_ID);
+    expect(validateScope).toHaveBeenCalledTimes(3);
+    expect(validateScope).toHaveBeenCalledWith(PROJECT_ID, SESSION_ID);
     expect(extractDocument).toHaveBeenCalledWith('text', expect.any(Uint8Array), 60_000);
     expect(normalizeImage).toHaveBeenCalledWith('png', expect.any(Uint8Array));
     expect(document).toMatchObject({

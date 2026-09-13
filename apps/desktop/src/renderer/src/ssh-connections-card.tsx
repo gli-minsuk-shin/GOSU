@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useState } from 'react';
 
 import type {
@@ -136,9 +138,9 @@ export function SshProjectLinkControl({
         type="button"
         className="secondary-button"
         disabled
-        title="Open an active project to link"
+        title={uiText('Open an active project to link')}
       >
-        No active project to link
+        {uiText('No active project to link')}
       </button>
     );
   }
@@ -148,9 +150,9 @@ export function SshProjectLinkControl({
       {linkedProjects.length > 0 && (
         <div
           className="ssh-project-link-badges"
-          aria-label={`Projects linked to this server: ${linkedProjects
-            .map((project) => project.name)
-            .join(', ')}`}
+          aria-label={uiText('Projects linked to this server: {value1}', {
+            value1: linkedProjects.map((project) => project.name).join(', '),
+          })}
         >
           {linkedProjects.map((project) => (
             <button
@@ -159,15 +161,17 @@ export function SshProjectLinkControl({
               key={project.id}
               onClick={() => onOpenWorkspaceSetup(project.id, connectionId)}
               disabled={busy}
-              title={`Manage ${project.name} remote workspace grant`}
+              title={uiText('Manage {name} remote workspace grant', { name: project.name })}
             >
-              Linked to {project.name}
+              {uiText('Linked to')} {project.name}
             </button>
           ))}
         </div>
       )}
       {availableProjects.length === 0 ? (
-        <small className="ssh-project-link-complete">Linked to all active projects</small>
+        <small className="ssh-project-link-complete">
+          {uiText('Linked to all active projects')}
+        </small>
       ) : availableProjects.length === 1 && preferredProject ? (
         <button
           type="button"
@@ -175,7 +179,7 @@ export function SshProjectLinkControl({
           onClick={() => onOpenWorkspaceSetup(preferredProject.id, connectionId)}
           disabled={busy}
         >
-          Link to {preferredProject.name}…
+          {uiText('Link to')} {preferredProject.name}…
         </button>
       ) : (
         <form
@@ -190,7 +194,7 @@ export function SshProjectLinkControl({
           }}
         >
           <label>
-            <span>Link another project</span>
+            <span>{uiText('Link another project')}</span>
             <select name="projectId" defaultValue={preferredProject?.id} disabled={busy}>
               {availableProjects.map((project) => (
                 <option key={project.id} value={project.id}>
@@ -200,7 +204,7 @@ export function SshProjectLinkControl({
             </select>
           </label>
           <button type="submit" className="secondary-button" disabled={busy || !preferredProject}>
-            Link project…
+            {uiText('Link project…')}
           </button>
         </form>
       )}
@@ -225,6 +229,7 @@ export function SshConnectionsCard({
   onRefreshResource = () => undefined,
   onOpenWorkspaceSetup = () => undefined,
 }: SshConnectionsCardProps) {
+  useUiText();
   const [label, setLabel] = useState('');
   const [hostAlias, setHostAlias] = useState('');
   const [hostAliasTouched, setHostAliasTouched] = useState(false);
@@ -241,22 +246,24 @@ export function SshConnectionsCard({
     <article className="card ssh-connections-card" aria-labelledby="ssh-connections-heading">
       <header className="card-head">
         <div>
-          <span>LOCAL SSH</span>
-          <h2 id="ssh-connections-heading">Registered SSH servers</h2>
+          <span>{uiText('LOCAL SSH')}</span>
+          <h2 id="ssh-connections-heading">{uiText('Registered SSH servers')}</h2>
         </div>
-        <small>{connections.length} registered locally</small>
+        <small>
+          {connections.length} {uiText('registered locally')}
+        </small>
       </header>
       <p className="privacy">
-        GOSU calls the system OpenSSH client with a registered alias or a safely parsed destination.
-        Authentication stays in your SSH agent; passwords, private keys, and pasted command text are
-        never stored by this connection list.
+        {uiText(
+          'GOSU calls the system OpenSSH client with a registered alias or a safely parsed destination. Authentication stays in your SSH agent; passwords, private keys, and pasted command text are never stored by this connection list.',
+        )}
       </p>
 
       <div className="connection-list">
         {connections.length === 0 ? (
           <div className="empty-card">
-            <strong>No SSH servers registered</strong>
-            <p>Paste a connection command or add an existing OpenSSH Host alias.</p>
+            <strong>{uiText('No SSH servers registered')}</strong>
+            <p>{uiText('Paste a connection command or add an existing OpenSSH Host alias.')}</p>
           </div>
         ) : (
           connections.map((connection) => {
@@ -304,7 +311,7 @@ export function SshConnectionsCard({
                     }}
                   >
                     <input
-                      aria-label="Server name"
+                      aria-label={uiText('Server name')}
                       value={editingLabel}
                       onChange={(event) => setEditingLabel(event.target.value)}
                       maxLength={120}
@@ -312,15 +319,15 @@ export function SshConnectionsCard({
                     />
                     {!canEditSshHostAlias(connection) && connection.directTarget ? (
                       <p className="privacy">
-                        Direct target ·{' '}
+                        {uiText('Direct target ·')}{' '}
                         {connection.directTarget.user ? `${connection.directTarget.user}@` : ''}
                         {connection.directTarget.host}
-                        {connection.directTarget.port ? `:${connection.directTarget.port}` : ''}.
-                        Re-import an SSH command to change this target.
+                        {connection.directTarget.port ? `:${connection.directTarget.port}` : ''}
+                        {uiText('. Re-import an SSH command to change this target.')}
                       </p>
                     ) : (
                       <input
-                        aria-label="OpenSSH host alias"
+                        aria-label={uiText('OpenSSH host alias')}
                         value={editingAlias}
                         onChange={(event) => {
                           setEditingAlias(event.target.value);
@@ -358,7 +365,7 @@ export function SshConnectionsCard({
                           (canEditSshHostAlias(connection) && !editingAliasValidation.valid)
                         }
                       >
-                        Save
+                        {uiText('Save')}
                       </button>
                       <button
                         type="button"
@@ -369,7 +376,7 @@ export function SshConnectionsCard({
                         }}
                         disabled={busy}
                       >
-                        Cancel
+                        {uiText('Cancel')}
                       </button>
                     </div>
                   </form>
@@ -384,19 +391,21 @@ export function SshConnectionsCard({
                       </span>
                       {connection.directTarget?.localForwards.map((forward) => (
                         <small key={`${forward.bindAddress}:${forward.localPort}`}>
-                          Inactive tunnel · {forward.bindAddress}:{forward.localPort} →{' '}
+                          {uiText('Inactive tunnel ·')} {forward.bindAddress}:{forward.localPort} →{' '}
                           {forward.destinationHost}:{forward.destinationPort}
                         </small>
                       ))}
                       {connection.directTarget?.user === 'root' && (
-                        <small>Root login · HIGH RISK for remote workspace work</small>
+                        <small>{uiText('Root login · HIGH RISK for remote workspace work')}</small>
                       )}
                       <small>
-                        {testStatus[connection.id] ?? `Connection profile v${connection.version}`}
+                        {testStatus[connection.id] ??
+                          uiText('Connection profile v{version}', { version: connection.version })}
                       </small>
                       <small>
-                        Test checks host trust and non-interactive authentication only. Project
-                        linking and command Allow once approval are separate.
+                        {uiText(
+                          'Test checks host trust and non-interactive authentication only. Project linking and command Allow once approval are separate.',
+                        )}
                       </small>
                     </div>
                     <SshResourceSummary state={resourceState} serverLabel={connection.label} />
@@ -417,7 +426,9 @@ export function SshConnectionsCard({
                         }
                         disabled={busy || resourceState.phase === 'loading'}
                       >
-                        {resourceState.phase === 'loading' ? 'Refreshing…' : 'Refresh usage'}
+                        {resourceState.phase === 'loading'
+                          ? uiText('Refreshing…')
+                          : uiText('Refresh usage')}
                       </button>
                       <button
                         type="button"
@@ -425,7 +436,7 @@ export function SshConnectionsCard({
                         onClick={() => invokeWithoutUnhandledRejection(() => onTest(connection.id))}
                         disabled={busy}
                       >
-                        Test
+                        {uiText('Test')}
                       </button>
                       <button
                         type="button"
@@ -438,7 +449,7 @@ export function SshConnectionsCard({
                         }}
                         disabled={busy}
                       >
-                        Edit
+                        {uiText('Edit')}
                       </button>
                       <button
                         type="button"
@@ -453,7 +464,7 @@ export function SshConnectionsCard({
                         }
                         disabled={busy}
                       >
-                        Remove
+                        {uiText('Remove')}
                       </button>
                     </div>
                   </>
@@ -465,21 +476,27 @@ export function SshConnectionsCard({
       </div>
 
       <details>
-        <summary>How to add an SSH server</summary>
+        <summary>{uiText('How to add an SSH server')}</summary>
         <p className="privacy">
-          You can paste a narrow connection command in the importer below. GOSU accepts only{' '}
-          <code>ssh</code>, <code>-p</code>, <code>-l</code>, one destination, and loopback-only{' '}
-          <code>-L</code>. It never executes the pasted text. Alternatively, add a named Host to{' '}
-          <code>~/.ssh/config</code>, confirm <code>ssh research-gpu</code> works in Terminal, then
-          enter only <code>research-gpu</code> in the alias form.
+          {uiText(
+            'You can paste a narrow connection command in the importer below. GOSU accepts only',
+          )}{' '}
+          <code>{uiText('ssh')}</code>, <code>-p</code>, <code>-l</code>
+          {uiText(', one destination, and loopback-only')} <code>-L</code>
+          {uiText('. It never executes the pasted text. Alternatively, add a named Host to')}{' '}
+          <code>{uiText('~/.ssh/config')}</code>
+          {uiText(', confirm')} <code>{uiText('ssh research-gpu')}</code>{' '}
+          {uiText('works in Terminal, then enter only')} <code>{uiText('research-gpu')}</code>{' '}
+          {uiText('in the alias form.')}
         </p>
-        <pre>{`Host research-gpu
-  HostName gpu.example.edu
-  User researcher
-  Port 2222`}</pre>
+        <pre>
+          {uiText('Host research-gpu\n  HostName gpu.example.edu\n  User researcher\n  Port 2222')}
+        </pre>
         <p className="privacy">
-          Imported <code>-L</code> requests are stored as an inactive normalized plan. Project Chat
-          does not open a tunnel automatically and can request only separately approved commands.
+          {uiText('Imported')} <code>-L</code>{' '}
+          {uiText(
+            'requests are stored as an inactive normalized plan. Project Chat does not open a tunnel automatically and can request only separately approved commands.',
+          )}
         </p>
       </details>
 
@@ -505,42 +522,42 @@ export function SshConnectionsCard({
             );
         }}
       >
-        <strong>Paste an SSH connection command</strong>
+        <strong>{uiText('Paste an SSH connection command')}</strong>
         <label>
-          Server name · optional
+          {uiText('Server name · optional')}
           <input
             value={importLabel}
             onChange={(event) => setImportLabel(event.target.value)}
             maxLength={120}
-            placeholder="8× RTX 3080"
+            placeholder={uiText('8× RTX 3080')}
             disabled={busy}
           />
         </label>
         <label>
-          SSH command
+          {uiText('SSH command')}
           <textarea
             value={importCommand}
             onChange={(event) => setImportCommand(event.target.value)}
             maxLength={4096}
             rows={3}
             spellCheck={false}
-            placeholder="ssh -p 2222 researcher@203.0.113.10 -L 8080:localhost:8080"
+            placeholder={uiText('ssh -p 2222 researcher@203.0.113.10 -L 8080:localhost:8080')}
             required
             disabled={busy}
           />
         </label>
         <p className="privacy">
-          The parser runs locally without an LLM or shell. Generic options, key paths, proxy
-          commands, remote commands, and shell syntax are rejected. A root login requires a separate
-          project workspace grant and is marked HIGH RISK for every approval.
+          {uiText(
+            'The parser runs locally without an LLM or shell. Generic options, key paths, proxy commands, remote commands, and shell syntax are rejected. A root login requires a separate project workspace grant and is marked HIGH RISK for every approval.',
+          )}
         </p>
         <button type="submit" className="primary-button" disabled={busy || !importCommand.trim()}>
-          Parse and register
+          {uiText('Parse and register')}
         </button>
       </form>
 
       <div className="ssh-registration-divider" role="separator">
-        <span>or register an existing ~/.ssh/config alias</span>
+        <span>{uiText('or register an existing ~/.ssh/config alias')}</span>
       </div>
 
       <form
@@ -568,18 +585,18 @@ export function SshConnectionsCard({
         }}
       >
         <label>
-          Server name
+          {uiText('Server name')}
           <input
             value={label}
             onChange={(event) => setLabel(event.target.value)}
             maxLength={120}
-            placeholder="Training server"
+            placeholder={uiText('Training server')}
             required
             disabled={busy}
           />
         </label>
         <label>
-          OpenSSH host alias
+          {uiText('OpenSSH host alias')}
           <input
             value={hostAlias}
             onChange={(event) => {
@@ -588,8 +605,10 @@ export function SshConnectionsCard({
             }}
             onBlur={() => setHostAliasTouched(true)}
             maxLength={255}
-            placeholder="research-gpu"
-            title="Use one concrete Host alias from your SSH config, without user@, spaces, or options."
+            placeholder={uiText('research-gpu')}
+            title={uiText(
+              'Use one concrete Host alias from your SSH config, without user@, spaces, or options.',
+            )}
             aria-invalid={hostAliasTouched && !hostAliasValidation.valid}
             aria-describedby={
               hostAliasTouched && !hostAliasValidation.valid
@@ -599,7 +618,7 @@ export function SshConnectionsCard({
             required
             disabled={busy}
           />
-          <small id="ssh-host-alias-help">Alias only — example: research-gpu</small>
+          <small id="ssh-host-alias-help">{uiText('Alias only — example: research-gpu')}</small>
         </label>
         {hostAliasTouched && !hostAliasValidation.valid && (
           <p className="settings-validation" id="ssh-host-alias-error" role="alert">
@@ -611,24 +630,14 @@ export function SshConnectionsCard({
           className="primary-button"
           disabled={busy || !label.trim() || !hostAliasValidation.valid}
         >
-          Register server
+          {uiText('Register server')}
         </button>
       </form>
 
       <p className="privacy">
-        Project Chat can request a typed remote command, but every command waits for a separate
-        Allow once decision. Raw output is returned only to that active model turn and is not saved
-        as a tool payload; a summary the model writes in its visible answer becomes chat history.
-        Registered servers remain unavailable to a project until a separate workspace grant is
-        approved. Diagnostics grants permit bounded Git inspection; Workspace grants may
-        additionally list/read bounded text files, create a new text file, replace an unchanged text
-        file, run a strict direct-argv test/build allowlist, and run one foreground Python
-        experiment entrypoint for at most 120 seconds. Every file action and command requires Allow
-        once. The typed broker itself has no deletion, raw shell, inline eval, module launch,
-        interactive shell, privilege escalation, general file transfer, TTY, or forwarding action.
-        Approved Python, tests, and builds are still untrusted code with the SSH account's full
-        accessible privileges; the workspace path does not sandbox that code. Parsed destinations
-        use isolated, non-interactive OpenSSH options.
+        {uiText(
+          "Project Chat can request a typed remote command, but every command waits for a separate Allow once decision. Raw output is returned only to that active model turn and is not saved as a tool payload; a summary the model writes in its visible answer becomes chat history. Registered servers remain unavailable to a project until a separate workspace grant is approved. Diagnostics grants permit bounded Git inspection; Workspace grants may additionally list/read bounded text files, create a new text file, replace an unchanged text file, run a strict direct-argv test/build allowlist, and run one foreground Python experiment entrypoint for at most 120 seconds. Every file action and command requires Allow once. The typed broker itself has no deletion, raw shell, inline eval, module launch, interactive shell, privilege escalation, general file transfer, TTY, or forwarding action. Approved Python, tests, and builds are still untrusted code with the SSH account's full accessible privileges; the workspace path does not sandbox that code. Parsed destinations use isolated, non-interactive OpenSSH options.",
+        )}
       </p>
     </article>
   );

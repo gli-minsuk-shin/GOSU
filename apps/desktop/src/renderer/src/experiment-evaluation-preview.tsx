@@ -1,3 +1,5 @@
+import { uiText } from '@gosu/ui/language';
+
 import type { ExperimentEvaluationPreview as EvaluationPreview } from '../../shared/experiment-evaluation-contracts';
 import { MarkdownDocument } from './markdown-document';
 import {
@@ -14,9 +16,9 @@ function formatValue(value: number, unit: string | null) {
 export function ExperimentEvaluationPreview({ preview }: { preview: EvaluationPreview }) {
   const chart = buildEvaluationPreviewChart(preview);
   return (
-    <section className="evaluation-preview" aria-label="Illustrative evaluation preview">
+    <section className="evaluation-preview" aria-label={uiText('Illustrative evaluation preview')}>
       <div className="evaluation-preview-warning" role="status">
-        <strong>Illustrative preview · not experiment evidence</strong>
+        <strong>{uiText('Illustrative preview · not experiment evidence')}</strong>
         <span>{preview.notice}</span>
       </div>
 
@@ -37,7 +39,11 @@ export function ExperimentEvaluationPreview({ preview }: { preview: EvaluationPr
             <strong>{chart.title}</strong>
             <span>
               {chart.subtitle}
-              {chart.truncated ? ` · Last 12 points per series (${chart.totalPoints} total)` : ''}
+              {chart.truncated
+                ? uiText(' · Last 12 points per series ({totalPoints} total)', {
+                    totalPoints: chart.totalPoints,
+                  })
+                : ''}
             </span>
           </figcaption>
           <svg
@@ -47,7 +53,8 @@ export function ExperimentEvaluationPreview({ preview }: { preview: EvaluationPr
           >
             <title id="evaluation-chart-title">{chart.title}</title>
             <desc id="evaluation-chart-desc">
-              {chart.subtitle}. Synthetic preview only. Series use distinct line and marker styles.
+              {chart.subtitle}
+              {uiText('. Synthetic preview only. Series use distinct line and marker styles.')}
             </desc>
             {[0, 1, 2, 3, 4].map((tick) => {
               const y = 24 + tick * 52;
@@ -100,10 +107,11 @@ export function ExperimentEvaluationPreview({ preview }: { preview: EvaluationPr
 
       {chart?.sparse && (
         <div className="evaluation-preview-sparse">
-          <strong>Not enough ordered points for a defensible trend line</strong>
+          <strong>{uiText('Not enough ordered points for a defensible trend line')}</strong>
           <span>
-            GOSU shows the exact KPI and table instead. Add at least eight evaluations to display
-            the line.
+            {uiText(
+              'GOSU shows the exact KPI and table instead. Add at least eight evaluations to display the line.',
+            )}
           </span>
         </div>
       )}
@@ -137,7 +145,7 @@ export function ExperimentEvaluationPreview({ preview }: { preview: EvaluationPr
       )}
 
       <section className="evaluation-preview-report">
-        <h4>Test report preview</h4>
+        <h4>{uiText('Test report preview')}</h4>
         <MarkdownDocument
           notePath="Evaluation Preview.md"
           source={preview.reportMarkdown}

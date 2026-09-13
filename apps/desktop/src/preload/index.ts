@@ -1,4 +1,22 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { droppedAttachmentPaths } from './dropped-attachment-paths';
+import { BriefingNotificationSnapshotSchema } from '../../../briefing-lab/src/briefing-notifications';
+import { MODEL_ROUTING_CHANNELS, ModelRoutingSchema, type ModelRouting } from '@gosu/contracts';
+import type {
+  PaperSummaryCandidate,
+  PaperSummarySaveReceipt,
+} from '../../../briefing-lab/src/paper-summary-contract';
+import {
+  APPLICATION_LANGUAGE_CHANNELS,
+  ApplicationLanguagePreferenceSchema,
+  AppLanguageSchema,
+  type AppLanguage,
+  type ApplicationLanguagePreference,
+} from '@gosu/contracts';
+import {
+  MODEL_LAB_OPEN_CHANNEL,
+  type ProjectModelLabLocation,
+} from '../shared/model-lab-contracts';
 
 import { AGENT_ADD_ON_CHANNELS } from '../shared/agent-addon-channels';
 import type {
@@ -426,6 +444,27 @@ function onToggleSidebar(listener: () => void) {
 }
 
 const api = {
+  applicationLanguage: {
+    get: async () =>
+      ApplicationLanguagePreferenceSchema.parse(
+        await ipcRenderer.invoke(APPLICATION_LANGUAGE_CHANNELS.get),
+      ),
+    set: async (language: AppLanguage) =>
+      ApplicationLanguagePreferenceSchema.parse(
+        await ipcRenderer.invoke(
+          APPLICATION_LANGUAGE_CHANNELS.set,
+          AppLanguageSchema.parse(language),
+        ),
+      ),
+    onChanged: (listener: (preference: ApplicationLanguagePreference) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const preference = ApplicationLanguagePreferenceSchema.safeParse(value);
+        if (preference.success) listener(preference.data);
+      };
+      ipcRenderer.on(APPLICATION_LANGUAGE_CHANNELS.changed, handler);
+      return () => ipcRenderer.removeListener(APPLICATION_LANGUAGE_CHANNELS.changed, handler);
+    },
+  },
   app: {
     onOpenSettings,
     onToggleSidebar,
@@ -469,12 +508,47 @@ const api = {
       };
     },
   },
+  briefingLab: {
+    notifications: () =>
+      ipcRenderer
+        .invoke('briefing-lab:notifications')
+        .then((value) => BriefingNotificationSnapshotSchema.parse(value)),
+    reserveDroppedAttachments: (
+      routineId: string,
+      files: readonly File[],
+    ): Promise<{ ticket: string }> =>
+      ipcRenderer.invoke('briefing-lab:reserve-drop', {
+        routineId,
+        paths: droppedAttachmentPaths(files, (file) => webUtils.getPathForFile(file)),
+      }),
+    getModelRouting: (): Promise<ModelRouting> =>
+      ipcRenderer.invoke(MODEL_ROUTING_CHANNELS.get).then((v) => ModelRoutingSchema.parse(v)),
+    setModelRouting: (value: ModelRouting): Promise<ModelRouting> =>
+      ipcRenderer
+        .invoke(MODEL_ROUTING_CHANNELS.set, ModelRoutingSchema.parse(value))
+        .then((v) => ModelRoutingSchema.parse(v)),
+    openPrivacy: (kind: 'automation' | 'calendar'): Promise<void> =>
+      ipcRenderer.invoke('briefing-lab:open-privacy', kind),
+    open: (): Promise<{ url: string; configuration: unknown }> =>
+      ipcRenderer.invoke('briefing-lab:open-global'),
+  },
+  modelLab: {
+    open: (input: { projectId: string }): Promise<ProjectModelLabLocation> =>
+      ipcRenderer.invoke(MODEL_LAB_OPEN_CHANNEL, input),
+  },
   modelUsage: {
     query: (input: ModelUsageAnalyticsQuery) =>
       ipcRenderer.invoke(
         MODEL_USAGE_IPC_CHANNELS.query,
         input,
       ) as Promise<ModelUsageAnalyticsReport>,
+  },
+  paperSummaries: {
+    save: (input: PaperSummaryCandidate) =>
+      ipcRenderer.invoke('gosu:paper-summary:save', {
+        candidate: input,
+        confirmed: true,
+      }) as Promise<PaperSummarySaveReceipt>,
   },
   projectChat: {
     snapshot: (projectId: string, sessionId?: string) =>
@@ -502,6 +576,13 @@ const api = {
       invokeProjectChat<{ removed: true }>(PROJECT_CHAT_IPC_CHANNELS.removeQueuedTurn, input),
     runQueuedTurnNow: (input: ProjectChatQueuedTurnInput) =>
       invokeProjectChat<{ accepted: true }>(PROJECT_CHAT_IPC_CHANNELS.runQueuedTurnNow, input),
+    steerQueuedTurn: (input: UpdateProjectChatQueuedTurnInput) =>
+      invokeProjectChat<{ accepted: true }>(PROJECT_CHAT_IPC_CHANNELS.steerQueuedTurn, input),
+    stageDroppedAttachments: (input: ChooseProjectChatAttachmentsInput, files: readonly File[]) =>
+      invokeProjectChat<ProjectChatAttachment[]>(PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.drop, {
+        ...input,
+        paths: droppedAttachmentPaths(files, (file) => webUtils.getPathForFile(file)),
+      }),
     chooseAttachments: (input: ChooseProjectChatAttachmentsInput) =>
       invokeProjectChat<ProjectChatAttachment[]>(
         PROJECT_CHAT_ATTACHMENT_IPC_CHANNELS.choose,

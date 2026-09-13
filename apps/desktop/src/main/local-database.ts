@@ -1,15 +1,28 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { ContextUsageSchema, type ContextUsage } from '../../../briefing-lab/src/context-usage';
+import {
+  ProjectContextCheckpointSchema,
+  projectTranscript,
+  type ProjectContextCheckpoint,
+} from './project-chat-context';
+import { conversationDigest } from '../../../briefing-lab/briefing-context';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import Database from 'better-sqlite3-multiple-ciphers';
 import { app, safeStorage } from 'electron';
 import { z } from 'zod';
 
 import {
+  AGENT_PERMANENT_MEMORY_MAX_ENTRIES_PER_SCOPE,
+  AgentPermanentMemoryEntrySchema,
   ManuscriptCheckpointV1Schema,
   ManuscriptSyncAnchorV1Schema,
   ManuscriptWorkspaceBindingV1Schema,
   ModelInvocationSchema,
+  createAgentPermanentMemoryEntry,
+  selectAgentPermanentMemories,
+  type AgentPermanentMemoryEntry,
   type ManuscriptCheckpointV1,
   type ModelCatalog,
   type ModelInvocation,
@@ -173,11 +186,21 @@ import {
 } from '../shared/ssh-workspace-contracts';
 import {
   EmptyProjectTrashReceiptSchema,
+  WorkspaceOperationSchema,
+  WorkspaceSnapshotSchema,
   type EmptyProjectTrashReceipt,
   type WorkspaceOperation,
   type WorkspacePendingSummary,
   type WorkspaceSnapshot,
 } from '../shared/workspace-contracts';
+import {
+  ProjectResearchPlanSchema,
+  ProjectResearchPlanReceiptSchema,
+  hasPendingObjectiveIdentity,
+  type ProjectResearchPlanCommit,
+  type ProjectResearchPlanReceipt,
+  type ProjectResearchPlan,
+} from '../shared/project-research-plan-contracts';
 import { ExperimentWorkspaceStorageError } from './experiment-workspace-storage-error';
 import {
   ExperimentRunExecutionBindingSchema,
@@ -642,6 +665,43 @@ function insertProjectChatMessage(database: Database.Database, message: ProjectC
   }
 }
 
+function insertProjectAgentPermanentMemory(
+  database: Database.Database,
+  memory: AgentPermanentMemoryEntry,
+) {
+  database
+    .prepare(
+      `insert or ignore into project_agent_permanent_memory(
+         id,schema_version,project_id,kind,user_request,outcome,keywords_json,
+         importance,source_id,created_at,updated_at
+       ) values(?,?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      memory.id,
+      1,
+      memory.scopeId,
+      memory.kind,
+      memory.userRequest,
+      memory.outcome,
+      JSON.stringify(memory.keywords),
+      memory.importance,
+      memory.sourceId,
+      memory.createdAt,
+      memory.updatedAt,
+    );
+  database
+    .prepare(
+      `delete from project_agent_permanent_memory
+       where project_id=? and id not in (
+         select id from project_agent_permanent_memory
+         where project_id=?
+         order by importance desc,updated_at desc,id
+         limit ?
+       )`,
+    )
+    .run(memory.scopeId, memory.scopeId, AGENT_PERMANENT_MEMORY_MAX_ENTRIES_PER_SCOPE);
+}
+
 function insertProjectChatAttempt(database: Database.Database, attempt: ProjectChatAttempt) {
   database
     .prepare(
@@ -692,8 +752,8 @@ function insertProjectChatSession(database: Database.Database, session: ProjectC
     .prepare(
       `insert into project_chat_sessions(
          id,project_id,title,is_default,parent_session_id,branched_from_message_id,
-         title_model_json,title_revision,created_at,updated_at
-       ) values(?,?,?,?,?,?,?,?,?,?)`,
+         title_model_json,title_revision,created_at,updated_at,critical_review_mode,model_lab_reference_json
+       ) values(?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       session.id,
@@ -706,6 +766,8 @@ function insertProjectChatSession(database: Database.Database, session: ProjectC
       0,
       session.createdAt,
       session.updatedAt,
+      session.criticalReviewMode ?? null,
+      session.modelLabReference ? JSON.stringify(session.modelLabReference) : null,
     );
 }
 
@@ -5201,6 +5263,15 @@ export class LocalDatabase {
         created_at text not null,
         updated_at text not null
       );
+      create table if not exists project_chat_context_state (
+        session_id text primary key references project_chat_sessions(id) on delete cascade,
+        project_id text not null,
+        checkpoint_json text,
+        usage_json text,
+        model_id text,
+        attempt_id text,
+        updated_at text not null
+      );
       create index if not exists project_chat_queued_turns_by_session
         on project_chat_queued_turns(project_id,session_id,priority,created_at,id);
       create table if not exists project_chat_instruction_revisions (
@@ -5357,6 +5428,62 @@ export class LocalDatabase {
         entries_json text not null check (length(entries_json) between 2 and 32768),
         updated_at text not null
       );
+      create table if not exists project_agent_permanent_memory (
+        id text primary key check (length(id) between 1 and 128),
+        schema_version integer not null check (schema_version = 1),
+        project_id text not null,
+        kind text not null check (kind in ('decision','constraint','preference','finding','workflow')),
+        user_request text not null check (length(user_request) between 1 and 400),
+        outcome text not null check (length(outcome) between 1 and 1200),
+        keywords_json text not null check (length(keywords_json) between 2 and 4096),
+        importance integer not null check (importance between 0 and 100),
+        source_id text not null check (length(source_id) between 1 and 160),
+        created_at text not null,
+        updated_at text not null,
+        unique(project_id,source_id)
+      );
+      create index if not exists project_agent_permanent_memory_by_project
+        on project_agent_permanent_memory(project_id,importance desc,updated_at desc,id);
+      create table if not exists project_research_plan_receipts (
+        id text primary key check (length(id) = 36),
+        project_id text not null check (length(project_id) = 36),
+        source_session_id text not null check (length(source_session_id) = 36),
+        source_attempt_id text not null check (length(source_attempt_id) = 36),
+        plan_hash text not null check (length(plan_hash) = 64),
+        idea_id text not null check (length(idea_id) = 36),
+        plan_json text not null check (length(plan_json) between 2 and 60000),
+        receipt_json text not null check (length(receipt_json) between 2 and 8192),
+        created_at text not null,
+        unique(project_id,source_attempt_id),
+        unique(project_id,idea_id),
+        foreign key(source_attempt_id) references project_chat_attempts(id) on delete cascade,
+        foreign key(source_session_id) references project_chat_sessions(id)
+      );
+      create index if not exists project_research_plan_receipts_by_project
+        on project_research_plan_receipts(project_id,created_at desc,id);
+      create trigger if not exists project_research_plan_receipts_project_limit
+        before insert on project_research_plan_receipts
+        when (select count(*) from project_research_plan_receipts
+              where project_id=new.project_id) >= 1000
+        begin
+          select raise(abort,'research_plan_limit_reached');
+        end;
+      create trigger if not exists project_research_plan_receipts_update_guard
+        before update on project_research_plan_receipts
+        begin
+          select raise(abort,'research_plan_receipt_immutable');
+        end;
+      create trigger if not exists project_research_plan_receipts_owner_guard
+        before insert on project_research_plan_receipts
+        when not exists (
+          select 1 from project_chat_attempts a
+          join project_chat_sessions s on s.id=a.session_id and s.project_id=a.project_id
+          where a.id=new.source_attempt_id and a.project_id=new.project_id
+            and a.session_id=new.source_session_id
+        )
+        begin
+          select raise(abort,'research_plan_scope_invalid');
+        end;
       create table if not exists project_chat_research_note_save_receipts (
         project_id text not null,
         session_id text not null references project_chat_sessions(id),
@@ -5501,6 +5628,22 @@ export class LocalDatabase {
       const chatSessionColumns = database.pragma('table_info(project_chat_sessions)') as Array<{
         name: string;
       }>;
+      if (!chatSessionColumns.some((column) => column.name === 'critical_review_mode')) {
+        database.exec(`alter table project_chat_sessions add column critical_review_mode text
+          check (critical_review_mode is null or critical_review_mode in ('direction','manuscript'))`);
+      }
+      if (!chatSessionColumns.some((column) => column.name === 'model_lab_reference_json')) {
+        database.exec(
+          `alter table project_chat_sessions add column model_lab_reference_json text check (model_lab_reference_json is null or length(model_lab_reference_json) between 2 and 2048)`,
+        );
+      }
+      database.exec(
+        `create trigger if not exists project_chat_model_reference_immutable before update of model_lab_reference_json on project_chat_sessions when new.model_lab_reference_json is not old.model_lab_reference_json begin select raise(abort, 'chat_model_reference_immutable'); end;`,
+      );
+      database.exec(`create trigger if not exists project_chat_review_mode_immutable
+        before update of critical_review_mode on project_chat_sessions
+        when new.critical_review_mode is not old.critical_review_mode
+        begin select raise(abort, 'chat_review_mode_immutable'); end;`);
       if (!chatSessionColumns.some((column) => column.name === 'title_model_json')) {
         database.exec(
           `alter table project_chat_sessions add column title_model_json text
@@ -5977,6 +6120,9 @@ export class LocalDatabase {
           database.prepare('delete from ssh_workspace_grants where project_id=?').run(project.id);
           database
             .prepare('delete from project_chat_queued_turns where project_id=?')
+            .run(project.id);
+          database
+            .prepare('delete from project_agent_permanent_memory where project_id=?')
             .run(project.id);
         }
         database
@@ -6599,7 +6745,7 @@ export class LocalDatabase {
     const existing = database
       .prepare(
         `select id,project_id,title,is_default,parent_session_id,branched_from_message_id,
-                title_model_json,created_at,updated_at
+                title_model_json,created_at,updated_at,critical_review_mode,model_lab_reference_json
          from project_chat_sessions where project_id=? and is_default=1`,
       )
       .get(projectId) as ProjectChatSessionRow | undefined;
@@ -6623,7 +6769,7 @@ export class LocalDatabase {
       this.require()
         .prepare(
           `select id,project_id,title,is_default,parent_session_id,branched_from_message_id,
-                  title_model_json,created_at,updated_at
+                  title_model_json,created_at,updated_at,critical_review_mode,model_lab_reference_json
            from project_chat_sessions where project_id=?
            order by is_default desc,updated_at desc,id asc`,
         )
@@ -6635,14 +6781,19 @@ export class LocalDatabase {
     const row = this.require()
       .prepare(
         `select id,project_id,title,is_default,parent_session_id,branched_from_message_id,
-                title_model_json,created_at,updated_at
+                title_model_json,created_at,updated_at,critical_review_mode,model_lab_reference_json
          from project_chat_sessions where project_id=? and id=?`,
       )
       .get(projectId, sessionId) as ProjectChatSessionRow | undefined;
     return row ? toChatSession(row) : null;
   }
 
-  createProjectChatSession(projectId: string, title?: string): ProjectChatSession {
+  createProjectChatSession(
+    projectId: string,
+    title?: string,
+    criticalReviewMode?: ProjectChatSession['criticalReviewMode'],
+    modelLabReference?: ProjectChatSession['modelLabReference'],
+  ): ProjectChatSession {
     const database = this.require();
     this.ensureDefaultProjectChatSession(projectId);
     return database
@@ -6671,7 +6822,15 @@ export class LocalDatabase {
         const session = ProjectChatSessionSchema.parse({
           id: randomUUID(),
           projectId,
-          title: title ?? generatedTitle,
+          title:
+            title ??
+            (criticalReviewMode === 'direction'
+              ? 'Research direction'
+              : criticalReviewMode === 'manuscript'
+                ? 'Manuscript review'
+                : generatedTitle),
+          ...(criticalReviewMode ? { criticalReviewMode } : {}),
+          ...(modelLabReference ? { modelLabReference } : {}),
           isDefault: false,
           createdAt: now,
           updatedAt: now,
@@ -6771,6 +6930,8 @@ export class LocalDatabase {
           title: input.title ?? `Branch · ${source.title}`.slice(0, 120),
           isDefault: false,
           parentSessionId: source.id,
+          ...(source.criticalReviewMode ? { criticalReviewMode: source.criticalReviewMode } : {}),
+          ...(source.modelLabReference ? { modelLabReference: source.modelLabReference } : {}),
           branchedFromMessageId: input.branchFromMessageId,
           createdAt: now,
           updatedAt: now,
@@ -6956,6 +7117,67 @@ export class LocalDatabase {
         )
         .run(queueId, projectId, sessionId).changes === 1
     );
+  }
+
+  takeQueuedSteer(input: {
+    projectId: string;
+    sessionId: string;
+    queueId: string;
+    message: string;
+    attemptId: string;
+    turnId: string;
+    createdAt: string;
+  }) {
+    const database = this.require();
+    return database
+      .transaction(() => {
+        const queued = this.listProjectChatQueuedTurns(input.projectId, input.sessionId).find(
+          (q) => q.id === input.queueId && q.status === 'queued',
+        );
+        if (!queued || queued.message !== input.message || queued.attachmentIds?.length)
+          return null;
+        const active = database
+          .prepare(
+            "select 1 from project_chat_attempts where id=? and project_id=? and session_id=? and turn_id=? and status='running'",
+          )
+          .get(input.attemptId, input.projectId, input.sessionId, input.turnId);
+        if (
+          !active ||
+          !this.removeProjectChatQueuedTurn(input.projectId, input.sessionId, input.queueId)
+        )
+          return null;
+        const id = randomUUID();
+        database
+          .prepare(
+            "insert into project_chat_messages(id,project_id,role,content,status,attempt_id,turn_id,created_at,completed_at) values(?,?,'user',?,'complete',?,?,?,?)",
+          )
+          .run(
+            id,
+            input.projectId,
+            `[실행 중 보충 · 전달 확인 대기]\n${input.message}`,
+            input.attemptId,
+            input.turnId,
+            input.createdAt,
+            input.createdAt,
+          );
+        // New message in this session only: never rewrite the branch-shared original question.
+        appendProjectChatSessionMessage(database, input.sessionId, id);
+        touchProjectChatSession(database, input.sessionId, input.createdAt);
+        return id;
+      })
+      .immediate();
+  }
+
+  confirmQueuedSteer(messageId: string, accepted: boolean) {
+    this.require()
+      .prepare(
+        "update project_chat_messages set content=replace(content,?,?) where id=? and role='user'",
+      )
+      .run(
+        '[실행 중 보충 · 전달 확인 대기]',
+        accepted ? '[실행 중 보충 · 전달 완료]' : '[실행 중 보충 · 전달 미확인 · 자동 재전송 없음]',
+        messageId,
+      );
   }
 
   prioritizeProjectChatQueuedTurn(
@@ -7869,11 +8091,45 @@ export class LocalDatabase {
         );
       if (updated.changes !== 1) throw new Error('chat_attempt_state_conflict');
       insertProjectChatMessage(database, assistantMessage);
+      if (terminal.status === 'complete') {
+        const user = database
+          .prepare(`select content from project_chat_messages where id=? and role='user'`)
+          .get(terminal.userMessageId) as { content: string } | undefined;
+        const permanent = user
+          ? createAgentPermanentMemoryEntry({
+              id: randomUUID(),
+              scopeType: 'project',
+              scopeId: terminal.projectId,
+              sourceId: terminal.id,
+              userRequest: user.content,
+              outcome: assistantMessage.content,
+              createdAt: terminal.updatedAt,
+            })
+          : null;
+        if (permanent) insertProjectAgentPermanentMemory(database, permanent);
+      }
       reportResearchNoteReceipts(database, terminal.id, terminal.updatedAt);
       if (!terminal.sessionId) throw new Error('chat_attempt_session_missing');
       appendProjectChatSessionMessage(database, terminal.sessionId, assistantMessage.id);
       touchProjectChatSession(database, terminal.sessionId, terminal.updatedAt);
     })();
+  }
+
+  rememberGlobalAssistantContext(projectId: string, text: string): boolean {
+    const id = randomUUID();
+    const memory = createAgentPermanentMemoryEntry({
+      id,
+      scopeType: 'project',
+      scopeId: projectId,
+      sourceId: `global-assistant:${id}`,
+      userRequest: '전역 AI 비서에서 사용자가 승인한 프로젝트별 기억',
+      outcome: text,
+      createdAt: new Date().toISOString(),
+      force: true,
+    });
+    if (!memory) return false;
+    insertProjectAgentPermanentMemory(this.require(), memory);
+    return true;
   }
 
   getProjectAgentWorkingMemory(
@@ -7887,6 +8143,24 @@ export class LocalDatabase {
       )
       .get(projectId, sessionId) as ProjectAgentWorkingMemoryRow | undefined;
     return row ? toProjectAgentWorkingMemory(row) : null;
+  }
+
+  getProjectAgentPermanentMemory(
+    projectId: string,
+    query: string,
+    options?: Readonly<{ maxTokens?: number }>,
+  ) {
+    const rows = this.require()
+      .prepare(
+        `select id,schema_version,project_id,kind,user_request,outcome,keywords_json,
+                importance,source_id,created_at,updated_at
+         from project_agent_permanent_memory
+         where project_id=?
+         order by importance desc,updated_at desc,id
+         limit 1000`,
+      )
+      .all(projectId) as ProjectAgentPermanentMemoryRow[];
+    return selectAgentPermanentMemories(rows.map(toProjectAgentPermanentMemory), query, options);
   }
 
   beginProjectAgentRun(input: ProjectAgentRun) {
@@ -8116,6 +8390,142 @@ export class LocalDatabase {
     return row ? toChatAttempt(row) : null;
   }
 
+  readProjectChatContextHistory(projectId: string, sessionId: string): ProjectChatMessage[] {
+    if (!this.getProjectChatSession(projectId, sessionId))
+      throw new Error('chat_session_not_found');
+    const rows = this.require()
+      .prepare(
+        `select * from (
+      select m.id,m.project_id,m.role,m.content,m.status,m.attempt_id,m.turn_id,m.model_json,m.created_at,m.completed_at,sm.ordinal
+      from project_chat_session_messages sm join project_chat_messages m on m.id=sm.message_id
+      where sm.session_id=? and m.project_id=? and m.status='complete'
+      and (m.attempt_id is null or exists(select 1 from project_chat_attempts a where a.id=m.attempt_id and a.status='complete'))
+      order by sm.ordinal desc limit 5000) order by ordinal asc`,
+      )
+      .all(sessionId, projectId) as ProjectChatMessageRow[];
+    return rows.map((m) =>
+      ProjectChatMessageSchema.parse({
+        id: m.id,
+        projectId: m.project_id,
+        role: m.role,
+        content: m.content,
+        status: m.status,
+        actions: [],
+        createdAt: m.created_at,
+        completedAt: m.completed_at,
+        ...(m.attempt_id ? { attemptId: m.attempt_id } : {}),
+      }),
+    );
+  }
+
+  getProjectChatContextState(projectId: string, sessionId: string) {
+    if (!this.getProjectChatSession(projectId, sessionId))
+      throw new Error('chat_session_not_found');
+    const row = this.require()
+      .prepare(
+        'select checkpoint_json,usage_json,model_id from project_chat_context_state where project_id=? and session_id=?',
+      )
+      .get(projectId, sessionId) as
+      | { checkpoint_json: string | null; usage_json: string | null; model_id: string | null }
+      | undefined;
+    return {
+      ...(row?.checkpoint_json
+        ? { checkpoint: ProjectContextCheckpointSchema.parse(JSON.parse(row.checkpoint_json)) }
+        : {}),
+      ...(row?.usage_json ? { usage: ContextUsageSchema.parse(JSON.parse(row.usage_json)) } : {}),
+      ...(row?.model_id ? { modelId: row.model_id } : {}),
+    };
+  }
+
+  saveProjectChatCheckpoint(projectId: string, sessionId: string, raw: ProjectContextCheckpoint) {
+    const checkpoint = ProjectContextCheckpointSchema.parse(raw),
+      db = this.require();
+    db.transaction(() => {
+      const history = this.readProjectChatContextHistory(projectId, sessionId);
+      if (
+        checkpoint.through > history.length ||
+        conversationDigest(projectTranscript(history.slice(0, checkpoint.through))) !==
+          checkpoint.digest
+      )
+        throw new Error('project_chat_checkpoint_stale');
+      db.prepare(
+        `insert into project_chat_context_state(session_id,project_id,checkpoint_json,updated_at) values(?,?,?,?) on conflict(session_id) do update set checkpoint_json=excluded.checkpoint_json,updated_at=excluded.updated_at`,
+      ).run(sessionId, projectId, JSON.stringify(checkpoint), new Date().toISOString());
+    }).immediate();
+  }
+
+  saveProjectChatContextUsage(
+    projectId: string,
+    sessionId: string,
+    attemptId: string,
+    modelId: string,
+    raw: ContextUsage,
+  ) {
+    const usage = ContextUsageSchema.parse(raw),
+      db = this.require();
+    if (
+      !db
+        .prepare('select 1 from project_chat_attempts where id=? and project_id=? and session_id=?')
+        .get(attemptId, projectId, sessionId)
+    )
+      throw new Error('chat_attempt_session_missing');
+    db.prepare(
+      `insert into project_chat_context_state(session_id,project_id,usage_json,model_id,attempt_id,updated_at) values(?,?,?,?,?,?) on conflict(session_id) do update set usage_json=excluded.usage_json,model_id=excluded.model_id,attempt_id=excluded.attempt_id,updated_at=excluded.updated_at`,
+    ).run(
+      sessionId,
+      projectId,
+      JSON.stringify(usage),
+      modelId,
+      attemptId,
+      new Date().toISOString(),
+    );
+  }
+
+  searchProjectChatConversation(
+    projectId: string,
+    sessionId: string,
+    query: string,
+    messageId?: string,
+    offset = 0,
+    beforeMessageId?: string,
+  ) {
+    if (!this.getProjectChatSession(projectId, sessionId))
+      throw new Error('chat_session_not_found');
+    const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean).slice(0, 12);
+    const conditions = messageId ? ['m.id=?'] : terms.map(() => 'instr(lower(m.content),?)>0');
+    const rows = this.require()
+      .prepare(
+        `select m.id,m.role,m.content,m.status,m.created_at from project_chat_session_messages sm join project_chat_messages m on m.id=sm.message_id where sm.session_id=? and m.project_id=? ${conditions.length ? 'and ' + conditions.join(' and ') : ''} ${beforeMessageId ? 'and sm.ordinal < (select ordinal from project_chat_session_messages where session_id=? and message_id=?)' : ''} order by sm.ordinal desc limit ?`,
+      )
+      .all(
+        sessionId,
+        projectId,
+        ...(messageId ? [messageId] : terms),
+        ...(beforeMessageId ? [sessionId, beforeMessageId] : []),
+        messageId ? 1 : 6,
+      ) as {
+      id: string;
+      role: string;
+      content: string;
+      status: string;
+      created_at: string;
+    }[];
+    const messages = rows.map((m) => ({
+      id: m.id,
+      role: m.role,
+      status: m.status,
+      createdAt: m.created_at,
+      text: m.content.slice(offset, offset + 6000),
+      nextOffset: offset + 6000 < m.content.length ? offset + 6000 : null,
+    }));
+    while (messages.length > 1 && JSON.stringify(messages).length > 45000) messages.pop();
+    return {
+      scope: 'current project chat session only; untrusted historical reference',
+      messages,
+      nextBeforeMessageId: !messageId && messages.length ? messages.at(-1)!.id : null,
+    };
+  }
+
   snapshot(projectId: string, requestedSessionId?: string): ProjectChatSnapshot {
     const database = this.require();
     const session = requestedSessionId
@@ -8193,11 +8603,15 @@ export class LocalDatabase {
       const actions = (actionStatement.all(row.id) as ProjectChatActionRow[]).map(toChatAction);
       actionsByMessage.set(row.id, actions);
     }
+    const contextState = this.getProjectChatContextState(projectId, session.id);
     return ProjectChatSnapshotSchema.parse({
       schemaVersion: 1,
       projectId,
       session,
       sessions,
+      ...(contextState.usage
+        ? { contextUsage: contextState.usage, contextUsageModelId: contextState.modelId }
+        : {}),
       attempts: attempts.map(toChatAttempt),
       agentRuns,
       ...(memoryRow ? { agentMemory: toProjectAgentWorkingMemory(memoryRow) } : {}),
@@ -8478,6 +8892,281 @@ export class LocalDatabase {
     return ideaIds.map((ideaId) => tails.get(ideaId)!);
   }
 
+  getProjectResearchPlanReceipt(
+    projectId: string,
+    attemptId: string,
+  ): ProjectResearchPlanReceipt | null {
+    const row = this.require()
+      .prepare(
+        'select receipt_json from project_research_plan_receipts where project_id=? and source_attempt_id=?',
+      )
+      .get(projectId, attemptId) as { receipt_json: string } | undefined;
+    return row ? ProjectResearchPlanReceiptSchema.parse(JSON.parse(row.receipt_json)) : null;
+  }
+
+  getProjectResearchPlanForIdea(
+    projectId: string,
+    ideaId: string,
+  ): ProjectResearchPlanReceipt | null {
+    const row = this.require()
+      .prepare(
+        'select receipt_json from project_research_plan_receipts where project_id=? and idea_id=?',
+      )
+      .get(projectId, ideaId) as { receipt_json: string } | undefined;
+    return row ? ProjectResearchPlanReceiptSchema.parse(JSON.parse(row.receipt_json)) : null;
+  }
+
+  getLatestProjectResearchPlan(
+    projectId: string,
+  ): { receipt: ProjectResearchPlanReceipt; plan: ProjectResearchPlan } | null {
+    const row = this.require()
+      .prepare(
+        `select receipt_json,plan_json from project_research_plan_receipts
+         where project_id=? order by rowid desc limit 1`,
+      )
+      .get(projectId) as { receipt_json: string; plan_json: string } | undefined;
+    return row
+      ? {
+          receipt: ProjectResearchPlanReceiptSchema.parse(JSON.parse(row.receipt_json)),
+          plan: ProjectResearchPlanSchema.parse(JSON.parse(row.plan_json)),
+        }
+      : null;
+  }
+
+  /** Commit only local records; nested database methods use synchronous SQLite savepoints. */
+  getProjectResearchPlanContentForIdea(
+    projectId: string,
+    ideaId: string,
+  ): { receipt: ProjectResearchPlanReceipt; plan: ProjectResearchPlan } | null {
+    const row = this.require()
+      .prepare(
+        'select receipt_json,plan_json from project_research_plan_receipts where project_id=? and idea_id=?',
+      )
+      .get(projectId, ideaId) as { receipt_json: string; plan_json: string } | undefined;
+    return row
+      ? {
+          receipt: ProjectResearchPlanReceiptSchema.parse(JSON.parse(row.receipt_json)),
+          plan: ProjectResearchPlanSchema.parse(JSON.parse(row.plan_json)),
+        }
+      : null;
+  }
+
+  commitProjectResearchPlan(
+    inputState: WorkspaceSnapshot,
+    inputOperation: WorkspaceOperation,
+    inputBundle: ProjectResearchPlanCommit,
+  ): void {
+    const state = WorkspaceSnapshotSchema.parse(structuredClone(inputState));
+    const operation = WorkspaceOperationSchema.parse(structuredClone(inputOperation));
+    const bundle = z
+      .object({
+        receipt: ProjectResearchPlanReceiptSchema,
+        plan: ProjectResearchPlanSchema,
+        expectedLoggingVersion: z.number().int().nonnegative(),
+        loggingTemplate: ExperimentLoggingTemplateSchema.nullable(),
+        idea: ExperimentIdeaSchema,
+        evaluationSession: ExperimentEvaluationSessionSchema,
+        userMessage: ExperimentEvaluationMessageSchema,
+        evaluationRevision: ExperimentEvaluationRevisionSchema,
+        assistantMessage: ExperimentEvaluationMessageSchema,
+      })
+      .strict()
+      .parse(structuredClone(inputBundle));
+    const {
+      receipt,
+      plan,
+      idea,
+      evaluationSession: session,
+      evaluationRevision: revision,
+    } = bundle;
+    const planJson = JSON.stringify(plan);
+    const expectedPrimaryMetric = {
+      ...plan.primaryMetric,
+      evaluatorHash:
+        plan.primaryMetric.evaluatorHash ??
+        (plan.referenceCode
+          ? `sha256:${createHash('sha256').update(plan.referenceCode, 'utf8').digest('hex')}`
+          : `pending:evaluator:${receipt.id}`),
+      datasetHash: plan.primaryMetric.datasetHash ?? `pending:dataset:${receipt.id}`,
+    };
+    const expectedEvaluationMetrics = [
+      {
+        key: plan.primaryMetric.key,
+        displayName: plan.primaryMetric.displayName,
+        direction: plan.primaryMetric.direction,
+        unit: plan.primaryMetric.unit,
+        aggregation: plan.primaryMetric.aggregation,
+        primary: true,
+      },
+      ...plan.observedMetrics,
+    ];
+    const database = this.require();
+    database
+      .transaction(() => {
+        const previous = this.getProjectResearchPlanReceipt(
+          receipt.projectId,
+          receipt.sourceAttemptId,
+        );
+        if (previous) {
+          throw new Error(
+            previous.planHash === receipt.planHash
+              ? 'research_plan_replayed'
+              : 'research_plan_conflict',
+          );
+        }
+        const project = state.projects.find(({ id }) => id === receipt.projectId);
+        const objective = state.objectives
+          .filter(({ projectId }) => projectId === receipt.projectId)
+          .sort((a, b) => b.objectiveVersion - a.objectiveVersion)[0];
+        const source = database
+          .prepare(
+            `select 1 from project_chat_attempts a
+         join project_chat_sessions s on s.id=a.session_id and s.project_id=a.project_id
+         where a.project_id=? and a.id=? and a.session_id=?`,
+          )
+          .get(receipt.projectId, receipt.sourceAttemptId, receipt.sourceSessionId);
+        if (
+          !source ||
+          !project ||
+          project.archivedAt ||
+          project.trashedAt ||
+          operation.projectId !== receipt.projectId ||
+          operation.commandType !== 'research.plan.apply' ||
+          !objective ||
+          objective.id !== receipt.objectiveId ||
+          objective.objectiveVersion !== receipt.objectiveVersion ||
+          objective.entityVersion !== receipt.objectiveEntityVersion ||
+          objective.locked !== receipt.objectiveLocked ||
+          objective.goal !== plan.goal ||
+          !isDeepStrictEqual(objective.primaryMetric, expectedPrimaryMetric) ||
+          !isDeepStrictEqual(objective.budget, plan.budget) ||
+          !isDeepStrictEqual(objective.guardrails, plan.guardrails) ||
+          !isDeepStrictEqual(objective.stopPolicy, plan.stopPolicy) ||
+          hasPendingObjectiveIdentity(objective.primaryMetric) !== receipt.needsIdentity ||
+          (receipt.needsIdentity && objective.locked) ||
+          createHash('sha256').update(planJson, 'utf8').digest('hex') !== receipt.planHash ||
+          idea.id !== receipt.ideaId ||
+          idea.projectId !== receipt.projectId ||
+          idea.title !== plan.title ||
+          idea.hypothesis !== plan.hypothesis ||
+          idea.version !== 1 ||
+          idea.outcome !== 'planned' ||
+          idea.completedAt !== null ||
+          session.id !== receipt.evaluationSessionId ||
+          session.projectId !== receipt.projectId ||
+          session.status !== 'draft' ||
+          session.version !== 1 ||
+          session.currentRevision !== 0 ||
+          session.activeAttemptId !== null ||
+          session.acceptedProfileId !== null ||
+          session.lastErrorCode !== null ||
+          revision.id !== receipt.evaluationRevisionId ||
+          revision.sessionId !== session.id ||
+          revision.revision !== 1 ||
+          revision.attemptId !== receipt.sourceAttemptId ||
+          revision.draft.title !== plan.title ||
+          revision.draft.purpose !== plan.goal ||
+          revision.draft.evaluationPolicy !== plan.evaluationPolicy ||
+          !isDeepStrictEqual(revision.draft.experimentRules, plan.experimentRules) ||
+          !isDeepStrictEqual(revision.draft.cadence, plan.cadence) ||
+          !isDeepStrictEqual(revision.draft.loggingFields, plan.loggingFields) ||
+          !isDeepStrictEqual(revision.draft.metrics, expectedEvaluationMetrics) ||
+          (plan.referenceCode !== null &&
+            revision.draft.referenceCode.content !== plan.referenceCode) ||
+          bundle.userMessage.sessionId !== session.id ||
+          bundle.userMessage.attemptId !== revision.attemptId ||
+          bundle.userMessage.role !== 'user' ||
+          bundle.userMessage.status !== 'complete' ||
+          bundle.userMessage.revision !== null ||
+          bundle.userMessage.invocation !== null ||
+          bundle.assistantMessage.sessionId !== session.id ||
+          bundle.assistantMessage.attemptId !== revision.attemptId ||
+          bundle.assistantMessage.role !== 'assistant' ||
+          bundle.assistantMessage.status !== 'complete' ||
+          bundle.assistantMessage.revision !== 1 ||
+          bundle.assistantMessage.id === bundle.userMessage.id
+        )
+          throw new Error('research_plan_scope_invalid');
+
+        const currentTemplate = this.getLatestExperimentLoggingTemplate(receipt.projectId);
+        if ((currentTemplate?.version ?? 0) !== bundle.expectedLoggingVersion)
+          throw new Error('experiment_logging_template_conflict');
+        const selectedTemplate = bundle.loggingTemplate ?? currentTemplate;
+        if (
+          !selectedTemplate ||
+          selectedTemplate.projectId !== receipt.projectId ||
+          selectedTemplate.id !== receipt.loggingTemplateId ||
+          selectedTemplate.version !== receipt.loggingTemplateVersion
+        )
+          throw new Error('research_plan_scope_invalid');
+        const evaluationCount = database
+          .prepare(
+            'select count(*) as count from experiment_evaluation_sessions where project_id=?',
+          )
+          .get(receipt.projectId) as { count: number };
+        if (evaluationCount.count >= EXPERIMENT_EVALUATION_MAX_SESSIONS_PER_PROJECT)
+          throw new Error('experiment_evaluation_session_limit_reached');
+
+        this.commitWorkspaceState(state, operation);
+        if (
+          bundle.loggingTemplate &&
+          !this.appendExperimentLoggingTemplate(
+            bundle.loggingTemplate,
+            bundle.expectedLoggingVersion,
+          )
+        )
+          throw new Error('experiment_logging_template_conflict');
+        if (!this.createExperimentIdea(idea)) throw new Error('research_plan_conflict');
+        if (!this.createExperimentEvaluationSession(session))
+          throw new Error('research_plan_conflict');
+        const generating = this.beginExperimentEvaluationTurn({
+          projectId: receipt.projectId,
+          sessionId: session.id,
+          expectedVersion: 1,
+          attemptId: revision.attemptId,
+          userMessage: bundle.userMessage,
+          updatedAt: bundle.userMessage.createdAt,
+        });
+        if (!generating) throw new Error('research_plan_conflict');
+        if (
+          !this.completeExperimentEvaluationTurn({
+            session: {
+              ...generating,
+              title: revision.draft.title,
+              status: 'ready',
+              version: 3,
+              currentRevision: 1,
+              activeAttemptId: null,
+              acceptedProfileId: null,
+              lastErrorCode: null,
+              updatedAt: revision.createdAt,
+            },
+            revision,
+            assistantMessage: bundle.assistantMessage,
+          })
+        )
+          throw new Error('research_plan_conflict');
+        database
+          .prepare(
+            `insert into project_research_plan_receipts(
+          id,project_id,source_session_id,source_attempt_id,plan_hash,idea_id,plan_json,receipt_json,created_at
+        ) values(?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            receipt.id,
+            receipt.projectId,
+            receipt.sourceSessionId,
+            receipt.sourceAttemptId,
+            receipt.planHash,
+            receipt.ideaId,
+            planJson,
+            JSON.stringify(receipt),
+            receipt.createdAt,
+          );
+      })
+      .immediate();
+  }
+
   getExperimentIdea(projectId: string, ideaId: string): ExperimentIdea | null {
     const row = this.require()
       .prepare('select * from experiment_ideas where project_id=? and id=?')
@@ -8644,6 +9333,19 @@ export class LocalDatabase {
       )
       .get(projectId, trialId) as ExperimentMetricPointRow | undefined;
     return row ? toExperimentMetricPoint(row) : null;
+  }
+
+  getExperimentLoggingTemplateRevision(
+    projectId: string,
+    revisionId: string,
+  ): ExperimentLoggingTemplate | null {
+    const row = this.require()
+      .prepare(
+        `select * from experiment_logging_template_revisions
+         where project_id=? and id=?`,
+      )
+      .get(projectId, revisionId) as ExperimentLoggingTemplateRow | undefined;
+    return row ? toExperimentLoggingTemplate(row) : null;
   }
 
   getLatestExperimentLoggingTemplate(projectId: string): ExperimentLoggingTemplate | null {
@@ -12122,6 +12824,8 @@ function toSshWorkspaceGrant(row: SshWorkspaceGrantRow) {
 }
 
 type ProjectChatSessionRow = {
+  model_lab_reference_json?: string | null;
+  critical_review_mode?: 'direction' | 'manuscript' | null;
   id: string;
   project_id: string;
   title: string;
@@ -12219,6 +12923,20 @@ type ProjectAgentWorkingMemoryRow = {
   project_id: string;
   revision: number;
   entries_json: string;
+  updated_at: string;
+};
+
+type ProjectAgentPermanentMemoryRow = {
+  id: string;
+  schema_version: 1;
+  project_id: string;
+  kind: AgentPermanentMemoryEntry['kind'];
+  user_request: string;
+  outcome: string;
+  keywords_json: string;
+  importance: number;
+  source_id: string;
+  created_at: string;
   updated_at: string;
 };
 
@@ -12346,11 +13064,32 @@ function toProjectAgentWorkingMemory(row: ProjectAgentWorkingMemoryRow) {
   });
 }
 
+function toProjectAgentPermanentMemory(row: ProjectAgentPermanentMemoryRow) {
+  return AgentPermanentMemoryEntrySchema.parse({
+    schemaVersion: 1,
+    id: row.id,
+    scopeType: 'project',
+    scopeId: row.project_id,
+    kind: row.kind,
+    userRequest: row.user_request,
+    outcome: row.outcome,
+    keywords: JSON.parse(row.keywords_json) as unknown,
+    importance: row.importance,
+    sourceId: row.source_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
 function toChatSession(row: ProjectChatSessionRow) {
   return ProjectChatSessionSchema.parse({
     id: row.id,
     projectId: row.project_id,
     title: row.title,
+    ...(row.model_lab_reference_json
+      ? { modelLabReference: JSON.parse(row.model_lab_reference_json) as unknown }
+      : {}),
+    ...(row.critical_review_mode ? { criticalReviewMode: row.critical_review_mode } : {}),
     isDefault: row.is_default === 1,
     ...(row.parent_session_id ? { parentSessionId: row.parent_session_id } : {}),
     ...(row.branched_from_message_id

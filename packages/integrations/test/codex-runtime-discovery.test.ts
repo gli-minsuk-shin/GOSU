@@ -1,0 +1,207 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  resolveGosuCodexHome,
+  resolveInstalledCodexExecutable,
+} from '../src/codex-runtime-discovery.js';
+
+const appRuntime = '/Applications/ChatGPT.app/Contents/Resources/codex';
+const codexRuntime = '/Applications/Codex.app/Contents/Resources/codex';
+const fallbackExecutable = '/bundled/node';
+
+describe('shared GOSU Codex login scope', () => {
+  it('resolves the same macOS home for standalone Model Lab and Electron GOSU', () => {
+    const options = {
+      platform: 'darwin' as const,
+      userHome: '/Users/fixture',
+      environment: {},
+      authFileExists: () => false,
+    };
+    const standalone = resolveGosuCodexHome(options);
+    const desktop = resolveGosuCodexHome({
+      ...options,
+      userDataDirectory: '/Users/fixture/Library/Application Support/GOSU',
+    });
+    expect(standalone).toBe(desktop);
+    expect(standalone).toBe('/Users/fixture/Library/Application Support/GOSU/codex-project-chat');
+    expect(standalone).not.toContain('/.codex');
+  });
+
+  it('supports native application-data roots on Linux and Windows', () => {
+    expect(
+      resolveGosuCodexHome({
+        platform: 'linux',
+        userHome: '/home/fixture',
+        environment: {},
+        authFileExists: () => false,
+      }),
+    ).toBe('/home/fixture/.config/GOSU/codex-project-chat');
+    expect(
+      resolveGosuCodexHome({
+        platform: 'linux',
+        userHome: '/home/fixture',
+        environment: { XDG_CONFIG_HOME: '/data/config' },
+        authFileExists: () => false,
+      }),
+    ).toBe('/data/config/GOSU/codex-project-chat');
+    expect(
+      resolveGosuCodexHome({
+        platform: 'win32',
+        userHome: 'C:\\Users\\fixture',
+        environment: { APPDATA: 'D:\\AppData' },
+        authFileExists: () => false,
+      }),
+    ).toBe('D:\\AppData\\GOSU\\codex-project-chat');
+  });
+
+  it('reuses the legacy Electron package-name login if the renamed app home has no auth', () => {
+    const legacy = '/Users/fixture/Library/Application Support/@gosu/desktop/codex-project-chat';
+    const authFileExists = vi.fn((path: string) => path === `${legacy}/auth.json`);
+    expect(
+      resolveGosuCodexHome({
+        platform: 'darwin',
+        userHome: '/Users/fixture',
+        environment: {},
+        authFileExists,
+      }),
+    ).toBe(legacy);
+    expect(authFileExists.mock.calls.map(([path]) => path)).toEqual([
+      '/Users/fixture/Library/Application Support/GOSU/codex-project-chat/auth.json',
+      `${legacy}/auth.json`,
+    ]);
+    expect(
+      resolveGosuCodexHome({
+        platform: 'darwin',
+        userDataDirectory: '/explicit/electron-user-data',
+        environment: {},
+        authFileExists,
+      }),
+    ).toBe('/explicit/electron-user-data/codex-project-chat');
+  });
+
+  it('prefers the current app login when both bounded homes contain auth', () => {
+    expect(
+      resolveGosuCodexHome({
+        platform: 'darwin',
+        userHome: '/Users/fixture',
+        environment: {},
+        authFileExists: () => true,
+      }),
+    ).toBe('/Users/fixture/Library/Application Support/GOSU/codex-project-chat');
+  });
+
+  it('honors only an explicit absolute shared override, never inherited generic CODEX_HOME', () => {
+    expect(
+      resolveGosuCodexHome({
+        platform: 'darwin',
+        userHome: '/Users/fixture',
+        environment: { GOSU_CODEX_HOME: '/shared/gosu-codex', CODEX_HOME: '/unrelated' },
+      }),
+    ).toBe('/shared/gosu-codex');
+    expect(() =>
+      resolveGosuCodexHome({ environment: { GOSU_CODEX_HOME: '../other-login' } }),
+    ).toThrow('gosu_codex_home_must_be_absolute');
+  });
+});
+
+function fixture(versions: Record<string, string | null>) {
+  return {
+    platform: 'darwin' as const,
+    userHome: '/fixture',
+    probeVersion: vi.fn(async (executable: string) => versions[executable] ?? null),
+  };
+}
+
+describe('installed Codex runtime discovery', () => {
+  it('selects the highest stable installed version without any model-name mapping', async () => {
+    const dependencies = fixture({
+      [fallbackExecutable]: 'codex-cli 0.149.0',
+      codex: 'codex-cli 0.152.9',
+      [codexRuntime]: 'codex-cli 0.153.0',
+      [appRuntime]: 'codex-cli 0.160.12',
+    });
+    await expect(
+      resolveInstalledCodexExecutable({ fallbackExecutable }, dependencies),
+    ).resolves.toBe(appRuntime);
+  });
+
+  it('probes bundled Node entrypoints with their prefix and environment', async () => {
+    const dependencies = fixture({ [fallbackExecutable]: 'codex-cli 0.149.0' });
+    const fallbackEnvironment = { ELECTRON_RUN_AS_NODE: '1' };
+    await expect(
+      resolveInstalledCodexExecutable(
+        { fallbackExecutable, fallbackArgs: ['/bundled/codex.js'], fallbackEnvironment },
+        dependencies,
+      ),
+    ).resolves.toBe(fallbackExecutable);
+    expect(dependencies.probeVersion).toHaveBeenCalledWith(
+      fallbackExecutable,
+      ['/bundled/codex.js'],
+      fallbackEnvironment,
+    );
+  });
+
+  it('retains the bundled runtime when installed candidates are older, prerelease or incompatible', async () => {
+    const dependencies = fixture({
+      [fallbackExecutable]: 'codex-cli 0.149.0',
+      codex: 'codex-cli 0.99.0',
+      [codexRuntime]: 'codex-cli 0.200.0-beta.1',
+      [appRuntime]: 'codex-cli 1.0.0',
+    });
+    await expect(
+      resolveInstalledCodexExecutable({ fallbackExecutable }, dependencies),
+    ).resolves.toBe(fallbackExecutable);
+  });
+
+  it('ignores missing, failed and malformed version probes', async () => {
+    const dependencies = fixture({ [appRuntime]: 'not a Codex CLI version: 999.0.0' });
+    dependencies.probeVersion.mockRejectedValueOnce(new Error('ENOENT'));
+    await expect(
+      resolveInstalledCodexExecutable({ fallbackExecutable }, dependencies),
+    ).resolves.toBe(fallbackExecutable);
+  });
+
+  it('uses an installed runtime if the default PATH command is missing', async () => {
+    const dependencies = fixture({ [appRuntime]: 'codex-cli 0.153.0' });
+    await expect(
+      resolveInstalledCodexExecutable({ fallbackExecutable: 'codex' }, dependencies),
+    ).resolves.toBe(appRuntime);
+    expect(dependencies.probeVersion.mock.calls.filter(([path]) => path === 'codex')).toHaveLength(
+      1,
+    );
+  });
+
+  it('preserves an explicit executable pin without probing or falling back silently', async () => {
+    const dependencies = fixture({ [appRuntime]: 'codex-cli 0.153.0' });
+    await expect(
+      resolveInstalledCodexExecutable(
+        { fallbackExecutable, explicitExecutable: ' /explicit/missing-or-older-codex ' },
+        dependencies,
+      ),
+    ).resolves.toBe('/explicit/missing-or-older-codex');
+    expect(dependencies.probeVersion).not.toHaveBeenCalled();
+  });
+
+  it('keeps the fallback on equal versions and compares version components numerically', async () => {
+    const dependencies = fixture({
+      [fallbackExecutable]: 'codex-cli 0.149.9',
+      codex: 'codex-cli 0.149.10',
+      [appRuntime]: 'codex-cli 0.149.9',
+    });
+    await expect(
+      resolveInstalledCodexExecutable({ fallbackExecutable }, dependencies),
+    ).resolves.toBe('codex');
+    dependencies.probeVersion.mockImplementation(async () => 'codex-cli 0.149.9');
+    await expect(
+      resolveInstalledCodexExecutable({ fallbackExecutable }, dependencies),
+    ).resolves.toBe(fallbackExecutable);
+  });
+
+  it('only checks PATH and the fallback on platforms without these application bundles', async () => {
+    const dependencies = { ...fixture({ codex: 'codex-cli 0.153.0' }), platform: 'linux' as const };
+    await expect(
+      resolveInstalledCodexExecutable({ fallbackExecutable }, dependencies),
+    ).resolves.toBe('codex');
+    expect(dependencies.probeVersion).toHaveBeenCalledTimes(2);
+  });
+});

@@ -122,7 +122,7 @@
   border-radius: 9px;
   background: var(--surface);
   color: var(--text);
-  font-size: 25px;
+  font-size: var(--font-title);
   line-height: 1;
 }
 
@@ -136,7 +136,7 @@
   border-radius: 9px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 18px;
+  font-size: var(--font-section);
   font-weight: 800;
 }
 
@@ -334,7 +334,7 @@
 
 .lecture-composer > header h2 {
   margin: 5px 0;
-  font-size: clamp(22px, 3vw, 32px);
+  font-size: var(--font-display);
   letter-spacing: -0.035em;
 }
 
@@ -1558,7 +1558,7 @@
 .lecture-chat-attachment-card small {
   grid-column: 1;
   color: var(--subtle);
-  font-size: calc(var(--font-caption) - 1px);
+  font-size: var(--font-caption);
 }
 
 .lecture-chat-attachment-card button {
@@ -1610,7 +1610,7 @@
 
 .lecture-chat-attach-button small {
   color: var(--subtle);
-  font-size: calc(var(--font-caption) - 1px);
+  font-size: var(--font-caption);
 }
 
 .lecture-chat-send-button {

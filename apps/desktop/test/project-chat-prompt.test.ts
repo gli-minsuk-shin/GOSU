@@ -1,9 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import {
+  assembleResearchAgentInstructions,
+  createAgentPermanentMemoryEntry,
+  estimateAgentContextTokens,
+  GOSU_RESEARCH_AGENT_POLICY,
+  selectAgentPermanentMemories,
+} from '@gosu/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
   PROJECT_CHAT_MAX_ASSEMBLED_PROMPT_CHARACTERS,
+  PROJECT_CHAT_POLICY_INSTRUCTIONS,
   assembleProjectChatPrompt,
 } from '../src/main/project-chat-prompt';
 import type { WorkspaceSnapshot } from '../src/shared/workspace-contracts';
@@ -13,6 +21,66 @@ function hash(value: string) {
 }
 
 describe('Project chat prompt assembly', () => {
+  it('adds the shared native-agent policy without moving untrusted turn content into instructions', () => {
+    const projectId = randomUUID();
+    const now = '2026-09-07T00:00:00.000Z';
+    const userRequest = 'Use H1_new = X.T @ (y - X @ H1) / N, then inspect the KKT loss.';
+    const result = assembleProjectChatPrompt({
+      snapshot: {
+        schemaVersion: 1,
+        revision: 1,
+        projects: [
+          {
+            id: projectId,
+            name: 'Research',
+            slug: 'research',
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        tasks: [],
+        objectives: [],
+      },
+      projectId,
+      message: userRequest,
+      harnessMode: 'context',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      profileVersion: 0,
+      instructionRevisionId: null,
+      customInstructions: 'UNTRUSTED_PREFERENCE_MARKER',
+      policyRules: ['USER_CONFIGURED_RULE_MARKER'],
+      nativeCollaborationModeId: 'default',
+      nativeExecutionKind: 'default',
+      nativeCollaborationCatalogSha256: hash('catalog'),
+      nativePersonality: 'auto',
+      nativeResponseVerbosity: 'auto',
+      effectiveReasoningOptionId: null,
+    });
+
+    expect(result.developerInstructions.startsWith(assembleResearchAgentInstructions([]))).toBe(
+      true,
+    );
+    expect(result.developerInstructions).toContain(PROJECT_CHAT_POLICY_INSTRUCTIONS.content);
+    expect(result.developerInstructions).not.toContain(userRequest);
+    expect(result.developerInstructions).not.toContain('UNTRUSTED_PREFERENCE_MARKER');
+    expect(result.developerInstructions).not.toContain('USER_CONFIGURED_RULE_MARKER');
+    const envelope = JSON.parse(result.prompt.split('\n').find((line) => line.startsWith('{'))!);
+    expect(envelope.userMessage).toBe(userRequest);
+    expect(envelope.projectPreferences.customInstructions).toBe('UNTRUSTED_PREFERENCE_MARKER');
+    expect(envelope.projectPolicyRules).toEqual(['USER_CONFIGURED_RULE_MARKER']);
+    expect(result.provenance).toMatchObject({
+      harnessInstructionId: GOSU_RESEARCH_AGENT_POLICY.id,
+      harnessInstructionVersion: GOSU_RESEARCH_AGENT_POLICY.version,
+      harnessInstructionsSha256: hash(GOSU_RESEARCH_AGENT_POLICY.content),
+      developerInstructionsSha256: hash(result.developerInstructions),
+      userMessageSha256: hash(userRequest),
+      nativeCollaborationModeId: 'default',
+      nativeExecutionKind: 'default',
+    });
+  });
+
   it('replaces older raw turns with bounded persistent working memory', () => {
     const now = new Date().toISOString();
     const projectId = randomUUID();
@@ -79,10 +147,10 @@ describe('Project chat prompt assembly', () => {
     });
 
     expect(result.contextPlan).toMatchObject({
-      strategy: 'recent-history-plus-working-memory',
+      strategy: 'layered-project-memory',
       candidateMessageCount: 14,
-      recentMessageCount: 9,
-      omittedMessageCount: 5,
+      recentMessageCount: 8,
+      omittedMessageCount: 6,
       workingMemoryRevision: 3,
       memoryEntryCount: 1,
     });
@@ -90,10 +158,198 @@ describe('Project chat prompt assembly', () => {
     expect(result.prompt).toContain('Use held-out log likelihood.');
     expect(result.prompt).not.toContain('"content":"0:hhhh');
     expect(result.provenance).toMatchObject({
-      assemblyVersion: 5,
+      assemblyVersion: 7,
       workingMemoryRevision: 3,
       contextPlanSha256: hash(JSON.stringify(result.contextPlan)),
     });
+  });
+
+  it('injects only the query-relevant permanent project memory into a frozen context segment', () => {
+    const now = '2026-08-31T00:00:00.000Z';
+    const projectId = randomUUID();
+    const relevant = createAgentPermanentMemoryEntry({
+      id: 'permanent-frozen-metric',
+      scopeType: 'project',
+      scopeId: projectId,
+      sourceId: randomUUID(),
+      userRequest: 'Remember this decision: the frozen evaluation metric is held-out likelihood.',
+      outcome: 'PERMANENT_FROZEN_METRIC: use held-out log likelihood for every comparison.',
+      createdAt: now,
+    })!;
+    const unrelated = createAgentPermanentMemoryEntry({
+      id: 'permanent-layout-preference',
+      scopeType: 'project',
+      scopeId: projectId,
+      sourceId: randomUUID(),
+      userRequest: 'Remember this preference: keep the project sidebar collapsed.',
+      outcome: 'PERMANENT_LAYOUT_PREFERENCE: collapse the left navigation rail.',
+      createdAt: now,
+    })!;
+    const permanentMemory = selectAgentPermanentMemories(
+      [unrelated, relevant],
+      'Which frozen held-out evaluation metric did we decide to use?',
+      { maxEntries: 1 },
+    );
+    const crossProjectMemory = {
+      ...relevant,
+      id: 'permanent-cross-project-secret',
+      scopeId: randomUUID(),
+      sourceId: randomUUID(),
+      outcome: 'CROSS_PROJECT_PERMANENT_MEMORY_MUST_NOT_APPEAR',
+    };
+
+    const result = assembleProjectChatPrompt({
+      snapshot: {
+        schemaVersion: 1,
+        revision: 1,
+        projects: [
+          {
+            id: projectId,
+            name: 'Permanent memory project',
+            slug: 'permanent-memory-project',
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        tasks: [],
+        objectives: [],
+      },
+      projectId,
+      message: 'Which frozen held-out evaluation metric did we decide to use?',
+      priorMessages: [],
+      harnessMode: 'context',
+      responseDepth: 'standard',
+      contextScope: 'project',
+      profileVersion: 0,
+      instructionRevisionId: null,
+      customInstructions: '',
+      nativeCollaborationModeId: null,
+      nativeExecutionKind: 'default',
+      nativeCollaborationCatalogSha256: hash('catalog'),
+      nativePersonality: 'auto',
+      nativeResponseVerbosity: 'auto',
+      effectiveReasoningOptionId: null,
+      permanentMemory: {
+        ...permanentMemory,
+        entries: [...permanentMemory.entries, crossProjectMemory],
+        candidateCount: 3,
+      },
+    });
+
+    expect(permanentMemory.entries.map((entry) => entry.id)).toEqual([relevant.id]);
+    expect(result.contextPlan).toMatchObject({
+      includedSegments: expect.arrayContaining(['permanent-memory']),
+      permanentMemoryCandidateCount: 3,
+      permanentMemoryEntryCount: 1,
+      permanentMemoryCharacters: JSON.stringify([relevant]).length,
+      permanentMemoryEstimatedTokens: estimateAgentContextTokens(JSON.stringify([relevant])),
+    });
+    expect(result.prompt).toContain('"projectPermanentMemory"');
+    expect(result.prompt).toContain('PERMANENT_FROZEN_METRIC');
+    expect(result.prompt).not.toContain('PERMANENT_LAYOUT_PREFERENCE');
+    expect(result.prompt).not.toContain('CROSS_PROJECT_PERMANENT_MEMORY_MUST_NOT_APPEAR');
+    expect(result.provenance).toMatchObject({
+      assemblyVersion: 7,
+      permanentMemoryEntryCount: 1,
+      permanentMemorySha256: hash(JSON.stringify([relevant])),
+    });
+  });
+
+  it('uses a provider-advertised 1M context window for a longer exact recent tail with reserves', () => {
+    const now = '2026-08-31T00:00:00.000Z';
+    const projectId = randomUUID();
+    const priorMessages = Array.from({ length: 80 }, (_, index) => ({
+      id: randomUUID(),
+      projectId,
+      role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      content: `large-context-turn-${index}:${'evidence '.repeat(1_000)}`,
+      status: 'complete' as const,
+      attemptId: randomUUID(),
+      actions: [],
+      createdAt: now,
+      completedAt: now,
+    }));
+    const baseInput = {
+      snapshot: {
+        schemaVersion: 1 as const,
+        revision: 1,
+        projects: [
+          {
+            id: projectId,
+            name: 'Large context project',
+            slug: 'large-context-project',
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        tasks: [],
+        objectives: [],
+      },
+      projectId,
+      message: 'Continue from the exact recent evidence.',
+      priorMessages,
+      harnessMode: 'context' as const,
+      responseDepth: 'standard' as const,
+      contextScope: 'project' as const,
+      profileVersion: 0,
+      instructionRevisionId: null,
+      customInstructions: '',
+      nativeCollaborationModeId: null,
+      nativeExecutionKind: 'default' as const,
+      nativeCollaborationCatalogSha256: hash('catalog'),
+      nativePersonality: 'auto' as const,
+      nativeResponseVerbosity: 'auto' as const,
+      effectiveReasoningOptionId: null,
+    };
+
+    const fallback = assembleProjectChatPrompt(baseInput);
+    const large = assembleProjectChatPrompt({ ...baseInput, contextWindowTokens: 1_000_000 });
+
+    expect(fallback.contextPlan.recentMessageCount).toBe(1);
+    expect(large.contextPlan).toMatchObject({
+      strategy: 'layered-project-memory',
+      contextWindowTokens: 1_000_000,
+      contextWindowSource: 'provider',
+      recentMessageCount: 80,
+      omittedMessageCount: 0,
+    });
+    expect(large.contextPlan.recentHistoryCharacters).toBeGreaterThan(500_000);
+    expect(large.contextPlan.outputReserveTokens).toBeGreaterThan(0);
+    expect(large.contextPlan.estimatedPromptTokens).toBeLessThanOrEqual(
+      large.contextPlan.availableInputTokens!,
+    );
+    const full = assembleProjectChatPrompt({
+      ...baseInput,
+      contextWindowTokens: 1050000,
+      contextWindowSource: 'configured',
+      priorMessages: Array.from({ length: 150 }, (_, i) => ({
+        ...priorMessages[0]!,
+        id: randomUUID(),
+        content: `retained-short-fact-${i}`,
+      })),
+    });
+    expect(full.contextPlan).toMatchObject({
+      recentMessageCount: 150,
+      omittedMessageCount: 0,
+      contextWindowSource: 'configured',
+    });
+    expect(full.prompt).toContain('retained-short-fact-0');
+    const redistributed = assembleProjectChatPrompt({
+      ...baseInput,
+      contextWindowTokens: 1_000_000,
+      priorMessages: Array.from({ length: 240 }, (_, i) => ({
+        ...priorMessages[0]!,
+        id: randomUUID(),
+        content: `long-fact-${i}:` + 'evidence '.repeat(1000),
+      })),
+    });
+    expect(redistributed.contextPlan.recentMessageCount).toBe(240);
+    expect(redistributed.prompt).toContain('long-fact-0:');
+    expect(redistributed.contextPlan.estimatedPromptTokens).toBeLessThan(
+      redistributed.contextPlan.availableInputTokens!,
+    );
   });
 
   it('is deterministic, bounded, project-local, and provenance-addressed', () => {
@@ -149,7 +405,17 @@ describe('Project chat prompt assembly', () => {
       snapshot,
       projectId,
       message: 'What should we test next?',
-      priorMessages: [],
+      priorMessages: Array.from({ length: 12 }, (_, index) => ({
+        id: randomUUID(),
+        projectId,
+        role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+        content: `fallback-heavy-history-${index}:${'context '.repeat(1_200)}`,
+        status: 'complete' as const,
+        attemptId: randomUUID(),
+        actions: [],
+        createdAt: now,
+        completedAt: now,
+      })),
       harnessMode: 'planner' as const,
       responseDepth: 'deep' as const,
       contextScope: 'project' as const,
@@ -169,14 +435,22 @@ describe('Project chat prompt assembly', () => {
     const second = assembleProjectChatPrompt(input);
     expect(second).toEqual(first);
     expect(first.prompt.length).toBeLessThanOrEqual(PROJECT_CHAT_MAX_ASSEMBLED_PROMPT_CHARACTERS);
+    expect(first.contextPlan).toMatchObject({
+      contextWindowTokens: 32_000,
+      contextWindowSource: 'fallback',
+    });
+    expect(first.contextPlan.recentHistoryCharacters).toBeLessThanOrEqual(10_000);
+    expect(first.contextPlan.estimatedPromptTokens).toBeLessThanOrEqual(
+      first.contextPlan.availableInputTokens!,
+    );
     expect(first.prompt).not.toContain('CROSS_PROJECT_SECRET');
     expect(first.prompt).not.toContain('secret-token');
     expect(first.prompt).not.toContain('researcher:');
     expect(first.prompt).toContain('"todoSkill":null');
     expect(first.provenance).toMatchObject({
-      assemblyVersion: 5,
+      assemblyVersion: 7,
       profileVersion: 3,
-      baseInstructionVersion: 37,
+      baseInstructionVersion: 40,
       workspaceRevision: 42,
       contextTruncated: true,
       requestedLegacyHarnessMode: 'planner',
@@ -258,7 +532,7 @@ describe('Project chat prompt assembly', () => {
       'even when the user did not separately ask to save it',
     );
     expect(first.developerInstructions).toContain(
-      'Set disposition none only for an ordinary short conversational answer',
+      'Set disposition none whenever note creation is unavailable or read-only',
     );
     expect(first.developerInstructions).toContain(
       'category, title, and the complete Markdown content without YAML frontmatter',
@@ -377,7 +651,10 @@ describe('Project chat prompt assembly', () => {
       'use $...$ for inline math and put $$...$$ on separate lines for display math',
     );
     expect(first.developerInstructions).toContain('Do not use \\(...\\) or \\[...\\] delimiters.');
-    expect(first.provenance.baseInstructionVersion).toBe(37);
+    expect(first.provenance.baseInstructionVersion).toBe(40);
+    expect(first.developerInstructions).toContain(
+      'automatically save the plan after read_experiment_setup',
+    );
     expect(first.developerInstructions).toContain('first call read_experiment_setup');
     expect(first.developerInstructions).toContain('create_experiment_run');
     expect(first.developerInstructions).toContain('execute_experiment_run');
@@ -541,7 +818,7 @@ describe('Project chat prompt assembly', () => {
     expect(result.developerInstructions).toContain('Legacy reviewer compatibility is active');
     expect(result.developerInstructions).toContain('set researchNote disposition to none');
     expect(result.provenance).toMatchObject({
-      assemblyVersion: 5,
+      assemblyVersion: 7,
       requestedLegacyHarnessMode: 'reviewer',
       nativeExecutionKind: 'legacy-reviewer',
       nativeCollaborationModeId: null,

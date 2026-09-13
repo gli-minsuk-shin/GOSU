@@ -113,4 +113,29 @@ describe('default AI selection', () => {
       ),
     ).toEqual({ effectiveModelId: 'explicit-model', issue: null });
   });
+
+  it('adopts refreshed defaults while preserving explicit pins and requiring their provider', () => {
+    const refreshed = [
+      ...models.map((model) => ({ ...model, isDefault: false })),
+      { modelId: 'future-default', isDefault: true, reasoningOptions: [{ id: 'future-effort' }] },
+    ];
+    expect(
+      resolveDefaultAiSelection(
+        { providerId: null, modelId: null, reasoningOptionId: 'future-effort' },
+        refreshed,
+      ),
+    ).toEqual({ effectiveModelId: 'future-default', issue: null });
+    expect(
+      resolveDefaultAiSelection(
+        { providerId: 'codex', modelId: 'explicit-model', reasoningOptionId: 'high' },
+        refreshed,
+      ),
+    ).toEqual({ effectiveModelId: 'explicit-model', issue: null });
+    expect(
+      resolveDefaultAiSelection(
+        { providerId: null, modelId: 'future-default', reasoningOptionId: null },
+        refreshed,
+      ),
+    ).toEqual({ effectiveModelId: null, issue: 'model_unavailable' });
+  });
 });

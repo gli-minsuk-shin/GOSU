@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from 'pdfjs-dist/types/src/display/api';
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
@@ -94,6 +96,7 @@ function PdfPageCanvas({
   scale: number;
   onDimensions(pageNumber: number, dimensions: PdfPageDimensions): void;
 }>) {
+  useUiText();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
 
@@ -153,9 +156,21 @@ function PdfPageCanvas({
 
   return (
     <>
-      {state === 'loading' && <span>Rendering page {pageNumber}…</span>}
-      {state === 'error' && <span role="alert">Page {pageNumber} could not be rendered.</span>}
-      <canvas ref={canvasRef} hidden={state !== 'ready'} aria-label={`PDF page ${pageNumber}`} />
+      {state === 'loading' && (
+        <span>
+          {uiText('Rendering page')} {pageNumber}…
+        </span>
+      )}
+      {state === 'error' && (
+        <span role="alert">
+          {uiText('Page')} {pageNumber} {uiText('could not be rendered.')}
+        </span>
+      )}
+      <canvas
+        ref={canvasRef}
+        hidden={state !== 'ready'}
+        aria-label={uiText('PDF page {pageNumber}', { pageNumber: pageNumber })}
+      />
     </>
   );
 }
@@ -173,6 +188,7 @@ export function PdfPreview({
   workspaceHeight = false,
   headerAction = null,
 }: PdfPreviewProps) {
+  useUiText();
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLElement>());
   const scrollFrameRef = useRef<number | null>(null);
@@ -219,7 +235,7 @@ export function PdfPreview({
       .catch(() => {
         if (!cancelled) {
           setLoading(false);
-          setError('The compiled PDF could not be rendered safely.');
+          setError(uiText('The compiled PDF could not be rendered safely.'));
         }
       });
     return () => {
@@ -307,7 +323,7 @@ export function PdfPreview({
   return (
     <section
       className={`pdf-preview${workspaceHeight ? ' pdf-preview-workspace-height' : ''}${className ? ` ${className}` : ''}`}
-      aria-label={`${document.title} PDF preview`}
+      aria-label={uiText('{title} PDF preview', { title: document.title })}
       data-current-page={pageNumber}
     >
       <header>
@@ -321,23 +337,23 @@ export function PdfPreview({
           <button
             type="button"
             className="ghost-button"
-            aria-label="Previous PDF page"
+            aria-label={uiText('Previous PDF page')}
             disabled={!pdfDocument || pageNumber <= 1}
             onClick={() => goToPage(pageNumber - 1)}
           >
-            Previous
+            {uiText('Previous')}
           </button>
           <span className="pdf-preview-page-counter" aria-live="polite">
-            {pdfDocument ? `${pageNumber} / ${pdfDocument.numPages}` : 'Loading'}
+            {pdfDocument ? `${pageNumber} / ${pdfDocument.numPages}` : uiText('Loading')}
           </span>
           <button
             type="button"
             className="ghost-button"
-            aria-label="Next PDF page"
+            aria-label={uiText('Next PDF page')}
             disabled={!pdfDocument || pageNumber >= pdfDocument.numPages}
             onClick={() => goToPage(pageNumber + 1)}
           >
-            Next
+            {uiText('Next')}
           </button>
           <button
             type="button"
@@ -365,7 +381,9 @@ export function PdfPreview({
         aria-busy={loading}
         onScroll={updateCurrentPageFromScroll}
       >
-        {loading && <span className="pdf-preview-status">Rendering the compiled PDF…</span>}
+        {loading && (
+          <span className="pdf-preview-status">{uiText('Rendering the compiled PDF…')}</span>
+        )}
         {error && (
           <span className="pdf-preview-status" role="alert">
             {error}
@@ -390,7 +408,10 @@ export function PdfPreview({
                   }}
                   className="pdf-preview-page"
                   data-page-number={nextPageNumber}
-                  aria-label={`Page ${nextPageNumber} of ${pdfDocument.numPages}`}
+                  aria-label={uiText('Page {nextPageNumber} of {numPages}', {
+                    nextPageNumber: nextPageNumber,
+                    numPages: pdfDocument.numPages,
+                  })}
                   style={{ width: dimensions.cssWidth, height: dimensions.cssHeight }}
                 >
                   {shouldRender ? (
@@ -402,7 +423,9 @@ export function PdfPreview({
                       onDimensions={rememberPageDimensions}
                     />
                   ) : (
-                    <span>Page {nextPageNumber}</span>
+                    <span>
+                      {uiText('Page')} {nextPageNumber}
+                    </span>
                   )}
                 </article>
               );

@@ -2,16 +2,31 @@ import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { Formula, MAX_FORMULA_SOURCE_LENGTH, renderFormulaResult } from './formula';
+import {
+  escapeLatexTextUnderscores,
+  Formula,
+  formulaDisplayRows,
+  formulaSourceForRendering,
+  MAX_FORMULA_SOURCE_LENGTH,
+  renderFormulaResult,
+} from './formula';
 import {
   backwardSignalNote,
+  CenterModelGraphButton,
   composeRepeatedBlocks,
   composeModelSubgraphs,
+  connectionHandleEndpoints,
+  estimatedModuleCardHeight,
+  estimatedFormulaRowLines,
   connectionSignalReading,
   findLogicalNeighborId,
+  formulaAwareGridPositions,
+  formulaAwareBoundaryYPositions,
+  formulaAwareLanePositions,
   forLoopOrderFlowDirection,
   forLoopRowTransition,
   gradientStrokeWidth,
+  lassoRefinementSemanticSteps,
   MAX_REPEATED_DETAIL_STEPS,
   modelFormulaAuditScope,
   modelGraphFitViewOptions,
@@ -47,6 +62,8 @@ import {
   modelImportPhaseLabel,
   modelLabShellClassName,
   modelLabWorkbenchClassName,
+  loadModelLabPermanentMemory,
+  loadModelLabPermanentMemoryFromBrowser,
   modelPythonDownloadName,
   pseudocodeLineOffset,
   modelViewSessionAfterRevision,
@@ -60,9 +77,13 @@ import {
   moduleDetailEvidenceSummary,
   moduleDetailGradientEvidence,
   modelViewSessionWithUpdate,
+  MODEL_LAB_MEMORY_STORAGE_MAX_CHARACTERS,
   panelWidthAfterPointerMove,
   panelWidthAfterSeparatorKey,
+  persistModelLabPermanentMemory,
+  persistModelLabPermanentMemoryToBrowser,
   replaceModelPreservingOrder,
+  restoreModelLabPermanentMemory,
   shouldHandoffCopilotFocus,
   toggleModelTreeExpansion,
   withoutTrashedModelSessions,
@@ -70,11 +91,13 @@ import {
 import {
   compactModuleFormula,
   isModuleActivationKey,
+  moduleHandlePorts,
+  moduleFormulaAccessibilityLabel,
   moduleRepeatPresentation,
   moduleRepeatStackLayers,
 } from './module-node';
 import { modelPseudocodeChangeSummary } from './model-pseudocode';
-import { modelFormulaConsistencyFindings } from './model-lab-domain';
+import { modelFormulaConsistencyFindings, runAgentReview } from './model-lab-domain';
 import {
   filmTransformerClassifier,
   residualClassifier,
@@ -108,7 +131,9 @@ describe('Model graph interaction contract', () => {
     expect(graphSource).toMatch(
       /const endpoints = openBlock\s+\? \{ source: connection\.source, target: connection\.target \}/u,
     );
-    expect(graphSource).toContain('STEP {data.rowTransition.fromStep} ↓ STEP');
+    expect(graphSource).toMatch(
+      /uiText\('STEP '\)[\s\S]*?data.rowTransition.fromStep[\s\S]*?uiText\(' ↓ STEP '\)/u,
+    );
     expect(graphSource).toContain('Follow STEP numbers. Each NEXT ROW arrow turns down');
     expect(nodeSource).toContain("orderFlowDirection === 'left-to-right'");
     expect(styles).toContain('.signal-edge__row-transition {');
@@ -121,6 +146,114 @@ describe('Model graph interaction contract', () => {
       String.raw`\text{Equation not deterministically derived from step 7}`,
     );
     expect(repeatedStepFormula(compound, 6)).not.toContain('GELU');
+  });
+
+  it('normalizes a general Python FiLM loop into named modules with rendered equations', () => {
+    const generalFilmBlock = {
+      ...residualClassifier.modules[1]!,
+      id: 'general-film-block',
+      name: 'General penalty FiLM refinement',
+      inputShape: ['Q', 'P', 64],
+      outputShape: ['Q', 'P', 64],
+      repeat: { count: 23, label: 'ResidualFiLMBlock layers 1 through 23' },
+      transform: [
+        'for block in 23 residual blocks;',
+        'beta_channels = h[:,:,:32];',
+        'auxiliary_channels = h[:,:,32:];',
+        'residual = y_query - batch_matmul(X_query, beta_channels);',
+        'projected = batch_matmul(transpose(X_query), residual) / N;',
+        'block_input = concat(projected, auxiliary_channels);',
+        'correction = Linear(512 -> 64)(GELU(Linear(64 -> 512)(block_input)));',
+        'gamma, delta = chunk(Linear(256 -> 128)(embedding), 2);',
+        'correction = correction * (1 + gamma[:,None,:]) + delta[:,None,:];',
+        'updated = Linear(64 -> 64)(RMSNorm(h + correction));',
+        'gate = sigmoid(updated[:,:,32:]);',
+        'auxiliary = 5 * tanh(updated[:,:,32:] / 5);',
+        'h = concat(updated[:,:,:32] * gate, auxiliary)',
+      ].join(' '),
+    };
+    const block = composeRepeatedBlocks({
+      ...residualClassifier,
+      modules: [generalFilmBlock],
+      connections: [],
+    }).blocks[0];
+    const detailModules = block?.detailModel.modules ?? [];
+
+    expect(repeatedModuleStepStatements(generalFilmBlock)).toHaveLength(12);
+    expect(detailModules).toHaveLength(12);
+    expect(detailModules.map((module) => module.name)).toEqual([
+      'Slice tensor channels',
+      'Slice tensor channels',
+      'Compute regression residual',
+      'Project residual gradient',
+      'Concatenate state tensors',
+      'Residual MLP 64 → 512 → 64',
+      'Generate FiLM parameters',
+      'FiLM conditioning',
+      'Normalize and project state',
+      'Compute channel gate',
+      'Bound auxiliary channels',
+      'Concatenate state tensors',
+    ]);
+    expect(detailModules.every((module) => !module.name.startsWith('Custom operation'))).toBe(true);
+    expect(
+      detailModules.every(
+        (module) => !module.formula.includes('Equation not deterministically derived'),
+      ),
+    ).toBe(true);
+    expect(detailModules.every((module) => renderFormulaResult(module.formula).valid)).toBe(true);
+    expect(modelFormulaConsistencyFindings(block!.detailModel)).toEqual([]);
+    expect(detailModules[5]?.formula).toContain(
+      String.raw`\operatorname{Linear}_{512\to64}\!\left(\operatorname{GELU}`,
+    );
+    expect(detailModules[8]?.formula).toContain(
+      String.raw`\operatorname{Linear}_{64\to64}\!\left(\operatorname{RMSNorm}_{64}`,
+    );
+  });
+
+  it('collapses chunk-loop control flow while preserving every semantic FiLM operation', () => {
+    const chunkedFilmBlock = {
+      ...residualClassifier.modules[1]!,
+      id: 'chunked-film-block',
+      inputShape: ['Q', 'P', 64],
+      outputShape: ['Q', 'P', 64],
+      repeat: { count: 23, label: 'ResidualFiLMBlock layers 1 through 23' },
+      transform: [
+        'outputs = [];',
+        'for start in range(0, P, 32768):;',
+        'stop = min(start + 32768, P);',
+        'selected = block_input[:, start:stop];',
+        'correction_chunk = Linear(512,64)(GELU(Linear(64,512)(selected)));',
+        'gamma, delta = chunk(Linear(256,128)(embedding), 2);',
+        'correction_chunk = correction_chunk * (1 + gamma[:,None,:]) + delta[:,None,:];',
+        'outputs.append(correction_chunk);',
+        'correction = concat(outputs, dim=1);',
+        'updated = RMSNorm_64(h + correction);',
+        'updated = Linear(64,64)(updated);',
+        'raw_auxiliary = updated[...,32:];',
+        'gate = sigmoid(raw_auxiliary);',
+        'clipped_auxiliary = 5 * tanh(raw_auxiliary / 5);',
+        'h = concat(updated[...,:32] * gate, clipped_auxiliary)',
+      ].join(' '),
+    };
+    const statements = repeatedModuleStepStatements(chunkedFilmBlock);
+    const block = composeRepeatedBlocks({
+      ...residualClassifier,
+      modules: [chunkedFilmBlock],
+      connections: [],
+    }).blocks[0];
+    const detailModules = block?.detailModel.modules ?? [];
+
+    expect(statements.some((statement) => /^for\b|^stop\s*=/u.test(statement))).toBe(false);
+    expect(detailModules).toHaveLength(13);
+    expect(detailModules.every((module) => !module.name.startsWith('Custom operation'))).toBe(true);
+    expect(
+      detailModules.every(
+        (module) => !module.formula.includes('Equation not deterministically derived'),
+      ),
+    ).toBe(true);
+    expect(detailModules.every((module) => renderFormulaResult(module.formula).valid)).toBe(true);
+    expect(modelFormulaConsistencyFindings(block!.detailModel)).toEqual([]);
   });
 
   it('shows concise, provider-qualified progress for an active LLM graph import', () => {
@@ -153,6 +286,8 @@ describe('Model graph interaction contract', () => {
     expect(updated.events).toHaveLength(2);
     expect(modelImportPhaseLabel('llm-running')).toBe('LLM RUNNING');
     expect(modelImportPhaseLabel('model-ir-validating')).toBe('VALIDATING MODELIR');
+    expect(modelImportPhaseLabel('model-ir-repairing')).toBe('CORRECTING MODELIR');
+    expect(modelImportPhaseLabel('cache-hit')).toBe('CANONICAL CACHE HIT');
     expect(appSource).toContain('aria-live="polite"');
     expect(appSource).toContain('Graph import status');
     expect(appSource).toContain('Local ModelIR validation · No LLM');
@@ -194,6 +329,40 @@ describe('Model graph interaction contract', () => {
       source: connection.target,
       target: connection.source,
     });
+    const portedConnection = { ...connection, sourcePort: 'hidden out', targetPort: 'hidden in' };
+    expect(connectionHandleEndpoints(portedConnection, 'forward')).toEqual({
+      sourceHandle: 'hidden out',
+      targetHandle: 'hidden in',
+    });
+    expect(connectionHandleEndpoints(portedConnection, 'backward')).toEqual({
+      sourceHandle: 'hidden in',
+      targetHandle: 'hidden out',
+    });
+  });
+
+  it('routes each named internal port to a distinct React Flow handle', () => {
+    const module = {
+      ...residualClassifier.modules[1]!,
+      inputPorts: [
+        { name: 'A', shape: ['B', 64], binding: 'internal' as const },
+        { name: 'lambda', shape: [1, 1], binding: 'external' as const },
+        { name: 'F', shape: ['B', 64], binding: 'internal' as const },
+      ],
+      outputPorts: [
+        { name: 'hidden', shape: ['B', 64], binding: 'internal' as const },
+        { name: 'result', shape: ['B', 64], binding: 'external' as const },
+      ],
+    };
+    expect(moduleHandlePorts(module, 'forward', null, 'target')?.map((port) => port.name)).toEqual([
+      'A',
+      'F',
+    ]);
+    expect(moduleHandlePorts(module, 'forward', null, 'source')?.map((port) => port.name)).toEqual([
+      'hidden',
+    ]);
+    expect(moduleHandlePorts(module, 'backward', null, 'source')?.map((port) => port.name)).toEqual(
+      ['A', 'F'],
+    );
   });
 
   it('maps arrow keys to connected or spatially adjacent modules', () => {
@@ -419,6 +588,215 @@ describe('Model graph interaction contract', () => {
     expect(hierarchy.model.modules).toHaveLength(1);
   });
 
+  it('groups the learned LASSO loop into four semantic blocks with consistent formulas and a visible skip', () => {
+    const refinement = {
+      ...residualClassifier.modules[1]!,
+      id: 'iterative_refinement',
+      name: 'LASSO-Aware Residual Refinement',
+      inputShape: ['P', '2K'],
+      outputShape: ['P', '2K'],
+      transform: [
+        'For j in range(1, L):',
+        '  H = Linear(2K, 2K)(H)',
+        '  H1 = H[:, :K]',
+        '  H2 = H[:, K:]',
+        '  H1 = soft_threshold(H1, exp(H2 + log(lambda) - log_lam_mean))',
+        '  H1 = X_c.T @ (broadcast_K(y_c) - X_c @ H1) / N',
+        '  H1 = H1 / lambda',
+        '  H1 = RMSNorm(K)(H1)',
+        '  H3 = concat([H1, H2], dim=1)',
+        '  H3 = Linear(2K, 4K)(H3) → GELU → RMSNorm(4K) → Linear(4K, 2K)',
+        '  H = H + H3',
+      ].join('\n'),
+      repeat: { count: 'L-1', label: 'For j in range(1, L)' },
+    };
+    const semantic = lassoRefinementSemanticSteps(refinement);
+    const block = composeRepeatedBlocks({
+      ...residualClassifier,
+      modules: [refinement],
+      connections: [],
+    }).blocks[0];
+
+    expect(repeatedModuleStepStatements(refinement)).toHaveLength(10);
+    expect(semantic?.map((step) => step.name)).toEqual([
+      'State projection + K/K split',
+      'Lambda-conditioned soft threshold',
+      'Normalized LASSO reprojection',
+      'Residual MLP fusion + state update',
+    ]);
+    expect(block?.detailModel.modules).toHaveLength(4);
+    expect(block?.detailModel.connections).toHaveLength(6);
+    expect(block?.detailKind).toBe('semantic blocks');
+    expect(block?.omittedStepCount).toBe(0);
+    expect(block?.detailModel.modules.map((module) => module.name)).toEqual(
+      semantic?.map((step) => step.name),
+    );
+    expect(
+      block?.detailModel.modules.every(
+        (module) =>
+          !module.name.startsWith('Custom operation') &&
+          !module.formula.includes('Equation not deterministically derived'),
+      ),
+    ).toBe(true);
+    expect(block?.detailModel.modules[2]).toMatchObject({
+      inputShape: ['P', 'K'],
+      outputShape: ['P', 'K'],
+      activation: 'RMSNorm',
+    });
+    expect(block?.detailModel.modules[2]?.formula).toContain(
+      String.raw`R_j=\operatorname{RMSNorm}_K(G_j)`,
+    );
+    expect(block?.detailModel.modules[2]?.formula).not.toContain('K+H_1');
+    expect(block?.detailModel.modules[3]?.formula).toContain(
+      String.raw`\operatorname{Linear}_{2K\to4K}`,
+    );
+    expect(block?.detailModel.modules[0]?.formula).not.toContain('Linear^{(j)}');
+    expect(block?.detailModel.modules[3]?.formula).not.toContain('Linear^{(j)}');
+    expect(block?.detailModel.modules[3]?.formula).toContain(String.raw`H_j=\widetilde H_j+C_j`);
+    expect(block?.detailModel.modules[3]?.inputPorts).toEqual([
+      { name: 'Rⱼ', shape: ['P', 'K'] },
+      { name: 'Fⱼ', shape: ['P', 'K'] },
+      { name: 'H̃ⱼ skip', shape: ['P', '2K'] },
+    ]);
+    expect(block?.detailModel.modules[0]?.inputPorts).toEqual([
+      {
+        name: 'Hⱼ₋₁',
+        shape: ['P', '2K'],
+        binding: 'loop-carried',
+        bindingId: 'iterative_refinement',
+      },
+    ]);
+    expect(block?.detailModel.modules[3]?.outputPorts).toEqual([
+      {
+        name: 'Hⱼ',
+        shape: ['P', '2K'],
+        binding: 'loop-carried',
+        bindingId: 'iterative_refinement',
+      },
+    ]);
+    expect(
+      block?.detailModel.connections.map((connection) => [
+        connection.sourcePort,
+        connection.targetPort,
+      ]),
+    ).toEqual([
+      ['Aⱼ', 'Aⱼ'],
+      ['Fⱼ', 'Fⱼ'],
+      ['β̂ⱼ', 'β̂ⱼ'],
+      ['Rⱼ', 'Rⱼ'],
+      ['Fⱼ', 'Fⱼ'],
+      ['H̃ⱼ', 'H̃ⱼ skip'],
+    ]);
+    expect(
+      block?.detailModel.connections.some(
+        (connection) =>
+          connection.source === block.detailModel.modules[0]?.id &&
+          connection.target === block.detailModel.modules[3]?.id &&
+          connection.tensorName === 'H̃ⱼ projected-state skip',
+      ),
+    ).toBe(true);
+    expect(
+      block?.detailModel.modules.every((module) => renderFormulaResult(module.formula).valid),
+    ).toBe(true);
+    expect(modelFormulaConsistencyFindings(block!.detailModel)).toEqual([]);
+    expect(
+      runAgentReview(block!.detailModel, 'healthy', 4).find(
+        (review) => review.id === 'shape-auditor',
+      )?.status,
+    ).toBe('pass');
+    const missingSkipModel = {
+      ...block!.detailModel,
+      connections: block!.detailModel.connections.filter(
+        (connection) => connection.targetPort !== 'H̃ⱼ skip',
+      ),
+    };
+    expect(
+      runAgentReview(missingSkipModel, 'healthy', 4).find((review) => review.id === 'shape-auditor')
+        ?.evidence,
+    ).toContain('Residual MLP fusion + state update.H̃ⱼ skip has no incoming edge.');
+    const unboundModel = {
+      ...block!.detailModel,
+      connections: block!.detailModel.connections.map((connection, index) => {
+        if (index !== 0) return connection;
+        const { targetPort: _omitted, ...unboundConnection } = connection;
+        return unboundConnection;
+      }),
+    };
+    expect(
+      runAgentReview(unboundModel, 'healthy', 4).find((review) => review.id === 'shape-auditor')
+        ?.status,
+    ).toBe('error');
+    const mispairedLoopModel = {
+      ...block!.detailModel,
+      modules: block!.detailModel.modules.map((module, index) =>
+        index === 3
+          ? {
+              ...module,
+              outputPorts: module.outputPorts!.map((port) => ({
+                ...port,
+                bindingId: 'different-loop',
+              })),
+            }
+          : module,
+      ),
+    };
+    expect(
+      runAgentReview(mispairedLoopModel, 'healthy', 4).find(
+        (review) => review.id === 'shape-auditor',
+      )?.evidence,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('iterative_refinement'),
+        expect.stringContaining('different-loop'),
+      ]),
+    );
+
+    expect(repeatedStepFormula('H1 = RMSNorm(K)(H1)', 6)).toBe(
+      String.raw`H_1\leftarrow\operatorname{RMSNorm}_{K}\!\left(H_1\right)`,
+    );
+    expect(repeatedStepFormula(refinement.transform.split('\n')[4]!.trim(), 3)).not.toContain(
+      'Equation not deterministically derived',
+    );
+    expect(repeatedStepFormula('H1 = soft_threshold(H1, tau)', 3)).toContain(String.raw`;\tau`);
+    expect(repeatedStepFormula('z = soft_threshold(x, tau)', 3)).toContain(
+      String.raw`\mathrm{z}\leftarrow\operatorname{ST}\!\left(\mathrm{x};\tau\right)`,
+    );
+    expect(repeatedStepFormula('Z = soft_threshold(X, Tau)', 3)).toContain(
+      String.raw`\mathrm{Z}\leftarrow\operatorname{ST}\!\left(\mathrm{X};\mathrm{Tau}\right)`,
+    );
+    expect(repeatedStepFormula('H1 = soft_threshold(H1, learned_threshold(H2))', 3)).toContain(
+      'Equation not deterministically derived',
+    );
+  });
+
+  it('collapses a homogeneous custom repeat into one inspectable operator instead of custom cards', () => {
+    const repeated = {
+      ...residualClassifier.modules[1]!,
+      id: 'domain-repeat',
+      name: 'Domain refinement',
+      transform: Array.from(
+        { length: 8 },
+        (_value, index) => `s${index + 1} = domain_step(s${index})`,
+      ).join('\n'),
+      formula: String.raw`s_{j+1}=\operatorname{DomainStep}(s_j)`,
+      repeat: { count: 8, label: 'domain refinement' },
+    };
+    const hierarchy = composeRepeatedBlocks({
+      ...residualClassifier,
+      modules: [repeated],
+      connections: [],
+    });
+    const detail = hierarchy.blocks[0];
+
+    expect(detail?.detailKind).toBe('semantic blocks');
+    expect(detail?.detailModel.modules).toHaveLength(1);
+    expect(detail?.detailModel.modules[0]).toMatchObject({
+      name: 'Domain refinement operator',
+      transform: 's1 = domain_step(s0)',
+      formula: repeated.formula,
+    });
+  });
+
   it('preserves a thirteenth repeated operation and its literal tanh saturation scale', () => {
     const refinement = {
       ...residualClassifier.modules[1]!,
@@ -598,8 +976,120 @@ describe('Model graph interaction contract', () => {
     expect(renderFormulaResult(latex, false)).toBe(rendered);
 
     const graphCardSource = readFileSync(new URL('./module-node.tsx', import.meta.url), 'utf8');
-    expect(graphCardSource).toContain('<Formula latex={module.formula} displayMode={false} />');
+    expect(graphCardSource).toContain('formulaDisplayRows(module.formula)');
+    expect(graphCardSource).toContain('module-node__formula-row');
+    expect(graphCardSource).toContain('<Formula latex={row}');
     expect(graphCardSource).not.toContain('ƒ {compactFormula}');
+  });
+
+  it('renders source identifiers inside LaTeX text blocks without losing underscores', () => {
+    const latex = String.raw`x=x_0,\quad \text{when certified_rounds}=0`;
+    expect(escapeLatexTextUnderscores(latex)).toContain(String.raw`certified\_rounds`);
+    expect(renderFormulaResult(latex, true)).toMatchObject({ valid: true });
+  });
+
+  it('renders independent multiline definitions as aligned rows instead of one equality chain', () => {
+    const latex = String.raw`m_\lambda=-\frac{1}{K}\sum_{k=1}^{K}\log\lambda_k
+s=\frac{X_c^{\top}y_c}{N}\in\mathbb{R}^{P\times 1}
+H_0=\operatorname{Linear}_{1\to d}(s)\in\mathbb{R}^{P\times 2K},\quad d=2K`;
+    const displaySource = formulaSourceForRendering(latex, true);
+    const inlineSource = formulaSourceForRendering(latex, false);
+    const rendered = renderFormulaResult(latex, true);
+
+    expect(displaySource).toContain(String.raw`\begin{aligned}`);
+    expect(displaySource).toContain(String.raw`m_\lambda&=`);
+    expect(displaySource).toContain(String.raw`\\ s&=`);
+    expect(displaySource).toContain(String.raw`\\ H_0&=`);
+    expect(displaySource).toContain(String.raw`\\ d&=`);
+    expect(inlineSource.match(/\\mathrel\{;\}/gu)).toHaveLength(3);
+    expect(rendered).toMatchObject({ valid: true });
+    if (rendered.valid) expect(rendered.html.match(/<mtr>/gu)).toHaveLength(4);
+    const matrix = String.raw`A=\begin{pmatrix}
+1&0\\
+0&1
+\end{pmatrix}`;
+    expect(formulaSourceForRendering(matrix, true)).toBe(matrix);
+    expect(renderFormulaResult(matrix, true)).toMatchObject({ valid: true });
+  });
+
+  it('lists each module equation on its own card row', () => {
+    const rows = formulaDisplayRows(
+      [
+        String.raw`T_j=\exp(F_j+\log\lambda-m_\lambda)`,
+        String.raw`\widehat\beta_j=\operatorname{ST}(A_j;T_j)`,
+        String.raw`H_j=\widetilde H_j+C_j`,
+      ].join('\n'),
+    );
+    expect(rows).toEqual([
+      String.raw`T_j=\exp(F_j+\log\lambda-m_\lambda)`,
+      String.raw`\widehat\beta_j=\operatorname{ST}(A_j;T_j)`,
+      String.raw`H_j=\widetilde H_j+C_j`,
+    ]);
+    expect(rows.every((row) => renderFormulaResult(row, false).valid)).toBe(true);
+    expect(formulaDisplayRows(String.raw`a=f(x), \quad b=g(a)`)).toEqual([
+      String.raw`a=f(x)`,
+      String.raw`b=g(a)`,
+    ]);
+    expect(formulaDisplayRows(String.raw`v=(a,\quad b)`)).toEqual([String.raw`v=(a,\quad b)`]);
+    expect(formulaDisplayRows(String.raw`f(x,\quad y)=z`)).toEqual([String.raw`f(x,\quad y)=z`]);
+    expect(moduleFormulaAccessibilityLabel(rows)).toContain('3 equations');
+    expect(moduleFormulaAccessibilityLabel(rows)).toContain('T_j=');
+    const mixedMatrix = String.raw`a=f(x)
+B=\begin{pmatrix}
+1&0\\
+0&1
+\end{pmatrix}
+c=g(B)`;
+    const mixedRows = formulaDisplayRows(mixedMatrix);
+    expect(mixedRows).toHaveLength(3);
+    expect(mixedRows[1]).toContain(String.raw`\begin{pmatrix}`);
+    expect(mixedRows[1]).toContain(String.raw`\end{pmatrix}`);
+    expect(mixedRows.every((row) => renderFormulaResult(row, true).valid)).toBe(true);
+    const sameLineMixed = formulaDisplayRows(
+      String.raw`a=f(x),\quad B=\begin{pmatrix}1&0\\0&1\end{pmatrix},\quad c=g(B)`,
+    );
+    expect(sameLineMixed).toHaveLength(3);
+    expect(sameLineMixed[1]).toContain(String.raw`\begin{pmatrix}`);
+    const alignedRow = String.raw`\begin{aligned}a&=1\\b&=2\\c&=3\\d&=4\\e&=5\\f&=6\\g&=7\end{aligned}`;
+    expect(estimatedFormulaRowLines(alignedRow)).toBe(7);
+
+    const tallModule = {
+      ...residualClassifier.modules[1]!,
+      formula: Array.from(
+        { length: 6 },
+        (_value, index) => `h_${index + 1}=f_${index + 1}(h_${index})`,
+      ).join('\n'),
+      lane: 0,
+    };
+    const shortModule = { ...residualClassifier.modules[1]!, id: 'short-formula', lane: 1 };
+    expect(estimatedModuleCardHeight(tallModule)).toBeGreaterThan(
+      estimatedModuleCardHeight(shortModule),
+    );
+    const gridModules = [
+      tallModule,
+      ...Array.from({ length: 5 }, (_value, index) => ({
+        ...shortModule,
+        id: `grid-${index}`,
+      })),
+    ];
+    const gridPositions = formulaAwareGridPositions(gridModules);
+    expect(gridPositions[5]!.y - gridPositions[0]!.y).toBeGreaterThanOrEqual(
+      estimatedModuleCardHeight(tallModule),
+    );
+    const lanePositions = formulaAwareLanePositions([tallModule, shortModule]);
+    expect(lanePositions.get(1)! - lanePositions.get(0)!).toBeGreaterThanOrEqual(
+      estimatedModuleCardHeight(tallModule),
+    );
+    const boundaryPositions = formulaAwareBoundaryYPositions(
+      [tallModule],
+      [gridModules, [shortModule]],
+    );
+    expect(boundaryPositions[0]!).toBeGreaterThan(
+      (lanePositions.get(0) ?? 0) + estimatedModuleCardHeight(tallModule),
+    );
+    expect(boundaryPositions[1]!).toBeGreaterThan(
+      boundaryPositions[0]! + estimatedModuleCardHeight(tallModule),
+    );
   });
 
   it('strict-renders every bundled module formula through the safe KaTeX boundary', () => {
@@ -927,6 +1417,26 @@ describe('Model graph interaction contract', () => {
     expect(modelGraphFitViewOptions(false).minZoom).toBeUndefined();
   });
 
+  it('renders an accessible icon-only center control that invokes its center action', () => {
+    let centerCalls = 0;
+    const button = createElement(CenterModelGraphButton, {
+      onClick: () => {
+        centerCalls += 1;
+      },
+    });
+    const markup = renderToStaticMarkup(button);
+
+    expect(markup).toContain(
+      'aria-label="Reset the canonical layout and center all model boxes in the graph viewport"',
+    );
+    expect(markup).toContain('title="Center model boxes"');
+    expect(markup).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/u);
+    expect(markup.replace(/<[^>]*>/gu, '').trim()).toBe('');
+    expect(centerCalls).toBe(0);
+    button.props.onClick();
+    expect(centerCalls).toBe(1);
+  });
+
   it('remounts the canonical graph layout before centering boxes that were moved off-screen', () => {
     expect(modelGraphViewportKey('model-a', null, 0)).not.toBe(
       modelGraphViewportKey('model-a', null, 1),
@@ -1086,6 +1596,101 @@ describe('Model graph interaction contract', () => {
     });
     expect(sessions[nextRevision]?.messages.at(-1)?.body).toContain('needs a shape check');
     expect(sessions[firstRevision]?.messages).toHaveLength(1);
+  });
+
+  it('restores only bounded schema-valid permanent memories from local storage', () => {
+    const memory = (index: number) => ({
+      schemaVersion: 1 as const,
+      id: `memory-${index}`,
+      scopeType: 'model' as const,
+      scopeId: residualClassifier.id,
+      kind: 'constraint' as const,
+      userRequest: 'Always preserve the residual connection.',
+      outcome: 'The residual connection remains an explicit model invariant.',
+      keywords: ['residual', 'connection'],
+      importance: 85,
+      sourceId: `assistant-${index}`,
+      createdAt: '2026-08-31T00:00:00.000Z',
+      updatedAt: '2026-08-31T00:00:00.000Z',
+    });
+    const stored = Array.from({ length: 1_002 }, (_, index) => memory(index));
+
+    const restored = restoreModelLabPermanentMemory(JSON.stringify(stored));
+
+    expect(restored).toHaveLength(1_000);
+    expect(restored[0]?.id).toBe('memory-2');
+    expect(restored.at(-1)?.id).toBe('memory-1001');
+    expect(
+      restoreModelLabPermanentMemory(
+        JSON.stringify([memory(1), { ...memory(2), kind: 'unsupported-memory-kind' }]),
+      ).map((entry) => entry.id),
+    ).toEqual(['memory-1']);
+    expect(restoreModelLabPermanentMemory('{invalid-json')).toEqual([]);
+    expect(restoreModelLabPermanentMemory(JSON.stringify({ entries: stored }))).toEqual([]);
+    expect(restoreModelLabPermanentMemory('x'.repeat(1_000_001))).toEqual([]);
+    const largeValidStore = Array.from({ length: 1_000 }, (_, index) => ({
+      ...memory(index),
+      userRequest: `Always preserve constraint ${index} ${'u'.repeat(330)}`,
+      outcome: `Durable outcome ${index} ${'o'.repeat(1_100)}`,
+    }));
+    const boundedLargeStore = restoreModelLabPermanentMemory(JSON.stringify(largeValidStore));
+    expect(boundedLargeStore.length).toBeGreaterThan(0);
+    expect(boundedLargeStore.length).toBeLessThan(1_000);
+    expect(JSON.stringify(boundedLargeStore).length).toBeLessThanOrEqual(
+      MODEL_LAB_MEMORY_STORAGE_MAX_CHARACTERS,
+    );
+  });
+
+  it('reports a local permanent-memory write failure instead of claiming it was saved', () => {
+    const memory = restoreModelLabPermanentMemory(
+      JSON.stringify([
+        {
+          schemaVersion: 1,
+          id: 'memory-write-failure',
+          scopeType: 'model',
+          scopeId: residualClassifier.id,
+          kind: 'preference',
+          userRequest: 'I prefer concise model explanations.',
+          outcome: 'Model explanations will remain concise.',
+          keywords: ['concise', 'explanations'],
+          importance: 70,
+          sourceId: 'assistant-write-failure',
+          createdAt: '2026-08-31T00:00:00.000Z',
+          updatedAt: '2026-08-31T00:00:00.000Z',
+        },
+      ]),
+    );
+    const storage = {
+      setItem: () => {
+        throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      },
+    };
+
+    expect(persistModelLabPermanentMemory(storage, memory)).toBe('failed');
+    const source = readFileSync(new URL('./model-lab-app.tsx', import.meta.url), 'utf8');
+    expect(source).toContain(
+      "memoryPersistenceStatus === 'saved' ? uiText('saved') : uiText('not saved')",
+    );
+  });
+
+  it('fails closed instead of crashing when local permanent-memory reads are denied', () => {
+    const storage = {
+      getItem: () => {
+        throw new DOMException('Storage denied', 'SecurityError');
+      },
+    };
+
+    expect(loadModelLabPermanentMemory(storage)).toEqual({ entries: [], status: 'failed' });
+    const deniedBrowser = Object.defineProperty({}, 'localStorage', {
+      get() {
+        throw new DOMException('Storage denied', 'SecurityError');
+      },
+    }) as Pick<Window, 'localStorage'>;
+    expect(loadModelLabPermanentMemoryFromBrowser(deniedBrowser)).toEqual({
+      entries: [],
+      status: 'failed',
+    });
+    expect(persistModelLabPermanentMemoryToBrowser(deniedBrowser, [])).toBe('failed');
   });
 
   it('opens a committed revision on the changed block in the expanded graph', () => {
@@ -1261,7 +1866,9 @@ describe('Model graph interaction contract', () => {
     expect(appSource).toContain('className="model-tree-folder-button"');
     expect(appSource).toContain('className="model-tree-folder-children"');
     expect(appSource).toContain('<ModelTreeChevron expanded={expanded} />');
-    expect(appSource).toContain('aria-label={`${candidate.name} module blocks`}');
+    expect(appSource).toContain(
+      "aria-label={uiText('{value0} module blocks', { value0: candidate.name })}",
+    );
     expect(appSource).not.toContain('id="active-model-modules"');
     expect(styles).toMatch(
       /\.model-tree-folder-button \{[\s\S]*?grid-template-columns: 20px 24px minmax\(0, 1fr\);/u,
@@ -1418,7 +2025,9 @@ describe('Model graph interaction contract', () => {
     expect(styles).toContain('.panel-resizer:focus-visible');
     expect(styles).toContain('grid-template-rows: 52px;');
     expect(styles).toContain('writing-mode: horizontal-tb;');
-    expect(appSource).toContain('const modelSessionsPanelCollapsed = modelSessionsCollapsed;');
+    expect(appSource).toContain(
+      'const modelSessionsPanelCollapsed = !workspaceEmpty && modelSessionsCollapsed;',
+    );
     expect(appSource).not.toContain('hidden={stackedSessionLayout}');
     expect(modelLabShellClassName(false, true)).not.toContain('model-lab-shell--focus');
   });

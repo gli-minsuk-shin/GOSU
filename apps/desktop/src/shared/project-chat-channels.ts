@@ -9,6 +9,7 @@ export const PROJECT_CHAT_IPC_CHANNELS = {
   updateQueuedTurn: 'gosu:project-chat:update-queued-turn',
   removeQueuedTurn: 'gosu:project-chat:remove-queued-turn',
   runQueuedTurnNow: 'gosu:project-chat:run-queued-turn-now',
+  steerQueuedTurn: 'gosu:project-chat:steer-queued-turn',
   cancel: 'gosu:project-chat:cancel',
   revokeSsh: 'gosu:project-chat:revoke-ssh',
   applyAction: 'gosu:project-chat:apply-action',

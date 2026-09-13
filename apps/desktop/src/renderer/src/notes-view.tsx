@@ -1,3 +1,5 @@
+import { uiText, useUiText } from '@gosu/ui/language';
+
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import {
@@ -43,6 +45,7 @@ export function ResearchNotesTree({
   onToggleDirectory: (path: string) => void;
   onOpenFile: (path: string) => void;
 }) {
+  useUiText();
   const rows = useMemo(
     () => localNotesTreeRows(files, expandedDirectories),
     [expandedDirectories, files],
@@ -108,7 +111,7 @@ export function ResearchNotesTree({
   };
 
   return (
-    <div className="local-notes-tree" role="tree" aria-label="Research Notes files">
+    <div className="local-notes-tree" role="tree" aria-label={uiText('Research Notes files')}>
       {rows.map((row, index) => {
         const directory = row.kind === 'directory';
         const expanded = directory && expandedDirectories.has(row.path);
@@ -192,6 +195,7 @@ export function ResearchNotesView({
   onFolderTreeCollapsedChange?: (collapsed: boolean) => void;
   searchAdapter?: SearchViewAdapter;
 }) {
+  useUiText();
   const folderTreeDetailsId = useId();
   const sidebarToolsBodyId = useId();
   const sidebarToolsBodyRef = useRef<HTMLDivElement>(null);
@@ -265,26 +269,34 @@ export function ResearchNotesView({
           <div className="empty-mark">◇</div>
           <h1>
             {checking
-              ? 'Opening Research Notes…'
+              ? uiText('Opening Research Notes…')
               : unavailable
-                ? 'Research Notes need attention'
+                ? uiText('Research Notes need attention')
                 : managed
-                  ? 'Connect an Obsidian Vault'
-                  : 'Open a local Markdown folder'}
+                  ? uiText('Connect an Obsidian Vault')
+                  : uiText('Open a local Markdown folder')}
           </h1>
           <p>
             {checking
-              ? 'GOSU is verifying the Obsidian Vault and this project’s isolated managed folder.'
+              ? uiText(
+                  'GOSU is verifying the Obsidian Vault and this project’s isolated managed folder.',
+                )
               : unavailable
-                ? 'GOSU could not verify this project’s Obsidian folder. Existing files were not changed. Retry the connection or choose the Vault again.'
+                ? uiText(
+                    'GOSU could not verify this project’s Obsidian folder. Existing files were not changed. Retry the connection or choose the Vault again.',
+                  )
                 : managed
-                  ? `Choose your Obsidian Vault once. GOSU creates only this project's managed GOSU folder with Literature, Papers, Experiments, Project Progress, and Idea Development notes. General Vault content remains read-only and is never sent to Hosted Sync automatically.`
-                  : 'GOSU receives read-only access to the folder you select. File contents are not sent to Hosted Sync automatically.'}
+                  ? uiText(
+                      "Choose your Obsidian Vault once. GOSU creates only this project's managed GOSU folder with Literature, Papers, Experiments, Project Progress, and Idea Development notes. General Vault content remains read-only and is never sent to Hosted Sync automatically.",
+                    )
+                  : uiText(
+                      'GOSU receives read-only access to the folder you select. File contents are not sent to Hosted Sync automatically.',
+                    )}
           </p>
           <div className="research-notes-empty-actions">
             {unavailable && onRetry && (
               <button type="button" className="primary-button" onClick={onRetry} disabled={busy}>
-                {busy ? 'Retrying…' : 'Retry project folder'}
+                {busy ? uiText('Retrying…') : uiText('Retry project folder')}
               </button>
             )}
             {!checking && (
@@ -294,7 +306,11 @@ export function ResearchNotesView({
                 onClick={onChoose}
                 disabled={busy}
               >
-                {busy ? 'Opening…' : managed ? 'Choose Obsidian Vault' : 'Choose folder'}
+                {busy
+                  ? uiText('Opening…')
+                  : managed
+                    ? uiText('Choose Obsidian Vault')
+                    : uiText('Choose folder')}
               </button>
             )}
           </div>
@@ -328,7 +344,7 @@ export function ResearchNotesView({
     <section className={`notes-layout${folderTreeCollapsed ? ' folder-tree-collapsed' : ''}`}>
       <aside
         className={`note-list${folderTreeCollapsed ? ' collapsed' : ''}`}
-        aria-label="Research Notes files"
+        aria-label={uiText('Research Notes files')}
       >
         <header className="research-notes-tree-header">
           <strong title={vault.root} hidden={folderTreeCollapsed}>
@@ -341,10 +357,10 @@ export function ResearchNotesView({
             aria-expanded={!folderTreeCollapsed}
             aria-label={
               folderTreeCollapsed
-                ? 'Show Research Notes folder tree'
-                : 'Hide Research Notes folder tree'
+                ? uiText('Show Research Notes folder tree')
+                : uiText('Hide Research Notes folder tree')
             }
-            title={folderTreeCollapsed ? 'Show folder tree' : 'Hide folder tree'}
+            title={folderTreeCollapsed ? uiText('Show folder tree') : uiText('Hide folder tree')}
             onClick={() => onFolderTreeCollapsedChange(!folderTreeCollapsed)}
           >
             <CollapseChevron direction={folderTreeCollapsed ? 'right' : 'left'} />
@@ -361,12 +377,14 @@ export function ResearchNotesView({
                 <span>{researchNotesAttentionMessage(workspace.attentionCode)}</span>
                 {onRetry && (
                   <button type="button" className="ghost-button" onClick={onRetry} disabled={busy}>
-                    Retry
+                    {uiText('Retry')}
                   </button>
                 )}
               </div>
             )}
-            {vault.files.length === 0 && <p className="column-empty">No note files found</p>}
+            {vault.files.length === 0 && (
+              <p className="column-empty">{uiText('No note files found')}</p>
+            )}
             {vault.files.length > 0 && (
               <ResearchNotesTree
                 key={vault.id}
@@ -390,7 +408,7 @@ export function ResearchNotesView({
               onClick={toggleSidebarTools}
             >
               <span className="research-notes-sidebar-tools-chevron" aria-hidden="true" />
-              <span>Search &amp; settings</span>
+              <span>{uiText('Search & settings')}</span>
             </button>
             <div
               id={sidebarToolsBodyId}
@@ -410,14 +428,14 @@ export function ResearchNotesView({
                 />
               )}
               <button type="button" className="secondary-button" onClick={onChoose} disabled={busy}>
-                {managed ? 'Change Vault' : 'Change folder'}
+                {managed ? uiText('Change Vault') : uiText('Change folder')}
               </button>
               {workspace && (
                 <section
                   className="research-notes-managed-summary"
-                  aria-label="Managed project folders"
+                  aria-label={uiText('Managed project folders')}
                 >
-                  <span>MANAGED PROJECT FOLDERS</span>
+                  <span>{uiText('MANAGED PROJECT FOLDERS')}</span>
                   <ul>
                     {workspace.folders.map((folder) => (
                       <li key={folder}>{folder}</li>
@@ -425,21 +443,20 @@ export function ResearchNotesView({
                   </ul>
                   <small>
                     {workspace.lastLiteratureSyncAt
-                      ? `Literature table synced ${new Date(workspace.lastLiteratureSyncAt).toLocaleString()}`
-                      : 'Literature table will sync after the first Literature search or update.'}
+                      ? uiText('Literature table synced {value1}', {
+                          value1: new Date(workspace.lastLiteratureSyncAt).toLocaleString(),
+                        })
+                      : uiText(
+                          'Literature table will sync after the first Literature search or update.',
+                        )}
                   </small>
                 </section>
               )}
               {accessPanel}
               <p className="note-agent-disclosure">
-                Access is project-specific and stays off until you explicitly authorize this folder
-                here or in AI Agent Settings. Listing sends display titles and opaque IDs; reading
-                also sends the requested excerpt, content hash, offset, and total length to the
-                configured LLM. Automatic Markdown saving is a separate explicit capability: it
-                creates only new files under this project’s managed folders, never replaces a
-                different existing file, and reports the relative location. Legacy grants remain
-                read-only until upgraded. Visible replies may be stored and synchronized; Research
-                Notes file bodies remain local.
+                {uiText(
+                  'Access is project-specific and stays off until you explicitly authorize this folder here or in AI Agent Settings. Listing sends display titles and opaque IDs; reading also sends the requested excerpt, content hash, offset, and total length to the configured LLM. Automatic Markdown saving is a separate explicit capability: it creates only new files under this project’s managed folders, never replaces a different existing file, and reports the relative location. Legacy grants remain read-only until upgraded. Visible replies may be stored and synchronized; Research Notes file bodies remain local.',
+                )}
               </p>
             </div>
           </section>
@@ -447,16 +464,18 @@ export function ResearchNotesView({
       </aside>
       <article className="note-reader">
         <header>
-          <span>{visibleSelectedNote?.path ?? 'Select a note file to read it locally.'}</span>
+          <span>
+            {visibleSelectedNote?.path ?? uiText('Select a note file to read it locally.')}
+          </span>
           {visibleSelectedNote && !selectedDocumentIsLatex && (
-            <div className="note-reader-mode" aria-label="Markdown display mode">
+            <div className="note-reader-mode" aria-label={uiText('Markdown display mode')}>
               <button
                 type="button"
                 className={mode === 'rendered' ? 'active' : ''}
                 aria-pressed={mode === 'rendered'}
                 onClick={() => setMode('rendered')}
               >
-                Rendered
+                {uiText('Rendered')}
               </button>
               <button
                 type="button"
@@ -464,14 +483,14 @@ export function ResearchNotesView({
                 aria-pressed={mode === 'source'}
                 onClick={() => setMode('source')}
               >
-                Source
+                {uiText('Source')}
               </button>
             </div>
           )}
         </header>
         <div className="note-reader-body">
           {busy ? (
-            <p className="note-reader-state">Reading…</p>
+            <p className="note-reader-state">{uiText('Reading…')}</p>
           ) : visibleSelectedNote ? (
             effectiveMode === 'rendered' ? (
               <MarkdownDocument
@@ -486,7 +505,7 @@ export function ResearchNotesView({
               <pre className="markdown-source">{visibleSelectedNote.content}</pre>
             )
           ) : (
-            <p className="note-reader-state">No note selected.</p>
+            <p className="note-reader-state">{uiText('No note selected.')}</p>
           )}
         </div>
       </article>
@@ -588,17 +607,17 @@ export function ResearchNotesProjectAccess({
   return (
     <section
       className={`local-notes-project-access ${tone}`}
-      aria-label="Project agent access"
+      aria-label={uiText('Project agent access')}
       aria-live="polite"
     >
-      <span>RESEARCH NOTES AGENT ACCESS</span>
+      <span>{uiText('RESEARCH NOTES AGENT ACCESS')}</span>
       <strong>{title}</strong>
       <p>{description}</p>
       {project && vault && !automaticMarkdownSaveAuthorized && (
         <small>
-          Enabling automatic Markdown saves lets Project Chat create reusable deliverables in this
-          project’s Research Notes without asking on every task. GOSU reports the relative saved
-          location and cannot replace a different existing file.
+          {uiText(
+            'Enabling automatic Markdown saves lets Project Chat create reusable deliverables in this project’s Research Notes without asking on every task. GOSU reports the relative saved location and cannot replace a different existing file.',
+          )}
         </small>
       )}
       <div className="local-notes-access-actions">
@@ -616,12 +635,12 @@ export function ResearchNotesProjectAccess({
             }
           >
             {profileLoading
-              ? 'Checking access…'
+              ? uiText('Checking access…')
               : busy
-                ? 'Working…'
+                ? uiText('Working…')
                 : readAuthorized
-                  ? 'Enable automatic Markdown saves'
-                  : `Authorize read + automatic saves for ${project.name}`}
+                  ? uiText('Enable automatic Markdown saves')
+                  : uiText('Authorize read + automatic saves for {name}', { name: project.name })}
           </button>
         )}
         {project && savedGrant && (
@@ -631,12 +650,12 @@ export function ResearchNotesProjectAccess({
             disabled={!canRevoke}
             onClick={() => onSetAccess(null)}
           >
-            {busy ? 'Working…' : 'Revoke access'}
+            {busy ? uiText('Working…') : uiText('Revoke access')}
           </button>
         )}
         {project && (
           <button type="button" className="ghost-button" onClick={onOpenSettings}>
-            Open AI Agent Settings…
+            {uiText('Open AI Agent Settings…')}
           </button>
         )}
       </div>
@@ -652,14 +671,24 @@ export function researchNotesAttentionMessage(
 ) {
   switch (attentionCode) {
     case 'folder_name_conflict':
-      return 'The renamed project folder would overwrite an existing Obsidian folder. GOSU kept the original folder unchanged.';
+      return uiText(
+        'The renamed project folder would overwrite an existing Obsidian folder. GOSU kept the original folder unchanged.',
+      );
     case 'folder_missing':
-      return 'The linked Obsidian project folder is missing. GOSU did not recreate or replace it automatically.';
+      return uiText(
+        'The linked Obsidian project folder is missing. GOSU did not recreate or replace it automatically.',
+      );
     case 'folder_ownership_changed':
-      return 'The project folder ownership marker changed. GOSU stopped managed writes and left every file untouched.';
+      return uiText(
+        'The project folder ownership marker changed. GOSU stopped managed writes and left every file untouched.',
+      );
     case 'vault_unavailable':
-      return 'The linked Obsidian Vault is unavailable. GOSU kept the existing folder binding for a safe retry.';
+      return uiText(
+        'The linked Obsidian Vault is unavailable. GOSU kept the existing folder binding for a safe retry.',
+      );
     default:
-      return 'The Obsidian project folder could not be reconciled safely. Existing notes were left untouched.';
+      return uiText(
+        'The Obsidian project folder could not be reconciled safely. Existing notes were left untouched.',
+      );
   }
 }

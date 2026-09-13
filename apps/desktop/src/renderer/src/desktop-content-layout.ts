@@ -12,9 +12,14 @@ export function desktopContentClassName({
   if (surface === 'settings') {
     return 'desktop-content desktop-content-compact desktop-content-settings';
   }
+  if (surface === 'workspace' && tab === 'review') {
+    return 'desktop-content desktop-content-chat desktop-content-review';
+  }
   if (surface === 'workspace' && tab === 'chat') {
     return 'desktop-content desktop-content-chat';
   }
+  if (surface === 'workspace' && ['model-lab', 'calendar', 'briefing-lab'].includes(tab))
+    return 'desktop-content desktop-content-model-lab';
   if (surface === 'workspace' && tab === 'lecture') {
     return 'desktop-content desktop-content-lecture';
   }

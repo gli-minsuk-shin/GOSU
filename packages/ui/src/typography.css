@@ -1,0 +1,28 @@
+/* Shared UI roles. Keep document math ratios and canvas zoom independent of these sizes. */
+:root {
+  --font-adjustment: 0px;
+  --font-caption: max(9px, calc(11px + var(--font-adjustment)));
+  --font-meta: max(9px, calc(11px + var(--font-adjustment)));
+  --font-control: var(--font-body);
+  --font-body: calc(12px + var(--font-adjustment));
+  --font-body-large: calc(13px + var(--font-adjustment));
+  --font-section: calc(14px + var(--font-adjustment));
+  --font-heading: calc(16px + var(--font-adjustment));
+  --font-title: calc(18px + var(--font-adjustment));
+  --font-display: calc(22px + var(--font-adjustment));
+  --font-kicker: var(--font-caption);
+  --font-code: var(--font-control);
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+}
+:root[data-text-size='compact'] {
+  --font-adjustment: -2px;
+}
+:root[data-text-size='default'] {
+  --font-adjustment: 0px;
+}
+:root[data-text-size='large'] {
+  --font-adjustment: 2px;
+}
+:root[data-text-size='extra-large'] {
+  --font-adjustment: 4px;
+}

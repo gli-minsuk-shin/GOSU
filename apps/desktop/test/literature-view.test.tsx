@@ -621,11 +621,11 @@ describe('Literature workspace', () => {
     expect(source).toContain('expectedVersion: record.version');
     expect(source).toContain('requestedModelId,');
     expect(source).toContain('reasoningOptionId,');
-    expect(source).toContain('<strong>AI organization:</strong>');
+    expect(source).toContain("<strong>{uiText('AI organization:')}</strong>");
     expect(source).toContain('record.aiAnnotations === null');
     expect(source).toContain('aiCandidates.map');
     expect(source).toContain('record.abstractText');
-    expect(source).toContain('<strong>Abstract</strong>');
+    expect(source).toContain("<strong>{uiText('Abstract')}</strong>");
   });
 
   it('projects the latest discovery search identity and rank for query-safe table sorting', () => {
