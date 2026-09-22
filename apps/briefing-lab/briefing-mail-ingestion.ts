@@ -11,6 +11,21 @@ export const mailDeliveryKey = (id: string, receivedAt: string) =>
   createHash('sha256')
     .update(JSON.stringify([id, new Date(receivedAt).toISOString()]))
     .digest('hex');
+
+/**
+ * The same message, named by something that does not move. `mailSummaryKey`'s id is a hash of the
+ * account, the *mailbox path* and Mail's per-mailbox message number, so one message read from a
+ * second selected mailbox -- or after Mail moved or re-indexed it -- hashes differently and is
+ * summarized again, identically. That is the reported duplicate. The Message-ID is the message.
+ *
+ * Received time and subject are still in the key on purpose. Skipping a mail the user has not seen
+ * summarized is the worst outcome here, so all three must agree before anything is skipped, and a
+ * message with no usable Message-ID gets no key at all and is simply read.
+ */
+export const mailMessageKey = (messageUrl: string, receivedAt: string, title: string) =>
+  createHash('sha256')
+    .update(JSON.stringify(['message', messageUrl, new Date(receivedAt).toISOString(), title]))
+    .digest('hex');
 /** Re-read this much below the previous coverage: Mail can sync a message after its received time. */
 export const MAIL_COVERAGE_OVERLAP_MS = 6 * 3_600_000;
 
@@ -21,6 +36,8 @@ export type MailReadPlan = {
   initial: boolean;
   excludeKeys: string[];
   excludeDeliveries?: string[];
+  /** Message-ID keys for mail already summarized, checked after metadata rather than inside Mail. */
+  excludeMessages?: string[];
   /** Per selected mailbox: read down to here (never below the approved days window). */
   coverage?: { accountId: string; mailboxId: string; stopAt: string }[];
 };

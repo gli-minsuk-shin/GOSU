@@ -33,6 +33,7 @@ import {
 import {
   nativeMailHash,
   mailDeliveryKey,
+  mailMessageKey,
   mailSummaryKey,
   type MailTargetCoverage,
   mailReadNotice,
@@ -1286,6 +1287,22 @@ export class AppleMailConnection {
         )
       )
         throw new Error('mail_scope_response_invalid');
+      // The exclusion Mail itself applies is keyed by the mailbox path and Mail's per-mailbox
+      // message number, so the same mail read from a second selected mailbox -- or after Mail moved
+      // or re-indexed it -- is not recognised and gets summarized again, identically. The Message-ID
+      // does not move. Dropping these here, before bodies are read, also saves reading them.
+      //
+      // Deliberately conservative: a message with no usable Message-ID is never skipped, and one
+      // that has one is skipped only when its received time and subject match the summary too.
+      const knownMessages = new Set(plan?.excludeMessages ?? []);
+      if (knownMessages.size) {
+        data.messages = data.messages.filter((item) => {
+          const url = appleMailMessageUrl(item.messageId);
+          return (
+            !url || !knownMessages.has(mailMessageKey(url, item.date, item.title || '(제목 없음)'))
+          );
+        });
+      }
       if (data.bodiesDeferred && scope.bodyPreview && data.messages.length) {
         progress?.({ stage: 'body', scanned: data.scanned });
         const bodies = await this.readBodies(

@@ -952,8 +952,11 @@ button {
    all. The mark is an inset bar rather than a border for the same reason. */
 .briefing-card.briefing-insight-card.is-asked-ai,
 .briefing-reading-list > .briefing-card.briefing-insight-card.is-asked-ai {
-  background: #f7fbf1;
-  box-shadow: inset 3px 0 0 #7ba24f;
+  /* Blue, not green. Briefing Lab's own surfaces are green-tinted, so a green mark on a green page
+     is the one colour that cannot stand out -- which is what the user reported. This is the blue
+     the mail connection rows already use, so it is the app's blue rather than a new one. */
+  background: #f0f5fa;
+  box-shadow: inset 3px 0 0 #4b7fa8;
 }
 .briefing-card-top {
   display: flex;
@@ -3007,8 +3010,8 @@ input[type='checkbox'] {
   margin-left: 8px;
   padding: 2px 7px;
   border-radius: 5px;
-  background: #e6f0d8;
-  color: #3f5f1f;
+  background: #dbe7f2;
+  color: #29506e;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;

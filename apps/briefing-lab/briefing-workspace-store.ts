@@ -59,6 +59,7 @@ import { assignPaperTags, buildPaperTagCatalog } from './src/paper-tags';
 import {
   MAIL_COVERAGE_OVERLAP_MS,
   mailDeliveryKey,
+  mailMessageKey,
   mailSummaryKey,
   needsMailReread,
   nextMailCoverage,
@@ -1048,10 +1049,16 @@ export class BriefingWorkspaceStore {
     const initialized = new Set(
       state.mailCollections.filter((r) => r.routineId === id).map((r) => r.accountId),
     );
-    // Summary key -> delivery key, so every exclusion can also be checked cheaply by the reader.
-    const excluded = new Map<string, string>();
-    const exclude = (itemId: string, receivedAt: string, title: string) =>
-      excluded.set(mailSummaryKey(itemId, receivedAt, title), mailDeliveryKey(itemId, receivedAt));
+    // Summary key -> the other two names for the same mail. The delivery key is what the reader
+    // checks cheaply; the Message-ID key is what survives the message being moved, re-indexed, or
+    // read from a second selected mailbox, which is how an identical mail got summarized twice.
+    // One map so that every place that *un*-excludes a mail drops all three together.
+    const excluded = new Map<string, { delivery: string; message?: string }>();
+    const exclude = (itemId: string, receivedAt: string, title: string, messageUrl?: string) =>
+      excluded.set(mailSummaryKey(itemId, receivedAt, title), {
+        delivery: mailDeliveryKey(itemId, receivedAt),
+        ...(messageUrl ? { message: mailMessageKey(messageUrl, receivedAt, title) } : {}),
+      });
     for (const history of state.history) {
       if (history.routineId !== id || history.kind !== 'briefing') continue;
       for (const item of history.items) {
@@ -1065,11 +1072,12 @@ export class BriefingWorkspaceStore {
         if (needsMailReread(item, scope)) continue;
         for (const copy of item.mailCopies ?? []) {
           initialized.add(copy.account.id);
-          if (/^[a-f0-9]{64}$/.test(copy.id)) exclude(copy.id, copy.receivedAt, copy.title);
+          if (/^[a-f0-9]{64}$/.test(copy.id))
+            exclude(copy.id, copy.receivedAt, copy.title, item.mailMessageUrl);
         }
         // A title alone, a failed run or an unsummarized collection is never a duplicate.
         if (/^[a-f0-9]{64}$/.test(item.id) && item.receivedAt)
-          exclude(item.id, item.receivedAt, item.title);
+          exclude(item.id, item.receivedAt, item.title, item.mailMessageUrl);
       }
     }
     let recheckCount = 0;
@@ -1119,7 +1127,12 @@ export class BriefingWorkspaceStore {
     });
     return {
       ...planMailRead(scope, [...initialized], [...excluded.keys()]),
-      excludeDeliveries: [...new Set(excluded.values())],
+      excludeDeliveries: [...new Set([...excluded.values()].map((known) => known.delivery))],
+      excludeMessages: [
+        ...new Set(
+          [...excluded.values()].flatMap((known) => (known.message ? [known.message] : [])),
+        ),
+      ],
       ...(coverage.length ? { coverage } : {}),
       ...(recheckCount ? { recheckCount } : {}),
     };

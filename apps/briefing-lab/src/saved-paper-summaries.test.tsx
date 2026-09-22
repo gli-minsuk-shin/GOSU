@@ -294,9 +294,19 @@ it('marks a paper the 논문 요약 AI was asked about on the card itself, not o
   // therefore paints nothing, which is exactly what the first attempt did: the class was on the
   // element and the screen looked identical. The marker must out-specify that rule.
   const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
-  expect(css).toMatch(
-    /\.briefing-reading-list > \.briefing-card\.briefing-insight-card\.is-asked-ai[^}]*\{[^}]*inset 3px 0 0/u,
-  );
+  const marker =
+    /\.briefing-reading-list > \.briefing-card\.briefing-insight-card\.is-asked-ai[^}]*\{([^}]*)\}/u.exec(
+      css,
+    );
+  expect(marker?.[1]).toContain('inset 3px 0 0');
+  // Blue, not green: the page's own surfaces are green-tinted, so a green mark was the one colour
+  // that could not stand out. Reported by the user after it shipped green.
+  const bar = /inset 3px 0 0 (#[0-9a-f]{6})/u.exec(marker?.[1] ?? '')?.[1] ?? '';
+  const channels = (hex: string) =>
+    [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16));
+  const [red, green, blue] = channels(bar);
+  expect(blue).toBeGreaterThan(green!);
+  expect(blue).toBeGreaterThan(red!);
 });
 
 it('filters the library to the papers the 논문 요약 AI was asked about, together with the other filters', async () => {

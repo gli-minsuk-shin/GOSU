@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BriefingWorkspaceStore } from './briefing-workspace-store';
+import { mailMessageKey } from './briefing-mail-ingestion';
 import { briefingClientContext } from './briefing-client-context';
 import { defaultAssistantPreferences, defaultLiveSettings } from '@gosu/briefing-core';
 import { randomUUID } from 'node:crypto';
@@ -186,6 +187,7 @@ it('repairs content-less email summaries instead of treating them as completed i
           title: 'Mail',
           readScope: 'mail-preview',
           publishedAt: '2026-09-11T00:00:00Z',
+          mailMessageUrl: 'message://%3Cseminar%40univ.example%3E',
           mailAccount: { id: 'a', name: 'Account', addresses: [] },
         },
       ],
@@ -207,9 +209,17 @@ it('repairs content-less email summaries instead of treating them as completed i
   expect((await owner(() => store.mailReadPlan('r', scope))).excludeKeys).toHaveLength(0);
   expect(await store.dailyItemKeys('r', runId)).toHaveLength(0);
   await save('학과에서 9월 16일 세미나 참석 신청을 안내했습니다.', '02');
-  expect((await owner(() => store.mailReadPlan('r', scope))).excludeKeys).toHaveLength(1);
+  const plan = await owner(() => store.mailReadPlan('r', scope));
+  expect(plan.excludeKeys).toHaveLength(1);
   expect(await store.dailyItemKeys('r', runId)).toHaveLength(1);
+  // The summary key names the mailbox the mail was read from, so the same mail found in another
+  // selected mailbox is not recognised and is summarized again. The Message-ID key does not, and
+  // it is built only once a real summary exists -- the priority-only run above produced none.
+  expect(plan.excludeMessages).toEqual([
+    mailMessageKey('message://%3Cseminar%40univ.example%3E', '2026-09-11T00:00:00Z', 'Mail'),
+  ]);
 });
+
 it('lets old cross-account Message-ID candidates through the normal read plan once without expanding scope', async () => {
   const { store } = await fixture();
   const multi = { ...scope, additionalAccounts: [{ accountId: 'b', mailboxId: 'box-b' }] };
