@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import {
   canonicalMailSource,
   deduplicateVerifiedMail,
+  mailRowRepresentatives,
   MailContentProofSchema,
 } from './src/mail-duplicates';
 import { z } from 'zod';
@@ -1063,19 +1064,18 @@ export class AppleMailConnection {
     if (unsafe?.status === 'rejected') throw unsafe.reason;
     const ready = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
     if (!ready.length && failed[0]?.status === 'rejected') throw failed[0].reason;
-    const items = deduplicateVerifiedMail(
-      ready
-        .flatMap((r) => r.items)
-        .sort(
-          (a, b) =>
-            (b.publishedAt ?? '').localeCompare(a.publishedAt ?? '') || a.id.localeCompare(b.id),
-        )
-        .slice(0, scope.limit),
-    );
-    // A copy merged into another account's row is handled when that row is summarized.
-    const representative = new Map<string, string>();
-    for (const item of items)
-      for (const copy of item.mailCopies ?? []) representative.set(copy.id, item.id);
+    const read = ready
+      .flatMap((r) => r.items)
+      .sort(
+        (a, b) =>
+          (b.publishedAt ?? '').localeCompare(a.publishedAt ?? '') || a.id.localeCompare(b.id),
+      )
+      .slice(0, scope.limit);
+    const items = deduplicateVerifiedMail(read);
+    // A copy merged into another account's row is handled when that row is summarized, and so is a
+    // twin collapsed out of one account -- which has no mailCopies entry by design, and without a
+    // stand-in would hold this mailbox's coverage back at that message for good.
+    const representative = mailRowRepresentatives(read, items);
     const warnings = [...new Set(ready.flatMap((r) => (r.warning ? [r.warning] : [])))];
     return {
       items,

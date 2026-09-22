@@ -237,6 +237,25 @@ const Schema = z
             })
             .strict()
             .optional(),
+          /**
+           * Every paper this conversation has been asked about, by key. The page holds one
+           * conversation now, so a single `paper` can only name the last one; this keeps each
+           * paper's details for the list and for the chats that read the index, and stays correct
+           * when a briefing that held a paper is removed.
+           */
+          papers: z
+            .record(
+              z.string().max(600),
+              z
+                .object({
+                  historyId: z.string().max(300),
+                  paperId: z.string().max(300),
+                  title: z.string().max(1000),
+                  key: z.string().max(600),
+                })
+                .strict(),
+            )
+            .optional(),
           messages: z.array(ConversationMessageSchema).max(10000),
           /**
            * `/new`: the model is given the records from this index on. Earlier records stay for the
@@ -306,17 +325,66 @@ const PAPER_SCOPE_MARK = ':paper:';
  * written under. The assistant owns every scope with no paper mark; a paper owns the scopes that
  * end with its own mark. Nothing belongs to both.
  */
-const belongsToChat = (scope: string, paperKey?: string) => {
+/**
+ * Which chat a call is about. `undefined` is the AI 비서. An object is 논문 요약's one page
+ * conversation, and `paperKey` -- when present -- says which paper that particular turn is about.
+ * It is an object rather than an optional key because "논문 요약, nothing attached" and "the AI
+ * 비서" are different chats, and a bare optional string cannot tell them apart: an unattached
+ * follow-up would silently land in the assistant's transcript, which is the mixing this whole line
+ * of work exists to remove.
+ */
+export type PaperChatSelector = Readonly<{ paperKey?: string }>;
+
+const belongsToChat = (scope: string, chat?: PaperChatSelector) => {
   const mark = scope.indexOf(PAPER_SCOPE_MARK);
-  if (paperKey === undefined) return mark < 0;
-  return mark >= 0 && scope.slice(mark) === paperScopeMark(paperKey);
+  if (chat === undefined) return mark < 0;
+  // Every paper shares the one page conversation. A scope written per paper before this change is
+  // a record of its own and is not shown here, so nothing a user already asked is rewritten.
+  return mark >= 0 && scope.slice(mark) === PAPERS_PAGE_MARK;
 };
 
 const paperScopeMark = (paperKey: string) =>
   `${PAPER_SCOPE_MARK}${createHash('sha256').update(paperKey).digest('hex')}`;
 
-const conversationScope = (profile: AssistantProfile, paperKey?: string) =>
-  paperKey ? paperConversationScope(scopeDigest(profile), paperKey) : scopeDigest(profile);
+/**
+ * 논문 요약 holds one conversation for the whole page: asking about a second paper continues the
+ * same transcript instead of abandoning the first. The mark keeps the `:paper:` prefix so every
+ * rule that separates this chat from the AI 비서 keeps working unchanged; only the part that used
+ * to name one paper is now fixed. Conversations written before this carry a per-paper mark and are
+ * left exactly as they are -- readable, never merged and never rewritten.
+ */
+const PAPERS_PAGE_MARK = `${PAPER_SCOPE_MARK}page`;
+
+/** Whether a stored conversation is the page's one transcript rather than a per-paper one. */
+export const isPapersPageScope = (scope: string) => scope.endsWith(PAPERS_PAGE_MARK);
+
+/**
+ * The turns that are about one paper, across both shapes a conversation can have: the page
+ * transcript, where each turn names its own paper, and the per-paper transcripts written before
+ * the page held one. Kept as a function of plain records so the rule can be read and tested
+ * without a store, a key or a disk.
+ */
+export const paperTurns = (
+  conversations: readonly {
+    readonly scope: string;
+    readonly messages: readonly ConversationMessage[];
+  }[],
+  paperKey: string,
+) => {
+  const legacy = paperScopeMark(paperKey);
+  return conversations
+    .flatMap((c) =>
+      isPapersPageScope(c.scope)
+        ? c.messages.filter((m) => m.paperKey === paperKey)
+        : c.scope.endsWith(legacy)
+          ? [...c.messages]
+          : [],
+    )
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+};
+
+const conversationScope = (profile: AssistantProfile, chat?: PaperChatSelector) =>
+  chat ? `${scopeDigest(profile)}${PAPERS_PAGE_MARK}` : scopeDigest(profile);
 
 export const paperConversationScope = (profileScope: string, paperKey: string) =>
   `${profileScope}${paperScopeMark(paperKey)}`;
@@ -634,12 +702,12 @@ export class BriefingWorkspaceStore {
       ];
     });
   }
-  async conversation(profile: AssistantProfile, paperKey?: string) {
+  async conversation(profile: AssistantProfile, chat?: PaperChatSelector) {
     const state = await this.state.read();
     const current = state.profiles.find((p) => p.routineId === profile.routineId);
     if (!current || !this.owns(current) || scopeDigest(current) !== scopeDigest(profile))
       throw new Error('assistant_settings_changed');
-    const scope = conversationScope(current, paperKey);
+    const scope = conversationScope(current, chat);
     return modelFacingMessages(
       state.conversations.find((c) => c.routineId === current.routineId && c.scope === scope),
     );
@@ -735,17 +803,17 @@ export class BriefingWorkspaceStore {
    * so a question asked about a paper appeared in the AI 비서's own screen even once the two were
    * stored apart: 논문 요약 AI was a separate chat everywhere except where the user could see it.
    */
-  async conversationDisplay(profile: AssistantProfile, paperKey?: string) {
+  async conversationDisplay(profile: AssistantProfile, chat?: PaperChatSelector) {
     const state = await this.state.read();
     const current = state.profiles.find((p) => p.routineId === profile.routineId);
     if (!current || !this.owns(current) || scopeDigest(current) !== scopeDigest(profile))
       throw new Error('assistant_settings_changed');
-    const scope = conversationScope(current, paperKey);
+    const scope = conversationScope(current, chat);
     const histories = state.conversations.filter((c) => c.routineId === current.routineId);
     // Which chat this is, across permission changes. An owner may read their own earlier chat
     // locally after the routine's permissions changed, which is why this is not an exact scope
     // match; what it must not do is put the two chats in one list.
-    const mine = histories.filter((c) => belongsToChat(c.scope, paperKey));
+    const mine = histories.filter((c) => belongsToChat(c.scope, chat));
     const current_ = mine.find((c) => c.scope === scope);
     return {
       messages: mine
@@ -784,16 +852,39 @@ export class BriefingWorkspaceStore {
         paper?: { historyId: string; paperId: string; title: string; key: string };
       }
     >();
+    const add = (
+      mark: string,
+      messages: ConversationMessage[],
+      paper?: { historyId: string; paperId: string; title: string; key: string },
+    ) => {
+      const found = byMark.get(mark) ?? { messages: [] };
+      byMark.set(mark, {
+        messages: [...found.messages, ...messages],
+        ...((paper ?? found.paper) ? { paper: paper ?? found.paper } : {}),
+      });
+    };
     for (const c of state.conversations) {
       if (c.routineId !== current.routineId) continue;
-      const mark = c.scope.indexOf(PAPER_SCOPE_MARK);
-      if (mark < 0) continue;
-      const key = c.scope.slice(mark);
-      const found = byMark.get(key) ?? { messages: [] };
-      byMark.set(key, {
-        messages: [...found.messages, ...c.messages],
-        ...((c.paper ?? found.paper) ? { paper: c.paper ?? found.paper } : {}),
-      });
+      const at = c.scope.indexOf(PAPER_SCOPE_MARK);
+      if (at < 0) continue;
+      if (!isPapersPageScope(c.scope)) {
+        // Written before the page held one conversation: the scope itself names the paper.
+        add(c.scope.slice(at), c.messages, c.paper);
+        continue;
+      }
+      // The page conversation holds every paper, so its turns are grouped by what each names. An
+      // entry still answers to `paperConversationMark`, so readers match papers the same way.
+      const byPaper = new Map<string, ConversationMessage[]>();
+      for (const m of c.messages) {
+        if (!m.paperKey) continue;
+        byPaper.set(m.paperKey, [...(byPaper.get(m.paperKey) ?? []), m]);
+      }
+      for (const [key, messages] of byPaper)
+        add(
+          paperScopeMark(key),
+          messages,
+          c.papers?.[key] ?? (c.paper?.key === key ? c.paper : undefined),
+        );
     }
     return [...byMark.entries()]
       .map(([mark, found]) => {
@@ -828,12 +919,10 @@ export class BriefingWorkspaceStore {
     const counts: Record<string, { turns: number; lastAskedAt: string; lastQuestion: string }> = {};
     for (const key of new Set(paperKeys)) {
       // Every permission scope of this paper, so a count does not reset because a routine's
-      // reading permissions changed.
-      const asked = mine
-        .filter((c) => belongsToChat(c.scope, key))
-        .flatMap((c) => c.messages)
-        .filter((m) => m.role === 'user')
-        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+      // reading permissions changed. Two shapes are read: the page conversation, where a turn names
+      // its own paper, and the per-paper conversations written before the page held one thread,
+      // which are still the user's and still count.
+      const asked = paperTurns(mine, key).filter((m) => m.role === 'user');
       if (!asked.length) continue;
       counts[key] = {
         turns: asked.length,
@@ -876,7 +965,7 @@ export class BriefingWorkspaceStore {
   async appendConversation(
     profile: AssistantProfile,
     message: ConversationMessage,
-    paperKey?: string,
+    chat?: PaperChatSelector,
     paper?: { historyId: string; paperId: string; title: string; key: string },
   ) {
     const parsed = ConversationMessageSchema.parse(message);
@@ -884,7 +973,7 @@ export class BriefingWorkspaceStore {
       const current = state.profiles.find((p) => p.routineId === profile.routineId);
       if (!current || !this.owns(current) || scopeDigest(current) !== scopeDigest(profile))
         throw new Error('assistant_settings_changed');
-      const scope = conversationScope(current, paperKey);
+      const scope = conversationScope(current, chat);
       let conversation = state.conversations.find(
         (c) => c.routineId === current.routineId && c.scope === scope,
       );
@@ -892,13 +981,18 @@ export class BriefingWorkspaceStore {
         conversation = { routineId: current.routineId, scope, messages: [] };
         state.conversations.push(conversation);
       }
-      if (paper && paperKey) conversation.paper = paper;
-      conversation.messages.push(parsed);
+      if (paper && chat?.paperKey) {
+        conversation.paper = paper;
+        conversation.papers = { ...conversation.papers, [paper.key]: paper };
+      }
+      // Attribution rides on the turn now that one thread holds every paper. A turn asked with
+      // nothing attached is about no paper, and counts for none.
+      conversation.messages.push(chat?.paperKey ? { ...parsed, paperKey: chat.paperKey } : parsed);
     });
   }
-  async conversationCheckpoint(profile: AssistantProfile, paperKey?: string) {
-    await this.conversation(profile, paperKey);
-    const scope = conversationScope(profile, paperKey);
+  async conversationCheckpoint(profile: AssistantProfile, chat?: PaperChatSelector) {
+    await this.conversation(profile, chat);
+    const scope = conversationScope(profile, chat);
     return (await this.state.read()).conversations.find(
       (c) => c.routineId === profile.routineId && c.scope === scope,
     )?.checkpoint;

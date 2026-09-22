@@ -210,6 +210,19 @@ const paperLibrary = [
       sourceUrl: 'https://arxiv.org/abs/2601.00001v1',
     },
   },
+  {
+    historyId: 'h',
+    savedAt: '2026-09-09T00:00:00Z',
+    item: {
+      id: 'p2',
+      title: 'Image study',
+      kind: 'papers',
+      summary: 'Saved result',
+      readScope: 'abstract',
+      tags: ['Diffusion'],
+      sourceUrl: 'https://arxiv.org/abs/2601.00002v1',
+    },
+  },
 ];
 async function mountWithPapers() {
   vi.stubGlobal('document', { documentElement: { dataset: {} } });
@@ -323,11 +336,48 @@ it('gives the paper chat the same composer tools as the AI 비서, file attachme
   const paper = labels(paneChats().find((n) => n.props.paperChat)!);
   expect(paper).toContain('파일 첨부');
   // Recommendations are the one thing the paper chat does not take: they are written for the
-  // assistant's routine, and a paper conversation starts from the paper, not from a prompt list.
+  // assistant's routine, and 논문 요약's conversation starts from the papers on the page.
   expect(paper).not.toContain('추천 질문');
   expect(paper).not.toContain('추천 질문 닫기');
-  // Everything else the assistant offers, the paper chat offers too.
-  expect(assistant.filter((label) => !label.startsWith('추천 질문'))).toEqual(paper);
+  // It has one the assistant does not: the attached paper can be taken off without closing.
+  expect(paper).toContain('첨부한 논문 떼기');
+  // Everything else is the same set.
+  expect(assistant.filter((label) => !label.startsWith('추천 질문'))).toEqual(
+    paper.filter((label) => label !== '첨부한 논문 떼기'),
+  );
+});
+it('attaches a paper to the page conversation instead of forking one of its own', async () => {
+  // 논문 요약 holds one conversation for the page. Asking about a second paper attaches that paper
+  // to the next turn; it must not remount the chat, which would throw away the transcript on screen
+  // and any unsent draft -- the "찾기도 어렵고 번거로움" the user reported about one thread per paper.
+  await mountWithPapers();
+  await openFirstPaperConversation();
+  const chat = paneChats().find((n) => n.props.papersChat)!;
+  expect(chat.props.paperChat).toMatchObject({ paperId: 'p1' });
+
+  await act(() =>
+    ui.root
+      .findAllByProps({ className: 'briefing-paper-open-chat' })
+      .filter((n) => n.props.onClick)[1]!
+      .props.onClick(),
+  );
+
+  // Same instance, new attachment: one conversation, a different paper on the next turn.
+  expect(paneChats().find((n) => n.props.papersChat)).toBe(chat);
+  expect(chat.props.paperChat).toMatchObject({ paperId: 'p2' });
+});
+it('keeps the 논문 요약 conversation open after its attached paper is taken off', async () => {
+  // Detaching is not closing. The page's transcript stays, and the next turn simply carries no
+  // paper -- which still belongs to 논문 요약 and not to the AI 비서.
+  await mountWithPapers();
+  await openFirstPaperConversation();
+  const chat = paneChats().find((n) => n.props.papersChat)!;
+
+  await act(() => ui.root.findByProps({ 'aria-label': '첨부한 논문 떼기' }).props.onClick());
+
+  expect(paneChats().find((n) => n.props.papersChat)).toBe(chat);
+  expect(chat.props.paperChat).toBeUndefined();
+  expect(ui.root.findAllByProps({ 'aria-label': '첨부한 논문 떼기' })).toHaveLength(0);
 });
 it('shows the paper chat its own model in the pane header, not the AI 비서\u2019s', async () => {
   // The two run on models the user assigns separately in 설정 → Agent, so the header that names the

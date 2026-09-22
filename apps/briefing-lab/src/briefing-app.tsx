@@ -882,6 +882,9 @@ export function BriefingApp({
   /** Which paper's 논문 요약 AI conversation the right-hand pane holds. It is kept while other tabs
    *  borrow the pane, so returning to 논문 요약 resumes the same conversation. */
   const [paperChat, setPaperChat] = useState<PaperChatReference | null>(null);
+  /** 논문 요약's conversation is open in the pane. It stays open with no paper attached, because
+   *  the page has one conversation and detaching a paper is not closing it. */
+  const [papersOpen, setPapersOpen] = useState(false);
   const [paperChatBusy, setPaperChatBusy] = useState(false);
   useEffect(() => {
     const choose = (event: Event) => {
@@ -944,7 +947,7 @@ export function BriefingApp({
   const activePaperChat = paperChat?.routineId === routine?.id ? paperChat : null;
   /** 논문 요약 lends its conversation the AI 비서's slot. Collapsing the pane hides it without
    *  ending it, so this stays true while `rightCollapsed` is. */
-  const paperChatOpen = tab === 'papers' && activePaperChat !== null;
+  const paperChatOpen = tab === 'papers' && papersOpen;
   const personalRoutines = workspace.routines.filter((item) => item.kind === 'personal');
   const primaryPersonalRoutine = personalRoutines[0] ?? routine;
   const openChatSidebar = () => {
@@ -1313,8 +1316,11 @@ export function BriefingApp({
                   onOpenedPaper={() => setPaperReference(undefined)}
                   onOpenChat={(paper) => {
                     setPaperChat(paper);
-                    // A conversation behind a collapsed pane is the same dead button in a new place.
-                    if (paper) setRightCollapsed(false);
+                    if (paper) {
+                      // Attaching a paper opens the page's conversation; it never forks a new one.
+                      setPapersOpen(true);
+                      setRightCollapsed(false);
+                    }
                   }}
                 />
               </>
@@ -1444,30 +1450,38 @@ export function BriefingApp({
                 setTab('settings');
               }}
             />
-            {activePaperChat && routine && (
+            {papersOpen && routine && (
               <section
                 className="briefing-paper-chat-panel"
                 aria-label="논문 요약 AI 질의응답"
                 hidden={!paperChatOpen}
               >
                 <header>
-                  <span>{activePaperChat.title}</span>
+                  <span>논문 요약의 대화</span>
                   <button
                     type="button"
-                    onClick={() => setPaperChat(null)}
+                    onClick={() => {
+                      setPapersOpen(false);
+                      setPaperChat(null);
+                    }}
                     aria-label="논문 대화 닫기"
                   >
                     닫기
                   </button>
                 </header>
                 <p className="briefing-muted">
-                  이 논문만의 대화입니다. AI 비서 대화에 섞이지 않고, 같은 논문을 다시 열면
-                  이어집니다. 사용할 모델은 설정 → Agent의 논문 분석·질의응답 AI에서 정합니다.
+                  이 화면의 논문들에 대한 하나의 대화입니다. AI 비서 대화에 섞이지 않습니다. 논문
+                  카드의 「AI 질의응답」을 누르면 그 논문이 다음 질문에 붙습니다. 사용할 모델은 설정
+                  → Agent의 논문 분석·질의응답 AI에서 정합니다.
                 </p>
                 <BriefingChat
-                  key={`${activePaperChat.historyId}:${activePaperChat.paperId}`}
+                  // Keyed by the routine, never by a paper: attaching a different paper must not
+                  // remount the chat and throw away the transcript or an unsent draft.
+                  key={`${routine.id}:papers`}
                   routine={routine}
-                  paperChat={activePaperChat}
+                  papersChat
+                  {...(activePaperChat ? { paperChat: activePaperChat } : {})}
+                  onDetachPaper={() => setPaperChat(null)}
                   autoSuggestions={autoSuggestions}
                   visible={paperChatOpen && !rightCollapsed}
                   onBusyChange={setPaperChatBusy}

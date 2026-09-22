@@ -542,7 +542,9 @@ it('keeps a paper question out of the AI 비서 transcript, in the paper own thr
 
   const profile = (await s.store.profile('r'))!;
   const assistant = await owner(() => s.store.conversation(profile));
-  const thread = await owner(() => s.store.conversation(profile, paperConversationKey(paper)));
+  const thread = await owner(() =>
+    s.store.conversation(profile, { paperKey: paperConversationKey(paper) }),
+  );
 
   // The assistant's own conversation holds only what was asked of the assistant.
   expect(assistant.map((m) => m.text)).toEqual([
@@ -561,9 +563,9 @@ it('keeps a paper question out of the AI 비서 transcript, in the paper own thr
     paperReference: { ...paper, historyId: '2026-09-21T00:00:00Z', paperId: 'other-item' },
   });
   expect(
-    (await owner(() => s.store.conversation(profile, paperConversationKey(paper)))).map(
-      (m) => m.text,
-    ),
+    (
+      await owner(() => s.store.conversation(profile, { paperKey: paperConversationKey(paper) }))
+    ).map((m) => m.text),
   ).toEqual([
     '이 논문의 가정은?',
     expect.stringContaining('Checked synthetic sources'),
@@ -631,9 +633,9 @@ it('lets the AI 비서 read a paper conversation without adding to it', async ()
   const profile = (await s.store.profile('r'))!;
   // Reading it here added nothing to the paper's thread, and the assistant kept its own.
   expect(
-    (await owner(() => s.store.conversation(profile, paperConversationKey(paper)))).map(
-      (m) => m.text,
-    ),
+    (
+      await owner(() => s.store.conversation(profile, { paperKey: paperConversationKey(paper) }))
+    ).map((m) => m.text),
   ).toEqual(['이 논문의 가정은?', expect.stringContaining('Checked synthetic sources')]);
   expect((await owner(() => s.store.conversation(profile))).map((m) => m.text)).toEqual([
     '내가 어떤 논문들 물어봤지?',

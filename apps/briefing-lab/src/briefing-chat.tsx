@@ -169,6 +169,8 @@ export function BriefingChat({
   globalMode = false,
   autoSuggestions = true,
   paperChat,
+  papersChat = false,
+  onDetachPaper,
   routine,
   onSettings,
   onBusyChange,
@@ -180,12 +182,15 @@ export function BriefingChat({
   /** Settings -> Agent: whether opening this chat also opens its suggested questions. */
   autoSuggestions?: boolean;
   /**
-   * 논문 요약 AI: this whole chat belongs to one paper. Its transcript is that paper's own, never
-   * the AI 비서's, and every turn carries the paper. The AI 비서 is never handed a paper: asking
-   * about one opens that paper's own conversation in 논문 요약, and only it carries the paper.
-   * a paper to one question in the assistant's chat.
+   * The paper the next turn carries, when the user has attached one. It is not the transcript's
+   * identity: 논문 요약 holds a single conversation for the page, and a paper rides along with the
+   * turn that asks about it. The AI 비서 is never handed a paper by anything.
    */
   paperChat?: PaperChatReference | undefined;
+  /** This is 논문 요약's page conversation rather than the AI 비서's, attached paper or not. */
+  papersChat?: boolean;
+  /** Take the attached paper off without ending the conversation. */
+  onDetachPaper?: (() => void) | undefined;
   onSettings: (proposal?: SettingsProposal) => void;
   onBusyChange?: (busy: boolean) => void;
   visible?: boolean;
@@ -231,6 +236,7 @@ export function BriefingChat({
           c.signal,
           undefined,
           paperChat,
+          papersChat || Boolean(paperChat),
         );
         const saved = ConversationMessageSchema.array().parse(result?.messages ?? []);
         if (!c.signal.aborted) {
@@ -466,6 +472,10 @@ export function BriefingChat({
         '/assistant/chat',
         {
           routineId: routine.id,
+          // Which chat this turn belongs to is stated, not inferred from whether a paper is
+          // attached: 논문 요약 holds one conversation for the page, and a follow-up asked with
+          // nothing attached is still its turn, never the AI 비서's.
+          ...(papersChat || paperChat ? { papersChat: true } : {}),
           ...((paperChat ?? queued?.paperReference)
             ? { paperReference: paperChat ?? queued?.paperReference }
             : {}),
@@ -641,7 +651,7 @@ export function BriefingChat({
       <div className="briefing-chat-context">
         <b>{routine.name}</b>
       </div>
-      {!paperChat && showSuggestions && restored && (
+      {!papersChat && !paperChat && showSuggestions && restored && (
         <section ref={suggestions} className="briefing-chat-welcome" aria-label="추천 질문">
           <header className="briefing-chat-welcome-heading">
             {globalMode ? (
@@ -1014,6 +1024,21 @@ export function BriefingChat({
         )}
         {!restored && !restoreError && <small role="status">이전 대화 불러오는 중…</small>}
         <div className="briefing-chat-input-box">
+          {paperChat && (
+            <div className="briefing-chat-paper-pill">
+              <span title={paperChat.title}>{paperChat.title}</span>
+              {onDetachPaper && (
+                <button
+                  type="button"
+                  aria-label="첨부한 논문 떼기"
+                  title="이 논문을 떼고 대화는 그대로 이어갑니다"
+                  onClick={onDetachPaper}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          )}
           {!!attachments.length && (
             <div className="assistant-attachment-pills">
               {attachments.map((file) => (
@@ -1102,7 +1127,7 @@ export function BriefingChat({
                   />
                 </svg>
               </button>
-              {!paperChat && (
+              {!papersChat && !paperChat && (
                 <button
                   type="button"
                   className="briefing-chat-shortcut"

@@ -93,6 +93,59 @@ export function sameDeliveredMail(a: DuplicateMail, b: DuplicateMail) {
     !(x && y && (x.digest !== y.digest || x.previewDigest !== y.previewDigest)),
   );
 }
+/**
+ * One message seen twice inside ONE account: the same mail sitting in the inbox and in an archive,
+ * or found again after Mail moved it. `sameDeliveredMail` is about the opposite case -- one message
+ * delivered to several accounts, which keeps a copy per account -- and it refuses same-account
+ * pairs, so this one had nowhere to be recognised and showed up as two identical rows.
+ *
+ * Stricter than the cross-account rule on purpose. The Message-ID, the subject AND the received
+ * time must all agree: a sender that reuses a Message-ID across two real sends differs in time, and
+ * hiding a mail the user has not seen is worse than showing it twice. No Message-ID, no match.
+ */
+export function sameMessageTwice(a: DuplicateMail, b: DuplicateMail) {
+  const when = (mail: DuplicateMail) => mail.receivedAt || mail.publishedAt;
+  const x = a.mailContentProof,
+    y = b.mailContentProof;
+  return Boolean(
+    a.kind === 'email' &&
+    b.kind === 'email' &&
+    a.mailAccount &&
+    b.mailAccount &&
+    a.mailAccount.id === b.mailAccount.id &&
+    a.mailMessageUrl &&
+    a.mailMessageUrl === b.mailMessageUrl &&
+    a.title === b.title &&
+    when(a) &&
+    when(a) === when(b) &&
+    !(x && y && (x.digest !== y.digest || x.previewDigest !== y.previewDigest)),
+  );
+}
+
+/**
+ * Which surviving row stands in for each read row, so coverage bookkeeping can advance.
+ *
+ * A row merged as a cross-account copy is already named by `mailCopies`. A row collapsed by
+ * `sameMessageTwice` is not, and it must not be: `mailCopies` is what the card counts when it says
+ * "같은 메일 · n개 계정 수신", so putting a same-account twin in there would make the screen claim
+ * two accounts where there is one. Without a stand-in, `nextMailCoverage` treats that row as
+ * unhandled, refuses to mark the mailbox read past it and re-reads from that message on every run.
+ */
+export function mailRowRepresentatives<T extends DuplicateMail>(
+  read: readonly T[],
+  kept: readonly T[],
+): Map<string, string> {
+  const byId = new Map<string, string>();
+  for (const row of kept) for (const copy of row.mailCopies ?? []) byId.set(copy.id, row.id);
+  const survives = new Set(kept.map((row) => row.id));
+  for (const row of read) {
+    if (survives.has(row.id) || byId.has(row.id)) continue;
+    const survivor = kept.find((candidate) => sameMessageTwice(candidate, row));
+    if (survivor) byId.set(row.id, survivor.id);
+  }
+  return byId;
+}
+
 export function deduplicateVerifiedMail<T extends DuplicateMail>(items: readonly T[]): T[] {
   const out: T[] = [];
   const identity = (copy: MailCopy) =>
@@ -126,6 +179,14 @@ export function deduplicateVerifiedMail<T extends DuplicateMail>(items: readonly
         : '';
     const representative = covered.get(own);
     if (representative && representative !== item && representative.id !== item.id) continue;
+    // The same message twice in one account is one row, not a copy pair: dropped rather than folded
+    // into mailCopies, which means one copy per account and still does. Whichever of the two
+    // actually has a body is the one kept, so collapsing never costs the reader the content.
+    const twin = out.findIndex((other) => sameMessageTwice(other, item));
+    if (twin >= 0) {
+      if (!out[twin]!.mailContentProof && item.mailContentProof) out[twin] = item;
+      continue;
+    }
     const index = out.findIndex(
       (other) =>
         sameDeliveredMail(other, item) &&

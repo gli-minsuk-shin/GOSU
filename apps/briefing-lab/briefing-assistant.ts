@@ -49,6 +49,12 @@ import { MailSearchRequestSchema, type MailSearchRequest } from './briefing-mail
 export const ChatRequestSchema = z
   .object({
     routineId: z.string().max(128),
+    /**
+     * This turn belongs to 논문 요약's one conversation rather than the AI 비서's. Sent
+     * independently of `paperReference`, because a follow-up in that chat may attach no paper and
+     * must still not land in the assistant's transcript.
+     */
+    papersChat: z.boolean().optional(),
     paperReference: PaperChatReferenceSchema.optional(),
     prompt: z.string().min(1).max(6000),
     attachmentIds: ProjectChatAttachmentIdsSchema.optional(),
@@ -743,7 +749,9 @@ async function runBriefingAssistantInner(
               (k) => k.historyId === query.query && k.paperId === query.from,
             );
             if (!wanted) throw new Error('assistant_paper_conversation_unknown');
-            const conversation = await workspace.conversationDisplay(profile, wanted.key);
+            const conversation = await workspace.conversationDisplay(profile, {
+              paperKey: wanted.key,
+            });
             return {
               historyId: wanted.historyId,
               paperId: wanted.paperId,

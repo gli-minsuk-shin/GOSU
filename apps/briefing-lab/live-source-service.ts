@@ -1302,9 +1302,9 @@ export class LiveSourceService {
         paperKey
           ? {
               index: [],
-              messages: (await this.workspace.conversationDisplay(profile, paperKey)).messages.map(
-                (m) => ({ role: m.role, text: m.text, createdAt: m.createdAt }),
-              ),
+              messages: (
+                await this.workspace.conversationDisplay(profile, { paperKey })
+              ).messages.map((m) => ({ role: m.role, text: m.text, createdAt: m.createdAt })),
             }
           : { index: await this.workspace.paperConversationIndex(profile) },
       requiresConfirmation: (profile) => this.workspace.requiresPerRequestConfirmation(profile),
@@ -3304,7 +3304,11 @@ export class LiveSourceService {
       }
       if (path === '/assistant/conversation/get') {
         const input = z
-          .object({ routineId, paperReference: PaperChatReferenceSchema.optional() })
+          .object({
+            routineId,
+            papersChat: z.boolean().optional(),
+            paperReference: PaperChatReferenceSchema.optional(),
+          })
           .strict()
           .parse(body);
         const profile = await this.workspace.profile(input.routineId);
@@ -3313,7 +3317,13 @@ export class LiveSourceService {
           200,
           await this.workspace.conversationDisplay(
             profile,
-            input.paperReference ? paperConversationKey(input.paperReference) : undefined,
+            input.papersChat || input.paperReference
+              ? {
+                  ...(input.paperReference
+                    ? { paperKey: paperConversationKey(input.paperReference) }
+                    : {}),
+                }
+              : undefined,
           ),
         );
       }
@@ -3452,19 +3462,24 @@ export class LiveSourceService {
             if (!this.attachments) throw new Error('assistant_attachments_unavailable');
             attached = this.attachments.claim(profile, input.attachmentIds);
           }
-          // 논문 요약 AI is its own chat. A turn about one paper reads and writes that paper's own
-          // transcript, so the AI 비서's conversation stays about what the user was discussing with
-          // it and a paper's thread is still there the next time that paper is opened.
+          // 논문 요약 AI is its own chat, and it is one conversation for the whole page. Which
+          // chat a turn belongs to comes from the request, not from whether a paper happens to be
+          // attached: an unattached follow-up is still 논문 요약's, and inferring it from the paper
+          // would drop that turn into the AI 비서's transcript.
           const paperKey = input.paperReference
             ? paperConversationKey(input.paperReference)
             : undefined;
-          const past = await this.workspace.conversation(profile, paperKey);
+          const chatScope =
+            input.papersChat || paperKey
+              ? ({ ...(paperKey ? { paperKey } : {}) } as const)
+              : undefined;
+          const past = await this.workspace.conversation(profile, chatScope);
           const paperSaveScope = approvedPaperSaveScope(
             input.prompt,
             past,
             !input.queueId && !input.attachmentIds?.length,
           );
-          const checkpoint = await this.workspace.conversationCheckpoint(profile, paperKey);
+          const checkpoint = await this.workspace.conversationCheckpoint(profile, chatScope);
           const policy = await this.modelRouting?.();
           // The assistant's provider and model come from Settings → Agent, like every Briefing usage.
           const assistantPreferences = routedBriefingPreferences(
@@ -3475,7 +3490,7 @@ export class LiveSourceService {
           await this.workspace.appendConversation(
             profile,
             { role: 'user', text: input.prompt, createdAt: new Date().toISOString() },
-            paperKey,
+            chatScope,
             input.paperReference && paperKey
               ? {
                   historyId: input.paperReference.historyId,
@@ -3602,7 +3617,7 @@ export class LiveSourceService {
               // The current context only: what is above a `/new` line is not reachable by the model.
               searchConversation: async (query, from, to) =>
                 searchConversationRecords(
-                  await this.workspace.conversation(profile, paperKey),
+                  await this.workspace.conversation(profile, chatScope),
                   query,
                   from,
                   to,
@@ -3791,7 +3806,7 @@ export class LiveSourceService {
                 ),
                 ...(result.contextUsage ? { contextUsage: result.contextUsage } : {}),
               },
-              paperKey,
+              chatScope,
             );
           } catch {
             persistenceWarning =

@@ -3,6 +3,7 @@ import { expect, it } from 'vitest';
 import {
   canonicalMailSource,
   deduplicateVerifiedMail,
+  mailRowRepresentatives,
   sameVerifiedMail,
   sameDeliveredMail,
   pendingMailRechecks,
@@ -104,8 +105,86 @@ it('shows one row for the same Message-ID delivered to two accounts even without
   ).toBe(false);
   expect(sameDeliveredMail(copy('a'), { ...copy('b'), title: 'Other' })).toBe(false);
   expect(sameDeliveredMail(copy('a'), { ...copy('b'), mailMessageUrl: undefined })).toBe(false);
-  expect(deduplicateVerifiedMail([copy('a'), copy('a')])).toHaveLength(2);
+  // A same-account pair is still not a *delivery* pair: this rule refuses it and `mailCopies`
+  // still means one copy per account. What changed is what happens to it afterwards. Two rows for
+  // one message in one account was the reported duplicate, so `sameMessageTwice` now collapses it
+  // -- on stricter evidence, the received time included. The test below covers that path.
+  expect(sameDeliveredMail(copy('a'), copy('a'))).toBe(false);
+  expect(deduplicateVerifiedMail([copy('a'), copy('a')])).toHaveLength(1);
 });
+it('shows one row for a message that sits in two mailboxes of the same account', () => {
+  // Reported alongside the across-runs duplicate: an identical mail appearing twice. The dedup
+  // merged copies only across *different* accounts, so one message that is in both the inbox and
+  // an archive of the same account was two rows. It carries the same Message-ID, subject and
+  // received time, which is more agreement than two distinct mails can have.
+  const inTwoMailboxes = (mailboxItemId: string) => ({
+    ...mail('a'),
+    id: mailboxItemId.repeat(64),
+    mailContentProof: undefined,
+    mailMessageUrl: 'message://%3Csame%40example.test%3E',
+  });
+
+  const result = deduplicateVerifiedMail([inTwoMailboxes('c'), inTwoMailboxes('d')]);
+  expect(result).toHaveLength(1);
+  // Dropped, not folded into mailCopies: that field means one copy per account and still does.
+  expect(result[0]!.mailCopies).toBeUndefined();
+
+  // The row that kept a body wins, whichever order they arrive in.
+  const withBody = { ...inTwoMailboxes('d'), mailContentProof: proof };
+  expect(deduplicateVerifiedMail([inTwoMailboxes('c'), withBody])[0]!.mailContentProof).toEqual(
+    proof,
+  );
+
+  // Still refuses without enough agreement: a different subject, a different received time, or no
+  // Message-ID at all. A sender that reuses a Message-ID across two real sends differs in time.
+  for (const different of [
+    { title: 'Other' },
+    { publishedAt: '2026-09-11T05:00:00Z' },
+    { mailMessageUrl: undefined },
+  ])
+    expect(
+      deduplicateVerifiedMail([inTwoMailboxes('c'), { ...inTwoMailboxes('d'), ...different }]),
+    ).toHaveLength(2);
+
+  // And never across accounts by this rule -- that path keeps its own evidence and its copy list.
+  const across = deduplicateVerifiedMail([
+    inTwoMailboxes('c'),
+    { ...inTwoMailboxes('d'), mailAccount: { id: 'b', name: 'b', addresses: [] } },
+  ]);
+  expect(across).toHaveLength(1);
+  expect(across[0]!.mailCopies?.map((c) => c.account.id)).toEqual(['a', 'b']);
+});
+
+it('gives a collapsed twin a stand-in so the mailbox can be marked read past it', () => {
+  // The collapsed row is not in the result and is deliberately not a mailCopy -- the card counts
+  // mailCopies when it says "같은 메일 · n개 계정 수신", so a same-account twin in there would claim
+  // two accounts where there is one. But nextMailCoverage calls any read row that is neither
+  // summarized nor spoken for "unhandled", refuses to advance the mailbox past it and re-reads from
+  // that message every run. The stand-in is what closes that.
+  const inTwoMailboxes = (mailboxItemId: string) => ({
+    ...mail('a'),
+    id: mailboxItemId.repeat(64),
+    mailContentProof: undefined,
+    mailMessageUrl: 'message://%3Csame%40example.test%3E',
+  });
+  const read = [inTwoMailboxes('c'), inTwoMailboxes('d')];
+  const kept = deduplicateVerifiedMail(read);
+
+  const stand = mailRowRepresentatives(read, kept);
+  expect(kept).toHaveLength(1);
+  expect(stand.get('d'.repeat(64))).toBe(kept[0]!.id);
+  // The survivor speaks for itself and needs no entry.
+  expect(stand.has(kept[0]!.id)).toBe(false);
+
+  // Cross-account copies keep the stand-in they always had.
+  const copies = [
+    inTwoMailboxes('c'),
+    { ...inTwoMailboxes('d'), mailAccount: { id: 'b', name: 'b', addresses: [] } },
+  ];
+  const merged = deduplicateVerifiedMail(copies);
+  expect(mailRowRepresentatives(copies, merged).get('d'.repeat(64))).toBe(merged[0]!.id);
+});
+
 it('rechecks legacy cross-account Message-ID candidates once, not every summary or every mailbox', () => {
   const legacy = ['a', 'b'].map((id) => ({
     ...mail(id),

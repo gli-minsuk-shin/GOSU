@@ -184,3 +184,40 @@
 .gosu-paper-save-offer.is-answer > strong {
   margin-bottom: 2px;
 }
+
+/* The paper attached to the next turn in 논문 요약's one conversation. It sits over the composer
+   beside the file pills, because it is the same kind of thing: something this question carries,
+   not something the transcript belongs to. Blue for the same reason the card's mark is blue --
+   this page's own surfaces are green, so green does not read as a marker here. */
+.briefing-chat-paper-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 8px 10px 0;
+  padding: 3px 4px 3px 8px;
+  border: 1px solid #c3d6e6;
+  border-radius: 6px;
+  background: #f0f5fa;
+  color: #29506e;
+  font-size: 12px;
+}
+.briefing-chat-paper-pill > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.briefing-chat-paper-pill > button {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.briefing-chat-paper-pill > button:hover {
+  background: #dbe7f2;
+}

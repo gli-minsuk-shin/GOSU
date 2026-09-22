@@ -19,8 +19,10 @@ export async function restoreBriefingConversation(
   routineId: string,
   signal: AbortSignal,
   pause = wait,
-  /** A paper chat restores that paper's own thread, not the assistant's. */
+  /** 논문 요약 restores its one page conversation, not the assistant's. The reference only says
+   *  which paper the screen has attached; the transcript is the page's either way. */
   paperReference?: PaperChatReference,
+  papersChat = false,
 ) {
   for (let attempt = 0; ; attempt++) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -32,7 +34,11 @@ export async function restoreBriefingConversation(
         contextStartedAt?: string;
       }>(
         '/assistant/conversation/get',
-        { routineId, ...(paperReference ? { paperReference } : {}) },
+        {
+          routineId,
+          ...(papersChat || paperReference ? { papersChat: true } : {}),
+          ...(paperReference ? { paperReference } : {}),
+        },
         signal,
       );
     } catch (error) {
